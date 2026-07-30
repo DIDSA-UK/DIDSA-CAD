@@ -656,7 +656,27 @@ class MirrorFeature(Feature):
     their current output Body/Bodies via the one-line `base_feature_id`
     lookup (`{bid for bid in bodies if base_feature_id(bid) == fid}`),
     combined with `source_body_ids` and deduplicated - see `app.document.
-    mirror.resolve_mirror_from_bodies`."""
+    mirror.resolve_mirror_from_bodies`.
+
+    `tool_feature_id` (Pattern/Mirror Phase 8, `docs/pattern-mirror-scope.md`
+    §2.11) is a third, mutually-exclusive seed-picking mode - names an
+    upstream Extrude/Revolve/Sweep Feature in Cut mode, or Boss mode with a
+    non-empty `target_body_ids` (a targetless Boss has no shared-target
+    problem - the ordinary `source_body_ids`/`source_feature_ids` path
+    above already copies it correctly as an independent Body). Its presence
+    *is* the mode switch, mirroring `PlaneRef`'s own "which optional field
+    is set selects the behaviour" convention - no separate mode enum. In
+    this mode, `source_body_ids`/`source_feature_ids` must both be empty
+    (validated by `app.document.router._validate_tool_feature_id`) and
+    `merge` is meaningless (there is exactly one target by construction -
+    `KEEP_SEPARATE` has no referent, so the router rejects it outright).
+    Rather than producing a brand-new Body, this mode mirrors the
+    referenced Feature's own pre-boolean tool shape once and applies a
+    single `BRepAlgoAPI_Cut`/`BRepAlgoAPI_Fuse` (matching that Feature's own
+    Cut/Boss mode) against its own single target Body - see
+    `app.document.mirror.resolve_mirror_tool_feature_from_bodies`, the
+    actual fix for "mirror an asymmetric hole pattern into the same part"
+    (§2.11's own "why FUSE_INTO_ONE doesn't cover this" reasoning)."""
 
     id: str
     source_body_ids: list[str]
@@ -666,6 +686,9 @@ class MirrorFeature(Feature):
     source_feature_ids: list[str] = field(default_factory=list)
     # Phase 5 (§2.10): KEEP_SEPARATE (default) vs. FUSE_INTO_ONE.
     merge: MergeMode = MergeMode.KEEP_SEPARATE
+    # Phase 8 (§2.11): a third, mutually-exclusive seed-picking mode - see
+    # this class's own docstring.
+    tool_feature_id: str | None = None
 
     @property
     def type(self) -> str:
@@ -804,6 +827,22 @@ class PatternFeature(Feature):
     deduplicated (a Body named both directly and via its own owning
     Feature is only ever patterned once).
 
+    `tool_feature_id` (Pattern/Mirror Phase 8, `docs/pattern-mirror-scope.md`
+    §2.11) is a third, mutually-exclusive seed-picking mode, mirroring
+    `MirrorFeature.tool_feature_id`'s own identical shape exactly - names
+    an upstream Extrude/Revolve/Sweep Feature in Cut mode, or Boss mode
+    with a non-empty `target_body_ids`, mutually exclusive with `source_
+    body_ids`/`source_feature_ids` and with `merge` forced away from
+    `KEEP_SEPARATE` (meaningless once there's exactly one target). Index 0
+    is already baked into the target (the seed Cut/Boss already ran once,
+    earlier in feature order) - this mode only computes the *other*
+    `count-1` transformed tool copies (same instance loop, `skip_indices`
+    applies unchanged), unions them into one combined tool, and applies a
+    single `BRepAlgoAPI_Cut`/`BRepAlgoAPI_Fuse` against the target - not
+    `count-1` separate booleans. v1 scope: exactly one target (`target_
+    body_ids[0]` of the referenced Feature) - see `app.document.pattern.
+    resolve_pattern_tool_feature_from_bodies`.
+
     Every Rectangular-only and Circular-only field is optional/defaulted
     (not just the ones Phase 2 already had before Circular existed) -
     which fields are actually required for a given `pattern_type` is
@@ -858,6 +897,9 @@ class PatternFeature(Feature):
     skip_indices: list[int] = field(default_factory=list)
     # Phase 5 (§2.10): KEEP_SEPARATE (default) vs. FUSE_INTO_ONE.
     merge: MergeMode = MergeMode.KEEP_SEPARATE
+    # Phase 8 (§2.11): a third, mutually-exclusive seed-picking mode - see
+    # this class's own docstring.
+    tool_feature_id: str | None = None
 
     @property
     def type(self) -> str:

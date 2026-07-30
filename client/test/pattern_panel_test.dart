@@ -45,6 +45,7 @@ void main() {
     void Function(MergeMode merge)? onMergeChanged,
     List<String> sourceFeatureIds = const [],
     VoidCallback? onPickSourceFeatures,
+    String? toolFeatureSummary,
     String title = 'Pattern',
     VoidCallback? onConfirm,
     VoidCallback? onCancel,
@@ -87,6 +88,7 @@ void main() {
           onMergeChanged: onMergeChanged ?? (_) {},
           sourceFeatureIds: sourceFeatureIds,
           onPickSourceFeatures: onPickSourceFeatures ?? () {},
+          toolFeatureSummary: toolFeatureSummary,
           onConfirm: onConfirm ?? () {},
           onCancel: onCancel ?? () {},
         ),
@@ -452,6 +454,26 @@ void main() {
       await tester.pumpWidget(harness(mode: PatternMode.circular, hasAxis: true));
       await tester.ensureVisible(find.text('No Features added from the Build Tree'));
       expect(find.text('No Features added from the Build Tree'), findsOneWidget);
+    });
+  });
+
+  group('Pattern/Mirror scoping Phase 8: PatternPanel tool_feature_id mode', () {
+    testWidgets('toolFeatureSummary shown replaces merge toggle and sourceFeatureIds row', (tester) async {
+      await tester.pumpWidget(
+        harness(merge: MergeMode.fuseIntoOne, toolFeatureSummary: 'Extrude 2'),
+      );
+      await tester.ensureVisible(find.textContaining('Patterning Extrude 2 into its own target'));
+      expect(find.textContaining('Patterning Extrude 2 into its own target'), findsOneWidget);
+      expect(find.byType(SegmentedButton<MergeMode>), findsNothing);
+      expect(find.text('Add from Tree'), findsNothing);
+    });
+
+    testWidgets('toolFeatureSummary null shows the ordinary merge toggle and Add from Tree button',
+        (tester) async {
+      await tester.pumpWidget(harness());
+      await tester.ensureVisible(find.text('Add from Tree'));
+      expect(find.byType(SegmentedButton<MergeMode>), findsOneWidget);
+      expect(find.text('Add from Tree'), findsOneWidget);
     });
   });
 

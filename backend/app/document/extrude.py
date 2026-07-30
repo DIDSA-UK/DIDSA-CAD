@@ -716,6 +716,94 @@ def _fuse_realized_instances(
     _register_solids(bodies, survivor_id, merged)
 
 
+def resolve_feature_tool_shape(
+    part: Part,
+    bodies: dict[str, TopoDS_Shape],
+    feature_id: str,
+    excluded_feature_ids: frozenset[str],
+) -> tuple[TopoDS_Shape, list[str], bool] | None:
+    """Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
+    §2.11/§4): the standalone, pre-boolean tool shape for an arbitrary
+    upstream `ExtrudeFeature`/`RevolveFeature`/`SweepFeature`, factored out
+    of `compute_part_bodies`'s own three inline branches below so both that
+    loop *and* `MirrorFeature`/`PatternFeature`'s new `tool_feature_id` path
+    (`app.document.mirror.resolve_mirror_tool_feature_from_bodies`/
+    `app.document.pattern.resolve_pattern_tool_feature_from_bodies`) can
+    share the identical computation, rather than `compute_part_bodies`'s
+    own inline solid-construction-then-`_apply_boss_or_cut` calls being the
+    only way to ever get at one of these three Feature types' own raw
+    solid.
+
+    Returns `(tool_shape, target_body_ids, is_cut)` - `target_body_ids`/
+    `is_cut` are simply that Feature's own fields (`target_body_ids`,
+    `extrude_type == CUT`/`mode == CUT`), returned alongside the shape so a
+    caller resolving an *arbitrary* Feature id (Pattern/Mirror's new path,
+    which doesn't already know which of the three types or which mode it
+    is) doesn't have to re-derive the same isinstance dispatch a second
+    time. Returns `None` - never raises - when `feature_id` doesn't resolve
+    to one of the three qualifying types at all, or (mirroring each
+    existing branch's own inline tolerance) when its own `sketch_feature_id`
+    doesn't resolve to a real `SketchFeature`, or its backing Sketch
+    currently has no extrudable/revolvable/sweepable profile - the exact
+    same "skip, don't fail the whole request" cases `compute_part_bodies`'s
+    own three branches already handled inline before this extraction,
+    unchanged in substance, just centralized. Still raises `HTTPException`
+    for the same structured geometry-failure errors `_solid_for_extrude_
+    feature`/`resolve_revolve_from_bodies`/`resolve_sweep_from_bodies`
+    themselves always could (`invalid_profile_ref`, `revolve_failed`,
+    `sweep_failed`, `invalid_path_ref`, `disconnected_path`, ...) - callers
+    keep their own pre-existing per-type tolerance policy for those
+    unchanged (see each of the three call sites below)."""
+    from app.document.revolve import resolve_revolve_from_bodies
+    from app.document.sweep import resolve_sweep_from_bodies
+
+    feature = part.get_feature(feature_id)
+
+    if isinstance(feature, ExtrudeFeature):
+        sketch_feature = part.get_feature(feature.sketch_feature_id)
+        if not isinstance(sketch_feature, SketchFeature):
+            logger.warning(
+                "Tool feature %s: referenced sketch feature %s not found",
+                feature_id,
+                feature.sketch_feature_id,
+            )
+            return None
+        solid = _solid_for_extrude_feature(feature, sketch_feature, part, bodies, excluded_feature_ids)
+        if solid is None:
+            return None
+        return solid, feature.target_body_ids, feature.extrude_type == ExtrudeType.CUT
+
+    if isinstance(feature, RevolveFeature):
+        sketch_feature = part.get_feature(feature.sketch_feature_id)
+        if not isinstance(sketch_feature, SketchFeature):
+            logger.warning(
+                "Tool feature %s: referenced sketch feature %s not found",
+                feature_id,
+                feature.sketch_feature_id,
+            )
+            return None
+        solid = resolve_revolve_from_bodies(feature, sketch_feature, part, bodies, excluded_feature_ids)
+        if solid is None:
+            return None
+        return solid, feature.target_body_ids, feature.mode == RevolveMode.CUT
+
+    if isinstance(feature, SweepFeature):
+        sketch_feature = part.get_feature(feature.sketch_feature_id)
+        if not isinstance(sketch_feature, SketchFeature):
+            logger.warning(
+                "Tool feature %s: referenced sketch feature %s not found",
+                feature_id,
+                feature.sketch_feature_id,
+            )
+            return None
+        solid = resolve_sweep_from_bodies(feature, sketch_feature, part, bodies, excluded_feature_ids)
+        if solid is None:
+            return None
+        return solid, feature.target_body_ids, feature.mode == SweepMode.CUT
+
+    return None
+
+
 def compute_part_bodies(
     part: Part, excluded_feature_ids: frozenset[str] = frozenset()
 ) -> dict[str, TopoDS_Shape]:
@@ -816,10 +904,16 @@ def compute_part_bodies(
     from app.document.chamfer import resolve_chamfer_from_bodies
     from app.document.fillet import resolve_fillet_from_bodies
     from app.document.import_geometry import resolve_import
-    from app.document.mirror import effective_mirror_source_body_ids, resolve_mirror_from_bodies
-    from app.document.pattern import effective_pattern_source_body_ids, resolve_pattern_from_bodies
-    from app.document.revolve import resolve_revolve_from_bodies
-    from app.document.sweep import resolve_sweep_from_bodies
+    from app.document.mirror import (
+        effective_mirror_source_body_ids,
+        resolve_mirror_from_bodies,
+        resolve_mirror_tool_feature_from_bodies,
+    )
+    from app.document.pattern import (
+        effective_pattern_source_body_ids,
+        resolve_pattern_from_bodies,
+        resolve_pattern_tool_feature_from_bodies,
+    )
 
     feature_index = {feature.id: i for i, feature in enumerate(part.features)}
     bodies: dict[str, TopoDS_Shape] = {}
@@ -881,6 +975,27 @@ def compute_part_bodies(
             continue
 
         if isinstance(feature, MirrorFeature):
+            if feature.tool_feature_id is not None:
+                # Phase 8 (§2.11): a third, mutually-exclusive seed-picking
+                # mode - mirrors the referenced upstream Cut/Boss-into-
+                # target Feature's own tool shape once and applies a single
+                # Cut/Fuse directly against its own target Body, in place -
+                # see `resolve_mirror_tool_feature_from_bodies`'s own
+                # docstring. Registered the same way `_apply_boss_or_cut`'s
+                # own Cut-mode branch registers its result (re-split via
+                # `_register_solids` in case the boolean happens to produce
+                # more than one disconnected solid).
+                try:
+                    target_id, new_shape = resolve_mirror_tool_feature_from_bodies(
+                        part, bodies, feature, excluded_feature_ids
+                    )
+                except HTTPException:
+                    logger.warning("Skipping MirrorFeature %s: could not be resolved", feature.id)
+                    continue
+                del bodies[target_id]
+                _register_solids(bodies, target_id, new_shape)
+                continue
+
             try:
                 mirrored_shapes = resolve_mirror_from_bodies(part, bodies, feature, excluded_feature_ids)
             except HTTPException:
@@ -916,6 +1031,23 @@ def compute_part_bodies(
             continue
 
         if isinstance(feature, PatternFeature):
+            if feature.tool_feature_id is not None:
+                # Phase 8 (§2.11): mirrors MirrorFeature's own tool_
+                # feature_id branch above - see `resolve_pattern_tool_
+                # feature_from_bodies`'s own docstring for the "union every
+                # realized copy into one combined tool, then one boolean"
+                # shape.
+                try:
+                    target_id, new_shape = resolve_pattern_tool_feature_from_bodies(
+                        part, bodies, feature, excluded_feature_ids
+                    )
+                except HTTPException:
+                    logger.warning("Skipping PatternFeature %s: could not be resolved", feature.id)
+                    continue
+                del bodies[target_id]
+                _register_solids(bodies, target_id, new_shape)
+                continue
+
             try:
                 per_source_instances = resolve_pattern_from_bodies(
                     part, bodies, feature, excluded_feature_ids
@@ -980,42 +1112,28 @@ def compute_part_bodies(
             continue
 
         if isinstance(feature, RevolveFeature):
-            sketch_feature = part.get_feature(feature.sketch_feature_id)
-            if not isinstance(sketch_feature, SketchFeature):
-                logger.warning(
-                    "Skipping RevolveFeature %s: referenced sketch feature %s not found",
-                    feature.id,
-                    feature.sketch_feature_id,
-                )
-                continue
+            # Phase 8: this branch's own solid computation now goes through
+            # `resolve_feature_tool_shape`, the same shared entry point
+            # Pattern/Mirror's new `tool_feature_id` path uses - see that
+            # function's own docstring. The try/except here keeps this
+            # branch's own pre-existing blanket-tolerance policy unchanged
+            # (any `HTTPException` from resolving this Revolve is tolerated,
+            # not just a narrow subset - matching the pre-extraction code
+            # exactly).
             try:
-                solid = resolve_revolve_from_bodies(
-                    feature, sketch_feature, part, bodies, excluded_feature_ids
-                )
+                result = resolve_feature_tool_shape(part, bodies, feature.id, excluded_feature_ids)
             except HTTPException:
                 logger.warning("Skipping RevolveFeature %s: could not be resolved", feature.id)
                 continue
-            if solid is None:
+            if result is None:
                 continue
-            _apply_boss_or_cut(
-                bodies, feature.id, feature_index, feature.mode == RevolveMode.CUT,
-                feature.target_body_ids, solid,
-            )
+            solid, target_body_ids, is_cut = result
+            _apply_boss_or_cut(bodies, feature.id, feature_index, is_cut, target_body_ids, solid)
             continue
 
         if isinstance(feature, SweepFeature):
-            sketch_feature = part.get_feature(feature.sketch_feature_id)
-            if not isinstance(sketch_feature, SketchFeature):
-                logger.warning(
-                    "Skipping SweepFeature %s: referenced sketch feature %s not found",
-                    feature.id,
-                    feature.sketch_feature_id,
-                )
-                continue
             try:
-                solid = resolve_sweep_from_bodies(
-                    feature, sketch_feature, part, bodies, excluded_feature_ids
-                )
+                result = resolve_feature_tool_shape(part, bodies, feature.id, excluded_feature_ids)
             except HTTPException as exc:
                 # Tolerates this Sweep's own stale/broken references
                 # (an edited-away path segment, a disconnected path, a
@@ -1037,28 +1155,17 @@ def compute_part_bodies(
                     raise
                 logger.warning("Skipping SweepFeature %s: could not be resolved", feature.id)
                 continue
-            if solid is None:
+            if result is None:
                 continue
-            _apply_boss_or_cut(
-                bodies, feature.id, feature_index, feature.mode == SweepMode.CUT,
-                feature.target_body_ids, solid,
-            )
+            solid, target_body_ids, is_cut = result
+            _apply_boss_or_cut(bodies, feature.id, feature_index, is_cut, target_body_ids, solid)
             continue
 
         if not isinstance(feature, ExtrudeFeature):
             continue
 
-        sketch_feature = part.get_feature(feature.sketch_feature_id)
-        if not isinstance(sketch_feature, SketchFeature):
-            logger.warning(
-                "Skipping ExtrudeFeature %s: referenced sketch feature %s not found",
-                feature.id,
-                feature.sketch_feature_id,
-            )
-            continue
-
         try:
-            solid = _solid_for_extrude_feature(feature, sketch_feature, part, bodies, excluded_feature_ids)
+            result = resolve_feature_tool_shape(part, bodies, feature.id, excluded_feature_ids)
         except HTTPException as exc:
             # Prompt G: profile_refs can now raise invalid_profile_ref (e.g.
             # topology drift since creation) - tolerated here the same way
@@ -1079,13 +1186,11 @@ def compute_part_bodies(
                 raise
             logger.warning("Skipping ExtrudeFeature %s: could not be resolved", feature.id)
             continue
-        if solid is None:
+        if result is None:
             continue
 
-        _apply_boss_or_cut(
-            bodies, feature.id, feature_index, feature.extrude_type == ExtrudeType.CUT,
-            feature.target_body_ids, solid,
-        )
+        solid, target_body_ids, is_cut = result
+        _apply_boss_or_cut(bodies, feature.id, feature_index, is_cut, target_body_ids, solid)
 
     return bodies
 

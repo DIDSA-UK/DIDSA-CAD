@@ -417,6 +417,15 @@ class FeatureDto {
   /// themselves use.
   final String merge;
 
+  /// Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
+  /// §2.11/§4) - present on both `"mirror"` and `"pattern"` Features: a
+  /// third, mutually-exclusive seed-picking mode naming an upstream
+  /// Extrude/Revolve/Sweep Cut/Boss-into-target Feature instead of
+  /// [sourceBodyIds]/[sourceFeatureIds]. Null for every ordinary Body-
+  /// seeded Mirror/Pattern (the overwhelmingly common case) and for any
+  /// Feature persisted before this field existed.
+  final String? toolFeatureId;
+
   FeatureDto({
     required this.type,
     required this.id,
@@ -468,6 +477,7 @@ class FeatureDto {
     this.reverseAngular = false,
     this.skipIndices = const [],
     this.merge = 'keep_separate',
+    this.toolFeatureId,
   });
 
   factory FeatureDto.fromJson(Map<String, dynamic> json) => FeatureDto(
@@ -554,6 +564,7 @@ class FeatureDto {
         reverseAngular: json['reverse_angular'] as bool? ?? false,
         skipIndices: (json['skip_indices'] as List?)?.cast<int>() ?? const [],
         merge: json['merge'] as String? ?? 'keep_separate',
+        toolFeatureId: json['tool_feature_id'] as String?,
       );
 }
 
@@ -967,6 +978,10 @@ class DocumentApiClient {
     required PlaneRefDto mirrorPlane,
     List<String> sourceFeatureIds = const [],
     MergeMode merge = MergeMode.keepSeparate,
+    // Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
+    // §2.11/§4): a third, mutually-exclusive seed-picking mode - see
+    // `FeatureDto.toolFeatureId`'s own doc comment.
+    String? toolFeatureId,
   }) =>
       _send(
         () => _httpClient.post(
@@ -977,15 +992,16 @@ class DocumentApiClient {
                 'mirror_plane': mirrorPlane.toJson(),
                 'source_feature_ids': sourceFeatureIds,
                 'merge': merge.apiValue,
+                if (toolFeatureId != null) 'tool_feature_id': toolFeatureId,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Partial update for an existing MirrorFeature - any of [sourceBodyIds]/
-  /// [mirrorPlane]/[sourceFeatureIds]/[merge] may be supplied; omitted
-  /// fields keep their current value. Used for the live-preview debounced
-  /// re-solve, same pattern as [updateFilletFeature].
+  /// [mirrorPlane]/[sourceFeatureIds]/[merge]/[toolFeatureId] may be
+  /// supplied; omitted fields keep their current value. Used for the
+  /// live-preview debounced re-solve, same pattern as [updateFilletFeature].
   Future<FeatureDto> updateMirrorFeature(
     String partId,
     String featureId, {
@@ -993,6 +1009,7 @@ class DocumentApiClient {
     PlaneRefDto? mirrorPlane,
     List<String>? sourceFeatureIds,
     MergeMode? merge,
+    String? toolFeatureId,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -1003,6 +1020,7 @@ class DocumentApiClient {
                 if (mirrorPlane != null) 'mirror_plane': mirrorPlane.toJson(),
                 if (sourceFeatureIds != null) 'source_feature_ids': sourceFeatureIds,
                 if (merge != null) 'merge': merge.apiValue,
+                if (toolFeatureId != null) 'tool_feature_id': toolFeatureId,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -1041,6 +1059,9 @@ class DocumentApiClient {
     bool reverseAngular = false,
     List<int> skipIndices = const [],
     MergeMode merge = MergeMode.keepSeparate,
+    // Pattern/Mirror scoping's Phase 8: mirrors [createMirrorFeature]'s own
+    // identical addition.
+    String? toolFeatureId,
   }) =>
       _send(
         () => _httpClient.post(
@@ -1064,6 +1085,7 @@ class DocumentApiClient {
                 'reverse_angular': reverseAngular,
                 'skip_indices': skipIndices,
                 'merge': merge.apiValue,
+                if (toolFeatureId != null) 'tool_feature_id': toolFeatureId,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -1094,6 +1116,7 @@ class DocumentApiClient {
     bool? reverseAngular,
     List<int>? skipIndices,
     MergeMode? merge,
+    String? toolFeatureId,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -1120,6 +1143,7 @@ class DocumentApiClient {
                 // `PatternFeatureUpdate.skip_indices` own docstring.
                 if (skipIndices != null) 'skip_indices': skipIndices,
                 if (merge != null) 'merge': merge.apiValue,
+                if (toolFeatureId != null) 'tool_feature_id': toolFeatureId,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

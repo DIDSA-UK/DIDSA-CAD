@@ -52,6 +52,18 @@ class MirrorPanel extends StatelessWidget {
   final List<String> sourceFeatureIds;
   final VoidCallback onPickSourceFeatures;
 
+  /// Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
+  /// §2.11/§4): non-null while this session's seed is the third,
+  /// mutually-exclusive `tool_feature_id` mode (entered via a long-press
+  /// "Mirror into Target" on an eligible upstream Cut/Boss - see
+  /// `PartScreen._openMirrorPanelFromToolFeature`) rather than a Body/
+  /// Feature-tree pick - a short display name for the referenced Feature
+  /// (e.g. "Extrude 2"). When set, the [sourceFeatureIds]/[merge] rows are
+  /// replaced with a single status line, since neither is user-editable in
+  /// this mode (`merge` is forced to `fuseIntoOne` server-side - see the
+  /// backend's own `_validate_tool_feature_id`).
+  final String? toolFeatureSummary;
+
   final VoidCallback onConfirm;
   final VoidCallback onCancel;
 
@@ -64,6 +76,7 @@ class MirrorPanel extends StatelessWidget {
     required this.onMergeChanged,
     this.sourceFeatureIds = const [],
     required this.onPickSourceFeatures,
+    this.toolFeatureSummary,
     required this.onConfirm,
     required this.onCancel,
   });
@@ -89,41 +102,62 @@ class MirrorPanel extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 12),
-          SegmentedButton<MergeMode>(
-            segments: const [
-              ButtonSegment(
-                  value: MergeMode.keepSeparate, label: Text('Keep Separate')),
-              ButtonSegment(
-                  value: MergeMode.fuseIntoOne,
-                  label: Text('Merge into One Body')),
-            ],
-            selected: {merge},
-            onSelectionChanged: (selection) => onMergeChanged(selection.first),
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  sourceFeatureIds.isEmpty
-                      ? 'No Features added from the Build Tree'
-                      : '${sourceFeatureIds.length} Feature'
-                          '${sourceFeatureIds.length == 1 ? '' : 's'} added from the Build Tree',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    fontSize: 12,
+          if (toolFeatureSummary != null)
+            Row(
+              children: [
+                Icon(Icons.account_tree_outlined,
+                    size: 16, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    'Mirroring $toolFeatureSummary into its own target - always merges',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      fontSize: 12,
+                    ),
                   ),
                 ),
-              ),
-              TextButton.icon(
-                onPressed: onPickSourceFeatures,
-                icon: const Icon(Icons.account_tree_outlined, size: 16),
-                label: const Text('Add from Tree'),
-              ),
-            ],
-          ),
+              ],
+            )
+          else ...[
+            SegmentedButton<MergeMode>(
+              segments: const [
+                ButtonSegment(
+                    value: MergeMode.keepSeparate, label: Text('Keep Separate')),
+                ButtonSegment(
+                    value: MergeMode.fuseIntoOne,
+                    label: Text('Merge into One Body')),
+              ],
+              selected: {merge},
+              onSelectionChanged: (selection) => onMergeChanged(selection.first),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    sourceFeatureIds.isEmpty
+                        ? 'No Features added from the Build Tree'
+                        : '${sourceFeatureIds.length} Feature'
+                            '${sourceFeatureIds.length == 1 ? '' : 's'} added from the Build Tree',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
+                TextButton.icon(
+                  onPressed: onPickSourceFeatures,
+                  icon: const Icon(Icons.account_tree_outlined, size: 16),
+                  label: const Text('Add from Tree'),
+                ),
+              ],
+            ),
+          ],
           const SizedBox(height: 12),
           Row(
             mainAxisAlignment: MainAxisAlignment.end,

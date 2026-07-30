@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
+import 'package:didsa_cad_client/viewport3d/mirror_panel.dart';
 import 'package:didsa_cad_client/viewport3d/part_screen.dart';
 import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
 import 'package:didsa_cad_client/viewport3d/pattern_panel.dart';
@@ -1317,6 +1318,170 @@ void main() {
     await tester.pump(const Duration(milliseconds: 250));
 
     expect(find.text('Pattern'), findsNothing);
+  });
+
+  testWidgets(
+      'Pattern/Mirror scoping Phase 8: long-pressing an eligible Cut Feature offers "Pattern into '
+      'Target"/"Mirror into Target", and tapping "Pattern into Target" opens PatternPanel seeded '
+      'via tool_feature_id', (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        {
+          'type': 'extrude',
+          'id': 'feature-2',
+          'sketch_feature_id': 'feature-1',
+          'extrude_type': 'cut',
+          'start_distance': 0.0,
+          'end_distance': 10.0,
+          'target_body_ids': ['feature-0'],
+          'locked': false,
+        },
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    await tester.longPress(find.text('Extrude 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.text('Pattern into Target'), findsOneWidget);
+    expect(find.text('Mirror into Target'), findsOneWidget);
+
+    await tester.tap(find.text('Pattern into Target'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    // Straight to `configuring` (no pickingBodies ribbon/step), tool_feature_id
+    // mode shows its own status line in place of the ordinary merge toggle/
+    // sourceFeatureIds row - see PatternPanel.toolFeatureSummary.
+    expect(find.byType(PatternPanel), findsOneWidget);
+    expect(find.text('Edit Pattern'), findsNothing);
+    expect(find.text('Select Body to Pattern'), findsNothing);
+    expect(find.textContaining('Patterning Extrude 1 into its own target'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    // direction_1 is still unset, so the debounced live-preview never
+    // actually fires a network call - pump past it so no Timer is left
+    // pending when this test tears down (mirrors the Phase 6 precedent
+    // test's own identical note).
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+      'Pattern/Mirror scoping Phase 8: tapping "Mirror into Target" opens MirrorPanel directly at '
+      'the pickingPlane step, seeded via tool_feature_id', (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        {
+          'type': 'extrude',
+          'id': 'feature-2',
+          'sketch_feature_id': 'feature-1',
+          'extrude_type': 'cut',
+          'start_distance': 0.0,
+          'end_distance': 10.0,
+          'target_body_ids': ['feature-0'],
+          'locked': false,
+        },
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    await tester.longPress(find.text('Extrude 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    await tester.tap(find.text('Mirror into Target'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    // MirrorPanel opens immediately (mirror_plane still required in
+    // tool_feature_id mode), showing its own status line and no plane
+    // picked yet - Confirm stays disabled until one is.
+    expect(find.byType(MirrorPanel), findsOneWidget);
+    expect(find.text('Edit Mirror'), findsNothing);
+    expect(find.textContaining('Mirroring Extrude 1 into its own target'), findsOneWidget);
+    expect(
+      tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed,
+      isNull,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+      'Pattern/Mirror scoping Phase 8: long-pressing a targetless Boss does not offer "Pattern into '
+      'Target"/"Mirror into Target" (no shared-target problem to solve)', (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        {
+          'type': 'extrude',
+          'id': 'feature-2',
+          'sketch_feature_id': 'feature-1',
+          'extrude_type': 'boss',
+          'start_distance': 0.0,
+          'end_distance': 10.0,
+          'locked': false,
+        },
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    await tester.longPress(find.text('Extrude 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    // Still offers the ordinary "Pattern" (body-seed) entry - only the two
+    // new tool_feature_id-mode entries are gated on eligibility.
+    expect(find.text('Pattern'), findsOneWidget);
+    expect(find.text('Pattern into Target'), findsNothing);
+    expect(find.text('Mirror into Target'), findsNothing);
   });
 
   testWidgets(

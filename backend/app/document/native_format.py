@@ -740,6 +740,11 @@ def _feature_to_dict(feature: Feature) -> dict:
             "mirror_plane": _plane_ref_to_dict(feature.mirror_plane),
             "source_feature_ids": list(feature.source_feature_ids),
             "merge": feature.merge.value,
+            # Phase 8 (`docs/pattern-mirror-scope.md` §2.11/§4): the third,
+            # mutually-exclusive seed-picking mode - `None` for every
+            # Mirror persisted before this field existed, or one using the
+            # ordinary source_body_ids/source_feature_ids path.
+            "tool_feature_id": feature.tool_feature_id,
         }
     if isinstance(feature, PatternFeature):
         return {
@@ -766,6 +771,8 @@ def _feature_to_dict(feature: Feature) -> dict:
             "reverse_angular": feature.reverse_angular,
             "skip_indices": list(feature.skip_indices),
             "merge": feature.merge.value,
+            # Phase 8: mirrors MirrorFeature's own identical field above.
+            "tool_feature_id": feature.tool_feature_id,
         }
     raise NativeFormatError(f"No native export mapping for feature type: {feature.type!r}")
 
@@ -851,6 +858,9 @@ def _feature_from_dict(data: dict) -> Feature:
             # `merge` (Phase 5) defaults to KEEP_SEPARATE for any Mirror
             # persisted before this field existed (Phase 1-4).
             merge=MergeMode(data.get("merge", MergeMode.KEEP_SEPARATE.value)),
+            # `tool_feature_id` (Phase 8) defaults to None for any Mirror
+            # persisted before this field existed.
+            tool_feature_id=data.get("tool_feature_id"),
         )
     if feature_type == "pattern":
         return PatternFeature(
@@ -885,6 +895,9 @@ def _feature_from_dict(data: dict) -> Feature:
             # `merge` (Phase 5) defaults to KEEP_SEPARATE for any Pattern
             # persisted before this field existed (Phase 2-4).
             merge=MergeMode(data.get("merge", MergeMode.KEEP_SEPARATE.value)),
+            # `tool_feature_id` (Phase 8) defaults to None for any Pattern
+            # persisted before this field existed.
+            tool_feature_id=data.get("tool_feature_id"),
         )
     raise NativeFormatError(f"Unknown native feature type: {feature_type!r}")
 

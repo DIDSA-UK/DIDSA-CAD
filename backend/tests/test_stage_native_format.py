@@ -381,6 +381,89 @@ def test_pattern_feature_round_trips_through_real_json_including_merge():
     assert imported_pattern.merge == pattern.merge == MergeMode.FUSE_INTO_ONE
 
 
+def test_mirror_and_pattern_tool_feature_id_round_trip_through_real_json():
+    """Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
+    §2.11/§4): `tool_feature_id`, the third seed-picking mode, round-trips
+    through native save/load exactly like every other field."""
+    part = Part(id="part-tool-feature", name="Tool Feature Part")
+    cut = ExtrudeFeature(
+        id="feat-cut",
+        sketch_feature_id="feat-sketch",
+        extrude_type=ExtrudeType.CUT,
+        start_distance=0.0,
+        end_distance=10.0,
+        target_body_ids=["feat-boss"],
+    )
+    part.add_feature(cut)
+    mirror = MirrorFeature(
+        id="feat-mirror",
+        source_body_ids=[],
+        mirror_plane=PlaneRef(fixed_plane=Plane.XY),
+        merge=MergeMode.FUSE_INTO_ONE,
+        tool_feature_id=cut.id,
+    )
+    part.add_feature(mirror)
+    pattern = PatternFeature(
+        id="feat-pattern",
+        source_body_ids=[],
+        pattern_type=PatternType.RECTANGULAR,
+        direction_1=None,
+        count_1=3,
+        spacing_1=20.0,
+        merge=MergeMode.FUSE_INTO_ONE,
+        tool_feature_id=cut.id,
+    )
+    part.add_feature(pattern)
+
+    document = Document(id="doc-tool-feature")
+    document.parts[part.id] = part
+
+    exported = json.loads(json.dumps(export_native(document, {})))
+    imported_document, _ = import_native(exported)
+    imported_part = imported_document.parts["part-tool-feature"]
+
+    assert imported_part.get_feature("feat-mirror").tool_feature_id == cut.id
+    assert imported_part.get_feature("feat-pattern").tool_feature_id == cut.id
+
+
+def test_mirror_and_pattern_tool_feature_id_defaults_to_none_for_pre_phase_8_saves():
+    """Backward compatibility: a Mirror/Pattern persisted before Phase 8's
+    `tool_feature_id` field existed has no `"tool_feature_id"` key at all -
+    must import as `None`, not raise."""
+    payload = {
+        "schema_version": 1,
+        "document": {
+            "id": "doc-legacy-8",
+            "parts": [
+                {
+                    "id": "part-legacy-8",
+                    "name": "Legacy Part",
+                    "features": [
+                        {
+                            "type": "mirror",
+                            "id": "feat-mirror-legacy-8",
+                            "source_body_ids": ["feat-extrude"],
+                            "mirror_plane": {"fixed_plane": "XY"},
+                        },
+                        {
+                            "type": "pattern",
+                            "id": "feat-pattern-legacy-8",
+                            "source_body_ids": ["feat-extrude"],
+                            "count_1": 2,
+                            "spacing_1": 5.0,
+                        },
+                    ],
+                }
+            ],
+        },
+        "sketches": [],
+    }
+    imported_document, _ = import_native(payload)
+    part = imported_document.parts["part-legacy-8"]
+    assert part.get_feature("feat-mirror-legacy-8").tool_feature_id is None
+    assert part.get_feature("feat-pattern-legacy-8").tool_feature_id is None
+
+
 def test_mirror_and_pattern_merge_default_to_keep_separate_for_pre_phase_5_saves():
     """Backward compatibility: a Mirror/Pattern persisted before Phase 5's
     `merge` field existed has no `"merge"` key in its saved dict at all -

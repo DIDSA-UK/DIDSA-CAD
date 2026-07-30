@@ -145,6 +145,13 @@ class PatternPanel extends StatefulWidget {
   final List<String> sourceFeatureIds;
   final VoidCallback onPickSourceFeatures;
 
+  /// Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
+  /// §2.11/§4): mirrors [MirrorPanel.toolFeatureSummary]'s own identical
+  /// shape exactly - non-null while this session's seed is the third
+  /// `tool_feature_id` mode (entered via a long-press "Pattern into
+  /// Target"), a short display name for the referenced Feature.
+  final String? toolFeatureSummary;
+
   final VoidCallback onConfirm;
   final VoidCallback onCancel;
 
@@ -189,6 +196,7 @@ class PatternPanel extends StatefulWidget {
     required this.onMergeChanged,
     this.sourceFeatureIds = const [],
     required this.onPickSourceFeatures,
+    this.toolFeatureSummary,
     required this.onConfirm,
     required this.onCancel,
   });
@@ -612,42 +620,66 @@ class _PatternPanelState extends State<PatternPanel> {
           else
             _rectangularFields(),
           const SizedBox(height: 12),
-          SegmentedButton<MergeMode>(
-            segments: const [
-              ButtonSegment(
-                  value: MergeMode.keepSeparate, label: Text('Keep Separate')),
-              ButtonSegment(
-                  value: MergeMode.fuseIntoOne,
-                  label: Text('Merge into One Body')),
-            ],
-            selected: {widget.merge},
-            onSelectionChanged: (selection) =>
-                widget.onMergeChanged(selection.first),
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  widget.sourceFeatureIds.isEmpty
-                      ? 'No Features added from the Build Tree'
-                      : '${widget.sourceFeatureIds.length} Feature'
-                          '${widget.sourceFeatureIds.length == 1 ? '' : 's'} added from the Build Tree',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    fontSize: 12,
+          if (widget.toolFeatureSummary != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(
+                children: [
+                  Icon(Icons.account_tree_outlined,
+                      size: 16, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      'Patterning ${widget.toolFeatureSummary} into its own target - always merges',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            )
+          else ...[
+            SegmentedButton<MergeMode>(
+              segments: const [
+                ButtonSegment(
+                    value: MergeMode.keepSeparate, label: Text('Keep Separate')),
+                ButtonSegment(
+                    value: MergeMode.fuseIntoOne,
+                    label: Text('Merge into One Body')),
+              ],
+              selected: {widget.merge},
+              onSelectionChanged: (selection) =>
+                  widget.onMergeChanged(selection.first),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    widget.sourceFeatureIds.isEmpty
+                        ? 'No Features added from the Build Tree'
+                        : '${widget.sourceFeatureIds.length} Feature'
+                            '${widget.sourceFeatureIds.length == 1 ? '' : 's'} added from the Build Tree',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      fontSize: 12,
+                    ),
                   ),
                 ),
-              ),
-              TextButton.icon(
-                onPressed: widget.onPickSourceFeatures,
-                icon: const Icon(Icons.account_tree_outlined, size: 16),
-                label: const Text('Add from Tree'),
-              ),
-            ],
-          ),
+                TextButton.icon(
+                  onPressed: widget.onPickSourceFeatures,
+                  icon: const Icon(Icons.account_tree_outlined, size: 16),
+                  label: const Text('Add from Tree'),
+                ),
+              ],
+            ),
+          ],
           const SizedBox(height: 8),
           Row(
             mainAxisAlignment: MainAxisAlignment.end,

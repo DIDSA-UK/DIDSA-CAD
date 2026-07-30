@@ -571,16 +571,27 @@ class MirrorFeatureCreate(BaseModel):
     mirror_plane: PlaneRefSchema
     source_feature_ids: list[str] = []
     merge: MergeMode = MergeMode.KEEP_SEPARATE
+    # Phase 8 (`docs/pattern-mirror-scope.md` §2.11/§4): a third, mutually
+    # exclusive seed-picking mode - names an upstream Extrude/Revolve/Sweep
+    # Cut/Boss-into-target Feature instead of `source_body_ids`/`source_
+    # feature_ids` (see `app.document.router._validate_tool_feature_id`).
+    tool_feature_id: str | None = None
 
 
 class MirrorFeatureUpdate(BaseModel):
     """Partial update, same omitted-vs-current-value convention as
-    `ChamferFeatureUpdate`/`FilletFeatureUpdate`."""
+    `ChamferFeatureUpdate`/`FilletFeatureUpdate`. `tool_feature_id`
+    (Phase 8) follows the identical convention - `None` (omitted) keeps
+    whatever the Feature already has; there is no supported way to switch
+    *out* of `tool_feature_id` mode via update (mirrors `PatternFeature
+    Update.pattern_type`'s own immutability - switching modes is delete+
+    recreate, not an edit)."""
 
     source_body_ids: list[str] | None = None
     mirror_plane: PlaneRefSchema | None = None
     source_feature_ids: list[str] | None = None
     merge: MergeMode | None = None
+    tool_feature_id: str | None = None
 
 
 class MirrorFeatureResponse(BaseModel):
@@ -590,6 +601,7 @@ class MirrorFeatureResponse(BaseModel):
     mirror_plane: PlaneRefSchema
     source_feature_ids: list[str] = []
     merge: MergeMode
+    tool_feature_id: str | None = None
     locked: bool
     # B1: see SketchFeatureResponse.produces above - always BODY for a
     # MirrorFeature.
@@ -662,6 +674,9 @@ class PatternFeatureCreate(BaseModel):
     reverse_angular: bool = False
     skip_indices: list[int] = []
     merge: MergeMode = MergeMode.KEEP_SEPARATE
+    # Phase 8 (`docs/pattern-mirror-scope.md` §2.11/§4): mirrors
+    # `MirrorFeatureCreate.tool_feature_id`'s own identical shape.
+    tool_feature_id: str | None = None
 
 
 class PatternFeatureUpdate(BaseModel):
@@ -702,6 +717,9 @@ class PatternFeatureUpdate(BaseModel):
     reverse_angular: bool | None = None
     skip_indices: list[int] | None = None
     merge: MergeMode | None = None
+    # Phase 8: mirrors `MirrorFeatureUpdate.tool_feature_id`'s own identical
+    # omitted-vs-current convention (see that field's own doc comment).
+    tool_feature_id: str | None = None
 
 
 class PatternFeatureResponse(BaseModel):
@@ -724,6 +742,7 @@ class PatternFeatureResponse(BaseModel):
     reverse_angular: bool
     skip_indices: list[int]
     merge: MergeMode
+    tool_feature_id: str | None = None
     locked: bool
     # B1: see SketchFeatureResponse.produces above - always BODY for a
     # PatternFeature.

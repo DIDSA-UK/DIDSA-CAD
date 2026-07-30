@@ -66,6 +66,30 @@ enum _ProfilePickerTarget { extrude, revolve, sweep }
 /// drift out of sync about which Feature types can seed a Mirror/Pattern.
 const _bodyProducingFeatureTypes = {'extrude', 'revolve', 'sweep', 'import', 'mirror', 'pattern'};
 
+/// Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
+/// §2.11/§4): whether [feature] is an eligible `tool_feature_id` target -
+/// mirrors the backend's own `app.document.graph.tool_feature_qualifies`
+/// exactly: an Extrude/Revolve/Sweep Feature in Cut mode, or Boss mode with
+/// a non-empty `target_body_ids` (a targetless Boss has no shared-target
+/// problem - the ordinary Body/Feature-tree seed path already copies it
+/// correctly as an independent Body). Computed purely from [FeatureDto]'s
+/// own already-fetched fields (`extrudeType`/`mode`/`targetBodyIds`) - no
+/// extra network round-trip needed, and this is only ever a client-side
+/// visual aid (which context-menu entries to show): the backend re-checks
+/// this for real via its own eager `_validate_tool_feature_id` at create/
+/// update time, so a stale/wrong value here can never let an ineligible
+/// Feature through.
+bool _isEligibleToolFeature(FeatureDto feature) {
+  final isCut = switch (feature.type) {
+    'extrude' => feature.extrudeType == 'cut',
+    'revolve' => feature.mode == 'cut',
+    'sweep' => feature.mode == 'cut',
+    _ => null,
+  };
+  if (isCut == null) return false;
+  return isCut || feature.targetBodyIds.isNotEmpty;
+}
+
 /// Pattern/Mirror scoping's Phase 1 (`docs/pattern-mirror-scope.md`
 /// §2.1/§4): which mutually-exclusive half of the guided Mirror flow is
 /// currently live - see `_PartScreenState`'s own Mirror state-field
@@ -1186,6 +1210,16 @@ class _PartScreenState extends State<PartScreen> {
   /// everywhere that field is.
   List<String> _mirrorSourceFeatureIds = [];
 
+  /// Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
+  /// §2.11/§4): non-null while this session's seed is the third, mutually-
+  /// exclusive `tool_feature_id` mode instead of [_mirrorSourceBodyIds]/
+  /// [_mirrorSourceFeatureIds] - set by [_openMirrorPanelFromToolFeature]
+  /// (a long-press "Mirror into Target" on an eligible upstream Cut/Boss),
+  /// reconstructed from the edited Feature's own stored value in
+  /// [_openMirrorPanelForEdit], reset alongside [_mirrorSourceBodyIds]
+  /// everywhere that field is.
+  String? _mirrorToolFeatureId;
+
   /// The MirrorFeature created (or, in edit mode, already existing) for the
   /// panel session - mirrors [_previewRevolveFeatureId]'s simple pattern.
   /// Mirror needs no dual-mesh preview-overlay machinery at all (see
@@ -1216,6 +1250,7 @@ class _PartScreenState extends State<PartScreen> {
     PlaneRefDto mirrorPlane,
     List<String> sourceFeatureIds,
     MergeMode merge,
+    String? toolFeatureId,
   })? _mirrorEditSnapshot;
 
   /// [_selectedEntities]' value from just before the panel opened - restored
@@ -1310,6 +1345,14 @@ class _PartScreenState extends State<PartScreen> {
   /// sources, on top of [_patternSourceBodyIds] - mirrors
   /// [_mirrorSourceFeatureIds]'s own shape.
   List<String> _patternSourceFeatureIds = [];
+
+  /// Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
+  /// §2.11/§4): mirrors [_mirrorToolFeatureId]'s own identical shape - non-
+  /// null while this session's seed is the third, mutually-exclusive
+  /// `tool_feature_id` mode instead of [_patternSourceBodyIds]/
+  /// [_patternSourceFeatureIds], set by [_openPatternPanelFromToolFeature]
+  /// (via [_resetPatternConfiguringState]'s own `toolFeatureId` param).
+  String? _patternToolFeatureId;
 
   /// Pattern/Mirror scoping Phase 4: Rectangular or Circular - always
   /// [PatternMode.rectangular] for a brand-new PatternFeature
@@ -1413,6 +1456,7 @@ class _PartScreenState extends State<PartScreen> {
     List<int> skipIndices,
     List<String> sourceFeatureIds,
     MergeMode merge,
+    String? toolFeatureId,
   })? _patternEditSnapshot;
 
   /// [_selectedEntities]' value from just before the panel opened -
@@ -4318,6 +4362,12 @@ class _PartScreenState extends State<PartScreen> {
     // comment for why this is shared with the Build Tree's own Feature
     // picker rather than redefined here.
     final showPattern = _bodyProducingFeatureTypes.contains(feature.type);
+    // Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
+    // §2.11/§4): a third, mutually-exclusive seed-picking mode - a
+    // strictly narrower gate than [showPattern]'s own (an Extrude/Revolve/
+    // Sweep in Cut mode, or Boss mode with a non-empty `target_body_ids` -
+    // see `_isEligibleToolFeature`).
+    final showToolFeatureActions = _isEligibleToolFeature(feature);
     if (!mounted) return;
 
     final action = await showFeatureContextMenu(
@@ -4334,6 +4384,7 @@ class _PartScreenState extends State<PartScreen> {
       sweepDisabledReason: extrudeDisabledReason,
       showRedefineOrientation: isSketchFeature,
       showPattern: showPattern,
+      showToolFeatureActions: showToolFeatureActions,
     );
     if (!mounted || action == null) return;
 
@@ -4348,6 +4399,10 @@ class _PartScreenState extends State<PartScreen> {
         await _redefineSketchOrientation(feature);
       case FeatureContextMenuAction.pattern:
         _openPatternPanelFromFeature(feature);
+      case FeatureContextMenuAction.patternIntoTarget:
+        _openPatternPanelFromToolFeature(feature);
+      case FeatureContextMenuAction.mirrorIntoTarget:
+        _openMirrorPanelFromToolFeature(feature);
       case FeatureContextMenuAction.toggleVisibility:
         await _toggleFeatureVisibility(feature);
       case FeatureContextMenuAction.delete:
@@ -5883,6 +5938,7 @@ class _PartScreenState extends State<PartScreen> {
       _mirrorSourceBodyIds = null;
       _mirrorSourceFeatureIds = [];
       _mirrorMerge = MergeMode.keepSeparate;
+      _mirrorToolFeatureId = null;
       _previewMirrorFeatureId = null;
       _meshBeforeMirror = _bodies;
       _entitiesBeforeMirror = _selectedEntities;
@@ -5955,6 +6011,39 @@ class _PartScreenState extends State<PartScreen> {
       _mirrorSourceBodyIds = sourceBodyIds;
       _mirrorSourceFeatureIds = [];
       _mirrorMerge = MergeMode.keepSeparate;
+      _mirrorToolFeatureId = null;
+      _previewMirrorFeatureId = null;
+      _meshBeforeMirror = _bodies;
+      _entitiesBeforeMirror = _selectedEntities;
+      _selectedEntities = {};
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _selectionFilterOverrides.push(_mirrorSelectionFilter);
+    });
+  }
+
+  /// Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
+  /// §2.11/§4): [FeatureContextMenuAction.mirrorIntoTarget]'s handler -
+  /// opens [MirrorPanel] directly in the `pickingPlane` step for a
+  /// brand-new MirrorFeature whose seed is [feature] itself, via
+  /// `tool_feature_id` rather than a Body/Feature-tree pick. Mirrors
+  /// [_openMirrorPanel]'s own "skip `pickingBodies` entirely" shape - the
+  /// seed is already fixed by [feature] going in, so there is nothing for
+  /// a Body-picking step to do - but still needs `pickingPlane`, since
+  /// `mirror_plane` remains required in this mode too (see
+  /// `MirrorFeature.tool_feature_id`'s own backend docstring). `merge` is
+  /// forced to `fuseIntoOne` up front - the router rejects `keepSeparate`
+  /// once `tool_feature_id` is set (there is exactly one target by
+  /// construction). [_onFeatureLongPress] is the only caller, already
+  /// gated on `_isEligibleToolFeature(feature)`, so this doesn't re-check.
+  void _openMirrorPanelFromToolFeature(FeatureDto feature) {
+    setState(() {
+      _mirrorStep = _MirrorStep.pickingPlane;
+      _mirrorSourceBodyIds = [];
+      _mirrorSourceFeatureIds = [];
+      _mirrorMerge = MergeMode.fuseIntoOne;
+      _mirrorToolFeatureId = feature.id;
       _previewMirrorFeatureId = null;
       _meshBeforeMirror = _bodies;
       _entitiesBeforeMirror = _selectedEntities;
@@ -5991,12 +6080,17 @@ class _PartScreenState extends State<PartScreen> {
   bool _openMirrorPanelForEdit(FeatureDto feature) {
     final sourceBodyIds = feature.sourceBodyIds;
     final mirrorPlane = feature.mirrorPlane;
+    final toolFeatureId = feature.toolFeatureId;
     // Bug fix: a MirrorFeature seeded purely via `source_feature_ids` (no
     // direct Body pick) has an empty (not missing) `sourceBodyIds` - the
     // old `sourceBodyIds.isEmpty` check alone made re-opening it for edit
     // silently fail (`false`, no panel, no error) even though the Feature
-    // is entirely valid.
-    if ((sourceBodyIds.isEmpty && feature.sourceFeatureIds.isEmpty) || mirrorPlane == null) return false;
+    // is entirely valid. Phase 8: a `tool_feature_id`-seeded Mirror has
+    // both `sourceBodyIds`/`sourceFeatureIds` empty too - equally valid.
+    if ((sourceBodyIds.isEmpty && feature.sourceFeatureIds.isEmpty && toolFeatureId == null) ||
+        mirrorPlane == null) {
+      return false;
+    }
 
     final merge = MergeMode.fromApiValue(feature.merge);
     final sourceFeatureIds = feature.sourceFeatureIds;
@@ -6007,11 +6101,13 @@ class _PartScreenState extends State<PartScreen> {
       _mirrorSourceBodyIds = sourceBodyIds;
       _mirrorSourceFeatureIds = sourceFeatureIds;
       _mirrorMerge = merge;
+      _mirrorToolFeatureId = toolFeatureId;
       _mirrorEditSnapshot = (
         sourceBodyIds: sourceBodyIds,
         mirrorPlane: mirrorPlane,
         sourceFeatureIds: sourceFeatureIds,
         merge: merge,
+        toolFeatureId: toolFeatureId,
       );
       _meshBeforeMirror = _bodies;
       _entitiesBeforeMirror = _selectedEntities;
@@ -6020,6 +6116,18 @@ class _PartScreenState extends State<PartScreen> {
       _selectionFilterOverrides.push(_mirrorSelectionFilter);
     });
     return true;
+  }
+
+  /// Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
+  /// §2.11/§4): a short display name for [featureId] (e.g. "Extrude 2"),
+  /// for [MirrorPanel.toolFeatureSummary]/[PatternPanel.toolFeatureSummary] -
+  /// falls back to the bare id itself if [_features] hasn't loaded it yet
+  /// (defensive only; by the time a tool-feature id is set, its own
+  /// Feature was already fetched to gate the long-press menu that set it).
+  String? _toolFeatureSummary(String? featureId) {
+    if (featureId == null) return null;
+    final index = _features.indexWhere((f) => f.id == featureId);
+    return index == -1 ? featureId : featureDisplayName(_features, index);
   }
 
   /// The face/referencePlane/createPlane-kind entity in [_selectedEntities] -
@@ -6082,6 +6190,7 @@ class _PartScreenState extends State<PartScreen> {
         mirrorPlane: mirrorPlane,
         sourceFeatureIds: _mirrorSourceFeatureIds,
         merge: _mirrorMerge,
+        toolFeatureId: _mirrorToolFeatureId,
       );
       _previewMirrorFeatureId = created.id;
     } else {
@@ -6092,6 +6201,7 @@ class _PartScreenState extends State<PartScreen> {
         mirrorPlane: mirrorPlane,
         sourceFeatureIds: _mirrorSourceFeatureIds,
         merge: _mirrorMerge,
+        toolFeatureId: _mirrorToolFeatureId,
       );
     }
     await _refreshMesh();
@@ -6139,6 +6249,7 @@ class _PartScreenState extends State<PartScreen> {
       _mirrorSourceBodyIds = null;
       _mirrorSourceFeatureIds = [];
       _mirrorMerge = MergeMode.keepSeparate;
+      _mirrorToolFeatureId = null;
       _selectedEntities = _entitiesBeforeMirror ?? {};
       _entitiesBeforeMirror = null;
       _previewMirrorFeatureId = null;
@@ -6166,6 +6277,7 @@ class _PartScreenState extends State<PartScreen> {
       _mirrorSourceBodyIds = null;
       _mirrorSourceFeatureIds = [];
       _mirrorMerge = MergeMode.keepSeparate;
+      _mirrorToolFeatureId = null;
       _selectedEntities = _entitiesBeforeMirror ?? {};
       _entitiesBeforeMirror = null;
       _previewMirrorFeatureId = null;
@@ -6184,6 +6296,7 @@ class _PartScreenState extends State<PartScreen> {
             mirrorPlane: editSnapshot.mirrorPlane,
             sourceFeatureIds: editSnapshot.sourceFeatureIds,
             merge: editSnapshot.merge,
+            toolFeatureId: editSnapshot.toolFeatureId,
           );
           await _refreshFeatures();
         });
@@ -6223,6 +6336,7 @@ class _PartScreenState extends State<PartScreen> {
       _patternStep = _PatternStep.pickingBodies;
       _patternSourceBodyIds = null;
       _patternSourceFeatureIds = [];
+      _patternToolFeatureId = null;
       _previewPatternFeatureId = null;
       _meshBeforePattern = _bodies;
       _entitiesBeforePattern = _selectedEntities;
@@ -6350,17 +6464,44 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
+  /// Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
+  /// §2.11/§4): [FeatureContextMenuAction.patternIntoTarget]'s handler -
+  /// mirrors [_openPatternPanelFromFeature]'s own shape exactly, except
+  /// the seed is [feature] via `tool_feature_id` (a third, mutually-
+  /// exclusive mode) rather than `source_feature_ids`. [_onFeatureLongPress]
+  /// is the only caller, already gated on `_isEligibleToolFeature(feature)`.
+  void _openPatternPanelFromToolFeature(FeatureDto feature) {
+    setState(() {
+      _meshBeforePattern = _bodies;
+      _entitiesBeforePattern = _selectedEntities;
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _selectionFilterOverrides.push(_patternDirectionSelectionFilter);
+      _resetPatternConfiguringState([], toolFeatureId: feature.id);
+    });
+  }
+
   /// Shared by [_confirmPatternBodySelection]/[_openPatternPanel]/
-  /// [_openPatternPanelFromFeature] - resets every Direction 1/2 field to
-  /// its default and enters `configuring` for [sourceBodyIds]/
-  /// [sourceFeatureIds]. Always called from inside a `setState` block by
-  /// its callers (each of which has its own filter-stack bookkeeping to do
-  /// alongside this).
-  void _resetPatternConfiguringState(List<String> sourceBodyIds, {List<String> sourceFeatureIds = const []}) {
+  /// [_openPatternPanelFromFeature]/[_openPatternPanelFromToolFeature] -
+  /// resets every Direction 1/2 field to its default and enters
+  /// `configuring` for [sourceBodyIds]/[sourceFeatureIds] (the ordinary
+  /// seed mode) or [toolFeatureId] (Phase 8's third, mutually-exclusive
+  /// mode - forces `merge` to `fuseIntoOne`, since `keepSeparate` has no
+  /// referent once there's exactly one target - see `MirrorFeature.
+  /// tool_feature_id`'s own backend docstring). Always called from inside
+  /// a `setState` block by its callers (each of which has its own
+  /// filter-stack bookkeeping to do alongside this).
+  void _resetPatternConfiguringState(
+    List<String> sourceBodyIds, {
+    List<String> sourceFeatureIds = const [],
+    String? toolFeatureId,
+  }) {
     _patternStep = _PatternStep.configuring;
     _patternMode = PatternMode.rectangular;
     _patternSourceBodyIds = sourceBodyIds;
     _patternSourceFeatureIds = sourceFeatureIds;
+    _patternToolFeatureId = toolFeatureId;
     _patternDirection1 = null;
     _patternDirection1EdgeEntity = null;
     _patternCount1 = 2;
@@ -6379,7 +6520,7 @@ class _PartScreenState extends State<PartScreen> {
     _patternAngleTotal = 360.0;
     _patternReverseAngular = false;
     _patternSkipIndices = {};
-    _patternMerge = MergeMode.keepSeparate;
+    _patternMerge = toolFeatureId != null ? MergeMode.fuseIntoOne : MergeMode.keepSeparate;
     _previewPatternFeatureId = null;
     _editingPatternFeatureId = null;
     _patternEditSnapshot = null;
@@ -6408,10 +6549,12 @@ class _PartScreenState extends State<PartScreen> {
   /// `PatternFeature`'s own backend docstring.
   bool _openPatternPanelForEdit(FeatureDto feature) {
     final sourceBodyIds = feature.sourceBodyIds;
+    final toolFeatureId = feature.toolFeatureId;
     // Bug fix: mirrors [_openMirrorPanelForEdit]'s own identical fix - a
     // PatternFeature seeded purely via `source_feature_ids` has an empty
-    // (not missing) `sourceBodyIds`.
-    if (sourceBodyIds.isEmpty && feature.sourceFeatureIds.isEmpty) return false;
+    // (not missing) `sourceBodyIds`. Phase 8: a `tool_feature_id`-seeded
+    // Pattern has both `sourceBodyIds`/`sourceFeatureIds` empty too.
+    if (sourceBodyIds.isEmpty && feature.sourceFeatureIds.isEmpty && toolFeatureId == null) return false;
     final mode = PatternMode.fromApiValue(feature.patternType ?? 'rectangular');
 
     if (mode == PatternMode.circular) {
@@ -6427,6 +6570,7 @@ class _PartScreenState extends State<PartScreen> {
         _previewPatternFeatureId = feature.id;
         _patternSourceBodyIds = sourceBodyIds;
         _patternSourceFeatureIds = sourceFeatureIds;
+        _patternToolFeatureId = toolFeatureId;
         _patternDirection1 = null;
         _patternDirection1EdgeEntity = null;
         _patternCount1 = 2;
@@ -6463,6 +6607,7 @@ class _PartScreenState extends State<PartScreen> {
           skipIndices: feature.skipIndices,
           sourceFeatureIds: sourceFeatureIds,
           merge: merge,
+          toolFeatureId: toolFeatureId,
         );
         _meshBeforePattern = _bodies;
         _entitiesBeforePattern = _selectedEntities;
@@ -6498,6 +6643,7 @@ class _PartScreenState extends State<PartScreen> {
       _previewPatternFeatureId = feature.id;
       _patternSourceBodyIds = sourceBodyIds;
       _patternSourceFeatureIds = sourceFeatureIds;
+      _patternToolFeatureId = toolFeatureId;
       _patternDirection1 = direction1;
       _patternDirection1EdgeEntity = direction1Entity;
       _patternCount1 = count1;
@@ -6534,6 +6680,7 @@ class _PartScreenState extends State<PartScreen> {
         skipIndices: feature.skipIndices,
         sourceFeatureIds: sourceFeatureIds,
         merge: merge,
+        toolFeatureId: toolFeatureId,
       );
       _meshBeforePattern = _bodies;
       _entitiesBeforePattern = _selectedEntities;
@@ -7028,7 +7175,15 @@ class _PartScreenState extends State<PartScreen> {
     // `sourceBodyIds` as an empty list, not null - the old `sourceBodyIds.
     // isEmpty` check alone bailed out here unconditionally, silently
     // skipping every create/update call for that entire session.
-    if (part == null || sourceBodyIds == null || (sourceBodyIds.isEmpty && _patternSourceFeatureIds.isEmpty)) {
+    // Phase 8 (`docs/pattern-mirror-scope.md` §2.11/§4): a `tool_feature_
+    // id`-seeded Pattern also has both `sourceBodyIds`/`_patternSource
+    // FeatureIds` empty (by construction - it's a third, mutually-
+    // exclusive seed mode) - `_patternToolFeatureId` being set must not
+    // by itself be treated as "nothing seeded yet" the way an ordinary
+    // empty selection is.
+    if (part == null ||
+        sourceBodyIds == null ||
+        (sourceBodyIds.isEmpty && _patternSourceFeatureIds.isEmpty && _patternToolFeatureId == null)) {
       return;
     }
 
@@ -7048,6 +7203,7 @@ class _PartScreenState extends State<PartScreen> {
           reverseAngular: _patternReverseAngular,
           skipIndices: skipIndices,
           merge: _patternMerge,
+          toolFeatureId: _patternToolFeatureId,
         );
         _previewPatternFeatureId = created.id;
       } else {
@@ -7062,6 +7218,7 @@ class _PartScreenState extends State<PartScreen> {
           reverseAngular: _patternReverseAngular,
           skipIndices: skipIndices,
           merge: _patternMerge,
+          toolFeatureId: _patternToolFeatureId,
         );
       }
       await _refreshMesh();
@@ -7088,6 +7245,7 @@ class _PartScreenState extends State<PartScreen> {
         reverse2: hasSecondDirection ? _patternReverse2 : false,
         skipIndices: skipIndices,
         merge: _patternMerge,
+        toolFeatureId: _patternToolFeatureId,
       );
       _previewPatternFeatureId = created.id;
     } else {
@@ -7106,6 +7264,7 @@ class _PartScreenState extends State<PartScreen> {
         reverse2: hasSecondDirection ? _patternReverse2 : false,
         skipIndices: skipIndices,
         merge: _patternMerge,
+        toolFeatureId: _patternToolFeatureId,
       );
     }
     await _refreshMesh();
@@ -7128,7 +7287,10 @@ class _PartScreenState extends State<PartScreen> {
       // just above - a Feature-only-seeded Pattern has an empty (not null)
       // `_patternSourceBodyIds`, which must not by itself block scheduling.
       final sourceBodyIds = _patternSourceBodyIds;
-      if (sourceBodyIds == null || (sourceBodyIds.isEmpty && _patternSourceFeatureIds.isEmpty)) return;
+      if (sourceBodyIds == null ||
+          (sourceBodyIds.isEmpty && _patternSourceFeatureIds.isEmpty && _patternToolFeatureId == null)) {
+        return;
+      }
       if (_patternMode == PatternMode.circular) {
         if (_patternAxis == null || _patternCountAngular < 2) return;
       } else {
@@ -7177,6 +7339,7 @@ class _PartScreenState extends State<PartScreen> {
       _patternMode = PatternMode.rectangular;
       _patternSourceBodyIds = null;
       _patternSourceFeatureIds = [];
+      _patternToolFeatureId = null;
       _patternDirection1 = null;
       _patternDirection1EdgeEntity = null;
       _patternHasSecondDirection = false;
@@ -7217,6 +7380,7 @@ class _PartScreenState extends State<PartScreen> {
       _patternMode = PatternMode.rectangular;
       _patternSourceBodyIds = null;
       _patternSourceFeatureIds = [];
+      _patternToolFeatureId = null;
       _patternDirection1 = null;
       _patternDirection1EdgeEntity = null;
       _patternHasSecondDirection = false;
@@ -7260,6 +7424,7 @@ class _PartScreenState extends State<PartScreen> {
             reverseAngular: editSnapshot.reverseAngular,
             skipIndices: editSnapshot.skipIndices,
             merge: editSnapshot.merge,
+            toolFeatureId: editSnapshot.toolFeatureId,
           );
           await _refreshFeatures();
         });
@@ -8171,6 +8336,7 @@ class _PartScreenState extends State<PartScreen> {
                       sourceFeatureIds: _mirrorSourceFeatureIds,
                       onPickSourceFeatures: () =>
                           _startSourceFeaturePicker(_SourceFeaturePickerTarget.mirror),
+                      toolFeatureSummary: _toolFeatureSummary(_mirrorToolFeatureId),
                       onConfirm: _confirmMirror,
                       onCancel: _cancelMirror,
                     ),
@@ -8252,6 +8418,7 @@ class _PartScreenState extends State<PartScreen> {
                       sourceFeatureIds: _patternSourceFeatureIds,
                       onPickSourceFeatures: () =>
                           _startSourceFeaturePicker(_SourceFeaturePickerTarget.pattern),
+                      toolFeatureSummary: _toolFeatureSummary(_patternToolFeatureId),
                       onConfirm: _confirmPattern,
                       onCancel: _cancelPattern,
                     ),

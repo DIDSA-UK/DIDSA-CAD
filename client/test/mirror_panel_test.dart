@@ -273,6 +273,49 @@ void main() {
     });
   });
 
+  group('Pattern/Mirror scoping Phase 8: MirrorPanel tool_feature_id mode', () {
+    testWidgets('toolFeatureSummary shown replaces merge toggle and sourceFeatureIds row', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: MirrorPanel(
+              hasPlanePicked: true,
+              merge: MergeMode.fuseIntoOne,
+              onMergeChanged: (_) {},
+              onPickSourceFeatures: () {},
+              toolFeatureSummary: 'Extrude 2',
+              onConfirm: () {},
+              onCancel: () {},
+            ),
+          ),
+        ),
+      );
+      expect(find.textContaining('Mirroring Extrude 2 into its own target'), findsOneWidget);
+      expect(find.byType(SegmentedButton<MergeMode>), findsNothing);
+      expect(find.text('Add from Tree'), findsNothing);
+    });
+
+    testWidgets('toolFeatureSummary null shows the ordinary merge toggle and Add from Tree button',
+        (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: MirrorPanel(
+              hasPlanePicked: true,
+              merge: MergeMode.keepSeparate,
+              onMergeChanged: (_) {},
+              onPickSourceFeatures: () {},
+              onConfirm: () {},
+              onCancel: () {},
+            ),
+          ),
+        ),
+      );
+      expect(find.byType(SegmentedButton<MergeMode>), findsOneWidget);
+      expect(find.text('Add from Tree'), findsOneWidget);
+    });
+  });
+
   group('MirrorPanel Cancel', () {
     testWidgets('Cancel is always enabled and fires onCancel', (tester) async {
       var cancelled = false;
