@@ -833,26 +833,37 @@ class SketchPatternInstance:
     `Sketch.entities` - see `Sketch.expand_pattern_and_mirror_instances`,
     the only place that ever turns this into real (transient) geometry.
 
-    `count` is the *total* instance count including the untouched source
-    (index 0, never recreated) - matching `PatternFeature.count_1`'s own
-    "count includes the original" convention exactly, so `count >= 2` (a
-    count of 1 would be a pure no-op, rejected at creation the same way
-    `PatternFeature` rejects `count_1 * count_2 < 2`).
+    `count_1` is the *total* instance count along `direction_1`, including
+    the untouched source (linear index 0, never recreated) - matching
+    `PatternFeature.count_1`'s own "count includes the original" convention
+    exactly. `direction_2`/`count_2`/`spacing_2`/`reverse_2` (on-device
+    feedback: "allow pattern in two directions, check body pattern tool for
+    UX") mirror `PatternFeature`'s own optional second-direction grid shape
+    - `direction_2` is only ever read when `count_2 > 1` (a stale/unset
+    `direction_2` is otherwise functionally inert, the same shortcut
+    `PatternFeature.direction_2` itself already uses, sidestepping a
+    separate "omitted vs. explicitly cleared" convention). The flattened
+    grid index is row-major (`index = i * count_2 + j`, `i` along
+    `direction_1`, `j` along `direction_2`), matching `PatternFeature`'s own
+    convention exactly - `count_1 * count_2 >= 2` (a product of 1 would be
+    a pure no-op, rejected at creation the same way `PatternFeature`
+    rejects `count_1 * count_2 < 2`).
 
-    v1 scope, deliberately narrower than `PatternFeature`: one direction
-    only (no second-direction grid yet - cheap to add later behind the
-    identical `direction_2`/`count_2`/`spacing_2` shape once there's a real
-    on-device ask for it, not worth speculatively building now), and no
-    circular/skip-instance variants (see this phase's own status.md/scope-
-    doc entry for the full reasoning - `PatternFeature` itself only grew
-    those in later, separately-scoped phases too)."""
+    v1 scope, deliberately narrower than `PatternFeature`: no circular/
+    skip-instance variants (see this phase's own status.md/scope-doc entry
+    for the full reasoning - `PatternFeature` itself only grew those in
+    later, separately-scoped phases too)."""
 
     id: str
     source_entity_ids: list[str]
-    direction: SketchPatternDirection
-    count: int
-    spacing: float
-    reverse: bool = False
+    direction_1: SketchPatternDirection
+    count_1: int
+    spacing_1: float
+    reverse_1: bool = False
+    direction_2: SketchPatternDirection | None = None
+    count_2: int = 1
+    spacing_2: float = 0.0
+    reverse_2: bool = False
 
 
 @dataclass
@@ -3039,41 +3050,78 @@ class Sketch:
             raise ValueError("Cannot use a zero-length Line as a pattern direction")
         return (dx / length, dy / length)
 
+    def _validate_pattern_fields(
+        self,
+        source_entity_ids: list[str],
+        direction_1: SketchPatternDirection,
+        count_1: int,
+        spacing_1: float,
+        direction_2: SketchPatternDirection | None,
+        count_2: int,
+        spacing_2: float,
+    ) -> None:
+        """Shared by `add_pattern_instance`/`update_pattern_instance` - see
+        `SketchPatternInstance`'s own docstring for the row-major grid shape
+        this validates. `direction_1` is always required and validated;
+        `direction_2`/`spacing_2` are only validated when `count_2 > 1`
+        (inert otherwise, same shortcut `PatternFeature.direction_2` already
+        uses) - mirroring `PatternFeature`'s own `_validate_pattern_counts_
+        and_direction_2` split."""
+        self._patternable_entities(source_entity_ids)
+        self._pattern_direction_unit_vector(direction_1)
+        if count_1 < 1 or count_2 < 1:
+            raise ValueError("Pattern count must be at least 1 in each direction")
+        if count_1 * count_2 < 2:
+            raise ValueError("Pattern count must be at least 2 (including the untouched source)")
+        if count_1 > 1 and spacing_1 == 0:
+            raise ValueError("Pattern spacing must be non-zero")
+        if count_2 > 1:
+            if direction_2 is None:
+                raise ValueError("A second direction is required when count_2 > 1")
+            self._pattern_direction_unit_vector(direction_2)
+            if spacing_2 == 0:
+                raise ValueError("Pattern spacing must be non-zero")
+
     def add_pattern_instance(
         self,
         source_entity_ids: list[str],
-        direction: SketchPatternDirection,
-        count: int,
-        spacing: float,
+        direction_1: SketchPatternDirection,
+        count_1: int,
+        spacing_1: float,
         *,
-        reverse: bool = False,
+        reverse_1: bool = False,
+        direction_2: SketchPatternDirection | None = None,
+        count_2: int = 1,
+        spacing_2: float = 0.0,
+        reverse_2: bool = False,
     ) -> SketchPatternInstance:
-        """Sketcher-roadmap Phase 7: registers a new lightweight linear
-        pattern of `source_entity_ids` - see `SketchPatternInstance`'s own
-        docstring for what this does and doesn't do (never creates any real
-        Point/entity here; those only ever appear transiently, on read, via
-        `expand_pattern_and_mirror_instances`).
+        """Sketcher-roadmap Phase 7: registers a new lightweight linear (or,
+        with a second direction, grid) pattern of `source_entity_ids` - see
+        `SketchPatternInstance`'s own docstring for what this does and
+        doesn't do (never creates any real Point/entity here; those only
+        ever appear transiently, on read, via `expand_pattern_and_mirror_
+        instances`).
 
         Raises `ValueError` for an empty/invalid `source_entity_ids`, a
-        malformed `direction`, `count < 2` (a no-op - matches
-        `PatternFeature`'s own `count_1 * count_2 >= 2` rejection) or
-        `spacing == 0` (directly ambiguous with "N coincident copies of the
-        seed", same reasoning `offset_line`'s own zero-distance rejection
-        uses); `KeyError` for a missing `source_entity_ids`/direction
-        `line_id`."""
-        self._patternable_entities(source_entity_ids)
-        self._pattern_direction_unit_vector(direction)
-        if count < 2:
-            raise ValueError("Pattern count must be at least 2 (including the untouched source)")
-        if spacing == 0:
-            raise ValueError("Pattern spacing must be non-zero")
+        malformed `direction_1`/`direction_2`, `count_1 * count_2 < 2` (a
+        no-op - matches `PatternFeature`'s own rejection), a zero spacing
+        in a direction whose own count is `> 1`, or `count_2 > 1` with no
+        `direction_2`; `KeyError` for a missing `source_entity_ids`/
+        direction `line_id`."""
+        self._validate_pattern_fields(
+            source_entity_ids, direction_1, count_1, spacing_1, direction_2, count_2, spacing_2
+        )
         instance = SketchPatternInstance(
             id=str(uuid.uuid4()),
             source_entity_ids=list(source_entity_ids),
-            direction=direction,
-            count=count,
-            spacing=spacing,
-            reverse=reverse,
+            direction_1=direction_1,
+            count_1=count_1,
+            spacing_1=spacing_1,
+            reverse_1=reverse_1,
+            direction_2=direction_2,
+            count_2=count_2,
+            spacing_2=spacing_2,
+            reverse_2=reverse_2,
         )
         self.pattern_instances[instance.id] = instance
         return instance
@@ -3083,36 +3131,55 @@ class Sketch:
         instance_id: str,
         *,
         source_entity_ids: list[str] | None = None,
-        direction: SketchPatternDirection | None = None,
-        count: int | None = None,
-        spacing: float | None = None,
-        reverse: bool | None = None,
+        direction_1: SketchPatternDirection | None = None,
+        count_1: int | None = None,
+        spacing_1: float | None = None,
+        reverse_1: bool | None = None,
+        direction_2: SketchPatternDirection | None = None,
+        clear_direction_2: bool = False,
+        count_2: int | None = None,
+        spacing_2: float | None = None,
+        reverse_2: bool | None = None,
     ) -> SketchPatternInstance:
         """PATCH semantics: every parameter is optional and, when omitted
         (`None`), leaves the instance's current value untouched - mirrors
         `LineUpdate`/`CircleUpdate`'s own "omitted fields are left
-        unchanged" convention. Re-validates the fully-merged result before
-        committing, so a partial update can never leave the instance in an
-        invalid state (e.g. `count` alone dropping below 2)."""
+        unchanged" convention. `direction_2` has the same omitted-vs-
+        explicitly-cleared ambiguity `PatternFeatureUpdate.skip_indices`
+        already established elsewhere in this codebase (`None` alone can't
+        distinguish "leave it" from "clear it back to unset") - `clear_
+        direction_2=True` is the explicit clear, checked before `direction_2`
+        so a caller can never accidentally pass both. Re-validates the
+        fully-merged result before committing, so a partial update can
+        never leave the instance in an invalid state (e.g. `count_1` alone
+        dropping to a product `< 2`)."""
         instance = self.pattern_instances.get(instance_id)
         if instance is None:
             raise KeyError(instance_id)
         new_source_entity_ids = instance.source_entity_ids if source_entity_ids is None else source_entity_ids
-        new_direction = instance.direction if direction is None else direction
-        new_count = instance.count if count is None else count
-        new_spacing = instance.spacing if spacing is None else spacing
-        new_reverse = instance.reverse if reverse is None else reverse
-        self._patternable_entities(new_source_entity_ids)
-        self._pattern_direction_unit_vector(new_direction)
-        if new_count < 2:
-            raise ValueError("Pattern count must be at least 2 (including the untouched source)")
-        if new_spacing == 0:
-            raise ValueError("Pattern spacing must be non-zero")
+        new_direction_1 = instance.direction_1 if direction_1 is None else direction_1
+        new_count_1 = instance.count_1 if count_1 is None else count_1
+        new_spacing_1 = instance.spacing_1 if spacing_1 is None else spacing_1
+        new_reverse_1 = instance.reverse_1 if reverse_1 is None else reverse_1
+        if clear_direction_2:
+            new_direction_2 = None
+        else:
+            new_direction_2 = instance.direction_2 if direction_2 is None else direction_2
+        new_count_2 = instance.count_2 if count_2 is None else count_2
+        new_spacing_2 = instance.spacing_2 if spacing_2 is None else spacing_2
+        new_reverse_2 = instance.reverse_2 if reverse_2 is None else reverse_2
+        self._validate_pattern_fields(
+            new_source_entity_ids, new_direction_1, new_count_1, new_spacing_1, new_direction_2, new_count_2, new_spacing_2
+        )
         instance.source_entity_ids = list(new_source_entity_ids)
-        instance.direction = new_direction
-        instance.count = new_count
-        instance.spacing = new_spacing
-        instance.reverse = new_reverse
+        instance.direction_1 = new_direction_1
+        instance.count_1 = new_count_1
+        instance.spacing_1 = new_spacing_1
+        instance.reverse_1 = new_reverse_1
+        instance.direction_2 = new_direction_2
+        instance.count_2 = new_count_2
+        instance.spacing_2 = new_spacing_2
+        instance.reverse_2 = new_reverse_2
         return instance
 
     def delete_pattern_instance(self, instance_id: str) -> None:
@@ -3210,32 +3277,57 @@ class Sketch:
     def _expand_pattern_instance(
         self, instance: SketchPatternInstance, points: dict[str, Point], entities: dict[str, SketchEntity]
     ) -> None:
+        """Row-major grid expansion (`index = i * count_2 + j`, `i` along
+        `direction_1`, `j` along `direction_2`) - see `SketchPatternInstance`'s
+        own docstring. `count_2 == 1` (the overwhelmingly common, single-
+        direction case) collapses `range(instance.count_2)` to `[0]`, so
+        `index` reduces to plain `i` and the id scheme is byte-for-byte
+        identical to this method's own pre-two-direction shape - no
+        migration needed for an already-persisted single-direction
+        instance."""
         try:
-            dx, dy = self._pattern_direction_unit_vector(instance.direction)
+            dx1, dy1 = self._pattern_direction_unit_vector(instance.direction_1)
         except (KeyError, ValueError):
             return  # Stale direction reference - tolerate drift, produce no instances.
-        if instance.reverse:
-            dx, dy = -dx, -dy
-        for index in range(1, instance.count):
-            offset_x = dx * instance.spacing * index
-            offset_y = dy * instance.spacing * index
+        if instance.reverse_1:
+            dx1, dy1 = -dx1, -dy1
+        dx2 = dy2 = 0.0
+        if instance.count_2 > 1:
+            if instance.direction_2 is None:
+                return  # Malformed (count_2 > 1 with no direction_2) - tolerate drift.
+            try:
+                dx2, dy2 = self._pattern_direction_unit_vector(instance.direction_2)
+            except (KeyError, ValueError):
+                return
+            if instance.reverse_2:
+                dx2, dy2 = -dx2, -dy2
 
-            def transform(x: float, y: float, offset_x: float = offset_x, offset_y: float = offset_y) -> tuple[float, float]:
-                return (x + offset_x, y + offset_y)
+        for i in range(instance.count_1):
+            for j in range(instance.count_2):
+                index = i * instance.count_2 + j
+                if index == 0:
+                    continue  # The untouched seed - never recreated.
+                offset_x = dx1 * instance.spacing_1 * i + dx2 * instance.spacing_2 * j
+                offset_y = dy1 * instance.spacing_1 * i + dy2 * instance.spacing_2 * j
 
-            for entity_id in instance.source_entity_ids:
-                entity = self.entities.get(entity_id)
-                if entity is None:
-                    continue
-                self._place_transformed_entity(
-                    entity,
-                    points,
-                    entities,
-                    new_id_prefix=f"{instance.id}#{index}#",
-                    point_id_prefix=f"{instance.id}#p{index}#",
-                    transform=transform,
-                    swap_arc_endpoints=False,
-                )
+                def transform(
+                    x: float, y: float, offset_x: float = offset_x, offset_y: float = offset_y
+                ) -> tuple[float, float]:
+                    return (x + offset_x, y + offset_y)
+
+                for entity_id in instance.source_entity_ids:
+                    entity = self.entities.get(entity_id)
+                    if entity is None:
+                        continue
+                    self._place_transformed_entity(
+                        entity,
+                        points,
+                        entities,
+                        new_id_prefix=f"{instance.id}#{index}#",
+                        point_id_prefix=f"{instance.id}#p{index}#",
+                        transform=transform,
+                        swap_arc_endpoints=False,
+                    )
 
     def _expand_mirror_instance(
         self, instance: SketchMirrorInstance, points: dict[str, Point], entities: dict[str, SketchEntity]

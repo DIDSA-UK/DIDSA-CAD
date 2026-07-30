@@ -18,6 +18,7 @@ import math
 import pytest
 from fastapi.testclient import TestClient
 
+from app.document.native_format import sketch_from_dict, sketch_to_dict
 from app.main import app
 from app.sketch.models import (
     Plane,
@@ -51,7 +52,7 @@ def test_expand_with_no_instances_returns_the_same_object():
 def test_add_pattern_instance_rejects_empty_source():
     sketch, _ = _line_sketch()
     with pytest.raises(ValueError):
-        sketch.add_pattern_instance([], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count=3, spacing=1.0)
+        sketch.add_pattern_instance([], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count_1=3, spacing_1=1.0)
 
 
 def test_add_pattern_instance_rejects_non_line_circle_arc_source():
@@ -61,7 +62,7 @@ def test_add_pattern_instance_rejects_non_line_circle_arc_source():
     ellipse = sketch.add_ellipse(center.id, major.id, minor_radius=2.0)
     with pytest.raises(ValueError):
         sketch.add_pattern_instance(
-            [ellipse.id], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count=3, spacing=1.0
+            [ellipse.id], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count_1=3, spacing_1=1.0
         )
 
 
@@ -69,33 +70,33 @@ def test_add_pattern_instance_rejects_unknown_source_id():
     sketch, _ = _line_sketch()
     with pytest.raises(KeyError):
         sketch.add_pattern_instance(
-            ["nope"], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count=3, spacing=1.0
+            ["nope"], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count_1=3, spacing_1=1.0
         )
 
 
 def test_add_pattern_instance_rejects_neither_or_both_direction_fields():
     sketch, line = _line_sketch()
     with pytest.raises(ValueError):
-        sketch.add_pattern_instance([line.id], SketchPatternDirection(), count=3, spacing=1.0)
+        sketch.add_pattern_instance([line.id], SketchPatternDirection(), count_1=3, spacing_1=1.0)
     with pytest.raises(ValueError):
         sketch.add_pattern_instance(
             [line.id],
             SketchPatternDirection(line_id=line.id, fixed_axis=SketchFixedAxis.X),
-            count=3,
-            spacing=1.0,
+            count_1=3,
+            spacing_1=1.0,
         )
 
 
 def test_add_pattern_instance_rejects_count_below_two():
     sketch, line = _line_sketch()
     with pytest.raises(ValueError):
-        sketch.add_pattern_instance([line.id], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count=1, spacing=1.0)
+        sketch.add_pattern_instance([line.id], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count_1=1, spacing_1=1.0)
 
 
 def test_add_pattern_instance_rejects_zero_spacing():
     sketch, line = _line_sketch()
     with pytest.raises(ValueError):
-        sketch.add_pattern_instance([line.id], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count=3, spacing=0.0)
+        sketch.add_pattern_instance([line.id], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count_1=3, spacing_1=0.0)
 
 
 def test_add_pattern_instance_rejects_zero_length_direction_line():
@@ -104,13 +105,13 @@ def test_add_pattern_instance_rejects_zero_length_direction_line():
     zero_line = sketch.add_line(p.id, sketch.add_point(3.0, 3.0).id)
     with pytest.raises(ValueError):
         sketch.add_pattern_instance(
-            [line.id], SketchPatternDirection(line_id=zero_line.id), count=3, spacing=1.0
+            [line.id], SketchPatternDirection(line_id=zero_line.id), count_1=3, spacing_1=1.0
         )
 
 
 def test_pattern_fixed_axis_x_produces_expected_translated_copies():
     sketch, line = _line_sketch()
-    sketch.add_pattern_instance([line.id], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count=3, spacing=5.0)
+    sketch.add_pattern_instance([line.id], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count_1=3, spacing_1=5.0)
 
     expanded = sketch.expand_pattern_and_mirror_instances()
 
@@ -125,7 +126,7 @@ def test_pattern_fixed_axis_x_produces_expected_translated_copies():
 def test_pattern_reverse_flips_direction():
     sketch, line = _line_sketch()
     sketch.add_pattern_instance(
-        [line.id], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count=2, spacing=5.0, reverse=True
+        [line.id], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count_1=2, spacing_1=5.0, reverse_1=True
     )
     expanded = sketch.expand_pattern_and_mirror_instances()
     new_lines = [e for e in expanded.entities.values() if e.type == "line" and e.id != line.id]
@@ -138,7 +139,7 @@ def test_pattern_direction_from_line_uses_its_unit_vector():
     dir_a = sketch.add_point(0.0, 0.0)
     dir_b = sketch.add_point(0.0, 3.0)  # +Y direction, length 3 (normalized away)
     dir_line = sketch.add_line(dir_a.id, dir_b.id, construction=True)
-    sketch.add_pattern_instance([line.id], SketchPatternDirection(line_id=dir_line.id), count=2, spacing=4.0)
+    sketch.add_pattern_instance([line.id], SketchPatternDirection(line_id=dir_line.id), count_1=2, spacing_1=4.0)
 
     expanded = sketch.expand_pattern_and_mirror_instances()
     new_lines = [e for e in expanded.entities.values() if e.type == "line" and e.id != line.id and e.id != dir_line.id]
@@ -156,7 +157,7 @@ def test_pattern_preserves_shared_endpoint_of_a_connected_chain():
     line1 = sketch.add_line(a.id, b.id)
     line2 = sketch.add_line(b.id, c.id)
     sketch.add_pattern_instance(
-        [line1.id, line2.id], SketchPatternDirection(fixed_axis=SketchFixedAxis.Y), count=2, spacing=1.0
+        [line1.id, line2.id], SketchPatternDirection(fixed_axis=SketchFixedAxis.Y), count_1=2, spacing_1=1.0
     )
 
     expanded = sketch.expand_pattern_and_mirror_instances()
@@ -177,7 +178,7 @@ def test_pattern_of_circle_and_arc():
     arc = sketch.add_arc(arc_center.id, arc_start.id, end_angle=math.pi / 2)
 
     sketch.add_pattern_instance(
-        [circle.id, arc.id], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count=2, spacing=10.0
+        [circle.id, arc.id], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count_1=2, spacing_1=10.0
     )
     expanded = sketch.expand_pattern_and_mirror_instances()
 
@@ -190,31 +191,210 @@ def test_pattern_of_circle_and_arc():
     assert expanded.points[new_arc.center_point_id].y == pytest.approx(20.0)
 
 
+def test_pattern_two_directions_produces_a_row_major_grid():
+    """On-device feedback ("allow pattern in two directions, check body
+    pattern tool for UX"): a 2x3 grid (count_1=2 along X, count_2=3 along
+    Y) produces 5 new instances (6 total including the untouched seed at
+    linear index 0), each at `(i*spacing_1, j*spacing_2)` - row-major,
+    matching `PatternFeature`'s own `index = i * count_2 + j` convention."""
+    sketch, line = _line_sketch()
+    sketch.add_pattern_instance(
+        [line.id],
+        SketchPatternDirection(fixed_axis=SketchFixedAxis.X),
+        count_1=2,
+        spacing_1=10.0,
+        direction_2=SketchPatternDirection(fixed_axis=SketchFixedAxis.Y),
+        count_2=3,
+        spacing_2=100.0,
+    )
+
+    expanded = sketch.expand_pattern_and_mirror_instances()
+
+    new_lines = [e for e in expanded.entities.values() if e.type == "line" and e.id != line.id]
+    assert len(new_lines) == 5
+    starts = sorted((expanded.points[l.start_point_id].x, expanded.points[l.start_point_id].y) for l in new_lines)
+    expected = sorted(
+        (i * 10.0, j * 100.0) for i in range(2) for j in range(3) if not (i == 0 and j == 0)
+    )
+    assert starts == pytest.approx(expected)
+
+
+def test_pattern_two_directions_reverse_2_flips_the_second_direction():
+    sketch, line = _line_sketch()
+    sketch.add_pattern_instance(
+        [line.id],
+        SketchPatternDirection(fixed_axis=SketchFixedAxis.X),
+        count_1=1,
+        spacing_1=0.0,
+        direction_2=SketchPatternDirection(fixed_axis=SketchFixedAxis.Y),
+        count_2=2,
+        spacing_2=10.0,
+        reverse_2=True,
+    )
+    expanded = sketch.expand_pattern_and_mirror_instances()
+    new_lines = [e for e in expanded.entities.values() if e.type == "line" and e.id != line.id]
+    assert len(new_lines) == 1
+    assert expanded.points[new_lines[0].start_point_id].y == pytest.approx(-10.0)
+
+
+def test_pattern_count_1_of_one_patterns_purely_along_direction_2():
+    """`count_1 == 1` alone is a no-op contribution from direction_1 (i only
+    ever takes 0) - a valid, real shape once a second direction exists,
+    unlike single-direction Pattern where `count_1 >= 2` was the whole
+    point."""
+    sketch, line = _line_sketch()
+    sketch.add_pattern_instance(
+        [line.id],
+        SketchPatternDirection(fixed_axis=SketchFixedAxis.X),
+        count_1=1,
+        spacing_1=0.0,
+        direction_2=SketchPatternDirection(fixed_axis=SketchFixedAxis.Y),
+        count_2=2,
+        spacing_2=7.0,
+    )
+    expanded = sketch.expand_pattern_and_mirror_instances()
+    new_lines = [e for e in expanded.entities.values() if e.type == "line" and e.id != line.id]
+    assert len(new_lines) == 1
+    assert expanded.points[new_lines[0].start_point_id].x == pytest.approx(0.0)
+    assert expanded.points[new_lines[0].start_point_id].y == pytest.approx(7.0)
+
+
+def test_add_pattern_instance_rejects_count_2_without_direction_2():
+    sketch, line = _line_sketch()
+    with pytest.raises(ValueError):
+        sketch.add_pattern_instance(
+            [line.id], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count_1=2, spacing_1=5.0, count_2=2
+        )
+
+
+def test_add_pattern_instance_rejects_zero_spacing_2():
+    sketch, line = _line_sketch()
+    with pytest.raises(ValueError):
+        sketch.add_pattern_instance(
+            [line.id],
+            SketchPatternDirection(fixed_axis=SketchFixedAxis.X),
+            count_1=2,
+            spacing_1=5.0,
+            direction_2=SketchPatternDirection(fixed_axis=SketchFixedAxis.Y),
+            count_2=2,
+            spacing_2=0.0,
+        )
+
+
+def test_update_pattern_instance_can_add_and_then_clear_direction_2():
+    sketch, line = _line_sketch()
+    instance = sketch.add_pattern_instance(
+        [line.id], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count_1=2, spacing_1=5.0
+    )
+
+    sketch.update_pattern_instance(
+        instance.id,
+        direction_2=SketchPatternDirection(fixed_axis=SketchFixedAxis.Y),
+        count_2=2,
+        spacing_2=10.0,
+    )
+    assert instance.direction_2 is not None
+    assert instance.count_2 == 2
+
+    sketch.update_pattern_instance(instance.id, clear_direction_2=True, count_2=1)
+    assert instance.direction_2 is None
+    assert instance.count_2 == 1
+
+
+def test_update_pattern_instance_revalidates_count_2_needs_direction_2():
+    sketch, line = _line_sketch()
+    instance = sketch.add_pattern_instance(
+        [line.id], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count_1=2, spacing_1=5.0
+    )
+    with pytest.raises(ValueError):
+        sketch.update_pattern_instance(instance.id, count_2=2)
+
+
+def test_pattern_instance_native_format_round_trip_with_two_directions():
+    sketch, line = _line_sketch()
+    sketch.add_pattern_instance(
+        [line.id],
+        SketchPatternDirection(fixed_axis=SketchFixedAxis.X),
+        count_1=2,
+        spacing_1=10.0,
+        reverse_1=True,
+        direction_2=SketchPatternDirection(fixed_axis=SketchFixedAxis.Y),
+        count_2=3,
+        spacing_2=20.0,
+        reverse_2=True,
+    )
+
+    round_tripped = sketch_from_dict(sketch_to_dict(sketch))
+
+    original = next(iter(sketch.pattern_instances.values()))
+    restored = next(iter(round_tripped.pattern_instances.values()))
+    assert restored.count_1 == original.count_1
+    assert restored.spacing_1 == original.spacing_1
+    assert restored.reverse_1 == original.reverse_1
+    assert restored.direction_2 == original.direction_2
+    assert restored.count_2 == original.count_2
+    assert restored.spacing_2 == original.spacing_2
+    assert restored.reverse_2 == original.reverse_2
+
+
+def test_pattern_instance_native_format_import_defaults_missing_second_direction_fields():
+    """A save from the brief window between Phase 7's own initial ship and
+    this on-device revision has no `direction_2`/`count_2`/`spacing_2`/
+    `reverse_2` keys at all, and its primary fields are still named
+    `direction`/`count`/`spacing`/`reverse` - both must import cleanly."""
+    data = {
+        "id": "s",
+        "plane": "XY",
+        "origin_point_id": None,
+        "points": [],
+        "entities": [],
+        "constraints": [],
+        "pattern_instances": [
+            {
+                "id": "pat-1",
+                "source_entity_ids": ["line-1"],
+                "direction": {"line_id": None, "fixed_axis": "x"},
+                "count": 3,
+                "spacing": 5.0,
+            }
+        ],
+    }
+    sketch = sketch_from_dict(data)
+    instance = sketch.pattern_instances["pat-1"]
+    assert instance.count_1 == 3
+    assert instance.spacing_1 == 5.0
+    assert instance.reverse_1 is False
+    assert instance.direction_2 is None
+    assert instance.count_2 == 1
+    assert instance.spacing_2 == 0.0
+    assert instance.reverse_2 is False
+
+
 def test_update_pattern_instance_partial_update_leaves_other_fields_unchanged():
     sketch, line = _line_sketch()
     instance = sketch.add_pattern_instance(
-        [line.id], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count=3, spacing=5.0
+        [line.id], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count_1=3, spacing_1=5.0
     )
-    sketch.update_pattern_instance(instance.id, spacing=8.0)
-    assert instance.spacing == 8.0
-    assert instance.count == 3
-    assert instance.direction.fixed_axis == SketchFixedAxis.X
+    sketch.update_pattern_instance(instance.id, spacing_1=8.0)
+    assert instance.spacing_1 == 8.0
+    assert instance.count_1 == 3
+    assert instance.direction_1.fixed_axis == SketchFixedAxis.X
 
 
 def test_update_pattern_instance_revalidates_merged_result():
     sketch, line = _line_sketch()
     instance = sketch.add_pattern_instance(
-        [line.id], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count=3, spacing=5.0
+        [line.id], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count_1=3, spacing_1=5.0
     )
     with pytest.raises(ValueError):
-        sketch.update_pattern_instance(instance.id, count=1)
-    assert instance.count == 3  # unchanged - the failed update never partially applied
+        sketch.update_pattern_instance(instance.id, count_1=1)
+    assert instance.count_1 == 3  # unchanged - the failed update never partially applied
 
 
 def test_delete_pattern_instance_removes_it_and_its_derived_geometry():
     sketch, line = _line_sketch()
     instance = sketch.add_pattern_instance(
-        [line.id], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count=3, spacing=5.0
+        [line.id], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count_1=3, spacing_1=5.0
     )
     sketch.delete_pattern_instance(instance.id)
     assert instance.id not in sketch.pattern_instances
@@ -231,7 +411,7 @@ def test_delete_pattern_instance_missing_id_raises():
 def test_pattern_instance_tolerates_a_deleted_source_entity():
     sketch, line = _line_sketch()
     instance = sketch.add_pattern_instance(
-        [line.id], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count=3, spacing=5.0
+        [line.id], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count_1=3, spacing_1=5.0
     )
     sketch.delete_line(line.id)
     # Drift-tolerant at read time - does not raise, just produces nothing.
@@ -387,7 +567,7 @@ def test_detect_profile_pattern_of_a_closed_loop_produces_multiple_loops():
     radius_point = sketch.add_point(2.0, 0.0)
     circle = sketch.add_circle(center.id, radius_point_id=radius_point.id)
     sketch.add_pattern_instance(
-        [circle.id], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count=3, spacing=10.0
+        [circle.id], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count_1=3, spacing_1=10.0
     )
 
     result = detect_profile(sketch)
@@ -421,7 +601,7 @@ def test_detect_profile_construction_direction_line_never_closes_a_loop_itself()
     dir_a = sketch.add_point(0.0, 0.0)
     dir_b = sketch.add_point(0.0, 3.0)
     dir_line = sketch.add_line(dir_a.id, dir_b.id, construction=True)
-    sketch.add_pattern_instance([line.id], SketchPatternDirection(line_id=dir_line.id), count=2, spacing=4.0)
+    sketch.add_pattern_instance([line.id], SketchPatternDirection(line_id=dir_line.id), count_1=2, spacing_1=4.0)
 
     result = detect_profile(sketch)
     # Two disjoint open Lines (original + one pattern copy) plus a
@@ -463,26 +643,75 @@ def test_create_pattern_instance_endpoint():
         f"/sketch/sketches/{sketch['id']}/pattern-instances",
         json={
             "source_entity_ids": [line["id"]],
-            "direction": {"fixed_axis": "y"},
-            "count": 3,
-            "spacing": 5.0,
+            "direction_1": {"fixed_axis": "y"},
+            "count_1": 3,
+            "spacing_1": 5.0,
         },
     )
     assert response.status_code == 201
     body = response.json()
-    assert body["count"] == 3
-    assert body["direction"]["fixed_axis"] == "y"
+    assert body["count_1"] == 3
+    assert body["direction_1"]["fixed_axis"] == "y"
 
     listed = client.get(f"/sketch/sketches/{sketch['id']}/pattern-instances").json()
     assert len(listed) == 1
     assert listed[0]["id"] == body["id"]
 
 
+def test_create_pattern_instance_endpoint_with_two_directions():
+    sketch = _create_sketch()
+    a = _create_point(sketch["id"], 0.0, 0.0)
+    b = _create_point(sketch["id"], 10.0, 0.0)
+    line = _create_line(sketch["id"], a["id"], b["id"])
+
+    response = client.post(
+        f"/sketch/sketches/{sketch['id']}/pattern-instances",
+        json={
+            "source_entity_ids": [line["id"]],
+            "direction_1": {"fixed_axis": "x"},
+            "count_1": 2,
+            "spacing_1": 10.0,
+            "direction_2": {"fixed_axis": "y"},
+            "count_2": 2,
+            "spacing_2": 20.0,
+        },
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["count_2"] == 2
+    assert body["direction_2"]["fixed_axis"] == "y"
+
+    updated = client.patch(
+        f"/sketch/sketches/{sketch['id']}/pattern-instances/{body['id']}", json={"clear_direction_2": True, "count_2": 1}
+    )
+    assert updated.status_code == 200
+    assert updated.json()["direction_2"] is None
+    assert updated.json()["count_2"] == 1
+
+
+def test_create_pattern_instance_count_2_without_direction_2_returns_400():
+    sketch = _create_sketch()
+    a = _create_point(sketch["id"], 0.0, 0.0)
+    b = _create_point(sketch["id"], 10.0, 0.0)
+    line = _create_line(sketch["id"], a["id"], b["id"])
+    response = client.post(
+        f"/sketch/sketches/{sketch['id']}/pattern-instances",
+        json={
+            "source_entity_ids": [line["id"]],
+            "direction_1": {"fixed_axis": "x"},
+            "count_1": 2,
+            "spacing_1": 10.0,
+            "count_2": 2,
+        },
+    )
+    assert response.status_code == 400
+
+
 def test_create_pattern_instance_invalid_source_returns_400():
     sketch = _create_sketch()
     response = client.post(
         f"/sketch/sketches/{sketch['id']}/pattern-instances",
-        json={"source_entity_ids": [], "direction": {"fixed_axis": "x"}, "count": 3, "spacing": 5.0},
+        json={"source_entity_ids": [], "direction_1": {"fixed_axis": "x"}, "count_1": 3, "spacing_1": 5.0},
     )
     assert response.status_code == 400
 
@@ -491,7 +720,7 @@ def test_create_pattern_instance_unknown_source_returns_404():
     sketch = _create_sketch()
     response = client.post(
         f"/sketch/sketches/{sketch['id']}/pattern-instances",
-        json={"source_entity_ids": ["nope"], "direction": {"fixed_axis": "x"}, "count": 3, "spacing": 5.0},
+        json={"source_entity_ids": ["nope"], "direction_1": {"fixed_axis": "x"}, "count_1": 3, "spacing_1": 5.0},
     )
     assert response.status_code == 404
 
@@ -503,7 +732,7 @@ def test_create_pattern_instance_direction_requires_exactly_one_field():
     line = _create_line(sketch["id"], a["id"], b["id"])
     response = client.post(
         f"/sketch/sketches/{sketch['id']}/pattern-instances",
-        json={"source_entity_ids": [line["id"]], "direction": {}, "count": 3, "spacing": 5.0},
+        json={"source_entity_ids": [line["id"]], "direction_1": {}, "count_1": 3, "spacing_1": 5.0},
     )
     assert response.status_code == 422
 
@@ -515,15 +744,15 @@ def test_update_and_delete_pattern_instance_endpoints():
     line = _create_line(sketch["id"], a["id"], b["id"])
     created = client.post(
         f"/sketch/sketches/{sketch['id']}/pattern-instances",
-        json={"source_entity_ids": [line["id"]], "direction": {"fixed_axis": "x"}, "count": 3, "spacing": 5.0},
+        json={"source_entity_ids": [line["id"]], "direction_1": {"fixed_axis": "x"}, "count_1": 3, "spacing_1": 5.0},
     ).json()
 
     updated = client.patch(
-        f"/sketch/sketches/{sketch['id']}/pattern-instances/{created['id']}", json={"spacing": 8.0}
+        f"/sketch/sketches/{sketch['id']}/pattern-instances/{created['id']}", json={"spacing_1": 8.0}
     )
     assert updated.status_code == 200
-    assert updated.json()["spacing"] == 8.0
-    assert updated.json()["count"] == 3
+    assert updated.json()["spacing_1"] == 8.0
+    assert updated.json()["count_1"] == 3
 
     deleted = client.delete(f"/sketch/sketches/{sketch['id']}/pattern-instances/{created['id']}")
     assert deleted.status_code == 200

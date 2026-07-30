@@ -1886,10 +1886,14 @@ class _FakeBackend {
       final instance = {
         'id': id,
         'source_entity_ids': body['source_entity_ids'],
-        'direction': body['direction'],
-        'count': body['count'],
-        'spacing': body['spacing'],
-        'reverse': body['reverse'] as bool? ?? false,
+        'direction_1': body['direction_1'],
+        'count_1': body['count_1'],
+        'spacing_1': body['spacing_1'],
+        'reverse_1': body['reverse_1'] as bool? ?? false,
+        'direction_2': body['direction_2'],
+        'count_2': body['count_2'] ?? 1,
+        'spacing_2': body['spacing_2'] ?? 0.0,
+        'reverse_2': body['reverse_2'] as bool? ?? false,
       };
       patternInstances[id] = instance;
       return _json(instance, 201);
@@ -1902,10 +1906,15 @@ class _FakeBackend {
       final instance = patternInstances[patternInstanceItemMatch.group(1)];
       if (instance == null) return http.Response('not found', 404);
       if (body.containsKey('source_entity_ids')) instance['source_entity_ids'] = body['source_entity_ids'];
-      if (body.containsKey('direction')) instance['direction'] = body['direction'];
-      if (body.containsKey('count')) instance['count'] = body['count'];
-      if (body.containsKey('spacing')) instance['spacing'] = body['spacing'];
-      if (body.containsKey('reverse')) instance['reverse'] = body['reverse'];
+      if (body.containsKey('direction_1')) instance['direction_1'] = body['direction_1'];
+      if (body.containsKey('count_1')) instance['count_1'] = body['count_1'];
+      if (body.containsKey('spacing_1')) instance['spacing_1'] = body['spacing_1'];
+      if (body.containsKey('reverse_1')) instance['reverse_1'] = body['reverse_1'];
+      if (body.containsKey('direction_2')) instance['direction_2'] = body['direction_2'];
+      if (body['clear_direction_2'] == true) instance['direction_2'] = null;
+      if (body.containsKey('count_2')) instance['count_2'] = body['count_2'];
+      if (body.containsKey('spacing_2')) instance['spacing_2'] = body['spacing_2'];
+      if (body.containsKey('reverse_2')) instance['reverse_2'] = body['reverse_2'];
       return _json(instance, 200);
     }
     if (patternInstanceItemMatch != null && request.method == 'DELETE') {
@@ -9882,10 +9891,10 @@ void main() {
       freshController.setPatternDirectionFixedAxis('x');
       expect(freshController.canConfirmPatternMirror, isFalse); // still no spacing
 
-      freshController.setPatternSpacing(5.0);
+      freshController.setPatternSpacing1(5.0);
       expect(freshController.canConfirmPatternMirror, isTrue); // default count is 2
 
-      freshController.setPatternCount(1);
+      freshController.setPatternCount1(1);
       expect(freshController.canConfirmPatternMirror, isFalse);
     });
 
@@ -9932,8 +9941,8 @@ void main() {
       await freshController.handleCanvasTap(3, 0);
       freshController.finishPatternPick();
       freshController.setPatternDirectionFixedAxis('x');
-      freshController.setPatternSpacing(5.0);
-      freshController.setPatternCount(3);
+      freshController.setPatternSpacing1(5.0);
+      freshController.setPatternCount1(3);
 
       await freshController.confirmPatternMirrorPreview();
 
@@ -9942,8 +9951,8 @@ void main() {
       final instance = freshController.patternInstances.values.single;
       expect(instance.sourceEntityIds, ['line-a']);
       expect(instance.directionFixedAxis, 'x');
-      expect(instance.count, 3);
-      expect(instance.spacing, 5.0);
+      expect(instance.count1, 3);
+      expect(instance.spacing1, 5.0);
       expect(freshBackend.requestLog.any((r) => r.startsWith('POST') && r.contains('pattern-instances')), isTrue);
 
       await freshController.undo();
@@ -10003,8 +10012,8 @@ void main() {
       await freshController.handleCanvasTap(3, 0);
       freshController.finishPatternPick();
       freshController.setPatternDirectionFixedAxis('x');
-      freshController.setPatternSpacing(5.0);
-      freshController.setPatternCount(3);
+      freshController.setPatternSpacing1(5.0);
+      freshController.setPatternCount1(3);
 
       final ghosts = freshController.patternMirrorGhosts;
 
@@ -10032,8 +10041,8 @@ void main() {
       await freshController.handleCanvasTap(3, 0);
       freshController.finishPatternPick();
       freshController.setPatternDirectionFixedAxis('x');
-      freshController.setPatternSpacing(5.0);
-      freshController.setPatternCount(2);
+      freshController.setPatternSpacing1(5.0);
+      freshController.setPatternCount1(2);
       await freshController.confirmPatternMirrorPreview();
       expect(freshController.patternMirrorGhosts, hasLength(1));
       expect(freshController.patternMirrorGhosts.whereType<LineGhost>().single.startX, 5.0);
@@ -10062,10 +10071,14 @@ void main() {
       freshBackend.patternInstances['existing-pattern'] = {
         'id': 'existing-pattern',
         'source_entity_ids': ['line-a'],
-        'direction': {'line_id': null, 'fixed_axis': 'y'},
-        'count': 2,
-        'spacing': 7.0,
-        'reverse': false,
+        'direction_1': {'line_id': null, 'fixed_axis': 'y'},
+        'count_1': 2,
+        'spacing_1': 7.0,
+        'reverse_1': false,
+        'direction_2': null,
+        'count_2': 1,
+        'spacing_2': 0.0,
+        'reverse_2': false,
       };
       final mockClient = MockClient((request) async => freshBackend.handle(request));
       final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
@@ -10074,7 +10087,7 @@ void main() {
 
       expect(freshController.patternInstances, hasLength(1));
       final instance = freshController.patternInstances.values.single;
-      expect(instance.spacing, 7.0);
+      expect(instance.spacing1, 7.0);
       expect(instance.directionFixedAxis, 'y');
     });
   });

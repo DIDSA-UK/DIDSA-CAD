@@ -77,6 +77,8 @@ class SketchRibbon extends StatelessWidget {
       SelectionKind.spline => 'Spline selected',
       SelectionKind.text => 'Text selected',
       SelectionKind.constraint => 'Constraint selected',
+      SelectionKind.patternInstance => 'Pattern selected',
+      SelectionKind.mirrorInstance => 'Mirror selected',
     };
   }
 
@@ -94,6 +96,11 @@ class SketchRibbon extends StatelessWidget {
         selectionSet.length == 1 && selectionSet.first.kind == SelectionKind.point
             ? controller.selectedPointDeleteBlockedReason
             : null;
+    final singlePatternOrMirrorIsMirror =
+        selectionSet.length == 1 && selectionSet.first.kind == SelectionKind.mirrorInstance;
+    final isSinglePatternOrMirrorSelection = selectionSet.length == 1 &&
+        (selectionSet.first.kind == SelectionKind.patternInstance ||
+            selectionSet.first.kind == SelectionKind.mirrorInstance);
     final constructionToggles = controller.availableConstructionToggles;
 
     final chips = <Widget>[
@@ -162,14 +169,43 @@ class SketchRibbon extends StatelessWidget {
               ? () => controller.applyConstraintOption(option.type)
               : null,
         ),
-      _RibbonActionChip(
-        svgAsset: 'assets/icons/ribbon/ribbon_delete.svg',
-        label: 'Delete',
-        tooltip: blockedReason,
-        onTap: blockedReason == null && !controller.busy
-            ? () => _confirmAndDelete(context, controller)
-            : null,
-      ),
+      // On-device feedback ("the patterned entity is not selectable and
+      // therefore not deletable. when a patterned entity is selected the
+      // context menu should offer 'edit pattern' and 'delete pattern'"):
+      // a Pattern/Mirror instance edits/deletes as a whole (see
+      // `SketchController.startEditingPatternInstance`/
+      // [deletePatternInstanceById]'s own doc comments - there is no
+      // individual derived copy to act on independently), so it gets its
+      // own dedicated chips instead of the generic Delete chip below
+      // (which only ever acts on real geometry via [deleteSelected]).
+      if (isSinglePatternOrMirrorSelection) ...[
+        _RibbonActionChip(
+          svgAsset: 'assets/icons/feature/feature_pattern.svg',
+          label: singlePatternOrMirrorIsMirror ? 'Edit Mirror' : 'Edit Pattern',
+          onTap: controller.busy
+              ? null
+              : () => singlePatternOrMirrorIsMirror
+                  ? controller.startEditingMirrorInstance(selectionSet.first.id)
+                  : controller.startEditingPatternInstance(selectionSet.first.id),
+        ),
+        _RibbonActionChip(
+          svgAsset: 'assets/icons/ribbon/ribbon_delete.svg',
+          label: singlePatternOrMirrorIsMirror ? 'Delete Mirror' : 'Delete Pattern',
+          onTap: controller.busy
+              ? null
+              : () => singlePatternOrMirrorIsMirror
+                  ? controller.deleteMirrorInstanceById(selectionSet.first.id)
+                  : controller.deletePatternInstanceById(selectionSet.first.id),
+        ),
+      ] else
+        _RibbonActionChip(
+          svgAsset: 'assets/icons/ribbon/ribbon_delete.svg',
+          label: 'Delete',
+          tooltip: blockedReason,
+          onTap: blockedReason == null && !controller.busy
+              ? () => _confirmAndDelete(context, controller)
+              : null,
+        ),
     ];
 
     final chipRow = Padding(

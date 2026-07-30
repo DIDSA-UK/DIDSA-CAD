@@ -7,6 +7,7 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
 import '../api/sketch_api_client.dart';
+import 'pattern_mirror_expansion.dart';
 import 'plane_indicator.dart';
 import 'sketch_controller.dart';
 import 'sketch_viewport.dart';
@@ -3481,11 +3482,26 @@ class _SketchPainter extends CustomPainter {
   /// covers the most important "this is solid" visual signal; the
   /// additional green overlay other extrudable profiles get is deferred.
   bool _addLoopBoundary(Path path, ProfileLoopDto loop) {
+    // On-device feedback fix: a Profile loop can now reference a Pattern/
+    // Mirror instance's own derived (synthetic-id) Points/Arcs, not just
+    // real ones - `controller.points`/`controller.arcs` only ever hold the
+    // real geometry, so every lookup below falls back to
+    // [SketchController.committedPatternMirrorExpansion] (recomputed fresh
+    // here, cheap: nothing under a few dozen entities in practice, and this
+    // whole painter already re-runs every frame off [controller]'s own
+    // [AnimatedBuilder]).
+    final expansion = controller.committedPatternMirrorExpansion;
+    (double, double)? pointXY(String id) {
+      final real = controller.points[id];
+      if (real != null) return (real.x, real.y);
+      return expansion.points[id];
+    }
+
     final points = <Offset>[];
     for (final id in loop.pointIds) {
-      final point = controller.points[id];
-      if (point == null) return false;
-      points.add(transform.sketchToScreen(point.x, point.y));
+      final xy = pointXY(id);
+      if (xy == null) return false;
+      points.add(transform.sketchToScreen(xy.$1, xy.$2));
     }
 
     final ellipseId = loop.lineIds.length == 1 ? loop.lineIds[0] : null;
@@ -3510,7 +3526,14 @@ class _SketchPainter extends CustomPainter {
       return true;
     }
 
-    final hasArc = loop.lineIds.any((id) => controller.arcs.containsKey(id));
+    // Pattern/Mirror only ever produces Line/Circle/Arc copies (never a
+    // Spline - see `pattern_mirror_expansion.dart`'s `PatternMirrorEntityKind`),
+    // so only the Arc lookups below need a synthetic-id fallback.
+    final syntheticArcs = <String, PatternMirrorExpandedEntity>{
+      for (final entity in expansion.entities)
+        if (entity.kind == PatternMirrorEntityKind.arc) entity.id: entity,
+    };
+    final hasArc = loop.lineIds.any((id) => controller.arcs.containsKey(id) || syntheticArcs.containsKey(id));
     final hasSpline = loop.lineIds.any((id) => controller.splines.containsKey(id));
     if (!hasArc && !hasSpline) {
       if (points.length == 2) {
@@ -3560,23 +3583,31 @@ class _SketchPainter extends CustomPainter {
         continue;
       }
       final arc = entityId == null ? null : controller.arcs[entityId];
-      final arcCenter = arc == null ? null : controller.points[arc.centerPointId];
-      final arcStart = arc == null ? null : controller.points[arc.startPointId];
-      final arcEnd = arc == null ? null : controller.points[arc.endPointId];
-      if (arc == null || arcCenter == null || arcStart == null || arcEnd == null) {
+      final syntheticArc = arc == null && entityId != null ? syntheticArcs[entityId] : null;
+      final arcCenterId = arc?.centerPointId ?? syntheticArc?.centerPointId;
+      final arcStartId = arc?.startPointId ?? syntheticArc?.startPointId;
+      final arcEndId = arc?.endPointId ?? syntheticArc?.endPointId;
+      final arcCenter = arcCenterId == null ? null : pointXY(arcCenterId);
+      final arcStart = arcStartId == null ? null : pointXY(arcStartId);
+      final arcEnd = arcEndId == null ? null : pointXY(arcEndId);
+      if (arc == null && syntheticArc == null) {
         path.lineTo(next.dx, next.dy);
         continue;
       }
-      final centerScreen = transform.sketchToScreen(arcCenter.x, arcCenter.y);
-      final radiusPixels = (transform.sketchToScreen(arcStart.x, arcStart.y) - centerScreen).distance;
+      if (arcCenter == null || arcStart == null || arcEnd == null) {
+        path.lineTo(next.dx, next.dy);
+        continue;
+      }
+      final centerScreen = transform.sketchToScreen(arcCenter.$1, arcCenter.$2);
+      final radiusPixels = (transform.sketchToScreen(arcStart.$1, arcStart.$2) - centerScreen).distance;
       final rect = Rect.fromCircle(center: centerScreen, radius: radiusPixels);
       final (startAngle, sweepAngle) = _arcScreenAngles(
-        arcCenter.x,
-        arcCenter.y,
-        arcStart.x,
-        arcStart.y,
-        arcEnd.x,
-        arcEnd.y,
+        arcCenter.$1,
+        arcCenter.$2,
+        arcStart.$1,
+        arcStart.$2,
+        arcEnd.$1,
+        arcEnd.$2,
       );
       // loop.pointIds[i] may be the Arc's own start or end Point,
       // depending on which direction profile.py's graph walk traced this
@@ -3584,7 +3615,7 @@ class _SketchPainter extends CustomPainter {
       // angle, by the negative sweep) when it's the latter, so the fill
       // always follows the real curve regardless of trace direction (same
       // resolution as extrude.py's wire_for_profile).
-      if (loop.pointIds[i] == arc.startPointId) {
+      if (loop.pointIds[i] == arcStartId) {
         path.arcTo(rect, startAngle, sweepAngle, false);
       } else {
         path.arcTo(rect, startAngle + sweepAngle, -sweepAngle, false);

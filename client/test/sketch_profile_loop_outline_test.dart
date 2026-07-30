@@ -136,4 +136,36 @@ void main() {
     final loop = ProfileLoopDto(pointIds: ['p0', 'ghost'], lineIds: ['l0']);
     expect(controller.profileLoopOutline(loop), isNull);
   });
+
+  test(
+      'on-device feedback fix: a loop referencing a committed Pattern instance\'s own '
+      'synthetic Points/Lines resolves via committedPatternMirrorExpansion', () {
+    final controller = SketchController(api: SketchApiClient(httpClient: null));
+    controller.points['p0'] = const SketchPointView(id: 'p0', x: 0, y: 0);
+    controller.points['p1'] = const SketchPointView(id: 'p1', x: 5, y: 0);
+    controller.points['p2'] = const SketchPointView(id: 'p2', x: 5, y: 5);
+    controller.points['p3'] = const SketchPointView(id: 'p3', x: 0, y: 5);
+    controller.lines['l0'] = const SketchLineView(id: 'l0', startPointId: 'p0', endPointId: 'p1');
+    controller.lines['l1'] = const SketchLineView(id: 'l1', startPointId: 'p1', endPointId: 'p2');
+    controller.lines['l2'] = const SketchLineView(id: 'l2', startPointId: 'p2', endPointId: 'p3');
+    controller.lines['l3'] = const SketchLineView(id: 'l3', startPointId: 'p3', endPointId: 'p0');
+    controller.patternInstances['pat0'] = const SketchPatternInstanceView(
+      id: 'pat0',
+      sourceEntityIds: ['l0', 'l1', 'l2', 'l3'],
+      directionFixedAxis: 'x',
+      count1: 2,
+      spacing1: 10.0,
+    );
+
+    // The second copy's own synthetic ids, per pattern_mirror_expansion.dart's
+    // `${instance.id}#$index#${entity.id}` / `${instance.id}#p$index#${point.id}`
+    // convention (index 1, the only non-seed cell for count1: 2).
+    final loop = ProfileLoopDto(
+      pointIds: ['pat0#p1#p0', 'pat0#p1#p1', 'pat0#p1#p2', 'pat0#p1#p3'],
+      lineIds: ['pat0#1#l0', 'pat0#1#l1', 'pat0#1#l2', 'pat0#1#l3'],
+    );
+    final outline = controller.profileLoopOutline(loop);
+
+    expect(outline, [(10.0, 0.0), (15.0, 0.0), (15.0, 5.0), (10.0, 5.0)]);
+  });
 }

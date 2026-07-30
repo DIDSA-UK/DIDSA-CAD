@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
+import '../viewport3d/resizable_tool_panel.dart';
 import 'sketch_controller.dart';
 
 /// Sketcher-roadmap Phase 7 (2D Pattern/Mirror): Pattern/Mirror's own
@@ -71,14 +72,17 @@ class PatternPickBar extends StatelessWidget {
   }
 }
 
-/// Pattern/Mirror's own bottom fly-up bar, shown once [SketchController.
-/// patternPreviewTargets] is non-null (picking is done) - mirrors
-/// `OffsetValueBar`'s exact "plain non-modal [Material] panel, live ghost
-/// preview computed client-side" shape (see [SketchController.
-/// patternMirrorGhosts]), widened with a Pattern/Mirror [SegmentedButton]
-/// (one [SketchMode.pattern] entry covers both operations, per this phase's
-/// own scope-doc design) and Pattern's own count/spacing/direction/reverse
-/// fields in place of Offset's single distance field.
+/// Pattern/Mirror's own configuring-phase panel, shown once
+/// [SketchController.patternPreviewTargets] is non-null (picking is done).
+///
+/// On-device feedback ("the ribbon is untidy. match ribbon from other
+/// pattern tool. extend by pulling and scrollable"): rebuilt on top of
+/// `viewport3d/resizable_tool_panel.dart`'s shared [ResizableToolPanel] -
+/// the exact same pull-to-resize, scrollable shell every 3D Feature panel
+/// (Extrude/Revolve/Sweep/Fillet/Chamfer/Mirror/Pattern) already uses,
+/// rather than the bespoke, fixed-height `Material` shell this bar
+/// originally had (matching `OffsetValueBar`'s own older, single-field
+/// shape, which never needed to scroll).
 class PatternValueBar extends StatelessWidget {
   final SketchController controller;
 
@@ -91,10 +95,20 @@ class PatternValueBar extends StatelessWidget {
       builder: (context, _) {
         final targets = controller.patternPreviewTargets;
         if (targets == null) return const SizedBox.shrink();
-        // Keyed by the target list's own identity - see OffsetValueBar's own
-        // doc comment for why (a fresh session must never carry over a
-        // previous session's own typed text/state).
-        return _PatternValueBarContent(key: ValueKey(targets), controller: controller, targetCount: targets.length);
+        // Keyed by the target list's own identity plus whichever instance
+        // (if any) is being edited and whether a second direction is
+        // currently enabled - each of these implies a different set of
+        // sensible initial text-field values, so each needs its own fresh
+        // `State`/`TextEditingController`s rather than one reused across
+        // them (mirrors `PatternPanel`'s own re-seeding key at its call
+        // site in `part_screen.dart`).
+        final key = ValueKey((
+          targets,
+          controller.editingPatternInstanceId,
+          controller.editingMirrorInstanceId,
+          controller.patternHasSecondDirection,
+        ));
+        return _PatternValueBarContent(key: key, controller: controller, targetCount: targets.length);
       },
     );
   }
@@ -111,15 +125,21 @@ class _PatternValueBarContent extends StatefulWidget {
 }
 
 class _PatternValueBarContentState extends State<_PatternValueBarContent> {
-  late final TextEditingController _countText = TextEditingController(
-    text: widget.controller.patternCount.toString(),
-  );
-  late final TextEditingController _spacingText = TextEditingController();
+  late final TextEditingController _count1Text =
+      TextEditingController(text: widget.controller.patternCount1.toString());
+  late final TextEditingController _spacing1Text =
+      TextEditingController(text: widget.controller.patternSpacing1?.toString() ?? '');
+  late final TextEditingController _count2Text =
+      TextEditingController(text: widget.controller.patternCount2.toString());
+  late final TextEditingController _spacing2Text =
+      TextEditingController(text: widget.controller.patternSpacing2?.toString() ?? '');
 
   @override
   void dispose() {
-    _countText.dispose();
-    _spacingText.dispose();
+    _count1Text.dispose();
+    _spacing1Text.dispose();
+    _count2Text.dispose();
+    _spacing2Text.dispose();
     super.dispose();
   }
 
@@ -139,66 +159,71 @@ class _PatternValueBarContentState extends State<_PatternValueBarContent> {
   Widget build(BuildContext context) {
     final controller = widget.controller;
     final operation = controller.patternMirrorOperation;
-    final theme = Theme.of(context);
-    return SafeArea(
-      top: false,
-      child: Material(
-        elevation: 8,
-        color: theme.colorScheme.surface,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
+    final editing = controller.editingPatternInstanceId != null || controller.editingMirrorInstanceId != null;
+    final title = editing
+        ? (operation == SketchPatternMirrorOperation.pattern ? 'Edit Pattern' : 'Edit Mirror')
+        : (operation == SketchPatternMirrorOperation.pattern ? 'Pattern' : 'Mirror');
+
+    return ResizableToolPanel(
+      title: title,
+      tooltip: '${widget.targetCount} ${widget.targetCount == 1 ? 'entity' : 'entities'} picked',
+      dragHandleKey: const Key('patternValueBarDragHandle'),
+      resizableAreaKey: const Key('patternValueBarResizableArea'),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: SegmentedButton<SketchPatternMirrorOperation>(
+              segments: const [
+                ButtonSegment(value: SketchPatternMirrorOperation.pattern, label: Text('Pattern')),
+                ButtonSegment(value: SketchPatternMirrorOperation.mirror, label: Text('Mirror')),
+              ],
+              selected: {operation},
+              onSelectionChanged: (selection) => controller.setPatternMirrorOperation(selection.first),
+            ),
+          ),
+          if (operation == SketchPatternMirrorOperation.pattern)
+            _patternFields(controller)
+          else
+            _mirrorFields(controller),
+          const SizedBox(height: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
             children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      widget.targetCount == 1 ? '1 entity picked' : '${widget.targetCount} entities picked',
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  SegmentedButton<SketchPatternMirrorOperation>(
-                    segments: const [
-                      ButtonSegment(value: SketchPatternMirrorOperation.pattern, label: Text('Pattern')),
-                      ButtonSegment(value: SketchPatternMirrorOperation.mirror, label: Text('Mirror')),
-                    ],
-                    selected: {operation},
-                    onSelectionChanged: (selection) => controller.setPatternMirrorOperation(selection.first),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              if (operation == SketchPatternMirrorOperation.pattern)
-                _patternFields(controller)
-              else
-                _mirrorFields(controller),
-              const SizedBox(height: 8),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  IconButton(onPressed: _cancel, icon: const Icon(Icons.close), tooltip: 'Cancel'),
-                  FilledButton(
-                    onPressed: controller.canConfirmPatternMirror ? _confirm : null,
-                    child: Text(operation == SketchPatternMirrorOperation.pattern ? 'Pattern' : 'Mirror'),
-                  ),
-                ],
+              TextButton(onPressed: _cancel, child: const Text('Cancel')),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed: controller.canConfirmPatternMirror ? _confirm : null,
+                child: Text(editing ? 'Update' : (operation == SketchPatternMirrorOperation.pattern ? 'Pattern' : 'Mirror')),
               ),
             ],
           ),
-        ),
+        ],
       ),
     );
   }
 
-  Widget _patternFields(SketchController controller) {
-    final directionSummary = controller.patternDirectionLineId != null
-        ? 'Direction: picked Line'
-        : controller.patternDirectionFixedAxis != null
-            ? 'Direction: ${controller.patternDirectionFixedAxis!.toUpperCase()} axis'
-            : 'Direction: tap X/Y or a Line in the sketch';
+  Widget _directionSection(
+    SketchController controller, {
+    required String label,
+    required String? directionLineId,
+    required String? directionFixedAxis,
+    required bool reverse,
+    required TextEditingController countText,
+    required TextEditingController spacingText,
+    required void Function(String axis) onFixedAxis,
+    required VoidCallback onReverse,
+    required void Function(int count) onCount,
+    required void Function(double? spacing) onSpacing,
+    required int slot,
+  }) {
+    final summary = directionLineId != null
+        ? '$label: picked Line'
+        : directionFixedAxis != null
+            ? '$label: ${directionFixedAxis.toUpperCase()} axis'
+            : '$label: tap X/Y or a Line in the sketch';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -207,22 +232,23 @@ class _PatternValueBarContentState extends State<_PatternValueBarContent> {
           spacing: 8,
           runSpacing: 4,
           children: [
-            Text(directionSummary),
+            Text(summary),
             SegmentedButton<String>(
               segments: const [
                 ButtonSegment(value: 'x', label: Text('X')),
                 ButtonSegment(value: 'y', label: Text('Y')),
               ],
-              selected: controller.patternDirectionFixedAxis != null ? {controller.patternDirectionFixedAxis!} : {},
+              selected: directionFixedAxis != null ? {directionFixedAxis} : {},
               emptySelectionAllowed: true,
               onSelectionChanged: (selection) {
+                controller.setPatternActiveDirectionSlot(slot);
                 if (selection.isEmpty) return;
-                controller.setPatternDirectionFixedAxis(selection.first);
+                onFixedAxis(selection.first);
               },
             ),
             IconButton(
-              onPressed: controller.togglePatternReverse,
-              isSelected: controller.patternReverse,
+              onPressed: onReverse,
+              isSelected: reverse,
               tooltip: 'Reverse direction',
               icon: const Icon(Icons.flip),
             ),
@@ -234,12 +260,12 @@ class _PatternValueBarContentState extends State<_PatternValueBarContent> {
             SizedBox(
               width: 90,
               child: TextField(
-                controller: _countText,
+                controller: countText,
                 keyboardType: TextInputType.number,
                 decoration: const InputDecoration(isDense: true, labelText: 'Count'),
                 onChanged: (value) {
                   final count = int.tryParse(value);
-                  if (count != null) controller.setPatternCount(count);
+                  if (count != null) onCount(count);
                 },
               ),
             ),
@@ -247,15 +273,83 @@ class _PatternValueBarContentState extends State<_PatternValueBarContent> {
             SizedBox(
               width: 110,
               child: TextField(
-                controller: _spacingText,
-                autofocus: true,
+                controller: spacingText,
                 keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
                 decoration: const InputDecoration(isDense: true, hintText: 'Spacing', suffixText: 'mm'),
-                onChanged: (value) => controller.setPatternSpacing(double.tryParse(value)),
+                onChanged: (value) => onSpacing(double.tryParse(value)),
               ),
             ),
           ],
         ),
+      ],
+    );
+  }
+
+  Widget _patternFields(SketchController controller) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        GestureDetector(
+          onTap: () => controller.setPatternActiveDirectionSlot(1),
+          child: _directionSection(
+            controller,
+            label: 'Direction 1',
+            directionLineId: controller.patternDirectionLineId,
+            directionFixedAxis: controller.patternDirectionFixedAxis,
+            reverse: controller.patternReverse1,
+            countText: _count1Text,
+            spacingText: _spacing1Text,
+            onFixedAxis: controller.setPatternDirectionFixedAxis,
+            onReverse: controller.togglePatternReverse1,
+            onCount: controller.setPatternCount1,
+            onSpacing: controller.setPatternSpacing1,
+            slot: 1,
+          ),
+        ),
+        const SizedBox(height: 8),
+        // On-device feedback ("allow pattern in two directions, check body
+        // pattern tool for UX") - mirrors `PatternPanel`'s own "enable
+        // Direction 2" checkbox, shown only once enabled (the active-slot
+        // toggle has nothing to disambiguate before then).
+        Row(
+          children: [
+            Checkbox(
+              value: controller.patternHasSecondDirection,
+              onChanged: (value) => controller.setPatternHasSecondDirection(value ?? false),
+            ),
+            const Text('Add a second direction'),
+          ],
+        ),
+        if (controller.patternHasSecondDirection) ...[
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: SegmentedButton<int>(
+              segments: const [
+                ButtonSegment(value: 1, label: Text('Direction 1')),
+                ButtonSegment(value: 2, label: Text('Direction 2')),
+              ],
+              selected: {controller.patternActiveDirectionSlot},
+              onSelectionChanged: (selection) => controller.setPatternActiveDirectionSlot(selection.first),
+            ),
+          ),
+          GestureDetector(
+            onTap: () => controller.setPatternActiveDirectionSlot(2),
+            child: _directionSection(
+              controller,
+              label: 'Direction 2',
+              directionLineId: controller.patternDirection2LineId,
+              directionFixedAxis: controller.patternDirection2FixedAxis,
+              reverse: controller.patternReverse2,
+              countText: _count2Text,
+              spacingText: _spacing2Text,
+              onFixedAxis: controller.setPatternDirection2FixedAxis,
+              onReverse: controller.togglePatternReverse2,
+              onCount: controller.setPatternCount2,
+              onSpacing: controller.setPatternSpacing2,
+              slot: 2,
+            ),
+          ),
+        ],
       ],
     );
   }
