@@ -830,10 +830,7 @@ class _SketchScreenState extends State<SketchScreen> {
                   // bottom whenever draw or dimension mode is active,
                   // non-modal so taps still reach the canvas underneath (see
                   // SketchConstructionMethodBar's own doc comment for why).
-                  Positioned(
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
+                  Positioned.fill(
                     child: AnimatedBuilder(
                       animation: _controller,
                       builder: (context, _) {
@@ -869,18 +866,46 @@ class _SketchScreenState extends State<SketchScreen> {
                         // is), so nothing here needed to change beyond
                         // dropping this gate.
                         final visible = mode != SketchMode.select;
+                        // Bug fix (on-device feedback: "confirm selection >
+                        // nothing happens, no toolbar appears"): this whole
+                        // area used to be a shrink-wrapped `Positioned(left,
+                        // right, bottom)` with no `top`, sized purely by its
+                        // child's own intrinsic (content) height - fine for
+                        // every other bar here (a plain fixed-height
+                        // `SafeArea > Material` shell), but [PatternValueBar]
+                        // was rebuilt on the shared [ResizableToolPanel]
+                        // (see that class's own doc comment), which needs a
+                        // genuinely *bounded* incoming height (a
+                        // `LayoutBuilder` computing its own pull-to-resize
+                        // fraction against it, then self-aligning to the
+                        // bottom) - unbounded height there throws a layout
+                        // exception, which silently aborted this whole
+                        // subtree's build, so nothing at all appeared once
+                        // picking finished and the value bar tried to show.
+                        // Fixed by making the enclosing [Positioned] fill the
+                        // whole body (see its own now-`Positioned.fill`
+                        // above) and wrapping every *other* bar in its own
+                        // bottom-`Align` here, to keep their previous
+                        // shrink-wrapped-to-content sizing/positioning
+                        // unchanged - only the [ResizableToolPanel]-based bar
+                        // wants the full height, since it already aligns
+                        // itself to the bottom internally.
+                        final usesResizableToolPanel =
+                            mode == SketchMode.pattern && _controller.patternPreviewTargets != null;
                         final bar = switch (mode) {
                           SketchMode.dimension => SketchDimensionBar(controller: _controller),
                           SketchMode.offset => _controller.offsetPreviewTargets != null
                               ? OffsetValueBar(controller: _controller)
                               : OffsetPickBar(controller: _controller),
-                          SketchMode.pattern => _controller.patternPreviewTargets != null
+                          SketchMode.pattern => usesResizableToolPanel
                               ? PatternValueBar(controller: _controller)
                               : PatternPickBar(controller: _controller),
                           SketchMode.trim => SketchTrimBar(controller: _controller),
                           SketchMode.convert => SketchConvertBar(controller: _controller),
                           _ => SketchConstructionMethodBar(controller: _controller),
                         };
+                        final positionedBar =
+                            usesResizableToolPanel ? bar : Align(alignment: Alignment.bottomCenter, child: bar);
                         return IgnorePointer(
                           ignoring: !visible,
                           child: AnimatedSlide(
@@ -890,7 +915,7 @@ class _SketchScreenState extends State<SketchScreen> {
                             child: AnimatedOpacity(
                               duration: const Duration(milliseconds: 200),
                               opacity: visible ? 1 : 0,
-                              child: bar,
+                              child: positionedBar,
                             ),
                           ),
                         );
