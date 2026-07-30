@@ -94,8 +94,15 @@ class _FakeDocumentBackend {
       // the real backend) so the "editing reveals every instance, Confirm
       // re-applies the real selection" sequencing is observable end to end.
       final patternFeature = features.firstWhere((f) => f['type'] == 'pattern', orElse: () => const {});
-      if (patternFeature.isNotEmpty) {
-        final seedId = (patternFeature['source_body_ids'] as List).first as String;
+      final patternSourceBodyIds =
+          patternFeature.isNotEmpty ? (patternFeature['source_body_ids'] as List) : const [];
+      // Pattern/Mirror scoping Phase 6: a Pattern seeded purely via
+      // `source_feature_ids` has an empty `source_body_ids` - this fake
+      // doesn't model resolving `source_feature_ids` into real instance
+      // Body ids, so it falls through to the generic single-placeholder
+      // mesh below instead of the scheme-correct instance-naming path.
+      if (patternFeature.isNotEmpty && patternSourceBodyIds.isNotEmpty) {
+        final seedId = patternSourceBodyIds.first as String;
         final isCircular = patternFeature['pattern_type'] == 'circular';
         final totalCount = isCircular
             ? (patternFeature['count_angular'] as num).toInt()
@@ -1242,6 +1249,84 @@ void main() {
     // Timer is left pending when this test tears down.
     await tester.pump(const Duration(milliseconds: 600));
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+      'Bug fix: a Pattern seeded purely from a source Feature (empty source_body_ids) still opens '
+      'for edit and still sends its live-preview PATCH ("trying to pattern a feature produced no new '
+      'bodies, no new entry in the tree, no preview is shown - fails silently" on-device feedback)',
+      (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        {
+          'type': 'extrude',
+          'id': 'feature-2',
+          'sketch_feature_id': 'feature-1',
+          'extrude_type': 'boss',
+          'start_distance': 0.0,
+          'end_distance': 10.0,
+          'locked': true,
+        },
+        {
+          'type': 'pattern',
+          'id': 'feature-3',
+          'source_body_ids': <String>[],
+          'source_feature_ids': ['feature-2'],
+          'pattern_type': 'rectangular',
+          'direction_1': {'edge_ref': null, 'sketch_line_ref': null, 'fixed_axis': 'x'},
+          'count_1': 3,
+          'spacing_1': 10.0,
+          'reverse_1': false,
+          'direction_2': null,
+          'count_2': 1,
+          'spacing_2': 0.0,
+          'reverse_2': false,
+          'axis': null,
+          'count_angular': 1,
+          'angle_total': 360.0,
+          'reverse_angular': false,
+          'skip_indices': [],
+          'locked': false,
+        },
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    await tester.tap(find.text('Pattern 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    // Before the fix, [_openPatternPanelForEdit]'s own `sourceBodyIds.
+    // isEmpty` guard bailed out (`false`, no panel) for exactly this shape -
+    // tapping the row did nothing at all, silently.
+    expect(find.text('Edit Pattern'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    // PatternPanel's own initState eagerly re-emits its initial field
+    // values, scheduling a debounced live-preview PATCH. Before the fix,
+    // [_schedulePatternPreview]'s own guard bailed out here too (empty
+    // `_patternSourceBodyIds`, regardless of `_patternSourceFeatureIds`),
+    // so nothing was ever sent.
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(tester.takeException(), isNull);
+    expect(backend.lastPatternPatchBody, isNotNull);
+    expect(backend.lastPatternPatchBody?['source_feature_ids'], ['feature-2']);
   });
 
   testWidgets(
