@@ -56,6 +56,16 @@ import 'view_preferences.dart';
 /// decides whether confirming opens [ExtrudePanel] or [RevolvePanel].
 enum _ProfilePickerTarget { extrude, revolve, sweep }
 
+/// Pattern/Mirror scoping's Phase 6 (`docs/pattern-mirror-scope.md` §2.8/§4):
+/// every Feature `type` that mints a brand-new Body id of its own (mirrors
+/// the backend's own `_PATTERN_MIRROR_SOURCE_FEATURE_TYPES`) - shared by
+/// [_PartScreenState._sourceFeaturePickerPickableIds] (the Build Tree's own
+/// multi-select Feature picker) and [_PartScreenState._onFeatureLongPress]'s
+/// `showPattern` gate (on-device feedback: "user should now be able to
+/// start pattern from long press a feature in the tree"), so the two never
+/// drift out of sync about which Feature types can seed a Mirror/Pattern.
+const _bodyProducingFeatureTypes = {'extrude', 'revolve', 'sweep', 'import', 'mirror', 'pattern'};
+
 /// Pattern/Mirror scoping's Phase 1 (`docs/pattern-mirror-scope.md`
 /// §2.1/§4): which mutually-exclusive half of the guided Mirror flow is
 /// currently live - see `_PartScreenState`'s own Mirror state-field
@@ -4286,6 +4296,13 @@ class _PartScreenState extends State<PartScreen> {
     // checked live during path-picking, not here).
     final canRevolve = canExtrude;
     final canSweep = canExtrude;
+    // Pattern/Mirror scoping's Phase 6 (on-device feedback: "user should
+    // now be able to start pattern from long press a feature in the
+    // tree"): any Feature that mints a Body of its own is a valid
+    // source_feature_ids seed - see `_bodyProducingFeatureTypes`'s own doc
+    // comment for why this is shared with the Build Tree's own Feature
+    // picker rather than redefined here.
+    final showPattern = _bodyProducingFeatureTypes.contains(feature.type);
     if (!mounted) return;
 
     final action = await showFeatureContextMenu(
@@ -4301,6 +4318,7 @@ class _PartScreenState extends State<PartScreen> {
       canSweep: canSweep,
       sweepDisabledReason: extrudeDisabledReason,
       showRedefineOrientation: isSketchFeature,
+      showPattern: showPattern,
     );
     if (!mounted || action == null) return;
 
@@ -4313,6 +4331,8 @@ class _PartScreenState extends State<PartScreen> {
         await _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.sweep);
       case FeatureContextMenuAction.redefineOrientation:
         await _redefineSketchOrientation(feature);
+      case FeatureContextMenuAction.pattern:
+        _openPatternPanelFromFeature(feature);
       case FeatureContextMenuAction.toggleVisibility:
         await _toggleFeatureVisibility(feature);
       case FeatureContextMenuAction.delete:
@@ -5766,10 +5786,9 @@ class _PartScreenState extends State<PartScreen> {
     final excludeId = target == _SourceFeaturePickerTarget.mirror
         ? (_editingMirrorFeatureId ?? _previewMirrorFeatureId)
         : (_editingPatternFeatureId ?? _previewPatternFeatureId);
-    const acceptedTypes = {'extrude', 'revolve', 'sweep', 'import', 'mirror', 'pattern'};
     return {
       for (final feature in _features)
-        if (acceptedTypes.contains(feature.type) && feature.id != excludeId) feature.id,
+        if (_bodyProducingFeatureTypes.contains(feature.type) && feature.id != excludeId) feature.id,
     };
   }
 
@@ -6065,8 +6084,21 @@ class _PartScreenState extends State<PartScreen> {
   /// before the panel opened, and rolls B4 rollback forward - mirrors
   /// [_confirmFillet] exactly, plus popping the [_mirrorSelectionFilter]
   /// override [_openMirrorPanel]/[_openMirrorPanelForEdit] pushed.
+  ///
+  /// Bug fix (on-device feedback: "patterns have stopped showing in the
+  /// feature tree... this was working before" - the identical gap exists
+  /// here too, for the same reason): [_endRollback] only refreshes the
+  /// mesh, and is a no-op entirely unless a B4 edit session engaged
+  /// rollback - never true for a brand-new Mirror created via the guided
+  /// flow. Without an explicit [_refreshFeatures] call, [_features] (what
+  /// [FeatureTreePanel] actually renders) never picks up the Feature this
+  /// whole session just created/edited until some unrelated later action
+  /// happens to refresh it - mirrors [_confirmSweep]'s own explicit
+  /// refresh-before-teardown shape.
   Future<void> _confirmMirror() async {
     _mirrorDebounce?.cancel();
+    await _runGuarded(_refreshFeatures);
+    if (!mounted) return;
     setState(() {
       // See [_confirmExtrude]'s doc comment for the build-tree-auto-close
       // fix this mirrors.
@@ -6176,20 +6208,55 @@ class _PartScreenState extends State<PartScreen> {
   int _patternPickedBodyCount() =>
       _selectedEntities.where((e) => e.kind == SelectionEntityKind.body).length;
 
+  /// Whether `pickingBodies` has anything to confirm yet - true once 1+
+  /// Bodies are tapped in the viewport *or* 1+ Features are picked via the
+  /// ribbon's own "Select Feature" button ([_patternSourceFeatureIds]),
+  /// gating [_confirmPatternBodySelection]'s own ribbon confirm button.
+  bool get _patternHasAnyPickedSource =>
+      _patternPickedBodyCount() > 0 || _patternSourceFeatureIds.isNotEmpty;
+
+  /// The `pickingBodies` ribbon's own tooltip text - names whichever of
+  /// Bodies/Features (or both) are currently picked, mirroring
+  /// [_mirrorPickedBodyCount]'s own single-source banner text exactly when
+  /// only Bodies are involved (the common case), widened for Phase 6's
+  /// "Select Feature" button potentially adding Features to the mix too.
+  String _patternPickingBodiesSummary() {
+    final bodyCount = _patternPickedBodyCount();
+    final featureCount = _patternSourceFeatureIds.length;
+    if (bodyCount == 0 && featureCount == 0) return 'Select Body to Pattern';
+    final parts = [
+      if (bodyCount > 0) '$bodyCount body(s)',
+      if (featureCount > 0) '$featureCount feature(s)',
+    ];
+    return '${parts.join(' + ')} selected - tap checkmark to confirm';
+  }
+
   /// Confirms the `pickingBodies` step (the banner's checkmark FAB - see
   /// [_patternPickedBodyCount]) - captures every currently-selected Body,
   /// pops the body-only filter, pushes the edge-only `configuring` filter,
   /// and resets every Direction 1/2 field to its default via
   /// [_resetPatternConfiguringState]. Mirrors
   /// [_confirmMirrorBodySelection]'s shape exactly.
+  ///
+  /// On-device feedback ("on the flyup ribbon, there should be an extra
+  /// button that says 'select feature'"): [_patternSourceFeatureIds] may
+  /// already be non-empty here - the `pickingBodies` ribbon's own "Select
+  /// Feature" button ([_startSourceFeaturePicker]) accumulates into it
+  /// directly, same as [PatternPanel.onPickSourceFeatures] does once
+  /// `configuring` - so a Pattern can be seeded from Feature-tree picks
+  /// alone, Body taps alone, or both, without ever needing a Body pick
+  /// first. Passed straight through to `configuring` rather than reset to
+  /// empty (unlike every other field here, which Phase 6's own multi-body
+  /// widening left otherwise untouched).
   void _confirmPatternBodySelection() {
     final bodyIds =
         _selectedEntities.where((e) => e.kind == SelectionEntityKind.body).map((e) => e.bodyId).toList();
-    if (bodyIds.isEmpty) return; // Defensive - the confirm FAB is disabled until then.
+    final featureIds = _patternSourceFeatureIds;
+    if (bodyIds.isEmpty && featureIds.isEmpty) return; // Defensive - the confirm FAB is disabled until then.
     setState(() {
       _selectionFilterOverrides.pop();
       _selectionFilterOverrides.push(_patternDirectionSelectionFilter);
-      _resetPatternConfiguringState(bodyIds);
+      _resetPatternConfiguringState(bodyIds, sourceFeatureIds: featureIds);
     });
   }
 
@@ -6228,16 +6295,40 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
-  /// Shared by [_confirmPatternBodySelection]/[_openPatternPanel] - resets
-  /// every Direction 1/2 field to its default and enters `configuring` for
-  /// [sourceBodyIds]. Always called from inside a `setState` block by its
-  /// two callers (each of which has its own filter-stack bookkeeping to do
+  /// On-device feedback ("user should now be able to start pattern from
+  /// long press a feature in the tree"): opens [PatternPanel] directly in
+  /// the `configuring` step for a brand-new PatternFeature seeded from
+  /// [feature] itself via `source_feature_ids` (Phase 6, `docs/pattern-
+  /// mirror-scope.md` §2.8) rather than a Body pick - mirrors
+  /// [_openPatternPanel]'s own "skip `pickingBodies` entirely" shape,
+  /// just sourced from a Feature-tree row instead of already-selected
+  /// viewport Bodies. [FeatureContextMenuAction.pattern]'s own handler in
+  /// [_onFeatureLongPress] is the only caller - that's already gated on
+  /// [feature] being a body-producing type (see `_bodyProducingFeatureTypes`),
+  /// so this doesn't re-check.
+  void _openPatternPanelFromFeature(FeatureDto feature) {
+    setState(() {
+      _meshBeforePattern = _bodies;
+      _entitiesBeforePattern = _selectedEntities;
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _selectionFilterOverrides.push(_patternDirectionSelectionFilter);
+      _resetPatternConfiguringState([], sourceFeatureIds: [feature.id]);
+    });
+  }
+
+  /// Shared by [_confirmPatternBodySelection]/[_openPatternPanel]/
+  /// [_openPatternPanelFromFeature] - resets every Direction 1/2 field to
+  /// its default and enters `configuring` for [sourceBodyIds]/
+  /// [sourceFeatureIds]. Always called from inside a `setState` block by
+  /// its callers (each of which has its own filter-stack bookkeeping to do
   /// alongside this).
-  void _resetPatternConfiguringState(List<String> sourceBodyIds) {
+  void _resetPatternConfiguringState(List<String> sourceBodyIds, {List<String> sourceFeatureIds = const []}) {
     _patternStep = _PatternStep.configuring;
     _patternMode = PatternMode.rectangular;
     _patternSourceBodyIds = sourceBodyIds;
-    _patternSourceFeatureIds = [];
+    _patternSourceFeatureIds = sourceFeatureIds;
     _patternDirection1 = null;
     _patternDirection1EdgeEntity = null;
     _patternCount1 = 2;
@@ -6985,17 +7076,27 @@ class _PartScreenState extends State<PartScreen> {
   /// the panel's own state is torn down - every debounced call up to this
   /// point deliberately sent `skip_indices: []` instead, so the backend has
   /// never yet seen the real selection.
+  ///
+  /// Bug fix (on-device feedback: "patterns have stopped showing in the
+  /// feature tree... this was working before"): [_endRollback] only
+  /// refreshes the mesh, and is a no-op entirely unless a B4 edit session
+  /// engaged rollback - never true for a brand-new Pattern created via the
+  /// guided flow. Without an explicit [_refreshFeatures] call, [_features]
+  /// (what [FeatureTreePanel] actually renders) never picks up the Feature
+  /// this whole session just created/edited until some unrelated later
+  /// action happens to refresh it - mirrors [_confirmSweep]'s own explicit
+  /// refresh-before-teardown shape.
   Future<void> _confirmPattern() async {
     _patternDebounce?.cancel();
-    if (_previewPatternFeatureId != null &&
-        _patternSourceBodyIds != null &&
-        _patternSourceBodyIds!.isNotEmpty) {
+    if (_previewPatternFeatureId != null) {
       final totalCount = _patternMode == PatternMode.circular
           ? _patternCountAngular
           : _patternCount1 * (_patternHasSecondDirection ? _patternCount2 : 1);
       final realSkipIndices = _patternSkipIndices.where((i) => i > 0 && i < totalCount).toList();
       await _runGuarded(() => _ensurePatternFeatureExists(skipIndices: realSkipIndices));
     }
+    await _runGuarded(_refreshFeatures);
+    if (!mounted) return;
     setState(() {
       _featureTreeVisible = false;
       _patternStep = null;
@@ -7897,6 +7998,23 @@ class _PartScreenState extends State<PartScreen> {
                 ),
                 if (_extrudeSketchFeature != null)
                   Positioned.fill(
+                    // Bug fix (on-device feedback): toggling the orbit/
+                    // select-mode FAB flips `if (_selectionMode) Positioned
+                    // .fill(...)` (the selection-mode border overlay) above
+                    // on/off, which shifts every *unkeyed* sibling after it
+                    // in this Stack's own children list by one index -
+                    // Flutter's list reconciliation only matches shifted
+                    // children by identity when they carry a `Key` of their
+                    // own, so an unkeyed `Positioned.fill` here got torn
+                    // down and rebuilt from scratch on every toggle,
+                    // resetting `ResizableToolPanel`'s own `_heightFraction`
+                    // State back to its default. A stable key on this
+                    // `Positioned` itself (distinct from the panel's own
+                    // `key:` below, which exists to re-seed its fields when
+                    // switching *which* Feature is being edited) lets
+                    // Flutter find and reuse this exact Element regardless
+                    // of where it lands in the list.
+                    key: const ValueKey('extrude-panel-slot'),
                     child: ExtrudePanel(
                       key: ValueKey(_editingExtrudeFeatureId ?? _extrudeSketchFeature!.id),
                       title: _editingExtrudeFeatureId != null ? 'Edit Extrude' : 'Extrude',
@@ -7912,6 +8030,9 @@ class _PartScreenState extends State<PartScreen> {
                   ),
                 if (_createPlaneMode != null)
                   Positioned.fill(
+                    // Bug fix: mirrors the Extrude panel slot's own stable-
+                    // key reasoning exactly, above.
+                    key: const ValueKey('create-plane-panel-slot'),
                     child: CreatePlanePanel(
                       key: ValueKey(_editingCreatePlaneFeatureId ?? _previewCreatePlaneFeatureId),
                       title: _editingCreatePlaneFeatureId != null ? 'Edit Plane' : 'Create Plane',
@@ -7924,6 +8045,9 @@ class _PartScreenState extends State<PartScreen> {
                   ),
                 if (_filletActive)
                   Positioned.fill(
+                    // Bug fix: mirrors the Extrude panel slot's own stable-
+                    // key reasoning exactly, above.
+                    key: const ValueKey('fillet-panel-slot'),
                     child: FilletPanel(
                       key: ValueKey(_editingFilletFeatureId ?? _previewFilletFeatureId),
                       title: _editingFilletFeatureId != null ? 'Edit Fillet' : 'Fillet',
@@ -7936,6 +8060,9 @@ class _PartScreenState extends State<PartScreen> {
                   ),
                 if (_chamferActive)
                   Positioned.fill(
+                    // Bug fix: mirrors the Extrude panel slot's own stable-
+                    // key reasoning exactly, above.
+                    key: const ValueKey('chamfer-panel-slot'),
                     child: ChamferPanel(
                       key: ValueKey(_editingChamferFeatureId ?? _previewChamferFeatureId),
                       title: _editingChamferFeatureId != null ? 'Edit Chamfer' : 'Chamfer',
@@ -7954,6 +8081,9 @@ class _PartScreenState extends State<PartScreen> {
                 if (_mirrorStep == _MirrorStep.pickingPlane &&
                     _sourceFeaturePickerTarget != _SourceFeaturePickerTarget.mirror)
                   Positioned.fill(
+                    // Bug fix: mirrors the Extrude panel slot's own stable-
+                    // key reasoning exactly, above.
+                    key: const ValueKey('mirror-panel-slot'),
                     child: MirrorPanel(
                       key: ValueKey(_editingMirrorFeatureId ?? _mirrorSourceBodyIds?.join(',')),
                       title: _editingMirrorFeatureId != null ? 'Edit Mirror' : 'Mirror',
@@ -7976,6 +8106,9 @@ class _PartScreenState extends State<PartScreen> {
                 if (_patternStep == _PatternStep.configuring &&
                     _sourceFeaturePickerTarget != _SourceFeaturePickerTarget.pattern)
                   Positioned.fill(
+                    // Bug fix: mirrors the Extrude panel slot's own stable-
+                    // key reasoning exactly, above.
+                    key: const ValueKey('pattern-panel-slot'),
                     child: PatternPanel(
                       // Includes [_patternHasSecondDirection] so toggling it
                       // forces a fresh [PatternPanel] (and thus fresh
@@ -8048,6 +8181,9 @@ class _PartScreenState extends State<PartScreen> {
                   ),
                 if (_revolveActive)
                   Positioned.fill(
+                    // Bug fix: mirrors the Extrude panel slot's own stable-
+                    // key reasoning exactly, above.
+                    key: const ValueKey('revolve-panel-slot'),
                     child: RevolvePanel(
                       key: ValueKey(_editingRevolveFeatureId ?? _revolveSketchFeature!.id),
                       title: _editingRevolveFeatureId != null ? 'Edit Revolve' : 'Revolve',
@@ -8063,6 +8199,9 @@ class _PartScreenState extends State<PartScreen> {
                   ),
                 if (_sweepActive)
                   Positioned.fill(
+                    // Bug fix: mirrors the Extrude panel slot's own stable-
+                    // key reasoning exactly, above.
+                    key: const ValueKey('sweep-panel-slot'),
                     child: SweepPanel(
                       key: ValueKey(_editingSweepFeatureId ?? _sweepSketchFeature!.id),
                       title: _editingSweepFeatureId != null ? 'Edit Sweep' : 'Sweep',
@@ -8329,17 +8468,26 @@ class _PartScreenState extends State<PartScreen> {
                 // feedback ("the tooltip at the top of the screen blocks the
                 // FABs"): moved from a full-width `top: 8` banner into this
                 // bottom [PickerRibbon].
-                if (_patternStep == _PatternStep.pickingBodies)
+                if (_patternStep == _PatternStep.pickingBodies &&
+                    _sourceFeaturePickerTarget != _SourceFeaturePickerTarget.pattern)
                   Positioned.fill(
                     child: PickerRibbon(
                       title: 'Pattern',
-                      tooltip: _patternPickedBodyCount() == 0
-                          ? 'Select Body to Pattern'
-                          : '${_patternPickedBodyCount()} body(s) selected - tap checkmark to confirm',
+                      tooltip: _patternPickingBodiesSummary(),
                       onCancel: _cancelPattern,
                       showConfirm: true,
-                      onConfirm:
-                          _busy || _patternPickedBodyCount() == 0 ? null : _confirmPatternBodySelection,
+                      onConfirm: _busy || !_patternHasAnyPickedSource ? null : _confirmPatternBodySelection,
+                      // On-device feedback ("on the flyup ribbon, there
+                      // should be an extra button that says 'select
+                      // feature'"): opens the Build Tree's own multi-select
+                      // Feature picker without leaving `pickingBodies` -
+                      // [_confirmSourceFeaturePicker] writes straight into
+                      // [_patternSourceFeatureIds], which
+                      // [_confirmPatternBodySelection] then carries forward
+                      // into `configuring` unchanged (see its own doc
+                      // comment).
+                      extraActionLabel: 'Select Feature',
+                      onExtraAction: () => _startSourceFeaturePicker(_SourceFeaturePickerTarget.pattern),
                     ),
                   ),
                 // On-device feedback ("the tooltip at the top of the screen

@@ -20,12 +20,25 @@ import 'package:flutter/material.dart';
 /// `FloatingActionButton.onPressed` here already uses - rather than
 /// hidden, so the button doesn't pop in/out of existence as the picked
 /// count crosses zero.
+///
+/// Pattern/Mirror scoping's Phase 6 (on-device feedback: "on the flyup
+/// ribbon, there should be an extra button that says 'select feature'"):
+/// [extraActionLabel]/[onExtraAction] add one optional extra button
+/// between the tooltip and Cancel, for a picking mode that offers a second
+/// way to add to the same in-progress selection (Pattern's own
+/// `pickingBodies` step - see `PartScreen._startPatternPicker` - can be
+/// seeded from a Body tap in the viewport *or* a Feature-tree pick via
+/// this button, opening the Build Tree's own multi-select picker without
+/// leaving `pickingBodies`). `null` (the default) omits it entirely, same
+/// "omitted, not just disabled" convention [showConfirm] uses.
 class PickerRibbon extends StatelessWidget {
   final String title;
   final String tooltip;
   final VoidCallback onCancel;
   final bool showConfirm;
   final VoidCallback? onConfirm;
+  final String? extraActionLabel;
+  final VoidCallback? onExtraAction;
 
   const PickerRibbon({
     super.key,
@@ -34,6 +47,8 @@ class PickerRibbon extends StatelessWidget {
     required this.onCancel,
     this.showConfirm = false,
     this.onConfirm,
+    this.extraActionLabel,
+    this.onExtraAction,
   });
 
   @override
@@ -71,6 +86,12 @@ class PickerRibbon extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 12),
+                if (extraActionLabel != null)
+                  TextButton.icon(
+                    onPressed: onExtraAction,
+                    icon: const Icon(Icons.account_tree_outlined, size: 16),
+                    label: Text(extraActionLabel!),
+                  ),
                 TextButton(onPressed: onCancel, child: const Text('Cancel')),
                 if (showConfirm) ...[
                   const SizedBox(width: 4),

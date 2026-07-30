@@ -10,6 +10,7 @@ import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
 import 'package:didsa_cad_client/viewport3d/part_screen.dart';
 import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
+import 'package:didsa_cad_client/viewport3d/pattern_panel.dart';
 import 'package:didsa_cad_client/viewport3d/reference_planes.dart';
 import 'package:didsa_cad_client/viewport3d/render_mode.dart';
 import 'package:didsa_cad_client/viewport3d/resizable_tool_panel.dart';
@@ -28,6 +29,13 @@ class _FakeDocumentBackend {
   /// body, for tests that need to assert on a field (e.g. `source_feature_
   /// ids`) this fake doesn't otherwise expose any other way.
   Map<String, dynamic>? lastPatternPatchBody;
+
+  /// Bug fix regression coverage ("patterns have stopped showing in the
+  /// feature tree... this was working before"): how many times `GET
+  /// .../features` has actually been called - proves [PartScreen] really
+  /// re-fetches the Feature list on Confirm, not just that a freshly-loaded
+  /// `_features` happens to already contain what the test expects.
+  int featuresGetCount = 0;
 
   // Starts past every seeded Feature's id (seeds are always "feature-N" in
   // creation order) so a newly-created Feature's id never collides with a
@@ -116,6 +124,7 @@ class _FakeDocumentBackend {
     }
 
     if (path == '/document/parts/part-1/features' && method == 'GET') {
+      featuresGetCount++;
       return _json(features.map((f) => f).toList(), 200);
     }
 
@@ -992,6 +1001,315 @@ void main() {
 
     await tester.pump(const Duration(milliseconds: 600));
     expect(backend.lastPatternPatchBody?['source_feature_ids'], ['feature-2']);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+      'Bug fix: confirming a Pattern edit re-fetches the Feature list, so it '
+      'still shows in the Build Tree afterward ("patterns have stopped showing '
+      'in the feature tree" on-device feedback)', (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        {
+          'type': 'pattern',
+          'id': 'feature-2',
+          'source_body_ids': ['body-1'],
+          'pattern_type': 'rectangular',
+          'direction_1': {'edge_ref': null, 'sketch_line_ref': null, 'fixed_axis': 'x'},
+          'count_1': 3,
+          'spacing_1': 10.0,
+          'reverse_1': false,
+          'direction_2': null,
+          'count_2': 1,
+          'spacing_2': 0.0,
+          'reverse_2': false,
+          'axis': null,
+          'count_angular': 1,
+          'angle_total': 360.0,
+          'reverse_angular': false,
+          'skip_indices': [],
+          'locked': false,
+        },
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('Pattern 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.text('Edit Pattern'), findsOneWidget);
+    // PatternPanel's own initState eager debounced update.
+    await tester.pump(const Duration(milliseconds: 600));
+
+    final featuresGetCountBeforeConfirm = backend.featuresGetCount;
+
+    await tester.ensureVisible(find.widgetWithText(FilledButton, 'Confirm'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Confirm'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(backend.featuresGetCount, greaterThan(featuresGetCountBeforeConfirm));
+    expect(tester.takeException(), isNull);
+
+    // The tree still shows the Pattern, proving _features itself was
+    // actually updated with the fresh fetch's own result, not merely that
+    // a network call happened.
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.text('Pattern 1'), findsOneWidget);
+  });
+
+  testWidgets(
+      'Pattern/Mirror scoping Phase 6: long-pressing a body-producing Feature row offers '
+      'Pattern, and tapping it opens PatternPanel seeded from that Feature', (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        {
+          'type': 'extrude',
+          'id': 'feature-2',
+          'sketch_feature_id': 'feature-1',
+          'extrude_type': 'boss',
+          'start_distance': 0.0,
+          'end_distance': 10.0,
+          'locked': false,
+        },
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    await tester.longPress(find.text('Extrude 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.text('Pattern'), findsOneWidget);
+
+    await tester.tap(find.text('Pattern'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    // Straight to `configuring` for a brand-new PatternFeature (title
+    // 'Pattern', not 'Edit Pattern' - nothing already existed to edit), no
+    // pickingBodies ribbon/step in between - mirrors the ambient
+    // SelectionContextPanel entry's own shape.
+    expect(find.byType(PatternPanel), findsOneWidget);
+    expect(find.text('Edit Pattern'), findsNothing);
+    expect(find.text('Select Body to Pattern'), findsNothing);
+    expect(tester.takeException(), isNull);
+
+    // PatternPanel's own initState eagerly re-emits its initial field
+    // values, which schedules a debounced live-preview PATCH - pump past
+    // it so no Timer is left pending when this test tears down.
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+      'Pattern/Mirror scoping Phase 6: long-pressing a non-body-producing Feature row (a '
+      'Sketch) does not offer Pattern', (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': false},
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    await tester.longPress(find.text('Sketch 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(find.text('Pattern'), findsNothing);
+  });
+
+  testWidgets(
+      'Pattern/Mirror scoping Phase 6 UX: the pickingBodies ribbon\'s "Select Feature" button '
+      'opens the Build Tree picker, and a confirmed pick is reflected back in the ribbon',
+      (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        {
+          'type': 'extrude',
+          'id': 'feature-2',
+          'sketch_feature_id': 'feature-1',
+          'extrude_type': 'boss',
+          'start_distance': 0.0,
+          'end_distance': 10.0,
+          'locked': false,
+        },
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    await tester.tap(find.byTooltip('Add'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('Feature'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('Pattern'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(find.text('Select Body to Pattern'), findsOneWidget);
+    expect(find.text('Select Feature'), findsOneWidget);
+
+    await tester.tap(find.text('Select Feature'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    // The Build Tree's own multi-select picker is up instead of the
+    // ribbon now.
+    expect(find.text('Select source Features'), findsOneWidget);
+    expect(find.text('Select Body to Pattern'), findsNothing);
+
+    await tester.tap(find.text('Extrude 1'));
+    await tester.pump();
+    expect(find.text('Select source Features - 1 selected'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Confirm Feature selection'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    // Back at the pickingBodies ribbon, now reflecting the picked Feature -
+    // still `pickingBodies`, not advanced to `configuring` (no Body was
+    // ever tapped, and the ribbon's own confirm is a separate, explicit
+    // step - see PartScreen._confirmPatternBodySelection).
+    expect(find.text('1 feature(s) selected - tap checkmark to confirm'), findsOneWidget);
+    expect(find.byType(PatternPanel), findsNothing);
+    expect(tester.takeException(), isNull);
+
+    // [_confirmSourceFeaturePicker] unconditionally reschedules the
+    // debounced live-preview PATCH (harmlessly a no-op here, since
+    // `_patternSourceBodyIds` is still null throughout `pickingBodies` -
+    // see [_schedulePatternPreview]'s own guard) - pump past it so no
+    // Timer is left pending when this test tears down.
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+      'Bug fix: toggling the orbit/select-mode FAB does not reset a resizable tool panel\'s own '
+      'pulled height (the panel\'s own Positioned slot needs a stable Key, since an unrelated '
+      'sibling elsewhere in the same Stack appearing/disappearing shifts every unkeyed one after '
+      'it)', (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        {
+          'type': 'pattern',
+          'id': 'feature-2',
+          'source_body_ids': ['body-1'],
+          'pattern_type': 'rectangular',
+          'direction_1': {'edge_ref': null, 'sketch_line_ref': null, 'fixed_axis': 'x'},
+          'count_1': 3,
+          'spacing_1': 10.0,
+          'reverse_1': false,
+          'direction_2': null,
+          'count_2': 1,
+          'spacing_2': 0.0,
+          'reverse_2': false,
+          'axis': null,
+          'count_angular': 1,
+          'angle_total': 360.0,
+          'reverse_angular': false,
+          'skip_indices': [],
+          'locked': false,
+        },
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('Pattern 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.text('Edit Pattern'), findsOneWidget);
+    // PatternPanel's own initState eager debounced update.
+    await tester.pump(const Duration(milliseconds: 600));
+
+    // Pull the panel taller than its default height.
+    await tester.drag(find.byKey(const Key('patternPanelDragHandle')), const Offset(0, -150));
+    await tester.pump();
+    final heightAfterDrag = tester.getSize(find.byKey(const Key('patternPanelResizableArea'))).height;
+
+    // Toggling orbit <-> selection mode is what used to reset it.
+    await tester.tap(find.byTooltip('Switch to orbit mode'));
+    await tester.pump();
+    await tester.tap(find.byTooltip('Switch to selection mode'));
+    await tester.pump();
+
+    final heightAfterToggling = tester.getSize(find.byKey(const Key('patternPanelResizableArea'))).height;
+    expect(heightAfterToggling, heightAfterDrag);
     expect(tester.takeException(), isNull);
   });
 
