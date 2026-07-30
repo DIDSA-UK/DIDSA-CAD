@@ -122,5 +122,39 @@ void main() {
       await tester.tap(find.text('Select Feature'));
       expect(tapped, isTrue);
     });
+
+    testWidgets(
+        'title/tooltip row and the button row (extraAction + Cancel + Confirm) do not overflow on a '
+        'narrow phone-width screen', (tester) async {
+      // On-device feedback: title + divider + tooltip + "Select Feature" +
+      // Cancel + Confirm used to all share one Row, which overflowed
+      // ("RIGHT OVERFLOWED BY 2.6 PIXELS") on a real phone-width screen the
+      // moment extraActionLabel was set. Buttons now live on their own row
+      // below the title/tooltip row, so this must render with zero
+      // overflow even at a narrow width.
+      await tester.binding.setSurfaceSize(const Size(320, 640));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: PickerRibbon(
+              title: 'Pattern',
+              tooltip: 'Select Body to Pattern',
+              onCancel: () {},
+              showConfirm: true,
+              onConfirm: () {},
+              extraActionLabel: 'Select Feature',
+              onExtraAction: () {},
+            ),
+          ),
+        ),
+      );
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('Select Feature'), findsOneWidget);
+      expect(find.text('Cancel'), findsOneWidget);
+      expect(find.byIcon(Icons.check), findsOneWidget);
+    });
   });
 }

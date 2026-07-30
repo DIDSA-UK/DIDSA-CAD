@@ -5964,7 +5964,12 @@ class _PartScreenState extends State<PartScreen> {
   bool _openMirrorPanelForEdit(FeatureDto feature) {
     final sourceBodyIds = feature.sourceBodyIds;
     final mirrorPlane = feature.mirrorPlane;
-    if (sourceBodyIds.isEmpty || mirrorPlane == null) return false;
+    // Bug fix: a MirrorFeature seeded purely via `source_feature_ids` (no
+    // direct Body pick) has an empty (not missing) `sourceBodyIds` - the
+    // old `sourceBodyIds.isEmpty` check alone made re-opening it for edit
+    // silently fail (`false`, no panel, no error) even though the Feature
+    // is entirely valid.
+    if ((sourceBodyIds.isEmpty && feature.sourceFeatureIds.isEmpty) || mirrorPlane == null) return false;
 
     final merge = MergeMode.fromApiValue(feature.merge);
     final sourceFeatureIds = feature.sourceFeatureIds;
@@ -6376,7 +6381,10 @@ class _PartScreenState extends State<PartScreen> {
   /// `PatternFeature`'s own backend docstring.
   bool _openPatternPanelForEdit(FeatureDto feature) {
     final sourceBodyIds = feature.sourceBodyIds;
-    if (sourceBodyIds.isEmpty) return false;
+    // Bug fix: mirrors [_openMirrorPanelForEdit]'s own identical fix - a
+    // PatternFeature seeded purely via `source_feature_ids` has an empty
+    // (not missing) `sourceBodyIds`.
+    if (sourceBodyIds.isEmpty && feature.sourceFeatureIds.isEmpty) return false;
     final mode = PatternMode.fromApiValue(feature.patternType ?? 'rectangular');
 
     if (mode == PatternMode.circular) {
@@ -6729,6 +6737,31 @@ class _PartScreenState extends State<PartScreen> {
   /// - the trailing `index` (shared across every source, since `skip_
   /// indices` applies identically to all of them) is what this returns,
   /// the leading `sourceIndex` is irrelevant here.
+  /// How many effective Pattern sources (Phase 6, `docs/pattern-mirror-
+  /// scope.md` §2.8) are feeding [_previewPatternFeatureId] right now -
+  /// every entry in [_patternSourceBodyIds] counts as one, plus, for each
+  /// [_patternSourceFeatureIds] entry, however many Bodies that Feature
+  /// currently owns (a source Feature that is itself a Mirror/Pattern can
+  /// resolve to more than one - see `body_ids_for_feature_id` on the
+  /// backend, which this mirrors via [_bodies]' own naming convention
+  /// rather than a round-trip). Bug fix: a Pattern seeded purely via
+  /// [_patternSourceFeatureIds] (no direct Body pick - see
+  /// [_openPatternPanelFromFeature]) used to compute this as
+  /// `_patternSourceBodyIds?.length ?? 1`, which is `0` regardless of how
+  /// many Bodies the source Feature actually resolves to server-side -
+  /// wrongly falling into the single-source naming branch below whenever
+  /// that source Feature itself produces 2+ Bodies.
+  int _patternEffectiveSourceCount() {
+    final bodyIds = _patternSourceBodyIds ?? const [];
+    var count = bodyIds.length;
+    for (final featureId in _patternSourceFeatureIds) {
+      final prefix = '$featureId#';
+      final owned = _bodies.where((b) => b.bodyId == featureId || b.bodyId.startsWith(prefix)).length;
+      count += owned > 0 ? owned : 1;
+    }
+    return count == 0 ? 1 : count;
+  }
+
   int? _patternInstanceIndexForBodyId(String bodyId) {
     final sourceBodyIds = _patternSourceBodyIds;
     if (sourceBodyIds != null && sourceBodyIds.contains(bodyId)) return 0;
@@ -6738,7 +6771,7 @@ class _PartScreenState extends State<PartScreen> {
         ? _patternCountAngular
         : _patternCount1 * (_patternHasSecondDirection ? _patternCount2 : 1);
     if (totalCount <= 1) return null;
-    final sourceCount = sourceBodyIds?.length ?? 1;
+    final sourceCount = _patternEffectiveSourceCount();
     final prefix = '$featureId#';
     if (sourceCount <= 1) {
       if (totalCount - 1 == 1) return bodyId == featureId ? 1 : null;
@@ -6767,7 +6800,7 @@ class _PartScreenState extends State<PartScreen> {
         ? _patternCountAngular
         : _patternCount1 * (_patternHasSecondDirection ? _patternCount2 : 1);
     if (totalCount <= 1) return const {};
-    final sourceCount = _patternSourceBodyIds?.length ?? 1;
+    final sourceCount = _patternEffectiveSourceCount();
     if (sourceCount <= 1) {
       final onlyOneInstance = totalCount - 1 == 1;
       return {
@@ -6960,7 +6993,17 @@ class _PartScreenState extends State<PartScreen> {
   Future<void> _ensurePatternFeatureExists({List<int> skipIndices = const []}) async {
     final part = _part;
     final sourceBodyIds = _patternSourceBodyIds;
-    if (part == null || sourceBodyIds == null || sourceBodyIds.isEmpty) return;
+    // Bug fix (on-device feedback: "trying to pattern a feature produced no
+    // new bodies, no new entry in the tree, no preview is shown - fails
+    // silently"): a Pattern seeded purely from `source_feature_ids` (no
+    // direct Body pick at all - see `_openPatternPanelFromFeature`/the
+    // pickingBodies ribbon's own "Select Feature" button) has
+    // `sourceBodyIds` as an empty list, not null - the old `sourceBodyIds.
+    // isEmpty` check alone bailed out here unconditionally, silently
+    // skipping every create/update call for that entire session.
+    if (part == null || sourceBodyIds == null || (sourceBodyIds.isEmpty && _patternSourceFeatureIds.isEmpty)) {
+      return;
+    }
 
     if (_patternMode == PatternMode.circular) {
       final axis = _patternAxis;
@@ -7054,7 +7097,11 @@ class _PartScreenState extends State<PartScreen> {
   void _schedulePatternPreview() {
     _patternDebounce?.cancel();
     _patternDebounce = Timer(const Duration(milliseconds: 500), () {
-      if (_patternSourceBodyIds == null || _patternSourceBodyIds!.isEmpty) return;
+      // Bug fix: mirrors [_ensurePatternFeatureExists]'s own identical fix
+      // just above - a Feature-only-seeded Pattern has an empty (not null)
+      // `_patternSourceBodyIds`, which must not by itself block scheduling.
+      final sourceBodyIds = _patternSourceBodyIds;
+      if (sourceBodyIds == null || (sourceBodyIds.isEmpty && _patternSourceFeatureIds.isEmpty)) return;
       if (_patternMode == PatternMode.circular) {
         if (_patternAxis == null || _patternCountAngular < 2) return;
       } else {

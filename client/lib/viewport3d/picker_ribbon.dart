@@ -23,14 +23,28 @@ import 'package:flutter/material.dart';
 ///
 /// Pattern/Mirror scoping's Phase 6 (on-device feedback: "on the flyup
 /// ribbon, there should be an extra button that says 'select feature'"):
-/// [extraActionLabel]/[onExtraAction] add one optional extra button
-/// between the tooltip and Cancel, for a picking mode that offers a second
-/// way to add to the same in-progress selection (Pattern's own
-/// `pickingBodies` step - see `PartScreen._startPatternPicker` - can be
-/// seeded from a Body tap in the viewport *or* a Feature-tree pick via
-/// this button, opening the Build Tree's own multi-select picker without
-/// leaving `pickingBodies`). `null` (the default) omits it entirely, same
-/// "omitted, not just disabled" convention [showConfirm] uses.
+/// [extraActionLabel]/[onExtraAction] add one optional extra button to the
+/// button row, for a picking mode that offers a second way to add to the
+/// same in-progress selection (Pattern's own `pickingBodies` step - see
+/// `PartScreen._startPatternPicker` - can be seeded from a Body tap in the
+/// viewport *or* a Feature-tree pick via this button, opening the Build
+/// Tree's own multi-select picker without leaving `pickingBodies`). `null`
+/// (the default) omits it entirely, same "omitted, not just disabled"
+/// convention [showConfirm] uses.
+///
+/// Bug fix (on-device feedback: "the select ribbon with tool tip shows
+/// overflow error"): title, divider, tooltip, [extraActionLabel] and
+/// Cancel/Confirm used to all share one `Row`, which overflowed on narrow
+/// phone screens the moment [extraActionLabel] was non-null and the
+/// tooltip text was of any real length. The title/divider/tooltip now sit
+/// in their own row (matching [ResizableToolPanel]'s own title-row
+/// convention, which wraps the tooltip in an `Expanded` on a row of its
+/// own) and the buttons sit below in a right-aligned `Wrap` - mirrors
+/// every panel's own Cancel/Confirm row shape (see e.g. `PatternPanel`'s
+/// `mainAxisAlignment: MainAxisAlignment.end` row), but wraps to a second
+/// line instead of overflowing on the narrowest phone widths, where
+/// [extraActionLabel] plus Cancel plus Confirm together still don't fit
+/// on one line.
 class PickerRibbon extends StatelessWidget {
   final String title;
   final String tooltip;
@@ -63,44 +77,56 @@ class PickerRibbon extends StatelessWidget {
               topLeft: Radius.circular(12), topRight: Radius.circular(12)),
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-            child: Row(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Text(title,
-                    style: const TextStyle(
-                        fontWeight: FontWeight.bold, fontSize: 16)),
-                const SizedBox(width: 12),
-                SizedBox(
-                  height: 18,
-                  child: VerticalDivider(
-                      width: 1,
-                      thickness: 1,
-                      color: Theme.of(context).colorScheme.outlineVariant),
+                Row(
+                  children: [
+                    Text(title,
+                        style: const TextStyle(
+                            fontWeight: FontWeight.bold, fontSize: 16)),
+                    const SizedBox(width: 12),
+                    SizedBox(
+                      height: 18,
+                      child: VerticalDivider(
+                          width: 1,
+                          thickness: 1,
+                          color: Theme.of(context).colorScheme.outlineVariant),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        tooltip,
+                        style: TextStyle(
+                            fontSize: 13,
+                            color: Theme.of(context).colorScheme.onSurfaceVariant),
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    tooltip,
-                    style: TextStyle(
-                        fontSize: 13,
-                        color: Theme.of(context).colorScheme.onSurfaceVariant),
-                  ),
+                const SizedBox(height: 8),
+                Wrap(
+                  alignment: WrapAlignment.end,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  spacing: 4,
+                  runSpacing: 4,
+                  children: [
+                    if (extraActionLabel != null)
+                      TextButton.icon(
+                        onPressed: onExtraAction,
+                        icon: const Icon(Icons.account_tree_outlined, size: 16),
+                        label: Text(extraActionLabel!),
+                      ),
+                    TextButton(onPressed: onCancel, child: const Text('Cancel')),
+                    if (showConfirm)
+                      IconButton.filled(
+                        tooltip: 'Confirm',
+                        onPressed: onConfirm,
+                        icon: const Icon(Icons.check),
+                      ),
+                  ],
                 ),
-                const SizedBox(width: 12),
-                if (extraActionLabel != null)
-                  TextButton.icon(
-                    onPressed: onExtraAction,
-                    icon: const Icon(Icons.account_tree_outlined, size: 16),
-                    label: Text(extraActionLabel!),
-                  ),
-                TextButton(onPressed: onCancel, child: const Text('Cancel')),
-                if (showConfirm) ...[
-                  const SizedBox(width: 4),
-                  IconButton.filled(
-                    tooltip: 'Confirm',
-                    onPressed: onConfirm,
-                    icon: const Icon(Icons.check),
-                  ),
-                ],
               ],
             ),
           ),
