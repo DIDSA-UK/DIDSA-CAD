@@ -1134,6 +1134,8 @@ class _SketchScreenState extends State<SketchScreen> {
         activeConstraintOverlayItemId: _controller.activeGhostKey,
         activeConstraintOverlayItemBuilder: _buildActiveGhostValueEditor,
         sketchGeometries: _embeddedSketchGeometries,
+        patternMirrorGhostSegments: _embeddedPatternMirrorGhostSegments,
+        patternMirrorSketchFeatureId: _controller.sketchId ?? 'active-sketch',
         sketchEntityColors: _embeddedSketchEntityColors,
         // On-device feedback ("make the origin an asterisk... it should
         // look the same independent of the zoom level"): the origin's own
@@ -1301,6 +1303,14 @@ class _SketchScreenState extends State<SketchScreen> {
       sketchEllipse: true,
       sketchSpline: true,
       plane: false,
+      // On-device feedback ("the patterned circle under the cursor is not
+      // highlighted and will not select"): Select-mode only, mirroring
+      // [SketchController._patternMirrorEntityAt]'s own mode gate exactly -
+      // a synthetic copy is never a valid pick target for Dimension/
+      // Convert/Offset/Pattern's own picking phase, unlike every other
+      // `sketchXxx` flag above (which stay on across every mode, since
+      // real geometry genuinely is a valid target for those).
+      sketchPatternMirrorInstance: _controller.mode == SketchMode.select,
     );
   }
 
@@ -1312,6 +1322,24 @@ class _SketchScreenState extends State<SketchScreen> {
   /// action (Delete, constraints, Length, ...) already works against a
   /// 3D-selected entity unmodified.
   void _handleEmbeddedSelectionToggle(SelectionEntityRef entity) {
+    // On-device feedback ("the patterned circle under the cursor is not
+    // highlighted and will not select"): unlike every other case below,
+    // `sketchPatternMirrorInstance`'s own target `SelectionKind` isn't a
+    // pure per-kind mapping - `entity.sketchEntityId` is a Pattern/Mirror
+    // instance's own id, and only checking which of
+    // [SketchController.patternInstances]/[mirrorInstances] actually
+    // contains it says which of [SelectionKind.patternInstance]/
+    // [.mirrorInstance] this is (mirrors `SketchController._patternMirrorEntityAt`'s
+    // own resolution, just working from an id instead of a hit-test).
+    if (entity.kind == SelectionEntityKind.sketchPatternMirrorInstance) {
+      final isMirror = _controller.mirrorInstances.containsKey(entity.sketchEntityId);
+      if (!isMirror && !_controller.patternInstances.containsKey(entity.sketchEntityId)) return;
+      _controller.selectEntity(SketchSelection(
+        kind: isMirror ? SelectionKind.mirrorInstance : SelectionKind.patternInstance,
+        id: entity.sketchEntityId,
+      ));
+      return;
+    }
     final kind = switch (entity.kind) {
       SelectionEntityKind.sketchPoint => SelectionKind.point,
       SelectionEntityKind.sketchLine => SelectionKind.line,
@@ -1417,11 +1445,16 @@ class _SketchScreenState extends State<SketchScreen> {
         SelectionKind.ellipse => SelectionEntityKind.sketchEllipse,
         SelectionKind.spline => SelectionEntityKind.sketchSpline,
         SelectionKind.constraint || SelectionKind.text => null,
-        // A Pattern/Mirror instance has no real 3D hit-test/highlight of
-        // its own yet either (see this method's own doc comment) -
-        // Select-mode's own picking is 2D-canvas-only for now, per
-        // `SketchController._patternMirrorEntityAt`'s own doc comment.
-        SelectionKind.patternInstance || SelectionKind.mirrorInstance => null,
+        // On-device feedback ("the patterned circle under the cursor is not
+        // highlighted and will not select"): now has a real 3D hit-test/
+        // highlight of its own (see [_embeddedPatternMirrorGhostSegments]/
+        // [_handleEmbeddedSelectionToggle]'s own inverse of this exact
+        // mapping) - both Pattern and Mirror resolve to the one shared
+        // [SelectionEntityKind.sketchPatternMirrorInstance], since that
+        // side only ever needs the instance's own id back (the kind is
+        // re-derived from which map contains it, not carried on the ref).
+        SelectionKind.patternInstance || SelectionKind.mirrorInstance =>
+          SelectionEntityKind.sketchPatternMirrorInstance,
       };
 
   /// Sketcher restructure Phase 2: [PartViewport.onSketchPlaneTap]'s
@@ -2038,6 +2071,50 @@ class _SketchScreenState extends State<SketchScreen> {
     final fresh = {key: geometry, ...others};
     _cachedEmbeddedSketchGeometries = fresh;
     return fresh;
+  }
+
+  /// On-device feedback ("the patterned circle under the cursor is not
+  /// highlighted and will not select" - reported against this file's own
+  /// embedded 3D (Orbit View) sketch editor, a separate rendering/hit-test
+  /// pipeline from `sketch_canvas.dart`'s own flat 2D canvas, which had
+  /// already been fixed for the identical complaint there): every
+  /// committed Pattern/Mirror instance's own derived (ghost) geometry,
+  /// resolved into world-space segments and keyed by *owning instance* id -
+  /// [PartViewport.patternMirrorGhostSegments]' own data source, feeding
+  /// `selection_hit_test.dart`'s `hitTestSketchPatternMirrorInstances` and
+  /// the matching hover/selected-highlight lookups in `part_viewport.dart`.
+  ///
+  /// Deliberately built from [SketchController.patternMirrorGhostsForInstance]
+  /// (an id-scoped query) rather than the flat [SketchController.
+  /// patternMirrorGhosts] list [_embeddedDrawGhostPolylines] already uses
+  /// for plain rendering - that list carries no id at all to key a
+  /// per-instance hit-test/highlight off (see that getter's own doc
+  /// comment). [ghostPolylines] tessellates each ghost the identical way
+  /// `_embeddedDrawGhostPolylines` already does (so hit-testing always
+  /// matches what's actually drawn); each resulting polyline is then split
+  /// into individual consecutive-pair segments (mirroring `part_viewport.
+  /// dart`'s own private `_polygonSegments`, duplicated here rather than
+  /// exposed across the `viewport3d`/`sketch` package boundary for a single
+  /// small helper) since [PartViewport.patternMirrorGhostSegments] is
+  /// segment-shaped, not polyline-shaped - see that field's own doc comment
+  /// for why.
+  Map<String, List<(vm.Vector3, vm.Vector3)>> get _embeddedPatternMirrorGhostSegments {
+    final basis = _effectiveOrbitBasis;
+    if (basis == null) return const {};
+    final result = <String, List<(vm.Vector3, vm.Vector3)>>{};
+    for (final id in [..._controller.patternInstances.keys, ..._controller.mirrorInstances.keys]) {
+      final segments = <(vm.Vector3, vm.Vector3)>[];
+      for (final ghost in _controller.patternMirrorGhostsForInstance(id)) {
+        for (final polyline in ghostPolylines(ghost)) {
+          final worldPolyline = [for (final (x, y) in polyline) sketchPointToWorld(basis, x, y)];
+          for (var i = 0; i < worldPolyline.length - 1; i++) {
+            segments.add((worldPolyline[i], worldPolyline[i + 1]));
+          }
+        }
+      }
+      if (segments.isNotEmpty) result[id] = segments;
+    }
+    return result;
   }
 
   /// P26 bug fix (on-device feedback: "placing the second point in a

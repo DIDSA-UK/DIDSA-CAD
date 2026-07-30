@@ -22,6 +22,13 @@ void main() {
       const state = SelectionFilterState.defaults;
       expect(state.plane, isTrue);
     });
+
+    test(
+        'on-device feedback ("the patterned circle under the cursor is not highlighted and will not select"): '
+        'sketchPatternMirrorInstance defaults off, unlike every sibling sketchXxx field', () {
+      const state = SelectionFilterState.defaults;
+      expect(state.sketchPatternMirrorInstance, isFalse);
+    });
   });
 
   group('SelectionFilterState.copyWith', () {
@@ -69,6 +76,16 @@ void main() {
       expect(next.face, isTrue);
       expect(next.body, isFalse);
     });
+
+    test('sketchPatternMirrorInstance can be set independently, leaving the rest untouched', () {
+      const state = SelectionFilterState.defaults;
+      final next = state.copyWith(sketchPatternMirrorInstance: true);
+      expect(next.sketchPatternMirrorInstance, isTrue);
+      expect(next.vertex, isTrue);
+      expect(next.edge, isTrue);
+      expect(next.face, isTrue);
+      expect(next.body, isFalse);
+    });
   });
 
   group('SelectionFilterState equality', () {
@@ -88,6 +105,7 @@ void main() {
       expect(base, isNot(base.copyWith(sketchPoint: false)));
       expect(base, isNot(base.copyWith(sketchLine: false)));
       expect(base, isNot(base.copyWith(plane: false)));
+      expect(base, isNot(base.copyWith(sketchPatternMirrorInstance: true)));
     });
   });
 }

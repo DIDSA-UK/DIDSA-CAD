@@ -254,6 +254,98 @@ void main() {
     });
   });
 
+  group('On-device feedback fix: hitTestSketchPatternMirrorInstances', () {
+    test('a segment within radius is hit, tagged with its owning instance id (not a segment id of its own)', () {
+      final hit = hitTestSketchPatternMirrorInstances(
+        straightDownZ,
+        viewportSize,
+        'feature-1',
+        [(vm.Vector3(0.05, -1, 10), vm.Vector3(0.05, 1, 10))],
+        ['pattern-instance-a'],
+      );
+      expect(
+        hit?.entity,
+        const SelectionEntityRef(
+          kind: SelectionEntityKind.sketchPatternMirrorInstance,
+          sketchFeatureId: 'feature-1',
+          sketchEntityId: 'pattern-instance-a',
+        ),
+      );
+    });
+
+    test('a segment outside radius is not hit', () {
+      final hit = hitTestSketchPatternMirrorInstances(
+        straightDownZ,
+        viewportSize,
+        'feature-1',
+        [(vm.Vector3(0.5, -1, 10), vm.Vector3(0.5, 1, 10))],
+        ['pattern-instance-a'],
+      );
+      expect(hit, isNull);
+    });
+
+    test('several segments (e.g. a tessellated Circle) sharing one owning instance id all resolve to that id', () {
+      final hit = hitTestSketchPatternMirrorInstances(
+        straightDownZ,
+        viewportSize,
+        'feature-1',
+        [
+          // Far from the ray - only the second segment is actually close.
+          (vm.Vector3(-1, -1, 10), vm.Vector3(-1, 1, 10)),
+          (vm.Vector3(0.05, -1, 10), vm.Vector3(0.05, 1, 10)),
+        ],
+        ['pattern-instance-a', 'pattern-instance-a'],
+      );
+      expect(hit?.entity.sketchEntityId, 'pattern-instance-a');
+    });
+  });
+
+  group(
+      'On-device feedback fix ("the patterned circle under the cursor is not highlighted and will not select"): '
+      'hitTestBodies considers patternMirrorGhostSegments', () {
+    test('a Pattern/Mirror ghost segment is hit when filter.sketchPatternMirrorInstance is on', () {
+      final hit = hitTestBodies(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
+        bodies: const [],
+        patternMirrorGhostSegments: {
+          'pattern-instance-a': [(vm.Vector3(0.05, -1, 10), vm.Vector3(0.05, 1, 10))],
+        },
+        patternMirrorSketchFeatureId: 'feature-1',
+        filter: const SelectionFilterState(
+          vertex: false,
+          edge: false,
+          face: false,
+          body: false,
+          sketchPatternMirrorInstance: true,
+        ),
+      );
+      expect(
+        hit?.entity,
+        const SelectionEntityRef(
+          kind: SelectionEntityKind.sketchPatternMirrorInstance,
+          sketchFeatureId: 'feature-1',
+          sketchEntityId: 'pattern-instance-a',
+        ),
+      );
+    });
+
+    test('a Pattern/Mirror ghost segment is never hit when filter.sketchPatternMirrorInstance is off '
+        '(default) - matches SketchController.hoveredEntity\'s own mode-gated fallback', () {
+      final hit = hitTestBodies(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
+        bodies: const [],
+        patternMirrorGhostSegments: {
+          'pattern-instance-a': [(vm.Vector3(0.05, -1, 10), vm.Vector3(0.05, 1, 10))],
+        },
+        patternMirrorSketchFeatureId: 'feature-1',
+        filter: SelectionFilterState.defaults,
+      );
+      expect(hit, isNull);
+    });
+  });
+
   group('hitTestFaces', () {
     final triangle = (vm.Vector3(-1, -1, 10), vm.Vector3(1, -1, 10), vm.Vector3(0, 1, 10));
 

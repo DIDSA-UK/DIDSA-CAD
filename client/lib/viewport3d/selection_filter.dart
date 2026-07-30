@@ -44,6 +44,22 @@ class SelectionFilterState {
   final bool sketchEllipse;
   final bool sketchSpline;
 
+  /// On-device feedback ("the patterned circle under the cursor is not
+  /// highlighted and will not select"): gates
+  /// `SelectionEntityKind.sketchPatternMirrorInstance` the same way
+  /// [sketchLine] gates `.sketchLine` - a committed Pattern/Mirror
+  /// instance's own derived (ghost) geometry, hit-tested in the embedded
+  /// 3D (Orbit View) sketch editor. Defaults to `false`, unlike every
+  /// sibling `sketchXxx` field above (which default `true`) - a synthetic
+  /// copy should only ever be a valid pick target in Select mode (mirrors
+  /// `SketchController._patternMirrorEntityAt`'s own Select/Dimension-only
+  /// mode gate on the 2D-canvas side exactly; `sketchLine`/`sketchCircle`/
+  /// etc default on because every *other* picking mode - Offset, Trim,
+  /// Convert, Dimension's own target pick - genuinely does want real
+  /// geometry hit-testable, but none of them should ever resolve a
+  /// synthetic copy as if it were one).
+  final bool sketchPatternMirrorInstance;
+
   /// On-device feedback: gates both `SelectionEntityKind.referencePlane` and
   /// `.createPlane` hover/hit-testing (see `part_viewport.dart`'s
   /// `_hoverHitTestPlanes`) - a single field for both plane kinds, not a
@@ -72,6 +88,7 @@ class SelectionFilterState {
     this.sketchEllipse = true,
     this.sketchSpline = true,
     this.plane = true,
+    this.sketchPatternMirrorInstance = false,
   });
 
   /// Matches hit-testing's behaviour from before this filter framework
@@ -95,6 +112,7 @@ class SelectionFilterState {
     bool? sketchEllipse,
     bool? sketchSpline,
     bool? plane,
+    bool? sketchPatternMirrorInstance,
   }) {
     return SelectionFilterState(
       vertex: vertex ?? this.vertex,
@@ -108,6 +126,7 @@ class SelectionFilterState {
       sketchEllipse: sketchEllipse ?? this.sketchEllipse,
       sketchSpline: sketchSpline ?? this.sketchSpline,
       plane: plane ?? this.plane,
+      sketchPatternMirrorInstance: sketchPatternMirrorInstance ?? this.sketchPatternMirrorInstance,
     );
   }
 
@@ -124,7 +143,8 @@ class SelectionFilterState {
       other.sketchArc == sketchArc &&
       other.sketchEllipse == sketchEllipse &&
       other.sketchSpline == sketchSpline &&
-      other.plane == plane;
+      other.plane == plane &&
+      other.sketchPatternMirrorInstance == sketchPatternMirrorInstance;
 
   @override
   int get hashCode => Object.hash(
@@ -135,12 +155,13 @@ class SelectionFilterState {
         sketchPoint,
         sketchLine,
         sketchCircle,
-        Object.hash(sketchArc, sketchEllipse, sketchSpline, plane),
+        Object.hash(sketchArc, sketchEllipse, sketchSpline, plane, sketchPatternMirrorInstance),
       );
 
   @override
   String toString() =>
       'SelectionFilterState(vertex: $vertex, edge: $edge, face: $face, body: $body, '
       'sketchPoint: $sketchPoint, sketchLine: $sketchLine, sketchCircle: $sketchCircle, '
-      'sketchArc: $sketchArc, sketchEllipse: $sketchEllipse, sketchSpline: $sketchSpline, plane: $plane)';
+      'sketchArc: $sketchArc, sketchEllipse: $sketchEllipse, sketchSpline: $sketchSpline, plane: $plane, '
+      'sketchPatternMirrorInstance: $sketchPatternMirrorInstance)';
 }
