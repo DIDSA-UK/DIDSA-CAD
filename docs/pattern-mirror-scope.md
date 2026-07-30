@@ -1291,15 +1291,35 @@ Pattern.
 
 2D, sketch-entity-level, per §2.9.
 
-**Status: implemented (2026-07-30) — see `docs/status.md`'s matching dated
-entry for the full implementation/verification write-up.** Verified for
-real: the full backend `pytest` suite (1152 tests, including 37 new
-`test_stage_o_sketch_pattern_mirror.py` ones) against genuine
-`pythonocc-core`, and the full client `flutter test` suite (1051 tests,
-including 15 new `SketchController` ones) plus a clean `flutter analyze`,
-using freshly-bootstrapped local toolchains (micromamba + conda-forge for
-the backend, a `master`-channel Flutter SDK clone for the client, per
-every prior phase's own bootstrap).
+**Status: implemented (2026-07-30), plus a same-day on-device-feedback
+follow-up round — see `docs/status.md`'s two matching dated entries (the
+original implementation, and the follow-up) for the full write-up.**
+Verified for real: the full backend `pytest` suite (1163 tests as of the
+follow-up round: 1152 original + 11 new two-direction ones) against genuine
+`pythonocc-core`, and the full client `flutter test` suite (1058 tests as of
+the follow-up round) plus a clean `flutter analyze`, using freshly-
+bootstrapped local toolchains (micromamba + conda-forge for the backend, a
+`master`-channel Flutter SDK clone for the client, per every prior phase's
+own bootstrap).
+
+**Follow-up round (on-device feedback)**: fixed a Pattern/Mirror-toggle
+state-loss bug (switching operations mid-configuration silently dropped the
+in-progress preview); reworked the sketch-level ribbon onto the shared
+`ResizableToolPanel` (the same pull-to-resize/scrollable shell the 3D
+`PatternPanel` and every other Feature panel already use, rather than a
+fixed-height clone of Offset's much simpler bar); added two-direction
+pattern support (`direction_2`/`count_2`/`spacing_2`/`reverse_2`, row-major
+grid expansion, matching `PatternFeature`'s own convention); fixed the
+2D sketcher's green closed-profile fill and the embedded-in-3D-viewport
+equivalent to resolve a Profile loop's synthetic Pattern/Mirror ids (both
+now fall back to `SketchController.committedPatternMirrorExpansion` instead
+of only real `points`/`arcs`); made a patterned/mirrored entity actually
+render in the Part's 3D viewport when its Sketch isn't being actively
+edited (`expandPatternMirrorDtos`, the DTO-based sibling of the same
+expansion module, merged into `part_screen.dart`'s own geometry-refresh
+pipeline); and made a patterned/mirrored entity selectable (as its whole
+owning instance, never an individual derived copy) inside the sketch
+editor, with "Edit Pattern"/"Delete Pattern" ribbon actions once selected.
 
 **Design revisions found while implementing, not anticipated by §2.9's
 original v1 write-up:**
@@ -1435,14 +1455,15 @@ original v1 write-up:**
   `adoptSketch` alongside every other entity collection) so its derived
   ghosts keep rendering - and stay associative - after the session that
   created it ends, not just during live preview.
-- **Explicit v1 non-goals, matching §2.9's own**: an individual instance
-  can't be independently edited/deleted/dimensioned (only its whole
-  Pattern/Mirror's own parameters, via the CRUD endpoints already shipped -
-  no client re-edit UI was built for reopening an existing instance's own
-  fields in this pass, a natural, cheap fast-follow); circular/two-
-  direction sketch patterns, skip-instances, and a Body-edge (from a
-  sibling 3D Body) as a direction/mirror-line source are all deferred, per
-  the scope-narrowing note above.
+- **Explicit v1 non-goals, matching §2.9's own**: an individual *derived
+  copy* can't be independently edited/deleted/dimensioned - only its whole
+  owning Pattern/Mirror instance can (select any one of its copies in the
+  sketch editor, then "Edit Pattern"/"Delete Pattern" - added in the same-
+  day on-device-feedback follow-up round, along with two-direction pattern
+  support; both were originally deferred here, see that round's own
+  write-up above and in `docs/status.md`). Still deferred: circular sketch
+  patterns, skip-instances, and a Body-edge (from a sibling 3D Body) as a
+  direction/mirror-line source, per the scope-narrowing note above.
 - **Complexity/risk**: medium-high, as scoped - architecturally simpler
   than it first looked (no solver/DOF changes), but `detect_profile`'s own
   core wire-assembly logic genuinely needed real care: the full pre-

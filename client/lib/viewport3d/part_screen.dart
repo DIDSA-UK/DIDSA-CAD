@@ -3343,12 +3343,27 @@ class _PartScreenState extends State<PartScreen> {
       try {
         final basis = await _sketchPlaneBasisFor(feature);
         if (basis == null) continue;
-        final points = await _sketchApi.listPoints(sketchId);
-        final lines = await _sketchApi.listLines(sketchId);
-        final circles = await _sketchApi.listCircles(sketchId);
-        final arcs = await _sketchApi.listArcs(sketchId);
+        final rawPoints = await _sketchApi.listPoints(sketchId);
+        final rawLines = await _sketchApi.listLines(sketchId);
+        final rawCircles = await _sketchApi.listCircles(sketchId);
+        final rawArcs = await _sketchApi.listArcs(sketchId);
         final ellipses = await _sketchApi.listEllipses(sketchId);
         final splines = await _sketchApi.listSplines(sketchId);
+        // On-device feedback ("the patterned entity is not visible in the
+        // sketch when viewed in the 3d viewport"): merge every committed
+        // Pattern/Mirror instance's own derived (synthetic-id) copies in
+        // before converting to 3D geometry - see expandPatternMirrorDtos's
+        // own doc comment.
+        final patternInstances = await _sketchApi.listPatternInstances(sketchId);
+        final mirrorInstances = await _sketchApi.listMirrorInstances(sketchId);
+        final (points, lines, circles, arcs) = expandPatternMirrorDtos(
+          points: rawPoints,
+          lines: rawLines,
+          circles: rawCircles,
+          arcs: rawArcs,
+          patternInstances: patternInstances,
+          mirrorInstances: mirrorInstances,
+        );
         updatedLines[feature.id] = lines;
         final geometry = sketchGeometry3DFrom(
           basis: basis,

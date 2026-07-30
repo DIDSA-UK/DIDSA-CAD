@@ -1392,6 +1392,11 @@ class _SketchScreenState extends State<SketchScreen> {
         SelectionKind.ellipse => SelectionEntityKind.sketchEllipse,
         SelectionKind.spline => SelectionEntityKind.sketchSpline,
         SelectionKind.constraint || SelectionKind.text => null,
+        // A Pattern/Mirror instance has no real 3D hit-test/highlight of
+        // its own yet either (see this method's own doc comment) -
+        // Select-mode's own picking is 2D-canvas-only for now, per
+        // `SketchController._patternMirrorEntityAt`'s own doc comment.
+        SelectionKind.patternInstance || SelectionKind.mirrorInstance => null,
       };
 
   /// Sketcher restructure Phase 2: [PartViewport.onSketchPlaneTap]'s

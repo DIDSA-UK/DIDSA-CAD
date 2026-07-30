@@ -7,6 +7,7 @@ import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart' show MeshDto;
 import '../api/sketch_api_client.dart';
+import '../sketch/pattern_mirror_expansion.dart';
 import 'mesh_geometry.dart' show vertexMarkerSegments;
 import 'reference_planes.dart';
 
@@ -377,6 +378,151 @@ bool sketchGeometry3DEquals(SketchGeometry3D a, SketchGeometry3D b) {
       setEquals(a.constructionIds, b.constructionIds) &&
       setEquals(a.hiddenPointIds, b.hiddenPointIds) &&
       a.originPointId == b.originPointId;
+}
+
+/// On-device feedback ("the patterned entity is not visible in the sketch
+/// when viewed in the 3d viewport"): [points]/[lines]/[circles]/[arcs],
+/// each with every one of [patternInstances]'/[mirrorInstances]' own
+/// derived (synthetic-id) copies appended - shares `pattern_mirror_
+/// expansion.dart`'s id/point/welding scheme with the 2D sketcher's own
+/// consumers (`SketchController.committedPatternMirrorExpansion`,
+/// `sketch_canvas.dart`'s `_addLoopBoundary`), just working off the raw
+/// API DTOs `part_screen.dart`'s `_refreshSketchGeometries` already has on
+/// hand instead of a live `SketchController`'s state. A no-op (returns the
+/// inputs unchanged) when both instance lists are empty, the overwhelmingly
+/// common case - no reason to allocate new lists for every Sketch that has
+/// no Pattern/Mirror at all.
+///
+/// Pattern/Mirror never produces a synthetic Ellipse or Spline (see
+/// `PatternMirrorEntityKind` - only Line/Circle/Arc are ever a source), so
+/// [ellipses]/[splines] pass straight through untouched; callers still
+/// merge them into [sketchGeometry3DFrom] directly.
+(List<PointDto>, List<LineDto>, List<CircleDto>, List<ArcDto>) expandPatternMirrorDtos({
+  required List<PointDto> points,
+  required List<LineDto> lines,
+  required List<CircleDto> circles,
+  required List<ArcDto> arcs,
+  required List<SketchPatternInstanceDto> patternInstances,
+  required List<SketchMirrorInstanceDto> mirrorInstances,
+}) {
+  if (patternInstances.isEmpty && mirrorInstances.isEmpty) {
+    return (points, lines, circles, arcs);
+  }
+
+  final pointsMap = <String, (double, double)>{for (final p in points) p.id: (p.x, p.y)};
+  final entitiesMap = <String, PatternMirrorSourceEntity>{
+    for (final line in lines)
+      line.id: PatternMirrorSourceEntity(
+        id: line.id,
+        kind: PatternMirrorEntityKind.line,
+        construction: line.construction,
+        startPointId: line.startPointId,
+        endPointId: line.endPointId,
+      ),
+    for (final circle in circles)
+      circle.id: PatternMirrorSourceEntity(
+        id: circle.id,
+        kind: PatternMirrorEntityKind.circle,
+        construction: circle.construction,
+        centerPointId: circle.centerPointId,
+        startPointId: circle.radiusPointId,
+      ),
+    for (final arc in arcs)
+      arc.id: PatternMirrorSourceEntity(
+        id: arc.id,
+        kind: PatternMirrorEntityKind.arc,
+        construction: arc.construction,
+        centerPointId: arc.centerPointId,
+        startPointId: arc.startPointId,
+        endPointId: arc.endPointId,
+      ),
+  };
+
+  PatternMirrorDirection toDirection(SketchPatternDirectionDto dto) =>
+      PatternMirrorDirection(lineId: dto.lineId, fixedAxis: dto.fixedAxis);
+  PatternMirrorDirection? toDirectionOrNull(SketchPatternDirectionDto? dto) => dto == null ? null : toDirection(dto);
+
+  final expansion = expandPatternAndMirrorInstances(
+    points: pointsMap,
+    entities: entitiesMap,
+    patternInstances: [
+      for (final dto in patternInstances)
+        PatternMirrorPatternInstance(
+          id: dto.id,
+          sourceEntityIds: dto.sourceEntityIds,
+          direction1: toDirection(dto.direction1),
+          count1: dto.count1,
+          spacing1: dto.spacing1,
+          reverse1: dto.reverse1,
+          direction2: toDirectionOrNull(dto.direction2),
+          count2: dto.count2,
+          spacing2: dto.spacing2,
+          reverse2: dto.reverse2,
+        ),
+    ],
+    mirrorInstances: [
+      for (final dto in mirrorInstances)
+        PatternMirrorMirrorInstance(id: dto.id, sourceEntityIds: dto.sourceEntityIds, mirrorLineId: dto.mirrorLineId),
+    ],
+  );
+  if (expansion.isEmpty) return (points, lines, circles, arcs);
+
+  (double, double)? resolvePoint(String id) => pointsMap[id] ?? expansion.points[id];
+
+  final mergedPoints = [
+    ...points,
+    for (final entry in expansion.points.entries) PointDto(id: entry.key, x: entry.value.$1, y: entry.value.$2),
+  ];
+  final mergedLines = [...lines];
+  final mergedCircles = [...circles];
+  final mergedArcs = [...arcs];
+
+  for (final entity in expansion.entities) {
+    switch (entity.kind) {
+      case PatternMirrorEntityKind.line:
+        final start = resolvePoint(entity.startPointId);
+        final end = resolvePoint(entity.endPointId);
+        if (start == null || end == null) continue;
+        final dx = end.$1 - start.$1;
+        final dy = end.$2 - start.$2;
+        mergedLines.add(LineDto(
+          id: entity.id,
+          startPointId: entity.startPointId,
+          endPointId: entity.endPointId,
+          length: math.sqrt(dx * dx + dy * dy),
+          construction: entity.construction,
+        ));
+      case PatternMirrorEntityKind.circle:
+        final center = resolvePoint(entity.centerPointId!);
+        final edge = resolvePoint(entity.startPointId);
+        if (center == null || edge == null) continue;
+        final dx = edge.$1 - center.$1;
+        final dy = edge.$2 - center.$2;
+        mergedCircles.add(CircleDto(
+          id: entity.id,
+          centerPointId: entity.centerPointId!,
+          radiusPointId: entity.startPointId,
+          radius: math.sqrt(dx * dx + dy * dy),
+          construction: entity.construction,
+        ));
+      case PatternMirrorEntityKind.arc:
+        final center = resolvePoint(entity.centerPointId!);
+        final start = resolvePoint(entity.startPointId);
+        if (center == null || start == null) continue;
+        final dx = start.$1 - center.$1;
+        final dy = start.$2 - center.$2;
+        mergedArcs.add(ArcDto(
+          id: entity.id,
+          centerPointId: entity.centerPointId!,
+          startPointId: entity.startPointId,
+          endPointId: entity.endPointId,
+          radius: math.sqrt(dx * dx + dy * dy),
+          construction: entity.construction,
+        ));
+    }
+  }
+
+  return (mergedPoints, mergedLines, mergedCircles, mergedArcs);
 }
 
 /// Builds [SketchGeometry3D] from a Sketch's raw DTOs - resolving each

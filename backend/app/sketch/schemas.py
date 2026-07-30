@@ -1047,32 +1047,58 @@ class SketchPatternDirectionSchema(BaseModel):
 
 
 class SketchPatternInstanceCreate(BaseModel):
+    """On-device feedback ("allow pattern in two directions, check body
+    pattern tool for UX"): `direction_2`/`count_2`/`spacing_2`/`reverse_2`
+    mirror `app.document.schemas` `PatternFeatureCreate`'s own optional
+    second-direction shape - `direction_1`/`count_1`/`spacing_1` required,
+    `direction_2` required only once `count_2 > 1` (validated by `Sketch.
+    add_pattern_instance`, not here - same "router/model split" convention
+    every other cross-field Pattern/Mirror validation in this codebase
+    already uses)."""
+
     source_entity_ids: list[str]
-    direction: SketchPatternDirectionSchema
-    count: int
-    spacing: float
-    reverse: bool = False
+    direction_1: SketchPatternDirectionSchema
+    count_1: int
+    spacing_1: float
+    reverse_1: bool = False
+    direction_2: SketchPatternDirectionSchema | None = None
+    count_2: int = 1
+    spacing_2: float = 0.0
+    reverse_2: bool = False
 
 
 class SketchPatternInstanceUpdate(BaseModel):
     """PATCH semantics: every field is optional and, when omitted, leaves
     the instance's current value unchanged - mirrors `LineUpdate`/
-    `CircleUpdate`'s own convention."""
+    `CircleUpdate`'s own convention. `clear_direction_2` is the explicit
+    "unset direction_2 entirely" signal (mirrors `Sketch.update_pattern_
+    instance`'s own omitted-vs-explicitly-cleared split, the same
+    convention `PatternFeatureUpdate.skip_indices` already established for
+    a field `None` alone can't disambiguate)."""
 
     source_entity_ids: list[str] | None = None
-    direction: SketchPatternDirectionSchema | None = None
-    count: int | None = None
-    spacing: float | None = None
-    reverse: bool | None = None
+    direction_1: SketchPatternDirectionSchema | None = None
+    count_1: int | None = None
+    spacing_1: float | None = None
+    reverse_1: bool | None = None
+    direction_2: SketchPatternDirectionSchema | None = None
+    clear_direction_2: bool = False
+    count_2: int | None = None
+    spacing_2: float | None = None
+    reverse_2: bool | None = None
 
 
 class SketchPatternInstanceResponse(BaseModel):
     id: str
     source_entity_ids: list[str]
-    direction: SketchPatternDirectionSchema
-    count: int
-    spacing: float
-    reverse: bool = False
+    direction_1: SketchPatternDirectionSchema
+    count_1: int
+    spacing_1: float
+    reverse_1: bool = False
+    direction_2: SketchPatternDirectionSchema | None = None
+    count_2: int = 1
+    spacing_2: float = 0.0
+    reverse_2: bool = False
 
 
 class SketchMirrorInstanceCreate(BaseModel):

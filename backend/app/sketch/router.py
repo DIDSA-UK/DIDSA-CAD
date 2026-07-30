@@ -1655,10 +1655,14 @@ def _pattern_instance_response(instance: SketchPatternInstance) -> SketchPattern
     return SketchPatternInstanceResponse(
         id=instance.id,
         source_entity_ids=instance.source_entity_ids,
-        direction=_pattern_direction_schema(instance.direction),
-        count=instance.count,
-        spacing=instance.spacing,
-        reverse=instance.reverse,
+        direction_1=_pattern_direction_schema(instance.direction_1),
+        count_1=instance.count_1,
+        spacing_1=instance.spacing_1,
+        reverse_1=instance.reverse_1,
+        direction_2=_pattern_direction_schema(instance.direction_2) if instance.direction_2 is not None else None,
+        count_2=instance.count_2,
+        spacing_2=instance.spacing_2,
+        reverse_2=instance.reverse_2,
     )
 
 
@@ -1703,10 +1707,16 @@ def create_pattern_instance(sketch_id: str, payload: SketchPatternInstanceCreate
     try:
         instance = sketch.add_pattern_instance(
             payload.source_entity_ids,
-            _pattern_direction_from_schema(payload.direction),
-            payload.count,
-            payload.spacing,
-            reverse=payload.reverse,
+            _pattern_direction_from_schema(payload.direction_1),
+            payload.count_1,
+            payload.spacing_1,
+            reverse_1=payload.reverse_1,
+            direction_2=(
+                _pattern_direction_from_schema(payload.direction_2) if payload.direction_2 is not None else None
+            ),
+            count_2=payload.count_2,
+            spacing_2=payload.spacing_2,
+            reverse_2=payload.reverse_2,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"Entity not found: {exc}") from exc
@@ -1730,12 +1740,19 @@ def update_pattern_instance(
         instance = sketch.update_pattern_instance(
             instance_id,
             source_entity_ids=payload.source_entity_ids,
-            direction=(
-                _pattern_direction_from_schema(payload.direction) if payload.direction is not None else None
+            direction_1=(
+                _pattern_direction_from_schema(payload.direction_1) if payload.direction_1 is not None else None
             ),
-            count=payload.count,
-            spacing=payload.spacing,
-            reverse=payload.reverse,
+            count_1=payload.count_1,
+            spacing_1=payload.spacing_1,
+            reverse_1=payload.reverse_1,
+            direction_2=(
+                _pattern_direction_from_schema(payload.direction_2) if payload.direction_2 is not None else None
+            ),
+            clear_direction_2=payload.clear_direction_2,
+            count_2=payload.count_2,
+            spacing_2=payload.spacing_2,
+            reverse_2=payload.reverse_2,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"Entity not found: {exc}") from exc

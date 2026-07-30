@@ -1195,27 +1195,41 @@ class SketchPatternDirectionDto {
 class SketchPatternInstanceDto {
   final String id;
   final List<String> sourceEntityIds;
-  final SketchPatternDirectionDto direction;
-  final int count;
-  final double spacing;
-  final bool reverse;
+  final SketchPatternDirectionDto direction1;
+  final int count1;
+  final double spacing1;
+  final bool reverse1;
+  final SketchPatternDirectionDto? direction2;
+  final int count2;
+  final double spacing2;
+  final bool reverse2;
 
   SketchPatternInstanceDto({
     required this.id,
     required this.sourceEntityIds,
-    required this.direction,
-    required this.count,
-    required this.spacing,
-    this.reverse = false,
+    required this.direction1,
+    required this.count1,
+    required this.spacing1,
+    this.reverse1 = false,
+    this.direction2,
+    this.count2 = 1,
+    this.spacing2 = 0.0,
+    this.reverse2 = false,
   });
 
   factory SketchPatternInstanceDto.fromJson(Map<String, dynamic> json) => SketchPatternInstanceDto(
         id: json['id'] as String,
         sourceEntityIds: (json['source_entity_ids'] as List<dynamic>).map((e) => e as String).toList(),
-        direction: SketchPatternDirectionDto.fromJson(json['direction'] as Map<String, dynamic>),
-        count: json['count'] as int,
-        spacing: (json['spacing'] as num).toDouble(),
-        reverse: json['reverse'] as bool? ?? false,
+        direction1: SketchPatternDirectionDto.fromJson(json['direction_1'] as Map<String, dynamic>),
+        count1: json['count_1'] as int,
+        spacing1: (json['spacing_1'] as num).toDouble(),
+        reverse1: json['reverse_1'] as bool? ?? false,
+        direction2: json['direction_2'] != null
+            ? SketchPatternDirectionDto.fromJson(json['direction_2'] as Map<String, dynamic>)
+            : null,
+        count2: json['count_2'] as int? ?? 1,
+        spacing2: (json['spacing_2'] as num?)?.toDouble() ?? 0.0,
+        reverse2: json['reverse_2'] as bool? ?? false,
       );
 }
 
@@ -2558,10 +2572,14 @@ class SketchApiClient {
   Future<SketchPatternInstanceDto> createPatternInstance(
     String sketchId,
     List<String> sourceEntityIds,
-    SketchPatternDirectionDto direction,
-    int count,
-    double spacing, {
-    bool reverse = false,
+    SketchPatternDirectionDto direction1,
+    int count1,
+    double spacing1, {
+    bool reverse1 = false,
+    SketchPatternDirectionDto? direction2,
+    int count2 = 1,
+    double spacing2 = 0.0,
+    bool reverse2 = false,
   }) =>
       _send(
         () => _httpClient.post(
@@ -2569,10 +2587,14 @@ class SketchApiClient {
               headers: _headers,
               body: jsonEncode({
                 'source_entity_ids': sourceEntityIds,
-                'direction': direction.toJson(),
-                'count': count,
-                'spacing': spacing,
-                'reverse': reverse,
+                'direction_1': direction1.toJson(),
+                'count_1': count1,
+                'spacing_1': spacing1,
+                'reverse_1': reverse1,
+                if (direction2 != null) 'direction_2': direction2.toJson(),
+                'count_2': count2,
+                'spacing_2': spacing2,
+                'reverse_2': reverse2,
               }),
             ),
         (body) => SketchPatternInstanceDto.fromJson(body as Map<String, dynamic>),
@@ -2582,10 +2604,15 @@ class SketchApiClient {
     String sketchId,
     String instanceId, {
     List<String>? sourceEntityIds,
-    SketchPatternDirectionDto? direction,
-    int? count,
-    double? spacing,
-    bool? reverse,
+    SketchPatternDirectionDto? direction1,
+    int? count1,
+    double? spacing1,
+    bool? reverse1,
+    SketchPatternDirectionDto? direction2,
+    bool clearDirection2 = false,
+    int? count2,
+    double? spacing2,
+    bool? reverse2,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -2593,10 +2620,15 @@ class SketchApiClient {
               headers: _headers,
               body: jsonEncode({
                 if (sourceEntityIds != null) 'source_entity_ids': sourceEntityIds,
-                if (direction != null) 'direction': direction.toJson(),
-                if (count != null) 'count': count,
-                if (spacing != null) 'spacing': spacing,
-                if (reverse != null) 'reverse': reverse,
+                if (direction1 != null) 'direction_1': direction1.toJson(),
+                if (count1 != null) 'count_1': count1,
+                if (spacing1 != null) 'spacing_1': spacing1,
+                if (reverse1 != null) 'reverse_1': reverse1,
+                if (direction2 != null) 'direction_2': direction2.toJson(),
+                if (clearDirection2) 'clear_direction_2': true,
+                if (count2 != null) 'count_2': count2,
+                if (spacing2 != null) 'spacing_2': spacing2,
+                if (reverse2 != null) 'reverse_2': reverse2,
               }),
             ),
         (body) => SketchPatternInstanceDto.fromJson(body as Map<String, dynamic>),

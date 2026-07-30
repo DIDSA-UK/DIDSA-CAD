@@ -80,6 +80,10 @@ class SketchDimensionBar extends StatelessWidget {
       SelectionKind.spline => 'Spline',
       SelectionKind.text => 'Text',
       SelectionKind.constraint => 'Constraint',
+      // Never actually reachable - Dimension mode's own selection never
+      // includes a Pattern/Mirror instance.
+      SelectionKind.patternInstance => 'Pattern',
+      SelectionKind.mirrorInstance => 'Mirror',
     };
   }
 }

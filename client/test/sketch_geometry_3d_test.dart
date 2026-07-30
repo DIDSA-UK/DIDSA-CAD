@@ -378,4 +378,130 @@ void main() {
       expect(geometry.circlePolygons, isEmpty);
     });
   });
+
+  group('expandPatternMirrorDtos', () {
+    test('no Pattern/Mirror instances returns the exact same lists (identity, no new allocation)', () {
+      final points = [PointDto(id: 'p0', x: 0, y: 0)];
+      final lines = <LineDto>[];
+      final circles = <CircleDto>[];
+      final arcs = <ArcDto>[];
+
+      final (rp, rl, rc, ra) = expandPatternMirrorDtos(
+        points: points,
+        lines: lines,
+        circles: circles,
+        arcs: arcs,
+        patternInstances: const [],
+        mirrorInstances: const [],
+      );
+
+      expect(identical(rp, points), isTrue);
+      expect(identical(rl, lines), isTrue);
+      expect(identical(rc, circles), isTrue);
+      expect(identical(ra, arcs), isTrue);
+    });
+
+    test('on-device feedback fix: a committed Pattern instance\'s derived Line copy is merged in, '
+        'so it can be rendered in the Part\'s 3D viewport', () {
+      final points = [
+        PointDto(id: 'p0', x: 0, y: 0),
+        PointDto(id: 'p1', x: 5, y: 0),
+      ];
+      final lines = [LineDto(id: 'l0', startPointId: 'p0', endPointId: 'p1', length: 5)];
+
+      final (mergedPoints, mergedLines, mergedCircles, mergedArcs) = expandPatternMirrorDtos(
+        points: points,
+        lines: lines,
+        circles: const [],
+        arcs: const [],
+        patternInstances: [
+          SketchPatternInstanceDto(
+            id: 'pat0',
+            sourceEntityIds: ['l0'],
+            direction1: const SketchPatternDirectionDto.fixedAxis('x'),
+            count1: 2,
+            spacing1: 10.0,
+          ),
+        ],
+        mirrorInstances: const [],
+      );
+
+      expect(mergedCircles, isEmpty);
+      expect(mergedArcs, isEmpty);
+      // Original geometry untouched, plus exactly one derived copy (index 1
+      // - the seed at index 0 is never recreated).
+      expect(mergedLines.map((l) => l.id), ['l0', 'pat0#1#l0']);
+      final derived = mergedLines.last;
+      final start = mergedPoints.firstWhere((p) => p.id == derived.startPointId);
+      final end = mergedPoints.firstWhere((p) => p.id == derived.endPointId);
+      expect((start.x, start.y), (10.0, 0.0));
+      expect((end.x, end.y), (15.0, 0.0));
+    });
+
+    test('a Circle Pattern source produces a derived Circle DTO with the same radius', () {
+      final points = [
+        PointDto(id: 'c0', x: 0, y: 0),
+        PointDto(id: 'r0', x: 3, y: 0),
+      ];
+      final circles = [CircleDto(id: 'circ0', centerPointId: 'c0', radiusPointId: 'r0', radius: 3)];
+
+      final (mergedPoints, _, mergedCircles, __) = expandPatternMirrorDtos(
+        points: points,
+        lines: const [],
+        circles: circles,
+        arcs: const [],
+        patternInstances: [
+          SketchPatternInstanceDto(
+            id: 'pat1',
+            sourceEntityIds: ['circ0'],
+            direction1: const SketchPatternDirectionDto.fixedAxis('y'),
+            count1: 2,
+            spacing1: 4.0,
+          ),
+        ],
+        mirrorInstances: const [],
+      );
+
+      expect(mergedCircles.map((c) => c.id), ['circ0', 'pat1#1#circ0']);
+      final derived = mergedCircles.last;
+      expect(derived.radius, closeTo(3.0, 1e-9));
+      final center = mergedPoints.firstWhere((p) => p.id == derived.centerPointId);
+      expect((center.x, center.y), (0.0, 4.0));
+    });
+
+    test('a Mirror instance welds an axis-crossing endpoint back onto its own real Point id', () {
+      // A Line straddling the mirror axis (x=0): p0 at x=-2 (off-axis),
+      // p1 at x=0 (on-axis) - reflecting across the Y axis (mirrorLine from
+      // (0,-1) to (0,1)) leaves p1 exactly where it started.
+      final points = [
+        PointDto(id: 'p0', x: -2, y: 0),
+        PointDto(id: 'p1', x: 0, y: 0),
+        PointDto(id: 'axisA', x: 0, y: -1),
+        PointDto(id: 'axisB', x: 0, y: 1),
+      ];
+      final lines = [
+        LineDto(id: 'l0', startPointId: 'p0', endPointId: 'p1', length: 2),
+        LineDto(id: 'axisLine', startPointId: 'axisA', endPointId: 'axisB', length: 2),
+      ];
+
+      final (mergedPoints, mergedLines, _, __) = expandPatternMirrorDtos(
+        points: points,
+        lines: lines,
+        circles: const [],
+        arcs: const [],
+        patternInstances: const [],
+        mirrorInstances: [
+          SketchMirrorInstanceDto(id: 'mir0', sourceEntityIds: ['l0'], mirrorLineId: 'axisLine'),
+        ],
+      );
+
+      expect(mergedLines.map((l) => l.id), ['l0', 'axisLine', 'mir0#m#l0']);
+      final derived = mergedLines.last;
+      // The welded endpoint reuses p1's own real id - no new Point minted.
+      expect(derived.endPointId, 'p1');
+      final start = mergedPoints.firstWhere((p) => p.id == derived.startPointId);
+      expect((start.x, start.y), (2.0, 0.0));
+      expect(mergedPoints.where((p) => p.id == 'p1').length, 1);
+    });
+  });
 }

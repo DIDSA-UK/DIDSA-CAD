@@ -425,21 +425,48 @@ def _pattern_instance_to_dict(instance: SketchPatternInstance) -> dict:
     return {
         "id": instance.id,
         "source_entity_ids": instance.source_entity_ids,
-        "direction": _pattern_direction_to_dict(instance.direction),
-        "count": instance.count,
-        "spacing": instance.spacing,
-        "reverse": instance.reverse,
+        "direction_1": _pattern_direction_to_dict(instance.direction_1),
+        "count_1": instance.count_1,
+        "spacing_1": instance.spacing_1,
+        "reverse_1": instance.reverse_1,
+        # On-device feedback ("allow pattern in two directions"): additive,
+        # None-safe fields, same "second direction is inert unless count_2
+        # > 1" convention `app.document.native_format`'s own `PatternFeature`
+        # round-trip already established.
+        "direction_2": _pattern_direction_to_dict(instance.direction_2) if instance.direction_2 is not None else None,
+        "count_2": instance.count_2,
+        "spacing_2": instance.spacing_2,
+        "reverse_2": instance.reverse_2,
     }
 
 
 def _pattern_instance_from_dict(data: dict) -> SketchPatternInstance:
+    # `direction_1`/`count_1`/`spacing_1`/`reverse_1` fall back to this
+    # phase's own original, pre-two-direction key names ("direction"/
+    # "count"/"spacing"/"reverse") for a save made in the brief window
+    # between Phase 7's own initial ship and this on-device revision -
+    # every other field here is purely additive and needs no such fallback.
+    direction_1_data = data.get("direction_1", data.get("direction"))
+    if direction_1_data is None:
+        raise NativeFormatError("Missing required field: 'direction_1'")
+    count_1 = data.get("count_1", data.get("count"))
+    if count_1 is None:
+        raise NativeFormatError("Missing required field: 'count_1'")
+    spacing_1 = data.get("spacing_1", data.get("spacing"))
+    if spacing_1 is None:
+        raise NativeFormatError("Missing required field: 'spacing_1'")
+    direction_2 = data.get("direction_2")
     return SketchPatternInstance(
         id=_require(data, "id"),
         source_entity_ids=list(_require(data, "source_entity_ids")),
-        direction=_pattern_direction_from_dict(_require(data, "direction")),
-        count=_require(data, "count"),
-        spacing=_require(data, "spacing"),
-        reverse=data.get("reverse", False),
+        direction_1=_pattern_direction_from_dict(direction_1_data),
+        count_1=count_1,
+        spacing_1=spacing_1,
+        reverse_1=data.get("reverse_1", data.get("reverse", False)),
+        direction_2=_pattern_direction_from_dict(direction_2) if direction_2 is not None else None,
+        count_2=data.get("count_2", 1),
+        spacing_2=data.get("spacing_2", 0.0),
+        reverse_2=data.get("reverse_2", False),
     )
 
 
