@@ -6,9 +6,11 @@ import 'svg_icon.dart';
 /// [toggleVisibility] above the existing [delete]; Stage 9 adds [extrude]
 /// above both; Prompt F adds [revolve] alongside [extrude]; Sweep adds
 /// [sweep] alongside both; the sketcher-roadmap feedback round adds
-/// [redefineOrientation] - later stages can add further entries here
-/// without changing how the menu itself is shown or wired up.
-enum FeatureContextMenuAction { extrude, revolve, sweep, redefineOrientation, toggleVisibility, delete }
+/// [redefineOrientation]; Pattern/Mirror scoping's Phase 6 adds [pattern]
+/// (on-device feedback: "user should now be able to start pattern from
+/// long press a feature in the tree") - later stages can add further
+/// entries here without changing how the menu itself is shown or wired up.
+enum FeatureContextMenuAction { extrude, revolve, sweep, redefineOrientation, pattern, toggleVisibility, delete }
 
 /// Shows a bottom sheet of actions for a single Feature, opened by a
 /// long-press on its row in the tree. A bottom sheet - rather than wiring
@@ -40,6 +42,14 @@ enum FeatureContextMenuAction { extrude, revolve, sweep, redefineOrientation, to
 /// hamburger-menu sheet gave the user no 3D reference to judge flip/rotate
 /// against, so it's gone; this reuses the same 3D-viewport orientation
 /// confirm step a brand new Sketch already shows.
+///
+/// Pattern/Mirror scoping's Phase 6: [showPattern] gates the "Pattern"
+/// entry - shown for any Feature that mints a Body of its own (Extrude/
+/// Revolve/Sweep/Import/Mirror/Pattern, mirrors `PartScreen`'s own
+/// `_bodyProducingFeatureTypes`), always enabled when shown (no
+/// eligibility check needed - `source_feature_ids` resolves against
+/// whatever the Feature currently produces, at solve time, same as every
+/// other Feature-tree-as-selection-source use).
 Future<FeatureContextMenuAction?> showFeatureContextMenu(
   BuildContext context, {
   required bool isHidden,
@@ -53,6 +63,7 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
   bool canSweep = false,
   String? sweepDisabledReason,
   bool showRedefineOrientation = false,
+  bool showPattern = false,
 }) {
   return showModalBottomSheet<FeatureContextMenuAction>(
     context: context,
@@ -99,6 +110,12 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
                 leading: const Icon(Icons.rotate_90_degrees_ccw),
                 title: const Text('Sketch Orientation'),
                 onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.redefineOrientation),
+              ),
+            if (showPattern)
+              ListTile(
+                leading: const SvgIcon('assets/icons/feature/feature_pattern.svg'),
+                title: const Text('Pattern'),
+                onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.pattern),
               ),
             ListTile(
               leading: Icon(isHidden ? Icons.visibility : Icons.visibility_off),

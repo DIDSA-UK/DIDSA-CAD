@@ -86,4 +86,41 @@ void main() {
     await tester.tap(find.widgetWithIcon(IconButton, Icons.check));
     expect(confirmed, isTrue);
   });
+
+  group('Pattern/Mirror scoping Phase 6: extraActionLabel/onExtraAction', () {
+    testWidgets('null extraActionLabel (the default) shows no extra button', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: PickerRibbon(title: 'Pattern', tooltip: 'Select Body to Pattern', onCancel: () {}),
+          ),
+        ),
+      );
+
+      expect(find.text('Select Feature'), findsNothing);
+    });
+
+    testWidgets('a non-null extraActionLabel shows the extra button, and tapping it fires onExtraAction', (
+      tester,
+    ) async {
+      var tapped = false;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: PickerRibbon(
+              title: 'Pattern',
+              tooltip: 'Select Body to Pattern',
+              onCancel: () {},
+              extraActionLabel: 'Select Feature',
+              onExtraAction: () => tapped = true,
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text('Select Feature'), findsOneWidget);
+      await tester.tap(find.text('Select Feature'));
+      expect(tapped, isTrue);
+    });
+  });
 }
