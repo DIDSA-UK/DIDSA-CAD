@@ -1291,16 +1291,21 @@ Pattern.
 
 2D, sketch-entity-level, per §2.9.
 
-**Status: implemented (2026-07-30), plus a same-day on-device-feedback
-follow-up round — see `docs/status.md`'s two matching dated entries (the
-original implementation, and the follow-up) for the full write-up.**
-Verified for real: the full backend `pytest` suite (1163 tests as of the
-follow-up round: 1152 original + 11 new two-direction ones) against genuine
-`pythonocc-core`, and the full client `flutter test` suite (1058 tests as of
-the follow-up round) plus a clean `flutter analyze`, using freshly-
-bootstrapped local toolchains (micromamba + conda-forge for the backend, a
-`master`-channel Flutter SDK clone for the client, per every prior phase's
-own bootstrap).
+**Status: implemented (2026-07-30), plus four same-day on-device-feedback
+follow-up rounds — see `docs/status.md`'s matching dated entries (the
+original implementation, then each follow-up in turn) for the full
+write-up of each.** Verified for real throughout: the full backend
+`pytest` suite (1163 tests as of the two-direction-pattern round: 1152
+original + 11 new) against genuine `pythonocc-core`, and the full client
+`flutter test` suite (1070 tests as of the final round) plus a clean
+`flutter analyze` after every round, using freshly-bootstrapped local
+toolchains (micromamba + conda-forge for the backend, a `master`-channel
+Flutter SDK clone for the client, per every prior phase's own bootstrap).
+**Also confirmed working on a real Android device** (the user's own
+on-device test, after the fourth follow-up round) - more comprehensive
+on-device testing to follow later; every verification before that point
+was sandbox-only (tests + `flutter analyze`, no physical device available
+in-session).
 
 **Follow-up round (on-device feedback)**: fixed a Pattern/Mirror-toggle
 state-loss bug (switching operations mid-configuration silently dropped the
@@ -1320,6 +1325,39 @@ expansion module, merged into `part_screen.dart`'s own geometry-refresh
 pipeline); and made a patterned/mirrored entity selectable (as its whole
 owning instance, never an individual derived copy) inside the sketch
 editor, with "Edit Pattern"/"Delete Pattern" ribbon actions once selected.
+
+**Second follow-up round**: fixed the Pattern tool's own value bar
+silently failing to render at all after Confirming a selection - a layout
+bug (the shared bottom tool-bar area handed the newly-`ResizableToolPanel`-
+based bar unbounded height, which that widget's own `LayoutBuilder` can't
+tolerate) unrelated to the Pattern/Mirror feature's own logic, caught by a
+real widget test that reproduces the exact reported symptom against the
+pre-fix code.
+
+**Third follow-up round**: fixed `SketchController.hoveredEntity()` never
+consulting the same Pattern/Mirror fallback the actual tap-resolution
+already used (so a committed instance's own derived copy highlighted
+nothing on hover even though tapping it did select it - the reported
+"disconnect between dynamic highlight and what actually gets selected");
+fixed the canvas's own ghost painter never reflecting hover/selected state
+at all, unlike every real entity kind's own paint loop; fixed the sketch
+pattern bar's Count/Spacing fields using two different `InputDecoration`
+shapes (mismatched field heights, reported as visual misalignment).
+
+**Fourth follow-up round**: built real 3D ray-hit-testing/hover/selection
+for a committed Pattern/Mirror instance's own derived geometry in the
+embedded 3D (Orbit View) sketch editor - a wholly separate rendering/
+hit-test pipeline (`PartViewport`, GPU-based) from the flat 2D canvas the
+third round had already fixed, and a gap that had been explicitly
+documented (not silently missed) since the original implementation: new
+`SelectionEntityKind.sketchPatternMirrorInstance` +
+`hitTestSketchPatternMirrorInstances` (mirrors `hitTestSketchLines`'s own
+shape, just tagging each segment with its *owning instance's* id rather
+than a real entity id of its own), `SelectionFilterState.
+sketchPatternMirrorInstance` (Select-mode-only, mirroring
+`_patternMirrorEntityAt`'s own mode gate), and the matching
+`PartViewport`/`sketch_screen.dart` plumbing for hover/selected-highlight
+rendering.
 
 **Design revisions found while implementing, not anticipated by §2.9's
 original v1 write-up:**
@@ -1455,15 +1493,40 @@ original v1 write-up:**
   `adoptSketch` alongside every other entity collection) so its derived
   ghosts keep rendering - and stay associative - after the session that
   created it ends, not just during live preview.
-- **Explicit v1 non-goals, matching §2.9's own**: an individual *derived
+- **Explicit v1 non-goal, matching §2.9's own**: an individual *derived
   copy* can't be independently edited/deleted/dimensioned - only its whole
   owning Pattern/Mirror instance can (select any one of its copies in the
-  sketch editor, then "Edit Pattern"/"Delete Pattern" - added in the same-
-  day on-device-feedback follow-up round, along with two-direction pattern
-  support; both were originally deferred here, see that round's own
-  write-up above and in `docs/status.md`). Still deferred: circular sketch
-  patterns, skip-instances, and a Body-edge (from a sibling 3D Body) as a
-  direction/mirror-line source, per the scope-narrowing note above.
+  sketch editor, or - since the same-day on-device-feedback follow-up
+  round that also added the embedded-3D-view's own selection support - one
+  of its copies there too, then "Edit Pattern"/"Delete Pattern"). This one
+  is permanent by design, not a deferred-for-now gap: matches the 3D
+  `PatternFeature`/`MirrorFeature`'s own identical "the instance is the
+  unit of edit, never one copy" rule.
+- **Deliberately out of scope for v1 - not yet built, no fixed date**:
+  - **Circular sketch patterns** (rotate-about-a-point, matching the 3D
+    `PatternFeature`'s own Phase 2 → Phase 4 progression) - only linear
+    (translate along a fixed X/Y axis or an existing Line's own direction)
+    is supported. A natural, cheap future widening behind the identical
+    field/endpoint shapes already shipped (would add a `pattern_type`/
+    axis-point field the same way Phase 4 did for the 3D feature), not a
+    redesign - see the scope-narrowing note above for the full reasoning.
+  - **Skip-instances** (the 3D `PatternFeature`'s own Phase 3) - every
+    instance in the grid is always created; no way to omit specific
+    grid/index positions.
+  - **A Body edge (from a sibling 3D Body) as a Pattern direction or
+    Mirror's own mirror line source** - only an existing Sketch Line (real
+    or construction) or a fixed X/Y axis. A Sketch has no OCCT edges of
+    its own to reference this way in the first place (see the
+    scope-narrowing note above), so this would need a materially
+    different mechanism than the 3D feature's own `PatternDirectionRef.
+    edge_ref`, not just a widened field - not attempted, not scoped.
+  - **A committed instance's own three duplicate translate/reflect
+    implementations (backend, 2D-canvas client, embedded-3D-view client)
+    have never been investigated for unification** - see `docs/roadmap.md`'s
+    matching "Investigate unifying sketch-level Pattern/Mirror's three
+    duplicate translate/reflect implementations" entry for the full
+    reasoning; a code-quality/maintainability question, not a missing
+    user-facing capability.
 - **Complexity/risk**: medium-high, as scoped - architecturally simpler
   than it first looked (no solver/DOF changes), but `detect_profile`'s own
   core wire-assembly logic genuinely needed real care: the full pre-

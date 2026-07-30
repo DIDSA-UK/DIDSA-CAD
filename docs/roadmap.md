@@ -318,3 +318,28 @@ deliberately unbuilt along the way, not yet scoped further:
   `file_picker`'s existing Flutter API exposes. Real scope (new platform
   channel/native Kotlin code, not a `file_picker` config tweak), not yet
   designed or attempted.
+- **Investigate unifying sketch-level Pattern/Mirror's three duplicate
+  translate/reflect implementations.** Phase 7 (`docs/pattern-mirror-scope.md`)
+  and its on-device-feedback follow-up rounds (see `docs/status.md`'s
+  2026-07-30 entries) ended up with the identical 2D pattern/mirror
+  expansion math implemented three separate times: the backend
+  (`Sketch.expand_pattern_and_mirror_instances`, `app/sketch/models.py`),
+  the 2D sketch canvas's own client-side mirror
+  (`pattern_mirror_expansion.dart`'s `expandPatternAndMirrorInstances`,
+  consumed by `SketchController`), and - added for the embedded-3D (Orbit
+  View) sketch editor's own hit-testing - a third,
+  `hitTestSketchPatternMirrorInstances`/`_embeddedPatternMirrorGhostSegments`
+  path in `selection_hit_test.dart`/`sketch_screen.dart`. Each was a
+  deliberate, individually-justified instance of this codebase's existing
+  "accepted duplication" convention for live-preview math (matching how
+  `offsetPreviewGhosts` already duplicates real Offset logic client-side) -
+  not an oversight, but three copies of the same translate/reflect/welding
+  rules is more than that convention originally anticipated, and nothing
+  enforces they stay in sync if the math changes again. Worth a dedicated
+  investigation later (not attempted now): whether the two *client-side*
+  copies (2D canvas + embedded-3D) could share one Dart implementation
+  behind a thin per-consumer adapter, and whether that's worth the
+  refactor risk against a working, well-tested feature - the backend copy
+  almost certainly stays separate regardless (different language, and the
+  one authoritative source of truth `detect_profile`/wire-building must
+  use).
