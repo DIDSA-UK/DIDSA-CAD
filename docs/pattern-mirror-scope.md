@@ -1538,3 +1538,41 @@ scoping pass doesn't have to re-derive the reasoning from scratch.
   extracts into a standalone, reusable function. This is the one file
   where Phase 8 touches already-shipped logic rather than adding
   alongside it, so it's the phase's own primary risk surface.
+
+## 6. Carried-over notes (2026-07-30), not yet actioned
+
+Surfaced during the on-device feedback rounds that produced Phase 6 and
+its two follow-up fix rounds (see `docs/status.md`'s matching 2026-07-30
+entries). None of these block Phase 7/8 — recorded here so a future
+session doesn't have to rediscover them.
+
+- **Fillet/Chamfer share Mirror/Pattern's own "doesn't show up after
+  creation" bug.** `_confirmMirror`/`_confirmPattern` (`part_screen.dart`)
+  were fixed to explicitly call `_refreshFeatures()` on confirm, since
+  `_endRollback()` alone is a no-op for a brand-new creation flow (only
+  engaged when editing an *existing* Feature row). `_confirmFillet`/
+  `_confirmChamfer` have the exact same shape and the exact same latent
+  bug — not yet reported on-device, but real: a freshly-created Fillet or
+  Chamfer won't show up in the Build Tree until an unrelated later action
+  happens to refresh it. Extrude/Revolve/Sweep already call
+  `_refreshFeatures()` explicitly on confirm and don't have this problem.
+- **No on-device verification yet for any Phase 6 work or its two fix
+  rounds.** Everything has been verified via `flutter analyze`/`flutter
+  test` only — no phone has touched the sandbox sessions that did this
+  work. The `PickerRibbon` two-row/`Wrap` restructure (2026-07-30) is a
+  solid bet given the regression test now pinning it at a 320px surface
+  width, but it's exactly the kind of layout fix that already needed a
+  second pass once real on-device feedback came in — worth a real-device
+  glance before trusting it fully.
+- **Fake test backend (`client/test/part_screen_test.dart`'s
+  `_FakeDocumentBackend`) still has no `POST .../mirror-features`/
+  `.../pattern-features` handler**, only `PATCH` against an
+  already-seeded Feature (plus a `/mesh` fallback for a Feature-only-
+  seeded Pattern, added 2026-07-30, that returns the generic single-
+  placeholder mesh rather than resolving `source_feature_ids` for real).
+  This hasn't bitten correctness yet, but it means no `part_screen_test.dart`
+  test can exercise a brand-new Mirror/Pattern's *create* network call
+  end-to-end, only edits to a pre-seeded one. Phase 8's new
+  `tool_feature_id` creation path is exactly the kind of thing a real
+  create-flow test would catch that PATCH-only testing can't — worth
+  extending this fake if Phase 8 work runs into it.
