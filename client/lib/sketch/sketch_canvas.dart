@@ -3305,7 +3305,27 @@ class _SketchPainter extends CustomPainter {
       ..color = _drawGhostColor
       ..strokeWidth = 1.5
       ..style = PaintingStyle.stroke;
-    for (final ghost in controller.offsetPreviewGhosts) {
+    _paintLineCircleArcGhosts(canvas, controller.offsetPreviewGhosts, paint);
+  }
+
+  /// Sketcher-roadmap Phase 7 (2D Pattern/Mirror): [SketchController.
+  /// patternMirrorGhosts]' own painter - shares [_paintOffsetPreviewGhosts]'
+  /// exact Line/Circle/Arc-only rendering (both getters only ever produce
+  /// those three ghost kinds) via [_paintLineCircleArcGhosts]. Unlike Offset
+  /// (mode-exclusive with [SketchController.activeDrawGhost]), this paints
+  /// in every mode - it also covers already-committed instances, not just a
+  /// live in-progress one - so it's called unconditionally, not gated on
+  /// [SketchMode.pattern].
+  void _paintPatternMirrorGhosts(Canvas canvas) {
+    final paint = Paint()
+      ..color = _drawGhostColor
+      ..strokeWidth = 1.5
+      ..style = PaintingStyle.stroke;
+    _paintLineCircleArcGhosts(canvas, controller.patternMirrorGhosts, paint);
+  }
+
+  void _paintLineCircleArcGhosts(Canvas canvas, List<DrawGhost> ghosts, Paint paint) {
+    for (final ghost in ghosts) {
       switch (ghost) {
         case LineGhost g:
           _drawDashedLine(
@@ -4122,6 +4142,7 @@ class _SketchPainter extends CustomPainter {
     _paintAutoCoincidentIndicator(canvas);
     _paintActiveDrawGhost(canvas);
     _paintOffsetPreviewGhosts(canvas);
+    _paintPatternMirrorGhosts(canvas);
 
     // Bug-fix round: the cursor's sketch-space position is never itself
     // touched by panning/zooming (see SketchController's class doc

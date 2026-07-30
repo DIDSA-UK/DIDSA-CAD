@@ -118,7 +118,23 @@ def detect_profile(sketch: Sketch) -> ProfileDetectionResult:
     function - matching this module's existing "branch takes priority over
     open-chain" message-detail precedent for the fully-unusable case, the
     only case previously distinguishable.
+
+    Sketcher-roadmap Phase 7 (2D Pattern/Mirror): reassigns its own `sketch`
+    parameter to `sketch.expand_pattern_and_mirror_instances()` as its very
+    first step - a Sketch with no pattern/mirror instances gets back the
+    exact same object (see that method's own doc comment), so every
+    pre-Phase-7 sketch's detection is byte-for-byte unchanged; one with
+    instances gets a Sketch whose `points`/`entities` additionally carry
+    each instance's own transient, derived Line/Circle/Arc copies, which
+    the connectivity walk/standalone-loop logic below then treats exactly
+    like real geometry, no special-casing needed anywhere past this line.
+    Every `Profile` this returns therefore may reference synthetic point/
+    entity ids - callers that go on to build OCCT wires from the result
+    (`app.document.extrude`/`revolve`/`sweep`) must expand their own
+    `sketch` the same way before doing so, so those ids still resolve; see
+    each of those modules' own call sites.
     """
+    sketch = sketch.expand_pattern_and_mirror_instances()
     real_entities = [entity for entity in sketch.entities.values() if not entity.construction]
 
     # Two Points linked by a CoincidentConstraint (e.g. a corner "closed" by

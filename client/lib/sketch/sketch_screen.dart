@@ -28,6 +28,7 @@ import 'sketch_controller.dart';
 import 'sketch_convert_bar.dart';
 import 'sketch_dimension_bar.dart';
 import 'sketch_offset_bar.dart';
+import 'sketch_pattern_bar.dart';
 import 'sketch_ribbon.dart';
 import 'sketch_speed_dial.dart';
 import 'sketch_trim_bar.dart';
@@ -873,6 +874,9 @@ class _SketchScreenState extends State<SketchScreen> {
                           SketchMode.offset => _controller.offsetPreviewTargets != null
                               ? OffsetValueBar(controller: _controller)
                               : OffsetPickBar(controller: _controller),
+                          SketchMode.pattern => _controller.patternPreviewTargets != null
+                              ? PatternValueBar(controller: _controller)
+                              : PatternPickBar(controller: _controller),
                           SketchMode.trim => SketchTrimBar(controller: _controller),
                           SketchMode.convert => SketchConvertBar(controller: _controller),
                           _ => SketchConstructionMethodBar(controller: _controller),
@@ -1062,6 +1066,11 @@ class _SketchScreenState extends State<SketchScreen> {
                 _controller.mode == SketchMode.dimension ||
                 _controller.mode == SketchMode.convert ||
                 _controller.mode == SketchMode.offset ||
+                // Sketcher-roadmap Phase 7: Pattern/Mirror dispatches its
+                // own taps the same generic way Convert Entities/Offset do
+                // (see [SketchController._handlePatternTap]), so it gets
+                // this same orbit-view fix for free too.
+                _controller.mode == SketchMode.pattern ||
                 _dragModeActiveInOrbitView),
         onDrawCursorMoved: _handleDrawCursorMoved,
         onDrawCursorCommit: _handleEmbeddedDrawOrDragCommit,
@@ -1691,23 +1700,28 @@ class _SketchScreenState extends State<SketchScreen> {
     final basis = _effectiveOrbitBasis;
     if (basis == null) return const [];
     final ghost = _controller.activeDrawGhost;
-    if (ghost != null) {
-      return [
-        for (final polyline in ghostPolylines(ghost))
-          [for (final (x, y) in polyline) sketchPointToWorld(basis, x, y)],
-      ];
-    }
-    // On-device feedback ("in the offset tool, a ghost preview should be
-    // shown so the user knows which is positive and negative"):
-    // [SketchController.activeDrawGhost] is always null in
-    // [SketchMode.offset] (only Draw mode ever sets it) - reusing this
-    // same prop for [SketchController.offsetPreviewGhosts] instead of
-    // adding a parallel one costs nothing (the two are mutually exclusive
-    // by mode) and gets the offset preview the exact same rendering this
-    // draw-tool ghost already has.
+    final modeGhosts = ghost != null
+        ? [ghost]
+        : [
+            // On-device feedback ("in the offset tool, a ghost preview should
+            // be shown so the user knows which is positive and negative"):
+            // [SketchController.activeDrawGhost] is always null in
+            // [SketchMode.offset] (only Draw mode ever sets it) - reusing
+            // this same prop for [SketchController.offsetPreviewGhosts]
+            // instead of adding a parallel one costs nothing (the two are
+            // mutually exclusive by mode) and gets the offset preview the
+            // exact same rendering this draw-tool ghost already has.
+            ..._controller.offsetPreviewGhosts,
+          ];
+    // Sketcher-roadmap Phase 7 (2D Pattern/Mirror): unlike [activeDrawGhost]/
+    // [offsetPreviewGhosts] (mode-exclusive, at most one in-progress tool's
+    // own ghosts at a time), [patternMirrorGhosts] always renders - it
+    // covers every already-committed Pattern/Mirror instance's own derived
+    // geometry too, not just a live in-progress one, so it's additive
+    // rather than another branch of the same either/or.
     return [
-      for (final offsetGhost in _controller.offsetPreviewGhosts)
-        for (final polyline in ghostPolylines(offsetGhost))
+      for (final drawGhost in [...modeGhosts, ..._controller.patternMirrorGhosts])
+        for (final polyline in ghostPolylines(drawGhost))
           [for (final (x, y) in polyline) sketchPointToWorld(basis, x, y)],
     ];
   }
