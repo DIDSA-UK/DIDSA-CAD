@@ -239,6 +239,28 @@ class _FakeDocumentBackend {
       return _json(feature, 200);
     }
 
+    final filletPatchMatch =
+        RegExp(r'^/document/parts/part-1/fillet-features/([^/]+)$').firstMatch(path);
+    if (filletPatchMatch != null && method == 'PATCH') {
+      final featureId = filletPatchMatch.group(1);
+      final feature = features.firstWhere((f) => f['id'] == featureId, orElse: () => {});
+      if (feature.isEmpty) return http.Response('not found: feature', 404);
+      if (body.containsKey('edge_refs')) feature['edge_refs'] = body['edge_refs'];
+      if (body.containsKey('radius')) feature['radius'] = body['radius'];
+      return _json(feature, 200);
+    }
+
+    final chamferPatchMatch =
+        RegExp(r'^/document/parts/part-1/chamfer-features/([^/]+)$').firstMatch(path);
+    if (chamferPatchMatch != null && method == 'PATCH') {
+      final featureId = chamferPatchMatch.group(1);
+      final feature = features.firstWhere((f) => f['id'] == featureId, orElse: () => {});
+      if (feature.isEmpty) return http.Response('not found: feature', 404);
+      if (body.containsKey('edge_refs')) feature['edge_refs'] = body['edge_refs'];
+      if (body.containsKey('distance')) feature['distance'] = body['distance'];
+      return _json(feature, 200);
+    }
+
     final deleteMatch = RegExp(r'^/document/parts/part-1/features/([^/]+)$').firstMatch(path);
     if (deleteMatch != null && method == 'DELETE') {
       final featureId = deleteMatch.group(1);
@@ -1080,6 +1102,130 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
     expect(find.text('Pattern 1'), findsOneWidget);
+  });
+
+  testWidgets(
+      'Bug fix: confirming a Fillet edit re-fetches the Feature list, so it '
+      'still shows in the Build Tree afterward (identical latent gap to the '
+      'Pattern/Mirror "stopped showing in the feature tree" bug, carried '
+      'over to Fillet/Chamfer)', (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        {
+          'type': 'fillet',
+          'id': 'feature-2',
+          'edge_refs': [
+            {'body_id': 'placeholder', 'shape_type': 'edge', 'index': 0},
+          ],
+          'radius': 2.0,
+          'locked': false,
+        },
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('Fillet 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.text('Edit Fillet'), findsOneWidget);
+    // FilletPanel's own initState eager debounced update - see the Pattern
+    // regression test above for why this pump is needed here too.
+    await tester.pump(const Duration(milliseconds: 600));
+
+    final featuresGetCountBeforeConfirm = backend.featuresGetCount;
+
+    await tester.ensureVisible(find.widgetWithText(FilledButton, 'Confirm'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Confirm'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(backend.featuresGetCount, greaterThan(featuresGetCountBeforeConfirm));
+    expect(tester.takeException(), isNull);
+
+    // The tree still shows the Fillet, proving _features itself was
+    // actually updated with the fresh fetch's own result, not merely that
+    // a network call happened.
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.text('Fillet 1'), findsOneWidget);
+  });
+
+  testWidgets(
+      'Bug fix: confirming a Chamfer edit re-fetches the Feature list, so it '
+      'still shows in the Build Tree afterward (identical latent gap to the '
+      'Pattern/Mirror "stopped showing in the feature tree" bug, carried '
+      'over to Fillet/Chamfer)', (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        {
+          'type': 'chamfer',
+          'id': 'feature-2',
+          'edge_refs': [
+            {'body_id': 'placeholder', 'shape_type': 'edge', 'index': 0},
+          ],
+          'distance': 1.0,
+          'locked': false,
+        },
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('Chamfer 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.text('Edit Chamfer'), findsOneWidget);
+    // ChamferPanel's own initState eager debounced update - see the Pattern
+    // regression test above for why this pump is needed here too.
+    await tester.pump(const Duration(milliseconds: 600));
+
+    final featuresGetCountBeforeConfirm = backend.featuresGetCount;
+
+    await tester.ensureVisible(find.widgetWithText(FilledButton, 'Confirm'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Confirm'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(backend.featuresGetCount, greaterThan(featuresGetCountBeforeConfirm));
+    expect(tester.takeException(), isNull);
+
+    // The tree still shows the Chamfer, proving _features itself was
+    // actually updated with the fresh fetch's own result, not merely that
+    // a network call happened.
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.text('Chamfer 1'), findsOneWidget);
   });
 
   testWidgets(
