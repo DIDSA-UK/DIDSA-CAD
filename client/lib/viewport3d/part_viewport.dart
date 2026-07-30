@@ -79,6 +79,29 @@ class PartViewport extends StatefulWidget {
   /// instance triggers a full GPU geometry rebuild of every entry.
   final Map<String, SketchGeometry3D> sketchGeometries;
 
+  /// On-device feedback ("the patterned circle under the cursor is not
+  /// highlighted and will not select"): a committed Pattern/Mirror
+  /// instance's own derived (ghost) geometry, keyed by *owning instance*
+  /// id - deliberately not folded into [sketchGeometries] (which is keyed
+  /// by real entity id and shaped for [SketchGeometry3D]'s own per-kind
+  /// polyline/id lists), since a Pattern/Mirror instance's own several
+  /// derived copies share one id, never each getting their own the way a
+  /// real Sketch entity does - see `sketch_screen.dart`'s own
+  /// `_embeddedPatternMirrorGhostSegments` for how this is built (already
+  /// pre-tessellated/pre-split into individual segments) and
+  /// `selection_hit_test.dart`'s `hitTestSketchPatternMirrorInstances` for
+  /// how it's hit-tested. Empty (the default) hit-tests/highlights
+  /// nothing, matching every existing call site that hasn't opted in.
+  final Map<String, List<(vm.Vector3, vm.Vector3)>> patternMirrorGhostSegments;
+
+  /// The Feature id [patternMirrorGhostSegments]' own hits should be
+  /// tagged with (see [SelectionEntityRef.sketchFeatureId]) - mirrors
+  /// [sketchGeometries]' own per-entry keying, just as a single value
+  /// since [patternMirrorGhostSegments] only ever covers the one Sketch
+  /// currently being edited (never every Sketch in the whole Part the way
+  /// [sketchGeometries] does).
+  final String patternMirrorSketchFeatureId;
+
   /// P23 (2D-sketcher feature parity): per-entity constraint-status colour
   /// override, keyed by entity id (Point/Line/Circle/Arc/Ellipse/Spline id -
   /// see [buildSketchGeometryNode]'s own `entityColors` parameter, which
@@ -698,6 +721,8 @@ class PartViewport extends StatefulWidget {
     required this.onPlaneTap,
     required this.onBackgroundTap,
     this.sketchGeometries = const {},
+    this.patternMirrorGhostSegments = const {},
+    this.patternMirrorSketchFeatureId = '',
     this.sketchEntityColors = const {},
     this.originWorldPoint,
     this.createPlanes = const {},
@@ -1156,6 +1181,17 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (widget.sketchGeometries != oldWidget.sketchGeometries ||
         widget.sketchEntityColors != oldWidget.sketchEntityColors) {
       setState(_syncSketchNodes);
+    }
+    // On-device feedback ("the patterned circle under the cursor is not
+    // highlighted and will not select"): re-syncs the selected-instance
+    // highlight if its own geometry moved while already selected (e.g. a
+    // live-dragged source Point) - mirrors [sketchGeometries]'s own check
+    // above, just against [_syncSelectedEntityNodes] (the lightweight
+    // highlight-only resync) rather than [_syncSketchNodes]' full base-
+    // geometry rebuild, since this field never feeds any base rendering of
+    // its own (that's still [PartViewport.drawGhostPolylines], unchanged).
+    if (widget.patternMirrorGhostSegments != oldWidget.patternMirrorGhostSegments) {
+      setState(_syncSelectedEntityNodes);
     }
     if (widget.createPlanes != oldWidget.createPlanes ||
         widget.selectedCreatePlaneFeatureId != oldWidget.selectedCreatePlaneFeatureId ||
@@ -2346,6 +2382,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             viewportSize: _viewportSize,
             bodies: widget.bodies,
             sketchGeometries: widget.sketchGeometries,
+            patternMirrorGhostSegments: widget.patternMirrorGhostSegments,
+            patternMirrorSketchFeatureId: widget.patternMirrorSketchFeatureId,
             filter: widget.selectionFilter,
             facesOccludeOtherHits: widget.renderMode.showsFilledFaces && !widget.bodiesHidden,
             orthographicHalfHeight: _orthographicHalfHeightOf(camera),
@@ -2445,6 +2483,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             viewportSize: _viewportSize,
             bodies: widget.bodies,
             sketchGeometries: widget.sketchGeometries,
+            patternMirrorGhostSegments: widget.patternMirrorGhostSegments,
+            patternMirrorSketchFeatureId: widget.patternMirrorSketchFeatureId,
             filter: widget.selectionFilter,
             facesOccludeOtherHits: widget.renderMode.showsFilledFaces && !widget.bodiesHidden,
             orthographicHalfHeight: _orthographicHalfHeightOf(camera),
@@ -3088,6 +3128,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               }
             }
           }
+        case SelectionEntityKind.sketchPatternMirrorInstance:
+          edgeSegments.addAll(widget.patternMirrorGhostSegments[entity.sketchEntityId] ?? const []);
         case SelectionEntityKind.referencePlane:
         case SelectionEntityKind.createPlane:
           // C5: a selected plane's highlight is its own quad rendering
@@ -3257,6 +3299,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           createPlaneSize / 2,
           color,
         );
+      case SelectionEntityKind.sketchPatternMirrorInstance:
+        final segments = widget.patternMirrorGhostSegments[entity.sketchEntityId];
+        if (segments == null || segments.isEmpty) return null;
+        return buildMeshEdgesNode(segments, color: color, width: kHighlightEdgeStrokeWidth);
     }
   }
 

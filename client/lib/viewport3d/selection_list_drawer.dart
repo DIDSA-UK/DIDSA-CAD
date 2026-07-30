@@ -157,6 +157,12 @@ class SelectionListDrawer extends StatelessWidget {
       case SelectionEntityKind.referencePlane:
       case SelectionEntityKind.createPlane:
         return const SvgIcon('assets/icons/viewport/selection_plane.svg');
+      case SelectionEntityKind.sketchPatternMirrorInstance:
+        // Reuses the 3D Pattern feature's own glyph - the same fallback
+        // `sketch_ribbon.dart`'s own "Edit Pattern"/"Edit Mirror" chips
+        // already use for this identical concept on the 2D-canvas side, no
+        // dedicated icon exists for either.
+        return const SvgIcon('assets/icons/feature/feature_pattern.svg');
     }
   }
 
@@ -185,6 +191,13 @@ class SelectionListDrawer extends StatelessWidget {
       case SelectionEntityKind.referencePlane:
       case SelectionEntityKind.createPlane:
         return 'Plane';
+      case SelectionEntityKind.sketchPatternMirrorInstance:
+        // This drawer only ever sees a bare `SelectionEntityKind`, with no
+        // way to tell a Pattern instance from a Mirror one apart (unlike
+        // `sketch_ribbon.dart`'s own 2D-canvas equivalent, which checks the
+        // richer `SelectionKind` enum instead) - a generic label rather
+        // than guessing.
+        return 'Pattern/Mirror';
     }
   }
 

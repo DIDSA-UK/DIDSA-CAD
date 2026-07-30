@@ -71,6 +71,18 @@ enum SelectionEntityKind {
   sketchSpline,
   referencePlane,
   createPlane,
+
+  /// On-device feedback ("the patterned circle under the cursor is not
+  /// highlighted and will not select" - reported against the embedded 3D
+  /// (Orbit View) sketch editor, a separate rendering/hit-test pipeline
+  /// from `sketch_canvas.dart`'s own flat 2D canvas, which had already been
+  /// fixed for the identical complaint there): a committed Pattern/Mirror
+  /// instance's own derived (ghost) geometry, hit-tested and highlighted as
+  /// a single unit - [SelectionEntityRef.sketchEntityId] is the *owning
+  /// instance's* own id, never an individual derived copy's, mirroring
+  /// `SketchController._patternMirrorEntityAt`'s identical "whole owning
+  /// instance, never a copy" contract on the 2D-canvas side.
+  sketchPatternMirrorInstance,
 }
 
 /// Identifies one selectable mesh entity - a [SelectionEntityKind] plus the
@@ -160,7 +172,8 @@ class SelectionEntityRef {
         SelectionEntityKind.sketchCircle ||
         SelectionEntityKind.sketchArc ||
         SelectionEntityKind.sketchEllipse ||
-        SelectionEntityKind.sketchSpline =>
+        SelectionEntityKind.sketchSpline ||
+        SelectionEntityKind.sketchPatternMirrorInstance =>
           'SelectionEntityRef($kind, sketchFeatureId: $sketchFeatureId, $sketchEntityId)',
         SelectionEntityKind.referencePlane => 'SelectionEntityRef($kind, $referencePlaneKind)',
         SelectionEntityKind.createPlane => 'SelectionEntityRef($kind, planeFeatureId: $planeFeatureId)',
@@ -641,6 +654,53 @@ HoverHit? _hitTestSketchPolylines(
   return best;
 }
 
+/// On-device feedback ("the patterned circle under the cursor is not
+/// highlighted and will not select" - the embedded-3D-view report, distinct
+/// from `sketch_canvas.dart`'s own flat-2D-canvas fix for the identical
+/// complaint there): [hitTestSketchLines]'s own counterpart for a committed
+/// Pattern/Mirror instance's own derived (ghost) geometry. Unlike every
+/// other `hitTestSketchXxx` function above, [segments] is already flattened
+/// to individual straight hops by the caller (`sketch_screen.dart` - a
+/// Circle/Arc ghost tessellates into several, a Line ghost into exactly
+/// one, mirroring `sketch_geometry_3d.dart`'s own `circlePolygons`/
+/// `arcPolylines` convention) rather than one polyline per entity, since
+/// [ownerInstanceIds] tags each segment with its *owning instance's* own
+/// id - several segments (even across several different derived copies)
+/// legitimately share the same id, unlike every other kind here where ids
+/// are 1:1 with a real entity.
+HoverHit? hitTestSketchPatternMirrorInstances(
+  vm.Ray ray,
+  Size viewportSize,
+  String sketchFeatureId,
+  List<(vm.Vector3, vm.Vector3)> segments,
+  List<String> ownerInstanceIds, {
+  double radiusPixels = kSelectionHitRadiusPixels,
+  double? orthographicHalfHeight,
+}) {
+  final direction = ray.direction.normalized();
+  HoverHit? best;
+  for (var i = 0; i < segments.length; i++) {
+    final closest = _closestRaySegmentDistance(ray.origin, direction, segments[i].$1, segments[i].$2);
+    if (closest == null) continue;
+    final (t, worldDistance) = closest;
+    final pixelDistance = worldDistance /
+        _worldUnitsPerPixelAtDepth(t, viewportSize, orthographicHalfHeight: orthographicHalfHeight);
+    if (pixelDistance > radiusPixels) continue;
+    if (best == null || _isCloserHit(pixelDistance, t, best.pixelDistance!, best.rayT)) {
+      best = HoverHit(
+        entity: SelectionEntityRef(
+          kind: SelectionEntityKind.sketchPatternMirrorInstance,
+          sketchFeatureId: sketchFeatureId,
+          sketchEntityId: ownerInstanceIds[i],
+        ),
+        rayT: t,
+        pixelDistance: pixelDistance,
+      );
+    }
+  }
+  return best;
+}
+
 /// Möller-Trumbore ray-triangle intersection - returns the ray parameter
 /// `t` of the intersection, or null if [ray] misses the triangle (or hits
 /// only behind the camera/at the camera itself).
@@ -876,6 +936,15 @@ HoverHit? hitTestBodies({
   required Size viewportSize,
   required List<BodyMeshDto> bodies,
   Map<String, SketchGeometry3D> sketchGeometries = const {},
+  // On-device feedback ("the patterned circle under the cursor is not
+  // highlighted and will not select"): a committed Pattern/Mirror
+  // instance's own derived (ghost) geometry, keyed by owning instance id
+  // (never a real backend entity id, unlike every other map/list
+  // parameter here) - see [hitTestSketchPatternMirrorInstances]'s own doc
+  // comment for why this is pre-flattened to segments rather than
+  // [sketchGeometries]' own per-entity polyline shape.
+  Map<String, List<(vm.Vector3, vm.Vector3)>> patternMirrorGhostSegments = const {},
+  String patternMirrorSketchFeatureId = '',
   double radiusPixels = kSelectionHitRadiusPixels,
   double vertexRadiusPixels = kVertexSelectionHitRadiusPixels,
   SelectionFilterState filter = SelectionFilterState.defaults,
@@ -1031,6 +1100,39 @@ HoverHit? hitTestBodies({
       if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
         bestEdge = hit;
       }
+    }
+  }
+
+  // On-device feedback ("the patterned circle under the cursor is not
+  // highlighted and will not select"): ties with real Sketch Lines/
+  // Circles/Arcs at the same priority tier (bestEdge) - a Pattern/Mirror
+  // instance's own derived copy is exactly as tappable as a real entity,
+  // same as `SketchController._resolveSelectableAt`'s own real-geometry-
+  // vs-synthetic-fallback resolution never distinguishing them once real
+  // geometry has already had first refusal on the 2D-canvas side (here,
+  // both compete on nearest-pixel-distance directly instead, since this
+  // function has no separate "only once nothing else is near" fallback
+  // tier the way [SketchController.hoveredEntity] does).
+  if (filter.sketchPatternMirrorInstance && patternMirrorGhostSegments.isNotEmpty) {
+    final segments = <(vm.Vector3, vm.Vector3)>[];
+    final ownerIds = <String>[];
+    for (final entry in patternMirrorGhostSegments.entries) {
+      for (final segment in entry.value) {
+        segments.add(segment);
+        ownerIds.add(entry.key);
+      }
+    }
+    final hit = hitTestSketchPatternMirrorInstances(
+      ray,
+      viewportSize,
+      patternMirrorSketchFeatureId,
+      segments,
+      ownerIds,
+      radiusPixels: radiusPixels,
+      orthographicHalfHeight: orthographicHalfHeight,
+    );
+    if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
+      bestEdge = hit;
     }
   }
 
