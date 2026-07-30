@@ -1539,13 +1539,32 @@ original v1 write-up:**
 
 ### Phase 8 — Feature pattern and feature mirror (Cut/Boss into a shared target)
 
-**Status: scoped (2026-07-29), not started.** Per §2.11 — the
-Extrude/Revolve/Sweep-into-shared-target subset of Option B (§2.8),
-covering both Pattern and Mirror. Direct trigger: on-device follow-up
-noting that mirroring an asymmetric hole pattern into the *same* Body
-(rather than producing a second, independent mirrored Body) is a real,
-common use case with no correct path today — see §2.11's own "why
-`FUSE_INTO_ONE` doesn't cover this" reasoning.
+**Status: implemented (2026-07-30) — see `docs/status.md`'s matching
+dated entry for the full implementation/verification write-up.** Per
+§2.11 — the Extrude/Revolve/Sweep-into-shared-target subset of Option B
+(§2.8), covering both Pattern and Mirror. Direct trigger: on-device
+follow-up noting that mirroring an asymmetric hole pattern into the
+*same* Body (rather than producing a second, independent mirrored Body)
+is a real, common use case with no correct path today — see §2.11's own
+"why `FUSE_INTO_ONE` doesn't cover this" reasoning. Verified for real:
+the full backend `pytest` suite (1182 tests, including 19 new
+`tool_feature_id` ones across a new `test_stage_p_feature_pattern_
+mirror.py` and two native-format round-trip tests) against genuine
+`pythonocc-core`, and the full client `flutter test` suite (1077 tests,
+including 7 new `tool_feature_id`-mode ones) plus a clean `flutter
+analyze`, using freshly-bootstrapped local toolchains (micromamba +
+conda-forge for the backend, a `master`-channel Flutter SDK clone for
+the client, per every prior phase's own bootstrap).
+
+The client's own third seed-picking path landed as a long-press context-
+menu shortcut ("Pattern into Target"/"Mirror into Target" on an eligible
+Cut/Boss Feature row), rather than a mode toggle inside the existing
+panels — the exact UI shape §2.11 flagged as needing an on-device pass;
+this reuses the identical long-press-to-`configuring`/`pickingPlane`
+shortcut Phase 6's own "Pattern from Feature" entry already established,
+narrowed by a new client-side `_isEligibleToolFeature` check mirroring
+the backend's `tool_feature_qualifies` exactly. Not yet confirmed on a
+real device.
 
 - **Deliverable**: pick an eligible upstream Cut/Boss-into-target
   Feature (not a Body) as the seed; Pattern repeats its own cut/boss
@@ -1564,9 +1583,15 @@ common use case with no correct path today — see §2.11's own "why
   separate booleans); new `_tool_feature_dependency` graph edge; new
   `invalid_tool_feature_ref` validation.
 - **Client**: a third seed-picking path on both panels (Feature-tree
-  selection of an eligible Cut/Boss, rather than a Body/edge/plane pick)
-  — exact UI shape needs an on-device pass, not fully speculated in
-  §2.11.
+  selection of an eligible Cut/Boss, rather than a Body/edge/plane pick),
+  shipped as two new long-press context-menu entries ("Pattern into
+  Target"/"Mirror into Target"), gated on a new `_isEligibleToolFeature`
+  check computed client-side from the already-fetched Feature list (no
+  extra network round-trip). `MirrorPanel`/`PatternPanel` both gained a
+  `toolFeatureSummary` field replacing the ordinary merge-toggle/
+  sourceFeatureIds row with a single status line in this mode (`merge` is
+  forced to `fuseIntoOne` client-side too, matching the backend's own
+  rejection of `keepSeparate`).
 - **Complexity/risk**: medium-high, as scoped in §2.11 — the real risk
   is safely factoring `resolve_feature_tool_shape` out of already-shipped
   `compute_part_bodies` logic without regressing it (every existing

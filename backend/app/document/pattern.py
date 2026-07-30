@@ -20,6 +20,7 @@ import math
 
 from fastapi import HTTPException
 from OCC.Core.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
+from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
 from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform
 from OCC.Core.GeomAbs import GeomAbs_Circle, GeomAbs_Cylinder, GeomAbs_Line
 from OCC.Core.gp import gp_Ax1, gp_Dir, gp_Trsf, gp_Vec
@@ -27,7 +28,11 @@ from OCC.Core.TopoDS import TopoDS_Shape, topods
 
 from app.document.create_plane import resolve_sketch_basis
 from app.document.extrude import basis_point_to_world, compute_part_bodies, resolve_subshape_from_bodies
-from app.document.graph import body_ids_for_feature_id, sketch_feature_id_for_sketch
+from app.document.graph import (
+    body_ids_for_feature_id,
+    sketch_feature_id_for_sketch,
+    tool_feature_qualifies,
+)
 from app.document.models import (
     FixedAxis,
     Part,
@@ -455,15 +460,113 @@ def resolve_pattern_from_bodies(
     return result
 
 
+def _invalid_tool_feature_ref(tool_feature_id: str) -> HTTPException:
+    """Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
+    §2.11/§4): mirrors `app.document.mirror._invalid_tool_feature_ref`'s
+    identical shape - `tool_feature_id` doesn't currently resolve to a
+    qualifying Feature (missing, wrong type, or a disqualified Cut/Boss -
+    see `app.document.graph.tool_feature_qualifies`)."""
+    return HTTPException(
+        status_code=422, detail={"type": "invalid_tool_feature_ref", "feature_id": tool_feature_id}
+    )
+
+
+def resolve_pattern_tool_feature_from_bodies(
+    part: Part,
+    bodies: dict[str, TopoDS_Shape],
+    feature: PatternFeature,
+    excluded_feature_ids: frozenset[str],
+) -> tuple[str, TopoDS_Shape]:
+    """Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
+    §2.11/§4): `PatternFeature.tool_feature_id` mode - repeats the
+    referenced upstream Cut/Boss-into-target Feature's own standalone,
+    pre-boolean tool shape (`app.document.extrude.resolve_feature_tool_
+    shape`) `count - 1` times into the *same* shared target, rather than
+    `count` independent Body copies.
+
+    Index 0 is already baked into the target - the seed Cut/Boss already
+    ran once, earlier in feature order (this Feature can only reference an
+    upstream Feature) - so this reuses `_rectangular_instances`/`_circular_
+    instances` unchanged (passing the tool shape in as their own `source`
+    parameter) to compute exactly the *other* `count - 1` transformed tool
+    copies, `skip_indices` filtered the same way as the ordinary Body-seed
+    path. Every realized copy is unioned into one combined tool
+    (`BRepAlgoAPI_Fuse`), then a single `BRepAlgoAPI_Cut`/`BRepAlgoAPI_Fuse`
+    (matching the referenced Feature's own Cut/Boss mode) is applied
+    against the target's *current* shape - not `count - 1` separate
+    booleans, the same "union then one boolean" reasoning `app.document.
+    extrude._fuse_realized_instances` already uses for `MergeMode.FUSE_
+    INTO_ONE`.
+
+    Re-checks `tool_feature_qualifies` here for the same recompute-time
+    drift tolerance `app.document.mirror.resolve_mirror_tool_feature_from_
+    bodies`'s own identical check gives (see that function's own doc
+    comment for the full reasoning). v1 scope: exactly one target -
+    `target_body_ids[0]`. Returns `(target_body_id, new_shape)`, mirroring
+    that function's own return shape exactly."""
+    from app.document.extrude import resolve_feature_tool_shape
+
+    tool_feature_id = feature.tool_feature_id
+    assert tool_feature_id is not None
+
+    tool_feature = part.get_feature(tool_feature_id)
+    if not tool_feature_qualifies(tool_feature):
+        raise _invalid_tool_feature_ref(tool_feature_id)
+
+    result = resolve_feature_tool_shape(part, bodies, tool_feature_id, excluded_feature_ids)
+    if result is None:
+        raise _invalid_tool_feature_ref(tool_feature_id)
+    tool_shape, target_body_ids, is_cut = result
+    if not target_body_ids:
+        raise _invalid_tool_feature_ref(tool_feature_id)
+    target_id = target_body_ids[0]
+    if target_id not in bodies:
+        raise _invalid_tool_feature_ref(tool_feature_id)
+
+    if feature.pattern_type == PatternType.CIRCULAR:
+        instances = _circular_instances(
+            part, bodies, feature, tool_shape, tool_feature_id, excluded_feature_ids
+        )
+    else:
+        instances = _rectangular_instances(
+            part, bodies, feature, tool_shape, tool_feature_id, excluded_feature_ids
+        )
+
+    combined_tool: TopoDS_Shape | None = None
+    for shape in instances.values():
+        combined_tool = shape if combined_tool is None else BRepAlgoAPI_Fuse(combined_tool, shape).Shape()
+
+    if combined_tool is None:
+        # Every instance beyond index 0 was skipped (or count*count_2/
+        # count_angular collapsed to 1) - nothing new to apply; the target
+        # already reflects index 0's own effect, applied earlier in feature
+        # order, unchanged.
+        return target_id, bodies[target_id]
+
+    if is_cut:
+        new_shape = BRepAlgoAPI_Cut(bodies[target_id], combined_tool).Shape()
+    else:
+        new_shape = BRepAlgoAPI_Fuse(bodies[target_id], combined_tool).Shape()
+    return target_id, new_shape
+
+
 def resolve_pattern(
     part: Part, feature: PatternFeature, excluded_feature_ids: frozenset[str] = frozenset()
-) -> dict[str, dict[int, TopoDS_Shape]]:
+) -> dict[str, dict[int, TopoDS_Shape]] | tuple[str, TopoDS_Shape]:
     """Fresh entry point for the router's create/update validation -
     computes `bodies` *as if `feature` weren't in `part.features` yet*
     (excludes its own id in addition to whatever the caller already
     excludes), matching every other resolver's self-exclusion convention
     in this codebase (`app.document.mirror.resolve_mirror`, `app.document.
-    revolve.resolve_revolve`, ...)."""
+    revolve.resolve_revolve`, ...).
+
+    Phase 8 (§2.11): dispatches to `resolve_pattern_tool_feature_from_
+    bodies` when `feature.tool_feature_id` is set, mirroring `app.document.
+    mirror.resolve_mirror`'s own identical dispatch - see that function's
+    own doc comment for why the differing return shape is never an issue
+    for any of this function's own call sites."""
     all_excluded = excluded_feature_ids | {feature.id}
     bodies = compute_part_bodies(part, all_excluded)
+    if feature.tool_feature_id is not None:
+        return resolve_pattern_tool_feature_from_bodies(part, bodies, feature, all_excluded)
     return resolve_pattern_from_bodies(part, bodies, feature, all_excluded)

@@ -21,7 +21,12 @@ from app.document.extrude import (
     select_profiles,
 )
 from app.document.fillet import resolve_fillet
-from app.document.graph import base_feature_id, build_feature_graph, transitive_dependents
+from app.document.graph import (
+    base_feature_id,
+    build_feature_graph,
+    tool_feature_qualifies,
+    transitive_dependents,
+)
 from app.document.import_geometry import resolve_import
 from app.document.mesh import DEFAULT_MESH_QUALITY, MeshData, tessellate_shape
 from app.document.mesh_data import Triangle
@@ -363,6 +368,7 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             source_feature_ids=feature.source_feature_ids,
             mirror_plane=_plane_ref_to_schema(feature.mirror_plane),
             merge=feature.merge,
+            tool_feature_id=feature.tool_feature_id,
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
@@ -390,6 +396,7 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             reverse_angular=feature.reverse_angular,
             skip_indices=list(feature.skip_indices),
             merge=feature.merge,
+            tool_feature_id=feature.tool_feature_id,
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
@@ -508,7 +515,10 @@ def _validate_source_feature_ids(
 
 
 def _validate_mirror_source_body_ids(
-    part: Part, source_body_ids: list[str], source_feature_ids: list[str]
+    part: Part,
+    source_body_ids: list[str],
+    source_feature_ids: list[str],
+    tool_feature_id: str | None = None,
 ) -> None:
     """Pattern/Mirror scoping's Phase 1/6 (`docs/pattern-mirror-scope.md`
     §2.1/§2.8/§4): `source_body_ids` combined with `source_feature_ids`
@@ -528,8 +538,14 @@ def _validate_mirror_source_body_ids(
     `SweepFeature`/`ImportFeature` set `_validate_target_body_ids` still
     uses for Boss/Cut's own unrelated `target_body_ids` concept. Each
     `source_feature_ids` entry is validated by `_validate_source_feature_
-    ids`, sharing the identical accepted-type set."""
-    if not source_body_ids and not source_feature_ids:
+    ids`, sharing the identical accepted-type set.
+
+    Phase 8 (§2.11): the "at least one entry" requirement is skipped
+    entirely when `tool_feature_id` is set - that's the third, mutually-
+    exclusive seed-picking mode (`_validate_tool_feature_id`'s own job to
+    validate), so `source_body_ids`/`source_feature_ids` being empty here
+    is expected, not an error."""
+    if tool_feature_id is None and not source_body_ids and not source_feature_ids:
         raise HTTPException(
             status_code=422,
             detail="MirrorFeature requires at least one source_body_ids or source_feature_ids entry",
@@ -546,7 +562,10 @@ def _validate_mirror_source_body_ids(
 
 
 def _validate_pattern_source_body_ids(
-    part: Part, source_body_ids: list[str], source_feature_ids: list[str]
+    part: Part,
+    source_body_ids: list[str],
+    source_feature_ids: list[str],
+    tool_feature_id: str | None = None,
 ) -> None:
     """Pattern/Mirror scoping's Phase 2/6 (`docs/pattern-mirror-scope.md`
     §2.2/§4): `source_body_ids` combined with `source_feature_ids` (Phase 6)
@@ -556,8 +575,12 @@ def _validate_pattern_source_body_ids(
     `PatternFeature`'s own docstring for the full reasoning), including its
     identical Phase 6 widening of the accepted-producer-type set to
     `MirrorFeature`/`PatternFeature` too. Each `source_feature_ids` entry
-    is validated by `_validate_source_feature_ids`."""
-    if not source_body_ids and not source_feature_ids:
+    is validated by `_validate_source_feature_ids`.
+
+    Phase 8 (§2.11): mirrors `_validate_mirror_source_body_ids`'s own
+    identical `tool_feature_id` carve-out - the "at least one entry"
+    requirement is skipped when `tool_feature_id` is set."""
+    if tool_feature_id is None and not source_body_ids and not source_feature_ids:
         raise HTTPException(
             status_code=422,
             detail="PatternFeature requires at least one source_body_ids or source_feature_ids entry",
@@ -571,6 +594,69 @@ def _validate_pattern_source_body_ids(
                 f"{_PATTERN_MIRROR_SOURCE_FEATURE_TYPES_DESCRIPTION} in this Part",
             )
     _validate_source_feature_ids(part, source_feature_ids, "PatternFeature")
+
+
+def _invalid_tool_feature_ref(tool_feature_id: str) -> HTTPException:
+    """Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
+    §2.11/§4): the structured `invalid_tool_feature_ref` error - shared
+    shape with `app.document.mirror`/`app.document.pattern`'s own identical
+    private helpers (this codebase's established per-module duplication
+    convention for small, identically-shaped error constructors, same as
+    `missing_reference`'s several independent copies)."""
+    return HTTPException(
+        status_code=422, detail={"type": "invalid_tool_feature_ref", "feature_id": tool_feature_id}
+    )
+
+
+def _validate_tool_feature_id(
+    part: Part,
+    tool_feature_id: str | None,
+    source_body_ids: list[str],
+    source_feature_ids: list[str],
+    merge: MergeMode,
+    feature_type_name: str,
+) -> None:
+    """Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
+    §2.11/§4): `tool_feature_id` is a third, mutually-exclusive seed-
+    picking mode on both `MirrorFeature`/`PatternFeature` - a no-op when
+    `None` (every pre-Phase-8 payload). When set:
+    - `source_body_ids`/`source_feature_ids` must both be empty - the same
+      "exactly one of N fields" convention `PlaneRef`/`PatternDirectionRef`
+      already use, generalized here to "this field vs. the other two as a
+      group" rather than "exactly one of three siblings".
+    - `merge` must not be `KEEP_SEPARATE` (the type's own default) - there
+      is exactly one target by construction once `tool_feature_id` is set,
+      so "keep separate" has no referent (see `MirrorFeature`/
+      `PatternFeature`'s own docstrings) - rejected outright rather than
+      silently ignored, so a client can't fall into the "looks configured
+      but isn't" trap.
+    - `tool_feature_id` must resolve to a real Feature in this Part that
+      `app.document.graph.tool_feature_qualifies` (an Extrude/Revolve/Sweep
+      Feature in Cut mode, or Boss mode with a non-empty `target_body_ids`)
+      - the structural half of `invalid_tool_feature_ref`; the referential/
+      geometric half (does it currently resolve to a real tool shape/target
+      Body) is checked later by `resolve_mirror`/`resolve_pattern`'s own
+      eager-resolve-to-validate call, which raises the identical error for
+      drift after the fact (`app.document.mirror.resolve_mirror_tool_
+      feature_from_bodies`/`app.document.pattern.resolve_pattern_tool_
+      feature_from_bodies`)."""
+    if tool_feature_id is None:
+        return
+    if source_body_ids or source_feature_ids:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{feature_type_name} tool_feature_id is mutually exclusive with "
+            "source_body_ids/source_feature_ids",
+        )
+    if merge == MergeMode.KEEP_SEPARATE:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{feature_type_name} merge must not be KEEP_SEPARATE when tool_feature_id is set - "
+            "there is exactly one target by construction, so KEEP_SEPARATE has no referent",
+        )
+    tool_feature = part.get_feature(tool_feature_id)
+    if not tool_feature_qualifies(tool_feature):
+        raise _invalid_tool_feature_ref(tool_feature_id)
 
 
 def _validate_pattern_direction_ref(ref: PatternDirectionRef, field_name: str) -> None:
@@ -1945,14 +2031,18 @@ def create_mirror_feature(part_id: str, payload: MirrorFeatureCreate) -> MirrorF
     source_body_ids = list(payload.source_body_ids)
     source_feature_ids = list(payload.source_feature_ids)
     mirror_plane = _plane_ref_to_domain(payload.mirror_plane)
-    _validate_mirror_source_body_ids(part, source_body_ids, source_feature_ids)
+    _validate_mirror_source_body_ids(part, source_body_ids, source_feature_ids, payload.tool_feature_id)
     _validate_plane_ref(part, mirror_plane)
+    _validate_tool_feature_id(
+        part, payload.tool_feature_id, source_body_ids, source_feature_ids, payload.merge, "MirrorFeature"
+    )
     feature = MirrorFeature(
         id=str(uuid.uuid4()),
         source_body_ids=source_body_ids,
         mirror_plane=mirror_plane,
         source_feature_ids=source_feature_ids,
         merge=payload.merge,
+        tool_feature_id=payload.tool_feature_id,
     )
     resolve_mirror(part, feature)  # raises on an unresolvable reference; result unused here
     part.add_feature(feature)
@@ -1990,8 +2080,22 @@ def update_mirror_feature(
         else feature.mirror_plane
     )
     new_merge = payload.merge if payload.merge is not None else feature.merge
-    _validate_mirror_source_body_ids(part, new_source_body_ids, new_source_feature_ids)
+    # Phase 8 (§2.11): `tool_feature_id` follows the same omitted-vs-
+    # current convention `mirror_plane`/`direction_1`/`axis` already use on
+    # their own Update schemas - `None` (omitted) keeps whatever this
+    # Mirror already has; a real value switches into (or re-points within)
+    # tool_feature_id mode. There is deliberately no way to switch *out* of
+    # tool_feature_id mode via this endpoint (mirrors `PatternFeatureUpdate.
+    # pattern_type`'s own immutability - switching modes is delete+recreate,
+    # not an edit).
+    new_tool_feature_id = (
+        payload.tool_feature_id if payload.tool_feature_id is not None else feature.tool_feature_id
+    )
+    _validate_mirror_source_body_ids(part, new_source_body_ids, new_source_feature_ids, new_tool_feature_id)
     _validate_plane_ref(part, new_mirror_plane)
+    _validate_tool_feature_id(
+        part, new_tool_feature_id, new_source_body_ids, new_source_feature_ids, new_merge, "MirrorFeature"
+    )
 
     candidate = MirrorFeature(
         id=feature.id,
@@ -1999,6 +2103,7 @@ def update_mirror_feature(
         mirror_plane=new_mirror_plane,
         source_feature_ids=new_source_feature_ids,
         merge=new_merge,
+        tool_feature_id=new_tool_feature_id,
     )
     resolve_mirror(part, candidate)  # raises on an unresolvable reference
 
@@ -2006,6 +2111,7 @@ def update_mirror_feature(
     feature.mirror_plane = candidate.mirror_plane
     feature.source_feature_ids = candidate.source_feature_ids
     feature.merge = candidate.merge
+    feature.tool_feature_id = candidate.tool_feature_id
     return _feature_response(part, feature)
 
 
@@ -2028,7 +2134,7 @@ def create_pattern_feature(part_id: str, payload: PatternFeatureCreate) -> Patte
         _pattern_direction_ref_to_domain(payload.direction_2) if payload.direction_2 is not None else None
     )
     axis = _pattern_axis_ref_to_domain(payload.axis) if payload.axis is not None else None
-    _validate_pattern_source_body_ids(part, source_body_ids, source_feature_ids)
+    _validate_pattern_source_body_ids(part, source_body_ids, source_feature_ids, payload.tool_feature_id)
     _validate_pattern_payload(
         payload.pattern_type,
         direction_1,
@@ -2039,6 +2145,9 @@ def create_pattern_feature(part_id: str, payload: PatternFeatureCreate) -> Patte
         payload.count_angular,
         payload.angle_total,
         payload.skip_indices,
+    )
+    _validate_tool_feature_id(
+        part, payload.tool_feature_id, source_body_ids, source_feature_ids, payload.merge, "PatternFeature"
     )
 
     feature = PatternFeature(
@@ -2060,6 +2169,7 @@ def create_pattern_feature(part_id: str, payload: PatternFeatureCreate) -> Patte
         reverse_angular=payload.reverse_angular,
         skip_indices=list(payload.skip_indices),
         merge=payload.merge,
+        tool_feature_id=payload.tool_feature_id,
     )
     resolve_pattern(part, feature)  # raises on an unresolvable reference; result unused here
     part.add_feature(feature)
@@ -2122,8 +2232,15 @@ def update_pattern_feature(
         list(payload.skip_indices) if payload.skip_indices is not None else feature.skip_indices
     )
     new_merge = payload.merge if payload.merge is not None else feature.merge
+    # Phase 8 (§2.11): mirrors `update_mirror_feature`'s own identical
+    # omitted-vs-current convention - see that function's own doc comment.
+    new_tool_feature_id = (
+        payload.tool_feature_id if payload.tool_feature_id is not None else feature.tool_feature_id
+    )
 
-    _validate_pattern_source_body_ids(part, new_source_body_ids, new_source_feature_ids)
+    _validate_pattern_source_body_ids(
+        part, new_source_body_ids, new_source_feature_ids, new_tool_feature_id
+    )
     _validate_pattern_payload(
         feature.pattern_type,
         new_direction_1,
@@ -2134,6 +2251,9 @@ def update_pattern_feature(
         new_count_angular,
         new_angle_total,
         new_skip_indices,
+    )
+    _validate_tool_feature_id(
+        part, new_tool_feature_id, new_source_body_ids, new_source_feature_ids, new_merge, "PatternFeature"
     )
 
     candidate = PatternFeature(
@@ -2155,6 +2275,7 @@ def update_pattern_feature(
         reverse_angular=new_reverse_angular,
         skip_indices=new_skip_indices,
         merge=new_merge,
+        tool_feature_id=new_tool_feature_id,
     )
     resolve_pattern(part, candidate)  # raises on an unresolvable reference
 
@@ -2174,6 +2295,7 @@ def update_pattern_feature(
     feature.reverse_angular = candidate.reverse_angular
     feature.skip_indices = candidate.skip_indices
     feature.merge = candidate.merge
+    feature.tool_feature_id = candidate.tool_feature_id
     return _feature_response(part, feature)
 
 

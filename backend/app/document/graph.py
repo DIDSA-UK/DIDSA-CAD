@@ -36,6 +36,8 @@ from app.document.models import (
     ChamferFeature,
     CreatePlaneFeature,
     ExtrudeFeature,
+    ExtrudeType,
+    Feature,
     FilletFeature,
     MirrorFeature,
     Part,
@@ -45,8 +47,10 @@ from app.document.models import (
     PlaneRef,
     PlaneType,
     RevolveFeature,
+    RevolveMode,
     SketchFeature,
     SweepFeature,
+    SweepMode,
 )
 from app.sketch.store import all_sketches
 
@@ -155,6 +159,39 @@ def body_ids_for_feature_id(body_ids: Iterable[str], feature_id: str) -> list[st
     `missing_reference`-shaped error for that, keeping this helper itself
     OCCT-free and side-effect-free like every other lookup in this module."""
     return [bid for bid in body_ids if base_feature_id(bid) == feature_id]
+
+
+def tool_feature_qualifies(feature: Feature | None) -> bool:
+    """Pattern/Mirror Phase 8 (`docs/pattern-mirror-scope.md` §2.11/§4):
+    whether `feature` is an eligible `tool_feature_id` target - an Extrude/
+    Revolve/Sweep Feature in Cut mode, or Boss mode with a non-empty
+    `target_body_ids`. A targetless Boss has no "shared target" problem at
+    all (Option A's ordinary `source_body_ids`/`source_feature_ids` path
+    already copies it correctly as an independent Body - see §2.11's own
+    scope-boundary note), so it's deliberately excluded here even though
+    it's a perfectly valid Extrude/Revolve/Sweep Feature in every other
+    sense. Fillet/Chamfer (no standalone tool shape - §2.11's own reasoning
+    for why they stay out of this phase) and every non-body-producing
+    Feature type simply fall through to `False`.
+
+    Pure model-level check, no `bodies` accumulator needed - unlike
+    `app.document.extrude.resolve_feature_tool_shape`'s own geometry
+    resolution, this only inspects `feature`'s own persisted fields, so
+    both `app.document.router._validate_tool_feature_id`'s eager check and
+    `app.document.mirror`/`pattern`'s own recompute-time re-check (the same
+    "validate eagerly, tolerate drift at recompute" split every other
+    reference kind in this codebase already uses) can share this one
+    implementation. `None` (a `tool_feature_id` that doesn't currently
+    resolve to any Feature at all) is tolerated, returning `False` rather
+    than raising - callers already raise their own structured
+    `invalid_tool_feature_ref` for that."""
+    if isinstance(feature, ExtrudeFeature):
+        return feature.extrude_type == ExtrudeType.CUT or bool(feature.target_body_ids)
+    if isinstance(feature, RevolveFeature):
+        return feature.mode == RevolveMode.CUT or bool(feature.target_body_ids)
+    if isinstance(feature, SweepFeature):
+        return feature.mode == SweepMode.CUT or bool(feature.target_body_ids)
+    return False
 
 
 def sketch_feature_id_for_sketch(part: Part, sketch_id: str) -> str | None:
@@ -279,6 +316,13 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
     Body edge depends on that edge's owning Feature, a Sketch Line depends
     on its owning SketchFeature, a fixed world axis depends on nothing).
 
+    Pattern/Mirror Phase 8: a `MirrorFeature`/`PatternFeature` with `tool_
+    feature_id` set depends on that Feature directly (already a bare
+    Feature id, no `base_feature_id` mapping needed, mirroring `source_
+    feature_ids`' own identical treatment) - deleting the referenced Cut/
+    Boss must cascade-delete the Mirror/Pattern too, same reasoning as
+    every other reference kind here.
+
     B2: also the graph cascade delete walks (see `transitive_dependents`)
     - moved here from app.document.extrude alongside `base_feature_id` for
     the same OCCT-free-testability reason (see that function's docstring)."""
@@ -376,6 +420,8 @@ def _mirror_dependencies(feature: MirrorFeature) -> tuple[str, ...]:
     plane_dep = _plane_ref_dependency(feature.mirror_plane)
     if plane_dep is not None:
         deps.add(plane_dep)
+    if feature.tool_feature_id is not None:
+        deps.add(feature.tool_feature_id)
     return tuple(deps)
 
 
@@ -442,6 +488,8 @@ def _pattern_dependencies(part: Part, feature: PatternFeature) -> tuple[str, ...
     axis_dep = _pattern_axis_dependency(part, feature.axis)
     if axis_dep is not None:
         deps.add(axis_dep)
+    if feature.tool_feature_id is not None:
+        deps.add(feature.tool_feature_id)
     return tuple(deps)
 
 

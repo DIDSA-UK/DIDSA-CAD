@@ -10,7 +10,23 @@ import 'svg_icon.dart';
 /// (on-device feedback: "user should now be able to start pattern from
 /// long press a feature in the tree") - later stages can add further
 /// entries here without changing how the menu itself is shown or wired up.
-enum FeatureContextMenuAction { extrude, revolve, sweep, redefineOrientation, pattern, toggleVisibility, delete }
+/// Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
+/// §2.11/§4) adds [patternIntoTarget]/[mirrorIntoTarget] - the third,
+/// mutually-exclusive seed-picking mode: repeating/reflecting this
+/// Feature's own Cut/Boss *effect* into its own shared target, distinct
+/// from [pattern] (which patterns the Bodies this Feature produces, via
+/// `source_feature_ids`).
+enum FeatureContextMenuAction {
+  extrude,
+  revolve,
+  sweep,
+  redefineOrientation,
+  pattern,
+  patternIntoTarget,
+  mirrorIntoTarget,
+  toggleVisibility,
+  delete,
+}
 
 /// Shows a bottom sheet of actions for a single Feature, opened by a
 /// long-press on its row in the tree. A bottom sheet - rather than wiring
@@ -50,6 +66,16 @@ enum FeatureContextMenuAction { extrude, revolve, sweep, redefineOrientation, pa
 /// eligibility check needed - `source_feature_ids` resolves against
 /// whatever the Feature currently produces, at solve time, same as every
 /// other Feature-tree-as-selection-source use).
+///
+/// Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
+/// §2.11/§4): [showToolFeatureActions] gates both the "Pattern into
+/// Target"/"Mirror into Target" entries - shown only for a Feature that
+/// would pass the backend's own `invalid_tool_feature_ref` eligibility
+/// check (an Extrude/Revolve/Sweep in Cut mode, or Boss mode with a
+/// non-empty `target_body_ids` - see `PartScreen._isEligibleToolFeature`),
+/// a strictly narrower set than [showPattern]'s own. Always enabled when
+/// shown, same "no further eligibility check needed here" reasoning
+/// [showPattern] already uses.
 Future<FeatureContextMenuAction?> showFeatureContextMenu(
   BuildContext context, {
   required bool isHidden,
@@ -64,6 +90,7 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
   String? sweepDisabledReason,
   bool showRedefineOrientation = false,
   bool showPattern = false,
+  bool showToolFeatureActions = false,
 }) {
   return showModalBottomSheet<FeatureContextMenuAction>(
     context: context,
@@ -117,6 +144,20 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
                 title: const Text('Pattern'),
                 onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.pattern),
               ),
+            if (showToolFeatureActions) ...[
+              ListTile(
+                leading: const SvgIcon('assets/icons/feature/feature_pattern.svg'),
+                title: const Text('Pattern into Target'),
+                subtitle: const Text('Repeats this Cut/Boss into its own target'),
+                onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.patternIntoTarget),
+              ),
+              ListTile(
+                leading: const SvgIcon('assets/icons/feature/feature_mirror.svg'),
+                title: const Text('Mirror into Target'),
+                subtitle: const Text('Reflects this Cut/Boss into its own target'),
+                onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.mirrorIntoTarget),
+              ),
+            ],
             ListTile(
               leading: Icon(isHidden ? Icons.visibility : Icons.visibility_off),
               title: Text(isHidden ? 'Show' : 'Hide'),
