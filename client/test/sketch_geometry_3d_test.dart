@@ -445,7 +445,7 @@ void main() {
       ];
       final circles = [CircleDto(id: 'circ0', centerPointId: 'c0', radiusPointId: 'r0', radius: 3)];
 
-      final (mergedPoints, _, mergedCircles, __) = expandPatternMirrorDtos(
+      final (mergedPoints, _, mergedCircles, _) = expandPatternMirrorDtos(
         points: points,
         lines: const [],
         circles: circles,
@@ -484,7 +484,7 @@ void main() {
         LineDto(id: 'axisLine', startPointId: 'axisA', endPointId: 'axisB', length: 2),
       ];
 
-      final (mergedPoints, mergedLines, _, __) = expandPatternMirrorDtos(
+      final (mergedPoints, mergedLines, _, _) = expandPatternMirrorDtos(
         points: points,
         lines: lines,
         circles: const [],
