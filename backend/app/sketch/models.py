@@ -2,7 +2,7 @@ import math
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Literal
 
@@ -795,6 +795,83 @@ class SketchEntityRef:
     entity_id: str
 
 
+class SketchFixedAxis(str, Enum):
+    """Sketcher-roadmap Phase 7 (2D Pattern): a fixed local axis of this
+    Sketch's own (x, y) space - the 2D analogue of
+    `app.document.models.FixedAxis`, restricted to the two axes a flat
+    sketch actually has."""
+
+    X = "x"
+    Y = "y"
+
+
+@dataclass(frozen=True)
+class SketchPatternDirection:
+    """Exactly one of two - a 2D, same-sketch-scoped analogue of
+    `app.document.models.PatternDirectionRef`. Deliberately narrower than
+    that type in two ways: no `edge_ref` (a Sketch has no OCCT edges of its
+    own to pick - every straight thing in it already is a Line, covered by
+    `line_id`), and a bare `line_id: str` rather than a full
+    `SketchEntityRef` (unlike `RevolveFeature.axis_ref`/`SweepFeature.
+    path_refs`, which reference a Sketch from *outside* it via the Document
+    layer, a pattern direction's Line always lives in this exact same
+    Sketch - carrying a separate `sketch_id` alongside it would only invite
+    a cross-sketch-id mismatch class of bug with no benefit, so this uses
+    the plain id `Sketch.entities` is already keyed by)."""
+
+    line_id: str | None = None
+    fixed_axis: SketchFixedAxis | None = None
+
+
+@dataclass
+class SketchPatternInstance:
+    """Sketcher-roadmap Phase 7 (§2.9 Option 2): a lightweight, non-solved
+    linear pattern of one or more of this same Sketch's own Line/Circle/Arc
+    entities - structurally identical in spirit to the 3D `PatternFeature`
+    (`app.document.models`), but pure 2D math with no OCCT/py-slvs
+    involvement at all, and never materialized into `Sketch.points`/
+    `Sketch.entities` - see `Sketch.expand_pattern_and_mirror_instances`,
+    the only place that ever turns this into real (transient) geometry.
+
+    `count` is the *total* instance count including the untouched source
+    (index 0, never recreated) - matching `PatternFeature.count_1`'s own
+    "count includes the original" convention exactly, so `count >= 2` (a
+    count of 1 would be a pure no-op, rejected at creation the same way
+    `PatternFeature` rejects `count_1 * count_2 < 2`).
+
+    v1 scope, deliberately narrower than `PatternFeature`: one direction
+    only (no second-direction grid yet - cheap to add later behind the
+    identical `direction_2`/`count_2`/`spacing_2` shape once there's a real
+    on-device ask for it, not worth speculatively building now), and no
+    circular/skip-instance variants (see this phase's own status.md/scope-
+    doc entry for the full reasoning - `PatternFeature` itself only grew
+    those in later, separately-scoped phases too)."""
+
+    id: str
+    source_entity_ids: list[str]
+    direction: SketchPatternDirection
+    count: int
+    spacing: float
+    reverse: bool = False
+
+
+@dataclass
+class SketchMirrorInstance:
+    """Sketcher-roadmap Phase 7 (§2.9 Option 2): `SketchPatternInstance`'s
+    mirror-shaped sibling - one reflected copy of one or more of this same
+    Sketch's own Line/Circle/Arc entities across an existing Line
+    (`mirror_line_id`, real or construction - "construction-geometry
+    support already exists in the sketcher" per §2.9), reflected across the
+    *infinite* line through that Line's two Points, not just its own
+    segment. Exactly one image is ever produced - unlike Pattern, Mirror
+    has no `count`, mirroring `MirrorFeature`'s own Phase 1 "no numeric
+    field at all, only the plane pick" shape."""
+
+    id: str
+    source_entity_ids: list[str]
+    mirror_line_id: str
+
+
 class NoIntersectionFoundError(ValueError):
     """Sketcher-roadmap Phase 11: `Sketch.trim_or_extend_line` raises this
     specifically (a `ValueError` subclass, so any existing bare `except
@@ -898,6 +975,13 @@ class Sketch:
     # lost) whenever a reference no longer resolves.
     external_references: dict[str, ExternalVertexReference] = field(default_factory=dict)
     _origin_point_id: str | None = field(default=None, repr=False)
+    # Sketcher-roadmap Phase 7 (2D Pattern/Mirror, §2.9 Option 2): lightweight,
+    # non-solved instances - see SketchPatternInstance/SketchMirrorInstance's
+    # own docstrings. Never contain real Points/entities themselves; expanded
+    # into transient, derived geometry only on read, by
+    # `expand_pattern_and_mirror_instances` below.
+    pattern_instances: dict[str, SketchPatternInstance] = field(default_factory=dict)
+    mirror_instances: dict[str, SketchMirrorInstance] = field(default_factory=dict)
 
     def set_orientation(self, *, flip: bool, rotation_quarter_turns: int) -> None:
         """The one mutator for `flip`/`rotation_quarter_turns` - normalizes
@@ -2909,6 +2993,382 @@ class Sketch:
         if not candidates:
             return None
         return min(candidates, key=lambda p: math.hypot(p[0] - corner_xy[0], p[1] - corner_xy[1]))
+
+    _PATTERNABLE_ENTITY_TYPES = (Line, Circle, Arc)
+
+    def _patternable_entities(self, entity_ids: list[str]) -> list["Line | Circle | Arc"]:
+        """Validates `entity_ids` for both `add_pattern_instance` and
+        `add_mirror_instance`: non-empty, every id resolves, and every one
+        is a Line/Circle/Arc - the exact same accepted-kinds boundary
+        `offset_line`/`offset_circle`/`offset_arc`/`offset_chain` already
+        established (Ellipse/Spline/Text/Polygon/Slot/Rectangle are all
+        deliberately out of v1 scope here too - see `SketchPatternInstance`'s
+        own docstring)."""
+        if not entity_ids:
+            raise ValueError("At least one source entity is required")
+        resolved: list[Line | Circle | Arc] = []
+        for entity_id in entity_ids:
+            entity = self.entities.get(entity_id)
+            if entity is None:
+                raise KeyError(entity_id)
+            if not isinstance(entity, self._PATTERNABLE_ENTITY_TYPES):
+                raise ValueError(f"Pattern/Mirror only supports Lines, Circles and Arcs, got {entity_id!r}")
+            resolved.append(entity)
+        return resolved
+
+    def _pattern_direction_unit_vector(self, direction: SketchPatternDirection) -> tuple[float, float]:
+        """Resolves `direction` to a unit `(dx, dy)` - see
+        `SketchPatternDirection`'s own docstring for the "exactly one of
+        two" shape this validates. Raises `ValueError` for neither/both set
+        or a zero-length direction Line; `KeyError` for a `line_id` that
+        isn't a real Line in this Sketch."""
+        if direction.fixed_axis is not None:
+            if direction.line_id is not None:
+                raise ValueError("Provide either 'line_id' or 'fixed_axis', not both")
+            return (1.0, 0.0) if direction.fixed_axis == SketchFixedAxis.X else (0.0, 1.0)
+        if direction.line_id is None:
+            raise ValueError("Provide either 'line_id' or 'fixed_axis'")
+        line = self.entities.get(direction.line_id)
+        if not isinstance(line, Line):
+            raise KeyError(direction.line_id)
+        start = self.points[line.start_point_id]
+        end = self.points[line.end_point_id]
+        dx, dy = end.x - start.x, end.y - start.y
+        length = math.hypot(dx, dy)
+        if length == 0:
+            raise ValueError("Cannot use a zero-length Line as a pattern direction")
+        return (dx / length, dy / length)
+
+    def add_pattern_instance(
+        self,
+        source_entity_ids: list[str],
+        direction: SketchPatternDirection,
+        count: int,
+        spacing: float,
+        *,
+        reverse: bool = False,
+    ) -> SketchPatternInstance:
+        """Sketcher-roadmap Phase 7: registers a new lightweight linear
+        pattern of `source_entity_ids` - see `SketchPatternInstance`'s own
+        docstring for what this does and doesn't do (never creates any real
+        Point/entity here; those only ever appear transiently, on read, via
+        `expand_pattern_and_mirror_instances`).
+
+        Raises `ValueError` for an empty/invalid `source_entity_ids`, a
+        malformed `direction`, `count < 2` (a no-op - matches
+        `PatternFeature`'s own `count_1 * count_2 >= 2` rejection) or
+        `spacing == 0` (directly ambiguous with "N coincident copies of the
+        seed", same reasoning `offset_line`'s own zero-distance rejection
+        uses); `KeyError` for a missing `source_entity_ids`/direction
+        `line_id`."""
+        self._patternable_entities(source_entity_ids)
+        self._pattern_direction_unit_vector(direction)
+        if count < 2:
+            raise ValueError("Pattern count must be at least 2 (including the untouched source)")
+        if spacing == 0:
+            raise ValueError("Pattern spacing must be non-zero")
+        instance = SketchPatternInstance(
+            id=str(uuid.uuid4()),
+            source_entity_ids=list(source_entity_ids),
+            direction=direction,
+            count=count,
+            spacing=spacing,
+            reverse=reverse,
+        )
+        self.pattern_instances[instance.id] = instance
+        return instance
+
+    def update_pattern_instance(
+        self,
+        instance_id: str,
+        *,
+        source_entity_ids: list[str] | None = None,
+        direction: SketchPatternDirection | None = None,
+        count: int | None = None,
+        spacing: float | None = None,
+        reverse: bool | None = None,
+    ) -> SketchPatternInstance:
+        """PATCH semantics: every parameter is optional and, when omitted
+        (`None`), leaves the instance's current value untouched - mirrors
+        `LineUpdate`/`CircleUpdate`'s own "omitted fields are left
+        unchanged" convention. Re-validates the fully-merged result before
+        committing, so a partial update can never leave the instance in an
+        invalid state (e.g. `count` alone dropping below 2)."""
+        instance = self.pattern_instances.get(instance_id)
+        if instance is None:
+            raise KeyError(instance_id)
+        new_source_entity_ids = instance.source_entity_ids if source_entity_ids is None else source_entity_ids
+        new_direction = instance.direction if direction is None else direction
+        new_count = instance.count if count is None else count
+        new_spacing = instance.spacing if spacing is None else spacing
+        new_reverse = instance.reverse if reverse is None else reverse
+        self._patternable_entities(new_source_entity_ids)
+        self._pattern_direction_unit_vector(new_direction)
+        if new_count < 2:
+            raise ValueError("Pattern count must be at least 2 (including the untouched source)")
+        if new_spacing == 0:
+            raise ValueError("Pattern spacing must be non-zero")
+        instance.source_entity_ids = list(new_source_entity_ids)
+        instance.direction = new_direction
+        instance.count = new_count
+        instance.spacing = new_spacing
+        instance.reverse = new_reverse
+        return instance
+
+    def delete_pattern_instance(self, instance_id: str) -> None:
+        if instance_id not in self.pattern_instances:
+            raise KeyError(instance_id)
+        del self.pattern_instances[instance_id]
+
+    def add_mirror_instance(self, source_entity_ids: list[str], mirror_line_id: str) -> SketchMirrorInstance:
+        """Sketcher-roadmap Phase 7: registers a new lightweight mirror
+        image of `source_entity_ids` across `mirror_line_id` - see
+        `SketchMirrorInstance`'s own docstring. Raises `ValueError`/
+        `KeyError` for an invalid `source_entity_ids` (same rules as
+        `add_pattern_instance`), and `KeyError` if `mirror_line_id` isn't a
+        real Line in this Sketch."""
+        self._patternable_entities(source_entity_ids)
+        mirror_line = self.entities.get(mirror_line_id)
+        if not isinstance(mirror_line, Line):
+            raise KeyError(mirror_line_id)
+        instance = SketchMirrorInstance(
+            id=str(uuid.uuid4()), source_entity_ids=list(source_entity_ids), mirror_line_id=mirror_line_id
+        )
+        self.mirror_instances[instance.id] = instance
+        return instance
+
+    def update_mirror_instance(
+        self,
+        instance_id: str,
+        *,
+        source_entity_ids: list[str] | None = None,
+        mirror_line_id: str | None = None,
+    ) -> SketchMirrorInstance:
+        instance = self.mirror_instances.get(instance_id)
+        if instance is None:
+            raise KeyError(instance_id)
+        new_source_entity_ids = instance.source_entity_ids if source_entity_ids is None else source_entity_ids
+        new_mirror_line_id = instance.mirror_line_id if mirror_line_id is None else mirror_line_id
+        self._patternable_entities(new_source_entity_ids)
+        mirror_line = self.entities.get(new_mirror_line_id)
+        if not isinstance(mirror_line, Line):
+            raise KeyError(new_mirror_line_id)
+        instance.source_entity_ids = list(new_source_entity_ids)
+        instance.mirror_line_id = new_mirror_line_id
+        return instance
+
+    def delete_mirror_instance(self, instance_id: str) -> None:
+        if instance_id not in self.mirror_instances:
+            raise KeyError(instance_id)
+        del self.mirror_instances[instance_id]
+
+    def expand_pattern_and_mirror_instances(self) -> "Sketch":
+        """Sketcher-roadmap Phase 7 (§2.9 Option 2) - the one place
+        `SketchPatternInstance`/`SketchMirrorInstance` ever turn into real
+        geometry: a Sketch whose `points`/`entities` additionally carry
+        every instance's own derived copies (pure 2D translate-for-Pattern/
+        reflect-for-Mirror math, computed fresh from this Sketch's
+        *current* source geometry every time this is called - no caching,
+        matching this whole codebase's "re-derive, don't cache"
+        philosophy), never written back into `self.points`/`self.entities`
+        - so a pattern/mirror instance's own copies never become
+        independently draggable/selectable/deletable in the real Sketch.
+
+        Returns `self` unchanged (the exact same object, not a copy) when
+        there are no instances at all - the overwhelmingly common case, and
+        the load-bearing guarantee that every pre-Phase-7 Sketch's profile
+        detection/wire construction is byte-for-byte unaffected: same
+        object identity, zero new allocation.
+
+        Deterministic, collision-free synthetic ids (`f"{instance.id}#p
+        {index}#{original_point_id}"` for Points, `f"{instance.id}#{index}#
+        {original_entity_id}"` for entities - `index` is fixed at `"m"` for
+        a Mirror's own single image) - calling this twice against the same
+        underlying Sketch state (e.g. once from `detect_profile`, once more
+        at the call site that goes on to build OCCT wires from its result -
+        see `app.document.extrude`/`revolve`/`sweep`) always produces the
+        exact same ids, so a `Profile`'s `point_ids`/`line_ids` computed
+        against one expansion still resolve correctly against a second,
+        independently-computed one.
+
+        A stale `source_entity_ids`/`direction.line_id`/`mirror_line_id`
+        entry (the source was since deleted) is skipped rather than
+        raising - the same "tolerate drift at read time" convention every
+        other derived-geometry read path in this codebase already follows
+        (e.g. `SubShapeRef` resolution's own fail-closed-per-reference, not
+        fail-closed-for-everything, shape)."""
+        if not self.pattern_instances and not self.mirror_instances:
+            return self
+        points = dict(self.points)
+        entities: dict[str, SketchEntity] = dict(self.entities)
+        for instance in self.pattern_instances.values():
+            self._expand_pattern_instance(instance, points, entities)
+        for instance in self.mirror_instances.values():
+            self._expand_mirror_instance(instance, points, entities)
+        return replace(self, points=points, entities=entities)
+
+    def _expand_pattern_instance(
+        self, instance: SketchPatternInstance, points: dict[str, Point], entities: dict[str, SketchEntity]
+    ) -> None:
+        try:
+            dx, dy = self._pattern_direction_unit_vector(instance.direction)
+        except (KeyError, ValueError):
+            return  # Stale direction reference - tolerate drift, produce no instances.
+        if instance.reverse:
+            dx, dy = -dx, -dy
+        for index in range(1, instance.count):
+            offset_x = dx * instance.spacing * index
+            offset_y = dy * instance.spacing * index
+
+            def transform(x: float, y: float, offset_x: float = offset_x, offset_y: float = offset_y) -> tuple[float, float]:
+                return (x + offset_x, y + offset_y)
+
+            for entity_id in instance.source_entity_ids:
+                entity = self.entities.get(entity_id)
+                if entity is None:
+                    continue
+                self._place_transformed_entity(
+                    entity,
+                    points,
+                    entities,
+                    new_id_prefix=f"{instance.id}#{index}#",
+                    point_id_prefix=f"{instance.id}#p{index}#",
+                    transform=transform,
+                    swap_arc_endpoints=False,
+                )
+
+    def _expand_mirror_instance(
+        self, instance: SketchMirrorInstance, points: dict[str, Point], entities: dict[str, SketchEntity]
+    ) -> None:
+        mirror_line = self.entities.get(instance.mirror_line_id)
+        if not isinstance(mirror_line, Line):
+            return  # Stale mirror-line reference - tolerate drift.
+        line_start = self.points.get(mirror_line.start_point_id)
+        line_end = self.points.get(mirror_line.end_point_id)
+        if line_start is None or line_end is None:
+            return
+        ab_x, ab_y = line_end.x - line_start.x, line_end.y - line_start.y
+        ab_len_sq = ab_x * ab_x + ab_y * ab_y
+        if ab_len_sq == 0:
+            return  # Zero-length mirror line - no well-defined reflection.
+
+        def transform(x: float, y: float) -> tuple[float, float]:
+            # Standard point-across-a-line reflection: project onto the
+            # (infinite) line through mirror_line's own two Points, then
+            # go the same distance again past that foot of perpendicular.
+            ap_x, ap_y = x - line_start.x, y - line_start.y
+            t = (ap_x * ab_x + ap_y * ab_y) / ab_len_sq
+            foot_x, foot_y = line_start.x + t * ab_x, line_start.y + t * ab_y
+            return (2 * foot_x - x, 2 * foot_y - y)
+
+        for entity_id in instance.source_entity_ids:
+            entity = self.entities.get(entity_id)
+            if entity is None:
+                continue
+            self._place_transformed_entity(
+                entity,
+                points,
+                entities,
+                new_id_prefix=f"{instance.id}#m#",
+                point_id_prefix=f"{instance.id}#pm#",
+                transform=transform,
+                # A reflection has negative determinant - it reverses
+                # apparent winding, so an Arc's own fixed "CCW from start to
+                # end" convention would otherwise trace the wrong (reflex)
+                # arc once naively transformed. Swapping which reflected
+                # Point plays start vs end restores the correct visual arc -
+                # the exact same fix `app.document.extrude.wire_for_profile`
+                # already applies for a mirrored 3D basis (see
+                # `is_mirrored_basis`'s own doc comment there).
+                swap_arc_endpoints=True,
+            )
+
+    def _place_transformed_entity(
+        self,
+        entity: "Line | Circle | Arc",
+        points: dict[str, Point],
+        entities: dict[str, SketchEntity],
+        *,
+        new_id_prefix: str,
+        point_id_prefix: str,
+        transform,
+        swap_arc_endpoints: bool,
+    ) -> None:
+        """Shared by `_expand_pattern_instance`/`_expand_mirror_instance`:
+        places one transformed copy of `entity` into `points`/`entities`.
+        Two source entities sharing an original Point (e.g. two connected
+        Lines in a picked chain) always produce the same synthetic Point id
+        for that shared corner (`point_id_prefix` is fixed per instance/
+        index, so the same original id always maps to the same synthetic
+        one) - this is what keeps a patterned/mirrored *chain* connected in
+        the copy, exactly like the original."""
+
+        def transformed_point(original_point_id: str) -> str:
+            original = self.points[original_point_id]
+            new_x, new_y = transform(original.x, original.y)
+            # Welding fix (found via testing, not anticipated in the
+            # original design): a transformed Point that lands back on its
+            # own source Point's exact position - always true for a Mirror
+            # instance's own axis-crossing Points (the fixed points of a
+            # reflection), never true for a Pattern instance's own pure
+            # translation unless spacing is degenerate (already rejected at
+            # creation) - reuses the *original* Point id instead of minting
+            # a synthetic one. Without this, mirroring a half-profile drawn
+            # up to its own centerline (the single most common real-world
+            # reason to mirror a sketch at all) would leave the real half
+            # and its own derived mirror image as two disjoint open chains
+            # that only ever *look* connected, never reported as one closed
+            # loop by detect_profile's own id-based connectivity walk - see
+            # this phase's own status.md/scope-doc entry for the full
+            # reasoning. This never changes Pattern's own output (no fixed
+            # points under a non-zero translation).
+            if math.isclose(new_x, original.x, abs_tol=1e-9) and math.isclose(new_y, original.y, abs_tol=1e-9):
+                return original_point_id
+            new_id = f"{point_id_prefix}{original_point_id}"
+            if new_id not in points:
+                points[new_id] = Point(id=new_id, x=new_x, y=new_y)
+            return new_id
+
+        new_id = f"{new_id_prefix}{entity.id}"
+        if isinstance(entity, Line):
+            entities[new_id] = Line(
+                id=new_id,
+                start_point_id=transformed_point(entity.start_point_id),
+                end_point_id=transformed_point(entity.end_point_id),
+                construction=entity.construction,
+            )
+        elif isinstance(entity, Circle):
+            entities[new_id] = Circle(
+                id=new_id,
+                center_point_id=transformed_point(entity.center_point_id),
+                radius_point_id=transformed_point(entity.radius_point_id),
+                # No real solver constraint backs a synthetic pattern/mirror
+                # instance (see this method's own docstring) - these three
+                # fields are solver-only bookkeeping that neither
+                # `profile.py` nor `wire_for_profile` ever reads (confirmed
+                # by direct inspection - both only ever touch
+                # center_point_id/radius_point_id/radius()), so placeholder
+                # empty values are safe here.
+                radius_constraint_id="",
+                cardinal_point_ids=[],
+                cardinal_constraint_ids=[],
+                construction=entity.construction,
+            )
+        elif isinstance(entity, Arc):
+            start_point_id = entity.end_point_id if swap_arc_endpoints else entity.start_point_id
+            end_point_id = entity.start_point_id if swap_arc_endpoints else entity.end_point_id
+            entities[new_id] = Arc(
+                id=new_id,
+                center_point_id=transformed_point(entity.center_point_id),
+                start_point_id=transformed_point(start_point_id),
+                end_point_id=transformed_point(end_point_id),
+                radius_constraint_id="",
+                end_radius_constraint_id="",
+                construction=entity.construction,
+            )
+        # Every other SketchEntity subclass is already excluded by
+        # `_patternable_entities` at creation/update time, so nothing else
+        # reaches here.
 
     def _existing_point_at(
         self, x: float, y: float, *, exclude_ids: frozenset[str] = frozenset(), epsilon: float = 1e-6

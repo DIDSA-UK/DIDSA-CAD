@@ -31,6 +31,10 @@ from app.sketch.models import (
     Polygon,
     Rectangle,
     Sketch,
+    SketchFixedAxis,
+    SketchMirrorInstance,
+    SketchPatternDirection,
+    SketchPatternInstance,
     Slot,
     Spline,
     TextEntity,
@@ -60,6 +64,7 @@ from app.sketch.schemas import (
     ConstraintResponse,
     ConstraintValueUpdate,
     DeleteEntityResponse,
+    DeletePatternMirrorInstanceResponse,
     DistanceConstraintCreate,
     DistanceConstraintResponse,
     EllipseCreate,
@@ -105,7 +110,14 @@ from app.sketch.schemas import (
     RectangleResponse,
     RectangleUpdate,
     SketchCreate,
+    SketchMirrorInstanceCreate,
+    SketchMirrorInstanceResponse,
+    SketchMirrorInstanceUpdate,
     SketchOrientationUpdate,
+    SketchPatternDirectionSchema,
+    SketchPatternInstanceCreate,
+    SketchPatternInstanceResponse,
+    SketchPatternInstanceUpdate,
     SketchResponse,
     SketchStateResponse,
     SlotCreate,
@@ -1606,3 +1618,194 @@ def solve_and_refresh(sketch_id: str, payload: SolveRequest | None = None) -> Sk
         constraints=[_constraint_response(constraint) for constraint in sketch.constraints.values()],
         profile=_profile_detection_response(sketch),
     )
+
+
+# --- Sketcher-roadmap Phase 7: 2D Pattern/Mirror ---------------------------
+
+
+def _get_pattern_instance_or_404(sketch: Sketch, instance_id: str) -> SketchPatternInstance:
+    instance = sketch.pattern_instances.get(instance_id)
+    if instance is None:
+        raise HTTPException(status_code=404, detail="Pattern instance not found")
+    return instance
+
+
+def _get_mirror_instance_or_404(sketch: Sketch, instance_id: str) -> SketchMirrorInstance:
+    instance = sketch.mirror_instances.get(instance_id)
+    if instance is None:
+        raise HTTPException(status_code=404, detail="Mirror instance not found")
+    return instance
+
+
+def _pattern_direction_from_schema(schema: SketchPatternDirectionSchema) -> SketchPatternDirection:
+    return SketchPatternDirection(
+        line_id=schema.line_id,
+        fixed_axis=SketchFixedAxis(schema.fixed_axis) if schema.fixed_axis is not None else None,
+    )
+
+
+def _pattern_direction_schema(direction: SketchPatternDirection) -> SketchPatternDirectionSchema:
+    return SketchPatternDirectionSchema(
+        line_id=direction.line_id,
+        fixed_axis=direction.fixed_axis.value if direction.fixed_axis is not None else None,
+    )
+
+
+def _pattern_instance_response(instance: SketchPatternInstance) -> SketchPatternInstanceResponse:
+    return SketchPatternInstanceResponse(
+        id=instance.id,
+        source_entity_ids=instance.source_entity_ids,
+        direction=_pattern_direction_schema(instance.direction),
+        count=instance.count,
+        spacing=instance.spacing,
+        reverse=instance.reverse,
+    )
+
+
+def _mirror_instance_response(instance: SketchMirrorInstance) -> SketchMirrorInstanceResponse:
+    return SketchMirrorInstanceResponse(
+        id=instance.id,
+        source_entity_ids=instance.source_entity_ids,
+        mirror_line_id=instance.mirror_line_id,
+    )
+
+
+@router.get("/sketches/{sketch_id}/pattern-instances", response_model=list[SketchPatternInstanceResponse])
+def list_pattern_instances(sketch_id: str) -> list[SketchPatternInstanceResponse]:
+    """Every pattern instance currently in this Sketch - mirrors
+    `list_lines`/`list_points`, the only way a client re-entering a Sketch
+    it didn't just create learns what pattern instances already exist."""
+    sketch = _get_sketch_or_404(sketch_id)
+    return [_pattern_instance_response(instance) for instance in sketch.pattern_instances.values()]
+
+
+@router.get(
+    "/sketches/{sketch_id}/pattern-instances/{instance_id}", response_model=SketchPatternInstanceResponse
+)
+def get_pattern_instance(sketch_id: str, instance_id: str) -> SketchPatternInstanceResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    return _pattern_instance_response(_get_pattern_instance_or_404(sketch, instance_id))
+
+
+@router.post(
+    "/sketches/{sketch_id}/pattern-instances", response_model=SketchPatternInstanceResponse, status_code=201
+)
+def create_pattern_instance(sketch_id: str, payload: SketchPatternInstanceCreate) -> SketchPatternInstanceResponse:
+    """Sketcher-roadmap Phase 7 (2D Pattern) - mirrors `create_circle`'s own
+    validate-then-construct shape (`app.sketch.models.Sketch.
+    add_pattern_instance` does the real validation; this only translates
+    exceptions to HTTP status codes). `KeyError` (a source entity id or a
+    direction Line id that doesn't resolve) -> 404; `ValueError` (an empty/
+    invalid source list, a malformed direction, a no-op count, a zero
+    spacing) -> 400 - the same split every other create endpoint in this
+    router uses."""
+    sketch = _get_sketch_or_404(sketch_id)
+    try:
+        instance = sketch.add_pattern_instance(
+            payload.source_entity_ids,
+            _pattern_direction_from_schema(payload.direction),
+            payload.count,
+            payload.spacing,
+            reverse=payload.reverse,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Entity not found: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _pattern_instance_response(instance)
+
+
+@router.patch(
+    "/sketches/{sketch_id}/pattern-instances/{instance_id}", response_model=SketchPatternInstanceResponse
+)
+def update_pattern_instance(
+    sketch_id: str, instance_id: str, payload: SketchPatternInstanceUpdate
+) -> SketchPatternInstanceResponse:
+    """PATCH semantics: every payload field is optional, mirroring
+    `Sketch.update_pattern_instance`'s own "omitted leaves unchanged"
+    convention."""
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_pattern_instance_or_404(sketch, instance_id)
+    try:
+        instance = sketch.update_pattern_instance(
+            instance_id,
+            source_entity_ids=payload.source_entity_ids,
+            direction=(
+                _pattern_direction_from_schema(payload.direction) if payload.direction is not None else None
+            ),
+            count=payload.count,
+            spacing=payload.spacing,
+            reverse=payload.reverse,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Entity not found: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _pattern_instance_response(instance)
+
+
+@router.delete(
+    "/sketches/{sketch_id}/pattern-instances/{instance_id}",
+    response_model=DeletePatternMirrorInstanceResponse,
+)
+def delete_pattern_instance(sketch_id: str, instance_id: str) -> DeletePatternMirrorInstanceResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_pattern_instance_or_404(sketch, instance_id)
+    sketch.delete_pattern_instance(instance_id)
+    return DeletePatternMirrorInstanceResponse(id=instance_id)
+
+
+@router.get("/sketches/{sketch_id}/mirror-instances", response_model=list[SketchMirrorInstanceResponse])
+def list_mirror_instances(sketch_id: str) -> list[SketchMirrorInstanceResponse]:
+    sketch = _get_sketch_or_404(sketch_id)
+    return [_mirror_instance_response(instance) for instance in sketch.mirror_instances.values()]
+
+
+@router.get("/sketches/{sketch_id}/mirror-instances/{instance_id}", response_model=SketchMirrorInstanceResponse)
+def get_mirror_instance(sketch_id: str, instance_id: str) -> SketchMirrorInstanceResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    return _mirror_instance_response(_get_mirror_instance_or_404(sketch, instance_id))
+
+
+@router.post("/sketches/{sketch_id}/mirror-instances", response_model=SketchMirrorInstanceResponse, status_code=201)
+def create_mirror_instance(sketch_id: str, payload: SketchMirrorInstanceCreate) -> SketchMirrorInstanceResponse:
+    """Sketcher-roadmap Phase 7 (2D Mirror) - see `create_pattern_instance`'s
+    own doc comment for the shared exception-translation shape."""
+    sketch = _get_sketch_or_404(sketch_id)
+    try:
+        instance = sketch.add_mirror_instance(payload.source_entity_ids, payload.mirror_line_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Entity not found: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _mirror_instance_response(instance)
+
+
+@router.patch("/sketches/{sketch_id}/mirror-instances/{instance_id}", response_model=SketchMirrorInstanceResponse)
+def update_mirror_instance(
+    sketch_id: str, instance_id: str, payload: SketchMirrorInstanceUpdate
+) -> SketchMirrorInstanceResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_mirror_instance_or_404(sketch, instance_id)
+    try:
+        instance = sketch.update_mirror_instance(
+            instance_id,
+            source_entity_ids=payload.source_entity_ids,
+            mirror_line_id=payload.mirror_line_id,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Entity not found: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _mirror_instance_response(instance)
+
+
+@router.delete(
+    "/sketches/{sketch_id}/mirror-instances/{instance_id}",
+    response_model=DeletePatternMirrorInstanceResponse,
+)
+def delete_mirror_instance(sketch_id: str, instance_id: str) -> DeletePatternMirrorInstanceResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_mirror_instance_or_404(sketch, instance_id)
+    sketch.delete_mirror_instance(instance_id)
+    return DeletePatternMirrorInstanceResponse(id=instance_id)

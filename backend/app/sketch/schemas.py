@@ -1026,3 +1026,77 @@ class SketchStateResponse(BaseModel):
     points: list[PointResponse]
     constraints: list[ConstraintResponse]
     profile: ProfileDetectionResponse
+
+
+# --- Sketcher-roadmap Phase 7: 2D Pattern/Mirror ---------------------------
+
+
+class SketchPatternDirectionSchema(BaseModel):
+    """Mirrors `app.sketch.models.SketchPatternDirection`'s own "exactly one
+    of two" shape - `line_id` (an existing Line in this same Sketch) or
+    `fixed_axis` ("x"/"y")."""
+
+    line_id: str | None = None
+    fixed_axis: Literal["x", "y"] | None = None
+
+    @model_validator(mode="after")
+    def check_exactly_one(self) -> "SketchPatternDirectionSchema":
+        if (self.line_id is None) == (self.fixed_axis is None):
+            raise ValueError("Provide exactly one of 'line_id' or 'fixed_axis'")
+        return self
+
+
+class SketchPatternInstanceCreate(BaseModel):
+    source_entity_ids: list[str]
+    direction: SketchPatternDirectionSchema
+    count: int
+    spacing: float
+    reverse: bool = False
+
+
+class SketchPatternInstanceUpdate(BaseModel):
+    """PATCH semantics: every field is optional and, when omitted, leaves
+    the instance's current value unchanged - mirrors `LineUpdate`/
+    `CircleUpdate`'s own convention."""
+
+    source_entity_ids: list[str] | None = None
+    direction: SketchPatternDirectionSchema | None = None
+    count: int | None = None
+    spacing: float | None = None
+    reverse: bool | None = None
+
+
+class SketchPatternInstanceResponse(BaseModel):
+    id: str
+    source_entity_ids: list[str]
+    direction: SketchPatternDirectionSchema
+    count: int
+    spacing: float
+    reverse: bool = False
+
+
+class SketchMirrorInstanceCreate(BaseModel):
+    source_entity_ids: list[str]
+    mirror_line_id: str
+
+
+class SketchMirrorInstanceUpdate(BaseModel):
+    source_entity_ids: list[str] | None = None
+    mirror_line_id: str | None = None
+
+
+class SketchMirrorInstanceResponse(BaseModel):
+    id: str
+    source_entity_ids: list[str]
+    mirror_line_id: str
+
+
+class DeletePatternMirrorInstanceResponse(BaseModel):
+    """The shared response shape for `DELETE .../pattern-instances/{id}` and
+    `.../mirror-instances/{id}` - unlike `DeleteEntityResponse`, there is
+    never anything to prune: an instance owns no real Points/entities of
+    its own (see `SketchPatternInstance`'s own docstring - its derived
+    geometry is always transient, never persisted), so deleting one is
+    always a plain, no-side-effect removal."""
+
+    id: str

@@ -88,6 +88,45 @@ class SketchArcView {
   });
 }
 
+/// Sketcher-roadmap Phase 7 (2D Pattern): the client's own local record of a
+/// `SketchPatternInstance` (`app.sketch.models`) - lightweight, mirrors the
+/// backend dataclass field-for-field. Unlike [SketchLineView]/
+/// [SketchCircleView]/etc., this never has geometry of its own directly -
+/// [SketchController.patternMirrorGhosts] computes its derived Line/Circle/
+/// Arc copies fresh, on every access, from [SketchController.points]/
+/// [lines]/[circles]/[arcs]' own *current* state (the exact same "no
+/// caching, re-derive from current source geometry" contract the backend's
+/// own `Sketch.expand_pattern_and_mirror_instances` follows).
+class SketchPatternInstanceView {
+  final String id;
+  final List<String> sourceEntityIds;
+  final String? directionLineId;
+  final String? directionFixedAxis;
+  final int count;
+  final double spacing;
+  final bool reverse;
+
+  const SketchPatternInstanceView({
+    required this.id,
+    required this.sourceEntityIds,
+    this.directionLineId,
+    this.directionFixedAxis,
+    required this.count,
+    required this.spacing,
+    this.reverse = false,
+  });
+}
+
+/// `SketchPatternInstanceView`'s Mirror-shaped sibling - see that class's
+/// own doc comment.
+class SketchMirrorInstanceView {
+  final String id;
+  final List<String> sourceEntityIds;
+  final String mirrorLineId;
+
+  const SketchMirrorInstanceView({required this.id, required this.sourceEntityIds, required this.mirrorLineId});
+}
+
 /// A regular Polygon - see the backend's `app.sketch.models.Polygon`
 /// docstring for how [vertexPointIds]/[lineIds] are ordered and what the
 /// solver constraint chain underneath them does. Bug fix (sketcher-roadmap
@@ -1129,7 +1168,13 @@ const bool kTapToPlace = true;
 /// single-selection "Offset" action - every tap picks a Line/Circle/Arc,
 /// then [offsetPreviewTargets] hands off to the UI layer's own non-modal
 /// value bar (with a live ghost preview - see [offsetPreviewGhosts]).
-enum SketchMode { select, draw, dimension, trim, convert, offset }
+enum SketchMode { select, draw, dimension, trim, convert, offset, pattern }
+
+/// Sketcher-roadmap Phase 7: which of the two operations [SketchMode.
+/// pattern] is currently configuring - one mode entry, reusing Offset's
+/// exact interaction shape, covers both (see `sketch_pattern_bar.dart`'s
+/// own `SegmentedButton`), rather than two near-duplicate mode entries.
+enum SketchPatternMirrorOperation { pattern, mirror }
 
 /// The kind of entity a [SketchSelection] refers to. [constraint] covers
 /// both Dimensions (Distance/Angle, which carry an editable numeric value)
@@ -1362,6 +1407,8 @@ class SketchController extends ChangeNotifier {
   final Map<String, SketchRectangleView> rectangles = {};
   final Map<String, SketchSplineView> splines = {};
   final Map<String, SketchTextView> texts = {};
+  final Map<String, SketchPatternInstanceView> patternInstances = {};
+  final Map<String, SketchMirrorInstanceView> mirrorInstances = {};
 
   /// Stage 23b: the sketch-space bounding box of every Point, plus every
   /// Circle's full extent (center +/- radius, since a circle's own Points
@@ -1580,6 +1627,8 @@ class SketchController extends ChangeNotifier {
         return 'Convert Entities';
       case SketchMode.offset:
         return 'Offset';
+      case SketchMode.pattern:
+        return _patternMirrorOperation == SketchPatternMirrorOperation.pattern ? 'Pattern' : 'Mirror';
     }
   }
 
@@ -6100,6 +6149,9 @@ class SketchController extends ChangeNotifier {
       case SketchMode.offset:
         await _handleOffsetTap(radius);
         break;
+      case SketchMode.pattern:
+        _handlePatternTap(radius);
+        break;
     }
   }
 
@@ -7995,6 +8047,430 @@ class SketchController extends ChangeNotifier {
     }
   }
 
+  // --- Sketcher-roadmap Phase 7: 2D Pattern/Mirror --------------------------
+  //
+  // Lightweight, non-solved sketch-level Pattern/Mirror (docs/pattern-mirror-
+  // scope.md Section 2.9/4): pick one or more Line/Circle/Arc entities,
+  // pattern (translate, count+spacing along a fixed X/Y axis or an existing
+  // Line's own direction) or mirror (reflect across an existing Line) them
+  // within this same 2D Sketch. Reuses [enterOffsetMode]/[_handleOffsetTap]/
+  // [finishOffsetChain]'s exact interaction shape: FAB "Tools" entry -> tap
+  // to accumulate sources -> Finish tick opens a non-modal bottom bar
+  // (`sketch_pattern_bar.dart`) -> Confirm commits to the backend.
+  //
+  // Unlike Offset (which always materializes real, independent Points/
+  // entities), a committed Pattern/Mirror instance is never written into
+  // [points]/[lines]/[circles]/[arcs] at all - its own derived geometry is
+  // always computed fresh, client-side, by [patternMirrorGhosts], the exact
+  // same "no caching, re-derive from current source geometry" contract the
+  // backend's own `Sketch.expand_pattern_and_mirror_instances` follows (see
+  // that method's own doc comment). This is what keeps a pattern/mirror
+  // instance's own copies non-independent - never separately draggable/
+  // selectable/deletable, matching `SketchPatternInstance`'s own docstring.
+
+  /// FAB -> Tools -> Pattern: enters [SketchMode.pattern], same no-further-
+  /// tool-choice shape as [enterOffsetMode] - every tap picks a Line/Circle/
+  /// Arc under the cursor (see [_handlePatternTap]) into [selectionSet],
+  /// surfaced via [patternPreviewTargets] once [finishPatternPick] (the
+  /// picking bar's own Finish tick) ends the picking phase.
+  void enterPatternMode() {
+    dropGrabbedEntity();
+    _mode = SketchMode.pattern;
+    _fabMenu = FabMenuState.closed;
+    _resetTransientDrawState();
+    _selectionSet.clear();
+    _ribbonVisible = false;
+    _dimensionSelection.clear();
+    _ghosts = [];
+    _activeGhostKey = null;
+    _patternPreviewTargets = null;
+    _resetPatternMirrorConfiguringState();
+    notifyListeners();
+  }
+
+  SketchPatternMirrorOperation _patternMirrorOperation = SketchPatternMirrorOperation.pattern;
+  SketchPatternMirrorOperation get patternMirrorOperation => _patternMirrorOperation;
+
+  /// The value bar's own Pattern/Mirror `SegmentedButton` - only meaningful
+  /// while configuring (post-Finish, pre-Confirm). Clears whichever
+  /// operation's own fields are being left, same "swap mode, drop the
+  /// fields that no longer apply" shape `PatternPanel`'s own 3D `PatternMode`
+  /// toggle uses.
+  void setPatternMirrorOperation(SketchPatternMirrorOperation operation) {
+    if (_patternMirrorOperation == operation) return;
+    _patternMirrorOperation = operation;
+    _resetPatternMirrorConfiguringState();
+    notifyListeners();
+  }
+
+  /// The picked-but-not-yet-committed source entities, non-null exactly
+  /// while the value bar is showing (post-Finish, pre-Confirm/Cancel) -
+  /// mirrors [offsetPreviewTargets]'s own shape exactly.
+  List<SketchSelection>? _patternPreviewTargets;
+  List<SketchSelection>? get patternPreviewTargets => _patternPreviewTargets;
+
+  String? _patternDirectionLineId;
+  String? get patternDirectionLineId => _patternDirectionLineId;
+  String? _patternDirectionFixedAxis;
+  String? get patternDirectionFixedAxis => _patternDirectionFixedAxis;
+  int _patternCount = 2;
+  int get patternCount => _patternCount;
+  double? _patternSpacing;
+  double? get patternSpacing => _patternSpacing;
+  bool _patternReverse = false;
+  bool get patternReverse => _patternReverse;
+  String? _mirrorLineId;
+  String? get mirrorLineId => _mirrorLineId;
+
+  void _resetPatternMirrorConfiguringState() {
+    _patternDirectionLineId = null;
+    _patternDirectionFixedAxis = null;
+    _patternCount = 2;
+    _patternSpacing = null;
+    _patternReverse = false;
+    _mirrorLineId = null;
+  }
+
+  void setPatternCount(int count) {
+    _patternCount = count;
+    notifyListeners();
+  }
+
+  void setPatternSpacing(double? spacing) {
+    _patternSpacing = spacing;
+    notifyListeners();
+  }
+
+  void togglePatternReverse() {
+    _patternReverse = !_patternReverse;
+    notifyListeners();
+  }
+
+  /// One of the value bar's X/Y buttons - mirrors `PatternPanel`'s own
+  /// fixed-axis buttons, minus a sketch-line direction alternative (see
+  /// [_handlePatternTap] for that - a viewport tap on a Line, not a bar
+  /// button, exactly like the 3D panel's own edge-tap precedent).
+  void setPatternDirectionFixedAxis(String axis) {
+    _patternDirectionFixedAxis = axis;
+    _patternDirectionLineId = null;
+    notifyListeners();
+  }
+
+  /// [SketchMode.pattern]'s own tap handler - dispatches on whether picking
+  /// is still in progress ([patternPreviewTargets] null) or the value bar is
+  /// already open (configuring): a pick-phase tap accumulates a Line/Circle/
+  /// Arc into [selectionSet] (same toggle-on-second-tap shape [_handleOffsetTap]
+  /// already uses for its own chain picks); a configuring-phase tap on a
+  /// Line sets the pattern direction or mirror line (dispatched on
+  /// [patternMirrorOperation]) - the bar stays non-modal the whole time, so
+  /// this reaches the canvas exactly like every other value-bar tool here.
+  void _handlePatternTap(double hitRadius) {
+    if (_busy || _sketchId == null) return;
+    final hit = _entityAt(cursorX, cursorY, hitRadius);
+    if (hit == null) return;
+    if (_patternPreviewTargets == null) {
+      if (hit.kind != SelectionKind.line && hit.kind != SelectionKind.circle && hit.kind != SelectionKind.arc) {
+        return;
+      }
+      final index = _selectionSet.indexWhere((s) => s.sameAs(hit));
+      if (index != -1) {
+        _selectionSet.removeAt(index);
+      } else {
+        _selectionSet.add(hit);
+      }
+      notifyListeners();
+      return;
+    }
+    if (hit.kind != SelectionKind.line) return;
+    if (_patternMirrorOperation == SketchPatternMirrorOperation.pattern) {
+      _patternDirectionLineId = hit.id;
+      _patternDirectionFixedAxis = null;
+    } else {
+      _mirrorLineId = hit.id;
+    }
+    notifyListeners();
+  }
+
+  /// The picking bar's own Finish tick - mirrors [finishOffsetChain] exactly
+  /// (an empty pick set just exits the tool outright).
+  void finishPatternPick() {
+    if (_selectionSet.isEmpty) {
+      exitToSelectMode();
+      return;
+    }
+    _patternPreviewTargets = List.of(_selectionSet);
+    _selectionSet.clear();
+    _resetPatternMirrorConfiguringState();
+    notifyListeners();
+  }
+
+  /// Dismisses the value bar without creating anything - mirrors
+  /// [cancelOffsetPreview].
+  void cancelPatternMirrorPreview() {
+    if (_patternPreviewTargets == null) return;
+    _patternPreviewTargets = null;
+    _resetPatternMirrorConfiguringState();
+    notifyListeners();
+  }
+
+  /// The value bar's own Confirm-enablement check - a no-op call is simply
+  /// prevented at the UI layer rather than silently ignored server-side,
+  /// same convention every other panel/bar's own Confirm button uses.
+  bool get canConfirmPatternMirror {
+    final targets = _patternPreviewTargets;
+    if (targets == null || targets.isEmpty) return false;
+    if (_patternMirrorOperation == SketchPatternMirrorOperation.pattern) {
+      final hasDirection = _patternDirectionLineId != null || _patternDirectionFixedAxis != null;
+      final spacing = _patternSpacing;
+      return hasDirection && spacing != null && spacing != 0 && _patternCount >= 2;
+    }
+    return _mirrorLineId != null;
+  }
+
+  /// The value bar's Confirm action - commits the currently-configured
+  /// Pattern/Mirror to the backend (see [SketchApiClient.
+  /// createPatternInstance]/[createMirrorInstance]), records it locally (so
+  /// [patternMirrorGhosts] keeps rendering it after this session ends), and
+  /// pushes one undo step that deletes it again - same shape [offsetLine]'s
+  /// own single-entity undo uses. Clears the preview/configuring state
+  /// immediately (before the API call resolves), same as every other
+  /// commit-on-tap interaction in this controller.
+  Future<void> confirmPatternMirrorPreview() async {
+    if (!canConfirmPatternMirror || _sketchId == null) return;
+    final targets = _patternPreviewTargets!;
+    final sourceIds = [for (final target in targets) target.id];
+    final operation = _patternMirrorOperation;
+    final direction = operation == SketchPatternMirrorOperation.pattern
+        ? (_patternDirectionLineId != null
+            ? SketchPatternDirectionDto.line(_patternDirectionLineId)
+            : SketchPatternDirectionDto.fixedAxis(_patternDirectionFixedAxis))
+        : null;
+    final count = _patternCount;
+    final spacing = _patternSpacing;
+    final reverse = _patternReverse;
+    final mirrorLineId = _mirrorLineId;
+    _patternPreviewTargets = null;
+    _resetPatternMirrorConfiguringState();
+    notifyListeners();
+    await _runGuarded(() async {
+      final sketchId = _sketchId!;
+      if (operation == SketchPatternMirrorOperation.pattern) {
+        final created = await _api.createPatternInstance(
+          sketchId,
+          sourceIds,
+          direction!,
+          count,
+          spacing!,
+          reverse: reverse,
+        );
+        patternInstances[created.id] = SketchPatternInstanceView(
+          id: created.id,
+          sourceEntityIds: created.sourceEntityIds,
+          directionLineId: created.direction.lineId,
+          directionFixedAxis: created.direction.fixedAxis,
+          count: created.count,
+          spacing: created.spacing,
+          reverse: created.reverse,
+        );
+        final newId = created.id;
+        _pushUndo(() async {
+          await _api.deletePatternInstance(sketchId, newId);
+          patternInstances.remove(newId);
+        });
+      } else {
+        final created = await _api.createMirrorInstance(sketchId, sourceIds, mirrorLineId!);
+        mirrorInstances[created.id] = SketchMirrorInstanceView(
+          id: created.id,
+          sourceEntityIds: created.sourceEntityIds,
+          mirrorLineId: created.mirrorLineId,
+        );
+        final newId = created.id;
+        _pushUndo(() async {
+          await _api.deleteMirrorInstance(sketchId, newId);
+          mirrorInstances.remove(newId);
+        });
+      }
+    });
+  }
+
+  /// A pattern direction's unit `(dx, dy)` - mirrors the backend's own
+  /// `Sketch._pattern_direction_unit_vector` exactly (fixed axis, or an
+  /// existing Line's own normalized direction), computed fresh from
+  /// [points]/[lines]' *current* state every call - null for an
+  /// incomplete/stale/degenerate direction (nothing to preview yet).
+  (double, double)? _patternDirectionUnitVector({String? lineId, String? fixedAxis}) {
+    if (fixedAxis != null) {
+      return fixedAxis == 'x' ? (1.0, 0.0) : (0.0, 1.0);
+    }
+    if (lineId == null) return null;
+    final line = lines[lineId];
+    if (line == null) return null;
+    final start = points[line.startPointId];
+    final end = points[line.endPointId];
+    if (start == null || end == null) return null;
+    final dx = end.x - start.x;
+    final dy = end.y - start.y;
+    final length = math.sqrt(dx * dx + dy * dy);
+    if (length == 0) return null;
+    return (dx / length, dy / length);
+  }
+
+  /// One transformed ghost for [entityId] (a Line/Circle/Arc, matching the
+  /// backend's own `_PATTERNABLE_ENTITY_TYPES`) under [transform] - null for
+  /// an unknown/unsupported entity (e.g. a since-deleted source, mirroring
+  /// the backend's own drift-tolerant `expand_pattern_and_mirror_instances`).
+  /// [swapArcEndpoints] mirrors the backend's own Arc-under-reflection fix
+  /// (`Sketch._expand_mirror_instance`'s doc comment) - a mirrored Arc's
+  /// start/end must swap to keep tracing the correct (non-reflex) visual
+  /// arc, since a reflection reverses apparent winding.
+  DrawGhost? _patternMirrorTransformedGhostFor(
+    String entityId,
+    (double, double) Function(double, double) transform, {
+    required bool swapArcEndpoints,
+  }) {
+    final line = lines[entityId];
+    if (line != null) {
+      final start = points[line.startPointId];
+      final end = points[line.endPointId];
+      if (start == null || end == null) return null;
+      final (sx, sy) = transform(start.x, start.y);
+      final (ex, ey) = transform(end.x, end.y);
+      return LineGhost(startX: sx, startY: sy, endX: ex, endY: ey);
+    }
+    final circle = circles[entityId];
+    if (circle != null) {
+      final center = points[circle.centerPointId];
+      final radiusPoint = points[circle.radiusPointId];
+      if (center == null || radiusPoint == null) return null;
+      final (cx, cy) = transform(center.x, center.y);
+      final (ex, ey) = transform(radiusPoint.x, radiusPoint.y);
+      return CircleGhost(centerX: cx, centerY: cy, edgeX: ex, edgeY: ey);
+    }
+    final arc = arcs[entityId];
+    if (arc != null) {
+      final center = points[arc.centerPointId];
+      final start = points[arc.startPointId];
+      final end = points[arc.endPointId];
+      if (center == null || start == null || end == null) return null;
+      final startSource = swapArcEndpoints ? end : start;
+      final endSource = swapArcEndpoints ? start : end;
+      final (cx, cy) = transform(center.x, center.y);
+      final (sx, sy) = transform(startSource.x, startSource.y);
+      final (ex, ey) = transform(endSource.x, endSource.y);
+      return ArcGhost(centerX: cx, centerY: cy, startX: sx, startY: sy, endX: ex, endY: ey);
+    }
+    return null;
+  }
+
+  List<DrawGhost> _patternGhostsFor(
+    List<String> sourceEntityIds,
+    (double, double) directionUnit,
+    int count,
+    double spacing,
+    bool reverse,
+  ) {
+    final dx = reverse ? -directionUnit.$1 : directionUnit.$1;
+    final dy = reverse ? -directionUnit.$2 : directionUnit.$2;
+    final ghosts = <DrawGhost>[];
+    for (var index = 1; index < count; index++) {
+      final offsetX = dx * spacing * index;
+      final offsetY = dy * spacing * index;
+      for (final entityId in sourceEntityIds) {
+        final ghost = _patternMirrorTransformedGhostFor(
+          entityId,
+          (x, y) => (x + offsetX, y + offsetY),
+          swapArcEndpoints: false,
+        );
+        if (ghost != null) ghosts.add(ghost);
+      }
+    }
+    return ghosts;
+  }
+
+  /// Mirrors the backend's own `Sketch._expand_mirror_instance` reflection
+  /// math exactly (project onto the infinite line through [mirrorLineId]'s
+  /// two Points, then go the same distance again past that foot of
+  /// perpendicular) - deliberately a second, independent implementation of
+  /// the same geometry rather than a shared library between client and
+  /// server, same accepted-duplication call `offsetPreviewGhosts`'s own doc
+  /// comment already made for this codebase's live-preview code (the real
+  /// computation the user's Confirm tap actually commits always happens
+  /// server-side).
+  List<DrawGhost> _mirrorGhostsFor(List<String> sourceEntityIds, String mirrorLineId) {
+    final mirrorLine = lines[mirrorLineId];
+    if (mirrorLine == null) return const [];
+    final a = points[mirrorLine.startPointId];
+    final b = points[mirrorLine.endPointId];
+    if (a == null || b == null) return const [];
+    final abx = b.x - a.x;
+    final aby = b.y - a.y;
+    final abLenSq = abx * abx + aby * aby;
+    if (abLenSq == 0) return const [];
+    (double, double) reflect(double x, double y) {
+      final apx = x - a.x;
+      final apy = y - a.y;
+      final t = (apx * abx + apy * aby) / abLenSq;
+      final footX = a.x + t * abx;
+      final footY = a.y + t * aby;
+      return (2 * footX - x, 2 * footY - y);
+    }
+
+    final ghosts = <DrawGhost>[];
+    for (final entityId in sourceEntityIds) {
+      final ghost = _patternMirrorTransformedGhostFor(entityId, reflect, swapArcEndpoints: true);
+      if (ghost != null) ghosts.add(ghost);
+    }
+    return ghosts;
+  }
+
+  /// Every Pattern/Mirror instance's own derived ghost geometry - both
+  /// already-committed instances ([patternInstances]/[mirrorInstances],
+  /// always shown, recomputed fresh from current source geometry every
+  /// call - full associativity by construction, exactly like the backend's
+  /// own read-time expansion) and the one currently being configured (the
+  /// live preview, shown only once enough fields are filled in to mean
+  /// something - an incomplete configuration previews nothing, same as
+  /// [offsetPreviewGhosts]'s own null-distance case). Consumed by
+  /// `sketch_canvas.dart`/`sketch_screen.dart`'s embedded-3D-view ghost
+  /// rendering exactly like [offsetPreviewGhosts] already is.
+  List<DrawGhost> get patternMirrorGhosts {
+    final ghosts = <DrawGhost>[];
+    for (final instance in patternInstances.values) {
+      final unit = _patternDirectionUnitVector(
+        lineId: instance.directionLineId,
+        fixedAxis: instance.directionFixedAxis,
+      );
+      if (unit == null) continue;
+      ghosts.addAll(
+        _patternGhostsFor(instance.sourceEntityIds, unit, instance.count, instance.spacing, instance.reverse),
+      );
+    }
+    for (final instance in mirrorInstances.values) {
+      ghosts.addAll(_mirrorGhostsFor(instance.sourceEntityIds, instance.mirrorLineId));
+    }
+
+    final liveTargets = _patternPreviewTargets;
+    if (liveTargets != null) {
+      final sourceIds = [for (final target in liveTargets) target.id];
+      if (_patternMirrorOperation == SketchPatternMirrorOperation.pattern) {
+        final unit = _patternDirectionUnitVector(
+          lineId: _patternDirectionLineId,
+          fixedAxis: _patternDirectionFixedAxis,
+        );
+        final spacing = _patternSpacing;
+        if (unit != null && spacing != null && spacing != 0 && _patternCount >= 2) {
+          ghosts.addAll(_patternGhostsFor(sourceIds, unit, _patternCount, spacing, _patternReverse));
+        }
+      } else {
+        final lineId = _mirrorLineId;
+        if (lineId != null) {
+          ghosts.addAll(_mirrorGhostsFor(sourceIds, lineId));
+        }
+      }
+    }
+    return ghosts;
+  }
+
   /// Trim/Extend's ribbon mode toggle ("Trim"/"Corner", mutually exclusive -
   /// see `sketch_trim_bar.dart`). Off (plain per-tap trim/extend, unchanged)
   /// is the default on entering the tool; on switches taps over to
@@ -9868,6 +10344,29 @@ class SketchController extends ChangeNotifier {
     }
     for (final constraint in await _api.listConstraints(sketchId)) {
       constraints[constraint.id] = constraint;
+    }
+    // Sketcher-roadmap Phase 7 (2D Pattern/Mirror): fetched alongside every
+    // other entity collection above, so a re-entered Sketch continues to
+    // show a previously-created instance's own derived ghosts (see
+    // [patternMirrorGhosts]) instead of only ever appearing for the
+    // session that created it.
+    for (final instance in await _api.listPatternInstances(sketchId)) {
+      patternInstances[instance.id] = SketchPatternInstanceView(
+        id: instance.id,
+        sourceEntityIds: instance.sourceEntityIds,
+        directionLineId: instance.direction.lineId,
+        directionFixedAxis: instance.direction.fixedAxis,
+        count: instance.count,
+        spacing: instance.spacing,
+        reverse: instance.reverse,
+      );
+    }
+    for (final instance in await _api.listMirrorInstances(sketchId)) {
+      mirrorInstances[instance.id] = SketchMirrorInstanceView(
+        id: instance.id,
+        sourceEntityIds: instance.sourceEntityIds,
+        mirrorLineId: instance.mirrorLineId,
+      );
     }
     // Fetched after every other collection above (so a Text's own anchor
     // Point is already in [points] to compute anchor-relative offsets

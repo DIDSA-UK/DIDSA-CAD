@@ -1174,6 +1174,65 @@ class SketchStateDto {
       );
 }
 
+// --- Sketcher-roadmap Phase 7: 2D Pattern/Mirror ----------------------------
+
+/// Mirrors the backend's `SketchPatternDirectionSchema` - exactly one of
+/// [lineId] (an existing Line in this same Sketch) or [fixedAxis] ("x"/"y").
+class SketchPatternDirectionDto {
+  final String? lineId;
+  final String? fixedAxis;
+
+  const SketchPatternDirectionDto.line(this.lineId) : fixedAxis = null;
+  const SketchPatternDirectionDto.fixedAxis(this.fixedAxis) : lineId = null;
+
+  factory SketchPatternDirectionDto.fromJson(Map<String, dynamic> json) => json['line_id'] != null
+      ? SketchPatternDirectionDto.line(json['line_id'] as String)
+      : SketchPatternDirectionDto.fixedAxis(json['fixed_axis'] as String?);
+
+  Map<String, dynamic> toJson() => {'line_id': lineId, 'fixed_axis': fixedAxis};
+}
+
+class SketchPatternInstanceDto {
+  final String id;
+  final List<String> sourceEntityIds;
+  final SketchPatternDirectionDto direction;
+  final int count;
+  final double spacing;
+  final bool reverse;
+
+  SketchPatternInstanceDto({
+    required this.id,
+    required this.sourceEntityIds,
+    required this.direction,
+    required this.count,
+    required this.spacing,
+    this.reverse = false,
+  });
+
+  factory SketchPatternInstanceDto.fromJson(Map<String, dynamic> json) => SketchPatternInstanceDto(
+        id: json['id'] as String,
+        sourceEntityIds: (json['source_entity_ids'] as List<dynamic>).map((e) => e as String).toList(),
+        direction: SketchPatternDirectionDto.fromJson(json['direction'] as Map<String, dynamic>),
+        count: json['count'] as int,
+        spacing: (json['spacing'] as num).toDouble(),
+        reverse: json['reverse'] as bool? ?? false,
+      );
+}
+
+class SketchMirrorInstanceDto {
+  final String id;
+  final List<String> sourceEntityIds;
+  final String mirrorLineId;
+
+  SketchMirrorInstanceDto({required this.id, required this.sourceEntityIds, required this.mirrorLineId});
+
+  factory SketchMirrorInstanceDto.fromJson(Map<String, dynamic> json) => SketchMirrorInstanceDto(
+        id: json['id'] as String,
+        sourceEntityIds: (json['source_entity_ids'] as List<dynamic>).map((e) => e as String).toList(),
+        mirrorLineId: json['mirror_line_id'] as String,
+      );
+}
+
 /// Thin wrapper over the backend's `/sketch` REST API. Knows nothing about
 /// UI/cursor state - it only translates Dart calls into the HTTP contract
 /// defined by backend/app/sketch/router.py and schemas.py.
@@ -2485,6 +2544,117 @@ class SketchApiClient {
   Future<ProfileDetectionDto> getProfile(String sketchId) => _send(
         () => _httpClient.get(_uri('/sketch/sketches/$sketchId/profile'), headers: _headers),
         (body) => ProfileDetectionDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  // --- Sketcher-roadmap Phase 7: 2D Pattern/Mirror --------------------------
+
+  Future<List<SketchPatternInstanceDto>> listPatternInstances(String sketchId) => _send(
+        () => _httpClient.get(_uri('/sketch/sketches/$sketchId/pattern-instances'), headers: _headers),
+        (body) => (body as List<dynamic>)
+            .map((e) => SketchPatternInstanceDto.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+
+  Future<SketchPatternInstanceDto> createPatternInstance(
+    String sketchId,
+    List<String> sourceEntityIds,
+    SketchPatternDirectionDto direction,
+    int count,
+    double spacing, {
+    bool reverse = false,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/pattern-instances'),
+              headers: _headers,
+              body: jsonEncode({
+                'source_entity_ids': sourceEntityIds,
+                'direction': direction.toJson(),
+                'count': count,
+                'spacing': spacing,
+                'reverse': reverse,
+              }),
+            ),
+        (body) => SketchPatternInstanceDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  Future<SketchPatternInstanceDto> updatePatternInstance(
+    String sketchId,
+    String instanceId, {
+    List<String>? sourceEntityIds,
+    SketchPatternDirectionDto? direction,
+    int? count,
+    double? spacing,
+    bool? reverse,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/sketch/sketches/$sketchId/pattern-instances/$instanceId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (sourceEntityIds != null) 'source_entity_ids': sourceEntityIds,
+                if (direction != null) 'direction': direction.toJson(),
+                if (count != null) 'count': count,
+                if (spacing != null) 'spacing': spacing,
+                if (reverse != null) 'reverse': reverse,
+              }),
+            ),
+        (body) => SketchPatternInstanceDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  Future<void> deletePatternInstance(String sketchId, String instanceId) => _send(
+        () => _httpClient.delete(
+              _uri('/sketch/sketches/$sketchId/pattern-instances/$instanceId'),
+              headers: _headers,
+            ),
+        (_) {},
+      );
+
+  Future<List<SketchMirrorInstanceDto>> listMirrorInstances(String sketchId) => _send(
+        () => _httpClient.get(_uri('/sketch/sketches/$sketchId/mirror-instances'), headers: _headers),
+        (body) => (body as List<dynamic>)
+            .map((e) => SketchMirrorInstanceDto.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+
+  Future<SketchMirrorInstanceDto> createMirrorInstance(
+    String sketchId,
+    List<String> sourceEntityIds,
+    String mirrorLineId,
+  ) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/mirror-instances'),
+              headers: _headers,
+              body: jsonEncode({'source_entity_ids': sourceEntityIds, 'mirror_line_id': mirrorLineId}),
+            ),
+        (body) => SketchMirrorInstanceDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  Future<SketchMirrorInstanceDto> updateMirrorInstance(
+    String sketchId,
+    String instanceId, {
+    List<String>? sourceEntityIds,
+    String? mirrorLineId,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/sketch/sketches/$sketchId/mirror-instances/$instanceId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (sourceEntityIds != null) 'source_entity_ids': sourceEntityIds,
+                if (mirrorLineId != null) 'mirror_line_id': mirrorLineId,
+              }),
+            ),
+        (body) => SketchMirrorInstanceDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  Future<void> deleteMirrorInstance(String sketchId, String instanceId) => _send(
+        () => _httpClient.delete(
+              _uri('/sketch/sketches/$sketchId/mirror-instances/$instanceId'),
+              headers: _headers,
+            ),
+        (_) {},
       );
 
   void close() => _httpClient.close();

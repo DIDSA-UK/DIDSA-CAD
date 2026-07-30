@@ -434,6 +434,10 @@ def resolve_sweep_from_bodies(
     blocks instead of a single untested one."""
     sketch = get_sketch_or_404(sketch_feature.sketch_id)
     result = detect_profile(sketch)
+    # Sketcher-roadmap Phase 7 (2D Pattern/Mirror): see extrude.py's
+    # identical call site for why this re-expansion is needed here too (a
+    # no-instance Sketch is a no-op, returning the same object).
+    sketch = sketch.expand_pattern_and_mirror_instances()
     if result.status not in EXTRUDABLE_STATUSES:
         logger.warning(
             "Skipping SweepFeature %s: sketch %s has no closed profile (status=%s)",

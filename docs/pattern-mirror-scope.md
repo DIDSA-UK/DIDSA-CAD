@@ -1291,24 +1291,167 @@ Pattern.
 
 2D, sketch-entity-level, per §2.9.
 
-- **Deliverable**: inside the sketcher, select one or more entities,
-  pattern or mirror them within the 2D sketch (lightweight, non-
-  independent instances), contributing to the sketch's extrudable
-  profile.
-- **Backend**: `Sketch.pattern_instances`/a mirror analog (new lightweight
-  dataclasses in `app/sketch/models.py` — pure 2D math, no OCCT needed at
-  all for the mirror case), the `detect_profile` expansion pre-pass
-  (§2.9), new sketch-level endpoints mirroring existing sketch-entity
-  endpoint shapes.
-- **Client**: new `SketchMode` entry reusing Offset's exact interaction
-  shape, `sketch_pattern_bar.dart` (clone `OffsetValueBar`), client-side
-  live preview, Finish-commits-to-backend flow.
-- **Complexity/risk**: medium-high. Architecturally simpler than it first
-  looks (no solver/DOF changes — modeled after Ellipse/Arc/Spline's own
-  "decompose into plain math, don't touch the solver" precedent), but
-  touches `detect_profile`'s core wire-assembly logic, which needs care
-  to avoid regressing existing non-patterned sketches — budget a
-  dedicated on-device verification pass.
+**Status: implemented (2026-07-30) — see `docs/status.md`'s matching dated
+entry for the full implementation/verification write-up.** Verified for
+real: the full backend `pytest` suite (1152 tests, including 37 new
+`test_stage_o_sketch_pattern_mirror.py` ones) against genuine
+`pythonocc-core`, and the full client `flutter test` suite (1051 tests,
+including 15 new `SketchController` ones) plus a clean `flutter analyze`,
+using freshly-bootstrapped local toolchains (micromamba + conda-forge for
+the backend, a `master`-channel Flutter SDK clone for the client, per
+every prior phase's own bootstrap).
+
+**Design revisions found while implementing, not anticipated by §2.9's
+original v1 write-up:**
+
+- **A same-sketch direction/mirror-line reference doesn't need the full
+  `SketchEntityRef`.** §2.9's own text suggested reusing `SketchEntityRef`
+  ("trivially available since it's the same Sketch") for "use this Sketch
+  Line as direction." In practice this is strictly simpler: a Pattern
+  direction or Mirror's own mirror line always lives in the *same* Sketch
+  as its source entities, so carrying a separate `sketch_id` alongside it
+  (as the general, cross-Sketch `SketchEntityRef` does - the type
+  `RevolveFeature.axis_ref`/`SweepFeature.path_refs` need, since *those*
+  reference a Sketch from *outside* it via the Document layer) only
+  invites a cross-Sketch-id mismatch class of bug with no benefit. Shipped
+  instead as a bare `line_id: str` field (`SketchPatternDirection`/
+  `SketchMirrorInstance.mirror_line_id`, `app/sketch/models.py`) - resolved
+  by a direct dict lookup against `self.entities`, the same "no OCCT
+  topology re-derivation" simplicity `SketchEntityRef`'s own docstring
+  already describes, just without the redundant id.
+- **The real, load-bearing find: a transformed Point that lands back on
+  its own source Point's exact position must reuse that Point's own id,
+  not mint a synthetic one.** This is always true for a Mirror instance's
+  own axis-crossing Points (the fixed points of a reflection), never true
+  for a Pattern instance's own pure translation (which has no fixed
+  points). Discovered directly via testing, not anticipated up front: the
+  single most common real-world reason to mirror a sketch at all - draw
+  half a symmetric profile up to a centerline, mirror it across that
+  centerline, get one closed loop - silently failed without this fix. The
+  real half and its own derived mirror image shared no Point ids at all
+  (each a separate, independently-computed synthetic Point per the
+  original design), so even though the two open ends visually coincided,
+  `detect_profile`'s id-based connectivity walk saw two disjoint open
+  chains, never one closed loop. Fixed in `Sketch._place_transformed_
+  entity`'s own `transformed_point` helper (`app/sketch/models.py`) - see
+  that method's own doc comment for the full reasoning, and
+  `test_detect_profile_closes_a_loop_mirrored_from_a_half_profile`
+  (`test_stage_o_sketch_pattern_mirror.py`) for the regression test this
+  fix is verified against. This changes nothing about Pattern's own
+  output.
+- **`detect_profile`'s own expansion is a local reassignment, not a
+  mutation - every downstream caller that goes on to build OCCT wires from
+  its result needs the identical re-expansion, explicitly.** `detect_
+  profile(sketch)` reassigns its own `sketch` parameter to `sketch.
+  expand_pattern_and_mirror_instances()` as its first line (a Sketch with
+  no instances gets back the exact same object, so this is a no-op for
+  every pre-Phase-7 sketch, confirmed by the full existing suite passing
+  unchanged) - but that reassignment is local to `detect_profile`'s own
+  call frame. `app.document.extrude`/`revolve`/`sweep` each call `detect_
+  profile(sketch)` and then separately pass the *same* `sketch` variable to
+  `wire_for_profile`/`face_for_profile`/`_prism_for_profile`, which index
+  `sketch.points`/`sketch.entities` directly - those three call sites each
+  needed their own explicit `sketch = sketch.expand_pattern_and_mirror_
+  instances()` line (deterministic synthetic ids, per that method's own
+  doc comment, make calling it twice safe and cheap) so a `Profile`'s
+  synthetic point/entity ids actually resolve when the wire gets built.
+  `app.document.router`'s two `detect_profile` call sites
+  (`_require_closed_sketch_feature`/`_validate_profile_refs`) needed no
+  such change - neither ever builds a wire from the result, and `profile_
+  refs` can only ever name a *real* entity (`resolve_sketch_entity` looks
+  up the live store, which never contains synthetic ids), so a pattern/
+  mirror instance's own derived copies are correctly never independently
+  selectable as a profile anchor either.
+- **v1 scope narrowed from the fully general "any direction/axis" shape
+  the 3D `PatternFeature`/`PatternDirectionRef` eventually grew to** -
+  deliberately, given this phase's own "medium-high, `detect_profile` is
+  the real risk" complexity note: linear (one direction) Pattern only, no
+  circular/two-direction-grid/skip-instances variants, and Pattern's own
+  direction (like Mirror's own mirror line) is either a fixed local X/Y
+  axis or an existing Sketch Line's own direction - there is no 2D
+  equivalent of `PatternDirectionRef.edge_ref` (a Sketch has no OCCT edges
+  of its own; every straight thing in it already is a Line). Client v1
+  reuses Offset's exact flat pick-then-configure shape with zero extra
+  wizard steps: while the value bar is open (non-modal, same as Offset's
+  own), a canvas tap on a Line sets the direction/mirror line directly (no
+  separate "pick direction" step the 3D panels need) - one `SketchMode`
+  entry with an internal Pattern/Mirror `SegmentedButton` toggle covers
+  both operations, per this section's own original design. Each of these
+  is a natural, cheap future widening behind the identical field/endpoint
+  shapes already shipped (a circular sketch pattern would add a
+  `pattern_type`/axis-point field exactly like `PatternFeature`'s own
+  Phase 2 → Phase 4 progression did), not a redesign.
+- **A committed instance's own derived geometry is never persisted as a
+  mesh/cache - recomputed fresh from current source geometry on every
+  read, client and server alike.** This was already §2.9's own design
+  intent ("full associativity by construction"), confirmed working
+  end-to-end: `Sketch.expand_pattern_and_mirror_instances` (backend) and
+  `SketchController.patternMirrorGhosts` (client, a second, independent
+  implementation of the identical 2D math - the same accepted-duplication
+  call `offsetPreviewGhosts`'s own doc comment already made for this
+  codebase's live-preview code) both recompute from scratch every call, so
+  dragging a Point that defines a patterned/mirrored source entity moves
+  every derived copy automatically, with no explicit invalidation/refresh
+  step anywhere.
+
+- **Deliverable**: inside the sketcher, select one or more Line/Circle/Arc
+  entities, pattern (translate along a fixed X/Y axis or an existing
+  Line's own direction, with count/spacing/reverse) or mirror (reflect
+  across an existing Line, real or construction) them within the 2D
+  sketch - lightweight, non-independent instances, contributing to the
+  sketch's extrudable profile via `detect_profile`'s own expanded view,
+  never appearing as independently selectable/draggable/deletable Points/
+  entities in the Sketch itself.
+- **Backend**: `SketchPatternInstance`/`SketchMirrorInstance` (new
+  lightweight dataclasses in `app/sketch/models.py`, plus `Sketch.
+  pattern_instances`/`mirror_instances` dicts) - pure 2D math (translate/
+  reflect), no OCCT/py-slvs solver involvement at all, modeled after
+  Ellipse/Arc/Spline's own "decompose into plain Points/Lines, don't touch
+  the solver" precedent for not needing a new dedicated py-slvs primitive
+  (though, unlike those, a pattern/mirror instance's own derived Points/
+  entities are never added to `self.points`/`self.entities` at all - see
+  `expand_pattern_and_mirror_instances`). `detect_profile`'s own expansion
+  pre-pass (§2.9, revised above); new CRUD endpoints (`POST`/`GET`/`PATCH`/
+  `DELETE .../pattern-instances[/{id}]` and `.../mirror-instances[/{id}]`)
+  mirroring every other sketch-entity endpoint's own validate→construct/
+  mutate→respond shape and 404/400 error-translation convention exactly.
+  `native_format.py` round-trip support, defaulting a missing key to `[]`
+  for backward compatibility with every pre-Phase-7 save, same convention
+  every other additive Sketch field already uses.
+- **Client**: new `SketchMode.pattern` entry reusing Offset's exact
+  interaction shape (`enterPatternMode`/`_handlePatternTap`/
+  `finishPatternPick`, mirroring `enterOffsetMode`/`_handleOffsetTap`/
+  `finishOffsetChain`), `sketch_pattern_bar.dart` (`PatternPickBar` cloned
+  from `OffsetPickBar`, `PatternValueBar` cloned from `OffsetValueBar` and
+  widened with the Pattern/Mirror toggle plus count/spacing/direction/
+  reverse fields), client-side live preview (`SketchController.
+  patternMirrorGhosts`, wired into both `sketch_canvas.dart`'s 2D painter
+  and `sketch_screen.dart`'s embedded-3D-view ghost rendering, reusing the
+  existing `LineGhost`/`CircleGhost`/`ArcGhost` pipeline unchanged),
+  Finish-commits-to-backend flow (`confirmPatternMirrorPreview`, with a
+  single-step undo deleting the created instance, mirroring `offsetLine`'s
+  own undo shape). A committed instance's own id/config is recorded
+  locally (`patternInstances`/`mirrorInstances` maps, fetched on
+  `adoptSketch` alongside every other entity collection) so its derived
+  ghosts keep rendering - and stay associative - after the session that
+  created it ends, not just during live preview.
+- **Explicit v1 non-goals, matching §2.9's own**: an individual instance
+  can't be independently edited/deleted/dimensioned (only its whole
+  Pattern/Mirror's own parameters, via the CRUD endpoints already shipped -
+  no client re-edit UI was built for reopening an existing instance's own
+  fields in this pass, a natural, cheap fast-follow); circular/two-
+  direction sketch patterns, skip-instances, and a Body-edge (from a
+  sibling 3D Body) as a direction/mirror-line source are all deferred, per
+  the scope-narrowing note above.
+- **Complexity/risk**: medium-high, as scoped - architecturally simpler
+  than it first looked (no solver/DOF changes), but `detect_profile`'s own
+  core wire-assembly logic genuinely needed real care: the full pre-
+  existing backend suite (1115 tests before this phase) passing completely
+  unchanged confirms the no-op-for-non-patterned-sketches guarantee holds,
+  and the Point-welding fix above was a real correctness gap the original
+  design didn't anticipate, found only by writing the "close a loop by
+  mirroring a half-profile" test the deliverable's own load-bearing use
+  case implies.
 
 ### Phase 8 — Feature pattern and feature mirror (Cut/Boss into a shared target)
 

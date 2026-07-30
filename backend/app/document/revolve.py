@@ -156,6 +156,10 @@ def resolve_revolve_from_bodies(
     raise `invalid_profile_ref`, same as Extrude's own resolver)."""
     sketch = get_sketch_or_404(sketch_feature.sketch_id)
     result = detect_profile(sketch)
+    # Sketcher-roadmap Phase 7 (2D Pattern/Mirror): see extrude.py's
+    # identical call site for why this re-expansion is needed here too (a
+    # no-instance Sketch is a no-op, returning the same object).
+    sketch = sketch.expand_pattern_and_mirror_instances()
     if result.status not in EXTRUDABLE_STATUSES:
         logger.warning(
             "Skipping RevolveFeature %s: sketch %s has no closed profile (status=%s)",

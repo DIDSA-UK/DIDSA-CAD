@@ -81,6 +81,10 @@ from app.sketch.models import (
     SketchEntity,
     SketchEntityRef,
     SketchEntityType,
+    SketchFixedAxis,
+    SketchMirrorInstance,
+    SketchPatternDirection,
+    SketchPatternInstance,
     Slot,
     Spline,
     TextEntity,
@@ -402,6 +406,59 @@ def _constraint_from_dict(data: dict) -> Constraint:
         raise NativeFormatError(f"Malformed {constraint_type!r} constraint: {exc}") from exc
 
 
+def _pattern_direction_to_dict(direction: SketchPatternDirection) -> dict:
+    return {
+        "line_id": direction.line_id,
+        "fixed_axis": direction.fixed_axis.value if direction.fixed_axis is not None else None,
+    }
+
+
+def _pattern_direction_from_dict(data: dict) -> SketchPatternDirection:
+    fixed_axis = data.get("fixed_axis")
+    return SketchPatternDirection(
+        line_id=data.get("line_id"),
+        fixed_axis=SketchFixedAxis(fixed_axis) if fixed_axis is not None else None,
+    )
+
+
+def _pattern_instance_to_dict(instance: SketchPatternInstance) -> dict:
+    return {
+        "id": instance.id,
+        "source_entity_ids": instance.source_entity_ids,
+        "direction": _pattern_direction_to_dict(instance.direction),
+        "count": instance.count,
+        "spacing": instance.spacing,
+        "reverse": instance.reverse,
+    }
+
+
+def _pattern_instance_from_dict(data: dict) -> SketchPatternInstance:
+    return SketchPatternInstance(
+        id=_require(data, "id"),
+        source_entity_ids=list(_require(data, "source_entity_ids")),
+        direction=_pattern_direction_from_dict(_require(data, "direction")),
+        count=_require(data, "count"),
+        spacing=_require(data, "spacing"),
+        reverse=data.get("reverse", False),
+    )
+
+
+def _mirror_instance_to_dict(instance: SketchMirrorInstance) -> dict:
+    return {
+        "id": instance.id,
+        "source_entity_ids": instance.source_entity_ids,
+        "mirror_line_id": instance.mirror_line_id,
+    }
+
+
+def _mirror_instance_from_dict(data: dict) -> SketchMirrorInstance:
+    return SketchMirrorInstance(
+        id=_require(data, "id"),
+        source_entity_ids=list(_require(data, "source_entity_ids")),
+        mirror_line_id=_require(data, "mirror_line_id"),
+    )
+
+
 def sketch_to_dict(sketch: Sketch) -> dict:
     """A `Sketch`'s full state, serialized to a plain dict - the same shape
     `export_native`'s own `"sketches"` array entries use.
@@ -428,6 +485,9 @@ def sketch_to_dict(sketch: Sketch) -> dict:
             {"point_id": point_id, "body_id": ref.body_id, "vertex_index": ref.vertex_index}
             for point_id, ref in sketch.external_references.items()
         ],
+        # Sketcher-roadmap Phase 7 (2D Pattern/Mirror).
+        "pattern_instances": [_pattern_instance_to_dict(i) for i in sketch.pattern_instances.values()],
+        "mirror_instances": [_mirror_instance_to_dict(i) for i in sketch.mirror_instances.values()],
     }
 
 
@@ -459,6 +519,15 @@ def sketch_from_dict(data: dict) -> Sketch:
         sketch.external_references[ref_data["point_id"]] = ExternalVertexReference(
             body_id=ref_data["body_id"], vertex_index=ref_data["vertex_index"]
         )
+    # Sketcher-roadmap Phase 7 (2D Pattern/Mirror) - defaulted to `[]`, same
+    # "a file saved before this feature existed has no opinion on it"
+    # reasoning as external_references above.
+    for instance_data in data.get("pattern_instances", []):
+        instance = _pattern_instance_from_dict(instance_data)
+        sketch.pattern_instances[instance.id] = instance
+    for instance_data in data.get("mirror_instances", []):
+        instance = _mirror_instance_from_dict(instance_data)
+        sketch.mirror_instances[instance.id] = instance
     return sketch
 
 

@@ -167,6 +167,16 @@ class SketchSpeedDial extends StatelessWidget {
             label: 'Offset',
             onPressed: controller.enterOffsetMode,
           ),
+          // Sketcher-roadmap Phase 7 (2D Pattern/Mirror): one tool entry
+          // covers both operations, mirroring Offset's own cursor-driven
+          // mode shape exactly - reuses the 3D Pattern feature's own icon
+          // (`assets/icons/feature/feature_pattern.svg`), the closest
+          // existing glyph in this codebase's own minimal-line-icon style.
+          _SpeedDialAction(
+            svgAsset: 'assets/icons/feature/feature_pattern.svg',
+            label: 'Pattern',
+            onPressed: controller.enterPatternMode,
+          ),
         ];
         final toolsSplitAt = (toolActions.length / 2).ceil();
         return [

@@ -534,6 +534,16 @@ def _solid_for_extrude_feature(
 
     sketch = get_sketch_or_404(sketch_feature.sketch_id)
     result = detect_profile(sketch)
+    # Sketcher-roadmap Phase 7 (2D Pattern/Mirror): `detect_profile` already
+    # expanded its own local `sketch` to resolve pattern/mirror instances'
+    # synthetic point/entity ids for `result`'s own Profile(s) - that
+    # reassignment is local to `detect_profile`'s own call frame, so this
+    # `sketch` variable needs the identical expansion (same deterministic
+    # ids, see `Sketch.expand_pattern_and_mirror_instances`'s own doc
+    # comment) before `_prism_for_profile` below can resolve them too. A
+    # no-instance Sketch gets back the exact same object, so this is a
+    # no-op for every pre-Phase-7 sketch.
+    sketch = sketch.expand_pattern_and_mirror_instances()
     if result.status not in EXTRUDABLE_STATUSES:
         logger.warning(
             "Skipping ExtrudeFeature %s: sketch %s has no closed profile (status=%s)",

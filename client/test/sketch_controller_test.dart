@@ -50,6 +50,9 @@ class _FakeBackend {
   final Map<String, Map<String, dynamic>> texts = {};
   final Map<String, Map<String, dynamic>> sketches = {};
   final Map<String, Map<String, dynamic>> constraints = {};
+  // Sketcher-roadmap Phase 7 (2D Pattern/Mirror).
+  final Map<String, Map<String, dynamic>> patternInstances = {};
+  final Map<String, Map<String, dynamic>> mirrorInstances = {};
 
   /// Every request `handle` has seen so far, as `"METHOD path"` - lets a test
   /// assert a controller call issued *no* HTTP request at all (e.g.
@@ -1869,6 +1872,82 @@ class _FakeBackend {
     final profileMatch = RegExp(r'^/sketch/sketches/[^/]+/profile$').hasMatch(path);
     if (profileMatch && request.method == 'GET') {
       return _json(_profileBody(), 200);
+    }
+
+    // Sketcher-roadmap Phase 7 (2D Pattern/Mirror). [SketchController.
+    // adoptSketch] now fetches both of these unconditionally for every
+    // Sketch (see `_loadExistingContent`), so these routes must exist for
+    // every existing test that adopts a Sketch, not just Phase-7-specific
+    // ones - an unmatched route here would 404 and surface as a spurious
+    // [SketchController.errorMessage] on every one of them.
+    final patternInstancesCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/pattern-instances$').hasMatch(path);
+    if (patternInstancesCollectionMatch && request.method == 'POST') {
+      final id = _newId('pattern-instance');
+      final instance = {
+        'id': id,
+        'source_entity_ids': body['source_entity_ids'],
+        'direction': body['direction'],
+        'count': body['count'],
+        'spacing': body['spacing'],
+        'reverse': body['reverse'] as bool? ?? false,
+      };
+      patternInstances[id] = instance;
+      return _json(instance, 201);
+    }
+    if (patternInstancesCollectionMatch && request.method == 'GET') {
+      return _jsonList(patternInstances.values.toList(), 200);
+    }
+    final patternInstanceItemMatch = RegExp(r'^/sketch/sketches/[^/]+/pattern-instances/(.+)$').firstMatch(path);
+    if (patternInstanceItemMatch != null && request.method == 'PATCH') {
+      final instance = patternInstances[patternInstanceItemMatch.group(1)];
+      if (instance == null) return http.Response('not found', 404);
+      if (body.containsKey('source_entity_ids')) instance['source_entity_ids'] = body['source_entity_ids'];
+      if (body.containsKey('direction')) instance['direction'] = body['direction'];
+      if (body.containsKey('count')) instance['count'] = body['count'];
+      if (body.containsKey('spacing')) instance['spacing'] = body['spacing'];
+      if (body.containsKey('reverse')) instance['reverse'] = body['reverse'];
+      return _json(instance, 200);
+    }
+    if (patternInstanceItemMatch != null && request.method == 'DELETE') {
+      patternInstances.remove(patternInstanceItemMatch.group(1));
+      return _json({'id': patternInstanceItemMatch.group(1)}, 200);
+    }
+    if (patternInstanceItemMatch != null && request.method == 'GET') {
+      final instance = patternInstances[patternInstanceItemMatch.group(1)];
+      if (instance == null) return http.Response('not found', 404);
+      return _json(instance, 200);
+    }
+
+    final mirrorInstancesCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/mirror-instances$').hasMatch(path);
+    if (mirrorInstancesCollectionMatch && request.method == 'POST') {
+      final id = _newId('mirror-instance');
+      final instance = {
+        'id': id,
+        'source_entity_ids': body['source_entity_ids'],
+        'mirror_line_id': body['mirror_line_id'],
+      };
+      mirrorInstances[id] = instance;
+      return _json(instance, 201);
+    }
+    if (mirrorInstancesCollectionMatch && request.method == 'GET') {
+      return _jsonList(mirrorInstances.values.toList(), 200);
+    }
+    final mirrorInstanceItemMatch = RegExp(r'^/sketch/sketches/[^/]+/mirror-instances/(.+)$').firstMatch(path);
+    if (mirrorInstanceItemMatch != null && request.method == 'PATCH') {
+      final instance = mirrorInstances[mirrorInstanceItemMatch.group(1)];
+      if (instance == null) return http.Response('not found', 404);
+      if (body.containsKey('source_entity_ids')) instance['source_entity_ids'] = body['source_entity_ids'];
+      if (body.containsKey('mirror_line_id')) instance['mirror_line_id'] = body['mirror_line_id'];
+      return _json(instance, 200);
+    }
+    if (mirrorInstanceItemMatch != null && request.method == 'DELETE') {
+      mirrorInstances.remove(mirrorInstanceItemMatch.group(1));
+      return _json({'id': mirrorInstanceItemMatch.group(1)}, 200);
+    }
+    if (mirrorInstanceItemMatch != null && request.method == 'GET') {
+      final instance = mirrorInstances[mirrorInstanceItemMatch.group(1)];
+      if (instance == null) return http.Response('not found', 404);
+      return _json(instance, 200);
     }
 
     return http.Response('not found: $path', 404);
@@ -9698,6 +9777,305 @@ void main() {
       controller.enterOffsetMode();
       await controller.handleCanvasTap(10.0, 5.0);
       expect(controller.selectionSet.single.kind, SelectionKind.line);
+    });
+  });
+
+  group('Sketcher-roadmap Phase 7 (2D Pattern/Mirror)', () {
+    test('enterPatternMode switches to SketchMode.pattern with a "Pattern" label', () {
+      controller.enterPatternMode();
+      expect(controller.mode, SketchMode.pattern);
+      expect(controller.modeLabel, 'Pattern');
+    });
+
+    Future<(SketchController, _FakeBackend)> adoptedControllerWithLine() async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-pattern-1', 'origin-pattern-1');
+      freshBackend.points['point-a'] = {'id': 'point-a', 'x': 0.0, 'y': 0.0};
+      freshBackend.points['point-b'] = {'id': 'point-b', 'x': 10.0, 'y': 0.0};
+      freshBackend.lines['line-a'] = {
+        'id': 'line-a',
+        'start_point_id': 'point-a',
+        'end_point_id': 'point-b',
+        'length': 10.0,
+        'construction': false,
+      };
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-pattern-1');
+      return (freshController, freshBackend);
+    }
+
+    test('tapping a Line accumulates into selectionSet without calling the create API yet', () async {
+      final (freshController, freshBackend) = await adoptedControllerWithLine();
+      freshController.enterPatternMode();
+
+      await freshController.handleCanvasTap(3, 0);
+
+      expect(freshController.patternPreviewTargets, isNull);
+      expect(freshController.selectionSet, hasLength(1));
+      expect(freshController.selectionSet.single.id, 'line-a');
+      expect(
+        freshBackend.requestLog.any((r) => r.startsWith('POST') &&
+            (r.contains('pattern-instances') || r.contains('mirror-instances'))),
+        isFalse,
+      );
+    });
+
+    test('tapping the same Line again removes it from selectionSet', () async {
+      final (freshController, _) = await adoptedControllerWithLine();
+      freshController.enterPatternMode();
+      await freshController.handleCanvasTap(3, 0);
+      expect(freshController.selectionSet, isNotEmpty);
+
+      await freshController.handleCanvasTap(3, 0);
+
+      expect(freshController.selectionSet, isEmpty);
+    });
+
+    test('tapping a Point (not a valid pattern/mirror source) is ignored', () async {
+      final (freshController, _) = await adoptedControllerWithLine();
+      freshController.enterPatternMode();
+
+      await freshController.handleCanvasTap(0, 0); // point-a
+
+      expect(freshController.selectionSet, isEmpty);
+    });
+
+    test('finishPatternPick with nothing picked exits to select mode', () async {
+      final (freshController, _) = await adoptedControllerWithLine();
+      freshController.enterPatternMode();
+
+      freshController.finishPatternPick();
+
+      expect(freshController.mode, SketchMode.select);
+    });
+
+    test('finishPatternPick hands off patternPreviewTargets and clears selectionSet', () async {
+      final (freshController, _) = await adoptedControllerWithLine();
+      freshController.enterPatternMode();
+      await freshController.handleCanvasTap(3, 0);
+
+      freshController.finishPatternPick();
+
+      expect(freshController.patternPreviewTargets, hasLength(1));
+      expect(freshController.selectionSet, isEmpty);
+    });
+
+    test('cancelPatternMirrorPreview clears patternPreviewTargets', () async {
+      final (freshController, _) = await adoptedControllerWithLine();
+      freshController.enterPatternMode();
+      await freshController.handleCanvasTap(3, 0);
+      freshController.finishPatternPick();
+
+      freshController.cancelPatternMirrorPreview();
+
+      expect(freshController.patternPreviewTargets, isNull);
+    });
+
+    test('canConfirmPatternMirror is false until a direction and non-zero spacing/count are set', () async {
+      final (freshController, _) = await adoptedControllerWithLine();
+      freshController.enterPatternMode();
+      await freshController.handleCanvasTap(3, 0);
+      freshController.finishPatternPick();
+      expect(freshController.canConfirmPatternMirror, isFalse);
+
+      freshController.setPatternDirectionFixedAxis('x');
+      expect(freshController.canConfirmPatternMirror, isFalse); // still no spacing
+
+      freshController.setPatternSpacing(5.0);
+      expect(freshController.canConfirmPatternMirror, isTrue); // default count is 2
+
+      freshController.setPatternCount(1);
+      expect(freshController.canConfirmPatternMirror, isFalse);
+    });
+
+    test('a configuring-phase Line tap sets the pattern direction from that Line, not the fixed axis',
+        () async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-pattern-dir', 'origin-pattern-dir');
+      freshBackend.points['a'] = {'id': 'a', 'x': 0.0, 'y': 0.0};
+      freshBackend.points['b'] = {'id': 'b', 'x': 10.0, 'y': 0.0};
+      freshBackend.points['c'] = {'id': 'c', 'x': 0.0, 'y': 20.0};
+      freshBackend.points['d'] = {'id': 'd', 'x': 0.0, 'y': 25.0};
+      freshBackend.lines['line-source'] = {
+        'id': 'line-source',
+        'start_point_id': 'a',
+        'end_point_id': 'b',
+        'length': 10.0,
+        'construction': false,
+      };
+      freshBackend.lines['line-dir'] = {
+        'id': 'line-dir',
+        'start_point_id': 'c',
+        'end_point_id': 'd',
+        'length': 5.0,
+        'construction': true,
+      };
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-pattern-dir');
+      freshController.enterPatternMode();
+      await freshController.handleCanvasTap(5, 0); // picks line-source
+      freshController.finishPatternPick();
+      freshController.setPatternDirectionFixedAxis('x');
+
+      await freshController.handleCanvasTap(0, 22.5); // picks line-dir
+
+      expect(freshController.patternDirectionLineId, 'line-dir');
+      expect(freshController.patternDirectionFixedAxis, isNull);
+    });
+
+    test('confirmPatternMirrorPreview creates a pattern instance, records it locally, and supports undo',
+        () async {
+      final (freshController, freshBackend) = await adoptedControllerWithLine();
+      freshController.enterPatternMode();
+      await freshController.handleCanvasTap(3, 0);
+      freshController.finishPatternPick();
+      freshController.setPatternDirectionFixedAxis('x');
+      freshController.setPatternSpacing(5.0);
+      freshController.setPatternCount(3);
+
+      await freshController.confirmPatternMirrorPreview();
+
+      expect(freshController.patternPreviewTargets, isNull);
+      expect(freshController.patternInstances, hasLength(1));
+      final instance = freshController.patternInstances.values.single;
+      expect(instance.sourceEntityIds, ['line-a']);
+      expect(instance.directionFixedAxis, 'x');
+      expect(instance.count, 3);
+      expect(instance.spacing, 5.0);
+      expect(freshBackend.requestLog.any((r) => r.startsWith('POST') && r.contains('pattern-instances')), isTrue);
+
+      await freshController.undo();
+      expect(freshController.patternInstances, isEmpty);
+      expect(freshBackend.requestLog.any((r) => r.startsWith('DELETE') && r.contains('pattern-instances')), isTrue);
+    });
+
+    test('confirmPatternMirrorPreview for Mirror creates a mirror instance and supports undo', () async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-mirror-1', 'origin-mirror-1');
+      freshBackend.points['a'] = {'id': 'a', 'x': 2.0, 'y': 0.0};
+      freshBackend.points['b'] = {'id': 'b', 'x': 2.0, 'y': 3.0};
+      freshBackend.points['ma'] = {'id': 'ma', 'x': 0.0, 'y': -5.0};
+      freshBackend.points['mb'] = {'id': 'mb', 'x': 0.0, 'y': 5.0};
+      freshBackend.lines['line-source'] = {
+        'id': 'line-source',
+        'start_point_id': 'a',
+        'end_point_id': 'b',
+        'length': 3.0,
+        'construction': false,
+      };
+      freshBackend.lines['line-mirror'] = {
+        'id': 'line-mirror',
+        'start_point_id': 'ma',
+        'end_point_id': 'mb',
+        'length': 10.0,
+        'construction': true,
+      };
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-mirror-1');
+      freshController.enterPatternMode();
+      await freshController.handleCanvasTap(2, 1.5); // picks line-source
+      freshController.finishPatternPick();
+      freshController.setPatternMirrorOperation(SketchPatternMirrorOperation.mirror);
+      expect(freshController.canConfirmPatternMirror, isFalse);
+
+      await freshController.handleCanvasTap(0, 0); // picks line-mirror (on the mirror axis itself)
+      expect(freshController.mirrorLineId, 'line-mirror');
+      expect(freshController.canConfirmPatternMirror, isTrue);
+
+      await freshController.confirmPatternMirrorPreview();
+
+      expect(freshController.mirrorInstances, hasLength(1));
+      final instance = freshController.mirrorInstances.values.single;
+      expect(instance.sourceEntityIds, ['line-source']);
+      expect(instance.mirrorLineId, 'line-mirror');
+      expect(freshBackend.requestLog.any((r) => r.startsWith('POST') && r.contains('mirror-instances')), isTrue);
+
+      await freshController.undo();
+      expect(freshController.mirrorInstances, isEmpty);
+    });
+
+    test('patternMirrorGhosts previews a live X-axis pattern from currently-picked sources', () async {
+      final (freshController, _) = await adoptedControllerWithLine();
+      freshController.enterPatternMode();
+      await freshController.handleCanvasTap(3, 0);
+      freshController.finishPatternPick();
+      freshController.setPatternDirectionFixedAxis('x');
+      freshController.setPatternSpacing(5.0);
+      freshController.setPatternCount(3);
+
+      final ghosts = freshController.patternMirrorGhosts;
+
+      expect(ghosts, hasLength(2)); // count 3 = seed + 2 new instances
+      final lineGhosts = ghosts.whereType<LineGhost>().toList();
+      expect(lineGhosts, hasLength(2));
+      final startXs = lineGhosts.map((g) => g.startX).toList()..sort();
+      expect(startXs, [5.0, 10.0]);
+    });
+
+    test('patternMirrorGhosts is empty for an incomplete live configuration (no direction/spacing yet)',
+        () async {
+      final (freshController, _) = await adoptedControllerWithLine();
+      freshController.enterPatternMode();
+      await freshController.handleCanvasTap(3, 0);
+      freshController.finishPatternPick();
+
+      expect(freshController.patternMirrorGhosts, isEmpty);
+    });
+
+    test('patternMirrorGhosts keeps previewing every already-committed instance, recomputed from current '
+        'source geometry (associativity)', () async {
+      final (freshController, _) = await adoptedControllerWithLine();
+      freshController.enterPatternMode();
+      await freshController.handleCanvasTap(3, 0);
+      freshController.finishPatternPick();
+      freshController.setPatternDirectionFixedAxis('x');
+      freshController.setPatternSpacing(5.0);
+      freshController.setPatternCount(2);
+      await freshController.confirmPatternMirrorPreview();
+      expect(freshController.patternMirrorGhosts, hasLength(1));
+      expect(freshController.patternMirrorGhosts.whereType<LineGhost>().single.startX, 5.0);
+
+      // Move the source Line's own start Point - the committed instance's
+      // own ghost must move with it, recomputed fresh, not frozen at
+      // whatever it was when created.
+      freshController.points['point-a'] =
+          SketchPointView(id: 'point-a', x: 100.0, y: 0.0);
+
+      expect(freshController.patternMirrorGhosts.whereType<LineGhost>().single.startX, 105.0);
+    });
+
+    test('a re-adopted Sketch loads its previously-created pattern/mirror instances', () async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-reload-1', 'origin-reload-1');
+      freshBackend.points['point-a'] = {'id': 'point-a', 'x': 0.0, 'y': 0.0};
+      freshBackend.points['point-b'] = {'id': 'point-b', 'x': 10.0, 'y': 0.0};
+      freshBackend.lines['line-a'] = {
+        'id': 'line-a',
+        'start_point_id': 'point-a',
+        'end_point_id': 'point-b',
+        'length': 10.0,
+        'construction': false,
+      };
+      freshBackend.patternInstances['existing-pattern'] = {
+        'id': 'existing-pattern',
+        'source_entity_ids': ['line-a'],
+        'direction': {'line_id': null, 'fixed_axis': 'y'},
+        'count': 2,
+        'spacing': 7.0,
+        'reverse': false,
+      };
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+
+      await freshController.adoptSketch('sketch-reload-1');
+
+      expect(freshController.patternInstances, hasLength(1));
+      final instance = freshController.patternInstances.values.single;
+      expect(instance.spacing, 7.0);
+      expect(instance.directionFixedAxis, 'y');
     });
   });
 }
