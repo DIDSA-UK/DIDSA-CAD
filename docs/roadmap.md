@@ -136,6 +136,40 @@ entries) - with one real gap confirmed by a direct code audit:
   a future pass to unify the two into one shared implementation rather than
   two hand-kept-in-sync copies, if a third such divergence shows up.
 
+## Text tool: 3D viewport, font selection, resizing, letter/line spacing
+
+Full design pass in `docs/text-tool-3d-viewport-scope.md` - not
+greenfield. The Text sketch entity (font-outline-to-BRep, closed/holed
+per-glyph profiles, already Extrude/Sweep/Revolve-able via the generic
+`Profile`/`wire_for_profile` path) and a working 2D-canvas tool
+(font/size/rotation, no letter/line spacing yet) both already shipped -
+see `docs/sketcher-overhaul-scope.md` §6.2.6. Four scoped, mostly
+independent workstreams remain, in the scope doc's own recommended
+order:
+
+1. **Render Text in the 3D-embedded ("Orbit View") sketcher.** Text is
+   currently the one sketch tool deliberately excluded there
+   (`SketchSpeedDial.restrictToEmbeddedTools`) - not because placement
+   doesn't work, but because `sketchGeometry3DFrom`/`SketchGeometry3D`
+   have no glyph-rendering case at all, unlike every other curved entity.
+   Low-medium risk - reuses the 2D canvas's already-cached preview-outline
+   geometry, no new backend endpoint.
+2. **Font selection.** 8 OFL-licensed fonts already bundled and already
+   confirmed to produce closed, holed, extrude/sweep-ready profiles -
+   needs a product decision on whether the ask is "confirm the existing
+   set" or "add more named fonts" (mechanical either way, plus a
+   per-font OCCT-compatibility spot-check).
+3. **Resizing.** A numeric `Size` field already exists; the real gap (if
+   wanted) is an interactive drag handle, mirroring the pattern other
+   tools (Circle radius, etc.) already use.
+4. **Letter spacing / line spacing.** Genuinely new backend work, and the
+   one item with a real unconfirmed unknown - whether `OCC.Core.Addons`
+   exposes a font-metrics source (advance widths, line height) for
+   per-character/per-line layout, alongside `text_to_brep`/
+   `register_font`. Recommend checking this on-device before locking in
+   field names/schema shape, the same way the original Text-tool OCCT-
+   availability check was run before that work started.
+
 ## Standalone "2D Drawing" tool follow-ups
 
 Thin v1 shipped 2026-07-21 (see `docs/status.md`): a bare, Part-free
