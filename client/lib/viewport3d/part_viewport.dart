@@ -3147,6 +3147,22 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               }
             }
           }
+        case SelectionEntityKind.sketchText:
+          // 3D-viewport Text tool round: mirrors [SelectionEntityKind.
+          // sketchSpline] above exactly - [entity.sketchEntityId] can
+          // legitimately match *several* [geometry.textIds] entries (one
+          // owning Text contributes one loop per glyph contour, plus one
+          // more per hole - see `sketch_geometry_3d.dart`'s own
+          // `textPolygons` doc comment), all correctly picked up by this
+          // same "append every matching index" loop, not just the first.
+          final geometry = widget.sketchGeometries[entity.sketchFeatureId];
+          if (geometry != null) {
+            for (var i = 0; i < geometry.textIds.length; i++) {
+              if (geometry.textIds[i] == entity.sketchEntityId) {
+                edgeSegments.addAll(_polygonSegments(geometry.textPolygons[i]));
+              }
+            }
+          }
         case SelectionEntityKind.sketchPatternMirrorInstance:
           edgeSegments.addAll(widget.patternMirrorGhostSegments[entity.sketchEntityId] ?? const []);
         case SelectionEntityKind.referencePlane:
@@ -3318,6 +3334,19 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           createPlaneSize / 2,
           color,
         );
+      case SelectionEntityKind.sketchText:
+        final geometry = widget.sketchGeometries[entity.sketchFeatureId];
+        if (geometry == null) return null;
+        // Multi-match, like sketchCircle above (not sketchArc/sketchEllipse/
+        // sketchSpline's own single indexOf) - one Text id can own several
+        // loops (one per glyph contour, plus holes - see
+        // _syncSelectedEntityNodes's own identical case for why).
+        final textSegments = <(vm.Vector3, vm.Vector3)>[
+          for (var i = 0; i < geometry.textIds.length; i++)
+            if (geometry.textIds[i] == entity.sketchEntityId) ..._polygonSegments(geometry.textPolygons[i]),
+        ];
+        if (textSegments.isEmpty) return null;
+        return buildMeshEdgesNode(textSegments, color: color, width: kHighlightEdgeStrokeWidth);
       case SelectionEntityKind.sketchPatternMirrorInstance:
         final segments = widget.patternMirrorGhostSegments[entity.sketchEntityId];
         if (segments == null || segments.isEmpty) return null;

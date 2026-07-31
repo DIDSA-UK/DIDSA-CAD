@@ -69,6 +69,18 @@ enum SelectionEntityKind {
   sketchArc,
   sketchEllipse,
   sketchSpline,
+
+  /// On-device feedback (3D-viewport Text tool round: "text is not
+  /// selectable with cursor only with drag box select and 'select
+  /// all'"): a Sketch's own Text entities were rendered in the
+  /// 3D-embedded viewport (`sketch_geometry_3d.dart`'s `textPolygons`)
+  /// but never wired into this ray-hit-testing/hover-highlight pipeline
+  /// at all - the same gap Circle/Arc/Ellipse/Spline each had to have
+  /// separately closed for themselves (see this enum's own doc comment
+  /// above and [sketchArc]'s sibling comments) - box-select/"select all"
+  /// still worked because those go through [SketchController]'s own
+  /// entity-map iteration, a completely different, filter-agnostic path.
+  sketchText,
   referencePlane,
   createPlane,
 
@@ -173,6 +185,7 @@ class SelectionEntityRef {
         SelectionEntityKind.sketchArc ||
         SelectionEntityKind.sketchEllipse ||
         SelectionEntityKind.sketchSpline ||
+        SelectionEntityKind.sketchText ||
         SelectionEntityKind.sketchPatternMirrorInstance =>
           'SelectionEntityRef($kind, sketchFeatureId: $sketchFeatureId, $sketchEntityId)',
         SelectionEntityKind.referencePlane => 'SelectionEntityRef($kind, $referencePlaneKind)',
@@ -613,6 +626,37 @@ HoverHit? hitTestSketchSplines(
       polylines,
       ids,
       SelectionEntityKind.sketchSpline,
+      radiusPixels: radiusPixels,
+      orthographicHalfHeight: orthographicHalfHeight,
+    );
+
+/// 3D-viewport Text tool round: [hitTestSketchCircles]' counterpart for a
+/// Sketch's own Text entities - each glyph contour's outer loop *or* one
+/// of its own holes is already its own closed polyline (see
+/// `sketch_geometry_3d.dart`'s `textPolygons`, one owning Text id per
+/// loop in the parallel `ids`), so this needs no Text-specific geometry
+/// of its own - a straight [_hitTestSketchPolylines] call, exactly like
+/// every sibling `hitTestSketchXxx` function here. A hole's own hit-test
+/// resolving to the owning Text id (never a "this is just a hole" flag)
+/// is correct - the whole point of tagging every loop with the same
+/// owning id is that a tap anywhere on the outline, hole included,
+/// selects the one Text entity, not a sub-piece of it.
+HoverHit? hitTestSketchTexts(
+  vm.Ray ray,
+  Size viewportSize,
+  String sketchFeatureId,
+  List<List<vm.Vector3>> polygons,
+  List<String> ids, {
+  double radiusPixels = kSelectionHitRadiusPixels,
+  double? orthographicHalfHeight,
+}) =>
+    _hitTestSketchPolylines(
+      ray,
+      viewportSize,
+      sketchFeatureId,
+      polygons,
+      ids,
+      SelectionEntityKind.sketchText,
       radiusPixels: radiusPixels,
       orthographicHalfHeight: orthographicHalfHeight,
     );
@@ -1094,6 +1138,20 @@ HoverHit? hitTestBodies({
         entry.key,
         geometry.splinePolylines,
         geometry.splineIds,
+        radiusPixels: radiusPixels,
+        orthographicHalfHeight: orthographicHalfHeight,
+      );
+      if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
+        bestEdge = hit;
+      }
+    }
+    if (filter.sketchText) {
+      final hit = hitTestSketchTexts(
+        ray,
+        viewportSize,
+        entry.key,
+        geometry.textPolygons,
+        geometry.textIds,
         radiusPixels: radiusPixels,
         orthographicHalfHeight: orthographicHalfHeight,
       );

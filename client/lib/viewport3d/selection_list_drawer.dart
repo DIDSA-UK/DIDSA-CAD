@@ -154,6 +154,11 @@ class SelectionListDrawer extends StatelessWidget {
         // same fallback reasoning `sketchLine`'s own Material glyph note
         // above already established for this list.
         return const SvgIcon('assets/icons/viewport/selection_sketch_circle.svg');
+      case SelectionEntityKind.sketchText:
+        // Unlike sketchArc/sketchEllipse/sketchSpline above, a real,
+        // dedicated icon already exists - the same one the Text draw tool
+        // itself uses in the speed dial.
+        return const SvgIcon('assets/icons/sketch_tools/sketch_tool_text.svg');
       case SelectionEntityKind.referencePlane:
       case SelectionEntityKind.createPlane:
         return const SvgIcon('assets/icons/viewport/selection_plane.svg');
@@ -188,6 +193,8 @@ class SelectionListDrawer extends StatelessWidget {
         return 'Sketch Ellipse';
       case SelectionEntityKind.sketchSpline:
         return 'Sketch Spline';
+      case SelectionEntityKind.sketchText:
+        return 'Sketch Text';
       case SelectionEntityKind.referencePlane:
       case SelectionEntityKind.createPlane:
         return 'Plane';

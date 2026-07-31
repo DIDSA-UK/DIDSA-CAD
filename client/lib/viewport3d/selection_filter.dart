@@ -44,6 +44,15 @@ class SelectionFilterState {
   final bool sketchEllipse;
   final bool sketchSpline;
 
+  /// 3D-viewport Text tool round: gates `SelectionEntityKind.sketchText`
+  /// the same way [sketchSpline] gates `.sketchSpline` - Text glyph
+  /// outlines were rendered in the embedded 3D sketcher but never had a
+  /// hit-test/filter entry of their own (see `selection_hit_test.dart`'s
+  /// own doc comment on the enum value). Defaults to `true`, same
+  /// "always considered by default" precedent every sibling `sketchXxx`
+  /// field above already has.
+  final bool sketchText;
+
   /// On-device feedback ("the patterned circle under the cursor is not
   /// highlighted and will not select"): gates
   /// `SelectionEntityKind.sketchPatternMirrorInstance` the same way
@@ -87,6 +96,7 @@ class SelectionFilterState {
     this.sketchArc = true,
     this.sketchEllipse = true,
     this.sketchSpline = true,
+    this.sketchText = true,
     this.plane = true,
     this.sketchPatternMirrorInstance = false,
   });
@@ -111,6 +121,7 @@ class SelectionFilterState {
     bool? sketchArc,
     bool? sketchEllipse,
     bool? sketchSpline,
+    bool? sketchText,
     bool? plane,
     bool? sketchPatternMirrorInstance,
   }) {
@@ -125,6 +136,7 @@ class SelectionFilterState {
       sketchArc: sketchArc ?? this.sketchArc,
       sketchEllipse: sketchEllipse ?? this.sketchEllipse,
       sketchSpline: sketchSpline ?? this.sketchSpline,
+      sketchText: sketchText ?? this.sketchText,
       plane: plane ?? this.plane,
       sketchPatternMirrorInstance: sketchPatternMirrorInstance ?? this.sketchPatternMirrorInstance,
     );
@@ -143,6 +155,7 @@ class SelectionFilterState {
       other.sketchArc == sketchArc &&
       other.sketchEllipse == sketchEllipse &&
       other.sketchSpline == sketchSpline &&
+      other.sketchText == sketchText &&
       other.plane == plane &&
       other.sketchPatternMirrorInstance == sketchPatternMirrorInstance;
 
@@ -155,13 +168,14 @@ class SelectionFilterState {
         sketchPoint,
         sketchLine,
         sketchCircle,
-        Object.hash(sketchArc, sketchEllipse, sketchSpline, plane, sketchPatternMirrorInstance),
+        Object.hash(sketchArc, sketchEllipse, sketchSpline, sketchText, plane, sketchPatternMirrorInstance),
       );
 
   @override
   String toString() =>
       'SelectionFilterState(vertex: $vertex, edge: $edge, face: $face, body: $body, '
       'sketchPoint: $sketchPoint, sketchLine: $sketchLine, sketchCircle: $sketchCircle, '
-      'sketchArc: $sketchArc, sketchEllipse: $sketchEllipse, sketchSpline: $sketchSpline, plane: $plane, '
+      'sketchArc: $sketchArc, sketchEllipse: $sketchEllipse, sketchSpline: $sketchSpline, '
+      'sketchText: $sketchText, plane: $plane, '
       'sketchPatternMirrorInstance: $sketchPatternMirrorInstance)';
 }

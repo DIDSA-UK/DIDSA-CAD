@@ -3328,12 +3328,86 @@ class SketchController extends ChangeNotifier {
     return created.id;
   }
 
+  /// [_nearestSlotArcApex]'s own shape, applied to a Text's own corner/
+  /// center handle positions ([textResizeHandle]/[textCenterHandle])
+  /// instead of a Slot Arc's apex - on-device feedback ("bounding box and
+  /// center lines are only visible when text is selected. user should be
+  /// able to use them for dimensioning"): the corner and center handles
+  /// are the two points on that bounding box actually worth dimensioning
+  /// from/to (matching the granularity every other shape's own
+  /// construction-snap targets already have - a Line exposes one
+  /// midpoint, a Slot exposes its two Arc apexes, never *every* point
+  /// along an edge), so this makes those two - not the full box outline
+  /// itself, which stays pure paint-time chrome (see [textBounds]'s own
+  /// doc comment for why it has no real backing geometry at all) -
+  /// tappable/dimension-pickable the exact same way. Checked regardless
+  /// of whether [text] is the current Select-mode [selection] - unlike
+  /// the bounding box's own *rendering* (gated on that, so an idle sketch
+  /// full of Text isn't cluttered with boxes), a snap target needs no
+  /// visual box drawn to be usable - the hover indicator
+  /// ([hoveredLineMidpoint]) is this mechanism's own, box-independent
+  /// discoverability cue, the same as it already is for a Line's
+  /// midpoint or a Slot's own apex.
+  (SketchTextView, bool isCorner)? _nearestTextHandleAt(double x, double y, double radius) {
+    (SketchTextView, bool)? best;
+    var bestDistSq = double.infinity;
+    for (final text in texts.values) {
+      final corner = textResizeHandle(text);
+      if (corner != null) {
+        final dx = x - corner.x;
+        final dy = y - corner.y;
+        final distSq = dx * dx + dy * dy;
+        if (distSq <= radius * radius && distSq < bestDistSq) {
+          bestDistSq = distSq;
+          best = (text, true);
+        }
+      }
+      final center = textCenterHandle(text);
+      if (center != null) {
+        final dx = x - center.x;
+        final dy = y - center.y;
+        final distSq = dx * dx + dy * dy;
+        if (distSq <= radius * radius && distSq < bestDistSq) {
+          bestDistSq = distSq;
+          best = (text, false);
+        }
+      }
+    }
+    return best;
+  }
+
+  /// [_materializeSlotArcApex]'s own shape, for a Text's corner/center
+  /// handle - deliberately unconstrained for the same reason: no existing
+  /// solver primitive expresses "stays at this Text's own bounding-box
+  /// corner/center" to hang a live-tracking constraint off of (the box
+  /// itself has no backing geometry at all - see [textBounds]'s own doc
+  /// comment), so this is a one-shot reference Point, not something that
+  /// re-tracks the Text if it's later resized/moved/re-rotated.
+  Future<String> _materializeTextHandlePoint(SketchTextView text, {required bool isCorner}) async {
+    final target = isCorner ? textResizeHandle(text) : textCenterHandle(text);
+    final (x, y) = (target!.x, target.y);
+    for (final existing in points.values) {
+      final dx = existing.x - x;
+      final dy = existing.y - y;
+      if (dx * dx + dy * dy <= 1e-9) return existing.id;
+    }
+    final created = await _api.createPoint(_sketchId!, x, y);
+    points[created.id] = SketchPointView(id: created.id, x: created.x, y: created.y);
+    _pushUndo(() async {
+      await _api.deletePoint(_sketchId!, created.id);
+      points.remove(created.id);
+    });
+    return created.id;
+  }
+
   /// The single lookup+materialize entry point every tap-to-place/tap-to-
   /// pick path goes through for a construction-only snap target not yet
   /// backed by a real Point - a Line's midpoint ([_nearestLineMidpointId]/
-  /// [_materializeMidpoint]) or an intact Slot's own Arc apex
-  /// ([_nearestSlotArcApex]/[_materializeSlotArcApex]). Returns the target's
-  /// current position (for a hover indicator, see [hoveredConstructionSnapPoint])
+  /// [_materializeMidpoint]), an intact Slot's own Arc apex
+  /// ([_nearestSlotArcApex]/[_materializeSlotArcApex]), or a Text's own
+  /// corner/center handle ([_nearestTextHandleAt]/
+  /// [_materializeTextHandlePoint]). Returns the target's current position
+  /// (for a hover indicator, see [hoveredConstructionSnapPoint])
   /// alongside a callback that materializes it into a real Point on demand -
   /// callers that only need the position (rendering) never call it; callers
   /// that need a Point id (picking/placing) do.
@@ -3358,6 +3432,17 @@ class SketchController extends ChangeNotifier {
       final position = _slotArcApex(slot, isArc1: isArc1);
       if (position != null) {
         return (position: position, materialize: () => _materializeSlotArcApex(slot, isArc1: isArc1));
+      }
+    }
+    final textHandleTarget = _nearestTextHandleAt(x, y, radius);
+    if (textHandleTarget != null) {
+      final (text, isCorner) = textHandleTarget;
+      final position = isCorner ? textResizeHandle(text) : textCenterHandle(text);
+      if (position != null) {
+        return (
+          position: (position.x, position.y),
+          materialize: () => _materializeTextHandlePoint(text, isCorner: isCorner),
+        );
       }
     }
     return null;
@@ -5456,20 +5541,37 @@ class SketchController extends ChangeNotifier {
 
   /// Commits a resize drag: PATCHes the real `size` (triggering a real
   /// OCCT font-outline recompute via [setTextProperties]'s own
-  /// [_refreshTextPreview] call) and moves the anchor Point so the
-  /// bounding box's center - the position handle, the thing the *other*
-  /// handle controls - ends up exactly where it started, even though
-  /// OCCT's own `size` scaling is anchored at the glyph's baseline origin,
-  /// not its visual center (see the section doc comment above). Solving
-  /// `newAnchor + (boundsCenterRelativeToAnchor * scale) == oldCenter` for
-  /// `newAnchor` gives `oldAnchor + (oldCenter - oldAnchor) * (1 - scale)`
-  /// - both terms already captured at grab time, so no extra geometry
-  /// query is needed here.
+  /// [_refreshTextPreview] call) and, normally, also moves the anchor
+  /// Point so the bounding box's center - the position handle, the thing
+  /// the *other* handle controls - ends up exactly where it started, even
+  /// though OCCT's own `size` scaling is anchored at the glyph's baseline
+  /// origin, not its visual center (see the section doc comment above).
+  /// Solving `newAnchor + (boundsCenterRelativeToAnchor * scale) ==
+  /// oldCenter` for `newAnchor` gives `oldAnchor + (oldCenter - oldAnchor)
+  /// * (1 - scale)` - both terms already captured at grab time, so no
+  /// extra geometry query is needed here.
+  ///
+  /// Bug fix (on-device feedback: "I receive 'can't move origin of
+  /// sketch' error"): that recenter is skipped entirely when the anchor
+  /// *is* the Sketch's own origin Point (`text.anchorPointId ==
+  /// _originPointId`) - the one Point the backend unconditionally refuses
+  /// to PATCH (`router.py`'s own "Cannot move the sketch's origin point",
+  /// surfaced here as [errorMessage] via [_runGuarded]'s `ApiException`
+  /// catch), the same case [dragGrabTargetAt]'s own Text branch already
+  /// refuses a *plain* position drag for. A Text anchored exactly at the
+  /// origin (a common thing to do - it's often the natural first tap in
+  /// an empty Sketch) still resizes correctly, just pivoting from the
+  /// fixed anchor itself rather than the bounding box's center - the same
+  /// "grows from the pinned point" behavior OCCT's own `size` scaling
+  /// already has natively (see the doc comment above), not a degraded
+  /// fallback so much as reverting to the more fundamental default when
+  /// the "preserve the center" convenience genuinely can't be honored.
   ///
   /// One combined undo entry reverts both the size and the anchor move
   /// together (mirrors every other multi-field commit in this file - e.g.
   /// [endLineDrag]'s own two-Point revert) rather than as two independent
-  /// undo steps a user could partially unwind.
+  /// undo steps a user could partially unwind - collapses to just the
+  /// `size` revert when the anchor never moved in the first place.
   Future<void> endTextResizeDrag() async {
     final textId = _draggingTextResizeId;
     final baseSize = _resizeBaseSize;
@@ -5512,11 +5614,14 @@ class SketchController extends ChangeNotifier {
       return;
     }
     final newSize = baseSize * scale;
-    final newAnchorX = baseAnchorX + (centerX - baseAnchorX) * (1 - scale);
-    final newAnchorY = baseAnchorY + (centerY - baseAnchorY) * (1 - scale);
+    final anchorIsFixed = text.anchorPointId == _originPointId;
+    final newAnchorX = anchorIsFixed ? baseAnchorX : baseAnchorX + (centerX - baseAnchorX) * (1 - scale);
+    final newAnchorY = anchorIsFixed ? baseAnchorY : baseAnchorY + (centerY - baseAnchorY) * (1 - scale);
     await _runGuarded(() async {
-      final movedAnchor = await _api.updatePoint(_sketchId!, text.anchorPointId, newAnchorX, newAnchorY);
-      points[text.anchorPointId] = SketchPointView(id: movedAnchor.id, x: movedAnchor.x, y: movedAnchor.y);
+      if (!anchorIsFixed) {
+        final movedAnchor = await _api.updatePoint(_sketchId!, text.anchorPointId, newAnchorX, newAnchorY);
+        points[text.anchorPointId] = SketchPointView(id: movedAnchor.id, x: movedAnchor.x, y: movedAnchor.y);
+      }
       final updated = await _api.updateText(_sketchId!, textId, size: newSize);
       texts[textId] = SketchTextView(
         id: updated.id,
@@ -5528,8 +5633,10 @@ class SketchController extends ChangeNotifier {
         construction: updated.construction,
       );
       _pushUndo(() async {
-        final revertedAnchor = await _api.updatePoint(_sketchId!, text.anchorPointId, baseAnchorX, baseAnchorY);
-        points[text.anchorPointId] = SketchPointView(id: revertedAnchor.id, x: revertedAnchor.x, y: revertedAnchor.y);
+        if (!anchorIsFixed) {
+          final revertedAnchor = await _api.updatePoint(_sketchId!, text.anchorPointId, baseAnchorX, baseAnchorY);
+          points[text.anchorPointId] = SketchPointView(id: revertedAnchor.id, x: revertedAnchor.x, y: revertedAnchor.y);
+        }
         final revertedText = await _api.updateText(_sketchId!, textId, size: baseSize);
         texts[textId] = SketchTextView(
           id: revertedText.id,
@@ -5543,7 +5650,7 @@ class SketchController extends ChangeNotifier {
         await _refreshTextPreview(textId);
       });
       await _refreshTextPreview(textId);
-      await _solveAndTrackDof(anchorPointIds: [text.anchorPointId]);
+      if (!anchorIsFixed) await _solveAndTrackDof(anchorPointIds: [text.anchorPointId]);
     });
   }
 

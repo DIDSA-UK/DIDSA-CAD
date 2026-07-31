@@ -480,3 +480,64 @@ to 20), `sketch_canvas.dart` (bounding-box/handle overlay, drag-mode grab
 dispatch), `sketch_ribbon.dart` (old modal dialog removed, "Edit Text" now
 opens the bar), new `sketch_text_bar.dart`, `pubspec.yaml` + `client/assets/fonts/`
 (all 20 fonts as Flutter asset fonts, not just backend-side).
+
+## 5. Phase 1 on-device feedback round (found and fixed post-implementation)
+
+Four real gaps found once Phase 1 was actually used in the 3D-embedded
+viewport, none of them "the 2D canvas got the feature and 3D didn't" so
+much as one genuine cross-view gap plus three narrower bugs:
+
+- **Auto-select/auto-open after placement.** Placing a Text left nothing
+  selected, so the bounding box/handles/toolbar (all gated on being the
+  current selection) never appeared without a separate manual select
+  step - far more discoverable via a flat 2D tap than a 3D ray-cast one,
+  which read as "3D never got the feature at all." Fixed by having
+  `SketchController._clickTextTool` exit to Select mode, select the new
+  Text, and call `openTextBar` immediately - the actual, literal "send
+  the user straight to the text edit tool after placing" ask, and it
+  happens to fix the cross-view discoverability gap too, since both
+  views funnel through this one shared method.
+- **Text had no hit-testing in the 3D-embedded ray-picking pipeline at
+  all.** A second, genuinely separate gap from the rendering fix in §2.1
+  - `sketchGeometry3DFrom` drew Text's glyph outlines, but the *hover/
+  tap-select* system (`SelectionEntityKind`/`SelectionFilterState` in
+  `selection_hit_test.dart`/`selection_filter.dart`, real GPU ray-casting
+  against rendered geometry - entirely different from the flat 2D
+  canvas's screen-space `_entityAt`) had no `sketchText` kind, so a 3D
+  cursor tap or hover never found it; box-select/"select all" worked
+  because those go through `SketchController`'s own entity-map iteration
+  instead. Added `SelectionEntityKind.sketchText`, `hitTestSketchTexts`,
+  wired through every consuming switch (`selection_hit_test.dart`,
+  `selection_filter.dart`, `sketch_screen.dart`'s both-direction
+  `SelectionKind`/`SelectionEntityKind` mappings, `selection_list_drawer.dart`'s
+  icon/label, `part_viewport.dart`'s two highlight-node builders).
+- **"Can't move the sketch's origin point" error while resizing.**
+  `endTextResizeDrag` always tried to recompute the anchor Point's
+  position to keep the bounding box's own center fixed after a scale -
+  when the anchor is literally the Sketch's origin Point (a common
+  placement - often the natural first tap in an empty Sketch), the
+  backend unconditionally rejects that PATCH. Fixed by skipping the
+  recenter for that one case and pivoting the resize from the anchor
+  itself instead (the same behavior OCCT's own `size` scaling already
+  has natively) rather than refusing the resize outright.
+- **Bounding box/handles usable for dimensioning.** The box and center
+  lines were (and still are) pure paint-time chrome with no backing
+  geometry - correct per §2.3's own design, since `TextEntity` is
+  deliberately never decomposed into Points/Lines - but that meant they
+  were never *reachable* as a dimension target either. Fixed via the
+  established `_nearestConstructionSnapAt` mechanism already used for a
+  Line's midpoint and a Slot's own Arc apex: the corner and center handle
+  positions (not the box outline itself - matching the same granularity
+  every other shape's own construction-snap targets already have) are
+  now real snap targets, hover-indicated the same way a Line midpoint is
+  and materializing into a genuine, dimension-usable reference Point on
+  tap - reachable regardless of whether the Text is currently Select-mode
+  selected, unlike the box's own *rendering*.
+  **Regression this uncovered**: the bounding box's own center (12, 5)
+  for the fixture's default text) is also the single most natural place
+  to tap to select the *whole* Text - now correctly loses to the new
+  snap target instead (mirrors the existing, deliberate "a Line's own
+  midpoint wins over selecting the Line" precedent), so several
+  pre-existing tests that tapped dead-center to select the whole Text
+  had to move a few units off both handle positions - not a design flaw,
+  the same tradeoff Line-midpoint snapping already made.
