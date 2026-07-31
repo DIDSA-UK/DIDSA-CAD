@@ -138,37 +138,43 @@ entries) - with one real gap confirmed by a direct code audit:
 
 ## Text tool: 3D viewport, font selection, resizing, letter/line spacing
 
-Full design pass in `docs/text-tool-3d-viewport-scope.md` - not
-greenfield. The Text sketch entity (font-outline-to-BRep, closed/holed
-per-glyph profiles, already Extrude/Sweep/Revolve-able via the generic
-`Profile`/`wire_for_profile` path) and a working 2D-canvas tool
-(font/size/rotation, no letter/line spacing yet) both already shipped -
-see `docs/sketcher-overhaul-scope.md` §6.2.6. Four scoped, mostly
-independent workstreams remain, in the scope doc's own recommended
-order:
+Full design pass in `docs/text-tool-3d-viewport-scope.md`. **Phase 1
+shipped**: Text renders in the 3D-embedded ("Orbit View") sketcher and the
+main Part viewport's reference-Sketch display (`sketchGeometry3DFrom`
+gained real glyph-outline rendering - the actual gap
+`SketchSpeedDial.restrictToEmbeddedTools` used to paper over by excluding
+Text entirely, now removed); the font allowlist grew from 8 to 20
+(Simple/Technical/Decorative registers, all still SIL OFL 1.1, all still
+static single-weight files - deliberately excludes fonts that are now
+variable-only upstream and connected-script/handwriting faces, both for
+closed-profile risk reasons the scope doc's §2.2 explains); and Text
+gained real corner (size, uniform-scale-about-center) and center
+(position - its own existing anchor Point, just handled/rendered at the
+bounding box's center) drag handles, in both the 2D canvas and the
+3D-embedded viewport, via the app's existing tap-to-grab/tap-to-drop
+drag-mode gesture, plus a transient construction-line bounding-box/
+center-line/dimension overlay and a new pattern-bar-style `TextValueBar`
+(replacing the old modal "Edit Text" dialog) with an expand-to-preview-
+in-its-own-face font picker and a height-in-mm field that PATCHes the
+same `size` the resize handle does.
 
-1. **Render Text in the 3D-embedded ("Orbit View") sketcher.** Text is
-   currently the one sketch tool deliberately excluded there
-   (`SketchSpeedDial.restrictToEmbeddedTools`) - not because placement
-   doesn't work, but because `sketchGeometry3DFrom`/`SketchGeometry3D`
-   have no glyph-rendering case at all, unlike every other curved entity.
-   Low-medium risk - reuses the 2D canvas's already-cached preview-outline
-   geometry, no new backend endpoint.
-2. **Font selection.** 8 OFL-licensed fonts already bundled and already
-   confirmed to produce closed, holed, extrude/sweep-ready profiles -
-   needs a product decision on whether the ask is "confirm the existing
-   set" or "add more named fonts" (mechanical either way, plus a
-   per-font OCCT-compatibility spot-check).
-3. **Resizing.** A numeric `Size` field already exists; the real gap (if
-   wanted) is an interactive drag handle, mirroring the pattern other
-   tools (Circle radius, etc.) already use.
-4. **Letter spacing / line spacing.** Genuinely new backend work, and the
-   one item with a real unconfirmed unknown - whether `OCC.Core.Addons`
-   exposes a font-metrics source (advance widths, line height) for
-   per-character/per-line layout, alongside `text_to_brep`/
-   `register_font`. Recommend checking this on-device before locking in
-   field names/schema shape, the same way the original Text-tool OCCT-
-   availability check was run before that work started.
+**Phase 2, not started**: letter spacing / line spacing. Genuinely new
+backend work, and the one item with a real unconfirmed unknown - whether
+`OCC.Core.Addons` exposes a font-metrics source (advance widths, line
+height) for per-character/per-line layout, alongside `text_to_brep`/
+`register_font`. Recommend checking this on-device before locking in
+field names/schema shape, the same way the original Text-tool OCCT-
+availability check was run before that work started. Multi-line content
+entry (a prerequisite for line spacing to have anything to control) isn't
+built yet either.
+
+**Known follow-up, not yet done**: the 12 newly-added fonts have not been
+run through a real on-device OCCT `text_to_brep` check (this project's
+dev sandbox has never had `pythonocc-core` installed) - chosen
+conservatively to manage that risk, and `test_stage19_text.py`'s existing
+per-font parametrized test will exercise all 20 for real the next time
+the full backend test suite runs somewhere `pythonocc-core` is actually
+installed (this repo's own CI does, via the real Docker image).
 
 ## Standalone "2D Drawing" tool follow-ups
 

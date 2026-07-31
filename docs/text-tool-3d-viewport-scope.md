@@ -18,8 +18,12 @@ Client: `client/lib/sketch/*` (2D canvas + controller + speed dial +
 ribbon dialog), `client/lib/viewport3d/sketch_geometry_3d.dart`
 (3D-embedded rendering).
 
-**Status: design only for everything in this document — nothing here is
-implemented yet.** This is *not* greenfield, though: Text already shipped
+**Status: §2.1 (3D-embedded rendering), §2.2 (font selection - expanded to
+20), and §2.3 (resizing/position handles) are implemented; §2.4 (letter/
+line spacing) is Phase 2, not started.** See §4's own updated delivery-
+order section for what shipped and what's still open.
+
+This is *not* greenfield, though: Text already shipped
 as a real, working v1 (`docs/sketcher-overhaul-scope.md` §6.2.6,
 implemented and covered by `backend/tests/test_stage19_text.py`) — the
 2D sketch canvas has a working Text tool today, with a font picker, size,
@@ -110,7 +114,25 @@ demanding fonts a user might reasonably ask for next.
 
 ### 2.1 Render Text in the 3D-embedded sketcher (the actual "add Text to the 3D viewport" ask)
 
-- **Proposed approach**: give `SketchGeometry3D` a `textPolygons`/
+- **Implemented.** Landed close to the proposal below, with one
+  simplification found once actually building it: outline-only rendering
+  (matching Circle/Arc/Ellipse/Spline's own existing 3D treatment, none of
+  which are filled either), not a filled/holed polygon - `textPolygons`
+  ended up a single flat `List<List<vm.Vector3>>` (one entry per glyph
+  contour's outer loop *or* one of its own holes, each independently
+  closed), not a separate outer/holes-per-contour structure, since a hole
+  drawn as its own outline loop needs no polygon-with-holes triangulation
+  at all. `SketchGeometry3D` gained `textPolygons`/`textIds`, populated in
+  `sketchGeometry3DFrom` from a new `texts`/`textContours` parameter pair
+  - the caller resolves the actual contours (`sketch_screen.dart`'s
+    `_textContoursFrom`, via `SketchController.textLiveContours` for the
+  actively-edited Sketch; `part_screen.dart`'s `_refreshSketchGeometries`
+  fetches `GET .../texts/{id}/preview` directly for read-only reference
+  Sketches, which had the exact same Text gap and got fixed alongside).
+  `restrictToEmbeddedTools`'s Text exclusion is gone (`sketch_speed_dial.dart`).
+  Selection/hit-testing (the item originally scoped out below) also
+  shipped, not deferred - see §2.3.
+- **Proposed approach** (original, kept for context): give `SketchGeometry3D` a `textPolygons`/
   `textHoles`/`textIds` triple (outer loop, its holes, and the owning
   Text entity id — one entry per glyph contour, mirroring
   `circlePolygons`/`circleIds`'s own shape), populated inside
@@ -148,7 +170,35 @@ demanding fonts a user might reasonably ask for next.
 
 ### 2.2 Font selection: audit the existing allowlist as "closed profiles for Extrude/Sweep/Revolve," decide if it needs to grow
 
-- **Current state**: 8 OFL-licensed fonts already bundled (§1), already
+- **Implemented**: expanded from 8 to 20 (`backend/app/sketch/text_fonts.py`),
+  spanning Simple (Open Sans, Roboto, Lato, Fira Sans, Barlow, PT Sans),
+  Technical (IBM Plex Serif/Mono, Space Mono, Rajdhani, Barlow Condensed,
+  Aldrich, Michroma, Audiowide, Arvo, Zilla Slab), and Decorative (Bebas
+  Neue, Bungee, Abril Fatface, Marcellus) registers. Every new font is a
+  genuinely static single-weight file, fetched from `google/fonts` -
+  several once-static families that would otherwise have fit these
+  categories (Inter, Work Sans, Oswald, Cinzel, Playfair Display) are now
+  variable-only upstream with no `static/` fallback, and were deliberately
+  passed over rather than adding more variable-font surface than Roboto
+  already exercises alone (see `text_fonts.py`'s own updated comment).
+  Connected-script/handwriting faces were deliberately excluded from the
+  decorative set for the same closed-profile risk reason flagged below.
+  Client-side: every font (all 20, not just the 12 new ones) is now also a
+  registered Flutter asset font (`pubspec.yaml`, `client/assets/fonts/`),
+  needed for §2.3's font-picker preview (each name rendered in its own
+  face) - previously these were OCCT-side only.
+  **The caveat below is unchanged and still real** - this sandbox still
+  has no `pythonocc-core`, so none of the 12 new fonts have been run
+  through a real on-device `text_to_brep` check yet. They were chosen
+  conservatively specifically to manage that risk, and
+  `test_stage19_text.py::test_create_text_with_each_allowlisted_font_over_the_api`
+  (parametrized over the full `FONT_ALLOWLIST`, already existing, needed
+  no changes) will exercise every one of them for real the moment this
+  runs in an environment that actually has OCCT - the repo's own CI does
+  (`.github/workflows/backend-verify.yml` builds the real Docker image and
+  runs the full `pytest` suite there) - so this is a real, automatic
+  safety net, not just a promise.
+- **Current state** (original, kept for context): 8 OFL-licensed fonts already bundled (§1), already
   confirmed to produce closed, correctly-holed per-glyph profiles via
   direct on-device OCCT testing, already extrude/sweep/revolve-able with
   zero Text-specific code in those three features. In that narrow sense,
@@ -193,7 +243,40 @@ demanding fonts a user might reasonably ask for next.
 
 ### 2.3 Resizing
 
-- **Current state**: `size` already exists as a plain numeric field,
+- **Implemented**, including the interactive gap flagged below, and
+  position (a "center handle"), which this section only mentioned as an
+  aside. Two handles, shown only while a Text is the current selection:
+  a **corner handle** that uniformly scales `size`, pivoting around the
+  bounding box's own center (kept fixed - independent of the position
+  handle, per the task's own explicit ask) via `SketchController.
+  beginTextResizeDrag`/`updateTextResizeDrag`/`endTextResizeDrag`; and a
+  **center handle**, which turned out to need no new drag mechanism at
+  all - it's the Text's own real anchor Point, just rendered/hit-tested at
+  the bounding box's center (a more intuitive drag point than the
+  anchor's literal baseline-origin position) instead of its own literal
+  coordinates, dragged via the exact same generic `beginPointDrag` every
+  other Point already uses. Both use the app's existing tap-to-grab/tap-
+  to-drop drag-mode gesture (`SketchController.dragGrabTargetAt`'s
+  established pattern - a new `textResizeHandleGrabTargetAt` sibling
+  checks the corner handle first, since it sits outside the glyph fill
+  `dragGrabTargetAt`'s own hit-test only ever checks), not a new
+  interaction language.
+  A resize drag never PATCHes per frame (a real font-outline recompute is
+  too expensive to run every pointer-move) - `_resizeLiveScale` is a
+  cheap client-side multiplier applied to the already-cached preview
+  contours for live rendering (`SketchController.textLiveContours`),
+  committed as one real `size` PATCH plus one anchor-Point move on drop.
+  A transient construction-line bounding box + center lines + width/
+  height dimension labels renders alongside the handles - paint-time
+  chrome only (`sketch_canvas.dart` for the 2D canvas, new
+  `SketchGeometry3D.textHandleLines`/`textHandleMarkers` fields for the
+  3D-embedded view), never real Line/Point entities, preserving
+  `TextEntity`'s own "never decomposed into Points/Lines" design.
+  The height-in-mm toolbar field (§4/new `sketch_text_bar.dart`) and the
+  corner handle both ultimately just PATCH the same `size` field, so they
+  naturally "overwrite each other" with no separate reconciliation needed
+  - confirmed the right call before implementing, not assumed.
+- **Current state** (original, kept for context): `size` already exists as a plain numeric field,
   editable via the "Edit Text" dialog's `Size` `TextField`
   (`sketch_ribbon.dart:722-731`, in mm, validated positive). This is
   "resizing" in the narrowest literal sense already.
@@ -323,24 +406,55 @@ any Text work started.
 - True kerning-pair-table awareness for letter spacing (§2.4 — additive
   tracking only, matching every mainstream vector tool's actual "letter
   spacing" behavior).
-- Interactive 3D-embedded resize/select/drag for Text (§2.1/§2.3 — 2D
-  canvas first, matching the precedent Arc/Ellipse/Spline already set of
-  rendering shipping well before selection/hit-testing).
+- ~~Interactive 3D-embedded resize/select/drag for Text~~ — **implemented
+  after all** (§2.3): building the resize/position handles turned out to
+  need real hit-testing in both views together, not a 2D-first sequencing
+  the way Arc/Ellipse/Spline's own rendering-before-selection precedent
+  suggested. General tap-to-select (not just the two handles) on Text
+  inside the 3D-embedded view specifically was not separately re-verified
+  beyond what already existed.
 - Non-uniform (independent width/height) text scaling (§2.3 — one `size`
   scalar stays the persisted model).
 
 ## 4. Suggested delivery order
 
-1. **§2.1** (3D-embedded rendering) — smallest, reuses existing cached
-   geometry, is the literal "add Text to the 3D viewport" ask, and has no
-   dependency on anything else here.
-2. **§2.2** (font selection audit/expansion) — independent of the other
-   three; can run in parallel with §2.1 once a product decision on "audit
-   vs. expand" is made.
-3. **§2.3** (resizing — 2D drag handle) — independent, low risk, same
-   established pattern as other tools' size handles.
-4. **§2.4** (letter/line spacing) — last, because it is the one item with
-   a genuine unconfirmed technical unknown (font-metrics source) that
-   should be checked on-device before schema/field decisions are locked
-   in, and because it is the largest, most self-contained chunk of new
-   backend geometry work.
+1. **§2.1** (3D-embedded rendering) — **Phase 1, implemented.** Smallest,
+   reused existing cached geometry, is the literal "add Text to the 3D
+   viewport" ask, had no dependency on anything else here.
+2. **§2.2** (font selection audit/expansion) — **Phase 1, implemented.**
+   Expanded from 8 to 20 fonts.
+3. **§2.3** (resizing + position handles) — **Phase 1, implemented,**
+   including the 2D canvas *and* the 3D-embedded viewport (both were
+   originally going to be sequenced separately, with 3D deferred behind
+   §2.1's own selection/hit-testing carve-out - building the handles
+   turned out to need real hit-testing either way, so both shipped
+   together instead), plus a new `sketch_text_bar.dart` (`TextValueBar`,
+   built on the same shared `ResizableToolPanel` shell `PatternValueBar`
+   uses, per the task's own "use the pattern tool bar as a reference"
+   instruction) that replaces the old modal "Edit Text" `AlertDialog` -
+   Content/Font (expand-to-preview-in-face/collapse)/Height-in-mm/Rotation
+   fields, each applying immediately on submit, draggable/scrollable like
+   every other tool's own bottom panel.
+4. **§2.4** (letter/line spacing) — **Phase 2, not started**, exactly as
+   originally sequenced last: it is the one item with a genuine
+   unconfirmed technical unknown (font-metrics source) that should be
+   checked on-device before schema/field decisions are locked in, and it
+   is the largest, most self-contained chunk of new backend geometry
+   work. Explicitly deferred to a second phase per the task's own
+   instruction, not dropped.
+
+**Files actually touched, Phase 1**: backend - `text_fonts.py` (12 new
+allowlist entries), `backend/app/sketch/fonts/` (12 new `.ttf`/`OFL-*.txt`
+pairs). Client - `sketch_geometry_3d.dart` (`textPolygons`/`textIds`/
+`textHandleLines`/`textHandleMarkers`, `sketchGeometry3DFrom`'s `texts`/
+`textContours`/`selectedTextId` params, `buildSketchGeometryNode`'s new
+render branches), `sketch_speed_dial.dart` (dropped the Text exclusion),
+`sketch_screen.dart`/`part_screen.dart` (`_textDtosFrom`/`_textContoursFrom`
+helpers, `TextValueBar` mounted alongside `SketchRibbon`), `sketch_controller.dart`
+(`textBounds`/`textCenterHandle`/`textResizeHandle`/`textLiveContours`/
+`textResizeHandleGrabTargetAt`/`beginTextResizeDrag`/`updateTextResizeDrag`/
+`endTextResizeDrag`/`openTextBar`/`closeTextBar`, `textFontOptions` widened
+to 20), `sketch_canvas.dart` (bounding-box/handle overlay, drag-mode grab
+dispatch), `sketch_ribbon.dart` (old modal dialog removed, "Edit Text" now
+opens the bar), new `sketch_text_bar.dart`, `pubspec.yaml` + `client/assets/fonts/`
+(all 20 fonts as Flutter asset fonts, not just backend-side).

@@ -718,7 +718,7 @@ class SketchTextContourOffsets {
 }
 
 /// The Text tool's own small, backend-bundled font allowlist, mirrored
-/// here for the "Edit Text" dialog's font picker - see the backend's
+/// here for the Text tool bar's font picker - see the backend's
 /// `app.sketch.text_fonts.FONT_ALLOWLIST` (same names, same order,
 /// deliberately not fetched from the server: a plain trusted-allowlist
 /// mirror, the same pattern [setPolygonSides]'s own [3, 20] clamp mirrors
@@ -726,15 +726,42 @@ class SketchTextContourOffsets {
 /// round: expanded from Open Sans alone to a spread of registers a
 /// mechanical/engineering drawing might reasonably want - see
 /// text_fonts.py's own doc comment for the reasoning behind each one.
+///
+/// 3D-viewport Text tool round (`docs/text-tool-3d-viewport-scope.md`
+/// §2.2): widened from 8 to 20, grouped into Simple/Technical/Decorative
+/// registers (a plain visual grouping for the font picker, not a typed
+/// enum - nothing downstream branches on which group a font is in).
+/// Every name here is also a registered Flutter font family
+/// ([pubspec.yaml]'s own `fonts:` section, one entry per name, asset
+/// path `assets/fonts/<name>/<name-no-spaces>-Regular.ttf`) - unlike the
+/// original 8 (OCCT-side only, see the "Edit Text" dialog's own old doc
+/// comment this replaces), the font picker itself now renders each name
+/// in its own face, so every allowlisted font needs a real Flutter-side
+/// asset too, not just a backend one.
 const List<String> textFontOptions = [
+  // Simple / general-purpose
   'Open Sans',
   'Roboto',
   'Lato',
   'Fira Sans',
+  'Barlow',
+  'PT Sans',
+  // Technical / engineering-drawing register
   'IBM Plex Serif',
   'IBM Plex Mono',
   'Space Mono',
   'Rajdhani',
+  'Barlow Condensed',
+  'Aldrich',
+  'Michroma',
+  'Audiowide',
+  'Arvo',
+  'Zilla Slab',
+  // Decorative / display
+  'Bebas Neue',
+  'Bungee',
+  'Abril Fatface',
+  'Marcellus',
 ];
 
 class SketchTextView {
@@ -2343,6 +2370,32 @@ class SketchController extends ChangeNotifier {
   /// dimensioning starts, since the flyout is for acting on a selection/idle
   /// canvas, not for drawing.
   bool get ribbonVisible => _ribbonVisible;
+
+  String? _textBarTextId;
+
+  /// The Text id [TextValueBar] (`sketch_text_bar.dart`) is currently
+  /// showing its Content/Font/Height/Rotation fields for - null when the
+  /// bar should be hidden. 3D-viewport Text tool round
+  /// (`docs/text-tool-3d-viewport-scope.md` §2.3): replaces the old
+  /// "Edit Text" `AlertDialog` - the ribbon's own "Edit Text" chip
+  /// ([openTextBar]) is still the entry point, unchanged, only what it
+  /// opens is new. Deliberately its own bit of state rather than reusing
+  /// [selection] directly - the bar should stay open even if the
+  /// underlying selection is ever cleared out from under it (e.g. a tap
+  /// elsewhere), the same "explicit close, not implicit" shape
+  /// [ribbonVisible] itself does not have but every modal-replacing bar in
+  /// this file (Pattern, Offset) does.
+  String? get textBarTextId => _textBarTextId;
+
+  void openTextBar(String textId) {
+    _textBarTextId = textId;
+    notifyListeners();
+  }
+
+  void closeTextBar() {
+    _textBarTextId = null;
+    notifyListeners();
+  }
 
   /// True while nothing is currently being drawn - no chain in progress, no
   /// circle mid-placement. Hovering/selecting an existing entity, and the
@@ -5150,28 +5203,35 @@ class SketchController extends ChangeNotifier {
   }
 
   /// Whether something is currently grabbed via the drag-mode gesture (a
-  /// Point, a Line, or a Constraint label) - the canvas hides its crosshair
-  /// cursor and highlights the grabbed entity while this is true, and a
-  /// further tap drops whatever's grabbed (see sketch_canvas.dart's
-  /// drag-mode tap dispatch) instead of trying to grab something new.
-  bool get isEntityGrabbed => _draggingPointId != null || _draggingLineId != null || _draggingLabelId != null;
+  /// Point, a Line, a Constraint label, or a Text resize handle - see
+  /// [beginTextResizeDrag]) - the canvas hides its crosshair cursor and
+  /// highlights the grabbed entity while this is true, and a further tap
+  /// drops whatever's grabbed (see sketch_canvas.dart's drag-mode tap
+  /// dispatch) instead of trying to grab something new.
+  bool get isEntityGrabbed =>
+      _draggingPointId != null ||
+      _draggingLineId != null ||
+      _draggingLabelId != null ||
+      _draggingTextResizeId != null;
 
   /// Feeds a cursor-position update to whichever entity is currently
-  /// grabbed (a Point or a Line - see [isEntityGrabbed]) - lets the
-  /// canvas's cursor-movement code stay agnostic to which kind of grab is
-  /// active. A no-op if nothing's grabbed, or only a label is - a label's
-  /// offset lives in screen space, not an absolute cursor position, so the
-  /// canvas feeds it directly via [updateLabelDrag] instead of through
-  /// here (see sketch_canvas.dart's `_feedMouseSwipeToGrabbedEntity` and
-  /// its touch-branch equivalent).
+  /// grabbed (a Point, a Line, or a Text resize handle - see
+  /// [isEntityGrabbed]) - lets the canvas's cursor-movement code stay
+  /// agnostic to which kind of grab is active. A no-op if nothing's
+  /// grabbed, or only a label is - a label's offset lives in screen
+  /// space, not an absolute cursor position, so the canvas feeds it
+  /// directly via [updateLabelDrag] instead of through here (see
+  /// sketch_canvas.dart's `_feedMouseSwipeToGrabbedEntity` and its
+  /// touch-branch equivalent).
   Future<void> updateGrabbedPosition(double x, double y) async {
     if (_draggingPointId != null) return updatePointDrag(x, y);
     if (_draggingLineId != null) return updateLineDrag(x, y);
+    if (_draggingTextResizeId != null) return updateTextResizeDrag(x, y);
   }
 
-  /// Drops whichever entity is currently grabbed (Point, Line, or
-  /// Constraint label - see [isEntityGrabbed]), finalizing it the same way
-  /// its own end-drag method would.
+  /// Drops whichever entity is currently grabbed (Point, Line, Constraint
+  /// label, or Text resize handle - see [isEntityGrabbed]), finalizing it
+  /// the same way its own end-drag method would.
   ///
   /// Bug-fix: the label branch was missing entirely - dropGrabbedEntity
   /// was written before label dragging was unified into this same
@@ -5184,6 +5244,299 @@ class SketchController extends ChangeNotifier {
     if (_draggingPointId != null) return endPointDrag();
     if (_draggingLineId != null) return endLineDrag();
     if (_draggingLabelId != null) return endLabelDrag();
+    if (_draggingTextResizeId != null) return endTextResizeDrag();
+  }
+
+  // --- Text resize/position handles -----------------------------------
+  //
+  // 3D-viewport Text tool round (`docs/text-tool-3d-viewport-scope.md`
+  // §2.3): a Text entity gets two handles once it's the current
+  // [selection] - a corner handle that scales [SketchTextView.size]
+  // uniformly (this section), and a center handle that's just its own
+  // real anchor Point rendered at the bounding box's center instead of
+  // its own literal (often off-glyph, whitespace-y) baseline-origin
+  // position - dragging it is already the *existing* generic
+  // [beginPointDrag]/[updatePointDrag] gesture (a Text's anchor Point is
+  // a real Point like any other), so it needs no new drag machinery of
+  // its own, only a different place to draw/hit-test its handle glyph
+  // (see sketch_canvas.dart/sketch_geometry_3d.dart's own rendering).
+  //
+  // The corner handle is different: there's no backing Point to PATCH a
+  // position onto - scaling `size` regenerates the *entire* glyph outline
+  // via a real OCCT font-to-BRep call (`text_geometry.text_to_shape`),
+  // far too expensive to run on every pointer-move frame. This instead
+  // follows the same "cheap kinematic preview every frame, one real
+  // commit at drop" shape `docs/roadmap.md` already recommends for the
+  // general drag path - [_resizeLiveScale] is a pure client-side multiplier
+  // applied to the *already-cached* preview contours (see
+  // [textLiveContours]) for live rendering, with no PATCH at all until
+  // [endTextResizeDrag].
+
+  String? _draggingTextResizeId;
+  double? _resizeOriginCursorX;
+  double? _resizeOriginCursorY;
+  double? _resizeBaseSize;
+  double? _resizeBaseAnchorX;
+  double? _resizeBaseAnchorY;
+  double? _resizeBaseCenterX;
+  double? _resizeBaseCenterY;
+  double? _resizeBaseCornerX;
+  double? _resizeBaseCornerY;
+
+  /// Multiplier applied to [SketchTextView.size]/the cached preview
+  /// contours while a resize drag is live - always 1.0 when nothing's
+  /// being resized. Exposed (not just an internal field) so
+  /// [textResizeHandle]/[textLiveContours] can be pure functions of
+  /// controller state, called equally from 2D canvas paint code and the
+  /// 3D-embedded geometry builder.
+  double get textResizeLiveScale => _resizeLiveScale;
+  double _resizeLiveScale = 1.0;
+
+  /// Below this, a resize drag is refused/clamped rather than allowed to
+  /// shrink `size` to (near-)zero or invert through the pivot - OCCT
+  /// would reject a non-positive size outright (see
+  /// `text_geometry.text_to_shape`'s own validation), and a tiny-but-
+  /// positive one is already useless in practice.
+  static const double _minTextResizeScale = 0.05;
+
+  /// [text]'s own bounding box in sketch-local space (rotation already
+  /// baked into [textAbsoluteContours] - see that method's own doc
+  /// comment), across every glyph contour's outer loop (holes are always
+  /// inside their own outer loop, so they never extend it). Null until
+  /// the first preview fetch completes, same as [textAbsoluteContours]
+  /// itself. Powers the resize/position handles and the construction-line
+  /// bounding-box overlay - one shared source so what's drawn, hit-tested,
+  /// and dimensioned never disagree.
+  ({double minX, double minY, double maxX, double maxY})? textBounds(SketchTextView text) {
+    final contours = textAbsoluteContours(text);
+    if (contours == null || contours.isEmpty) return null;
+    double? minX, minY, maxX, maxY;
+    for (final contour in contours) {
+      for (final p in contour.outer) {
+        minX = minX == null ? p.$1 : math.min(minX, p.$1);
+        maxX = maxX == null ? p.$1 : math.max(maxX, p.$1);
+        minY = minY == null ? p.$2 : math.min(minY, p.$2);
+        maxY = maxY == null ? p.$2 : math.max(maxY, p.$2);
+      }
+    }
+    if (minX == null) return null;
+    return (minX: minX, minY: minY!, maxX: maxX!, maxY: maxY!);
+  }
+
+  /// Where the position handle sits - the bounding box's own center,
+  /// always (never affected by an in-progress resize drag: the whole
+  /// point of the two handles being independent controls is that
+  /// resizing pivots around this and leaves it fixed - see the section
+  /// doc comment above). Actually dragging it is the ordinary
+  /// [beginPointDrag] gesture on [SketchTextView.anchorPointId] - this is
+  /// purely "where to draw/hit-test the handle glyph," not a distinct
+  /// drag mechanism.
+  ({double x, double y})? textCenterHandle(SketchTextView text) {
+    final bounds = textBounds(text);
+    if (bounds == null) return null;
+    return (x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2);
+  }
+
+  /// Where the resize handle sits - the bounding box's own top-right
+  /// corner, live-scaled toward/away from [textCenterHandle] while a
+  /// resize drag on this exact Text is in progress (see
+  /// [beginTextResizeDrag]'s own doc comment), so the handle glyph
+  /// visibly tracks the drag instead of jumping only once it's dropped.
+  ({double x, double y})? textResizeHandle(SketchTextView text) {
+    final bounds = textBounds(text);
+    if (bounds == null) return null;
+    if (_draggingTextResizeId == text.id) {
+      final cx = _resizeBaseCenterX!;
+      final cy = _resizeBaseCenterY!;
+      return (
+        x: cx + (_resizeBaseCornerX! - cx) * _resizeLiveScale,
+        y: cy + (_resizeBaseCornerY! - cy) * _resizeLiveScale,
+      );
+    }
+    return (x: bounds.maxX, y: bounds.maxY);
+  }
+
+  /// [text]'s own absolute preview contours (see [textAbsoluteContours]),
+  /// live-scaled around the bounding box's center while a resize drag on
+  /// this exact Text is in progress - the actual fill/outline this
+  /// Text's own renderer (2D canvas or 3D-embedded) should draw every
+  /// frame, so what's dragged and what's shown never disagree. Identical
+  /// to [textAbsoluteContours] whenever no resize drag is active on this
+  /// Text (the overwhelmingly common case).
+  List<SketchTextContourOffsets>? textLiveContours(SketchTextView text) {
+    final absolute = textAbsoluteContours(text);
+    if (absolute == null || _draggingTextResizeId != text.id) return absolute;
+    final cx = _resizeBaseCenterX!;
+    final cy = _resizeBaseCenterY!;
+    final scale = _resizeLiveScale;
+    (double, double) scaled((double, double) p) => (cx + (p.$1 - cx) * scale, cy + (p.$2 - cy) * scale);
+    return [
+      for (final contour in absolute)
+        SketchTextContourOffsets(
+          outer: [for (final p in contour.outer) scaled(p)],
+          holes: [for (final hole in contour.holes) [for (final p in hole) scaled(p)]],
+        ),
+    ];
+  }
+
+  /// Finds a Text resize handle at ([x], [y]) - checked by both canvases
+  /// *before* [dragGrabTargetAt] (see that method's own doc comment for
+  /// why: this handle sits outside the glyph fill [_entityAt]'s hit-test
+  /// only ever checks, so it would never otherwise be reachable). Only
+  /// ever looks at the *currently selected* Text (mirrors why the handle
+  /// is only ever drawn for that one Text in the first place - see
+  /// sketch_canvas.dart/sketch_geometry_3d.dart's own rendering), not
+  /// every Text in the sketch.
+  String? textResizeHandleGrabTargetAt(double x, double y, double radius) {
+    if (_mode != SketchMode.select) return null;
+    final selected = selection;
+    if (selected == null || selected.kind != SelectionKind.text) return null;
+    final text = texts[selected.id];
+    if (text == null) return null;
+    final handle = textResizeHandle(text);
+    if (handle == null) return null;
+    final distSq = math.pow(x - handle.x, 2) + math.pow(y - handle.y, 2);
+    return distSq <= radius * radius ? text.id : null;
+  }
+
+  /// Starts a Text resize-handle drag - see the section doc comment above
+  /// for why this is its own mechanism rather than reusing
+  /// [beginPointDrag]. Refuses while another drag is already active
+  /// (mirrors [beginPointDrag]'s own single-drag-at-a-time invariant).
+  bool beginTextResizeDrag(String textId, double cursorX, double cursorY) {
+    if (_mode != SketchMode.select || isEntityGrabbed) return false;
+    final text = texts[textId];
+    final anchor = text == null ? null : points[text.anchorPointId];
+    final bounds = text == null ? null : textBounds(text);
+    if (text == null || anchor == null || bounds == null) return false;
+    _draggingTextResizeId = textId;
+    _resizeOriginCursorX = cursorX;
+    _resizeOriginCursorY = cursorY;
+    _resizeBaseSize = text.size;
+    _resizeBaseAnchorX = anchor.x;
+    _resizeBaseAnchorY = anchor.y;
+    _resizeBaseCenterX = (bounds.minX + bounds.maxX) / 2;
+    _resizeBaseCenterY = (bounds.minY + bounds.maxY) / 2;
+    _resizeBaseCornerX = bounds.maxX;
+    _resizeBaseCornerY = bounds.maxY;
+    _resizeLiveScale = 1.0;
+    notifyListeners();
+    return true;
+  }
+
+  /// Live-updates [_resizeLiveScale] from the cursor's own distance to
+  /// the fixed pivot center, relative to how far the cursor started from
+  /// it - a plain radial-distance ratio, not a raw cursor-position
+  /// mapping, so the corner handle always moves directly toward/away from
+  /// the (fixed) center along the same diagonal, matching a single-scalar
+  /// `size` (see `docs/text-tool-3d-viewport-scope.md` §2.3: no
+  /// independent width/height, so nothing here should let a drag imply
+  /// one). Purely local state - no PATCH, no notifyListeners-triggered
+  /// network call, safe to call on every pointer-move frame.
+  void updateTextResizeDrag(double x, double y) {
+    final cx = _resizeBaseCenterX;
+    final cy = _resizeBaseCenterY;
+    final originX = _resizeOriginCursorX;
+    final originY = _resizeOriginCursorY;
+    if (_draggingTextResizeId == null || cx == null || cy == null || originX == null || originY == null) return;
+    final originDist = math.sqrt(math.pow(originX - cx, 2) + math.pow(originY - cy, 2));
+    if (originDist < 1e-9) return;
+    final currentDist = math.sqrt(math.pow(x - cx, 2) + math.pow(y - cy, 2));
+    _resizeLiveScale = (currentDist / originDist).clamp(_minTextResizeScale, 1000.0);
+    notifyListeners();
+  }
+
+  /// Commits a resize drag: PATCHes the real `size` (triggering a real
+  /// OCCT font-outline recompute via [setTextProperties]'s own
+  /// [_refreshTextPreview] call) and moves the anchor Point so the
+  /// bounding box's center - the position handle, the thing the *other*
+  /// handle controls - ends up exactly where it started, even though
+  /// OCCT's own `size` scaling is anchored at the glyph's baseline origin,
+  /// not its visual center (see the section doc comment above). Solving
+  /// `newAnchor + (boundsCenterRelativeToAnchor * scale) == oldCenter` for
+  /// `newAnchor` gives `oldAnchor + (oldCenter - oldAnchor) * (1 - scale)`
+  /// - both terms already captured at grab time, so no extra geometry
+  /// query is needed here.
+  ///
+  /// One combined undo entry reverts both the size and the anchor move
+  /// together (mirrors every other multi-field commit in this file - e.g.
+  /// [endLineDrag]'s own two-Point revert) rather than as two independent
+  /// undo steps a user could partially unwind.
+  Future<void> endTextResizeDrag() async {
+    final textId = _draggingTextResizeId;
+    final baseSize = _resizeBaseSize;
+    final baseAnchorX = _resizeBaseAnchorX;
+    final baseAnchorY = _resizeBaseAnchorY;
+    final centerX = _resizeBaseCenterX;
+    final centerY = _resizeBaseCenterY;
+    final scale = _resizeLiveScale;
+    _draggingTextResizeId = null;
+    _resizeOriginCursorX = null;
+    _resizeOriginCursorY = null;
+    _resizeBaseSize = null;
+    _resizeBaseAnchorX = null;
+    _resizeBaseAnchorY = null;
+    _resizeBaseCenterX = null;
+    _resizeBaseCenterY = null;
+    _resizeBaseCornerX = null;
+    _resizeBaseCornerY = null;
+    _resizeLiveScale = 1.0;
+    if (textId == null ||
+        baseSize == null ||
+        baseAnchorX == null ||
+        baseAnchorY == null ||
+        centerX == null ||
+        centerY == null ||
+        _sketchId == null) {
+      notifyListeners();
+      return;
+    }
+    final text = texts[textId];
+    if (text == null) {
+      notifyListeners();
+      return;
+    }
+    // Negligible/no-op drag - avoid a pointless network round trip and
+    // undo entry, mirrors every other drag's own "didn't actually move"
+    // shortcut (e.g. [endPointDrag]'s own no-real-movement guard).
+    if ((scale - 1.0).abs() < 1e-6) {
+      notifyListeners();
+      return;
+    }
+    final newSize = baseSize * scale;
+    final newAnchorX = baseAnchorX + (centerX - baseAnchorX) * (1 - scale);
+    final newAnchorY = baseAnchorY + (centerY - baseAnchorY) * (1 - scale);
+    await _runGuarded(() async {
+      final movedAnchor = await _api.updatePoint(_sketchId!, text.anchorPointId, newAnchorX, newAnchorY);
+      points[text.anchorPointId] = SketchPointView(id: movedAnchor.id, x: movedAnchor.x, y: movedAnchor.y);
+      final updated = await _api.updateText(_sketchId!, textId, size: newSize);
+      texts[textId] = SketchTextView(
+        id: updated.id,
+        content: updated.content,
+        font: updated.font,
+        size: updated.size,
+        anchorPointId: updated.anchorPointId,
+        rotationDegrees: updated.rotationDegrees,
+        construction: updated.construction,
+      );
+      _pushUndo(() async {
+        final revertedAnchor = await _api.updatePoint(_sketchId!, text.anchorPointId, baseAnchorX, baseAnchorY);
+        points[text.anchorPointId] = SketchPointView(id: revertedAnchor.id, x: revertedAnchor.x, y: revertedAnchor.y);
+        final revertedText = await _api.updateText(_sketchId!, textId, size: baseSize);
+        texts[textId] = SketchTextView(
+          id: revertedText.id,
+          content: revertedText.content,
+          font: revertedText.font,
+          size: revertedText.size,
+          anchorPointId: revertedText.anchorPointId,
+          rotationDegrees: revertedText.rotationDegrees,
+          construction: revertedText.construction,
+        );
+        await _refreshTextPreview(textId);
+      });
+      await _refreshTextPreview(textId);
+      await _solveAndTrackDof(anchorPointIds: [text.anchorPointId]);
+    });
   }
 
   /// Stage 15 item 2: per-Constraint screen-pixel offset from its default

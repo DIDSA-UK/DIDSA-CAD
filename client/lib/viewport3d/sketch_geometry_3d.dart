@@ -255,6 +255,42 @@ class SketchGeometry3D {
   final List<List<vm.Vector3>> splinePolylines;
   final List<String> splineIds;
 
+  /// 3D-viewport Text tool round (`docs/text-tool-3d-viewport-scope.md`
+  /// §2.1): one loop per glyph contour's outer boundary *or* one of its
+  /// own holes (an "o" contributes two entries here - an outer ring and
+  /// an inner counter - each independently closed, exactly the shape
+  /// `app.sketch.text_geometry.text_to_polygons`/`_text_profile` already
+  /// produce server-side; see [buildSketchGeometryNode]'s own comment for
+  /// why this file draws Text as outline loops only, the same as every
+  /// other curved entity here, rather than a filled/holed fill the way
+  /// the 2D canvas does), each closed (first point repeated as the last -
+  /// unlike [circlePolygons]'s own generation loop, these come from
+  /// already-tessellated server data with no such implicit repeat baked
+  /// in, so [sketchGeometry3DFrom] adds it explicitly). [textIds]
+  /// (parallel, one owning Text entity id per loop - never unique, since
+  /// one multi-glyph Text contributes many loops) mirrors [circleIds]'s
+  /// own role.
+  final List<List<vm.Vector3>> textPolygons;
+  final List<String> textIds;
+
+  /// §2.3's own resize/position handles' construction-line bounding box +
+  /// center lines, in world space - at most 4 (box edges) + 2 (center
+  /// lines) segments, always dashed (see [buildSketchGeometryNode]'s own
+  /// rendering - unlike every other dashed thing here, this never checks
+  /// [constructionIds], since it's not a real sketch entity at all, just
+  /// paint-time chrome). Empty unless [sketchGeometry3DFrom]'s own
+  /// `selectedTextId` names a Text with resolved bounds - mirrors
+  /// `sketch_canvas.dart`'s own "only the currently selected Text" gate,
+  /// so this file's own doc comment on [SketchController.textBounds]
+  /// applies equally here.
+  final List<(vm.Vector3, vm.Vector3)> textHandleLines;
+
+  /// The same two handles `sketch_canvas.dart` draws (center, then
+  /// corner, in that order - exactly 0 or 2 entries) - rendered as small
+  /// marker primitives, the 3D-embedded counterpart of that file's own
+  /// diamond/square paint calls.
+  final List<vm.Vector3> textHandleMarkers;
+
   /// P26 (2D-sketcher feature parity): the subset of [lineIds]/[circleIds]/
   /// [arcIds]/[ellipseIds]/[splineIds] flagged `construction` on their own
   /// DTO - [buildSketchGeometryNode] dashes exactly these, mirroring
@@ -310,6 +346,10 @@ class SketchGeometry3D {
     this.ellipseIds = const [],
     this.splinePolylines = const [],
     this.splineIds = const [],
+    this.textPolygons = const [],
+    this.textIds = const [],
+    this.textHandleLines = const [],
+    this.textHandleMarkers = const [],
     this.constructionIds = const <String>{},
     this.hiddenPointIds = const <String>{},
     this.originPointId,
@@ -330,7 +370,8 @@ class SketchGeometry3D {
       circlePolygons.isEmpty &&
       arcPolylines.isEmpty &&
       ellipsePolygons.isEmpty &&
-      splinePolylines.isEmpty;
+      splinePolylines.isEmpty &&
+      textPolygons.isEmpty;
 }
 
 /// P27 bug fix (on-device feedback: Rectangle placement still froze/ANR'd
@@ -375,6 +416,10 @@ bool sketchGeometry3DEquals(SketchGeometry3D a, SketchGeometry3D b) {
       listEquals(a.ellipseIds, b.ellipseIds) &&
       nestedListEquals(a.splinePolylines, b.splinePolylines) &&
       listEquals(a.splineIds, b.splineIds) &&
+      nestedListEquals(a.textPolygons, b.textPolygons) &&
+      listEquals(a.textIds, b.textIds) &&
+      listEquals(a.textHandleLines, b.textHandleLines) &&
+      listEquals(a.textHandleMarkers, b.textHandleMarkers) &&
       setEquals(a.constructionIds, b.constructionIds) &&
       setEquals(a.hiddenPointIds, b.hiddenPointIds) &&
       a.originPointId == b.originPointId;
@@ -549,6 +594,25 @@ SketchGeometry3D sketchGeometry3DFrom({
   List<ArcDto> arcs = const [],
   List<EllipseDto> ellipses = const [],
   List<SplineDto> splines = const [],
+  List<TextDto> texts = const [],
+  // 3D-viewport Text tool round: already-absolute (anchor + rotation
+  // baked in - see [TextContourDto]'s own doc comment), sketch-local
+  // contours per Text id - this function has no OCCT/font access of its
+  // own, so unlike every other entity here (built purely from
+  // [points]/[lines]/etc.), the actual glyph shape has to be resolved by
+  // the caller (either `SketchController.textLiveContours` for the
+  // actively-edited Sketch, or a direct `GET .../texts/{id}/preview` call
+  // for a read-only reference Sketch - see `sketch_screen.dart`'s
+  // `_textContoursFrom`/`part_screen.dart`'s own equivalent) and handed
+  // in here already resolved. A Text id missing from this map (a preview
+  // fetch still in flight, or one that failed) simply contributes no
+  // loops - same "silently draw nothing yet, not an error" tolerance
+  // [_pointDtosFrom]'s own callers already extend to a missing Point.
+  Map<String, List<TextContourDto>> textContours = const {},
+  // §2.3: mirrors `sketch_canvas.dart`'s own "only the currently selected
+  // Text gets a bounding box/handles" gate - see [textHandleLines]'s own
+  // doc comment.
+  String? selectedTextId,
   Set<String> hiddenPointIds = const <String>{},
   String? originPointId,
 }) {
@@ -675,6 +739,70 @@ SketchGeometry3D sketchGeometry3DFrom({
     if (spline.construction) constructionIds.add(spline.id);
   }
 
+  // 3D-viewport Text tool round - see this function's own [textContours]
+  // parameter doc comment for why these arrive pre-resolved rather than
+  // being derived from [points] the way every other entity above is.
+  final textPolygons = <List<vm.Vector3>>[];
+  final textIds = <String>[];
+  for (final text in texts) {
+    final contours = textContours[text.id];
+    if (contours == null) continue;
+    for (final contour in contours) {
+      void addLoop(List<(double, double)> loop) {
+        if (loop.isEmpty) return;
+        final worldLoop = [for (final p in loop) sketchPointToWorld(basis, p.$1, p.$2)];
+        // Explicitly closes the loop (repeats the first vertex as the
+        // last) - unlike [circlePolygons]'s own generation loop above,
+        // this data comes from already-tessellated server-side wires
+        // with no such implicit repeat, and [PolylineGeometry] is a
+        // plain line strip with no separate "close the path" concept.
+        worldLoop.add(worldLoop.first);
+        textPolygons.add(worldLoop);
+        textIds.add(text.id);
+      }
+
+      addLoop(contour.outer);
+      for (final hole in contour.holes) {
+        addLoop(hole);
+      }
+    }
+    if (text.construction) constructionIds.add(text.id);
+  }
+
+  // §2.3's own bounding-box/handle overlay - see [textHandleLines]'s own
+  // doc comment for why this only ever considers [selectedTextId].
+  final textHandleLines = <(vm.Vector3, vm.Vector3)>[];
+  final textHandleMarkers = <vm.Vector3>[];
+  final selectedContours = selectedTextId == null ? null : textContours[selectedTextId];
+  if (selectedContours != null && selectedContours.isNotEmpty) {
+    double? minX, minY, maxX, maxY;
+    for (final contour in selectedContours) {
+      for (final p in contour.outer) {
+        minX = minX == null ? p.$1 : math.min(minX, p.$1);
+        maxX = maxX == null ? p.$1 : math.max(maxX, p.$1);
+        minY = minY == null ? p.$2 : math.min(minY, p.$2);
+        maxY = maxY == null ? p.$2 : math.max(maxY, p.$2);
+      }
+    }
+    if (minX != null) {
+      vm.Vector3 corner(double x, double y) => sketchPointToWorld(basis, x, y);
+      final topLeft = corner(minX, maxY!);
+      final topRight = corner(maxX!, maxY);
+      final bottomLeft = corner(minX, minY!);
+      final bottomRight = corner(maxX, minY);
+      final center = corner((minX + maxX) / 2, (minY + maxY) / 2);
+      textHandleLines.addAll([
+        (topLeft, topRight),
+        (topRight, bottomRight),
+        (bottomRight, bottomLeft),
+        (bottomLeft, topLeft),
+        (corner(minX, (minY + maxY) / 2), corner(maxX, (minY + maxY) / 2)),
+        (corner((minX + maxX) / 2, minY), corner((minX + maxX) / 2, maxY)),
+      ]);
+      textHandleMarkers.addAll([center, topRight]);
+    }
+  }
+
   return SketchGeometry3D(
     lineSegments: lineSegments,
     lineIds: lineIds,
@@ -688,6 +816,10 @@ SketchGeometry3D sketchGeometry3DFrom({
     ellipseIds: ellipseIds,
     splinePolylines: splinePolylines,
     splineIds: splineIds,
+    textPolygons: textPolygons,
+    textIds: textIds,
+    textHandleLines: textHandleLines,
+    textHandleMarkers: textHandleMarkers,
     constructionIds: constructionIds,
     hiddenPointIds: hiddenPointIds,
     originPointId: originPointId,
@@ -945,6 +1077,45 @@ Node buildSketchGeometryNode(
       ...outlinePrimitivesFor(geometry.ellipseIds[i], geometry.ellipsePolygons[i]),
     for (var i = 0; i < geometry.splinePolylines.length; i++)
       ...outlinePrimitivesFor(geometry.splineIds[i], geometry.splinePolylines[i]),
+    // 3D-viewport Text tool round: outline-only, same as every other
+    // curved entity above - no fill/hole triangulation needed here (see
+    // [SketchGeometry3D.textPolygons]'s own doc comment for why holes are
+    // just their own loop rather than something a Face/fill primitive
+    // needs). Matches the flat 2D canvas's own outline stroke around a
+    // Text's fill (`sketch_canvas.dart` fills *and* strokes each contour);
+    // the fill itself is deliberately not reproduced in 3D, consistent
+    // with every other Sketch entity here never being filled in this view.
+    for (var i = 0; i < geometry.textPolygons.length; i++)
+      ...outlinePrimitivesFor(geometry.textIds[i], geometry.textPolygons[i]),
+    // §2.3's own bounding-box/center-line overlay - always dashed (see
+    // [SketchGeometry3D.textHandleLines]'s own doc comment for why this
+    // never consults [constructionIds] the way [outlinePrimitivesFor]
+    // does), using a dedicated construction-style material distinct from
+    // [materialFor] (there's no owning entity id to key a color lookup
+    // off - this isn't a real sketch entity).
+    for (final line in geometry.textHandleLines)
+      for (final dash in dashedSegments([line.$1, line.$2]))
+        MeshPrimitive(
+          PolylineGeometry([dash.$1, dash.$2], width: sketchLineWidth),
+          UnlitMaterial()
+            ..alphaMode = AlphaMode.opaque
+            ..baseColorFactor = sketchConstructionColor
+            ..doubleSided = true,
+        ),
+    // The two handle markers themselves (center, then corner - see
+    // [SketchGeometry3D.textHandleMarkers]'s own doc comment) - same
+    // round-cap disk primitive [vertexMarkerSegments] already builds for
+    // every ordinary Point marker below, just in a distinct color so they
+    // read as a different affordance.
+    for (final marker in geometry.textHandleMarkers)
+      for (final segment in vertexMarkerSegments([marker]))
+        MeshPrimitive(
+          PolylineGeometry([segment.$1, segment.$2], width: sketchPointMarkerWidth, cap: PolylineCap.round),
+          UnlitMaterial()
+            ..alphaMode = AlphaMode.opaque
+            ..baseColorFactor = sketchIndicatorAnchorColor
+            ..doubleSided = true,
+        ),
     for (var i = 0; i < geometry.points.length; i++)
       if (!geometry.hiddenPointIds.contains(geometry.pointIds[i]) &&
           geometry.pointIds[i] != geometry.originPointId)

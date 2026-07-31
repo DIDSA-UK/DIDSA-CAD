@@ -11,7 +11,17 @@ import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart' show BodyMeshDto;
 import '../api/sketch_api_client.dart'
-    show ApiException, ArcDto, CircleDto, EllipseDto, LineDto, PointDto, SketchDto, SplineDto;
+    show
+        ApiException,
+        ArcDto,
+        CircleDto,
+        EllipseDto,
+        LineDto,
+        PointDto,
+        SketchDto,
+        SplineDto,
+        TextContourDto,
+        TextDto;
 import '../didsa_logo_button.dart';
 import '../viewport3d/part_viewport.dart';
 import '../viewport3d/reference_planes.dart';
@@ -31,6 +41,7 @@ import 'sketch_offset_bar.dart';
 import 'sketch_pattern_bar.dart';
 import 'sketch_ribbon.dart';
 import 'sketch_speed_dial.dart';
+import 'sketch_text_bar.dart';
 import 'sketch_trim_bar.dart';
 import 'sketcher_preferences.dart';
 
@@ -173,6 +184,43 @@ List<CircleDto> _circleDtosFrom(SketchController controller) => [
             construction: circle.construction,
           ),
     ];
+
+/// 3D-viewport Text tool round (`docs/text-tool-3d-viewport-scope.md`
+/// §2.1): [sketchGeometry3DFrom]'s `texts` parameter - unlike every other
+/// `_*DtosFrom` helper above, `SketchTextView` already carries everything
+/// `TextDto` needs (it *is* the client's own cache of the same backend
+/// response), so this is a plain field-for-field wrap, not a recompute.
+List<TextDto> _textDtosFrom(SketchController controller) => [
+      for (final text in controller.texts.values)
+        TextDto(
+          id: text.id,
+          content: text.content,
+          font: text.font,
+          size: text.size,
+          anchorPointId: text.anchorPointId,
+          rotationDegrees: text.rotationDegrees,
+          construction: text.construction,
+        ),
+    ];
+
+/// [sketchGeometry3DFrom]'s `textContours` parameter -
+/// [SketchController.textLiveContours] (not [SketchController.
+/// textAbsoluteContours] directly) so a Text currently being resized via
+/// its own corner handle (see that controller method's own doc comment)
+/// renders the live scaled preview here too, not just on the flat 2D
+/// canvas - the two views must never visibly disagree about where an
+/// in-progress drag currently sits.
+Map<String, List<TextContourDto>> _textContoursFrom(SketchController controller) {
+  final result = <String, List<TextContourDto>>{};
+  for (final text in controller.texts.values) {
+    final contours = controller.textLiveContours(text);
+    if (contours == null) continue;
+    result[text.id] = [
+      for (final contour in contours) TextContourDto(outer: contour.outer, holes: contour.holes),
+    ];
+  }
+  return result;
+}
 
 /// The 2D sketch screen: chained line/circle sketching against the live
 /// backend, against a single Sketch. By default it creates a brand-new
@@ -743,6 +791,16 @@ class _SketchScreenState extends State<SketchScreen> {
                   // dependency of its own) already works against a
                   // 3D-selected entity unmodified.
                   Positioned.fill(child: SketchRibbon(controller: _controller)),
+                  // 3D-viewport Text tool round
+                  // (`docs/text-tool-3d-viewport-scope.md` §2.3): the Text
+                  // tool's own configuring bar - see [TextValueBar]'s own
+                  // doc comment for why it's independent of the mode-keyed
+                  // `bar` switch below (Text editing happens in ordinary
+                  // Select mode, not a dedicated [SketchMode]).
+                  // `Positioned.fill` for the same reason [PatternValueBar]
+                  // needs it - see the mode-keyed `bar` switch's own doc
+                  // comment on `usesResizableToolPanel`.
+                  Positioned.fill(child: TextValueBar(controller: _controller)),
                   // Tap-outside barrier: while the FAB menu is open, any tap
                   // outside the FAB itself (which sits above this in the
                   // Stack, so remains tappable) closes the menu instead of
@@ -1011,10 +1069,15 @@ class _SketchScreenState extends State<SketchScreen> {
   /// git history for that era's doc comment); P16-P18 retrofitted drawing
   /// itself onto a cursor+ghost+commit model ([_orbitCursorActive]'s own
   /// doc comment), and P20 opened that model up to every draw tool except
-  /// Text (see [SketchSpeedDial.restrictToEmbeddedTools]) - a genuine tap
-  /// (not a cursor drag) commits via [_handleEmbeddedSketchTap]/
-  /// [_handleDrawCursorMoved] either way. Select mode ([selectionMode]) is
-  /// also supported here, gated the same way.
+  /// Text (see [SketchSpeedDial.restrictToEmbeddedTools]'s own doc comment
+  /// for that era) - a genuine tap (not a cursor drag) commits via
+  /// [_handleEmbeddedSketchTap]/[_handleDrawCursorMoved] either way.
+  /// Select mode ([selectionMode]) is also supported here, gated the same
+  /// way. 3D-viewport Text tool round
+  /// (`docs/text-tool-3d-viewport-scope.md` §2.1): Text is no longer
+  /// excluded - `sketchGeometry3DFrom` now has a real glyph-outline case
+  /// (see [SketchGeometry3D.textPolygons]'s own doc comment), the actual
+  /// gap [restrictToEmbeddedTools] used to exist to paper over.
   ///
   /// Otherwise: just the flat 2D [SketchCanvas] - no 3D body backdrop.
   /// On-device feedback: a body backdrop behind the flat canvas used to be
@@ -1554,6 +1617,16 @@ class _SketchScreenState extends State<SketchScreen> {
     // to drag it rather than tapping to select it.
     final grabRadius =
         localPixelsPerUnit == null ? SketchController.snapRadius : _controller.hitRadiusForPixelsPerUnit(localPixelsPerUnit);
+    // Checked before the general [dragGrabTargetAt] resolution below -
+    // mirrors sketch_canvas.dart's own drag-mode tap dispatch (see
+    // [SketchController.textResizeHandleGrabTargetAt]'s own doc comment
+    // for why this needs to run first, not as a case inside the switch
+    // below).
+    final resizeTextId = _controller.textResizeHandleGrabTargetAt(x, y, grabRadius);
+    if (resizeTextId != null) {
+      _controller.beginTextResizeDrag(resizeTextId, x, y);
+      return;
+    }
     final target = _controller.dragGrabTargetAt(x, y, grabRadius);
     if (target == null) return;
     switch (target.kind) {
@@ -2050,6 +2123,10 @@ class _SketchScreenState extends State<SketchScreen> {
       arcs: _arcDtosFrom(_controller),
       ellipses: _ellipseDtosFrom(_controller),
       splines: _splineDtosFrom(_controller),
+      texts: _textDtosFrom(_controller),
+      textContours: _textContoursFrom(_controller),
+      selectedTextId:
+          _controller.selection?.kind == SelectionKind.text ? _controller.selection!.id : null,
       hiddenPointIds: _hiddenPointIdsFrom(_controller),
       originPointId: _controller.originPointId,
     );

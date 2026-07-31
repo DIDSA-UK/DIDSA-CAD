@@ -9,7 +9,7 @@ import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart';
 import '../api/sketch_api_client.dart'
-    show ApiException, LineDto, ProfileDetectionDto, ProfileLoopDto, SketchApiClient;
+    show ApiException, LineDto, ProfileDetectionDto, ProfileLoopDto, SketchApiClient, TextContourDto;
 import '../connection_screen.dart';
 import '../didsa_logo_button.dart';
 import '../sketch/sketch_controller.dart';
@@ -3481,6 +3481,24 @@ class _PartScreenState extends State<PartScreen> {
         final rawArcs = await _sketchApi.listArcs(sketchId);
         final ellipses = await _sketchApi.listEllipses(sketchId);
         final splines = await _sketchApi.listSplines(sketchId);
+        // 3D-viewport Text tool round (`docs/text-tool-3d-viewport-scope.md`
+        // §2.1): a reference Sketch (this method's own read-only context,
+        // no live SketchController to ask for a cached preview - contrast
+        // sketch_screen.dart's `_textContoursFrom`) fetches each Text's own
+        // outline directly. One request per Text, same "N+1 but only ever a
+        // handful of entities, and this whole refresh already fans out
+        // similarly per Sketch" tradeoff every other per-entity fetch in
+        // this method already accepts.
+        final texts = await _sketchApi.listTexts(sketchId);
+        final textContours = <String, List<TextContourDto>>{};
+        for (final text in texts) {
+          try {
+            textContours[text.id] = await _sketchApi.getTextPreview(sketchId, text.id);
+          } catch (_) {
+            // Swallow - see this method's own doc comment; a single Text's
+            // preview failing just means that one contributes no loops.
+          }
+        }
         // On-device feedback ("the patterned entity is not visible in the
         // sketch when viewed in the 3d viewport"): merge every committed
         // Pattern/Mirror instance's own derived (synthetic-id) copies in
@@ -3505,6 +3523,8 @@ class _PartScreenState extends State<PartScreen> {
           arcs: arcs,
           ellipses: ellipses,
           splines: splines,
+          texts: texts,
+          textContours: textContours,
         );
         if (!geometry.isEmpty) updated[feature.id] = geometry;
       } catch (_) {
