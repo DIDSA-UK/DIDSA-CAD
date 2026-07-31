@@ -5351,6 +5351,30 @@ void main() {
     expect(controller.points[text.anchorPointId]!.y, closeTo(5, 1e-9));
   });
 
+  test('on-device feedback ("after placing the locating point, user should be sent straight to '
+      'the text edit tool"): placing a Text exits to Select mode, selects it, and opens '
+      'TextValueBar - in both the 2D canvas and the 3D-embedded viewport, since both funnel '
+      'through the same handleCanvasTap', () async {
+    controller.selectDrawTool(SketchTool.text);
+
+    await controller.handleCanvasTap(5, 5);
+
+    final textId = controller.texts.keys.single;
+    expect(controller.mode, SketchMode.select);
+    expect(controller.selectionSet, hasLength(1));
+    expect(controller.selection?.kind, SelectionKind.text);
+    expect(controller.selection?.id, textId);
+    expect(controller.textBarTextId, textId);
+    // Not the ribbon too - see _clickTextTool's own doc comment on why
+    // showing both would be redundant.
+    expect(controller.ribbonVisible, isFalse);
+    // The bounding box/handles this unlocks are gated on being the
+    // current selection (SketchController.textBounds's own doc comment) -
+    // confirming they're actually reachable now, not just the selection
+    // bookkeeping.
+    expect(controller.textBounds(controller.texts[textId]!), isNotNull);
+  });
+
   test('creating a Text entity fetches and caches its preview outline', () async {
     controller.selectDrawTool(SketchTool.text);
     await controller.handleCanvasTap(5, 5);

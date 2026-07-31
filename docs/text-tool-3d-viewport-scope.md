@@ -276,6 +276,28 @@ demanding fonts a user might reasonably ask for next.
   corner handle both ultimately just PATCH the same `size` field, so they
   naturally "overwrite each other" with no separate reconciliation needed
   - confirmed the right call before implementing, not assumed.
+- **On-device feedback follow-up** ("you rolled out the features to the
+  2D sketcher, I need them in the 3D viewport sketcher too"): the handles/
+  bounding box/`TextValueBar` above were already generic across both
+  views from the start (one shared `SketchController`, one shared
+  `handleCanvasTap` entry point per `_handleEmbeddedSketchTap`'s own doc
+  comment) - the real gap was discoverability, not a 3D-specific bug.
+  Placing a Text left nothing selected, so none of the above ever
+  appeared without a separate manual select-then-ribbon-chip step -
+  trivial to stumble into by habit on the 2D canvas (glyphs are right
+  there, easy to tap), much easier to miss entirely via a 3D ray-cast tap
+  against text you don't yet know is there. Fixed at the root instead of
+  patching the 3D path specifically: `_clickTextTool` now exits to Select
+  mode, adds the new Text to `selectionSet`, and calls `openTextBar`
+  immediately after a successful placement (paired with a second,
+  explicitly requested UX change - "after placing the locating point,
+  user should be sent straight to the text edit tool" - which turned out
+  to be the same fix). Since both views share the placement code path,
+  this makes the bounding box/handles/toolbar appear immediately in
+  either one, with no per-view branching needed. `exitToSelectMode` also
+  now clears `textBarTextId`, so switching draw tools (or entering
+  Dimension mode) while the bar is open can no longer leave it dangling,
+  disconnected from the selection that opened it.
 - **Current state** (original, kept for context): `size` already exists as a plain numeric field,
   editable via the "Edit Text" dialog's `Size` `TextField`
   (`sketch_ribbon.dart:722-731`, in mm, validated positive). This is
