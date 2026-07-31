@@ -213,6 +213,17 @@ enum MergeMode {
       MergeMode.values.firstWhere((m) => m.apiValue == value, orElse: () => MergeMode.keepSeparate);
 }
 
+/// Pattern/Mirror scoping's Phase 9 (`docs/pattern-mirror-scope.md` §2.12/§4):
+/// which of a Feature's own two mutually-exclusive seed fields a long-press
+/// "Pattern"/"Mirror" entry currently seeds through - [body] sends the
+/// long-pressed Feature's id via `source_feature_ids` (patterns/mirrors the
+/// Bodies it produces), [feature] sends it via `tool_feature_id` (repeats/
+/// reflects its own Cut/Boss effect into its own shared target instead).
+/// Shared by [PatternPanel.seedKind]/[MirrorPanel.seedKind] - a simple
+/// two-way toggle both panels show verbatim, the same "not worth
+/// duplicating per panel" reasoning [MergeMode] above already established.
+enum PatternMirrorSeedKind { body, feature }
+
 class FeatureDto {
   final String type;
   final String id;

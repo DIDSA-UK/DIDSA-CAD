@@ -713,6 +713,24 @@ class PartViewport extends StatefulWidget {
   /// with no separate camera-change plumbing needed.
   final SketchPlaneBasis? sketchOrientationBasis;
 
+  /// Bug fix ("XYZ triad hidden behind any open tool panel",
+  /// `docs/roadmap.md`): [_ScenePainter] normally draws the orientation
+  /// triad (`triad.dart`'s `paintTriad`) at a fixed screen-space bottom-left
+  /// offset - every tool panel/picker ribbon `PartScreen` overlays on top of
+  /// this widget (`PatternPanel`, `ExtrudePanel`, `FilletPanel`, ... - see
+  /// `PartScreen._anyToolPanelOpen`) sits in that same corner and covers it
+  /// completely. When true, [_ScenePainter] instead anchors the triad to the
+  /// world origin's own projected screen position (following the camera the
+  /// same way [buildReferencePlaneNode]'s real 3D-space geometry already
+  /// does, just computed in screen space here since the triad itself is a
+  /// fixed-size 2D overlay, not real scene geometry) - clamped back onto
+  /// screen if the origin projects near/past an edge, and falling back to
+  /// the fixed corner if the origin is behind the camera entirely (mirrors
+  /// [worldToScreen]'s own null-when-behind-camera contract). `false` (the
+  /// default) keeps the original always-fixed-corner behavior for every
+  /// caller that doesn't pass this.
+  final bool anchorTriadAtOrigin;
+
   const PartViewport({
     super.key,
     this.bodies = const [],
@@ -791,6 +809,7 @@ class PartViewport extends StatefulWidget {
     this.initialViewRotationQuarterTurns = 0,
     this.initialViewBasis,
     this.sketchOrientationBasis,
+    this.anchorTriadAtOrigin = false,
   });
 
   @override
@@ -3415,6 +3434,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                     if (_selectedEdgesNode != null) _selectedEdgesNode!,
                     if (_selectedVerticesNode != null) _selectedVerticesNode!,
                   ],
+                  anchorTriadAtOrigin: widget.anchorTriadAtOrigin,
                 ),
               ),
             ),
@@ -3715,6 +3735,9 @@ class _ScenePainter extends CustomPainter {
   /// before [Scene.render], per [PolylineGeometry]'s own contract.
   final List<Node> polylineCarryingNodes;
 
+  /// See [PartViewport.anchorTriadAtOrigin]'s own doc comment.
+  final bool anchorTriadAtOrigin;
+
   /// `paint` runs every frame, so this guards [paint]'s diagnostic logging to
   /// fire only once - the first call already proves `scene.render` (the
   /// flutter_scene GPU call) didn't hang, which is all the logging is for.
@@ -3725,11 +3748,13 @@ class _ScenePainter extends CustomPainter {
     required this.camera,
     required this.size,
     this.polylineCarryingNodes = const [],
+    this.anchorTriadAtOrigin = false,
   });
 
   /// Distance of the triad's center from each edge of the viewport - large
   /// enough that its arms (see [paintTriad]'s `armLength`) and axis labels
-  /// never clip against the corner.
+  /// never clip against the corner. Also [triadCenterFor]'s own clamp
+  /// margin, so an origin-anchored triad never clips against an edge either.
   static const double _triadMargin = 44;
 
   @override
@@ -3752,9 +3777,19 @@ class _ScenePainter extends CustomPainter {
     if (isFirstPaint) {
       debugPrint('[PartViewport] _ScenePainter.paint: first frame, scene.render() returned');
     }
-    // Bottom-left, per the project brief's own stated preference - drawn
-    // last so it stays on top of the rendered scene.
-    final triadCenter = Offset(_triadMargin, canvasSize.height - _triadMargin);
+    // Bottom-left by default, per the project brief's own stated preference
+    // - drawn last so it stays on top of the rendered scene. Bug fix ("XYZ
+    // triad hidden behind any open tool panel"): [anchorTriadAtOrigin] (set
+    // while any tool panel/picker ribbon covers this corner - see
+    // `PartScreen._anyToolPanelOpen`) re-anchors to the world origin's own
+    // projected position instead, so the triad stays visible alongside the
+    // open panel rather than underneath it.
+    final triadCenter = triadCenterFor(
+      perspectiveCamera,
+      canvasSize,
+      anchorAtOrigin: anchorTriadAtOrigin,
+      margin: _triadMargin,
+    );
     paintTriad(canvas, triadCenter, triadAxes(perspectiveCamera));
   }
 

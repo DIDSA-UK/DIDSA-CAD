@@ -447,3 +447,28 @@ roadmap entry" ask.
   almost certainly stays separate regardless (different language, and the
   one authoritative source of truth `detect_profile`/wire-building must
   use).
+- **XYZ triad hidden behind any open tool panel - fixed (2026-07-31),
+  not yet confirmed on a real device.** Every tool panel (`PatternPanel`,
+  `ExtrudePanel`, `CreatePlanePanel`, `FilletPanel`, `ChamferPanel`,
+  `SweepPanel`, etc.) is a `Stack` overlay sitting on top of the
+  full-canvas `PartViewport`, while `triad.dart`'s `paintTriad` used to
+  always draw the orientation triad at a fixed screen-space bottom-left
+  offset inside that same canvas - so any open panel covered it
+  completely, with no way to check orientation while actually using a
+  tool. Fixed via a new `PartViewport.anchorTriadAtOrigin` flag
+  (`PartScreen._anyToolPanelOpen`, ORing together every existing tool-panel/
+  picker-ribbon active flag) that re-anchors the triad to the world
+  origin's own projected screen position (`triad.dart`'s new, pure
+  `triadCenterFor` helper, following the camera the same way
+  `reference_planes.dart`'s real 3D-space geometry already does for free)
+  while a panel is open, clamped to stay on-screen and falling back to the
+  original fixed corner when the origin can't be projected at all (behind
+  the camera) - falling back to the same fixed corner otherwise, unchanged
+  from before this fix. Verified via `flutter test` (a new `triadCenterFor`
+  unit-test group plus a `part_screen_test.dart` wiring test reproducing
+  the bug's own absence/presence across two different tools - the New
+  Sketch plane picker and `ExtrudePanel`, not just Pattern/Mirror) - **not**
+  verified on an actual device with real GPU rendering and real panel
+  layouts, since this sandbox has no display/GPU. Worth a real on-device
+  glance before fully trusting the clamp-fallback behavior looks right at
+  a variety of screen sizes/panel heights.

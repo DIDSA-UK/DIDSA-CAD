@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart' show Offset, Size;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_scene/scene.dart' show PerspectiveCamera;
 import 'package:vector_math/vector_math.dart' as vm;
@@ -64,6 +65,64 @@ void main() {
         expect(farAxes[i].direction.dx, closeTo(nearAxes[i].direction.dx, 1e-6));
         expect(farAxes[i].direction.dy, closeTo(nearAxes[i].direction.dy, 1e-6));
       }
+    });
+  });
+
+  group('triadCenterFor', () {
+    const viewSize = Size(400, 300);
+    const margin = 44.0;
+
+    test('anchorAtOrigin false always returns the fixed bottom-left corner', () {
+      // Camera position/orientation must not matter at all when the flag is
+      // off - this is the pre-fix, always-on behavior every viewport used
+      // before "XYZ triad hidden behind any open tool panel" was fixed.
+      final camera = PerspectiveCamera(position: vm.Vector3(5, 5, 5), target: vm.Vector3.zero());
+      final center = triadCenterFor(camera, viewSize, anchorAtOrigin: false, margin: margin);
+      expect(center, const Offset(margin, 300 - margin));
+    });
+
+    test('anchorAtOrigin true follows the world origin when it projects on-screen', () {
+      // Camera looking straight down -Z at the origin from a middling
+      // distance - the origin projects near screen-center, nowhere close to
+      // the fixed bottom-left corner the false case above returns.
+      final camera = PerspectiveCamera(
+        position: vm.Vector3(0, 0, 10),
+        target: vm.Vector3.zero(),
+        up: vm.Vector3(0, 1, 0),
+      );
+      final center = triadCenterFor(camera, viewSize, anchorAtOrigin: true, margin: margin);
+      expect(center.dx, closeTo(viewSize.width / 2, 1.0));
+      expect(center.dy, closeTo(viewSize.height / 2, 1.0));
+    });
+
+    test('anchorAtOrigin true clamps to stay margin-inset from every edge', () {
+      // A camera offset well off to one side puts the origin's own screen
+      // projection far outside [viewSize] - the result must still land
+      // fully on-screen (clamped), not just wherever the raw projection
+      // happens to fall.
+      final camera = PerspectiveCamera(
+        position: vm.Vector3(0, 0, 0.5),
+        target: vm.Vector3(50, 50, 0),
+        up: vm.Vector3(0, 1, 0),
+      );
+      final center = triadCenterFor(camera, viewSize, anchorAtOrigin: true, margin: margin);
+      expect(center.dx, inInclusiveRange(margin, viewSize.width - margin));
+      expect(center.dy, inInclusiveRange(margin, viewSize.height - margin));
+    });
+
+    test('anchorAtOrigin true falls back to the fixed corner when the origin is behind the camera',
+        () {
+      // Camera at the origin looking *away* from it (target behind the
+      // camera relative to forward) - worldToScreen returns null for a
+      // point with clip.w <= 0, and this must fall back rather than
+      // computing a nonsense position.
+      final camera = PerspectiveCamera(
+        position: vm.Vector3(0, 0, -10),
+        target: vm.Vector3(0, 0, -20),
+        up: vm.Vector3(0, 1, 0),
+      );
+      final center = triadCenterFor(camera, viewSize, anchorAtOrigin: true, margin: margin);
+      expect(center, const Offset(margin, 300 - margin));
     });
   });
 }

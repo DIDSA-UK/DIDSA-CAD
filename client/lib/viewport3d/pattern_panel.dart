@@ -148,9 +148,18 @@ class PatternPanel extends StatefulWidget {
   /// Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
   /// §2.11/§4): mirrors [MirrorPanel.toolFeatureSummary]'s own identical
   /// shape exactly - non-null while this session's seed is the third
-  /// `tool_feature_id` mode (entered via a long-press "Pattern into
-  /// Target"), a short display name for the referenced Feature.
+  /// `tool_feature_id` mode (entered via a long-press "Pattern"), a short
+  /// display name for the referenced Feature.
   final String? toolFeatureSummary;
+
+  /// Pattern/Mirror scoping's Phase 9 (`docs/pattern-mirror-scope.md`
+  /// §2.12/§4): mirrors [MirrorPanel.seedKind]/[MirrorPanel.onSeedKindChanged]'s
+  /// own identical shape exactly - non-null only while this session was
+  /// opened via a Feature's own long-press "Pattern" entry *and* that
+  /// Feature qualifies for both seed kinds, showing the "Pattern Body"/
+  /// "Pattern Feature" toggle.
+  final PatternMirrorSeedKind? seedKind;
+  final void Function(PatternMirrorSeedKind kind)? onSeedKindChanged;
 
   final VoidCallback onConfirm;
   final VoidCallback onCancel;
@@ -197,6 +206,8 @@ class PatternPanel extends StatefulWidget {
     this.sourceFeatureIds = const [],
     required this.onPickSourceFeatures,
     this.toolFeatureSummary,
+    this.seedKind,
+    this.onSeedKindChanged,
     required this.onConfirm,
     required this.onCancel,
   });
@@ -358,6 +369,27 @@ class _PatternPanelState extends State<PatternPanel> {
         child: Text(axis.toUpperCase()),
       );
 
+  /// Bug fix ("Phase 9", `docs/pattern-mirror-scope.md` §2.12/§4): the
+  /// viewport-tap-to-pick affordance (tap an edge/face/Sketch Line while
+  /// this panel is open) already works the whole time this panel is on
+  /// screen - it was previously entirely implicit, discoverable only via
+  /// the hint text this button now sits next to. Tapping it doesn't pick
+  /// anything itself (there's no separate "arm the picker" step - the
+  /// viewport is always live) - it just surfaces [hintText] as a visible,
+  /// tappable prompt, the same text already shown (in red) whenever
+  /// nothing is picked yet. A plain [IconButton] (mirroring the reverse-
+  /// direction toggle's own compact shape in this exact Row), not an
+  /// [OutlinedButton.icon] with a text label, to stay narrow enough to sit
+  /// alongside the X/Y/Z buttons without overflowing this panel's own
+  /// narrowest-supported surface width (see `pattern_panel_test.dart`).
+  Widget _pickAffordanceButton(String tooltip, String hintText) => IconButton(
+        tooltip: tooltip,
+        onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(hintText), duration: const Duration(seconds: 3)),
+        ),
+        icon: const Icon(Icons.touch_app_outlined, size: 20),
+      );
+
   Widget _directionSection({
     required String label,
     required bool hasDirection,
@@ -391,6 +423,9 @@ class _PatternPanelState extends State<PatternPanel> {
                 ),
               ),
             ),
+            _pickAffordanceButton(
+                'Pick Direction', 'Tap an edge or Sketch Line in the viewport to set $label'),
+            const SizedBox(width: 4),
             _axisButton('x', onSetFixedAxis),
             const SizedBox(width: 4),
             _axisButton('y', onSetFixedAxis),
@@ -536,16 +571,30 @@ class _PatternPanelState extends State<PatternPanel> {
         Text('Axis',
             style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
         const SizedBox(height: 6),
-        Text(
-          widget.hasAxis
-              ? (widget.axisSummary ?? 'Axis selected')
-              : 'Tap an edge, a cylindrical face, or a Sketch Line for the axis',
-          style: TextStyle(
-            color: widget.hasAxis
-                ? Theme.of(context).colorScheme.onSurfaceVariant
-                : Theme.of(context).colorScheme.error,
-            fontSize: 12,
-          ),
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                widget.hasAxis
+                    ? (widget.axisSummary ?? 'Axis selected')
+                    : 'Tap an edge, a cylindrical face, or a Sketch Line for the axis',
+                style: TextStyle(
+                  color: widget.hasAxis
+                      ? Theme.of(context).colorScheme.onSurfaceVariant
+                      : Theme.of(context).colorScheme.error,
+                  fontSize: 12,
+                ),
+              ),
+            ),
+            // Bug fix ("Phase 9", `docs/pattern-mirror-scope.md` §2.12/§4):
+            // unlike Direction 1/2, Circular's axis has no fixed-world-axis
+            // button alternative at all (a bare direction can't supply the
+            // real pivot point an axis needs) - this was the one section
+            // with no explicit picking affordance whatsoever, viewport-tap
+            // discoverable only by already knowing to look for it.
+            _pickAffordanceButton(
+                'Pick Axis', 'Tap an edge, a cylindrical face, or a Sketch Line in the viewport for the axis'),
+          ],
         ),
         const SizedBox(height: 8),
         Row(
@@ -599,6 +648,18 @@ class _PatternPanelState extends State<PatternPanel> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          if (widget.seedKind != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: SegmentedButton<PatternMirrorSeedKind>(
+                segments: const [
+                  ButtonSegment(value: PatternMirrorSeedKind.body, label: Text('Pattern Body')),
+                  ButtonSegment(value: PatternMirrorSeedKind.feature, label: Text('Pattern Feature')),
+                ],
+                selected: {widget.seedKind!},
+                onSelectionChanged: (selection) => widget.onSeedKindChanged?.call(selection.first),
+              ),
+            ),
           if (widget.canChangeMode)
             Padding(
               padding: const EdgeInsets.only(bottom: 12),

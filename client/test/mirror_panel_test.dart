@@ -316,6 +316,120 @@ void main() {
     });
   });
 
+  group('Pattern/Mirror scoping Phase 9: MirrorPanel seed-kind toggle', () {
+    testWidgets('hidden when seedKind is null (not a long-press single-Feature session)',
+        (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: MirrorPanel(
+              hasPlanePicked: true,
+              merge: MergeMode.keepSeparate,
+              onMergeChanged: (_) {},
+              onPickSourceFeatures: () {},
+              onConfirm: () {},
+              onCancel: () {},
+            ),
+          ),
+        ),
+      );
+      expect(find.text('Mirror Body'), findsNothing);
+      expect(find.text('Mirror Feature'), findsNothing);
+    });
+
+    testWidgets('shown and reflects body as selected', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: MirrorPanel(
+              hasPlanePicked: true,
+              merge: MergeMode.keepSeparate,
+              onMergeChanged: (_) {},
+              onPickSourceFeatures: () {},
+              seedKind: PatternMirrorSeedKind.body,
+              onSeedKindChanged: (_) {},
+              onConfirm: () {},
+              onCancel: () {},
+            ),
+          ),
+        ),
+      );
+      expect(find.text('Mirror Body'), findsOneWidget);
+      expect(find.text('Mirror Feature'), findsOneWidget);
+      final segmentedButton = tester
+          .widget<SegmentedButton<PatternMirrorSeedKind>>(find.byType(SegmentedButton<PatternMirrorSeedKind>));
+      expect(segmentedButton.selected, {PatternMirrorSeedKind.body});
+    });
+
+    testWidgets('reflects feature as selected', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: MirrorPanel(
+              hasPlanePicked: true,
+              merge: MergeMode.fuseIntoOne,
+              onMergeChanged: (_) {},
+              onPickSourceFeatures: () {},
+              seedKind: PatternMirrorSeedKind.feature,
+              onSeedKindChanged: (_) {},
+              toolFeatureSummary: 'Extrude 1',
+              onConfirm: () {},
+              onCancel: () {},
+            ),
+          ),
+        ),
+      );
+      final segmentedButton = tester
+          .widget<SegmentedButton<PatternMirrorSeedKind>>(find.byType(SegmentedButton<PatternMirrorSeedKind>));
+      expect(segmentedButton.selected, {PatternMirrorSeedKind.feature});
+    });
+
+    testWidgets('tapping "Mirror Feature" fires onSeedKindChanged(feature)', (tester) async {
+      PatternMirrorSeedKind? picked;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: MirrorPanel(
+              hasPlanePicked: true,
+              merge: MergeMode.keepSeparate,
+              onMergeChanged: (_) {},
+              onPickSourceFeatures: () {},
+              seedKind: PatternMirrorSeedKind.body,
+              onSeedKindChanged: (k) => picked = k,
+              onConfirm: () {},
+              onCancel: () {},
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('Mirror Feature'));
+      expect(picked, PatternMirrorSeedKind.feature);
+    });
+
+    testWidgets('tapping "Mirror Body" fires onSeedKindChanged(body)', (tester) async {
+      PatternMirrorSeedKind? picked;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: MirrorPanel(
+              hasPlanePicked: true,
+              merge: MergeMode.fuseIntoOne,
+              onMergeChanged: (_) {},
+              onPickSourceFeatures: () {},
+              seedKind: PatternMirrorSeedKind.feature,
+              onSeedKindChanged: (k) => picked = k,
+              toolFeatureSummary: 'Extrude 1',
+              onConfirm: () {},
+              onCancel: () {},
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('Mirror Body'));
+      expect(picked, PatternMirrorSeedKind.body);
+    });
+  });
+
   group('MirrorPanel Cancel', () {
     testWidgets('Cancel is always enabled and fires onCancel', (tester) async {
       var cancelled = false;

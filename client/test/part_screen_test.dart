@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
+import 'package:didsa_cad_client/viewport3d/extrude_panel.dart';
 import 'package:didsa_cad_client/viewport3d/mirror_panel.dart';
 import 'package:didsa_cad_client/viewport3d/part_screen.dart';
 import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
@@ -1321,9 +1322,9 @@ void main() {
   });
 
   testWidgets(
-      'Pattern/Mirror scoping Phase 8: long-pressing an eligible Cut Feature offers "Pattern into '
-      'Target"/"Mirror into Target", and tapping "Pattern into Target" opens PatternPanel seeded '
-      'via tool_feature_id', (tester) async {
+      'Pattern/Mirror scoping Phase 9: long-pressing an eligible Cut Feature still offers the '
+      'plain "Pattern"/"Mirror" entries, and tapping "Pattern" opens PatternPanel seeded via '
+      'tool_feature_id by default, with the Body/Feature toggle shown', (tester) async {
     final backend = _FakeDocumentBackend(
       seedFeatures: [
         {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
@@ -1359,21 +1360,38 @@ void main() {
     await tester.longPress(find.text('Extrude 1'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
-    expect(find.text('Pattern into Target'), findsOneWidget);
-    expect(find.text('Mirror into Target'), findsOneWidget);
+    // Phase 9: the old separate "Pattern into Target"/"Mirror into Target"
+    // entries are gone - a tool-feature-eligible Cut/Boss now shows the
+    // exact same "Pattern"/"Mirror" entries as any other body-producing
+    // Feature (see FeatureContextMenuAction's own doc comment).
+    expect(find.text('Pattern'), findsOneWidget);
+    expect(find.text('Mirror'), findsOneWidget);
+    expect(find.text('Pattern into Target'), findsNothing);
+    expect(find.text('Mirror into Target'), findsNothing);
 
-    await tester.tap(find.text('Pattern into Target'));
+    await tester.tap(find.text('Pattern'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
-    // Straight to `configuring` (no pickingBodies ribbon/step), tool_feature_id
-    // mode shows its own status line in place of the ordinary merge toggle/
-    // sourceFeatureIds row - see PatternPanel.toolFeatureSummary.
+    // Straight to `configuring` (no pickingBodies ribbon/step). Extrude 1
+    // qualifies for both seed kinds (body-producing *and* tool-feature-
+    // eligible), so it defaults to tool_feature_id mode (its own status
+    // line replaces the ordinary merge toggle/sourceFeatureIds row - see
+    // PatternPanel.toolFeatureSummary) and shows the Body/Feature toggle.
     expect(find.byType(PatternPanel), findsOneWidget);
     expect(find.text('Edit Pattern'), findsNothing);
     expect(find.text('Select Body to Pattern'), findsNothing);
     expect(find.textContaining('Patterning Extrude 1 into its own target'), findsOneWidget);
+    expect(find.text('Pattern Body'), findsOneWidget);
+    expect(find.text('Pattern Feature'), findsOneWidget);
     expect(tester.takeException(), isNull);
+
+    // Toggling to Body mode swaps the seed field and status line, still
+    // seeded from the same Extrude 1 Feature.
+    await tester.tap(find.text('Pattern Body'));
+    await tester.pump();
+    expect(find.textContaining('Patterning Extrude 1 into its own target'), findsNothing);
+    expect(find.text('1 Feature added from the Build Tree'), findsOneWidget);
 
     // direction_1 is still unset, so the debounced live-preview never
     // actually fires a network call - pump past it so no Timer is left
@@ -1384,8 +1402,10 @@ void main() {
   });
 
   testWidgets(
-      'Pattern/Mirror scoping Phase 8: tapping "Mirror into Target" opens MirrorPanel directly at '
-      'the pickingPlane step, seeded via tool_feature_id', (tester) async {
+      'Pattern/Mirror scoping Phase 9: tapping "Mirror" on an eligible Cut Feature opens '
+      'MirrorPanel directly at the pickingPlane step, seeded via tool_feature_id by default '
+      '(the entry-point asymmetry fix - Mirror never had this long-press entry before)',
+      (tester) async {
     final backend = _FakeDocumentBackend(
       seedFeatures: [
         {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
@@ -1422,26 +1442,45 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
-    await tester.tap(find.text('Mirror into Target'));
+    await tester.tap(find.text('Mirror'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
     // MirrorPanel opens immediately (mirror_plane still required in
-    // tool_feature_id mode), showing its own status line and no plane
-    // picked yet - Confirm stays disabled until one is.
+    // tool_feature_id mode), showing its own status line, the Body/Feature
+    // toggle (Extrude 1 qualifies for both), and no plane picked yet -
+    // Confirm stays disabled until one is.
     expect(find.byType(MirrorPanel), findsOneWidget);
     expect(find.text('Edit Mirror'), findsNothing);
     expect(find.textContaining('Mirroring Extrude 1 into its own target'), findsOneWidget);
+    expect(find.text('Mirror Body'), findsOneWidget);
+    expect(find.text('Mirror Feature'), findsOneWidget);
     expect(
       tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed,
       isNull,
     );
     expect(tester.takeException(), isNull);
+
+    // Toggling to Body mode swaps the seed field and status line.
+    await tester.tap(find.text('Mirror Body'));
+    await tester.pump();
+    expect(find.textContaining('Mirroring Extrude 1 into its own target'), findsNothing);
+    expect(find.text('1 Feature added from the Build Tree'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    // Unlike Pattern's own debounce, [PartScreen._scheduleMirrorPreview]
+    // always starts its Timer regardless of whether a plane is picked yet
+    // (the "nothing to preview" guard only runs once the Timer fires) - pump
+    // past it so no Timer is left pending when this test tears down.
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets(
-      'Pattern/Mirror scoping Phase 8: long-pressing a targetless Boss does not offer "Pattern into '
-      'Target"/"Mirror into Target" (no shared-target problem to solve)', (tester) async {
+      'Pattern/Mirror scoping Phase 9: long-pressing a targetless Boss (body-producing but not '
+      'tool-feature-eligible) still offers "Pattern"/"Mirror", opening in source_feature_ids '
+      'mode with the Body/Feature toggle hidden (only qualifies for one seed kind)',
+      (tester) async {
     final backend = _FakeDocumentBackend(
       seedFeatures: [
         {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
@@ -1477,11 +1516,29 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
-    // Still offers the ordinary "Pattern" (body-seed) entry - only the two
-    // new tool_feature_id-mode entries are gated on eligibility.
+    // Still offers the unified "Pattern"/"Mirror" entries - the old,
+    // separate tool_feature_id-mode entries are gone entirely (Phase 9).
     expect(find.text('Pattern'), findsOneWidget);
+    expect(find.text('Mirror'), findsOneWidget);
     expect(find.text('Pattern into Target'), findsNothing);
     expect(find.text('Mirror into Target'), findsNothing);
+
+    await tester.tap(find.text('Pattern'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    // A targetless Boss isn't tool-feature-eligible, so this opens in the
+    // ordinary source_feature_ids mode by default, with no Body/Feature
+    // toggle at all (nothing to toggle - it only qualifies for one kind).
+    expect(find.byType(PatternPanel), findsOneWidget);
+    expect(find.text('1 Feature added from the Build Tree'), findsOneWidget);
+    expect(find.textContaining('into its own target'), findsNothing);
+    expect(find.text('Pattern Body'), findsNothing);
+    expect(find.text('Pattern Feature'), findsNothing);
+    expect(tester.takeException(), isNull);
+
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets(
@@ -2060,6 +2117,73 @@ void main() {
     expect(find.text('New Sketch on XY'), findsNothing);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'Bug fix ("XYZ triad hidden behind any open tool panel", docs/roadmap.md): '
+    'PartViewport.anchorTriadAtOrigin is false with no tool panel open, true while the New '
+    'Sketch plane picker or an Extrude panel is open (two different tools, not just '
+    'Pattern/Mirror), and false again once that session ends',
+    (tester) async {
+      final backend = _FakeDocumentBackend(
+        seedFeatures: [
+          {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': false},
+        ],
+      );
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      bool anchored() => tester.widget<PartViewport>(find.byType(PartViewport)).anchorTriadAtOrigin;
+
+      // Baseline: nothing open yet.
+      expect(anchored(), isFalse);
+
+      // Tool 1: the "New Sketch" plane picker (a PickerRibbon-backed mode,
+      // not a full ResizableToolPanel, but still a Stack overlay covering
+      // the viewport's own bottom-left corner).
+      await tester.tap(find.byTooltip('Add'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('New Sketch'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(anchored(), isTrue);
+
+      tester.widget<PartViewport>(find.byType(PartViewport)).onBackgroundTap();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(anchored(), isFalse);
+
+      // Tool 2: ExtrudePanel, via the same long-press "Extrude" flow the
+      // sibling test below exercises in full.
+      await tester.tap(find.byTooltip('Feature tree'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.longPress(find.text('Sketch 1'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('Extrude'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(find.byType(ExtrudePanel), findsOneWidget);
+      expect(anchored(), isTrue);
+
+      await tester.tap(find.text('Cancel'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(anchored(), isFalse);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'long-pressing a SketchFeature with a closed profile offers an enabled Extrude action, and '

@@ -55,14 +55,29 @@ class MirrorPanel extends StatelessWidget {
   /// Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
   /// §2.11/§4): non-null while this session's seed is the third,
   /// mutually-exclusive `tool_feature_id` mode (entered via a long-press
-  /// "Mirror into Target" on an eligible upstream Cut/Boss - see
-  /// `PartScreen._openMirrorPanelFromToolFeature`) rather than a Body/
+  /// "Mirror" on an eligible upstream Cut/Boss - see
+  /// `PartScreen._openMirrorPanelFromFeature`) rather than a Body/
   /// Feature-tree pick - a short display name for the referenced Feature
   /// (e.g. "Extrude 2"). When set, the [sourceFeatureIds]/[merge] rows are
   /// replaced with a single status line, since neither is user-editable in
   /// this mode (`merge` is forced to `fuseIntoOne` server-side - see the
   /// backend's own `_validate_tool_feature_id`).
   final String? toolFeatureSummary;
+
+  /// Pattern/Mirror scoping's Phase 9 (`docs/pattern-mirror-scope.md`
+  /// §2.12/§4): non-null only while this session was opened via a
+  /// Feature's own long-press "Mirror" entry *and* that Feature qualifies
+  /// for both seed kinds (`source_feature_ids`/`tool_feature_id`) - shows
+  /// the "Mirror Body"/"Mirror Feature" toggle, letting the user switch
+  /// which of the two mutually-exclusive fields carries the seed Feature's
+  /// id (see `PartScreen._mirrorSeedKind`). Null (hidden) for every other
+  /// seed path - an ambient Body selection, an Add-from-Tree pick, editing
+  /// an existing Feature, or a long-press seed that only qualifies for one
+  /// kind - in which case [toolFeatureSummary]/[sourceFeatureIds] already
+  /// unambiguously show which single mode is active, with nothing to
+  /// toggle. Mirrors [PatternPanel.seedKind]'s own identical shape.
+  final PatternMirrorSeedKind? seedKind;
+  final void Function(PatternMirrorSeedKind kind)? onSeedKindChanged;
 
   final VoidCallback onConfirm;
   final VoidCallback onCancel;
@@ -77,6 +92,8 @@ class MirrorPanel extends StatelessWidget {
     this.sourceFeatureIds = const [],
     required this.onPickSourceFeatures,
     this.toolFeatureSummary,
+    this.seedKind,
+    this.onSeedKindChanged,
     required this.onConfirm,
     required this.onCancel,
   });
@@ -90,6 +107,18 @@ class MirrorPanel extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          if (seedKind != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: SegmentedButton<PatternMirrorSeedKind>(
+                segments: const [
+                  ButtonSegment(value: PatternMirrorSeedKind.body, label: Text('Mirror Body')),
+                  ButtonSegment(value: PatternMirrorSeedKind.feature, label: Text('Mirror Feature')),
+                ],
+                selected: {seedKind!},
+                onSelectionChanged: (selection) => onSeedKindChanged?.call(selection.first),
+              ),
+            ),
           Text(
             hasPlanePicked
                 ? 'Mirror plane selected'
