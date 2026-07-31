@@ -1837,6 +1837,14 @@ class SketchController extends ChangeNotifier {
     _pendingConvertEdges.clear();
     _ghosts = [];
     _activeGhostKey = null;
+    // 3D-viewport Text tool round: a stale-selection guard mirroring every
+    // other bit of state cleared above - without this, switching draw
+    // tools (or entering Dimension mode) while [TextValueBar] was open
+    // left it showing, now completely disconnected from the selection
+    // that opened it. [_clickTextTool] itself calls this *before*
+    // reopening the bar for the newly-placed Text, so the auto-open flow
+    // is unaffected by clearing it here first.
+    _textBarTextId = null;
     notifyListeners();
   }
 
@@ -12165,9 +12173,25 @@ class SketchController extends ChangeNotifier {
   /// Points do - unlike [SketchTool.point]'s deliberately-distinct
   /// Coincident-linked placement) and creates the Text entity immediately
   /// with [_defaultTextContent] at the backend's own default font/size.
+  ///
+  /// On-device feedback ("when starting the text tool, after placing the
+  /// locating point, user should be sent straight to the text edit tool
+  /// to change text and settings"): once placement succeeds, this now
+  /// also exits to Select mode with the new Text as the current
+  /// [selection] (so its bounding box/handles - [textBounds]/
+  /// [textCenterHandle]/[textResizeHandle], gated on being the current
+  /// selection - render immediately, in both the 2D canvas and the
+  /// 3D-embedded viewport, no separate re-select step needed) and opens
+  /// [TextValueBar] directly via [openTextBar] - not the ribbon (left
+  /// closed, same as every other tool's own post-placement state; showing
+  /// both the ribbon *and* the bar over the same selection would be
+  /// redundant chrome for no benefit). Skipped entirely if creation itself
+  /// failed (`createdTextId` stays null - [_runGuarded] already recorded
+  /// [errorMessage]).
   Future<void> _clickTextTool() async {
     _selectionSet.clear();
     _ribbonVisible = false;
+    String? createdTextId;
     await _runGuarded(() async {
       final anchorPointId = await _pointIdAtCursor();
       final text = await _api.createText(_sketchId!, _defaultTextContent, anchorPointId);
@@ -12188,7 +12212,13 @@ class SketchController extends ChangeNotifier {
       // Same rule as any other completed entity: one finished entity = one solve call.
       await _solveAndTrackDof();
       await _refreshTextPreview(text.id);
+      createdTextId = text.id;
     });
+    if (createdTextId != null) {
+      exitToSelectMode(); // also clears _selectionSet - must run before setting it below.
+      _selectionSet.add(SketchSelection(kind: SelectionKind.text, id: createdTextId!));
+      openTextBar(createdTextId!);
+    }
   }
 
   /// The ribbon's "Edit Text" action: PATCHes whichever of

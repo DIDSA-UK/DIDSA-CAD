@@ -156,7 +156,15 @@ drag-mode gesture, plus a transient construction-line bounding-box/
 center-line/dimension overlay and a new pattern-bar-style `TextValueBar`
 (replacing the old modal "Edit Text" dialog) with an expand-to-preview-
 in-its-own-face font picker and a height-in-mm field that PATCHes the
-same `size` the resize handle does.
+same `size` the resize handle does. **Follow-up round**: all of the above
+was already generic across the 2D canvas and 3D-embedded viewport, but
+placing a Text left nothing selected, so none of it was ever reachable
+without a manual select-then-ribbon-chip step - much easier to stumble
+into on the 2D canvas than via a 3D ray-cast tap. Fixed at the root
+(`_clickTextTool` now exits to Select mode, selects the new Text, and
+opens `TextValueBar` immediately after placement - see scope doc §2.3's
+own follow-up note), which also satisfies the separately-requested "send
+the user straight to text edit after placing" behavior in one fix.
 
 **Phase 2, not started**: letter spacing / line spacing. Genuinely new
 backend work, and the one item with a real unconfirmed unknown - whether
