@@ -710,6 +710,98 @@ axis/angle addressing beyond the already-covered index conventions
 (should just work unchanged, but not separately verified in this design
 pass).
 
+### 2.12 Pattern/Mirror entry-point unification
+
+**Trigger**: on-device follow-up to Phase 8 (§2.11) itself — shipping
+`tool_feature_id` as two brand-new, separate long-press context-menu rows
+("Pattern into Target"/"Mirror into Target") sitting alongside the
+pre-existing plain "Pattern"/"Mirror" rows left an eligible Cut/Boss
+Feature with *three* seed-picking entry points crowding one context menu,
+plus a genuine asymmetry Phase 6/8 never closed: Pattern had a "seed from
+this Feature via `source_feature_ids`" long-press entry from Phase 6
+onward, Mirror never got the equivalent.
+
+**The fix, not a new mechanism**: `tool_feature_id`'s mutual exclusivity
+with `source_body_ids`/`source_feature_ids` is already enforced
+server-side (Phase 8) — nothing about *resolving* a seed changes here, only
+which entry points a client offers and how it picks between two backend
+fields it could already send. Concretely:
+
+- `FeatureContextMenuAction.patternIntoTarget`/`.mirrorIntoTarget` are
+  removed outright. The plain `pattern`/(newly added) `mirror` actions
+  widen their own gate (`showPattern`/`showMirror` in
+  `feature_context_menu.dart`) to the *union* of `_bodyProducingFeatureTypes`
+  (Phase 6's body-seed eligibility) and `_isEligibleToolFeature` (Phase 8's
+  narrower tool-feature eligibility) — both already defined in
+  `part_screen.dart`, reused verbatim, no new eligibility logic.
+- A new `mirror` entry (`FeatureContextMenuAction.mirror`) is the
+  entry-point-asymmetry fix itself: `_openMirrorPanelFromFeature` mirrors
+  `_openPatternPanelFromFeature`'s own shape exactly, seeding via
+  `source_feature_ids` or `tool_feature_id` depending on
+  `_isEligibleToolFeature(feature)`.
+- Since a single long-pressed Feature can now qualify for *both* seed
+  kinds (e.g. an Extrude in Cut mode is both body-producing and
+  tool-feature-eligible), each panel gains a "Pattern Body"/"Pattern
+  Feature" (`MirrorPanel`: "Mirror Body"/"Mirror Feature") toggle — a new
+  shared `PatternMirrorSeedKind` enum (`document_api_client.dart`, next to
+  `MergeMode`, same "one toggle both panels show verbatim" reasoning that
+  enum's own doc comment already established). `PartScreen._patternSeedKind`/
+  `_mirrorSeedKind` computes it: non-null (toggle shown) only when the
+  session's own `_patternLongPressSeedFeature`/`_mirrorLongPressSeedFeature`
+  (set only by the long-press entry point, null for every other seed path —
+  ambient Body selection, Add-from-Tree, editing an existing Feature)
+  qualifies for both kinds; null (toggle hidden) otherwise, since there's
+  nothing to toggle — the panel already operates correctly in whichever
+  single mode applies. `_setPatternSeedKind`/`_setMirrorSeedKind` flip which
+  of the two mutually-exclusive fields carries the seed Feature's id,
+  resetting `merge` the same way entering tool-feature mode always has
+  (`fuseIntoOne`, since `keepSeparate` has no referent with exactly one
+  target).
+- `_resetMirrorConfiguringState` — genuinely new, not previously
+  factored out — replaces three independently hand-duplicated `setState`
+  blocks (`_openMirrorPanel`/`_openMirrorPanelFromToolFeature`/
+  `_confirmMirrorBodySelection`, the last two now merged/removed),
+  mirroring `_resetPatternConfiguringState`'s own already-established
+  shape exactly.
+- **Discoverability fix, found during this same pass, not originally
+  scoped**: the viewport-tap-to-pick affordance for Pattern's own
+  direction/axis picks was entirely implicit — nothing but red hint text
+  invited a first-time user to look at the 3D view at all, and Circular
+  mode's axis section had no interactive affordance whatsoever (no
+  fixed-axis buttons the way Direction 1/2 have, by design — see §2.7). A
+  new "Pick Direction"/"Pick Axis" `IconButton` (compact, mirroring the
+  existing reverse-direction toggle's own narrow shape rather than an
+  `OutlinedButton.icon` with a text label, to avoid overflow risk in an
+  already-tight row) sits alongside Direction 1/2's X/Y/Z buttons and
+  inside Circular's own axis-hint row; tapping it surfaces the identical
+  hint text as a `SnackBar` rather than picking anything itself — the
+  viewport tap is, and was, always live the whole time the panel is open.
+
+**Client**: `feature_context_menu.dart` (enum/gate/menu markup),
+`part_screen.dart` (`_openMirrorPanelFromFeature`,
+`_resetMirrorConfiguringState`, `_patternSeedKind`/`_mirrorSeedKind` and
+their setters, `_patternLongPressSeedFeature`/`_mirrorLongPressSeedFeature`),
+`pattern_panel.dart`/`mirror_panel.dart` (the seed-kind toggle,
+`pattern_panel.dart`'s new Pick Direction/Pick Axis buttons),
+`document_api_client.dart` (`PatternMirrorSeedKind`).
+
+**Explicitly out of scope** (per the original phase-8-follow-up ask, not
+attempted here): the shared-widget-vs-hand-duplication question for the
+merge-toggle/"Add from Tree"/`toolFeatureSummary` panel markup
+(`MirrorPanel`/`PatternPanel` still duplicate this row-for-row rather than
+sharing a widget — an accepted, pre-existing convention in this codebase,
+not a Phase-9 regression); the 2D sketch-level Pattern/Mirror tool (Phase
+7, already unified across both operations from the start — this phase's
+own template, not something needing the same fix).
+
+**Complexity/risk**: low-medium. Every individual piece — widened
+eligibility gate, a new enum, a `setState`-consolidating helper, a
+`SnackBar`-only affordance button — has a direct precedent elsewhere in
+this same file; the only genuinely new judgment call was the seed-kind
+toggle's own visibility rule (show only when both kinds qualify), which
+falls directly out of the "nothing to toggle otherwise" reasoning above
+rather than needing a separate design pass.
+
 ---
 
 ## 3. Other CAD-tool pattern/mirror-adjacent features — survey and scope call
@@ -1599,7 +1691,49 @@ real device.
   Pattern/Mirror-side logic itself closely mirrors Phase 5's
   already-shipped `_fuse_realized_instances` shape.
 
-### Phase 9+ — Explicitly deferred, not scheduled
+### Phase 9 — Pattern/Mirror entry-point unification
+
+**Status: implemented (2026-07-31) — see `docs/status.md`'s matching dated
+entry for the full implementation/verification write-up.** Per §2.12 —
+folds Phase 8's separate "Pattern into Target"/"Mirror into Target"
+long-press entries back into the plain "Pattern"/"Mirror" rows (widened to
+the union of `_bodyProducingFeatureTypes`/`_isEligibleToolFeature`
+eligibility), fixes the Mirror-side entry-point asymmetry Phase 6/8 never
+closed (Pattern always had a "seed from this Feature" long-press entry,
+Mirror never did), and adds a "Pick Direction"/"Pick Axis" discoverability
+button for the pre-existing (but entirely implicit) viewport-tap-to-pick
+affordance. Verified for real: `flutter analyze` clean and the full client
+`flutter test` suite (1096 tests, up from 1075 before this phase's own new/
+rewritten coverage) green, using the same `master`-channel Flutter SDK
+bootstrap every prior client-only phase in this document used. No backend
+change at all — `tool_feature_id`'s mutual exclusivity with
+`source_body_ids`/`source_feature_ids` was already enforced server-side by
+Phase 8.
+
+- **Deliverable**: long-pressing any body-producing-or-tool-feature-
+  eligible Feature offers exactly two entries, "Pattern" and "Mirror" (not
+  four, as Phase 8 briefly had for eligible Cut/Boss Features) — tapping
+  either seeds the corresponding panel via `tool_feature_id` by default
+  when the Feature qualifies (matching Phase 8's own prior default
+  behavior), or `source_feature_ids` otherwise; a Feature qualifying for
+  *both* shows a "Pattern Body"/"Pattern Feature" (resp. "Mirror Body"/
+  "Mirror Feature") toggle inside the opened panel to switch between them.
+  Direction 1/2 (Rectangular) and the axis section (Circular) each gained
+  a compact "Pick Direction"/"Pick Axis" button surfacing the same
+  viewport-tap hint text via a `SnackBar`.
+- **Client**: see §2.12's own full breakdown — `feature_context_menu.dart`
+  (enum/gate/menu markup), `part_screen.dart` (`_openMirrorPanelFromFeature`,
+  `_resetMirrorConfiguringState`, `_patternSeedKind`/`_mirrorSeedKind` and
+  their setters, `_patternLongPressSeedFeature`/
+  `_mirrorLongPressSeedFeature`), `pattern_panel.dart`/`mirror_panel.dart`
+  (seed-kind toggle, Pick Direction/Pick Axis), `document_api_client.dart`
+  (`PatternMirrorSeedKind`).
+- **Complexity/risk**: low-medium, as scoped in §2.12 — every piece had a
+  direct precedent elsewhere in the same file; the seed-kind toggle's own
+  visibility rule (both-kinds-qualify only) was the one small design
+  decision, and it fell out directly from "nothing to toggle otherwise."
+
+### Phase 10+ — Explicitly deferred, not scheduled
 
 Per §3's survey: pattern-along-a-curve, sketch-driven/table-driven
 pattern, fill pattern, varying instance spacing, a standalone
@@ -1609,7 +1743,10 @@ note; the Extrude/Revolve/Sweep subset is Phase 8, not deferred),
 per-instance independent sketch-pattern editing (§2.9's Option 1
 upgrade), and equation-driven instance parameters. Each is called out
 above with its one-line "why not now" reason preserved, so a future
-scoping pass doesn't have to re-derive the reasoning from scratch.
+scoping pass doesn't have to re-derive the reasoning from scratch. Also
+per §2.12's own out-of-scope note: the shared-widget-vs-hand-duplication
+question for the merge-toggle/"Add from Tree"/`toolFeatureSummary` panel
+markup, not attempted in Phase 9.
 
 ---
 

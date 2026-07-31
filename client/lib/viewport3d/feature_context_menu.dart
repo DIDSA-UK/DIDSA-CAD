@@ -10,20 +10,26 @@ import 'svg_icon.dart';
 /// (on-device feedback: "user should now be able to start pattern from
 /// long press a feature in the tree") - later stages can add further
 /// entries here without changing how the menu itself is shown or wired up.
-/// Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
-/// §2.11/§4) adds [patternIntoTarget]/[mirrorIntoTarget] - the third,
-/// mutually-exclusive seed-picking mode: repeating/reflecting this
-/// Feature's own Cut/Boss *effect* into its own shared target, distinct
-/// from [pattern] (which patterns the Bodies this Feature produces, via
-/// `source_feature_ids`).
+///
+/// Pattern/Mirror scoping's Phase 9 (`docs/pattern-mirror-scope.md`
+/// §2.12/§4) adds [mirror] (the entry-point asymmetry this phase fixes:
+/// [pattern] already had this "seed from this Feature via
+/// `source_feature_ids`" entry, Mirror never did) and folds Phase 8's
+/// separate [patternIntoTarget]/[mirrorIntoTarget] entries back into
+/// [pattern]/[mirror] themselves - a Feature eligible for the
+/// `tool_feature_id` seed mode (see `PartScreen._isEligibleToolFeature`)
+/// now shows the same single "Pattern"/"Mirror" entry as any other
+/// body-producing Feature, with the choice of which of the two mutually-
+/// exclusive seed fields to use surfaced as a toggle *inside* the opened
+/// panel instead (`PatternPanel.seedKind`/`MirrorPanel.seedKind`) - see
+/// [showPattern]'s own doc comment for the widened gate this implies.
 enum FeatureContextMenuAction {
   extrude,
   revolve,
   sweep,
   redefineOrientation,
   pattern,
-  patternIntoTarget,
-  mirrorIntoTarget,
+  mirror,
   toggleVisibility,
   delete,
 }
@@ -67,15 +73,17 @@ enum FeatureContextMenuAction {
 /// whatever the Feature currently produces, at solve time, same as every
 /// other Feature-tree-as-selection-source use).
 ///
-/// Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
-/// §2.11/§4): [showToolFeatureActions] gates both the "Pattern into
-/// Target"/"Mirror into Target" entries - shown only for a Feature that
-/// would pass the backend's own `invalid_tool_feature_ref` eligibility
-/// check (an Extrude/Revolve/Sweep in Cut mode, or Boss mode with a
-/// non-empty `target_body_ids` - see `PartScreen._isEligibleToolFeature`),
-/// a strictly narrower set than [showPattern]'s own. Always enabled when
-/// shown, same "no further eligibility check needed here" reasoning
-/// [showPattern] already uses.
+/// Pattern/Mirror scoping's Phase 9 (`docs/pattern-mirror-scope.md`
+/// §2.12/§4): [showPattern]'s own gate widened to the *union* of
+/// `_bodyProducingFeatureTypes` and the backend's own
+/// `invalid_tool_feature_ref` eligibility check (`PartScreen.
+/// _isEligibleToolFeature` - an Extrude/Revolve/Sweep in Cut mode, or Boss
+/// mode with a non-empty `target_body_ids`) - folding Phase 8's separate
+/// "Pattern into Target"/"Mirror into Target" entries back into this one
+/// (see [FeatureContextMenuAction]'s own doc comment). [showMirror] mirrors
+/// [showPattern] exactly - the entry-point asymmetry this phase fixes (see
+/// [FeatureContextMenuAction.mirror]'s own doc comment). Both stay always-
+/// enabled-when-shown, same reasoning as before.
 Future<FeatureContextMenuAction?> showFeatureContextMenu(
   BuildContext context, {
   required bool isHidden,
@@ -90,7 +98,7 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
   String? sweepDisabledReason,
   bool showRedefineOrientation = false,
   bool showPattern = false,
-  bool showToolFeatureActions = false,
+  bool showMirror = false,
 }) {
   return showModalBottomSheet<FeatureContextMenuAction>(
     context: context,
@@ -144,20 +152,12 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
                 title: const Text('Pattern'),
                 onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.pattern),
               ),
-            if (showToolFeatureActions) ...[
-              ListTile(
-                leading: const SvgIcon('assets/icons/feature/feature_pattern.svg'),
-                title: const Text('Pattern into Target'),
-                subtitle: const Text('Repeats this Cut/Boss into its own target'),
-                onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.patternIntoTarget),
-              ),
+            if (showMirror)
               ListTile(
                 leading: const SvgIcon('assets/icons/feature/feature_mirror.svg'),
-                title: const Text('Mirror into Target'),
-                subtitle: const Text('Reflects this Cut/Boss into its own target'),
-                onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.mirrorIntoTarget),
+                title: const Text('Mirror'),
+                onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.mirror),
               ),
-            ],
             ListTile(
               leading: Icon(isHidden ? Icons.visibility : Icons.visibility_off),
               title: Text(isHidden ? 'Show' : 'Hide'),

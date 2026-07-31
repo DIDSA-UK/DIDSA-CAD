@@ -46,6 +46,8 @@ void main() {
     List<String> sourceFeatureIds = const [],
     VoidCallback? onPickSourceFeatures,
     String? toolFeatureSummary,
+    PatternMirrorSeedKind? seedKind,
+    void Function(PatternMirrorSeedKind kind)? onSeedKindChanged,
     String title = 'Pattern',
     VoidCallback? onConfirm,
     VoidCallback? onCancel,
@@ -89,6 +91,8 @@ void main() {
           sourceFeatureIds: sourceFeatureIds,
           onPickSourceFeatures: onPickSourceFeatures ?? () {},
           toolFeatureSummary: toolFeatureSummary,
+          seedKind: seedKind,
+          onSeedKindChanged: onSeedKindChanged,
           onConfirm: onConfirm ?? () {},
           onCancel: onCancel ?? () {},
         ),
@@ -474,6 +478,78 @@ void main() {
       await tester.ensureVisible(find.text('Add from Tree'));
       expect(find.byType(SegmentedButton<MergeMode>), findsOneWidget);
       expect(find.text('Add from Tree'), findsOneWidget);
+    });
+  });
+
+  group('Pattern/Mirror scoping Phase 9: PatternPanel seed-kind toggle', () {
+    testWidgets('hidden when seedKind is null (not a long-press single-Feature session)',
+        (tester) async {
+      await tester.pumpWidget(harness());
+      expect(find.text('Pattern Body'), findsNothing);
+      expect(find.text('Pattern Feature'), findsNothing);
+    });
+
+    testWidgets('shown and reflects body as selected', (tester) async {
+      await tester.pumpWidget(harness(seedKind: PatternMirrorSeedKind.body));
+      expect(find.text('Pattern Body'), findsOneWidget);
+      expect(find.text('Pattern Feature'), findsOneWidget);
+      final segmentedButton =
+          tester.widget<SegmentedButton<PatternMirrorSeedKind>>(find.byType(SegmentedButton<PatternMirrorSeedKind>));
+      expect(segmentedButton.selected, {PatternMirrorSeedKind.body});
+    });
+
+    testWidgets('reflects feature as selected', (tester) async {
+      await tester.pumpWidget(harness(seedKind: PatternMirrorSeedKind.feature));
+      final segmentedButton =
+          tester.widget<SegmentedButton<PatternMirrorSeedKind>>(find.byType(SegmentedButton<PatternMirrorSeedKind>));
+      expect(segmentedButton.selected, {PatternMirrorSeedKind.feature});
+    });
+
+    testWidgets('tapping "Pattern Feature" fires onSeedKindChanged(feature)', (tester) async {
+      PatternMirrorSeedKind? picked;
+      await tester.pumpWidget(
+        harness(seedKind: PatternMirrorSeedKind.body, onSeedKindChanged: (k) => picked = k),
+      );
+      await tester.tap(find.text('Pattern Feature'));
+      expect(picked, PatternMirrorSeedKind.feature);
+    });
+
+    testWidgets('tapping "Pattern Body" fires onSeedKindChanged(body)', (tester) async {
+      PatternMirrorSeedKind? picked;
+      await tester.pumpWidget(
+        harness(seedKind: PatternMirrorSeedKind.feature, onSeedKindChanged: (k) => picked = k),
+      );
+      await tester.tap(find.text('Pattern Body'));
+      expect(picked, PatternMirrorSeedKind.body);
+    });
+  });
+
+  group('Pattern/Mirror scoping Phase 9: viewport-tap-to-pick affordance buttons', () {
+    testWidgets('Rectangular mode shows a "Pick Direction" button alongside X/Y/Z', (tester) async {
+      await tester.pumpWidget(harness());
+      expect(find.byTooltip('Pick Direction'), findsOneWidget);
+    });
+
+    testWidgets('tapping "Pick Direction" shows a SnackBar with the picking hint', (tester) async {
+      await tester.pumpWidget(harness());
+      await tester.tap(find.byTooltip('Pick Direction'));
+      await tester.pump();
+      expect(find.byType(SnackBar), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('Circular mode shows a "Pick Axis" button (no fixed-axis alternative exists)',
+        (tester) async {
+      await tester.pumpWidget(harness(mode: PatternMode.circular, hasAxis: false));
+      expect(find.byTooltip('Pick Axis'), findsOneWidget);
+    });
+
+    testWidgets('tapping "Pick Axis" shows a SnackBar with the picking hint', (tester) async {
+      await tester.pumpWidget(harness(mode: PatternMode.circular, hasAxis: false));
+      await tester.tap(find.byTooltip('Pick Axis'));
+      await tester.pump();
+      expect(find.byType(SnackBar), findsOneWidget);
+      expect(tester.takeException(), isNull);
     });
   });
 

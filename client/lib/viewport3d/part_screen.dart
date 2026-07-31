@@ -595,6 +595,30 @@ class _PartScreenState extends State<PartScreen> {
   /// that isn't actually available).
   bool get _selectionModeFabVisible => !_featureTreePanelVisible && !_confirmingSketchOrientation;
 
+  /// Bug fix ("XYZ triad hidden behind any open tool panel",
+  /// `docs/roadmap.md`): every tool panel (`ExtrudePanel`, `CreatePlanePanel`,
+  /// `FilletPanel`, `ChamferPanel`, `RevolvePanel`, `SweepPanel`,
+  /// `MirrorPanel`, `PatternPanel`) and picker-ribbon-only step (Sweep's
+  /// path, the Profile picker, "New Sketch" plane selection) is a `Stack`
+  /// overlay sitting on top of the full-canvas [PartViewport] at the same
+  /// fixed bottom-left corner `triad.dart`'s `paintTriad` draws the
+  /// orientation triad at, per [PartViewport.anchorTriadAtOrigin]'s own doc
+  /// comment - so any of them covers it completely. Passed straight through
+  /// as that flag; deliberately reuses each panel/picker's own already-
+  /// established `*Active`/mode condition rather than re-deriving a new one.
+  bool get _anyToolPanelOpen =>
+      _extrudeActive ||
+      _createPlaneActive ||
+      _filletActive ||
+      _chamferActive ||
+      _revolveActive ||
+      _sweepActive ||
+      _mirrorActive ||
+      _patternActive ||
+      _profilePickerActive ||
+      _pathPickerActive ||
+      _planeSelectionMode;
+
   /// Item 4: "Unselected entity tap -> add; already-selected -> remove
   /// (toggle)" - passed to [PartViewport.onSelectionToggle], fired by a tap
   /// (Fix 4) when the cursor's hover hit is non-null.
@@ -763,6 +787,46 @@ class _PartScreenState extends State<PartScreen> {
   /// "update state, reschedule the debounced preview" shape.
   void _setMirrorMerge(MergeMode merge) {
     setState(() => _mirrorMerge = merge);
+    _scheduleMirrorPreview();
+  }
+
+  /// [MirrorPanel.seedKind]'s current value - non-null (and the toggle
+  /// shown) only when [_mirrorLongPressSeedFeature] qualifies for *both*
+  /// `source_feature_ids` and `tool_feature_id` seeding; null otherwise (not
+  /// a long-press session, or the seeded Feature only qualifies for one
+  /// kind, in which case the panel already operates in that one mode with
+  /// nothing to toggle). Mirrors [_patternSeedKind]'s own identical shape.
+  PatternMirrorSeedKind? get _mirrorSeedKind {
+    final feature = _mirrorLongPressSeedFeature;
+    if (feature == null) return null;
+    final qualifiesAsBody = _bodyProducingFeatureTypes.contains(feature.type);
+    final qualifiesAsToolFeature = _isEligibleToolFeature(feature);
+    if (!(qualifiesAsBody && qualifiesAsToolFeature)) return null;
+    return _mirrorToolFeatureId != null ? PatternMirrorSeedKind.feature : PatternMirrorSeedKind.body;
+  }
+
+  /// [MirrorPanel.onSeedKindChanged] - only reachable while [_mirrorSeedKind]
+  /// is non-null (i.e. [_mirrorLongPressSeedFeature] qualifies for both
+  /// kinds), so this never needs to re-check eligibility itself. Flips which
+  /// of [_mirrorSourceFeatureIds]/[_mirrorToolFeatureId] carries the seed
+  /// Feature's id, resetting `merge` the same way
+  /// [_resetMirrorConfiguringState]'s own `toolFeatureId` branch does
+  /// (`fuseIntoOne` has no referent otherwise - see that method's own doc
+  /// comment). Mirrors [_setPatternSeedKind]'s own identical shape.
+  void _setMirrorSeedKind(PatternMirrorSeedKind kind) {
+    final feature = _mirrorLongPressSeedFeature;
+    if (feature == null) return;
+    setState(() {
+      if (kind == PatternMirrorSeedKind.feature) {
+        _mirrorSourceFeatureIds = [];
+        _mirrorToolFeatureId = feature.id;
+        _mirrorMerge = MergeMode.fuseIntoOne;
+      } else {
+        _mirrorSourceFeatureIds = [feature.id];
+        _mirrorToolFeatureId = null;
+        _mirrorMerge = MergeMode.keepSeparate;
+      }
+    });
     _scheduleMirrorPreview();
   }
 
@@ -1213,12 +1277,27 @@ class _PartScreenState extends State<PartScreen> {
   /// Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
   /// §2.11/§4): non-null while this session's seed is the third, mutually-
   /// exclusive `tool_feature_id` mode instead of [_mirrorSourceBodyIds]/
-  /// [_mirrorSourceFeatureIds] - set by [_openMirrorPanelFromToolFeature]
-  /// (a long-press "Mirror into Target" on an eligible upstream Cut/Boss),
-  /// reconstructed from the edited Feature's own stored value in
-  /// [_openMirrorPanelForEdit], reset alongside [_mirrorSourceBodyIds]
-  /// everywhere that field is.
+  /// [_mirrorSourceFeatureIds] - set by [_openMirrorPanelFromFeature]
+  /// (Phase 9: a long-press "Mirror" on an eligible upstream Cut/Boss - see
+  /// [_mirrorSeedKind]/[_setMirrorSeedKind] for how the user can also
+  /// switch into/out of this mode afterwards), reconstructed from the
+  /// edited Feature's own stored value in [_openMirrorPanelForEdit], reset
+  /// alongside [_mirrorSourceBodyIds] everywhere that field is.
   String? _mirrorToolFeatureId;
+
+  /// Pattern/Mirror scoping's Phase 9 (`docs/pattern-mirror-scope.md`
+  /// §2.12/§4): the Feature a "Mirror" long-press entry started this
+  /// session from, if any - used only to compute [MirrorPanel.seedKind]'s
+  /// own Body/Feature toggle eligibility (does this exact Feature qualify
+  /// for both `source_feature_ids` and `tool_feature_id` seeding). Null for
+  /// every other seed path (ambient Body selection, Add-from-Tree
+  /// multi-select, or editing an existing Feature) - toggling seed kind
+  /// only makes sense for the single Feature the long-press itself named.
+  /// Set by [_openMirrorPanelFromFeature] via [_resetMirrorConfiguringState]'s
+  /// own `longPressSeedFeature` param; explicitly cleared everywhere else
+  /// `configuring`/`pickingPlane` is (re-)entered. Mirrors
+  /// [_patternLongPressSeedFeature]'s own identical shape.
+  FeatureDto? _mirrorLongPressSeedFeature;
 
   /// The MirrorFeature created (or, in edit mode, already existing) for the
   /// panel session - mirrors [_previewRevolveFeatureId]'s simple pattern.
@@ -1350,9 +1429,18 @@ class _PartScreenState extends State<PartScreen> {
   /// §2.11/§4): mirrors [_mirrorToolFeatureId]'s own identical shape - non-
   /// null while this session's seed is the third, mutually-exclusive
   /// `tool_feature_id` mode instead of [_patternSourceBodyIds]/
-  /// [_patternSourceFeatureIds], set by [_openPatternPanelFromToolFeature]
+  /// [_patternSourceFeatureIds], set by [_openPatternPanelFromFeature]
   /// (via [_resetPatternConfiguringState]'s own `toolFeatureId` param).
   String? _patternToolFeatureId;
+
+  /// Pattern/Mirror scoping's Phase 9 (`docs/pattern-mirror-scope.md`
+  /// §2.12/§4): mirrors [_mirrorLongPressSeedFeature]'s own identical shape -
+  /// the Feature a "Pattern" long-press entry started this session from, if
+  /// any, used only to compute [PatternPanel.seedKind]'s own Body/Feature
+  /// toggle eligibility. Null for every other seed path. Set by
+  /// [_openPatternPanelFromFeature] via [_resetPatternConfiguringState]'s
+  /// own `longPressSeedFeature` param.
+  FeatureDto? _patternLongPressSeedFeature;
 
   /// Pattern/Mirror scoping Phase 4: Rectangular or Circular - always
   /// [PatternMode.rectangular] for a brand-new PatternFeature
@@ -4361,13 +4449,18 @@ class _PartScreenState extends State<PartScreen> {
     // source_feature_ids seed - see `_bodyProducingFeatureTypes`'s own doc
     // comment for why this is shared with the Build Tree's own Feature
     // picker rather than redefined here.
-    final showPattern = _bodyProducingFeatureTypes.contains(feature.type);
-    // Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
-    // §2.11/§4): a third, mutually-exclusive seed-picking mode - a
-    // strictly narrower gate than [showPattern]'s own (an Extrude/Revolve/
-    // Sweep in Cut mode, or Boss mode with a non-empty `target_body_ids` -
-    // see `_isEligibleToolFeature`).
-    final showToolFeatureActions = _isEligibleToolFeature(feature);
+    //
+    // Phase 9 (`docs/pattern-mirror-scope.md` §2.12/§4): widened to the
+    // union with `_isEligibleToolFeature` - folds the old separate
+    // "Pattern into Target"/"Mirror into Target" entries back into this
+    // one/[showMirror] (see `FeatureContextMenuAction`'s own doc comment);
+    // the opened panel's own Body/Feature seed-kind toggle
+    // ([_patternSeedKind]/[_mirrorSeedKind]) is what actually distinguishes
+    // the two modes now, not a separate menu entry. [showMirror] mirrors
+    // this exactly - the entry-point asymmetry this phase fixes (Pattern
+    // already had a "seed from this Feature" entry; Mirror never did).
+    final showPatternOrMirror =
+        _bodyProducingFeatureTypes.contains(feature.type) || _isEligibleToolFeature(feature);
     if (!mounted) return;
 
     final action = await showFeatureContextMenu(
@@ -4383,8 +4476,8 @@ class _PartScreenState extends State<PartScreen> {
       canSweep: canSweep,
       sweepDisabledReason: extrudeDisabledReason,
       showRedefineOrientation: isSketchFeature,
-      showPattern: showPattern,
-      showToolFeatureActions: showToolFeatureActions,
+      showPattern: showPatternOrMirror,
+      showMirror: showPatternOrMirror,
     );
     if (!mounted || action == null) return;
 
@@ -4399,10 +4492,8 @@ class _PartScreenState extends State<PartScreen> {
         await _redefineSketchOrientation(feature);
       case FeatureContextMenuAction.pattern:
         _openPatternPanelFromFeature(feature);
-      case FeatureContextMenuAction.patternIntoTarget:
-        _openPatternPanelFromToolFeature(feature);
-      case FeatureContextMenuAction.mirrorIntoTarget:
-        _openMirrorPanelFromToolFeature(feature);
+      case FeatureContextMenuAction.mirror:
+        _openMirrorPanelFromFeature(feature);
       case FeatureContextMenuAction.toggleVisibility:
         await _toggleFeatureVisibility(feature);
       case FeatureContextMenuAction.delete:
@@ -5939,6 +6030,7 @@ class _PartScreenState extends State<PartScreen> {
       _mirrorSourceFeatureIds = [];
       _mirrorMerge = MergeMode.keepSeparate;
       _mirrorToolFeatureId = null;
+      _mirrorLongPressSeedFeature = null;
       _previewMirrorFeatureId = null;
       _meshBeforeMirror = _bodies;
       _entitiesBeforeMirror = _selectedEntities;
@@ -5973,11 +6065,9 @@ class _PartScreenState extends State<PartScreen> {
         .toList();
     if (bodyIds.isEmpty) return; // Defensive - the confirm FAB is disabled until then.
     setState(() {
-      _mirrorSourceBodyIds = bodyIds;
-      _selectedEntities = {};
       _selectionFilterOverrides.pop();
       _selectionFilterOverrides.push(_mirrorSelectionFilter);
-      _mirrorStep = _MirrorStep.pickingPlane;
+      _resetMirrorConfiguringState(bodyIds);
     });
   }
 
@@ -6007,52 +6097,82 @@ class _PartScreenState extends State<PartScreen> {
   /// non-empty edge list.
   void _openMirrorPanel(List<String> sourceBodyIds) {
     setState(() {
-      _mirrorStep = _MirrorStep.pickingPlane;
-      _mirrorSourceBodyIds = sourceBodyIds;
-      _mirrorSourceFeatureIds = [];
-      _mirrorMerge = MergeMode.keepSeparate;
-      _mirrorToolFeatureId = null;
-      _previewMirrorFeatureId = null;
       _meshBeforeMirror = _bodies;
       _entitiesBeforeMirror = _selectedEntities;
-      _selectedEntities = {};
       _selectionMode = true;
       _toolbarOpen = false;
       _featureTreeVisible = false;
       _selectionFilterOverrides.push(_mirrorSelectionFilter);
+      _resetMirrorConfiguringState(sourceBodyIds);
     });
   }
 
-  /// Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
-  /// §2.11/§4): [FeatureContextMenuAction.mirrorIntoTarget]'s handler -
-  /// opens [MirrorPanel] directly in the `pickingPlane` step for a
-  /// brand-new MirrorFeature whose seed is [feature] itself, via
-  /// `tool_feature_id` rather than a Body/Feature-tree pick. Mirrors
-  /// [_openMirrorPanel]'s own "skip `pickingBodies` entirely" shape - the
-  /// seed is already fixed by [feature] going in, so there is nothing for
-  /// a Body-picking step to do - but still needs `pickingPlane`, since
-  /// `mirror_plane` remains required in this mode too (see
-  /// `MirrorFeature.tool_feature_id`'s own backend docstring). `merge` is
-  /// forced to `fuseIntoOne` up front - the router rejects `keepSeparate`
-  /// once `tool_feature_id` is set (there is exactly one target by
-  /// construction). [_onFeatureLongPress] is the only caller, already
-  /// gated on `_isEligibleToolFeature(feature)`, so this doesn't re-check.
-  void _openMirrorPanelFromToolFeature(FeatureDto feature) {
+  /// On-device feedback: mirrors [_openPatternPanelFromFeature]'s own
+  /// identical shape - opens [MirrorPanel] directly in the `pickingPlane`
+  /// step for a brand-new MirrorFeature seeded from [feature] itself,
+  /// rather than a Body pick. [_onFeatureLongPress] is the only caller.
+  ///
+  /// Pattern/Mirror scoping's Phase 9 (`docs/pattern-mirror-scope.md`
+  /// §2.12/§4): this is the entry-point-asymmetry fix itself - Pattern
+  /// already had this "seed from this Feature" long-press entry
+  /// ([_openPatternPanelFromFeature]), Mirror never did. Also folds in
+  /// Phase 8's separate "Mirror into Target" entry
+  /// ([_openMirrorPanelFromToolFeature], now removed): [feature] seeds via
+  /// `tool_feature_id` when it's tool-feature-eligible (`merge` forced to
+  /// `fuseIntoOne` - the router rejects `keepSeparate` once `tool_feature_id`
+  /// is set, there being exactly one target by construction), or via
+  /// `source_feature_ids` otherwise - [MirrorPanel.seedKind]'s own toggle
+  /// (see [_mirrorSeedKind]) lets the user switch between the two
+  /// afterwards, when [feature] qualifies for both.
+  void _openMirrorPanelFromFeature(FeatureDto feature) {
+    final seedAsToolFeature = _isEligibleToolFeature(feature);
     setState(() {
-      _mirrorStep = _MirrorStep.pickingPlane;
-      _mirrorSourceBodyIds = [];
-      _mirrorSourceFeatureIds = [];
-      _mirrorMerge = MergeMode.fuseIntoOne;
-      _mirrorToolFeatureId = feature.id;
-      _previewMirrorFeatureId = null;
       _meshBeforeMirror = _bodies;
       _entitiesBeforeMirror = _selectedEntities;
-      _selectedEntities = {};
       _selectionMode = true;
       _toolbarOpen = false;
       _featureTreeVisible = false;
       _selectionFilterOverrides.push(_mirrorSelectionFilter);
+      _resetMirrorConfiguringState(
+        [],
+        sourceFeatureIds: seedAsToolFeature ? [] : [feature.id],
+        toolFeatureId: seedAsToolFeature ? feature.id : null,
+        longPressSeedFeature: feature,
+      );
     });
+  }
+
+  /// Shared by [_confirmMirrorBodySelection]/[_openMirrorPanel]/
+  /// [_openMirrorPanelFromFeature] - resets the mirror-plane pick and enters
+  /// `pickingPlane` for [sourceBodyIds]/[sourceFeatureIds] (the ordinary
+  /// seed mode) or [toolFeatureId] (Phase 8's third, mutually-exclusive
+  /// mode - forces `merge` to `fuseIntoOne`, since `keepSeparate` has no
+  /// referent once there's exactly one target - see `MirrorFeature.
+  /// tool_feature_id`'s own backend docstring). [longPressSeedFeature]
+  /// (Phase 9) records which Feature - if any - a "Mirror" long-press named
+  /// directly, for [MirrorPanel.seedKind]'s own toggle eligibility; null
+  /// (the default) for every seed path that isn't a single-Feature
+  /// long-press. Mirrors [_resetPatternConfiguringState]'s own shape
+  /// exactly, replacing three independently hand-duplicated `setState`
+  /// blocks (Phase 9, `docs/pattern-mirror-scope.md` §2.12). Always called
+  /// from inside a `setState` block by its callers (each of which has its
+  /// own filter-stack bookkeeping to do alongside this).
+  void _resetMirrorConfiguringState(
+    List<String> sourceBodyIds, {
+    List<String> sourceFeatureIds = const [],
+    String? toolFeatureId,
+    FeatureDto? longPressSeedFeature,
+  }) {
+    _mirrorStep = _MirrorStep.pickingPlane;
+    _mirrorSourceBodyIds = sourceBodyIds;
+    _mirrorSourceFeatureIds = sourceFeatureIds;
+    _mirrorToolFeatureId = toolFeatureId;
+    _mirrorMerge = toolFeatureId != null ? MergeMode.fuseIntoOne : MergeMode.keepSeparate;
+    _mirrorLongPressSeedFeature = longPressSeedFeature;
+    _previewMirrorFeatureId = null;
+    _editingMirrorFeatureId = null;
+    _mirrorEditSnapshot = null;
+    _selectedEntities = {};
   }
 
   /// B4: opens [MirrorPanel] to edit an *already-existing* MirrorFeature -
@@ -6102,6 +6222,7 @@ class _PartScreenState extends State<PartScreen> {
       _mirrorSourceFeatureIds = sourceFeatureIds;
       _mirrorMerge = merge;
       _mirrorToolFeatureId = toolFeatureId;
+      _mirrorLongPressSeedFeature = null;
       _mirrorEditSnapshot = (
         sourceBodyIds: sourceBodyIds,
         mirrorPlane: mirrorPlane,
@@ -6337,6 +6458,7 @@ class _PartScreenState extends State<PartScreen> {
       _patternSourceBodyIds = null;
       _patternSourceFeatureIds = [];
       _patternToolFeatureId = null;
+      _patternLongPressSeedFeature = null;
       _previewPatternFeatureId = null;
       _meshBeforePattern = _bodies;
       _entitiesBeforePattern = _selectedEntities;
@@ -6444,15 +6566,23 @@ class _PartScreenState extends State<PartScreen> {
   /// On-device feedback ("user should now be able to start pattern from
   /// long press a feature in the tree"): opens [PatternPanel] directly in
   /// the `configuring` step for a brand-new PatternFeature seeded from
-  /// [feature] itself via `source_feature_ids` (Phase 6, `docs/pattern-
-  /// mirror-scope.md` §2.8) rather than a Body pick - mirrors
-  /// [_openPatternPanel]'s own "skip `pickingBodies` entirely" shape,
-  /// just sourced from a Feature-tree row instead of already-selected
-  /// viewport Bodies. [FeatureContextMenuAction.pattern]'s own handler in
-  /// [_onFeatureLongPress] is the only caller - that's already gated on
-  /// [feature] being a body-producing type (see `_bodyProducingFeatureTypes`),
-  /// so this doesn't re-check.
+  /// [feature] itself, rather than a Body pick - mirrors [_openPatternPanel]'s
+  /// own "skip `pickingBodies` entirely" shape, just sourced from a
+  /// Feature-tree row instead of already-selected viewport Bodies.
+  /// [FeatureContextMenuAction.pattern]'s own handler in
+  /// [_onFeatureLongPress] is the only caller.
+  ///
+  /// Pattern/Mirror scoping's Phase 9 (`docs/pattern-mirror-scope.md`
+  /// §2.12/§4) folds in the old separate "Pattern into Target" entry
+  /// ([_openPatternPanelFromToolFeature], now removed): [feature] seeds via
+  /// `tool_feature_id` when it's tool-feature-eligible (`merge` forced to
+  /// `fuseIntoOne`, per that mode's own single-target constraint), or via
+  /// `source_feature_ids` (Phase 6, `docs/pattern-mirror-scope.md` §2.8)
+  /// otherwise - [PatternPanel.seedKind]'s own toggle (see
+  /// [_patternSeedKind]) lets the user switch between the two afterwards,
+  /// when [feature] qualifies for both.
   void _openPatternPanelFromFeature(FeatureDto feature) {
+    final seedAsToolFeature = _isEligibleToolFeature(feature);
     setState(() {
       _meshBeforePattern = _bodies;
       _entitiesBeforePattern = _selectedEntities;
@@ -6460,48 +6590,40 @@ class _PartScreenState extends State<PartScreen> {
       _toolbarOpen = false;
       _featureTreeVisible = false;
       _selectionFilterOverrides.push(_patternDirectionSelectionFilter);
-      _resetPatternConfiguringState([], sourceFeatureIds: [feature.id]);
-    });
-  }
-
-  /// Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
-  /// §2.11/§4): [FeatureContextMenuAction.patternIntoTarget]'s handler -
-  /// mirrors [_openPatternPanelFromFeature]'s own shape exactly, except
-  /// the seed is [feature] via `tool_feature_id` (a third, mutually-
-  /// exclusive mode) rather than `source_feature_ids`. [_onFeatureLongPress]
-  /// is the only caller, already gated on `_isEligibleToolFeature(feature)`.
-  void _openPatternPanelFromToolFeature(FeatureDto feature) {
-    setState(() {
-      _meshBeforePattern = _bodies;
-      _entitiesBeforePattern = _selectedEntities;
-      _selectionMode = true;
-      _toolbarOpen = false;
-      _featureTreeVisible = false;
-      _selectionFilterOverrides.push(_patternDirectionSelectionFilter);
-      _resetPatternConfiguringState([], toolFeatureId: feature.id);
+      _resetPatternConfiguringState(
+        [],
+        sourceFeatureIds: seedAsToolFeature ? [] : [feature.id],
+        toolFeatureId: seedAsToolFeature ? feature.id : null,
+        longPressSeedFeature: feature,
+      );
     });
   }
 
   /// Shared by [_confirmPatternBodySelection]/[_openPatternPanel]/
-  /// [_openPatternPanelFromFeature]/[_openPatternPanelFromToolFeature] -
-  /// resets every Direction 1/2 field to its default and enters
-  /// `configuring` for [sourceBodyIds]/[sourceFeatureIds] (the ordinary
-  /// seed mode) or [toolFeatureId] (Phase 8's third, mutually-exclusive
-  /// mode - forces `merge` to `fuseIntoOne`, since `keepSeparate` has no
-  /// referent once there's exactly one target - see `MirrorFeature.
-  /// tool_feature_id`'s own backend docstring). Always called from inside
-  /// a `setState` block by its callers (each of which has its own
-  /// filter-stack bookkeeping to do alongside this).
+  /// [_openPatternPanelFromFeature] - resets every Direction 1/2 field to
+  /// its default and enters `configuring` for [sourceBodyIds]/
+  /// [sourceFeatureIds] (the ordinary seed mode) or [toolFeatureId] (Phase
+  /// 8's third, mutually-exclusive mode - forces `merge` to `fuseIntoOne`,
+  /// since `keepSeparate` has no referent once there's exactly one target -
+  /// see `MirrorFeature.tool_feature_id`'s own backend docstring).
+  /// [longPressSeedFeature] (Phase 9) records which Feature - if any - a
+  /// "Pattern" long-press named directly, for [PatternPanel.seedKind]'s own
+  /// toggle eligibility; null (the default) for every seed path that isn't
+  /// a single-Feature long-press. Always called from inside a `setState`
+  /// block by its callers (each of which has its own filter-stack
+  /// bookkeeping to do alongside this).
   void _resetPatternConfiguringState(
     List<String> sourceBodyIds, {
     List<String> sourceFeatureIds = const [],
     String? toolFeatureId,
+    FeatureDto? longPressSeedFeature,
   }) {
     _patternStep = _PatternStep.configuring;
     _patternMode = PatternMode.rectangular;
     _patternSourceBodyIds = sourceBodyIds;
     _patternSourceFeatureIds = sourceFeatureIds;
     _patternToolFeatureId = toolFeatureId;
+    _patternLongPressSeedFeature = longPressSeedFeature;
     _patternDirection1 = null;
     _patternDirection1EdgeEntity = null;
     _patternCount1 = 2;
@@ -6590,6 +6712,7 @@ class _PartScreenState extends State<PartScreen> {
         _patternReverseAngular = feature.reverseAngular;
         _patternSkipIndices = feature.skipIndices.toSet();
         _patternMerge = merge;
+        _patternLongPressSeedFeature = null;
         _patternEditSnapshot = (
           sourceBodyIds: sourceBodyIds,
           direction1: null,
@@ -6663,6 +6786,7 @@ class _PartScreenState extends State<PartScreen> {
       _patternReverseAngular = false;
       _patternSkipIndices = feature.skipIndices.toSet();
       _patternMerge = merge;
+      _patternLongPressSeedFeature = null;
       _patternEditSnapshot = (
         sourceBodyIds: sourceBodyIds,
         direction1: direction1,
@@ -6877,6 +7001,37 @@ class _PartScreenState extends State<PartScreen> {
   /// shared across both Rectangular and Circular mode.
   void _setPatternMerge(MergeMode merge) {
     setState(() => _patternMerge = merge);
+    _schedulePatternPreview();
+  }
+
+  /// [PatternPanel.seedKind]'s current value - mirrors [_mirrorSeedKind]'s
+  /// own identical shape: non-null (and the toggle shown) only when
+  /// [_patternLongPressSeedFeature] qualifies for both seed kinds.
+  PatternMirrorSeedKind? get _patternSeedKind {
+    final feature = _patternLongPressSeedFeature;
+    if (feature == null) return null;
+    final qualifiesAsBody = _bodyProducingFeatureTypes.contains(feature.type);
+    final qualifiesAsToolFeature = _isEligibleToolFeature(feature);
+    if (!(qualifiesAsBody && qualifiesAsToolFeature)) return null;
+    return _patternToolFeatureId != null ? PatternMirrorSeedKind.feature : PatternMirrorSeedKind.body;
+  }
+
+  /// [PatternPanel.onSeedKindChanged] - mirrors [_setMirrorSeedKind]'s own
+  /// identical shape, only reachable while [_patternSeedKind] is non-null.
+  void _setPatternSeedKind(PatternMirrorSeedKind kind) {
+    final feature = _patternLongPressSeedFeature;
+    if (feature == null) return;
+    setState(() {
+      if (kind == PatternMirrorSeedKind.feature) {
+        _patternSourceFeatureIds = [];
+        _patternToolFeatureId = feature.id;
+        _patternMerge = MergeMode.fuseIntoOne;
+      } else {
+        _patternSourceFeatureIds = [feature.id];
+        _patternToolFeatureId = null;
+        _patternMerge = MergeMode.keepSeparate;
+      }
+    });
     _schedulePatternPreview();
   }
 
@@ -8030,6 +8185,7 @@ class _PartScreenState extends State<PartScreen> {
                   // PartViewport's own build rather than an external
                   // overlay here.
                   sketchOrientationBasis: _confirmingSketchOrientation ? _pendingOrientationBasis : null,
+                  anchorTriadAtOrigin: _anyToolPanelOpen,
                 ),
                 // On-device feedback ("move the select/orbit fab to the top
                 // right group of fabs under 'centre view'"): a sibling of
@@ -8337,6 +8493,8 @@ class _PartScreenState extends State<PartScreen> {
                       onPickSourceFeatures: () =>
                           _startSourceFeaturePicker(_SourceFeaturePickerTarget.mirror),
                       toolFeatureSummary: _toolFeatureSummary(_mirrorToolFeatureId),
+                      seedKind: _mirrorSeedKind,
+                      onSeedKindChanged: _setMirrorSeedKind,
                       onConfirm: _confirmMirror,
                       onCancel: _cancelMirror,
                     ),
@@ -8419,6 +8577,8 @@ class _PartScreenState extends State<PartScreen> {
                       onPickSourceFeatures: () =>
                           _startSourceFeaturePicker(_SourceFeaturePickerTarget.pattern),
                       toolFeatureSummary: _toolFeatureSummary(_patternToolFeatureId),
+                      seedKind: _patternSeedKind,
+                      onSeedKindChanged: _setPatternSeedKind,
                       onConfirm: _confirmPattern,
                       onCancel: _cancelPattern,
                     ),

@@ -1,6 +1,10 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_scene/scene.dart' show Camera;
 import 'package:vector_math/vector_math.dart' as vm;
+
+import 'screen_projection.dart';
 
 /// One axis of the on-screen orientation triad: its label, color, and the
 /// screen-space direction it should point (see [triadAxes]).
@@ -131,6 +135,43 @@ class DebugCameraOrientationOverlay extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Bug fix ("XYZ triad hidden behind any open tool panel", `docs/roadmap.md`):
+/// pure screen-space center computation for [paintTriad], factored out so
+/// it's unit-testable without a real GPU-backed `Scene` (`PartViewport`'s
+/// `_ScenePainter` is otherwise untestable in a headless `flutter test` run -
+/// mirrors [worldToScreen]'s own pure/render-independent split).
+///
+/// Every tool panel `PartScreen` overlays on top of the viewport (Pattern,
+/// Extrude, Fillet, ...) sits at the same fixed bottom-left corner the triad
+/// used to always draw at, hiding it completely. When [anchorAtOrigin] is
+/// false (`PartScreen._anyToolPanelOpen` is false - no panel open), this
+/// always returns that same fixed corner, unchanged from the pre-fix
+/// behavior. When true, it instead follows the world origin's own projected
+/// screen position via [worldToScreen] - the same "follow the camera" idea
+/// `reference_planes.dart`'s real 3D-space geometry already gets for free by
+/// actually living in the scene, just computed here in screen space since
+/// the triad is a fixed-size 2D overlay, not real scene geometry - clamped to
+/// stay at least [margin] from every edge so an origin near/past an edge
+/// still draws a fully on-screen triad instead of clipping. Falls back to the
+/// fixed corner when the origin can't be projected at all (behind the
+/// camera - see [worldToScreen]'s own null-when-behind-camera contract).
+Offset triadCenterFor(
+  Camera camera,
+  Size viewSize, {
+  required bool anchorAtOrigin,
+  double margin = 44,
+}) {
+  final fixedCorner = Offset(margin, viewSize.height - margin);
+  if (!anchorAtOrigin) return fixedCorner;
+
+  final projected = worldToScreen(camera, viewSize, vm.Vector3.zero());
+  if (projected == null) return fixedCorner;
+
+  final maxX = math.max(margin, viewSize.width - margin);
+  final maxY = math.max(margin, viewSize.height - margin);
+  return Offset(projected.dx.clamp(margin, maxX), projected.dy.clamp(margin, maxY));
 }
 
 /// Paints [axes] (see [triadAxes]) as a fixed-size compass centered at
