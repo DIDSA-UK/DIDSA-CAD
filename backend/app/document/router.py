@@ -24,6 +24,7 @@ from app.document.fillet import resolve_fillet
 from app.document.graph import (
     base_feature_id,
     build_feature_graph,
+    excluded_feature_ids_after,
     tool_feature_qualifies,
     transitive_dependents,
 )
@@ -246,14 +247,14 @@ def _create_plane_feature_response(part: Part, feature: CreatePlaneFeature) -> C
     (no kernel in this sandbox - never a concern over real HTTP), reaches
     the fallback.
 
-    Bug fix: resolves against `_excluded_feature_ids_after`'s own
+    Bug fix: resolves against `excluded_feature_ids_after`'s own
     causally-consistent snapshot (excludes every Feature that comes after
     this one) rather than the Part's fully-built one - see that helper's
     own docstring for the full "why" (this Plane's own face reference
     silently resolving to a different face once a later Feature, e.g. a
     Cut, modifies the same Body it's anchored to)."""
     try:
-        resolved = resolve_create_plane(part, feature, _excluded_feature_ids_after(part, feature.id))
+        resolved = resolve_create_plane(part, feature, excluded_feature_ids_after(part, feature.id))
         origin, normal, x_axis, y_axis = (
             resolved.origin,
             resolved.normal,
@@ -282,72 +283,6 @@ def _create_plane_feature_response(part: Part, feature: CreatePlaneFeature) -> C
     )
 
 
-def _excluded_feature_ids_after(part: Part, feature_id: str) -> frozenset[str]:
-    """The `excluded_feature_ids` set to pass to `compute_part_bodies`/any
-    resolver taking one, when resolving an *already-persisted* Feature's
-    own live geometry for display/refresh purposes - `_create_plane_
-    feature_response`'s own `origin`/`normal`, and `_sketch_has_lost_
-    reference`'s external-reference refresh, are the two call sites this
-    was written for. Every Feature id that comes *after* `feature_id` in
-    `part.features`' own list order - append-only, creation order (see
-    `Part`'s own docstring: a Feature can only ever be added at the end,
-    and can only be edited/deleted while it is the last one). Empty if
-    `feature_id` isn't found or is already last - nothing to exclude.
-
-    Bug fix: `compute_part_bodies(part)` alone (no exclusions) always
-    computes the Part's *final*, fully-built state - the wrong snapshot to
-    resolve a stored `SubShapeRef`/face-index against for a Feature that
-    isn't the last one in the Part. A raw OCCT face/edge/vertex index (see
-    `SubShapeRef`'s own docstring - `topexp.MapShapes`'s own enumeration
-    order over a *specific* shape) is only stable when resolved against the
-    same shape it was captured against; it is not a persistent label
-    attached to "the same" face forever. A *later* Boolean (a Cut/Boss into
-    the same Body a Plane is anchored to, or that a Sketch's own external
-    reference points at) can restructure that Body's own B-rep graph enough
-    that the identical index now lands on a genuinely different face/edge/
-    vertex on the *fully-built* Part, even though the stored reference
-    itself never changed - on-device feedback caught this directly: a
-    face-anchored Plane's own reported `origin`/`normal` drifting to a
-    different face of the same Body once a Cut targeting that Body was
-    added after it, and (found while root-causing that report) a Sketch's
-    own `external_references` are exposed to the identical failure mode,
-    more seriously - `refresh_external_references` doesn't just report a
-    wrong value, it *writes* the newly-(mis)resolved position straight onto
-    the Sketch's own persisted Point data, on every `GET .../features` call.
-
-    Deliberately list-position-based, not graph-dependency-based. A first
-    attempt at this fix used `transitive_dependents` (B2's own cascade-
-    delete graph query) instead - wrong, and caught only by writing a real
-    reproduction against the exact reported scenario before trusting it:
-    `transitive_dependents` only catches Features that *explicitly
-    reference* `feature_id` by id. It missed the actual reported case
-    entirely - a later Cut that modifies the *same Body* a Plane is
-    anchored to, with no dependency edge between the Cut and the Plane at
-    all, since the Cut's own `target_body_ids` references the Body
-    directly, never the Plane. List position is always a superset of graph
-    dependents (nothing can depend on a Feature that doesn't exist yet, so
-    every transitive dependent necessarily comes later in the list too) -
-    excluding "everything after" is safe (a Feature's own dependencies
-    always come before it in the list, so this can never accidentally
-    exclude something it needs) and correctly covers coincidental same-Body
-    siblings that graph dependents alone cannot.
-
-    The Feature's own *actual* geometry construction (inside `compute_part_
-    bodies`'s own topological walk - e.g. a Cut's own tool solid resolving
-    the Plane/Sketch it depends on) never has this problem: it naturally
-    only ever sees `bodies_so_far`, i.e. exactly this same exclusion, since
-    anything downstream of it hasn't run yet at that point in the walk.
-    This helper gives every other "resolve this already-persisted Feature's
-    own live state" call site that identical, causally-consistent snapshot
-    instead of the final one."""
-    ids = [f.id for f in part.features]
-    try:
-        index = ids.index(feature_id)
-    except ValueError:
-        return frozenset()
-    return frozenset(ids[index + 1 :])
-
-
 def _sketch_has_lost_reference(part: Part, feature: SketchFeature) -> bool:
     """Sketcher-roadmap Phase 4.3 v1: whether `feature`'s own Sketch has at
     least one `external_references` entry that no longer resolves against
@@ -361,7 +296,7 @@ def _sketch_has_lost_reference(part: Part, feature: SketchFeature) -> bool:
     every Sketch that doesn't use the feature.
 
     Bug fix: resolves (and, via `refresh_external_references`, persists)
-    each external reference against `_excluded_feature_ids_after`'s own
+    each external reference against `excluded_feature_ids_after`'s own
     causally-consistent snapshot rather than the Part's fully-built one -
     see that helper's own docstring for the full "why" (a stored vertex/
     edge index silently relocating to the wrong Body feature once a later
@@ -370,7 +305,7 @@ def _sketch_has_lost_reference(part: Part, feature: SketchFeature) -> bool:
     if sketch is None or not sketch.external_references:
         return False
     try:
-        excluded = _excluded_feature_ids_after(part, feature.id)
+        excluded = excluded_feature_ids_after(part, feature.id)
         bodies = compute_part_bodies(part, excluded)
         lost_point_ids = refresh_external_references(part, sketch, bodies, excluded)
     except HTTPException:

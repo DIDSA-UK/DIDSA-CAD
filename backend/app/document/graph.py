@@ -194,6 +194,82 @@ def tool_feature_qualifies(feature: Feature | None) -> bool:
     return False
 
 
+def excluded_feature_ids_after(part: Part, feature_id: str) -> frozenset[str]:
+    """The `excluded_feature_ids` set to pass to `compute_part_bodies`/any
+    resolver taking one, when resolving an already-persisted Feature's own
+    live geometry against the causally-consistent snapshot of the Part as
+    it stood right after that Feature was added - every Feature id that
+    comes *after* `feature_id` in `part.features`' own list order (append-
+    only, creation order - see `Part`'s own docstring: a Feature can only
+    be edited/deleted while it is the last one). Empty if `feature_id`
+    isn't found or is already last - nothing to exclude.
+
+    Two call sites: `app.document.router`'s own `_create_plane_feature_
+    response`/`_sketch_has_lost_reference` (an already-persisted Plane's
+    `origin`/`normal`, and a Sketch's `external_references`, re-resolved on
+    every `GET .../features` call - a display/refresh-time bug found via
+    on-device feedback), and `app.document.pattern`/`mirror`'s own
+    `resolve_pattern_tool_feature_from_bodies`/`resolve_mirror_tool_
+    feature_from_bodies` (Phase 8's `tool_feature_id` mode - re-deriving an
+    *upstream* Feature's own standalone tool shape from a *later* Pattern/
+    Mirror Feature's own position in the walk, a second bug of the
+    identical class found while root-causing an on-device "pattern
+    produced a stray cut in the wrong place" report).
+
+    Bug fix (both instances): `compute_part_bodies(part)` alone (no
+    exclusions) always computes the Part's *final*, fully-built state - the
+    wrong snapshot to resolve a stored `SubShapeRef`/face-index against for
+    a Feature that isn't the last one in the Part. A raw OCCT face/edge/
+    vertex index (see `SubShapeRef`'s own docstring - `topexp.MapShapes`'s
+    own enumeration order over a *specific* shape) is only stable when
+    resolved against the same shape it was captured against; it is not a
+    persistent label attached to "the same" face forever. A *later*
+    Boolean (a Cut/Boss into the same Body a Plane is anchored to, that a
+    Sketch's own external reference points at, or - Phase 8's own new case
+    - that a `tool_feature_id`-referenced upstream Cut/Boss itself already
+    modified before the referencing Pattern/Mirror re-derives its own
+    pre-boolean tool shape) can restructure that Body's own B-rep graph
+    enough that the identical index now lands on a genuinely different
+    face/edge/vertex, even though the stored reference itself never
+    changed.
+
+    Deliberately list-position-based, not graph-dependency-based. A first
+    attempt at the router.py fix used `transitive_dependents` (B2's own
+    cascade-delete graph query) instead - wrong, and caught only by writing
+    a real reproduction against the exact reported scenario before
+    trusting it: `transitive_dependents` only catches Features that
+    *explicitly reference* `feature_id` by id. It missed the actual
+    reported case entirely - a later Cut that modifies the *same Body* a
+    Plane is anchored to, with no dependency edge between the Cut and the
+    Plane at all, since the Cut's own `target_body_ids` references the Body
+    directly, never the Plane. List position is always a superset of graph
+    dependents (nothing can depend on a Feature that doesn't exist yet, so
+    every transitive dependent necessarily comes later in the list too) -
+    excluding "everything after" is safe (a Feature's own dependencies
+    always come before it in the list, so this can never accidentally
+    exclude something it needs) and correctly covers coincidental same-Body
+    siblings that graph dependents alone cannot.
+
+    The Feature's own *actual* geometry construction (inside `compute_part_
+    bodies`'s own topological walk - e.g. a Cut's own tool solid resolving
+    the Plane/Sketch it depends on, *at that Feature's own turn in the
+    walk*) never has this problem: it naturally only ever sees `bodies_so_
+    far` as of itself, i.e. exactly this same exclusion, since anything
+    downstream of it hasn't run yet at that point. Phase 8's `tool_feature_
+    id` mode is the one place that *deliberately* re-derives an earlier
+    Feature's own construction from a later point in the walk (to get an
+    independent, transformable copy of its tool shape) - which is exactly
+    why it needs this same causally-consistent snapshot threaded back in
+    explicitly, rather than inheriting whatever `bodies` its own caller
+    happens to be sitting on."""
+    ids = [f.id for f in part.features]
+    try:
+        index = ids.index(feature_id)
+    except ValueError:
+        return frozenset()
+    return frozenset(ids[index + 1 :])
+
+
 def sketch_feature_id_for_sketch(part: Part, sketch_id: str) -> str | None:
     """C2: resolves a `SketchEntityRef.sketch_id` (an `app.sketch.models.
     Sketch` id) back to the `SketchFeature` id that wraps it in `part` - the

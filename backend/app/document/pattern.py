@@ -30,6 +30,7 @@ from app.document.create_plane import resolve_sketch_basis
 from app.document.extrude import basis_point_to_world, compute_part_bodies, resolve_subshape_from_bodies
 from app.document.graph import (
     body_ids_for_feature_id,
+    excluded_feature_ids_after,
     sketch_feature_id_for_sketch,
     tool_feature_qualifies,
 )
@@ -503,7 +504,29 @@ def resolve_pattern_tool_feature_from_bodies(
     bodies`'s own identical check gives (see that function's own doc
     comment for the full reasoning). v1 scope: exactly one target -
     `target_body_ids[0]`. Returns `(target_body_id, new_shape)`, mirroring
-    that function's own return shape exactly."""
+    that function's own return shape exactly.
+
+    Bug fix (on-device feedback: "trying to pattern a hole produced no
+    visible second hole, and a small stray cut showed up in the wrong
+    corner"): `resolve_feature_tool_shape` re-derives `tool_feature_id`'s
+    own standalone tool shape - which means re-resolving *its* own
+    upstream dependencies (its Sketch's anchor - a `CreatePlaneFeature`'s
+    `face_ref`, in the reported case) from scratch. Passing this function's
+    own `bodies`/`excluded_feature_ids` straight through was wrong: those
+    reflect the Part as of *this Pattern's own* position in the walk,
+    which is *after* `tool_feature_id` already ran - i.e. after its own
+    Cut/Boss already modified the very Body a dependency like that anchor
+    Plane's `face_ref` points at. A raw OCCT face index isn't a persistent
+    label (see `app.document.graph.excluded_feature_ids_after`'s own
+    docstring) - resolving the Plane's `face_ref` against the *post-cut*
+    Body silently returned a different face than the one actually used
+    when `tool_feature_id` itself was first created, producing a
+    correctly-computed-but-wrong-shaped tool (confirmed via direct
+    reproduction: the anchor Plane's own resolved origin/normal differed
+    between the two calls). Fixed by resolving `tool_feature_id`'s own
+    pre-boolean tool shape against a *separate*, causally-consistent
+    snapshot - the Part exactly as it stood right before `tool_feature_id`
+    ran - rather than this Pattern's own further-advanced accumulator."""
     from app.document.extrude import resolve_feature_tool_shape
 
     tool_feature_id = feature.tool_feature_id
@@ -513,7 +536,11 @@ def resolve_pattern_tool_feature_from_bodies(
     if not tool_feature_qualifies(tool_feature):
         raise _invalid_tool_feature_ref(tool_feature_id)
 
-    result = resolve_feature_tool_shape(part, bodies, tool_feature_id, excluded_feature_ids)
+    tool_excluded = (
+        excluded_feature_ids | {tool_feature_id} | excluded_feature_ids_after(part, tool_feature_id)
+    )
+    tool_bodies = compute_part_bodies(part, tool_excluded)
+    result = resolve_feature_tool_shape(part, tool_bodies, tool_feature_id, tool_excluded)
     if result is None:
         raise _invalid_tool_feature_ref(tool_feature_id)
     tool_shape, target_body_ids, is_cut = result

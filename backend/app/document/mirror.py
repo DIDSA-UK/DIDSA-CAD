@@ -23,7 +23,7 @@ from OCC.Core.TopoDS import TopoDS_Shape
 
 from app.document.create_plane import resolve_plane_ref
 from app.document.extrude import compute_part_bodies
-from app.document.graph import body_ids_for_feature_id, tool_feature_qualifies
+from app.document.graph import body_ids_for_feature_id, excluded_feature_ids_after, tool_feature_qualifies
 from app.document.models import MirrorFeature, Part
 
 
@@ -189,7 +189,21 @@ def resolve_mirror_tool_feature_from_bodies(
     if not tool_feature_qualifies(tool_feature):
         raise _invalid_tool_feature_ref(tool_feature_id)
 
-    result = resolve_feature_tool_shape(part, bodies, tool_feature_id, excluded_feature_ids)
+    # Bug fix - see `app.document.pattern.resolve_pattern_tool_feature_
+    # from_bodies`'s own identical fix (found together, same on-device
+    # report): `resolve_feature_tool_shape` re-derives `tool_feature_id`'s
+    # own upstream dependencies (its Sketch's anchor Plane, if any) - these
+    # must resolve against the Part exactly as it stood right before
+    # `tool_feature_id` ran, not this Mirror's own further-advanced `bodies`
+    # accumulator (which already reflects `tool_feature_id`'s own applied
+    # Cut/Boss on the very Body an anchor Plane's `face_ref` might point
+    # at) - see `app.document.graph.excluded_feature_ids_after`'s own
+    # docstring for the full "why".
+    tool_excluded = (
+        excluded_feature_ids | {tool_feature_id} | excluded_feature_ids_after(part, tool_feature_id)
+    )
+    tool_bodies = compute_part_bodies(part, tool_excluded)
+    result = resolve_feature_tool_shape(part, tool_bodies, tool_feature_id, tool_excluded)
     if result is None:
         raise _invalid_tool_feature_ref(tool_feature_id)
     tool_shape, target_body_ids, is_cut = result

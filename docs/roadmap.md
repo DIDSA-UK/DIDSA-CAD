@@ -184,6 +184,110 @@ deliberately unbuilt along the way, not yet scoped further:
   exclusion for external-reference Points, the same inherited limitation
   every other pinned reference already has. Not fixed, not newly introduced.
 
+## Reference drift / "potentially broken reference" health flag
+
+User brainstorm (2026-07-31, prompted by the same day's three related bug
+fixes - see `docs/status.md`'s "Bug fix: face-anchored Plane and Sketch
+external references drifting..." and "Bug fix: Pattern/Mirror
+`tool_feature_id` mode re-deriving an upstream Cut's tool shape..."
+entries): those bugs were a *fixable* implementation defect (resolving a
+`SubShapeRef` against the wrong point in the Part's own history), but the
+underlying vulnerability they exposed is not fully closed by that fix - a
+raw OCCT face/edge/vertex index (`topexp.MapShapes`'s own enumeration
+order over one specific shape - see `SubShapeRef`'s own docstring) is
+*never* a guaranteed-stable identity across a genuinely restructured Body
+(a later fillet merging two faces, a cut consuming one entirely). This is
+the industry-wide, still-not-fully-solved "Topological Naming Problem"
+every history-based CAD kernel (Parasolid, ACIS, OCCT here) has some
+version of - not unique brittleness in this project. Today, that
+remaining case is handled by failing closed (a structured
+`missing_reference` 422, or `has_lost_reference` for Sketch external
+references) when resolution genuinely can't find a match at all. The gap:
+nothing catches the case where resolution *succeeds* but against a
+different face/edge than intended - exactly what happened here (a Plane's
+`face_ref` silently landing on a side face instead of the top face it was
+created against).
+
+**The idea, not yet designed in detail**: alongside a `SubShapeRef` (or
+`PatternDirectionRef`/`PatternAxisRef`/a Mirror's `mirror_plane`), store a
+lightweight geometric signature captured when the reference was created
+(or last confirmed healthy) - a face's centroid + normal, an edge's
+midpoint + direction, a vertex's position. On every later resolution,
+compare the newly-resolved shape's own signature against the stored one.
+Small drift (the body legitimately grew/shrank a bit, the referenced
+face moved slightly) is expected and fine; a normal that flipped
+90°+, or a centroid that jumped to a different corner of the body
+entirely, is exactly the "resolved successfully but wrong" failure this
+session hit twice. Past some threshold, don't silently trust the new
+value the way `refresh_external_references` currently does (it persists
+whatever it resolves to, on every read) - flag the feature instead
+("potentially broken reference"), the same way `has_lost_reference`
+already flags a Sketch whose external reference can't resolve at all, but
+generalized to every reference kind that can silently drift rather than
+only the one that currently fails closed. Critically (the user's own
+framing): don't auto-correct the feature's behavior based on the drifted
+value - surface the flag and let the user decide, rather than the system
+silently accepting a value that might be wrong.
+
+The user's own rough starting language for thresholds - "normal changed by
+more than ___", "sketch vertical changed by more than ___" - is a
+reasonable first cut at the two most obviously-affected reference kinds
+(a face-anchored Plane's own normal; a Sketch's in-plane orientation via
+its anchor Plane's x/y axes) and is roughly the design direction to start
+from, not yet worked out as real numbers/formulas.
+
+**Precedent** (general industry concepts, not verified against any
+specific vendor's documented internals - worth a real research pass before
+or during implementation if matching prior art precisely matters, per the
+user's own "align with NX or something" ask): the general "diff the
+before/after state and require confirmation on a large change" pattern is
+well-established outside CAD too (`terraform plan` refusing to silently
+apply a change that would destroy more resources than expected; migration
+tools that abort rather than silently touch an unexpectedly large row
+count). Within CAD specifically, mature kernels/wrappers are understood to
+mitigate the Topological Naming Problem partly via geometry-based
+re-identification ("shape matching" / "sticky IDs") layered on top of raw
+topological indices, rather than trusting a bare enumeration index alone -
+OCCT itself exposes `BRepAlgoAPI_BooleanOperation::Modified()`/
+`Generated()`/`IsDeleted()` for a boolean operation to report what became
+of a given input face/edge directly, which this codebase does not
+currently use anywhere (every resolver here re-derives identity purely by
+re-enumerating a shape after the fact). A geometric-signature health check
+is a heuristic safety net *on top of* the current approach, not a
+replacement for wiring in that boolean-native tracking, which would be the
+more thorough (and more involved) fix for the same underlying class of
+problem.
+
+**Open questions, not yet resolved:**
+- Threshold values, and whether they should be absolute (a fixed angle/
+  distance) or relative (e.g. a percentage of the Body's own bounding-box
+  diagonal, so the same check behaves sensibly on a 10mm bracket and a
+  10m assembly).
+- Which reference kinds get this first - `CreatePlaneFeature.face_refs`
+  and `PatternDirectionRef.edge_ref`/`PatternAxisRef` are the two directly
+  implicated by this session's own bugs; `Sketch.external_references`
+  already has a (weaker, resolve-or-fail-only) version of this via
+  `has_lost_reference`, so may just need widening rather than a new
+  mechanism; `tool_feature_id` itself is a Feature-id reference, not a
+  raw topology index, so may not need a signature scheme at all.
+- Whether a flagged feature still renders its best-effort (possibly wrong)
+  resolved geometry, or freezes at its last known-good state until the
+  flag is addressed.
+- Whether/how a flag is dismissed once reviewed - does the user
+  acknowledge "yes, this drift is intentional, stop flagging it" (updating
+  the stored signature to the new value), or does it just clear itself
+  once the signature re-stabilizes?
+- Where the comparison logic would live - most likely a new sibling to
+  `resolve_subshape_from_bodies` (`app.document.extrude`), called from the
+  same handful of `_feature_response` branches `excluded_feature_ids_after`
+  already touches, plus `pattern.py`/`mirror.py`'s own tool_feature_id
+  resolvers.
+
+Not scoped enough to estimate effort or start implementation - written up
+here to capture the idea and the concrete bug reports that motivated it
+before they're forgotten, per the user's own explicit "let's scope the
+roadmap entry" ask.
+
 ## Other open items
 
 - **A sketch's origin point reportedly doesn't line up with the correct 3D
