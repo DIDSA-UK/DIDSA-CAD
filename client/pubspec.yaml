@@ -113,3 +113,73 @@ flutter:
           weight: 700
         - asset: assets/fonts/Lekton/Lekton-Italic.ttf
           style: italic
+
+    # 3D-viewport Text tool round (`docs/text-tool-3d-viewport-scope.md`
+    # §2.2): one family entry per `sketch_controller.dart`'s own
+    # `textFontOptions` name (and the backend's matching
+    # `app.sketch.text_fonts.FONT_ALLOWLIST` key) - unlike Lekton above,
+    # these are single-weight (Regular only, no Bold/Italic variants,
+    # matching each backend .ttf exactly) and exist so the Text tool's
+    # font picker can render every option in its own actual face, not a
+    # geometry preview substitute. Each font's own SIL OFL 1.1 license
+    # copy lives alongside it (assets/fonts/<name>/OFL.txt).
+    - family: Open Sans
+      fonts:
+        - asset: assets/fonts/Open Sans/OpenSans-Regular.ttf
+    - family: Roboto
+      fonts:
+        - asset: assets/fonts/Roboto/Roboto-Regular.ttf
+    - family: Lato
+      fonts:
+        - asset: assets/fonts/Lato/Lato-Regular.ttf
+    - family: Fira Sans
+      fonts:
+        - asset: assets/fonts/Fira Sans/FiraSans-Regular.ttf
+    - family: Barlow
+      fonts:
+        - asset: assets/fonts/Barlow/Barlow-Regular.ttf
+    - family: PT Sans
+      fonts:
+        - asset: assets/fonts/PT Sans/PTSans-Regular.ttf
+    - family: IBM Plex Serif
+      fonts:
+        - asset: assets/fonts/IBM Plex Serif/IBMPlexSerif-Regular.ttf
+    - family: IBM Plex Mono
+      fonts:
+        - asset: assets/fonts/IBM Plex Mono/IBMPlexMono-Regular.ttf
+    - family: Space Mono
+      fonts:
+        - asset: assets/fonts/Space Mono/SpaceMono-Regular.ttf
+    - family: Rajdhani
+      fonts:
+        - asset: assets/fonts/Rajdhani/Rajdhani-Regular.ttf
+    - family: Barlow Condensed
+      fonts:
+        - asset: assets/fonts/Barlow Condensed/BarlowCondensed-Regular.ttf
+    - family: Aldrich
+      fonts:
+        - asset: assets/fonts/Aldrich/Aldrich-Regular.ttf
+    - family: Michroma
+      fonts:
+        - asset: assets/fonts/Michroma/Michroma-Regular.ttf
+    - family: Audiowide
+      fonts:
+        - asset: assets/fonts/Audiowide/Audiowide-Regular.ttf
+    - family: Arvo
+      fonts:
+        - asset: assets/fonts/Arvo/Arvo-Regular.ttf
+    - family: Zilla Slab
+      fonts:
+        - asset: assets/fonts/Zilla Slab/ZillaSlab-Regular.ttf
+    - family: Bebas Neue
+      fonts:
+        - asset: assets/fonts/Bebas Neue/BebasNeue-Regular.ttf
+    - family: Bungee
+      fonts:
+        - asset: assets/fonts/Bungee/Bungee-Regular.ttf
+    - family: Abril Fatface
+      fonts:
+        - asset: assets/fonts/Abril Fatface/AbrilFatface-Regular.ttf
+    - family: Marcellus
+      fonts:
+        - asset: assets/fonts/Marcellus/Marcellus-Regular.ttf

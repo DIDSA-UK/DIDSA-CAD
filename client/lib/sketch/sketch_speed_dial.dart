@@ -48,6 +48,15 @@ class SketchSpeedDial extends StatelessWidget {
   /// Dimension mode) - real Body geometry is already directly tappable in
   /// 3D via ordinary hit-testing, with no need for the 2D canvas's own
   /// projected-ghost-overlay trick at all.
+  ///
+  /// 3D-viewport Text tool round (`docs/text-tool-3d-viewport-scope.md`
+  /// §2.1): Text is no longer excluded either - `sketchGeometry3DFrom` now
+  /// has a real glyph-outline case (see [SketchGeometry3D.textPolygons]'s
+  /// own doc comment), the actual gap this flag existed to paper over.
+  /// This field is now permanently `false` in practice (every known caller
+  /// passes `_orbitViewActive`, but nothing left in [tools] gets filtered
+  /// by it) - left in place rather than deleted in case a genuinely new,
+  /// 2D-only tool shows up later and needs the same escape hatch again.
   final bool restrictToEmbeddedTools;
 
   const SketchSpeedDial({super.key, required this.controller, this.restrictToEmbeddedTools = false});
@@ -275,11 +284,10 @@ class SketchSpeedDial extends StatelessWidget {
             onPressed: () => controller.selectDrawTool(SketchTool.text),
           ),
         ];
-        // P20: every tool except Text works in the 3D-embedded view now -
-        // see [restrictToEmbeddedTools]'s own doc comment.
-        final tools = restrictToEmbeddedTools
-            ? allTools.where((action) => action.tool != SketchTool.text).toList()
-            : allTools;
+        // P20/3D-viewport Text tool round: every tool, including Text, now
+        // works in the 3D-embedded view - see [restrictToEmbeddedTools]'s
+        // own doc comment.
+        final tools = allTools;
         final splitAt = (tools.length / 2).ceil();
         return [
           _rowOf(tools.sublist(0, splitAt)),

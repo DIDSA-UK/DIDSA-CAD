@@ -614,6 +614,14 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     final labelId = dimensionLabelAt(controller, transform, cursorScreen, _ghostHitRadiusPixels);
     if (labelId != null && controller.beginLabelDrag(labelId)) return true;
     final hitRadius = controller.hitRadiusForPixelsPerUnit(transform.pixelsPerUnit);
+    // Checked before the general [dragGrabTargetAt] resolution below - a
+    // Text's own resize handle sits outside its glyph fill, which is all
+    // [dragGrabTargetAt]'s underlying hit-test ever checks (see
+    // [SketchController.textResizeHandleGrabTargetAt]'s own doc comment).
+    final resizeTextId = controller.textResizeHandleGrabTargetAt(controller.cursorX, controller.cursorY, hitRadius);
+    if (resizeTextId != null) {
+      return controller.beginTextResizeDrag(resizeTextId, controller.cursorX, controller.cursorY);
+    }
     final target = controller.dragGrabTargetAt(controller.cursorX, controller.cursorY, hitRadius);
     if (target == null) return false;
     switch (target.kind) {
@@ -4087,6 +4095,109 @@ class _SketchPainter extends CustomPainter {
           ..style = PaintingStyle.stroke
           ..strokeWidth = textIsSelected || isHovered ? _lineStrokeWidthEmphasis : _lineStrokeWidth,
       );
+
+      // 3D-viewport Text tool round (`docs/text-tool-3d-viewport-scope.md`
+      // §2.3): the resize/position handles' own construction-line
+      // bounding box, center lines, and width/height dimensions - only
+      // for the *currently selected* Text (mirrors why the handles
+      // themselves are only ever hit-tested for the current [selection] -
+      // see [SketchController.textResizeHandleGrabTargetAt]'s own doc
+      // comment), so an idle sketch full of Text entities doesn't get
+      // cluttered with a box around every single one. Deliberately a pure
+      // paint-time overlay, not real Line/Point entities - see
+      // [SketchController.textBounds]'s own doc comment for why: a real
+      // construction Line loop would contradict `TextEntity`'s own
+      // "never decomposed into Points/Lines" design.
+      if (textIsSelected) {
+        final bounds = controller.textBounds(text);
+        final centerHandle = controller.textCenterHandle(text);
+        final resizeHandle = controller.textResizeHandle(text);
+        if (bounds != null && centerHandle != null && resizeHandle != null) {
+          final topLeft = transform.sketchToScreen(bounds.minX, bounds.maxY);
+          final topRight = transform.sketchToScreen(bounds.maxX, bounds.maxY);
+          final bottomLeft = transform.sketchToScreen(bounds.minX, bounds.minY);
+          final bottomRight = transform.sketchToScreen(bounds.maxX, bounds.minY);
+          final center = transform.sketchToScreen(centerHandle.x, centerHandle.y);
+          final resizeScreen = transform.sketchToScreen(resizeHandle.x, resizeHandle.y);
+
+          final boxPaint = Paint()
+            ..color = _constructionColor
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = _lineStrokeWidth;
+          final boxPath = Path()
+            ..moveTo(topLeft.dx, topLeft.dy)
+            ..lineTo(topRight.dx, topRight.dy)
+            ..lineTo(bottomRight.dx, bottomRight.dy)
+            ..lineTo(bottomLeft.dx, bottomLeft.dy)
+            ..close();
+          _drawDashedPath(canvas, boxPath, boxPaint);
+
+          final centerLinePaint = Paint()
+            ..color = _constructionColor.withValues(alpha: 0.6)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = _lineStrokeWidth;
+          _drawDashedPath(
+            canvas,
+            Path()
+              ..moveTo((topLeft.dx + bottomLeft.dx) / 2, (topLeft.dy + bottomLeft.dy) / 2)
+              ..lineTo((topRight.dx + bottomRight.dx) / 2, (topRight.dy + bottomRight.dy) / 2),
+            centerLinePaint,
+          );
+          _drawDashedPath(
+            canvas,
+            Path()
+              ..moveTo((topLeft.dx + topRight.dx) / 2, (topLeft.dy + topRight.dy) / 2)
+              ..lineTo((bottomLeft.dx + bottomRight.dx) / 2, (bottomLeft.dy + bottomRight.dy) / 2),
+            centerLinePaint,
+          );
+
+          final widthLabel = (bounds.maxX - bounds.minX).toStringAsFixed(1);
+          final heightLabel = (bounds.maxY - bounds.minY).toStringAsFixed(1);
+          _drawDimensionLabel(
+            canvas,
+            Offset((bottomLeft.dx + bottomRight.dx) / 2, math.max(bottomLeft.dy, bottomRight.dy) + 14),
+            widthLabel,
+            _constructionColor,
+            plainBlackText: true,
+          );
+          _drawDimensionLabel(
+            canvas,
+            Offset(math.max(topRight.dx, bottomRight.dx) + 22, (topRight.dy + bottomRight.dy) / 2),
+            heightLabel,
+            _constructionColor,
+            plainBlackText: true,
+          );
+
+          // Center (position) handle - dragging it is the ordinary
+          // anchor-Point grab/drop gesture (see [SketchController.
+          // textCenterHandle]'s own doc comment); drawn as a small
+          // diamond, distinct from the corner handle's square, so the two
+          // read as different affordances at a glance.
+          final centerHandlePaint = Paint()
+            ..color = _selectedColor
+            ..style = PaintingStyle.fill;
+          const handleHalfSize = 5.0;
+          canvas.drawPath(
+            Path()
+              ..moveTo(center.dx, center.dy - handleHalfSize)
+              ..lineTo(center.dx + handleHalfSize, center.dy)
+              ..lineTo(center.dx, center.dy + handleHalfSize)
+              ..lineTo(center.dx - handleHalfSize, center.dy)
+              ..close(),
+            centerHandlePaint,
+          );
+
+          // Corner (size) handle - see [SketchController.
+          // beginTextResizeDrag]'s own doc comment for the drag itself.
+          final resizeHandlePaint = Paint()
+            ..color = _selectedColor
+            ..style = PaintingStyle.fill;
+          canvas.drawRect(
+            Rect.fromCenter(center: resizeScreen, width: handleHalfSize * 2, height: handleHalfSize * 2),
+            resizeHandlePaint,
+          );
+        }
+      }
     }
 
     final originId = controller.originPointId;

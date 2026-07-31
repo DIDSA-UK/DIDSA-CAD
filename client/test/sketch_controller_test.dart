@@ -5561,6 +5561,124 @@ void main() {
     expect(textFontOptions.toSet().length, textFontOptions.length);
   });
 
+  group('Text resize/position handles (docs/text-tool-3d-viewport-scope.md §2.3)', () {
+    // Default 'Text' content (4 chars) * size 10 * 0.6 = 24 width, 10
+    // height (see the fake backend's own textPreviewContours) - anchored
+    // at the origin gives a bounding box of exactly (0, 0) to (24, 10),
+    // center (12, 5), corner handle (24, 10) - the fixture every test
+    // below builds on.
+    Future<String> placeDefaultTextAtOrigin() async {
+      controller.selectDrawTool(SketchTool.text);
+      await controller.handleCanvasTap(0, 0);
+      controller.exitToSelectMode();
+      return controller.texts.keys.single;
+    }
+
+    test('textBounds/textCenterHandle/textResizeHandle report the expected box', () async {
+      final textId = await placeDefaultTextAtOrigin();
+      final text = controller.texts[textId]!;
+
+      final bounds = controller.textBounds(text)!;
+      expect(bounds.minX, closeTo(0, 1e-9));
+      expect(bounds.minY, closeTo(0, 1e-9));
+      expect(bounds.maxX, closeTo(24, 1e-9));
+      expect(bounds.maxY, closeTo(10, 1e-9));
+
+      final center = controller.textCenterHandle(text)!;
+      expect(center.x, closeTo(12, 1e-9));
+      expect(center.y, closeTo(5, 1e-9));
+
+      final corner = controller.textResizeHandle(text)!;
+      expect(corner.x, closeTo(24, 1e-9));
+      expect(corner.y, closeTo(10, 1e-9));
+    });
+
+    test('textResizeHandleGrabTargetAt only resolves for the currently selected Text, and only '
+        'near its own handle', () async {
+      final textId = await placeDefaultTextAtOrigin();
+
+      // Nothing selected yet - even tapping exactly on the handle misses.
+      expect(controller.textResizeHandleGrabTargetAt(24, 10, 1), isNull);
+
+      await controller.handleCanvasTap(12, 5); // selects the Text (inside its filled shape)
+      expect(controller.selection?.kind, SelectionKind.text);
+      expect(controller.selection?.id, textId);
+
+      // Selected, but far from the handle itself.
+      expect(controller.textResizeHandleGrabTargetAt(0, 0, 1), isNull);
+      // Selected, right on the handle.
+      expect(controller.textResizeHandleGrabTargetAt(24, 10, 1), textId);
+    });
+
+    test('a resize drag live-previews with no PATCH, then commits size and re-centers the anchor '
+        'Point on drop', () async {
+      final textId = await placeDefaultTextAtOrigin();
+      await controller.handleCanvasTap(12, 5); // select it
+      final text = controller.texts[textId]!;
+      final anchorId = text.anchorPointId;
+
+      expect(controller.beginTextResizeDrag(textId, 24, 10), isTrue);
+      expect(controller.isEntityGrabbed, isTrue);
+
+      final requestCountAfterGrab = backend.requestLog.length;
+      controller.updateTextResizeDrag(36, 15); // doubles the distance from the (12, 5) pivot
+      expect(controller.textResizeLiveScale, closeTo(2.0, 1e-9));
+      expect(controller.textResizeHandle(text)!.x, closeTo(36, 1e-9));
+      expect(controller.textResizeHandle(text)!.y, closeTo(15, 1e-9));
+      // The center handle is the pivot - it must stay fixed mid-drag,
+      // that's the whole point of the two handles being independent.
+      expect(controller.textCenterHandle(text)!.x, closeTo(12, 1e-9));
+      expect(controller.textCenterHandle(text)!.y, closeTo(5, 1e-9));
+      // No network round trip yet - too expensive to run per frame (see
+      // beginTextResizeDrag's own doc comment).
+      expect(backend.requestLog.length, requestCountAfterGrab);
+
+      await controller.dropGrabbedEntity();
+
+      expect(controller.isEntityGrabbed, isFalse);
+      expect(controller.texts[textId]!.size, closeTo(20.0, 1e-9));
+      final anchor = controller.points[anchorId]!;
+      expect(anchor.x, closeTo(-12, 1e-9));
+      expect(anchor.y, closeTo(-5, 1e-9));
+      // Center really did stay put after the real (post-commit) preview
+      // re-fetch, not just during the live client-side preview above.
+      final settledCenter = controller.textCenterHandle(controller.texts[textId]!)!;
+      expect(settledCenter.x, closeTo(12, 1e-9));
+      expect(settledCenter.y, closeTo(5, 1e-9));
+
+      await controller.undo();
+
+      expect(controller.texts[textId]!.size, closeTo(10.0, 1e-9));
+      expect(controller.points[anchorId]!.x, closeTo(0, 1e-9));
+      expect(controller.points[anchorId]!.y, closeTo(0, 1e-9));
+    });
+
+    test('a negligible resize drag (dropped back where it started) is a no-op - no PATCH, no undo '
+        'entry', () async {
+      final textId = await placeDefaultTextAtOrigin();
+      await controller.handleCanvasTap(12, 5);
+      final requestCountBefore = backend.requestLog.length;
+
+      controller.beginTextResizeDrag(textId, 24, 10);
+      controller.updateTextResizeDrag(24, 10); // same distance from the pivot - scale stays 1.0
+      await controller.dropGrabbedEntity();
+
+      expect(controller.texts[textId]!.size, closeTo(10.0, 1e-9));
+      expect(backend.requestLog.length, requestCountBefore);
+    });
+
+    test('openTextBar/closeTextBar toggle textBarTextId', () async {
+      final textId = await placeDefaultTextAtOrigin();
+      expect(controller.textBarTextId, isNull);
+
+      controller.openTextBar(textId);
+      expect(controller.textBarTextId, textId);
+
+      controller.closeTextBar();
+      expect(controller.textBarTextId, isNull);
+    });
+  });
+
   // --- Stage 6: hover, selection, ribbon, delete ----------------------------
 
   test('hoveredEntity is null while a chain is in progress, even right on top of an entity', () async {
