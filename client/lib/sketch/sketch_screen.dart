@@ -831,7 +831,25 @@ class _SketchScreenState extends State<SketchScreen> {
                   Positioned(
                     right: 16,
                     bottom: 16,
-                    child: SketchSpeedDial(controller: _controller, restrictToEmbeddedTools: _orbitViewActive),
+                    // On-device feedback ("when using the text edit tool
+                    // bar, the 'drag toggle' and 'new(+)' FABs should be
+                    // hidden"): this FAB and the drag-mode toggle FAB below
+                    // both hide while [TextValueBar] is open - picking a
+                    // new draw tool or toggling drag mode mid-edit would
+                    // abandon the bar's own context for no benefit, and the
+                    // corner/center handles stay draggable throughout
+                    // regardless (see [TextValueBar]'s own doc comment -
+                    // dragging them was never gated on the bar being open
+                    // in the first place, only on Select mode + drag mode,
+                    // both still reachable with the handles themselves
+                    // still visible).
+                    child: AnimatedBuilder(
+                      animation: _controller,
+                      builder: (context, _) {
+                        if (_controller.textBarTextId != null) return const SizedBox.shrink();
+                        return SketchSpeedDial(controller: _controller, restrictToEmbeddedTools: _orbitViewActive);
+                      },
+                    ),
                   ),
                   // Drag-mode toggle FAB, bottom-left: replaces the old
                   // timing-based "double-tap/double-click to drag" gesture
@@ -859,8 +877,25 @@ class _SketchScreenState extends State<SketchScreen> {
                         // Orbit View too now, but only in cursor sub-mode -
                         // orbit sub-mode has no cursor to grab with (see
                         // [_orbitCursorActive]'s own doc comment).
+                        //
+                        // On-device feedback ("when using the text edit
+                        // tool bar, the 'drag toggle' ... FAB should be
+                        // hidden. Dragging the centre and corner nodes
+                        // can be done outside of the edit tool when they
+                        // ... are visible"): also hidden while
+                        // [TextValueBar] is open - see the speed-dial
+                        // FAB's own identical gate above. Per that same
+                        // feedback, the corner/center handles are meant
+                        // to stay draggable *outside* the bar (before
+                        // opening it, or after closing it via Done) -
+                        // this only hides the *toggle*, not drag mode
+                        // itself, so a drag already in progress or
+                        // already-on drag mode from before opening the
+                        // bar is unaffected; toggling it on fresh
+                        // requires closing the bar first.
                         if (_controller.mode != SketchMode.select ||
-                            (_orbitViewActive && !_orbitCursorActive)) {
+                            (_orbitViewActive && !_orbitCursorActive) ||
+                            _controller.textBarTextId != null) {
                           return const SizedBox.shrink();
                         }
                         final active = _controller.dragModeEnabled;
@@ -1365,6 +1400,7 @@ class _SketchScreenState extends State<SketchScreen> {
       sketchArc: true,
       sketchEllipse: true,
       sketchSpline: true,
+      sketchText: true,
       plane: false,
       // On-device feedback ("the patterned circle under the cursor is not
       // highlighted and will not select"): Select-mode only, mirroring
@@ -1410,6 +1446,10 @@ class _SketchScreenState extends State<SketchScreen> {
       SelectionEntityKind.sketchArc => SelectionKind.arc,
       SelectionEntityKind.sketchEllipse => SelectionKind.ellipse,
       SelectionEntityKind.sketchSpline => SelectionKind.spline,
+      // 3D-viewport Text tool round: closes the gap that left Text only
+      // selectable via box-select/"select all" in the embedded 3D
+      // sketcher - see SelectionEntityKind.sketchText's own doc comment.
+      SelectionEntityKind.sketchText => SelectionKind.text,
       _ => null,
     };
     if (kind == null) return;
@@ -1497,9 +1537,14 @@ class _SketchScreenState extends State<SketchScreen> {
   /// P33: [SelectionKind] -> [SelectionEntityKind] for every real Sketch
   /// entity kind the 3D cursor mode can select (see
   /// [_embeddedCursorModeFilter]/[_handleEmbeddedSelectionToggle]'s own
-  /// inverse of this mapping) - null for [SelectionKind.constraint]/`.text`,
-  /// which have no [SelectionEntityKind] counterpart (a Constraint has no 3D
-  /// hit-test of its own yet; Text isn't drawable in Orbit View at all).
+  /// inverse of this mapping) - null for [SelectionKind.constraint], which
+  /// has no [SelectionEntityKind] counterpart (a Constraint has no 3D
+  /// hit-test of its own yet - see [_embeddedSelectedEntities]'s own
+  /// expand-to-referenced-Points/Lines workaround for that). 3D-viewport
+  /// Text tool round: `.text` used to fall into this same null case ("Text
+  /// isn't drawable in Orbit View at all") - now maps to
+  /// [SelectionEntityKind.sketchText] like every other real entity kind
+  /// above, once Text actually was drawable/hit-testable there.
   SelectionEntityKind? _embeddedSelectionEntityKind(SelectionKind kind) => switch (kind) {
         SelectionKind.point => SelectionEntityKind.sketchPoint,
         SelectionKind.line => SelectionEntityKind.sketchLine,
@@ -1507,7 +1552,8 @@ class _SketchScreenState extends State<SketchScreen> {
         SelectionKind.arc => SelectionEntityKind.sketchArc,
         SelectionKind.ellipse => SelectionEntityKind.sketchEllipse,
         SelectionKind.spline => SelectionEntityKind.sketchSpline,
-        SelectionKind.constraint || SelectionKind.text => null,
+        SelectionKind.text => SelectionEntityKind.sketchText,
+        SelectionKind.constraint => null,
         // On-device feedback ("the patterned circle under the cursor is not
         // highlighted and will not select"): now has a real 3D hit-test/
         // highlight of its own (see [_embeddedPatternMirrorGhostSegments]/

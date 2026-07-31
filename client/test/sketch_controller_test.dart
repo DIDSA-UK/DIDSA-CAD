@@ -5413,8 +5413,13 @@ void main() {
     controller.exitToSelectMode();
 
     // Default 'Text' content -> a 24x10 rectangle from (0, 0) to (24, 10)
-    // (see the fake backend's own textPreviewContours) - well inside it.
-    await controller.handleCanvasTap(12, 5);
+    // (see the fake backend's own textPreviewContours) - well inside it,
+    // but deliberately off both the center (12, 5) and corner (24, 10)
+    // handles (§2.3's own dimension-usable construction-snap targets -
+    // see SketchController._nearestTextHandleAt's own doc comment), which
+    // now win over a plain fill hit the same way a Line's own midpoint
+    // already does.
+    await controller.handleCanvasTap(6, 3);
 
     expect(controller.selectionSet.length, 1);
     expect(controller.selectionSet.first.kind, SelectionKind.text);
@@ -5449,7 +5454,7 @@ void main() {
     controller.selectDrawTool(SketchTool.text);
     await controller.handleCanvasTap(0, 0);
     controller.exitToSelectMode();
-    await controller.handleCanvasTap(12, 5);
+    await controller.handleCanvasTap(6, 3); // off-center - see the sibling test's own doc comment
     expect(controller.selection?.kind, SelectionKind.text);
 
     await controller.deleteSelected();
@@ -5461,7 +5466,7 @@ void main() {
     controller.selectDrawTool(SketchTool.text);
     await controller.handleCanvasTap(0, 0);
     controller.exitToSelectMode();
-    await controller.handleCanvasTap(12, 5);
+    await controller.handleCanvasTap(6, 3); // off-center - see the sibling test's own doc comment
     expect(controller.selectedIsConstruction, isFalse);
 
     await controller.toggleSelectedConstruction();
@@ -5624,7 +5629,12 @@ void main() {
       // Nothing selected yet - even tapping exactly on the handle misses.
       expect(controller.textResizeHandleGrabTargetAt(24, 10, 1), isNull);
 
-      await controller.handleCanvasTap(12, 5); // selects the Text (inside its filled shape)
+      // Off-center (12, 5)/(24, 10) themselves are now their own
+      // dimension-usable construction-snap targets - see
+      // SketchController._nearestTextHandleAt's own doc comment - so a
+      // plain "select the whole Text" tap needs to land elsewhere in the
+      // fill, same fix as the sibling tests above this group.
+      await controller.handleCanvasTap(6, 3); // selects the Text (inside its filled shape)
       expect(controller.selection?.kind, SelectionKind.text);
       expect(controller.selection?.id, textId);
 
@@ -5637,7 +5647,7 @@ void main() {
     test('a resize drag live-previews with no PATCH, then commits size and re-centers the anchor '
         'Point on drop', () async {
       final textId = await placeDefaultTextAtOrigin();
-      await controller.handleCanvasTap(12, 5); // select it
+      await controller.handleCanvasTap(6, 3); // select it (off-center - see sibling test's own doc comment)
       final text = controller.texts[textId]!;
       final anchorId = text.anchorPointId;
 
@@ -5680,7 +5690,7 @@ void main() {
     test('a negligible resize drag (dropped back where it started) is a no-op - no PATCH, no undo '
         'entry', () async {
       final textId = await placeDefaultTextAtOrigin();
-      await controller.handleCanvasTap(12, 5);
+      await controller.handleCanvasTap(6, 3); // select it (off-center - see sibling test's own doc comment)
       final requestCountBefore = backend.requestLog.length;
 
       controller.beginTextResizeDrag(textId, 24, 10);
@@ -5689,6 +5699,42 @@ void main() {
 
       expect(controller.texts[textId]!.size, closeTo(10.0, 1e-9));
       expect(backend.requestLog.length, requestCountBefore);
+    });
+
+    test('on-device feedback ("I receive \'can\'t move origin of sketch\' error when moving the '
+        'text by moving the reference point"): resizing a Text anchored exactly at the Sketch\'s '
+        'own origin pivots from the anchor instead of attempting to move it', () async {
+      final textId = await placeDefaultTextAtOrigin();
+      final originId = controller.originPointId!;
+      final text = controller.texts[textId]!;
+      // Force the anchor to literally be the origin Point - the one Point
+      // the backend unconditionally refuses to PATCH (see
+      // endTextResizeDrag's own doc comment) - regardless of exactly how
+      // a real Text's anchor ends up there (placement already avoids
+      // this via _pointIdAt's own coincident-point fix, so this
+      // simulates the state directly rather than depending on a
+      // specific reproduction path).
+      controller.texts[textId] = SketchTextView(
+        id: text.id,
+        content: text.content,
+        font: text.font,
+        size: text.size,
+        anchorPointId: originId,
+        rotationDegrees: text.rotationDegrees,
+        construction: text.construction,
+        previewContoursRelative: text.previewContoursRelative,
+      );
+
+      controller.beginTextResizeDrag(textId, 24, 10);
+      controller.updateTextResizeDrag(36, 15); // same scale-2.0 drag as the sibling resize test above
+      await controller.dropGrabbedEntity();
+
+      expect(controller.errorMessage, isNull);
+      expect(controller.texts[textId]!.size, closeTo(20.0, 1e-9));
+      // The origin itself never moved - resized from the fixed anchor,
+      // not around a recomputed center.
+      expect(controller.points[originId]!.x, closeTo(0, 1e-9));
+      expect(controller.points[originId]!.y, closeTo(0, 1e-9));
     });
 
     test('openTextBar/closeTextBar toggle textBarTextId', () async {
@@ -5700,6 +5746,53 @@ void main() {
 
       controller.closeTextBar();
       expect(controller.textBarTextId, isNull);
+    });
+
+    test('on-device feedback ("bounding box and center lines are only visible when text is '
+        'selected. user should be able to use them for dimensioning"): the corner and center '
+        'handles are hover-indicated and materialize into a real, dimension-usable Point on tap, '
+        'regardless of whether the Text is currently selected', () async {
+      final textId = await placeDefaultTextAtOrigin();
+      expect(controller.selection, isNull); // deliberately not selected for this test
+
+      // Hover indicator (the same mechanism a Line's own midpoint or a
+      // Slot's own Arc apex already gets - see hoveredLineMidpoint's own
+      // doc comment) lights up over the corner handle (24, 10) with
+      // nothing selected.
+      controller.moveCursorToSketchPoint(24, 10);
+      final hovered = controller.hoveredLineMidpoint;
+      expect(hovered?.$1, closeTo(24, 1e-9));
+      expect(hovered?.$2, closeTo(10, 1e-9));
+
+      final pointCountBefore = controller.points.length;
+      await controller.handleCanvasTap(24, 10);
+
+      expect(controller.selection?.kind, SelectionKind.point);
+      final materializedId = controller.selection!.id;
+      expect(controller.points[materializedId]?.x, closeTo(24, 1e-9));
+      expect(controller.points[materializedId]?.y, closeTo(10, 1e-9));
+      expect(controller.points.length, pointCountBefore + 1);
+
+      // Re-tapping the same corner reuses the already-materialized Point,
+      // not a second one - same "materialize once/reuse on repick"
+      // contract every other construction-snap target already has.
+      controller.exitToSelectMode();
+      await controller.handleCanvasTap(24, 10);
+      expect(controller.selection?.id, materializedId);
+      expect(controller.points.length, pointCountBefore + 1);
+
+      // The center handle (12, 5) is an independent, separately
+      // materializable target.
+      controller.exitToSelectMode();
+      await controller.handleCanvasTap(12, 5);
+      expect(controller.selection?.kind, SelectionKind.point);
+      expect(controller.selection?.id, isNot(materializedId));
+      expect(controller.points[controller.selection!.id]?.x, closeTo(12, 1e-9));
+      expect(controller.points[controller.selection!.id]?.y, closeTo(5, 1e-9));
+
+      // Still just the Text and the two materialized reference Points -
+      // nothing was fabricated for the untouched Text id itself.
+      expect(controller.texts.keys, contains(textId));
     });
   });
 
