@@ -368,6 +368,19 @@ def rack_tooth_geometry(
     )
 
 
+def default_rack_backing_height(module: float) -> float:
+    """`RackFeature.backing_height`'s default when omitted (`None`) -
+    `2 * module`, comparable in scale to the teeth themselves (roughly
+    the same order of magnitude as `dedendum_height`'s own `1.25 *
+    module`) rather than a flat constant that would look absurdly thin
+    on a large-module rack or needlessly thick on a small one. Must be
+    positive - a `0.0` backing height would close the tooth profile into
+    a zero-area rectangle (see `RackFeature`'s own docstring)."""
+    if module <= 0:
+        raise GearGeometryError(f"module must be positive, got {module!r}")
+    return 2 * module
+
+
 def rack_tooth_profile_points(geometry: RackToothGeometry) -> list[tuple[float, float]]:
     """One rack tooth's straight-sided trapezoid outline (root-left,
     tip-left, tip-right, root-right), local frame centred on the tooth,
@@ -386,6 +399,37 @@ def rack_tooth_profile_points(geometry: RackToothGeometry) -> list[tuple[float, 
         (half_thickness_at_tip, geometry.addendum_height),
         (half_thickness_at_root, -geometry.dedendum_height),
     ]
+
+
+def rack_length(geometry: RackToothGeometry, tooth_count: int) -> float:
+    """A rack's overall tooth-bearing length is derived from its tooth
+    count, not an independent input - `docs/gear-design/03-rack.md`'s own
+    "derived, not entered" resolution, the same treatment this project
+    already gives `GearChainFeature`'s centre distance and
+    `PlanetaryGearFeature`'s planet tooth count."""
+    if tooth_count < 1:
+        raise GearGeometryError(f"tooth_count must be >= 1, got {tooth_count!r}")
+    return tooth_count * geometry.tooth_pitch
+
+
+def full_rack_profile_points(geometry: RackToothGeometry, tooth_count: int) -> list[tuple[float, float]]:
+    """`tooth_count` copies of one rack tooth's outline, laid out end to
+    end along the local x axis (`geometry.tooth_pitch` apart, so
+    consecutive teeth's root corners land exactly at the flat root land
+    between them - no separate "root gap" edge needed the way a spur
+    gear's curved-root wire construction (`full_gear_profile_by_tooth`)
+    needs one, since every rack edge is already a straight line). Centred
+    so the whole rack spans `[-rack_length/2, +rack_length/2]` along x,
+    matching how every other gear type here centres on the origin."""
+    if tooth_count < 1:
+        raise GearGeometryError(f"tooth_count must be >= 1, got {tooth_count!r}")
+    total_length = rack_length(geometry, tooth_count)
+    start_offset = -total_length / 2 + geometry.tooth_pitch / 2
+    points: list[tuple[float, float]] = []
+    for i in range(tooth_count):
+        offset = start_offset + i * geometry.tooth_pitch
+        points.extend((x + offset, y) for x, y in rack_tooth_profile_points(geometry))
+    return points
 
 
 # ---------------------------------------------------------------------------

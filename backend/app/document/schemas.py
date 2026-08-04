@@ -11,6 +11,7 @@ from app.document.models import (
     PatternType,
     PlaneType,
     Produces,
+    RackType,
     RevolveMode,
     SubShapeType,
     SweepMode,
@@ -847,6 +848,62 @@ class GearFeatureResponse(BaseModel):
     produces: Produces
 
 
+class RackFeatureCreate(BaseModel):
+    """`docs/gear-design/03-rack.md`: creates a `RackFeature` - a standalone
+    linear trapezoidal-tooth rack over `tooth_count` teeth, no backing
+    SketchFeature (same "gear teeth are not Sketch entities" decision as
+    `GearFeatureCreate`). `plane_ref` follows the identical optional/
+    defaults-to-XY convention. `backing_height` is optional - omitting it
+    (`None`) resolves to `2 * module` at build time
+    (`app.document.gear_math.default_rack_backing_height`); a literal 0.0
+    would silently produce a degenerate zero-area profile, so unlike the
+    other numeric fields there is no plain-float default here. Boss/Cut +
+    `target_body_ids` follow `ExtrudeFeatureCreate`'s exact convention."""
+
+    plane_ref: PlaneRefSchema | None = None
+    rack_type: RackType
+    module: float
+    tooth_count: int
+    face_width: float
+    pressure_angle_degrees: float = 20.0
+    backlash: float = 0.0
+    backing_height: float | None = None
+    target_body_ids: list[str] = []
+
+
+class RackFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `GearFeatureUpdate`."""
+
+    plane_ref: PlaneRefSchema | None = None
+    rack_type: RackType | None = None
+    module: float | None = None
+    tooth_count: int | None = None
+    face_width: float | None = None
+    pressure_angle_degrees: float | None = None
+    backlash: float | None = None
+    backing_height: float | None = None
+    target_body_ids: list[str] | None = None
+
+
+class RackFeatureResponse(BaseModel):
+    type: Literal["rack"] = "rack"
+    id: str
+    plane_ref: PlaneRefSchema
+    rack_type: RackType
+    module: float
+    tooth_count: int
+    face_width: float
+    pressure_angle_degrees: float
+    backlash: float
+    backing_height: float | None = None
+    target_body_ids: list[str] = []
+    locked: bool
+    # B1: see SketchFeatureResponse.produces above - always BODY for a
+    # RackFeature.
+    produces: Produces
+
+
 FeatureResponse = Union[
     SketchFeatureResponse,
     ExtrudeFeatureResponse,
@@ -859,6 +916,7 @@ FeatureResponse = Union[
     PatternFeatureResponse,
     ImportFeatureResponse,
     GearFeatureResponse,
+    RackFeatureResponse,
 ]
 
 

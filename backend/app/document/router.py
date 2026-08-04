@@ -22,6 +22,7 @@ from app.document.extrude import (
 )
 from app.document.fillet import resolve_fillet
 from app.document.gear import resolve_gear
+from app.document.rack import resolve_rack
 from app.document.graph import (
     base_feature_id,
     build_feature_graph,
@@ -59,6 +60,8 @@ from app.document.models import (
     PlaneRef,
     PlaneType,
     PointRef,
+    RackFeature,
+    RackType,
     RevolveFeature,
     RevolveMode,
     SketchFeature,
@@ -110,6 +113,9 @@ from app.document.schemas import (
     PatternFeatureUpdate,
     PlaneRefSchema,
     PointRefSchema,
+    RackFeatureCreate,
+    RackFeatureResponse,
+    RackFeatureUpdate,
     RevolveFeatureCreate,
     RevolveFeatureResponse,
     RevolveFeatureUpdate,
@@ -448,6 +454,21 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
+    if isinstance(feature, RackFeature):
+        return RackFeatureResponse(
+            id=feature.id,
+            plane_ref=_plane_ref_to_schema(feature.plane_ref),
+            rack_type=feature.rack_type,
+            module=feature.module,
+            tooth_count=feature.tooth_count,
+            face_width=feature.face_width,
+            pressure_angle_degrees=feature.pressure_angle_degrees,
+            backlash=feature.backlash,
+            backing_height=feature.backing_height,
+            target_body_ids=feature.target_body_ids,
+            locked=part.is_locked(feature.id),
+            produces=feature.produces,
+        )
     raise NotImplementedError(f"No response mapping for feature type: {feature.type}")
 
 
@@ -506,11 +527,13 @@ def _validate_target_body_ids(part: Part, is_cut: bool, target_body_ids: list[st
         )
     for target_id in target_body_ids:
         target_feature = part.get_feature(base_feature_id(target_id))
-        if not isinstance(target_feature, (ExtrudeFeature, RevolveFeature, SweepFeature, ImportFeature, GearFeature)):
+        if not isinstance(
+            target_feature, (ExtrudeFeature, RevolveFeature, SweepFeature, ImportFeature, GearFeature, RackFeature)
+        ):
             raise HTTPException(
                 status_code=400,
                 detail=f"target_body_ids entry {target_id!r} does not refer to an ExtrudeFeature, "
-                "RevolveFeature, SweepFeature, ImportFeature, or GearFeature in this Part",
+                "RevolveFeature, SweepFeature, ImportFeature, GearFeature, or RackFeature in this Part",
             )
 
 
@@ -522,10 +545,11 @@ _PATTERN_MIRROR_SOURCE_FEATURE_TYPES = (
     MirrorFeature,
     PatternFeature,
     GearFeature,
+    RackFeature,
 )
 _PATTERN_MIRROR_SOURCE_FEATURE_TYPES_DESCRIPTION = (
-    "ExtrudeFeature, RevolveFeature, SweepFeature, ImportFeature, MirrorFeature, PatternFeature, or "
-    "GearFeature"
+    "ExtrudeFeature, RevolveFeature, SweepFeature, ImportFeature, MirrorFeature, PatternFeature, "
+    "GearFeature, or RackFeature"
 )
 
 
@@ -2294,6 +2318,99 @@ def update_gear_feature(part_id: str, feature_id: str, payload: GearFeatureUpdat
     feature.backlash = candidate.backlash
     feature.root_fillet_radius = candidate.root_fillet_radius
     feature.outer_diameter = candidate.outer_diameter
+    feature.target_body_ids = candidate.target_body_ids
+    return _feature_response(part, feature)
+
+
+@router.post("/parts/{part_id}/rack-features", response_model=RackFeatureResponse, status_code=201)
+def create_rack_feature(part_id: str, payload: RackFeatureCreate) -> RackFeatureResponse:
+    """`docs/gear-design/03-rack.md`: mirrors `create_gear_feature`'s exact
+    shape - unlike a Gear there is no internal/external discriminator to
+    check, so this skips straight to `_validate_plane_ref`/
+    `_validate_target_body_ids` for payload shape, then `resolve_rack` for
+    referential/geometric validity (including every `gear_math`-raised
+    `invalid_rack_parameters` failure) before ever persisting an
+    unresolvable Rack."""
+    part = get_part_or_404(part_id)
+    plane_ref = _plane_ref_to_domain(payload.plane_ref) if payload.plane_ref is not None else _default_plane_ref()
+    _validate_plane_ref(part, plane_ref)
+    _validate_target_body_ids(part, payload.rack_type == RackType.CUT, payload.target_body_ids)
+    feature = RackFeature(
+        id=str(uuid.uuid4()),
+        plane_ref=plane_ref,
+        rack_type=payload.rack_type,
+        module=payload.module,
+        tooth_count=payload.tooth_count,
+        face_width=payload.face_width,
+        pressure_angle_degrees=payload.pressure_angle_degrees,
+        backlash=payload.backlash,
+        backing_height=payload.backing_height,
+        target_body_ids=list(payload.target_body_ids),
+    )
+    resolve_rack(part, feature)  # raises on an unresolvable/invalid rack; result unused here
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_rack_feature_or_404(part: Part, feature_id: str) -> RackFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, RackFeature):
+        raise HTTPException(status_code=404, detail="Rack feature not found")
+    return feature
+
+
+@router.patch("/parts/{part_id}/rack-features/{feature_id}", response_model=RackFeatureResponse)
+def update_rack_feature(part_id: str, feature_id: str, payload: RackFeatureUpdate) -> RackFeatureResponse:
+    """Mirrors `update_gear_feature`'s exact shape - same validate-before-
+    mutate discipline against a scratch Feature sharing the real one's id.
+    `plane_ref` follows the same omitted-vs-current convention every other
+    Update schema here uses."""
+    part = get_part_or_404(part_id)
+    feature = _get_rack_feature_or_404(part, feature_id)
+
+    new_plane_ref = _plane_ref_to_domain(payload.plane_ref) if payload.plane_ref is not None else feature.plane_ref
+    new_rack_type = payload.rack_type if payload.rack_type is not None else feature.rack_type
+    new_module = payload.module if payload.module is not None else feature.module
+    new_tooth_count = payload.tooth_count if payload.tooth_count is not None else feature.tooth_count
+    new_face_width = payload.face_width if payload.face_width is not None else feature.face_width
+    new_pressure_angle_degrees = (
+        payload.pressure_angle_degrees
+        if payload.pressure_angle_degrees is not None
+        else feature.pressure_angle_degrees
+    )
+    new_backlash = payload.backlash if payload.backlash is not None else feature.backlash
+    new_backing_height = (
+        payload.backing_height if payload.backing_height is not None else feature.backing_height
+    )
+    new_target_body_ids = (
+        list(payload.target_body_ids) if payload.target_body_ids is not None else feature.target_body_ids
+    )
+
+    _validate_plane_ref(part, new_plane_ref)
+    _validate_target_body_ids(part, new_rack_type == RackType.CUT, new_target_body_ids)
+
+    candidate = RackFeature(
+        id=feature.id,
+        plane_ref=new_plane_ref,
+        rack_type=new_rack_type,
+        module=new_module,
+        tooth_count=new_tooth_count,
+        face_width=new_face_width,
+        pressure_angle_degrees=new_pressure_angle_degrees,
+        backlash=new_backlash,
+        backing_height=new_backing_height,
+        target_body_ids=new_target_body_ids,
+    )
+    resolve_rack(part, candidate)  # raises on an unresolvable/invalid rack
+
+    feature.plane_ref = candidate.plane_ref
+    feature.rack_type = candidate.rack_type
+    feature.module = candidate.module
+    feature.tooth_count = candidate.tooth_count
+    feature.face_width = candidate.face_width
+    feature.pressure_angle_degrees = candidate.pressure_angle_degrees
+    feature.backlash = candidate.backlash
+    feature.backing_height = candidate.backing_height
     feature.target_body_ids = candidate.target_body_ids
     return _feature_response(part, feature)
 

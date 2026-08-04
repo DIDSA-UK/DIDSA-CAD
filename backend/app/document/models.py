@@ -1064,6 +1064,75 @@ class GearFeature(Feature):
         return Produces.BODY
 
 
+class RackType(str, Enum):
+    """Boss/Cut parity with `GearType`/`ExtrudeType` - kept as its own enum
+    despite identical values, matching this codebase's established
+    "each Feature type owns its own enum" convention rather than reusing
+    another Feature type's mode enum (`docs/gear-design/00-conventions.md`)."""
+
+    BOSS = "boss"
+    CUT = "cut"
+
+
+@dataclass
+class RackFeature(Feature):
+    """`docs/gear-design/03-rack.md`: a standalone rack - a straight-sided
+    trapezoidal-tooth profile (genuinely different math from an involute
+    spur gear's curved flank, not a variant of it - see
+    `app.document.gear_math`'s own OCCT-free split between
+    `spur_gear_geometry`/`rack_tooth_geometry`) over a derived length,
+    extruded `face_width` deep along `plane_ref`'s normal, same
+    positioning convention every other gear-producing Feature here uses.
+
+    Kept as its own Feature type rather than a `GearFeature` variant flag -
+    a rack has no pitch/base/addendum/dedendum radii, no `is_internal`
+    concept, and needs its own `backing_height` field a round gear has no
+    use for; folding it into `GearFeature` would mean either type carrying
+    fields meaningless to the other, the exact shape this project's
+    "each Feature type owns its own fields" convention exists to avoid.
+
+    `tooth_count` is the free input; overall rack length is *derived*
+    (`app.document.gear_math.rack_length`), not entered - the same
+    "derived, not entered" treatment `GearChainFeature`'s centre distance
+    and `PlanetaryGearFeature`'s planet tooth count already get.
+    `backing_height` is the solid material thickness below the tooth
+    root/dedendum line, closing the toothed profile into a real closed 2D
+    region before extrusion - a rack has no natural "far side" the way a
+    round gear's own axis provides one, so this needs its own explicit
+    field. `None` (the default) resolves to `2 * module`
+    (`app.document.gear_math.default_rack_backing_height`) at build time -
+    a *positive* default is required here, unlike `plane_ref`'s XY
+    default: a literal `0.0` backing height would close the profile into
+    a zero-area rectangle (a degenerate, invalid solid), not a valid "no
+    backing" rack, so `None`-as-sentinel is used rather than a plain
+    `0.0` default, which would look like a normal float but silently
+    produce unbuildable geometry. Boss/Cut + `target_body_ids` follow
+    `GearFeature`'s exact convention."""
+
+    id: str
+    plane_ref: PlaneRef
+    rack_type: RackType
+    module: float
+    tooth_count: int
+    face_width: float
+    pressure_angle_degrees: float = 20.0
+    backlash: float = 0.0
+    backing_height: float | None = None
+    target_body_ids: list[str] = field(default_factory=list)
+
+    @property
+    def type(self) -> str:
+        return "rack"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
 @dataclass
 class Part:
     """An independent solid-modeling history: an ordered list of Features.

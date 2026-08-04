@@ -50,6 +50,8 @@ from app.document.models import (
     MirrorFeature,
     Part,
     PatternFeature,
+    RackFeature,
+    RackType,
     ResolvedPlane,
     RevolveFeature,
     RevolveMode,
@@ -763,6 +765,7 @@ def resolve_feature_tool_shape(
     `gear_failed`, ...) - callers keep their own pre-existing per-type
     tolerance policy for those unchanged (see each call site below)."""
     from app.document.gear import resolve_gear_from_bodies
+    from app.document.rack import resolve_rack_from_bodies
     from app.document.revolve import resolve_revolve_from_bodies
     from app.document.sweep import resolve_sweep_from_bodies
 
@@ -822,6 +825,13 @@ def resolve_feature_tool_shape(
         # Sketch profile represents for the others).
         solid = resolve_gear_from_bodies(feature, part, bodies, excluded_feature_ids)
         return solid, feature.target_body_ids, feature.gear_type == GearType.CUT
+
+    if isinstance(feature, RackFeature):
+        # docs/gear-design/03-rack.md: same "no backing SketchFeature,
+        # always raises a structured HTTPException rather than returning
+        # None" shape as GearFeature just above.
+        solid = resolve_rack_from_bodies(feature, part, bodies, excluded_feature_ids)
+        return solid, feature.target_body_ids, feature.rack_type == RackType.CUT
 
     return None
 
@@ -1202,6 +1212,25 @@ def compute_part_bodies(
                 ):
                     raise
                 logger.warning("Skipping GearFeature %s: could not be resolved", feature.id)
+                continue
+            if result is None:
+                continue
+            solid, target_body_ids, is_cut = result
+            _apply_boss_or_cut(bodies, feature.id, feature_index, is_cut, target_body_ids, solid)
+            continue
+
+        if isinstance(feature, RackFeature):
+            # docs/gear-design/03-rack.md: mirrors the GearFeature branch
+            # just above exactly, including its own structured error types.
+            try:
+                result = resolve_feature_tool_shape(part, bodies, feature.id, excluded_feature_ids)
+            except HTTPException as exc:
+                if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
+                    "invalid_rack_parameters",
+                    "rack_failed",
+                ):
+                    raise
+                logger.warning("Skipping RackFeature %s: could not be resolved", feature.id)
                 continue
             if result is None:
                 continue

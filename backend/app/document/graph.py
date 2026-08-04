@@ -47,6 +47,7 @@ from app.document.models import (
     PatternFeature,
     PlaneRef,
     PlaneType,
+    RackFeature,
     RevolveFeature,
     RevolveMode,
     SketchFeature,
@@ -431,6 +432,8 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
             depends_on = _pattern_dependencies(part, feature)
         elif isinstance(feature, GearFeature):
             depends_on = _gear_dependencies(feature)
+        elif isinstance(feature, RackFeature):
+            depends_on = _rack_dependencies(feature)
         nodes.append(GraphNode(id=feature.id, depends_on=depends_on))
     return nodes
 
@@ -510,6 +513,17 @@ def _gear_dependencies(feature: GearFeature) -> tuple[str, ...]:
     `plane_ref` (same as `_mirror_dependencies`' `mirror_plane` treatment)
     and `target_body_ids` (same `base_feature_id`-mapped `set` treatment
     `ExtrudeFeature`'s own branch above already uses)."""
+    deps: set[str] = {base_feature_id(tid) for tid in feature.target_body_ids}
+    plane_dep = _plane_ref_dependency(feature.plane_ref)
+    if plane_dep is not None:
+        deps.add(plane_dep)
+    return tuple(deps)
+
+
+def _rack_dependencies(feature: RackFeature) -> tuple[str, ...]:
+    """`docs/gear-design/03-rack.md`: identical shape to `_gear_dependencies`
+    - `RackFeature` has no backing Sketch either, so the same `plane_ref` +
+    `target_body_ids` treatment applies verbatim."""
     deps: set[str] = {base_feature_id(tid) for tid in feature.target_body_ids}
     plane_dep = _plane_ref_dependency(feature.plane_ref)
     if plane_dep is not None:

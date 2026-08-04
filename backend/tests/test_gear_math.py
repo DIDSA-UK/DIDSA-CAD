@@ -10,14 +10,17 @@ import pytest
 
 from app.document.gear_math import (
     GearGeometryError,
+    default_rack_backing_height,
     external_internal_pair_center_distance,
     external_pair_center_distance,
     full_gear_profile_by_tooth,
     full_gear_profile_points,
+    full_rack_profile_points,
     involute_point,
     involute_roll_angle_at_radius,
     minimum_tooth_count_without_undercut,
     planetary_planet_tooth_count,
+    rack_length,
     rack_tooth_geometry,
     rack_tooth_profile_points,
     sample_involute_flank,
@@ -260,6 +263,64 @@ def test_rack_flank_angle_matches_the_pressure_angle():
     dy = tip_left[1] - root_left[1]
     flank_angle_from_vertical = math.atan2(abs(dx), dy)
     assert flank_angle_from_vertical == pytest.approx(math.radians(20.0), abs=1e-6)
+
+
+def test_rack_length_matches_known_formula():
+    # module=2 -> tooth_pitch = pi*2 ~= 6.2832mm; 5 teeth -> length ~= 31.416mm
+    geometry = rack_tooth_geometry(module=2.0)
+    assert rack_length(geometry, tooth_count=5) == pytest.approx(5 * 2 * math.pi, abs=1e-6)
+
+
+def test_rack_length_rejects_non_positive_tooth_count():
+    geometry = rack_tooth_geometry(module=2.0)
+    with pytest.raises(GearGeometryError):
+        rack_length(geometry, tooth_count=0)
+
+
+def test_full_rack_profile_has_four_points_per_tooth():
+    geometry = rack_tooth_geometry(module=2.0)
+    points = full_rack_profile_points(geometry, tooth_count=5)
+    assert len(points) == 20
+
+
+def test_full_rack_profile_is_centred_on_the_origin():
+    geometry = rack_tooth_geometry(module=2.0)
+    points = full_rack_profile_points(geometry, tooth_count=6)
+    xs = [x for x, y in points]
+    assert min(xs) == pytest.approx(-max(xs), abs=1e-9)
+
+
+def test_full_rack_profile_teeth_are_evenly_spaced_copies():
+    geometry = rack_tooth_geometry(module=2.0)
+    points = full_rack_profile_points(geometry, tooth_count=4)
+    tooth_0 = points[0:4]
+    tooth_1 = points[4:8]
+    for (x0, y0), (x1, y1) in zip(tooth_0, tooth_1):
+        assert y1 == pytest.approx(y0, abs=1e-9)
+        assert x1 - x0 == pytest.approx(geometry.tooth_pitch, abs=1e-9)
+
+
+def test_full_rack_profile_consecutive_teeth_share_the_flat_root_land():
+    # tooth i's root-right point and tooth i+1's root-left point should
+    # both sit at y=-dedendum_height (the flat land between teeth), the
+    # geometric property that lets a straight polyline through all points
+    # connect the whole profile with no separate root-gap edge needed.
+    geometry = rack_tooth_geometry(module=2.0)
+    points = full_rack_profile_points(geometry, tooth_count=3)
+    root_right_0 = points[3]
+    root_left_1 = points[4]
+    assert root_right_0[1] == pytest.approx(root_left_1[1], abs=1e-9)
+    assert root_right_0[1] == pytest.approx(-geometry.dedendum_height, abs=1e-9)
+
+
+def test_default_rack_backing_height_scales_with_module():
+    assert default_rack_backing_height(2.0) == pytest.approx(4.0)
+    assert default_rack_backing_height(1.0) == pytest.approx(2.0)
+
+
+def test_default_rack_backing_height_rejects_non_positive_module():
+    with pytest.raises(GearGeometryError):
+        default_rack_backing_height(0.0)
 
 
 # ---------------------------------------------------------------------------
