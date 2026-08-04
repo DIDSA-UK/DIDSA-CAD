@@ -172,4 +172,48 @@ void main() {
     expect(requestedPaths, contains('POST /document/parts'));
     expect(requestedPaths, contains('POST /document/parts/part-1/gear-features'));
   });
+
+  testWidgets('tapping a field help icon shows its tooltip instead of opening the field', (tester) async {
+    // On-device feedback: the "?" help icon next to the Module dropdown
+    // originally lost the tap to the surrounding `DropdownButtonFormField`'s
+    // own tap-to-open handling (opened the dropdown instead of the
+    // tooltip) - fixed by routing the tap through a real `IconButton`
+    // (`FieldHelpIcon`) rather than relying on `Tooltip`'s own automatic
+    // gesture detection. Regression guard for that fix, on the exact field
+    // (Module, a dropdown - the case that broke) rather than a plain
+    // `TextField` (which never had the bug).
+    final client = DocumentApiClient(
+      httpClient: MockClient((request) async => http.Response(
+            jsonEncode({
+              'gear_kind': 'external',
+              'outline_points': [
+                [1.0, 0.0],
+              ],
+              'pitch_radius': 20.0,
+              'warnings': [],
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          )),
+    );
+
+    await tester.pumpWidget(MaterialApp(home: GearDesignScreen(documentApi: client)));
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.help_outline).first);
+    await tester.pump();
+
+    // The dropdown's own menu must NOT have opened - "0.75" (a standard
+    // module value that isn't the current selection) is only visible once
+    // the full options list renders, unlike the closed state's single
+    // selected-value display.
+    expect(find.text('0.75'), findsNothing);
+    // The tooltip's own message text is now showing.
+    expect(
+      find.text('Tooth size - pitch diameter divided by tooth count. Larger module means larger, '
+          'stronger teeth for the same tooth count.'),
+      findsOneWidget,
+    );
+  });
 }

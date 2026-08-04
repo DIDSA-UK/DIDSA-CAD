@@ -178,6 +178,45 @@ def test_tooth_tip_and_root_land_on_the_expected_radii():
     assert min(radii) == pytest.approx(max(geometry.dedendum_radius, geometry.base_radius), abs=1e-6)
 
 
+def test_internal_tooth_profile_points_are_symmetric_about_the_centerline():
+    # Same shape assertion as test_tooth_profile_points_are_symmetric_about_
+    # the_centerline above, for is_internal=True - the mirror-through-pitch
+    # construction (_internal_tooth_profile_points) only rescales each
+    # point's own radius, which can't break the existing left/right
+    # symmetry about the +X-axis centerline.
+    geometry = spur_gear_geometry(module=2.0, tooth_count=40, is_internal=True)
+    points = tooth_profile_points(geometry, points_per_flank=6)
+    assert len(points) == 12
+    right = points[:6]
+    left = list(reversed(points[6:]))
+    for (rx, ry), (lx, ly) in zip(right, left):
+        assert lx == pytest.approx(rx, abs=1e-6)
+        assert ly == pytest.approx(-ry, abs=1e-6)
+
+
+def test_internal_tooth_widens_toward_the_root_and_narrows_toward_the_tip():
+    # On-device feedback: a real internal gear rendered with teeth narrower
+    # at the root (far from centre, near the rim) than at the tip (close to
+    # centre, near the bore) - a "dovetail", backwards from how every real
+    # gear tooth (external or internal) actually tapers. Confirmed against
+    # the real OCCT solid (a binary search on the material/hole boundary at
+    # each radius) before this fix and clear afterward - this is the same
+    # check expressed directly against the pure-math profile points, so a
+    # regression here is caught without needing OCCT at all.
+    geometry = spur_gear_geometry(module=2.0, tooth_count=40, is_internal=True)
+    points = tooth_profile_points(geometry, points_per_flank=30)
+    right = points[:30]  # root -> tip, per tooth_profile_points' own docstring
+    root_half_width = abs(right[0][1])
+    tip_half_width = abs(right[-1][1])
+    assert math.hypot(*right[0]) > math.hypot(*right[-1])  # right[0] really is the root (larger radius)
+    assert root_half_width > tip_half_width
+    # Monotonic throughout, not just at the two ends - right[] runs root to
+    # tip (per tooth_profile_points' own docstring), so half-width should
+    # be *descending* across the list, not ascending.
+    half_widths = [abs(y) for _, y in right]
+    assert half_widths == sorted(half_widths, reverse=True)
+
+
 def test_full_gear_profile_has_one_tooth_worth_of_points_times_tooth_count():
     geometry = spur_gear_geometry(module=2.0, tooth_count=12)
     points = full_gear_profile_points(geometry, points_per_flank=6)

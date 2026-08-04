@@ -126,6 +126,51 @@ def test_internal_gear_produces_an_annulus_body():
     assert max_radius == 70.0 or abs(max_radius - 70.0) < 0.5
 
 
+def test_internal_gear_teeth_widen_toward_the_rim_not_the_bore():
+    # On-device feedback: a real internal gear's teeth rendered narrower at
+    # the root (near the outer rim) than at the tip (near the bore) - a
+    # "dovetail", backwards from how every real gear tooth actually tapers
+    # (wide where it's structurally anchored, narrow at its working end).
+    # Confirmed via a direct real-OCCT-solid check during investigation
+    # (a binary search for the material/hole boundary angle at increasing
+    # radius); this is the same shape assertion expressed against the real
+    # tessellated mesh this endpoint actually returns, so a regression is
+    # caught at the full router/OCCT integration level, not just in
+    # gear_math's own pure-Python unit tests.
+    part = _create_part()
+    response = _create_gear(part["id"], is_internal=True, tooth_count=60, outer_diameter=140.0)
+    assert response.status_code == 201, response.json()
+    mesh = _mesh(part["id"])
+    vertices = mesh[0]["mesh"]["vertices"]
+
+    # module=2, tooth_count=60: addendum (tip, near bore) ~= 58mm,
+    # dedendum (root, near rim) ~= 62.5mm - see spur_gear_geometry's own
+    # is_internal sign flip. The first tooth (tooth_index=0 in
+    # full_gear_profile_by_tooth) is centred on angle 0 - `x > 0` alone
+    # would catch *every* tooth in the right half of the whole gear (each
+    # with its own, unrelated global y from its own angular position, not
+    # its width), not just this one tooth's own flank points, so this
+    # narrows to angles within this one tooth's own angular pitch too.
+    import math
+
+    angular_pitch = 2 * math.pi / 60
+
+    def half_width_near(target_radius: float, tolerance: float = 0.05) -> float:
+        matches = [
+            (x, y)
+            for x, y, z in vertices
+            if abs(z) < 1e-6
+            and abs(math.hypot(x, y) - target_radius) < tolerance
+            and abs(math.atan2(y, x)) < angular_pitch * 0.4
+        ]
+        assert matches, f"no front-cap vertices found near radius {target_radius}"
+        return max(abs(y) for _, y in matches)
+
+    tip_half_width = half_width_near(58.0)
+    root_half_width = half_width_near(62.5)
+    assert root_half_width > tip_half_width
+
+
 def test_internal_gear_outer_diameter_too_small_is_rejected():
     part = _create_part()
     # tooth_count=60, module=2 -> dedendum diameter ~125mm; 100mm rim

@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'field_help_icon.dart';
+
 /// `docs/gear-design/00-conventions.md`'s field input style: "dropdown of
 /// standard values... with a 'custom' option revealing free text" - shared
 /// by every gear-type entry form's module/pressure-angle fields
@@ -17,6 +19,10 @@ class StandardValueField extends StatefulWidget {
   /// field - empty (the default) for a bare number like module.
   final String suffix;
 
+  /// Shown behind a tappable "?" (see [fieldHelpIcon]) next to the
+  /// dropdown - null omits the icon entirely.
+  final String? helpText;
+
   const StandardValueField({
     super.key,
     required this.label,
@@ -24,6 +30,7 @@ class StandardValueField extends StatefulWidget {
     required this.value,
     required this.onChanged,
     this.suffix = '',
+    this.helpText,
   });
 
   @override
@@ -73,7 +80,10 @@ class _StandardValueFieldState extends State<StandardValueField> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         DropdownButtonFormField<double?>(
-          decoration: InputDecoration(labelText: widget.label),
+          decoration: InputDecoration(
+            labelText: widget.label,
+            suffixIcon: widget.helpText == null ? null : fieldHelpIcon(widget.helpText!),
+          ),
           initialValue: _isCustom ? null : widget.value,
           items: [
             for (final standardValue in widget.standardValues)

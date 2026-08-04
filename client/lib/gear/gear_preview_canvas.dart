@@ -17,28 +17,83 @@ class GearPreviewCanvas extends StatelessWidget {
 
   const GearPreviewCanvas({super.key, required this.preview, required this.showReferenceOverlay});
 
+  /// The one headline metric worth showing directly on the preview rather
+  /// than buried in the form: pitch diameter for a gear (external/
+  /// internal), overall length for a rack (a rack has no pitch circle at
+  /// all - `preview.rackLength` is its own closest equivalent "how big is
+  /// this" number). Null while there's nothing valid to report yet.
+  String? _metricLabel() {
+    final preview = this.preview;
+    if (preview == null) return null;
+    if (preview.gearKind == 'rack') {
+      final length = preview.rackLength;
+      return length == null ? null : 'Length: ${_formatMm(length)} mm';
+    }
+    final pitchRadius = preview.pitchRadius;
+    return pitchRadius == null ? null : 'Pitch diameter: ${_formatMm(pitchRadius * 2)} mm';
+  }
+
+  static String _formatMm(double value) =>
+      value == value.roundToDouble() ? value.toStringAsFixed(0) : value.toStringAsFixed(2);
+
   @override
   Widget build(BuildContext context) {
+    final metricLabel = _metricLabel();
     return Container(
       color: const Color(0xFF12121C),
-      // On-device feedback (caught by actually running this screen, not by
-      // `flutter analyze`/widget tests alone): a childless `CustomPaint` has
-      // no intrinsic size and collapses to zero inside this `Row`'s
-      // `Expanded` - `Expanded` only forces tight *width*, not height, so
-      // with no child the whole canvas silently vanished the moment a real
-      // preview loaded (the "enter valid parameters" placeholder `Text`
-      // happened to force a size while `preview == null`, masking the bug
-      // until a valid preview actually arrived). `SizedBox.expand` makes
-      // this fill its parent unconditionally, child or not.
-      child: SizedBox.expand(
-        child: CustomPaint(
-          painter: _GearPreviewPainter(preview: preview, showReferenceOverlay: showReferenceOverlay),
-          child: preview == null
-              ? const Center(
-                  child: Text('Enter valid parameters to see a preview', style: TextStyle(color: Colors.white38)),
-                )
-              : null,
-        ),
+      child: Stack(
+        children: [
+          // Pinch-to-zoom/two-finger-pan: `InteractiveViewer` is the stock
+          // Flutter widget for exactly this gesture pair (also picks up
+          // trackpad pinch/scroll on desktop) - no custom gesture-tracking
+          // needed. `boundaryMargin` is generous rather than tight so
+          // panning past the auto-fit view isn't immediately clamped.
+          Positioned.fill(
+            child: InteractiveViewer(
+              minScale: 0.5,
+              maxScale: 12,
+              boundaryMargin: const EdgeInsets.all(2000),
+              // On-device feedback (caught by actually running this screen,
+              // not by `flutter analyze`/widget tests alone): a childless
+              // `CustomPaint` has no intrinsic size and collapses to zero
+              // inside this `Row`'s `Expanded` - `Expanded` only forces
+              // tight *width*, not height, so with no child the whole
+              // canvas silently vanished the moment a real preview loaded
+              // (the "enter valid parameters" placeholder `Text` happened
+              // to force a size while `preview == null`, masking the bug
+              // until a valid preview actually arrived). `SizedBox.expand`
+              // makes this fill its parent unconditionally, child or not.
+              child: SizedBox.expand(
+                child: CustomPaint(
+                  painter: _GearPreviewPainter(preview: preview, showReferenceOverlay: showReferenceOverlay),
+                  child: preview == null
+                      ? const Center(
+                          child: Text(
+                            'Enter valid parameters to see a preview',
+                            style: TextStyle(color: Colors.white38),
+                          ),
+                        )
+                      : null,
+                ),
+              ),
+            ),
+          ),
+          if (metricLabel != null)
+            Positioned(
+              top: 8,
+              left: 8,
+              child: IgnorePointer(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.45),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(metricLabel, style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }

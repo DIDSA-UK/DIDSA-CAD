@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../api/document_api_client.dart';
 import '../api/sketch_api_client.dart' show ApiException;
 import '../viewport3d/part_screen.dart';
+import 'field_help_icon.dart';
 import 'gear_preview_canvas.dart';
 import 'standard_value_field.dart';
 
@@ -313,6 +314,8 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
           label: 'Module',
           standardValues: _standardModules,
           value: _module,
+          helpText: 'Tooth size - pitch diameter divided by tooth count. Larger module means larger, '
+              'stronger teeth for the same tooth count.',
           onChanged: (value) {
             setState(() => _module = value);
             _schedulePreview();
@@ -324,6 +327,8 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
           standardValues: _standardPressureAngles,
           value: _pressureAngleDegrees,
           suffix: '°',
+          helpText: 'The angle between a tooth\'s profile and a line perpendicular to the pitch circle. '
+              '20° is the modern standard; 14.5° is an older standard kept for compatibility.',
           onChanged: (value) {
             setState(() => _pressureAngleDegrees = value);
             _schedulePreview();
@@ -333,21 +338,33 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
         TextField(
           controller: _toothCountController,
           keyboardType: const TextInputType.numberWithOptions(signed: false),
-          decoration: const InputDecoration(labelText: 'Tooth count'),
+          decoration: InputDecoration(
+            labelText: 'Tooth count',
+            suffixIcon: fieldHelpIcon('How many teeth this gear has, evenly spaced around it.'),
+          ),
           onChanged: (_) => _schedulePreview(),
         ),
         const SizedBox(height: 12),
         TextField(
           controller: _faceWidthController,
           keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          decoration: const InputDecoration(labelText: 'Face width'),
+          decoration: InputDecoration(
+            labelText: 'Face width',
+            suffixIcon: fieldHelpIcon('How far the gear is extruded along its own axis - its thickness.'),
+          ),
           onChanged: (_) => setState(() {}),
         ),
         if (_kind != GearDesignKind.rack) ...[
           const SizedBox(height: 12),
           TextField(
             keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
-            decoration: const InputDecoration(labelText: 'Profile shift'),
+            decoration: InputDecoration(
+              labelText: 'Profile shift',
+              suffixIcon: fieldHelpIcon(
+                'Shifts the tooth profile outward (positive) or inward (negative) from standard - '
+                'changes tooth thickness and can help avoid undercut on low tooth counts.',
+              ),
+            ),
             onChanged: (text) {
               final value = double.tryParse(text);
               if (value != null) {
@@ -359,7 +376,12 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
           const SizedBox(height: 12),
           TextField(
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            decoration: const InputDecoration(labelText: 'Root fillet radius'),
+            decoration: InputDecoration(
+              labelText: 'Root fillet radius',
+              suffixIcon: fieldHelpIcon(
+                'Rounds the corner at the base of each tooth for strength. 0 leaves a sharp corner.',
+              ),
+            ),
             onChanged: (text) {
               final value = double.tryParse(text);
               if (value != null) setState(() => _rootFilletRadius = value);
@@ -369,7 +391,12 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
         const SizedBox(height: 12),
         TextField(
           keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          decoration: const InputDecoration(labelText: 'Backlash'),
+          decoration: InputDecoration(
+            labelText: 'Backlash',
+            suffixIcon: fieldHelpIcon(
+              'Extra clearance subtracted from tooth thickness, so mating teeth don\'t jam.',
+            ),
+          ),
           onChanged: (text) {
             final value = double.tryParse(text);
             if (value != null) {
@@ -383,7 +410,13 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
           TextField(
             controller: _outerDiameterController,
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            decoration: const InputDecoration(labelText: 'Outer diameter (required)'),
+            decoration: InputDecoration(
+              labelText: 'Outer diameter (required)',
+              suffixIcon: fieldHelpIcon(
+                'The ring\'s own outer rim diameter - must be larger than the tooth profile\'s own '
+                'reach, or there\'s no rim material left.',
+              ),
+            ),
             onChanged: (_) => _schedulePreview(),
           ),
         ],
@@ -392,16 +425,23 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
           TextField(
             controller: _backingHeightController,
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               labelText: 'Backing height',
               hintText: 'Default: 2 × module',
+              suffixIcon: fieldHelpIcon(
+                'Solid material thickness below the tooth root. Leave blank for a sensible default '
+                '(2 × module).',
+              ),
             ),
             onChanged: (_) => _schedulePreview(),
           ),
         ],
         const SizedBox(height: 12),
         DropdownButtonFormField<String>(
-          decoration: const InputDecoration(labelText: 'Plane'),
+          decoration: InputDecoration(
+            labelText: 'Plane',
+            suffixIcon: fieldHelpIcon('Which fixed reference plane the gear is built on.'),
+          ),
           initialValue: _plane,
           items: [for (final plane in _fixedPlanes) DropdownMenuItem(value: plane, child: Text(plane))],
           onChanged: (value) {

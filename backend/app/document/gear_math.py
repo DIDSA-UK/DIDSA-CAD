@@ -24,7 +24,7 @@ dependency at all.
 """
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 # ---------------------------------------------------------------------------
 # Errors
@@ -250,7 +250,17 @@ def tooth_profile_points(
     axis. Root fillet is represented only as `geometry.root_fillet_radius`
     (a value for `02-gear-feature.md`'s OCCT construction to apply when
     rounding the root corners) - this function samples the ideal
-    flank/tip only, not a trochoidal undercut curve."""
+    flank/tip only, not a trochoidal undercut curve.
+
+    Internal gears (`geometry.is_internal`) delegate to
+    `_internal_tooth_profile_points` - see that function's own docstring
+    for why a plain sign flip on addendum/dedendum (this function's only
+    other internal/external distinction, entirely upstream in
+    `spur_gear_geometry`) is not enough by itself to get a correctly-
+    tapered internal tooth."""
+    if geometry.is_internal:
+        return _internal_tooth_profile_points(geometry, points_per_flank)
+
     offset = _flank_start_offset_angle(geometry)
     tip_radius = geometry.addendum_radius
     root_radius = max(geometry.dedendum_radius, geometry.base_radius)
@@ -269,6 +279,71 @@ def tooth_profile_points(
     left_flank_rotated = [_rotate((p[0], -p[1]), offset) for p in left_flank]
 
     return right_flank_rotated + left_flank_rotated
+
+
+def _mirror_radius_through_pitch(pitch_radius: float, radius: float) -> float:
+    """Reflects `radius` through `pitch_radius` (`r -> 2*pitch - r`) - the
+    radial mirror `_internal_tooth_profile_points` uses both to build a
+    "virtual external" geometry and to map its points back afterward."""
+    return 2 * pitch_radius - radius
+
+
+def _internal_tooth_profile_points(
+    geometry: SpurGearGeometry, points_per_flank: int
+) -> list[tuple[float, float]]:
+    """On-device feedback (a real internal gear rendered with teeth
+    narrower at the root than at the tip - a "dovetail", backwards from a
+    real tooth's taper): `spur_gear_geometry`'s `is_internal` sign flip
+    only repositions *which* radius is called addendum/dedendum (still
+    addendum < pitch < dedendum for internal, the reverse of external) -
+    it does not, by itself, correct for a real property of *any* involute
+    flank sampled this way (external or internal alike): angular tooth
+    width is a strictly *decreasing* function of radius, always, for
+    radius >= base_radius (a consequence of `involute_function`'s own
+    monotonicity, not a choice this module makes). For external, where
+    addendum (tip) sits *above* pitch and dedendum (root) *below* it, that
+    universal law already gives the wanted shape - wide at the root
+    (small radius), narrow at the tip (large radius) - matching
+    `test_gear_feature.py`'s own confirmed-correct external renders. For
+    internal, addendum (tip) sits *below* pitch (small radius) and
+    dedendum (root) *above* it (large radius) - the same universal law
+    then gives *narrow* at the root and *wide* at the tip: exactly the
+    dovetail shape reported, confirmed directly against the real OCCT
+    solid (a binary search for the material/hole boundary angle at each
+    radius, not just the raw wire) before this fix and clear afterward.
+
+    The fix: build the flank as if this were an *external* gear of a
+    radially-mirrored addendum/dedendum (`_mirror_radius_through_pitch`,
+    reflecting each through the pitch radius) - reusing `tooth_profile_
+    points`'s own already-correct external construction unchanged, tooth
+    thickness/pressure angle/base circle all untouched - then mirror
+    every resulting point's *radius* back through the pitch radius
+    (angle unchanged). Radial mirroring inverts which end of the flank is
+    closer to/further from the base circle, which inverts the direction
+    of the same universal narrowing law - giving a tooth that's wide at
+    the (real) root and narrows to the (real) tip, the physically correct
+    shape for a mating pair (confirmed separately: at any given distance
+    from the shared base circle, this internal tooth's own width now
+    matches a same-module/pressure-angle external gear's tooth width,
+    which is exactly the meshing constraint - an internal gear's tooth
+    space must accept a mating pinion's tooth of that same shape)."""
+    virtual_external = replace(
+        geometry,
+        is_internal=False,
+        addendum_radius=_mirror_radius_through_pitch(geometry.pitch_radius, geometry.addendum_radius),
+        dedendum_radius=_mirror_radius_through_pitch(geometry.pitch_radius, geometry.dedendum_radius),
+    )
+    virtual_points = tooth_profile_points(virtual_external, points_per_flank)
+
+    def mirror_point(point: tuple[float, float]) -> tuple[float, float]:
+        x, y = point
+        radius = math.hypot(x, y)
+        if radius == 0:
+            return point
+        scale = _mirror_radius_through_pitch(geometry.pitch_radius, radius) / radius
+        return (x * scale, y * scale)
+
+    return [mirror_point(p) for p in virtual_points]
 
 
 def _rotate(point: tuple[float, float], angle: float) -> tuple[float, float]:
