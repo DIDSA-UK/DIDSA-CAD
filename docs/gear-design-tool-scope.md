@@ -115,12 +115,34 @@ Client: `client/lib/viewport3d/*` (3D Feature panels/selection),
    spherical-involute tooth surfaces** (not the cheaper loft-of-scaled-
    flat-profiles approximation most hobbyist tools use). Flagged as
    realistically the single largest chunk of effort in this whole area —
-   see Workstream 8.
+   see §5.
 4. **DXF import: full "block" semantics.** A DXF import lands as one
    selectable/movable/rotatable/scalable unit in its own home sketch, while
    individual curves become pickable elsewhere via the existing Convert
    Entities tool — reusing the `ExternalVertexReference` mechanism rather
    than inventing a new one.
+5. **Tooth flank curve: a real `Geom_BSplineCurve`, not a straight-line
+   approximation** — the only choice that keeps STEP export genuinely
+   smooth rather than faceted. Full reasoning moved into Workstream 2 (it's
+   an engineering detail of that workstream, not a product-level scoping
+   decision on its own).
+6. **Numeric fields: dropdown of standard values (module, pressure angle)
+   with a "custom" override, not free text everywhere** — matches this
+   project's own already-planned approach for the (separate, still
+   unbuilt) Hole tool: "selectable from a standard table rather than typed
+   in as a raw diameter" (`docs/roadmap.md`'s MBD section).
+7. **Gear parameter presets/templates: yes, wanted** — but kept
+   **client-local**, not a new server-side store. `project-brief.md` §3's
+   stated architecture principle ("the server is stateless between
+   sessions... does not persist any model data") has held for every Feature
+   built so far; a preset store is the first thing in this whole app that
+   needs to persist independent of one session's Part, so it's worth being
+   deliberate rather than accidentally becoming the first exception to it.
+   `SketcherPreferences`/`MeshViewerPreferences` (on-device, local-only
+   settings, no backend involved) are the direct existing precedent — see
+   Workstream 9. If cross-device preset sync is ever wanted, that's a
+   genuine, separate architectural decision to revisit explicitly, not an
+   incidental side effect of building presets at all.
 
 ---
 
@@ -370,27 +392,85 @@ hit-testing model before implementation starts, separate from the DXF
 parsing itself (which is comparatively straightforward via `ezdxf`'s
 reader).
 
-### Workstream 8 — Gear Design entry screen (client)
+### Workstream 8 — Gear Design entry screen (client) and its 2D preview
 
-New `ToolChooserScreen` tile → a parameter-entry screen with text fields
-per gear type (module/teeth/pressure angle/etc., matching Workstream 1's
-parameter set) and a live 2D preview canvas. The preview should run the
-*same* `gear_math` formulas the backend uses (ported to Dart, or requested
-from the backend on every field change like the existing sketch solve
-round-trip does) rather than a separately-hand-rolled approximation, so
-what the user previews is what they get — worth an explicit implementation
-decision (client-side Dart port vs. backend round-trip) during detailed
-design, trading offline/latency-free preview against a second copy of the
-math to keep in sync (this codebase has an existing, explicitly-accepted
-precedent for live-preview math duplication — see `docs/roadmap.md`'s
-Pattern/Mirror "three duplicate translate/reflect implementations" entry —
-so duplication itself isn't a blocker, just a known, named tradeoff).
+New `ToolChooserScreen` tile → a dedicated screen (closer in shape to
+`SketchScreen` than to a compact `ResizableToolPanel`, since it needs a 2D
+canvas alongside a form, not just a few fields): a gear-type selector
+(external/internal/rack/helical/herringbone/planetary/pair) and a form of
+fields per type (§ below), next to a live 2D preview canvas.
+
+**Preview mechanism — resolved, refining Workstream 1's own earlier open
+question ("Dart port vs. backend round-trip").** Neither, exactly: since
+`gear_math` (Workstream 1) is deliberately kept OCCT-free, add a cheap
+`GET/POST /gear/preview` endpoint that runs *only* `gear_math` and returns
+raw 2D point arrays (tooth outline, plus pitch/base/addendum/dedendum
+circle radii for the reference overlay below) — no OCCT solid construction,
+no tessellation. That's cheap enough to call on every debounced keystroke,
+the same rhythm every other panel's live-PATCH already uses, without
+duplicating the math client-side (avoiding the exact "three duplicate
+implementations" drift already flagged as a known cost in
+`docs/roadmap.md`'s Pattern/Mirror entry) and without paying for a full
+OCCT extrude+mesh cycle on every field edit. The **expensive** path — a
+real `GearFeature`, real OCCT solid (with the true `BSplineCurve` flank
+from Workstream 2) — only runs on debounce-settle or explicit "Create",
+mirroring the create-eagerly-on-open convention every other Feature panel
+already uses, just deferred one step later than usual given how much more
+expensive a full gear solid is than e.g. an Extrude.
+
+**Reference circle overlay: on by default, toggleable.** Pitch/base/
+addendum/dedendum circles drawn alongside the tooth outline from the same
+`/gear/preview` response, since they directly explain what each parameter
+is doing — genuinely useful while learning the tool, not just decoration.
+A pair/rack-pinion preview shows both members together (mesh visibly
+correct or not, before committing); a planetary preview shows the full
+ring/sun/planet layout, so an invalid assembly condition (Workstream 1) is
+*seen*, with the validation error as backup, not the first signal.
+
+**Field input style: dropdown of standard values (module, pressure angle)
+with a "custom" override**, matching this project's own already-planned
+approach for the Hole tool. Standard module list (a conventional metric
+series: 0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10...) and standard
+pressure angles (14.5°, 20°, 25°) as the picklist, "custom" revealing a
+free-text field for anything outside that set — never a hard restriction,
+just a sane default path.
+
 "Create" adds a Part (or opens the current one) with the resulting
-`GearFeature`(s), handing off to the normal `PartScreen` 3D-viewport flow.
+`GearFeature`(s), handing off to the normal `PartScreen` 3D-viewport flow —
+editing afterward is then just the ordinary Feature-tree edit flow
+(reopen while it's still the last Feature, or roll back to it via the
+existing `Part.is_locked` mechanic if something's been built on top of it
+since), nothing gear-specific to add there.
 
 **Complexity/risk:** medium. Mostly UI work following this codebase's
 existing tool-panel/value-bar conventions (`ExtrudePanel`, `FilletPanel`,
-etc.) rather than new concepts, plus the preview-duplication decision above.
+etc.) rather than new concepts; the one new backend piece is the cheap
+`/gear/preview` endpoint, which is a thin wrapper around Workstream 1 and
+should ship alongside it.
+
+### Workstream 9 — Gear parameter presets/templates (client-local)
+
+A named-preset store for gear parameters (module, teeth, pressure angle,
+type, etc.), reusable across Parts/sessions. Kept deliberately **client-
+local** (on-device storage — the same mechanism `SketcherPreferences`/
+`MeshViewerPreferences` already use, no new backend persistence), per §2
+decision 7: this app's server has held a genuine "stateless, persists no
+model data" principle through every Feature built so far, and a preset
+store is the first thing that needs to outlive a single session's Part —
+worth keeping that boundary intact by default rather than crossing it
+incidentally. UI: a "Save as preset" action on the Gear Design screen
+(Workstream 8) capturing the current form state under a user-given name,
+and a picklist/gallery to load one back into the form. Presets are a
+convenience for *re-populating the form*, not a live/associative link —
+loading one and then creating a gear produces an ordinary, independent
+`GearFeature`, with no ongoing relationship to the preset it came from.
+
+**Complexity/risk:** low. Pure client-side, no new backend surface, no
+interaction with the Feature-tree/dependency-graph model at all — this is
+UI convenience state, not part of any Part's document. Only real design
+question left: exact storage mechanism (Flutter's usual local-prefs/
+file-based options — a small, ordinary choice, not one that needs
+resolving in this scope doc).
 
 ---
 
@@ -409,7 +489,7 @@ single largest chunk of geometry-kernel work in the whole gear tool —
 expect it to need its own dedicated scoping pass (own math derivation, own
 OCCT construction strategy — most likely sampling the spherical involute
 directly as 3D points rather than any 2D-profile-plus-extrude/loft
-technique the other gear types use) once Workstreams 1-8 are live and there's
+technique the other gear types use) once Workstreams 1-9 are live and there's
 a working gear tool to extend rather than build bevel support into
 speculatively now.
 
@@ -421,9 +501,11 @@ speculatively now.
    in this dev sandbox today, and everything else depends on it.
 2. **Workstream 2** (external/internal `GearFeature`) — first real 3D gear,
    proves the Feature-tree integration end-to-end.
-3. **Workstream 8** (entry screen + preview) in parallel with/right after
-   Workstream 2, so there's a usable tool as soon as spur gears work rather
-   than waiting for every gear type.
+3. **Workstream 8** (entry screen + `/gear/preview` + reference overlay) in
+   parallel with/right after Workstream 2, so there's a usable tool as soon
+   as spur gears work rather than waiting for every gear type. **Workstream
+   9** (client-local presets) is a small, independent add-on once
+   Workstream 8's form exists — no dependency ordering pressure either way.
 4. **Workstream 3** (rack/rack-and-pinion) — cheap extension of Workstream 2.
 5. **Workstream 4b spike** (Loft/helix-sweep feasibility) early, in parallel
    with 2-4, specifically *because* it's the highest-risk unknown — better
@@ -444,8 +526,10 @@ speculatively now.
 ## 7. Open questions to resolve during detailed design (not blocking this
 scope doc, but not yet answered)
 
-- Client-side preview: Dart port of `gear_math`, or live backend round-trip
-  per field edit (Workstream 8)?
+- ~~Client-side preview: Dart port of `gear_math`, or live backend
+  round-trip per field edit?~~ **Resolved** — neither: a cheap, OCCT-free
+  `/gear/preview` endpoint calling the real `gear_math` directly, cheap
+  enough for every debounced keystroke. See Workstream 8.
 - ~~Involute profile realized as a true `Geom_BSplineCurve` through sampled
   points, or dense straight-line segments?~~ **Resolved** — real
   `BSplineCurve`, per the mesh-smoothness discussion now in Workstream 2:
