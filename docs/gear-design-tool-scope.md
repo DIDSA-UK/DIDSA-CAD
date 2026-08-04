@@ -160,6 +160,15 @@ Client: `client/lib/viewport3d/*` (3D Feature panels/selection),
 10. **DXF export for a multi-gear system produces both per-gear cut files
     and a combined layout file** (every gear at its real relative
     position, for reference/assembly drawings) — see Workstream 6.
+11. **Turn-angle input: one always-visible per-stage field (default 0°),
+    relative to the previous segment, sign convention inherited from
+    `RevolveFeature`/circular `PatternFeature`; text-entry only for v1.**
+    See Workstream 5.
+12. **Interference checking is a topology split, not a tolerance value**:
+    skip consecutive (intentionally meshing) stage pairs entirely, exact
+    overlap test plus a small print-clearance margin for every non-adjacent
+    pair, per-stage-type bounding shape. **Internal/ring stages are
+    restricted to the last position in a chain.** See Workstream 5.
 
 ---
 
@@ -366,6 +375,15 @@ exactly as it already can target one instance of a Pattern today — the
 chain Feature only owns the *generative* gear parameters, not anything
 downstream.
 
+**Internal (ring) stages: last stage only, resolved.** A linear chain
+naturally "continues past" an external gear (something else meshes with
+its far side), but nothing meaningfully continues past a ring the same
+way without turning into a branching (planetary-like) topology, which is
+`PlanetaryGearFeature`'s job, not this one's. `GearChainFeature` rejects an
+`internal` stage anywhere but the final position — a real, deliberate
+restriction (not a v1 gap left to chance), avoiding an edge case the
+linear-chain model was never meant to cover.
+
 **Path shape — bent paths supported, not straight-line-only.** Each stage
 after the first carries its own turn angle (relative to the previous
 segment's direction, within the chain's own plane — reusing `PlaneRef` for
@@ -386,18 +404,40 @@ No bespoke angle-range validation — a sharp reversal is exactly what the
 interference check below exists to catch. Text-entry only, no visual
 drag/dial control, for v1. This is a materially bigger scope item than the
 straight-line-only alternative would have been, for two concrete reasons:
-- **Interference checking becomes mandatory, not optional.** In a straight
-  chain, only consecutive stages can ever be geometrically close, so
-  correctness reduces to "consecutive pairs are the correct center
-  distance apart" (already required regardless). Once a chain can bend —
-  potentially back toward itself — **non-adjacent** stages can now
-  physically overlap even though they were never meant to mesh. This needs
-  a real new check (pairwise circle-overlap test — addendum circle vs.
-  addendum circle — across every *non-adjacent* stage pair, not just
-  consecutive ones) with no existing precedent to reuse anywhere in this
-  codebase; flag interference as a warning (same non-blocking-banner
-  convention as every other gear validation) rather than silently letting
-  two solids collide.
+- **Interference checking becomes mandatory, not optional — design
+  resolved, not just a tolerance value picked.** The naive version of this
+  check ("do two stages' addendum circles overlap?") can't actually
+  distinguish a correctly meshing adjacent pair from a real collision:
+  addendum radius = pitch radius + module, so a *correctly meshing* pair's
+  addendum circles always overlap by design (`sum of addendum radii =
+  center_distance + 2×module` — teeth interleave, that's the whole point).
+  Tuning a fuzzy "how much overlap is OK" threshold can't resolve that
+  ambiguity, because a correct mesh and a collision look geometrically
+  identical to that test. The chain's own topology already disambiguates
+  it for free, so the check splits in two instead of needing a tolerance:
+  - **Consecutive stage pairs**: no check at all. Their correctness is
+    guaranteed by `gear_math`'s own exact center-distance formula, not
+    re-verified by a geometric collision test after the fact — the same
+    trust this doc already places in that formula everywhere else.
+  - **Every non-adjacent pair**: a plain, exact overlap test (zero
+    tolerance — any overlap at all is a genuine problem, there is no
+    legitimate reason for these to be close), *plus* a small default
+    **print-clearance margin** (flagging pairs that come within e.g. 0.2mm
+    without literally overlapping — "geometrically fine" isn't the same as
+    "printable," and FDM/manufacturing needs real gap, not mathematical
+    zero) — both non-blocking warnings, same banner convention as every
+    other gear validation.
+
+  The "occupied shape" checked also isn't the same for every stage type,
+  worth being precise about rather than treating every stage as a generic
+  circle: an **external** gear's addendum circle (its teeth point outward
+  — the part that can hit a neighbor); an **internal** gear's *outer rim*
+  circle, not its addendum circle (its teeth point inward into its own
+  bore, so the addendum circle can't collide with anything external — the
+  rim can); a **rack**'s oriented bounding rectangle along its length
+  (addendum-to-dedendum band width), not a circle at all. No existing
+  precedent for any of this to reuse anywhere in this codebase — genuinely
+  new geometry-validation code.
 - **The 2D preview (Workstream 8) needs to render an actual routed path**,
   not a single line — each stage's center comes from the previous stage's
   center + center-distance + the stage's own turn angle, and the preview
@@ -682,8 +722,17 @@ scope doc, but not yet answered)
   separate bounds check to invent. Text-entry only for v1, no visual
   drag/dial control (a plausible later enhancement over the same data, not
   required now).
-- **Still open**: the precise interference-check tolerance (how close is
-  "touching but not meshing" allowed to be before it's flagged, given two
-  *intentionally* meshing adjacent gears are supposed to be nearly
-  touching by design — the check needs to somehow exclude each stage's own
-  intended meshing neighbour while still catching everything else).
+- ~~The precise interference-check tolerance...~~ **Resolved — not a
+  tolerance value, a topology split.** A fuzzy "how close is too close"
+  threshold can't distinguish a correctly meshing pair from a collision
+  (their addendum circles overlap identically either way, by design of
+  meshing teeth) — the chain's own topology already disambiguates it for
+  free instead: skip consecutive stage pairs entirely (trusted to
+  `gear_math`'s exact center-distance formula), exact zero-tolerance
+  overlap test for every non-adjacent pair, plus a small default
+  print-clearance margin (e.g. 0.2mm) beyond pure geometric overlap for
+  manufacturing practicality. Per-stage-type bounding shape (addendum
+  circle / outer rim circle / rack bounding rectangle), also resolved. See
+  Workstream 5's own interference bullet for full reasoning.
+- ~~Can an internal gear appear mid-chain?~~ **Resolved** — no, last stage
+  only; see Workstream 5's "Internal (ring) stages" note.
