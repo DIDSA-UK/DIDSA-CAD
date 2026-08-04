@@ -143,6 +143,23 @@ Client: `client/lib/viewport3d/*` (3D Feature panels/selection),
    Workstream 9. If cross-device preset sync is ever wanted, that's a
    genuine, separate architectural decision to revisit explicitly, not an
    incidental side effect of building presets at all.
+8. **Multi-gear systems (pairs, chains, planetary) are one live,
+   re-derivable Feature each — `GearChainFeature`/`PlanetaryGearFeature` —
+   not a one-shot orchestration that creates independent Features once.**
+   Reverses this doc's original Workstream 5 draft; resolves what had been
+   an open §7 question. Mirrors Pattern/Mirror's existing "one Feature,
+   many realized Bodies, recomputed fresh every time" pattern, so editing
+   one gear's tooth count live-repositions/resizes the rest, for free, from
+   the existing dependency graph — no new live-linking mechanism needed.
+   See Workstream 5.
+9. **Gear chains support bent (multi-directional) paths in v1, not
+   straight-line-only.** Real added scope, specifically interference
+   checking between non-adjacent stages (a genuinely new problem for this
+   codebase — nothing currently checks for unintended geometric overlap
+   between unrelated shapes) — see Workstream 5's own risk callout.
+10. **DXF export for a multi-gear system produces both per-gear cut files
+    and a combined layout file** (every gear at its real relative
+    position, for reference/assembly drawings) — see Workstream 6.
 
 ---
 
@@ -261,14 +278,15 @@ fiddly, matching this codebase's own noted experience with e.g. Slot/Polygon
 closed-form geometry); low for Boss/Cut integration, which is copy-paste
 from `ExtrudeFeature`'s existing pattern.
 
-### Workstream 3 — Rack, and rack-and-pinion pairs
+### Workstream 3 — Rack tooth-profile generator
 
-Rack: same `GearFeature`-family Feature but a linear trapezoidal-tooth
-profile (from `gear_math`'s rack generator) over a specified length instead
-of a full disc. Rack-and-pinion "pair": client/orchestration-level, not a
-new backend Feature type — creates one rack `GearFeature` and one external
-`GearFeature`, plus a `CreatePlaneFeature` positioning the pinion's pitch
-circle tangent to the rack's pitch line at the correct center distance.
+A standalone rack: same `GearFeature`-family Feature but a linear
+trapezoidal-tooth profile (from `gear_math`'s rack generator, genuinely
+different math from involute sampling — straight-sided, not curved) over a
+specified length instead of a full disc, for a user who wants just a rack
+on its own. Pairing a rack with a pinion at the correct position is **not**
+built here — see Workstream 5, which now owns all multi-gear positioning
+(pairs, chains, rack-and-pinion, planetary) as one unified concept.
 
 **Complexity/risk:** low-medium, mostly reuses Workstream 2's machinery.
 
@@ -317,24 +335,89 @@ correctness risk (self-intersecting lofts/sweeps at high twist angles,
 wire-orientation mismatches). Budget real spike time before committing to
 an approach.
 
-### Workstream 5 — Planetary gear sets (orchestration, not new gear math)
+### Workstream 5 — Multi-gear systems: `GearChainFeature` and `PlanetaryGearFeature`
 
-Client (or a thin backend orchestration endpoint) that, given a module,
-sun/ring tooth counts, and planet count, validates the assembly condition
-(Workstream 1), computes each planet's `GearFeature` + position (via
-`CreatePlaneFeature`, evenly spaced around the sun at the correct radius),
-and creates: one external `GearFeature` (sun), one internal `GearFeature`
-(ring), N external `GearFeature`s (planets), each correctly positioned.
-Static/positioned only — no kinematics, no rotation/motion, matching the
-static-print-and-design scope of the original request.
+**Revised from an earlier draft of this doc**, which treated pairs/sets as
+one-shot client-side orchestration (generate N independent `GearFeature`s
+once, no ongoing relationship). Superseded per a later brainstorming
+round: a multi-gear system should be **one Feature, live and re-derivable**
+— editing one gear's tooth count should reposition/resize the rest
+automatically, the same live parametric behaviour every other edit in this
+app already gets. The existing precedent that makes this both possible and
+cheap is **Pattern/Mirror**: one Feature specification resolved fresh into
+several `#N`-suffixed Bodies on *every* recompute (this app's dependency
+graph never caches — "re-derive, don't cache," per the project brief), not
+a one-time expansion into independent sibling Features. Two new Feature
+types, following the six-part checklist §1 describes, mirroring how this
+codebase already gives Extrude/Revolve/Sweep each their own enum rather
+than one shared polymorphic type:
 
-**Complexity/risk:** medium — mostly correct application of Workstream 1's
-math plus repeated use of Workstream 2's `GearFeature`, no new geometry
-kernel work. The one real design question: whether the app currently has a
-clean way to programmatically add several Features to a Part in one
-client-driven batch, or whether this needs a small new "batch create"
-convenience — worth checking against `document_api_client.dart`'s existing
-call shape during implementation.
+**`GearChainFeature`** — an ordered list of N≥2 meshing stages (each stage:
+external/internal/rack, tooth count or rack length, face width, hand), one
+shared module + pressure angle for the whole chain (structurally
+eliminates mismatched-module gears — impossible to construct, not just
+validated against). N=2 is an ordinary pair (including rack-and-pinion, a
+rack stage next to a gear stage); N>2 is a longer gear train. Resolves in
+one pass into N positioned Bodies, same `#N`-suffix convention
+`ExtrudeFeature` already uses when one Feature yields several disjoint
+solids. A later Feature (Fillet, Cut for a bore/keyway, Pattern, Text
+engraving...) can still target one specific stage's Body individually,
+exactly as it already can target one instance of a Pattern today — the
+chain Feature only owns the *generative* gear parameters, not anything
+downstream.
+
+**Path shape — bent paths supported, not straight-line-only.** Each stage
+after the first carries its own turn angle (relative to the previous
+segment's direction, within the chain's own plane — reusing `PlaneRef` for
+that plane, same as Mirror's mirror-plane input already does, no new
+reference type needed) rather than every stage defaulting to one straight
+line. This is a materially bigger scope item than the straight-line-only
+alternative would have been, for two concrete reasons:
+- **Interference checking becomes mandatory, not optional.** In a straight
+  chain, only consecutive stages can ever be geometrically close, so
+  correctness reduces to "consecutive pairs are the correct center
+  distance apart" (already required regardless). Once a chain can bend —
+  potentially back toward itself — **non-adjacent** stages can now
+  physically overlap even though they were never meant to mesh. This needs
+  a real new check (pairwise circle-overlap test — addendum circle vs.
+  addendum circle — across every *non-adjacent* stage pair, not just
+  consecutive ones) with no existing precedent to reuse anywhere in this
+  codebase; flag interference as a warning (same non-blocking-banner
+  convention as every other gear validation) rather than silently letting
+  two solids collide.
+- **The 2D preview (Workstream 8) needs to render an actual routed path**,
+  not a single line — each stage's center comes from the previous stage's
+  center + center-distance + the stage's own turn angle, and the preview
+  should visually flag any interfering pair it detects (e.g. highlighting
+  the offending gears), so a bad route is *seen*, not just rejected by a
+  banner after the fact.
+
+A fully general, drag-to-route interactive path editor is real UI scope on
+top of the numeric turn-angle-per-stage approach above — recommend text-
+entry turn angles for v1 (consistent with this tool's stated text-entry-
+first interaction model), with interactive routing as a plausible later
+UI-only enhancement over the same underlying data shape, not a backend
+change.
+
+**`PlanetaryGearFeature`** — kept as its own Feature type, not folded into
+`GearChainFeature`, because its topology is genuinely different: branching
+(sun meshes every planet, every planet meshes the ring), not a sequence.
+Sun/ring tooth counts + planet count in, validates the assembly condition
+(Workstream 1) and evenly spaces planets around the sun at the correct
+radius, resolving into N+2 positioned Bodies (sun, ring, N planets) in one
+pass, same multi-body convention as `GearChainFeature`. Static/positioned
+only — no kinematics/rotation, matching the static-print-and-design scope
+of the original request.
+
+**Complexity/risk:** high for `GearChainFeature` specifically (bent paths +
+interference checking are both genuinely new problems for this codebase,
+not reuse of an existing pattern — worth a real spike alongside Workstream
+4b's Loft/helix-sweep spike, for the same "find out early if there's a
+showstopper" reason); medium for `PlanetaryGearFeature` (no new geometry-
+kernel work, mostly correct application of Workstream 1's math plus
+Workstream 2's per-gear-type geometry builders, reused via the same shared-
+helper pattern `ExtrudeFeature`/`RevolveFeature`/`SweepFeature` already use
+for their own common Boss/Cut logic).
 
 ### Workstream 6 — DXF export (shared with the existing "2D Drawing"
 roadmap item)
@@ -344,11 +427,17 @@ own profile points (Workstream 1, bypassing the Sketch model entirely —
 the profile never needs to become interactive Sketch geometry to be
 exported) or a general Sketch's Points/Lines/Arcs/Circles/Ellipses/Splines/
 Text (satisfying the pre-existing, separately-roadmapped "2D Drawing DXF
-export" ask with the same writer). Multi-file export for pairs/sets/
-planetary/rack-pinion: one DXF per gear, since that matches how a gear is
-actually cut/printed/used downstream (each part on its own sheet/plate),
-returned as a zip or as multiple endpoint calls — a UX decision for the
-export dialog, not a backend architecture one.
+export" ask with the same writer). Two export shapes for a
+`GearChainFeature`/`PlanetaryGearFeature`, both wanted:
+- **Per-gear cut files** — one DXF per gear, since that matches how a gear
+  is actually cut/printed/used downstream (each part on its own sheet/
+  plate), returned as a zip or as multiple endpoint calls.
+- **Combined layout export** — every gear in the system in one DXF, each
+  at its real relative position/rotation (the same positions
+  `GearChainFeature`/`PlanetaryGearFeature` itself computes), for a
+  reference/assembly drawing rather than for cutting. Cheap to add given
+  the per-gear profile geometry and positions already both exist from the
+  Feature's own resolve step — this is placement, not new geometry.
 
 DWG is explicitly out of scope (proprietary format, no viable open-source
 writer) — this was already the conclusion reached for the separate 2D
@@ -426,6 +515,21 @@ A pair/rack-pinion preview shows both members together (mesh visibly
 correct or not, before committing); a planetary preview shows the full
 ring/sun/planet layout, so an invalid assembly condition (Workstream 1) is
 *seen*, with the validation error as backup, not the first signal.
+
+**Chain preview: renders the actual routed path, not a straight line.**
+`/gear/preview` extended to accept a `GearChainFeature`/`PlanetaryGearFeature`-
+shaped payload (list of stages + turn angles, or sun/ring/planet-count),
+returning every stage's outline + computed center + reference circles, so
+a bent chain's real layout is visible while still editing turn angles.
+Any interfering non-adjacent pair (Workstream 5) is highlighted directly on
+the two offending gears — seen at the point of cause, not just reported as
+a banner elsewhere. Also surfaces two cheap, genuinely useful numbers per
+`gear_math`, even with no kinematics/simulation involved: **overall ratio**
+(input:output tooth ratio through the chain) and **rotation direction**
+per stage (external-external reverses, external-internal doesn't, rack
+direction depends on orientation) — standard in every real gear-design
+tool, and essentially free once the stage list and its meshing
+relationships already exist for layout purposes.
 
 **Field input style: dropdown of standard values (module, pressure angle)
 with a "custom" override**, matching this project's own already-planned
@@ -507,18 +611,25 @@ speculatively now.
    9** (client-local presets) is a small, independent add-on once
    Workstream 8's form exists — no dependency ordering pressure either way.
 4. **Workstream 3** (rack/rack-and-pinion) — cheap extension of Workstream 2.
-5. **Workstream 4b spike** (Loft/helix-sweep feasibility) early, in parallel
-   with 2-4, specifically *because* it's the highest-risk unknown — better
-   to find out if the twist-controlled Loft or helix-sweep approach has a
-   showstopper before Workstream 4 is fully committed to depending on it.
+5. **Two parallel spikes, both specifically *because* they're the highest-
+   risk unknowns** — better to find a showstopper early than after
+   committing:
+   - **Workstream 4b** (Loft/helix-sweep feasibility for helical teeth).
+   - **Workstream 5's `GearChainFeature` bent-path + interference-check
+     approach** — a small standalone spike (a handful of stages, a couple
+     of turn angles, confirm the circle-overlap interference check and the
+     `PlaneRef`-anchored routing math both hold up) before committing the
+     full chain UI/preview to depend on it.
 6. **Workstream 4** (helical/herringbone) once 4b's spike lands.
-7. **Workstream 5** (planetary) — depends on Workstream 2 (internal +
-   external gears) and benefits from Workstream 4b's `CreatePlaneFeature`-
-   positioning patterns if any were built along the way.
-8. **Workstreams 6-7** (DXF export, then import-with-blocks) — independent
-   of the gear-specific work above; can run on its own track in parallel,
-   and Workstream 6 in particular could ship early since the existing "2D
-   Drawing" tool wants it regardless of gears.
+7. **Workstream 5** (`GearChainFeature` — covers pairs, rack-and-pinion,
+   and N-stage chains in one Feature type — then `PlanetaryGearFeature`)
+   once its own spike lands — depends on Workstream 2 (internal + external
+   gears) and Workstream 3 (rack) for the per-stage geometry it positions.
+8. **Workstreams 6-7** (DXF export — per-gear cut files, then the combined
+   layout export, then DXF import-with-blocks) — independent of the
+   gear-specific work above; can run on its own track in parallel, and
+   Workstream 6's per-gear export in particular could ship early since the
+   existing "2D Drawing" tool wants a DXF writer regardless of gears.
 9. **Bevel** (§5) — separate phase, after the above is live.
 
 ---
@@ -539,9 +650,14 @@ scope doc, but not yet answered)
 - Exact parameter set per gear type for v1 (e.g. is profile shift a v1
   requirement or a later refinement once undercut at low tooth counts is
   confirmed to actually be a problem worth surfacing to the user?).
-- Whether "gear pairs/sets" need a saved, re-editable relationship (e.g.
-  changing the sun's tooth count later re-derives the whole planetary set)
-  or are a one-shot generator whose output Features are then independent,
-  ordinary Part Features from that point on (simpler, matches this
-  codebase's "re-derive the whole graph" recompute model less directly
-  since there's no single upstream Feature the whole set depends on today).
+- ~~Whether "gear pairs/sets" need a saved, re-editable relationship...~~
+  **Resolved** — yes, live and re-derivable, via `GearChainFeature`/
+  `PlanetaryGearFeature` as single Features. See §2 decision 8 / Workstream 5.
+- New from the bent-path decision: exact turn-angle input UX (a numeric
+  field per stage vs. some lighter-weight way to specify "continue
+  straight" as the common case without a redundant 0° entry every time),
+  and the precise interference-check tolerance (how close is "touching but
+  not meshing" allowed to be before it's flagged, given two *intentionally*
+  meshing adjacent gears are supposed to be nearly touching by design —
+  the check needs to somehow exclude each stage's own intended meshing
+  neighbour while still catching everything else).
