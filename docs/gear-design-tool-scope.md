@@ -72,7 +72,7 @@ Client: `client/lib/viewport3d/*` (3D Feature panels/selection),
   vertices individually, tracked associatively, from inside another Sketch.
   A DXF import that lands as a lightweight reference Body (wireframe, no
   volume) would make individual-curve selection "for free" via this
-  existing tool — see Workstream 6.
+  existing tool — see Workstream 7.
 
 - **Confirmed absent, all genuinely greenfield:**
   - **DXF, in either direction.** `docs/roadmap.md`'s "2D Drawing tool
@@ -629,33 +629,77 @@ rather than assumed by the importing tool).
 
 ### Workstream 7 — DXF import with block semantics
 
-The larger design lift of the two DXF workstreams, because of the block
-requirement (§2, decision 4). Proposed approach: an imported DXF becomes a
-lightweight, non-solid reference `Body` (a wireframe/compound of edges, no
-volume) — `ImportFeature` already round-trips STEP/glTF/OBJ/STL into a
-`Body`; a DXF import is a new `ImportSourceFormat` entry feeding the same
-pattern, just producing wire/edge geometry instead of a solid. Once it's a
-real `Body`:
-- In the sketch it's imported into, the whole thing is one selectable/
-  movable/rotatable/scalable unit (new selection-hit-testing case treating
-  the reference Body as one grouped hit target — needs a real client-side
-  design pass, not yet detailed here).
-- From the 3D viewport or another sketch, **Convert Entities already lets
-  individual Body edges be pulled in as independent, associative Sketch
-  entities** (`ExternalVertexReference`) — this is the existing mechanism
-  that gives "select individually elsewhere" for free, assuming the
-  reference Body's edges are real, well-formed OCCT edges (they will be,
-  since DXF entities become real OCCT curves on import, same as any other
-  imported geometry).
+**Block-selection design resolved** — turned out to be mostly reuse of an
+existing mechanism, not the new selection-semantics concept this doc
+originally flagged it as. Grounded in a direct audit of the client's
+selection architecture (`client/lib/viewport3d/selection_hit_test.dart`,
+`client/lib/sketch/sketch_controller.dart`): `SketchSelection`
+(`{kind, id}`) is a flat list with no compound/grouped-selection container
+anywhere; Rectangle/Polygon/Slot are deliberately *not* selected as a
+unit (tapping one selects a single constituent Line/Point, confirmed by
+`SketchRectangleView`'s own doc comment); Pattern/Mirror's `ownerInstanceId`
+grouping (`_patternMirrorEntityAt`, `hitTestSketchPatternMirrorInstances`)
+is the one real "many hit regions → one id" precedent, but only works
+because those instances are pure ghost geometry with no independent
+underlying primitives — not applicable here, since a DXF block's curves
+need to be real, individually addressable entities for Convert Entities to
+reach. None of these three fit directly. What does: `SelectionEntityKind.
+body` (`selection_hit_test.dart`) already exists and is already "select the
+whole thing as one unit" — normally a tap resolves to a specific face/
+edge/vertex, but with `SelectionFilterState.body` engaged, it resolves to
+the whole owning Body instead (already used for e.g. Boss/Cut target-body
+picking). Convert Entities (`convert_body_edge`/`convert_body_vertex`,
+`backend/app/document/router.py`) is already Body-edge-to-Sketch, one edge
+per tap, and is structurally *separate* from ordinary viewport
+tap-selection (`SketchMode.convert` is its own dedicated picking mode).
+Both halves of the requirement already exist — they just aren't wired
+to the same object yet.
 
-**Complexity/risk:** high. The "one unit in its home sketch, individual
-elsewhere" requirement is a genuinely new selection-semantics concept for
-this codebase (nothing currently groups a set of entities as one
-hit-target while also allowing them to be referenced individually from
-elsewhere) — needs its own focused design pass on the client selection/
-hit-testing model before implementation starts, separate from the DXF
-parsing itself (which is comparatively straightforward via `ezdxf`'s
-reader).
+**Resolved design, four pieces:**
+1. DXF import stays a new `ImportSourceFormat.DXF` value on the *existing*
+   `ImportFeature` (no new Feature type) — confirms this workstream's
+   original plan: a lightweight, non-solid reference `Body` (a wireframe/
+   compound of real OCCT edges, no volume — `ImportFeature` already
+   round-trips STEP/glTF/OBJ/STL into a `Body` the same way).
+2. **`ImportFeature` gains placement fields** (translation, rotation,
+   uniform scale — matching `TextEntity`'s own existing "uniform-scale-
+   about-center" convention, since non-uniform scale would distort a
+   mechanical drawing's proportions), applied to the parsed shape before
+   it registers as a Body. Genuinely new, but small and general-purpose —
+   benefits STEP/mesh imports too, not just DXF, and directly fulfils
+   `ImportFeature`'s own docstring, which already named "move body" as an
+   anticipated-but-deferred capability ("future features will be able to
+   edit existing bodies (scale, move face, delete face, move body)").
+   **This is what "moved, rotated, and scaled as a block" actually cashes
+   out to** — editing this Feature's own placement via a small dedicated
+   panel (same convention as every other panel in this app), not dragging
+   loose sketch points (which would hit the exact known "associative point
+   drag snaps back on next solve" gap this doc's grounding audit already
+   found elsewhere in this codebase — deliberately avoided by never
+   treating a block's rendered geometry as directly draggable at all).
+3. **"Selects as one" — one small, targeted rule**, not a new selection
+   paradigm: a Body whose originating Feature is a DXF `ImportFeature`
+   always resolves as `SelectionEntityKind.body` on an ordinary tap,
+   regardless of the general `SelectionFilterState` — necessary because a
+   DXF-sourced Body is wireframe-only (no faces at all to hit-test
+   against), so without this override, ordinary tapping would fall
+   through to individual-edge picking by default instead. Applies
+   everywhere the Body is visible, not context-restricted to "while
+   editing its home sketch" specifically — there's no real need for that
+   narrower scoping once the rule is this simple.
+4. **"Individually elsewhere, via Convert Entities" — completely
+   unmodified.** Pick one edge of the DXF Body at a time, exactly like
+   picking an edge from any other Body today. Zero new scope.
+
+**Complexity/risk:** medium, downgraded from this doc's original "high...
+needs its own focused design pass" — the research this round found the
+hard-sounding part was mostly already-existing machinery, not a genuinely
+new concept. What's left is real but bounded: the DXF parsing itself
+(`ezdxf`'s reader — already known to be comparatively straightforward),
+`ImportFeature`'s new placement fields (small, additive), and the one
+targeted whole-body-selection override (item 3) — none of which carry the
+"nothing like this exists anywhere in this codebase" risk profile
+Workstream 10's bevel construction does.
 
 ### Workstream 8 — Gear Design entry screen (client) and its 2D preview
 
