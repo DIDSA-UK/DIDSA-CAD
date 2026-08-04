@@ -2,6 +2,7 @@ import base64
 import binascii
 import logging
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Response
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
@@ -22,6 +23,16 @@ from app.document.extrude import (
 )
 from app.document.fillet import resolve_fillet
 from app.document.gear import resolve_gear
+from app.document.gear_math import (
+    GearGeometryError,
+    default_rack_backing_height,
+    full_gear_profile_points,
+    full_rack_profile_points,
+    minimum_tooth_count_without_undercut,
+    rack_length as gear_math_rack_length,
+    rack_tooth_geometry,
+    spur_gear_geometry,
+)
 from app.document.rack import resolve_rack
 from app.document.graph import (
     base_feature_id,
@@ -97,6 +108,8 @@ from app.document.schemas import (
     GearFeatureCreate,
     GearFeatureResponse,
     GearFeatureUpdate,
+    GearPreviewRequest,
+    GearPreviewResponse,
     ImportFeatureCreate,
     ImportFeatureResponse,
     MeshVertexData,
@@ -2413,6 +2426,130 @@ def update_rack_feature(part_id: str, feature_id: str, payload: RackFeatureUpdat
     feature.backing_height = candidate.backing_height
     feature.target_body_ids = candidate.target_body_ids
     return _feature_response(part, feature)
+
+
+def _invalid_gear_preview_parameters(detail: str) -> HTTPException:
+    """Mirrors `app.document.gear._invalid_gear_parameters`'s convention -
+    a `gear_math`-rejected parameter combination has no valid geometry to
+    draw at all, so `/gear/preview` blocks (422) rather than returning a
+    warning, per `00-conventions.md`'s stated exception to the non-blocking
+    validation-banner rule."""
+    return HTTPException(status_code=422, detail={"type": "invalid_gear_preview_parameters", "detail": detail})
+
+
+def _gear_preview_response(payload: GearPreviewRequest) -> GearPreviewResponse:
+    """`docs/gear-design/08-entry-screen-and-preview.md`: the actual math
+    behind `/gear/preview` - runs only `gear_math` (no OCCT, no
+    tessellation), shared by the GET and POST routes below. Scoped down to
+    exactly the two gear-producing Feature types that exist today
+    (`external`/`internal` spur gears via `GearFeature`, `rack` via
+    `RackFeature`) - see this workstream's own scoping note for why helical/
+    herringbone/chain/planetary/bevel have no branch here yet; adding one
+    later is one more `gear_kind` literal value plus one more branch, not a
+    new endpoint."""
+    if payload.gear_kind == "rack":
+        try:
+            rack_geometry = rack_tooth_geometry(
+                module=payload.module,
+                pressure_angle_degrees=payload.pressure_angle_degrees,
+                backlash=payload.backlash,
+            )
+            outline_points = full_rack_profile_points(rack_geometry, payload.tooth_count)
+        except GearGeometryError as exc:
+            raise _invalid_gear_preview_parameters(str(exc)) from exc
+
+        backing_height = (
+            payload.backing_height
+            if payload.backing_height is not None
+            else default_rack_backing_height(payload.module)
+        )
+        if backing_height <= 0:
+            raise _invalid_gear_preview_parameters(f"backing_height must be positive, got {backing_height!r}")
+
+        return GearPreviewResponse(
+            gear_kind="rack",
+            outline_points=outline_points,
+            pitch_line_y=0.0,
+            addendum_line_y=rack_geometry.addendum_height,
+            dedendum_line_y=-rack_geometry.dedendum_height,
+            rack_length=gear_math_rack_length(rack_geometry, payload.tooth_count),
+        )
+
+    is_internal = payload.gear_kind == "internal"
+    if is_internal and payload.outer_diameter is None:
+        raise _invalid_gear_preview_parameters("outer_diameter is required when gear_kind is internal")
+
+    try:
+        geometry = spur_gear_geometry(
+            module=payload.module,
+            tooth_count=payload.tooth_count,
+            pressure_angle_degrees=payload.pressure_angle_degrees,
+            profile_shift=payload.profile_shift,
+            backlash=payload.backlash,
+            is_internal=is_internal,
+        )
+        outline_points = full_gear_profile_points(geometry)
+    except GearGeometryError as exc:
+        raise _invalid_gear_preview_parameters(str(exc)) from exc
+
+    warnings: list[str] = []
+    if not is_internal:
+        min_tooth_count = minimum_tooth_count_without_undercut(
+            payload.pressure_angle_degrees, payload.profile_shift
+        )
+        if payload.tooth_count < min_tooth_count:
+            warnings.append(
+                f"Tooth count {payload.tooth_count} is below the undercut-free minimum "
+                f"({min_tooth_count:.1f}) for this pressure angle/profile shift - the root will be undercut."
+            )
+
+    return GearPreviewResponse(
+        gear_kind=payload.gear_kind,
+        outline_points=outline_points,
+        pitch_radius=geometry.pitch_radius,
+        base_radius=geometry.base_radius,
+        addendum_radius=geometry.addendum_radius,
+        dedendum_radius=geometry.dedendum_radius,
+        outer_radius=(payload.outer_diameter / 2) if is_internal and payload.outer_diameter else None,
+        warnings=warnings,
+    )
+
+
+@router.post("/gear/preview", response_model=GearPreviewResponse)
+def preview_gear(payload: GearPreviewRequest) -> GearPreviewResponse:
+    """`docs/gear-design/08-entry-screen-and-preview.md`: cheap enough (pure
+    `gear_math`, no OCCT/tessellation) to call on every debounced keystroke
+    while the Gear Design entry screen's form is being edited - the POST
+    body form, for a client sending a full JSON payload."""
+    return _gear_preview_response(payload)
+
+
+@router.get("/gear/preview", response_model=GearPreviewResponse)
+def preview_gear_via_query(
+    gear_kind: Literal["external", "internal", "rack"] = Query(...),
+    module: float = Query(...),
+    tooth_count: int = Query(...),
+    pressure_angle_degrees: float = Query(20.0),
+    profile_shift: float = Query(0.0),
+    backlash: float = Query(0.0),
+    outer_diameter: float | None = Query(None),
+    backing_height: float | None = Query(None),
+) -> GearPreviewResponse:
+    """Same preview, as a plain query-string GET - convenient for a quick
+    manual check (a browser/`curl` URL, no JSON body) without needing a
+    second implementation of the actual math."""
+    return _gear_preview_response(
+        GearPreviewRequest(
+            gear_kind=gear_kind,
+            module=module,
+            tooth_count=tooth_count,
+            pressure_angle_degrees=pressure_angle_degrees,
+            profile_shift=profile_shift,
+            backlash=backlash,
+            outer_diameter=outer_diameter,
+            backing_height=backing_height,
+        )
+    )
 
 
 @router.post("/parts/{part_id}/pattern-features", response_model=PatternFeatureResponse, status_code=201)

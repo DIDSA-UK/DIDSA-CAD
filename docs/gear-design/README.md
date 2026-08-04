@@ -6,9 +6,12 @@ on `ToolChooserScreen`) for parametric text-entry gear generation with a
 compound, planetary, and straight bevel gears — plus DXF import/export
 and a general Loft feature. Ends in solid geometry ready to 3D print.
 
-**Status: design only — nothing is implemented yet.** Confirmed
-genuinely greenfield: no gear/involute code, no DXF in either direction,
-no Loft feature exist anywhere in this codebase.
+**Status: in progress.** Workstreams 1-3 (gear math core, `GearFeature`,
+`RackFeature`) and a scoped-down v1 of Workstream 8 (entry screen + 2D
+preview for those two Feature types) are done - see the table below and
+`docs/status.md`'s dated entries. Helical/herringbone/Loft, gear chains/
+compound/planetary, DXF import/export, presets, and bevel gears are all
+still unstarted.
 
 ## How to use these docs in a fresh implementation session
 
@@ -36,7 +39,7 @@ never needed most of it).
 | 5 | `05-gear-chain-and-planetary.md` | 1, 2, 3 | High |
 | 6 | `06-dxf-export.md` | 1, 5 | Low-medium |
 | 7 | `07-dxf-import-block.md` | — | Medium |
-| 8 | `08-entry-screen-and-preview.md` | 1, 2 | Medium |
+| 8 | `08-entry-screen-and-preview.md` | 1, 2 | Medium - **v1 done** (external/internal/rack only; helical/herringbone/chain/planetary/bevel UI, multi-gear preview, and `GearGroup` colour-coding deferred to their own workstreams per that file's own scoped-down note) |
 | 9 | `09-presets.md` | 8 | Low |
 | 10 | `10-bevel-gear.md` | 1 | Highest in project |
 | 11 | `11-bevel-pair.md` | 10 | High |

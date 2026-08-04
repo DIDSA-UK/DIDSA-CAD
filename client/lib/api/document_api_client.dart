@@ -718,6 +718,66 @@ class NativeImportResultDto {
       );
 }
 
+/// `docs/gear-design/08-entry-screen-and-preview.md`: the wire counterpart
+/// to the backend's `GearPreviewResponse` - [outlinePoints] is the full 2D
+/// tooth-outline polyline (local frame, centred on the origin) the live
+/// preview canvas draws directly; the rest are the reference-circle
+/// overlay's own numbers. [pitchRadius]/[baseRadius]/[addendumRadius]/
+/// [dedendumRadius]/[outerRadius] are only non-null for `gearKind`
+/// `"external"`/`"internal"`; [pitchLineY]/[addendumLineY]/[dedendumLineY]/
+/// [rackLength] only for `"rack"` - see the backend response's own doc
+/// comment for why a rack has lines, not circles. [warnings] carries every
+/// non-blocking `gear_math` validation (e.g. undercut risk) per
+/// `00-conventions.md`'s validation-banner convention - a parameter
+/// combination with no valid geometry at all is a 422 [ApiException]
+/// instead, never a response with [warnings] set.
+class GearPreviewDto {
+  final String gearKind;
+  final List<List<double>> outlinePoints;
+  final double? pitchRadius;
+  final double? baseRadius;
+  final double? addendumRadius;
+  final double? dedendumRadius;
+  final double? outerRadius;
+  final double? pitchLineY;
+  final double? addendumLineY;
+  final double? dedendumLineY;
+  final double? rackLength;
+  final List<String> warnings;
+
+  GearPreviewDto({
+    required this.gearKind,
+    required this.outlinePoints,
+    this.pitchRadius,
+    this.baseRadius,
+    this.addendumRadius,
+    this.dedendumRadius,
+    this.outerRadius,
+    this.pitchLineY,
+    this.addendumLineY,
+    this.dedendumLineY,
+    this.rackLength,
+    this.warnings = const [],
+  });
+
+  factory GearPreviewDto.fromJson(Map<String, dynamic> json) => GearPreviewDto(
+        gearKind: json['gear_kind'] as String,
+        outlinePoints: (json['outline_points'] as List)
+            .map((p) => (p as List).map((v) => (v as num).toDouble()).toList())
+            .toList(),
+        pitchRadius: (json['pitch_radius'] as num?)?.toDouble(),
+        baseRadius: (json['base_radius'] as num?)?.toDouble(),
+        addendumRadius: (json['addendum_radius'] as num?)?.toDouble(),
+        dedendumRadius: (json['dedendum_radius'] as num?)?.toDouble(),
+        outerRadius: (json['outer_radius'] as num?)?.toDouble(),
+        pitchLineY: (json['pitch_line_y'] as num?)?.toDouble(),
+        addendumLineY: (json['addendum_line_y'] as num?)?.toDouble(),
+        dedendumLineY: (json['dedendum_line_y'] as num?)?.toDouble(),
+        rackLength: (json['rack_length'] as num?)?.toDouble(),
+        warnings: (json['warnings'] as List?)?.cast<String>() ?? const [],
+      );
+}
+
 /// Thin wrapper over the backend's `/document` REST API - same shape and
 /// conventions as [SketchApiClient], kept as a separate client rather than
 /// merged into it because it talks to a different backend router
@@ -771,8 +831,17 @@ class DocumentApiClient {
   String _detailOf(http.Response response) {
     try {
       final decoded = jsonDecode(response.body);
-      if (decoded is Map<String, dynamic> && decoded['detail'] is String) {
-        return decoded['detail'] as String;
+      if (decoded is Map<String, dynamic>) {
+        final detail = decoded['detail'];
+        if (detail is String) return detail;
+        // Every gear/rack-feature (and now `/gear/preview`) failure uses a
+        // structured `{"type": ..., "detail": "..."}` shape (see the
+        // backend's `app.document.gear._invalid_gear_parameters` and its
+        // siblings) rather than a plain string - surface the inner
+        // human-readable detail instead of the raw dict.
+        if (detail is Map<String, dynamic> && detail['detail'] is String) {
+          return detail['detail'] as String;
+        }
       }
     } catch (_) {
       // Not JSON (or no `detail` field) - fall through to the raw body.
@@ -1478,6 +1547,122 @@ class DocumentApiClient {
               body: jsonEncode({
                 'source_format': sourceFormat,
                 'data_base64': base64Encode(bytes),
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// `docs/gear-design/08-entry-screen-and-preview.md`: the cheap
+  /// `/gear/preview` endpoint - runs only `gear_math` server-side (no OCCT,
+  /// no tessellation), cheap enough to call on every debounced keystroke
+  /// while [GearDesignScreen]'s form is being edited. [gearKind] is
+  /// `'external'`/`'internal'`/`'rack'` - the only two Feature types that
+  /// exist yet (see that workstream's own scoped-down v1 note); a future
+  /// gear type widens this to one more string value, not a new method.
+  /// [outerDiameter] is required for `'internal'`, [backingHeight] optional
+  /// for `'rack'` (omitted resolves to the backend's own default) - same
+  /// rules [createGearFeature]/[createRackFeature] themselves enforce.
+  Future<GearPreviewDto> previewGear({
+    required String gearKind,
+    required double module,
+    required int toothCount,
+    double pressureAngleDegrees = 20.0,
+    double profileShift = 0.0,
+    double backlash = 0.0,
+    double? outerDiameter,
+    double? backingHeight,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/gear/preview'),
+              headers: _headers,
+              body: jsonEncode({
+                'gear_kind': gearKind,
+                'module': module,
+                'tooth_count': toothCount,
+                'pressure_angle_degrees': pressureAngleDegrees,
+                'profile_shift': profileShift,
+                'backlash': backlash,
+                if (outerDiameter != null) 'outer_diameter': outerDiameter,
+                if (backingHeight != null) 'backing_height': backingHeight,
+              }),
+            ),
+        (body) => GearPreviewDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// `docs/gear-design/02-gear-feature.md`: creates the real `GearFeature`
+  /// (external or internal involute spur gear) once the user hits "Create"
+  /// on [GearDesignScreen] - [planeRef] omitted defaults to the fixed XY
+  /// plane at the backend, same as every other call site that leaves it
+  /// unset. [outerDiameter] is required when [isInternal] is true,
+  /// rejected otherwise (`_validate_gear_feature_payload`).
+  Future<FeatureDto> createGearFeature(
+    String partId, {
+    required String gearType,
+    required bool isInternal,
+    required double module,
+    required int toothCount,
+    required double faceWidth,
+    double pressureAngleDegrees = 20.0,
+    double profileShift = 0.0,
+    double backlash = 0.0,
+    double rootFilletRadius = 0.0,
+    double? outerDiameter,
+    PlaneRefDto? planeRef,
+    List<String> targetBodyIds = const [],
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/gear-features'),
+              headers: _headers,
+              body: jsonEncode({
+                if (planeRef != null) 'plane_ref': planeRef.toJson(),
+                'gear_type': gearType,
+                'is_internal': isInternal,
+                'module': module,
+                'tooth_count': toothCount,
+                'face_width': faceWidth,
+                'pressure_angle_degrees': pressureAngleDegrees,
+                'profile_shift': profileShift,
+                'backlash': backlash,
+                'root_fillet_radius': rootFilletRadius,
+                if (outerDiameter != null) 'outer_diameter': outerDiameter,
+                'target_body_ids': targetBodyIds,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// `docs/gear-design/03-rack.md`: creates the real `RackFeature` once the
+  /// user hits "Create" on [GearDesignScreen] with `gearKind == 'rack'` -
+  /// mirrors [createGearFeature]'s exact shape. [backingHeight] omitted
+  /// resolves to `2 * module` at the backend.
+  Future<FeatureDto> createRackFeature(
+    String partId, {
+    required String rackType,
+    required double module,
+    required int toothCount,
+    required double faceWidth,
+    double pressureAngleDegrees = 20.0,
+    double backlash = 0.0,
+    double? backingHeight,
+    PlaneRefDto? planeRef,
+    List<String> targetBodyIds = const [],
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/rack-features'),
+              headers: _headers,
+              body: jsonEncode({
+                if (planeRef != null) 'plane_ref': planeRef.toJson(),
+                'rack_type': rackType,
+                'module': module,
+                'tooth_count': toothCount,
+                'face_width': faceWidth,
+                'pressure_angle_degrees': pressureAngleDegrees,
+                'backlash': backlash,
+                if (backingHeight != null) 'backing_height': backingHeight,
+                'target_body_ids': targetBodyIds,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

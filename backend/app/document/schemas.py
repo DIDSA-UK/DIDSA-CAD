@@ -904,6 +904,65 @@ class RackFeatureResponse(BaseModel):
     produces: Produces
 
 
+class GearPreviewRequest(BaseModel):
+    """`docs/gear-design/08-entry-screen-and-preview.md`: the cheap
+    `/gear/preview` endpoint's request - runs only `gear_math`, no OCCT, so
+    it's cheap enough to call on every debounced keystroke while the entry
+    screen's form is still being edited. `gear_kind` is the discriminator
+    (`"external"`/`"internal"`/`"rack"` today - the only two Feature types
+    that exist yet, per this workstream's own scoped-down v1; a future
+    gear type adds one more literal value here plus a new branch in
+    `app.document.router._gear_preview_response`, not a new endpoint).
+
+    Deliberately excludes anything `plane_ref`/positioning-related (the
+    preview is always drawn in its own local 2D frame, centred on the
+    origin - positioning only matters once "Create" builds the real
+    Feature) and `root_fillet_radius` (cosmetic only at the OCCT
+    construction stage - `gear_math.tooth_profile_points` never uses it,
+    so it has no effect on this endpoint's own output)."""
+
+    gear_kind: Literal["external", "internal", "rack"]
+    module: float
+    tooth_count: int
+    pressure_angle_degrees: float = 20.0
+    profile_shift: float = 0.0
+    backlash: float = 0.0
+    # Required when gear_kind == "internal" (the ring's own rim diameter),
+    # meaningless otherwise - same rule as `GearFeatureCreate.outer_diameter`.
+    outer_diameter: float | None = None
+    # Rack only; None resolves to `default_rack_backing_height(module)`,
+    # same convention as `RackFeatureCreate.backing_height`.
+    backing_height: float | None = None
+
+
+class GearPreviewResponse(BaseModel):
+    """`outline_points` is the full 2D tooth-outline polyline (world/local
+    frame, gear or rack centred on the origin) for the live preview canvas
+    to draw directly. The rest are the reference-circle overlay's own
+    numbers - `pitch_radius`/`base_radius`/`addendum_radius`/
+    `dedendum_radius`/`outer_radius` for `"external"`/`"internal"` (a rack
+    has no such circles, so these stay null for `gear_kind == "rack"`);
+    `pitch_line_y`/`addendum_line_y`/`dedendum_line_y`/`rack_length` for
+    `"rack"` instead (null for the two gear kinds). `warnings` carries every
+    non-blocking `gear_math` validation (currently just undercut risk) per
+    `00-conventions.md`'s validation-banner convention - a `GearGeometryError`
+    with no valid geometry at all raises a 422 instead of landing here at
+    all, matching that same doc's stated blocking exception."""
+
+    gear_kind: Literal["external", "internal", "rack"]
+    outline_points: list[tuple[float, float]]
+    pitch_radius: float | None = None
+    base_radius: float | None = None
+    addendum_radius: float | None = None
+    dedendum_radius: float | None = None
+    outer_radius: float | None = None
+    pitch_line_y: float | None = None
+    addendum_line_y: float | None = None
+    dedendum_line_y: float | None = None
+    rack_length: float | None = None
+    warnings: list[str] = []
+
+
 FeatureResponse = Union[
     SketchFeatureResponse,
     ExtrudeFeatureResponse,

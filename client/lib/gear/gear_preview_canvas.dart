@@ -1,0 +1,160 @@
+import 'dart:math' as math;
+
+import 'package:flutter/material.dart';
+
+import '../api/document_api_client.dart';
+
+/// `docs/gear-design/08-entry-screen-and-preview.md`'s live 2D preview -
+/// draws the tooth-outline polyline straight from a [GearPreviewDto]
+/// (already computed server-side by `/gear/preview`, no client-side gear
+/// math at all - `00-conventions.md`'s "don't duplicate the math
+/// client-side" point), plus the reference-circle/line overlay
+/// (`showReferenceOverlay`, toggleable, on by default) drawn from the same
+/// response.
+class GearPreviewCanvas extends StatelessWidget {
+  final GearPreviewDto? preview;
+  final bool showReferenceOverlay;
+
+  const GearPreviewCanvas({super.key, required this.preview, required this.showReferenceOverlay});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: const Color(0xFF12121C),
+      // On-device feedback (caught by actually running this screen, not by
+      // `flutter analyze`/widget tests alone): a childless `CustomPaint` has
+      // no intrinsic size and collapses to zero inside this `Row`'s
+      // `Expanded` - `Expanded` only forces tight *width*, not height, so
+      // with no child the whole canvas silently vanished the moment a real
+      // preview loaded (the "enter valid parameters" placeholder `Text`
+      // happened to force a size while `preview == null`, masking the bug
+      // until a valid preview actually arrived). `SizedBox.expand` makes
+      // this fill its parent unconditionally, child or not.
+      child: SizedBox.expand(
+        child: CustomPaint(
+          painter: _GearPreviewPainter(preview: preview, showReferenceOverlay: showReferenceOverlay),
+          child: preview == null
+              ? const Center(
+                  child: Text('Enter valid parameters to see a preview', style: TextStyle(color: Colors.white38)),
+                )
+              : null,
+        ),
+      ),
+    );
+  }
+}
+
+class _GearPreviewPainter extends CustomPainter {
+  final GearPreviewDto? preview;
+  final bool showReferenceOverlay;
+
+  _GearPreviewPainter({required this.preview, required this.showReferenceOverlay});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final preview = this.preview;
+    if (preview == null || preview.outlinePoints.isEmpty) return;
+
+    // Auto-fit scale/pan: every gear/rack kind is centred on the origin in
+    // its own local frame (see the backend's `full_gear_profile_points`/
+    // `full_rack_profile_points`), so the extent to fit is just the largest
+    // |x|/|y| seen across the outline plus (when shown) the overlay's own
+    // reference circles/lines - an internal gear's `outer_radius` in
+    // particular reaches further out than its own tooth outline does.
+    double maxExtent = 1.0;
+    for (final point in preview.outlinePoints) {
+      maxExtent = math.max(maxExtent, math.max(point[0].abs(), point[1].abs()));
+    }
+    if (showReferenceOverlay) {
+      for (final radius in [
+        preview.pitchRadius,
+        preview.baseRadius,
+        preview.addendumRadius,
+        preview.dedendumRadius,
+        preview.outerRadius,
+      ]) {
+        if (radius != null) maxExtent = math.max(maxExtent, radius);
+      }
+      if (preview.rackLength != null) maxExtent = math.max(maxExtent, preview.rackLength! / 2);
+    }
+
+    final scale = (math.min(size.width, size.height) / 2) * 0.85 / maxExtent;
+    final center = Offset(size.width / 2, size.height / 2);
+    // Flip y: gear_math's +y is "up", Canvas's +y is "down".
+    Offset toCanvas(double x, double y) => center + Offset(x * scale, -y * scale);
+
+    if (showReferenceOverlay) _paintReferenceOverlay(canvas, preview, toCanvas);
+
+    final outlinePaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..color = Colors.white;
+    final path = Path()..moveTo(toCanvas(preview.outlinePoints.first[0], preview.outlinePoints.first[1]).dx,
+        toCanvas(preview.outlinePoints.first[0], preview.outlinePoints.first[1]).dy);
+    for (final point in preview.outlinePoints.skip(1)) {
+      final canvasPoint = toCanvas(point[0], point[1]);
+      path.lineTo(canvasPoint.dx, canvasPoint.dy);
+    }
+    path.close();
+    canvas.drawPath(path, outlinePaint);
+  }
+
+  void _paintReferenceOverlay(
+    Canvas canvas,
+    GearPreviewDto preview,
+    Offset Function(double, double) toCanvas,
+  ) {
+    final refPaint = Paint()..style = PaintingStyle.stroke..strokeWidth = 1;
+
+    // On-device feedback: `canvas.drawCircle` rendered as a filled bounding
+    // square rather than a stroked circle under this project's Impeller/
+    // software-GL toolchain (Flutter master channel, required for
+    // `flutter_scene` compatibility - see `.github/workflows/client-verify.
+    // yml`'s own "volatile channel" caveat) - a sampled `Path` (the same
+    // primitive the tooth outline above already uses, and already confirmed
+    // correct on-device) sidesteps it entirely rather than depending on a
+    // draw call this toolchain doesn't render right.
+    void drawCircle(double? radius, Color color) {
+      if (radius == null) return;
+      const sampleCount = 72;
+      final path = Path();
+      for (var i = 0; i <= sampleCount; i++) {
+        final angle = 2 * math.pi * i / sampleCount;
+        final point = toCanvas(radius * math.cos(angle), radius * math.sin(angle));
+        if (i == 0) {
+          path.moveTo(point.dx, point.dy);
+        } else {
+          path.lineTo(point.dx, point.dy);
+        }
+      }
+      canvas.drawPath(path, refPaint..color = color);
+    }
+
+    drawCircle(preview.outerRadius, Colors.purpleAccent);
+    drawCircle(preview.addendumRadius, Colors.lightGreenAccent);
+    drawCircle(preview.pitchRadius, Colors.lightBlueAccent);
+    drawCircle(preview.baseRadius, Colors.orangeAccent);
+    drawCircle(preview.dedendumRadius, Colors.redAccent);
+
+    final rackLength = preview.rackLength;
+    if (rackLength != null) {
+      final halfSpan = rackLength / 2 + rackLength * 0.1;
+
+      void drawLine(double? y, Color color) {
+        if (y == null) return;
+        final path = Path()
+          ..moveTo(toCanvas(-halfSpan, y).dx, toCanvas(-halfSpan, y).dy)
+          ..lineTo(toCanvas(halfSpan, y).dx, toCanvas(halfSpan, y).dy);
+        canvas.drawPath(path, refPaint..color = color);
+      }
+
+      drawLine(preview.addendumLineY, Colors.lightGreenAccent);
+      drawLine(preview.pitchLineY, Colors.lightBlueAccent);
+      drawLine(preview.dedendumLineY, Colors.redAccent);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _GearPreviewPainter oldDelegate) =>
+      oldDelegate.preview != preview || oldDelegate.showReferenceOverlay != showReferenceOverlay;
+}
