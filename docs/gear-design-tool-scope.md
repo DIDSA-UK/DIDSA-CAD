@@ -210,6 +210,20 @@ Client: `client/lib/viewport3d/*` (3D Feature panels/selection),
     `GearChainFeature`, rather than the chain's own bent-path/interference
     machinery (built around one shared plane) being extended to a
     structurally different intersecting-axis case. See Workstream 11.
+18. **Positioning: every gear-producing Feature owns a `plane_ref:
+    PlaneRef` directly** (not routed through a Sketch, since gear teeth
+    aren't Sketch entities), defaulting to the fixed XY plane, always
+    shown and overridable on the Gear Design screen, never silently
+    chosen — a real gap found by walking a full user flow end to end
+    rather than something scoped up front. Resolved once in Workstream 2,
+    applies identically to Workstreams 5/10/11. See Workstream 2.
+19. **Confirmed, not a new decision: downstream Features (Cut for a
+    keyway/fixing holes, Fillet, Pattern, ...) already work on any
+    gear-producing Feature's output Body with zero new work**, since every
+    gear Feature registers ordinary Bodies via the same generic
+    `target_body_ids`/`SubShapeRef` machinery every other Feature already
+    uses — this app's modular architecture already guarantees it, nothing
+    in this doc's design creates an exception. See Workstream 2.
 
 ---
 
@@ -283,6 +297,66 @@ module (mm), tooth count, pressure angle, face width (extrude depth),
 profile shift, backlash, root fillet radius, and (internal only) rim/outer
 diameter. `app/document/gear.py` (OCCT-dependent half) turns `gear_math`'s
 sampled profile points into OCCT edges/wire.
+
+**Positioning — resolved, a real gap found by walking a full user flow
+end to end.** `GearFeature` doesn't route through a `SketchFeature` at all
+(the whole point of §1's "gear teeth are not Sketch entities" decision), so
+unlike `ExtrudeFeature` — which gets its plane for free via the Sketch it
+extrudes — `GearFeature` must own a **`plane_ref: PlaneRef`** field
+directly (the exact same reusable type Mirror/`GearChainFeature`/
+`BevelPairFeature` already anchor against — a fixed XY/XZ/YZ plane, a Body
+face, or an existing `CreatePlaneFeature`; no new reference kind
+invented). The profile is built directly in that plane's local (x, y) —
+via its real, right-handed `x_axis`/`y_axis` basis, per `ResolvedPlane` —
+then extruded along its normal, mirroring `ExtrudeFeature`'s own
+`start_distance`/`end_distance`-from-plane convention exactly.
+
+**Default value, resolved**: the Gear Design screen's plane field is a
+full `PlaneRef` picker (same component the rest of the app's plane-
+reference fields already use — Mirror's mirror-plane input, Create
+Plane's own face-anchor option), pre-filled to the fixed XY plane and
+always visibly shown, never silently chosen — consistent with this app's
+existing convention that *no* Sketch-anchored feature anywhere ever
+defaults to a plane invisibly (every existing Extrude/Revolve/Sweep/New
+Sketch flow requires an explicit, visible plane pick; XY-prefilled-and-
+overridable is the same "sensible default, always visible, always
+editable" pattern this doc already uses for module/pressure-angle
+dropdowns, not a new UX idea). This resolves cleanly whether or not a Part
+is already open: the fixed-plane case of `PlaneRef` needs no existing
+Part geometry to resolve at all, so arriving fresh from the `ToolChooser
+Screen` splash tile with no Part open yet needs no special-casing — a new
+Part is still created lazily at "Create," exactly as Workstream 8 already
+described, just now with an explicit (if pre-filled) plane choice feeding
+into it rather than an unstated one. Applies identically to
+`GearChainFeature`/`PlanetaryGearFeature` (Workstream 5, already named
+`PlaneRef` reuse but never specified the default) and `BevelGearFeature`/
+`BevelPairFeature` (Workstream 10/11, apex + primary-axis anchor via the
+same type) — resolved once here rather than five separate times.
+
+**Confirmed: downstream Features work on gear Bodies with zero new work,
+by construction.** Every gear-producing Feature in this doc follows the
+same six-part checklist as `ExtrudeFeature`/`PatternFeature`/every other
+Feature type (§1) and registers its output as an ordinary `Body` — real
+OCCT topology (real faces/edges/vertices), the same `#N`-suffix multi-body
+convention `ExtrudeFeature`/`PatternFeature` already use. Nothing about a
+gear Body is special or restricted: `target_body_ids` (Extrude Cut,
+Fillet, Chamfer), `SubShapeRef` (a face for a new Sketch, a Fillet/Chamfer
+edge pick), and Pattern/Mirror's own `source_body_ids` are all already
+generic across *any* Body regardless of which upstream Feature produced
+it — this app's whole modular architecture (§ project-brief.md's "each
+module... only depends on well-defined inputs/outputs") depends on that
+being true, and nothing in this doc's design introduces an exception to
+it. Concretely, for a keyway or fixing holes on one gear of a pair: a new
+Sketch on a face of *that specific gear's* Body (its own `#N`-suffixed
+id, individually targetable exactly like one Pattern instance already is
+today — see Workstream 5's own note), draw the cut profile, `ExtrudeFeature`
+with `mode=CUT` targeting that Body id. No gear-specific tooling needed —
+this is the exact same "Sketch on Face → Cut" flow the app already has for
+any Body. The one thing that *is* standard, expected behaviour rather than
+a gear-specific limitation: once a Cut is stacked on top of a gear
+Feature, `Part.is_locked` applies exactly as it does to every other
+Feature — editing the gear's own tooth count/module afterward needs the
+existing rollback mechanic, same as editing any earlier Feature in any Part.
 
 **Curve representation — resolved, not left open** (see §6's earlier note,
 now settled): each tooth flank is built as one real `Geom_BSplineCurve`
@@ -864,7 +938,10 @@ bevel gear doesn't know its future meshing partner, so it can't derive its
 own cone angle the way Workstream 11's pairing system will — Workstream 11
 computes and sets this automatically when generating a pair together,
 mirroring how `GearChainFeature` computes center distance rather than
-having the user enter it).
+having the user enter it). Anchored the same way as every other gear
+Feature — a `plane_ref: PlaneRef` (apex = plane origin, primary axis =
+plane normal), defaulting to the fixed XY plane, per Workstream 2's
+positioning resolution.
 
 **Complexity/risk:** the highest in this entire document, worth saying
 plainly rather than folding into a generic "high" alongside everything
