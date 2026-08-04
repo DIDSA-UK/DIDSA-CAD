@@ -109,13 +109,14 @@ Client: `client/lib/viewport3d/*` (3D Feature panels/selection),
    constraint-solved Sketch. DXF export/import remain required, but as
    secondary outputs/inputs, not the mechanism that produces the 3D shape.
 2. **V1 scope: external, internal, rack-and-pinion, helical, herringbone,
-   and planetary sets together** (not phased planar-first). Bevel is
-   explicitly carved out.
-3. **Bevel gears: deferred to a dedicated later phase, targeting true
-   spherical-involute tooth surfaces** (not the cheaper loft-of-scaled-
-   flat-profiles approximation most hobbyist tools use). Flagged as
-   realistically the single largest chunk of effort in this whole area —
-   see §5.
+   and planetary sets together** (not phased planar-first). ~~Bevel is
+   explicitly carved out~~ — **superseded, see decisions 14-17 below**:
+   straight bevel was later pulled into v1 too, leaving only spiral/
+   Zerol/hypoid bevel variants genuinely deferred.
+3. ~~Bevel gears: deferred to a dedicated later phase~~ — **superseded**,
+   see decisions 14-17. Targeting true spherical-involute tooth surfaces
+   (not the cheaper loft-of-scaled-flat-profiles approximation most
+   hobbyist tools use) still holds; the *timing* decision changed.
 4. **DXF import: full "block" semantics.** A DXF import lands as one
    selectable/movable/rotatable/scalable unit in its own home sketch, while
    individual curves become pickable elsewhere via the existing Convert
@@ -147,7 +148,7 @@ Client: `client/lib/viewport3d/*` (3D Feature panels/selection),
    re-derivable Feature each — `GearChainFeature`/`PlanetaryGearFeature` —
    not a one-shot orchestration that creates independent Features once.**
    Reverses this doc's original Workstream 5 draft; resolves what had been
-   an open §7 question. Mirrors Pattern/Mirror's existing "one Feature,
+   an open §6 question. Mirrors Pattern/Mirror's existing "one Feature,
    many realized Bodies, recomputed fresh every time" pattern, so editing
    one gear's tooth count live-repositions/resizes the rest, for free, from
    the existing dependency graph — no new live-linking mechanism needed.
@@ -191,6 +192,24 @@ Client: `client/lib/viewport3d/*` (3D Feature panels/selection),
     members default to fusing into one Body (reusing Pattern/Mirror's
     existing `MergeMode`, not a new mechanism), overridable to stay
     separate. See Workstream 5's "Compound gears" note.
+14. **Bevel gears: straight bevel only, pulled into v1** — spiral/Zerol/
+    hypoid bevel variants remain deferred as their own further-later phase
+    (a materially bigger leap, arguably harder than every other workstream
+    in this doc combined). See Workstream 10.
+15. **Bevel shaft angle: arbitrary, not restricted to 90°.** The pitch-cone
+    formula is built general from the start (`γ1 = atan(sin(Σ) / (N2/N1 +
+    cos(Σ)))`), not the simpler 90°-only special case. See Workstream 10.
+16. **Bevel pairing: a full automated, live `BevelPairFeature`** — not a
+    standalone `BevelGearFeature` manually positioned twice. Mirrors
+    `GearChainFeature`/`PlanetaryGearFeature`'s own live, re-derivable
+    pattern, scoped as a pair specifically (exactly 2 members), not a
+    generalized N-stage bevel chain. See Workstream 11.
+17. **`BevelPairFeature` kept fully separate from `GearChainFeature`** —
+    no bevel stage kind added to the planar chain. A chain that needs to
+    turn a 3D corner places a `BevelPairFeature` alongside a
+    `GearChainFeature`, rather than the chain's own bent-path/interference
+    machinery (built around one shared plane) being extended to a
+    structurally different intersecting-axis case. See Workstream 11.
 
 ---
 
@@ -265,7 +284,7 @@ profile shift, backlash, root fillet radius, and (internal only) rim/outer
 diameter. `app/document/gear.py` (OCCT-dependent half) turns `gear_math`'s
 sampled profile points into OCCT edges/wire.
 
-**Curve representation — resolved, not left open** (see §7's earlier note,
+**Curve representation — resolved, not left open** (see §6's earlier note,
 now settled): each tooth flank is built as one real `Geom_BSplineCurve`
 interpolated through `gear_math`'s sampled involute points (`GeomAPI_
 Interpolate`), not a polyline of short straight edges. This matters beyond
@@ -425,7 +444,7 @@ after the first carries its own turn angle (relative to the previous
 segment's direction, within the chain's own plane — reusing `PlaneRef` for
 that plane, same as Mirror's mirror-plane input already does, no new
 reference type needed) rather than every stage defaulting to one straight
-line. **Turn-angle UX — resolved** (was open, see §7): one always-visible
+line. **Turn-angle UX — resolved** (was open, see §6): one always-visible
 numeric field per stage after the first, default 0° = continue straight
 (no reveal/hide toggle — the default already gives a straight chain for
 free), plus one chain-level "start direction" field for stage 1→2's own
@@ -742,28 +761,138 @@ resolving in this scope doc).
 
 ---
 
-## 5. Bevel gears (deferred phase, targeting true spherical-involute geometry)
+### Workstream 10 — Bevel gear math + `BevelGearFeature` (straight bevel)
 
-Explicitly out of the initial delivery per §2 decision 3, recorded here so
-the reasoning isn't lost: a true involute bevel tooth flank is a
-**spherical involute**, generated by rolling a plane on a base cone rather
-than a base cylinder — the tooth profile genuinely changes shape along the
-face width (it does not scale uniformly the way a simple "shrink toward
-the apex" loft would suggest), and real bevel gear manufacture (Gleason/
-Klingelnberg-style) uses additional corrections (lengthwise crowning, tooth
-taper) beyond the base spherical-involute form that this scope deliberately
-leaves for a later decision. Building this properly is realistically the
-single largest chunk of geometry-kernel work in the whole gear tool —
-expect it to need its own dedicated scoping pass (own math derivation, own
-OCCT construction strategy — most likely sampling the spherical involute
-directly as 3D points rather than any 2D-profile-plus-extrude/loft
-technique the other gear types use) once Workstreams 1-9 are live and there's
-a working gear tool to extend rather than build bevel support into
-speculatively now.
+**Pulled into v1** (revised from this doc's original "deferred phase"
+treatment, per an explicit later decision — straight bevel only, not
+spiral/Zerol/hypoid, which stay deferred as their own further-later phase;
+see §2 decisions 14-17). This workstream is where this doc's original
+"needs its own dedicated scoping pass" note (recorded when bevel was still
+deferred) finally gets done, rather than staying a placeholder.
+
+**Why this is structurally unlike every other gear type in this doc.**
+Every other gear type builds a flat 2D tooth profile and turns it into a
+solid via an operation this codebase already has some version of (Extrude
+for external/internal/rack, Sweep/Loft for helical/herringbone). A bevel
+tooth has no such flat profile at all — its flank is a genuinely 3D
+curved surface on a cone, so there's no "make the 2D shape, then run an
+existing operation" shortcut. The math and the OCCT construction are both
+real, first-time work for this codebase.
+
+**Math** (`app/document/bevel_math.py`, OCCT-free, mirrors `gear_math.py`'s
+own split): the **spherical involute** — a curve generated by rolling a
+plane on a base cone (rather than a base cylinder, as the planar involute
+does), living on the surface of a sphere centred at the cone apex, not in
+a flat plane. Also: pitch cone half-angles from tooth counts and shaft
+angle (`γ1 = atan(sin(Σ) / (N2/N1 + cos(Σ)))`, `γ2 = Σ − γ1` — the general
+form for **arbitrary shaft angle Σ**, per this round's decision; reduces
+to the familiar `γ1 = atan(N1/N2)` at Σ=90°, a useful known-value check for
+the test suite this needs); addendum/dedendum cone angles; and a face-width
+bound relative to cone distance (a face width too large relative to the
+cone distance thins the tooth toward degeneracy near the apex — needs a
+real bounds check, non-blocking-banner warning, same convention as every
+other gear validation in this doc, not a hard limit). Like Workstream 1,
+this needs a real reference-value test suite (known standard bevel gear
+dimensions), not just "it runs" — arguably more important here than
+anywhere else in this doc, since there's no existing precedent anywhere in
+this codebase to sanity-check the derivation against.
+
+**OCCT construction** (`app/document/bevel.py`): sample the spherical
+involute at the outer (back) cone and at the inner cone (back cone
+distance − face width) — two genuine 3D space curves per tooth flank on
+the generating sphere, not planar profiles — then build each flank as a
+ruled/lofted surface between them. `BRepOffsetAPI_ThruSections` (already
+scoped for Workstream 4b's Loft) may actually be reusable here after all —
+it isn't strictly limited to planar cross-sections — but this is
+genuinely unconfirmed and needs its own spike, not an assumption, since
+self-intersection risk on a tight cone is real. Full gear body assembly
+(N teeth around the cone, flank surfaces stitched into a closed shell,
+addendum/dedendum cone surfaces capping top and bottom) is real BRep
+shell/solid construction from curved surfaces directly — closer to
+raw kernel work than any other Feature in this codebase, all of which
+extrude/revolve/sweep/loft a profile rather than assembling a shell from
+scratch.
+
+**`BevelGearFeature`**: six-part checklist as usual. Parameters: module
+(back-cone equivalent), tooth count, pressure angle, face width, backlash,
+profile shift, and **pitch cone angle as a direct field** (a standalone
+bevel gear doesn't know its future meshing partner, so it can't derive its
+own cone angle the way Workstream 11's pairing system will — Workstream 11
+computes and sets this automatically when generating a pair together,
+mirroring how `GearChainFeature` computes center distance rather than
+having the user enter it).
+
+**Complexity/risk:** the highest in this entire document, worth saying
+plainly rather than folding into a generic "high" alongside everything
+else. Every other hard item in this doc found something existing to reuse
+— `PlaneRef`, `MergeMode`, Pattern/Mirror's multi-body pattern,
+`RevolveFeature`'s angle convention, `ExternalVertexReference`. Bevel
+construction largely can't: there's no shell-from-curved-surfaces
+precedent anywhere in this codebase to build on. Budget real, dedicated
+spike time before committing the rest of Workstream 11 to depend on this
+approach working.
+
+### Workstream 11 — `BevelPairFeature`: automated live bevel pairing
+
+**Pulled into v1**, and scoped as a **pair specifically (exactly 2
+members), not a generalized N-stage chain** — deliberately narrower than
+`GearChainFeature`. Bevel trains longer than two gears are a genuinely
+rarer, more exotic case than planar chains, and routing a 3D path through
+multiple arbitrary shaft angles would import all of `GearChainFeature`'s
+bent-path/interference-check complexity into a second, geometrically
+unrelated (intersecting-axis, not parallel/coplanar) case — a much bigger
+scope expansion than "mirror what GearChainFeature does" was asking for.
+If a longer bevel train turns out to be wanted later, it's an additive
+extension of this Feature type, not a redesign.
+
+Mirrors `GearChainFeature`/`PlanetaryGearFeature`'s own live,
+re-derivable pattern (one Feature, resolved fresh into multiple Bodies on
+every recompute, via the same Pattern/Mirror precedent) — editing one
+gear's tooth count live-recomputes both members' pitch cone angles and
+repositions/resizes automatically. Module and pressure-angle are **flat
+shared fields on the Feature itself, not a `GearGroup` reference** —
+deliberately simpler than `GearChainFeature`'s own group indirection,
+since a pair always has exactly two members that always mesh with each
+other; there's no third station for a module change to happen at, so
+`GearGroup`'s whole reason to exist (module changing partway through a
+chain) doesn't apply here. Shaft angle: user-specified, **arbitrary** per
+this round's decision, feeding directly into Workstream 10's cone-angle
+formula. Position: apex-aligned — both gears' cone apexes coincide at one
+point, axes intersecting at the specified shaft angle, anchored via a
+`PlaneRef` for the apex/primary-axis orientation (reusing the same
+reference type Mirror/`GearChainFeature` already use, no new reference
+kind invented). Interference checking: **not needed at all** — with
+exactly two members that are always the intended meshing pair, there's no
+"non-adjacent stage" case for `GearChainFeature`'s own interference
+machinery to apply to; a genuine simplification worth stating explicitly
+rather than leaving as a silent gap.
+
+**Kept fully separate from `GearChainFeature`**, per this round's decision
+— a chain that needs to turn a real 3D corner places a `BevelPairFeature`
+alongside a `GearChainFeature` rather than the chain gaining a bevel stage
+kind. Avoids extending the already-high-risk bent-path/interference-check
+work (designed around one shared plane) to a structurally different
+intersecting-axis case it was never built to handle.
+
+**A real unresolved unknown, same shape as the compound-gear DXF
+question**: a bevel gear has no flat 2D "cut profile" the way planar gears
+do — its teeth are curved 3D surfaces on a cone, not extruded from an
+outline. Likely resolution: represent a bevel gear's DXF export as the
+back-cone tooth profile's **flat pattern/development** (a cone "unrolled"
+flat — a standard bevel-gear drafting technique real technical drawings
+already use), which is itself new geometry work (computing a cone's flat
+development), distinct from anything else Workstream 6 needs for planar
+gears. Needs resolving during this workstream, not assumed.
+
+**Complexity/risk:** high — real new positioning/validation logic
+(simpler than `GearChainFeature`'s own in some ways, per the no-
+interference-check simplification above, but built on Workstream 10's
+still-unproven construction approach) plus the DXF flat-pattern question
+above, itself unspiked.
 
 ---
 
-## 6. Suggested delivery order
+## 5. Suggested delivery order
 
 1. **Workstream 1** (gear math core) — no dependencies, fully unit-testable
    in this dev sandbox today, and everything else depends on it.
@@ -775,11 +904,10 @@ speculatively now.
    9** (client-local presets) is a small, independent add-on once
    Workstream 8's form exists — no dependency ordering pressure either way.
 4. **Workstream 3** (rack/rack-and-pinion) — cheap extension of Workstream 2.
-5. **Three parallel spikes, all specifically *because* they're the
+5. **Four parallel spikes, all specifically *because* they're the
    highest-risk unknowns** — better to find a showstopper early than after
-   committing. v1 now carries three separate "genuinely new OCCT/geometry
-   technique" items (up from two, per the decision to pull compound
-   geometry into v1 rather than defer it):
+   committing. v1 now carries four separate "genuinely new OCCT/geometry
+   technique" items in total (up from two at this doc's original draft):
    - **Workstream 4b** (Loft/helix-sweep feasibility for helical teeth).
    - **Workstream 5's `GearChainFeature` bent-path + interference-check
      approach** — a small standalone spike (a handful of stages, a couple
@@ -792,25 +920,43 @@ speculatively now.
      unknowns (structural transition, DXF-per-compound-member
      representation) before the chain schema/UI/export are built assuming
      an approach that turns out not to work.
+   - **Workstream 10's bevel spike** — the highest-risk item in the whole
+     doc (§ Workstream 10's own complexity/risk note): confirm the
+     spherical-involute construction and the ruled/lofted tooth-flank
+     approach (whether `BRepOffsetAPI_ThruSections` genuinely handles this,
+     or something else is needed) before any of Workstream 11's pairing
+     logic or Workstream 6's flat-pattern DXF question are built on top of
+     an unproven foundation.
 6. **Workstream 4** (helical/herringbone) once 4b's spike lands.
 7. **Workstream 5** (`GearChainFeature` — covers pairs, rack-and-pinion,
    N-stage chains, and compound stations in one Feature type, plus its
    `GearGroup` schema — then `PlanetaryGearFeature`) once both of its own
    spikes land — depends on Workstream 2 (internal + external gears) and
    Workstream 3 (rack) for the per-stage geometry it positions.
-8. **Workstreams 6-7** (DXF export — per-gear cut files including the
-   compound-member representation resolved above, the combined layout
-   export, then DXF import-with-blocks) — independent of the gear-specific
-   work above; can run on its own track in parallel, and Workstream 6's
-   per-gear export in particular could ship early since the existing "2D
-   Drawing" tool wants a DXF writer regardless of gears.
-9. **Bevel** (§5) — separate phase, after the above is live. The one item
-   in this whole doc still deliberately deferred rather than pulled into
-   v1.
+8. **Workstream 10** (`BevelGearFeature`, straight bevel) once its own
+   spike lands — no dependency on Workstreams 2-5, since bevel's
+   construction pipeline shares no code with any other gear type (see
+   Workstream 10's own "why this is structurally unlike every other gear
+   type" note); could in principle run earlier in parallel with 2-7, but
+   sequenced after them here since it's the doc's single highest-risk item
+   and benefits most from the rest of the tool (preview, DXF, presets)
+   already existing to slot into rather than being built in isolation.
+9. **Workstream 11** (`BevelPairFeature`) once Workstream 10 is live —
+   depends on it the same way Workstream 5 depends on Workstream 2.
+10. **Workstreams 6-7** (DXF export — per-gear cut files including the
+    compound-member and bevel-flat-pattern representations resolved above,
+    the combined layout export, then DXF import-with-blocks) — independent
+    of the gear-specific work above; can run on its own track in parallel,
+    and Workstream 6's per-gear export in particular could ship early
+    since the existing "2D Drawing" tool wants a DXF writer regardless of
+    gears.
+11. **Spiral/Zerol/hypoid bevel** — the one variant still deliberately
+    deferred in this entire doc (§2 decision 14), a further-later phase
+    after Workstream 10/11's straight-bevel foundation is live.
 
 ---
 
-## 7. Open questions to resolve during detailed design (not blocking this
+## 6. Open questions to resolve during detailed design (not blocking this
 scope doc, but not yet answered)
 
 - ~~Client-side preview: Dart port of `gear_math`, or live backend
