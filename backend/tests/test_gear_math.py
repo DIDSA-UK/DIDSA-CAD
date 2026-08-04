@@ -12,6 +12,7 @@ from app.document.gear_math import (
     GearGeometryError,
     external_internal_pair_center_distance,
     external_pair_center_distance,
+    full_gear_profile_by_tooth,
     full_gear_profile_points,
     involute_point,
     involute_roll_angle_at_radius,
@@ -187,6 +188,37 @@ def test_full_gear_profile_points_all_lie_between_dedendum_and_addendum_radius()
     for x, y in points:
         radius = math.hypot(x, y)
         assert root_radius - 1e-6 <= radius <= geometry.addendum_radius + 1e-6
+
+
+def test_full_gear_profile_by_tooth_has_one_entry_per_tooth_with_correct_flank_sizes():
+    geometry = spur_gear_geometry(module=2.0, tooth_count=12)
+    by_tooth = full_gear_profile_by_tooth(geometry, points_per_flank=6)
+    assert len(by_tooth) == 12
+    for right, left in by_tooth:
+        assert len(right) == 6
+        assert len(left) == 6
+
+
+def test_full_gear_profile_by_tooth_matches_the_flattened_points_exactly():
+    # full_gear_profile_points is built from this function - guard against
+    # the refactor drifting the two apart.
+    geometry = spur_gear_geometry(module=2.0, tooth_count=12)
+    by_tooth = full_gear_profile_by_tooth(geometry, points_per_flank=6)
+    flattened = [p for right, left in by_tooth for p in (*right, *left)]
+    assert flattened == full_gear_profile_points(geometry, points_per_flank=6)
+
+
+def test_full_gear_profile_by_tooth_teeth_are_evenly_rotated_copies_of_each_other():
+    geometry = spur_gear_geometry(module=2.0, tooth_count=8)
+    by_tooth = full_gear_profile_by_tooth(geometry, points_per_flank=5)
+    angular_pitch = 2 * math.pi / 8
+    first_right = by_tooth[0][0]
+    second_right = by_tooth[1][0]
+    for (x0, y0), (x1, y1) in zip(first_right, second_right):
+        r0, r1 = math.hypot(x0, y0), math.hypot(x1, y1)
+        assert r1 == pytest.approx(r0, abs=1e-9)
+        theta0, theta1 = math.atan2(y0, x0), math.atan2(y1, x1)
+        assert (theta1 - theta0) % (2 * math.pi) == pytest.approx(angular_pitch, abs=1e-9)
 
 
 # ---------------------------------------------------------------------------

@@ -281,20 +281,44 @@ def _rotate(point: tuple[float, float], angle: float) -> tuple[float, float]:
     return (x * cos_a - y * sin_a, x * sin_a + y * cos_a)
 
 
+def full_gear_profile_by_tooth(
+    geometry: SpurGearGeometry, points_per_flank: int = 12
+) -> list[tuple[list[tuple[float, float]], list[tuple[float, float]]]]:
+    """Same points as `full_gear_profile_points`, but grouped by tooth and
+    by flank (`[(right_flank_points, left_flank_points), ...]`, one entry
+    per tooth, each already rotated to that tooth's world position within
+    the gear) instead of flattened. `02-gear-feature.md`'s OCCT
+    construction needs this shape, not the flat list - each flank becomes
+    one `Geom_BSplineCurve` edge (per the real-curve decision in
+    `00-conventions.md`), so the wire builder needs to know exactly where
+    one flank ends and the next begins, which a flat point list throws
+    away."""
+    angular_pitch = 2 * math.pi / geometry.tooth_count
+    raw = tooth_profile_points(geometry, points_per_flank)
+    raw_right, raw_left = raw[:points_per_flank], raw[points_per_flank:]
+    result = []
+    for tooth_index in range(geometry.tooth_count):
+        tooth_angle = tooth_index * angular_pitch
+        right = [_rotate(p, tooth_angle) for p in raw_right]
+        left = [_rotate(p, tooth_angle) for p in raw_left]
+        result.append((right, left))
+    return result
+
+
 def full_gear_profile_points(
     geometry: SpurGearGeometry, points_per_flank: int = 12
 ) -> list[tuple[float, float]]:
     """The whole gear's closed-loop outline (every tooth, all the way
     around) in world coordinates (gear centre at the origin) - what
     `08-entry-screen-and-preview.md`'s `/gear/preview` endpoint returns for
-    the live 2D canvas, and what `02-gear-feature.md`'s OCCT construction
-    turns into a wire. One `tooth_profile_points` call per tooth, rotated
-    to that tooth's angular position (`2*pi / tooth_count` apart)."""
-    angular_pitch = 2 * math.pi / geometry.tooth_count
+    the live 2D canvas: a flat point list is exactly what a preview
+    polyline needs, unlike `02-gear-feature.md`'s OCCT construction (see
+    `full_gear_profile_by_tooth`, which this is built from, for why that
+    one needs flank boundaries kept separate instead)."""
     points: list[tuple[float, float]] = []
-    for tooth_index in range(geometry.tooth_count):
-        tooth_angle = tooth_index * angular_pitch
-        points.extend(_rotate(p, tooth_angle) for p in tooth_profile_points(geometry, points_per_flank))
+    for right, left in full_gear_profile_by_tooth(geometry, points_per_flank):
+        points.extend(right)
+        points.extend(left)
     return points
 
 

@@ -997,6 +997,73 @@ class ImportFeature(Feature):
         return Produces.BODY
 
 
+class GearType(str, Enum):
+    """Boss/Cut parity with `ExtrudeType` (`docs/gear-design/00-conventions.md`
+    - every Feature type owns its own enum, not a shared one, matching this
+    codebase's established convention even though the values are
+    identical). A gear is normally Bossed as a fresh Body, but Cut is
+    supported for symmetry with every other primitive-producing Feature
+    (Extrude/Revolve/Sweep) - e.g. cutting a gear-shaped pocket."""
+
+    BOSS = "boss"
+    CUT = "cut"
+
+
+@dataclass
+class GearFeature(Feature):
+    """`docs/gear-design/02-gear-feature.md`: an external or internal
+    involute spur gear, built straight from parameters - no backing
+    SketchFeature at all (`docs/gear-design/00-conventions.md`'s "gear
+    teeth are not Sketch entities" decision), so unlike `ExtrudeFeature`
+    this owns its own `plane_ref: PlaneRef` directly rather than getting a
+    plane for free via an upstream Sketch. Defaults to the fixed XY plane
+    at the router layer, per that same conventions doc.
+
+    `app.document.gear_math.spur_gear_geometry` resolves `module`/
+    `tooth_count`/`pressure_angle_degrees`/`profile_shift`/`backlash` into
+    real dimensions; `app.document.gear` (the OCCT-dependent half) turns
+    those into a solid, each tooth flank a real `Geom_BSplineCurve` (see
+    conventions - the only choice that keeps STEP export genuinely
+    smooth), extruded `face_width` deep along the plane's normal.
+
+    `is_internal=True` builds an annulus (outer `outer_diameter` rim +
+    inward-facing tooth boundary) as one Boss, not a separate Cut step -
+    `outer_diameter` is required when `is_internal` is True, meaningless
+    (and ignored) otherwise.
+
+    Boss/Cut + `target_body_ids` follow `ExtrudeFeature`'s exact
+    convention: Boss fuses into each named Body (or starts a new Body if
+    empty), Cut subtracts from each named Body (non-empty required - see
+    `app.document.router._validate_target_body_ids`, widened to accept a
+    `GearFeature`-originated Body)."""
+
+    id: str
+    plane_ref: PlaneRef
+    gear_type: GearType
+    is_internal: bool
+    module: float
+    tooth_count: int
+    face_width: float
+    pressure_angle_degrees: float = 20.0
+    profile_shift: float = 0.0
+    backlash: float = 0.0
+    root_fillet_radius: float = 0.0
+    outer_diameter: float | None = None
+    target_body_ids: list[str] = field(default_factory=list)
+
+    @property
+    def type(self) -> str:
+        return "gear"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
 @dataclass
 class Part:
     """An independent solid-modeling history: an ordered list of Features.

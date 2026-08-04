@@ -21,6 +21,7 @@ from app.document.extrude import (
     select_profiles,
 )
 from app.document.fillet import resolve_fillet
+from app.document.gear import resolve_gear
 from app.document.graph import (
     base_feature_id,
     build_feature_graph,
@@ -44,6 +45,8 @@ from app.document.models import (
     Feature,
     FilletFeature,
     FixedAxis,
+    GearFeature,
+    GearType,
     ImportFeature,
     ImportSourceFormat,
     MergeMode,
@@ -88,6 +91,9 @@ from app.document.schemas import (
     FilletFeatureCreate,
     FilletFeatureResponse,
     FilletFeatureUpdate,
+    GearFeatureCreate,
+    GearFeatureResponse,
+    GearFeatureUpdate,
     ImportFeatureCreate,
     ImportFeatureResponse,
     MeshVertexData,
@@ -424,6 +430,24 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
+    if isinstance(feature, GearFeature):
+        return GearFeatureResponse(
+            id=feature.id,
+            plane_ref=_plane_ref_to_schema(feature.plane_ref),
+            gear_type=feature.gear_type,
+            is_internal=feature.is_internal,
+            module=feature.module,
+            tooth_count=feature.tooth_count,
+            face_width=feature.face_width,
+            pressure_angle_degrees=feature.pressure_angle_degrees,
+            profile_shift=feature.profile_shift,
+            backlash=feature.backlash,
+            root_fillet_radius=feature.root_fillet_radius,
+            outer_diameter=feature.outer_diameter,
+            target_body_ids=feature.target_body_ids,
+            locked=part.is_locked(feature.id),
+            produces=feature.produces,
+        )
     raise NotImplementedError(f"No response mapping for feature type: {feature.type}")
 
 
@@ -482,11 +506,11 @@ def _validate_target_body_ids(part: Part, is_cut: bool, target_body_ids: list[st
         )
     for target_id in target_body_ids:
         target_feature = part.get_feature(base_feature_id(target_id))
-        if not isinstance(target_feature, (ExtrudeFeature, RevolveFeature, SweepFeature, ImportFeature)):
+        if not isinstance(target_feature, (ExtrudeFeature, RevolveFeature, SweepFeature, ImportFeature, GearFeature)):
             raise HTTPException(
                 status_code=400,
                 detail=f"target_body_ids entry {target_id!r} does not refer to an ExtrudeFeature, "
-                "RevolveFeature, SweepFeature, or ImportFeature in this Part",
+                "RevolveFeature, SweepFeature, ImportFeature, or GearFeature in this Part",
             )
 
 
@@ -497,9 +521,11 @@ _PATTERN_MIRROR_SOURCE_FEATURE_TYPES = (
     ImportFeature,
     MirrorFeature,
     PatternFeature,
+    GearFeature,
 )
 _PATTERN_MIRROR_SOURCE_FEATURE_TYPES_DESCRIPTION = (
-    "ExtrudeFeature, RevolveFeature, SweepFeature, ImportFeature, MirrorFeature, or PatternFeature"
+    "ExtrudeFeature, RevolveFeature, SweepFeature, ImportFeature, MirrorFeature, PatternFeature, or "
+    "GearFeature"
 )
 
 
@@ -1043,6 +1069,35 @@ def _validate_plane_ref(part: Part, ref: PlaneRef) -> None:
                 status_code=400,
                 detail="face_refs plane_feature_id does not refer to a CreatePlaneFeature in this Part",
             )
+
+
+def _default_plane_ref() -> PlaneRef:
+    """`docs/gear-design/00-conventions.md`'s positioning resolution: a
+    `GearFeature` created without an explicit `plane_ref` anchors to the
+    fixed XY plane - resolves cleanly whether or not a Part already has
+    any geometry, since a fixed plane needs none. The Gear Design client
+    screen still always shows and pre-fills this choice rather than hiding
+    it (see that conventions doc) - this is only the API-level fallback
+    for a caller that omits the field entirely."""
+    return PlaneRef(fixed_plane=Plane.XY)
+
+
+def _validate_gear_feature_payload(is_internal: bool, outer_diameter: float | None) -> None:
+    """`docs/gear-design/02-gear-feature.md`: `outer_diameter` is required
+    for an internal gear (the ring's own rim diameter - there is no other
+    way to know how far the annulus extends) and meaningless for an
+    external one (nothing to be a rim of) - checked here, at payload-shape
+    time, rather than only surfacing later as a `resolve_gear`
+    `invalid_gear_parameters` failure, matching this codebase's "payload
+    shape checked by the router, referential/geometric validity checked by
+    the resolver" split every other structured Feature validation here
+    already uses."""
+    if is_internal and outer_diameter is None:
+        raise HTTPException(status_code=422, detail="outer_diameter is required when is_internal is true")
+    if not is_internal and outer_diameter is not None:
+        raise HTTPException(
+            status_code=422, detail="outer_diameter must not be supplied when is_internal is false"
+        )
 
 
 def _validate_create_plane_payload(
@@ -2128,6 +2183,118 @@ def update_mirror_feature(
     feature.source_feature_ids = candidate.source_feature_ids
     feature.merge = candidate.merge
     feature.tool_feature_id = candidate.tool_feature_id
+    return _feature_response(part, feature)
+
+
+@router.post("/parts/{part_id}/gear-features", response_model=GearFeatureResponse, status_code=201)
+def create_gear_feature(part_id: str, payload: GearFeatureCreate) -> GearFeatureResponse:
+    """`docs/gear-design/02-gear-feature.md`: mirrors `create_mirror_
+    feature`'s exact shape - unlocked from the start, fails closed (via
+    `_validate_gear_feature_payload`/`_validate_plane_ref`/
+    `_validate_target_body_ids` for payload shape, then `resolve_gear` for
+    referential/geometric validity - including every `gear_math`-raised
+    `invalid_gear_parameters` failure) before ever persisting an
+    unresolvable Gear."""
+    part = get_part_or_404(part_id)
+    _validate_gear_feature_payload(payload.is_internal, payload.outer_diameter)
+    plane_ref = _plane_ref_to_domain(payload.plane_ref) if payload.plane_ref is not None else _default_plane_ref()
+    _validate_plane_ref(part, plane_ref)
+    _validate_target_body_ids(part, payload.gear_type == GearType.CUT, payload.target_body_ids)
+    feature = GearFeature(
+        id=str(uuid.uuid4()),
+        plane_ref=plane_ref,
+        gear_type=payload.gear_type,
+        is_internal=payload.is_internal,
+        module=payload.module,
+        tooth_count=payload.tooth_count,
+        face_width=payload.face_width,
+        pressure_angle_degrees=payload.pressure_angle_degrees,
+        profile_shift=payload.profile_shift,
+        backlash=payload.backlash,
+        root_fillet_radius=payload.root_fillet_radius,
+        outer_diameter=payload.outer_diameter,
+        target_body_ids=list(payload.target_body_ids),
+    )
+    resolve_gear(part, feature)  # raises on an unresolvable/invalid gear; result unused here
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_gear_feature_or_404(part: Part, feature_id: str) -> GearFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, GearFeature):
+        raise HTTPException(status_code=404, detail="Gear feature not found")
+    return feature
+
+
+@router.patch("/parts/{part_id}/gear-features/{feature_id}", response_model=GearFeatureResponse)
+def update_gear_feature(part_id: str, feature_id: str, payload: GearFeatureUpdate) -> GearFeatureResponse:
+    """Mirrors `update_mirror_feature`'s exact shape - same validate-
+    before-mutate discipline against a scratch Feature sharing the real
+    one's id. `plane_ref` follows the same omitted-vs-current convention
+    every other Update schema here uses - omitted keeps the Feature's
+    existing plane, an explicit value replaces it; there is no way to
+    revert to the XY default via this endpoint once a real value has been
+    set, matching `MirrorFeatureUpdate.mirror_plane`'s own behaviour."""
+    part = get_part_or_404(part_id)
+    feature = _get_gear_feature_or_404(part, feature_id)
+
+    new_plane_ref = _plane_ref_to_domain(payload.plane_ref) if payload.plane_ref is not None else feature.plane_ref
+    new_gear_type = payload.gear_type if payload.gear_type is not None else feature.gear_type
+    new_is_internal = payload.is_internal if payload.is_internal is not None else feature.is_internal
+    new_module = payload.module if payload.module is not None else feature.module
+    new_tooth_count = payload.tooth_count if payload.tooth_count is not None else feature.tooth_count
+    new_face_width = payload.face_width if payload.face_width is not None else feature.face_width
+    new_pressure_angle_degrees = (
+        payload.pressure_angle_degrees
+        if payload.pressure_angle_degrees is not None
+        else feature.pressure_angle_degrees
+    )
+    new_profile_shift = payload.profile_shift if payload.profile_shift is not None else feature.profile_shift
+    new_backlash = payload.backlash if payload.backlash is not None else feature.backlash
+    new_root_fillet_radius = (
+        payload.root_fillet_radius if payload.root_fillet_radius is not None else feature.root_fillet_radius
+    )
+    new_outer_diameter = (
+        payload.outer_diameter if payload.outer_diameter is not None else feature.outer_diameter
+    )
+    new_target_body_ids = (
+        list(payload.target_body_ids) if payload.target_body_ids is not None else feature.target_body_ids
+    )
+
+    _validate_gear_feature_payload(new_is_internal, new_outer_diameter)
+    _validate_plane_ref(part, new_plane_ref)
+    _validate_target_body_ids(part, new_gear_type == GearType.CUT, new_target_body_ids)
+
+    candidate = GearFeature(
+        id=feature.id,
+        plane_ref=new_plane_ref,
+        gear_type=new_gear_type,
+        is_internal=new_is_internal,
+        module=new_module,
+        tooth_count=new_tooth_count,
+        face_width=new_face_width,
+        pressure_angle_degrees=new_pressure_angle_degrees,
+        profile_shift=new_profile_shift,
+        backlash=new_backlash,
+        root_fillet_radius=new_root_fillet_radius,
+        outer_diameter=new_outer_diameter,
+        target_body_ids=new_target_body_ids,
+    )
+    resolve_gear(part, candidate)  # raises on an unresolvable/invalid gear
+
+    feature.plane_ref = candidate.plane_ref
+    feature.gear_type = candidate.gear_type
+    feature.is_internal = candidate.is_internal
+    feature.module = candidate.module
+    feature.tooth_count = candidate.tooth_count
+    feature.face_width = candidate.face_width
+    feature.pressure_angle_degrees = candidate.pressure_angle_degrees
+    feature.profile_shift = candidate.profile_shift
+    feature.backlash = candidate.backlash
+    feature.root_fillet_radius = candidate.root_fillet_radius
+    feature.outer_diameter = candidate.outer_diameter
+    feature.target_body_ids = candidate.target_body_ids
     return _feature_response(part, feature)
 
 

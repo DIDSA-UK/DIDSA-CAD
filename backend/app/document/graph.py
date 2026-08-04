@@ -39,6 +39,7 @@ from app.document.models import (
     ExtrudeType,
     Feature,
     FilletFeature,
+    GearFeature,
     MirrorFeature,
     Part,
     PatternAxisRef,
@@ -428,6 +429,8 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
             depends_on = _mirror_dependencies(feature)
         elif isinstance(feature, PatternFeature):
             depends_on = _pattern_dependencies(part, feature)
+        elif isinstance(feature, GearFeature):
+            depends_on = _gear_dependencies(feature)
         nodes.append(GraphNode(id=feature.id, depends_on=depends_on))
     return nodes
 
@@ -498,6 +501,19 @@ def _mirror_dependencies(feature: MirrorFeature) -> tuple[str, ...]:
         deps.add(plane_dep)
     if feature.tool_feature_id is not None:
         deps.add(feature.tool_feature_id)
+    return tuple(deps)
+
+
+def _gear_dependencies(feature: GearFeature) -> tuple[str, ...]:
+    """`docs/gear-design/02-gear-feature.md`: `GearFeature` has no backing
+    Sketch, so its only dependencies are `_plane_ref_dependency`'s own
+    `plane_ref` (same as `_mirror_dependencies`' `mirror_plane` treatment)
+    and `target_body_ids` (same `base_feature_id`-mapped `set` treatment
+    `ExtrudeFeature`'s own branch above already uses)."""
+    deps: set[str] = {base_feature_id(tid) for tid in feature.target_body_ids}
+    plane_dep = _plane_ref_dependency(feature.plane_ref)
+    if plane_dep is not None:
+        deps.add(plane_dep)
     return tuple(deps)
 
 

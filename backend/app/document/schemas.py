@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from app.document.models import (
     ExtrudeType,
     FixedAxis,
+    GearType,
     ImportSourceFormat,
     MergeMode,
     PatternType,
@@ -775,6 +776,77 @@ class ImportFeatureResponse(BaseModel):
     produces: Produces
 
 
+class GearFeatureCreate(BaseModel):
+    """`docs/gear-design/02-gear-feature.md`: creates a `GearFeature` - an
+    external or internal involute spur gear built straight from
+    parameters, no backing SketchFeature (`00-conventions.md`'s "gear
+    teeth are not Sketch entities" decision). `plane_ref` is a full
+    `PlaneRefSchema` (same shape as `MirrorFeatureCreate.mirror_plane`),
+    optional here - omitting it defaults to the fixed XY plane at the
+    router (`app.document.router._default_plane_ref`), per that
+    conventions doc's "always visible [to the client UI], never silently
+    chosen" resolution: the *client* always shows and pre-fills XY rather
+    than hiding the field, but the API itself stays forgiving of a
+    caller/script that omits it entirely.
+
+    `outer_diameter` is required when `is_internal` is True (the ring's
+    own rim diameter), meaningless (and rejected) otherwise - see
+    `app.document.router._validate_gear_feature_payload`. Boss/Cut +
+    `target_body_ids` follow `ExtrudeFeatureCreate`'s exact convention."""
+
+    plane_ref: PlaneRefSchema | None = None
+    gear_type: GearType
+    is_internal: bool
+    module: float
+    tooth_count: int
+    face_width: float
+    pressure_angle_degrees: float = 20.0
+    profile_shift: float = 0.0
+    backlash: float = 0.0
+    root_fillet_radius: float = 0.0
+    outer_diameter: float | None = None
+    target_body_ids: list[str] = []
+
+
+class GearFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `ExtrudeFeatureUpdate`/`MirrorFeatureUpdate`."""
+
+    plane_ref: PlaneRefSchema | None = None
+    gear_type: GearType | None = None
+    is_internal: bool | None = None
+    module: float | None = None
+    tooth_count: int | None = None
+    face_width: float | None = None
+    pressure_angle_degrees: float | None = None
+    profile_shift: float | None = None
+    backlash: float | None = None
+    root_fillet_radius: float | None = None
+    outer_diameter: float | None = None
+    target_body_ids: list[str] | None = None
+
+
+class GearFeatureResponse(BaseModel):
+    type: Literal["gear"] = "gear"
+    id: str
+    plane_ref: PlaneRefSchema
+    gear_type: GearType
+    is_internal: bool
+    module: float
+    tooth_count: int
+    face_width: float
+    pressure_angle_degrees: float
+    profile_shift: float
+    backlash: float
+    root_fillet_radius: float
+    outer_diameter: float | None = None
+    target_body_ids: list[str] = []
+    locked: bool
+    # B1: see SketchFeatureResponse.produces above - always BODY for a
+    # GearFeature.
+    produces: Produces
+
+
 FeatureResponse = Union[
     SketchFeatureResponse,
     ExtrudeFeatureResponse,
@@ -786,6 +858,7 @@ FeatureResponse = Union[
     MirrorFeatureResponse,
     PatternFeatureResponse,
     ImportFeatureResponse,
+    GearFeatureResponse,
 ]
 
 
