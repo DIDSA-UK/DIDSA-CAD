@@ -371,8 +371,21 @@ after the first carries its own turn angle (relative to the previous
 segment's direction, within the chain's own plane — reusing `PlaneRef` for
 that plane, same as Mirror's mirror-plane input already does, no new
 reference type needed) rather than every stage defaulting to one straight
-line. This is a materially bigger scope item than the straight-line-only
-alternative would have been, for two concrete reasons:
+line. **Turn-angle UX — resolved** (was open, see §7): one always-visible
+numeric field per stage after the first, default 0° = continue straight
+(no reveal/hide toggle — the default already gives a straight chain for
+free), plus one chain-level "start direction" field for stage 1→2's own
+heading. Angle is relative to the *previous segment's own direction*
+(turtle-graphics style, not absolute within the plane), so inserting or
+removing a stage elsewhere in the chain never changes what an untouched
+stage's own angle means. Sign convention inherited rather than invented:
+positive = counter-clockwise about the anchor plane's normal, exactly
+matching `RevolveFeature.angle`/circular `PatternFeature`'s existing
+right-hand-rule convention (both already rotate via OCCT's own `gp_Ax1`).
+No bespoke angle-range validation — a sharp reversal is exactly what the
+interference check below exists to catch. Text-entry only, no visual
+drag/dial control, for v1. This is a materially bigger scope item than the
+straight-line-only alternative would have been, for two concrete reasons:
 - **Interference checking becomes mandatory, not optional.** In a straight
   chain, only consecutive stages can ever be geometrically close, so
   correctness reduces to "consecutive pairs are the correct center
@@ -392,12 +405,10 @@ alternative would have been, for two concrete reasons:
   the offending gears), so a bad route is *seen*, not just rejected by a
   banner after the fact.
 
-A fully general, drag-to-route interactive path editor is real UI scope on
-top of the numeric turn-angle-per-stage approach above — recommend text-
-entry turn angles for v1 (consistent with this tool's stated text-entry-
-first interaction model), with interactive routing as a plausible later
-UI-only enhancement over the same underlying data shape, not a backend
-change.
+A fully general, drag-to-route interactive path editor (dragging gear
+positions directly in the preview canvas rather than typing angles) is a
+plausible later UI-only enhancement over the same underlying data shape —
+not attempted in v1, deliberately, per the resolution above.
 
 **`PlanetaryGearFeature`** — kept as its own Feature type, not folded into
 `GearChainFeature`, because its topology is genuinely different: branching
@@ -653,11 +664,26 @@ scope doc, but not yet answered)
 - ~~Whether "gear pairs/sets" need a saved, re-editable relationship...~~
   **Resolved** — yes, live and re-derivable, via `GearChainFeature`/
   `PlanetaryGearFeature` as single Features. See §2 decision 8 / Workstream 5.
-- New from the bent-path decision: exact turn-angle input UX (a numeric
-  field per stage vs. some lighter-weight way to specify "continue
-  straight" as the common case without a redundant 0° entry every time),
-  and the precise interference-check tolerance (how close is "touching but
-  not meshing" allowed to be before it's flagged, given two *intentionally*
-  meshing adjacent gears are supposed to be nearly touching by design —
-  the check needs to somehow exclude each stage's own intended meshing
-  neighbour while still catching everything else).
+- ~~Exact turn-angle input UX...~~ **Resolved.** One always-visible numeric
+  "turn angle" field per stage after the first (default 0° = continue
+  straight — no toggle to reveal/hide it; leaving the default alone already
+  gives a straight chain, the same shape as every other per-stage field
+  this tool already has), plus one chain-level "start direction" field
+  (stage 1→2's own heading, since a relative turn needs something to be
+  relative *to*). Reference frame is **relative to the previous segment's
+  direction** (turtle-graphics style), not absolute within the plane — the
+  only choice that keeps every stage's meaning stable when a stage is
+  inserted/removed elsewhere in the chain. Sign convention inherited, not
+  invented: positive = counter-clockwise about the anchor plane's normal,
+  matching `RevolveFeature.angle`/circular `PatternFeature`'s existing
+  right-hand-rule convention (OCCT's own `gp_Ax1`-based rotation, already
+  used both places). No bespoke angle-range validation — a sharp reversal
+  is exactly what the interference check (below) exists to catch, not a
+  separate bounds check to invent. Text-entry only for v1, no visual
+  drag/dial control (a plausible later enhancement over the same data, not
+  required now).
+- **Still open**: the precise interference-check tolerance (how close is
+  "touching but not meshing" allowed to be before it's flagged, given two
+  *intentionally* meshing adjacent gears are supposed to be nearly
+  touching by design — the check needs to somehow exclude each stage's own
+  intended meshing neighbour while still catching everything else).
