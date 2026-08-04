@@ -193,13 +193,44 @@ New `Feature` subclass, following the six-part checklist above. Parameters:
 module (mm), tooth count, pressure angle, face width (extrude depth),
 profile shift, backlash, root fillet radius, and (internal only) rim/outer
 diameter. `app/document/gear.py` (OCCT-dependent half) turns `gear_math`'s
-sampled profile points into OCCT edges/wire (likely a `BSplineCurve`
-through the sampled involute points, or straight edges if enough points are
-sampled — a design choice to make during implementation, trading file/mesh
-size against curve fidelity) and extrudes via the same `BRepPrimAPI_MakePrism`
-path `ExtrudeFeature` already uses. Internal gears: an annulus profile
-(outer rim boundary + inward-facing involute tooth boundary) built as one
-Boss, not a separate Cut step.
+sampled profile points into OCCT edges/wire.
+
+**Curve representation — resolved, not left open** (see §7's earlier note,
+now settled): each tooth flank is built as one real `Geom_BSplineCurve`
+interpolated through `gear_math`'s sampled involute points (`GeomAPI_
+Interpolate`), not a polyline of short straight edges. This matters beyond
+looks — the resulting `Body` is a true analytic BRep solid, identical in
+kind to every other Feature's output in this codebase (Extrude/Revolve/
+Sweep all already produce exact curves/surfaces, never polygons, at the
+model level). Concretely:
+- **STEP export** (`step_export.py`, writes the Body's real BRep directly)
+  carries the exact involute flank curve, not a faceted approximation —
+  correct for reimport into another CAD tool or for a shop that machines
+  from STEP.
+- **STL/OBJ/glTF export and the 3D viewport** all go through one shared
+  tessellation step (`app/document/mesh.py`'s `BRepMesh_IncrementalMesh`,
+  controlled by `MeshQuality.linear_deflection`/`angular_deflection`) —
+  these are always faceted, because STL/OBJ/glTF have no curve concept at
+  all; this is true of every solid modeler's STL export, not a DIDSA-CAD
+  limitation. The one real action item: `DEFAULT_MESH_QUALITY`'s existing
+  `linear_deflection = 0.5` (`mesh_data.py`) is deliberately coarse, tuned
+  for real-time viewport performance on the Pi 5 target hardware — almost
+  certainly too coarse for a small-module tooth flank meant to actually
+  mesh with another printed gear. STL/print export should request a
+  measurably finer deflection than the viewport's live default (an
+  explicit `MeshQuality` override at export time — the mechanism already
+  exists, this is a call-site decision, not new plumbing), rather than
+  inheriting the viewport's performance-tuned default unchanged.
+
+Had the tooth flank instead been built as a dense polyline of straight
+edges, none of the above would hold — even the "exact" STEP output would
+carry visibly faceted flanks, since there'd be no real curve there to
+preserve. Building the true `BSplineCurve` costs a little more up front in
+`gear.py` and is worth it precisely because it's the only choice that keeps
+STEP export genuinely smooth.
+
+Internal gears: an annulus profile (outer rim boundary + inward-facing
+involute tooth boundary) built as one Boss, not a separate Cut step.
 
 **Complexity/risk:** medium-high for the OCCT curve/profile assembly
 (getting wire winding direction and start/end continuity right around a
@@ -415,10 +446,12 @@ scope doc, but not yet answered)
 
 - Client-side preview: Dart port of `gear_math`, or live backend round-trip
   per field edit (Workstream 8)?
-- Involute profile realized as a true `Geom_BSplineCurve` through sampled
-  points, or dense straight-line segments? Affects file size, DXF fidelity,
-  and mesh triangle count — worth a quick real-file comparison once
-  Workstream 1/2 exist.
+- ~~Involute profile realized as a true `Geom_BSplineCurve` through sampled
+  points, or dense straight-line segments?~~ **Resolved** — real
+  `BSplineCurve`, per the mesh-smoothness discussion now in Workstream 2:
+  it's the only choice that keeps STEP export genuinely smooth rather than
+  faceted, and print/STL export quality is a separate, already-existing
+  `MeshQuality` override at export time, not a reason to avoid a real curve.
 - Exact parameter set per gear type for v1 (e.g. is profile shift a v1
   requirement or a later refinement once undercut at low tooth counts is
   confirmed to actually be a problem worth surfacing to the user?).
