@@ -77,3 +77,153 @@ Pattern/Mirror's multi-body pattern, `RevolveFeature`'s angle convention,
 shell-from-curved-surfaces precedent exists anywhere in this codebase.
 Budget real, dedicated spike time before committing `11-bevel-pair.md`
 to depend on this approach working.
+
+## Spike findings (2026-08-04)
+
+Investigation/prototype pass, not the full six-part `BevelGearFeature`
+checklist — see `docs/status.md`'s matching entry for the session summary.
+Two deliverables, matching this doc's own scope split above.
+
+### 1. Spherical involute math — `app/document/bevel_math.py` (real, committed)
+
+Implements `pitch_cone_half_angles` (general-`Sigma` formula plus the
+`Sigma=90deg` reduction), `base_cone_half_angle`, the spherical involute
+curve itself (`spherical_involute_point` and its colatitude/roll-angle
+inverse), `bevel_gear_geometry` (pitch/cone-distance/addendum/dedendum/
+face-and-root-cone-angle resolution), `max_recommended_face_width`
+(`cone_distance / 3`, non-blocking per `00-conventions.md`), and
+`bevel_tooth_flank_pair` (the pure-Python point sampling the OCCT spike
+below consumes). 87 tests, `backend/tests/test_bevel_math.py`.
+
+**A real bug was caught, not just "it runs"** — exactly the risk this
+doc's own test requirement called out. The first working draft of
+`spherical_involute_point` used the tangent direction
+`Tang(theta) = (-sin(theta), cos(theta), 0)` (the increasing-`theta`
+direction) for the great circle the curve rolls along. It passed every
+self-consistency check tried first: the point lies exactly on the unit
+sphere, colatitude grows monotonically away from the base circle, and —
+most dangerously — a full independent re-derivation via Napier's rules
+for right spherical triangles matched it to machine precision. None of
+those checks actually exercise the curve's *handedness*, so all of them
+passed on the wrong-signed curve. What caught it: reducing the same
+general "involute of a curve on a surface" construction (geodesic tangent
+to the base curve, walked out by the base curve's own arc length) to the
+*flat* case — where geodesics are straight lines — and comparing the
+result **bit-for-bit** against `gear_math.involute_point`'s own
+already-shipped, already-tested planar formula. The flat reduction of the
+wrong-signed curve diverged from `gear_math` immediately; flipping the
+sign (`Tang(theta) = (sin(theta), -cos(theta), 0)`) matched to 13
+significant figures. Independently re-confirmed with a from-scratch rigid-
+body rolling simulation (small-step rotation about the instantaneous
+sphere-centre-to-contact-point axis) that shares no code or derivation
+with the closed form — the corrected sign matches that simulation to a
+few percent (the simulation's own discretization error; it doesn't
+converge to machine precision even at 200,000 steps, which is expected
+for two structurally different constructions of the same motion), while
+the original wrong-signed version disagreed with the same simulation by
+40x. Both cross-checks are now permanent regression tests
+(`test_spherical_involute_converges_to_the_planar_involute_as_the_base_
+cone_flattens`, `test_spherical_involute_matches_independent_rigid_body_
+rolling_simulation`) — a same-formula-compared-to-itself test (the Napier
+check alone) would not have caught this class of bug; a genuinely
+independent second derivation was necessary, matching this doc's own
+"more important here than anywhere else in this project" framing for
+reference-value testing.
+
+**Takeaway for anyone extending this module**: for a genuinely new curve
+construction with no in-codebase precedent, prefer checks that are
+independent *in derivation method*, not just checks that are numerous.
+Self-consistency properties (lies on the sphere, monotonic growth) and
+even a from-scratch second derivation of the *same* formula (Napier's
+rules, in this case) can still share the underlying handedness convention
+and pass together while both being wrong. What worked was reducing to a
+case with a pre-existing, trusted, independently-derived answer
+(`gear_math`'s planar involute) and demanding bit-for-bit agreement there.
+
+### 2. OCCT construction spike — `BRepOffsetAPI_ThruSections`: **GO**
+
+Bootstrapped a real conda-forge `pythonocc-core` 7.9.3 env (micromamba
+from GitHub Releases, `backend/environment.yml` — the established recipe,
+`docs/status.md`). Sampled `bevel_tooth_flank_pair`'s outer/inner curves,
+fit each as a real `Geom_BSplineCurve` (`GeomAPI_Interpolate`, matching
+`00-conventions.md`'s real-curve requirement), and built
+`BRepOffsetAPI_ThruSections` between the two per-flank wires (single-edge
+wires), across a battery of cases:
+
+- A moderate 90-degree pair (20T/40T pinion/gear, module 4) and increasingly
+  tight cones down to an 18T/90T pair (pitch angle 11.3deg) and a 6T/80T
+  pair (pitch angle 4.3deg, well past the ~17-tooth undercut-avoidance
+  threshold `gear_math.minimum_tooth_count_without_undercut` already
+  flags).
+- Both `ruled=True` and `ruled=False` (smoothed) `ThruSections` modes —
+  identical surface area and identical validity in every case tried here
+  (two profiles is the degenerate case where "ruled" and "smoothed"
+  Fill modes coincide).
+- Cross-checked in every case against a hand-built alternative,
+  `GeomFill_BSplineCurves(outer, inner, GeomFill_StretchStyle)` (a direct
+  ruled-surface fill, no `ThruSections` involved) — **identical** surface
+  area and identical fold behaviour to `ThruSections` in every single
+  case tried. If `ThruSections` is ever rejected for a *different* reason
+  (API ergonomics, wire-ordering control, etc.), this is a confirmed,
+  working fallback for exactly this two-curve-ruled-surface case, not a
+  theoretical one.
+- Validity checked three ways: `BRepCheck_Analyzer.IsValid()` (topological
+  validity — passed in every case, including the folded one below, which
+  is the reason it isn't sufficient on its own), a self-section
+  (`BRepAlgoAPI_Section` of the shape against itself — a weak signal, see
+  the spike script's own comment on why), and a real fine-grid
+  parametric-injectivity scan (sample the surface on a 25x25 (u, v) grid,
+  flag any two non-adjacent grid points landing on near-identical 3D
+  positions — a genuine fold/self-intersection detector, unlike the other
+  two checks). Also cross-tooth (does one tooth's flank overlap the next
+  tooth's) and same-tooth (does a tooth's right flank overlap its own left
+  flank) section checks via `BRepAlgoAPI_Section`.
+
+**Result: valid, non-self-intersecting, correctly-shaped flank surfaces
+in every case with realistic parameters**, including the 6-tooth/80-tooth
+pair at a 4.3-degree pitch cone angle — tighter than any bevel pinion a
+real design would use. `ThruSections` is confirmed, not merely assumed,
+for this specific "loft between two spherical-involute space curves" use
+case.
+
+**The one genuine self-intersection found, precisely characterized**: not
+from tight cone angle alone, and not from low tooth count alone, but from
+**face width pushed toward `max_recommended_face_width` specifically on a
+tight cone**. Probed the threshold directly (`face_width` as a fraction of
+`max_recommended_face_width(cone_distance)`, same three gears as above):
+
+| pair (pinion/gear teeth) | pitch angle | fold first appears at face_width / (cone_distance/3) |
+|---|---|---|
+| 20T/40T, module 4 (moderate) | 26.6deg | not reached even at 1.00 (fully valid across the whole tested range) |
+| 18T/90T, module 2.5 (tight, valid tooth count) | 11.3deg | 1.00 (right at the standard bound) |
+| 6T/80T, module 2.5 (very tight, undercut territory anyway) | 4.3deg | 0.95 |
+
+The mechanism: `inner_cone_distance = cone_distance - face_width` shrinks
+the inner curve's sphere radius a lot relative to the outer curve's while
+both curves sweep the *same* angular (colatitude/azimuth) range — on a
+tight cone this makes the inner curve a much more tightly-wound version of
+the outer one in absolute 3D terms, and the straight "rungs" a ruled
+surface draws between corresponding parameter points on the two curves
+start crossing each other. This is exactly the risk this doc's own
+"Face-width bound relative to cone distance" section named, now with a
+concrete mechanism and threshold instead of a guess. **Implication for a
+real `BevelGearFeature`**: the existing `max_recommended_face_width =
+cone_distance / 3` rule of thumb is fine as the non-blocking warning
+banner's *general* threshold (per `00-conventions.md`), but is not
+conservative enough to guarantee valid geometry on a tight pitch cone by
+itself — a real implementation should run an actual fold/self-intersection
+check (the grid-injectivity scan prototyped here, or equivalent) at
+construction time for tight-cone gears specifically, not rely on the face-
+width ratio alone.
+
+**Not attempted, out of scope for this spike** (per the task's own
+scoping): stitching N teeth into a closed shell, capping with addendum/
+dedendum cone surfaces, and producing a valid solid gear body. One or two
+teeth's worth of flank construction, proven valid, was the target — met.
+Full shell/solid assembly remains real, unstarted BRep kernel work and
+should get its own dedicated spike before `BevelGearFeature` commits to a
+full implementation plan.
+
+**Go/no-go: GO on `BRepOffsetAPI_ThruSections`** for spherical-involute
+bevel tooth flank construction, with the face-width caveat above carried
+forward into `BevelGearFeature`'s eventual validation logic.
