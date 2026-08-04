@@ -221,3 +221,82 @@ API surface, which current stable Flutter has already changed underneath it.
 See `.github/workflows/client-verify.yml`'s own comment and `docs/status.md`'s
 "flutter_scene 0.18.1 doesn't compile against current Flutter stable at all"
 entry for the full story.
+
+## Beyond widget tests: real on-device screenshots against a real backend
+
+**Reserve this for significant, tough, or unexpectedly-tricky work** - it's a
+genuine time investment (bootstrapping a whole toolchain from nothing), not a
+routine step for every change. `flutter test`/`flutter analyze` stay the
+default first line; reach for this when the stakes or surprise factor
+justify it - new canvas/rendering code, a fix that "should obviously work"
+but something about it still nags, a bug that won't reproduce any other way.
+
+The reason it's worth the cost: a widget test only proves the *widget tree*
+is right - it asserts on finders and structure, never on what actually gets
+*painted*. That gap is real, not theoretical. Building `GearDesignScreen`'s
+2D preview canvas (`docs/status.md`'s 2026-08-04 Workstream 8 entry has the
+full story), two real bugs - a `CustomPaint` that silently collapsed to zero
+height, and a `canvas.drawCircle` that rendered as a filled square under this
+project's own required Impeller/master-channel toolchain - both passed every
+widget test and a clean `flutter analyze` outright, because neither check
+ever looks at a rendered pixel. Only actually running the compiled app and
+looking at a real screenshot caught them, and only re-running the same way
+after each fix actually confirmed it (not "this looks like it should render
+now" - the same "trust the real output, not a theory" meta-lesson at the top
+of this file, just applied to a screenshot's pixels instead of a test
+runner's assertion text).
+
+### The recipe (a fresh container has none of this installed - bootstrap all of it)
+
+1. **A real Flutter SDK on this project's actual channel**: `git clone -b
+   master --depth 1 https://github.com/flutter/flutter.git` - **`master`,
+   not `stable`** (see the channel-pin section above), or `flutter_scene`/
+   `flutter_gpu` fail to even compile.
+2. **Linux desktop build deps** (also missing fresh): `apt-get install -y
+   libgtk-3-dev libepoxy-dev libgl1-mesa-dev pkg-config`, then `flutter
+   config --enable-linux-desktop && flutter build linux --debug` - a real
+   compiled binary (`build/linux/x64/debug/bundle/<app>`), not `flutter
+   run`'s dev-mode wrapper.
+3. **A display to run it against**: `apt-get install -y xvfb`, `Xvfb :99
+   -screen 0 1280x800x24 &`, `export DISPLAY=:99`.
+4. **A real backend, not a mock** - for this project, the same
+   `pythonocc-core` conda env bootstrap `docs/status.md`'s Workstream 1-2
+   entry already describes, `uvicorn app.main:app --host 127.0.0.1 --port
+   8123` in the background. A mocked `MockClient` widget test can't catch a
+   rendering bug that only shows up against real response shapes.
+5. **Drive it**: `apt-get install -y xdotool`, then `xdotool mousemove X Y
+   click 1` / `xdotool type --delay 40 "text"` against absolute screen
+   coordinates - there's no window manager under Xvfb, so no window
+   IDs/focus concepts to fight, the app just fills the whole display. Clear
+   a field before typing over it - `xdotool key ctrl+a` then `key Delete` -
+   don't assume a click selects existing text; a stale/pre-filled value
+   (this project persists server URL/API key via `shared_preferences`) gets
+   new text **appended**, not replaced, otherwise. A screenshot right after
+   typing, before the next click, is the cheap way to catch that before it
+   wastes a whole later step.
+6. **Look at it for real**: `pip install pillow`, then
+   `PIL.ImageGrab.grab().save(path)` - captures the real X11 framebuffer
+   directly against Xvfb, no extra system screenshot tool (`scrot`/`xwd`)
+   needed. Read the saved PNG back with the Read tool; sample specific
+   pixels (`img.getpixel((x, y))`) to confirm an exact colour when a
+   screenshot merely *looks* right but the actual claim is about a specific
+   value.
+7. **A built Linux binary's own GPU-enablement gap**: launched directly
+   (not via `flutter run`), it needs `FLUTTER_ENGINE_SWITCHES=1
+   FLUTTER_ENGINE_SWITCH_1="enable-flutter-gpu=true"` set before launch or
+   `PartViewport`'s 3D scene refuses to start - and the index is **1-based**
+   (`FLUTTER_ENGINE_SWITCH_0` is rejected with a "FLUTTER_ENGINE_SWITCH_1 is
+   missing" error, not the `_0` its own naming suggests). Same underlying
+   gap `client/README.md` already documents for `flutter run -d windows`.
+
+### Rough edges hit doing this, so the next session doesn't rediscover them
+
+- `pkill -f <name>` in this sandbox's Bash tool can report a spurious "Exit
+  code 144" even when it worked fine (or had nothing to kill) - don't trust
+  it as a success/failure signal. Confirm with `ps aux | grep <name>`, and
+  prefer `kill -9 <pid>` (tracked from the `nohup ... & echo $!` launch)
+  over `pkill` when precision matters, e.g. relaunching after a rebuild
+  without killing a second stray instance too.
+- Rebuilding after an on-device fix means a full `flutter build linux
+  --debug` (tens of seconds, not instant) - budget for a real rebuild-and-
+  reverify loop per fix, not a single pass.
