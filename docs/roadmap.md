@@ -8,26 +8,29 @@ project spec, see `docs/project-brief.md`.
 
 ## Gear design tool
 
-Full scope in `docs/gear-design-tool-scope.md` — a new "Gear Design" entry
-point (alongside the existing "3D Part Design"/"2D Drawing" tiles on
+Full scope in `docs/gear-design/` (`README.md` is the index - start
+there; `00-conventions.md` holds shared decisions every workstream needs;
+one file per workstream after that, split specifically so a future
+implementation session only needs to read the one workstream file it's
+building, not one large combined doc). A new "Gear Design" entry point
+(alongside the existing "3D Part Design"/"2D Drawing" tiles on
 `ToolChooserScreen`) for parametric external, internal, rack-and-pinion,
-helical, herringbone, and planetary gears, plus DXF export/import (DXF
-import with full "block" semantics, reusing the existing Convert Entities/
-`ExternalVertexReference` mechanism). Not started - confirmed genuinely
-greenfield (no gear/involute code, no DXF in either direction, no Loft
-feature exist anywhere in this codebase today). Key decisions already made
-during scoping: gears are a procedural `GearFeature` (Feature-tree node,
-parameters -> solid), not a DXF-round-trip or a constraint-solved Sketch
-entity (`Spline`'s real `py-slvs` solver backing makes it unsuitable for
-hundreds of involute-curve points per gear); a genuinely new general Loft
-feature (`BRepOffsetAPI_ThruSections`, twist control via selectable start/
-end reference points per profile) is a real prerequisite for helical/
-herringbone teeth, alongside a sweep-along-helix alternative worth spiking
-first since it's the higher-risk unknown in the whole plan. Bevel gears are
-deliberately deferred to their own later phase, targeting true
-spherical-involute tooth surfaces rather than the cheaper loft-of-scaled-
-profiles approximation most hobbyist tools use - see the scope doc's §5 for
-why that's a materially harder problem than the other gear types.
+helical, herringbone, compound, planetary, and straight bevel gears, plus
+DXF export/import (full "block" semantics on import, reusing the existing
+Convert Entities/`ExternalVertexReference` mechanism) and a general Loft
+feature. Not started - confirmed genuinely greenfield (no gear/involute
+code, no DXF in either direction, no Loft feature exist anywhere in this
+codebase today). Key decisions: gears are procedural Features (parameters
+-> solid), never a DXF-round-trip or constraint-solved Sketch entities
+(`Spline`'s real `py-slvs` solver backing makes it unsuitable for
+hundreds of involute-curve points per gear); multi-gear systems
+(`GearChainFeature`/`PlanetaryGearFeature`/`BevelPairFeature`) are each
+one live, re-derivable Feature, mirroring Pattern/Mirror's existing
+"one Feature, many realized Bodies" pattern, not a one-shot generator.
+Compound-gear geometry and straight bevel gears are both in v1 scope
+(the two highest-risk items in the whole project, pulled in deliberately
+rather than deferred); spiral/Zerol/hypoid bevel variants remain the one
+thing still deferred.
 
 ## Analysis tools
 
