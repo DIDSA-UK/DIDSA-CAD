@@ -169,6 +169,20 @@ Client: `client/lib/viewport3d/*` (3D Feature panels/selection),
     overlap test plus a small print-clearance margin for every non-adjacent
     pair, per-stage-type bounding shape. **Internal/ring stages are
     restricted to the last position in a chain.** See Workstream 5.
+13. **Compound gears: `GearGroup` schema built into `GearChainFeature` now
+    (v1), compound-station geometry itself deferred to a later phase.** A
+    `GearGroup` (`id`/`module`/`pressure_angle`/`display_color`) is what
+    module/pressure-angle actually belong to, not the chain directly —
+    v1 UI creates exactly one implicit group per chain, so nothing changes
+    for a normal chain today, but the schema is already correctly shaped
+    for a future multi-group/compound chain without a breaking migration
+    later. The two-coaxial-gears-per-station geometry, cross-group mesh
+    validation, and compound-aware ratio/direction rule are real,
+    undiminished scope, deferred rather than added to an already large v1
+    — same reasoning as bevel's own deferral (§5). Whenever built, the two
+    members default to fusing into one Body (reusing Pattern/Mirror's
+    existing `MergeMode`, not a new mechanism), overridable to stay
+    separate. See Workstream 5's "Compound gears" note.
 
 ---
 
@@ -362,11 +376,25 @@ codebase already gives Extrude/Revolve/Sweep each their own enum rather
 than one shared polymorphic type:
 
 **`GearChainFeature`** — an ordered list of N≥2 meshing stages (each stage:
-external/internal/rack, tooth count or rack length, face width, hand), one
-shared module + pressure angle for the whole chain (structurally
-eliminates mismatched-module gears — impossible to construct, not just
-validated against). N=2 is an ordinary pair (including rack-and-pinion, a
-rack stage next to a gear stage); N>2 is a longer gear train. Resolves in
+external/internal/rack, tooth count or rack length, face width, hand).
+
+**Module/pressure-angle: owned by a `GearGroup`, not inlined per-chain —
+resolved, folding in a compound-gear-driven refinement** (see this
+workstream's own "Compound gears" note below for the full reasoning). A
+`GearGroup` is a small named record (`id`, `module`, `pressure_angle`,
+`display_color`), and every stage references a `group_id` rather than
+carrying its own module/pressure-angle directly. Two stages can only mesh
+if they share a group (still structurally eliminates mismatched-module
+gears — impossible to construct, not just validated against — exactly
+the original guarantee, just relocated one level). v1 UI creates exactly
+**one implicit group per chain** — a normal chain still reads, to the
+user, as "the chain has one module," no groups concept surfaced anywhere
+— but the schema is already shaped for multiple groups (and the
+color-coded preview that falls out of it) without a later breaking
+migration of an already-shipped Feature type.
+
+N=2 is an ordinary pair (including rack-and-pinion, a rack stage next to a
+gear stage); N>2 is a longer gear train. Resolves in
 one pass into N positioned Bodies, same `#N`-suffix convention
 `ExtrudeFeature` already uses when one Feature yields several disjoint
 solids. A later Feature (Fillet, Cut for a bore/keyway, Pattern, Text
@@ -458,7 +486,43 @@ Sun/ring tooth counts + planet count in, validates the assembly condition
 radius, resolving into N+2 positioned Bodies (sun, ring, N planets) in one
 pass, same multi-body convention as `GearChainFeature`. Static/positioned
 only — no kinematics/rotation, matching the static-print-and-design scope
-of the original request.
+of the original request. Planetary topology structurally requires one
+shared module across sun/planets/ring (no `GearGroup`-style module change
+makes sense within a fixed sun/planet/ring relationship the way it does
+along a chain), so `GearGroup` is a `GearChainFeature`-only concept, not
+shared with this Feature type.
+
+**Compound gears — schema-ready now, geometry deferred.** A compound gear
+(two or more gears rigidly fused coaxially on one shaft — the incoming
+mesh from one station connects to one member, the outgoing mesh to the
+next station originates from the other, the two members never mesh with
+each other) is exactly the case `GearGroup` above exists to support: a
+compound station is the point where a chain crosses from one group to
+another, since its two coaxial members are free to differ in module
+without needing to mesh. Two things worth keeping separate rather than
+conflating:
+- **Building `GearGroup` into `GearChainFeature`'s schema now** (v1, per
+  above) — cheap, forward-compatible, and already the right shape even for
+  a chain with exactly one group.
+- **Building compound-station *geometry*** (a station holding two coaxial
+  gear bodies instead of one, the axial stacking-offset parameter between
+  them, cross-group mesh validation at the join, and the compound-aware
+  ratio/direction rule for Workstream 8's preview — a compound station
+  never reverses direction since both members are rigidly fused and always
+  co-rotate, but does change the ratio by the two members' own tooth-count
+  difference, a distinct case from an ordinary meshing link) — **deferred**
+  to a later phase, sequenced after the rest of `GearChainFeature` is live,
+  the same reasoning as bevel's own deferral (§5): real, undiminished
+  geometry-kernel and validation scope on top of an already large v1, worth
+  building against a working chain tool rather than speculatively now.
+
+Merge behaviour for whenever compound-station geometry does get built:
+**fuse into one Body by default** (matches what a compound gear physically
+usually is when printed/machined as one part — one hub, two diameters),
+overridable to keep the two members as separate Bodies (e.g. two gears
+pressed onto a common keyed shaft, also a real, common construction) via
+the existing `MergeMode` field Pattern/Mirror already expose — reused, not
+invented, same as `GearGroup`'s own reuse of an existing pattern.
 
 **Complexity/risk:** high for `GearChainFeature` specifically (bent paths +
 interference checking are both genuinely new problems for this codebase,
@@ -468,7 +532,10 @@ showstopper" reason); medium for `PlanetaryGearFeature` (no new geometry-
 kernel work, mostly correct application of Workstream 1's math plus
 Workstream 2's per-gear-type geometry builders, reused via the same shared-
 helper pattern `ExtrudeFeature`/`RevolveFeature`/`SweepFeature` already use
-for their own common Boss/Cut logic).
+for their own common Boss/Cut logic); low for `GearGroup`'s own schema
+(a small referenced record and a "same group" mesh-validation check, no
+geometry-kernel work at all — the deferred compound-station geometry above
+carries the real cost, not the group concept itself).
 
 ### Workstream 6 — DXF export (shared with the existing "2D Drawing"
 roadmap item)
@@ -582,6 +649,13 @@ direction depends on orientation) — standard in every real gear-design
 tool, and essentially free once the stage list and its meshing
 relationships already exist for layout purposes.
 
+**Group color-coding.** Each stage's outline is tinted by its `GearGroup`'s
+`display_color`. A no-op visually for v1's single-implicit-group chains
+(everything one color), but the mechanism costs nothing to build now and
+is what makes a future multi-group/compound chain self-explanatory at a
+glance later — the color change *is* the compound joint, no need to read
+fields to find where a chain's module changes.
+
 **Field input style: dropdown of standard values (module, pressure angle)
 with a "custom" override**, matching this project's own already-planned
 approach for the Hole tool. Standard module list (a conventional metric
@@ -672,16 +746,21 @@ speculatively now.
      `PlaneRef`-anchored routing math both hold up) before committing the
      full chain UI/preview to depend on it.
 6. **Workstream 4** (helical/herringbone) once 4b's spike lands.
-7. **Workstream 5** (`GearChainFeature` — covers pairs, rack-and-pinion,
-   and N-stage chains in one Feature type — then `PlanetaryGearFeature`)
-   once its own spike lands — depends on Workstream 2 (internal + external
-   gears) and Workstream 3 (rack) for the per-stage geometry it positions.
+7. **Workstream 5** (`GearChainFeature`, including its `GearGroup` schema
+   — covers pairs, rack-and-pinion, and N-stage chains in one Feature
+   type — then `PlanetaryGearFeature`) once its own spike lands — depends
+   on Workstream 2 (internal + external gears) and Workstream 3 (rack) for
+   the per-stage geometry it positions.
 8. **Workstreams 6-7** (DXF export — per-gear cut files, then the combined
    layout export, then DXF import-with-blocks) — independent of the
    gear-specific work above; can run on its own track in parallel, and
    Workstream 6's per-gear export in particular could ship early since the
    existing "2D Drawing" tool wants a DXF writer regardless of gears.
 9. **Bevel** (§5) — separate phase, after the above is live.
+10. **Compound-station geometry** (Workstream 5's own deferred note) —
+    separate phase, after `GearChainFeature` is live; independent of and
+    no particular ordering pressure against Bevel, since neither depends
+    on the other.
 
 ---
 
