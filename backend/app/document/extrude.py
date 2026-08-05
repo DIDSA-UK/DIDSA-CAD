@@ -39,6 +39,8 @@ from app.document.plane_geometry import (
     world_point_to_basis,
 )
 from app.document.models import (
+    BevelGearFeature,
+    BevelGearType,
     ChamferFeature,
     ExtrudeFeature,
     ExtrudeType,
@@ -768,6 +770,7 @@ def resolve_feature_tool_shape(
     `invalid_path_ref`, `disconnected_path`, `invalid_gear_parameters`,
     `gear_failed`, ...) - callers keep their own pre-existing per-type
     tolerance policy for those unchanged (see each call site below)."""
+    from app.document.bevel import resolve_bevel_gear_from_bodies
     from app.document.gear import resolve_gear_from_bodies
     from app.document.loft import resolve_loft_from_bodies
     from app.document.rack import resolve_rack_from_bodies
@@ -842,6 +845,17 @@ def resolve_feature_tool_shape(
         # None" shape as GearFeature just above.
         solid = resolve_rack_from_bodies(feature, part, bodies, excluded_feature_ids)
         return solid, feature.target_body_ids, feature.rack_type == RackType.CUT
+
+    if isinstance(feature, BevelGearFeature):
+        # docs/gear-design/10-bevel-gear.md: same "no backing SketchFeature,
+        # always raises a structured HTTPException rather than returning
+        # None" shape as GearFeature/RackFeature just above. Its own non-
+        # blocking warnings (fold-risk, face-width, assembly sanity checks -
+        # second return value) aren't surfaced through this path, same
+        # "only the router's create/update endpoints put them on the
+        # Feature's own response" treatment as GearFeature/LoftFeature.
+        solid, _warnings = resolve_bevel_gear_from_bodies(feature, part, bodies, excluded_feature_ids)
+        return solid, feature.target_body_ids, feature.bevel_type == BevelGearType.CUT
 
     if isinstance(feature, LoftFeature):
         # docs/gear-design/04-helical-herringbone-loft.md: like GearFeature/
@@ -1254,6 +1268,26 @@ def compute_part_bodies(
                 ):
                     raise
                 logger.warning("Skipping RackFeature %s: could not be resolved", feature.id)
+                continue
+            if result is None:
+                continue
+            solid, target_body_ids, is_cut = result
+            _apply_boss_or_cut(bodies, feature.id, feature_index, is_cut, target_body_ids, solid)
+            continue
+
+        if isinstance(feature, BevelGearFeature):
+            # docs/gear-design/10-bevel-gear.md: mirrors the GearFeature/
+            # RackFeature branches above exactly, including their own
+            # structured error types.
+            try:
+                result = resolve_feature_tool_shape(part, bodies, feature.id, excluded_feature_ids)
+            except HTTPException as exc:
+                if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
+                    "invalid_bevel_parameters",
+                    "bevel_failed",
+                ):
+                    raise
+                logger.warning("Skipping BevelGearFeature %s: could not be resolved", feature.id)
                 continue
             if result is None:
                 continue

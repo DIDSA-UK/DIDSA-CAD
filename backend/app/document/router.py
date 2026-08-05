@@ -7,6 +7,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Query, Response
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 
+from app.document.bevel import resolve_bevel_gear
 from app.document.chamfer import resolve_chamfer
 from app.document.create_plane import (
     basis_for_sketch,
@@ -53,6 +54,8 @@ from app.document.native_format import NativeFormatError, export_native, import_
 from app.document.pattern import resolve_pattern
 from app.document.step_export import export_step
 from app.document.models import (
+    BevelGearFeature,
+    BevelGearType,
     ChamferFeature,
     CreatePlaneFeature,
     ExtrudeFeature,
@@ -95,6 +98,9 @@ from app.document.models import (
 )
 from app.document.revolve import resolve_revolve
 from app.document.schemas import (
+    BevelGearFeatureCreate,
+    BevelGearFeatureResponse,
+    BevelGearFeatureUpdate,
     BodyMeshResponse,
     CascadeDeletePreviewResponse,
     CascadeDeleteResponse,
@@ -579,6 +585,8 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
+    if isinstance(feature, BevelGearFeature):
+        return _bevel_gear_feature_response(part, feature)
     if isinstance(feature, LoftFeature):
         return _loft_feature_response(part, feature)
     if isinstance(feature, GearChainFeature):
@@ -634,6 +642,43 @@ def _gear_feature_response(
         target_body_ids=feature.target_body_ids,
         helix_angle_degrees=feature.helix_angle_degrees,
         herringbone=feature.herringbone,
+        locked=part.is_locked(feature.id),
+        produces=feature.produces,
+        warnings=warnings,
+    )
+
+
+def _bevel_gear_feature_response(
+    part: Part, feature: BevelGearFeature, warnings: list[str] | None = None
+) -> BevelGearFeatureResponse:
+    """Mirrors `_gear_feature_response`'s exact shape: `warnings` (face-
+    width-vs-cone-distance, per-flank fold-risk, and assembled-solid
+    sanity findings - see `app.document.bevel.resolve_bevel_gear_from_
+    bodies`) is only known at create/update time from that call's own
+    return value - a plain `GET .../features` re-read (this function's
+    other caller, via `_feature_response`) re-resolves the bevel gear to
+    recompute them fresh, soft-failing to `[]` rather than raising, same
+    "since-broken Feature still shown, not one whose failure takes down
+    the whole feature list" reasoning as every other warnings-bearing
+    Feature type here."""
+    if warnings is None:
+        try:
+            _, warnings = resolve_bevel_gear(part, feature)
+        except HTTPException:
+            logger.warning("BevelGearFeature %s could not be resolved for its response", feature.id)
+            warnings = []
+    return BevelGearFeatureResponse(
+        id=feature.id,
+        plane_ref=_plane_ref_to_schema(feature.plane_ref),
+        bevel_type=feature.bevel_type,
+        module=feature.module,
+        tooth_count=feature.tooth_count,
+        face_width=feature.face_width,
+        pitch_cone_angle_degrees=feature.pitch_cone_angle_degrees,
+        pressure_angle_degrees=feature.pressure_angle_degrees,
+        backlash=feature.backlash,
+        profile_shift=feature.profile_shift,
+        target_body_ids=feature.target_body_ids,
         locked=part.is_locked(feature.id),
         produces=feature.produces,
         warnings=warnings,
@@ -765,13 +810,14 @@ def _validate_target_body_ids(part: Part, is_cut: bool, target_body_ids: list[st
                 LoftFeature,
                 GearChainFeature,
                 PlanetaryGearFeature,
+                BevelGearFeature,
             ),
         ):
             raise HTTPException(
                 status_code=400,
                 detail=f"target_body_ids entry {target_id!r} does not refer to an ExtrudeFeature, "
                 "RevolveFeature, SweepFeature, ImportFeature, GearFeature, RackFeature, LoftFeature, "
-                "GearChainFeature, or PlanetaryGearFeature in this Part",
+                "GearChainFeature, PlanetaryGearFeature, or BevelGearFeature in this Part",
             )
 
 
@@ -787,10 +833,11 @@ _PATTERN_MIRROR_SOURCE_FEATURE_TYPES = (
     LoftFeature,
     GearChainFeature,
     PlanetaryGearFeature,
+    BevelGearFeature,
 )
 _PATTERN_MIRROR_SOURCE_FEATURE_TYPES_DESCRIPTION = (
     "ExtrudeFeature, RevolveFeature, SweepFeature, ImportFeature, MirrorFeature, PatternFeature, "
-    "GearFeature, RackFeature, LoftFeature, GearChainFeature, or PlanetaryGearFeature"
+    "GearFeature, RackFeature, LoftFeature, GearChainFeature, PlanetaryGearFeature, or BevelGearFeature"
 )
 
 
@@ -2849,6 +2896,104 @@ def update_rack_feature(part_id: str, feature_id: str, payload: RackFeatureUpdat
     feature.backing_height = candidate.backing_height
     feature.target_body_ids = candidate.target_body_ids
     return _feature_response(part, feature)
+
+
+@router.post("/parts/{part_id}/bevel-gear-features", response_model=BevelGearFeatureResponse, status_code=201)
+def create_bevel_gear_feature(part_id: str, payload: BevelGearFeatureCreate) -> BevelGearFeatureResponse:
+    """`docs/gear-design/10-bevel-gear.md`: mirrors `create_rack_feature`'s
+    exact shape - no internal/external discriminator to check (unlike
+    Gear), so this skips straight to `_validate_plane_ref`/
+    `_validate_target_body_ids` for payload shape, then `resolve_bevel_
+    gear` for referential/geometric validity (including every `bevel_
+    math`-raised `invalid_bevel_parameters` failure, and every OCCT-
+    construction `bevel_failed` failure) before ever persisting an
+    unresolvable bevel gear."""
+    part = get_part_or_404(part_id)
+    plane_ref = _plane_ref_to_domain(payload.plane_ref) if payload.plane_ref is not None else _default_plane_ref()
+    _validate_plane_ref(part, plane_ref)
+    _validate_target_body_ids(part, payload.bevel_type == BevelGearType.CUT, payload.target_body_ids)
+    feature = BevelGearFeature(
+        id=str(uuid.uuid4()),
+        plane_ref=plane_ref,
+        bevel_type=payload.bevel_type,
+        module=payload.module,
+        tooth_count=payload.tooth_count,
+        face_width=payload.face_width,
+        pitch_cone_angle_degrees=payload.pitch_cone_angle_degrees,
+        pressure_angle_degrees=payload.pressure_angle_degrees,
+        backlash=payload.backlash,
+        profile_shift=payload.profile_shift,
+        target_body_ids=list(payload.target_body_ids),
+    )
+    _, warnings = resolve_bevel_gear(part, feature)  # raises on an unresolvable/invalid bevel gear
+    part.add_feature(feature)
+    return _bevel_gear_feature_response(part, feature, warnings)
+
+
+def _get_bevel_gear_feature_or_404(part: Part, feature_id: str) -> BevelGearFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, BevelGearFeature):
+        raise HTTPException(status_code=404, detail="Bevel gear feature not found")
+    return feature
+
+
+@router.patch("/parts/{part_id}/bevel-gear-features/{feature_id}", response_model=BevelGearFeatureResponse)
+def update_bevel_gear_feature(part_id: str, feature_id: str, payload: BevelGearFeatureUpdate) -> BevelGearFeatureResponse:
+    """Mirrors `update_rack_feature`'s exact shape - same validate-before-
+    mutate discipline against a scratch Feature sharing the real one's id."""
+    part = get_part_or_404(part_id)
+    feature = _get_bevel_gear_feature_or_404(part, feature_id)
+
+    new_plane_ref = _plane_ref_to_domain(payload.plane_ref) if payload.plane_ref is not None else feature.plane_ref
+    new_bevel_type = payload.bevel_type if payload.bevel_type is not None else feature.bevel_type
+    new_module = payload.module if payload.module is not None else feature.module
+    new_tooth_count = payload.tooth_count if payload.tooth_count is not None else feature.tooth_count
+    new_face_width = payload.face_width if payload.face_width is not None else feature.face_width
+    new_pitch_cone_angle_degrees = (
+        payload.pitch_cone_angle_degrees
+        if payload.pitch_cone_angle_degrees is not None
+        else feature.pitch_cone_angle_degrees
+    )
+    new_pressure_angle_degrees = (
+        payload.pressure_angle_degrees
+        if payload.pressure_angle_degrees is not None
+        else feature.pressure_angle_degrees
+    )
+    new_backlash = payload.backlash if payload.backlash is not None else feature.backlash
+    new_profile_shift = payload.profile_shift if payload.profile_shift is not None else feature.profile_shift
+    new_target_body_ids = (
+        list(payload.target_body_ids) if payload.target_body_ids is not None else feature.target_body_ids
+    )
+
+    _validate_plane_ref(part, new_plane_ref)
+    _validate_target_body_ids(part, new_bevel_type == BevelGearType.CUT, new_target_body_ids)
+
+    candidate = BevelGearFeature(
+        id=feature.id,
+        plane_ref=new_plane_ref,
+        bevel_type=new_bevel_type,
+        module=new_module,
+        tooth_count=new_tooth_count,
+        face_width=new_face_width,
+        pitch_cone_angle_degrees=new_pitch_cone_angle_degrees,
+        pressure_angle_degrees=new_pressure_angle_degrees,
+        backlash=new_backlash,
+        profile_shift=new_profile_shift,
+        target_body_ids=new_target_body_ids,
+    )
+    _, warnings = resolve_bevel_gear(part, candidate)  # raises on an unresolvable/invalid bevel gear
+
+    feature.plane_ref = candidate.plane_ref
+    feature.bevel_type = candidate.bevel_type
+    feature.module = candidate.module
+    feature.tooth_count = candidate.tooth_count
+    feature.face_width = candidate.face_width
+    feature.pitch_cone_angle_degrees = candidate.pitch_cone_angle_degrees
+    feature.pressure_angle_degrees = candidate.pressure_angle_degrees
+    feature.backlash = candidate.backlash
+    feature.profile_shift = candidate.profile_shift
+    feature.target_body_ids = candidate.target_body_ids
+    return _bevel_gear_feature_response(part, feature, warnings)
 
 
 @router.post("/parts/{part_id}/gear-chain-features", response_model=GearChainFeatureResponse, status_code=201)

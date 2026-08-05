@@ -33,6 +33,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from app.document.models import (
+    BevelGearFeature,
     ChamferFeature,
     CreatePlaneFeature,
     ExtrudeFeature,
@@ -440,6 +441,8 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
             depends_on = _gear_dependencies(feature)
         elif isinstance(feature, RackFeature):
             depends_on = _rack_dependencies(feature)
+        elif isinstance(feature, BevelGearFeature):
+            depends_on = _bevel_gear_dependencies(feature)
         elif isinstance(feature, LoftFeature):
             depends_on = _loft_dependencies(part, feature)
         elif isinstance(feature, GearChainFeature):
@@ -547,6 +550,18 @@ def _rack_dependencies(feature: RackFeature) -> tuple[str, ...]:
     """`docs/gear-design/03-rack.md`: identical shape to `_gear_dependencies`
     - `RackFeature` has no backing Sketch either, so the same `plane_ref` +
     `target_body_ids` treatment applies verbatim."""
+    deps: set[str] = {base_feature_id(tid) for tid in feature.target_body_ids}
+    plane_dep = _plane_ref_dependency(feature.plane_ref)
+    if plane_dep is not None:
+        deps.add(plane_dep)
+    return tuple(deps)
+
+
+def _bevel_gear_dependencies(feature: BevelGearFeature) -> tuple[str, ...]:
+    """`docs/gear-design/10-bevel-gear.md`: identical shape to
+    `_gear_dependencies`/`_rack_dependencies` - `BevelGearFeature` has no
+    backing Sketch either, so the same `plane_ref` + `target_body_ids`
+    treatment applies verbatim."""
     deps: set[str] = {base_feature_id(tid) for tid in feature.target_body_ids}
     plane_dep = _plane_ref_dependency(feature.plane_ref)
     if plane_dep is not None:

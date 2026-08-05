@@ -1472,6 +1472,81 @@ class PlanetaryGearFeature(Feature):
         return Produces.BODY
 
 
+class BevelGearType(str, Enum):
+    """Boss/Cut parity with `GearType`/`RackType`/`LoftMode` - kept as its
+    own enum despite identical values, matching this codebase's
+    established "each Feature type owns its own enum" convention
+    (`00-conventions.md`)."""
+
+    BOSS = "boss"
+    CUT = "cut"
+
+
+@dataclass
+class BevelGearFeature(Feature):
+    """`docs/gear-design/10-bevel-gear.md`: a standalone straight bevel
+    gear - the highest-risk workstream in this project (genuinely new BRep
+    shell/solid construction, no shell-from-curved-surfaces precedent
+    anywhere else in this codebase - see `app.document.bevel`'s own module
+    docstring). No backing SketchFeature, same "gear teeth are not Sketch
+    entities" decision every other gear-family Feature type already makes
+    (`00-conventions.md`) - `app.document.bevel_math.bevel_gear_geometry`
+    resolves the pitch cone's own dimensions, `app.document.bevel` (the
+    OCCT-dependent half) assembles the real solid.
+
+    `pitch_cone_angle_degrees` is a **direct field**, not derived from a
+    mate's tooth count - unlike `bevel_math.bevel_gear_geometry`'s own
+    `mate_tooth_count`/`shaft_angle_degrees`-derived spike convenience
+    (that function's own docstring), a standalone `BevelGearFeature` has
+    no meshing partner to derive its own cone angle from; `11-bevel-
+    pair.md`'s own future pairing system computes and sets this
+    automatically when generating a mating pair together, out of scope
+    here. `module`/`face_width` are both measured at the outer (large,
+    back-cone) end, matching how bevel gear module is conventionally
+    specified (`bevel_math.BevelGearGeometry`'s own docstring).
+
+    Anchored via `plane_ref: PlaneRef` - the plane's origin is the cone
+    apex, its normal is the gear's own primary shaft axis (`00-
+    conventions.md`'s positioning convention), defaulting to the fixed XY
+    plane at the router layer like every other gear-family Feature.
+
+    Boss/Cut + `target_body_ids` follow `GearFeature`/`RackFeature`'s
+    exact convention, for symmetry with every other primitive-producing
+    Feature type in this codebase (`GearType`'s own docstring) - a bevel
+    gear is normally Bossed as a fresh Body, but Cut (e.g. a bevel-shaped
+    pocket) is supported too.
+
+    There is no `root_fillet_radius` field at all - a bevel tooth's root
+    fillet is not supported (no `BRepPrimAPI_MakePrism.Generated()`-
+    equivalent vertex-tracking exists for a `ThruSections`/`Sewing`-built
+    solid, the same reason `GearFeature`'s own helical/herringbone teeth
+    don't support one either - see that dataclass's own docstring)."""
+
+    id: str
+    plane_ref: PlaneRef
+    bevel_type: BevelGearType
+    module: float
+    tooth_count: int
+    face_width: float
+    pitch_cone_angle_degrees: float
+    pressure_angle_degrees: float = 20.0
+    backlash: float = 0.0
+    profile_shift: float = 0.0
+    target_body_ids: list[str] = field(default_factory=list)
+
+    @property
+    def type(self) -> str:
+        return "bevel_gear"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
 @dataclass
 class Part:
     """An independent solid-modeling history: an ordered list of Features.

@@ -3,6 +3,7 @@ from typing import Literal, Union
 from pydantic import BaseModel
 
 from app.document.models import (
+    BevelGearType,
     ExtrudeType,
     FixedAxis,
     GearChainMemberType,
@@ -923,6 +924,69 @@ class RackFeatureResponse(BaseModel):
     produces: Produces
 
 
+class BevelGearFeatureCreate(BaseModel):
+    """`docs/gear-design/10-bevel-gear.md`: creates a `BevelGearFeature` -
+    a standalone straight bevel gear built straight from parameters, no
+    backing SketchFeature (same "gear teeth are not Sketch entities"
+    decision as `GearFeatureCreate`/`RackFeatureCreate`). `plane_ref`
+    follows the identical optional/defaults-to-XY convention.
+    `pitch_cone_angle_degrees` is required and direct - a standalone bevel
+    gear has no meshing partner to derive it from (`11-bevel-pair.md`'s
+    own future pairing system does that automatically). Boss/Cut +
+    `target_body_ids` follow `GearFeatureCreate`'s exact convention."""
+
+    plane_ref: PlaneRefSchema | None = None
+    bevel_type: BevelGearType
+    module: float
+    tooth_count: int
+    face_width: float
+    pitch_cone_angle_degrees: float
+    pressure_angle_degrees: float = 20.0
+    backlash: float = 0.0
+    profile_shift: float = 0.0
+    target_body_ids: list[str] = []
+
+
+class BevelGearFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `GearFeatureUpdate`/`RackFeatureUpdate`."""
+
+    plane_ref: PlaneRefSchema | None = None
+    bevel_type: BevelGearType | None = None
+    module: float | None = None
+    tooth_count: int | None = None
+    face_width: float | None = None
+    pitch_cone_angle_degrees: float | None = None
+    pressure_angle_degrees: float | None = None
+    backlash: float | None = None
+    profile_shift: float | None = None
+    target_body_ids: list[str] | None = None
+
+
+class BevelGearFeatureResponse(BaseModel):
+    type: Literal["bevel_gear"] = "bevel_gear"
+    id: str
+    plane_ref: PlaneRefSchema
+    bevel_type: BevelGearType
+    module: float
+    tooth_count: int
+    face_width: float
+    pitch_cone_angle_degrees: float
+    pressure_angle_degrees: float
+    backlash: float
+    profile_shift: float
+    target_body_ids: list[str] = []
+    locked: bool
+    # B1: see SketchFeatureResponse.produces above - always BODY for a
+    # BevelGearFeature.
+    produces: Produces
+    # Non-blocking - face-width-vs-cone-distance, per-flank fold-risk, and
+    # assembled-solid sanity warnings (app.document.bevel.resolve_bevel_
+    # gear_from_bodies's own second return value). Same convention as
+    # GearFeatureResponse.warnings/LoftFeatureResponse.warnings.
+    warnings: list[str] = []
+
+
 class LoftSectionSchema(BaseModel):
     """`docs/gear-design/04-helical-herringbone-loft.md` (4b): the wire
     counterpart to `app.document.models.LoftSection` - see that dataclass's
@@ -1175,6 +1239,7 @@ FeatureResponse = Union[
     GearFeatureResponse,
     RackFeatureResponse,
     LoftFeatureResponse,
+    BevelGearFeatureResponse,
 ]
 
 

@@ -306,7 +306,7 @@ class BevelGearGeometry:
 
     module: float
     tooth_count: int
-    mate_tooth_count: int
+    mate_tooth_count: int | None
     pressure_angle: float
     shaft_angle: float
     backlash: float
@@ -330,7 +330,7 @@ def bevel_gear_geometry(
     *,
     module: float,
     tooth_count: int,
-    mate_tooth_count: int,
+    mate_tooth_count: int | None = None,
     face_width: float,
     pressure_angle_degrees: float = 20.0,
     shaft_angle_degrees: float = 90.0,
@@ -338,18 +338,24 @@ def bevel_gear_geometry(
     profile_shift: float = 0.0,
     addendum_coefficient: float = 1.0,
     dedendum_coefficient: float = 1.25,
+    pitch_cone_angle_degrees: float | None = None,
 ) -> BevelGearGeometry:
     """Resolve one straight bevel gear's cone geometry from its generative
     parameters, mirroring `gear_math.spur_gear_geometry`'s shape as
     closely as a genuinely different tooth-flank geometry allows. Per
     `docs/gear-design/10-bevel-gear.md`, `pitch_cone_angle` is a **direct
-    input here** (a standalone bevel gear doesn't know a future meshing
-    partner's tooth count on its own - `11-bevel-pair.md`'s pairing system
-    computes it automatically) - but this prototype takes `mate_tooth_
-    count` + `shaft_angle_degrees` and derives it via `pitch_cone_half_
-    angles`, since a spike needs to exercise that formula, not just take
-    its output as a given; a real `BevelGearFeature` would take the angle
-    directly per the doc and skip this derivation.
+    input** for a real `BevelGearFeature` (a standalone bevel gear doesn't
+    know a future meshing partner's tooth count on its own - `11-bevel-
+    pair.md`'s pairing system computes it automatically) - pass
+    `pitch_cone_angle_degrees` directly for that case, which skips
+    `mate_tooth_count`/`shaft_angle_degrees`-based derivation entirely
+    (both become unused; `mate_tooth_count` may be omitted, and
+    `BevelGearGeometry.mate_tooth_count` is `None` on the result). Omitting
+    `pitch_cone_angle_degrees` (the default, `None`) keeps this spike's own
+    original behaviour: `mate_tooth_count` (required in that case) +
+    `shaft_angle_degrees` derive the angle via `pitch_cone_half_angles`,
+    since the spike this module started as needed to exercise that formula
+    directly, not just take its own output as a given.
 
     `addendum`/`dedendum` use the same coefficients-times-module
     convention as `gear_math.spur_gear_geometry` (`addendum_coefficient`/
@@ -368,9 +374,18 @@ def bevel_gear_geometry(
         raise GearGeometryError(f"backlash must be >= 0, got {backlash!r}")
 
     pressure_angle = math.radians(pressure_angle_degrees)
-    pitch_cone_angle, _mate_pitch_cone_angle = pitch_cone_half_angles(
-        tooth_count, mate_tooth_count, shaft_angle_degrees
-    )
+    if pitch_cone_angle_degrees is not None:
+        if not (0 < pitch_cone_angle_degrees < 90):
+            raise GearGeometryError(
+                f"pitch_cone_angle_degrees must be in (0, 90), got {pitch_cone_angle_degrees!r}"
+            )
+        pitch_cone_angle = math.radians(pitch_cone_angle_degrees)
+    else:
+        if mate_tooth_count is None:
+            raise GearGeometryError("mate_tooth_count is required when pitch_cone_angle_degrees is not given")
+        pitch_cone_angle, _mate_pitch_cone_angle = pitch_cone_half_angles(
+            tooth_count, mate_tooth_count, shaft_angle_degrees
+        )
     shaft_angle = math.radians(shaft_angle_degrees)
 
     pitch_radius = module * tooth_count / 2

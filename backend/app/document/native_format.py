@@ -21,6 +21,8 @@ import base64
 import dataclasses
 
 from app.document.models import (
+    BevelGearFeature,
+    BevelGearType,
     ChamferFeature,
     CreatePlaneFeature,
     Document,
@@ -910,6 +912,21 @@ def _feature_to_dict(feature: Feature) -> dict:
             "backing_height": feature.backing_height,
             "target_body_ids": list(feature.target_body_ids),
         }
+    if isinstance(feature, BevelGearFeature):
+        return {
+            "type": "bevel_gear",
+            "id": feature.id,
+            "plane_ref": _plane_ref_to_dict(feature.plane_ref),
+            "bevel_type": feature.bevel_type.value,
+            "module": feature.module,
+            "tooth_count": feature.tooth_count,
+            "face_width": feature.face_width,
+            "pitch_cone_angle_degrees": feature.pitch_cone_angle_degrees,
+            "pressure_angle_degrees": feature.pressure_angle_degrees,
+            "backlash": feature.backlash,
+            "profile_shift": feature.profile_shift,
+            "target_body_ids": list(feature.target_body_ids),
+        }
     if isinstance(feature, LoftFeature):
         return {
             "type": "loft",
@@ -1099,6 +1116,20 @@ def _feature_from_dict(data: dict) -> Feature:
             pressure_angle_degrees=data.get("pressure_angle_degrees", 20.0),
             backlash=data.get("backlash", 0.0),
             backing_height=data.get("backing_height"),
+            target_body_ids=list(data.get("target_body_ids", [])),
+        )
+    if feature_type == "bevel_gear":
+        return BevelGearFeature(
+            id=feature_id,
+            plane_ref=_plane_ref_from_dict(_require(data, "plane_ref")),
+            bevel_type=BevelGearType(_require(data, "bevel_type")),
+            module=_require(data, "module"),
+            tooth_count=_require(data, "tooth_count"),
+            face_width=_require(data, "face_width"),
+            pitch_cone_angle_degrees=_require(data, "pitch_cone_angle_degrees"),
+            pressure_angle_degrees=data.get("pressure_angle_degrees", 20.0),
+            backlash=data.get("backlash", 0.0),
+            profile_shift=data.get("profile_shift", 0.0),
             target_body_ids=list(data.get("target_body_ids", [])),
         )
     if feature_type == "loft":

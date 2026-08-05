@@ -422,6 +422,31 @@ def test_bevel_gear_geometry_rejects_backlash_that_exceeds_available_tooth_thick
         bevel_gear_geometry(module=4.0, tooth_count=20, mate_tooth_count=40, face_width=15.0, backlash=100.0)
 
 
+def test_bevel_gear_geometry_accepts_pitch_cone_angle_degrees_directly():
+    # docs/gear-design/10-bevel-gear.md: a standalone BevelGearFeature
+    # takes pitch_cone_angle as a direct field, skipping mate_tooth_count/
+    # shaft_angle_degrees-based derivation entirely - given the exact
+    # angle a 20T/40T Sigma=90deg pair would derive, this must produce
+    # geometry identical to the mate_tooth_count-derived path.
+    derived = bevel_gear_geometry(module=4.0, tooth_count=20, mate_tooth_count=40, face_width=15.0)
+    direct = bevel_gear_geometry(
+        module=4.0, tooth_count=20, face_width=15.0, pitch_cone_angle_degrees=26.56505117707799
+    )
+    assert direct.pitch_cone_angle == pytest.approx(derived.pitch_cone_angle)
+    assert direct.cone_distance == pytest.approx(derived.cone_distance)
+    assert direct.mate_tooth_count is None
+
+
+def test_bevel_gear_geometry_requires_mate_tooth_count_when_pitch_cone_angle_degrees_is_omitted():
+    with pytest.raises(GearGeometryError):
+        bevel_gear_geometry(module=4.0, tooth_count=20, face_width=15.0)
+
+
+def test_bevel_gear_geometry_rejects_pitch_cone_angle_degrees_out_of_range():
+    with pytest.raises(GearGeometryError):
+        bevel_gear_geometry(module=4.0, tooth_count=20, face_width=15.0, pitch_cone_angle_degrees=95.0)
+
+
 def test_max_recommended_face_width_is_one_third_of_cone_distance():
     assert max_recommended_face_width(90.0) == pytest.approx(30.0)
 
