@@ -468,6 +468,76 @@ def compound_axial_overlap(member_a_face_width: float, axial_offset: float) -> f
     return member_a_face_width - axial_offset
 
 
+@dataclass(frozen=True)
+class LinkRatio:
+    """`docs/gear-design/08-entry-screen-and-preview.md`'s "two cheap
+    numbers from the same math": one meshing link's overall-ratio and
+    rotation-direction summary. `ratio` follows the standard driven-teeth/
+    driving-teeth convention (the earlier stage in chain order is treated
+    as "driving," the next as "driven" - chain order = power-flow order,
+    an explicit convention pick since neither this doc nor Spike 1 names an
+    input/output end) - `None` for a rack link, since a rack's linear
+    motion has no single well-defined angular ratio;
+    `linear_mm_per_revolution` (rack travel per one full revolution of its
+    meshing gear, `pi * module * tooth_count`) is that link's own
+    equivalent number instead. `reverses` is `05-gear-chain-and-planetary.
+    md`'s own stated rule: True for external-external, False for external-
+    internal - a rack link is treated the same as external-external here
+    (the standard rack-and-pinion convention: a rack's single tooth face
+    behaves like one side of an external gear for this purpose), which is
+    this module's own explicit reading of the doc's "rack direction depends
+    on orientation" note (the rack's *own* physical direction of travel
+    depends on which side of the segment its teeth face - already resolved
+    by `_bounding_shape_for_member`'s `orientation` - but the reversal
+    parity relative to the neighbouring gear does not have a second case to
+    select between, since a rack has only one meshing face)."""
+
+    ratio: float | None
+    reverses: bool
+    linear_mm_per_revolution: float | None = None
+
+
+def mesh_link_ratio(driving: ChainMemberSpec, driven: ChainMemberSpec) -> LinkRatio:
+    """One ordinary meshing link between two adjacent stages/members -
+    `driving` is the earlier stage's own `outgoing_member()`, `driven` the
+    next stage's `incoming_member()` (see `LinkRatio`'s own docstring for
+    the chain-order-as-power-flow convention)."""
+    if driving.kind == ChainMemberKind.RACK or driven.kind == ChainMemberKind.RACK:
+        gear = driven if driving.kind == ChainMemberKind.RACK else driving
+        return LinkRatio(
+            ratio=None, reverses=True, linear_mm_per_revolution=math.pi * gear.module * gear.tooth_count
+        )
+    reverses = driving.kind != ChainMemberKind.INTERNAL and driven.kind != ChainMemberKind.INTERNAL
+    return LinkRatio(ratio=driven.tooth_count / driving.tooth_count, reverses=reverses)
+
+
+def compound_transition_ratio(member_a: ChainMemberSpec, member_b: ChainMemberSpec) -> LinkRatio:
+    """A compound stage's two members are rigidly fused on one shaft - they
+    always co-rotate (`reverses=False` unconditionally - `05-gear-chain-
+    and-planetary.md`'s own "never reverses" compound-gear rule), but the
+    tooth-count *identity* driving the next mesh changes from `member_a` to
+    `member_b`. `ratio` here (`member_b`'s teeth / `member_a`'s teeth)
+    reports that identity change for display only - it is not a second
+    physical mesh and must not be multiplied into `chain_overall_ratio`
+    separately: the ordinary `mesh_link_ratio` calls on either side of this
+    stage already pick up `member_a`'s/`member_b`'s own tooth counts
+    correctly via `ChainStageSpec.incoming_member()`/`outgoing_member()`."""
+    return LinkRatio(ratio=member_b.tooth_count / member_a.tooth_count, reverses=False)
+
+
+def chain_overall_ratio(links: list[LinkRatio]) -> float | None:
+    """Telescoped product of every ordinary mesh link's own driven/driving
+    ratio (stage 0's driving speed to the last stage's driven speed) -
+    `None` if any link is a rack link, per `LinkRatio`'s own docstring,
+    rather than silently reporting a partial/misleading product."""
+    ratio = 1.0
+    for link in links:
+        if link.ratio is None:
+            return None
+        ratio *= link.ratio
+    return ratio
+
+
 def thin_member_warning(face_width: float, member_label: str, minimum: float = 1.0) -> str | None:
     """Spike 2's own separate, simpler minimum-thickness check "on a single
     member's own face_width in isolation" - unrelated to the join-geometry

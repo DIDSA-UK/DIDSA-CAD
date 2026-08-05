@@ -1236,15 +1236,121 @@ class PlanetaryGearFeatureResponse(BaseModel):
     produces: Produces
 
 
+class GearPreviewChainRequest(BaseModel):
+    """`GearPreviewRequest.chain` - reuses `GearGroupSchema`/
+    `GearChainStageSchema` verbatim (the same shape `GearChainFeatureCreate`
+    itself uses) rather than a parallel duplicate schema set, since the
+    preview payload needs to be structurally identical to the real Feature
+    payload for everything but `plane_ref` anyway."""
+
+    groups: list[GearGroupSchema]
+    stages: list[GearChainStageSchema]
+    start_direction_degrees: float = 0.0
+    print_clearance_margin: float = 0.2
+
+
+class GearPreviewPlanetaryRequest(BaseModel):
+    """`GearPreviewRequest.planetary` - mirrors `PlanetaryGearFeatureCreate`
+    minus `plane_ref`."""
+
+    module: float
+    sun_tooth_count: int
+    ring_tooth_count: int
+    planet_count: int
+    face_width: float
+    ring_outer_diameter: float
+    pressure_angle_degrees: float = 20.0
+
+
+class GearPreviewMember(BaseModel):
+    """One resolved chain/planetary member's own outline + reference-circle
+    numbers, for the preview canvas to draw directly - same "no client-side
+    gear math" principle `GearPreviewResponse.outline_points` already
+    establishes for the single-gear case, just repeated once per member.
+    `outline_points`/`center` are already translated (and, for a rack,
+    rotated - `app.document.gear_chain._rack_rotation`'s own convention)
+    into the chain/assembly's own local 2D frame, so the client applies no
+    further per-member transform - only the shared screen-space scale/pan
+    every preview canvas already does."""
+
+    stage_index: int
+    label: str
+    member_type: Literal["external", "internal", "rack"]
+    group_id: str | None = None
+    display_color: str | None = None
+    center: tuple[float, float]
+    outline_points: list[tuple[float, float]]
+    pitch_radius: float | None = None
+    base_radius: float | None = None
+    addendum_radius: float | None = None
+    dedendum_radius: float | None = None
+    outer_radius: float | None = None
+
+
+class GearPreviewInterferenceFinding(BaseModel):
+    """The wire counterpart to `app.document.gear_chain_math.
+    InterferenceFinding` - see that dataclass's own docstring."""
+
+    stage_index_a: int
+    member_label_a: str
+    stage_index_b: int
+    member_label_b: str
+    gap: float
+    kind: Literal["overlap", "clearance"]
+
+
+class GearPreviewLink(BaseModel):
+    """One meshing relationship's ratio/rotation-direction summary - the
+    wire counterpart to `app.document.gear_chain_math.LinkRatio`, plus
+    which stage(s) it connects. `kind == "mesh"` is an ordinary link
+    between two adjacent stages (`from_stage_index`/`to_stage_index` differ
+    by 1, `mesh_link_ratio`'s own result); `kind == "compound"` is a
+    compound stage's own internal a->b transition (`from_stage_index ==
+    to_stage_index`, `compound_transition_ratio`'s own display-only ratio -
+    see that function's docstring for why it is not folded into
+    `GearPreviewChainResult.overall_ratio`)."""
+
+    from_stage_index: int
+    to_stage_index: int
+    kind: Literal["mesh", "compound"]
+    ratio: float | None = None
+    reverses_direction: bool
+    linear_mm_per_revolution: float | None = None
+
+
+class GearPreviewChainResult(BaseModel):
+    members: list[GearPreviewMember]
+    interference_findings: list[GearPreviewInterferenceFinding]
+    links: list[GearPreviewLink]
+    # `app.document.gear_chain_math.chain_overall_ratio` - null when any
+    # link in the chain is a rack link (no single well-defined angular
+    # ratio spans it - see that function's own docstring).
+    overall_ratio: float | None = None
+
+
+class GearPreviewPlanetaryResult(BaseModel):
+    members: list[GearPreviewMember]
+    # Sun/planet and planet/ring are the two independently meaningful mesh
+    # ratios for a planetary set (no single "overall ratio" the way a chain
+    # has one, since planetary output depends on which member is held
+    # fixed - out of scope here, same static/positioned-only scope
+    # `PlanetaryGearFeature` itself has).
+    sun_to_planet_ratio: float | None = None
+    planet_to_ring_ratio: float | None = None
+
+
 class GearPreviewRequest(BaseModel):
     """`docs/gear-design/08-entry-screen-and-preview.md`: the cheap
-    `/gear/preview` endpoint's request - runs only `gear_math`, no OCCT, so
-    it's cheap enough to call on every debounced keystroke while the entry
-    screen's form is still being edited. `gear_kind` is the discriminator
-    (`"external"`/`"internal"`/`"rack"` today - the only two Feature types
-    that exist yet, per this workstream's own scoped-down v1; a future
-    gear type adds one more literal value here plus a new branch in
-    `app.document.router._gear_preview_response`, not a new endpoint).
+    `/gear/preview` endpoint's request - runs only `gear_math`/`gear_chain_
+    math`, no OCCT, so it's cheap enough to call on every debounced
+    keystroke while the entry screen's form is still being edited.
+    `gear_kind` is the discriminator (`"external"`/`"internal"`/`"rack"`
+    for a single `GearFeature`/`RackFeature`-shaped preview, `"chain"`/
+    `"planetary"` for `GearChainFeature`/`PlanetaryGearFeature`'s own
+    multi-gear preview via the nested `chain`/`planetary` payloads below -
+    a future gear type still adds one more literal value here plus a new
+    branch in `app.document.router._gear_preview_response`, not a new
+    endpoint, per this field's own original design).
 
     Deliberately excludes anything `plane_ref`/positioning-related (the
     preview is always drawn in its own local 2D frame, centred on the
@@ -1253,9 +1359,14 @@ class GearPreviewRequest(BaseModel):
     construction stage - `gear_math.tooth_profile_points` never uses it,
     so it has no effect on this endpoint's own output)."""
 
-    gear_kind: Literal["external", "internal", "rack"]
-    module: float
-    tooth_count: int
+    gear_kind: Literal["external", "internal", "rack", "chain", "planetary"]
+    # Required for gear_kind in ("external", "internal", "rack"); unused
+    # (and ignored) for "chain"/"planetary", which carry their own nested
+    # `chain`/`planetary` payload below instead - widened from a plain
+    # required field so a single-gear kind's blank/irrelevant value doesn't
+    # need a placeholder just to satisfy the schema.
+    module: float | None = None
+    tooth_count: int | None = None
     pressure_angle_degrees: float = 20.0
     profile_shift: float = 0.0
     backlash: float = 0.0
@@ -1265,6 +1376,13 @@ class GearPreviewRequest(BaseModel):
     # Rack only; None resolves to `default_rack_backing_height(module)`,
     # same convention as `RackFeatureCreate.backing_height`.
     backing_height: float | None = None
+    # Required when gear_kind == "chain"/"planetary" respectively -
+    # `08-entry-screen-and-preview.md`'s "Chain/planetary/bevel-pair
+    # preview" extension. Each mirrors its real Feature's own Create schema
+    # minus `plane_ref` (the preview always draws in its own local frame,
+    # same convention the single-gear fields above already document).
+    chain: GearPreviewChainRequest | None = None
+    planetary: GearPreviewPlanetaryRequest | None = None
 
 
 class GearPreviewResponse(BaseModel):
@@ -1279,10 +1397,20 @@ class GearPreviewResponse(BaseModel):
     non-blocking `gear_math` validation (currently just undercut risk) per
     `00-conventions.md`'s validation-banner convention - a `GearGeometryError`
     with no valid geometry at all raises a 422 instead of landing here at
-    all, matching that same doc's stated blocking exception."""
+    all, matching that same doc's stated blocking exception.
 
-    gear_kind: Literal["external", "internal", "rack"]
-    outline_points: list[tuple[float, float]]
+    `chain`/`planetary` are populated only for the matching `gear_kind`
+    (null otherwise, mirroring `outline_points`/`pitch_radius`/etc.'s own
+    kind-conditional nullability above) - `GearPreviewChainResult`/
+    `GearPreviewPlanetaryResult`'s own multi-member payload, per
+    `08-entry-screen-and-preview.md`'s "Chain/planetary/bevel-pair preview"
+    extension. `outline_points` and the single-gear reference-circle fields
+    all stay null for these two kinds - there is no one outline/circle set
+    for a multi-member preview, only each member's own (see
+    `GearPreviewMember`)."""
+
+    gear_kind: Literal["external", "internal", "rack", "chain", "planetary"]
+    outline_points: list[tuple[float, float]] = []
     pitch_radius: float | None = None
     base_radius: float | None = None
     addendum_radius: float | None = None
@@ -1293,6 +1421,8 @@ class GearPreviewResponse(BaseModel):
     dedendum_line_y: float | None = None
     rack_length: float | None = None
     warnings: list[str] = []
+    chain: GearPreviewChainResult | None = None
+    planetary: GearPreviewPlanetaryResult | None = None
 
 
 FeatureResponse = Union[

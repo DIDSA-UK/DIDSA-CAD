@@ -6,7 +6,9 @@ import '../api/document_api_client.dart';
 import '../api/sketch_api_client.dart' show ApiException;
 import '../viewport3d/part_screen.dart';
 import 'field_help_icon.dart';
+import 'gear_chain_design_screen.dart';
 import 'gear_preview_canvas.dart';
+import 'gear_validation_banner.dart';
 import 'standard_value_field.dart';
 
 /// `docs/gear-design/08-entry-screen-and-preview.md`'s gear-type selector -
@@ -283,7 +285,17 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Gear Design')),
+      appBar: AppBar(
+        title: const Text('Gear Design'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const GearChainDesignScreen()),
+            ),
+            child: const Text('Chain / Planetary'),
+          ),
+        ],
+      ),
       body: LayoutBuilder(
         builder: (context, constraints) {
           final canvas = GearPreviewCanvas(preview: _preview, showReferenceOverlay: _showReferenceOverlay);
@@ -542,39 +554,11 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
   Widget _buildValidationBanner() {
     final blockingError = _blockingError;
     if (blockingError != null) {
-      return _Banner(color: Colors.red, icon: Icons.error_outline, text: blockingError);
+      return GearValidationBanner(color: Colors.red, icon: Icons.error_outline, text: blockingError);
     }
     if (_warnings.isNotEmpty) {
-      return _Banner(color: Colors.amber, icon: Icons.warning_amber, text: _warnings.join('\n'));
+      return GearValidationBanner(color: Colors.amber, icon: Icons.warning_amber, text: _warnings.join('\n'));
     }
     return const SizedBox.shrink();
-  }
-}
-
-class _Banner extends StatelessWidget {
-  final Color color;
-  final IconData icon;
-  final String text;
-
-  const _Banner({required this.color, required this.icon, required this.text});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.15),
-        border: Border.all(color: color.withValues(alpha: 0.5)),
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, color: color, size: 18),
-          const SizedBox(width: 8),
-          Expanded(child: Text(text, style: TextStyle(color: color, fontSize: 12))),
-        ],
-      ),
-    );
   }
 }

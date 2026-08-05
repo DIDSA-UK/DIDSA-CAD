@@ -1,6 +1,7 @@
 import base64
 import binascii
 import logging
+import math
 import uuid
 from typing import Literal
 
@@ -31,9 +32,21 @@ from app.document.gear_math import (
     full_gear_profile_points,
     full_rack_profile_points,
     minimum_tooth_count_without_undercut,
+    planetary_planet_tooth_count,
     rack_length as gear_math_rack_length,
     rack_tooth_geometry,
     spur_gear_geometry,
+    validate_planetary_assembly,
+)
+from app.document.gear_chain_math import (
+    ChainMemberKind,
+    ChainMemberSpec,
+    ChainStageSpec,
+    LinkRatio,
+    chain_overall_ratio,
+    compound_transition_ratio,
+    mesh_link_ratio,
+    resolve_chain as resolve_chain_positions_and_interference,
 )
 from app.document.rack import resolve_rack
 from app.document.loft import resolve_loft
@@ -139,6 +152,13 @@ from app.document.schemas import (
     GearFeatureResponse,
     GearFeatureUpdate,
     GearGroupSchema,
+    GearPreviewChainRequest,
+    GearPreviewChainResult,
+    GearPreviewInterferenceFinding,
+    GearPreviewLink,
+    GearPreviewMember,
+    GearPreviewPlanetaryRequest,
+    GearPreviewPlanetaryResult,
     GearPreviewRequest,
     GearPreviewResponse,
     ImportFeatureCreate,
@@ -3324,16 +3344,368 @@ def _invalid_gear_preview_parameters(detail: str) -> HTTPException:
     return HTTPException(status_code=422, detail={"type": "invalid_gear_preview_parameters", "detail": detail})
 
 
+def _preview_transform_profile(
+    points: list[tuple[float, float]], center: tuple[float, float], angle: float = 0.0
+) -> list[tuple[float, float]]:
+    """Rotates (about the profile's own local origin) then translates a raw
+    `gear_math`/`rack_tooth_geometry` profile (always centred on its own
+    local origin) into a chain/planetary preview's shared 2D frame - the
+    one transform every other preview response already spares the client
+    (`00-conventions.md`'s "don't duplicate the math client-side" point),
+    generalized here from "translate only" to "rotate then translate" for a
+    rack member, whose own length axis isn't generally aligned with the
+    chain's local x axis."""
+    if angle == 0.0:
+        return [(center[0] + x, center[1] + y) for x, y in points]
+    cos_a, sin_a = math.cos(angle), math.sin(angle)
+    return [(center[0] + x * cos_a - y * sin_a, center[1] + x * sin_a + y * cos_a) for x, y in points]
+
+
+def _preview_rack_rotation(resolved_stage, start_direction_degrees: float) -> float:
+    """Mirrors `app.document.gear_chain._rack_rotation` exactly (a rack's
+    own length axis is perpendicular to its one adjacent chain segment) -
+    small, deliberate duplication of that OCCT-adjacent module's private
+    helper rather than importing it, matching every other branch of
+    `_gear_preview_response` below (which already duplicates `resolve_gear`/
+    `resolve_rack`'s own cheap math rather than calling into them)."""
+    orientation = resolved_stage.incoming_direction
+    if orientation is None:
+        orientation = resolved_stage.outgoing_direction
+    if orientation is None:
+        orientation = math.radians(start_direction_degrees)
+    return orientation + math.pi / 2
+
+
+def _chain_member_math_spec(member: GearChainMemberSpec, group: GearGroup) -> ChainMemberSpec:
+    """Mirrors `app.document.gear_chain._member_to_math_spec` exactly - see
+    `_preview_rack_rotation`'s own docstring for why this is duplicated
+    rather than imported."""
+    return ChainMemberSpec(
+        kind=ChainMemberKind(member.member_type.value),
+        module=group.module,
+        pressure_angle_degrees=group.pressure_angle_degrees,
+        tooth_count=member.tooth_count,
+        face_width=member.face_width,
+        outer_diameter=member.outer_diameter,
+    )
+
+
+def _chain_stage_math_spec(stage: GearChainStage, groups: dict[str, GearGroup]) -> ChainStageSpec:
+    """Mirrors `app.document.gear_chain._build_stage_specs`'s own per-stage
+    conversion (see `_preview_rack_rotation`'s docstring)."""
+    if stage.is_compound:
+        return ChainStageSpec(
+            turn_angle_degrees=stage.turn_angle_degrees,
+            compound_member_a=_chain_member_math_spec(
+                stage.compound_member_a, groups[stage.compound_member_a.group_id]
+            ),
+            compound_member_b=_chain_member_math_spec(
+                stage.compound_member_b, groups[stage.compound_member_b.group_id]
+            ),
+        )
+    return ChainStageSpec(
+        turn_angle_degrees=stage.turn_angle_degrees,
+        member=_chain_member_math_spec(stage.member, groups[stage.member.group_id]),
+    )
+
+
+def _preview_member_outline(
+    stage_index: int,
+    label: str,
+    member_spec: ChainMemberSpec,
+    group_id: str | None,
+    display_color: str | None,
+    center: tuple[float, float],
+    rotation: float = 0.0,
+) -> GearPreviewMember:
+    """One physical member's `GearPreviewMember` - the tooth outline (raw
+    `gear_math` points, transformed into the shared preview frame via
+    `_preview_transform_profile`) plus its reference-circle numbers, shared
+    by the chain and planetary preview builders below."""
+    if member_spec.kind == ChainMemberKind.RACK:
+        rack_geometry = rack_tooth_geometry(
+            module=member_spec.module, pressure_angle_degrees=member_spec.pressure_angle_degrees
+        )
+        outline_points = _preview_transform_profile(
+            full_rack_profile_points(rack_geometry, member_spec.tooth_count), center, rotation
+        )
+        return GearPreviewMember(
+            stage_index=stage_index,
+            label=label,
+            member_type="rack",
+            group_id=group_id,
+            display_color=display_color,
+            center=center,
+            outline_points=outline_points,
+        )
+
+    is_internal = member_spec.kind == ChainMemberKind.INTERNAL
+    geometry = spur_gear_geometry(
+        module=member_spec.module,
+        tooth_count=member_spec.tooth_count,
+        pressure_angle_degrees=member_spec.pressure_angle_degrees,
+        is_internal=is_internal,
+    )
+    outline_points = _preview_transform_profile(full_gear_profile_points(geometry), center)
+    return GearPreviewMember(
+        stage_index=stage_index,
+        label=label,
+        member_type=member_spec.kind.value,
+        group_id=group_id,
+        display_color=display_color,
+        center=center,
+        outline_points=outline_points,
+        pitch_radius=geometry.pitch_radius,
+        base_radius=geometry.base_radius,
+        addendum_radius=geometry.addendum_radius,
+        dedendum_radius=geometry.dedendum_radius,
+        outer_radius=(member_spec.outer_diameter / 2) if is_internal and member_spec.outer_diameter else None,
+    )
+
+
+def _gear_preview_chain_response(payload: GearPreviewChainRequest) -> GearPreviewChainResult:
+    """`docs/gear-design/08-entry-screen-and-preview.md`'s "Chain/planetary/
+    bevel-pair preview" extension, the `GearChainFeature` half - reuses
+    `_validate_gear_chain_stages` (the exact payload-shape validation
+    `create_gear_chain_feature` itself runs) and `app.document.
+    gear_chain_math.resolve_chain` (the real bent-path positioning +
+    interference math, `05-gear-chain-and-planetary.md`'s own Spike 1) so
+    the preview and the real Feature agree on every rejection and every
+    resolved position - only the OCCT solid construction itself
+    (`app.document.gear_chain.resolve_gear_chain_from_bodies`) is
+    deliberately not run here."""
+    groups = [_gear_group_to_domain(g) for g in payload.groups]
+    stages = [_gear_chain_stage_to_domain(s) for s in payload.stages]
+    _validate_gear_chain_stages(groups, stages)
+    groups_by_id = {g.id: g for g in groups}
+
+    try:
+        stage_specs = [_chain_stage_math_spec(stage, groups_by_id) for stage in stages]
+        resolved = resolve_chain_positions_and_interference(
+            stage_specs, payload.start_direction_degrees, payload.print_clearance_margin
+        )
+
+        members: list[GearPreviewMember] = []
+        for i, (stage, spec, resolved_stage) in enumerate(zip(stages, stage_specs, resolved.stages)):
+            if spec.is_compound:
+                members.append(
+                    _preview_member_outline(
+                        i,
+                        "a",
+                        spec.compound_member_a,
+                        stage.compound_member_a.group_id,
+                        groups_by_id[stage.compound_member_a.group_id].display_color,
+                        resolved_stage.center,
+                    )
+                )
+                members.append(
+                    _preview_member_outline(
+                        i,
+                        "b",
+                        spec.compound_member_b,
+                        stage.compound_member_b.group_id,
+                        groups_by_id[stage.compound_member_b.group_id].display_color,
+                        resolved_stage.center,
+                    )
+                )
+            else:
+                rotation = (
+                    _preview_rack_rotation(resolved_stage, payload.start_direction_degrees)
+                    if spec.member.kind == ChainMemberKind.RACK
+                    else 0.0
+                )
+                members.append(
+                    _preview_member_outline(
+                        i,
+                        "single",
+                        spec.member,
+                        stage.member.group_id,
+                        groups_by_id[stage.member.group_id].display_color,
+                        resolved_stage.center,
+                        rotation,
+                    )
+                )
+    except GearGeometryError as exc:
+        raise _invalid_gear_preview_parameters(str(exc)) from exc
+
+    interference_findings = [
+        GearPreviewInterferenceFinding(
+            stage_index_a=finding.stage_index_a,
+            member_label_a=finding.member_label_a,
+            stage_index_b=finding.stage_index_b,
+            member_label_b=finding.member_label_b,
+            gap=finding.gap,
+            kind=finding.kind,
+        )
+        for finding in resolved.interference_findings
+    ]
+
+    def _link(from_index: int, to_index: int, kind: Literal["mesh", "compound"], link_ratio: LinkRatio) -> GearPreviewLink:
+        return GearPreviewLink(
+            from_stage_index=from_index,
+            to_stage_index=to_index,
+            kind=kind,
+            ratio=link_ratio.ratio,
+            reverses_direction=link_ratio.reverses,
+            linear_mm_per_revolution=link_ratio.linear_mm_per_revolution,
+        )
+
+    links: list[GearPreviewLink] = []
+    mesh_ratios: list[LinkRatio] = []
+    for k in range(len(stage_specs) - 1):
+        if stage_specs[k].is_compound:
+            links.append(
+                _link(k, k, "compound", compound_transition_ratio(stage_specs[k].compound_member_a, stage_specs[k].compound_member_b))
+            )
+        mesh_ratio = mesh_link_ratio(stage_specs[k].outgoing_member(), stage_specs[k + 1].incoming_member())
+        mesh_ratios.append(mesh_ratio)
+        links.append(_link(k, k + 1, "mesh", mesh_ratio))
+    if stage_specs and stage_specs[-1].is_compound:
+        last = len(stage_specs) - 1
+        links.append(
+            _link(
+                last,
+                last,
+                "compound",
+                compound_transition_ratio(stage_specs[last].compound_member_a, stage_specs[last].compound_member_b),
+            )
+        )
+
+    return GearPreviewChainResult(
+        members=members,
+        interference_findings=interference_findings,
+        links=links,
+        overall_ratio=chain_overall_ratio(mesh_ratios),
+    )
+
+
+def _gear_preview_planetary_response(payload: GearPreviewPlanetaryRequest) -> GearPreviewPlanetaryResult:
+    """`docs/gear-design/08-entry-screen-and-preview.md`'s "Chain/planetary/
+    bevel-pair preview" extension, the `PlanetaryGearFeature` half - reuses
+    the exact same `gear_math` calls and orbit-radius/even-spacing
+    positioning `app.document.planetary_gear.resolve_planetary_from_bodies`
+    itself uses (that positioning is already pure arithmetic, no OCCT, so
+    it's duplicated here rather than the OCCT solid construction, per this
+    module's established "duplicate the cheap math" precedent)."""
+    try:
+        planet_tooth_count = planetary_planet_tooth_count(payload.sun_tooth_count, payload.ring_tooth_count)
+        sun_geometry = spur_gear_geometry(
+            module=payload.module,
+            tooth_count=payload.sun_tooth_count,
+            pressure_angle_degrees=payload.pressure_angle_degrees,
+            is_internal=False,
+        )
+        ring_geometry = spur_gear_geometry(
+            module=payload.module,
+            tooth_count=payload.ring_tooth_count,
+            pressure_angle_degrees=payload.pressure_angle_degrees,
+            is_internal=True,
+        )
+        planet_geometry = spur_gear_geometry(
+            module=payload.module,
+            tooth_count=planet_tooth_count,
+            pressure_angle_degrees=payload.pressure_angle_degrees,
+            is_internal=False,
+        )
+        validate_planetary_assembly(
+            sun_teeth=payload.sun_tooth_count,
+            ring_teeth=payload.ring_tooth_count,
+            planet_count=payload.planet_count,
+            planet_pitch_radius=planet_geometry.pitch_radius,
+            planet_addendum_radius=planet_geometry.addendum_radius,
+        )
+    except GearGeometryError as exc:
+        raise _invalid_gear_preview_parameters(str(exc)) from exc
+
+    if payload.face_width <= 0:
+        raise _invalid_gear_preview_parameters(f"face_width must be positive, got {payload.face_width!r}")
+    if payload.ring_outer_diameter / 2 <= ring_geometry.dedendum_radius:
+        raise _invalid_gear_preview_parameters(
+            f"ring_outer_diameter ({payload.ring_outer_diameter!r}) must exceed the ring's own tooth profile "
+            f"outer reach (dedendum diameter {ring_geometry.dedendum_radius * 2!r})"
+        )
+
+    members = [
+        GearPreviewMember(
+            stage_index=0,
+            label="sun",
+            member_type="external",
+            center=(0.0, 0.0),
+            outline_points=full_gear_profile_points(sun_geometry),
+            pitch_radius=sun_geometry.pitch_radius,
+            base_radius=sun_geometry.base_radius,
+            addendum_radius=sun_geometry.addendum_radius,
+            dedendum_radius=sun_geometry.dedendum_radius,
+        ),
+        GearPreviewMember(
+            stage_index=1,
+            label="ring",
+            member_type="internal",
+            center=(0.0, 0.0),
+            outline_points=full_gear_profile_points(ring_geometry),
+            pitch_radius=ring_geometry.pitch_radius,
+            base_radius=ring_geometry.base_radius,
+            addendum_radius=ring_geometry.addendum_radius,
+            dedendum_radius=ring_geometry.dedendum_radius,
+            outer_radius=payload.ring_outer_diameter / 2,
+        ),
+    ]
+    orbit_radius = sun_geometry.pitch_radius + planet_geometry.pitch_radius
+    planet_outline = full_gear_profile_points(planet_geometry)
+    for i in range(payload.planet_count):
+        angle = 2 * math.pi * i / payload.planet_count
+        center = (orbit_radius * math.cos(angle), orbit_radius * math.sin(angle))
+        members.append(
+            GearPreviewMember(
+                stage_index=2 + i,
+                label=f"planet_{i}",
+                member_type="external",
+                center=center,
+                outline_points=_preview_transform_profile(planet_outline, center),
+                pitch_radius=planet_geometry.pitch_radius,
+                base_radius=planet_geometry.base_radius,
+                addendum_radius=planet_geometry.addendum_radius,
+                dedendum_radius=planet_geometry.dedendum_radius,
+            )
+        )
+
+    sun_spec = ChainMemberSpec(ChainMemberKind.EXTERNAL, payload.module, payload.pressure_angle_degrees, payload.sun_tooth_count, payload.face_width)
+    planet_spec = ChainMemberSpec(ChainMemberKind.EXTERNAL, payload.module, payload.pressure_angle_degrees, planet_tooth_count, payload.face_width)
+    ring_spec = ChainMemberSpec(
+        ChainMemberKind.INTERNAL, payload.module, payload.pressure_angle_degrees, payload.ring_tooth_count,
+        payload.face_width, payload.ring_outer_diameter,
+    )
+    sun_to_planet = mesh_link_ratio(sun_spec, planet_spec)
+    planet_to_ring = mesh_link_ratio(planet_spec, ring_spec)
+
+    return GearPreviewPlanetaryResult(
+        members=members, sun_to_planet_ratio=sun_to_planet.ratio, planet_to_ring_ratio=planet_to_ring.ratio
+    )
+
+
 def _gear_preview_response(payload: GearPreviewRequest) -> GearPreviewResponse:
     """`docs/gear-design/08-entry-screen-and-preview.md`: the actual math
-    behind `/gear/preview` - runs only `gear_math` (no OCCT, no
-    tessellation), shared by the GET and POST routes below. Scoped down to
-    exactly the two gear-producing Feature types that exist today
-    (`external`/`internal` spur gears via `GearFeature`, `rack` via
-    `RackFeature`) - see this workstream's own scoping note for why helical/
-    herringbone/chain/planetary/bevel have no branch here yet; adding one
-    later is one more `gear_kind` literal value plus one more branch, not a
-    new endpoint."""
+    behind `/gear/preview` - runs only `gear_math`/`gear_chain_math` (no
+    OCCT, no tessellation), shared by the GET and POST routes below.
+    `"chain"`/`"planetary"` reuse `_gear_preview_chain_response`/
+    `_gear_preview_planetary_response` above; a future gear type still adds
+    one more `gear_kind` literal value plus one more branch here, not a new
+    endpoint, per this schema's own original design."""
+    if payload.gear_kind == "chain":
+        if payload.chain is None:
+            raise _invalid_gear_preview_parameters("chain is required when gear_kind is chain")
+        return GearPreviewResponse(gear_kind="chain", chain=_gear_preview_chain_response(payload.chain))
+
+    if payload.gear_kind == "planetary":
+        if payload.planetary is None:
+            raise _invalid_gear_preview_parameters("planetary is required when gear_kind is planetary")
+        return GearPreviewResponse(
+            gear_kind="planetary", planetary=_gear_preview_planetary_response(payload.planetary)
+        )
+
+    if payload.module is None or payload.tooth_count is None:
+        raise _invalid_gear_preview_parameters("module and tooth_count are required for this gear_kind")
+
     if payload.gear_kind == "rack":
         try:
             rack_geometry = rack_tooth_geometry(

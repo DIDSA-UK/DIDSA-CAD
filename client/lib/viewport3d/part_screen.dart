@@ -2962,7 +2962,7 @@ class _PartScreenState extends State<PartScreen> {
   /// user actually sees, not just a server log" this fix requires for a
   /// root fillet that silently fell back to unfilleted (see
   /// `app.document.gear.resolve_gear_from_bodies`'s own `warnings`). Same
-  /// amber-with-warning-icon convention `GearDesignScreen._Banner` already
+  /// amber-with-warning-icon convention `GearValidationBanner` already
   /// uses for its own pre-Create preview warnings.
   void _showInitialWarningsBanner() {
     if (!mounted) return;

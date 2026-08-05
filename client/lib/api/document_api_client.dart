@@ -740,6 +740,168 @@ class NativeImportResultDto {
 /// `00-conventions.md`'s validation-banner convention - a parameter
 /// combination with no valid geometry at all is a 422 [ApiException]
 /// instead, never a response with [warnings] set.
+/// `docs/gear-design/08-entry-screen-and-preview.md`'s "Chain/planetary/
+/// bevel-pair preview" extension - the wire counterpart to the backend's
+/// `GearPreviewMember`. One physical member's own tooth outline (already
+/// translated/rotated by the backend into the chain/assembly's shared 2D
+/// frame - no client-side transform needed, same "don't duplicate the
+/// math client-side" point [GearPreviewDto.outlinePoints] already follows)
+/// plus its reference-circle numbers.
+class GearPreviewMemberDto {
+  final int stageIndex;
+  final String label;
+  final String memberType;
+  final String? groupId;
+  final String? displayColor;
+  final List<double> center;
+  final List<List<double>> outlinePoints;
+  final double? pitchRadius;
+  final double? baseRadius;
+  final double? addendumRadius;
+  final double? dedendumRadius;
+  final double? outerRadius;
+
+  GearPreviewMemberDto({
+    required this.stageIndex,
+    required this.label,
+    required this.memberType,
+    this.groupId,
+    this.displayColor,
+    required this.center,
+    required this.outlinePoints,
+    this.pitchRadius,
+    this.baseRadius,
+    this.addendumRadius,
+    this.dedendumRadius,
+    this.outerRadius,
+  });
+
+  factory GearPreviewMemberDto.fromJson(Map<String, dynamic> json) => GearPreviewMemberDto(
+        stageIndex: json['stage_index'] as int,
+        label: json['label'] as String,
+        memberType: json['member_type'] as String,
+        groupId: json['group_id'] as String?,
+        displayColor: json['display_color'] as String?,
+        center: (json['center'] as List).map((v) => (v as num).toDouble()).toList(),
+        outlinePoints: (json['outline_points'] as List)
+            .map((p) => (p as List).map((v) => (v as num).toDouble()).toList())
+            .toList(),
+        pitchRadius: (json['pitch_radius'] as num?)?.toDouble(),
+        baseRadius: (json['base_radius'] as num?)?.toDouble(),
+        addendumRadius: (json['addendum_radius'] as num?)?.toDouble(),
+        dedendumRadius: (json['dedendum_radius'] as num?)?.toDouble(),
+        outerRadius: (json['outer_radius'] as num?)?.toDouble(),
+      );
+}
+
+/// The wire counterpart to the backend's `GearPreviewInterferenceFinding`
+/// (`app.document.gear_chain_math.InterferenceFinding`'s own wire shape) -
+/// `05-gear-chain-and-planetary.md`'s topology-split interference check.
+class GearPreviewInterferenceFindingDto {
+  final int stageIndexA;
+  final String memberLabelA;
+  final int stageIndexB;
+  final String memberLabelB;
+  final double gap;
+  final String kind; // "overlap" | "clearance"
+
+  GearPreviewInterferenceFindingDto({
+    required this.stageIndexA,
+    required this.memberLabelA,
+    required this.stageIndexB,
+    required this.memberLabelB,
+    required this.gap,
+    required this.kind,
+  });
+
+  factory GearPreviewInterferenceFindingDto.fromJson(Map<String, dynamic> json) => GearPreviewInterferenceFindingDto(
+        stageIndexA: json['stage_index_a'] as int,
+        memberLabelA: json['member_label_a'] as String,
+        stageIndexB: json['stage_index_b'] as int,
+        memberLabelB: json['member_label_b'] as String,
+        gap: (json['gap'] as num).toDouble(),
+        kind: json['kind'] as String,
+      );
+}
+
+/// The wire counterpart to the backend's `GearPreviewLink`
+/// (`app.document.gear_chain_math.LinkRatio`'s own wire shape) - one
+/// meshing relationship's overall-ratio/rotation-direction summary.
+/// [kind] is `"mesh"` (an ordinary link between two adjacent stages) or
+/// `"compound"` (a compound stage's own internal a->b transition, `05-
+/// gear-chain-and-planetary.md`'s "never reverses" rule).
+class GearPreviewLinkDto {
+  final int fromStageIndex;
+  final int toStageIndex;
+  final String kind;
+  final double? ratio;
+  final bool reversesDirection;
+  final double? linearMmPerRevolution;
+
+  GearPreviewLinkDto({
+    required this.fromStageIndex,
+    required this.toStageIndex,
+    required this.kind,
+    this.ratio,
+    required this.reversesDirection,
+    this.linearMmPerRevolution,
+  });
+
+  factory GearPreviewLinkDto.fromJson(Map<String, dynamic> json) => GearPreviewLinkDto(
+        fromStageIndex: json['from_stage_index'] as int,
+        toStageIndex: json['to_stage_index'] as int,
+        kind: json['kind'] as String,
+        ratio: (json['ratio'] as num?)?.toDouble(),
+        reversesDirection: json['reverses_direction'] as bool,
+        linearMmPerRevolution: (json['linear_mm_per_revolution'] as num?)?.toDouble(),
+      );
+}
+
+/// The wire counterpart to the backend's `GearPreviewChainResult` -
+/// [GearPreviewDto.chain]'s own payload when `gearKind == 'chain'`.
+class GearPreviewChainResultDto {
+  final List<GearPreviewMemberDto> members;
+  final List<GearPreviewInterferenceFindingDto> interferenceFindings;
+  final List<GearPreviewLinkDto> links;
+  final double? overallRatio;
+
+  GearPreviewChainResultDto({
+    required this.members,
+    required this.interferenceFindings,
+    required this.links,
+    this.overallRatio,
+  });
+
+  factory GearPreviewChainResultDto.fromJson(Map<String, dynamic> json) => GearPreviewChainResultDto(
+        members: (json['members'] as List)
+            .map((m) => GearPreviewMemberDto.fromJson(m as Map<String, dynamic>))
+            .toList(),
+        interferenceFindings: (json['interference_findings'] as List)
+            .map((f) => GearPreviewInterferenceFindingDto.fromJson(f as Map<String, dynamic>))
+            .toList(),
+        links: (json['links'] as List).map((l) => GearPreviewLinkDto.fromJson(l as Map<String, dynamic>)).toList(),
+        overallRatio: (json['overall_ratio'] as num?)?.toDouble(),
+      );
+}
+
+/// The wire counterpart to the backend's `GearPreviewPlanetaryResult` -
+/// [GearPreviewDto.planetary]'s own payload when `gearKind == 'planetary'`.
+class GearPreviewPlanetaryResultDto {
+  final List<GearPreviewMemberDto> members;
+  final double? sunToPlanetRatio;
+  final double? planetToRingRatio;
+
+  GearPreviewPlanetaryResultDto({required this.members, this.sunToPlanetRatio, this.planetToRingRatio});
+
+  factory GearPreviewPlanetaryResultDto.fromJson(Map<String, dynamic> json) => GearPreviewPlanetaryResultDto(
+        members: (json['members'] as List)
+            .map((m) => GearPreviewMemberDto.fromJson(m as Map<String, dynamic>))
+            .toList(),
+        sunToPlanetRatio: (json['sun_to_planet_ratio'] as num?)?.toDouble(),
+        planetToRingRatio: (json['planet_to_ring_ratio'] as num?)?.toDouble(),
+      );
+}
+
 class GearPreviewDto {
   final String gearKind;
   final List<List<double>> outlinePoints;
@@ -753,6 +915,8 @@ class GearPreviewDto {
   final double? dedendumLineY;
   final double? rackLength;
   final List<String> warnings;
+  final GearPreviewChainResultDto? chain;
+  final GearPreviewPlanetaryResultDto? planetary;
 
   GearPreviewDto({
     required this.gearKind,
@@ -767,11 +931,13 @@ class GearPreviewDto {
     this.dedendumLineY,
     this.rackLength,
     this.warnings = const [],
+    this.chain,
+    this.planetary,
   });
 
   factory GearPreviewDto.fromJson(Map<String, dynamic> json) => GearPreviewDto(
         gearKind: json['gear_kind'] as String,
-        outlinePoints: (json['outline_points'] as List)
+        outlinePoints: ((json['outline_points'] as List?) ?? const [])
             .map((p) => (p as List).map((v) => (v as num).toDouble()).toList())
             .toList(),
         pitchRadius: (json['pitch_radius'] as num?)?.toDouble(),
@@ -784,7 +950,77 @@ class GearPreviewDto {
         dedendumLineY: (json['dedendum_line_y'] as num?)?.toDouble(),
         rackLength: (json['rack_length'] as num?)?.toDouble(),
         warnings: (json['warnings'] as List?)?.cast<String>() ?? const [],
+        chain: json['chain'] == null ? null : GearPreviewChainResultDto.fromJson(json['chain'] as Map<String, dynamic>),
+        planetary: json['planetary'] == null
+            ? null
+            : GearPreviewPlanetaryResultDto.fromJson(json['planetary'] as Map<String, dynamic>),
       );
+}
+
+/// Request-side input for one `GearChainFeature`/preview stage's single
+/// member (v1 UI scope: single-gear/rack stages only - no compound-station
+/// UI yet, per `05-gear-chain-and-planetary.md`'s own "v1 UI creates
+/// exactly one implicit group per chain" note; the backend's compound
+/// fields are simply never sent). Mirrors the backend's
+/// `GearChainMemberSpecSchema`.
+class GearChainMemberInputDto {
+  final String memberType; // "external" | "internal" | "rack"
+  final String groupId;
+  final int toothCount;
+  final double faceWidth;
+  final double? outerDiameter;
+
+  const GearChainMemberInputDto({
+    required this.memberType,
+    required this.groupId,
+    required this.toothCount,
+    required this.faceWidth,
+    this.outerDiameter,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'member_type': memberType,
+        'group_id': groupId,
+        'tooth_count': toothCount,
+        'face_width': faceWidth,
+        if (outerDiameter != null) 'outer_diameter': outerDiameter,
+      };
+}
+
+/// Request-side input for one chain stage - mirrors the backend's
+/// `GearChainStageSchema`, single-member only (see
+/// [GearChainMemberInputDto]'s own doc comment).
+class GearChainStageInputDto {
+  final double turnAngleDegrees;
+  final GearChainMemberInputDto member;
+
+  const GearChainStageInputDto({this.turnAngleDegrees = 0.0, required this.member});
+
+  Map<String, dynamic> toJson() => {'turn_angle_degrees': turnAngleDegrees, 'member': member.toJson()};
+}
+
+/// Request-side input for a chain's one implicit `GearGroup` (v1 UI scope -
+/// see [GearChainMemberInputDto]'s own doc comment) - mirrors the
+/// backend's `GearGroupSchema`.
+class GearGroupInputDto {
+  final String id;
+  final double module;
+  final double pressureAngleDegrees;
+  final String? displayColor;
+
+  const GearGroupInputDto({
+    required this.id,
+    required this.module,
+    this.pressureAngleDegrees = 20.0,
+    this.displayColor,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'module': module,
+        'pressure_angle_degrees': pressureAngleDegrees,
+        if (displayColor != null) 'display_color': displayColor,
+      };
 }
 
 /// Thin wrapper over the backend's `/document` REST API - same shape and
@@ -1685,6 +1921,125 @@ class DocumentApiClient {
                 'backlash': backlash,
                 if (backingHeight != null) 'backing_height': backingHeight,
                 'target_body_ids': targetBodyIds,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// `docs/gear-design/08-entry-screen-and-preview.md`'s "Chain/planetary/
+  /// bevel-pair preview" extension - `/gear/preview` with `gear_kind:
+  /// 'chain'`. [groups]/[stages] mirror `GearChainFeatureCreate`'s own
+  /// shape minus `plane_ref` (the preview always draws in its own local
+  /// frame, same convention [previewGear] already follows).
+  Future<GearPreviewDto> previewGearChain({
+    required List<GearGroupInputDto> groups,
+    required List<GearChainStageInputDto> stages,
+    double startDirectionDegrees = 0.0,
+    double printClearanceMargin = 0.2,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/gear/preview'),
+              headers: _headers,
+              body: jsonEncode({
+                'gear_kind': 'chain',
+                'chain': {
+                  'groups': groups.map((g) => g.toJson()).toList(),
+                  'stages': stages.map((s) => s.toJson()).toList(),
+                  'start_direction_degrees': startDirectionDegrees,
+                  'print_clearance_margin': printClearanceMargin,
+                },
+              }),
+            ),
+        (body) => GearPreviewDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// `/gear/preview` with `gear_kind: 'planetary'` - mirrors
+  /// `PlanetaryGearFeatureCreate`'s own shape minus `plane_ref`.
+  Future<GearPreviewDto> previewGearPlanetary({
+    required double module,
+    required int sunToothCount,
+    required int ringToothCount,
+    required int planetCount,
+    required double faceWidth,
+    required double ringOuterDiameter,
+    double pressureAngleDegrees = 20.0,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/gear/preview'),
+              headers: _headers,
+              body: jsonEncode({
+                'gear_kind': 'planetary',
+                'planetary': {
+                  'module': module,
+                  'sun_tooth_count': sunToothCount,
+                  'ring_tooth_count': ringToothCount,
+                  'planet_count': planetCount,
+                  'face_width': faceWidth,
+                  'ring_outer_diameter': ringOuterDiameter,
+                  'pressure_angle_degrees': pressureAngleDegrees,
+                },
+              }),
+            ),
+        (body) => GearPreviewDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// `docs/gear-design/05-gear-chain-and-planetary.md`: creates the real
+  /// `GearChainFeature` once the user hits "Create" on
+  /// [GearChainDesignScreen] with chain mode selected - [planeRef] omitted
+  /// defaults to the fixed XY plane at the backend, same as every other
+  /// gear Feature create call.
+  Future<FeatureDto> createGearChainFeature(
+    String partId, {
+    required List<GearGroupInputDto> groups,
+    required List<GearChainStageInputDto> stages,
+    double startDirectionDegrees = 0.0,
+    double printClearanceMargin = 0.2,
+    PlaneRefDto? planeRef,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/gear-chain-features'),
+              headers: _headers,
+              body: jsonEncode({
+                if (planeRef != null) 'plane_ref': planeRef.toJson(),
+                'groups': groups.map((g) => g.toJson()).toList(),
+                'stages': stages.map((s) => s.toJson()).toList(),
+                'start_direction_degrees': startDirectionDegrees,
+                'print_clearance_margin': printClearanceMargin,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// `docs/gear-design/05-gear-chain-and-planetary.md`: creates the real
+  /// `PlanetaryGearFeature` once the user hits "Create" on
+  /// [GearChainDesignScreen] with planetary mode selected.
+  Future<FeatureDto> createPlanetaryGearFeature(
+    String partId, {
+    required double module,
+    required int sunToothCount,
+    required int ringToothCount,
+    required int planetCount,
+    required double faceWidth,
+    required double ringOuterDiameter,
+    double pressureAngleDegrees = 20.0,
+    PlaneRefDto? planeRef,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/planetary-gear-features'),
+              headers: _headers,
+              body: jsonEncode({
+                if (planeRef != null) 'plane_ref': planeRef.toJson(),
+                'module': module,
+                'sun_tooth_count': sunToothCount,
+                'ring_tooth_count': ringToothCount,
+                'planet_count': planetCount,
+                'face_width': faceWidth,
+                'ring_outer_diameter': ringOuterDiameter,
+                'pressure_angle_degrees': pressureAngleDegrees,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

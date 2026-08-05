@@ -16,9 +16,12 @@ from app.document.gear_chain_math import (
     ChainStageSpec,
     GearGeometryError,
     check_chain_interference,
+    chain_overall_ratio,
     circle_circle_gap,
     circle_rect_gap,
     compound_axial_overlap,
+    compound_transition_ratio,
+    mesh_link_ratio,
     rect_rect_gap,
     resolve_chain,
     resolve_chain_positions,
@@ -220,3 +223,49 @@ def test_thin_member_warning_flags_below_the_minimum():
 
 def test_thin_member_warning_silent_above_the_minimum():
     assert thin_member_warning(5.0, "stage 1 member a") is None
+
+
+# ---------------------------------------------------------------------------
+# Ratio/rotation-direction (08-entry-screen-and-preview.md's "two cheap
+# numbers from the same math")
+# ---------------------------------------------------------------------------
+
+
+def test_mesh_link_ratio_external_external_reverses():
+    link = mesh_link_ratio(_external(2, 20), _external(2, 40))
+    assert link.reverses is True
+    assert link.ratio == pytest.approx(2.0)  # driven(40)/driving(20)
+    assert link.linear_mm_per_revolution is None
+
+
+def test_mesh_link_ratio_external_internal_does_not_reverse():
+    link = mesh_link_ratio(_external(2, 20), _internal(2, 60, outer_diameter=140))
+    assert link.reverses is False
+    assert link.ratio == pytest.approx(3.0)
+
+
+def test_mesh_link_ratio_rack_link_reverses_and_reports_linear_travel():
+    link = mesh_link_ratio(_external(2, 20), _rack(2, 10))
+    assert link.reverses is True
+    assert link.ratio is None
+    assert link.linear_mm_per_revolution == pytest.approx(math.pi * 2 * 20)
+
+    reverse_order = mesh_link_ratio(_rack(2, 10), _external(2, 20))
+    assert reverse_order.linear_mm_per_revolution == pytest.approx(math.pi * 2 * 20)
+
+
+def test_compound_transition_ratio_never_reverses():
+    link = compound_transition_ratio(_external(1, 20), _external(5, 10))
+    assert link.reverses is False
+    assert link.ratio == pytest.approx(0.5)  # member_b(10)/member_a(20)
+
+
+def test_chain_overall_ratio_telescopes_across_pure_gear_links():
+    links = [mesh_link_ratio(_external(2, 20), _external(2, 40)), mesh_link_ratio(_external(2, 40), _external(2, 10))]
+    # 40/20 * 10/40 = 0.5
+    assert chain_overall_ratio(links) == pytest.approx(0.5)
+
+
+def test_chain_overall_ratio_none_when_any_link_is_a_rack_link():
+    links = [mesh_link_ratio(_external(2, 20), _external(2, 40)), mesh_link_ratio(_external(2, 40), _rack(2, 10))]
+    assert chain_overall_ratio(links) is None
