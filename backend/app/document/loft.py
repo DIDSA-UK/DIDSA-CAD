@@ -668,6 +668,23 @@ def resolve_loft_from_bodies(
         raise _loft_failed("could not thicken the lofted surface by the given thickness")
     solid = thicken.Shape()
 
+    # Bug fix (real on-device/CI finding, not anticipated up front):
+    # MakeThickSolidBySimple's own output solid can come back with inverted
+    # (inward-pointing) face orientation depending on the input shell's own
+    # winding - BRepGProp's volume integral is signed by face orientation,
+    # so this surfaces as a *negative* Mass() for an otherwise perfectly
+    # valid solid (confirmed via a real 10x8x1 thin loft: OCCT returned
+    # -80.0, not 80.0). `.Reversed()` flips every face's orientation
+    # (and, transitively, the sign BRepGProp reports) without changing the
+    # solid's actual shape at all - the standard OCCT fix for exactly this,
+    # applied unconditionally based on a real volume check rather than
+    # assumed to always be needed (a shell that happens to come out right-
+    # side-up already has this be a no-op check, not a blind flip).
+    volume_props = GProp_GProps()
+    brepgprop.VolumeProperties(solid, volume_props)
+    if volume_props.Mass() < 0:
+        solid = solid.Reversed()
+
     warnings = _mid_section_warnings(solid, resolved[0].basis, resolved[-1].basis)
     return solid, warnings
 
