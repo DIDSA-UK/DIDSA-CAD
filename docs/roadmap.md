@@ -16,21 +16,24 @@ building, not one large combined doc). A new "Gear Design" entry point
 (alongside the existing "3D Part Design"/"2D Drawing" tiles on
 `ToolChooserScreen`) for parametric external, internal, rack-and-pinion,
 helical, herringbone, compound, planetary, and straight bevel gears, plus
-DXF export/import (full "block" semantics on import, reusing the existing
-Convert Entities/`ExternalVertexReference` mechanism) and a general Loft
-feature. Not started - confirmed genuinely greenfield (no gear/involute
-code, no DXF in either direction, no Loft feature exist anywhere in this
-codebase today). Key decisions: gears are procedural Features (parameters
--> solid), never a DXF-round-trip or constraint-solved Sketch entities
-(`Spline`'s real `py-slvs` solver backing makes it unsuitable for
-hundreds of involute-curve points per gear); multi-gear systems
-(`GearChainFeature`/`PlanetaryGearFeature`/`BevelPairFeature`) are each
-one live, re-derivable Feature, mirroring Pattern/Mirror's existing
-"one Feature, many realized Bodies" pattern, not a one-shot generator.
-Compound-gear geometry and straight bevel gears are both in v1 scope
-(the two highest-risk items in the whole project, pulled in deliberately
-rather than deferred); spiral/Zerol/hypoid bevel variants remain the one
-thing still deferred.
+a general Loft feature. **Backend/API essentially complete**: Workstreams
+1-5, 10, 11 done (gear math core, `GearFeature`, `RackFeature`, helical/
+herringbone + `LoftFeature`, `GearChainFeature`/`PlanetaryGearFeature`/
+`GearGroup`, `BevelGearFeature`, `BevelPairFeature`), plus a scoped-down
+v1 entry screen/preview (Workstream 8, external/internal/rack only). Only
+Workstream 9 (client-local presets) remains in this doc set. Key
+decisions: gears are procedural Features (parameters -> solid), never a
+DXF-round-trip or constraint-solved Sketch entities (`Spline`'s real
+`py-slvs` solver backing makes it unsuitable for hundreds of involute-
+curve points per gear); multi-gear systems (`GearChainFeature`/
+`PlanetaryGearFeature`/`BevelPairFeature`) are each one live, re-derivable
+Feature, mirroring Pattern/Mirror's existing "one Feature, many realized
+Bodies" pattern, not a one-shot generator. Compound-gear geometry and
+straight bevel gears were both pulled into v1 scope deliberately (the two
+highest-risk items in the whole project) rather than deferred, and both
+are now live; spiral/Zerol/hypoid bevel variants remain the one thing
+still deferred. DXF import/export was originally scoped here too but has
+since moved to its own doc set (`docs/dxf-io/`) - see the entry below.
 
 ## Analysis tools
 
@@ -219,13 +222,15 @@ endpoints (`GET`/`POST /sketch/sketches/{id}/export`, `.../import`, reusing
 the Part-level native format's own `sketch_to_dict`/`sketch_from_dict`).
 Deliberately deferred, not yet scoped in detail:
 
-- **DXF export.** Genuinely greenfield - no `ezdxf` dependency yet, no
-  existing DXF import to mirror either (contrary to what
-  `docs/sketcher-overhaul-scope.md` Phase 8 implied was already scoped -
-  confirmed zero implementation exists). Realistic path: a Python `ezdxf`
-  writer directly against the Sketch model's own Points/Lines/Arcs/Circles/
-  Ellipses/Splines/Text. DWG is a dead end (proprietary format, no viable
-  open-source parser) - DXF-only.
+- **DXF import/export.** Now fully scoped (moved out of `docs/gear-design/`,
+  which originally proposed it for a gear-round-trip workflow that's since
+  been dropped - see `docs/dxf-io/README.md`). DXF-only, no DWG (no viable
+  open-source writer/reader). Import lands as a positionable, constrainable
+  "block" inside a Sketch (ghost geometry positioned by two real Points +
+  a construction Line, not a plain numeric transform); export covers both
+  a whole Sketch and any Body's own planar face, through one shared
+  `ezdxf` writer. Not started - `docs/dxf-io/`'s own three workstream
+  files are ready for implementation.
 - **A "my drawings" list/browse feature.** No multi-document concept exists
   anywhere in the backend today (not even for Parts) - the current
   file-based Save/Open sidesteps needing one entirely. Would need either a

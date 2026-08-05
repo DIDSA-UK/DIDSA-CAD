@@ -1,47 +1,23 @@
-# Workstream 6 — DXF export
+# Workstream 6 — DXF export (MOVED, no longer a Gear Design workstream)
 
-Read `00-conventions.md` first. Depends on Workstream 1 (gear profile
-points) and, for multi-gear exports, Workstream 5. Shared with the
-existing, separately-roadmapped "2D Drawing" tool's own unstarted DXF
-export ask (`docs/roadmap.md`) — build one `ezdxf`-based writer, not two.
+**This workstream moved to `docs/dxf-io/`.** Retired here deliberately
+rather than deleted, so the history of why stays discoverable.
 
-## Scope
+Originally scoped around a "design a gear, export DXF, reimport into a 3D
+Part, extrude/loft it" round-trip. That motivation is dead —
+`GearFeature`/`RackFeature`/`GearChainFeature`/`PlanetaryGearFeature`/
+`BevelGearFeature`/`BevelPairFeature` all already build real solids
+directly, no DXF round-trip needed. DXF export survives as a general 2D
+Sketcher/3D Part Design capability instead, not a gear-specific one — see
+`docs/dxf-io/00-conventions.md` for the full reasoning and
+`docs/dxf-io/02-dxf-export.md`/`docs/dxf-io/03-gear-chain-schematic-export.md`
+for the current scope (per-gear export is now free via a generic "Export
+Face" capability, no gear-specific writer code at all; the multi-gear
+chain/planetary layout export is scoped there as a schematic).
 
-New backend dependency: `ezdxf`. New writer consuming either a gear's own
-profile points (Workstream 1, bypassing the Sketch model entirely — the
-profile never needs to become interactive Sketch geometry to be exported)
-or a general Sketch's Points/Lines/Arcs/Circles/Ellipses/Splines/Text
-(satisfies the "2D Drawing" tool's own DXF export ask with the same
-writer).
-
-Two export shapes for a `GearChainFeature`/`PlanetaryGearFeature`:
-
-- **Per-gear cut files** — one DXF per gear (matches how a gear is
-  actually cut/printed/used downstream), returned as a zip or multiple
-  endpoint calls.
-- **Combined layout export** — every gear in the system in one DXF, each
-  at its real relative position/rotation (the positions
-  `GearChainFeature`/`PlanetaryGearFeature` already compute), for a
-  reference/assembly drawing rather than cutting. Cheap — placement, not
-  new geometry.
-
-**Unresolved, decide here, don't assume** (flagged in
-`05-gear-chain-and-planetary.md`): a compound station's two members sit
-at different depths along the shaft, not the same 2D plane — likely two
-separate per-member DXF files even when the 3D solid is fused. Also
-unresolved: a bevel gear (`10-bevel-gear.md`) has no flat 2D profile at
-all — likely a flat-pattern/development of the back-cone tooth profile
-(a standard bevel-drafting technique), itself new geometry work.
-
-DWG is out of scope (proprietary format, no viable open-source writer) —
-already the conclusion for the separate 2D Drawing tool's own roadmap
-entry.
-
-## Complexity/risk
-
-Low-medium. `ezdxf` is mature and well-documented; the main work is a
-clean mapping from this app's entity model to DXF entities (LWPOLYLINE
-for sampled involute curves, or SPLINE if `ezdxf`'s spline entity is
-preferred over polyline sampling; ARC/LINE/CIRCLE directly), plus units
-(`$INSUNITS` header — this app's geometry is implicitly mm throughout,
-state it explicitly rather than assume the importing tool knows).
+The two things this file used to flag as unresolved are both resolved in
+the new location, not carried forward as open questions:
+- Compound-station DXF (two members at different depths) — dissolved
+  under the new "Export Face" model; each member has its own face.
+- Bevel flat-pattern DXF — dropped from scope entirely, not deferred; a
+  bevel tooth's curved flank has no flat face to export at all.
