@@ -229,6 +229,8 @@ void main() {
     await tester.pump();
     expect(find.text('Herringbone'), findsOneWidget);
 
+    await tester.ensureVisible(find.widgetWithText(SwitchListTile, 'Herringbone'));
+    await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(SwitchListTile, 'Herringbone'));
     await tester.pump();
 

@@ -49,7 +49,13 @@ class GearPresetControls extends StatelessWidget {
         ],
       ),
     );
-    controller.dispose();
+    // Deferred to a post-frame callback rather than disposed immediately:
+    // `showDialog`'s Future resolves as soon as the route is popped, but the
+    // dialog's exit transition is still animating the TextField out at that
+    // point - disposing its controller synchronously here raced the
+    // framework's own teardown of the still-attached EditableText ("attached:
+    // is not true" / "Tried to build dirty widget in the wrong build scope").
+    WidgetsBinding.instance.addPostFrameCallback((_) => controller.dispose());
     if (name == null || name.isEmpty) return;
     await GearPresetStore.save(name, kind, captureFields());
   }

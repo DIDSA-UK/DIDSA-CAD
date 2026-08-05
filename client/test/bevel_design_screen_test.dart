@@ -24,7 +24,7 @@ void main() {
   http.Response jsonResponse(Object body, {int status = 200}) =>
       http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});
 
-  Map<String, dynamic> _bevelMember({required String label, double axisAngleDegrees = 0.0}) => {
+  Map<String, dynamic> bevelMember({required String label, double axisAngleDegrees = 0.0}) => {
         'label': label,
         'axis_angle_degrees': axisAngleDegrees,
         'outline_points': [
@@ -52,7 +52,7 @@ void main() {
         'gear_kind': 'bevel_gear',
         'outline_points': [],
         'warnings': warnings,
-        'bevel_gear': _bevelMember(label: 'single'),
+        'bevel_gear': bevelMember(label: 'single'),
       };
 
   Map<String, dynamic> bevelPairPreviewResponse() => {
@@ -61,8 +61,8 @@ void main() {
         'warnings': [],
         'bevel_pair': {
           'members': [
-            _bevelMember(label: 'member_1'),
-            _bevelMember(label: 'member_2', axisAngleDegrees: 90.0),
+            bevelMember(label: 'member_1'),
+            bevelMember(label: 'member_2', axisAngleDegrees: 90.0),
           ],
           'shaft_angle_degrees': 90.0,
         },

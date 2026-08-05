@@ -24,7 +24,7 @@ void main() {
   http.Response jsonResponse(Object body, {int status = 200}) =>
       http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});
 
-  Map<String, dynamic> _member({
+  Map<String, dynamic> member({
     required int stageIndex,
     required String label,
     String memberType = 'external',
@@ -49,8 +49,8 @@ void main() {
         'warnings': [],
         'chain': {
           'members': [
-            _member(stageIndex: 0, label: 'single'),
-            _member(stageIndex: 1, label: 'single', center: const [35.0, 0.0]),
+            member(stageIndex: 0, label: 'single'),
+            member(stageIndex: 1, label: 'single', center: const [35.0, 0.0]),
           ],
           'interference_findings': findings,
           'links': [
@@ -73,9 +73,9 @@ void main() {
         'warnings': [],
         'planetary': {
           'members': [
-            _member(stageIndex: 0, label: 'sun'),
-            _member(stageIndex: 1, label: 'ring', memberType: 'internal'),
-            _member(stageIndex: 2, label: 'planet_0', center: const [40.0, 0.0]),
+            member(stageIndex: 0, label: 'sun'),
+            member(stageIndex: 1, label: 'ring', memberType: 'internal'),
+            member(stageIndex: 2, label: 'planet_0', center: const [40.0, 0.0]),
           ],
           'sun_to_planet_ratio': 1.0,
           'planet_to_ring_ratio': 3.0,
