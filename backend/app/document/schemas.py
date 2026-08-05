@@ -1060,11 +1060,13 @@ class BevelPairFeatureResponse(BaseModel):
 class LoftSectionSchema(BaseModel):
     """`docs/gear-design/04-helical-herringbone-loft.md` (4b): the wire
     counterpart to `app.document.models.LoftSection` - see that dataclass's
-    own docstring for `reference_point`'s alignment semantics."""
+    own docstring for `reference_point`'s alignment semantics and
+    `alignment_point`'s own, separate translation semantics."""
 
     sketch_feature_id: str
     profile_refs: list[SketchEntityRefSchema] = []
     reference_point: SketchEntityRefSchema | None = None
+    alignment_point: SketchEntityRefSchema | None = None
 
 
 class LoftFeatureCreate(BaseModel):
@@ -1075,13 +1077,18 @@ class LoftFeatureCreate(BaseModel):
     _validate_loft_thickness`), switches every section from a closed Profile
     to a single open chain and thickens the resulting lofted shell by this
     signed value instead of lofting directly into a solid - see
-    `LoftFeature`'s own docstring."""
+    `LoftFeature`'s own docstring. `guide_curve_refs`, if set (see
+    `app.document.router._validate_loft_guide_curve_refs`), is the same
+    ordered, cross-Sketch Line/Arc/Ellipse/Spline chain shape as
+    `SweepFeatureCreate.path_refs` - see `LoftFeature.guide_curve_refs`'s
+    own docstring for what it does here."""
 
     sections: list[LoftSectionSchema]
     mode: LoftMode
     ruled: bool = False
     target_body_ids: list[str] = []
     thickness: float | None = None
+    guide_curve_refs: list[SketchEntityRefSchema] = []
 
 
 class LoftFeatureUpdate(BaseModel):
@@ -1090,13 +1097,18 @@ class LoftFeatureUpdate(BaseModel):
     omitting it (`None`) keeps the Feature's current value (which may
     itself be `None`, i.e. closed-profile mode), the same "can't null a
     real value back out via Update" limitation every other Optional field
-    here already has (e.g. `RackFeatureUpdate.backing_height`)."""
+    here already has (e.g. `RackFeatureUpdate.backing_height`). `guide_
+    curve_refs` follows the same convention: `None` (the default) keeps
+    whatever the Feature already has; passing `[]` explicitly clears it
+    back to "no guide curve" (an empty list is itself a real, meaningful
+    value here, unlike a bare omission)."""
 
     sections: list[LoftSectionSchema] | None = None
     mode: LoftMode | None = None
     ruled: bool | None = None
     target_body_ids: list[str] | None = None
     thickness: float | None = None
+    guide_curve_refs: list[SketchEntityRefSchema] | None = None
 
 
 class LoftFeatureResponse(BaseModel):
@@ -1107,6 +1119,7 @@ class LoftFeatureResponse(BaseModel):
     ruled: bool
     target_body_ids: list[str] = []
     thickness: float | None = None
+    guide_curve_refs: list[SketchEntityRefSchema] = []
     locked: bool
     # B1: see SketchFeatureResponse.produces above - always BODY for a
     # LoftFeature.

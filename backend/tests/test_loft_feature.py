@@ -72,10 +72,17 @@ def _profile_ref(sketch_id: str, entity_id: str, entity_type: str = "line") -> d
     return {"sketch_id": sketch_id, "entity_type": entity_type, "entity_id": entity_id}
 
 
-def _section(sketch_feature: dict, *, reference_point_id: str | None = None) -> dict:
+def _section(
+    sketch_feature: dict,
+    *,
+    reference_point_id: str | None = None,
+    alignment_point_id: str | None = None,
+) -> dict:
     section = {"sketch_feature_id": sketch_feature["id"]}
     if reference_point_id is not None:
         section["reference_point"] = _profile_ref(sketch_feature["sketch_id"], reference_point_id, "point")
+    if alignment_point_id is not None:
+        section["alignment_point"] = _profile_ref(sketch_feature["sketch_id"], alignment_point_id, "point")
     return section
 
 
@@ -564,3 +571,224 @@ def test_update_loft_feature_can_change_thickness():
     )
     assert patch_response.status_code == 200, patch_response.json()
     assert patch_response.json()["thickness"] == 2.0
+
+
+# --- Vertex-to-vertex alignment + guide curves (`alignment_point`/`guide_curve_refs`) ---
+#
+# A third, later addition, orthogonal to both the closed-solid/open-
+# thickness split and to `reference_point`'s own separate rotation - see
+# app.document.loft._apply_alignment_point_translation's own docstring.
+
+
+def _guide_curve_xz(part_id: str, start: tuple[float, float], end: tuple[float, float]) -> dict:
+    """A single Line on the fixed XZ plane - `Plane.XZ`'s own basis has
+    `x_axis=(-1,0,0)`, `y_axis=(0,0,1)` (`app.document.plane_geometry.
+    _PLANE_BASIS`), so a local `(lx, ly)` point embeds to world
+    `(-lx, 0, ly)` - `start`/`end` are given here directly in *world*
+    `(x, z)` for this helper's own callers' readability, negated before
+    being sent as this Sketch's own local `(x, y)`."""
+    feature = _create_sketch_feature(part_id, "XZ")
+    sx, sz = start
+    ex, ez = end
+    a = _add_point(feature["sketch_id"], -sx, sz)
+    b = _add_point(feature["sketch_id"], -ex, ez)
+    line = _add_line(feature["sketch_id"], a["id"], b["id"])
+    return {"sketch_id": feature["sketch_id"], "entity_id": line["id"]}
+
+
+def _guide_curve_ref(guide: dict) -> dict:
+    return {"sketch_id": guide["sketch_id"], "entity_type": "line", "entity_id": guide["entity_id"]}
+
+
+def test_alignment_point_straightens_an_offset_loft():
+    """Two same-size, same-shape squares - the top one shifted +10 in its
+    own local X compared to the bottom (so an unaligned loft between them
+    is a slanted parallelepiped) - each with an `alignment_point` at its
+    own "same" corner (the bottom's own `(-5,-5)`, the top's own shifted
+    `(5,-5)` - the same relative corner of an otherwise-identical square).
+    With no guide curve, `_apply_alignment_point_translation` slides the
+    top section so its `alignment_point` matches the bottom's own world
+    position (projected into the top's own plane) - this cancels the
+    deliberate +10 local-X offset exactly, producing a dead-straight
+    10x10x8 prism instead of a slanted one.
+
+    Checked via each mesh vertex's own X coordinate rather than volume - a
+    slanted prism between two congruent, only-translated squares has the
+    *same* volume as a straight one (Cavalieri's principle), so volume
+    alone can't tell the aligned and unaligned cases apart the way
+    `test_loft_between_two_squares_produces_one_solid_body`'s own check
+    can for a simpler case."""
+
+    def _build(part_name: str, *, use_alignment_points: bool) -> list[tuple[float, float, float]]:
+        part = _create_part(part_name)
+        bottom = _create_sketch_feature(part["id"], "XY")
+        bottom_corners = _add_polygon(bottom["sketch_id"], [(-5, -5), (5, -5), (5, 5), (-5, 5)])
+        plane = _move_sketch_feature_up(part["id"], bottom, 8.0)
+        top_response = client.post(
+            f"/document/parts/{part['id']}/features/sketch", json={"plane_feature_id": plane["id"]}
+        )
+        assert top_response.status_code == 201, top_response.json()
+        top = top_response.json()
+        top_corners = _add_polygon(top["sketch_id"], [(5, -5), (15, -5), (15, 5), (5, 5)])
+
+        if use_alignment_points:
+            sections = [
+                _section(bottom, alignment_point_id=bottom_corners[0]["id"]),
+                _section(top, alignment_point_id=top_corners[0]["id"]),
+            ]
+        else:
+            sections = [_section(bottom), _section(top)]
+        response = _create_loft(part["id"], sections)
+        assert response.status_code == 201, response.json()
+        return _mesh(part["id"])[0]["mesh"]["vertices"]
+
+    aligned_vertices = _build("Aligned", use_alignment_points=True)
+    unaligned_vertices = _build("Unaligned", use_alignment_points=False)
+
+    aligned_max_x = max(x for x, _y, _z in aligned_vertices)
+    aligned_min_x = min(x for x, _y, _z in aligned_vertices)
+    assert aligned_max_x <= 5.0 + 1e-6
+    assert aligned_min_x >= -5.0 - 1e-6
+
+    unaligned_max_x = max(x for x, _y, _z in unaligned_vertices)
+    assert unaligned_max_x > 5.0 + 1e-6
+
+
+def test_guide_curve_ref_slides_each_section_along_the_rail():
+    """A guide curve running from world `(-0.75, 0, -2)` to
+    `(3.75, 0, 10)` - a straight line of slope `3/8` in `x` per unit `z` -
+    crosses the bottom section's own plane (`z=0`) at `x=0` and the top
+    section's own plane (`z=8`) at `x=3`, both through the guide wire's
+    own interior (overshooting each plane at both ends, not landing
+    exactly on a wire endpoint). Each section's `alignment_point` is its
+    own local origin (`(0, 0)`, a plain center point, no corner needed) -
+    the bottom's needs no translation at all (its own plane's crossing is
+    already at the world origin), the top's slides by `+3` in `x`."""
+    part = _create_part()
+    bottom = _create_sketch_feature(part["id"], "XY")
+    _add_polygon(bottom["sketch_id"], [(-5, -5), (5, -5), (5, 5), (-5, 5)])
+    bottom_center = _add_point(bottom["sketch_id"], 0.0, 0.0)
+    plane = _move_sketch_feature_up(part["id"], bottom, 8.0)
+    top_response = client.post(
+        f"/document/parts/{part['id']}/features/sketch", json={"plane_feature_id": plane["id"]}
+    )
+    assert top_response.status_code == 201, top_response.json()
+    top = top_response.json()
+    _add_polygon(top["sketch_id"], [(-5, -5), (5, -5), (5, 5), (-5, 5)])
+    top_center = _add_point(top["sketch_id"], 0.0, 0.0)
+
+    guide = _guide_curve_xz(part["id"], (-0.75, -2.0), (3.75, 10.0))
+
+    response = _create_loft(
+        part["id"],
+        [
+            _section(bottom, alignment_point_id=bottom_center["id"]),
+            _section(top, alignment_point_id=top_center["id"]),
+        ],
+        guide_curve_refs=[_guide_curve_ref(guide)],
+    )
+    assert response.status_code == 201, response.json()
+
+    vertices = _mesh(part["id"])[0]["mesh"]["vertices"]
+    bottom_layer_x = [x for x, _y, z in vertices if abs(z) < 1e-6]
+    top_layer_x = [x for x, _y, z in vertices if abs(z - 8.0) < 1e-6]
+    assert bottom_layer_x and top_layer_x
+    assert abs(min(bottom_layer_x) - (-5.0)) < 1e-3
+    assert abs(max(bottom_layer_x) - 5.0) < 1e-3
+    # Top square shifted by +3 in X (its own plane's guide-curve crossing).
+    assert abs(min(top_layer_x) - (-2.0)) < 1e-3
+    assert abs(max(top_layer_x) - 8.0) < 1e-3
+
+
+def test_guide_curve_requires_alignment_point_on_every_section():
+    part = _create_part()
+    bottom = _square_sketch(part["id"])
+    plane = _move_sketch_feature_up(part["id"], bottom, 8.0)
+    top_response = client.post(
+        f"/document/parts/{part['id']}/features/sketch", json={"plane_feature_id": plane["id"]}
+    )
+    top = top_response.json()
+    _add_polygon(top["sketch_id"], [(-5, -5), (5, -5), (5, 5), (-5, 5)])
+    top_center = _add_point(top["sketch_id"], 0.0, 0.0)
+    guide = _guide_curve_xz(part["id"], (-0.75, -2.0), (3.75, 10.0))
+
+    response = _create_loft(
+        part["id"],
+        [_section(bottom), _section(top, alignment_point_id=top_center["id"])],
+        guide_curve_refs=[_guide_curve_ref(guide)],
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["type"] == "invalid_loft_section"
+
+
+def test_vertex_to_vertex_alignment_requires_first_section_alignment_point():
+    part = _create_part()
+    bottom = _square_sketch(part["id"])
+    plane = _move_sketch_feature_up(part["id"], bottom, 8.0)
+    top_response = client.post(
+        f"/document/parts/{part['id']}/features/sketch", json={"plane_feature_id": plane["id"]}
+    )
+    top = top_response.json()
+    top_corners = _add_polygon(top["sketch_id"], [(-5, -5), (5, -5), (5, 5), (-5, 5)])
+
+    response = _create_loft(
+        part["id"],
+        [_section(bottom), _section(top, alignment_point_id=top_corners[0]["id"])],
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["type"] == "invalid_loft_section"
+
+
+def test_guide_curve_refs_rejects_a_point_entity_type():
+    part = _create_part()
+    bottom = _square_sketch(part["id"])
+    plane = _move_sketch_feature_up(part["id"], bottom, 8.0)
+    top_response = client.post(
+        f"/document/parts/{part['id']}/features/sketch", json={"plane_feature_id": plane["id"]}
+    )
+    top = top_response.json()
+    _add_polygon(top["sketch_id"], [(-5, -5), (5, -5), (5, 5), (-5, 5)])
+    guide_sketch = _create_sketch_feature(part["id"], "XZ")
+    point = _add_point(guide_sketch["sketch_id"], 0.0, 0.0)
+
+    response = _create_loft(
+        part["id"],
+        [_section(bottom), _section(top)],
+        guide_curve_refs=[
+            {"sketch_id": guide_sketch["sketch_id"], "entity_type": "point", "entity_id": point["id"]}
+        ],
+    )
+    assert response.status_code == 422
+
+
+def test_update_loft_feature_can_clear_guide_curve_refs():
+    part = _create_part()
+    bottom = _create_sketch_feature(part["id"], "XY")
+    _add_polygon(bottom["sketch_id"], [(-5, -5), (5, -5), (5, 5), (-5, 5)])
+    bottom_center = _add_point(bottom["sketch_id"], 0.0, 0.0)
+    plane = _move_sketch_feature_up(part["id"], bottom, 8.0)
+    top_response = client.post(
+        f"/document/parts/{part['id']}/features/sketch", json={"plane_feature_id": plane["id"]}
+    )
+    top = top_response.json()
+    _add_polygon(top["sketch_id"], [(-5, -5), (5, -5), (5, 5), (-5, 5)])
+    top_center = _add_point(top["sketch_id"], 0.0, 0.0)
+    guide = _guide_curve_xz(part["id"], (-0.75, -2.0), (3.75, 10.0))
+
+    create_response = _create_loft(
+        part["id"],
+        [
+            _section(bottom, alignment_point_id=bottom_center["id"]),
+            _section(top, alignment_point_id=top_center["id"]),
+        ],
+        guide_curve_refs=[_guide_curve_ref(guide)],
+    )
+    assert create_response.status_code == 201, create_response.json()
+    feature_id = create_response.json()["id"]
+    assert len(create_response.json()["guide_curve_refs"]) == 1
+
+    patch_response = client.patch(
+        f"/document/parts/{part['id']}/loft-features/{feature_id}", json={"guide_curve_refs": []}
+    )
+    assert patch_response.status_code == 200, patch_response.json()
+    assert patch_response.json()["guide_curve_refs"] == []

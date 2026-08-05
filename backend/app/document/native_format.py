@@ -609,6 +609,9 @@ def _loft_section_to_dict(section: LoftSection) -> dict:
         "reference_point": _sketch_entity_ref_to_dict(section.reference_point)
         if section.reference_point
         else None,
+        "alignment_point": _sketch_entity_ref_to_dict(section.alignment_point)
+        if section.alignment_point
+        else None,
     }
 
 
@@ -618,6 +621,9 @@ def _loft_section_from_dict(data: dict) -> LoftSection:
         profile_refs=[_sketch_entity_ref_from_dict(r) for r in data.get("profile_refs", [])],
         reference_point=_sketch_entity_ref_from_dict(data["reference_point"])
         if data.get("reference_point")
+        else None,
+        alignment_point=_sketch_entity_ref_from_dict(data["alignment_point"])
+        if data.get("alignment_point")
         else None,
     )
 
@@ -965,6 +971,7 @@ def _feature_to_dict(feature: Feature) -> dict:
             "ruled": feature.ruled,
             "target_body_ids": list(feature.target_body_ids),
             "thickness": feature.thickness,
+            "guide_curve_refs": [_sketch_entity_ref_to_dict(r) for r in feature.guide_curve_refs],
         }
     if isinstance(feature, GearChainFeature):
         return {
@@ -1182,6 +1189,7 @@ def _feature_from_dict(data: dict) -> Feature:
             ruled=data.get("ruled", False),
             target_body_ids=list(data.get("target_body_ids", [])),
             thickness=data.get("thickness"),
+            guide_curve_refs=[_sketch_entity_ref_from_dict(r) for r in data.get("guide_curve_refs", [])],
         )
     if feature_type == "gear_chain":
         return GearChainFeature(

@@ -577,17 +577,25 @@ def _loft_dependencies(part: Part, feature: LoftFeature) -> tuple[str, ...]:
     `build_feature_graph`'s `LoftFeature` dependency-edge logic - every
     distinct Sketch named across `sections` (each entry may name a
     different Sketch, mirroring `_sweep_dependencies`' identical
-    `path_refs` treatment) via its own owning SketchFeature, plus every
-    `target_body_ids` entry's owning Feature for Cut mode, deduplicated
-    via a `set`. `reference_point` never adds its own dependency edge -
-    it's always required to name a Point in that same section's own
-    Sketch (enforced by `app.document.loft`), so it never reaches a
-    Sketch not already covered by that section's `sketch_feature_id`."""
+    `path_refs` treatment) via its own owning SketchFeature, every distinct
+    Sketch named across `guide_curve_refs` the same way (mirrors `_sweep_
+    dependencies`' own `path_refs` handling exactly - a guide curve is the
+    identical "ordered, possibly cross-Sketch chain" shape), plus every
+    `target_body_ids` entry's owning Feature for Cut mode, deduplicated via
+    a `set`. `reference_point`/`alignment_point` never add their own
+    dependency edge - both are always required to name a Point in that
+    same section's own Sketch (enforced by `app.document.loft`), so neither
+    ever reaches a Sketch not already covered by that section's `sketch_
+    feature_id`."""
     deps: set[str] = set()
     for section in feature.sections:
         sketch_feature_id = section.sketch_feature_id
         if part.get_feature(sketch_feature_id) is not None:
             deps.add(sketch_feature_id)
+    for ref in feature.guide_curve_refs:
+        guide_sketch_feature_id = sketch_feature_id_for_sketch(part, ref.sketch_id)
+        if guide_sketch_feature_id is not None:
+            deps.add(guide_sketch_feature_id)
     deps.update(base_feature_id(tid) for tid in feature.target_body_ids)
     return tuple(deps)
 

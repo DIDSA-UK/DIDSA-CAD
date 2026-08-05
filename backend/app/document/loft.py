@@ -29,6 +29,26 @@ genuinely new OCCT technique, verified so far only by code review (same
 `pythonocc-core`-unavailable sandbox constraint as the rest of this module)
 - treat it with the same "needs a real on-device/CI pass" caution as
 everything else in this docstring until `docs/status.md` says otherwise.
+
+**Guide curves + vertex-to-vertex alignment (`LoftFeature.guide_curve_refs`/
+`LoftSection.alignment_point`)**: a third, later addition, orthogonal to
+both of the above (composes with either the closed-solid or the open-
+thickness path, and with `reference_point`'s own separate rotation).
+`alignment_point` is a rigid *translation*, applied after any
+`reference_point` rotation, that slides a section (in-plane only, never
+off its own plane) so that one designated point on it lands exactly on a
+target: the ordered `guide_curve_refs` chain's own intersection with that
+section's plane if set (reusing `app.document.sweep.resolve_path_wire`'s
+identical cross-Sketch path-resolution machinery, just as a rail here
+rather than an extrusion direction), or otherwise the first alignment_point-
+bearing section's own position (projected into this section's own plane) -
+see `_apply_alignment_point_translation`'s own docstring for the exact
+rule, and `LoftFeature.guide_curve_refs`'/`LoftSection.alignment_point`'s
+own docstrings for why this is a deliberately narrower, honest v1 (one
+point per section rides the rail exactly; the rest of each section's own
+boundary is carried along rigidly, not reshaped to hug the curve).
+Verified so far only by code review, same sandbox constraint as the rest
+of this module.
 """
 
 import logging
@@ -36,6 +56,7 @@ import math
 from dataclasses import dataclass
 
 from fastapi import HTTPException
+from OCC.Core.BRep import BRep_Tool
 from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Section
 from OCC.Core.BRepBuilderAPI import (
     BRepBuilderAPI_MakeEdge,
@@ -50,9 +71,9 @@ from OCC.Core.Bnd import Bnd_Box
 from OCC.Core.BRepBndLib import brepbndlib
 from OCC.Core.Geom import Geom_BezierCurve
 from OCC.Core.GProp import GProp_GProps
-from OCC.Core.gp import gp_Ax1, gp_Circ, gp_Dir, gp_Pln, gp_Pnt, gp_Trsf
+from OCC.Core.gp import gp_Ax1, gp_Circ, gp_Dir, gp_Pln, gp_Pnt, gp_Trsf, gp_Vec
 from OCC.Core.TColgp import TColgp_Array1OfPnt
-from OCC.Core.TopAbs import TopAbs_EDGE
+from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_VERTEX
 from OCC.Core.TopExp import TopExp_Explorer
 from OCC.Core.TopoDS import TopoDS_Shape, TopoDS_Wire, topods
 
@@ -67,7 +88,8 @@ from app.document.extrude import (
 )
 from app.document.models import LoftFeature, LoftSection, Part, ResolvedPlane, SketchFeature
 from app.document.plane_geometry import is_mirrored_basis
-from app.sketch.models import Arc, Sketch, SketchEntityType, Spline
+from app.document.sweep import resolve_path_wire
+from app.sketch.models import Arc, Sketch, SketchEntityRef, SketchEntityType, Spline
 from app.sketch.profile import (
     OpenChain,
     OpenChainStatus,
@@ -90,11 +112,44 @@ def _invalid_loft_section(index: int, detail: str) -> HTTPException:
     return HTTPException(status_code=422, detail={"type": "invalid_loft_section", "index": index, "detail": detail})
 
 
+def _invalid_guide_curve_ref(index: int, detail: str) -> HTTPException:
+    """A `guide_curve_refs`-driven alignment that can't be resolved for
+    section `index` - a real geometric crossing-count problem (see
+    `_guide_curve_intersection`), not a payload-shape one (those are
+    `app.document.sweep.resolve_path_wire`'s own `invalid_path_ref`/
+    `disconnected_path`, left to propagate as-is rather than rewrapped -
+    the guide curve chain itself is resolved by that exact same machinery
+    `SweepFeature.path_refs` already uses, so its own errors are already
+    clear and actionable without translation)."""
+    return HTTPException(
+        status_code=422, detail={"type": "invalid_guide_curve_ref", "index": index, "detail": detail}
+    )
+
+
 def _loft_failed(detail: str) -> HTTPException:
     """A structurally-valid set of sections that OCCT nonetheless couldn't
     loft between - mirrors `app.document.sweep._sweep_failed`'s own
     "resolvable parameters, unresolvable geometry" distinction."""
     return HTTPException(status_code=422, detail={"type": "loft_failed", "detail": detail})
+
+
+def _resolve_local_point(
+    sketch_feature: SketchFeature, ref: SketchEntityRef, index: int, field_name: str
+) -> tuple[float, float]:
+    """Resolves `ref` (a `LoftSection.reference_point` or `.alignment_point`
+    - the two share this exact same "Point in this section's own Sketch"
+    shape and validation, even though what each does with the result
+    differs completely) to its own local `(x, y)` within `sketch_feature`'s
+    Sketch."""
+    if ref.entity_type != SketchEntityType.POINT:
+        raise _invalid_loft_section(index, f"{field_name} must reference a Point entity")
+    if ref.sketch_id != sketch_feature.sketch_id:
+        raise _invalid_loft_section(index, f"{field_name} must belong to this section's own Sketch")
+    try:
+        point = resolve_sketch_entity(ref)
+    except HTTPException:
+        raise _invalid_loft_section(index, f"{field_name} does not resolve to a Point") from None
+    return (point.x, point.y)
 
 
 @dataclass
@@ -103,6 +158,7 @@ class _ResolvedClosedSection:
     basis: ResolvedPlane
     profile: Profile
     reference_angle: float | None
+    alignment_local: tuple[float, float] | None
 
 
 def _resolve_closed_section(
@@ -113,19 +169,21 @@ def _resolve_closed_section(
     index: int,
 ) -> _ResolvedClosedSection:
     """Resolves one `LoftSection` into its own Sketch/basis/Profile/
-    reference-angle - mirrors `app.document.sweep._resolve_path_segment`'s
-    own per-entry resolution shape (each entry resolved entirely
-    independently: its own owning SketchFeature, its own basis), narrowed
-    (unlike a MultiProfile-tolerant Extrude/Sweep) to require selecting
-    down to exactly one profile - a Loft section is a single 2D cross-
-    section, not several disjoint ones.
+    reference-angle/alignment-point - mirrors `app.document.sweep._resolve_
+    path_segment`'s own per-entry resolution shape (each entry resolved
+    entirely independently: its own owning SketchFeature, its own basis),
+    narrowed (unlike a MultiProfile-tolerant Extrude/Sweep) to require
+    selecting down to exactly one profile - a Loft section is a single 2D
+    cross-section, not several disjoint ones.
 
-    `section.reference_point`, if set, must be a `POINT` entity in this
-    *same* section's own Sketch (never a different Sketch - there would be
-    no shared local frame to measure an angle in otherwise) - resolved to
-    its local `(x, y)` and reduced to `atan2(y, x)`, the angle from this
-    Sketch's own local origin `LoftFeature`/`LoftSection`'s own docstrings
-    describe as the alignment technique's rotation center."""
+    `section.reference_point`/`section.alignment_point`, each if set, must
+    be a `POINT` entity in this *same* section's own Sketch (never a
+    different Sketch - there would be no shared local frame to measure
+    against otherwise) - see `_resolve_local_point`. `reference_point` is
+    reduced further to `atan2(y, x)`, the angle from this Sketch's own
+    local origin `LoftFeature`/`LoftSection`'s own docstrings describe as
+    the rotation-alignment technique's center; `alignment_local` is kept as
+    a bare `(x, y)` pair, `_apply_alignment_point_translation`'s own input."""
     sketch_feature = part.get_feature(section.sketch_feature_id)
     if not isinstance(sketch_feature, SketchFeature):
         raise _invalid_loft_section(index, "sketch_feature_id does not refer to a SketchFeature in this Part")
@@ -154,18 +212,20 @@ def _resolve_closed_section(
 
     reference_angle = None
     if section.reference_point is not None:
-        ref = section.reference_point
-        if ref.entity_type != SketchEntityType.POINT:
-            raise _invalid_loft_section(index, "reference_point must reference a Point entity")
-        if ref.sketch_id != sketch_feature.sketch_id:
-            raise _invalid_loft_section(index, "reference_point must belong to this section's own Sketch")
-        try:
-            point = resolve_sketch_entity(ref)
-        except HTTPException:
-            raise _invalid_loft_section(index, "reference_point does not resolve to a Point") from None
-        reference_angle = math.atan2(point.y, point.x)
+        x, y = _resolve_local_point(sketch_feature, section.reference_point, index, "reference_point")
+        reference_angle = math.atan2(y, x)
 
-    return _ResolvedClosedSection(sketch=sketch, basis=basis, profile=profile, reference_angle=reference_angle)
+    alignment_local = None
+    if section.alignment_point is not None:
+        alignment_local = _resolve_local_point(sketch_feature, section.alignment_point, index, "alignment_point")
+
+    return _ResolvedClosedSection(
+        sketch=sketch,
+        basis=basis,
+        profile=profile,
+        reference_angle=reference_angle,
+        alignment_local=alignment_local,
+    )
 
 
 @dataclass
@@ -174,6 +234,7 @@ class _ResolvedOpenSection:
     basis: ResolvedPlane
     chain: OpenChain
     reference_angle: float | None
+    alignment_local: tuple[float, float] | None
 
 
 def _resolve_open_section(
@@ -187,13 +248,13 @@ def _resolve_open_section(
     when `LoftFeature.thickness` is set (a thin/sheet Loft between open
     profiles rather than a solid Loft between closed ones) - same overall
     resolution shape (own SketchFeature, own basis, own `reference_point`
-    alignment angle), narrowed to require a single open chain
-    (`app.sketch.profile.detect_open_chain`) instead of a single closed
-    Profile. `section.profile_refs` has no open-chain analogue (a sketch
-    with 2+ disjoint open chains is rejected outright as ambiguous, rather
-    than letting the caller disambiguate) - narrower than the closed-profile
-    path deliberately, matching this being a newer, more conservatively
-    scoped addition."""
+    alignment angle, own `alignment_point`), narrowed to require a single
+    open chain (`app.sketch.profile.detect_open_chain`) instead of a single
+    closed Profile. `section.profile_refs` has no open-chain analogue (a
+    sketch with 2+ disjoint open chains is rejected outright as ambiguous,
+    rather than letting the caller disambiguate) - narrower than the
+    closed-profile path deliberately, matching this being a newer, more
+    conservatively scoped addition."""
     sketch_feature = part.get_feature(section.sketch_feature_id)
     if not isinstance(sketch_feature, SketchFeature):
         raise _invalid_loft_section(index, "sketch_feature_id does not refer to a SketchFeature in this Part")
@@ -211,18 +272,20 @@ def _resolve_open_section(
 
     reference_angle = None
     if section.reference_point is not None:
-        ref = section.reference_point
-        if ref.entity_type != SketchEntityType.POINT:
-            raise _invalid_loft_section(index, "reference_point must reference a Point entity")
-        if ref.sketch_id != sketch_feature.sketch_id:
-            raise _invalid_loft_section(index, "reference_point must belong to this section's own Sketch")
-        try:
-            point = resolve_sketch_entity(ref)
-        except HTTPException:
-            raise _invalid_loft_section(index, "reference_point does not resolve to a Point") from None
-        reference_angle = math.atan2(point.y, point.x)
+        x, y = _resolve_local_point(sketch_feature, section.reference_point, index, "reference_point")
+        reference_angle = math.atan2(y, x)
 
-    return _ResolvedOpenSection(sketch=sketch, basis=basis, chain=chain, reference_angle=reference_angle)
+    alignment_local = None
+    if section.alignment_point is not None:
+        alignment_local = _resolve_local_point(sketch_feature, section.alignment_point, index, "alignment_point")
+
+    return _ResolvedOpenSection(
+        sketch=sketch,
+        basis=basis,
+        chain=chain,
+        reference_angle=reference_angle,
+        alignment_local=alignment_local,
+    )
 
 
 def wire_for_open_chain(sketch: Sketch, chain: OpenChain, basis: ResolvedPlane) -> TopoDS_Wire:
@@ -301,6 +364,129 @@ def _rotate_wire(wire: TopoDS_Wire, basis: ResolvedPlane, angle: float) -> TopoD
     trsf = gp_Trsf()
     trsf.SetRotation(gp_Ax1(gp_Pnt(ox, oy, oz), gp_Dir(nx, ny, nz)), angle)
     return topods.Wire(BRepBuilderAPI_Transform(wire, trsf, True).Shape())
+
+
+def _rotate_point(point: gp_Pnt, basis: ResolvedPlane, angle: float) -> gp_Pnt:
+    """`_rotate_wire`'s identical rotation, applied to a single point rather
+    than a whole wire - used by `_apply_alignment_point_translation` to keep
+    an `alignment_point` in lock-step with whatever `reference_point`
+    rotation was already applied to that same section's wire (both are
+    derived from the same pre-rotation local `(x, y)`, so rotating this
+    point by the section's own applied twist is exactly equivalent to what
+    the wire itself already underwent)."""
+    ox, oy, oz = basis.origin
+    nx, ny, nz = basis.normal
+    trsf = gp_Trsf()
+    trsf.SetRotation(gp_Ax1(gp_Pnt(ox, oy, oz), gp_Dir(nx, ny, nz)), angle)
+    return point.Transformed(trsf)
+
+
+def _guide_curve_intersection(guide_wire: TopoDS_Wire, basis: ResolvedPlane, section_index: int) -> gp_Pnt:
+    """The single point where `guide_wire` (already embedded in world space
+    via `app.document.sweep.resolve_path_wire`) crosses the plane through
+    `basis.origin` normal to `basis.normal` - the world-space target
+    `_apply_alignment_point_translation` slides that section's own
+    `alignment_point` onto. Exactly one crossing is required - zero means
+    the guide curve doesn't reach this section's plane at all, 2+ means it
+    crosses back and forth with no unique target to pick."""
+    ox, oy, oz = basis.origin
+    nx, ny, nz = basis.normal
+    section = BRepAlgoAPI_Section(guide_wire, gp_Pln(gp_Pnt(ox, oy, oz), gp_Dir(nx, ny, nz)))
+    section.Build()
+    points: list[gp_Pnt] = []
+    if section.IsDone():
+        explorer = TopExp_Explorer(section.Shape(), TopAbs_VERTEX)
+        while explorer.More():
+            points.append(BRep_Tool.Pnt(topods.Vertex(explorer.Current())))
+            explorer.Next()
+    # Distinct crossings only - BRepAlgoAPI_Section can report the same
+    # geometric point more than once (e.g. once per incident guide-curve
+    # edge at a shared vertex) without that being a genuine second
+    # crossing.
+    distinct: list[gp_Pnt] = []
+    for point in points:
+        if not any(point.Distance(existing) < 1e-6 for existing in distinct):
+            distinct.append(point)
+    if len(distinct) != 1:
+        raise _invalid_guide_curve_ref(
+            section_index,
+            f"guide curve crosses section {section_index}'s own plane {len(distinct)} time(s), expected exactly 1",
+        )
+    return distinct[0]
+
+
+def _apply_alignment_point_translation(
+    feature: LoftFeature,
+    resolved: list,
+    wires: list[TopoDS_Wire],
+    part: Part,
+    bodies_so_far: dict[str, TopoDS_Shape],
+    excluded_feature_ids: frozenset[str],
+) -> list[TopoDS_Wire]:
+    """Translates each section's own (already `reference_point`-rotated, if
+    applicable) wire so its `alignment_point` lands on its own target -
+    `feature.guide_curve_refs`' own crossing with that section's plane
+    (`_guide_curve_intersection`) if set, or otherwise the first alignment_
+    point-bearing section's own world position, projected into *this*
+    section's own plane (subtracting the delta's component along this
+    section's own normal, so a section only ever slides *within* its own
+    plane, never off it) - see `LoftFeature.guide_curve_refs`'s own
+    docstring for the two behaviours this dispatches between. A no-op
+    (returns `wires` completely unchanged) when no section has an
+    `alignment_point` set at all - this only ever changes behaviour for a
+    Loft that opts in, same "no opt-in, no change" guarantee `reference_
+    point`'s own rotation already gives.
+
+    Deliberately only ever a rigid translation of the *whole* wire, never a
+    reshape of individual boundary points to hug the guide curve more
+    closely - `LoftFeature.guide_curve_refs`'s own docstring explains why
+    that harder problem is out of this v1's scope."""
+    if not any(entry.alignment_local is not None for entry in resolved):
+        return wires
+
+    if feature.guide_curve_refs:
+        for index, entry in enumerate(resolved):
+            if entry.alignment_local is None:
+                raise _invalid_loft_section(
+                    index, "every section needs an alignment_point when guide_curve_refs is set"
+                )
+        guide_wire = resolve_path_wire(part, feature.guide_curve_refs, bodies_so_far, excluded_feature_ids)
+        targets = [_guide_curve_intersection(guide_wire, entry.basis, i) for i, entry in enumerate(resolved)]
+    else:
+        first_with_alignment = next(
+            (i for i, entry in enumerate(resolved) if entry.alignment_local is not None), None
+        )
+        if first_with_alignment != 0:
+            raise _invalid_loft_section(
+                0, "the first section must have an alignment_point too, to align the others against"
+            )
+        first_entry = resolved[0]
+        fx, fy = first_entry.alignment_local
+        first_world = basis_point_to_world(first_entry.basis, fx, fy)
+        targets = [first_world for _ in resolved]
+
+    new_wires: list[TopoDS_Wire] = []
+    for index, (entry, wire) in enumerate(zip(resolved, wires)):
+        if entry.alignment_local is None:
+            new_wires.append(wire)
+            continue
+        ax, ay = entry.alignment_local
+        current_world = basis_point_to_world(entry.basis, ax, ay)
+        if index > 0 and resolved[0].reference_angle is not None and entry.reference_angle is not None:
+            twist = resolved[0].reference_angle - entry.reference_angle
+            current_world = _rotate_point(current_world, entry.basis, twist)
+        target = targets[index]
+        delta = gp_Vec(current_world, target)
+        if not feature.guide_curve_refs:
+            nx, ny, nz = entry.basis.normal
+            normal_dir = gp_Vec(nx, ny, nz)
+            delta = delta.Subtracted(normal_dir.Multiplied(delta.Dot(normal_dir)))
+        if delta.Magnitude() > 1e-9:
+            trsf = gp_Trsf()
+            trsf.SetTranslation(delta)
+            wire = topods.Wire(BRepBuilderAPI_Transform(wire, trsf, True).Shape())
+        new_wires.append(wire)
+    return new_wires
 
 
 def _mid_section_warnings(solid: TopoDS_Shape, basis_a: ResolvedPlane, basis_b: ResolvedPlane) -> list[str]:
@@ -445,6 +631,9 @@ def resolve_loft_from_bodies(
             for index, section in enumerate(feature.sections)
         ]
         wires = _wires_from_resolved(resolved)
+        wires = _apply_alignment_point_translation(
+            feature, resolved, wires, part, bodies_so_far, excluded_feature_ids
+        )
 
         loft_maker = BRepOffsetAPI_ThruSections(True, feature.ruled)
         for wire in wires:
@@ -462,6 +651,7 @@ def resolve_loft_from_bodies(
         for index, section in enumerate(feature.sections)
     ]
     wires = _wires_from_resolved(resolved)
+    wires = _apply_alignment_point_translation(feature, resolved, wires, part, bodies_so_far, excluded_feature_ids)
 
     loft_maker = BRepOffsetAPI_ThruSections(False, feature.ruled)
     for wire in wires:
