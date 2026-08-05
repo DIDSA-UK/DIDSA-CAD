@@ -786,6 +786,7 @@ def _loft_feature_response(part: Part, feature: LoftFeature, warnings: list[str]
         mode=feature.mode,
         ruled=feature.ruled,
         target_body_ids=feature.target_body_ids,
+        thickness=feature.thickness,
         locked=part.is_locked(feature.id),
         produces=feature.produces,
         warnings=warnings,
@@ -1354,6 +1355,18 @@ def _validate_loft_sections(sections: list[LoftSection]) -> None:
             status_code=422,
             detail="LoftFeature requires at least 2 sections",
         )
+
+
+def _validate_loft_thickness(thickness: float | None) -> None:
+    """A `LoftFeatureCreate`/`Update.thickness`, if provided at all, must be
+    nonzero - zero has no meaningful "thicken by nothing into a solid"
+    interpretation (a plain-400 convention, mirroring `_validate_fillet_
+    radius`'s own bare numeric-field check with no structured error type).
+    Its sign is meaningful (which side of the lofted shell the material is
+    added to - see `app.document.loft.resolve_loft_from_bodies`), so unlike
+    a radius this is not rejected for being negative, only for being 0."""
+    if thickness is not None and thickness == 0:
+        raise HTTPException(status_code=400, detail="thickness must not be 0")
 
 
 def _validate_fillet_radius(radius: float) -> None:
@@ -2609,6 +2622,7 @@ def create_loft_feature(part_id: str, payload: LoftFeatureCreate) -> LoftFeature
     part = get_part_or_404(part_id)
     sections = [_loft_section_to_domain(section) for section in payload.sections]
     _validate_loft_sections(sections)
+    _validate_loft_thickness(payload.thickness)
     _validate_target_body_ids(part, payload.mode == LoftMode.CUT, payload.target_body_ids)
     feature = LoftFeature(
         id=str(uuid.uuid4()),
@@ -2616,6 +2630,7 @@ def create_loft_feature(part_id: str, payload: LoftFeatureCreate) -> LoftFeature
         mode=payload.mode,
         ruled=payload.ruled,
         target_body_ids=list(payload.target_body_ids),
+        thickness=payload.thickness,
     )
     _, warnings = resolve_loft(part, feature)  # raises on an unresolvable/invalid loft
     part.add_feature(feature)
@@ -2648,7 +2663,9 @@ def update_loft_feature(part_id: str, feature_id: str, payload: LoftFeatureUpdat
     new_target_body_ids = (
         payload.target_body_ids if payload.target_body_ids is not None else feature.target_body_ids
     )
+    new_thickness = payload.thickness if payload.thickness is not None else feature.thickness
     _validate_loft_sections(new_sections)
+    _validate_loft_thickness(new_thickness)
     _validate_target_body_ids(part, new_mode == LoftMode.CUT, new_target_body_ids)
 
     candidate = LoftFeature(
@@ -2657,6 +2674,7 @@ def update_loft_feature(part_id: str, feature_id: str, payload: LoftFeatureUpdat
         mode=new_mode,
         ruled=new_ruled,
         target_body_ids=list(new_target_body_ids),
+        thickness=new_thickness,
     )
     _, warnings = resolve_loft(part, candidate)  # raises on an unresolvable/invalid loft
 
@@ -2664,6 +2682,7 @@ def update_loft_feature(part_id: str, feature_id: str, payload: LoftFeatureUpdat
     feature.mode = candidate.mode
     feature.ruled = candidate.ruled
     feature.target_body_ids = candidate.target_body_ids
+    feature.thickness = candidate.thickness
     return _loft_feature_response(part, feature, warnings)
 
 

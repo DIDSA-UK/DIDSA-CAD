@@ -964,6 +964,7 @@ def _feature_to_dict(feature: Feature) -> dict:
             "mode": feature.mode.value,
             "ruled": feature.ruled,
             "target_body_ids": list(feature.target_body_ids),
+            "thickness": feature.thickness,
         }
     if isinstance(feature, GearChainFeature):
         return {
@@ -1180,6 +1181,7 @@ def _feature_from_dict(data: dict) -> Feature:
             mode=LoftMode(_require(data, "mode")),
             ruled=data.get("ruled", False),
             target_body_ids=list(data.get("target_body_ids", [])),
+            thickness=data.get("thickness"),
         )
     if feature_type == "gear_chain":
         return GearChainFeature(

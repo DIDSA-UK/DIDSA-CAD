@@ -431,3 +431,136 @@ def test_loft_body_can_be_cut_afterward_via_a_new_sketch():
     assert cut_response.status_code == 201, cut_response.json()
     mesh = _mesh(part["id"])
     assert len(mesh) == 1
+
+
+# --- Thin/open-chain loft (`thickness`) -------------------------------------
+#
+# A second, later addition alongside the closed-profile solid loft tested
+# above - lofts between open chains instead of closed profiles, thickening
+# the resulting lofted shell into a solid (see app.document.loft's own
+# module docstring). Same real-OCCT-required status as every test above.
+
+
+def _open_line_sketch(
+    part_id: str, points: list[tuple[float, float]], *, plane: str | None = None, plane_feature_id: str | None = None
+) -> dict:
+    """A deliberately *unclosed* polyline (no wrap-around line back to the
+    first point) - the open-chain counterpart to `_square_sketch`/
+    `_add_polygon` above."""
+    if plane_feature_id is not None:
+        response = client.post(
+            f"/document/parts/{part_id}/features/sketch", json={"plane_feature_id": plane_feature_id}
+        )
+    else:
+        response = client.post(f"/document/parts/{part_id}/features/sketch", json={"plane": plane or "XY"})
+    assert response.status_code == 201, response.json()
+    feature = response.json()
+    corners = [_add_point(feature["sketch_id"], x, y) for x, y in points]
+    for a, b in zip(corners, corners[1:]):
+        _add_line(feature["sketch_id"], a["id"], b["id"])
+    return feature
+
+
+def test_loft_between_two_open_lines_with_thickness_produces_a_solid():
+    """Two identical single-segment open chains, directly stacked 8mm apart
+    in Z, loft into a single flat 10x8 rectangular face (no cross-section
+    area of its own - an open chain, unlike a closed Profile, has none)
+    which `thickness=1.0` then thickens into a real box - known volume
+    10 * 8 * 1 = 80, the open-chain counterpart to `test_loft_between_two_
+    squares_produces_one_solid_body`'s own known-volume check above."""
+    part = _create_part()
+    bottom = _open_line_sketch(part["id"], [(-5.0, 0.0), (5.0, 0.0)], plane="XY")
+    plane = _move_sketch_feature_up(part["id"], bottom, 8.0)
+    top = _open_line_sketch(part["id"], [(-5.0, 0.0), (5.0, 0.0)], plane_feature_id=plane["id"])
+
+    response = _create_loft(part["id"], [_section(bottom), _section(top)], thickness=1.0)
+    assert response.status_code == 201, response.json()
+    body = response.json()
+    assert body["type"] == "loft"
+    assert body["thickness"] == 1.0
+
+    from OCC.Core.BRepGProp import brepgprop
+    from OCC.Core.GProp import GProp_GProps
+
+    from app.document.extrude import compute_part_bodies
+    from app.document.store import get_part_or_404
+
+    real_part = get_part_or_404(part["id"])
+    bodies = compute_part_bodies(real_part)
+    (solid,) = bodies.values()
+    props = GProp_GProps()
+    brepgprop.VolumeProperties(solid, props)
+    assert abs(props.Mass() - 80.0) < 1.0
+
+
+def test_loft_negative_thickness_flips_direction_and_still_succeeds():
+    """`thickness`'s sign only picks which side of the lofted shell the
+    material is added to (see `app.document.loft.resolve_loft_from_bodies`'s
+    own docstring) - a negative value is not itself an error the way 0 is
+    (`test_loft_thickness_zero_is_rejected` below)."""
+    part = _create_part()
+    bottom = _open_line_sketch(part["id"], [(-5.0, 0.0), (5.0, 0.0)], plane="XY")
+    plane = _move_sketch_feature_up(part["id"], bottom, 8.0)
+    top = _open_line_sketch(part["id"], [(-5.0, 0.0), (5.0, 0.0)], plane_feature_id=plane["id"])
+
+    response = _create_loft(part["id"], [_section(bottom), _section(top)], thickness=-1.0)
+    assert response.status_code == 201, response.json()
+    assert response.json()["thickness"] == -1.0
+
+
+def test_loft_thickness_zero_is_rejected():
+    part = _create_part()
+    bottom = _open_line_sketch(part["id"], [(-5.0, 0.0), (5.0, 0.0)], plane="XY")
+    plane = _move_sketch_feature_up(part["id"], bottom, 8.0)
+    top = _open_line_sketch(part["id"], [(-5.0, 0.0), (5.0, 0.0)], plane_feature_id=plane["id"])
+
+    response = _create_loft(part["id"], [_section(bottom), _section(top)], thickness=0.0)
+    assert response.status_code == 400
+
+
+def test_loft_open_chain_sections_without_thickness_are_rejected():
+    """Without `thickness` set, `_resolve_closed_section` (the original
+    closed-profile path) still runs, and an open chain has no closed
+    Profile for it to find - confirms omitting `thickness` doesn't silently
+    fall back to treating open sections as loftable solid cross-sections."""
+    part = _create_part()
+    bottom = _open_line_sketch(part["id"], [(-5.0, 0.0), (5.0, 0.0)], plane="XY")
+    plane = _move_sketch_feature_up(part["id"], bottom, 8.0)
+    top = _open_line_sketch(part["id"], [(-5.0, 0.0), (5.0, 0.0)], plane_feature_id=plane["id"])
+
+    response = _create_loft(part["id"], [_section(bottom), _section(top)])
+    assert response.status_code == 422
+    assert response.json()["detail"]["type"] == "invalid_loft_section"
+
+
+def test_loft_rejects_a_sketch_with_multiple_disjoint_open_chains():
+    """Two unconnected line segments in the same Sketch - `detect_open_
+    chain` reports `MULTIPLE_CHAINS` rather than picking one arbitrarily,
+    since a Loft section needs exactly one chain to loft."""
+    part = _create_part()
+    bottom = _open_line_sketch(part["id"], [(-5.0, 0.0), (5.0, 0.0)], plane="XY")
+    extra_a = _add_point(bottom["sketch_id"], -5.0, 5.0)
+    extra_b = _add_point(bottom["sketch_id"], 5.0, 5.0)
+    _add_line(bottom["sketch_id"], extra_a["id"], extra_b["id"])
+    plane = _move_sketch_feature_up(part["id"], bottom, 8.0)
+    top = _open_line_sketch(part["id"], [(-5.0, 0.0), (5.0, 0.0)], plane_feature_id=plane["id"])
+
+    response = _create_loft(part["id"], [_section(bottom), _section(top)], thickness=1.0)
+    assert response.status_code == 422
+    assert response.json()["detail"]["type"] == "invalid_loft_section"
+
+
+def test_update_loft_feature_can_change_thickness():
+    part = _create_part()
+    bottom = _open_line_sketch(part["id"], [(-5.0, 0.0), (5.0, 0.0)], plane="XY")
+    plane = _move_sketch_feature_up(part["id"], bottom, 8.0)
+    top = _open_line_sketch(part["id"], [(-5.0, 0.0), (5.0, 0.0)], plane_feature_id=plane["id"])
+    create_response = _create_loft(part["id"], [_section(bottom), _section(top)], thickness=1.0)
+    assert create_response.status_code == 201, create_response.json()
+    feature_id = create_response.json()["id"]
+
+    patch_response = client.patch(
+        f"/document/parts/{part['id']}/loft-features/{feature_id}", json={"thickness": 2.0}
+    )
+    assert patch_response.status_code == 200, patch_response.json()
+    assert patch_response.json()["thickness"] == 2.0

@@ -1071,22 +1071,32 @@ class LoftFeatureCreate(BaseModel):
     """Creates a `LoftFeature` lofting between `sections` (2+ required - see
     `app.document.router._validate_loft_sections`) via `BRepOffsetAPI_
     ThruSections`. Boss/Cut + `target_body_ids` follow `SweepFeatureCreate`'s
-    exact convention."""
+    exact convention. `thickness`, if set (see `app.document.router.
+    _validate_loft_thickness`), switches every section from a closed Profile
+    to a single open chain and thickens the resulting lofted shell by this
+    signed value instead of lofting directly into a solid - see
+    `LoftFeature`'s own docstring."""
 
     sections: list[LoftSectionSchema]
     mode: LoftMode
     ruled: bool = False
     target_body_ids: list[str] = []
+    thickness: float | None = None
 
 
 class LoftFeatureUpdate(BaseModel):
     """Partial update for live-preview re-solves, same omitted-vs-current-
-    value convention as `SweepFeatureUpdate`."""
+    value convention as `SweepFeatureUpdate` - including for `thickness`:
+    omitting it (`None`) keeps the Feature's current value (which may
+    itself be `None`, i.e. closed-profile mode), the same "can't null a
+    real value back out via Update" limitation every other Optional field
+    here already has (e.g. `RackFeatureUpdate.backing_height`)."""
 
     sections: list[LoftSectionSchema] | None = None
     mode: LoftMode | None = None
     ruled: bool | None = None
     target_body_ids: list[str] | None = None
+    thickness: float | None = None
 
 
 class LoftFeatureResponse(BaseModel):
@@ -1096,6 +1106,7 @@ class LoftFeatureResponse(BaseModel):
     mode: LoftMode
     ruled: bool
     target_body_ids: list[str] = []
+    thickness: float | None = None
     locked: bool
     # B1: see SketchFeatureResponse.produces above - always BODY for a
     # LoftFeature.

@@ -1245,13 +1245,23 @@ class LoftFeature(Feature):
     profile-with-holes needs its own per-hole correspondence between
     sections (the exact same open "reference point per profile" problem,
     once per hole), rejected outright (`invalid_loft_section`) rather than
-    silently only lofting the outer boundary and dropping the holes."""
+    silently only lofting the outer boundary and dropping the holes.
+
+    `thickness`, when set, switches every `sections` entry from a closed
+    Profile to a single open chain (`app.sketch.profile.detect_open_chain`)
+    - a thin/sheet Loft, lofted as an open shell then thickened by this
+    signed value (`app.document.loft.resolve_loft_from_bodies`) rather than
+    lofted directly into a solid. `None` (the default) is the original
+    closed-profile behaviour, completely unchanged. A `LoftFeature` never
+    mixes open and closed sections - `thickness` applies to every section
+    at once, not per-section."""
 
     id: str
     sections: list[LoftSection]
     mode: LoftMode
     ruled: bool = False
     target_body_ids: list[str] = field(default_factory=list)
+    thickness: float | None = None
 
     @property
     def type(self) -> str:

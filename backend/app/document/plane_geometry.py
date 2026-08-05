@@ -126,7 +126,7 @@ def is_mirrored_basis(basis: ResolvedPlane) -> bool:
 
     Bug fix (on-device feedback, confirmed by direct numeric simulation,
     not just reasoning about it - a first attempt at "fixing" `app.
-    document.extrude._arc_axis` itself, by deriving a canonicalized
+    document.extrude.arc_axis` itself, by deriving a canonicalized
     right-handed X reference direction instead of using the real
     `x_axis`, turned out to reproduce the *exact same wrong result* the
     original bug did): a Slot's own semicircular end-cap Arcs came out
@@ -135,7 +135,7 @@ def is_mirrored_basis(basis: ResolvedPlane) -> bool:
 
     A mirror transform genuinely is supposed to reverse apparent CCW/CW
     for anything embedded through it (that's what mirroring a curved
-    shape means) - `app.document.extrude._arc_axis` already does the
+    shape means) - `app.document.extrude.arc_axis` already does the
     right thing by passing the real (possibly left-handed) `x_axis`
     straight through to OCCT's `gp_Ax2`. The actual fix lives in `app.
     document.extrude.wire_for_profile`'s own Arc branch: it swaps which

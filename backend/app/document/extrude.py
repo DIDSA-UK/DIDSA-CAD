@@ -103,7 +103,7 @@ def basis_normal(basis: ResolvedPlane) -> gp_Dir:
     return gp_Dir(x, y, z)
 
 
-def _arc_axis(basis: ResolvedPlane, center_x: float, center_y: float) -> gp_Ax2:
+def arc_axis(basis: ResolvedPlane, center_x: float, center_y: float) -> gp_Ax2:
     """The `gp_Ax2` an Arc's `gp_Circ` is built against - unlike Circle's
     own `axis` (built with the 2-argument `gp_Ax2(point, normal)`, whose X
     reference direction OCCT picks arbitrarily, harmless there since a full
@@ -137,7 +137,7 @@ def _arc_axis(basis: ResolvedPlane, center_x: float, center_y: float) -> gp_Ax2:
 def _ellipse_axis(basis: ResolvedPlane, center_x: float, center_y: float, rotation: float) -> gp_Ax2:
     """The `gp_Ax2` an Ellipse's `gp_Elips` is built against - `gp_Elips`
     always places its major axis along the `gp_Ax2`'s own X reference
-    direction, so (mirroring `_arc_axis`'s identical reasoning) that
+    direction, so (mirroring `arc_axis`'s identical reasoning) that
     reference direction must be pinned explicitly rather than left to
     OCCT's arbitrary default: the sketch plane's own local +X axis,
     rotated in-plane by the Ellipse's own `rotation()` (the angle from
@@ -293,7 +293,7 @@ def wire_for_profile(sketch: Sketch, profile: Profile, basis: ResolvedPlane):
         if isinstance(entity, Arc):
             center = sketch.points[entity.center_point_id]
             radius = entity.radius(sketch.points)
-            axis = _arc_axis(basis, center.x, center.y)
+            axis = arc_axis(basis, center.x, center.y)
             start = sketch.points[entity.start_point_id]
             end = sketch.points[entity.end_point_id]
             # Bug fix (on-device feedback: a Slot's own semicircular
@@ -301,7 +301,7 @@ def wire_for_profile(sketch: Sketch, profile: Profile, basis: ResolvedPlane):
             # Trim/Extend-closed Arc+Line loop extruded the wrong,
             # excluded side - both only on a *mirrored* Sketch): a mirror
             # transform genuinely does reverse apparent CCW/CW for
-            # anything embedded through it, which `_arc_axis` (passing the
+            # anything embedded through it, which `arc_axis` (passing the
             # real, possibly left-handed `basis.x_axis` straight to OCCT)
             # already correctly allows for - what still needs to flip in
             # step with it is *which* Point plays P1 vs P2 for

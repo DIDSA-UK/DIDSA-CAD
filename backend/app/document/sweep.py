@@ -40,7 +40,7 @@ from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Edge, TopoDS_Shape, TopoDS_W
 from app.document.create_plane import resolve_sketch_basis
 from app.document.extrude import (
     EXTRUDABLE_STATUSES,
-    _arc_axis,
+    arc_axis,
     _ellipse_axis,
     basis_point_to_world,
     compute_part_bodies,
@@ -188,7 +188,7 @@ def _resolve_path_segment(
     Line/Arc/Ellipse/Spline, reusing exactly the same OCCT edge-
     construction math `app.document.extrude.wire_for_profile` already
     proved correct for these same four entity types within an ordinary
-    (single-Sketch) Profile - `_arc_axis`'s mirror-aware P1/P2 swap and
+    (single-Sketch) Profile - `arc_axis`'s mirror-aware P1/P2 swap and
     `Spline.segments()`'s own pole ordering in particular, both previously
     fixed against real on-device bugs (see their own doc comments) and
     deliberately not re-derived here.
@@ -240,7 +240,7 @@ def _resolve_path_segment(
     if ref.entity_type == SketchEntityType.ARC and isinstance(entity, Arc):
         center = sketch.points[entity.center_point_id]
         radius = entity.radius(sketch.points)
-        axis = _arc_axis(basis, center.x, center.y)
+        axis = arc_axis(basis, center.x, center.y)
         start = sketch.points[entity.start_point_id]
         end = sketch.points[entity.end_point_id]
         start_world = basis_point_to_world(basis, start.x, start.y)
