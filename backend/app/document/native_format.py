@@ -23,6 +23,8 @@ import dataclasses
 from app.document.models import (
     BevelGearFeature,
     BevelGearType,
+    BevelPairFeature,
+    BevelPairMemberSpec,
     ChamferFeature,
     CreatePlaneFeature,
     Document,
@@ -658,6 +660,20 @@ def _gear_chain_member_from_dict(data: dict) -> GearChainMemberSpec:
     )
 
 
+def _bevel_pair_member_to_dict(member: BevelPairMemberSpec) -> dict:
+    return {
+        "tooth_count": member.tooth_count,
+        "profile_shift": member.profile_shift,
+    }
+
+
+def _bevel_pair_member_from_dict(data: dict) -> BevelPairMemberSpec:
+    return BevelPairMemberSpec(
+        tooth_count=_require(data, "tooth_count"),
+        profile_shift=data.get("profile_shift", 0.0),
+    )
+
+
 def _gear_chain_stage_to_dict(stage: GearChainStage) -> dict:
     return {
         "turn_angle_degrees": stage.turn_angle_degrees,
@@ -927,6 +943,19 @@ def _feature_to_dict(feature: Feature) -> dict:
             "profile_shift": feature.profile_shift,
             "target_body_ids": list(feature.target_body_ids),
         }
+    if isinstance(feature, BevelPairFeature):
+        return {
+            "type": "bevel_pair",
+            "id": feature.id,
+            "plane_ref": _plane_ref_to_dict(feature.plane_ref),
+            "module": feature.module,
+            "member_1": _bevel_pair_member_to_dict(feature.member_1),
+            "member_2": _bevel_pair_member_to_dict(feature.member_2),
+            "face_width": feature.face_width,
+            "pressure_angle_degrees": feature.pressure_angle_degrees,
+            "shaft_angle_degrees": feature.shaft_angle_degrees,
+            "backlash": feature.backlash,
+        }
     if isinstance(feature, LoftFeature):
         return {
             "type": "loft",
@@ -1131,6 +1160,18 @@ def _feature_from_dict(data: dict) -> Feature:
             backlash=data.get("backlash", 0.0),
             profile_shift=data.get("profile_shift", 0.0),
             target_body_ids=list(data.get("target_body_ids", [])),
+        )
+    if feature_type == "bevel_pair":
+        return BevelPairFeature(
+            id=feature_id,
+            plane_ref=_plane_ref_from_dict(_require(data, "plane_ref")),
+            module=_require(data, "module"),
+            member_1=_bevel_pair_member_from_dict(_require(data, "member_1")),
+            member_2=_bevel_pair_member_from_dict(_require(data, "member_2")),
+            face_width=_require(data, "face_width"),
+            pressure_angle_degrees=data.get("pressure_angle_degrees", 20.0),
+            shaft_angle_degrees=data.get("shaft_angle_degrees", 90.0),
+            backlash=data.get("backlash", 0.0),
         )
     if feature_type == "loft":
         return LoftFeature(

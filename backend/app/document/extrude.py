@@ -41,6 +41,7 @@ from app.document.plane_geometry import (
 from app.document.models import (
     BevelGearFeature,
     BevelGearType,
+    BevelPairFeature,
     ChamferFeature,
     ExtrudeFeature,
     ExtrudeType,
@@ -1364,6 +1365,29 @@ def compute_part_bodies(
                 ):
                     raise
                 logger.warning("Skipping PlanetaryGearFeature %s: could not be resolved", feature.id)
+                continue
+            _register_solids(bodies, feature.id, shape)
+            continue
+
+        if isinstance(feature, BevelPairFeature):
+            # docs/gear-design/11-bevel-pair.md: same "no Boss/Cut, always
+            # mints brand-new Bodies" shape as GearChainFeature/
+            # PlanetaryGearFeature just above - see GearChainFeature's own
+            # comment. resolve_bevel_pair_from_bodies reuses app.document.
+            # bevel's own _assemble_gear_solid internally, so it can raise
+            # that module's own bevel_failed error type too, in addition to
+            # its own invalid_bevel_pair_parameters.
+            from app.document.bevel_pair import resolve_bevel_pair_from_bodies
+
+            try:
+                shape, _warnings = resolve_bevel_pair_from_bodies(feature, part, bodies, excluded_feature_ids)
+            except HTTPException as exc:
+                if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
+                    "invalid_bevel_pair_parameters",
+                    "bevel_failed",
+                ):
+                    raise
+                logger.warning("Skipping BevelPairFeature %s: could not be resolved", feature.id)
                 continue
             _register_solids(bodies, feature.id, shape)
             continue

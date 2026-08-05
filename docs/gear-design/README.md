@@ -45,7 +45,7 @@ never needed most of it).
 | 8 | `08-entry-screen-and-preview.md` | 1, 2 | Medium - **v1 done** (external/internal/rack only; helical/herringbone/chain/planetary/bevel UI, multi-gear preview, and `GearGroup` colour-coding deferred to their own workstreams per that file's own scoped-down note) |
 | 9 | `09-presets.md` | 8 | Low |
 | 10 | `10-bevel-gear.md` | 1 | Highest in project - **done** (`BevelGearFeature` - straight bevel, arbitrary shaft angle via a direct `pitch_cone_angle_degrees` field - backend/API only, bevel UI deferred to Workstream 8's own future extension) |
-| 11 | `11-bevel-pair.md` | 10 | High - now unblocked |
+| 11 | `11-bevel-pair.md` | 10 | High - **done** (`BevelPairFeature` - apex-aligned dual-axis positioning, arbitrary shaft angle, auto-derived pitch cone angles - backend/API only, bevel pair UI deferred to Workstream 8's own future extension; DXF flat-pattern export deferred to Workstream 6) |
 
 Spiral/Zerol/hypoid bevel variants are the one thing still deliberately
 deferred past this whole project — a further-later phase after 10/11's

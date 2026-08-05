@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Query, Response
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 
 from app.document.bevel import resolve_bevel_gear
+from app.document.bevel_pair import resolve_bevel_pair
 from app.document.chamfer import resolve_chamfer
 from app.document.create_plane import (
     basis_for_sketch,
@@ -56,6 +57,8 @@ from app.document.step_export import export_step
 from app.document.models import (
     BevelGearFeature,
     BevelGearType,
+    BevelPairFeature,
+    BevelPairMemberSpec,
     ChamferFeature,
     CreatePlaneFeature,
     ExtrudeFeature,
@@ -101,6 +104,10 @@ from app.document.schemas import (
     BevelGearFeatureCreate,
     BevelGearFeatureResponse,
     BevelGearFeatureUpdate,
+    BevelPairFeatureCreate,
+    BevelPairFeatureResponse,
+    BevelPairFeatureUpdate,
+    BevelPairMemberSpecSchema,
     BodyMeshResponse,
     CascadeDeletePreviewResponse,
     CascadeDeleteResponse,
@@ -305,6 +312,14 @@ def _gear_chain_stage_to_schema(stage: GearChainStage) -> GearChainStageSchema:
         compound_axial_offset=stage.compound_axial_offset,
         compound_merge=stage.compound_merge,
     )
+
+
+def _bevel_pair_member_to_domain(schema: BevelPairMemberSpecSchema) -> BevelPairMemberSpec:
+    return BevelPairMemberSpec(tooth_count=schema.tooth_count, profile_shift=schema.profile_shift)
+
+
+def _bevel_pair_member_to_schema(member: BevelPairMemberSpec) -> BevelPairMemberSpecSchema:
+    return BevelPairMemberSpecSchema(tooth_count=member.tooth_count, profile_shift=member.profile_shift)
 
 
 def _point_ref_to_domain(schema: PointRefSchema) -> PointRef:
@@ -587,6 +602,8 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
         )
     if isinstance(feature, BevelGearFeature):
         return _bevel_gear_feature_response(part, feature)
+    if isinstance(feature, BevelPairFeature):
+        return _bevel_pair_feature_response(part, feature)
     if isinstance(feature, LoftFeature):
         return _loft_feature_response(part, feature)
     if isinstance(feature, GearChainFeature):
@@ -679,6 +696,40 @@ def _bevel_gear_feature_response(
         backlash=feature.backlash,
         profile_shift=feature.profile_shift,
         target_body_ids=feature.target_body_ids,
+        locked=part.is_locked(feature.id),
+        produces=feature.produces,
+        warnings=warnings,
+    )
+
+
+def _bevel_pair_feature_response(
+    part: Part, feature: BevelPairFeature, warnings: list[str] | None = None
+) -> BevelPairFeatureResponse:
+    """Mirrors `_bevel_gear_feature_response`'s exact shape: `warnings`
+    (per-member face-width-vs-cone-distance, fold-risk, and assembled-solid
+    sanity findings, label-prefixed - see `app.document.bevel_pair.
+    resolve_bevel_pair_from_bodies`'s own return value) is only known at
+    create/update time - a plain `GET .../features` re-read (this
+    function's other caller, via `_feature_response`) re-resolves the pair
+    to recompute them fresh, soft-failing to `[]` rather than raising, same
+    "since-broken Feature still shown" reasoning as every other
+    warnings-bearing Feature type here."""
+    if warnings is None:
+        try:
+            _, warnings = resolve_bevel_pair(part, feature)
+        except HTTPException:
+            logger.warning("BevelPairFeature %s could not be resolved for its response", feature.id)
+            warnings = []
+    return BevelPairFeatureResponse(
+        id=feature.id,
+        plane_ref=_plane_ref_to_schema(feature.plane_ref),
+        module=feature.module,
+        member_1=_bevel_pair_member_to_schema(feature.member_1),
+        member_2=_bevel_pair_member_to_schema(feature.member_2),
+        face_width=feature.face_width,
+        pressure_angle_degrees=feature.pressure_angle_degrees,
+        shaft_angle_degrees=feature.shaft_angle_degrees,
+        backlash=feature.backlash,
         locked=part.is_locked(feature.id),
         produces=feature.produces,
         warnings=warnings,
@@ -811,13 +862,14 @@ def _validate_target_body_ids(part: Part, is_cut: bool, target_body_ids: list[st
                 GearChainFeature,
                 PlanetaryGearFeature,
                 BevelGearFeature,
+                BevelPairFeature,
             ),
         ):
             raise HTTPException(
                 status_code=400,
                 detail=f"target_body_ids entry {target_id!r} does not refer to an ExtrudeFeature, "
                 "RevolveFeature, SweepFeature, ImportFeature, GearFeature, RackFeature, LoftFeature, "
-                "GearChainFeature, PlanetaryGearFeature, or BevelGearFeature in this Part",
+                "GearChainFeature, PlanetaryGearFeature, BevelGearFeature, or BevelPairFeature in this Part",
             )
 
 
@@ -834,10 +886,12 @@ _PATTERN_MIRROR_SOURCE_FEATURE_TYPES = (
     GearChainFeature,
     PlanetaryGearFeature,
     BevelGearFeature,
+    BevelPairFeature,
 )
 _PATTERN_MIRROR_SOURCE_FEATURE_TYPES_DESCRIPTION = (
     "ExtrudeFeature, RevolveFeature, SweepFeature, ImportFeature, MirrorFeature, PatternFeature, "
-    "GearFeature, RackFeature, LoftFeature, GearChainFeature, PlanetaryGearFeature, or BevelGearFeature"
+    "GearFeature, RackFeature, LoftFeature, GearChainFeature, PlanetaryGearFeature, BevelGearFeature, "
+    "or BevelPairFeature"
 )
 
 
@@ -3170,6 +3224,95 @@ def update_planetary_gear_feature(
     feature.ring_outer_diameter = candidate.ring_outer_diameter
     feature.pressure_angle_degrees = candidate.pressure_angle_degrees
     return _feature_response(part, feature)
+
+
+@router.post("/parts/{part_id}/bevel-pair-features", response_model=BevelPairFeatureResponse, status_code=201)
+def create_bevel_pair_feature(part_id: str, payload: BevelPairFeatureCreate) -> BevelPairFeatureResponse:
+    """`docs/gear-design/11-bevel-pair.md`: mirrors `create_planetary_gear_
+    feature`'s exact shape - no payload-shape validation beyond `_validate_
+    plane_ref` (member tooth counts have no discriminated-union shape to
+    check); every real check (the pitch-cone-split formula's own domain,
+    both members' own bevel_math validation, OCCT construction) is `app.
+    document.bevel_pair.resolve_bevel_pair`'s job, raising the structured
+    `invalid_bevel_pair_parameters`/`bevel_failed` errors before ever
+    persisting an unresolvable pair."""
+    part = get_part_or_404(part_id)
+    plane_ref = _plane_ref_to_domain(payload.plane_ref) if payload.plane_ref is not None else _default_plane_ref()
+    _validate_plane_ref(part, plane_ref)
+    feature = BevelPairFeature(
+        id=str(uuid.uuid4()),
+        plane_ref=plane_ref,
+        module=payload.module,
+        member_1=_bevel_pair_member_to_domain(payload.member_1),
+        member_2=_bevel_pair_member_to_domain(payload.member_2),
+        face_width=payload.face_width,
+        pressure_angle_degrees=payload.pressure_angle_degrees,
+        shaft_angle_degrees=payload.shaft_angle_degrees,
+        backlash=payload.backlash,
+    )
+    _, warnings = resolve_bevel_pair(part, feature)  # raises on an unresolvable/invalid bevel pair
+    part.add_feature(feature)
+    return _bevel_pair_feature_response(part, feature, warnings)
+
+
+def _get_bevel_pair_feature_or_404(part: Part, feature_id: str) -> BevelPairFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, BevelPairFeature):
+        raise HTTPException(status_code=404, detail="Bevel pair feature not found")
+    return feature
+
+
+@router.patch("/parts/{part_id}/bevel-pair-features/{feature_id}", response_model=BevelPairFeatureResponse)
+def update_bevel_pair_feature(part_id: str, feature_id: str, payload: BevelPairFeatureUpdate) -> BevelPairFeatureResponse:
+    """Mirrors `update_planetary_gear_feature`'s exact shape - same
+    validate-before-mutate discipline against a scratch Feature sharing
+    the real one's id."""
+    part = get_part_or_404(part_id)
+    feature = _get_bevel_pair_feature_or_404(part, feature_id)
+
+    new_plane_ref = _plane_ref_to_domain(payload.plane_ref) if payload.plane_ref is not None else feature.plane_ref
+    new_module = payload.module if payload.module is not None else feature.module
+    new_member_1 = (
+        _bevel_pair_member_to_domain(payload.member_1) if payload.member_1 is not None else feature.member_1
+    )
+    new_member_2 = (
+        _bevel_pair_member_to_domain(payload.member_2) if payload.member_2 is not None else feature.member_2
+    )
+    new_face_width = payload.face_width if payload.face_width is not None else feature.face_width
+    new_pressure_angle_degrees = (
+        payload.pressure_angle_degrees
+        if payload.pressure_angle_degrees is not None
+        else feature.pressure_angle_degrees
+    )
+    new_shaft_angle_degrees = (
+        payload.shaft_angle_degrees if payload.shaft_angle_degrees is not None else feature.shaft_angle_degrees
+    )
+    new_backlash = payload.backlash if payload.backlash is not None else feature.backlash
+
+    _validate_plane_ref(part, new_plane_ref)
+
+    candidate = BevelPairFeature(
+        id=feature.id,
+        plane_ref=new_plane_ref,
+        module=new_module,
+        member_1=new_member_1,
+        member_2=new_member_2,
+        face_width=new_face_width,
+        pressure_angle_degrees=new_pressure_angle_degrees,
+        shaft_angle_degrees=new_shaft_angle_degrees,
+        backlash=new_backlash,
+    )
+    _, warnings = resolve_bevel_pair(part, candidate)  # raises on an unresolvable/invalid bevel pair
+
+    feature.plane_ref = candidate.plane_ref
+    feature.module = candidate.module
+    feature.member_1 = candidate.member_1
+    feature.member_2 = candidate.member_2
+    feature.face_width = candidate.face_width
+    feature.pressure_angle_degrees = candidate.pressure_angle_degrees
+    feature.shaft_angle_degrees = candidate.shaft_angle_degrees
+    feature.backlash = candidate.backlash
+    return _bevel_pair_feature_response(part, feature, warnings)
 
 
 def _invalid_gear_preview_parameters(detail: str) -> HTTPException:

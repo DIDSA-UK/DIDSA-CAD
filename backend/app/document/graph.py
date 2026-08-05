@@ -34,6 +34,7 @@ from dataclasses import dataclass
 
 from app.document.models import (
     BevelGearFeature,
+    BevelPairFeature,
     ChamferFeature,
     CreatePlaneFeature,
     ExtrudeFeature,
@@ -448,6 +449,8 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
         elif isinstance(feature, GearChainFeature):
             depends_on = _plane_ref_only_dependencies(feature.plane_ref)
         elif isinstance(feature, PlanetaryGearFeature):
+            depends_on = _plane_ref_only_dependencies(feature.plane_ref)
+        elif isinstance(feature, BevelPairFeature):
             depends_on = _plane_ref_only_dependencies(feature.plane_ref)
         nodes.append(GraphNode(id=feature.id, depends_on=depends_on))
     return nodes

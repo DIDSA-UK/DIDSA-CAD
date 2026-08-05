@@ -987,6 +987,76 @@ class BevelGearFeatureResponse(BaseModel):
     warnings: list[str] = []
 
 
+class BevelPairMemberSpecSchema(BaseModel):
+    """The wire counterpart to `app.document.models.BevelPairMemberSpec` -
+    the legitimately-differing per-member fields only (see that
+    dataclass's own docstring for why every other bevel pair dimension is
+    flat on `BevelPairFeatureCreate` instead)."""
+
+    tooth_count: int
+    profile_shift: float = 0.0
+
+
+class BevelPairFeatureCreate(BaseModel):
+    """`docs/gear-design/11-bevel-pair.md`: creates a `BevelPairFeature` -
+    two apex-aligned mating bevel gears, exactly 2 members
+    (`member_1`/`member_2`), no backing SketchFeature (same "gear teeth
+    are not Sketch entities" decision as `BevelGearFeatureCreate`).
+    `plane_ref` follows the identical optional/defaults-to-XY convention.
+    Cone angles are **not** accepted here - they're auto-derived from both
+    members' own tooth counts plus `shaft_angle_degrees` (`app.document.
+    bevel_pair.resolve_bevel_pair_from_bodies`), the whole point of
+    automated live bevel pairing vs. `BevelGearFeatureCreate`'s own direct
+    `pitch_cone_angle_degrees` field. No `target_body_ids`/Boss-Cut `mode`
+    at all - a pair always mints two brand-new Bodies (see `BevelPairFeature`'s
+    own docstring)."""
+
+    plane_ref: PlaneRefSchema | None = None
+    module: float
+    member_1: BevelPairMemberSpecSchema
+    member_2: BevelPairMemberSpecSchema
+    face_width: float
+    pressure_angle_degrees: float = 20.0
+    shaft_angle_degrees: float = 90.0
+    backlash: float = 0.0
+
+
+class BevelPairFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `BevelGearFeatureUpdate`."""
+
+    plane_ref: PlaneRefSchema | None = None
+    module: float | None = None
+    member_1: BevelPairMemberSpecSchema | None = None
+    member_2: BevelPairMemberSpecSchema | None = None
+    face_width: float | None = None
+    pressure_angle_degrees: float | None = None
+    shaft_angle_degrees: float | None = None
+    backlash: float | None = None
+
+
+class BevelPairFeatureResponse(BaseModel):
+    type: Literal["bevel_pair"] = "bevel_pair"
+    id: str
+    plane_ref: PlaneRefSchema
+    module: float
+    member_1: BevelPairMemberSpecSchema
+    member_2: BevelPairMemberSpecSchema
+    face_width: float
+    pressure_angle_degrees: float
+    shaft_angle_degrees: float
+    backlash: float
+    locked: bool
+    # B1: see SketchFeatureResponse.produces above - always BODY for a
+    # BevelPairFeature.
+    produces: Produces
+    # Non-blocking - face-width-vs-cone-distance, per-flank fold-risk, and
+    # assembled-solid sanity warnings, one set per member (label-prefixed -
+    # see app.document.bevel_pair.resolve_bevel_pair_from_bodies's own
+    # second return value). Same convention as BevelGearFeatureResponse.warnings.
+    warnings: list[str] = []
+
+
 class LoftSectionSchema(BaseModel):
     """`docs/gear-design/04-helical-herringbone-loft.md` (4b): the wire
     counterpart to `app.document.models.LoftSection` - see that dataclass's
@@ -1240,6 +1310,7 @@ FeatureResponse = Union[
     RackFeatureResponse,
     LoftFeatureResponse,
     BevelGearFeatureResponse,
+    BevelPairFeatureResponse,
 ]
 
 

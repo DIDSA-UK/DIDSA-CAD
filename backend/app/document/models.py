@@ -1547,6 +1547,101 @@ class BevelGearFeature(Feature):
         return Produces.BODY
 
 
+@dataclass(frozen=True)
+class BevelPairMemberSpec:
+    """One physical member of a `BevelPairFeature` - the *legitimately-
+    differing* per-member fields only (`docs/gear-design/11-bevel-pair.md`):
+    `tooth_count` and `profile_shift` (used to balance strength between a
+    small pinion and a large gear). Every other dimension (module, pressure
+    angle, shaft angle, backlash, face width) is shared pair-level, flat on
+    `BevelPairFeature` itself, not here - both gears physically share one
+    axial band/mesh, so those can't legitimately differ between the two
+    members (see that dataclass's own docstring)."""
+
+    tooth_count: int
+    profile_shift: float = 0.0
+
+
+@dataclass
+class BevelPairFeature(Feature):
+    """`docs/gear-design/11-bevel-pair.md`: automated live bevel pairing -
+    exactly 2 members (`member_1`/`member_2`), deliberately narrower than
+    `GearChainFeature`'s own N-stage generality (a bevel train longer than
+    two gears is a rarer, geometrically unrelated case per that doc's own
+    scoping reasoning) - not a generalized N-stage bevel chain.
+
+    **Shared pair-level fields, flat on this Feature** (not a `GearGroup`
+    reference - a pair always has exactly 2 members that always mesh, no
+    third station for a module change to happen, unlike `GearChainFeature`):
+    `module`, `pressure_angle_degrees`, `shaft_angle_degrees` (default
+    90.0, pre-filled and editable, arbitrary - not restricted to 90),
+    `backlash`, `face_width`.
+
+    **Cone angles are auto-derived, not entered** - the whole point of
+    automated live bevel pairing vs. `BevelGearFeature`'s own standalone
+    `pitch_cone_angle_degrees` direct field (which exists specifically
+    because a standalone gear has no partner to derive from). `app.
+    document.bevel_pair.resolve_bevel_pair_from_bodies` calls `bevel_math.
+    pitch_cone_half_angles(shaft_angle_degrees, member_1.tooth_count,
+    member_2.tooth_count)` directly, then feeds each member's own resolved
+    gamma into `bevel_math.bevel_gear_geometry` via its `pitch_cone_angle_
+    degrees` direct-field path (not the `mate_tooth_count`-derived path -
+    that one exists for `bevel_gear_geometry`'s own original spike-era
+    convenience, not what a live pair needs, since this Feature already
+    resolved both gammas itself in one call).
+
+    **Positioning - apex-aligned**: both members' cone apexes coincide at
+    `plane_ref`'s own origin. Member 1's axis is `plane_ref`'s own normal
+    directly (identical basis to a standalone `BevelGearFeature`). Member
+    2's axis is member 1's axis rotated by `shaft_angle_degrees` about
+    `plane_ref`'s own `x_axis` (CCW-positive, matching `RevolveFeature.
+    angle`'s own right-hand-rule convention - `00-conventions.md`) - see
+    `app.document.bevel_pair._tilted_basis`.
+
+    **No interference checking at all** - explicit simplification per the
+    doc: with exactly two members that are always the intended meshing
+    pair, there's no "non-adjacent stage" case for `GearChainFeature`'s own
+    interference machinery to apply to.
+
+    No backing SketchFeature (`00-conventions.md`'s "gear teeth are not
+    Sketch entities" decision) - owns its own `plane_ref: PlaneRef`
+    directly, defaulting to the fixed XY plane at the router layer like
+    every other gear-family Feature. Always mints two brand-new Bodies (the
+    same `#N`-suffix convention `GearChainFeature`/`PlanetaryGearFeature`
+    already use via `_register_solids`) - no Boss/Cut `target_body_ids`
+    concept at all, same shape as `GearChainFeature`/`PlanetaryGearFeature`.
+
+    Kept fully separate from `GearChainFeature` - no bevel stage kind was
+    added to the planar chain's own stage union, and `app.document.gear_
+    chain`/`app.document.gear_chain_math` are untouched by this Feature.
+
+    DXF flat-pattern export (a bevel gear's cone "unrolled" flat) is
+    explicitly out of scope here - `11-bevel-pair.md` flags it as new
+    geometry work belonging to `06-dxf-export.md`, not this Feature."""
+
+    id: str
+    plane_ref: PlaneRef
+    module: float
+    member_1: BevelPairMemberSpec
+    member_2: BevelPairMemberSpec
+    face_width: float
+    pressure_angle_degrees: float = 20.0
+    shaft_angle_degrees: float = 90.0
+    backlash: float = 0.0
+
+    @property
+    def type(self) -> str:
+        return "bevel_pair"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
 @dataclass
 class Part:
     """An independent solid-modeling history: an ordered list of Features.
