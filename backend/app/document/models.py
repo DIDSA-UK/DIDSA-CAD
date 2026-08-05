@@ -1035,7 +1035,41 @@ class GearFeature(Feature):
     convention: Boss fuses into each named Body (or starts a new Body if
     empty), Cut subtracts from each named Body (non-empty required - see
     `app.document.router._validate_target_body_ids`, widened to accept a
-    `GearFeature`-originated Body)."""
+    `GearFeature`-originated Body).
+
+    `docs/gear-design/04-helical-herringbone-loft.md` (Workstream 4a):
+    `helix_angle_degrees` (default `0.0`) adds helical teeth - the tooth
+    profile twists by `app.document.gear_math.helical_twist_angle`'s own
+    angle between the bottom face and the top face, built as a
+    `BRepOffsetAPI_ThruSections` loft between two rotated copies of the
+    ordinary straight-tooth outline (`app.document.gear._gear_outline_
+    wire`, reused completely unchanged - see `app.document.gear.
+    _twisted_basis`) rather than a new tooth-generation path, per that
+    doc's own 2026-08-04 spike findings (loft-between-rotated-copies is
+    the *primary* technique, not sweep-along-helix, which distorts the
+    cross-section and was dropped). `0.0` (the default) is a plain
+    straight-tooth gear, built by the exact original `BRepPrimAPI_
+    MakePrism` path unchanged - `helix_angle_degrees == 0.0` is
+    byte-identical to this field not existing at all, so every GearFeature
+    persisted before this field existed keeps producing the exact same
+    geometry.
+
+    `herringbone` (default `False`, meaningless unless `helix_angle_
+    degrees != 0.0`) replaces the single loft above with two - a helical
+    half from the bottom face to the gear's own mid-plane, and a *mirrored*
+    (opposite-handed) helical half from the mid-plane to the top face -
+    fused into one solid, per the doc's own "mirrored, not simply twice as
+    tall" definition: each half spans `face_width / 2` and only half of
+    the full-face-width twist angle, meeting at zero relative twist at
+    both the very top and very bottom.
+
+    Root fillet (`root_fillet_radius`) is not currently supported for a
+    helical/herringbone tooth (`app.document.gear._apply_root_fillet`'s
+    `BRepPrimAPI_MakePrism.Generated()` vertex-tracking has no equivalent
+    for a `ThruSections` loft) - a non-zero value is tolerated but ignored
+    with a logged warning, the same best-effort convention an unfilleted
+    straight gear already falls back to when the fillet construction
+    itself doesn't converge."""
 
     id: str
     plane_ref: PlaneRef
@@ -1050,6 +1084,8 @@ class GearFeature(Feature):
     root_fillet_radius: float = 0.0
     outer_diameter: float | None = None
     target_body_ids: list[str] = field(default_factory=list)
+    helix_angle_degrees: float = 0.0
+    herringbone: bool = False
 
     @property
     def type(self) -> str:
@@ -1123,6 +1159,103 @@ class RackFeature(Feature):
     @property
     def type(self) -> str:
         return "rack"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
+class LoftMode(str, Enum):
+    """Boss/Cut parity with `ExtrudeType`/`SweepMode` - kept as its own enum
+    despite identical values, matching this codebase's established "each
+    Feature type owns its own enum" convention (`00-conventions.md`)."""
+
+    BOSS = "boss"
+    CUT = "cut"
+
+
+@dataclass(frozen=True)
+class LoftSection:
+    """`docs/gear-design/04-helical-herringbone-loft.md` (4b): one cross-
+    section of a `LoftFeature` - an existing SketchFeature's closed Profile
+    (`sketch_feature_id`/`profile_refs`, exactly the same reference shape
+    `SweepFeature` already uses for its own Profile, narrowed here to
+    select exactly one profile per section - a Loft section is a single
+    2D cross-section, not a MultiProfile). Each section may live in a
+    *different* Sketch (confirmed pattern, mirrors `SweepFeature.path_refs`
+    each possibly naming a different Sketch) - a Loft between two Sketches
+    at different heights/planes is exactly what makes a tapered or twisted
+    3D transition possible at all.
+
+    `reference_point` (optional, a `SketchEntityRef` restricted to
+    `SketchEntityType.POINT` in this section's *own* Sketch) resolves the
+    still-open question the 04 doc's own 2026-08-04 spike flagged and left
+    unanswered: how a user aligns/twists one section relative to another
+    when `BRepOffsetAPI_ThruSections`'s own vertex correspondence
+    (confirmed by that spike to ignore wire order entirely) can't be
+    steered by reordering. This is resolved here as an *explicit pre-
+    alignment transform*, one of the two candidates the spike itself named
+    as worth investigating instead of `AddVertex`/`ParType`: if the first
+    section and this section both have a `reference_point` set, this
+    section's whole profile is rotated (about its own Sketch's local
+    origin, in its own local (x, y) plane, before being embedded into
+    world space) so its own reference point's local angle-from-origin
+    matches the first section's - see `app.document.loft._resolve_section`/
+    `_rotate_wire`. A section with no `reference_point` (the default) is
+    never rotated - this only ever changes behaviour for a section that
+    opts in, so a plain two-section Loft with no alignment picked at all
+    behaves exactly as `ThruSections`' own default correspondence would
+    produce unmodified."""
+
+    sketch_feature_id: str
+    profile_refs: list[SketchEntityRef] = field(default_factory=list)
+    reference_point: SketchEntityRef | None = None
+
+
+@dataclass
+class LoftFeature(Feature):
+    """`docs/gear-design/04-helical-herringbone-loft.md` (4b): a genuinely
+    standalone Feature (useful on its own, not gear-specific - same
+    "useful on its own" status `SweepFeature` already has), lofting a
+    solid through 2+ ordered `sections` via `BRepOffsetAPI_ThruSections`
+    (`isSolid=True`) - the OCCT-dependent construction lives in
+    `app.document.loft`, not here, same module split every other Feature
+    type here already keeps.
+
+    `ruled` selects `ThruSections`' own ruled-vs-smooth surface mode
+    (straight-line-interpolated between consecutive sections vs. a smooth
+    spline blend) - per the 04 doc's own spike, this makes no measurable
+    difference for exactly 2 sections (a spline fit through 2 points
+    degenerates to the same result as a straight line), only relevant once
+    3+ sections are involved.
+
+    Boss/Cut + `target_body_ids` follow `SweepFeature`'s exact convention:
+    Boss fuses into each named Body (or starts a new Body if empty), Cut
+    subtracts from each named Body (non-empty required - see
+    `app.document.router._validate_target_body_ids`, widened to accept a
+    `LoftFeature`-originated Body).
+
+    v1 scope, matching this project's established conservative-scoping
+    convention (`FilletFeature`/`ChamferFeature`'s own docstrings): each
+    section's profile must have no inner loops (holes) - lofting a
+    profile-with-holes needs its own per-hole correspondence between
+    sections (the exact same open "reference point per profile" problem,
+    once per hole), rejected outright (`invalid_loft_section`) rather than
+    silently only lofting the outer boundary and dropping the holes."""
+
+    id: str
+    sections: list[LoftSection]
+    mode: LoftMode
+    ruled: bool = False
+    target_body_ids: list[str] = field(default_factory=list)
+
+    @property
+    def type(self) -> str:
+        return "loft"
 
     @property
     def produces_solid_geometry(self) -> bool:

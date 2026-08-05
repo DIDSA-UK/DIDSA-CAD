@@ -210,6 +210,27 @@ def spur_gear_geometry(
     )
 
 
+def helical_twist_angle(pitch_radius: float, face_width: float, helix_angle_degrees: float) -> float:
+    """`docs/gear-design/04-helical-herringbone-loft.md` (Workstream 4a): the
+    angular twist (radians, CCW-positive - same convention `_rotate` below
+    uses) between a helical tooth's profile at one face and a point
+    `face_width` away along the gear's axis, for a constant-lead helix at
+    `helix_angle_degrees` (measured from the axis, at the pitch circle) -
+    the standard `twist = face_width * tan(helix_angle) / pitch_radius`
+    relation (the pitch-circle arc length `face_width * tan(helix_angle)`,
+    converted to an angle by dividing by `pitch_radius`).
+
+    This only derives *how much* to rotate a profile copy by - the 04 doc's
+    own 2026-08-04 spike resolved *how* to apply it (a plain pre-rotation of
+    the copy's real (x, y) coordinates before building its wire, no wire-
+    reordering/winding-direction correction needed - see
+    `app.document.gear._twisted_basis` for the OCCT construction this
+    feeds)."""
+    if pitch_radius <= 0:
+        raise GearGeometryError(f"pitch_radius must be positive, got {pitch_radius!r}")
+    return face_width * math.tan(math.radians(helix_angle_degrees)) / pitch_radius
+
+
 def minimum_tooth_count_without_undercut(
     pressure_angle_degrees: float = 20.0,
     profile_shift: float = 0.0,

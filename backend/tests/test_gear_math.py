@@ -16,6 +16,7 @@ from app.document.gear_math import (
     full_gear_profile_by_tooth,
     full_gear_profile_points,
     full_rack_profile_points,
+    helical_twist_angle,
     involute_point,
     involute_roll_angle_at_radius,
     minimum_tooth_count_without_undercut,
@@ -462,3 +463,38 @@ def test_orbit_radius_used_by_assembly_check_matches_direct_geometric_computatio
 
     derived_orbit_radius = planet_pitch_radius * (sun_teeth + ring_teeth) / (ring_teeth - sun_teeth)
     assert derived_orbit_radius == pytest.approx(expected_orbit_radius)
+
+
+# --- helical_twist_angle (Workstream 4a) ------------------------------------
+
+
+def test_helical_twist_angle_zero_helix_angle_gives_zero_twist():
+    assert helical_twist_angle(pitch_radius=20.0, face_width=20.0, helix_angle_degrees=0.0) == 0.0
+
+
+def test_helical_twist_angle_at_45_degrees_equals_face_width_over_pitch_radius():
+    # tan(45deg) == 1, so the standard `twist = face_width * tan(helix) /
+    # pitch_radius` relation degenerates to a clean, independently-checkable
+    # value at this one angle.
+    twist_radians = helical_twist_angle(pitch_radius=20.0, face_width=10.0, helix_angle_degrees=45.0)
+    assert twist_radians == pytest.approx(10.0 / 20.0)
+
+
+def test_helical_twist_angle_is_linear_in_face_width():
+    # twist = face_width * tan(helix_angle) / pitch_radius - halving
+    # face_width must exactly halve the twist (used directly by
+    # app.document.gear's own herringbone-half construction).
+    full = helical_twist_angle(pitch_radius=15.0, face_width=10.0, helix_angle_degrees=20.0)
+    half = helical_twist_angle(pitch_radius=15.0, face_width=5.0, helix_angle_degrees=20.0)
+    assert half == pytest.approx(full / 2)
+
+
+def test_helical_twist_angle_flips_sign_with_helix_angle():
+    positive = helical_twist_angle(pitch_radius=15.0, face_width=10.0, helix_angle_degrees=20.0)
+    negative = helical_twist_angle(pitch_radius=15.0, face_width=10.0, helix_angle_degrees=-20.0)
+    assert positive == pytest.approx(-negative)
+
+
+def test_helical_twist_angle_rejects_non_positive_pitch_radius():
+    with pytest.raises(GearGeometryError):
+        helical_twist_angle(pitch_radius=0.0, face_width=10.0, helix_angle_degrees=20.0)

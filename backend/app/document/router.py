@@ -34,6 +34,7 @@ from app.document.gear_math import (
     spur_gear_geometry,
 )
 from app.document.rack import resolve_rack
+from app.document.loft import resolve_loft
 from app.document.graph import (
     base_feature_id,
     build_feature_graph,
@@ -61,6 +62,9 @@ from app.document.models import (
     GearType,
     ImportFeature,
     ImportSourceFormat,
+    LoftFeature,
+    LoftMode,
+    LoftSection,
     MergeMode,
     MirrorFeature,
     Part,
@@ -112,6 +116,10 @@ from app.document.schemas import (
     GearPreviewResponse,
     ImportFeatureCreate,
     ImportFeatureResponse,
+    LoftFeatureCreate,
+    LoftFeatureResponse,
+    LoftFeatureUpdate,
+    LoftSectionSchema,
     MeshVertexData,
     MirrorFeatureCreate,
     MirrorFeatureResponse,
@@ -185,6 +193,26 @@ def _sketch_entity_ref_to_domain(schema: SketchEntityRefSchema) -> SketchEntityR
 def _sketch_entity_ref_to_schema(ref: SketchEntityRef) -> SketchEntityRefSchema:
     return SketchEntityRefSchema(
         sketch_id=ref.sketch_id, entity_type=ref.entity_type, entity_id=ref.entity_id
+    )
+
+
+def _loft_section_to_domain(schema: LoftSectionSchema) -> LoftSection:
+    return LoftSection(
+        sketch_feature_id=schema.sketch_feature_id,
+        profile_refs=[_sketch_entity_ref_to_domain(ref) for ref in schema.profile_refs],
+        reference_point=_sketch_entity_ref_to_domain(schema.reference_point)
+        if schema.reference_point
+        else None,
+    )
+
+
+def _loft_section_to_schema(section: LoftSection) -> LoftSectionSchema:
+    return LoftSectionSchema(
+        sketch_feature_id=section.sketch_feature_id,
+        profile_refs=[_sketch_entity_ref_to_schema(ref) for ref in section.profile_refs],
+        reference_point=_sketch_entity_ref_to_schema(section.reference_point)
+        if section.reference_point
+        else None,
     )
 
 
@@ -464,6 +492,8 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             root_fillet_radius=feature.root_fillet_radius,
             outer_diameter=feature.outer_diameter,
             target_body_ids=feature.target_body_ids,
+            helix_angle_degrees=feature.helix_angle_degrees,
+            herringbone=feature.herringbone,
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
@@ -482,7 +512,39 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
+    if isinstance(feature, LoftFeature):
+        return _loft_feature_response(part, feature)
     raise NotImplementedError(f"No response mapping for feature type: {feature.type}")
+
+
+def _loft_feature_response(part: Part, feature: LoftFeature, warnings: list[str] | None = None) -> LoftFeatureResponse:
+    """`docs/gear-design/04-helical-herringbone-loft.md`: unlike every other
+    `_feature_response` branch, a Loft's own non-blocking self-intersection
+    `warnings` are only known at create/update time (from `app.document.
+    loft.resolve_loft`'s own return value - see `create_loft_feature`/
+    `update_loft_feature`) - a plain `GET .../features` re-read (this
+    function's other caller, via `_feature_response`) re-resolves the Loft
+    to recompute them fresh rather than persisting them on the Feature
+    itself (mirrors `_create_plane_feature_response`'s own "resolve live
+    geometry on every read" convention), soft-failing to `[]` rather than
+    raising - a since-broken Loft is still shown (as a locked/lit Feature
+    row), not one whose failure takes down the whole feature list."""
+    if warnings is None:
+        try:
+            _, warnings = resolve_loft(part, feature)
+        except HTTPException:
+            logger.warning("LoftFeature %s could not be resolved for its response", feature.id)
+            warnings = []
+    return LoftFeatureResponse(
+        id=feature.id,
+        sections=[_loft_section_to_schema(section) for section in feature.sections],
+        mode=feature.mode,
+        ruled=feature.ruled,
+        target_body_ids=feature.target_body_ids,
+        locked=part.is_locked(feature.id),
+        produces=feature.produces,
+        warnings=warnings,
+    )
 
 
 def _mesh_vertex_data(mesh_data: MeshData) -> MeshVertexData:
@@ -541,12 +603,22 @@ def _validate_target_body_ids(part: Part, is_cut: bool, target_body_ids: list[st
     for target_id in target_body_ids:
         target_feature = part.get_feature(base_feature_id(target_id))
         if not isinstance(
-            target_feature, (ExtrudeFeature, RevolveFeature, SweepFeature, ImportFeature, GearFeature, RackFeature)
+            target_feature,
+            (
+                ExtrudeFeature,
+                RevolveFeature,
+                SweepFeature,
+                ImportFeature,
+                GearFeature,
+                RackFeature,
+                LoftFeature,
+            ),
         ):
             raise HTTPException(
                 status_code=400,
                 detail=f"target_body_ids entry {target_id!r} does not refer to an ExtrudeFeature, "
-                "RevolveFeature, SweepFeature, ImportFeature, GearFeature, or RackFeature in this Part",
+                "RevolveFeature, SweepFeature, ImportFeature, GearFeature, RackFeature, or LoftFeature "
+                "in this Part",
             )
 
 
@@ -559,10 +631,11 @@ _PATTERN_MIRROR_SOURCE_FEATURE_TYPES = (
     PatternFeature,
     GearFeature,
     RackFeature,
+    LoftFeature,
 )
 _PATTERN_MIRROR_SOURCE_FEATURE_TYPES_DESCRIPTION = (
     "ExtrudeFeature, RevolveFeature, SweepFeature, ImportFeature, MirrorFeature, PatternFeature, "
-    "GearFeature, or RackFeature"
+    "GearFeature, RackFeature, or LoftFeature"
 )
 
 
@@ -982,6 +1055,23 @@ def _validate_sweep_path_refs(path_refs: list[SketchEntityRef]) -> None:
                 status_code=422,
                 detail="path_refs entries must have entity_type one of line, arc, ellipse, spline",
             )
+
+
+def _validate_loft_sections(sections: list[LoftSection]) -> None:
+    """`docs/gear-design/04-helical-herringbone-loft.md` (4b): a `LoftFeature`
+    must name at least 2 `sections` (422, mirroring `_validate_sweep_path_
+    refs`'s own "at least one entry" convention) - there is nothing to loft
+    *between* with fewer than 2. Whether each section actually resolves to
+    exactly one loftable Profile (and, if `reference_point` is set, a real
+    Point in that same section's own Sketch) is a referential/geometric
+    check made by `app.document.loft.resolve_loft` instead (the same
+    "payload shape in the router, resolution in the OCCT module" split
+    every other structured Feature error in this codebase already uses)."""
+    if len(sections) < 2:
+        raise HTTPException(
+            status_code=422,
+            detail="LoftFeature requires at least 2 sections",
+        )
 
 
 def _validate_fillet_radius(radius: float) -> None:
@@ -2127,6 +2217,79 @@ def update_sweep_feature(part_id: str, feature_id: str, payload: SweepFeatureUpd
     return _feature_response(part, feature)
 
 
+@router.post("/parts/{part_id}/loft-features", response_model=LoftFeatureResponse, status_code=201)
+def create_loft_feature(part_id: str, payload: LoftFeatureCreate) -> LoftFeatureResponse:
+    """`docs/gear-design/04-helical-herringbone-loft.md` (4b): mirrors
+    `create_sweep_feature`'s exact shape - validates the payload shape
+    (`_validate_loft_sections`; `_validate_target_body_ids`, widened to
+    accept a Body from any of Extrude/Revolve/Sweep/Gear/Rack/Loft) and
+    then resolvability (`app.document.loft.resolve_loft`) *before*
+    constructing the Feature - fails closed with `invalid_loft_section`/
+    `loft_failed`/`missing_reference` rather than ever persisting an
+    unresolvable Loft. Its own non-blocking self-intersection `warnings`
+    (from that same `resolve_loft` call) are threaded straight into the
+    response rather than re-resolved a second time."""
+    part = get_part_or_404(part_id)
+    sections = [_loft_section_to_domain(section) for section in payload.sections]
+    _validate_loft_sections(sections)
+    _validate_target_body_ids(part, payload.mode == LoftMode.CUT, payload.target_body_ids)
+    feature = LoftFeature(
+        id=str(uuid.uuid4()),
+        sections=sections,
+        mode=payload.mode,
+        ruled=payload.ruled,
+        target_body_ids=list(payload.target_body_ids),
+    )
+    _, warnings = resolve_loft(part, feature)  # raises on an unresolvable/invalid loft
+    part.add_feature(feature)
+    return _loft_feature_response(part, feature, warnings)
+
+
+def _get_loft_feature_or_404(part: Part, feature_id: str) -> LoftFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, LoftFeature):
+        raise HTTPException(status_code=404, detail="Loft feature not found")
+    return feature
+
+
+@router.patch("/parts/{part_id}/loft-features/{feature_id}", response_model=LoftFeatureResponse)
+def update_loft_feature(part_id: str, feature_id: str, payload: LoftFeatureUpdate) -> LoftFeatureResponse:
+    """Same validate-before-mutate discipline as `update_sweep_feature`: the
+    merged (existing-plus-payload) values are checked against a scratch
+    Feature sharing the real one's id before anything on the real, stored
+    Feature is touched."""
+    part = get_part_or_404(part_id)
+    feature = _get_loft_feature_or_404(part, feature_id)
+
+    new_sections = (
+        [_loft_section_to_domain(section) for section in payload.sections]
+        if payload.sections is not None
+        else feature.sections
+    )
+    new_mode = payload.mode if payload.mode is not None else feature.mode
+    new_ruled = payload.ruled if payload.ruled is not None else feature.ruled
+    new_target_body_ids = (
+        payload.target_body_ids if payload.target_body_ids is not None else feature.target_body_ids
+    )
+    _validate_loft_sections(new_sections)
+    _validate_target_body_ids(part, new_mode == LoftMode.CUT, new_target_body_ids)
+
+    candidate = LoftFeature(
+        id=feature.id,
+        sections=new_sections,
+        mode=new_mode,
+        ruled=new_ruled,
+        target_body_ids=list(new_target_body_ids),
+    )
+    _, warnings = resolve_loft(part, candidate)  # raises on an unresolvable/invalid loft
+
+    feature.sections = candidate.sections
+    feature.mode = candidate.mode
+    feature.ruled = candidate.ruled
+    feature.target_body_ids = candidate.target_body_ids
+    return _loft_feature_response(part, feature, warnings)
+
+
 @router.post("/parts/{part_id}/mirror-features", response_model=MirrorFeatureResponse, status_code=201)
 def create_mirror_feature(part_id: str, payload: MirrorFeatureCreate) -> MirrorFeatureResponse:
     """Pattern/Mirror scoping's Phase 1 (`docs/pattern-mirror-scope.md`
@@ -2251,6 +2414,8 @@ def create_gear_feature(part_id: str, payload: GearFeatureCreate) -> GearFeature
         root_fillet_radius=payload.root_fillet_radius,
         outer_diameter=payload.outer_diameter,
         target_body_ids=list(payload.target_body_ids),
+        helix_angle_degrees=payload.helix_angle_degrees,
+        herringbone=payload.herringbone,
     )
     resolve_gear(part, feature)  # raises on an unresolvable/invalid gear; result unused here
     part.add_feature(feature)
@@ -2298,6 +2463,10 @@ def update_gear_feature(part_id: str, feature_id: str, payload: GearFeatureUpdat
     new_target_body_ids = (
         list(payload.target_body_ids) if payload.target_body_ids is not None else feature.target_body_ids
     )
+    new_helix_angle_degrees = (
+        payload.helix_angle_degrees if payload.helix_angle_degrees is not None else feature.helix_angle_degrees
+    )
+    new_herringbone = payload.herringbone if payload.herringbone is not None else feature.herringbone
 
     _validate_gear_feature_payload(new_is_internal, new_outer_diameter)
     _validate_plane_ref(part, new_plane_ref)
@@ -2317,6 +2486,8 @@ def update_gear_feature(part_id: str, feature_id: str, payload: GearFeatureUpdat
         root_fillet_radius=new_root_fillet_radius,
         outer_diameter=new_outer_diameter,
         target_body_ids=new_target_body_ids,
+        helix_angle_degrees=new_helix_angle_degrees,
+        herringbone=new_herringbone,
     )
     resolve_gear(part, candidate)  # raises on an unresolvable/invalid gear
 
@@ -2332,6 +2503,8 @@ def update_gear_feature(part_id: str, feature_id: str, payload: GearFeatureUpdat
     feature.root_fillet_radius = candidate.root_fillet_radius
     feature.outer_diameter = candidate.outer_diameter
     feature.target_body_ids = candidate.target_body_ids
+    feature.helix_angle_degrees = candidate.helix_angle_degrees
+    feature.herringbone = candidate.herringbone
     return _feature_response(part, feature)
 
 

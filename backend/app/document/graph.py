@@ -40,6 +40,8 @@ from app.document.models import (
     Feature,
     FilletFeature,
     GearFeature,
+    LoftFeature,
+    LoftMode,
     MirrorFeature,
     Part,
     PatternAxisRef,
@@ -193,6 +195,8 @@ def tool_feature_qualifies(feature: Feature | None) -> bool:
         return feature.mode == RevolveMode.CUT or bool(feature.target_body_ids)
     if isinstance(feature, SweepFeature):
         return feature.mode == SweepMode.CUT or bool(feature.target_body_ids)
+    if isinstance(feature, LoftFeature):
+        return feature.mode == LoftMode.CUT or bool(feature.target_body_ids)
     return False
 
 
@@ -434,6 +438,8 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
             depends_on = _gear_dependencies(feature)
         elif isinstance(feature, RackFeature):
             depends_on = _rack_dependencies(feature)
+        elif isinstance(feature, LoftFeature):
+            depends_on = _loft_dependencies(part, feature)
         nodes.append(GraphNode(id=feature.id, depends_on=depends_on))
     return nodes
 
@@ -528,6 +534,26 @@ def _rack_dependencies(feature: RackFeature) -> tuple[str, ...]:
     plane_dep = _plane_ref_dependency(feature.plane_ref)
     if plane_dep is not None:
         deps.add(plane_dep)
+    return tuple(deps)
+
+
+def _loft_dependencies(part: Part, feature: LoftFeature) -> tuple[str, ...]:
+    """`docs/gear-design/04-helical-herringbone-loft.md` (4b):
+    `build_feature_graph`'s `LoftFeature` dependency-edge logic - every
+    distinct Sketch named across `sections` (each entry may name a
+    different Sketch, mirroring `_sweep_dependencies`' identical
+    `path_refs` treatment) via its own owning SketchFeature, plus every
+    `target_body_ids` entry's owning Feature for Cut mode, deduplicated
+    via a `set`. `reference_point` never adds its own dependency edge -
+    it's always required to name a Point in that same section's own
+    Sketch (enforced by `app.document.loft`), so it never reaches a
+    Sketch not already covered by that section's `sketch_feature_id`."""
+    deps: set[str] = set()
+    for section in feature.sections:
+        sketch_feature_id = section.sketch_feature_id
+        if part.get_feature(sketch_feature_id) is not None:
+            deps.add(sketch_feature_id)
+    deps.update(base_feature_id(tid) for tid in feature.target_body_ids)
     return tuple(deps)
 
 

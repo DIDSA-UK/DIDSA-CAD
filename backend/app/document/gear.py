@@ -20,14 +20,18 @@ this project.
 """
 
 import logging
+import math
+from dataclasses import replace
 
 from fastapi import HTTPException
+from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
 from OCC.Core.BRepBuilderAPI import (
     BRepBuilderAPI_MakeEdge,
     BRepBuilderAPI_MakeFace,
     BRepBuilderAPI_MakeWire,
 )
 from OCC.Core.BRepFilletAPI import BRepFilletAPI_MakeFillet
+from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_ThruSections
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakePrism
 from OCC.Core.GeomAPI import GeomAPI_Interpolate
 from OCC.Core.gp import gp_Ax2, gp_Circ, gp_Vec
@@ -42,6 +46,7 @@ from app.document.gear_math import (
     GearGeometryError,
     SpurGearGeometry,
     full_gear_profile_by_tooth,
+    helical_twist_angle,
     spur_gear_geometry,
 )
 from app.document.models import GearFeature, Part, ResolvedPlane
@@ -232,6 +237,131 @@ def _apply_root_fillet(
     return fillet_maker.Shape()
 
 
+def _twisted_basis(basis: ResolvedPlane, height: float, twist: float) -> ResolvedPlane:
+    """`docs/gear-design/04-helical-herringbone-loft.md` (Workstream 4a): a
+    `ResolvedPlane` identical to `basis` except shifted `height` along its
+    own normal and with its in-plane `x_axis`/`y_axis` rotated by `twist`
+    radians (CCW-positive, same convention `gear_math._rotate` uses) about
+    that same normal.
+
+    Embedding a profile's local (x, y) through *this* basis is
+    mathematically identical to first rotating the profile's own real
+    (x, y) coordinates by `twist` about the local origin and *then*
+    embedding through the original, unshifted/unrotated `basis` -
+    `basis_point_to_world`'s embedding (`origin + x*x_axis + y*y_axis`) is
+    linear in (x, y), and rotation commutes with a linear map applied in
+    the same plane it rotates within. This is exactly the pre-rotate-the-
+    real-(x,y)-coordinates twist-control technique the 04 doc's own
+    2026-08-04 spike confirmed (`Result 1`/`Implementation sketch` - no
+    wire-reordering, no winding-direction correction needed), applied here
+    by rotating the *basis* instead of every individual point so
+    `_gear_outline_wire`/`_gear_face` can be reused completely unchanged
+    for the twisted copy rather than duplicating their point-level
+    construction."""
+    ox, oy, oz = basis.origin
+    nx, ny, nz = basis.normal
+    shifted_origin = (ox + height * nx, oy + height * ny, oz + height * nz)
+    cos_t, sin_t = math.cos(twist), math.sin(twist)
+    xx, xy, xz = basis.x_axis
+    yx, yy, yz = basis.y_axis
+    rotated_x_axis = (cos_t * xx + sin_t * yx, cos_t * xy + sin_t * yy, cos_t * xz + sin_t * yz)
+    rotated_y_axis = (-sin_t * xx + cos_t * yx, -sin_t * xy + cos_t * yy, -sin_t * xz + cos_t * yz)
+    return replace(basis, origin=shifted_origin, x_axis=rotated_x_axis, y_axis=rotated_y_axis)
+
+
+def _twisted_tooth_loft(
+    basis: ResolvedPlane,
+    geometry: SpurGearGeometry,
+    points_per_flank: int,
+    bottom_height: float,
+    bottom_twist: float,
+    top_height: float,
+    top_twist: float,
+) -> TopoDS_Shape:
+    """One helical (or one herringbone half's) tooth-boundary solid: a
+    `BRepOffsetAPI_ThruSections` loft between two twisted/shifted copies of
+    `_gear_outline_wire`'s ordinary straight-tooth outline - the *primary*
+    helical-tooth technique per the 04 doc's own spike (loft-between-two-
+    rotated-profile-copies, not sweep-along-helix, which was prototyped and
+    found to distort the cross-section). `ruled=False` (smooth mode): the
+    spike found no measurable difference between ruled/smooth for a
+    2-section loft (a spline fit through exactly 2 points degenerates to a
+    straight line either way).
+
+    Root-corner vertices aren't threaded through here (unlike
+    `resolve_gear_from_bodies`'s straight-tooth path) - a `ThruSections`
+    loft has no `BRepPrimAPI_MakePrism.Generated()`-equivalent vertex-
+    tracking `_apply_root_fillet` could use, so root fillet is not
+    currently supported for a helical/herringbone tooth (see
+    `GearFeature`'s own docstring) - the caller skips it with a warning
+    instead of calling this differently."""
+    bottom_basis = _twisted_basis(basis, bottom_height, bottom_twist)
+    top_basis = _twisted_basis(basis, top_height, top_twist)
+    bottom_wire, _ = _gear_outline_wire(bottom_basis, geometry, points_per_flank)
+    top_wire, _ = _gear_outline_wire(top_basis, geometry, points_per_flank)
+
+    loft_maker = BRepOffsetAPI_ThruSections(True, False)
+    loft_maker.AddWire(bottom_wire)
+    loft_maker.AddWire(top_wire)
+    loft_maker.Build()
+    if not loft_maker.IsDone():
+        raise _gear_failed("could not loft the helical tooth profile between its two twisted end sections")
+    return loft_maker.Shape()
+
+
+def _helical_or_herringbone_solid(
+    basis: ResolvedPlane, feature: GearFeature, geometry: SpurGearGeometry, points_per_flank: int
+) -> TopoDS_Shape:
+    """The full helical/herringbone gear solid - `resolve_gear_from_bodies`'s
+    branch for `feature.helix_angle_degrees != 0.0`. Builds the twisted
+    tooth-boundary solid (one loft for a plain helical gear, two lofts
+    fused together for a herringbone gear's own mirrored halves - see
+    `GearFeature.herringbone`'s own docstring for the "mirrored, not simply
+    twice as tall" construction: bottom-to-midplane at `+half_twist`,
+    midplane-to-top at `-half_twist` relative to the midplane, so both
+    halves meet at zero *relative* twist at the shared midplane and the
+    whole tooth returns to the same orientation at top and bottom),
+    external exactly as-is, internal by cutting that same twisted solid out
+    of a plain (untwisted - an internal gear's outer rim is a plain
+    cylinder regardless of tooth twist) outer-rim prism, mirroring
+    `_gear_face`'s own external/internal split but as two separate solids
+    plus a boolean Cut instead of one face-with-a-hole plus one prism
+    (`ThruSections` builds from wire sections, not faces-with-holes, so the
+    single-face-with-a-hole trick the straight-tooth path uses doesn't
+    apply directly here)."""
+    total_twist = helical_twist_angle(geometry.pitch_radius, feature.face_width, feature.helix_angle_degrees)
+    if feature.herringbone:
+        half_width = feature.face_width / 2
+        half_twist = helical_twist_angle(geometry.pitch_radius, half_width, feature.helix_angle_degrees)
+        bottom_half = _twisted_tooth_loft(basis, geometry, points_per_flank, 0.0, 0.0, half_width, half_twist)
+        top_half = _twisted_tooth_loft(
+            basis, geometry, points_per_flank, half_width, half_twist, feature.face_width, 0.0
+        )
+        tooth_solid = BRepAlgoAPI_Fuse(bottom_half, top_half).Shape()
+    else:
+        tooth_solid = _twisted_tooth_loft(basis, geometry, points_per_flank, 0.0, 0.0, feature.face_width, total_twist)
+
+    if not feature.is_internal:
+        return tooth_solid
+
+    assert feature.outer_diameter is not None  # enforced by the router before this is ever called
+    outer_radius = feature.outer_diameter / 2
+    if outer_radius <= geometry.dedendum_radius:
+        raise _invalid_gear_parameters(
+            f"outer_diameter ({feature.outer_diameter!r}) must exceed the tooth profile's own outer "
+            f"reach (dedendum diameter {geometry.dedendum_radius * 2!r}) - there is no rim material left "
+            "otherwise"
+        )
+    axis = gp_Ax2(basis_point_to_world(basis, 0.0, 0.0), basis_normal(basis))
+    outer_edge = BRepBuilderAPI_MakeEdge(gp_Circ(axis, outer_radius)).Edge()
+    outer_wire = BRepBuilderAPI_MakeWire(outer_edge).Wire()
+    outer_face = BRepBuilderAPI_MakeFace(outer_wire).Face()
+    normal = basis_normal(basis)
+    prism_vector = gp_Vec(normal.X(), normal.Y(), normal.Z()).Multiplied(feature.face_width)
+    outer_solid = BRepPrimAPI_MakePrism(outer_face, prism_vector).Shape()
+    return BRepAlgoAPI_Cut(outer_solid, tooth_solid).Shape()
+
+
 def resolve_gear_from_bodies(
     feature: GearFeature,
     part: Part,
@@ -246,7 +376,18 @@ def resolve_gear_from_bodies(
     "skip if the backing Sketch has no profile" tolerance, a `GearFeature`
     has no equivalent "temporarily has nothing to build" state; a bad
     parameter combination is always a real error to surface, not a
-    transient/expected one to silently skip."""
+    transient/expected one to silently skip.
+
+    `feature.helix_angle_degrees == 0.0` (the default) takes the exact
+    original straight-tooth `BRepPrimAPI_MakePrism` path unchanged - see
+    `GearFeature`'s own docstring for why this keeps every gear persisted
+    before Workstream 4a byte-identical. A non-zero value (or
+    `feature.herringbone`) instead builds via `_helical_or_herringbone_
+    solid`."""
+    if not (-90 < feature.helix_angle_degrees < 90):
+        raise _invalid_gear_parameters(
+            f"helix_angle_degrees must be in (-90, 90), got {feature.helix_angle_degrees!r}"
+        )
     try:
         geometry = spur_gear_geometry(
             module=feature.module,
@@ -266,6 +407,18 @@ def resolve_gear_from_bodies(
         raise _invalid_gear_parameters(f"face_width must be positive, got {feature.face_width!r}")
 
     basis = resolve_plane_ref(part, bodies, feature.plane_ref, excluded_feature_ids)
+
+    if feature.helix_angle_degrees != 0.0 or feature.herringbone:
+        if feature.root_fillet_radius > 0:
+            logger.warning(
+                "GearFeature %s: root_fillet_radius is not supported for a helical/herringbone tooth "
+                "(helix_angle_degrees=%r, herringbone=%r) - skipping",
+                feature.id,
+                feature.helix_angle_degrees,
+                feature.herringbone,
+            )
+        return _helical_or_herringbone_solid(basis, feature, geometry, _POINTS_PER_FLANK)
+
     wire, root_corner_vertices = _gear_outline_wire(basis, geometry, _POINTS_PER_FLANK)
     face = _gear_face(basis, feature, geometry, wire)
 

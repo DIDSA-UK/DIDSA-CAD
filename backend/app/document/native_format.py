@@ -33,6 +33,9 @@ from app.document.models import (
     GearType,
     ImportFeature,
     ImportSourceFormat,
+    LoftFeature,
+    LoftMode,
+    LoftSection,
     MergeMode,
     MirrorFeature,
     Part,
@@ -589,6 +592,26 @@ def _subshape_ref_from_dict(data: dict) -> SubShapeRef:
     )
 
 
+def _loft_section_to_dict(section: LoftSection) -> dict:
+    return {
+        "sketch_feature_id": section.sketch_feature_id,
+        "profile_refs": [_sketch_entity_ref_to_dict(r) for r in section.profile_refs],
+        "reference_point": _sketch_entity_ref_to_dict(section.reference_point)
+        if section.reference_point
+        else None,
+    }
+
+
+def _loft_section_from_dict(data: dict) -> LoftSection:
+    return LoftSection(
+        sketch_feature_id=_require(data, "sketch_feature_id"),
+        profile_refs=[_sketch_entity_ref_from_dict(r) for r in data.get("profile_refs", [])],
+        reference_point=_sketch_entity_ref_from_dict(data["reference_point"])
+        if data.get("reference_point")
+        else None,
+    )
+
+
 def _point_ref_to_dict(ref: PointRef) -> dict:
     return {
         "vertex_ref": _subshape_ref_to_dict(ref.vertex_ref) if ref.vertex_ref else None,
@@ -794,6 +817,10 @@ def _feature_to_dict(feature: Feature) -> dict:
             "root_fillet_radius": feature.root_fillet_radius,
             "outer_diameter": feature.outer_diameter,
             "target_body_ids": list(feature.target_body_ids),
+            # Workstream 4a: default 0.0/False for every gear persisted
+            # before these two fields existed.
+            "helix_angle_degrees": feature.helix_angle_degrees,
+            "herringbone": feature.herringbone,
         }
     if isinstance(feature, RackFeature):
         return {
@@ -807,6 +834,15 @@ def _feature_to_dict(feature: Feature) -> dict:
             "pressure_angle_degrees": feature.pressure_angle_degrees,
             "backlash": feature.backlash,
             "backing_height": feature.backing_height,
+            "target_body_ids": list(feature.target_body_ids),
+        }
+    if isinstance(feature, LoftFeature):
+        return {
+            "type": "loft",
+            "id": feature.id,
+            "sections": [_loft_section_to_dict(section) for section in feature.sections],
+            "mode": feature.mode.value,
+            "ruled": feature.ruled,
             "target_body_ids": list(feature.target_body_ids),
         }
     raise NativeFormatError(f"No native export mapping for feature type: {feature.type!r}")
@@ -949,6 +985,11 @@ def _feature_from_dict(data: dict) -> Feature:
             root_fillet_radius=data.get("root_fillet_radius", 0.0),
             outer_diameter=data.get("outer_diameter"),
             target_body_ids=list(data.get("target_body_ids", [])),
+            # Workstream 4a: default 0.0/False for any GearFeature persisted
+            # before these two fields existed - byte-identical straight-tooth
+            # behaviour, per that field's own docstring.
+            helix_angle_degrees=data.get("helix_angle_degrees", 0.0),
+            herringbone=data.get("herringbone", False),
         )
     if feature_type == "rack":
         return RackFeature(
@@ -961,6 +1002,14 @@ def _feature_from_dict(data: dict) -> Feature:
             pressure_angle_degrees=data.get("pressure_angle_degrees", 20.0),
             backlash=data.get("backlash", 0.0),
             backing_height=data.get("backing_height"),
+            target_body_ids=list(data.get("target_body_ids", [])),
+        )
+    if feature_type == "loft":
+        return LoftFeature(
+            id=feature_id,
+            sections=[_loft_section_from_dict(s) for s in data.get("sections", [])],
+            mode=LoftMode(_require(data, "mode")),
+            ruled=data.get("ruled", False),
             target_body_ids=list(data.get("target_body_ids", [])),
         )
     raise NativeFormatError(f"Unknown native feature type: {feature_type!r}")

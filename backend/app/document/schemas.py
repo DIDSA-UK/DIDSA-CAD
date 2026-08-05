@@ -7,6 +7,7 @@ from app.document.models import (
     FixedAxis,
     GearType,
     ImportSourceFormat,
+    LoftMode,
     MergeMode,
     PatternType,
     PlaneType,
@@ -793,7 +794,12 @@ class GearFeatureCreate(BaseModel):
     `outer_diameter` is required when `is_internal` is True (the ring's
     own rim diameter), meaningless (and rejected) otherwise - see
     `app.document.router._validate_gear_feature_payload`. Boss/Cut +
-    `target_body_ids` follow `ExtrudeFeatureCreate`'s exact convention."""
+    `target_body_ids` follow `ExtrudeFeatureCreate`'s exact convention.
+
+    `helix_angle_degrees` (Workstream 4a, default `0.0`) and `herringbone`
+    (default `False`) follow `GearFeature`'s own identical fields - see
+    that dataclass's docstring for the full construction. `0.0`/`False`
+    (the defaults) reproduce every pre-Workstream-4a gear byte-identically."""
 
     plane_ref: PlaneRefSchema | None = None
     gear_type: GearType
@@ -807,6 +813,8 @@ class GearFeatureCreate(BaseModel):
     root_fillet_radius: float = 0.0
     outer_diameter: float | None = None
     target_body_ids: list[str] = []
+    helix_angle_degrees: float = 0.0
+    herringbone: bool = False
 
 
 class GearFeatureUpdate(BaseModel):
@@ -825,6 +833,8 @@ class GearFeatureUpdate(BaseModel):
     root_fillet_radius: float | None = None
     outer_diameter: float | None = None
     target_body_ids: list[str] | None = None
+    helix_angle_degrees: float | None = None
+    herringbone: bool | None = None
 
 
 class GearFeatureResponse(BaseModel):
@@ -842,6 +852,8 @@ class GearFeatureResponse(BaseModel):
     root_fillet_radius: float
     outer_diameter: float | None = None
     target_body_ids: list[str] = []
+    helix_angle_degrees: float = 0.0
+    herringbone: bool = False
     locked: bool
     # B1: see SketchFeatureResponse.produces above - always BODY for a
     # GearFeature.
@@ -902,6 +914,57 @@ class RackFeatureResponse(BaseModel):
     # B1: see SketchFeatureResponse.produces above - always BODY for a
     # RackFeature.
     produces: Produces
+
+
+class LoftSectionSchema(BaseModel):
+    """`docs/gear-design/04-helical-herringbone-loft.md` (4b): the wire
+    counterpart to `app.document.models.LoftSection` - see that dataclass's
+    own docstring for `reference_point`'s alignment semantics."""
+
+    sketch_feature_id: str
+    profile_refs: list[SketchEntityRefSchema] = []
+    reference_point: SketchEntityRefSchema | None = None
+
+
+class LoftFeatureCreate(BaseModel):
+    """Creates a `LoftFeature` lofting between `sections` (2+ required - see
+    `app.document.router._validate_loft_sections`) via `BRepOffsetAPI_
+    ThruSections`. Boss/Cut + `target_body_ids` follow `SweepFeatureCreate`'s
+    exact convention."""
+
+    sections: list[LoftSectionSchema]
+    mode: LoftMode
+    ruled: bool = False
+    target_body_ids: list[str] = []
+
+
+class LoftFeatureUpdate(BaseModel):
+    """Partial update for live-preview re-solves, same omitted-vs-current-
+    value convention as `SweepFeatureUpdate`."""
+
+    sections: list[LoftSectionSchema] | None = None
+    mode: LoftMode | None = None
+    ruled: bool | None = None
+    target_body_ids: list[str] | None = None
+
+
+class LoftFeatureResponse(BaseModel):
+    type: Literal["loft"] = "loft"
+    id: str
+    sections: list[LoftSectionSchema]
+    mode: LoftMode
+    ruled: bool
+    target_body_ids: list[str] = []
+    locked: bool
+    # B1: see SketchFeatureResponse.produces above - always BODY for a
+    # LoftFeature.
+    produces: Produces
+    # `docs/gear-design/04-helical-herringbone-loft.md`'s own Result 2
+    # finding: a real, best-effort geometric self-intersection check
+    # (`app.document.loft._mid_section_warnings`) - non-blocking, per
+    # `00-conventions.md`'s validation-banner convention (empty for the
+    # common, non-self-intersecting case).
+    warnings: list[str] = []
 
 
 class GearPreviewRequest(BaseModel):
@@ -976,6 +1039,7 @@ FeatureResponse = Union[
     ImportFeatureResponse,
     GearFeatureResponse,
     RackFeatureResponse,
+    LoftFeatureResponse,
 ]
 
 
