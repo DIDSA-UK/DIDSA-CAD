@@ -43,6 +43,7 @@ from app.document.models import (
     ExtrudeFeature,
     ExtrudeType,
     FilletFeature,
+    GearChainFeature,
     GearFeature,
     GearType,
     ImportFeature,
@@ -52,6 +53,7 @@ from app.document.models import (
     MirrorFeature,
     Part,
     PatternFeature,
+    PlanetaryGearFeature,
     RackFeature,
     RackType,
     ResolvedPlane,
@@ -1276,6 +1278,55 @@ def compute_part_bodies(
                 continue
             solid, target_body_ids, is_cut = result
             _apply_boss_or_cut(bodies, feature.id, feature_index, is_cut, target_body_ids, solid)
+            continue
+
+        if isinstance(feature, GearChainFeature):
+            # docs/gear-design/05-gear-chain-and-planetary.md: no Boss/Cut
+            # concept at all (see that Feature's own docstring) - always
+            # mints brand-new Bodies, so this registers the returned
+            # compound directly via `_register_solids` rather than going
+            # through `_apply_boss_or_cut`/`resolve_feature_tool_shape`.
+            # `resolve_gear_chain_from_bodies` reuses `app.document.gear`'s
+            # and `app.document.rack`'s own construction internally, so it
+            # can raise any of their structured error types too, in
+            # addition to its own.
+            from app.document.gear_chain import resolve_gear_chain_from_bodies
+
+            try:
+                shape, _warnings = resolve_gear_chain_from_bodies(feature, part, bodies, excluded_feature_ids)
+            except HTTPException as exc:
+                if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
+                    "invalid_gear_chain_parameters",
+                    "gear_chain_compound_join_failed",
+                    "gear_chain_failed",
+                    "invalid_gear_parameters",
+                    "gear_failed",
+                    "invalid_rack_parameters",
+                    "rack_failed",
+                ):
+                    raise
+                logger.warning("Skipping GearChainFeature %s: could not be resolved", feature.id)
+                continue
+            _register_solids(bodies, feature.id, shape)
+            continue
+
+        if isinstance(feature, PlanetaryGearFeature):
+            # Same "no Boss/Cut, always mints brand-new Bodies" shape as
+            # GearChainFeature just above - see that branch's own comment.
+            from app.document.planetary_gear import resolve_planetary_from_bodies
+
+            try:
+                shape = resolve_planetary_from_bodies(feature, part, bodies, excluded_feature_ids)
+            except HTTPException as exc:
+                if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
+                    "invalid_planetary_parameters",
+                    "invalid_gear_parameters",
+                    "gear_failed",
+                ):
+                    raise
+                logger.warning("Skipping PlanetaryGearFeature %s: could not be resolved", feature.id)
+                continue
+            _register_solids(bodies, feature.id, shape)
             continue
 
         if not isinstance(feature, ExtrudeFeature):

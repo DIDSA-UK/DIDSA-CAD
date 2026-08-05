@@ -29,7 +29,12 @@ from app.document.models import (
     Feature,
     FilletFeature,
     FixedAxis,
+    GearChainFeature,
+    GearChainMemberSpec,
+    GearChainMemberType,
+    GearChainStage,
     GearFeature,
+    GearGroup,
     GearType,
     ImportFeature,
     ImportSourceFormat,
@@ -43,6 +48,7 @@ from app.document.models import (
     PatternDirectionRef,
     PatternFeature,
     PatternType,
+    PlanetaryGearFeature,
     PlaneRef,
     PlaneType,
     PointRef,
@@ -612,6 +618,74 @@ def _loft_section_from_dict(data: dict) -> LoftSection:
     )
 
 
+def _gear_group_to_dict(group: GearGroup) -> dict:
+    return {
+        "id": group.id,
+        "module": group.module,
+        "pressure_angle_degrees": group.pressure_angle_degrees,
+        "display_color": group.display_color,
+    }
+
+
+def _gear_group_from_dict(data: dict) -> GearGroup:
+    return GearGroup(
+        id=_require(data, "id"),
+        module=_require(data, "module"),
+        pressure_angle_degrees=data.get("pressure_angle_degrees", 20.0),
+        display_color=data.get("display_color"),
+    )
+
+
+def _gear_chain_member_to_dict(member: GearChainMemberSpec) -> dict:
+    return {
+        "member_type": member.member_type.value,
+        "group_id": member.group_id,
+        "tooth_count": member.tooth_count,
+        "face_width": member.face_width,
+        "outer_diameter": member.outer_diameter,
+    }
+
+
+def _gear_chain_member_from_dict(data: dict) -> GearChainMemberSpec:
+    return GearChainMemberSpec(
+        member_type=GearChainMemberType(_require(data, "member_type")),
+        group_id=_require(data, "group_id"),
+        tooth_count=_require(data, "tooth_count"),
+        face_width=_require(data, "face_width"),
+        outer_diameter=data.get("outer_diameter"),
+    )
+
+
+def _gear_chain_stage_to_dict(stage: GearChainStage) -> dict:
+    return {
+        "turn_angle_degrees": stage.turn_angle_degrees,
+        "member": _gear_chain_member_to_dict(stage.member) if stage.member is not None else None,
+        "compound_member_a": _gear_chain_member_to_dict(stage.compound_member_a)
+        if stage.compound_member_a is not None
+        else None,
+        "compound_member_b": _gear_chain_member_to_dict(stage.compound_member_b)
+        if stage.compound_member_b is not None
+        else None,
+        "compound_axial_offset": stage.compound_axial_offset,
+        "compound_merge": stage.compound_merge.value,
+    }
+
+
+def _gear_chain_stage_from_dict(data: dict) -> GearChainStage:
+    return GearChainStage(
+        turn_angle_degrees=data.get("turn_angle_degrees", 0.0),
+        member=_gear_chain_member_from_dict(data["member"]) if data.get("member") else None,
+        compound_member_a=_gear_chain_member_from_dict(data["compound_member_a"])
+        if data.get("compound_member_a")
+        else None,
+        compound_member_b=_gear_chain_member_from_dict(data["compound_member_b"])
+        if data.get("compound_member_b")
+        else None,
+        compound_axial_offset=data.get("compound_axial_offset", 0.0),
+        compound_merge=MergeMode(data.get("compound_merge", MergeMode.FUSE_INTO_ONE.value)),
+    )
+
+
 def _point_ref_to_dict(ref: PointRef) -> dict:
     return {
         "vertex_ref": _subshape_ref_to_dict(ref.vertex_ref) if ref.vertex_ref else None,
@@ -845,6 +919,29 @@ def _feature_to_dict(feature: Feature) -> dict:
             "ruled": feature.ruled,
             "target_body_ids": list(feature.target_body_ids),
         }
+    if isinstance(feature, GearChainFeature):
+        return {
+            "type": "gear_chain",
+            "id": feature.id,
+            "plane_ref": _plane_ref_to_dict(feature.plane_ref),
+            "groups": [_gear_group_to_dict(g) for g in feature.groups],
+            "stages": [_gear_chain_stage_to_dict(s) for s in feature.stages],
+            "start_direction_degrees": feature.start_direction_degrees,
+            "print_clearance_margin": feature.print_clearance_margin,
+        }
+    if isinstance(feature, PlanetaryGearFeature):
+        return {
+            "type": "planetary_gear",
+            "id": feature.id,
+            "plane_ref": _plane_ref_to_dict(feature.plane_ref),
+            "module": feature.module,
+            "sun_tooth_count": feature.sun_tooth_count,
+            "ring_tooth_count": feature.ring_tooth_count,
+            "planet_count": feature.planet_count,
+            "face_width": feature.face_width,
+            "ring_outer_diameter": feature.ring_outer_diameter,
+            "pressure_angle_degrees": feature.pressure_angle_degrees,
+        }
     raise NativeFormatError(f"No native export mapping for feature type: {feature.type!r}")
 
 
@@ -1011,6 +1108,27 @@ def _feature_from_dict(data: dict) -> Feature:
             mode=LoftMode(_require(data, "mode")),
             ruled=data.get("ruled", False),
             target_body_ids=list(data.get("target_body_ids", [])),
+        )
+    if feature_type == "gear_chain":
+        return GearChainFeature(
+            id=feature_id,
+            plane_ref=_plane_ref_from_dict(_require(data, "plane_ref")),
+            groups=[_gear_group_from_dict(g) for g in data.get("groups", [])],
+            stages=[_gear_chain_stage_from_dict(s) for s in data.get("stages", [])],
+            start_direction_degrees=data.get("start_direction_degrees", 0.0),
+            print_clearance_margin=data.get("print_clearance_margin", 0.2),
+        )
+    if feature_type == "planetary_gear":
+        return PlanetaryGearFeature(
+            id=feature_id,
+            plane_ref=_plane_ref_from_dict(_require(data, "plane_ref")),
+            module=_require(data, "module"),
+            sun_tooth_count=_require(data, "sun_tooth_count"),
+            ring_tooth_count=_require(data, "ring_tooth_count"),
+            planet_count=_require(data, "planet_count"),
+            face_width=_require(data, "face_width"),
+            ring_outer_diameter=_require(data, "ring_outer_diameter"),
+            pressure_angle_degrees=data.get("pressure_angle_degrees", 20.0),
         )
     raise NativeFormatError(f"Unknown native feature type: {feature_type!r}")
 

@@ -35,6 +35,8 @@ from app.document.gear_math import (
 )
 from app.document.rack import resolve_rack
 from app.document.loft import resolve_loft
+from app.document.gear_chain import resolve_gear_chain
+from app.document.planetary_gear import resolve_planetary
 from app.document.graph import (
     base_feature_id,
     build_feature_graph,
@@ -58,7 +60,12 @@ from app.document.models import (
     Feature,
     FilletFeature,
     FixedAxis,
+    GearChainFeature,
+    GearChainMemberSpec,
+    GearChainMemberType,
+    GearChainStage,
     GearFeature,
+    GearGroup,
     GearType,
     ImportFeature,
     ImportSourceFormat,
@@ -72,6 +79,7 @@ from app.document.models import (
     PatternDirectionRef,
     PatternFeature,
     PatternType,
+    PlanetaryGearFeature,
     PlaneRef,
     PlaneType,
     PointRef,
@@ -109,9 +117,15 @@ from app.document.schemas import (
     FilletFeatureCreate,
     FilletFeatureResponse,
     FilletFeatureUpdate,
+    GearChainFeatureCreate,
+    GearChainFeatureResponse,
+    GearChainFeatureUpdate,
+    GearChainMemberSpecSchema,
+    GearChainStageSchema,
     GearFeatureCreate,
     GearFeatureResponse,
     GearFeatureUpdate,
+    GearGroupSchema,
     GearPreviewRequest,
     GearPreviewResponse,
     ImportFeatureCreate,
@@ -132,6 +146,9 @@ from app.document.schemas import (
     PatternFeatureCreate,
     PatternFeatureResponse,
     PatternFeatureUpdate,
+    PlanetaryGearFeatureCreate,
+    PlanetaryGearFeatureResponse,
+    PlanetaryGearFeatureUpdate,
     PlaneRefSchema,
     PointRefSchema,
     RackFeatureCreate,
@@ -213,6 +230,74 @@ def _loft_section_to_schema(section: LoftSection) -> LoftSectionSchema:
         reference_point=_sketch_entity_ref_to_schema(section.reference_point)
         if section.reference_point
         else None,
+    )
+
+
+def _gear_group_to_domain(schema: GearGroupSchema) -> GearGroup:
+    return GearGroup(
+        id=schema.id,
+        module=schema.module,
+        pressure_angle_degrees=schema.pressure_angle_degrees,
+        display_color=schema.display_color,
+    )
+
+
+def _gear_group_to_schema(group: GearGroup) -> GearGroupSchema:
+    return GearGroupSchema(
+        id=group.id,
+        module=group.module,
+        pressure_angle_degrees=group.pressure_angle_degrees,
+        display_color=group.display_color,
+    )
+
+
+def _gear_chain_member_to_domain(schema: GearChainMemberSpecSchema) -> GearChainMemberSpec:
+    return GearChainMemberSpec(
+        member_type=schema.member_type,
+        group_id=schema.group_id,
+        tooth_count=schema.tooth_count,
+        face_width=schema.face_width,
+        outer_diameter=schema.outer_diameter,
+    )
+
+
+def _gear_chain_member_to_schema(member: GearChainMemberSpec) -> GearChainMemberSpecSchema:
+    return GearChainMemberSpecSchema(
+        member_type=member.member_type,
+        group_id=member.group_id,
+        tooth_count=member.tooth_count,
+        face_width=member.face_width,
+        outer_diameter=member.outer_diameter,
+    )
+
+
+def _gear_chain_stage_to_domain(schema: GearChainStageSchema) -> GearChainStage:
+    return GearChainStage(
+        turn_angle_degrees=schema.turn_angle_degrees,
+        member=_gear_chain_member_to_domain(schema.member) if schema.member is not None else None,
+        compound_member_a=_gear_chain_member_to_domain(schema.compound_member_a)
+        if schema.compound_member_a is not None
+        else None,
+        compound_member_b=_gear_chain_member_to_domain(schema.compound_member_b)
+        if schema.compound_member_b is not None
+        else None,
+        compound_axial_offset=schema.compound_axial_offset,
+        compound_merge=schema.compound_merge,
+    )
+
+
+def _gear_chain_stage_to_schema(stage: GearChainStage) -> GearChainStageSchema:
+    return GearChainStageSchema(
+        turn_angle_degrees=stage.turn_angle_degrees,
+        member=_gear_chain_member_to_schema(stage.member) if stage.member is not None else None,
+        compound_member_a=_gear_chain_member_to_schema(stage.compound_member_a)
+        if stage.compound_member_a is not None
+        else None,
+        compound_member_b=_gear_chain_member_to_schema(stage.compound_member_b)
+        if stage.compound_member_b is not None
+        else None,
+        compound_axial_offset=stage.compound_axial_offset,
+        compound_merge=stage.compound_merge,
     )
 
 
@@ -514,6 +599,22 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
         )
     if isinstance(feature, LoftFeature):
         return _loft_feature_response(part, feature)
+    if isinstance(feature, GearChainFeature):
+        return _gear_chain_feature_response(part, feature)
+    if isinstance(feature, PlanetaryGearFeature):
+        return PlanetaryGearFeatureResponse(
+            id=feature.id,
+            plane_ref=_plane_ref_to_schema(feature.plane_ref),
+            module=feature.module,
+            sun_tooth_count=feature.sun_tooth_count,
+            ring_tooth_count=feature.ring_tooth_count,
+            planet_count=feature.planet_count,
+            face_width=feature.face_width,
+            ring_outer_diameter=feature.ring_outer_diameter,
+            pressure_angle_degrees=feature.pressure_angle_degrees,
+            locked=part.is_locked(feature.id),
+            produces=feature.produces,
+        )
     raise NotImplementedError(f"No response mapping for feature type: {feature.type}")
 
 
@@ -541,6 +642,34 @@ def _loft_feature_response(part: Part, feature: LoftFeature, warnings: list[str]
         mode=feature.mode,
         ruled=feature.ruled,
         target_body_ids=feature.target_body_ids,
+        locked=part.is_locked(feature.id),
+        produces=feature.produces,
+        warnings=warnings,
+    )
+
+
+def _gear_chain_feature_response(
+    part: Part, feature: GearChainFeature, warnings: list[str] | None = None
+) -> GearChainFeatureResponse:
+    """`docs/gear-design/05-gear-chain-and-planetary.md`: mirrors
+    `_loft_feature_response`'s own "known only at create/update time,
+    re-resolved live for a GET" treatment exactly - `warnings` here covers
+    both interference findings and compound-join volume-loss/thin-member
+    findings (`app.document.gear_chain.resolve_gear_chain`'s own second
+    return value)."""
+    if warnings is None:
+        try:
+            _, warnings = resolve_gear_chain(part, feature)
+        except HTTPException:
+            logger.warning("GearChainFeature %s could not be resolved for its response", feature.id)
+            warnings = []
+    return GearChainFeatureResponse(
+        id=feature.id,
+        plane_ref=_plane_ref_to_schema(feature.plane_ref),
+        groups=[_gear_group_to_schema(g) for g in feature.groups],
+        stages=[_gear_chain_stage_to_schema(s) for s in feature.stages],
+        start_direction_degrees=feature.start_direction_degrees,
+        print_clearance_margin=feature.print_clearance_margin,
         locked=part.is_locked(feature.id),
         produces=feature.produces,
         warnings=warnings,
@@ -612,13 +741,15 @@ def _validate_target_body_ids(part: Part, is_cut: bool, target_body_ids: list[st
                 GearFeature,
                 RackFeature,
                 LoftFeature,
+                GearChainFeature,
+                PlanetaryGearFeature,
             ),
         ):
             raise HTTPException(
                 status_code=400,
                 detail=f"target_body_ids entry {target_id!r} does not refer to an ExtrudeFeature, "
-                "RevolveFeature, SweepFeature, ImportFeature, GearFeature, RackFeature, or LoftFeature "
-                "in this Part",
+                "RevolveFeature, SweepFeature, ImportFeature, GearFeature, RackFeature, LoftFeature, "
+                "GearChainFeature, or PlanetaryGearFeature in this Part",
             )
 
 
@@ -632,10 +763,12 @@ _PATTERN_MIRROR_SOURCE_FEATURE_TYPES = (
     GearFeature,
     RackFeature,
     LoftFeature,
+    GearChainFeature,
+    PlanetaryGearFeature,
 )
 _PATTERN_MIRROR_SOURCE_FEATURE_TYPES_DESCRIPTION = (
     "ExtrudeFeature, RevolveFeature, SweepFeature, ImportFeature, MirrorFeature, PatternFeature, "
-    "GearFeature, RackFeature, or LoftFeature"
+    "GearFeature, RackFeature, LoftFeature, GearChainFeature, or PlanetaryGearFeature"
 )
 
 
@@ -1224,6 +1357,101 @@ def _validate_gear_feature_payload(is_internal: bool, outer_diameter: float | No
     if not is_internal and outer_diameter is not None:
         raise HTTPException(
             status_code=422, detail="outer_diameter must not be supplied when is_internal is false"
+        )
+
+
+def _validate_gear_chain_member_payload(member: GearChainMemberSpec, group_ids: set[str], *, allow_rack: bool) -> None:
+    if member.group_id not in group_ids:
+        raise HTTPException(
+            status_code=422, detail=f"group_id {member.group_id!r} does not refer to a group on this chain"
+        )
+    if member.member_type == GearChainMemberType.RACK and not allow_rack:
+        raise HTTPException(status_code=422, detail="a compound stage's members cannot be a rack")
+    if member.member_type == GearChainMemberType.INTERNAL and member.outer_diameter is None:
+        raise HTTPException(status_code=422, detail="outer_diameter is required for an internal chain member")
+    if member.member_type != GearChainMemberType.INTERNAL and member.outer_diameter is not None:
+        raise HTTPException(
+            status_code=422, detail="outer_diameter must not be supplied for a non-internal chain member"
+        )
+
+
+def _validate_gear_chain_stages(groups: list[GearGroup], stages: list[GearChainStage]) -> None:
+    """`docs/gear-design/05-gear-chain-and-planetary.md`: the payload-shape
+    half of `GearChainFeature` validation (referential/geometric validity -
+    group-id *adjacency* matching, module compatibility, actual
+    resolvability - is `app.document.gear_chain.resolve_gear_chain`'s job
+    instead, the same "payload shape in the router, resolution in the OCCT
+    module" split every other structured Feature validation here already
+    uses):
+
+    - At least 2 stages (there is no chain otherwise).
+    - Each stage sets exactly one of `member` or both `compound_member_a`/
+      `compound_member_b` (never neither, never all three) - mirrors
+      `_validate_plane_ref`'s own "exactly one of N" convention.
+    - A compound member is never `RACK` (no coaxial-stacking concept for a
+      rack).
+    - `INTERNAL` (single-member or either compound member) is rejected
+      anywhere but the chain's final stage - `05-gear-chain-and-planetary.
+      md`'s own deliberate restriction (nothing meaningfully continues past
+      a ring on this codebase's model - see `PlanetaryGearFeature` for the
+      branching topology that does).
+    - `RACK` (single-member only) is only allowed at the chain's first or
+      last stage - avoids the double-sided-rack orientation ambiguity a
+      mid-chain rack would create (see `app.document.gear_chain_math.
+      ChainStageSpec`'s own docstring); two racks at opposite ends of a
+      2-stage chain would be adjacent to each other, which `gear_chain_
+      math._segment_distance` itself already rejects (surfaced as
+      `invalid_gear_chain_parameters` at resolve time, not pre-checked
+      here).
+    - The last stage's `turn_angle_degrees` must be `0.0` - Spike 1's own
+      flagged loose end (its own value is geometrically inert on the last
+      stage, since no segment leaves it): this build's resolution is to
+      reject a nonzero value outright rather than silently accept a
+      no-op, matching this codebase's general "fail closed on a
+      structurally meaningless input" convention (e.g. `PlaneRef`'s own
+      "exactly one of N" checks) rather than a soft warning."""
+    if len(stages) < 2:
+        raise HTTPException(status_code=422, detail="GearChainFeature requires at least 2 stages")
+
+    group_ids = {g.id for g in groups}
+    last_index = len(stages) - 1
+    for i, stage in enumerate(stages):
+        is_single = stage.member is not None
+        is_compound = stage.compound_member_a is not None or stage.compound_member_b is not None
+        if is_single == is_compound:
+            raise HTTPException(
+                status_code=422,
+                detail=f"stage {i} must set exactly one of member or (compound_member_a and compound_member_b)",
+            )
+        if is_compound and (stage.compound_member_a is None or stage.compound_member_b is None):
+            raise HTTPException(
+                status_code=422, detail=f"stage {i} is compound but is missing one of its two members"
+            )
+
+        members = [stage.compound_member_a, stage.compound_member_b] if is_compound else [stage.member]
+        for member in members:
+            _validate_gear_chain_member_payload(member, group_ids, allow_rack=not is_compound)
+            if member.member_type == GearChainMemberType.INTERNAL and i != last_index:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"stage {i}: an internal (ring) member is only allowed on the chain's last stage",
+                )
+            if member.member_type == GearChainMemberType.RACK and i not in (0, last_index):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"stage {i}: a rack stage is only allowed at the first or last position",
+                )
+        if is_compound and stage.compound_member_a.group_id == stage.compound_member_b.group_id:
+            raise HTTPException(
+                status_code=422,
+                detail=f"stage {i}: a compound stage's two members must use different groups",
+            )
+
+    if stages[last_index].turn_angle_degrees != 0.0:
+        raise HTTPException(
+            status_code=422,
+            detail="the last stage's turn_angle_degrees is geometrically inert (no segment leaves the "
+            "last stage) and must be 0.0",
         )
 
 
@@ -2598,6 +2826,182 @@ def update_rack_feature(part_id: str, feature_id: str, payload: RackFeatureUpdat
     feature.backlash = candidate.backlash
     feature.backing_height = candidate.backing_height
     feature.target_body_ids = candidate.target_body_ids
+    return _feature_response(part, feature)
+
+
+@router.post("/parts/{part_id}/gear-chain-features", response_model=GearChainFeatureResponse, status_code=201)
+def create_gear_chain_feature(part_id: str, payload: GearChainFeatureCreate) -> GearChainFeatureResponse:
+    """`docs/gear-design/05-gear-chain-and-planetary.md`: mirrors
+    `create_loft_feature`'s exact shape - validates payload shape
+    (`_validate_gear_chain_stages`/`_validate_plane_ref`), then
+    resolvability (`app.document.gear_chain.resolve_gear_chain` - bent-path
+    positioning, group-adjacency/module matching, per-stage OCCT
+    construction, and the compound-join connected-solid-count BLOCKING
+    check) before ever persisting an unresolvable chain. Non-blocking
+    interference/compound-join `warnings` are threaded straight into the
+    response, same as Loft's own self-intersection warnings."""
+    part = get_part_or_404(part_id)
+    groups = [_gear_group_to_domain(g) for g in payload.groups]
+    stages = [_gear_chain_stage_to_domain(s) for s in payload.stages]
+    _validate_gear_chain_stages(groups, stages)
+    plane_ref = _plane_ref_to_domain(payload.plane_ref) if payload.plane_ref is not None else _default_plane_ref()
+    _validate_plane_ref(part, plane_ref)
+    feature = GearChainFeature(
+        id=str(uuid.uuid4()),
+        plane_ref=plane_ref,
+        groups=groups,
+        stages=stages,
+        start_direction_degrees=payload.start_direction_degrees,
+        print_clearance_margin=payload.print_clearance_margin,
+    )
+    _, warnings = resolve_gear_chain(part, feature)  # raises on an unresolvable/invalid chain
+    part.add_feature(feature)
+    return _gear_chain_feature_response(part, feature, warnings)
+
+
+def _get_gear_chain_feature_or_404(part: Part, feature_id: str) -> GearChainFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, GearChainFeature):
+        raise HTTPException(status_code=404, detail="Gear chain feature not found")
+    return feature
+
+
+@router.patch("/parts/{part_id}/gear-chain-features/{feature_id}", response_model=GearChainFeatureResponse)
+def update_gear_chain_feature(
+    part_id: str, feature_id: str, payload: GearChainFeatureUpdate
+) -> GearChainFeatureResponse:
+    """Mirrors `update_loft_feature`'s exact shape - same validate-before-
+    mutate discipline against a scratch Feature sharing the real one's id."""
+    part = get_part_or_404(part_id)
+    feature = _get_gear_chain_feature_or_404(part, feature_id)
+
+    new_plane_ref = _plane_ref_to_domain(payload.plane_ref) if payload.plane_ref is not None else feature.plane_ref
+    new_groups = (
+        [_gear_group_to_domain(g) for g in payload.groups] if payload.groups is not None else feature.groups
+    )
+    new_stages = (
+        [_gear_chain_stage_to_domain(s) for s in payload.stages] if payload.stages is not None else feature.stages
+    )
+    new_start_direction_degrees = (
+        payload.start_direction_degrees
+        if payload.start_direction_degrees is not None
+        else feature.start_direction_degrees
+    )
+    new_print_clearance_margin = (
+        payload.print_clearance_margin
+        if payload.print_clearance_margin is not None
+        else feature.print_clearance_margin
+    )
+
+    _validate_gear_chain_stages(new_groups, new_stages)
+    _validate_plane_ref(part, new_plane_ref)
+
+    candidate = GearChainFeature(
+        id=feature.id,
+        plane_ref=new_plane_ref,
+        groups=new_groups,
+        stages=new_stages,
+        start_direction_degrees=new_start_direction_degrees,
+        print_clearance_margin=new_print_clearance_margin,
+    )
+    _, warnings = resolve_gear_chain(part, candidate)  # raises on an unresolvable/invalid chain
+
+    feature.plane_ref = candidate.plane_ref
+    feature.groups = candidate.groups
+    feature.stages = candidate.stages
+    feature.start_direction_degrees = candidate.start_direction_degrees
+    feature.print_clearance_margin = candidate.print_clearance_margin
+    return _gear_chain_feature_response(part, feature, warnings)
+
+
+@router.post(
+    "/parts/{part_id}/planetary-gear-features", response_model=PlanetaryGearFeatureResponse, status_code=201
+)
+def create_planetary_gear_feature(part_id: str, payload: PlanetaryGearFeatureCreate) -> PlanetaryGearFeatureResponse:
+    """`docs/gear-design/05-gear-chain-and-planetary.md`: mirrors
+    `create_gear_feature`'s exact shape - unlike a chain there is no
+    payload-shape validation to do beyond `_validate_plane_ref` (sun/ring/
+    planet tooth counts have no discriminated-union shape to check); every
+    real check (derived planet tooth count, the assembly condition, planet-
+    planet interference) is `app.document.planetary_gear.resolve_planetary`'s
+    job, and a failure there BLOCKS creation outright (`00-conventions.md`'s
+    validation-banner exception - there is no valid planet gear to draw at
+    all for an invalid combination, not a quality tradeoff)."""
+    part = get_part_or_404(part_id)
+    plane_ref = _plane_ref_to_domain(payload.plane_ref) if payload.plane_ref is not None else _default_plane_ref()
+    _validate_plane_ref(part, plane_ref)
+    feature = PlanetaryGearFeature(
+        id=str(uuid.uuid4()),
+        plane_ref=plane_ref,
+        module=payload.module,
+        sun_tooth_count=payload.sun_tooth_count,
+        ring_tooth_count=payload.ring_tooth_count,
+        planet_count=payload.planet_count,
+        face_width=payload.face_width,
+        ring_outer_diameter=payload.ring_outer_diameter,
+        pressure_angle_degrees=payload.pressure_angle_degrees,
+    )
+    resolve_planetary(part, feature)  # raises (blocking) on an invalid/unresolvable planetary set
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_planetary_gear_feature_or_404(part: Part, feature_id: str) -> PlanetaryGearFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, PlanetaryGearFeature):
+        raise HTTPException(status_code=404, detail="Planetary gear feature not found")
+    return feature
+
+
+@router.patch("/parts/{part_id}/planetary-gear-features/{feature_id}", response_model=PlanetaryGearFeatureResponse)
+def update_planetary_gear_feature(
+    part_id: str, feature_id: str, payload: PlanetaryGearFeatureUpdate
+) -> PlanetaryGearFeatureResponse:
+    """Mirrors `update_gear_feature`'s exact shape - same validate-before-
+    mutate discipline against a scratch Feature sharing the real one's id."""
+    part = get_part_or_404(part_id)
+    feature = _get_planetary_gear_feature_or_404(part, feature_id)
+
+    new_plane_ref = _plane_ref_to_domain(payload.plane_ref) if payload.plane_ref is not None else feature.plane_ref
+    new_module = payload.module if payload.module is not None else feature.module
+    new_sun_tooth_count = payload.sun_tooth_count if payload.sun_tooth_count is not None else feature.sun_tooth_count
+    new_ring_tooth_count = (
+        payload.ring_tooth_count if payload.ring_tooth_count is not None else feature.ring_tooth_count
+    )
+    new_planet_count = payload.planet_count if payload.planet_count is not None else feature.planet_count
+    new_face_width = payload.face_width if payload.face_width is not None else feature.face_width
+    new_ring_outer_diameter = (
+        payload.ring_outer_diameter if payload.ring_outer_diameter is not None else feature.ring_outer_diameter
+    )
+    new_pressure_angle_degrees = (
+        payload.pressure_angle_degrees
+        if payload.pressure_angle_degrees is not None
+        else feature.pressure_angle_degrees
+    )
+
+    _validate_plane_ref(part, new_plane_ref)
+
+    candidate = PlanetaryGearFeature(
+        id=feature.id,
+        plane_ref=new_plane_ref,
+        module=new_module,
+        sun_tooth_count=new_sun_tooth_count,
+        ring_tooth_count=new_ring_tooth_count,
+        planet_count=new_planet_count,
+        face_width=new_face_width,
+        ring_outer_diameter=new_ring_outer_diameter,
+        pressure_angle_degrees=new_pressure_angle_degrees,
+    )
+    resolve_planetary(part, candidate)  # raises (blocking) on an invalid/unresolvable planetary set
+
+    feature.plane_ref = candidate.plane_ref
+    feature.module = candidate.module
+    feature.sun_tooth_count = candidate.sun_tooth_count
+    feature.ring_tooth_count = candidate.ring_tooth_count
+    feature.planet_count = candidate.planet_count
+    feature.face_width = candidate.face_width
+    feature.ring_outer_diameter = candidate.ring_outer_diameter
+    feature.pressure_angle_degrees = candidate.pressure_angle_degrees
     return _feature_response(part, feature)
 
 

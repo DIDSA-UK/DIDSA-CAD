@@ -1266,6 +1266,212 @@ class LoftFeature(Feature):
         return Produces.BODY
 
 
+@dataclass(frozen=True)
+class GearGroup:
+    """`docs/gear-design/05-gear-chain-and-planetary.md`: a small named
+    record - `module`/`pressure_angle_degrees`/`display_color` - referenced
+    by id from every `GearChainMemberSpec.group_id` rather than inlined per-
+    stage. Two members can only mesh if they share a group, which is what
+    makes a mismatched-module meshing pair structurally impossible to
+    construct. Not a Feature (no Feature-tree entry of its own, no separate
+    CRUD endpoint) - owned directly by the one `GearChainFeature` it
+    belongs to (`GearChainFeature.groups`), the same "embedded record, not
+    a standalone Feature" treatment `LoftSection` already gets from
+    `LoftFeature`. v1 UI creates exactly one implicit group per chain
+    (`00-conventions.md`), but the schema already supports 2+ groups
+    without a later breaking migration - a chain with a compound join
+    genuinely needs (at least) 2."""
+
+    id: str
+    module: float
+    pressure_angle_degrees: float = 20.0
+    display_color: str | None = None
+
+
+class GearChainMemberType(str, Enum):
+    """Boss/Cut-enum parity with `GearType`/`RackType` in spirit (its own
+    enum, not shared - `00-conventions.md`), but this one selects a
+    member's *kind* rather than Boss-vs-Cut - a `GearChainFeature` has no
+    Boss/Cut concept at all (see that Feature's own docstring)."""
+
+    EXTERNAL = "external"
+    INTERNAL = "internal"
+    RACK = "rack"
+
+
+@dataclass(frozen=True)
+class GearChainMemberSpec:
+    """One physical gear/rack member - a single-gear/rack stage's own
+    `GearChainStage.member`, or one of a compound stage's `compound_
+    member_a`/`compound_member_b`. `group_id` resolves to one entry of the
+    owning `GearChainFeature.groups` for `module`/`pressure_angle_degrees`
+    - see `GearGroup`'s own docstring for why this indirection exists.
+    `outer_diameter` is required when `member_type == INTERNAL`,
+    meaningless (and rejected) otherwise - mirrors `GearFeature.
+    outer_diameter`'s identical convention. A compound member's own
+    `member_type` is restricted to `EXTERNAL`/`INTERNAL` (never `RACK` -
+    a rack has no coaxial-stacking concept at all) by the router, not by
+    this dataclass itself, same "payload shape validated by the API layer"
+    split every other mutually-exclusive Feature field already uses."""
+
+    member_type: GearChainMemberType
+    group_id: str
+    tooth_count: int
+    face_width: float
+    outer_diameter: float | None = None
+
+
+@dataclass
+class GearChainStage:
+    """One stage of `GearChainFeature.stages` - a single-gear/rack stage
+    (`member` set, every `compound_*` field unset) or a compound stage
+    (`compound_member_a`/`compound_member_b` set, `member` unset),
+    discriminated by which fields are populated - mirrors `PlaneRef`'s own
+    "exactly one of N, payload shape validated by the router" convention
+    rather than a redundant separate `is_compound` flag.
+
+    `turn_angle_degrees` steers the chain segment *leaving* this stage
+    (turtle-graphics style, CCW-positive, relative to the previous
+    segment's own direction - see `app.document.gear_chain_math.
+    resolve_chain_positions`) - geometrically inert on the chain's last
+    stage (no segment leaves it); `app.document.gear_chain` rejects a
+    nonzero value there rather than silently accepting a no-op, per Spike
+    1's own flagged loose end (`05-gear-chain-and-planetary.md`).
+
+    `compound_member_a` is the incoming-facing member (meshes with the
+    previous stage), `compound_member_b` the outgoing-facing one (meshes
+    with the next) - see `app.document.gear_chain_math.ChainStageSpec`'s
+    own docstring for why this a/b assignment was picked (the doc itself
+    only says the two members face opposite directions, not which field is
+    which). `compound_axial_offset` is member_b's own z-start (its local
+    frame's origin) measured from member_a's z=0 origin, along the shared
+    shaft axis (member_a spans `[0, compound_member_a.face_width]`).
+    `compound_merge` reuses `MergeMode`'s existing two values verbatim -
+    Spike 2's own confirmed-sufficient finding, no new field needed -
+    defaulting to `FUSE_INTO_ONE` (matches what a compound gear physically
+    usually is when printed/machined, per this doc's own compound
+    section), overridable to `KEEP_SEPARATE`."""
+
+    turn_angle_degrees: float = 0.0
+    member: GearChainMemberSpec | None = None
+    compound_member_a: GearChainMemberSpec | None = None
+    compound_member_b: GearChainMemberSpec | None = None
+    compound_axial_offset: float = 0.0
+    compound_merge: MergeMode = MergeMode.FUSE_INTO_ONE
+
+    @property
+    def is_compound(self) -> bool:
+        return self.compound_member_a is not None
+
+
+@dataclass
+class GearChainFeature(Feature):
+    """`docs/gear-design/05-gear-chain-and-planetary.md`: an ordered list
+    of N>=2 meshing `stages` (external/internal/rack/compound), resolved in
+    one pass into N (or more, for a compound stage kept separate via
+    `GearChainStage.compound_merge=KEEP_SEPARATE`) positioned Bodies - the
+    same `#N`-suffix convention Pattern/Mirror/Extrude already use (see
+    `app.document.gear_chain.resolve_gear_chain_from_bodies`, which reuses
+    `app.document.extrude._register_solids` directly rather than inventing
+    a new suffix scheme), so a later Feature can still target one specific
+    stage's Body individually (`00-conventions.md`).
+
+    No backing SketchFeature (`00-conventions.md`'s "gear teeth are not
+    Sketch entities" decision) - owns its own `plane_ref: PlaneRef`
+    directly, same convention `GearFeature`/`RackFeature` already use; the
+    turn-angle chain lives within that plane. An `internal` stage/member is
+    rejected anywhere but the final stage - `05-gear-chain-and-planetary.
+    md`'s own deliberate restriction (nothing meaningfully continues past a
+    ring without turning into a branching, `PlanetaryGearFeature` topology)
+    - enforced at the router (`app.document.router._validate_gear_chain_
+    stages`), not by this dataclass.
+
+    `groups` are this Feature's own embedded `GearGroup` records (not a
+    standalone Feature type - see `GearGroup`'s own docstring); every
+    stage/member's `group_id` must resolve to one of them.
+
+    Always mints brand-new Bodies - no Boss/Cut `target_body_ids` concept
+    at all (a chain is a fresh multi-body assembly, not a modification of
+    an existing Body), unlike `GearFeature`/`RackFeature`/`LoftFeature`.
+
+    `print_clearance_margin` (default 0.2mm) feeds `app.document.
+    gear_chain_math.check_chain_interference`'s own non-blocking overlap/
+    clearance findings (`00-conventions.md`'s validation-banner convention
+    - never blocks creation)."""
+
+    id: str
+    plane_ref: PlaneRef
+    groups: list[GearGroup]
+    stages: list[GearChainStage]
+    start_direction_degrees: float = 0.0
+    print_clearance_margin: float = 0.2
+
+    @property
+    def type(self) -> str:
+        return "gear_chain"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
+@dataclass
+class PlanetaryGearFeature(Feature):
+    """`docs/gear-design/05-gear-chain-and-planetary.md`: a branching (not
+    sequential) gear topology - sun meshes every planet, every planet
+    meshes the ring - kept as its own Feature type rather than folded into
+    `GearChainFeature` (see that doc's own "genuinely different topology"
+    reasoning). Sun/ring tooth counts are the free inputs; planet tooth
+    count is *derived* (`app.document.gear_math.planetary_planet_tooth_
+    count`, `N_planet = (N_ring - N_sun) / 2`), not entered - an odd or
+    non-positive result means there is no valid planet gear to draw at all,
+    which BLOCKS creation outright (`00-conventions.md`'s validation-banner
+    exception), not a soft warning. `planet_count` is validated against
+    `gear_math.validate_planetary_assembly`'s own assembly condition
+    (`(sun_tooth_count + ring_tooth_count) mod planet_count == 0`) and
+    interference check, both at creation/update time.
+
+    One shared `module`/`pressure_angle_degrees`/`face_width` across
+    sun/ring/planets - real planetary sets mesh across one common axial
+    band and structurally require one shared module (no place for a module
+    change to happen the way a chain has a compound join), so unlike
+    `GearChainFeature` there is no `GearGroup` concept here at all.
+    `ring_outer_diameter` is the ring's own rim diameter - required the
+    same way `GearFeature.outer_diameter` is for any internal gear.
+
+    No turn-angle/path concept - planets auto-space evenly around the sun
+    at the correct radius (see `app.document.planetary_gear`). Resolves
+    into N+2 positioned Bodies (sun, ring, N planets) in one pass, static/
+    positioned only - no kinematics/rotation. Same "no Boss/Cut, always
+    mints brand-new Bodies" shape as `GearChainFeature`."""
+
+    id: str
+    plane_ref: PlaneRef
+    module: float
+    sun_tooth_count: int
+    ring_tooth_count: int
+    planet_count: int
+    face_width: float
+    ring_outer_diameter: float
+    pressure_angle_degrees: float = 20.0
+
+    @property
+    def type(self) -> str:
+        return "planetary_gear"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
 @dataclass
 class Part:
     """An independent solid-modeling history: an ordered list of Features.

@@ -169,25 +169,35 @@ def _root_corner_vertices_from_wire(wire: TopoDS_Wire, tooth_count: int) -> list
     return vertices
 
 
-def _gear_face(basis: ResolvedPlane, feature: GearFeature, geometry: SpurGearGeometry, wire: TopoDS_Wire):
+def _gear_face(
+    basis: ResolvedPlane, is_internal: bool, outer_diameter: float | None, geometry: SpurGearGeometry, wire: TopoDS_Wire
+):
     """External gear: the tooth-profile wire alone bounds the face (solid
     star shape, no hole). Internal gear: the tooth-profile wire is the
     *inner* boundary (a hole - the bore where a mating pinion sits, teeth
     pointing inward per `spur_gear_geometry`'s `is_internal` sign flip),
-    with a plain circle at `feature.outer_diameter / 2` as the outer rim -
-    same `BRepBuilderAPI_MakeFace(outer).Add(inner)` idiom
-    `app.document.extrude.face_for_profile` already uses for a Sketch
-    profile's own inner loops, including the same winding-direction check
-    (`_wire_normal` dot product) since `.Add` does not reorient a hole
-    wire for you."""
-    if not feature.is_internal:
+    with a plain circle at `outer_diameter / 2` as the outer rim - same
+    `BRepBuilderAPI_MakeFace(outer).Add(inner)` idiom `app.document.extrude.
+    face_for_profile` already uses for a Sketch profile's own inner loops,
+    including the same winding-direction check (`_wire_normal` dot product)
+    since `.Add` does not reorient a hole wire for you.
+
+    Takes `is_internal`/`outer_diameter` as plain values rather than a whole
+    `GearFeature` (`resolve_gear_from_bodies`'s original shape) so
+    `docs/gear-design/05-gear-chain-and-planetary.md`'s `GearChainFeature`
+    can reuse this directly for one chain member at a time, which has no
+    `GearFeature` of its own to pass - mirrors this codebase's established
+    "promote to an explicit-params helper once a second caller needs it"
+    convention (see e.g. `app.document.create_plane.resolve_plane_ref`'s own
+    docstring)."""
+    if not is_internal:
         return BRepBuilderAPI_MakeFace(wire).Face()
 
-    assert feature.outer_diameter is not None  # enforced by the router before this is ever called
-    outer_radius = feature.outer_diameter / 2
+    assert outer_diameter is not None  # enforced by the router before this is ever called
+    outer_radius = outer_diameter / 2
     if outer_radius <= geometry.dedendum_radius:
         raise _invalid_gear_parameters(
-            f"outer_diameter ({feature.outer_diameter!r}) must exceed the tooth profile's own outer "
+            f"outer_diameter ({outer_diameter!r}) must exceed the tooth profile's own outer "
             f"reach (dedendum diameter {geometry.dedendum_radius * 2!r}) - there is no rim material left "
             "otherwise"
         )
@@ -420,7 +430,7 @@ def resolve_gear_from_bodies(
         return _helical_or_herringbone_solid(basis, feature, geometry, _POINTS_PER_FLANK)
 
     wire, root_corner_vertices = _gear_outline_wire(basis, geometry, _POINTS_PER_FLANK)
-    face = _gear_face(basis, feature, geometry, wire)
+    face = _gear_face(basis, feature.is_internal, feature.outer_diameter, geometry, wire)
 
     normal = basis_normal(basis)
     prism_vector = gp_Vec(normal.X(), normal.Y(), normal.Z()).Multiplied(feature.face_width)

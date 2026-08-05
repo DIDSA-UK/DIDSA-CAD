@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from app.document.models import (
     ExtrudeType,
     FixedAxis,
+    GearChainMemberType,
     GearType,
     ImportSourceFormat,
     LoftMode,
@@ -965,6 +966,134 @@ class LoftFeatureResponse(BaseModel):
     # `00-conventions.md`'s validation-banner convention (empty for the
     # common, non-self-intersecting case).
     warnings: list[str] = []
+
+
+class GearGroupSchema(BaseModel):
+    """`docs/gear-design/05-gear-chain-and-planetary.md`: the wire
+    counterpart to `app.document.models.GearGroup` - see that dataclass's
+    own docstring."""
+
+    id: str
+    module: float
+    pressure_angle_degrees: float = 20.0
+    display_color: str | None = None
+
+
+class GearChainMemberSpecSchema(BaseModel):
+    """The wire counterpart to `app.document.models.GearChainMemberSpec`."""
+
+    member_type: GearChainMemberType
+    group_id: str
+    tooth_count: int
+    face_width: float
+    outer_diameter: float | None = None
+
+
+class GearChainStageSchema(BaseModel):
+    """The wire counterpart to `app.document.models.GearChainStage` - see
+    that dataclass's own docstring for the single-vs-compound discriminated-
+    union shape and the a/b=incoming/outgoing compound convention."""
+
+    turn_angle_degrees: float = 0.0
+    member: GearChainMemberSpecSchema | None = None
+    compound_member_a: GearChainMemberSpecSchema | None = None
+    compound_member_b: GearChainMemberSpecSchema | None = None
+    compound_axial_offset: float = 0.0
+    compound_merge: MergeMode = MergeMode.FUSE_INTO_ONE
+
+
+class GearChainFeatureCreate(BaseModel):
+    """`docs/gear-design/05-gear-chain-and-planetary.md`: creates a
+    `GearChainFeature` - an ordered list of N>=2 meshing `stages`, no
+    backing SketchFeature (same "gear teeth are not Sketch entities"
+    decision as `GearFeatureCreate`). `plane_ref` follows the identical
+    optional/defaults-to-XY convention. No `target_body_ids`/Boss-Cut
+    `mode` at all - a chain always mints brand-new Bodies (see
+    `GearChainFeature`'s own docstring)."""
+
+    plane_ref: PlaneRefSchema | None = None
+    groups: list[GearGroupSchema]
+    stages: list[GearChainStageSchema]
+    start_direction_degrees: float = 0.0
+    print_clearance_margin: float = 0.2
+
+
+class GearChainFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `GearFeatureUpdate`."""
+
+    plane_ref: PlaneRefSchema | None = None
+    groups: list[GearGroupSchema] | None = None
+    stages: list[GearChainStageSchema] | None = None
+    start_direction_degrees: float | None = None
+    print_clearance_margin: float | None = None
+
+
+class GearChainFeatureResponse(BaseModel):
+    type: Literal["gear_chain"] = "gear_chain"
+    id: str
+    plane_ref: PlaneRefSchema
+    groups: list[GearGroupSchema]
+    stages: list[GearChainStageSchema]
+    start_direction_degrees: float
+    print_clearance_margin: float
+    locked: bool
+    produces: Produces
+    # Non-blocking interference/compound-join findings from `app.document.
+    # gear_chain.resolve_gear_chain` - same "known only at create/update
+    # time, re-resolved live for a GET" treatment `LoftFeatureResponse.
+    # warnings` already gets (see `app.document.router._gear_chain_
+    # feature_response`).
+    warnings: list[str] = []
+
+
+class PlanetaryGearFeatureCreate(BaseModel):
+    """`docs/gear-design/05-gear-chain-and-planetary.md`: creates a
+    `PlanetaryGearFeature` - sun/ring tooth counts are free inputs, planet
+    tooth count is derived (not accepted here at all). No `GearGroup`
+    concept (one shared `module`/`pressure_angle_degrees` directly on this
+    schema - see that Feature's own docstring for why). `ring_outer_
+    diameter` is always required (a ring is always present, unlike
+    `GearFeatureCreate.outer_diameter`'s internal-only conditional
+    requirement)."""
+
+    plane_ref: PlaneRefSchema | None = None
+    module: float
+    sun_tooth_count: int
+    ring_tooth_count: int
+    planet_count: int
+    face_width: float
+    ring_outer_diameter: float
+    pressure_angle_degrees: float = 20.0
+
+
+class PlanetaryGearFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `GearFeatureUpdate`."""
+
+    plane_ref: PlaneRefSchema | None = None
+    module: float | None = None
+    sun_tooth_count: int | None = None
+    ring_tooth_count: int | None = None
+    planet_count: int | None = None
+    face_width: float | None = None
+    ring_outer_diameter: float | None = None
+    pressure_angle_degrees: float | None = None
+
+
+class PlanetaryGearFeatureResponse(BaseModel):
+    type: Literal["planetary_gear"] = "planetary_gear"
+    id: str
+    plane_ref: PlaneRefSchema
+    module: float
+    sun_tooth_count: int
+    ring_tooth_count: int
+    planet_count: int
+    face_width: float
+    ring_outer_diameter: float
+    pressure_angle_degrees: float
+    locked: bool
+    produces: Produces
 
 
 class GearPreviewRequest(BaseModel):

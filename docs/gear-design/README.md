@@ -6,12 +6,15 @@ on `ToolChooserScreen`) for parametric text-entry gear generation with a
 compound, planetary, and straight bevel gears — plus DXF import/export
 and a general Loft feature. Ends in solid geometry ready to 3D print.
 
-**Status: in progress.** Workstreams 1-4 (gear math core, `GearFeature`,
-`RackFeature`, helical/herringbone teeth + general `LoftFeature`) and a
-scoped-down v1 of Workstream 8 (entry screen + 2D preview for `GearFeature`/
-`RackFeature` only) are done - see the table below and `docs/status.md`'s
-dated entries. Gear chains/compound/planetary, DXF import/export, presets,
-and bevel gears are all still unstarted.
+**Status: in progress.** Workstreams 1-5 (gear math core, `GearFeature`,
+`RackFeature`, helical/herringbone teeth + general `LoftFeature`,
+`GearChainFeature`/`PlanetaryGearFeature`/`GearGroup`) and a scoped-down v1
+of Workstream 8 (entry screen + 2D preview for `GearFeature`/`RackFeature`
+only) are done - see the table below and `docs/status.md`'s dated entries.
+DXF import/export, presets, and bevel gears are all still unstarted; the
+chain/planetary 2D preview + `GearGroup` colour-coding UI (Workstream 8's
+own future extension) is also still unstarted - Workstream 5 itself is
+backend/API only, per that workstream's own "build before UI" scope.
 
 ## How to use these docs in a fresh implementation session
 
@@ -36,7 +39,7 @@ never needed most of it).
 | 2 | `02-gear-feature.md` | 1 | Medium-high |
 | 3 | `03-rack.md` | 1, 2 | Low-medium |
 | 4 | `04-helical-herringbone-loft.md` | 2 | High - **done** (general `LoftFeature` + `GearFeature.helix_angle_degrees`/`herringbone`) |
-| 5 | `05-gear-chain-and-planetary.md` | 1, 2, 3 | High |
+| 5 | `05-gear-chain-and-planetary.md` | 1, 2, 3 | High - **done** (`GearGroup`, `GearChainFeature` incl. compound stations, `PlanetaryGearFeature` - backend/API only, chain/planetary preview UI deferred to Workstream 8's own future extension) |
 | 6 | `06-dxf-export.md` | 1, 5 | Low-medium |
 | 7 | `07-dxf-import-block.md` | — | Medium |
 | 8 | `08-entry-screen-and-preview.md` | 1, 2 | Medium - **v1 done** (external/internal/rack only; helical/herringbone/chain/planetary/bevel UI, multi-gear preview, and `GearGroup` colour-coding deferred to their own workstreams per that file's own scoped-down note) |

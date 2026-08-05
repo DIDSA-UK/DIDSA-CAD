@@ -39,6 +39,7 @@ from app.document.models import (
     ExtrudeType,
     Feature,
     FilletFeature,
+    GearChainFeature,
     GearFeature,
     LoftFeature,
     LoftMode,
@@ -47,6 +48,7 @@ from app.document.models import (
     PatternAxisRef,
     PatternDirectionRef,
     PatternFeature,
+    PlanetaryGearFeature,
     PlaneRef,
     PlaneType,
     RackFeature,
@@ -440,6 +442,10 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
             depends_on = _rack_dependencies(feature)
         elif isinstance(feature, LoftFeature):
             depends_on = _loft_dependencies(part, feature)
+        elif isinstance(feature, GearChainFeature):
+            depends_on = _plane_ref_only_dependencies(feature.plane_ref)
+        elif isinstance(feature, PlanetaryGearFeature):
+            depends_on = _plane_ref_only_dependencies(feature.plane_ref)
         nodes.append(GraphNode(id=feature.id, depends_on=depends_on))
     return nodes
 
@@ -524,6 +530,17 @@ def _gear_dependencies(feature: GearFeature) -> tuple[str, ...]:
     if plane_dep is not None:
         deps.add(plane_dep)
     return tuple(deps)
+
+
+def _plane_ref_only_dependencies(plane_ref: PlaneRef) -> tuple[str, ...]:
+    """`docs/gear-design/05-gear-chain-and-planetary.md`: `GearChainFeature`/
+    `PlanetaryGearFeature` have no backing Sketch and no `target_body_ids`
+    at all (see each dataclass's own docstring - both always mint brand-new
+    Bodies) - their only dependency is whatever `plane_ref` itself depends
+    on, via the same `_plane_ref_dependency` helper `_gear_dependencies`/
+    `_rack_dependencies` already use."""
+    plane_dep = _plane_ref_dependency(plane_ref)
+    return (plane_dep,) if plane_dep is not None else ()
 
 
 def _rack_dependencies(feature: RackFeature) -> tuple[str, ...]:
