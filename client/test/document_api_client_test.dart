@@ -1535,7 +1535,51 @@ void main() {
       expect(capturedBody['is_internal'], false);
       expect(capturedBody['module'], 2.0);
       expect(capturedBody['tooth_count'], 20);
+      // Workstream 4a: defaults reproduce a plain spur gear byte-identically.
+      expect(capturedBody['helix_angle_degrees'], 0.0);
+      expect(capturedBody['herringbone'], false);
       expect(feature.type, 'gear');
+    });
+
+    test('createGearFeature sends helix_angle_degrees/herringbone when set', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'gear',
+            'id': 'gear-1',
+            'locked': false,
+            'produces': 'body',
+            'plane_ref': {'fixed_plane': 'XY'},
+            'gear_type': 'boss',
+            'is_internal': false,
+            'module': 2.0,
+            'tooth_count': 20,
+            'face_width': 5.0,
+            'pressure_angle_degrees': 20.0,
+            'profile_shift': 0.0,
+            'backlash': 0.0,
+            'root_fillet_radius': 0.0,
+            'helix_angle_degrees': 20.0,
+            'herringbone': true,
+          });
+        }),
+      );
+
+      await client.createGearFeature(
+        'part-1',
+        gearType: 'boss',
+        isInternal: false,
+        module: 2.0,
+        toothCount: 20,
+        faceWidth: 5.0,
+        helixAngleDegrees: 20.0,
+        herringbone: true,
+      );
+
+      expect(capturedBody['helix_angle_degrees'], 20.0);
+      expect(capturedBody['herringbone'], true);
     });
 
     test('createRackFeature sends every rack field plus plane_ref', () async {

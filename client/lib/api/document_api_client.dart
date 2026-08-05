@@ -1605,6 +1605,15 @@ class DocumentApiClient {
   /// plane at the backend, same as every other call site that leaves it
   /// unset. [outerDiameter] is required when [isInternal] is true,
   /// rejected otherwise (`_validate_gear_feature_payload`).
+  ///
+  /// `docs/gear-design/04-helical-herringbone-loft.md`: [helixAngleDegrees]
+  /// (default `0.0`) and [herringbone] (default `false`) mirror
+  /// `GearFeatureCreate`'s own identical fields - the defaults reproduce a
+  /// plain spur gear byte-identically. Deliberately not threaded through
+  /// [previewGear]: that workstream's own spike found a helical/herringbone
+  /// tooth's flat 2D outline (what `/gear/preview` returns) is identical to
+  /// the equivalent spur profile - the twist is a 3D-only effect gear_math's
+  /// preview response has no way to represent and doesn't need to.
   Future<FeatureDto> createGearFeature(
     String partId, {
     required String gearType,
@@ -1619,6 +1628,8 @@ class DocumentApiClient {
     double? outerDiameter,
     PlaneRefDto? planeRef,
     List<String> targetBodyIds = const [],
+    double helixAngleDegrees = 0.0,
+    bool herringbone = false,
   }) =>
       _send(
         () => _httpClient.post(
@@ -1637,6 +1648,8 @@ class DocumentApiClient {
                 'root_fillet_radius': rootFilletRadius,
                 if (outerDiameter != null) 'outer_diameter': outerDiameter,
                 'target_body_ids': targetBodyIds,
+                'helix_angle_degrees': helixAngleDegrees,
+                'herringbone': herringbone,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

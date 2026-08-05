@@ -173,6 +173,67 @@ void main() {
     expect(requestedPaths, contains('POST /document/parts/part-1/gear-features'));
   });
 
+  testWidgets('Herringbone toggle only appears once a non-zero helix angle is entered, and posts both fields',
+      (tester) async {
+    final requestedPaths = <String>[];
+    Map<String, dynamic>? gearFeatureBody;
+    final client = DocumentApiClient(
+      httpClient: MockClient((request) async {
+        requestedPaths.add('${request.method} ${request.url.path}');
+        if (request.url.path == '/document/gear/preview') {
+          return jsonResponse(defaultPreviewResponse());
+        }
+        if (request.url.path == '/document/parts') {
+          return jsonResponse({'id': 'part-1', 'name': 'Gear Part', 'feature_ids': []}, status: 201);
+        }
+        if (request.url.path == '/document/parts/part-1/gear-features') {
+          gearFeatureBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'gear',
+            'id': 'gear-1',
+            'locked': false,
+            'produces': 'body',
+            'gear_type': 'boss',
+            'is_internal': false,
+            'module': 2.0,
+            'tooth_count': 20,
+            'face_width': 5.0,
+            'pressure_angle_degrees': 20.0,
+            'profile_shift': 0.0,
+            'backlash': 0.0,
+            'root_fillet_radius': 0.0,
+            'helix_angle_degrees': 15.0,
+            'herringbone': true,
+          }, status: 201);
+        }
+        return jsonResponse({'id': 'part-1', 'name': 'Gear Part', 'feature_ids': []});
+      }),
+    );
+
+    await tester.pumpWidget(MaterialApp(home: GearDesignScreen(documentApi: client)));
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Herringbone'), findsNothing);
+
+    await tester.enterText(find.widgetWithText(TextField, 'Helix angle'), '15');
+    await tester.pump();
+    expect(find.text('Herringbone'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(SwitchListTile, 'Herringbone'));
+    await tester.pump();
+
+    await tester.ensureVisible(find.byType(FilledButton));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(FilledButton));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(requestedPaths, contains('POST /document/parts/part-1/gear-features'));
+    expect(gearFeatureBody?['helix_angle_degrees'], 15.0);
+    expect(gearFeatureBody?['herringbone'], true);
+  });
+
   testWidgets('tapping a field help icon shows its tooltip instead of opening the field', (tester) async {
     // On-device feedback: the "?" help icon next to the Module dropdown
     // originally lost the tap to the surrounding `DropdownButtonFormField`'s

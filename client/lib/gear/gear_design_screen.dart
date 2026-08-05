@@ -10,13 +10,15 @@ import 'gear_preview_canvas.dart';
 import 'standard_value_field.dart';
 
 /// `docs/gear-design/08-entry-screen-and-preview.md`'s gear-type selector -
-/// scoped down (per this workstream's own note) to exactly the two
-/// Feature types that exist today: `GearFeature` (external/internal spur
-/// gears) and `RackFeature` (standalone rack). Adding a new type later
-/// (helical, planetary, bevel, ...) is one more enum value plus one more
-/// branch through this screen/`/gear/preview`'s `gear_kind`, not a new
-/// screen - no placeholder UI is built for those yet, since their backing
-/// Feature types don't exist (Workstreams 4/5/10/11 are still unstarted).
+/// covers the two Feature types `GearFeature` (external/internal spur
+/// gears, now including helical/herringbone teeth - Workstream 4a's
+/// `helix_angle_degrees`/`herringbone` fields sit directly on the
+/// External/Internal form, not as separate `GearDesignKind` values, since
+/// they're orthogonal modifiers on the same Feature type rather than a
+/// distinct one) and `RackFeature` (standalone rack, no helix concept).
+/// Chain/planetary/bevel/bevel-pair (Workstreams 5/10/11's own Feature
+/// types) still have no client UI - out of scope for this pass, tracked
+/// separately (see `docs/gear-design/README.md`'s workstream table).
 enum GearDesignKind {
   external,
   internal,
@@ -79,6 +81,8 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
   double _profileShift = 0.0;
   double _backlash = 0.0;
   double _rootFilletRadius = 0.0;
+  double _helixAngleDegrees = 0.0;
+  bool _herringbone = false;
   String _plane = 'XY';
   bool _showReferenceOverlay = true;
 
@@ -258,6 +262,8 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
           rootFilletRadius: _rootFilletRadius,
           outerDiameter: _kind == GearDesignKind.internal ? double.tryParse(_outerDiameterController.text) : null,
           planeRef: planeRef,
+          helixAngleDegrees: _helixAngleDegrees,
+          herringbone: _herringbone,
         );
         warnings = feature.warnings;
       }
@@ -396,6 +402,44 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
               if (value != null) setState(() => _rootFilletRadius = value);
             },
           ),
+          const SizedBox(height: 12),
+          TextField(
+            keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
+            decoration: InputDecoration(
+              labelText: 'Helix angle',
+              suffix: const Text('°'),
+              // Same reasoning as root fillet's identical helper text above:
+              // `04-helical-herringbone-loft.md`'s own spike found a
+              // helical tooth's flat 2D outline is identical to the
+              // equivalent spur profile - the twist is a 3D-only effect
+              // `/gear/preview`'s response has no way to represent.
+              helperText: 'Not shown in the preview above - visible after Create',
+              suffixIcon: fieldHelpIcon(
+                'Angles the teeth relative to the gear\'s own axis, for quieter, smoother meshing. '
+                '0° is a plain straight-tooth (spur) gear.',
+              ),
+            ),
+            onChanged: (text) {
+              final value = double.tryParse(text);
+              if (value != null) {
+                setState(() {
+                  _helixAngleDegrees = value;
+                  if (value == 0.0) _herringbone = false;
+                });
+              }
+            },
+          ),
+          if (_helixAngleDegrees != 0.0) ...[
+            const SizedBox(height: 4),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Herringbone'),
+              subtitle: const Text('Two mirrored helical halves meeting at the mid-plane, instead of one twist '
+                  'the full face width - cancels the axial thrust a plain helical gear produces.'),
+              value: _herringbone,
+              onChanged: (value) => setState(() => _herringbone = value),
+            ),
+          ],
         ],
         const SizedBox(height: 12),
         TextField(
