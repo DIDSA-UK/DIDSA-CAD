@@ -563,25 +563,7 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             produces=feature.produces,
         )
     if isinstance(feature, GearFeature):
-        return GearFeatureResponse(
-            id=feature.id,
-            plane_ref=_plane_ref_to_schema(feature.plane_ref),
-            gear_type=feature.gear_type,
-            is_internal=feature.is_internal,
-            module=feature.module,
-            tooth_count=feature.tooth_count,
-            face_width=feature.face_width,
-            pressure_angle_degrees=feature.pressure_angle_degrees,
-            profile_shift=feature.profile_shift,
-            backlash=feature.backlash,
-            root_fillet_radius=feature.root_fillet_radius,
-            outer_diameter=feature.outer_diameter,
-            target_body_ids=feature.target_body_ids,
-            helix_angle_degrees=feature.helix_angle_degrees,
-            herringbone=feature.herringbone,
-            locked=part.is_locked(feature.id),
-            produces=feature.produces,
-        )
+        return _gear_feature_response(part, feature)
     if isinstance(feature, RackFeature):
         return RackFeatureResponse(
             id=feature.id,
@@ -616,6 +598,46 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             produces=feature.produces,
         )
     raise NotImplementedError(f"No response mapping for feature type: {feature.type}")
+
+
+def _gear_feature_response(
+    part: Part, feature: GearFeature, warnings: list[str] | None = None
+) -> GearFeatureResponse:
+    """Mirrors `_loft_feature_response`'s exact shape: `warnings` (a
+    requested root_fillet_radius that was silently honoured-in-name-only -
+    see `app.document.gear.resolve_gear_from_bodies`) is only known at
+    create/update time from that call's own return value - a plain `GET
+    .../features` re-read (this function's other caller, via
+    `_feature_response`) re-resolves the Gear to recompute them fresh,
+    soft-failing to `[]` rather than raising, same as Loft's identical
+    "since-broken Feature still shown, not one whose failure takes down
+    the whole feature list" reasoning."""
+    if warnings is None:
+        try:
+            _, warnings = resolve_gear(part, feature)
+        except HTTPException:
+            logger.warning("GearFeature %s could not be resolved for its response", feature.id)
+            warnings = []
+    return GearFeatureResponse(
+        id=feature.id,
+        plane_ref=_plane_ref_to_schema(feature.plane_ref),
+        gear_type=feature.gear_type,
+        is_internal=feature.is_internal,
+        module=feature.module,
+        tooth_count=feature.tooth_count,
+        face_width=feature.face_width,
+        pressure_angle_degrees=feature.pressure_angle_degrees,
+        profile_shift=feature.profile_shift,
+        backlash=feature.backlash,
+        root_fillet_radius=feature.root_fillet_radius,
+        outer_diameter=feature.outer_diameter,
+        target_body_ids=feature.target_body_ids,
+        helix_angle_degrees=feature.helix_angle_degrees,
+        herringbone=feature.herringbone,
+        locked=part.is_locked(feature.id),
+        produces=feature.produces,
+        warnings=warnings,
+    )
 
 
 def _loft_feature_response(part: Part, feature: LoftFeature, warnings: list[str] | None = None) -> LoftFeatureResponse:
@@ -2645,9 +2667,9 @@ def create_gear_feature(part_id: str, payload: GearFeatureCreate) -> GearFeature
         helix_angle_degrees=payload.helix_angle_degrees,
         herringbone=payload.herringbone,
     )
-    resolve_gear(part, feature)  # raises on an unresolvable/invalid gear; result unused here
+    _, warnings = resolve_gear(part, feature)  # raises on an unresolvable/invalid gear
     part.add_feature(feature)
-    return _feature_response(part, feature)
+    return _gear_feature_response(part, feature, warnings)
 
 
 def _get_gear_feature_or_404(part: Part, feature_id: str) -> GearFeature:
@@ -2717,7 +2739,7 @@ def update_gear_feature(part_id: str, feature_id: str, payload: GearFeatureUpdat
         helix_angle_degrees=new_helix_angle_degrees,
         herringbone=new_herringbone,
     )
-    resolve_gear(part, candidate)  # raises on an unresolvable/invalid gear
+    _, warnings = resolve_gear(part, candidate)  # raises on an unresolvable/invalid gear
 
     feature.plane_ref = candidate.plane_ref
     feature.gear_type = candidate.gear_type
@@ -2733,7 +2755,7 @@ def update_gear_feature(part_id: str, feature_id: str, payload: GearFeatureUpdat
     feature.target_body_ids = candidate.target_body_ids
     feature.helix_angle_degrees = candidate.helix_angle_degrees
     feature.herringbone = candidate.herringbone
-    return _feature_response(part, feature)
+    return _gear_feature_response(part, feature, warnings)
 
 
 @router.post("/parts/{part_id}/rack-features", response_model=RackFeatureResponse, status_code=201)

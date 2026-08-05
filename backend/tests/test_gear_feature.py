@@ -245,6 +245,77 @@ def test_root_fillet_actually_changes_the_mesh_not_a_silent_no_op():
     assert plain_vertices != filleted_vertices
 
 
+def test_root_fillet_fallback_surfaces_a_warning_not_just_a_silent_no_op():
+    """On-device bug report: a root fillet radius too large for the gear's
+    own geometry used to silently fall back to an unfilleted gear with
+    nothing but a server-side `logger.warning` - no signal anywhere in the
+    HTTP response or the UI. Confirmed directly (this same module-2/20-
+    tooth default gear): radius 0.05-1.5 genuinely change the mesh
+    (test_root_fillet_actually_changes_the_mesh_not_a_silent_no_op above),
+    radius >= 2.0 falls back to an identical, unfilleted mesh - this test
+    confirms *that* fallback now surfaces as a real, user-visible warning."""
+    part_fallback = _create_part("Fallback")
+    fallback_response = _create_gear(part_fallback["id"], root_fillet_radius=2.0)
+    assert fallback_response.status_code == 201, fallback_response.json()
+    body = fallback_response.json()
+    assert len(body["warnings"]) == 1
+    assert "did not converge" in body["warnings"][0]
+    fallback_vertices = _mesh(part_fallback["id"])[0]["mesh"]["vertices"]
+
+    part_plain = _create_part("Plain2")
+    plain_response = _create_gear(part_plain["id"], root_fillet_radius=0.0)
+    assert plain_response.status_code == 201, plain_response.json()
+    assert plain_response.json()["warnings"] == []
+    plain_vertices = _mesh(part_plain["id"])[0]["mesh"]["vertices"]
+
+    # Confirms the warning really does correspond to a silent fallback (the
+    # mesh is genuinely unfilleted), not just a spurious message alongside
+    # a real fillet.
+    assert fallback_vertices == plain_vertices
+
+
+def test_root_fillet_convergence_leaves_warnings_empty():
+    part = _create_part()
+    response = _create_gear(part["id"], root_fillet_radius=0.3)
+    assert response.status_code == 201, response.json()
+    assert response.json()["warnings"] == []
+
+
+def test_update_gear_feature_root_fillet_fallback_surfaces_a_warning():
+    """Mirrors the create-time fallback test above for PATCH - `resolve_
+    gear`'s own warnings need threading through `update_gear_feature` too,
+    not just `create_gear_feature`."""
+    part = _create_part()
+    create_response = _create_gear(part["id"])
+    assert create_response.status_code == 201, create_response.json()
+    assert create_response.json()["warnings"] == []
+    feature_id = create_response.json()["id"]
+
+    patch_response = client.patch(
+        f"/document/parts/{part['id']}/gear-features/{feature_id}", json={"root_fillet_radius": 2.0}
+    )
+    assert patch_response.status_code == 200, patch_response.json()
+    assert len(patch_response.json()["warnings"]) == 1
+    assert "did not converge" in patch_response.json()["warnings"][0]
+
+
+def test_get_features_re_resolves_the_root_fillet_fallback_warning():
+    """`_gear_feature_response`'s own re-resolve-on-GET path (mirrors
+    `_loft_feature_response`'s identical convention) - a plain `GET .../
+    features` re-read must show the same fallback warning `create_gear_
+    feature`'s own response did, not just the create/update response."""
+    part = _create_part()
+    create_response = _create_gear(part["id"], root_fillet_radius=2.0)
+    assert create_response.status_code == 201, create_response.json()
+
+    get_response = client.get(f"/document/parts/{part['id']}/features")
+    assert get_response.status_code == 200, get_response.json()
+    gear_features = [f for f in get_response.json() if f["type"] == "gear"]
+    assert len(gear_features) == 1
+    assert len(gear_features[0]["warnings"]) == 1
+    assert "did not converge" in gear_features[0]["warnings"][0]
+
+
 def test_update_gear_feature_changes_tooth_count_and_the_mesh_reflects_it():
     part = _create_part()
     create_response = _create_gear(part["id"], tooth_count=20)

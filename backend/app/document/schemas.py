@@ -859,6 +859,12 @@ class GearFeatureResponse(BaseModel):
     # B1: see SketchFeatureResponse.produces above - always BODY for a
     # GearFeature.
     produces: Produces
+    # Non-blocking - a requested root_fillet_radius that was silently
+    # honoured-in-name-only (didn't converge, or unsupported on a
+    # helical/herringbone tooth) - see app.document.gear.resolve_gear_
+    # from_bodies. Same convention as LoftFeatureResponse.warnings/
+    # GearChainFeatureResponse.warnings below.
+    warnings: list[str] = []
 
 
 class RackFeatureCreate(BaseModel):

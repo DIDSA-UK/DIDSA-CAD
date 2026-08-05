@@ -215,7 +215,7 @@ def _gear_face(
 
 def _apply_root_fillet(
     prism_maker: BRepPrimAPI_MakePrism, solid: TopoDS_Shape, root_corner_vertices: list[TopoDS_Vertex], radius: float
-) -> TopoDS_Shape:
+) -> tuple[TopoDS_Shape, str | None]:
     """Rounds the axial edge at each root-gap corner (where a flank's side
     face meets the root edge's side face, running the full `face_width`
     depth) - the geometrically correct thing to round for a "root fillet"
@@ -226,9 +226,14 @@ def _apply_root_fillet(
 
     Best-effort: if the fillet construction doesn't converge (same
     `IsDone()` failure mode `app.document.fillet` already handles), falls
-    back to the unfilleted solid with a warning rather than failing the
-    whole Feature - a root fillet improves strength but an unfilleted gear
-    is still a valid, meshable gear."""
+    back to the unfilleted solid rather than failing the whole Feature - a
+    root fillet improves strength but an unfilleted gear is still a valid,
+    meshable gear. Returns `(solid, warning)` rather than just `solid` -
+    `warning` is a non-`None` user-facing message on the fallback path (on-
+    device testing found the pre-existing `logger.warning`-only version of
+    this genuinely invisible: a too-large radius silently produced an
+    unfilleted gear with zero signal anywhere in the HTTP response or UI),
+    `None` when the fillet actually converged."""
     fillet_maker = BRepFilletAPI_MakeFillet(solid)
     edge_count = 0
     for vertex in root_corner_vertices:
@@ -238,13 +243,18 @@ def _apply_root_fillet(
             fillet_maker.Add(radius, topods.Edge(generated))
             edge_count += 1
     if edge_count == 0:
-        logger.warning("Gear root fillet requested but no root-corner edges were found - skipping")
-        return solid
+        warning = "Root fillet requested but no root-corner edges were found - skipped"
+        logger.warning(warning)
+        return solid, warning
     fillet_maker.Build()
     if not fillet_maker.IsDone():
+        warning = (
+            f"Root fillet radius {radius!r} did not converge for this gear's geometry - "
+            "falling back to an unfilleted gear. Try a smaller radius."
+        )
         logger.warning("Gear root fillet did not converge (radius=%r) - falling back to unfilleted gear", radius)
-        return solid
-    return fillet_maker.Shape()
+        return solid, warning
+    return fillet_maker.Shape(), None
 
 
 def _twisted_basis(basis: ResolvedPlane, height: float, twist: float) -> ResolvedPlane:
@@ -377,16 +387,26 @@ def resolve_gear_from_bodies(
     part: Part,
     bodies: dict[str, TopoDS_Shape],
     excluded_feature_ids: frozenset[str],
-) -> TopoDS_Shape:
-    """The real OCCT solid for one `GearFeature` - parameters straight in,
-    solid straight out, no backing Sketch at any point
-    (`00-conventions.md`'s "gear teeth are not Sketch entities" decision).
-    Raises a structured `HTTPException` (`invalid_gear_parameters`/
-    `gear_failed`) rather than returning `None` - unlike `ExtrudeFeature`'s
-    "skip if the backing Sketch has no profile" tolerance, a `GearFeature`
-    has no equivalent "temporarily has nothing to build" state; a bad
-    parameter combination is always a real error to surface, not a
-    transient/expected one to silently skip.
+) -> tuple[TopoDS_Shape, list[str]]:
+    """The real OCCT solid for one `GearFeature`, plus any non-blocking
+    `warnings` - parameters straight in, solid (and warnings) straight out,
+    no backing Sketch at any point (`00-conventions.md`'s "gear teeth are
+    not Sketch entities" decision). Raises a structured `HTTPException`
+    (`invalid_gear_parameters`/`gear_failed`) rather than returning `None`
+    - unlike `ExtrudeFeature`'s "skip if the backing Sketch has no profile"
+    tolerance, a `GearFeature` has no equivalent "temporarily has nothing
+    to build" state; a bad parameter combination is always a real error to
+    surface, not a transient/expected one to silently skip.
+
+    `warnings` covers every case where a requested `root_fillet_radius` was
+    silently honoured-in-name-only before this - a helical/herringbone
+    tooth (unsupported - no `BRepPrimAPI_MakePrism.Generated()`-equivalent
+    to hang the fillet off) or a straight tooth whose fillet didn't
+    converge (`_apply_root_fillet`) both used to be a `logger.warning`-only
+    server-side event with no signal anywhere in the HTTP response or UI -
+    a real on-device gap (see docs/status.md's dated entry for this fix).
+    Mirrors `app.document.loft.resolve_loft_from_bodies`'s own `(shape,
+    warnings)` shape exactly.
 
     `feature.helix_angle_degrees == 0.0` (the default) takes the exact
     original straight-tooth `BRepPrimAPI_MakePrism` path unchanged - see
@@ -419,7 +439,9 @@ def resolve_gear_from_bodies(
     basis = resolve_plane_ref(part, bodies, feature.plane_ref, excluded_feature_ids)
 
     if feature.helix_angle_degrees != 0.0 or feature.herringbone:
+        warnings: list[str] = []
         if feature.root_fillet_radius > 0:
+            warning = "Root fillet is not supported for a helical/herringbone tooth - skipped"
             logger.warning(
                 "GearFeature %s: root_fillet_radius is not supported for a helical/herringbone tooth "
                 "(helix_angle_degrees=%r, herringbone=%r) - skipping",
@@ -427,7 +449,8 @@ def resolve_gear_from_bodies(
                 feature.helix_angle_degrees,
                 feature.herringbone,
             )
-        return _helical_or_herringbone_solid(basis, feature, geometry, _POINTS_PER_FLANK)
+            warnings.append(warning)
+        return _helical_or_herringbone_solid(basis, feature, geometry, _POINTS_PER_FLANK), warnings
 
     wire, root_corner_vertices = _gear_outline_wire(basis, geometry, _POINTS_PER_FLANK)
     face = _gear_face(basis, feature.is_internal, feature.outer_diameter, geometry, wire)
@@ -437,15 +460,20 @@ def resolve_gear_from_bodies(
     prism_maker = BRepPrimAPI_MakePrism(face, prism_vector)
     solid = prism_maker.Shape()
 
+    warnings = []
     if feature.root_fillet_radius > 0:
-        solid = _apply_root_fillet(prism_maker, solid, root_corner_vertices, feature.root_fillet_radius)
+        solid, fillet_warning = _apply_root_fillet(
+            prism_maker, solid, root_corner_vertices, feature.root_fillet_radius
+        )
+        if fillet_warning is not None:
+            warnings.append(fillet_warning)
 
-    return solid
+    return solid, warnings
 
 
 def resolve_gear(
     part: Part, feature: GearFeature, excluded_feature_ids: frozenset[str] = frozenset()
-) -> TopoDS_Shape:
+) -> tuple[TopoDS_Shape, list[str]]:
     """Fresh entry point for the router's create/update validation -
     mirrors `app.document.fillet.resolve_fillet`'s own shape exactly:
     computes `bodies` *as if `feature` weren't in `part.features` yet*

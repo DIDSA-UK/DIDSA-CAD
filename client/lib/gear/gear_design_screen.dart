@@ -231,6 +231,7 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
     try {
       final part = await _api.createPart('Gear Part');
       final planeRef = PlaneRefDto(fixedPlane: _plane);
+      List<String> warnings = const [];
       if (_kind == GearDesignKind.rack) {
         await _api.createRackFeature(
           part.id,
@@ -244,7 +245,7 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
           planeRef: planeRef,
         );
       } else {
-        await _api.createGearFeature(
+        final feature = await _api.createGearFeature(
           part.id,
           gearType: 'boss',
           isInternal: _kind == GearDesignKind.internal,
@@ -258,10 +259,12 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
           outerDiameter: _kind == GearDesignKind.internal ? double.tryParse(_outerDiameterController.text) : null,
           planeRef: planeRef,
         );
+        warnings = feature.warnings;
       }
       if (!mounted) return;
-      Navigator.of(context)
-          .pushReplacement(MaterialPageRoute(builder: (_) => PartScreen(initialPartId: part.id)));
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => PartScreen(initialPartId: part.id, initialWarnings: warnings)),
+      );
     } on ApiException catch (e) {
       if (!mounted) return;
       setState(() {
@@ -378,6 +381,12 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
             decoration: InputDecoration(
               labelText: 'Root fillet radius',
+              // On-device feedback: /gear/preview genuinely can't reflect
+              // this (cosmetic-only at OCCT-construction time, gear_math
+              // never reads it - see the backend router's own docstring),
+              // so without this note a user has no way to tell that's
+              // intentional rather than the field silently not working.
+              helperText: 'Not shown in the preview above - visible after Create',
               suffixIcon: fieldHelpIcon(
                 'Rounds the corner at the base of each tooth for strength. 0 leaves a sharp corner.',
               ),

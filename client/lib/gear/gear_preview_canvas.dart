@@ -11,11 +11,30 @@ import '../api/document_api_client.dart';
 /// client-side" point), plus the reference-circle/line overlay
 /// (`showReferenceOverlay`, toggleable, on by default) drawn from the same
 /// response.
-class GearPreviewCanvas extends StatelessWidget {
+class GearPreviewCanvas extends StatefulWidget {
   final GearPreviewDto? preview;
   final bool showReferenceOverlay;
 
   const GearPreviewCanvas({super.key, required this.preview, required this.showReferenceOverlay});
+
+  @override
+  State<GearPreviewCanvas> createState() => _GearPreviewCanvasState();
+}
+
+class _GearPreviewCanvasState extends State<GearPreviewCanvas> {
+  // On-device feedback: promoted from a local variable to a field so the
+  // painter can read its current scale on every paint (see
+  // `_GearPreviewPainter.zoomScale`) - the fix for line thickness ballooning as
+  // the user zooms in (`InteractiveViewer` visually scales its whole child,
+  // stroke widths included, since a `CustomPaint`'s own painter has no idea
+  // it's being displayed inside one).
+  final TransformationController _transformController = TransformationController();
+
+  @override
+  void dispose() {
+    _transformController.dispose();
+    super.dispose();
+  }
 
   /// The one headline metric worth showing directly on the preview rather
   /// than buried in the form: pitch diameter for a gear (external/
@@ -23,7 +42,7 @@ class GearPreviewCanvas extends StatelessWidget {
   /// all - `preview.rackLength` is its own closest equivalent "how big is
   /// this" number). Null while there's nothing valid to report yet.
   String? _metricLabel() {
-    final preview = this.preview;
+    final preview = widget.preview;
     if (preview == null) return null;
     if (preview.gearKind == 'rack') {
       final length = preview.rackLength;
@@ -50,6 +69,7 @@ class GearPreviewCanvas extends StatelessWidget {
           // panning past the auto-fit view isn't immediately clamped.
           Positioned.fill(
             child: InteractiveViewer(
+              transformationController: _transformController,
               minScale: 0.5,
               maxScale: 12,
               boundaryMargin: const EdgeInsets.all(2000),
@@ -64,9 +84,22 @@ class GearPreviewCanvas extends StatelessWidget {
               // until a valid preview actually arrived). `SizedBox.expand`
               // makes this fill its parent unconditionally, child or not.
               child: SizedBox.expand(
-                child: CustomPaint(
-                  painter: _GearPreviewPainter(preview: preview, showReferenceOverlay: showReferenceOverlay),
-                  child: preview == null
+                // Repaints on every transform change (pinch/scroll/pan) so
+                // the painter's own `zoomScale` argument - and therefore its
+                // effective stroke width - always matches the current zoom
+                // level, not just whatever it was at the last unrelated
+                // rebuild (a new preview arriving, the overlay toggle, ...).
+                child: AnimatedBuilder(
+                  animation: _transformController,
+                  builder: (context, child) => CustomPaint(
+                    painter: _GearPreviewPainter(
+                      preview: widget.preview,
+                      showReferenceOverlay: widget.showReferenceOverlay,
+                      zoomScale: _transformController.value.getMaxScaleOnAxis(),
+                    ),
+                    child: child,
+                  ),
+                  child: widget.preview == null
                       ? const Center(
                           child: Text(
                             'Enter valid parameters to see a preview',
@@ -99,11 +132,27 @@ class GearPreviewCanvas extends StatelessWidget {
   }
 }
 
+// On-device feedback: these read too thick even at 1x zoom against the
+// `InteractiveViewer`'s own scaling, before the zoom-invariance fix below
+// even comes into play - halved/tightened from the original 2/1.
+const double _outlineStrokeWidth = 1.1;
+const double _referenceStrokeWidth = 0.6;
+
 class _GearPreviewPainter extends CustomPainter {
   final GearPreviewDto? preview;
   final bool showReferenceOverlay;
 
-  _GearPreviewPainter({required this.preview, required this.showReferenceOverlay});
+  /// The `InteractiveViewer` ancestor's current zoom factor
+  /// (`TransformationController.value.getMaxScaleOnAxis()`) - divided into
+  /// every stroke width below so line weight stays visually constant as the
+  /// user zooms in/out, rather than the `InteractiveViewer` visually
+  /// scaling this painter's own already-fixed-width strokes along with
+  /// everything else it draws (the root cause: this painter has no idea
+  /// it's being displayed inside one, so a "2px" stroke is 2px in *its own*
+  /// coordinate space, not 2 screen px, once that space itself is scaled).
+  final double zoomScale;
+
+  _GearPreviewPainter({required this.preview, required this.showReferenceOverlay, required this.zoomScale});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -142,7 +191,7 @@ class _GearPreviewPainter extends CustomPainter {
 
     final outlinePaint = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 2
+      ..strokeWidth = _outlineStrokeWidth / zoomScale
       ..color = Colors.white;
     final path = Path()..moveTo(toCanvas(preview.outlinePoints.first[0], preview.outlinePoints.first[1]).dx,
         toCanvas(preview.outlinePoints.first[0], preview.outlinePoints.first[1]).dy);
@@ -159,7 +208,9 @@ class _GearPreviewPainter extends CustomPainter {
     GearPreviewDto preview,
     Offset Function(double, double) toCanvas,
   ) {
-    final refPaint = Paint()..style = PaintingStyle.stroke..strokeWidth = 1;
+    final refPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = _referenceStrokeWidth / zoomScale;
 
     // On-device feedback: `canvas.drawCircle` rendered as a filled bounding
     // square rather than a stroked circle under this project's Impeller/
@@ -211,5 +262,7 @@ class _GearPreviewPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _GearPreviewPainter oldDelegate) =>
-      oldDelegate.preview != preview || oldDelegate.showReferenceOverlay != showReferenceOverlay;
+      oldDelegate.preview != preview ||
+      oldDelegate.showReferenceOverlay != showReferenceOverlay ||
+      oldDelegate.zoomScale != zoomScale;
 }

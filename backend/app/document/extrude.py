@@ -828,7 +828,12 @@ def resolve_feature_tool_shape(
         # every failure mode instead, since a GearFeature has no
         # equivalent "temporarily has nothing to build" state a missing
         # Sketch profile represents for the others).
-        solid = resolve_gear_from_bodies(feature, part, bodies, excluded_feature_ids)
+        # Its own non-blocking root-fillet-fallback warnings (second return
+        # value) aren't surfaced through this path - same "only the
+        # router's create/update endpoints put them on the Feature's own
+        # response" treatment as LoftFeature's identical `_warnings` just
+        # below.
+        solid, _warnings = resolve_gear_from_bodies(feature, part, bodies, excluded_feature_ids)
         return solid, feature.target_body_ids, feature.gear_type == GearType.CUT
 
     if isinstance(feature, RackFeature):

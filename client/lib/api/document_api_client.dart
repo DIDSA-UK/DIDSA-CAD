@@ -437,6 +437,13 @@ class FeatureDto {
   /// Feature persisted before this field existed.
   final String? toolFeatureId;
 
+  /// Non-blocking, from `LoftFeatureResponse.warnings`/`GearChainFeature
+  /// Response.warnings`/`GearFeatureResponse.warnings` - a requested option
+  /// (root fillet, a self-intersecting section, ...) that was silently
+  /// honoured-in-name-only. Empty for every other Feature type, and for any
+  /// Feature persisted before its own type gained a `warnings` field.
+  final List<String> warnings;
+
   FeatureDto({
     required this.type,
     required this.id,
@@ -489,6 +496,7 @@ class FeatureDto {
     this.skipIndices = const [],
     this.merge = 'keep_separate',
     this.toolFeatureId,
+    this.warnings = const [],
   });
 
   factory FeatureDto.fromJson(Map<String, dynamic> json) => FeatureDto(
@@ -576,6 +584,7 @@ class FeatureDto {
         skipIndices: (json['skip_indices'] as List?)?.cast<int>() ?? const [],
         merge: json['merge'] as String? ?? 'keep_separate',
         toolFeatureId: json['tool_feature_id'] as String?,
+        warnings: (json['warnings'] as List?)?.cast<String>() ?? const [],
       );
 }
 
