@@ -77,10 +77,18 @@ class LoftSectionDto {
   final List<SketchEntityRefDto> profileRefs;
   final SketchEntityRefDto? referencePoint;
 
+  /// The backend `LoftSection.alignment_point` - a rigid in-plane
+  /// translation target (vertex-to-vertex alignment or a guide-curve rail
+  /// - see that field's own docstring), a separate field from
+  /// [referencePoint] (that one's rotation-only behaviour is load-bearing
+  /// for helical/herringbone gear teeth and must never change meaning).
+  final SketchEntityRefDto? alignmentPoint;
+
   const LoftSectionDto({
     required this.sketchFeatureId,
     this.profileRefs = const [],
     this.referencePoint,
+    this.alignmentPoint,
   });
 
   factory LoftSectionDto.fromJson(Map<String, dynamic> json) => LoftSectionDto(
@@ -92,12 +100,16 @@ class LoftSectionDto {
         referencePoint: json['reference_point'] == null
             ? null
             : SketchEntityRefDto.fromJson(json['reference_point'] as Map<String, dynamic>),
+        alignmentPoint: json['alignment_point'] == null
+            ? null
+            : SketchEntityRefDto.fromJson(json['alignment_point'] as Map<String, dynamic>),
       );
 
   Map<String, dynamic> toJson() => {
         'sketch_feature_id': sketchFeatureId,
         'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
         if (referencePoint != null) 'reference_point': referencePoint!.toJson(),
+        if (alignmentPoint != null) 'alignment_point': alignmentPoint!.toJson(),
       };
 }
 
@@ -400,6 +412,15 @@ class FeatureDto {
   /// original closed-profile solid Loft, completely unchanged).
   final double? thickness;
 
+  /// Only present on a `"loft"` Feature - the ordered, possibly cross-
+  /// Sketch Line/Arc/Ellipse/Spline chain (the backend `LoftFeature.
+  /// guide_curve_refs`, same shape as [pathRefs]) each `sections` entry
+  /// with an `alignment_point` set is rigidly translated to follow. Empty
+  /// (the default) means no guide curve - vertex-to-vertex alignment
+  /// against the first alignment_point-bearing section instead (see the
+  /// backend's own docstring).
+  final List<SketchEntityRefDto> guideCurveRefs;
+
   /// Sketcher-roadmap Phase 4.3 v1: only meaningful on a `"sketch"`
   /// Feature - true whenever at least one of its Sketch's external Body-
   /// vertex references no longer resolves (see the backend's
@@ -533,6 +554,7 @@ class FeatureDto {
     this.sections = const [],
     this.ruled = false,
     this.thickness,
+    this.guideCurveRefs = const [],
     this.hasLostReference = false,
     this.sourceBodyIds = const [],
     this.sourceFeatureIds = const [],
@@ -619,6 +641,10 @@ class FeatureDto {
             const [],
         ruled: json['ruled'] as bool? ?? false,
         thickness: (json['thickness'] as num?)?.toDouble(),
+        guideCurveRefs: (json['guide_curve_refs'] as List?)
+                ?.map((r) => SketchEntityRefDto.fromJson(r as Map<String, dynamic>))
+                .toList() ??
+            const [],
         hasLostReference: json['has_lost_reference'] as bool? ?? false,
         sourceBodyIds: (json['source_body_ids'] as List?)?.cast<String>() ?? const [],
         sourceFeatureIds: (json['source_feature_ids'] as List?)?.cast<String>() ?? const [],
@@ -1744,6 +1770,7 @@ class DocumentApiClient {
     bool ruled = false,
     List<String> targetBodyIds = const [],
     double? thickness,
+    List<SketchEntityRefDto> guideCurveRefs = const [],
   }) =>
       _send(
         () => _httpClient.post(
@@ -1755,15 +1782,21 @@ class DocumentApiClient {
                 'ruled': ruled,
                 'target_body_ids': targetBodyIds,
                 if (thickness != null) 'thickness': thickness,
+                'guide_curve_refs': guideCurveRefs.map((r) => r.toJson()).toList(),
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Partial update for an existing LoftFeature - any subset of
-  /// [sections]/[mode]/[ruled]/[targetBodyIds]/[thickness] may be supplied,
-  /// mirroring [updateSweepFeature]'s omitted-vs-current-value convention.
-  /// Used for the live-preview debounced re-solve.
+  /// [sections]/[mode]/[ruled]/[targetBodyIds]/[thickness]/[guideCurveRefs]
+  /// may be supplied, mirroring [updateSweepFeature]'s omitted-vs-current-
+  /// value convention - including for [guideCurveRefs]: omitting it keeps
+  /// the Feature's current value, passing `[]` explicitly clears it back
+  /// to "no guide curve" (see the backend `LoftFeatureUpdate.guide_curve_
+  /// refs`'s own docstring for why an empty list is itself meaningful
+  /// here, unlike a bare omission). Used for the live-preview debounced
+  /// re-solve.
   Future<FeatureDto> updateLoftFeature(
     String partId,
     String featureId, {
@@ -1772,6 +1805,7 @@ class DocumentApiClient {
     bool? ruled,
     List<String>? targetBodyIds,
     double? thickness,
+    List<SketchEntityRefDto>? guideCurveRefs,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -1783,6 +1817,8 @@ class DocumentApiClient {
                 if (ruled != null) 'ruled': ruled,
                 if (targetBodyIds != null) 'target_body_ids': targetBodyIds,
                 if (thickness != null) 'thickness': thickness,
+                if (guideCurveRefs != null)
+                  'guide_curve_refs': guideCurveRefs.map((r) => r.toJson()).toList(),
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

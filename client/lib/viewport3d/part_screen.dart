@@ -698,6 +698,27 @@ class _PartScreenState extends State<PartScreen> {
       _setRevolveAxis(entity);
       return;
     }
+    // Loft's own advanced "alignment_point"/"guide curve" sub-picks
+    // (LoftPanel's own "Guide curve & alignment points" section) - mirrors
+    // the Revolve axis special-case above exactly: a single reference,
+    // resolved then the sub-mode ends, rather than accumulated the way
+    // target-body picks are. Checked ahead of the generic accumulate-
+    // toggle below for the identical reason every other special-case here
+    // is - these sub-modes are only ever entered from inside an already-
+    // open LoftPanel session, so `_loftActive` is implicitly already true
+    // whenever either fires.
+    if (_loftAlignmentPickIndex != null && entity.kind == SelectionEntityKind.sketchPoint) {
+      _setLoftAlignmentPoint(entity);
+      return;
+    }
+    if (_loftPickingGuideCurve &&
+        (entity.kind == SelectionEntityKind.sketchLine ||
+            entity.kind == SelectionEntityKind.sketchArc ||
+            entity.kind == SelectionEntityKind.sketchEllipse ||
+            entity.kind == SelectionEntityKind.sketchSpline)) {
+      _setLoftGuideCurve(entity);
+      return;
+    }
     // Pattern/Mirror scoping Phase 1: a face/referencePlane/createPlane tap
     // during the `pickingPlane` step sets (or clears, if it's the
     // already-picked one) the mirror plane - mirrors [_setRevolveAxis]
@@ -2917,17 +2938,51 @@ class _PartScreenState extends State<PartScreen> {
   String? _editingLoftFeatureId;
 
   /// The edited Feature's own stored values from just before editing started
-  /// - mirrors [_sweepEditSnapshot].
+  /// - mirrors [_sweepEditSnapshot]. `alignmentPoints`/`guideCurveRef`
+  /// snapshot [_loftAlignmentPoints]/[_loftGuideCurveRef]'s own pre-edit
+  /// values (unlike `sections` themselves, both of those *can* change
+  /// mid-edit-session via this panel's own advanced picker, so Cancel needs
+  /// its own copy to revert to - same reasoning as `mode`/`ruled`/etc).
   ({
     LoftMode mode,
     bool ruled,
     double? thickness,
     List<String> targetBodyIds,
+    List<SketchEntityRefDto?> alignmentPoints,
+    SketchEntityRefDto? guideCurveRef,
   })? _loftEditSnapshot;
 
   LoftMode _loftMode = LoftMode.boss;
   bool _loftRuled = false;
   double? _loftThickness;
+
+  /// One slot per [_loftSections] entry - the backend `LoftSection.
+  /// alignment_point`, null until that section's own point has been
+  /// picked (see [_startLoftAlignmentPointPick]). Kept the same length as
+  /// [_loftSections] by [_openLoftPanel]/[_openLoftPanelForEdit].
+  List<SketchEntityRefDto?> _loftAlignmentPoints = [];
+
+  /// Non-null while picking an `alignment_point` for `_loftSections[index]`
+  /// in the 3D viewport - mirrors [_revolveActive]'s own "a dedicated
+  /// selection-filter override is live" shape, narrowed to a single
+  /// in-flight pick rather than the whole panel session.
+  int? _loftAlignmentPickIndex;
+
+  /// The picked `guide_curve_refs` entity - this session's own UI
+  /// simplification of the backend's ordered chain to a single entity
+  /// (see [LoftPanel]'s own doc comment for why) - sent as a one-element
+  /// list, or `[]` if null.
+  SketchEntityRefDto? _loftGuideCurveRef;
+
+  /// Whether the guide-curve pick is currently active in the viewport.
+  bool _loftPickingGuideCurve = false;
+
+  /// Stashes [_selectedEntities] (the target-body picker's own selection)
+  /// around an alignment-point/guide-curve sub-pick, restored once it
+  /// concludes - mirrors [_entitiesBeforeLoft]'s own identical "stash/
+  /// restore around a nested selection-mode diversion" shape, one level
+  /// deeper (a sub-pick *within* an already-open Loft panel session).
+  Set<SelectionEntityRef>? _entitiesBeforeLoftSubPick;
 
   /// Debounces the panel's live-preview PATCH/POST + mesh refresh - mirrors
   /// [_sweepDebounce].
@@ -2951,6 +3006,38 @@ class _PartScreenState extends State<PartScreen> {
     plane: false,
   );
 
+  /// The `alignment_point` sub-pick's own selection filter - a Sketch
+  /// Point only, mirrors [CreatePlanePanel]'s own `threePoints` pool
+  /// (`_pointRefDtoFor`'s doc comment) narrowed to Sketch Points alone (an
+  /// `alignment_point` is always a `POINT` entity in a section's own
+  /// Sketch, never a Body vertex - see the backend `LoftSection.
+  /// alignment_point`'s own docstring).
+  static const _loftAlignmentPointSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: false,
+    body: false,
+    sketchPoint: true,
+    sketchLine: false,
+    sketchCircle: false,
+    plane: false,
+  );
+
+  /// The guide-curve sub-pick's own selection filter - mirrors
+  /// [_pathPickerSelectionFilter] exactly (`sketchLine: true` covers
+  /// Line/Arc/Ellipse/Spline hits alike, per that field's own established
+  /// meaning in this codebase - see [_togglePathPick]'s own dispatch).
+  static const _loftGuideCurveSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: false,
+    body: false,
+    sketchPoint: false,
+    sketchLine: true,
+    sketchCircle: false,
+    plane: false,
+  );
+
   /// Mirrors [_currentSweepTargetBodyIds] exactly.
   List<String> _currentLoftTargetBodyIds() => _selectedEntities
       .where((e) => e.kind == SelectionEntityKind.body)
@@ -2969,6 +3056,8 @@ class _PartScreenState extends State<PartScreen> {
       _loftMode = LoftMode.boss;
       _loftRuled = false;
       _loftThickness = null;
+      _loftAlignmentPoints = List.filled(sections.length, null);
+      _loftGuideCurveRef = null;
       _entitiesBeforeLoft = _selectedEntities;
       _selectedEntities = {};
       _selectionMode = true;
@@ -2991,16 +3080,27 @@ class _PartScreenState extends State<PartScreen> {
     final ruled = feature.ruled;
     final thickness = feature.thickness;
     final targetBodyIds = feature.targetBodyIds;
+    final alignmentPoints = [for (final section in feature.sections) section.alignmentPoint];
+    final guideCurveRef = feature.guideCurveRefs.isNotEmpty ? feature.guideCurveRefs.first : null;
 
     setState(() {
       _loftSections = resolvedSections;
       _editingLoftFeatureId = feature.id;
       _previewLoftFeatureId = feature.id;
-      _loftEditSnapshot = (mode: mode, ruled: ruled, thickness: thickness, targetBodyIds: targetBodyIds);
+      _loftEditSnapshot = (
+        mode: mode,
+        ruled: ruled,
+        thickness: thickness,
+        targetBodyIds: targetBodyIds,
+        alignmentPoints: alignmentPoints,
+        guideCurveRef: guideCurveRef,
+      );
       _meshBeforeLoft = _bodies;
       _loftMode = mode;
       _loftRuled = ruled;
       _loftThickness = thickness;
+      _loftAlignmentPoints = alignmentPoints;
+      _loftGuideCurveRef = guideCurveRef;
       _entitiesBeforeLoft = _selectedEntities;
       _selectedEntities = {
         for (final bodyId in targetBodyIds)
@@ -3014,6 +3114,10 @@ class _PartScreenState extends State<PartScreen> {
 
   /// Mirrors [_ensureSweepFeatureExists] exactly, substituting the fixed,
   /// ordered [_loftSections] for Sweep's single sketchFeature + path.
+  /// Threads [_loftAlignmentPoints]/[_loftGuideCurveRef] through on every
+  /// call (including the debounced live-preview ones) - the same "always
+  /// resend, even unchanged" convention [_ensureSweepFeatureExists] already
+  /// uses for its own `pathRefs`.
   Future<void> _ensureLoftFeatureExists(
     LoftMode mode,
     bool ruled,
@@ -3024,8 +3128,13 @@ class _PartScreenState extends State<PartScreen> {
     if (part == null || _loftSections.length < 2) return;
 
     final sections = [
-      for (final section in _loftSections) LoftSectionDto(sketchFeatureId: section.id),
+      for (var i = 0; i < _loftSections.length; i++)
+        LoftSectionDto(
+          sketchFeatureId: _loftSections[i].id,
+          alignmentPoint: i < _loftAlignmentPoints.length ? _loftAlignmentPoints[i] : null,
+        ),
     ];
+    final guideCurveRefs = _loftGuideCurveRef == null ? <SketchEntityRefDto>[] : [_loftGuideCurveRef!];
 
     final existingId = _previewLoftFeatureId;
     if (existingId == null) {
@@ -3036,6 +3145,7 @@ class _PartScreenState extends State<PartScreen> {
         ruled: ruled,
         targetBodyIds: targetBodyIds,
         thickness: thickness,
+        guideCurveRefs: guideCurveRefs,
       );
       _previewLoftFeatureId = created.id;
     } else {
@@ -3047,6 +3157,7 @@ class _PartScreenState extends State<PartScreen> {
         ruled: ruled,
         targetBodyIds: targetBodyIds,
         thickness: thickness,
+        guideCurveRefs: guideCurveRefs,
       );
     }
     await _refreshMesh();
@@ -3102,6 +3213,18 @@ class _PartScreenState extends State<PartScreen> {
       _meshBeforeLoft = null;
       _editingLoftFeatureId = null;
       _loftEditSnapshot = null;
+      _loftAlignmentPoints = [];
+      _loftGuideCurveRef = null;
+      // Defensive: abandons an in-flight alignment-point/guide-curve
+      // sub-pick if Confirm was pressed without finishing it first - pops
+      // its own filter override before the main panel's own pop just below
+      // (LIFO: it was pushed after the panel's own, so must come off
+      // first).
+      if (_loftAlignmentPickIndex != null || _loftPickingGuideCurve) {
+        _loftAlignmentPickIndex = null;
+        _loftPickingGuideCurve = false;
+        _selectionFilterOverrides.pop();
+      }
       _selectedEntities = _entitiesBeforeLoft ?? {};
       _entitiesBeforeLoft = null;
       _selectionFilterOverrides.pop();
@@ -3128,6 +3251,14 @@ class _PartScreenState extends State<PartScreen> {
       _meshBeforeLoft = null;
       _editingLoftFeatureId = null;
       _loftEditSnapshot = null;
+      _loftAlignmentPoints = [];
+      _loftGuideCurveRef = null;
+      // Mirrors _confirmLoft's own identical defensive cleanup above.
+      if (_loftAlignmentPickIndex != null || _loftPickingGuideCurve) {
+        _loftAlignmentPickIndex = null;
+        _loftPickingGuideCurve = false;
+        _selectionFilterOverrides.pop();
+      }
       _selectedEntities = _entitiesBeforeLoft ?? {};
       _entitiesBeforeLoft = null;
       _selectionFilterOverrides.pop();
@@ -3138,13 +3269,24 @@ class _PartScreenState extends State<PartScreen> {
     if (part != null && previewId != null) {
       if (wasEditing && editSnapshot != null) {
         await _runGuarded(() async {
+          final revertSections = [
+            for (var i = 0; i < sections.length; i++)
+              LoftSectionDto(
+                sketchFeatureId: sections[i].id,
+                alignmentPoint: i < editSnapshot.alignmentPoints.length ? editSnapshot.alignmentPoints[i] : null,
+              ),
+          ];
+          final revertGuideCurveRefs =
+              editSnapshot.guideCurveRef == null ? <SketchEntityRefDto>[] : [editSnapshot.guideCurveRef!];
           await _api.updateLoftFeature(
             part.id,
             previewId,
+            sections: revertSections,
             mode: editSnapshot.mode.apiValue,
             ruled: editSnapshot.ruled,
             targetBodyIds: editSnapshot.targetBodyIds,
             thickness: editSnapshot.thickness,
+            guideCurveRefs: revertGuideCurveRefs,
           );
           await _refreshFeatures();
         });
@@ -3161,6 +3303,122 @@ class _PartScreenState extends State<PartScreen> {
       }
     }
     await _endRollback();
+  }
+
+  /// [LoftPanel.onPickAlignmentPoint] - enters the viewport picking
+  /// sub-mode for `_loftSections[index]`'s own `alignment_point`, stashing
+  /// the target-body picker's own [_selectedEntities] the same way
+  /// [_openLoftPanel] itself stashes whatever came before it.
+  void _startLoftAlignmentPointPick(int index) {
+    setState(() {
+      _loftAlignmentPickIndex = index;
+      _entitiesBeforeLoftSubPick = _selectedEntities;
+      _selectedEntities = {};
+      _selectionFilterOverrides.push(_loftAlignmentPointSelectionFilter);
+    });
+  }
+
+  /// [_toggleSelectedEntity]'s own Loft-alignment-point special case -
+  /// mirrors [_setRevolveAxis]'s "single reference, resolved then the
+  /// sub-mode ends" shape, generalized to whichever section index is
+  /// currently being picked for.
+  void _setLoftAlignmentPoint(SelectionEntityRef entity) {
+    final index = _loftAlignmentPickIndex;
+    if (index == null) return;
+    final sketchId = _sketchIdForFeatureId(entity.sketchFeatureId);
+    if (sketchId == null) return; // Defensive - see _sketchIdForFeatureId's own doc comment.
+    setState(() {
+      if (index < _loftAlignmentPoints.length) {
+        _loftAlignmentPoints[index] = SketchEntityRefDto(
+          sketchId: sketchId,
+          entityType: 'point',
+          entityId: entity.sketchEntityId,
+        );
+      }
+      _loftAlignmentPickIndex = null;
+      _selectedEntities = _entitiesBeforeLoftSubPick ?? {};
+      _entitiesBeforeLoftSubPick = null;
+      _selectionFilterOverrides.pop();
+    });
+    _scheduleLoftPreview();
+  }
+
+  /// [LoftPanel.onClearAlignmentPoint].
+  void _clearLoftAlignmentPoint(int index) {
+    if (index >= _loftAlignmentPoints.length) return;
+    setState(() => _loftAlignmentPoints[index] = null);
+    _scheduleLoftPreview();
+  }
+
+  /// Exits the alignment-point sub-pick without picking anything - mirrors
+  /// [_cancelPathPicker]'s own identical "restore the stashed selection,
+  /// pop the filter override" shape.
+  void _cancelLoftAlignmentPointPick() {
+    setState(() {
+      _loftAlignmentPickIndex = null;
+      _selectedEntities = _entitiesBeforeLoftSubPick ?? {};
+      _entitiesBeforeLoftSubPick = null;
+      _selectionFilterOverrides.pop();
+    });
+  }
+
+  /// [LoftPanel.onPickGuideCurve] - mirrors [_startLoftAlignmentPointPick]
+  /// exactly, substituting the guide-curve selection filter (Line/Arc/
+  /// Ellipse/Spline) for Sketch Points.
+  void _startLoftGuideCurvePick() {
+    setState(() {
+      _loftPickingGuideCurve = true;
+      _entitiesBeforeLoftSubPick = _selectedEntities;
+      _selectedEntities = {};
+      _selectionFilterOverrides.push(_loftGuideCurveSelectionFilter);
+    });
+  }
+
+  /// [_toggleSelectedEntity]'s own Loft-guide-curve special case - mirrors
+  /// [_setLoftAlignmentPoint]'s exact shape, resolving [entity]'s own
+  /// concrete curve-entity-type string from its [SelectionEntityKind]
+  /// (this session's own UI narrows `guide_curve_refs` to a single entity
+  /// - see [LoftPanel]'s own doc comment).
+  void _setLoftGuideCurve(SelectionEntityRef entity) {
+    if (!_loftPickingGuideCurve) return;
+    final sketchId = _sketchIdForFeatureId(entity.sketchFeatureId);
+    if (sketchId == null) return;
+    final entityType = switch (entity.kind) {
+      SelectionEntityKind.sketchLine => 'line',
+      SelectionEntityKind.sketchArc => 'arc',
+      SelectionEntityKind.sketchEllipse => 'ellipse',
+      SelectionEntityKind.sketchSpline => 'spline',
+      _ => null,
+    };
+    if (entityType == null) return; // Defensive - the selection filter already excludes every other kind.
+    setState(() {
+      _loftGuideCurveRef = SketchEntityRefDto(
+        sketchId: sketchId,
+        entityType: entityType,
+        entityId: entity.sketchEntityId,
+      );
+      _loftPickingGuideCurve = false;
+      _selectedEntities = _entitiesBeforeLoftSubPick ?? {};
+      _entitiesBeforeLoftSubPick = null;
+      _selectionFilterOverrides.pop();
+    });
+    _scheduleLoftPreview();
+  }
+
+  /// [LoftPanel.onClearGuideCurve].
+  void _clearLoftGuideCurve() {
+    setState(() => _loftGuideCurveRef = null);
+    _scheduleLoftPreview();
+  }
+
+  /// Mirrors [_cancelLoftAlignmentPointPick] exactly.
+  void _cancelLoftGuideCurvePick() {
+    setState(() {
+      _loftPickingGuideCurve = false;
+      _selectedEntities = _entitiesBeforeLoftSubPick ?? {};
+      _entitiesBeforeLoftSubPick = null;
+      _selectionFilterOverrides.pop();
+    });
   }
 
   /// Mirrors [_sweepPickerBannerText] exactly.
@@ -9110,6 +9368,16 @@ class _PartScreenState extends State<PartScreen> {
                       initialThickness: _loftThickness,
                       sectionCount: _loftSections.length,
                       targetBodyCount: _currentLoftTargetBodyIds().length,
+                      alignmentPointsSet: [for (final ref in _loftAlignmentPoints) ref != null],
+                      guideCurveSet: _loftGuideCurveRef != null,
+                      pickingAlignmentPointIndex: _loftAlignmentPickIndex,
+                      pickingGuideCurve: _loftPickingGuideCurve,
+                      onPickAlignmentPoint: _startLoftAlignmentPointPick,
+                      onClearAlignmentPoint: _clearLoftAlignmentPoint,
+                      onCancelAlignmentPointPick: _cancelLoftAlignmentPointPick,
+                      onPickGuideCurve: _startLoftGuideCurvePick,
+                      onClearGuideCurve: _clearLoftGuideCurve,
+                      onCancelGuideCurvePick: _cancelLoftGuideCurvePick,
                       onChanged: _onLoftValuesChanged,
                       onConfirm: _confirmLoft,
                       onCancel: _cancelLoft,

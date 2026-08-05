@@ -41,6 +41,21 @@ enum LoftMode {
 /// Every value change is reported immediately via [onChanged] - debouncing
 /// the resulting PATCH/POST and mesh refresh is [PartScreen]'s job, not this
 /// widget's, same as [SweepPanel].
+///
+/// The "Guide curve & alignment points (advanced)" section exposes the
+/// backend's own `LoftSection.alignment_point`/`LoftFeature.guide_curve_
+/// refs` - see that dataclass's own docstring for what each does
+/// geometrically. Picking itself (a Point per section, or a single curve
+/// entity for the guide curve) happens in the 3D viewport behind this
+/// panel, driven by [PartScreen] exactly like target-body picking already
+/// is - this panel only ever shows whether each is currently set and
+/// offers "Pick"/"Clear" buttons, the same "picking lives in the
+/// viewport, this panel just reflects state" split [targetBodyCount]
+/// already uses. This session's own UI only ever lets a single entity
+/// stand in for the backend's `guide_curve_refs` (an ordered *list*, in
+/// principle a multi-segment chain) - a deliberate v1 narrowing, not a
+/// backend limitation; a multi-segment guide curve is still reachable via
+/// a direct API call.
 class LoftPanel extends StatefulWidget {
   /// 'Loft' when creating a brand-new Feature (default), 'Edit Loft' when
   /// [PartScreen] opened this to edit an already-existing one instead -
@@ -53,16 +68,39 @@ class LoftPanel extends StatefulWidget {
   final bool initialRuled;
   final double? initialThickness;
 
-  /// How many sections were picked - always 2 in this panel's v1 flow (see
-  /// [PartScreen]'s own section-picking state), kept as a count rather than
-  /// a hardcoded "2" so this panel's own summary line stays correct if a
-  /// later revision lets a Loft take more than 2 sections without this file
-  /// needing to change.
+  /// How many sections were picked (2+, see [PartScreen]'s own section-
+  /// picking state).
   final int sectionCount;
 
   /// How many target bodies are currently picked in the 3D viewport - same
   /// meaning and same live-read convention as [SweepPanel.targetBodyCount].
   final int targetBodyCount;
+
+  /// Whether each of [sectionCount] sections currently has an
+  /// `alignment_point` picked - same length as [sectionCount].
+  final List<bool> alignmentPointsSet;
+
+  /// Whether a `guide_curve_refs` entity is currently picked.
+  final bool guideCurveSet;
+
+  /// Non-null while [PartScreen] is currently picking an `alignment_point`
+  /// for that section index in the 3D viewport - that row shows "tap in
+  /// the viewport" + a Cancel button instead of Pick/Change while this is
+  /// set, mirroring [guideCurveSet]'s own `pickingGuideCurve` pairing.
+  final int? pickingAlignmentPointIndex;
+
+  /// Whether [PartScreen] is currently picking the guide curve entity.
+  final bool pickingGuideCurve;
+
+  /// Starts picking an `alignment_point` for the section at this index in
+  /// the 3D viewport - mirrors how [onPickSourceFeatures]-style callbacks
+  /// elsewhere in this codebase hand picking off to [PartScreen].
+  final void Function(int sectionIndex) onPickAlignmentPoint;
+  final void Function(int sectionIndex) onClearAlignmentPoint;
+  final VoidCallback onCancelAlignmentPointPick;
+  final VoidCallback onPickGuideCurve;
+  final VoidCallback onClearGuideCurve;
+  final VoidCallback onCancelGuideCurvePick;
 
   final void Function(LoftMode mode, bool ruled, double? thickness) onChanged;
   final VoidCallback onConfirm;
@@ -77,6 +115,16 @@ class LoftPanel extends StatefulWidget {
     this.initialThickness,
     required this.sectionCount,
     required this.targetBodyCount,
+    this.alignmentPointsSet = const [],
+    this.guideCurveSet = false,
+    this.pickingAlignmentPointIndex,
+    this.pickingGuideCurve = false,
+    required this.onPickAlignmentPoint,
+    required this.onClearAlignmentPoint,
+    required this.onCancelAlignmentPointPick,
+    required this.onPickGuideCurve,
+    required this.onClearGuideCurve,
+    required this.onCancelGuideCurvePick,
     required this.onChanged,
     required this.onConfirm,
     required this.onCancel,
@@ -243,7 +291,91 @@ class _LoftPanelState extends State<LoftPanel> {
                 ),
               ),
             ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 4),
+          Theme(
+            data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+            child: ExpansionTile(
+              tilePadding: EdgeInsets.zero,
+              title: const Text('Guide curve & alignment points (advanced)', style: TextStyle(fontSize: 13)),
+              childrenPadding: EdgeInsets.zero,
+              children: [
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  title: const Text('Guide curve'),
+                  subtitle: Text(
+                    widget.pickingGuideCurve
+                        ? 'Tap a line, arc, ellipse or spline in the viewport…'
+                        : (widget.guideCurveSet ? 'Set' : 'Not set'),
+                  ),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: widget.pickingGuideCurve
+                        ? [
+                            TextButton(
+                              onPressed: widget.onCancelGuideCurvePick,
+                              child: const Text('Cancel'),
+                            ),
+                          ]
+                        : [
+                            TextButton(
+                              onPressed: widget.onPickGuideCurve,
+                              child: Text(widget.guideCurveSet ? 'Change' : 'Pick'),
+                            ),
+                            if (widget.guideCurveSet)
+                              IconButton(
+                                tooltip: 'Clear guide curve',
+                                icon: const Icon(Icons.close, size: 18),
+                                onPressed: widget.onClearGuideCurve,
+                              ),
+                          ],
+                  ),
+                ),
+                for (var i = 0; i < widget.sectionCount; i++)
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    dense: true,
+                    title: Text('Section ${i + 1} alignment point'),
+                    subtitle: Text(
+                      widget.pickingAlignmentPointIndex == i
+                          ? 'Tap a point in the viewport…'
+                          : (i < widget.alignmentPointsSet.length && widget.alignmentPointsSet[i]
+                              ? 'Set'
+                              : 'Not set'),
+                    ),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: widget.pickingAlignmentPointIndex == i
+                          ? [
+                              TextButton(
+                                onPressed: widget.onCancelAlignmentPointPick,
+                                child: const Text('Cancel'),
+                              ),
+                            ]
+                          : [
+                              TextButton(
+                                onPressed: widget.pickingAlignmentPointIndex == null
+                                    ? () => widget.onPickAlignmentPoint(i)
+                                    : null,
+                                child: Text(
+                                  i < widget.alignmentPointsSet.length && widget.alignmentPointsSet[i]
+                                      ? 'Change'
+                                      : 'Pick',
+                                ),
+                              ),
+                              if (i < widget.alignmentPointsSet.length && widget.alignmentPointsSet[i])
+                                IconButton(
+                                  tooltip: 'Clear alignment point',
+                                  icon: const Icon(Icons.close, size: 18),
+                                  onPressed: () => widget.onClearAlignmentPoint(i),
+                                ),
+                            ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
