@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../api/document_api_client.dart';
 import '../api/sketch_api_client.dart' show ApiException;
 import '../viewport3d/part_screen.dart';
+import 'bevel_design_screen.dart';
 import 'field_help_icon.dart';
 import 'gear_chain_design_screen.dart';
 import 'gear_preview_canvas.dart';
@@ -18,9 +19,12 @@ import 'standard_value_field.dart';
 /// External/Internal form, not as separate `GearDesignKind` values, since
 /// they're orthogonal modifiers on the same Feature type rather than a
 /// distinct one) and `RackFeature` (standalone rack, no helix concept).
-/// Chain/planetary/bevel/bevel-pair (Workstreams 5/10/11's own Feature
-/// types) still have no client UI - out of scope for this pass, tracked
-/// separately (see `docs/gear-design/README.md`'s workstream table).
+/// Chain/planetary (`GearChainFeature`/`PlanetaryGearFeature`) and bevel/
+/// bevel-pair (`BevelGearFeature`/`BevelPairFeature`) each get their own
+/// dedicated screen instead of a `GearDesignKind` value - reached via this
+/// screen's own app bar actions (`GearChainDesignScreen`, `BevelDesignScreen`)
+/// - both are genuinely multi-gear/differently-shaped previews, not a
+/// single-gear form variant (see those screens' own top-of-file comments).
 enum GearDesignKind {
   external,
   internal,
@@ -293,6 +297,12 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
               MaterialPageRoute(builder: (_) => const GearChainDesignScreen()),
             ),
             child: const Text('Chain / Planetary'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const BevelDesignScreen()),
+            ),
+            child: const Text('Bevel'),
           ),
         ],
       ),

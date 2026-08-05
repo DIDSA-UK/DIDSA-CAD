@@ -902,6 +902,72 @@ class GearPreviewPlanetaryResultDto {
       );
 }
 
+/// `docs/gear-design/10-bevel-gear.md`/`11-bevel-pair.md` - the wire
+/// counterpart to the backend's `GearPreviewBevelMember`. **Not** a tooth
+/// outline (a bevel tooth has no flat 2D cut profile at all - its flank is
+/// a curved surface on a cone, per that doc's own "structurally unlike
+/// every other gear type" framing) - [outlinePoints] is the standard
+/// bevel-drafting axial cross-section envelope instead (symmetric about
+/// the member's own axis), already positioned/rotated by the backend into
+/// the shared preview frame: apex at the origin, axis along
+/// [axisAngleDegrees] from local +x.
+class GearPreviewBevelMemberDto {
+  final String label;
+  final double axisAngleDegrees;
+  final List<List<double>> outlinePoints;
+  final List<List<double>> pitchLine;
+  final double pitchConeAngleDegrees;
+  final double coneDistance;
+  final double innerConeDistance;
+  final double pitchRadius;
+  final double faceWidth;
+
+  GearPreviewBevelMemberDto({
+    required this.label,
+    required this.axisAngleDegrees,
+    required this.outlinePoints,
+    required this.pitchLine,
+    required this.pitchConeAngleDegrees,
+    required this.coneDistance,
+    required this.innerConeDistance,
+    required this.pitchRadius,
+    required this.faceWidth,
+  });
+
+  factory GearPreviewBevelMemberDto.fromJson(Map<String, dynamic> json) => GearPreviewBevelMemberDto(
+        label: json['label'] as String,
+        axisAngleDegrees: (json['axis_angle_degrees'] as num).toDouble(),
+        outlinePoints: (json['outline_points'] as List)
+            .map((p) => (p as List).map((v) => (v as num).toDouble()).toList())
+            .toList(),
+        pitchLine: (json['pitch_line'] as List)
+            .map((p) => (p as List).map((v) => (v as num).toDouble()).toList())
+            .toList(),
+        pitchConeAngleDegrees: (json['pitch_cone_angle_degrees'] as num).toDouble(),
+        coneDistance: (json['cone_distance'] as num).toDouble(),
+        innerConeDistance: (json['inner_cone_distance'] as num).toDouble(),
+        pitchRadius: (json['pitch_radius'] as num).toDouble(),
+        faceWidth: (json['face_width'] as num).toDouble(),
+      );
+}
+
+/// The wire counterpart to the backend's `GearPreviewBevelPairResult` -
+/// [GearPreviewDto.bevelPair]'s own payload when `gearKind == 'bevel_pair'`
+/// - `11-bevel-pair.md`'s dual-axis apex-aligned pair, projected into 2D.
+class GearPreviewBevelPairResultDto {
+  final List<GearPreviewBevelMemberDto> members;
+  final double shaftAngleDegrees;
+
+  GearPreviewBevelPairResultDto({required this.members, required this.shaftAngleDegrees});
+
+  factory GearPreviewBevelPairResultDto.fromJson(Map<String, dynamic> json) => GearPreviewBevelPairResultDto(
+        members: (json['members'] as List)
+            .map((m) => GearPreviewBevelMemberDto.fromJson(m as Map<String, dynamic>))
+            .toList(),
+        shaftAngleDegrees: (json['shaft_angle_degrees'] as num).toDouble(),
+      );
+}
+
 class GearPreviewDto {
   final String gearKind;
   final List<List<double>> outlinePoints;
@@ -917,6 +983,8 @@ class GearPreviewDto {
   final List<String> warnings;
   final GearPreviewChainResultDto? chain;
   final GearPreviewPlanetaryResultDto? planetary;
+  final GearPreviewBevelMemberDto? bevelGear;
+  final GearPreviewBevelPairResultDto? bevelPair;
 
   GearPreviewDto({
     required this.gearKind,
@@ -933,6 +1001,8 @@ class GearPreviewDto {
     this.warnings = const [],
     this.chain,
     this.planetary,
+    this.bevelGear,
+    this.bevelPair,
   });
 
   factory GearPreviewDto.fromJson(Map<String, dynamic> json) => GearPreviewDto(
@@ -954,6 +1024,12 @@ class GearPreviewDto {
         planetary: json['planetary'] == null
             ? null
             : GearPreviewPlanetaryResultDto.fromJson(json['planetary'] as Map<String, dynamic>),
+        bevelGear: json['bevel_gear'] == null
+            ? null
+            : GearPreviewBevelMemberDto.fromJson(json['bevel_gear'] as Map<String, dynamic>),
+        bevelPair: json['bevel_pair'] == null
+            ? null
+            : GearPreviewBevelPairResultDto.fromJson(json['bevel_pair'] as Map<String, dynamic>),
       );
 }
 
@@ -2040,6 +2116,140 @@ class DocumentApiClient {
                 'face_width': faceWidth,
                 'ring_outer_diameter': ringOuterDiameter,
                 'pressure_angle_degrees': pressureAngleDegrees,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// `docs/gear-design/10-bevel-gear.md`: `/gear/preview` with `gear_kind:
+  /// 'bevel_gear'` - mirrors `BevelGearFeatureCreate`'s own shape minus
+  /// `plane_ref`/`bevel_type`/`target_body_ids`.
+  Future<GearPreviewDto> previewGearBevelGear({
+    required double module,
+    required int toothCount,
+    required double faceWidth,
+    required double pitchConeAngleDegrees,
+    double pressureAngleDegrees = 20.0,
+    double backlash = 0.0,
+    double profileShift = 0.0,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/gear/preview'),
+              headers: _headers,
+              body: jsonEncode({
+                'gear_kind': 'bevel_gear',
+                'bevel_gear': {
+                  'module': module,
+                  'tooth_count': toothCount,
+                  'face_width': faceWidth,
+                  'pitch_cone_angle_degrees': pitchConeAngleDegrees,
+                  'pressure_angle_degrees': pressureAngleDegrees,
+                  'backlash': backlash,
+                  'profile_shift': profileShift,
+                },
+              }),
+            ),
+        (body) => GearPreviewDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// `docs/gear-design/11-bevel-pair.md`: `/gear/preview` with `gear_kind:
+  /// 'bevel_pair'` - mirrors `BevelPairFeatureCreate`'s own shape minus
+  /// `plane_ref`. Cone angles are auto-derived server-side, not sent here.
+  Future<GearPreviewDto> previewGearBevelPair({
+    required double module,
+    required int toothCount1,
+    double profileShift1 = 0.0,
+    required int toothCount2,
+    double profileShift2 = 0.0,
+    required double faceWidth,
+    double pressureAngleDegrees = 20.0,
+    double shaftAngleDegrees = 90.0,
+    double backlash = 0.0,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/gear/preview'),
+              headers: _headers,
+              body: jsonEncode({
+                'gear_kind': 'bevel_pair',
+                'bevel_pair': {
+                  'module': module,
+                  'member_1': {'tooth_count': toothCount1, 'profile_shift': profileShift1},
+                  'member_2': {'tooth_count': toothCount2, 'profile_shift': profileShift2},
+                  'face_width': faceWidth,
+                  'pressure_angle_degrees': pressureAngleDegrees,
+                  'shaft_angle_degrees': shaftAngleDegrees,
+                  'backlash': backlash,
+                },
+              }),
+            ),
+        (body) => GearPreviewDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// `docs/gear-design/10-bevel-gear.md`: creates the real `BevelGearFeature`
+  /// once the user hits "Create" on [BevelDesignScreen] in single-gear mode.
+  Future<FeatureDto> createBevelGearFeature(
+    String partId, {
+    required String bevelType,
+    required double module,
+    required int toothCount,
+    required double faceWidth,
+    required double pitchConeAngleDegrees,
+    double pressureAngleDegrees = 20.0,
+    double backlash = 0.0,
+    double profileShift = 0.0,
+    PlaneRefDto? planeRef,
+    List<String> targetBodyIds = const [],
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/bevel-gear-features'),
+              headers: _headers,
+              body: jsonEncode({
+                if (planeRef != null) 'plane_ref': planeRef.toJson(),
+                'bevel_type': bevelType,
+                'module': module,
+                'tooth_count': toothCount,
+                'face_width': faceWidth,
+                'pitch_cone_angle_degrees': pitchConeAngleDegrees,
+                'pressure_angle_degrees': pressureAngleDegrees,
+                'backlash': backlash,
+                'profile_shift': profileShift,
+                'target_body_ids': targetBodyIds,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// `docs/gear-design/11-bevel-pair.md`: creates the real `BevelPairFeature`
+  /// once the user hits "Create" on [BevelDesignScreen] in pair mode.
+  Future<FeatureDto> createBevelPairFeature(
+    String partId, {
+    required double module,
+    required int toothCount1,
+    double profileShift1 = 0.0,
+    required int toothCount2,
+    double profileShift2 = 0.0,
+    required double faceWidth,
+    double pressureAngleDegrees = 20.0,
+    double shaftAngleDegrees = 90.0,
+    double backlash = 0.0,
+    PlaneRefDto? planeRef,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/bevel-pair-features'),
+              headers: _headers,
+              body: jsonEncode({
+                if (planeRef != null) 'plane_ref': planeRef.toJson(),
+                'module': module,
+                'member_1': {'tooth_count': toothCount1, 'profile_shift': profileShift1},
+                'member_2': {'tooth_count': toothCount2, 'profile_shift': profileShift2},
+                'face_width': faceWidth,
+                'pressure_angle_degrees': pressureAngleDegrees,
+                'shaft_angle_degrees': shaftAngleDegrees,
+                'backlash': backlash,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

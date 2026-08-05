@@ -48,6 +48,7 @@ from app.document.gear_chain_math import (
     mesh_link_ratio,
     resolve_chain as resolve_chain_positions_and_interference,
 )
+from app.document.bevel_math import BevelGearGeometry, bevel_gear_geometry, max_recommended_face_width, pitch_cone_half_angles
 from app.document.rack import resolve_rack
 from app.document.loft import resolve_loft
 from app.document.gear_chain import resolve_gear_chain
@@ -152,6 +153,11 @@ from app.document.schemas import (
     GearFeatureResponse,
     GearFeatureUpdate,
     GearGroupSchema,
+    GearPreviewBevelGearRequest,
+    GearPreviewBevelMember,
+    GearPreviewBevelPairMemberRequest,
+    GearPreviewBevelPairRequest,
+    GearPreviewBevelPairResult,
     GearPreviewChainRequest,
     GearPreviewChainResult,
     GearPreviewInterferenceFinding,
@@ -3683,14 +3689,159 @@ def _gear_preview_planetary_response(payload: GearPreviewPlanetaryRequest) -> Ge
     )
 
 
+def _bevel_member_schematic(label: str, axis_angle_degrees: float, geometry: BevelGearGeometry) -> GearPreviewBevelMember:
+    """`GearPreviewBevelMember`'s own axial-cross-section schematic (see
+    that schema's docstring for why this is an envelope, not a tooth
+    outline) - built in the member's own local frame (axis along local +x)
+    then rotated by `axis_angle_degrees` about the shared apex at the
+    origin, mirroring `_preview_transform_profile`'s rotate-then-translate
+    shape with a translation of `(0, 0)` (both a pair's members' apexes
+    coincide there, per `11-bevel-pair.md`).
+
+    The 8-point outline traces the full symmetric-about-the-axis envelope:
+    from the inner face-cone corner out along the face cone to the outer
+    face-cone corner, across to the outer root-cone corner, in along the
+    root cone to the inner root-cone corner, across the axis to the
+    mirrored inner root-cone corner, and back out along the mirrored
+    boundary to close - the same closed "picture-frame wedge" shape a real
+    bevel-gear engineering drawing's axial half-section shows, both sides
+    of the axis rather than just one."""
+    face = geometry.face_cone_angle
+    root = geometry.root_cone_angle
+    pitch = geometry.pitch_cone_angle
+    outer = geometry.cone_distance
+    inner = geometry.inner_cone_distance
+
+    def point(radius: float, angle: float) -> tuple[float, float]:
+        return (radius * math.cos(angle), radius * math.sin(angle))
+
+    local_outline = [
+        point(inner, face),
+        point(outer, face),
+        point(outer, root),
+        point(inner, root),
+        point(inner, -root),
+        point(outer, -root),
+        point(outer, -face),
+        point(inner, -face),
+    ]
+    local_pitch_line = (point(inner, pitch), point(outer, pitch))
+
+    axis_angle = math.radians(axis_angle_degrees)
+    outline_points = _preview_transform_profile(local_outline, (0.0, 0.0), axis_angle)
+    pitch_line = tuple(_preview_transform_profile(list(local_pitch_line), (0.0, 0.0), axis_angle))
+
+    return GearPreviewBevelMember(
+        label=label,
+        axis_angle_degrees=axis_angle_degrees,
+        outline_points=outline_points,
+        pitch_line=pitch_line,
+        pitch_cone_angle_degrees=math.degrees(pitch),
+        cone_distance=outer,
+        inner_cone_distance=inner,
+        pitch_radius=geometry.pitch_radius,
+        face_width=geometry.face_width,
+    )
+
+
+def _bevel_face_width_warning(label: str, geometry: BevelGearGeometry) -> str | None:
+    """`10-bevel-gear.md`'s own face-width-vs-cone-distance non-blocking
+    warning - the same `max_recommended_face_width = cone_distance / 3`
+    rule-of-thumb `app.document.bevel.resolve_bevel_gear_from_bodies`
+    itself surfaces, reproduced here so the preview flags it before
+    Create, per `00-conventions.md`'s validation-banner convention."""
+    max_face_width = max_recommended_face_width(geometry.cone_distance)
+    if geometry.face_width > max_face_width:
+        return (
+            f"{label}: face_width ({geometry.face_width!r}) exceeds the recommended maximum "
+            f"({max_face_width:.3f}, cone_distance/3) - the tooth thins toward degeneracy near the apex"
+        )
+    return None
+
+
+def _gear_preview_bevel_gear_response(payload: GearPreviewBevelGearRequest) -> tuple[GearPreviewBevelMember, list[str]]:
+    """`docs/gear-design/08-entry-screen-and-preview.md`'s "Chain/planetary/
+    bevel-pair preview" extension, the standalone `BevelGearFeature` half -
+    reuses `bevel_math.bevel_gear_geometry` directly (the same function
+    `app.document.bevel.resolve_bevel_gear_from_bodies` calls), skipping
+    only the OCCT shell/solid assembly itself."""
+    try:
+        geometry = bevel_gear_geometry(
+            module=payload.module,
+            tooth_count=payload.tooth_count,
+            face_width=payload.face_width,
+            pressure_angle_degrees=payload.pressure_angle_degrees,
+            backlash=payload.backlash,
+            profile_shift=payload.profile_shift,
+            # shaft_angle_degrees deliberately omitted (defaults to 90.0,
+            # unused) - passing pitch_cone_angle_degrees directly skips
+            # the mate_tooth_count/shaft_angle_degrees-derived path
+            # entirely, per bevel_gear_geometry's own docstring.
+            pitch_cone_angle_degrees=payload.pitch_cone_angle_degrees,
+        )
+    except GearGeometryError as exc:
+        raise _invalid_gear_preview_parameters(str(exc)) from exc
+
+    warning = _bevel_face_width_warning("single", geometry)
+    return _bevel_member_schematic("single", 0.0, geometry), ([warning] if warning else [])
+
+
+def _gear_preview_bevel_pair_response(payload: GearPreviewBevelPairRequest) -> tuple[GearPreviewBevelPairResult, list[str]]:
+    """The `BevelPairFeature` half - reuses `bevel_math.pitch_cone_half_
+    angles` + `bevel_gear_geometry`'s `pitch_cone_angle_degrees` direct-
+    field path in the exact same order `app.document.bevel_pair.resolve_
+    bevel_pair_from_bodies` itself calls them, so preview and Create derive
+    identical cone angles for identical inputs."""
+    try:
+        gamma_1, gamma_2 = pitch_cone_half_angles(
+            payload.member_1.tooth_count, payload.member_2.tooth_count, payload.shaft_angle_degrees
+        )
+        geometry_1 = bevel_gear_geometry(
+            module=payload.module,
+            tooth_count=payload.member_1.tooth_count,
+            face_width=payload.face_width,
+            pressure_angle_degrees=payload.pressure_angle_degrees,
+            backlash=payload.backlash,
+            profile_shift=payload.member_1.profile_shift,
+            pitch_cone_angle_degrees=math.degrees(gamma_1),
+        )
+        geometry_2 = bevel_gear_geometry(
+            module=payload.module,
+            tooth_count=payload.member_2.tooth_count,
+            face_width=payload.face_width,
+            pressure_angle_degrees=payload.pressure_angle_degrees,
+            backlash=payload.backlash,
+            profile_shift=payload.member_2.profile_shift,
+            pitch_cone_angle_degrees=math.degrees(gamma_2),
+        )
+    except GearGeometryError as exc:
+        raise _invalid_gear_preview_parameters(str(exc)) from exc
+
+    warnings = [
+        w
+        for w in (
+            _bevel_face_width_warning("member_1", geometry_1),
+            _bevel_face_width_warning("member_2", geometry_2),
+        )
+        if w
+    ]
+    members = [
+        _bevel_member_schematic("member_1", 0.0, geometry_1),
+        _bevel_member_schematic("member_2", payload.shaft_angle_degrees, geometry_2),
+    ]
+    return GearPreviewBevelPairResult(members=members, shaft_angle_degrees=payload.shaft_angle_degrees), warnings
+
+
 def _gear_preview_response(payload: GearPreviewRequest) -> GearPreviewResponse:
     """`docs/gear-design/08-entry-screen-and-preview.md`: the actual math
     behind `/gear/preview` - runs only `gear_math`/`gear_chain_math` (no
     OCCT, no tessellation), shared by the GET and POST routes below.
     `"chain"`/`"planetary"` reuse `_gear_preview_chain_response`/
-    `_gear_preview_planetary_response` above; a future gear type still adds
-    one more `gear_kind` literal value plus one more branch here, not a new
-    endpoint, per this schema's own original design."""
+    `_gear_preview_planetary_response` above, `"bevel_gear"`/`"bevel_pair"`
+    reuse `_gear_preview_bevel_gear_response`/`_gear_preview_bevel_pair_
+    response`; a future gear type still adds one more `gear_kind` literal
+    value plus one more branch here, not a new endpoint, per this schema's
+    own original design."""
     if payload.gear_kind == "chain":
         if payload.chain is None:
             raise _invalid_gear_preview_parameters("chain is required when gear_kind is chain")
@@ -3702,6 +3853,18 @@ def _gear_preview_response(payload: GearPreviewRequest) -> GearPreviewResponse:
         return GearPreviewResponse(
             gear_kind="planetary", planetary=_gear_preview_planetary_response(payload.planetary)
         )
+
+    if payload.gear_kind == "bevel_gear":
+        if payload.bevel_gear is None:
+            raise _invalid_gear_preview_parameters("bevel_gear is required when gear_kind is bevel_gear")
+        member, warnings = _gear_preview_bevel_gear_response(payload.bevel_gear)
+        return GearPreviewResponse(gear_kind="bevel_gear", bevel_gear=member, warnings=warnings)
+
+    if payload.gear_kind == "bevel_pair":
+        if payload.bevel_pair is None:
+            raise _invalid_gear_preview_parameters("bevel_pair is required when gear_kind is bevel_pair")
+        result, warnings = _gear_preview_bevel_pair_response(payload.bevel_pair)
+        return GearPreviewResponse(gear_kind="bevel_pair", bevel_pair=result, warnings=warnings)
 
     if payload.module is None or payload.tooth_count is None:
         raise _invalid_gear_preview_parameters("module and tooth_count are required for this gear_kind")

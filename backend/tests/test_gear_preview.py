@@ -314,3 +314,118 @@ def test_planetary_preview_blocks_when_assembly_condition_fails():
         }
     )
     assert response.status_code == 422
+
+
+# --- Bevel gear / bevel pair (docs/gear-design/10-bevel-gear.md,
+# 11-bevel-pair.md - 08-entry-screen-and-preview.md's "Chain/planetary/
+# bevel-pair preview" section) ----------------------------------------------
+
+
+def _bevel_gear_preview(**overrides) -> dict:
+    payload = {
+        "gear_kind": "bevel_gear",
+        "bevel_gear": {
+            "module": 4.0,
+            "tooth_count": 20,
+            "face_width": 14.9,
+            "pitch_cone_angle_degrees": 26.56505117707799,
+            "pressure_angle_degrees": 20.0,
+        },
+    }
+    payload.update(overrides)
+    return client.post("/document/gear/preview", json=payload)
+
+
+def test_bevel_gear_preview_returns_axial_cross_section_schematic():
+    response = _bevel_gear_preview()
+    assert response.status_code == 200, response.json()
+    body = response.json()
+    member = body["bevel_gear"]
+    assert member["label"] == "single"
+    assert member["axis_angle_degrees"] == 0.0
+    assert member["pitch_radius"] == 40.0
+    assert member["cone_distance"] == pytest.approx(89.4427, abs=1e-3)
+    assert len(member["outline_points"]) == 8
+    # Every outline point sits at either the inner or the outer cone
+    # distance from the apex (the origin) - a real geometric property of
+    # this schematic, not just "it has 8 points".
+    for x, y in member["outline_points"]:
+        radius = (x**2 + y**2) ** 0.5
+        assert radius == pytest.approx(member["cone_distance"], abs=1e-6) or radius == pytest.approx(
+            member["inner_cone_distance"], abs=1e-6
+        )
+    assert body["warnings"] == []
+
+
+def test_bevel_gear_preview_warns_when_face_width_exceeds_recommended_maximum():
+    # max_recommended_face_width(cone_distance=89.4427) = cone_distance/3 ~= 29.81
+    response = _bevel_gear_preview(bevel_gear={
+        "module": 4.0,
+        "tooth_count": 20,
+        "face_width": 35.0,
+        "pitch_cone_angle_degrees": 26.56505117707799,
+    })
+    assert response.status_code == 200, response.json()
+    assert len(response.json()["warnings"]) == 1
+    assert "face_width" in response.json()["warnings"][0]
+
+
+def test_bevel_gear_preview_rejects_invalid_parameters_as_422():
+    response = _bevel_gear_preview(bevel_gear={
+        "module": 4.0,
+        "tooth_count": 20,
+        "face_width": 100.0,  # >= cone_distance - invalid
+        "pitch_cone_angle_degrees": 26.56505117707799,
+    })
+    assert response.status_code == 422
+    assert response.json()["detail"]["type"] == "invalid_gear_preview_parameters"
+
+
+def _bevel_pair_preview(**overrides) -> dict:
+    payload = {
+        "gear_kind": "bevel_pair",
+        "bevel_pair": {
+            "module": 4.0,
+            "member_1": {"tooth_count": 20},
+            "member_2": {"tooth_count": 40},
+            "face_width": 14.9,
+            "shaft_angle_degrees": 90.0,
+        },
+    }
+    payload.update(overrides)
+    return client.post("/document/gear/preview", json=payload)
+
+
+def test_bevel_pair_preview_auto_derives_cone_angles_and_dual_axis():
+    response = _bevel_pair_preview()
+    assert response.status_code == 200, response.json()
+    pair = response.json()["bevel_pair"]
+    assert pair["shaft_angle_degrees"] == 90.0
+    assert len(pair["members"]) == 2
+    member_1, member_2 = pair["members"]
+    assert member_1["label"] == "member_1"
+    assert member_1["axis_angle_degrees"] == 0.0
+    assert member_2["label"] == "member_2"
+    assert member_2["axis_angle_degrees"] == 90.0
+    # Known-value case: gamma_1 = atan(N1/N2) at Sigma=90deg (10-bevel-gear.md).
+    assert member_1["pitch_cone_angle_degrees"] == pytest.approx(math.degrees(math.atan(20 / 40)), abs=1e-6)
+    assert member_2["pitch_cone_angle_degrees"] == pytest.approx(90.0 - member_1["pitch_cone_angle_degrees"], abs=1e-6)
+    # A meshing pair always shares the same cone distance (real geometric
+    # property, confirmed directly in this project's own BevelPairFeature
+    # test suite - reproduced here for the preview's own math).
+    assert member_1["cone_distance"] == pytest.approx(member_2["cone_distance"], abs=1e-6)
+    assert member_1["pitch_radius"] == 40.0  # module(4) * tooth_count(20) / 2
+    assert member_2["pitch_radius"] == 80.0
+
+
+def test_bevel_pair_preview_rejects_tooth_counts_below_four():
+    response = _bevel_pair_preview(
+        bevel_pair={
+            "module": 4.0,
+            "member_1": {"tooth_count": 2},
+            "member_2": {"tooth_count": 40},
+            "face_width": 14.9,
+        }
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["type"] == "invalid_gear_preview_parameters"

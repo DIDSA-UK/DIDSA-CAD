@@ -1339,6 +1339,84 @@ class GearPreviewPlanetaryResult(BaseModel):
     planet_to_ring_ratio: float | None = None
 
 
+class GearPreviewBevelGearRequest(BaseModel):
+    """`GearPreviewRequest.bevel_gear` - mirrors `BevelGearFeatureCreate`
+    minus `plane_ref`/`bevel_type`/`target_body_ids` (positioning and
+    Boss/Cut mode don't matter for a preview - see `GearPreviewRequest`'s
+    own docstring)."""
+
+    module: float
+    tooth_count: int
+    face_width: float
+    pitch_cone_angle_degrees: float
+    pressure_angle_degrees: float = 20.0
+    backlash: float = 0.0
+    profile_shift: float = 0.0
+
+
+class GearPreviewBevelPairMemberRequest(BaseModel):
+    """The wire counterpart to `app.document.models.BevelPairMemberSpec` -
+    see `BevelPairMemberSpecSchema`'s own docstring for why only these two
+    fields legitimately differ per member."""
+
+    tooth_count: int
+    profile_shift: float = 0.0
+
+
+class GearPreviewBevelPairRequest(BaseModel):
+    """`GearPreviewRequest.bevel_pair` - mirrors `BevelPairFeatureCreate`
+    minus `plane_ref`. Cone angles are not accepted here either - like the
+    real Feature, they're auto-derived from both members' own tooth counts
+    plus `shaft_angle_degrees` (`app.document.bevel_math.pitch_cone_half_
+    angles`)."""
+
+    module: float
+    member_1: GearPreviewBevelPairMemberRequest
+    member_2: GearPreviewBevelPairMemberRequest
+    face_width: float
+    pressure_angle_degrees: float = 20.0
+    shaft_angle_degrees: float = 90.0
+    backlash: float = 0.0
+
+
+class GearPreviewBevelMember(BaseModel):
+    """One bevel gear's axial cross-section schematic - `10-bevel-gear.md`'s
+    own point: a bevel tooth has no flat 2D cut profile at all (its flank
+    is a curved surface on a cone), so unlike every other `gear_kind` this
+    is *not* a tooth outline. It's the standard bevel-drafting side-view
+    envelope instead: the symmetric (about the member's own axis) closed
+    shape bounded by the face cone (addendum) and root cone (dedendum)
+    generators, between the inner (front) and outer (back) cone distances
+    - exactly what a bevel gear catalog/engineering drawing shows for an
+    at-a-glance size/proportion reference. `pitch_line` (one reference
+    segment, the "upper" half only - the outline itself is already
+    symmetric) is the pitch cone generator between the same two cone
+    distances.
+
+    `outline_points`/`pitch_line` are in the shared preview's local 2D
+    frame: the apex at the origin, this member's own axis pointing along
+    `axis_angle_degrees` from local +x (`0` for a standalone bevel gear or
+    a pair's `member_1`; `shaft_angle_degrees` for a pair's `member_2` -
+    `11-bevel-pair.md`'s own apex-aligned, dual-axis positioning, projected
+    into this 2D schematic - both members' apexes coincide at the origin,
+    same as their real 3D cone apexes)."""
+
+    label: str  # "single" | "member_1" | "member_2"
+    axis_angle_degrees: float
+    outline_points: list[tuple[float, float]]
+    pitch_line: tuple[tuple[float, float], tuple[float, float]]
+    pitch_cone_angle_degrees: float
+    cone_distance: float
+    inner_cone_distance: float
+    pitch_radius: float
+    face_width: float
+
+
+class GearPreviewBevelPairResult(BaseModel):
+    members: list[GearPreviewBevelMember]
+    shaft_angle_degrees: float
+
+
 class GearPreviewRequest(BaseModel):
     """`docs/gear-design/08-entry-screen-and-preview.md`: the cheap
     `/gear/preview` endpoint's request - runs only `gear_math`/`gear_chain_
@@ -1347,10 +1425,12 @@ class GearPreviewRequest(BaseModel):
     `gear_kind` is the discriminator (`"external"`/`"internal"`/`"rack"`
     for a single `GearFeature`/`RackFeature`-shaped preview, `"chain"`/
     `"planetary"` for `GearChainFeature`/`PlanetaryGearFeature`'s own
-    multi-gear preview via the nested `chain`/`planetary` payloads below -
-    a future gear type still adds one more literal value here plus a new
-    branch in `app.document.router._gear_preview_response`, not a new
-    endpoint, per this field's own original design).
+    multi-gear preview via the nested `chain`/`planetary` payloads below,
+    `"bevel_gear"`/`"bevel_pair"` for `BevelGearFeature`/`BevelPairFeature`'s
+    own axial-cross-section schematic via the nested `bevel_gear`/
+    `bevel_pair` payloads - a future gear type still adds one more literal
+    value here plus a new branch in `app.document.router._gear_preview_
+    response`, not a new endpoint, per this field's own original design).
 
     Deliberately excludes anything `plane_ref`/positioning-related (the
     preview is always drawn in its own local 2D frame, centred on the
@@ -1359,7 +1439,7 @@ class GearPreviewRequest(BaseModel):
     construction stage - `gear_math.tooth_profile_points` never uses it,
     so it has no effect on this endpoint's own output)."""
 
-    gear_kind: Literal["external", "internal", "rack", "chain", "planetary"]
+    gear_kind: Literal["external", "internal", "rack", "chain", "planetary", "bevel_gear", "bevel_pair"]
     # Required for gear_kind in ("external", "internal", "rack"); unused
     # (and ignored) for "chain"/"planetary", which carry their own nested
     # `chain`/`planetary` payload below instead - widened from a plain
@@ -1383,6 +1463,10 @@ class GearPreviewRequest(BaseModel):
     # same convention the single-gear fields above already document).
     chain: GearPreviewChainRequest | None = None
     planetary: GearPreviewPlanetaryRequest | None = None
+    # Required when gear_kind == "bevel_gear"/"bevel_pair" respectively -
+    # same nested-payload convention as chain/planetary above.
+    bevel_gear: GearPreviewBevelGearRequest | None = None
+    bevel_pair: GearPreviewBevelPairRequest | None = None
 
 
 class GearPreviewResponse(BaseModel):
@@ -1409,7 +1493,7 @@ class GearPreviewResponse(BaseModel):
     for a multi-member preview, only each member's own (see
     `GearPreviewMember`)."""
 
-    gear_kind: Literal["external", "internal", "rack", "chain", "planetary"]
+    gear_kind: Literal["external", "internal", "rack", "chain", "planetary", "bevel_gear", "bevel_pair"]
     outline_points: list[tuple[float, float]] = []
     pitch_radius: float | None = None
     base_radius: float | None = None
@@ -1423,6 +1507,12 @@ class GearPreviewResponse(BaseModel):
     warnings: list[str] = []
     chain: GearPreviewChainResult | None = None
     planetary: GearPreviewPlanetaryResult | None = None
+    # Populated only for "bevel_gear" (one member, label "single") -
+    # `GearPreviewBevelMember`'s own axial-cross-section schematic.
+    bevel_gear: GearPreviewBevelMember | None = None
+    # Populated only for "bevel_pair" (two members, `11-bevel-pair.md`'s
+    # own dual-axis apex-aligned positioning projected into 2D).
+    bevel_pair: GearPreviewBevelPairResult | None = None
 
 
 FeatureResponse = Union[
