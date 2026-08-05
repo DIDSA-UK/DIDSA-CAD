@@ -136,8 +136,9 @@ needing to mesh.
   pressed onto a common keyed shaft) via the existing `MergeMode` field
   Pattern/Mirror already expose.
 
-**Two unspiked unknowns — resolve during this workstream, not
-mid-implementation:**
+**Two unspiked unknowns, resolved by a real spike against
+`pythonocc-core` — see "Spike 2 findings" below.** Original framing, kept
+for context:
 - **Structural transition between the two diameters.** A large module
   difference leaves a step (or a thin unsupported overhang) at the join.
   No manufacturing-constraint validation exists anywhere in this
@@ -396,3 +397,250 @@ attempted in this spike): the last-stage inert-`turn_angle`-field UI
 handling, and the rack-orientation-within-a-bent-chain convention. Spike 2
 (compound-station geometry) is still separately required before the full
 Workstream 5 build, per this doc's own risk section above.
+
+---
+
+## Spike 2 findings (2026-08-04) — compound-station geometry, against real `pythonocc-core`
+
+Investigate/prototype only, per this doc's own "plan for two separate
+spikes" note above — Spike 1 (above) is unmodified context, not redone
+here. Unlike Spike 1 (pure Python, no OCCT), this workstream's own compound-
+gear unknowns are explicitly OCCT questions ("structural transition
+between two diameters," "does the fused solid's own geometry support a
+join fillet"), so this spike required real `pythonocc-core`, not reasoning
+about the API. Bootstrapped a real conda-forge env — `micromamba` from its
+GitHub Releases download-asset URL (`micro.mamba.pm` 403'd through this
+sandbox's proxy, same shape as every prior session's entry above), built
+`backend/environment.yml` (`pythonocc-core=7.9.3=novtk*`, `conda.anaconda.org`
+reachable) — the same established recipe every prior spike in this file
+used. Prototype script (throwaway, not committed) built every solid via
+`app.document.gear`'s own real internals (`_gear_outline_wire`, `_gear_face`,
+`_apply_root_fillet`, `spur_gear_geometry` — a simplified stand-in for
+`resolve_gear_from_bodies` that hand-builds a `ResolvedPlane` offset along
+world Z instead of routing through `resolve_plane_ref`/a full
+`Part`/`compute_part_bodies`, which isn't needed to test the join itself),
+fused the results with real `BRepAlgoAPI_Fuse`, and inspected the actual
+output (`BRepCheck_Analyzer`, `TopAbs_SOLID`/`TopAbs_FACE`/`TopAbs_EDGE`
+counts, real `BRepGProp` volumes) — every number below is printed output
+from that run, not restated reasoning.
+
+### 1. Structural transition: minimum-thickness alone is not sufficient — the real failure mode is silent disconnection
+
+**External+external members never degenerate, at any tested module
+ratio.** Five module/tooth-count combinations up to a 16× ratio (module
+0.5 ↔ module 8, 60-tooth ↔ 8-tooth) all fused into one topologically valid
+single solid — `BRepAlgoAPI_Fuse.IsDone()` and `BRepCheck_Analyzer.IsValid()`
+both `True` in every case, fused volume equal to the sum of the two
+members' own unfused volumes to the mm³ (e.g. the 16× case: `A=2109.668 +
+B=108088.318 = 110197.986`, fused `110197.986`, zero difference). This
+matches what `_gear_face` actually builds: an external `GearFeature` is a
+solid disc all the way to the shaft centre (wire-alone face, no inner
+loop), so two coaxial external members are always fully backed by a
+continuous cross-sectional web at the join — never merely a thin shell.
+**A plain minimum-thickness warning would be guarding against a failure
+mode that structurally can't occur for the common external+external
+case.**
+
+**Three real, silent failure modes were found instead, none flagged by
+`Fuse.IsDone()` or `BRepCheck_Analyzer` (both stayed `True` in every case
+below):**
+
+1. **Axial gap.** Module-1/20-tooth (`face_width=6`) stacked against
+   module-5/10-tooth with a gap between the two members' own `z` ranges:
+   `gap=0.0mm` → 1 solid (correct). `gap=0.1mm` → **2 solids** — `IsDone`
+   and `BRepCheck.IsValid` both stayed `True`, only a real
+   `TopAbs_SOLID` walk (`_explode_solids`) reveals the members never
+   actually touch. `gap=1.0mm` → 2 solids, same silent pattern. A 0.1mm
+   stacking-offset typo is well within plausible user input.
+2. **Radial mismatch on an internal (ring) member.** Compound members can
+   be any type ("each its own type" per this doc's own scope), and a ring
+   gear's material is an annulus, not a disc. Built a ring (module 2, 40
+   teeth, `outer_diameter=90` → outer rim radius 45mm, inward addendum
+   reach 38mm) against three external partners at the same axial position:
+   a small pinion (module 1, 8 teeth, addendum radius 5mm, well inside the
+   38mm bore) → **2 solids**, a floating disconnected pinion; a bigger
+   pinion (module 1, 46 teeth, addendum radius 24mm, still short of 38mm)
+   → still **2 solids**; only once the pinion's own addendum radius
+   (module 2, 44 teeth → 46mm) exceeds the ring's 38mm reach does it
+   become **1 solid**. Confirms the mechanism is genuinely radius-
+   dependent, not a fixed bug, and — as the doc's original "step/overhang"
+   framing didn't anticipate at all — this is a connectivity problem
+   specific to internal-member compounds, not a thickness problem.
+3. **Axial overlap.** Module-1/20-tooth stacked with the second member's
+   `z` start moved *earlier* than the first member's own `face_width` (a
+   stacking offset smaller than it should be): `overlap=0.0mm` → 1 solid,
+   volume exactly the unfused sum (36098.919mm³). `overlap=1.0mm` → still
+   1 solid (`IsDone`/valid both `True`), but volume drops to
+   35777.806mm³ — 321.113mm³ less than the unfused sum. `overlap=3.0mm` →
+   1 solid, volume 35135.580mm³, 963.339mm³ less. Geometrically valid
+   (one connected solid, no OCCT error), but the larger member's footprint
+   silently swallows the smaller member's own tooth geometry in the
+   overlap band — the result doesn't match either member's stated spec
+   there.
+
+**Resolution**: a minimum-thickness check does not catch any of the three
+cases above (none are a thin wall; all are silent — no exception, no
+invalid-shape flag). What actually catches case 1 and 2 cheaply, reusing
+existing code with zero new topology work: **count connected solids after
+the join** the same way `app.document.extrude._explode_solids` already
+does (already called by `_register_solids` on every Boss/Cut/Pattern/
+Mirror result — no new function needed, just a call-site check). When
+`merge=FUSE_INTO_ONE` was requested and the result comes back as more
+than one connected solid, that's `00-conventions.md`'s "no valid geometry
+to draw" **blocking** exception (the user asked for one fused body and the
+given parameters don't produce one) — not a soft warning, since there is
+nothing sensible to register as "the" fused Body. Case 3 (axial overlap,
+silently-swallowed geometry) is a good fit for the ordinary **non-blocking**
+warning convention instead — the result is a single valid solid, just
+surprising relative to the stated per-member spec; detecting it needs
+comparing the fused volume against the two members' own unfused volumes
+(both already computed for free before the fuse). A literal minimum-
+thickness metric is still worth keeping, but as a separate, simpler check
+on a single member's own `face_width` in isolation (a 0.3mm-thick member
+is physically fragile regardless of the join) — a different question from
+the join geometry this spike was scoped to test.
+
+### 2. Optional join fillet: the edge-picking mechanism generalizes, but convergence is too narrow to be worth building now
+
+Locating "the join" directly on the fused result (walking every edge of
+the fused shape and keeping the ones whose bounding box sits flat in the
+member-A/member-B transition plane, `z=width_a`) works cleanly and
+generalizes the same "map original topology through the operation" idiom
+`_apply_root_fillet` already uses via `BRepPrimAPI_MakePrism.Generated()` —
+just via a direct query on the fused result here rather than the prism's
+own build history (tracking member A's *original* top face through
+`BRepAlgoAPI_Fuse.Modified()`/`IsDeleted()` turned out to be the wrong
+approach: when member B's cross-section is larger than member A's, the
+exposed "shoulder" at the join is a face newly carved from member B's
+own bottom face, not a survival of member A's top face at all — a real
+dead end this spike hit and corrected before landing on the direct-query
+approach).
+
+But actual convergence of `BRepFilletAPI_MakeFillet` around that whole
+loop (a modest module diff, module 1→2, 20→15 teeth: 280 join-plane edges
+found; a large diff, module 1→5, 20→10 teeth: 240 edges) is narrow and
+non-monotonic with radius:
+- Modest diff (module 1→2): converges (`IsDone=True`) at 0.05–0.5mm,
+  fails at 0.8mm and 1.0mm.
+- Large diff (module 1→5): converges at 0.05–0.8mm, fails only at 1.0mm —
+  a *wider* window than the modest-diff case, confirming the relationship
+  between module difference and which radii converge isn't a simple
+  monotonic curve.
+
+The usable window exists but is unpredictable as a function of module
+difference, and even where it converges the radii (well under 1mm) are
+too small relative to a real multi-millimetre step to meaningfully
+address stress concentration — cosmetic at best, not real relief. Given
+root fillet "worked correctly on the first real run, no fixes needed" per
+this project's own Workstream-2 history (`docs/status.md`), a whole-loop
+join fillet is a materially less reliable feature by comparison. **Not
+worth building as v1 scope.** A more promising future angle (not
+prototyped here, genuinely new geometry work): a chamfer/lead-in on just
+the *outer envelope* at the transition radius (one large circle, not the
+actual scalloped tooth-profile loop).
+
+### 3. DXF two-files resolution: confirmed, and simpler than the original framing suggested
+
+No DXF export code exists in this codebase yet (`06-dxf-export.md`,
+Workstream 6, unstarted — confirmed by direct search, not assumed), so
+this is a scoping conclusion, not a code test — correctly out of this
+spike's scope to implement. `06-dxf-export.md`'s own existing scope
+already writes a gear's DXF directly from its stored generative
+parameters (`gear_math` profile points) — it never slices or re-derives
+from the OCCT solid. Each compound member keeps its own `module`/
+`tooth_count`/`pressure_angle`/`face_width` spec on the Feature regardless
+of what the fused 3D solid ends up looking like (confirmed directly by
+this spike's own Part A–D results above: the fuse only ever touches the
+3D solid, never the members' own stored parameters), so **whether
+`merge=FUSE_INTO_ONE` or `KEEP_SEPARATE` was chosen makes no difference to
+DXF export** — "two separate per-member DXF files" isn't a special case
+needing new logic, it's the same per-member path `06-dxf-export.md`'s
+"per-gear cut files" already needs for an ordinary N-stage chain, just
+contributing 2 files for a compound stage instead of 1.
+
+Two concrete, previously-unflagged refinements for `06-dxf-export.md`'s
+own future scope (not implemented here):
+1. **Per-gear cut file naming needs a compound-aware case.** An ordinary
+   chain stage maps 1:1 to one output file; a compound stage must map to
+   2 (member A / member B) — a naming sub-index, not a structural rework.
+2. **Combined layout export has an unaddressed compound case.** Both
+   members of a compound stage share the exact same `(x, y)` centre
+   (coaxial, unlike an ordinary chain's sequentially-offset stages) — in
+   a flat top-down layout drawing they land exactly on top of each other
+   by construction. Not a bug (they genuinely are coaxial), but the
+   writer needs a deliberate choice here (e.g. one DXF layer per member at
+   the shared location) rather than silently overlapping two profiles
+   indistinguishably on one layer.
+
+### 4. `MergeMode`: confirmed sufficient for the coaxial compound case, with one gap already covered by finding 1 above
+
+Built a `TopoDS_Compound` of two touching-but-unfused coaxial solids and
+ran it through the real `_explode_solids`/`_register_solids` functions
+Pattern/Mirror's own `KEEP_SEPARATE` path already uses (not reasoning
+about them — actually called them, same as every other check in this
+spike):
+
+- **`KEEP_SEPARATE`**: `_register_solids(bodies, "compound_stage_1",
+  compound)` registered `['compound_stage_1#0', 'compound_stage_1#1']` —
+  two independent Bodies, identical to Mirror/Pattern's own disjoint-
+  copies outcome. `_explode_solids` walks `TopAbs_SOLID` topologically,
+  not by spatial proximity, so two independently-built solids that merely
+  touch (no shared BRep topology) are correctly split, no special-casing
+  needed for "touching" vs. "spatially separate" — confirming this covers
+  the coaxial case cleanly, not just Pattern/Mirror's original
+  non-coaxial (spatially-disjoint-copies) use case.
+- **`FUSE_INTO_ONE`, well-formed** (correct stacking offset): registered
+  `['compound_stage_1']` — one Body, correct.
+- **`FUSE_INTO_ONE`, 0.5mm axial gap**: `Fuse.IsDone()=True`,
+  `BRepCheck.IsValid()=True`, but `_register_solids` still registered
+  `['compound_stage_1#0', 'compound_stage_1#1']` — silently split into two
+  Bodies despite the user asking for one fused body. This is exactly
+  finding 1's own gap, confirmed directly through the real `MergeMode`
+  plumbing rather than in the abstract: `MergeMode`'s existing two values
+  and `_register_solids`'/`_fuse_realized_instances`' existing mechanics
+  are sufficient and need no new field or enum value — what's missing is
+  a `FUSE_INTO_ONE`-specific caller-side check on the resulting body count
+  (finding 1's resolution), which Mirror/Pattern's own existing
+  `FUSE_INTO_ONE` callers never needed since their sources/copies aren't
+  positioned by a user-typed axial-offset number the way a compound
+  stacking offset is.
+
+One further, minor observation: `KEEP_SEPARATE` performs no boolean at
+all, so a compound station built with `KEEP_SEPARATE` *and* a mistaken
+axial overlap would register two literally interpenetrating Bodies (both
+keeping their own full, unmodified geometry) rather than
+`FUSE_INTO_ONE`'s "geometrically valid but volume-short" outcome (finding
+1, case 3). Not a new gap this spike introduces — this app already allows
+any two Bodies to overlap in general (nothing Pattern/Mirror-specific
+prevents it today) — but worth carrying into the full build as the same
+kind of non-blocking warning as finding 1's overlap case, checked
+independently of which `MergeMode` was chosen.
+
+### Conclusion
+
+Both compound-gear unknowns are resolved with real evidence, not just
+re-derived reasoning: a plain minimum-thickness check is **not**
+sufficient (three silent disconnection/volume-loss modes reachable via
+plausible input, none of them a thin wall); the fix is a connected-solid-
+count check after the join (blocking when `FUSE_INTO_ONE` produces >1
+solid, non-blocking for the overlap/volume-loss case), cheap to build by
+reusing `_explode_solids` already-existing logic. A join fillet is
+technically wireable (edge-picking generalizes) but not worth building as
+v1 scope — convergence is too narrow and unpredictable to be a reliable
+feature. The DXF two-files resolution is confirmed and simpler than
+originally framed (gear DXF export never touches the 3D solid at all, so
+fuse-vs-separate is a non-issue for it), with two concrete refinements
+flagged for `06-dxf-export.md`'s own future scope. `MergeMode`'s existing
+`KEEP_SEPARATE`/`FUSE_INTO_ONE` values need no new field for the coaxial
+compound case — both were exercised directly against real coaxial solids
+here, not just reasoned about from Pattern/Mirror's original non-coaxial
+use case.
+
+**Both of Workstream 5's spikes are now done** (Spike 1: `GearChainFeature`
+bent-path positioning + interference checking, above; Spike 2: this
+section). **Workstream 5 is clear to move to a full build** — the
+remaining open items are small, scoped design decisions to make during
+implementation (Spike 1's last-stage inert-field UI handling and rack-
+orientation convention; this spike's connected-solid-count check and the
+two `06-dxf-export.md` refinements), not further unresolved technical
+risk requiring another spike.
