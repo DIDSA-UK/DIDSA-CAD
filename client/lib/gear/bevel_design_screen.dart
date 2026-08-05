@@ -7,6 +7,8 @@ import '../api/sketch_api_client.dart' show ApiException;
 import '../viewport3d/part_screen.dart';
 import 'bevel_preview_canvas.dart';
 import 'field_help_icon.dart';
+import 'gear_preset_controls.dart';
+import 'gear_preset_store.dart';
 import 'gear_validation_banner.dart';
 import 'standard_value_field.dart';
 
@@ -76,6 +78,14 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
     _mode = widget.initialMode;
     _api = widget.documentApi ?? DocumentApiClient();
     _schedulePreview();
+    _loadPresets();
+  }
+
+  /// Mirrors `GearDesignScreen._loadPresets`'s own fire-and-forget warm-up.
+  Future<void> _loadPresets() async {
+    await GearPresetStore.load();
+    if (!mounted) return;
+    setState(() {});
   }
 
   @override
@@ -328,6 +338,8 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
           },
         ),
         const SizedBox(height: 12),
+        GearPresetControls(kind: 'bevel_design', captureFields: _captureFields, onLoad: _applyPresetFields),
+        const SizedBox(height: 12),
         if (_previewLoading)
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 4),
@@ -484,6 +496,53 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
         onChanged: (_) => _schedulePreview(),
       ),
     ];
+  }
+
+  /// `docs/gear-design/09-presets.md`: both modes' fields captured
+  /// together, same simplicity `GearChainDesignScreen._captureFields`
+  /// already uses.
+  Map<String, dynamic> _captureFields() => {
+        'mode': _mode.name,
+        'module': _module,
+        'pressureAngleDegrees': _pressureAngleDegrees,
+        'plane': _plane,
+        'toothCount': _toothCountController.text,
+        'faceWidth': _faceWidthController.text,
+        'pitchConeAngle': _pitchConeAngleController.text,
+        'backlash': _backlashController.text,
+        'profileShift': _profileShiftController.text,
+        'toothCount1': _toothCount1Controller.text,
+        'profileShift1': _profileShift1Controller.text,
+        'toothCount2': _toothCount2Controller.text,
+        'profileShift2': _profileShift2Controller.text,
+        'pairFaceWidth': _pairFaceWidthController.text,
+        'shaftAngle': _shaftAngleController.text,
+        'pairBacklash': _pairBacklashController.text,
+      };
+
+  void _applyPresetFields(Map<String, dynamic> fields) {
+    setState(() {
+      final modeName = fields['mode'] as String?;
+      if (modeName != null) {
+        _mode = BevelMultiKind.values.firstWhere((m) => m.name == modeName, orElse: () => _mode);
+      }
+      _module = (fields['module'] as num?)?.toDouble() ?? _module;
+      _pressureAngleDegrees = (fields['pressureAngleDegrees'] as num?)?.toDouble() ?? _pressureAngleDegrees;
+      _plane = fields['plane'] as String? ?? _plane;
+      if (fields['toothCount'] is String) _toothCountController.text = fields['toothCount'] as String;
+      if (fields['faceWidth'] is String) _faceWidthController.text = fields['faceWidth'] as String;
+      if (fields['pitchConeAngle'] is String) _pitchConeAngleController.text = fields['pitchConeAngle'] as String;
+      if (fields['backlash'] is String) _backlashController.text = fields['backlash'] as String;
+      if (fields['profileShift'] is String) _profileShiftController.text = fields['profileShift'] as String;
+      if (fields['toothCount1'] is String) _toothCount1Controller.text = fields['toothCount1'] as String;
+      if (fields['profileShift1'] is String) _profileShift1Controller.text = fields['profileShift1'] as String;
+      if (fields['toothCount2'] is String) _toothCount2Controller.text = fields['toothCount2'] as String;
+      if (fields['profileShift2'] is String) _profileShift2Controller.text = fields['profileShift2'] as String;
+      if (fields['pairFaceWidth'] is String) _pairFaceWidthController.text = fields['pairFaceWidth'] as String;
+      if (fields['shaftAngle'] is String) _shaftAngleController.text = fields['shaftAngle'] as String;
+      if (fields['pairBacklash'] is String) _pairBacklashController.text = fields['pairBacklash'] as String;
+    });
+    _schedulePreview();
   }
 
   Widget _buildValidationBanner() {

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/gear/gear_design_screen.dart';
@@ -18,6 +19,14 @@ import 'package:didsa_cad_client/gear/gear_design_screen.dart';
 /// chain (unlike `PartScreen` itself, which this only navigates *to* after
 /// Create, never builds inline here).
 void main() {
+  // GearDesignScreen now warms GearPresetStore's cache in initState -
+  // shared_preferences has no real platform channel under `flutter test`,
+  // so every test needs the mock in place, same as part_screen_test.dart's
+  // own setUp.
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+  });
+
   http.Response jsonResponse(Object body, {int status = 200}) =>
       http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});
 
@@ -276,5 +285,42 @@ void main() {
           'stronger teeth for the same tooth count.'),
       findsOneWidget,
     );
+  });
+
+  testWidgets('Save as preset then Load preset round-trips the tooth count field', (tester) async {
+    final client = DocumentApiClient(
+      httpClient: MockClient((request) async => jsonResponse(defaultPreviewResponse())),
+    );
+
+    await tester.pumpWidget(MaterialApp(home: GearDesignScreen(documentApi: client)));
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.widgetWithText(TextField, 'Tooth count'), '24');
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.text('Save as preset'));
+    await tester.tap(find.text('Save as preset'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.widgetWithText(TextField, 'Preset name'), 'My 24-tooth gear');
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    // Change the field away from the saved value, so loading the preset
+    // back is a real, observable change.
+    await tester.enterText(find.widgetWithText(TextField, 'Tooth count'), '30');
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.text('Load preset'));
+    await tester.tap(find.text('Load preset'));
+    await tester.pumpAndSettle();
+    expect(find.text('My 24-tooth gear'), findsOneWidget);
+    await tester.tap(find.text('My 24-tooth gear'));
+    await tester.pumpAndSettle();
+
+    final toothCountField = tester.widget<TextField>(find.widgetWithText(TextField, 'Tooth count'));
+    expect(toothCountField.controller?.text, '24');
   });
 }

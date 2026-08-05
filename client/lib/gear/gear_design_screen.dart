@@ -8,6 +8,8 @@ import '../viewport3d/part_screen.dart';
 import 'bevel_design_screen.dart';
 import 'field_help_icon.dart';
 import 'gear_chain_design_screen.dart';
+import 'gear_preset_controls.dart';
+import 'gear_preset_store.dart';
 import 'gear_preview_canvas.dart';
 import 'gear_validation_banner.dart';
 import 'standard_value_field.dart';
@@ -111,6 +113,18 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
     super.initState();
     _api = widget.documentApi ?? DocumentApiClient();
     _schedulePreview();
+    _loadPresets();
+  }
+
+  /// Mirrors `MeshViewerScreen._loadScenePrefs`'s own "don't block the
+  /// first frame on a shared_preferences read" pattern - not awaited from
+  /// [initState]. Presets are only actually read once "Load preset" is
+  /// tapped (`GearPresetControls`), so this just warms the in-memory cache
+  /// early rather than gating anything on it.
+  Future<void> _loadPresets() async {
+    await GearPresetStore.load();
+    if (!mounted) return;
+    setState(() {});
   }
 
   @override
@@ -530,6 +544,8 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
           value: _showReferenceOverlay,
           onChanged: (value) => setState(() => _showReferenceOverlay = value),
         ),
+        const SizedBox(height: 12),
+        GearPresetControls(kind: 'gear_design', captureFields: _captureFields, onLoad: _applyPresetFields),
         const SizedBox(height: 8),
         if (_previewLoading)
           const Padding(
@@ -555,6 +571,53 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
         ),
       ],
     );
+  }
+
+  /// `docs/gear-design/09-presets.md`: this form's own current state,
+  /// captured as a plain map - controller text is snapshotted as-is
+  /// (rather than the parsed number) so an in-progress/blank field round-
+  /// trips exactly, matching what the user actually typed.
+  Map<String, dynamic> _captureFields() => {
+        'kind': _kind.name,
+        'module': _module,
+        'pressureAngleDegrees': _pressureAngleDegrees,
+        'toothCount': _toothCountController.text,
+        'faceWidth': _faceWidthController.text,
+        'profileShift': _profileShift,
+        'backlash': _backlash,
+        'rootFilletRadius': _rootFilletRadius,
+        'helixAngleDegrees': _helixAngleDegrees,
+        'herringbone': _herringbone,
+        'outerDiameter': _outerDiameterController.text,
+        'backingHeight': _backingHeightController.text,
+        'plane': _plane,
+      };
+
+  /// The inverse of [_captureFields] - loading a preset re-populates the
+  /// form exactly as if the user had typed/selected every value
+  /// themselves, then re-fetches the preview (`09-presets.md`'s own "a
+  /// convenience for re-populating the form" framing - no ongoing link to
+  /// the preset afterward).
+  void _applyPresetFields(Map<String, dynamic> fields) {
+    setState(() {
+      final kindName = fields['kind'] as String?;
+      if (kindName != null) {
+        _kind = GearDesignKind.values.firstWhere((k) => k.name == kindName, orElse: () => _kind);
+      }
+      _module = (fields['module'] as num?)?.toDouble() ?? _module;
+      _pressureAngleDegrees = (fields['pressureAngleDegrees'] as num?)?.toDouble() ?? _pressureAngleDegrees;
+      if (fields['toothCount'] is String) _toothCountController.text = fields['toothCount'] as String;
+      if (fields['faceWidth'] is String) _faceWidthController.text = fields['faceWidth'] as String;
+      _profileShift = (fields['profileShift'] as num?)?.toDouble() ?? _profileShift;
+      _backlash = (fields['backlash'] as num?)?.toDouble() ?? _backlash;
+      _rootFilletRadius = (fields['rootFilletRadius'] as num?)?.toDouble() ?? _rootFilletRadius;
+      _helixAngleDegrees = (fields['helixAngleDegrees'] as num?)?.toDouble() ?? _helixAngleDegrees;
+      _herringbone = fields['herringbone'] as bool? ?? _herringbone;
+      if (fields['outerDiameter'] is String) _outerDiameterController.text = fields['outerDiameter'] as String;
+      if (fields['backingHeight'] is String) _backingHeightController.text = fields['backingHeight'] as String;
+      _plane = fields['plane'] as String? ?? _plane;
+    });
+    _schedulePreview();
   }
 
   /// `00-conventions.md`'s non-blocking validation banner: a `gear_math`

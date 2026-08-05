@@ -14,19 +14,21 @@ solids directly). See `docs/dxf-io/00-conventions.md` for the full
 reasoning, and `06-dxf-export.md`/`07-dxf-import-block.md` in this
 directory for pointers to the new location.
 
-**Status: backend/API complete, client rollout in progress.** Workstreams
-1, 2, 3, 4, 5, 10, 11 (gear math core, `GearFeature`, `RackFeature`,
-helical/herringbone teeth + general `LoftFeature`, `GearChainFeature`/
-`PlanetaryGearFeature`/`GearGroup`, `BevelGearFeature`, `BevelPairFeature`)
-are all done. Workstream 8's entry screen + 2D preview now covers
-external/internal/rack (v1), helical/herringbone teeth (`GearFeature`
-fields on the existing External/Internal form), chain/planetary
-(`GearChainDesignScreen` - stage-list editor, multi-gear preview with
-interference highlighting and `GearGroup` colour-coding, ratio/rotation-
-direction display), and bevel/bevel-pair (`BevelDesignScreen` - the
-axial-cross-section schematic preview a bevel tooth's lack of a flat 2D
-profile calls for, dual-axis for a pair) - see `docs/status.md`'s dated
-entries. Only Workstream 9 (presets) remains.
+**Status: complete, backend and client.** Workstreams 1, 2, 3, 4, 5, 10, 11
+(gear math core, `GearFeature`, `RackFeature`, helical/herringbone teeth +
+general `LoftFeature`, `GearChainFeature`/`PlanetaryGearFeature`/
+`GearGroup`, `BevelGearFeature`, `BevelPairFeature`) are all done.
+Workstream 8's entry screen + 2D preview covers external/internal/rack
+(v1), helical/herringbone teeth (`GearFeature` fields on the existing
+External/Internal form), chain/planetary (`GearChainDesignScreen` -
+stage-list editor, multi-gear preview with interference highlighting and
+`GearGroup` colour-coding, ratio/rotation-direction display), and
+bevel/bevel-pair (`BevelDesignScreen` - the axial-cross-section schematic
+preview a bevel tooth's lack of a flat 2D profile calls for, dual-axis for
+a pair). Workstream 9 (presets) is done too - `GearPresetStore`
+(client-local, `shared_preferences`-backed) plus a shared `GearPresetControls`
+widget ("Save as preset"/"Load preset") on all three Gear Design screens.
+See `docs/status.md`'s dated entries for the full rollout history.
 
 ## How to use these docs in a fresh implementation session
 
@@ -55,7 +57,7 @@ never needed most of it).
 | 6 | `06-dxf-export.md` | — | — **moved to `docs/dxf-io/`**, no longer gear-specific |
 | 7 | `07-dxf-import-block.md` | — | — **moved to `docs/dxf-io/`**, no longer gear-specific |
 | 8 | `08-entry-screen-and-preview.md` | 1, 2 | Medium - **fully done** (external/internal/rack v1, `helix_angle_degrees`/`herringbone` fields on the same form, `GearChainDesignScreen`'s multi-gear preview with interference highlighting/ratio-direction display/`GearGroup` colour-coding, and `BevelDesignScreen`'s dual-axis axial-cross-section schematic preview - `/gear/preview` now covers all seven `gear_kind` values) |
-| 9 | `09-presets.md` | 8 | Low |
+| 9 | `09-presets.md` | 8 | Low - **done** (`GearPresetStore`, client-local `shared_preferences`-backed named presets; `GearPresetControls` "Save as preset"/"Load preset" on all three Gear Design screens - no backend involvement, per this doc's own scope) |
 | 10 | `10-bevel-gear.md` | 1 | Highest in project - **done, incl. client UI** (`BevelGearFeature` - straight bevel, arbitrary shaft angle via a direct `pitch_cone_angle_degrees` field; `BevelDesignScreen`'s "Bevel Gear" mode covers entry + the axial-cross-section schematic preview) |
 | 11 | `11-bevel-pair.md` | 10 | High - **done, incl. client UI** (`BevelPairFeature` - apex-aligned dual-axis positioning, arbitrary shaft angle, auto-derived pitch cone angles; `BevelDesignScreen`'s "Bevel Pair" mode covers entry + dual-axis preview; DXF flat-pattern export still deferred to Workstream 6) |
 

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/gear/gear_chain_design_screen.dart';
@@ -14,6 +15,12 @@ import 'package:didsa_cad_client/gear/gear_chain_design_screen.dart';
 /// shape: a fake [MockClient] stands in for the real backend, no real
 /// network, no OCCT dependency in this screen's own import chain.
 void main() {
+  // GearChainDesignScreen now warms GearPresetStore's cache in initState -
+  // see gear_design_screen_test.dart's own identical setUp for why.
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+  });
+
   http.Response jsonResponse(Object body, {int status = 200}) =>
       http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});
 

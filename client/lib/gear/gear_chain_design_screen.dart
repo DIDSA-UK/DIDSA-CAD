@@ -7,6 +7,8 @@ import '../api/sketch_api_client.dart' show ApiException;
 import '../viewport3d/part_screen.dart';
 import 'field_help_icon.dart';
 import 'gear_chain_preview_canvas.dart';
+import 'gear_preset_controls.dart';
+import 'gear_preset_store.dart';
 import 'gear_validation_banner.dart';
 import 'standard_value_field.dart';
 
@@ -124,6 +126,14 @@ class _GearChainDesignScreenState extends State<GearChainDesignScreen> {
     _mode = widget.initialMode;
     _api = widget.documentApi ?? DocumentApiClient();
     _schedulePreview();
+    _loadPresets();
+  }
+
+  /// Mirrors `GearDesignScreen._loadPresets`'s own fire-and-forget warm-up.
+  Future<void> _loadPresets() async {
+    await GearPresetStore.load();
+    if (!mounted) return;
+    setState(() {});
   }
 
   @override
@@ -423,6 +433,12 @@ class _GearChainDesignScreenState extends State<GearChainDesignScreen> {
           },
         ),
         const SizedBox(height: 12),
+        GearPresetControls(
+          kind: 'gear_chain_design',
+          captureFields: _captureFields,
+          onLoad: _applyPresetFields,
+        ),
+        const SizedBox(height: 12),
         if (_previewLoading)
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 4),
@@ -686,6 +702,85 @@ class _GearChainDesignScreenState extends State<GearChainDesignScreen> {
         child: Text(lines.join('\n'), style: const TextStyle(color: Colors.white70, fontSize: 12)),
       ),
     );
+  }
+
+  /// `docs/gear-design/09-presets.md`: this form's own current state
+  /// (both modes' fields captured together, same "one preset, whichever
+  /// fields the screen happened to have" simplicity `GearDesignScreen.
+  /// _captureFields` already uses - loading a chain-mode preset back into
+  /// planetary mode's own fields would just be a harmless no-op, since
+  /// `_applyPresetFields` only restores the mode captured alongside them).
+  Map<String, dynamic> _captureFields() => {
+        'mode': _mode.name,
+        'module': _module,
+        'pressureAngleDegrees': _pressureAngleDegrees,
+        'plane': _plane,
+        'startDirection': _startDirectionController.text,
+        'printClearance': _printClearanceController.text,
+        'stages': [
+          for (final stage in _stages)
+            {
+              'kind': stage.kind.name,
+              'toothCount': stage.toothCountController.text,
+              'faceWidth': stage.faceWidthController.text,
+              'turnAngle': stage.turnAngleController.text,
+              'outerDiameter': stage.outerDiameterController.text,
+            },
+        ],
+        'sunToothCount': _sunToothCountController.text,
+        'ringToothCount': _ringToothCountController.text,
+        'planetCount': _planetCountController.text,
+        'planetaryFaceWidth': _planetaryFaceWidthController.text,
+        'ringOuterDiameter': _ringOuterDiameterController.text,
+      };
+
+  void _applyPresetFields(Map<String, dynamic> fields) {
+    setState(() {
+      final modeName = fields['mode'] as String?;
+      if (modeName != null) {
+        _mode = GearMultiKind.values.firstWhere((m) => m.name == modeName, orElse: () => _mode);
+      }
+      _module = (fields['module'] as num?)?.toDouble() ?? _module;
+      _pressureAngleDegrees = (fields['pressureAngleDegrees'] as num?)?.toDouble() ?? _pressureAngleDegrees;
+      _plane = fields['plane'] as String? ?? _plane;
+      if (fields['startDirection'] is String) _startDirectionController.text = fields['startDirection'] as String;
+      if (fields['printClearance'] is String) _printClearanceController.text = fields['printClearance'] as String;
+
+      final stagesData = fields['stages'];
+      if (stagesData is List && stagesData.length >= 2) {
+        for (final stage in _stages) {
+          stage.dispose();
+        }
+        _stages.clear();
+        for (final raw in stagesData) {
+          final map = raw as Map;
+          final kind = ChainStageKind.values.firstWhere(
+            (k) => k.name == map['kind'],
+            orElse: () => ChainStageKind.external,
+          );
+          _stages.add(
+            _ChainStageForm(
+              kind: kind,
+              toothCount: map['toothCount'] as String? ?? '20',
+              faceWidth: map['faceWidth'] as String? ?? '5',
+              turnAngle: map['turnAngle'] as String? ?? '0',
+              outerDiameter: map['outerDiameter'] as String? ?? '',
+            ),
+          );
+        }
+      }
+
+      if (fields['sunToothCount'] is String) _sunToothCountController.text = fields['sunToothCount'] as String;
+      if (fields['ringToothCount'] is String) _ringToothCountController.text = fields['ringToothCount'] as String;
+      if (fields['planetCount'] is String) _planetCountController.text = fields['planetCount'] as String;
+      if (fields['planetaryFaceWidth'] is String) {
+        _planetaryFaceWidthController.text = fields['planetaryFaceWidth'] as String;
+      }
+      if (fields['ringOuterDiameter'] is String) {
+        _ringOuterDiameterController.text = fields['ringOuterDiameter'] as String;
+      }
+    });
+    _schedulePreview();
   }
 
   Widget _buildValidationBanner() {
