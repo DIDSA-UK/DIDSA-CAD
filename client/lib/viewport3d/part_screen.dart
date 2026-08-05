@@ -28,6 +28,7 @@ import 'feature_tree_panel.dart';
 import 'export_format_dialog.dart';
 import 'fillet_panel.dart';
 import 'import_format_dialog.dart';
+import 'loft_panel.dart';
 import 'mesh_geometry.dart';
 import 'mirror_panel.dart';
 import 'override_stack.dart';
@@ -64,12 +65,12 @@ enum _ProfilePickerTarget { extrude, revolve, sweep }
 /// `showPattern` gate (on-device feedback: "user should now be able to
 /// start pattern from long press a feature in the tree"), so the two never
 /// drift out of sync about which Feature types can seed a Mirror/Pattern.
-const _bodyProducingFeatureTypes = {'extrude', 'revolve', 'sweep', 'import', 'mirror', 'pattern'};
+const _bodyProducingFeatureTypes = {'extrude', 'revolve', 'sweep', 'loft', 'import', 'mirror', 'pattern'};
 
 /// Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
 /// §2.11/§4): whether [feature] is an eligible `tool_feature_id` target -
 /// mirrors the backend's own `app.document.graph.tool_feature_qualifies`
-/// exactly: an Extrude/Revolve/Sweep Feature in Cut mode, or Boss mode with
+/// exactly: an Extrude/Revolve/Sweep/Loft Feature in Cut mode, or Boss mode with
 /// a non-empty `target_body_ids` (a targetless Boss has no shared-target
 /// problem - the ordinary Body/Feature-tree seed path already copies it
 /// correctly as an independent Body). Computed purely from [FeatureDto]'s
@@ -84,6 +85,7 @@ bool _isEligibleToolFeature(FeatureDto feature) {
     'extrude' => feature.extrudeType == 'cut',
     'revolve' => feature.mode == 'cut',
     'sweep' => feature.mode == 'cut',
+    'loft' => feature.mode == 'cut',
     _ => null,
   };
   if (isCut == null) return false;
@@ -557,6 +559,7 @@ class _PartScreenState extends State<PartScreen> {
       !_chamferActive &&
       !_revolveActive &&
       !_sweepActive &&
+      !_loftActive &&
       !_mirrorActive &&
       !_patternActive &&
       !_profilePickerActive &&
@@ -576,6 +579,7 @@ class _PartScreenState extends State<PartScreen> {
           !_chamferActive &&
           !_revolveActive &&
           !_sweepActive &&
+          !_loftActive &&
           !_mirrorActive &&
           !_patternActive &&
           !_profilePickerActive &&
@@ -622,6 +626,7 @@ class _PartScreenState extends State<PartScreen> {
       _chamferActive ||
       _revolveActive ||
       _sweepActive ||
+      _loftActive ||
       _mirrorActive ||
       _patternActive ||
       _profilePickerActive ||
@@ -770,6 +775,7 @@ class _PartScreenState extends State<PartScreen> {
     if (_chamferActive) _scheduleChamferPreview();
     if (_revolveActive) _scheduleRevolvePreview();
     if (_sweepActive) _scheduleSweepPreview();
+    if (_loftActive) _scheduleLoftPreview();
   }
 
   /// Pattern/Mirror scoping Phase 1: [_toggleSelectedEntity]'s plane-like-kind
@@ -885,6 +891,7 @@ class _PartScreenState extends State<PartScreen> {
     if (_chamferActive) _scheduleChamferPreview();
     if (_revolveActive) _scheduleRevolvePreview();
     if (_sweepActive) _scheduleSweepPreview();
+    if (_loftActive) _scheduleLoftPreview();
     if (_mirrorActive) _scheduleMirrorPreview();
   }
 
@@ -2839,6 +2846,374 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
+  // --- Loft state -----------------------------------------------------------
+  // A Loft has no single backing SketchFeature the way Extrude/Revolve/Sweep
+  // do - it needs exactly two, its own dedicated two-step picker (pick
+  // Section A, then Section B) rather than reusing [_ProfilePickerTarget]'s
+  // "one Sketch, then straight to the target panel" shape. Unlike every
+  // other Boss/Cut Feature here, a Loft accepts either two closed profiles
+  // (lofted directly into a solid) or two open chains (lofted into a shell
+  // and thickened - see [LoftPanel]'s own doc comment), so this deliberately
+  // does not filter which Sketches are pickable the way Extrude/Revolve/
+  // Sweep's own `_checkExtrudeEligibility`-gated pickers do - a genuinely
+  // invalid pick (e.g. one closed, one open) is reported by the backend's
+  // own 422 once Confirm is pressed (surfaced via [_runGuarded]'s
+  // [_errorMessage]), not pre-filtered here.
+
+  /// True while the Feature tree is acting as a Sketch picker for a pending
+  /// Loft (either section) - mirrors [_sweepSketchPickerActive].
+  bool _loftSketchPickerActive = false;
+
+  /// Every Sketch Feature id, unfiltered (see this block's own top
+  /// comment for why) - mirrors [_pickableSweepSketchIds]'s shape, not its
+  /// eligibility filtering.
+  Set<String> _pickableLoftSketchIds = {};
+
+  /// Section A, once picked, while this picker is still waiting for Section
+  /// B - null before the first pick, and again once both are picked and
+  /// [_openLoftPanel] has taken over.
+  FeatureDto? _loftPendingSectionA;
+
+  /// The two SketchFeatures currently being lofted between via [LoftPanel],
+  /// or null when the panel is closed - mirrors [_sweepSketchFeature], split
+  /// into two since a Loft always needs exactly two sections in this v1 UI.
+  FeatureDto? _loftSectionA;
+  FeatureDto? _loftSectionB;
+
+  /// The LoftFeature created by the panel's first live-preview update -
+  /// mirrors [_previewSweepFeatureId].
+  String? _previewLoftFeatureId;
+
+  /// Mirrors [_meshBeforeSweep].
+  List<BodyMeshDto>? _meshBeforeLoft;
+
+  /// Mirrors [_entitiesBeforeSweep] - while the panel is open,
+  /// [_selectedEntities] is dedicated entirely to target-body picking.
+  Set<SelectionEntityRef>? _entitiesBeforeLoft;
+
+  /// B4-style: non-null while [LoftPanel] is editing an *existing*
+  /// LoftFeature - mirrors [_editingSweepFeatureId].
+  String? _editingLoftFeatureId;
+
+  /// The edited Feature's own stored values from just before editing started
+  /// - mirrors [_sweepEditSnapshot].
+  ({
+    LoftMode mode,
+    bool ruled,
+    double? thickness,
+    List<String> targetBodyIds,
+  })? _loftEditSnapshot;
+
+  LoftMode _loftMode = LoftMode.boss;
+  bool _loftRuled = false;
+  double? _loftThickness;
+
+  /// Debounces the panel's live-preview PATCH/POST + mesh refresh - mirrors
+  /// [_sweepDebounce].
+  Timer? _loftDebounce;
+
+  /// Mirrors [_sweepActive].
+  bool get _loftActive => _loftSectionA != null && _loftSectionB != null;
+
+  /// Mirrors [_sweepSelectionFilter] exactly - a Loft's own two sections are
+  /// already fixed by the time this panel shows, so this only ever needs
+  /// bodies, same as Sweep's.
+  static const _loftSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: false,
+    body: true,
+    sketchPoint: false,
+    sketchLine: false,
+    sketchCircle: false,
+    plane: false,
+  );
+
+  /// Mirrors [_currentSweepTargetBodyIds] exactly.
+  List<String> _currentLoftTargetBodyIds() => _selectedEntities
+      .where((e) => e.kind == SelectionEntityKind.body)
+      .map((e) => e.bodyId)
+      .toSet()
+      .toList();
+
+  /// Opens [LoftPanel] for [sectionA]/[sectionB] - mirrors [_openSweepPanel]
+  /// exactly, substituting the two fixed sections for a fixed path.
+  void _openLoftPanel(FeatureDto sectionA, FeatureDto sectionB) {
+    setState(() {
+      _loftSectionA = sectionA;
+      _loftSectionB = sectionB;
+      _previewLoftFeatureId = null;
+      _meshBeforeLoft = _bodies;
+      _loftMode = LoftMode.boss;
+      _loftRuled = false;
+      _loftThickness = null;
+      _entitiesBeforeLoft = _selectedEntities;
+      _selectedEntities = {};
+      _selectionMode = true;
+      _selectionFilterOverrides.push(_loftSelectionFilter);
+    });
+  }
+
+  /// Mirrors [_openSweepPanelForEdit] exactly, resolving both of
+  /// [feature.sections]' own `sketchFeatureId`s instead of Sweep's single
+  /// [sketchFeatureId] - a Loft's own `sections` (unlike Sweep's `pathRefs`)
+  /// always has exactly 2 entries by the time it's a real, persisted
+  /// Feature (see the backend `_validate_loft_sections`).
+  bool _openLoftPanelForEdit(FeatureDto feature) {
+    if (feature.sections.length != 2) return false;
+    final sectionA = _featureById(feature.sections[0].sketchFeatureId);
+    final sectionB = _featureById(feature.sections[1].sketchFeatureId);
+    if (sectionA == null || sectionB == null) return false;
+
+    final mode = LoftMode.fromApiValue(feature.mode ?? 'boss');
+    final ruled = feature.ruled;
+    final thickness = feature.thickness;
+    final targetBodyIds = feature.targetBodyIds;
+
+    setState(() {
+      _loftSectionA = sectionA;
+      _loftSectionB = sectionB;
+      _editingLoftFeatureId = feature.id;
+      _previewLoftFeatureId = feature.id;
+      _loftEditSnapshot = (mode: mode, ruled: ruled, thickness: thickness, targetBodyIds: targetBodyIds);
+      _meshBeforeLoft = _bodies;
+      _loftMode = mode;
+      _loftRuled = ruled;
+      _loftThickness = thickness;
+      _entitiesBeforeLoft = _selectedEntities;
+      _selectedEntities = {
+        for (final bodyId in targetBodyIds)
+          SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: bodyId),
+      };
+      _selectionMode = true;
+      _selectionFilterOverrides.push(_loftSelectionFilter);
+    });
+    return true;
+  }
+
+  /// Mirrors [_ensureSweepFeatureExists] exactly, substituting the fixed
+  /// [_loftSectionA]/[_loftSectionB] pair for Sweep's single sketchFeature +
+  /// path.
+  Future<void> _ensureLoftFeatureExists(
+    LoftMode mode,
+    bool ruled,
+    double? thickness,
+    List<String> targetBodyIds,
+  ) async {
+    final part = _part;
+    final sectionA = _loftSectionA;
+    final sectionB = _loftSectionB;
+    if (part == null || sectionA == null || sectionB == null) return;
+
+    final sections = [
+      LoftSectionDto(sketchFeatureId: sectionA.id),
+      LoftSectionDto(sketchFeatureId: sectionB.id),
+    ];
+
+    final existingId = _previewLoftFeatureId;
+    if (existingId == null) {
+      final created = await _api.createLoftFeature(
+        part.id,
+        sections: sections,
+        mode: mode.apiValue,
+        ruled: ruled,
+        targetBodyIds: targetBodyIds,
+        thickness: thickness,
+      );
+      _previewLoftFeatureId = created.id;
+    } else {
+      await _api.updateLoftFeature(
+        part.id,
+        existingId,
+        sections: sections,
+        mode: mode.apiValue,
+        ruled: ruled,
+        targetBodyIds: targetBodyIds,
+        thickness: thickness,
+      );
+    }
+    await _refreshMesh();
+  }
+
+  /// [LoftPanel.onChanged] - mirrors [_onSweepValuesChanged], plus the
+  /// ruled/thickness fields Sweep has no equivalent of.
+  void _onLoftValuesChanged(LoftMode mode, bool ruled, double? thickness) {
+    _loftMode = mode;
+    _loftRuled = ruled;
+    _loftThickness = thickness;
+    _scheduleLoftPreview();
+  }
+
+  /// Mirrors [_scheduleSweepPreview] exactly.
+  void _scheduleLoftPreview() {
+    _loftDebounce?.cancel();
+    _loftDebounce = Timer(const Duration(milliseconds: 500), () {
+      _runGuarded(() => _ensureLoftFeatureExists(
+            _loftMode,
+            _loftRuled,
+            _loftThickness,
+            _currentLoftTargetBodyIds(),
+          ));
+    });
+  }
+
+  /// Mirrors [_confirmSweep] exactly, auto-hiding both of [_loftSectionA]/
+  /// [_loftSectionB] (rather than Sweep's single sketchFeature) on a
+  /// brand-new (not edited) Loft.
+  Future<void> _confirmLoft() async {
+    _loftDebounce?.cancel();
+    final sectionA = _loftSectionA;
+    final sectionB = _loftSectionB;
+    final wasEditing = _editingLoftFeatureId != null;
+    final targetBodyIds = _currentLoftTargetBodyIds();
+    await _runGuarded(() async {
+      await _ensureLoftFeatureExists(_loftMode, _loftRuled, _loftThickness, targetBodyIds);
+      await _refreshFeatures();
+      await _refreshSketchGeometries();
+    });
+    if (!mounted) return;
+    setState(() {
+      _featureTreeVisible = false;
+      if (!wasEditing) {
+        if (sectionA != null) {
+          _hiddenFeatureIds.add(sectionA.id);
+          _autoHiddenSketchFeatureIds.add(sectionA.id);
+        }
+        if (sectionB != null) {
+          _hiddenFeatureIds.add(sectionB.id);
+          _autoHiddenSketchFeatureIds.add(sectionB.id);
+        }
+      }
+      _recomputeVisibleSketchGeometries();
+      _loftSectionA = null;
+      _loftSectionB = null;
+      _previewLoftFeatureId = null;
+      _meshBeforeLoft = null;
+      _editingLoftFeatureId = null;
+      _loftEditSnapshot = null;
+      _selectedEntities = _entitiesBeforeLoft ?? {};
+      _entitiesBeforeLoft = null;
+      _selectionFilterOverrides.pop();
+      if ((sectionA != null && _selectedFeatureId == sectionA.id) ||
+          (sectionB != null && _selectedFeatureId == sectionB.id)) {
+        _selectedFeatureId = null;
+      }
+    });
+    await _endRollback();
+  }
+
+  /// Mirrors [_cancelSweep] exactly.
+  Future<void> _cancelLoft() async {
+    _loftDebounce?.cancel();
+    final part = _part;
+    final sectionA = _loftSectionA;
+    final sectionB = _loftSectionB;
+    final previewId = _previewLoftFeatureId;
+    final meshBefore = _meshBeforeLoft;
+    final wasEditing = _editingLoftFeatureId != null;
+    final editSnapshot = _loftEditSnapshot;
+    setState(() {
+      _featureTreeVisible = false;
+      _loftSectionA = null;
+      _loftSectionB = null;
+      _previewLoftFeatureId = null;
+      _meshBeforeLoft = null;
+      _editingLoftFeatureId = null;
+      _loftEditSnapshot = null;
+      _selectedEntities = _entitiesBeforeLoft ?? {};
+      _entitiesBeforeLoft = null;
+      _selectionFilterOverrides.pop();
+      if ((sectionA != null && _selectedFeatureId == sectionA.id) ||
+          (sectionB != null && _selectedFeatureId == sectionB.id)) {
+        _selectedFeatureId = null;
+      }
+    });
+    if (part != null && previewId != null) {
+      if (wasEditing && editSnapshot != null) {
+        await _runGuarded(() async {
+          await _api.updateLoftFeature(
+            part.id,
+            previewId,
+            mode: editSnapshot.mode.apiValue,
+            ruled: editSnapshot.ruled,
+            targetBodyIds: editSnapshot.targetBodyIds,
+            thickness: editSnapshot.thickness,
+          );
+          await _refreshFeatures();
+        });
+      } else {
+        await _runGuarded(() async {
+          await _api.deleteFeature(part.id, previewId);
+          if (meshBefore != null) {
+            _bodies = meshBefore;
+          } else {
+            await _refreshMesh();
+          }
+          await _refreshFeatures();
+        });
+      }
+    }
+    await _endRollback();
+  }
+
+  /// Mirrors [_sweepPickerBannerText] exactly.
+  String _loftPickerBannerText() {
+    final count = _currentLoftTargetBodyIds().length;
+    return _loftMode == LoftMode.cut
+        ? (count == 0 ? 'select a target body' : '$count target body/bodies selected')
+        : (count == 0 ? 'tap bodies to merge into (optional)' : '$count target body/bodies selected');
+  }
+
+  /// The "Add" FAB's Loft entry - always starts the two-step Sketch picker
+  /// (see this block's own top comment), unlike Extrude/Revolve/Sweep's own
+  /// entry points, which shortcut straight to their target flow when an
+  /// eligible Sketch is already selected - a Loft never has just one Sketch
+  /// to shortcut from, so there is no equivalent shortcut here.
+  void _loftSelectedFeature() => _startLoftSketchPicker();
+
+  /// Mirrors [_startSweepSketchPicker], minus the eligibility refresh (see
+  /// this block's own top comment for why every Sketch is pickable here).
+  void _startLoftSketchPicker() {
+    setState(() {
+      _loftSketchPickerActive = true;
+      _featureTreeVisible = true;
+      _toolbarOpen = false;
+      _planeSelectionModeStack.pop();
+      _loftPendingSectionA = null;
+      _pickableLoftSketchIds = {for (final f in _features) if (f.type == 'sketch') f.id};
+    });
+  }
+
+  /// Mirrors [_onSweepSketchPicked]'s shape, except this fires twice (once
+  /// per section) before actually opening [LoftPanel] - the first tap
+  /// stashes its own Sketch as [_loftPendingSectionA] and stays in picker
+  /// mode; the second opens the panel with both.
+  void _onLoftSketchPicked(FeatureDto feature) {
+    final sectionA = _loftPendingSectionA;
+    if (sectionA == null) {
+      setState(() => _loftPendingSectionA = feature);
+      _showSnack('Section A picked — now tap a sketch for Section B');
+      return;
+    }
+    setState(() {
+      _loftSketchPickerActive = false;
+      _featureTreeVisible = false;
+      _loftPendingSectionA = null;
+      _pickableLoftSketchIds = {};
+    });
+    _openLoftPanel(sectionA, feature);
+  }
+
+  /// Mirrors [_cancelSweepSketchPicker] exactly.
+  void _cancelLoftSketchPicker() {
+    setState(() {
+      _loftSketchPickerActive = false;
+      _featureTreeVisible = false;
+      _loftPendingSectionA = null;
+      _pickableLoftSketchIds = {};
+    });
+  }
+
   /// C2: per-Feature resolved plane geometry for [PartViewport.createPlanes] -
   /// recomputed from [_features] directly (no extra network call - the
   /// resolved `origin`/`normal` already ride along on every
@@ -4071,6 +4446,8 @@ class _PartScreenState extends State<PartScreen> {
         await _revolveSelectedFeature();
       case FeaturePickerAction.sweep:
         await _sweepSelectedFeature();
+      case FeaturePickerAction.loft:
+        _loftSelectedFeature();
       case FeaturePickerAction.mirror:
         _startMirrorPicker();
       case FeaturePickerAction.pattern:
@@ -4352,6 +4729,11 @@ class _PartScreenState extends State<PartScreen> {
       // Rollback is ended by _confirmSweep/_cancelSweep instead - mirrors
       // the revolve branch above exactly.
       final opened = _openSweepPanelForEdit(feature);
+      if (!opened) await _endRollback();
+    } else if (feature.type == 'loft') {
+      // Rollback is ended by _confirmLoft/_cancelLoft instead - mirrors the
+      // sweep branch above exactly.
+      final opened = _openLoftPanelForEdit(feature);
       if (!opened) await _endRollback();
     } else if (feature.type == 'mirror') {
       // Pattern/Mirror scoping Phase 1: rollback is ended by
@@ -8101,6 +8483,7 @@ class _PartScreenState extends State<PartScreen> {
           !_sketchPickerActive &&
           !_revolveSketchPickerActive &&
           !_sweepSketchPickerActive &&
+          !_loftSketchPickerActive &&
           !_profilePickerActive &&
           !_pathPickerActive,
       onPopInvokedWithResult: (didPop, result) {
@@ -8113,6 +8496,8 @@ class _PartScreenState extends State<PartScreen> {
           _cancelRevolveSketchPicker();
         } else if (_sweepSketchPickerActive) {
           _cancelSweepSketchPicker();
+        } else if (_loftSketchPickerActive) {
+          _cancelLoftSketchPicker();
         } else if (_profilePickerActive) {
           _cancelProfilePicker();
         } else if (_pathPickerActive) {
@@ -8338,6 +8723,7 @@ class _PartScreenState extends State<PartScreen> {
                     !_chamferActive &&
                     !_revolveActive &&
                     !_sweepActive &&
+                    !_loftActive &&
                     !_mirrorActive &&
                     !_patternActive &&
                     !_profilePickerActive &&
@@ -8375,6 +8761,8 @@ class _PartScreenState extends State<PartScreen> {
                         _cancelRevolveSketchPicker();
                       } else if (_sweepSketchPickerActive) {
                         _cancelSweepSketchPicker();
+                      } else if (_loftSketchPickerActive) {
+                        _cancelLoftSketchPicker();
                       } else if (_sourceFeaturePickerTarget != null) {
                         _cancelSourceFeaturePicker();
                       } else {
@@ -8382,23 +8770,30 @@ class _PartScreenState extends State<PartScreen> {
                       }
                     },
                     // Prompt F: only one of _sketchPickerActive/
-                    // _revolveSketchPickerActive/_sweepSketchPickerActive is
-                    // ever true at a time (same "one panel/picker active"
-                    // invariant every other flow in this file relies on), so a
-                    // chain of ternaries picks whichever is live - mirrors the
-                    // previewOverlayBodyId/previewOverlayMesh ternary above.
-                    isSketchPickerMode:
-                        _sketchPickerActive || _revolveSketchPickerActive || _sweepSketchPickerActive,
+                    // _revolveSketchPickerActive/_sweepSketchPickerActive/
+                    // _loftSketchPickerActive is ever true at a time (same
+                    // "one panel/picker active" invariant every other flow in
+                    // this file relies on), so a chain of ternaries picks
+                    // whichever is live - mirrors the previewOverlayBodyId/
+                    // previewOverlayMesh ternary above.
+                    isSketchPickerMode: _sketchPickerActive ||
+                        _revolveSketchPickerActive ||
+                        _sweepSketchPickerActive ||
+                        _loftSketchPickerActive,
                     pickableSketchIds: _sketchPickerActive
                         ? _pickableSketchIds
                         : _revolveSketchPickerActive
                             ? _pickableRevolveSketchIds
-                            : _pickableSweepSketchIds,
+                            : _sweepSketchPickerActive
+                                ? _pickableSweepSketchIds
+                                : _pickableLoftSketchIds,
                     onSketchPicked: _sketchPickerActive
                         ? _onSketchPicked
                         : _revolveSketchPickerActive
                             ? _onRevolveSketchPicked
-                            : _onSweepSketchPicked,
+                            : _sweepSketchPickerActive
+                                ? _onSweepSketchPicked
+                                : _onLoftSketchPicked,
                     isFeaturePickerMode: _sourceFeaturePickerTarget != null,
                     pickableFeaturePickerIds: _sourceFeaturePickerPickableIds,
                     selectedFeaturePickerIds: _selectedSourceFeatureIds,
@@ -8672,6 +9067,25 @@ class _PartScreenState extends State<PartScreen> {
                       onChanged: _onSweepValuesChanged,
                       onConfirm: _confirmSweep,
                       onCancel: _cancelSweep,
+                    ),
+                  ),
+                if (_loftActive)
+                  Positioned.fill(
+                    // Bug fix: mirrors the Extrude panel slot's own stable-
+                    // key reasoning exactly, above.
+                    key: const ValueKey('loft-panel-slot'),
+                    child: LoftPanel(
+                      key: ValueKey(_editingLoftFeatureId ?? '${_loftSectionA!.id}-${_loftSectionB!.id}'),
+                      title: _editingLoftFeatureId != null ? 'Edit Loft' : 'Loft',
+                      tooltip: _loftPickerBannerText(),
+                      initialMode: _loftMode,
+                      initialRuled: _loftRuled,
+                      initialThickness: _loftThickness,
+                      sectionCount: 2,
+                      targetBodyCount: _currentLoftTargetBodyIds().length,
+                      onChanged: _onLoftValuesChanged,
+                      onConfirm: _confirmLoft,
+                      onCancel: _cancelLoft,
                     ),
                   ),
                 // On-device feedback ("the tooltip at the top of the screen
@@ -8987,6 +9401,7 @@ class _PartScreenState extends State<PartScreen> {
                         _chamferActive ||
                         _revolveActive ||
                         _sweepActive ||
+                        _loftActive ||
                         _mirrorActive ||
                         _patternActive)
                     ? 180
@@ -9001,6 +9416,7 @@ class _PartScreenState extends State<PartScreen> {
                       !_chamferActive &&
                       !_revolveActive &&
                       !_sweepActive &&
+                      !_loftActive &&
                       !_mirrorActive &&
                       !_patternActive &&
                       !_profilePickerActive &&

@@ -265,3 +265,15 @@ profile" control (profiles that are *not* simply rotated copies of each
 other): still an open question per Result 1's "Still open" note above —
 needs its own follow-up spike before that specific UI is built, separate
 from the gear-tooth case this pass focused on.
+
+## 2026-08-05 addendum — Part Designer UI + thin/open-chain mode
+
+A later, separate session (`docs/status.md`'s own 2026-08-05 "Loft
+accessible in the 3D Part Designer" entry) built the general-purpose Part
+Designer UI this doc's own 4b section describes but never had a client
+for, and extended `LoftFeature` with a `thickness` field: when set, every
+section is a single open chain (`app.sketch.profile.detect_open_chain`)
+instead of a closed Profile, lofted into a shell and thickened into a
+solid via `BRepOffsetAPI_MakeThickSolid.MakeThickSolidBySimple` rather than
+lofted directly into a solid. See that status.md entry for the full
+design and verification-status detail - not repeated here.
