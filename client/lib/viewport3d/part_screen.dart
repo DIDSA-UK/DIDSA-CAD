@@ -2848,37 +2848,58 @@ class _PartScreenState extends State<PartScreen> {
 
   // --- Loft state -----------------------------------------------------------
   // A Loft has no single backing SketchFeature the way Extrude/Revolve/Sweep
-  // do - it needs exactly two, its own dedicated two-step picker (pick
-  // Section A, then Section B) rather than reusing [_ProfilePickerTarget]'s
-  // "one Sketch, then straight to the target panel" shape. Unlike every
-  // other Boss/Cut Feature here, a Loft accepts either two closed profiles
-  // (lofted directly into a solid) or two open chains (lofted into a shell
-  // and thickened - see [LoftPanel]'s own doc comment), so this deliberately
-  // does not filter which Sketches are pickable the way Extrude/Revolve/
-  // Sweep's own `_checkExtrudeEligibility`-gated pickers do - a genuinely
-  // invalid pick (e.g. one closed, one open) is reported by the backend's
-  // own 422 once Confirm is pressed (surfaced via [_runGuarded]'s
-  // [_errorMessage]), not pre-filtered here.
+  // do, and (unlike every one of those) can take 2 *or more* ordered
+  // sections - the backend's own `LoftFeature.sections` has always accepted
+  // 2+ (`_validate_loft_sections`'s only rule is "at least 2"), so this
+  // reuses [FeatureTreePanel]'s existing multi-select "Feature picker" mode
+  // (`isFeaturePickerMode`/`selectedFeaturePickerIds`/`onFeaturePickerToggle`
+  // - otherwise only ever used by the Mirror/Pattern source-feature picker)
+  // rather than [_ProfilePickerTarget]'s own "pick exactly one Sketch, then
+  // straight to the target panel" shape - that shape has no way to
+  // accumulate an open-ended, user-confirmed count the way this needs.
+  // Order matters here (it's the loft's own section traversal order), which
+  // [FeatureTreePanel]'s own `selectedFeaturePickerIds` (a bare `Set`,
+  // fine for Mirror/Pattern's unordered sources) can't preserve on its own -
+  // [_loftPendingSections] keeps its own ordered `List` instead, and a
+  // `Set` view of it is all [FeatureTreePanel] ever needs for its own
+  // pickable/selected-highlight rendering.
+  //
+  // Unlike every other Boss/Cut Feature here, a Loft accepts either all-
+  // closed profiles (lofted directly into a solid) or all-open chains
+  // (lofted into a shell and thickened - see [LoftPanel]'s own doc
+  // comment), so this deliberately does not filter which Sketches are
+  // pickable the way Extrude/Revolve/Sweep's own `_checkExtrudeEligibility`-
+  // gated pickers do - a genuinely invalid pick (e.g. mixing open and
+  // closed) is reported by the backend's own 422 once Confirm is pressed
+  // (surfaced via [_runGuarded]'s [_errorMessage]), not pre-filtered here.
 
-  /// True while the Feature tree is acting as a Sketch picker for a pending
-  /// Loft (either section) - mirrors [_sweepSketchPickerActive].
+  /// True while the Feature tree is acting as a multi-select Sketch picker
+  /// for a pending Loft's sections - mirrors [_sweepSketchPickerActive],
+  /// except this drives [FeatureTreePanel]'s `isFeaturePickerMode` (multi-
+  /// select-with-confirm) rather than its `isSketchPickerMode` (single-tap-
+  /// finalizes), per this block's own top comment.
   bool _loftSketchPickerActive = false;
 
   /// Every Sketch Feature id, unfiltered (see this block's own top
   /// comment for why) - mirrors [_pickableSweepSketchIds]'s shape, not its
-  /// eligibility filtering.
+  /// eligibility filtering. Doubles as [FeatureTreePanel.pickableFeaturePickerIds]
+  /// while [_loftSketchPickerActive].
   Set<String> _pickableLoftSketchIds = {};
 
-  /// Section A, once picked, while this picker is still waiting for Section
-  /// B - null before the first pick, and again once both are picked and
-  /// [_openLoftPanel] has taken over.
-  FeatureDto? _loftPendingSectionA;
+  /// The sections picked so far this picker session, in tap order - empty
+  /// before the first pick, and again once [_confirmLoftSectionPicker] has
+  /// handed them off to [_openLoftPanel]. Tapping an already-picked Sketch
+  /// again removes it (mirrors [FeatureTreePanel]'s own toggle semantics for
+  /// [_toggleSourceFeaturePick]) rather than reordering it - this session's
+  /// v1 scope has no drag-reorder UI, so a removed-then-re-added section
+  /// simply moves to the end.
+  List<FeatureDto> _loftPendingSections = [];
 
-  /// The two SketchFeatures currently being lofted between via [LoftPanel],
-  /// or null when the panel is closed - mirrors [_sweepSketchFeature], split
-  /// into two since a Loft always needs exactly two sections in this v1 UI.
-  FeatureDto? _loftSectionA;
-  FeatureDto? _loftSectionB;
+  /// The ordered SketchFeatures currently being lofted between via
+  /// [LoftPanel] (2+), or empty when the panel is closed - mirrors
+  /// [_sweepSketchFeature], generalized from a single Feature to an ordered
+  /// list since a Loft always needs 2+ sections, never just one.
+  List<FeatureDto> _loftSections = [];
 
   /// The LoftFeature created by the panel's first live-preview update -
   /// mirrors [_previewSweepFeatureId].
@@ -2912,10 +2933,11 @@ class _PartScreenState extends State<PartScreen> {
   /// [_sweepDebounce].
   Timer? _loftDebounce;
 
-  /// Mirrors [_sweepActive].
-  bool get _loftActive => _loftSectionA != null && _loftSectionB != null;
+  /// Mirrors [_sweepActive] - the backend's own "2+ sections" minimum (see
+  /// this block's own top comment), not just "non-empty".
+  bool get _loftActive => _loftSections.length >= 2;
 
-  /// Mirrors [_sweepSelectionFilter] exactly - a Loft's own two sections are
+  /// Mirrors [_sweepSelectionFilter] exactly - a Loft's own sections are
   /// already fixed by the time this panel shows, so this only ever needs
   /// bodies, same as Sweep's.
   static const _loftSelectionFilter = SelectionFilterState(
@@ -2936,12 +2958,12 @@ class _PartScreenState extends State<PartScreen> {
       .toSet()
       .toList();
 
-  /// Opens [LoftPanel] for [sectionA]/[sectionB] - mirrors [_openSweepPanel]
-  /// exactly, substituting the two fixed sections for a fixed path.
-  void _openLoftPanel(FeatureDto sectionA, FeatureDto sectionB) {
+  /// Opens [LoftPanel] for [sections] (2+, in order) - mirrors
+  /// [_openSweepPanel] exactly, substituting the fixed ordered sections for
+  /// a fixed path.
+  void _openLoftPanel(List<FeatureDto> sections) {
     setState(() {
-      _loftSectionA = sectionA;
-      _loftSectionB = sectionB;
+      _loftSections = sections;
       _previewLoftFeatureId = null;
       _meshBeforeLoft = _bodies;
       _loftMode = LoftMode.boss;
@@ -2954,16 +2976,16 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
-  /// Mirrors [_openSweepPanelForEdit] exactly, resolving both of
-  /// [feature.sections]' own `sketchFeatureId`s instead of Sweep's single
-  /// [sketchFeatureId] - a Loft's own `sections` (unlike Sweep's `pathRefs`)
-  /// always has exactly 2 entries by the time it's a real, persisted
-  /// Feature (see the backend `_validate_loft_sections`).
+  /// Mirrors [_openSweepPanelForEdit] exactly, resolving every one of
+  /// [feature.sections]' own `sketchFeatureId`s (2+, see the backend
+  /// `_validate_loft_sections`) instead of Sweep's single [sketchFeatureId].
   bool _openLoftPanelForEdit(FeatureDto feature) {
-    if (feature.sections.length != 2) return false;
-    final sectionA = _featureById(feature.sections[0].sketchFeatureId);
-    final sectionB = _featureById(feature.sections[1].sketchFeatureId);
-    if (sectionA == null || sectionB == null) return false;
+    if (feature.sections.length < 2) return false;
+    final sections = [
+      for (final section in feature.sections) _featureById(section.sketchFeatureId),
+    ];
+    if (sections.any((s) => s == null)) return false;
+    final resolvedSections = sections.cast<FeatureDto>();
 
     final mode = LoftMode.fromApiValue(feature.mode ?? 'boss');
     final ruled = feature.ruled;
@@ -2971,8 +2993,7 @@ class _PartScreenState extends State<PartScreen> {
     final targetBodyIds = feature.targetBodyIds;
 
     setState(() {
-      _loftSectionA = sectionA;
-      _loftSectionB = sectionB;
+      _loftSections = resolvedSections;
       _editingLoftFeatureId = feature.id;
       _previewLoftFeatureId = feature.id;
       _loftEditSnapshot = (mode: mode, ruled: ruled, thickness: thickness, targetBodyIds: targetBodyIds);
@@ -2991,9 +3012,8 @@ class _PartScreenState extends State<PartScreen> {
     return true;
   }
 
-  /// Mirrors [_ensureSweepFeatureExists] exactly, substituting the fixed
-  /// [_loftSectionA]/[_loftSectionB] pair for Sweep's single sketchFeature +
-  /// path.
+  /// Mirrors [_ensureSweepFeatureExists] exactly, substituting the fixed,
+  /// ordered [_loftSections] for Sweep's single sketchFeature + path.
   Future<void> _ensureLoftFeatureExists(
     LoftMode mode,
     bool ruled,
@@ -3001,13 +3021,10 @@ class _PartScreenState extends State<PartScreen> {
     List<String> targetBodyIds,
   ) async {
     final part = _part;
-    final sectionA = _loftSectionA;
-    final sectionB = _loftSectionB;
-    if (part == null || sectionA == null || sectionB == null) return;
+    if (part == null || _loftSections.length < 2) return;
 
     final sections = [
-      LoftSectionDto(sketchFeatureId: sectionA.id),
-      LoftSectionDto(sketchFeatureId: sectionB.id),
+      for (final section in _loftSections) LoftSectionDto(sketchFeatureId: section.id),
     ];
 
     final existingId = _previewLoftFeatureId;
@@ -3057,13 +3074,12 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
-  /// Mirrors [_confirmSweep] exactly, auto-hiding both of [_loftSectionA]/
-  /// [_loftSectionB] (rather than Sweep's single sketchFeature) on a
+  /// Mirrors [_confirmSweep] exactly, auto-hiding every one of
+  /// [_loftSections] (rather than Sweep's single sketchFeature) on a
   /// brand-new (not edited) Loft.
   Future<void> _confirmLoft() async {
     _loftDebounce?.cancel();
-    final sectionA = _loftSectionA;
-    final sectionB = _loftSectionB;
+    final sections = _loftSections;
     final wasEditing = _editingLoftFeatureId != null;
     final targetBodyIds = _currentLoftTargetBodyIds();
     await _runGuarded(() async {
@@ -3075,18 +3091,13 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _featureTreeVisible = false;
       if (!wasEditing) {
-        if (sectionA != null) {
-          _hiddenFeatureIds.add(sectionA.id);
-          _autoHiddenSketchFeatureIds.add(sectionA.id);
-        }
-        if (sectionB != null) {
-          _hiddenFeatureIds.add(sectionB.id);
-          _autoHiddenSketchFeatureIds.add(sectionB.id);
+        for (final section in sections) {
+          _hiddenFeatureIds.add(section.id);
+          _autoHiddenSketchFeatureIds.add(section.id);
         }
       }
       _recomputeVisibleSketchGeometries();
-      _loftSectionA = null;
-      _loftSectionB = null;
+      _loftSections = [];
       _previewLoftFeatureId = null;
       _meshBeforeLoft = null;
       _editingLoftFeatureId = null;
@@ -3094,8 +3105,7 @@ class _PartScreenState extends State<PartScreen> {
       _selectedEntities = _entitiesBeforeLoft ?? {};
       _entitiesBeforeLoft = null;
       _selectionFilterOverrides.pop();
-      if ((sectionA != null && _selectedFeatureId == sectionA.id) ||
-          (sectionB != null && _selectedFeatureId == sectionB.id)) {
+      if (sections.any((section) => _selectedFeatureId == section.id)) {
         _selectedFeatureId = null;
       }
     });
@@ -3106,16 +3116,14 @@ class _PartScreenState extends State<PartScreen> {
   Future<void> _cancelLoft() async {
     _loftDebounce?.cancel();
     final part = _part;
-    final sectionA = _loftSectionA;
-    final sectionB = _loftSectionB;
+    final sections = _loftSections;
     final previewId = _previewLoftFeatureId;
     final meshBefore = _meshBeforeLoft;
     final wasEditing = _editingLoftFeatureId != null;
     final editSnapshot = _loftEditSnapshot;
     setState(() {
       _featureTreeVisible = false;
-      _loftSectionA = null;
-      _loftSectionB = null;
+      _loftSections = [];
       _previewLoftFeatureId = null;
       _meshBeforeLoft = null;
       _editingLoftFeatureId = null;
@@ -3123,8 +3131,7 @@ class _PartScreenState extends State<PartScreen> {
       _selectedEntities = _entitiesBeforeLoft ?? {};
       _entitiesBeforeLoft = null;
       _selectionFilterOverrides.pop();
-      if ((sectionA != null && _selectedFeatureId == sectionA.id) ||
-          (sectionB != null && _selectedFeatureId == sectionB.id)) {
+      if (sections.any((section) => _selectedFeatureId == section.id)) {
         _selectedFeatureId = null;
       }
     });
@@ -3164,11 +3171,11 @@ class _PartScreenState extends State<PartScreen> {
         : (count == 0 ? 'tap bodies to merge into (optional)' : '$count target body/bodies selected');
   }
 
-  /// The "Add" FAB's Loft entry - always starts the two-step Sketch picker
-  /// (see this block's own top comment), unlike Extrude/Revolve/Sweep's own
-  /// entry points, which shortcut straight to their target flow when an
-  /// eligible Sketch is already selected - a Loft never has just one Sketch
-  /// to shortcut from, so there is no equivalent shortcut here.
+  /// The "Add" FAB's Loft entry - always starts the multi-select Sketch
+  /// picker (see this block's own top comment), unlike Extrude/Revolve/
+  /// Sweep's own entry points, which shortcut straight to their target flow
+  /// when an eligible Sketch is already selected - a Loft never has just one
+  /// Sketch to shortcut from, so there is no equivalent shortcut here.
   void _loftSelectedFeature() => _startLoftSketchPicker();
 
   /// Mirrors [_startSweepSketchPicker], minus the eligibility refresh (see
@@ -3179,29 +3186,42 @@ class _PartScreenState extends State<PartScreen> {
       _featureTreeVisible = true;
       _toolbarOpen = false;
       _planeSelectionModeStack.pop();
-      _loftPendingSectionA = null;
+      _loftPendingSections = [];
       _pickableLoftSketchIds = {for (final f in _features) if (f.type == 'sketch') f.id};
     });
   }
 
-  /// Mirrors [_onSweepSketchPicked]'s shape, except this fires twice (once
-  /// per section) before actually opening [LoftPanel] - the first tap
-  /// stashes its own Sketch as [_loftPendingSectionA] and stays in picker
-  /// mode; the second opens the panel with both.
-  void _onLoftSketchPicked(FeatureDto feature) {
-    final sectionA = _loftPendingSectionA;
-    if (sectionA == null) {
-      setState(() => _loftPendingSectionA = feature);
-      _showSnack('Section A picked — now tap a sketch for Section B');
-      return;
-    }
+  /// [FeatureTreePanel.onFeaturePickerToggle] while [_loftSketchPickerActive]
+  /// - toggles [feature]'s membership in the ordered [_loftPendingSections]
+  /// (append if new, remove if already picked - see that field's own doc
+  /// comment for why a re-pick moves to the end rather than restoring its
+  /// old position).
+  void _toggleLoftSectionPick(FeatureDto feature) {
+    setState(() {
+      final index = _loftPendingSections.indexWhere((f) => f.id == feature.id);
+      if (index >= 0) {
+        _loftPendingSections.removeAt(index);
+      } else {
+        _loftPendingSections.add(feature);
+      }
+    });
+  }
+
+  /// The Loft section picker's own "confirm" FAB (mirrors the Pattern/
+  /// Mirror source-feature picker's identical FAB - this session likewise
+  /// has no bottom ribbon of its own, its banner living inside
+  /// [FeatureTreePanel] itself) - closes the picker and opens [LoftPanel]
+  /// with [_loftPendingSections]. Only reachable once 2+ are picked (see
+  /// this FAB's own `onPressed` gating at its call site).
+  void _confirmLoftSectionPicker() {
+    final sections = _loftPendingSections;
     setState(() {
       _loftSketchPickerActive = false;
       _featureTreeVisible = false;
-      _loftPendingSectionA = null;
+      _loftPendingSections = [];
       _pickableLoftSketchIds = {};
     });
-    _openLoftPanel(sectionA, feature);
+    _openLoftPanel(sections);
   }
 
   /// Mirrors [_cancelSweepSketchPicker] exactly.
@@ -3209,7 +3229,7 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _loftSketchPickerActive = false;
       _featureTreeVisible = false;
-      _loftPendingSectionA = null;
+      _loftPendingSections = [];
       _pickableLoftSketchIds = {};
     });
   }
@@ -8770,34 +8790,41 @@ class _PartScreenState extends State<PartScreen> {
                       }
                     },
                     // Prompt F: only one of _sketchPickerActive/
-                    // _revolveSketchPickerActive/_sweepSketchPickerActive/
-                    // _loftSketchPickerActive is ever true at a time (same
-                    // "one panel/picker active" invariant every other flow in
-                    // this file relies on), so a chain of ternaries picks
-                    // whichever is live - mirrors the previewOverlayBodyId/
-                    // previewOverlayMesh ternary above.
-                    isSketchPickerMode: _sketchPickerActive ||
-                        _revolveSketchPickerActive ||
-                        _sweepSketchPickerActive ||
-                        _loftSketchPickerActive,
+                    // _revolveSketchPickerActive/_sweepSketchPickerActive is
+                    // ever true at a time (same "one panel/picker active"
+                    // invariant every other flow in this file relies on), so a
+                    // chain of ternaries picks whichever is live - mirrors the
+                    // previewOverlayBodyId/previewOverlayMesh ternary above.
+                    // Loft's own picker uses isFeaturePickerMode instead (see
+                    // that block's own top comment for why), not this one.
+                    isSketchPickerMode:
+                        _sketchPickerActive || _revolveSketchPickerActive || _sweepSketchPickerActive,
                     pickableSketchIds: _sketchPickerActive
                         ? _pickableSketchIds
                         : _revolveSketchPickerActive
                             ? _pickableRevolveSketchIds
-                            : _sweepSketchPickerActive
-                                ? _pickableSweepSketchIds
-                                : _pickableLoftSketchIds,
+                            : _pickableSweepSketchIds,
                     onSketchPicked: _sketchPickerActive
                         ? _onSketchPicked
                         : _revolveSketchPickerActive
                             ? _onRevolveSketchPicked
-                            : _sweepSketchPickerActive
-                                ? _onSweepSketchPicked
-                                : _onLoftSketchPicked,
-                    isFeaturePickerMode: _sourceFeaturePickerTarget != null,
-                    pickableFeaturePickerIds: _sourceFeaturePickerPickableIds,
-                    selectedFeaturePickerIds: _selectedSourceFeatureIds,
-                    onFeaturePickerToggle: _toggleSourceFeaturePick,
+                            : _onSweepSketchPicked,
+                    // Loft's own multi-select section picker shares this
+                    // exact mode with the Pattern/Mirror source-feature
+                    // picker (only one of the two is ever active at a time,
+                    // same invariant as the sketch-picker chain above) -
+                    // see the Loft state block's own top comment for why a
+                    // 2+ ordered pick needs this mode instead of
+                    // isSketchPickerMode's single-tap-finalizes shape.
+                    isFeaturePickerMode: _sourceFeaturePickerTarget != null || _loftSketchPickerActive,
+                    pickableFeaturePickerIds:
+                        _loftSketchPickerActive ? _pickableLoftSketchIds : _sourceFeaturePickerPickableIds,
+                    selectedFeaturePickerIds: _loftSketchPickerActive
+                        ? {for (final f in _loftPendingSections) f.id}
+                        : _selectedSourceFeatureIds,
+                    onFeaturePickerToggle:
+                        _loftSketchPickerActive ? _toggleLoftSectionPick : _toggleSourceFeaturePick,
+                    featurePickerLabel: _loftSketchPickerActive ? 'Select sketches to loft' : 'Select source Features',
                     bodyIds: _computedBodyIds,
                     bodyNames: _bodyNames,
                     onBodyTap: _onBodyTap,
@@ -9075,13 +9102,13 @@ class _PartScreenState extends State<PartScreen> {
                     // key reasoning exactly, above.
                     key: const ValueKey('loft-panel-slot'),
                     child: LoftPanel(
-                      key: ValueKey(_editingLoftFeatureId ?? '${_loftSectionA!.id}-${_loftSectionB!.id}'),
+                      key: ValueKey(_editingLoftFeatureId ?? _loftSections.map((s) => s.id).join('-')),
                       title: _editingLoftFeatureId != null ? 'Edit Loft' : 'Loft',
                       tooltip: _loftPickerBannerText(),
                       initialMode: _loftMode,
                       initialRuled: _loftRuled,
                       initialThickness: _loftThickness,
-                      sectionCount: 2,
+                      sectionCount: _loftSections.length,
                       targetBodyCount: _currentLoftTargetBodyIds().length,
                       onChanged: _onLoftValuesChanged,
                       onConfirm: _confirmLoft,
@@ -9459,6 +9486,22 @@ class _PartScreenState extends State<PartScreen> {
                       heroTag: 'confirm-source-feature-picker-fab',
                       tooltip: 'Confirm Feature selection',
                       onPressed: _busy ? null : _confirmSourceFeaturePicker,
+                      child: const Icon(Icons.check),
+                    ),
+                  // Mirrors the source-feature-picker FAB just above exactly
+                  // - same "no bottom ribbon of its own, banner lives inside
+                  // FeatureTreePanel" reasoning. Unlike that FAB, disabled
+                  // below 2 picked sections - a Loft has nothing to loft
+                  // between with fewer than 2 (see the backend's own
+                  // `_validate_loft_sections`), so confirming early has
+                  // nothing valid to hand off to [_openLoftPanel].
+                  if (_loftSketchPickerActive)
+                    FloatingActionButton(
+                      heroTag: 'confirm-loft-section-picker-fab',
+                      tooltip: 'Confirm Loft sections',
+                      onPressed: _busy || _loftPendingSections.length < 2
+                          ? null
+                          : _confirmLoftSectionPicker,
                       child: const Icon(Icons.check),
                     ),
                 ],

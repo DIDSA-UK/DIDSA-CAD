@@ -205,6 +205,14 @@ class FeatureTreePanel extends StatefulWidget {
   /// Unused (and may be left null) outside picker mode.
   final void Function(FeatureDto feature)? onFeaturePickerToggle;
 
+  /// [isFeaturePickerMode]'s own inline banner text (before the running
+  /// "N selected" suffix) - defaults to the original Pattern/Mirror
+  /// source-feature-picker wording so that flow's own call site doesn't
+  /// need updating; a Loft section picker (the only other caller of this
+  /// mode) passes its own, since "source Features" would be a confusing
+  /// label for picking ordered Loft sections.
+  final String featurePickerLabel;
+
   const FeatureTreePanel({
     super.key,
     required this.visible,
@@ -226,6 +234,7 @@ class FeatureTreePanel extends StatefulWidget {
     this.pickableFeaturePickerIds = const {},
     this.selectedFeaturePickerIds = const {},
     this.onFeaturePickerToggle,
+    this.featurePickerLabel = 'Select source Features',
   });
 
   @override
@@ -332,7 +341,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
                                 color: Theme.of(context).colorScheme.surfaceContainerHighest,
                                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                                 child: Text(
-                                  'Select source Features'
+                                  '${widget.featurePickerLabel}'
                                   '${widget.selectedFeaturePickerIds.isEmpty ? '' : ' - ${widget.selectedFeaturePickerIds.length} selected'}',
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
