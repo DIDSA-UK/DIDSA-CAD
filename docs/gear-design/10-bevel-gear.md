@@ -227,3 +227,302 @@ full implementation plan.
 **Go/no-go: GO on `BRepOffsetAPI_ThruSections`** for spherical-involute
 bevel tooth flank construction, with the face-width caveat above carried
 forward into `BevelGearFeature`'s eventual validation logic.
+
+## Spike findings (2026-08-05) — shell/solid assembly
+
+Second investigate/prototype pass, picking up exactly where the
+2026-08-04 spike above stopped ("Not attempted, out of scope for this
+spike: stitching N teeth into a closed shell, capping with addendum/
+dedendum cone surfaces, and producing a valid solid gear body"). Still not
+the full `BevelGearFeature` six-part checklist - no dataclass Feature, no
+router, nothing committed to `app/document/bevel.py`. Bootstrapped the
+same real conda-forge `pythonocc-core` 7.9.3 env (`backend/environment.yml`,
+`docs/status.md`'s established recipe) and worked entirely in
+scratch-only scripts, matching this project's own convention for spike
+sessions.
+
+### 1. Go/no-go: **GO** on full shell/solid assembly via `BRepBuilderAPI_Sewing`
+
+A real, valid, non-self-intersecting solid bevel gear body (all N teeth,
+capped top and bottom) is buildable today with existing OCCT APIs already
+used elsewhere in this codebase, plus one genuinely new technique (the
+spherical end-caps, §3 below). Built and validated for both the prior
+spike's moderate 20T/40T (module 4, 90deg) pair and the tight 18T/90T
+(module 2.5, pitch angle 11.3deg) pair, at multiple face-width ratios each
+(§4-5).
+
+### 2. Face inventory: `4N + 2` faces, all via `ThruSections`-between-two-wires or a sphere+wire face
+
+Per tooth (`N` around the full cone), the closed shell decomposes into:
+
+- **2 flank faces** (right, left) - exactly the prior spike's own
+  technique, unchanged: `BRepOffsetAPI_ThruSections(ruled=True)` between
+  two single-edge `Geom_BSplineCurve` wires (outer/inner cone distance),
+  each fit via `GeomAPI_Interpolate` through `bevel_tooth_flank_pair`'s
+  sampled points.
+- **1 tip-land face** (addendum cone piece, azimuthally spanning just this
+  tooth's own tip width) and **1 root-land face** (base/root cone piece,
+  spanning the *gap* to the next tooth) - a new but structurally identical
+  application of the *same* `ThruSections`-between-two-wires idiom: the
+  two wires are plain circular arcs (`gp_Circ`, trimmed by two points) at
+  fixed colatitude (face-cone angle for the tip, root/base-cone angle for
+  the root) instead of `BSplineCurve`s, one at `cone_distance` and one at
+  `inner_cone_distance`. No separate `Geom_ConicalSurface`/
+  `BRepPrimAPI_MakeCone` construction was needed - corresponding points on
+  the outer/inner arc lie on the same ray from the apex (straight-bevel
+  teeth are ruled by lines through the apex; see the prior spike's own
+  point-sampling), so the arc-to-arc loft *is* the exact trimmed cone
+  patch, reusing the identical technique flanks already use rather than
+  a different one.
+- **2 end-cap faces** (outer sphere at `cone_distance`, inner sphere at
+  `inner_cone_distance`) - **one face each**, not per-tooth: bounded by
+  the *entire* `4N`-edge zigzag rim (right-flank curve, tip arc, left-flank
+  curve, root arc, repeating `N` times around the full 2*pi), mirroring
+  `gear.py`'s own planar `_gear_face`/whole-outline-as-one-face pattern
+  exactly, just on a sphere instead of a plane. See §3 for why this needed
+  a genuinely new technique, and §6 for a topology dead end this ruled
+  out (a separate cap face per tooth, excluding the gaps, does **not**
+  close correctly - the gap's own root-land face has no second partner
+  face without the full zigzag rim as one connected loop, matching the
+  planar case where root gaps are concave notches in the *same* outline
+  wire, not omitted from it).
+
+Root/undercut handling needed **no new work**: both test cases
+(20T/40T and 18T/90T) land in mild undercut territory
+(`root_cone_angle < base_cone_angle`), and `bevel_tooth_flank_pair`
+already clamps the flank's own start to `max(root_cone_angle,
+base_cone_angle)` (its own docstring: "mirrors
+`gear_math.tooth_profile_points`'s own clamp"). The tip-land/root-land
+faces were simply built at that same clamped colatitude, exactly
+reusing `gear_math`/`gear.py`'s own established, already-shipped
+undercut simplification (draw the outline at the base circle/cone, not
+the true root/dedendum, when the two disagree) rather than inventing a
+bevel-specific fix.
+
+### 3. The one genuinely new technique: sphere-with-pcurves end-caps, and two real dead ends
+
+`BRepBuilderAPI_MakeFace(wire)` (planar auto-detection) fails outright on
+the rim wire, as expected - it isn't planar. Two more plausible-looking
+approaches were tried and **both are real dead ends, not just unconfirmed**:
+
+- **`BRepBuilderAPI_MakeFace(Geom_SphericalSurface, wire)` without
+  pcurves**: `IsDone()` returns `True` and looks like success, but
+  `BRepCheck_Analyzer` on the resulting face reports invalid and its
+  `GProp_GProps` area comes back as **exactly 0.0**. The API's own
+  docstring says why, easy to miss: "If the surface S is not plane, it
+  must contain pcurves for all edges in W, otherwise the wrong shape will
+  be created" - true to its word, a silently-wrong face, not an error.
+- **`BRepOffsetAPI_MakeFilling`** (N-sided energy-minimizing patch,
+  sidesteps pcurves entirely by fitting its own surface to the boundary
+  edges as C0 constraints): `IsDone()` `True`, `BRepCheck_Analyzer` even
+  reports **valid**, but the resulting area (5398 mm^2 for the 20T/40T
+  outer cap) is **~3.2x** a naive upper-bound estimate (the full spherical
+  zone between the root and face colatitudes, ignoring the teeth/gap
+  zigzag entirely, which must exceed the true cap area) - a real, visible,
+  wrong answer that both weaker checks miss. Do not use this for a rim
+  this irregular (80 boundary edges, sharp per-tooth zigzags); it is a
+  measured, not theoretical, dead end for this exact shape.
+
+**What actually worked**: build the pcurve by hand. For a sphere
+centred at the apex with the gear axis as pole, the (azimuth, latitude)
+of any 3D point is closed-form (`atan2(y, x)`, `asin(z / R)`) and matches
+`Geom_SphericalSurface`'s own default parametrization exactly (axis-
+aligned `gp_Ax3`, no rotation needed). Each flank edge's pcurve is a 2D
+`Geom2dAPI_Interpolate` through the same points' (azimuth, latitude)
+pairs; each arc edge's pcurve is a trivial `Geom2d_Line` at constant
+latitude. Two non-obvious steps were both load-bearing, not
+nice-to-haves:
+
+1. **Azimuth unwrapping.** `atan2` wraps to `(-pi, pi]`; naively using its
+   raw value per point breaks monotonicity every time the loop crosses
+   the seam. A running-offset unwrap (the same algorithm `numpy.unwrap`
+   uses, hand-rolled here with no numpy dependency) keeps the pcurve's own
+   U parameter strictly increasing all the way around N teeth.
+2. **`BRepLib.BuildCurves3d(wire)` before `MakeFace`, not after.** Edges
+   built from `BRepBuilderAPI_MakeEdge(pcurve2d, surface, p1, p2)` carry
+   **no 3D curve at all** until this call - `BRep_Tool.Curve(edge)`
+   returns null, and `BRepCheck_Analyzer` cannot evaluate such an edge
+   outside a face context. Skipping this (or calling it after the face is
+   already built, which was this session's own first mistake) leaves the
+   face silently broken exactly like the no-pcurve case above.
+
+With both steps done, the resulting cap face's `BRepCheck_Analyzer`
+result is a specific, informative status
+(`BRepCheck_UnorientableShape`, not "generically invalid") - see §6.
+
+### 4. `BRepBuilderAPI_Sewing` and solid assembly: the technique that closed it
+
+`BRepBuilderAPI_Sewing(tolerance=1e-4)` fed all `4N + 2` faces (built
+independently, via three different constructions above, none sharing
+literal edge objects) merged every coincident boundary correctly on the
+first try - `sewn_shape.ShapeType()` comes back as a single genuine
+`TopoDS_Shell`, `shell.Closed()` is `True`, and the sewn face count
+matches the input count exactly (no faces dropped or duplicated) for
+every case tested. This is the answer to the task's own "how it stitches
+to the tooth flanks' own edges without gaps" question: tolerance-based
+coincidence matching across independently-built curves (BSpline-fit
+flank edges vs. arc-fit tip/root/cap edges) is sufficient - no shared-edge
+bookkeeping between the different face builders was necessary.
+
+`BRepBuilderAPI_MakeSolid(shell)` alone was **not** sufficient:
+`IsDone()` succeeds, but the raw solid's `BRepGProp` volume comes back as
+exactly `0.0` and `BRepCheck_Analyzer` reports invalid - the two end-cap
+faces' own orientation is genuinely ambiguous to OCCT's default
+resolution (§6), and that ambiguity silently cancels volume rather than
+raising an error. `BRepLib.OrientClosedSolid` applied directly to this
+raw solid didn't fix it either. What worked: `ShapeFix_Shell().Perform()`
+applied to the **whole sewn shell**, before `MakeSolid` - this propagates
+the already-unambiguous orientation of the `4N` flank/tip/root faces
+across the shared edges to fix the two ambiguous end-caps, which
+per-face `ShapeFix_Face().FixOrientation()` (tried first, on each cap in
+isolation before sewing) could not do consistently - that route "fixed"
+`BRepCheck_Analyzer` to report valid, but produced the *same* wrong,
+~3.2x-inflated area `MakeFilling` did, a strong sign it silently
+reinterpreted the wire's enclosed region wrong rather than genuinely
+fixing it. Sequence that actually produces a correct, validated solid:
+**Sewing -> `ShapeFix_Shell` on the shell -> `MakeSolid` -> `BRepLib.
+OrientClosedSolid`**.
+
+### 5. Validation: `BRepCheck_Analyzer` is wrong again, in a new way - real checks agree
+
+`BRepCheck_Analyzer` on the final solid (post-fix) still reports
+`IsValid() == False`, tracing to `BRepCheck_UnorientableShape` on the two
+end-cap faces specifically - their own wires touch the same latitude
+circle N times around (once per root-land arc), which appears to be
+genuinely ambiguous input to OCCT's own per-face orientation heuristic
+even though the *applied* orientation (fixed at the shell level) is
+correct. Confirmed correct three independent ways, none of which is
+`BRepCheck_Analyzer`, continuing this project's own "`BRepCheck_Analyzer`
+alone is not enough" lesson from the 2026-08-04 spike above - this time
+for an *orientation* false-negative rather than a missed self-intersection:
+
+- **Independent volume, different code path entirely**: a real
+  `BRepMesh_IncrementalMesh` tessellation (0.05mm linear deflection) fed
+  through a hand-written divergence-theorem sum over every mesh triangle
+  (`sum of signed tetrahedron volumes from the origin`) - genuinely
+  different code from `BRepGProp`'s own analytic integration. Agreement
+  was 0.08-0.47% across every case tested (Table below) - mesh-
+  discretization-level noise, not a red flag.
+- **`BOPAlgo_CheckerSI`** (self-intersection check) on the final solid:
+  no errors, every case.
+- **Direct point classification**: `BRepTopAdaptor_FClass2d` on the outer
+  cap face correctly classifies a point at a tooth's own centre azimuth as
+  `TopAbs_IN`.
+
+| pair (pinion/gear teeth) | module | face_width tested | analytic vol (mm^3) | independent mesh vol (mm^3) | agreement |
+|---|---|---|---|---|---|
+| 20T/40T, 90deg | 4 | 14.9 / 26.8 / 29.8 | 67825 / 105771 / 113290 | 67738 / 105603 / 113108 | 0.13-0.16% |
+| 18T/90T, 90deg | 2.5 | 19.1 / 36.3 / 38.2 / 45.9 | 26646 / 43066 / 44507 / 49585 | 26624 / 42992 / 44428 / 49496 | 0.08-0.18% |
+
+**Implication for whoever builds the real `BevelGearFeature`**: don't
+gate a real implementation's validity check on `BRepCheck_Analyzer.
+IsValid()` for the assembled solid - it will false-negative on the
+end-caps every time, for a reason (repeated latitude-circle grazing) that
+is inherent to this shape, not a bug to fix away. Use the independent
+mesh-volume/BOPAlgo_CheckerSI combination (or equivalent) as the real
+signal, exactly as the flank-only spike already established for the
+per-flank case.
+
+### 6. A topology dead end worth naming, so nobody re-tries it
+
+Before landing on "one big end-cap face per sphere, bounded by the full
+zigzag rim" (§2), this session tried decomposing each end-cap into **N
+separate per-tooth patches** instead (each bounded by its own tooth-width
+root arc, *not* reaching into the gap). Built and validated in isolation
+- genuinely correct, `BRepCheck_Analyzer`-valid, plausible area
+(37.27mm^2 for one 20T/40T tooth, `20 * 37.27 = 745.4` matching the whole-
+rim face's own computed area to full precision, confirming gaps
+contribute ~zero extra area as expected). But this decomposition is
+**topologically wrong for assembly**: the root-land face's own outer/
+inner edge (spanning the *gap's* azimuthal width) never appears as a
+per-tooth-patch boundary at all (those patches only ever touch the
+*tooth's own* width), so it has no second partnering face and Sewing
+would leave it a free edge. The fix was recognizing this mirrors
+`gear.py`'s own planar precedent exactly: root gaps are concave notches
+in the *same* single outline face, never a separately-capped region - see
+`00-conventions.md`'s Feature-tree checklist framing ("every gear-
+producing Feature type is one more entry in this codebase's existing
+pattern") holding even for the one construction this project's own docs
+called "closer to raw kernel work than any other Feature."
+
+### 7. Face-width fold risk re-tested at assembly scale: no new failure mode found, but a real discrepancy flagged honestly
+
+The 2026-08-04 spike's own scratch fold-detection script no longer exists
+(scratch-only, by that spike's own explicit convention) and could not be
+re-run verbatim; this session re-derived a grid-based detector from its
+description (25x25 (u,v) grid; both a point-coincidence check at non-
+adjacent grid points and a local-surface-normal sign-flip check via
+`GeomLProp_SLProps`) and validated it against a positive control before
+trusting it: pushed `face_width` to the physical limit
+(`inner_cone_distance` shrinking toward the apex, `ratio -> ~2.95x
+max_recommended_face_width`) and confirmed the point-coincidence check
+correctly fires there for the 6T/80T case (`min_dist` 0.0989mm at
+ratio=2.0 down to 0.0049mm - true near-coincidence - at ratio=2.95,
+`inner_cone_distance` = 1.67mm from the apex).
+
+**Honest discrepancy**: at the *previously-documented* threshold ratios
+(6T/80T at 0.95, 18T/90T at 1.00), this session's own re-implementation
+found **no fold** by either signal - only the much more extreme ratios
+above triggered it. Without the original script to compare line-by-line,
+this could not be reconciled this session; it's flagged here rather than
+silently reported as agreement, and whoever builds the real feature
+should re-run both probes side by side once the construction is real,
+committed code rather than two different sessions' scratch scripts.
+
+**What *is* solidly answered, regardless of the exact threshold** - the
+question this spike was actually scoped to resolve (task item 5): at
+every ratio tested, from comfortably safe (0.5x) through the point of
+near-degenerate collapse at the apex (2.95x), **the full-ring assembly
+and the single isolated flank track each other's pass/fail status
+exactly** - both stay volume-consistent and `BOPAlgo_CheckerSI`-clean
+together, including at ratio=2.95 where the flank's own grid-injectivity
+check *first* signals near-coincidence but the assembled solid's volume-
+agreement/`BOPAlgo_CheckerSI` checks do **not** yet catch it (a second,
+independent confirmation of §5's lesson: those whole-solid checks are
+weaker than the grid-based one, even post-assembly, not just pre-
+assembly). No evidence anywhere in this testing that stitching N teeth
+into a ring shifts the safe boundary or introduces a *new* failure mode
+beyond the single flank's own risk - adjacent-tooth interaction adds
+nothing new. **Practical upshot**: the per-flank grid-injectivity check
+remains the right place to gate on this risk, run once per tooth (they're
+all identical up to rotation) before assembly, exactly as the parent
+spike already recommended - a "ring-level" re-check after assembly would
+be redundant, not more thorough.
+
+### 8. Implementation sketch for `BevelGearFeature`
+
+Not full code, per this spike's own scope. In `app/document/bevel.py`
+(new, mirroring `gear.py`'s own shape):
+
+- `_flank_face(basis, outer_pts, inner_pts)`: `GeomAPI_Interpolate` +
+  `ThruSections`, unchanged from the 2026-08-04 spike.
+- `_arc_wire(radius, colatitude, az_start, az_end)`: the one small new
+  helper tip-land/root-land need - a `gp_Circ`-based trimmed arc wire.
+  `_tip_land_face`/`_root_land_face` are both just `ThruSections` between
+  two calls to this at the two face-widths.
+- `_spherical_cap_face(tooth_count, sphere_radius, start_colat,
+  face_colat)`: the one genuinely new piece (§3) - the `Unwrapper`
+  running-azimuth-offset helper, the closed-form (azimuth, latitude)
+  pcurve construction, and the `BuildCurves3d`-before-`MakeFace` ordering
+  all belong here, isolated from the rest of the module since nothing
+  else needs them.
+- `_assemble_gear_solid(...)`: loop `tooth_count` times collecting the
+  `4N` side faces, append the 2 cap faces, `Sewing` -> `ShapeFix_Shell` ->
+  `MakeSolid` -> `OrientClosedSolid`, exactly the sequence in §4.
+- Validation split two ways, per §5/§7's own findings: run the
+  grid-injectivity/normal-flip fold check **per flank, before assembly**
+  (cheap, localized, the actual load-bearing check) as part of
+  `bevel_gear_geometry`'s existing non-blocking-warning surface
+  (`00-conventions.md`); run `BOPAlgo_CheckerSI` + the independent mesh-
+  volume cross-check **once, on the assembled solid**, as a final sanity
+  pass - not the primary defense, and don't gate on
+  `BRepCheck_Analyzer.IsValid()` at all for the reason §5 gives.
+- Undercut: no new code - `bevel_tooth_flank_pair`'s existing
+  `max(root_cone_angle, base_cone_angle)` clamp already determines the
+  tip-land/root-land colatitude too; pass it through unchanged.
+
+**Go/no-go: GO on full shell/solid assembly.** The technique is real,
+reproducible, and validated against genuinely independent checks for both
+a moderate and a tight test case. The one open item for the real
+implementation to resolve is §7's threshold discrepancy - budget a short
+side-by-side re-run once the code is committed, not a full second spike.
