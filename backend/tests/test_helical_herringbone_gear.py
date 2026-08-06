@@ -154,11 +154,26 @@ def test_helical_gear_mid_height_cross_section_matches_interpolated_twist_at_a_l
     *end* sections - the loft's own inputs, unaffected by which
     correspondence `ThruSections` chooses to connect them with), this
     samples a genuine *interior* cross-section - the actual lofted lateral
-    surface a wrong correspondence would visibly corrupt - and confirms
-    the tooth-tip vertex sits at the linearly-interpolated twist angle
-    there, not at 0deg (the untwisted bottom's own angle) or at a
-    neighbouring tooth's own angular position (18deg away for this
-    20-tooth gear)."""
+    surface a wrong correspondence would visibly corrupt.
+
+    A first version of this test compared the interior tip's own radius
+    against `_NEAR_TIP_THRESHOLD` (this file's own "near full addendum"
+    cutoff for the loft's two *end* sections) and failed on a real CI run
+    against real `pythonocc-core` - not because the fix is wrong (every
+    other helical/herringbone test in this file passed, including the ones
+    that already exercise `CheckCompatibility(False)` end-to-end), but
+    because that comparison itself was wrong: a tooth-tip *corner* vertex
+    isn't swept along a circular arc with height, it's a straight 3D chord
+    between its own two (twisted-copy) end positions - exactly `04-
+    helical-herringbone-loft.md`'s own 2026-08-04 spike's "1-7% area
+    deviation from a true rotation" finding, measured here a different way.
+    A chord between two points on a circle sags inward of the arc (more so
+    the further apart the two points are), so the interior radius is
+    *expected* to measure measurably below the addendum - this version
+    computes that expected chord position analytically instead of assuming
+    it stays near the addendum, and checks the *angle* (not affected by
+    the chord's own radius sag) plus the *chord-corrected* radius, at
+    whatever height the mesher actually sampled closest to the midpoint."""
     part = _create_part()
     # 45deg: the real angle a user reported this bug at, and (at this
     # gear's 20mm pitch radius/20mm face width) well past the 18deg
@@ -171,34 +186,43 @@ def test_helical_gear_mid_height_cross_section_matches_interpolated_twist_at_a_l
     vertices = _mesh(part["id"])[0]["mesh"]["vertices"]
 
     total_twist = helical_twist_angle(_PITCH_RADIUS, face_width, helix_angle_degrees)
+    addendum_radius = _PITCH_RADIUS + 2.0  # module=2 -> addendum = pitch_radius + module
     mid_z = face_width / 2
 
     # The mesher doesn't guarantee an exact z=mid_z sample on a smooth
     # lofted surface (unlike z=0/z=face_width, which are the loft's own
     # input wires and always present) - use whichever sampled height is
     # actually closest to it, and require it to be close enough (within
-    # 1/10 of the face width) for the interpolated-twist comparison below
+    # 1/10 of the face width) for the interpolated-chord comparison below
     # to still be meaningful.
     z_values = sorted({z for _, _, z in vertices})
     sampled_mid_z = min(z_values, key=lambda z: abs(z - mid_z))
     assert abs(sampled_mid_z - mid_z) < face_width / 10
 
-    expected_mid_twist = total_twist * (sampled_mid_z / face_width)
-    angular_pitch = 2 * math.pi / 20
+    # A straight 3D chord from (addendum_radius, angle=0) to
+    # (addendum_radius, angle=total_twist), evaluated at parameter
+    # t = sampled_mid_z / face_width - this is exactly what a tooth tip's
+    # own corner vertex traces between the loft's two end sections for a
+    # correspondence that's actually correct (the specific thing this
+    # test is checking for).
+    t = sampled_mid_z / face_width
+    chord_x = (1 - t) + t * math.cos(total_twist)
+    chord_y = t * math.sin(total_twist)
+    expected_angle = math.atan2(chord_y, chord_x)
+    expected_radius = addendum_radius * math.hypot(chord_x, chord_y)
 
-    # The tip sits at the interpolated twist angle for this height...
-    assert _max_radius_near(vertices, sampled_mid_z, expected_mid_twist, angle_tolerance=0.15) > _NEAR_TIP_THRESHOLD
-    # ...not still at the untwisted bottom's own angle...
-    assert _max_radius_near(vertices, sampled_mid_z, 0.0, angle_tolerance=0.15) < _NEAR_TIP_THRESHOLD
-    # ...and not wrapped onto a neighbouring tooth's own angular position.
-    assert (
-        _max_radius_near(vertices, sampled_mid_z, expected_mid_twist - angular_pitch, angle_tolerance=0.15)
-        < _NEAR_TIP_THRESHOLD
-    )
-    assert (
-        _max_radius_near(vertices, sampled_mid_z, expected_mid_twist + angular_pitch, angle_tolerance=0.15)
-        < _NEAR_TIP_THRESHOLD
-    )
+    # The tip sits at the chord-interpolated twist angle for this height,
+    # at the chord-interpolated (not full-addendum) radius...
+    measured_radius = _max_radius_near(vertices, sampled_mid_z, expected_angle, angle_tolerance=0.02)
+    assert abs(measured_radius - expected_radius) < 0.5
+    # ...not still at the untwisted bottom's own angle, at anywhere near
+    # that same magnitude - the specific failure mode a correspondence
+    # that silently failed to twist at all (this session's real bug, and
+    # separately the reported "twist doesn't match my input" symptom)
+    # would produce, and which the chord check above alone can't rule out
+    # (a correspondence stuck at zero twist would, unlike a real bug,
+    # otherwise still produce *some* real, if wrong, geometry to measure).
+    assert _max_radius_near(vertices, sampled_mid_z, 0.0, angle_tolerance=0.02) < addendum_radius - 1.0
 
 
 def test_helical_gear_twist_direction_flips_with_the_sign_of_helix_angle():
