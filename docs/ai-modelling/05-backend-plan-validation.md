@@ -58,6 +58,24 @@ Response: one entry per step —
 }
 ```
 
+**Workstream 4 addition**: a successful `fillet`/`chamfer` result also
+carries `resolved_edges` — the real Body edges its `EdgeSelector`
+heuristic resolved to (`[{"body_id": "f1", "shape_type": "edge", "index": 3}, ...]`),
+`null` for every other step kind. This is the *only* way the client can
+ever get concrete edge refs for a Fillet/Chamfer step at all — the
+heuristics in `ai_plan_edges.py` need real OCCT topology, never available
+client-side — so workstream 4's translator reuses this dry-run's own
+resolution for real execution instead of re-deriving it. Each entry's
+`body_id` is deliberately the plan's own `edges.of` local_id (plus any
+`#N` multi-solid suffix), never this endpoint's own scratch Feature id —
+the translator substitutes the real id at the point of use, exactly like
+every other local_id reference. Reusing the `index` values against real
+execution is only valid because both walk the same step sequence from the
+same empty starting Part (`00-conventions.md`'s "v1 always starts a fresh
+Part") — the same assumption this endpoint already relies on for "a step
+that dry-run-passes here behaves identically once workstream 4's
+translator executes it for real."
+
 `error` is always a structured `{"type": "...", ...}` object (never a
 bare string) — every domain error in this codebase is already
 `HTTPException(422/400, detail={"type": ...})`, and this endpoint's own
@@ -130,6 +148,27 @@ Items 1-5 (dataclass, `depends_on`, `resolve_X` module, `compute_part_
 bodies` branch, schemas) are all reused as-is from whichever existing
 Feature types a given plan happens to use — this endpoint adds no new
 geometry logic anywhere.
+
+## Real finding from workstream 4 (2026-08-06): sketch-entity angle fields were radians, not degrees
+
+`00-conventions.md` promises "degrees for every angle" and
+`ai_plan_summary.dart`'s Review & Generate panel already labelled
+`sketch_line`/`sketch_circle`/`sketch_arc`/`sketch_ellipse`'s
+`angle`/`end_angle` fields with a literal "°" — but this endpoint's
+handlers passed the value straight through to `Sketch.add_line`/
+`add_circle`/`add_arc`/`add_ellipse`, whose own docstrings are explicit
+that they expect **radians**. Never caught by this file's own tests
+(structural dry-run success doesn't care whether an angle value is
+numerically sensible — any float succeeds), and irrelevant to plan
+*validity* on its own, but a real correctness bug for anything built from
+an angle-bearing sketch entity: the geometry silently wouldn't match what
+the degrees value said, and (workstream 4's own new concern) it would
+have made dry-run's internally-modeled geometry diverge from the
+translator's real execution wherever the translator correctly interpreted
+the value as degrees — breaking the `resolved_edges` index-reuse guarantee
+above. Fixed with a `math.radians()` conversion at each of the four call
+sites; see `ai_plan_schemas.py`'s own field-level comments and
+`test_ai_plan_validate.py::test_sketch_line_angle_is_degrees_not_radians`.
 
 ## Real finding from spike 1 (2026-08-06): reference *kind*-checking, not just existence-checking
 

@@ -809,13 +809,33 @@ class AiPlanStepResultDto {
   final List<String> warnings;
   final Map<String, dynamic>? error;
 
-  AiPlanStepResultDto({required this.localId, required this.ok, required this.warnings, this.error});
+  /// Workstream 4: only present (and only meaningful) on a successful
+  /// `fillet`/`chamfer` step - the real Body edges its `EdgeSelector`
+  /// resolved to, with each [SubShapeRefDto.bodyId] holding the plan's own
+  /// `edges.of` local_id (plus any `#N` multi-solid suffix), never a real
+  /// Body id - `PlanTranslator` substitutes the real id at the point of
+  /// use. This is the *only* way the client can ever get concrete edge
+  /// refs for a Fillet/Chamfer step (the selector heuristics need real
+  /// OCCT topology, never available client-side) - see `StepResult.
+  /// resolved_edges`'s own doc comment in `ai_plan_schemas.py`.
+  final List<SubShapeRefDto>? resolvedEdges;
+
+  AiPlanStepResultDto({
+    required this.localId,
+    required this.ok,
+    required this.warnings,
+    this.error,
+    this.resolvedEdges,
+  });
 
   factory AiPlanStepResultDto.fromJson(Map<String, dynamic> json) => AiPlanStepResultDto(
         localId: json['local_id'] as String,
         ok: json['ok'] as bool,
         warnings: (json['warnings'] as List? ?? const []).cast<String>(),
         error: json['error'] as Map<String, dynamic>?,
+        resolvedEdges: (json['resolved_edges'] as List?)
+            ?.map((e) => SubShapeRefDto.fromJson(e as Map<String, dynamic>))
+            .toList(),
       );
 }
 

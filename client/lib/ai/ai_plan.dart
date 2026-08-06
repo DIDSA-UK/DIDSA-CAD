@@ -94,8 +94,8 @@ enum AiMergeMode {
       AiMergeMode.values.firstWhere((e) => e.wireValue == value, orElse: () => throw FormatException('Unknown MergeMode: $value'));
 }
 
-/// `app.document.models.FixedAxis` - `PatternDirectionStep`/`PatternAxisStep`'s
-/// own `fixed_axis`.
+/// `app.document.models.FixedAxis` - `PatternDirectionStep.fixed_axis`
+/// (`PatternAxisStep` has no `fixed_axis` field - see its own doc comment).
 enum AiFixedAxis {
   x('x'),
   y('y'),
@@ -211,22 +211,24 @@ class AiPatternDirectionStep {
       };
 }
 
-/// `PatternAxisStep` (`ai_plan_schemas.py`) - `PatternStep.axis`.
+/// `PatternAxisStep` (`ai_plan_schemas.py`) - `PatternStep.axis`. Unlike
+/// [AiPatternDirectionStep], no `fixedAxis` option - bug found while
+/// implementing workstream 4: `PatternAxisRef` (the real backend type this
+/// mirrors) resolves to a full world-space axis (an origin point *and* a
+/// direction, since a Circular Pattern rotates around a real pivot, not
+/// just along a direction) and has no `fixed_axis` field at all, unlike
+/// `PatternDirectionRef`'s plain direction. [sketchLineRef] is the only
+/// plan-authorable option as a result.
 class AiPatternAxisStep {
-  final AiFixedAxis? fixedAxis;
-  final String? sketchLineRef;
+  final String sketchLineRef;
 
-  const AiPatternAxisStep({this.fixedAxis, this.sketchLineRef});
+  const AiPatternAxisStep({required this.sketchLineRef});
 
   factory AiPatternAxisStep.fromJson(Map<String, dynamic> json) => AiPatternAxisStep(
-        fixedAxis: json['fixed_axis'] == null ? null : AiFixedAxis.fromWire(json['fixed_axis'] as String),
-        sketchLineRef: json['sketch_line_ref'] as String?,
+        sketchLineRef: json['sketch_line_ref'] as String,
       );
 
-  Map<String, dynamic> toJson() => {
-        if (fixedAxis != null) 'fixed_axis': fixedAxis!.wireValue,
-        if (sketchLineRef != null) 'sketch_line_ref': sketchLineRef,
-      };
+  Map<String, dynamic> toJson() => {'sketch_line_ref': sketchLineRef};
 }
 
 /// `MirrorPlaneStep` (`ai_plan_schemas.py`) - `MirrorStep.mirror_plane`.

@@ -35,6 +35,7 @@ from app.document.models import (
     RevolveMode,
     SweepMode,
 )
+from app.document.schemas import SubShapeRefSchema
 from app.sketch.models import Plane
 
 
@@ -60,6 +61,10 @@ class SketchLineStep(BaseModel):
     start_point_id: str
     end_point_id: str | None = None
     length: float | None = None
+    # Degrees, per 00-conventions.md's "degrees for every angle" - despite
+    # the real `LineCreate.angle` this ultimately drives being radians,
+    # `ai_plan.py`'s handler converts before calling it. Don't pass this
+    # value to a radians-expecting call unconverted.
     angle: float | None = None
     construction: bool = False
 
@@ -71,6 +76,7 @@ class SketchCircleStep(BaseModel):
     center_point_id: str
     radius_point_id: str | None = None
     radius: float | None = None
+    # Degrees - see `SketchLineStep.angle`'s identical note.
     angle: float | None = None
     construction: bool = False
 
@@ -82,6 +88,7 @@ class SketchArcStep(BaseModel):
     center_point_id: str
     start_point_id: str
     end_point_id: str | None = None
+    # Degrees - see `SketchLineStep.angle`'s identical note.
     end_angle: float | None = None
     construction: bool = False
 
@@ -93,6 +100,7 @@ class SketchEllipseStep(BaseModel):
     center_point_id: str
     major_point_id: str | None = None
     major_radius: float | None = None
+    # Degrees - see `SketchLineStep.angle`'s identical note.
     angle: float | None = None
     minor_radius: float
     construction: bool = False
@@ -238,11 +246,21 @@ class PatternDirectionStep(BaseModel):
 
 class PatternAxisStep(BaseModel):
     """Mirrors `PatternAxisRef`, minus its `edge_ref`/`face_ref` options -
-    same reasoning as `PatternDirectionStep` above. Exactly one of the two
-    fields must be set."""
+    same "doesn't exist at plan-authoring time" reasoning as
+    `PatternDirectionStep` above, but *not* a `fixed_axis` option like that
+    one: bug found while implementing workstream 4 - unlike
+    `PatternDirectionRef` (a plain direction, expressible as a bare world
+    axis), `PatternAxisRef` resolves to a full world-space axis (an origin
+    point *and* a direction - a Circular Pattern rotates around a real
+    pivot, not just along a direction) and genuinely has no `fixed_axis`
+    field at all on the real backend dataclass; the original version of
+    this class copied `PatternDirectionStep`'s shape without checking that
+    difference, and would have raised an unhandled `TypeError` (not even a
+    structured validation error) the moment a plan actually used it.
+    `sketch_line_ref` is `PatternAxisRef`'s only plan-authorable option as
+    a result - required, not optional, since it's the only field left."""
 
-    fixed_axis: FixedAxis | None = None
-    sketch_line_ref: str | None = None
+    sketch_line_ref: str  # local_id of a `sketch_line` step
 
 
 class PatternStep(BaseModel):
@@ -367,6 +385,24 @@ class StepResult(BaseModel):
     # depends-on-failed-step short-circuiting, edge-selector failures)
     # follow the identical shape for consistency.
     error: dict | None = None
+    # Workstream 4: only present (and only meaningful) on a successful
+    # `fillet`/`chamfer` step - the real Body edges its `EdgeSelector`
+    # heuristic resolved to, so the translator can reuse this dry-run's
+    # own resolution for real execution instead of re-deriving it (there is
+    # no other way for the client to resolve an EdgeSelector at all - the
+    # heuristics in `app.document.ai_plan_edges` need real OCCT topology,
+    # never available client-side). Each entry's `body_id` is deliberately
+    # the plan's own `edges.of` local_id (plus any `#N` multi-solid suffix
+    # `_resolve_body_shape` added), never this validator's own scratch
+    # Feature id - the translator substitutes its real id at the point of
+    # use, exactly like every other local_id reference. `index` values are
+    # only valid reused against real execution because both walk the same
+    # step sequence from the same empty starting Part (00-conventions.md's
+    # "v1 always starts a fresh Part") - the same assumption this endpoint's
+    # own module docstring already relies on ("a step that dry-run-passes
+    # here behaves identically once workstream 4's translator executes it
+    # for real").
+    resolved_edges: list[SubShapeRefSchema] | None = None
 
 
 class PlanValidateResponse(BaseModel):
