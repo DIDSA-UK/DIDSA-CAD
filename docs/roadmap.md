@@ -35,6 +35,40 @@ are now live; spiral/Zerol/hypoid bevel variants remain the one thing
 still deferred. DXF import/export was originally scoped here too but has
 since moved to its own doc set (`docs/dxf-io/`) - see the entry below.
 
+## AI Modelling
+
+Full scope in `docs/ai-modelling/` (`README.md` is the index - start
+there; `00-conventions.md` holds shared decisions every workstream needs;
+one file per workstream after that, mirroring `docs/gear-design/`'s own
+per-workstream split). A new "AI Modelling" entry point (alongside the
+existing "3D Part Design"/"2D Drawing"/"Gear Design" tiles on
+`ToolChooserScreen`) - a user describes a part in plain English, an LLM
+asks clarifying questions to scope it, then a client-side translator turns
+the resulting structured plan into a real Feature-tree part via this
+app's own Sketch/Feature API. **Status: scoped, not started** - this is
+the output of an investigation/brainstorm session, no code written yet.
+Key decisions: client-direct (Flutter calls the chosen AI provider - local
+or cloud - directly; no new backend AI-brokering endpoint), a structured
+JSON plan + deterministic client-side translator rather than freeform
+LLM tool-calling against the live API, one new backend addition only (a
+stateless dry-run plan-validation endpoint reusing every existing Feature
+type's own `resolve_X` functions, never persisting anything), and a
+provider abstraction unifying local + OpenAI cloud on the OpenAI-
+compatible chat-completions wire shape with a separate Anthropic adapter.
+v1 is text-input only, composing only from Sketch's existing entity types
+and a subset of existing Feature types (gear-shaped requests route to the
+now-complete Gear Design screens instead of freeform generation); image
+upload (sketch/drawing photo interpretation) is real, deliberately
+deferred scope with its own not-yet-designed workstream
+(`06-image-input-deferred.md`) - explicitly excludes reverse-engineering
+a photo of a real physical object as a v1 non-goal. One real open design
+problem flagged for the next implementation session:
+`03-structured-plan-schema.md`'s Fillet/Chamfer edge-selection scheme
+(a Body's edges don't exist until it's built, unlike Sketch entities)
+isn't fully resolved - a coarse deterministic-selector approach is
+recommended over a mid-execution LLM call, but the actual selector set
+still needs designing.
+
 ## Analysis tools
 
 - **Measure tool.** Not yet scoped in detail - needs its own design pass
