@@ -185,3 +185,110 @@ project's own Text-tool font work, `docs/roadmap.md`'s Text tool entry)
 **Not yet done, before this schema/prompt can be considered validated:**
 non-Gemini model coverage (Groq and/or Ollama Cloud, once reachable),
 more adversarial/underspecified prompts, and the edge-selector spike.
+
+## Spike findings continued (2026-08-06, Ollama Cloud coverage)
+
+Same session's continuation, run locally (not sandboxed) specifically to
+reach the non-Gemini models the first pass couldn't. Same system-prompt
+five-component shape and structural validator (kind membership, no
+forward/dangling `local_id` refs, edge-selector membership) as the first
+pass; scratch script again not committed, per this project's spike
+convention.
+
+**Groq: confirmed genuinely unreachable from this machine, not a sandbox
+artifact.** Every request — with or without a real API key, `GET` or
+`POST`, against `api.groq.com` — returns `HTTP 403` with body
+`{"error":{"message":"Access denied. Please check your network settings."}}`.
+That message and behavior is distinct from a normal missing/bad-key `401`
+and appeared identically before and after supplying a real key, so this
+reads as a network/IP/region-level block on Groq's own side for this
+connection, not the sandboxed session's org-policy block from the first
+pass and not an auth problem. **Groq stays untested** — dropped for this
+session by user decision in favor of two Ollama Cloud models instead of
+delaying further.
+
+**Ollama Cloud: fully reachable** (`https://ollama.com/v1`, confirmed with
+a plain `GET /models` returning `200` even unauthenticated). Ran the same
+three scenarios from the first pass against two models on this endpoint:
+
+- **`gpt-oss:20b`** (weak/fast tier — the "local-class" comparison point
+  the original spike wanted).
+- **`gpt-oss:120b`** (frontier-scale tier). **Correction to this doc set's
+  own free-tier assumptions**: `glm-5.2`, `deepseek-v4-flash:preview`,
+  `kimi-k2.6`, and `qwen3.5:397b` — the specific frontier models named in
+  `README.md`'s "Testing without cost" section — all now return
+  `HTTP 403 "this model requires a subscription"` on Ollama Cloud's free
+  tier as of this session, contrary to that section's claim of reaching
+  them at $0. Confirmed still-free on the same account: `gpt-oss:120b`,
+  `nemotron-3-super`, `gemma4:31b`, `minimax-m3`. `README.md` itself
+  wasn't updated this session (out of scope per this session's brief) —
+  worth a follow-up correction pass.
+
+**Fully-specified request and gear-shaped request: clean pass on both
+models**, same as Gemini — valid schema-conformant plans first response,
+gear request correctly routed to a single `gear_request` step, sensible
+centered rectangle geometry on the block request.
+
+**The L-shaped-bracket ambiguous scenario: the specific 40mm-vs-5mm
+thickness error did NOT reproduce on either `gpt-oss` model, across five
+total attempts** (both models × with/without few-shot, plus three extra
+repeat runs on `gpt-oss:20b`/with-few-shot to check reproducibility — two
+of those five hit transient read-timeouts, not a model-behavior data
+point either way). Instead, across the runs that completed:
+
+- **One run produced a schema-valid plan with the *correct* `end_distance`
+  (5mm on both of its two extrude steps)** — `gpt-oss:20b`, with the
+  few-shot example, first attempt. Structurally valid per this session's
+  validator, though one extrude step's `profile` field referenced the
+  parent `sketch` step's `local_id` directly rather than a specific
+  rectangle entity within it — not caught as an error by the validator
+  (it only confirms a reference resolves to *some* earlier `local_id`, not
+  that it's the *right kind* of step to reference), a real gap in the
+  validation logic worth carrying into workstream 5's design, not just a
+  one-off quirk of this run.
+- **The other completed runs (three of five) asked a further, genuinely
+  relevant clarifying question instead of guessing** — e.g. "is this a
+  square with a corner notch, or an L-profile plate?", "what's the width
+  of each leg of the L?" — rather than silently picking a wrong number.
+  Both `gpt-oss:20b` and `gpt-oss:120b` did this at least once each,
+  with and without the few-shot example.
+
+**Consequence for the open question from the first pass**: this is
+evidence the Gemini thickness error is more likely **model-specific than
+a universal structured-output weakness** — the `gpt-oss` family, when
+uncertain on the identical prompt, tended to ask rather than confidently
+emit a wrong number, which is the better failure mode of the two.
+Caveat: both tested models share one family/lineage (`gpt-oss` at two
+sizes), not independent architectures, so this doesn't yet rule out the
+error being common to *some* other class of model — a real third,
+architecturally distinct model (e.g. once Groq or a subscription-tier
+Ollama Cloud model is reachable) is still needed before calling this
+settled. Workstream 2's "surface literal values prominently" consequence
+from the first pass stands regardless of this finding — a human-legible
+safety net matters even when it fires less often than Gemini's runs
+suggested.
+
+**New observation — non-determinism across identical repeat runs**: unlike
+Gemini's identically-reproduced error across 2 runs in the first pass, the
+same model/prompt/temperature(0.2) pairing here produced three genuinely
+different turn-2 behaviors across five attempts on `gpt-oss:20b` alone
+(valid-correct plan, two different specific clarifying questions, two
+timeouts). Single runs are not a reliable signal for these models —
+future spike sessions should budget for repeat runs per scenario rather
+than treating one pass/fail as final, a methodology gap in the first
+pass's own single-run-per-scenario approach.
+
+**Spike 2 (edge-selector heuristic): still not run** — same standing
+blocker as the first pass (no `pythonocc-core`/real `MeshDto` fixture in
+either sandboxed or local sessions so far).
+
+**Not yet done, updated:** Groq coverage (still genuinely blocked from
+every session tried so far — needs a different network path, not just a
+different session type); a third, architecturally-independent model
+(neither Gemini nor `gpt-oss`) to settle the thickness-error
+model-specificity question; more adversarial/underspecified prompts
+beyond the one bracket scenario; the edge-selector spike; the
+validator-gap fix (reject a step reference that points at a `local_id` of
+the wrong kind, e.g. an `extrude.profile` pointing at a `sketch` step
+instead of a sketch-entity step); and a `README.md` correction pass for
+the now-subscription-gated Ollama Cloud model list.
