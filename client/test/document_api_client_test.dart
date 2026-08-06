@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:didsa_cad_client/api/document_api_client.dart';
+import 'package:didsa_cad_client/api/sketch_api_client.dart' show ApiException;
 
 /// Prompt A3: tests for the array-of-Bodies `/mesh` response shape Prompt
 /// A1 introduced - `BodyMeshDto.fromJson` directly, plus `getPartMesh`'s
@@ -1354,6 +1355,270 @@ void main() {
 
       expect(capturedBody, {'plane_feature_id': 'plane-1'});
       expect(feature.planeFeatureId, 'plane-1');
+    });
+  });
+
+  group('Gear Design Workstream 8: GearPreviewDto.fromJson', () {
+    test('parses a gear-kind response with reference circles', () {
+      final dto = GearPreviewDto.fromJson({
+        'gear_kind': 'external',
+        'outline_points': [
+          [1.0, 2.0],
+          [3.0, 4.0],
+        ],
+        'pitch_radius': 20.0,
+        'base_radius': 18.79,
+        'addendum_radius': 22.0,
+        'dedendum_radius': 17.5,
+        'outer_radius': null,
+        'pitch_line_y': null,
+        'addendum_line_y': null,
+        'dedendum_line_y': null,
+        'rack_length': null,
+        'warnings': ['Tooth count is low'],
+      });
+
+      expect(dto.gearKind, 'external');
+      expect(dto.outlinePoints, [
+        [1.0, 2.0],
+        [3.0, 4.0],
+      ]);
+      expect(dto.pitchRadius, 20.0);
+      expect(dto.addendumRadius, 22.0);
+      expect(dto.pitchLineY, isNull);
+      expect(dto.warnings, ['Tooth count is low']);
+    });
+
+    test('parses a rack response with reference lines instead of circles', () {
+      final dto = GearPreviewDto.fromJson({
+        'gear_kind': 'rack',
+        'outline_points': [
+          [-5.0, -2.5],
+          [5.0, -2.5],
+        ],
+        'pitch_line_y': 0.0,
+        'addendum_line_y': 2.0,
+        'dedendum_line_y': -2.5,
+        'rack_length': 62.8,
+        'warnings': [],
+      });
+
+      expect(dto.gearKind, 'rack');
+      expect(dto.pitchRadius, isNull);
+      expect(dto.pitchLineY, 0.0);
+      expect(dto.rackLength, 62.8);
+      expect(dto.warnings, isEmpty);
+    });
+  });
+
+  group('Gear Design Workstream 8: DocumentApiClient previewGear', () {
+    http.Response jsonResponse(Object body, {int status = 200}) =>
+        http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});
+
+    test('sends gear_kind/module/tooth_count and parses the response', () async {
+      Map<String, dynamic> capturedBody = {};
+      Uri? capturedUri;
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedUri = request.url;
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'gear_kind': 'external',
+            'outline_points': [
+              [1.0, 0.0],
+            ],
+            'pitch_radius': 20.0,
+            'base_radius': 18.0,
+            'addendum_radius': 22.0,
+            'dedendum_radius': 17.5,
+            'warnings': [],
+          });
+        }),
+      );
+
+      final preview = await client.previewGear(gearKind: 'external', module: 2.0, toothCount: 20);
+
+      expect(capturedUri?.path, '/document/gear/preview');
+      expect(capturedBody['gear_kind'], 'external');
+      expect(capturedBody['module'], 2.0);
+      expect(capturedBody['tooth_count'], 20);
+      expect(capturedBody.containsKey('outer_diameter'), isFalse);
+      expect(capturedBody.containsKey('backing_height'), isFalse);
+      expect(preview.pitchRadius, 20.0);
+    });
+
+    test('sends outer_diameter for an internal gear', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'gear_kind': 'internal',
+            'outline_points': [
+              [1.0, 0.0],
+            ],
+            'outer_radius': 50.0,
+            'warnings': [],
+          });
+        }),
+      );
+
+      await client.previewGear(gearKind: 'internal', module: 2.0, toothCount: 40, outerDiameter: 100.0);
+
+      expect(capturedBody['outer_diameter'], 100.0);
+    });
+
+    test('surfaces a structured 422 detail as the ApiException message', () async {
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          return http.Response(
+            jsonEncode({
+              'detail': {'type': 'invalid_gear_preview_parameters', 'detail': 'tooth_count must be >= 4'},
+            }),
+            422,
+            headers: {'content-type': 'application/json'},
+          );
+        }),
+      );
+
+      await expectLater(
+        client.previewGear(gearKind: 'external', module: 2.0, toothCount: 3),
+        throwsA(
+          isA<ApiException>().having((e) => e.message, 'message', contains('tooth_count must be >= 4')),
+        ),
+      );
+    });
+  });
+
+  group('Gear Design Workstream 8: DocumentApiClient createGearFeature/createRackFeature', () {
+    http.Response jsonResponse(Object body, {int status = 201}) =>
+        http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});
+
+    test('createGearFeature sends every gear field plus plane_ref', () async {
+      Map<String, dynamic> capturedBody = {};
+      Uri? capturedUri;
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedUri = request.url;
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'gear',
+            'id': 'gear-1',
+            'locked': false,
+            'produces': 'body',
+            'plane_ref': {'fixed_plane': 'XY'},
+            'gear_type': 'boss',
+            'is_internal': false,
+            'module': 2.0,
+            'tooth_count': 20,
+            'face_width': 5.0,
+            'pressure_angle_degrees': 20.0,
+            'profile_shift': 0.0,
+            'backlash': 0.0,
+            'root_fillet_radius': 0.0,
+          });
+        }),
+      );
+
+      final feature = await client.createGearFeature(
+        'part-1',
+        gearType: 'boss',
+        isInternal: false,
+        module: 2.0,
+        toothCount: 20,
+        faceWidth: 5.0,
+        planeRef: const PlaneRefDto(fixedPlane: 'XY'),
+      );
+
+      expect(capturedUri?.path, '/document/parts/part-1/gear-features');
+      expect(capturedBody['plane_ref'], {'fixed_plane': 'XY'});
+      expect(capturedBody['is_internal'], false);
+      expect(capturedBody['module'], 2.0);
+      expect(capturedBody['tooth_count'], 20);
+      // Workstream 4a: defaults reproduce a plain spur gear byte-identically.
+      expect(capturedBody['helix_angle_degrees'], 0.0);
+      expect(capturedBody['herringbone'], false);
+      expect(feature.type, 'gear');
+    });
+
+    test('createGearFeature sends helix_angle_degrees/herringbone when set', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'gear',
+            'id': 'gear-1',
+            'locked': false,
+            'produces': 'body',
+            'plane_ref': {'fixed_plane': 'XY'},
+            'gear_type': 'boss',
+            'is_internal': false,
+            'module': 2.0,
+            'tooth_count': 20,
+            'face_width': 5.0,
+            'pressure_angle_degrees': 20.0,
+            'profile_shift': 0.0,
+            'backlash': 0.0,
+            'root_fillet_radius': 0.0,
+            'helix_angle_degrees': 20.0,
+            'herringbone': true,
+          });
+        }),
+      );
+
+      await client.createGearFeature(
+        'part-1',
+        gearType: 'boss',
+        isInternal: false,
+        module: 2.0,
+        toothCount: 20,
+        faceWidth: 5.0,
+        helixAngleDegrees: 20.0,
+        herringbone: true,
+      );
+
+      expect(capturedBody['helix_angle_degrees'], 20.0);
+      expect(capturedBody['herringbone'], true);
+    });
+
+    test('createRackFeature sends every rack field plus plane_ref', () async {
+      Map<String, dynamic> capturedBody = {};
+      Uri? capturedUri;
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedUri = request.url;
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'rack',
+            'id': 'rack-1',
+            'locked': false,
+            'produces': 'body',
+            'plane_ref': {'fixed_plane': 'XZ'},
+            'rack_type': 'boss',
+            'module': 2.0,
+            'tooth_count': 10,
+            'face_width': 5.0,
+            'pressure_angle_degrees': 20.0,
+            'backlash': 0.0,
+          });
+        }),
+      );
+
+      final feature = await client.createRackFeature(
+        'part-1',
+        rackType: 'boss',
+        module: 2.0,
+        toothCount: 10,
+        faceWidth: 5.0,
+        planeRef: const PlaneRefDto(fixedPlane: 'XZ'),
+      );
+
+      expect(capturedUri?.path, '/document/parts/part-1/rack-features');
+      expect(capturedBody['rack_type'], 'boss');
+      expect(capturedBody['tooth_count'], 10);
+      expect(capturedBody.containsKey('backing_height'), isFalse);
+      expect(feature.type, 'rack');
     });
   });
 }

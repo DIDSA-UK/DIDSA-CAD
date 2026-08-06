@@ -39,15 +39,26 @@ from app.document.plane_geometry import (
     world_point_to_basis,
 )
 from app.document.models import (
+    BevelGearFeature,
+    BevelGearType,
+    BevelPairFeature,
     ChamferFeature,
     ExtrudeFeature,
     ExtrudeType,
     FilletFeature,
+    GearChainFeature,
+    GearFeature,
+    GearType,
     ImportFeature,
+    LoftFeature,
+    LoftMode,
     MergeMode,
     MirrorFeature,
     Part,
     PatternFeature,
+    PlanetaryGearFeature,
+    RackFeature,
+    RackType,
     ResolvedPlane,
     RevolveFeature,
     RevolveMode,
@@ -724,36 +735,46 @@ def resolve_feature_tool_shape(
 ) -> tuple[TopoDS_Shape, list[str], bool] | None:
     """Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
     §2.11/§4): the standalone, pre-boolean tool shape for an arbitrary
-    upstream `ExtrudeFeature`/`RevolveFeature`/`SweepFeature`, factored out
-    of `compute_part_bodies`'s own three inline branches below so both that
-    loop *and* `MirrorFeature`/`PatternFeature`'s new `tool_feature_id` path
+    upstream `ExtrudeFeature`/`RevolveFeature`/`SweepFeature`/`GearFeature`
+    (`docs/gear-design/02-gear-feature.md`), factored out of
+    `compute_part_bodies`'s own inline branches below so both that loop
+    *and* `MirrorFeature`/`PatternFeature`'s new `tool_feature_id` path
     (`app.document.mirror.resolve_mirror_tool_feature_from_bodies`/
     `app.document.pattern.resolve_pattern_tool_feature_from_bodies`) can
     share the identical computation, rather than `compute_part_bodies`'s
     own inline solid-construction-then-`_apply_boss_or_cut` calls being the
-    only way to ever get at one of these three Feature types' own raw
-    solid.
+    only way to ever get at one of these Feature types' own raw solid.
 
     Returns `(tool_shape, target_body_ids, is_cut)` - `target_body_ids`/
     `is_cut` are simply that Feature's own fields (`target_body_ids`,
-    `extrude_type == CUT`/`mode == CUT`), returned alongside the shape so a
-    caller resolving an *arbitrary* Feature id (Pattern/Mirror's new path,
-    which doesn't already know which of the three types or which mode it
-    is) doesn't have to re-derive the same isinstance dispatch a second
-    time. Returns `None` - never raises - when `feature_id` doesn't resolve
-    to one of the three qualifying types at all, or (mirroring each
-    existing branch's own inline tolerance) when its own `sketch_feature_id`
-    doesn't resolve to a real `SketchFeature`, or its backing Sketch
-    currently has no extrudable/revolvable/sweepable profile - the exact
-    same "skip, don't fail the whole request" cases `compute_part_bodies`'s
-    own three branches already handled inline before this extraction,
-    unchanged in substance, just centralized. Still raises `HTTPException`
-    for the same structured geometry-failure errors `_solid_for_extrude_
-    feature`/`resolve_revolve_from_bodies`/`resolve_sweep_from_bodies`
-    themselves always could (`invalid_profile_ref`, `revolve_failed`,
-    `sweep_failed`, `invalid_path_ref`, `disconnected_path`, ...) - callers
-    keep their own pre-existing per-type tolerance policy for those
-    unchanged (see each of the three call sites below)."""
+    `extrude_type == CUT`/`mode == CUT`/`gear_type == CUT`), returned
+    alongside the shape so a caller resolving an *arbitrary* Feature id
+    (Pattern/Mirror's new path, which doesn't already know which type or
+    which mode it is) doesn't have to re-derive the same isinstance
+    dispatch a second time. Returns `None` - never raises - when
+    `feature_id` doesn't resolve to one of the qualifying types at all, or
+    (mirroring each existing branch's own inline tolerance) when its own
+    `sketch_feature_id` doesn't resolve to a real `SketchFeature`, or its
+    backing Sketch currently has no extrudable/revolvable/sweepable
+    profile - the exact same "skip, don't fail the whole request" cases
+    `compute_part_bodies`'s own branches already handled inline before
+    this extraction, unchanged in substance, just centralized. `GearFeature`
+    is the one exception to the "return None, don't raise" tolerance -
+    unlike the Sketch-profile-backed types, it has no equivalent "currently
+    has nothing to build" state, so `resolve_gear_from_bodies` always
+    raises a structured `HTTPException` for a failure rather than
+    returning `None` (see that function's own docstring). Still raises
+    `HTTPException` for the same structured geometry-failure errors
+    `_solid_for_extrude_feature`/`resolve_revolve_from_bodies`/
+    `resolve_sweep_from_bodies`/`resolve_gear_from_bodies` themselves
+    always could (`invalid_profile_ref`, `revolve_failed`, `sweep_failed`,
+    `invalid_path_ref`, `disconnected_path`, `invalid_gear_parameters`,
+    `gear_failed`, ...) - callers keep their own pre-existing per-type
+    tolerance policy for those unchanged (see each call site below)."""
+    from app.document.bevel import resolve_bevel_gear_from_bodies
+    from app.document.gear import resolve_gear_from_bodies
+    from app.document.loft import resolve_loft_from_bodies
+    from app.document.rack import resolve_rack_from_bodies
     from app.document.revolve import resolve_revolve_from_bodies
     from app.document.sweep import resolve_sweep_from_bodies
 
@@ -800,6 +821,55 @@ def resolve_feature_tool_shape(
         if solid is None:
             return None
         return solid, feature.target_body_ids, feature.mode == SweepMode.CUT
+
+    if isinstance(feature, GearFeature):
+        # docs/gear-design/02-gear-feature.md: unlike Extrude/Revolve/Sweep,
+        # a GearFeature has no backing SketchFeature to look up first - it
+        # builds straight from its own parameters (00-conventions.md's
+        # "gear teeth are not Sketch entities" decision) - and it never
+        # returns None the way the three profile-based branches above can
+        # (resolve_gear_from_bodies raises a structured HTTPException for
+        # every failure mode instead, since a GearFeature has no
+        # equivalent "temporarily has nothing to build" state a missing
+        # Sketch profile represents for the others).
+        # Its own non-blocking root-fillet-fallback warnings (second return
+        # value) aren't surfaced through this path - same "only the
+        # router's create/update endpoints put them on the Feature's own
+        # response" treatment as LoftFeature's identical `_warnings` just
+        # below.
+        solid, _warnings = resolve_gear_from_bodies(feature, part, bodies, excluded_feature_ids)
+        return solid, feature.target_body_ids, feature.gear_type == GearType.CUT
+
+    if isinstance(feature, RackFeature):
+        # docs/gear-design/03-rack.md: same "no backing SketchFeature,
+        # always raises a structured HTTPException rather than returning
+        # None" shape as GearFeature just above.
+        solid = resolve_rack_from_bodies(feature, part, bodies, excluded_feature_ids)
+        return solid, feature.target_body_ids, feature.rack_type == RackType.CUT
+
+    if isinstance(feature, BevelGearFeature):
+        # docs/gear-design/10-bevel-gear.md: same "no backing SketchFeature,
+        # always raises a structured HTTPException rather than returning
+        # None" shape as GearFeature/RackFeature just above. Its own non-
+        # blocking warnings (fold-risk, face-width, assembly sanity checks -
+        # second return value) aren't surfaced through this path, same
+        # "only the router's create/update endpoints put them on the
+        # Feature's own response" treatment as GearFeature/LoftFeature.
+        solid, _warnings = resolve_bevel_gear_from_bodies(feature, part, bodies, excluded_feature_ids)
+        return solid, feature.target_body_ids, feature.bevel_type == BevelGearType.CUT
+
+    if isinstance(feature, LoftFeature):
+        # docs/gear-design/04-helical-herringbone-loft.md: like GearFeature/
+        # RackFeature, always raises a structured HTTPException rather than
+        # returning None (fewer than 2 resolvable sections has no
+        # equivalent "temporarily has nothing to build" state). Its own
+        # non-blocking self-intersection warnings (resolve_loft_from_
+        # bodies' second return value) aren't surfaced through this path -
+        # only the router's create/update endpoints (which call
+        # app.document.loft.resolve_loft directly) put them on the
+        # Feature's own response.
+        solid, _warnings = resolve_loft_from_bodies(feature, part, bodies, excluded_feature_ids)
+        return solid, feature.target_body_ids, feature.mode == LoftMode.CUT
 
     return None
 
@@ -1159,6 +1229,167 @@ def compute_part_bodies(
                 continue
             solid, target_body_ids, is_cut = result
             _apply_boss_or_cut(bodies, feature.id, feature_index, is_cut, target_body_ids, solid)
+            continue
+
+        if isinstance(feature, GearFeature):
+            # docs/gear-design/02-gear-feature.md: resolve_gear_from_bodies
+            # always raises a structured HTTPException on failure rather
+            # than resolve_feature_tool_shape returning None for it (no
+            # backing Sketch, so no "currently has nothing to build" state
+            # to tolerate) - every gear-specific failure mode is caught
+            # and skipped here the same way every other Feature type's own
+            # branch tolerates its own structured errors; anything else
+            # (e.g. a missing_reference from an upstream plane_ref) still
+            # propagates and fails the whole request.
+            try:
+                result = resolve_feature_tool_shape(part, bodies, feature.id, excluded_feature_ids)
+            except HTTPException as exc:
+                if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
+                    "invalid_gear_parameters",
+                    "gear_failed",
+                ):
+                    raise
+                logger.warning("Skipping GearFeature %s: could not be resolved", feature.id)
+                continue
+            if result is None:
+                continue
+            solid, target_body_ids, is_cut = result
+            _apply_boss_or_cut(bodies, feature.id, feature_index, is_cut, target_body_ids, solid)
+            continue
+
+        if isinstance(feature, RackFeature):
+            # docs/gear-design/03-rack.md: mirrors the GearFeature branch
+            # just above exactly, including its own structured error types.
+            try:
+                result = resolve_feature_tool_shape(part, bodies, feature.id, excluded_feature_ids)
+            except HTTPException as exc:
+                if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
+                    "invalid_rack_parameters",
+                    "rack_failed",
+                ):
+                    raise
+                logger.warning("Skipping RackFeature %s: could not be resolved", feature.id)
+                continue
+            if result is None:
+                continue
+            solid, target_body_ids, is_cut = result
+            _apply_boss_or_cut(bodies, feature.id, feature_index, is_cut, target_body_ids, solid)
+            continue
+
+        if isinstance(feature, BevelGearFeature):
+            # docs/gear-design/10-bevel-gear.md: mirrors the GearFeature/
+            # RackFeature branches above exactly, including their own
+            # structured error types.
+            try:
+                result = resolve_feature_tool_shape(part, bodies, feature.id, excluded_feature_ids)
+            except HTTPException as exc:
+                if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
+                    "invalid_bevel_parameters",
+                    "bevel_failed",
+                ):
+                    raise
+                logger.warning("Skipping BevelGearFeature %s: could not be resolved", feature.id)
+                continue
+            if result is None:
+                continue
+            solid, target_body_ids, is_cut = result
+            _apply_boss_or_cut(bodies, feature.id, feature_index, is_cut, target_body_ids, solid)
+            continue
+
+        if isinstance(feature, LoftFeature):
+            # docs/gear-design/04-helical-herringbone-loft.md: tolerates
+            # this Loft's own stale/broken references (an edited-away
+            # section, an unresolvable reference_point, a geometrically-
+            # invalid loft) - mirrors the SweepFeature branch above's
+            # deliberately narrow catch for the identical reason (a
+            # missing_reference from an upstream plane/Sketch dependency
+            # must still propagate and fail the whole request).
+            try:
+                result = resolve_feature_tool_shape(part, bodies, feature.id, excluded_feature_ids)
+            except HTTPException as exc:
+                if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
+                    "invalid_loft_section",
+                    "loft_failed",
+                ):
+                    raise
+                logger.warning("Skipping LoftFeature %s: could not be resolved", feature.id)
+                continue
+            if result is None:
+                continue
+            solid, target_body_ids, is_cut = result
+            _apply_boss_or_cut(bodies, feature.id, feature_index, is_cut, target_body_ids, solid)
+            continue
+
+        if isinstance(feature, GearChainFeature):
+            # docs/gear-design/05-gear-chain-and-planetary.md: no Boss/Cut
+            # concept at all (see that Feature's own docstring) - always
+            # mints brand-new Bodies, so this registers the returned
+            # compound directly via `_register_solids` rather than going
+            # through `_apply_boss_or_cut`/`resolve_feature_tool_shape`.
+            # `resolve_gear_chain_from_bodies` reuses `app.document.gear`'s
+            # and `app.document.rack`'s own construction internally, so it
+            # can raise any of their structured error types too, in
+            # addition to its own.
+            from app.document.gear_chain import resolve_gear_chain_from_bodies
+
+            try:
+                shape, _warnings = resolve_gear_chain_from_bodies(feature, part, bodies, excluded_feature_ids)
+            except HTTPException as exc:
+                if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
+                    "invalid_gear_chain_parameters",
+                    "gear_chain_compound_join_failed",
+                    "gear_chain_failed",
+                    "invalid_gear_parameters",
+                    "gear_failed",
+                    "invalid_rack_parameters",
+                    "rack_failed",
+                ):
+                    raise
+                logger.warning("Skipping GearChainFeature %s: could not be resolved", feature.id)
+                continue
+            _register_solids(bodies, feature.id, shape)
+            continue
+
+        if isinstance(feature, PlanetaryGearFeature):
+            # Same "no Boss/Cut, always mints brand-new Bodies" shape as
+            # GearChainFeature just above - see that branch's own comment.
+            from app.document.planetary_gear import resolve_planetary_from_bodies
+
+            try:
+                shape = resolve_planetary_from_bodies(feature, part, bodies, excluded_feature_ids)
+            except HTTPException as exc:
+                if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
+                    "invalid_planetary_parameters",
+                    "invalid_gear_parameters",
+                    "gear_failed",
+                ):
+                    raise
+                logger.warning("Skipping PlanetaryGearFeature %s: could not be resolved", feature.id)
+                continue
+            _register_solids(bodies, feature.id, shape)
+            continue
+
+        if isinstance(feature, BevelPairFeature):
+            # docs/gear-design/11-bevel-pair.md: same "no Boss/Cut, always
+            # mints brand-new Bodies" shape as GearChainFeature/
+            # PlanetaryGearFeature just above - see GearChainFeature's own
+            # comment. resolve_bevel_pair_from_bodies reuses app.document.
+            # bevel's own _assemble_gear_solid internally, so it can raise
+            # that module's own bevel_failed error type too, in addition to
+            # its own invalid_bevel_pair_parameters.
+            from app.document.bevel_pair import resolve_bevel_pair_from_bodies
+
+            try:
+                shape, _warnings = resolve_bevel_pair_from_bodies(feature, part, bodies, excluded_feature_ids)
+            except HTTPException as exc:
+                if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
+                    "invalid_bevel_pair_parameters",
+                    "bevel_failed",
+                ):
+                    raise
+                logger.warning("Skipping BevelPairFeature %s: could not be resolved", feature.id)
+                continue
+            _register_solids(bodies, feature.id, shape)
             continue
 
         if not isinstance(feature, ExtrudeFeature):

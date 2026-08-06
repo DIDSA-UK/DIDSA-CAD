@@ -165,6 +165,14 @@ class PartScreen extends StatefulWidget {
   /// the save dialog.
   final String? initialFilePath;
 
+  /// Gear Design bug fix: non-blocking warnings from the Feature this
+  /// screen was just navigated to show (currently only `GearFeature`'s own
+  /// root-fillet-fallback warnings - see `GearDesignScreen._create`) -
+  /// shown once, as a dismissible amber `MaterialBanner`, by
+  /// [_PartScreenState.initState]. Empty for every ordinary launch (a
+  /// freshly-created Part with no Feature yet, or Native Load).
+  final List<String> initialWarnings;
+
   const PartScreen({
     super.key,
     this.documentApi,
@@ -173,6 +181,7 @@ class PartScreen extends StatefulWidget {
     this.initialHiddenFeatureIds = const [],
     this.initialFileName,
     this.initialFilePath,
+    this.initialWarnings = const [],
   });
 
   @override
@@ -2942,6 +2951,32 @@ class _PartScreenState extends State<PartScreen> {
     _lastSavedFilePath = widget.initialFilePath;
     _loadPart();
     _loadViewPreferences();
+    if (widget.initialWarnings.isNotEmpty) {
+      // Scaffold/ScaffoldMessenger aren't available yet mid-initState.
+      WidgetsBinding.instance.addPostFrameCallback((_) => _showInitialWarningsBanner());
+    }
+  }
+
+  /// Gear Design bug fix: shows [PartScreen.initialWarnings] as a single
+  /// dismissible amber `MaterialBanner` - the "non-blocking warning the
+  /// user actually sees, not just a server log" this fix requires for a
+  /// root fillet that silently fell back to unfilleted (see
+  /// `app.document.gear.resolve_gear_from_bodies`'s own `warnings`). Same
+  /// amber-with-warning-icon convention `GearValidationBanner` already
+  /// uses for its own pre-Create preview warnings.
+  void _showInitialWarningsBanner() {
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showMaterialBanner(
+      MaterialBanner(
+        backgroundColor: Colors.amber.withValues(alpha: 0.15),
+        leading: const Icon(Icons.warning_amber, color: Colors.amber),
+        content: Text(widget.initialWarnings.join('\n'), style: const TextStyle(color: Colors.amber)),
+        actions: [
+          TextButton(onPressed: () => messenger.hideCurrentMaterialBanner(), child: const Text('Dismiss')),
+        ],
+      ),
+    );
   }
 
   /// Loads [ViewPreferences] in the background, not awaited from

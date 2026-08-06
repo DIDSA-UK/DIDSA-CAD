@@ -997,6 +997,651 @@ class ImportFeature(Feature):
         return Produces.BODY
 
 
+class GearType(str, Enum):
+    """Boss/Cut parity with `ExtrudeType` (`docs/gear-design/00-conventions.md`
+    - every Feature type owns its own enum, not a shared one, matching this
+    codebase's established convention even though the values are
+    identical). A gear is normally Bossed as a fresh Body, but Cut is
+    supported for symmetry with every other primitive-producing Feature
+    (Extrude/Revolve/Sweep) - e.g. cutting a gear-shaped pocket."""
+
+    BOSS = "boss"
+    CUT = "cut"
+
+
+@dataclass
+class GearFeature(Feature):
+    """`docs/gear-design/02-gear-feature.md`: an external or internal
+    involute spur gear, built straight from parameters - no backing
+    SketchFeature at all (`docs/gear-design/00-conventions.md`'s "gear
+    teeth are not Sketch entities" decision), so unlike `ExtrudeFeature`
+    this owns its own `plane_ref: PlaneRef` directly rather than getting a
+    plane for free via an upstream Sketch. Defaults to the fixed XY plane
+    at the router layer, per that same conventions doc.
+
+    `app.document.gear_math.spur_gear_geometry` resolves `module`/
+    `tooth_count`/`pressure_angle_degrees`/`profile_shift`/`backlash` into
+    real dimensions; `app.document.gear` (the OCCT-dependent half) turns
+    those into a solid, each tooth flank a real `Geom_BSplineCurve` (see
+    conventions - the only choice that keeps STEP export genuinely
+    smooth), extruded `face_width` deep along the plane's normal.
+
+    `is_internal=True` builds an annulus (outer `outer_diameter` rim +
+    inward-facing tooth boundary) as one Boss, not a separate Cut step -
+    `outer_diameter` is required when `is_internal` is True, meaningless
+    (and ignored) otherwise.
+
+    Boss/Cut + `target_body_ids` follow `ExtrudeFeature`'s exact
+    convention: Boss fuses into each named Body (or starts a new Body if
+    empty), Cut subtracts from each named Body (non-empty required - see
+    `app.document.router._validate_target_body_ids`, widened to accept a
+    `GearFeature`-originated Body).
+
+    `docs/gear-design/04-helical-herringbone-loft.md` (Workstream 4a):
+    `helix_angle_degrees` (default `0.0`) adds helical teeth - the tooth
+    profile twists by `app.document.gear_math.helical_twist_angle`'s own
+    angle between the bottom face and the top face, built as a
+    `BRepOffsetAPI_ThruSections` loft between two rotated copies of the
+    ordinary straight-tooth outline (`app.document.gear._gear_outline_
+    wire`, reused completely unchanged - see `app.document.gear.
+    _twisted_basis`) rather than a new tooth-generation path, per that
+    doc's own 2026-08-04 spike findings (loft-between-rotated-copies is
+    the *primary* technique, not sweep-along-helix, which distorts the
+    cross-section and was dropped). `0.0` (the default) is a plain
+    straight-tooth gear, built by the exact original `BRepPrimAPI_
+    MakePrism` path unchanged - `helix_angle_degrees == 0.0` is
+    byte-identical to this field not existing at all, so every GearFeature
+    persisted before this field existed keeps producing the exact same
+    geometry.
+
+    `herringbone` (default `False`, meaningless unless `helix_angle_
+    degrees != 0.0`) replaces the single loft above with two - a helical
+    half from the bottom face to the gear's own mid-plane, and a *mirrored*
+    (opposite-handed) helical half from the mid-plane to the top face -
+    fused into one solid, per the doc's own "mirrored, not simply twice as
+    tall" definition: each half spans `face_width / 2` and only half of
+    the full-face-width twist angle, meeting at zero relative twist at
+    both the very top and very bottom.
+
+    Root fillet (`root_fillet_radius`) is not currently supported for a
+    helical/herringbone tooth (`app.document.gear._apply_root_fillet`'s
+    `BRepPrimAPI_MakePrism.Generated()` vertex-tracking has no equivalent
+    for a `ThruSections` loft) - a non-zero value is tolerated but ignored
+    with a logged warning, the same best-effort convention an unfilleted
+    straight gear already falls back to when the fillet construction
+    itself doesn't converge."""
+
+    id: str
+    plane_ref: PlaneRef
+    gear_type: GearType
+    is_internal: bool
+    module: float
+    tooth_count: int
+    face_width: float
+    pressure_angle_degrees: float = 20.0
+    profile_shift: float = 0.0
+    backlash: float = 0.0
+    root_fillet_radius: float = 0.0
+    outer_diameter: float | None = None
+    target_body_ids: list[str] = field(default_factory=list)
+    helix_angle_degrees: float = 0.0
+    herringbone: bool = False
+
+    @property
+    def type(self) -> str:
+        return "gear"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
+class RackType(str, Enum):
+    """Boss/Cut parity with `GearType`/`ExtrudeType` - kept as its own enum
+    despite identical values, matching this codebase's established
+    "each Feature type owns its own enum" convention rather than reusing
+    another Feature type's mode enum (`docs/gear-design/00-conventions.md`)."""
+
+    BOSS = "boss"
+    CUT = "cut"
+
+
+@dataclass
+class RackFeature(Feature):
+    """`docs/gear-design/03-rack.md`: a standalone rack - a straight-sided
+    trapezoidal-tooth profile (genuinely different math from an involute
+    spur gear's curved flank, not a variant of it - see
+    `app.document.gear_math`'s own OCCT-free split between
+    `spur_gear_geometry`/`rack_tooth_geometry`) over a derived length,
+    extruded `face_width` deep along `plane_ref`'s normal, same
+    positioning convention every other gear-producing Feature here uses.
+
+    Kept as its own Feature type rather than a `GearFeature` variant flag -
+    a rack has no pitch/base/addendum/dedendum radii, no `is_internal`
+    concept, and needs its own `backing_height` field a round gear has no
+    use for; folding it into `GearFeature` would mean either type carrying
+    fields meaningless to the other, the exact shape this project's
+    "each Feature type owns its own fields" convention exists to avoid.
+
+    `tooth_count` is the free input; overall rack length is *derived*
+    (`app.document.gear_math.rack_length`), not entered - the same
+    "derived, not entered" treatment `GearChainFeature`'s centre distance
+    and `PlanetaryGearFeature`'s planet tooth count already get.
+    `backing_height` is the solid material thickness below the tooth
+    root/dedendum line, closing the toothed profile into a real closed 2D
+    region before extrusion - a rack has no natural "far side" the way a
+    round gear's own axis provides one, so this needs its own explicit
+    field. `None` (the default) resolves to `2 * module`
+    (`app.document.gear_math.default_rack_backing_height`) at build time -
+    a *positive* default is required here, unlike `plane_ref`'s XY
+    default: a literal `0.0` backing height would close the profile into
+    a zero-area rectangle (a degenerate, invalid solid), not a valid "no
+    backing" rack, so `None`-as-sentinel is used rather than a plain
+    `0.0` default, which would look like a normal float but silently
+    produce unbuildable geometry. Boss/Cut + `target_body_ids` follow
+    `GearFeature`'s exact convention."""
+
+    id: str
+    plane_ref: PlaneRef
+    rack_type: RackType
+    module: float
+    tooth_count: int
+    face_width: float
+    pressure_angle_degrees: float = 20.0
+    backlash: float = 0.0
+    backing_height: float | None = None
+    target_body_ids: list[str] = field(default_factory=list)
+
+    @property
+    def type(self) -> str:
+        return "rack"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
+class LoftMode(str, Enum):
+    """Boss/Cut parity with `ExtrudeType`/`SweepMode` - kept as its own enum
+    despite identical values, matching this codebase's established "each
+    Feature type owns its own enum" convention (`00-conventions.md`)."""
+
+    BOSS = "boss"
+    CUT = "cut"
+
+
+@dataclass(frozen=True)
+class LoftSection:
+    """`docs/gear-design/04-helical-herringbone-loft.md` (4b): one cross-
+    section of a `LoftFeature` - an existing SketchFeature's closed Profile
+    (`sketch_feature_id`/`profile_refs`, exactly the same reference shape
+    `SweepFeature` already uses for its own Profile, narrowed here to
+    select exactly one profile per section - a Loft section is a single
+    2D cross-section, not a MultiProfile). Each section may live in a
+    *different* Sketch (confirmed pattern, mirrors `SweepFeature.path_refs`
+    each possibly naming a different Sketch) - a Loft between two Sketches
+    at different heights/planes is exactly what makes a tapered or twisted
+    3D transition possible at all.
+
+    `reference_point` (optional, a `SketchEntityRef` restricted to
+    `SketchEntityType.POINT` in this section's *own* Sketch) resolves the
+    still-open question the 04 doc's own 2026-08-04 spike flagged and left
+    unanswered: how a user aligns/twists one section relative to another
+    when `BRepOffsetAPI_ThruSections`'s own vertex correspondence
+    (confirmed by that spike to ignore wire order entirely) can't be
+    steered by reordering. This is resolved here as an *explicit pre-
+    alignment transform*, one of the two candidates the spike itself named
+    as worth investigating instead of `AddVertex`/`ParType`: if the first
+    section and this section both have a `reference_point` set, this
+    section's whole profile is rotated (about its own Sketch's local
+    origin, in its own local (x, y) plane, before being embedded into
+    world space) so its own reference point's local angle-from-origin
+    matches the first section's - see `app.document.loft._resolve_section`/
+    `_rotate_wire`. A section with no `reference_point` (the default) is
+    never rotated - this only ever changes behaviour for a section that
+    opts in, so a plain two-section Loft with no alignment picked at all
+    behaves exactly as `ThruSections`' own default correspondence would
+    produce unmodified."""
+
+    sketch_feature_id: str
+    profile_refs: list[SketchEntityRef] = field(default_factory=list)
+    reference_point: SketchEntityRef | None = None
+
+
+@dataclass
+class LoftFeature(Feature):
+    """`docs/gear-design/04-helical-herringbone-loft.md` (4b): a genuinely
+    standalone Feature (useful on its own, not gear-specific - same
+    "useful on its own" status `SweepFeature` already has), lofting a
+    solid through 2+ ordered `sections` via `BRepOffsetAPI_ThruSections`
+    (`isSolid=True`) - the OCCT-dependent construction lives in
+    `app.document.loft`, not here, same module split every other Feature
+    type here already keeps.
+
+    `ruled` selects `ThruSections`' own ruled-vs-smooth surface mode
+    (straight-line-interpolated between consecutive sections vs. a smooth
+    spline blend) - per the 04 doc's own spike, this makes no measurable
+    difference for exactly 2 sections (a spline fit through 2 points
+    degenerates to the same result as a straight line), only relevant once
+    3+ sections are involved.
+
+    Boss/Cut + `target_body_ids` follow `SweepFeature`'s exact convention:
+    Boss fuses into each named Body (or starts a new Body if empty), Cut
+    subtracts from each named Body (non-empty required - see
+    `app.document.router._validate_target_body_ids`, widened to accept a
+    `LoftFeature`-originated Body).
+
+    v1 scope, matching this project's established conservative-scoping
+    convention (`FilletFeature`/`ChamferFeature`'s own docstrings): each
+    section's profile must have no inner loops (holes) - lofting a
+    profile-with-holes needs its own per-hole correspondence between
+    sections (the exact same open "reference point per profile" problem,
+    once per hole), rejected outright (`invalid_loft_section`) rather than
+    silently only lofting the outer boundary and dropping the holes."""
+
+    id: str
+    sections: list[LoftSection]
+    mode: LoftMode
+    ruled: bool = False
+    target_body_ids: list[str] = field(default_factory=list)
+
+    @property
+    def type(self) -> str:
+        return "loft"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
+@dataclass(frozen=True)
+class GearGroup:
+    """`docs/gear-design/05-gear-chain-and-planetary.md`: a small named
+    record - `module`/`pressure_angle_degrees`/`display_color` - referenced
+    by id from every `GearChainMemberSpec.group_id` rather than inlined per-
+    stage. Two members can only mesh if they share a group, which is what
+    makes a mismatched-module meshing pair structurally impossible to
+    construct. Not a Feature (no Feature-tree entry of its own, no separate
+    CRUD endpoint) - owned directly by the one `GearChainFeature` it
+    belongs to (`GearChainFeature.groups`), the same "embedded record, not
+    a standalone Feature" treatment `LoftSection` already gets from
+    `LoftFeature`. v1 UI creates exactly one implicit group per chain
+    (`00-conventions.md`), but the schema already supports 2+ groups
+    without a later breaking migration - a chain with a compound join
+    genuinely needs (at least) 2."""
+
+    id: str
+    module: float
+    pressure_angle_degrees: float = 20.0
+    display_color: str | None = None
+
+
+class GearChainMemberType(str, Enum):
+    """Boss/Cut-enum parity with `GearType`/`RackType` in spirit (its own
+    enum, not shared - `00-conventions.md`), but this one selects a
+    member's *kind* rather than Boss-vs-Cut - a `GearChainFeature` has no
+    Boss/Cut concept at all (see that Feature's own docstring)."""
+
+    EXTERNAL = "external"
+    INTERNAL = "internal"
+    RACK = "rack"
+
+
+@dataclass(frozen=True)
+class GearChainMemberSpec:
+    """One physical gear/rack member - a single-gear/rack stage's own
+    `GearChainStage.member`, or one of a compound stage's `compound_
+    member_a`/`compound_member_b`. `group_id` resolves to one entry of the
+    owning `GearChainFeature.groups` for `module`/`pressure_angle_degrees`
+    - see `GearGroup`'s own docstring for why this indirection exists.
+    `outer_diameter` is required when `member_type == INTERNAL`,
+    meaningless (and rejected) otherwise - mirrors `GearFeature.
+    outer_diameter`'s identical convention. A compound member's own
+    `member_type` is restricted to `EXTERNAL`/`INTERNAL` (never `RACK` -
+    a rack has no coaxial-stacking concept at all) by the router, not by
+    this dataclass itself, same "payload shape validated by the API layer"
+    split every other mutually-exclusive Feature field already uses."""
+
+    member_type: GearChainMemberType
+    group_id: str
+    tooth_count: int
+    face_width: float
+    outer_diameter: float | None = None
+
+
+@dataclass
+class GearChainStage:
+    """One stage of `GearChainFeature.stages` - a single-gear/rack stage
+    (`member` set, every `compound_*` field unset) or a compound stage
+    (`compound_member_a`/`compound_member_b` set, `member` unset),
+    discriminated by which fields are populated - mirrors `PlaneRef`'s own
+    "exactly one of N, payload shape validated by the router" convention
+    rather than a redundant separate `is_compound` flag.
+
+    `turn_angle_degrees` steers the chain segment *leaving* this stage
+    (turtle-graphics style, CCW-positive, relative to the previous
+    segment's own direction - see `app.document.gear_chain_math.
+    resolve_chain_positions`) - geometrically inert on the chain's last
+    stage (no segment leaves it); `app.document.gear_chain` rejects a
+    nonzero value there rather than silently accepting a no-op, per Spike
+    1's own flagged loose end (`05-gear-chain-and-planetary.md`).
+
+    `compound_member_a` is the incoming-facing member (meshes with the
+    previous stage), `compound_member_b` the outgoing-facing one (meshes
+    with the next) - see `app.document.gear_chain_math.ChainStageSpec`'s
+    own docstring for why this a/b assignment was picked (the doc itself
+    only says the two members face opposite directions, not which field is
+    which). `compound_axial_offset` is member_b's own z-start (its local
+    frame's origin) measured from member_a's z=0 origin, along the shared
+    shaft axis (member_a spans `[0, compound_member_a.face_width]`).
+    `compound_merge` reuses `MergeMode`'s existing two values verbatim -
+    Spike 2's own confirmed-sufficient finding, no new field needed -
+    defaulting to `FUSE_INTO_ONE` (matches what a compound gear physically
+    usually is when printed/machined, per this doc's own compound
+    section), overridable to `KEEP_SEPARATE`."""
+
+    turn_angle_degrees: float = 0.0
+    member: GearChainMemberSpec | None = None
+    compound_member_a: GearChainMemberSpec | None = None
+    compound_member_b: GearChainMemberSpec | None = None
+    compound_axial_offset: float = 0.0
+    compound_merge: MergeMode = MergeMode.FUSE_INTO_ONE
+
+    @property
+    def is_compound(self) -> bool:
+        return self.compound_member_a is not None
+
+
+@dataclass
+class GearChainFeature(Feature):
+    """`docs/gear-design/05-gear-chain-and-planetary.md`: an ordered list
+    of N>=2 meshing `stages` (external/internal/rack/compound), resolved in
+    one pass into N (or more, for a compound stage kept separate via
+    `GearChainStage.compound_merge=KEEP_SEPARATE`) positioned Bodies - the
+    same `#N`-suffix convention Pattern/Mirror/Extrude already use (see
+    `app.document.gear_chain.resolve_gear_chain_from_bodies`, which reuses
+    `app.document.extrude._register_solids` directly rather than inventing
+    a new suffix scheme), so a later Feature can still target one specific
+    stage's Body individually (`00-conventions.md`).
+
+    No backing SketchFeature (`00-conventions.md`'s "gear teeth are not
+    Sketch entities" decision) - owns its own `plane_ref: PlaneRef`
+    directly, same convention `GearFeature`/`RackFeature` already use; the
+    turn-angle chain lives within that plane. An `internal` stage/member is
+    rejected anywhere but the final stage - `05-gear-chain-and-planetary.
+    md`'s own deliberate restriction (nothing meaningfully continues past a
+    ring without turning into a branching, `PlanetaryGearFeature` topology)
+    - enforced at the router (`app.document.router._validate_gear_chain_
+    stages`), not by this dataclass.
+
+    `groups` are this Feature's own embedded `GearGroup` records (not a
+    standalone Feature type - see `GearGroup`'s own docstring); every
+    stage/member's `group_id` must resolve to one of them.
+
+    Always mints brand-new Bodies - no Boss/Cut `target_body_ids` concept
+    at all (a chain is a fresh multi-body assembly, not a modification of
+    an existing Body), unlike `GearFeature`/`RackFeature`/`LoftFeature`.
+
+    `print_clearance_margin` (default 0.2mm) feeds `app.document.
+    gear_chain_math.check_chain_interference`'s own non-blocking overlap/
+    clearance findings (`00-conventions.md`'s validation-banner convention
+    - never blocks creation)."""
+
+    id: str
+    plane_ref: PlaneRef
+    groups: list[GearGroup]
+    stages: list[GearChainStage]
+    start_direction_degrees: float = 0.0
+    print_clearance_margin: float = 0.2
+
+    @property
+    def type(self) -> str:
+        return "gear_chain"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
+@dataclass
+class PlanetaryGearFeature(Feature):
+    """`docs/gear-design/05-gear-chain-and-planetary.md`: a branching (not
+    sequential) gear topology - sun meshes every planet, every planet
+    meshes the ring - kept as its own Feature type rather than folded into
+    `GearChainFeature` (see that doc's own "genuinely different topology"
+    reasoning). Sun/ring tooth counts are the free inputs; planet tooth
+    count is *derived* (`app.document.gear_math.planetary_planet_tooth_
+    count`, `N_planet = (N_ring - N_sun) / 2`), not entered - an odd or
+    non-positive result means there is no valid planet gear to draw at all,
+    which BLOCKS creation outright (`00-conventions.md`'s validation-banner
+    exception), not a soft warning. `planet_count` is validated against
+    `gear_math.validate_planetary_assembly`'s own assembly condition
+    (`(sun_tooth_count + ring_tooth_count) mod planet_count == 0`) and
+    interference check, both at creation/update time.
+
+    One shared `module`/`pressure_angle_degrees`/`face_width` across
+    sun/ring/planets - real planetary sets mesh across one common axial
+    band and structurally require one shared module (no place for a module
+    change to happen the way a chain has a compound join), so unlike
+    `GearChainFeature` there is no `GearGroup` concept here at all.
+    `ring_outer_diameter` is the ring's own rim diameter - required the
+    same way `GearFeature.outer_diameter` is for any internal gear.
+
+    No turn-angle/path concept - planets auto-space evenly around the sun
+    at the correct radius (see `app.document.planetary_gear`). Resolves
+    into N+2 positioned Bodies (sun, ring, N planets) in one pass, static/
+    positioned only - no kinematics/rotation. Same "no Boss/Cut, always
+    mints brand-new Bodies" shape as `GearChainFeature`."""
+
+    id: str
+    plane_ref: PlaneRef
+    module: float
+    sun_tooth_count: int
+    ring_tooth_count: int
+    planet_count: int
+    face_width: float
+    ring_outer_diameter: float
+    pressure_angle_degrees: float = 20.0
+
+    @property
+    def type(self) -> str:
+        return "planetary_gear"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
+class BevelGearType(str, Enum):
+    """Boss/Cut parity with `GearType`/`RackType`/`LoftMode` - kept as its
+    own enum despite identical values, matching this codebase's
+    established "each Feature type owns its own enum" convention
+    (`00-conventions.md`)."""
+
+    BOSS = "boss"
+    CUT = "cut"
+
+
+@dataclass
+class BevelGearFeature(Feature):
+    """`docs/gear-design/10-bevel-gear.md`: a standalone straight bevel
+    gear - the highest-risk workstream in this project (genuinely new BRep
+    shell/solid construction, no shell-from-curved-surfaces precedent
+    anywhere else in this codebase - see `app.document.bevel`'s own module
+    docstring). No backing SketchFeature, same "gear teeth are not Sketch
+    entities" decision every other gear-family Feature type already makes
+    (`00-conventions.md`) - `app.document.bevel_math.bevel_gear_geometry`
+    resolves the pitch cone's own dimensions, `app.document.bevel` (the
+    OCCT-dependent half) assembles the real solid.
+
+    `pitch_cone_angle_degrees` is a **direct field**, not derived from a
+    mate's tooth count - unlike `bevel_math.bevel_gear_geometry`'s own
+    `mate_tooth_count`/`shaft_angle_degrees`-derived spike convenience
+    (that function's own docstring), a standalone `BevelGearFeature` has
+    no meshing partner to derive its own cone angle from; `11-bevel-
+    pair.md`'s own future pairing system computes and sets this
+    automatically when generating a mating pair together, out of scope
+    here. `module`/`face_width` are both measured at the outer (large,
+    back-cone) end, matching how bevel gear module is conventionally
+    specified (`bevel_math.BevelGearGeometry`'s own docstring).
+
+    Anchored via `plane_ref: PlaneRef` - the plane's origin is the cone
+    apex, its normal is the gear's own primary shaft axis (`00-
+    conventions.md`'s positioning convention), defaulting to the fixed XY
+    plane at the router layer like every other gear-family Feature.
+
+    Boss/Cut + `target_body_ids` follow `GearFeature`/`RackFeature`'s
+    exact convention, for symmetry with every other primitive-producing
+    Feature type in this codebase (`GearType`'s own docstring) - a bevel
+    gear is normally Bossed as a fresh Body, but Cut (e.g. a bevel-shaped
+    pocket) is supported too.
+
+    There is no `root_fillet_radius` field at all - a bevel tooth's root
+    fillet is not supported (no `BRepPrimAPI_MakePrism.Generated()`-
+    equivalent vertex-tracking exists for a `ThruSections`/`Sewing`-built
+    solid, the same reason `GearFeature`'s own helical/herringbone teeth
+    don't support one either - see that dataclass's own docstring)."""
+
+    id: str
+    plane_ref: PlaneRef
+    bevel_type: BevelGearType
+    module: float
+    tooth_count: int
+    face_width: float
+    pitch_cone_angle_degrees: float
+    pressure_angle_degrees: float = 20.0
+    backlash: float = 0.0
+    profile_shift: float = 0.0
+    target_body_ids: list[str] = field(default_factory=list)
+
+    @property
+    def type(self) -> str:
+        return "bevel_gear"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
+@dataclass(frozen=True)
+class BevelPairMemberSpec:
+    """One physical member of a `BevelPairFeature` - the *legitimately-
+    differing* per-member fields only (`docs/gear-design/11-bevel-pair.md`):
+    `tooth_count` and `profile_shift` (used to balance strength between a
+    small pinion and a large gear). Every other dimension (module, pressure
+    angle, shaft angle, backlash, face width) is shared pair-level, flat on
+    `BevelPairFeature` itself, not here - both gears physically share one
+    axial band/mesh, so those can't legitimately differ between the two
+    members (see that dataclass's own docstring)."""
+
+    tooth_count: int
+    profile_shift: float = 0.0
+
+
+@dataclass
+class BevelPairFeature(Feature):
+    """`docs/gear-design/11-bevel-pair.md`: automated live bevel pairing -
+    exactly 2 members (`member_1`/`member_2`), deliberately narrower than
+    `GearChainFeature`'s own N-stage generality (a bevel train longer than
+    two gears is a rarer, geometrically unrelated case per that doc's own
+    scoping reasoning) - not a generalized N-stage bevel chain.
+
+    **Shared pair-level fields, flat on this Feature** (not a `GearGroup`
+    reference - a pair always has exactly 2 members that always mesh, no
+    third station for a module change to happen, unlike `GearChainFeature`):
+    `module`, `pressure_angle_degrees`, `shaft_angle_degrees` (default
+    90.0, pre-filled and editable, arbitrary - not restricted to 90),
+    `backlash`, `face_width`.
+
+    **Cone angles are auto-derived, not entered** - the whole point of
+    automated live bevel pairing vs. `BevelGearFeature`'s own standalone
+    `pitch_cone_angle_degrees` direct field (which exists specifically
+    because a standalone gear has no partner to derive from). `app.
+    document.bevel_pair.resolve_bevel_pair_from_bodies` calls `bevel_math.
+    pitch_cone_half_angles(shaft_angle_degrees, member_1.tooth_count,
+    member_2.tooth_count)` directly, then feeds each member's own resolved
+    gamma into `bevel_math.bevel_gear_geometry` via its `pitch_cone_angle_
+    degrees` direct-field path (not the `mate_tooth_count`-derived path -
+    that one exists for `bevel_gear_geometry`'s own original spike-era
+    convenience, not what a live pair needs, since this Feature already
+    resolved both gammas itself in one call).
+
+    **Positioning - apex-aligned**: both members' cone apexes coincide at
+    `plane_ref`'s own origin. Member 1's axis is `plane_ref`'s own normal
+    directly (identical basis to a standalone `BevelGearFeature`). Member
+    2's axis is member 1's axis rotated by `shaft_angle_degrees` about
+    `plane_ref`'s own `x_axis` (CCW-positive, matching `RevolveFeature.
+    angle`'s own right-hand-rule convention - `00-conventions.md`) - see
+    `app.document.bevel_pair._tilted_basis`.
+
+    **No interference checking at all** - explicit simplification per the
+    doc: with exactly two members that are always the intended meshing
+    pair, there's no "non-adjacent stage" case for `GearChainFeature`'s own
+    interference machinery to apply to.
+
+    No backing SketchFeature (`00-conventions.md`'s "gear teeth are not
+    Sketch entities" decision) - owns its own `plane_ref: PlaneRef`
+    directly, defaulting to the fixed XY plane at the router layer like
+    every other gear-family Feature. Always mints two brand-new Bodies (the
+    same `#N`-suffix convention `GearChainFeature`/`PlanetaryGearFeature`
+    already use via `_register_solids`) - no Boss/Cut `target_body_ids`
+    concept at all, same shape as `GearChainFeature`/`PlanetaryGearFeature`.
+
+    Kept fully separate from `GearChainFeature` - no bevel stage kind was
+    added to the planar chain's own stage union, and `app.document.gear_
+    chain`/`app.document.gear_chain_math` are untouched by this Feature.
+
+    DXF flat-pattern export (a bevel gear's cone "unrolled" flat) is
+    explicitly out of scope here - `11-bevel-pair.md` flags it as new
+    geometry work belonging to `06-dxf-export.md`, not this Feature."""
+
+    id: str
+    plane_ref: PlaneRef
+    module: float
+    member_1: BevelPairMemberSpec
+    member_2: BevelPairMemberSpec
+    face_width: float
+    pressure_angle_degrees: float = 20.0
+    shaft_angle_degrees: float = 90.0
+    backlash: float = 0.0
+
+    @property
+    def type(self) -> str:
+        return "bevel_pair"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
 @dataclass
 class Part:
     """An independent solid-modeling history: an ordered list of Features.

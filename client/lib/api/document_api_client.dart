@@ -437,6 +437,13 @@ class FeatureDto {
   /// Feature persisted before this field existed.
   final String? toolFeatureId;
 
+  /// Non-blocking, from `LoftFeatureResponse.warnings`/`GearChainFeature
+  /// Response.warnings`/`GearFeatureResponse.warnings` - a requested option
+  /// (root fillet, a self-intersecting section, ...) that was silently
+  /// honoured-in-name-only. Empty for every other Feature type, and for any
+  /// Feature persisted before its own type gained a `warnings` field.
+  final List<String> warnings;
+
   FeatureDto({
     required this.type,
     required this.id,
@@ -489,6 +496,7 @@ class FeatureDto {
     this.skipIndices = const [],
     this.merge = 'keep_separate',
     this.toolFeatureId,
+    this.warnings = const [],
   });
 
   factory FeatureDto.fromJson(Map<String, dynamic> json) => FeatureDto(
@@ -576,6 +584,7 @@ class FeatureDto {
         skipIndices: (json['skip_indices'] as List?)?.cast<int>() ?? const [],
         merge: json['merge'] as String? ?? 'keep_separate',
         toolFeatureId: json['tool_feature_id'] as String?,
+        warnings: (json['warnings'] as List?)?.cast<String>() ?? const [],
       );
 }
 
@@ -718,6 +727,378 @@ class NativeImportResultDto {
       );
 }
 
+/// `docs/gear-design/08-entry-screen-and-preview.md`: the wire counterpart
+/// to the backend's `GearPreviewResponse` - [outlinePoints] is the full 2D
+/// tooth-outline polyline (local frame, centred on the origin) the live
+/// preview canvas draws directly; the rest are the reference-circle
+/// overlay's own numbers. [pitchRadius]/[baseRadius]/[addendumRadius]/
+/// [dedendumRadius]/[outerRadius] are only non-null for `gearKind`
+/// `"external"`/`"internal"`; [pitchLineY]/[addendumLineY]/[dedendumLineY]/
+/// [rackLength] only for `"rack"` - see the backend response's own doc
+/// comment for why a rack has lines, not circles. [warnings] carries every
+/// non-blocking `gear_math` validation (e.g. undercut risk) per
+/// `00-conventions.md`'s validation-banner convention - a parameter
+/// combination with no valid geometry at all is a 422 [ApiException]
+/// instead, never a response with [warnings] set.
+/// `docs/gear-design/08-entry-screen-and-preview.md`'s "Chain/planetary/
+/// bevel-pair preview" extension - the wire counterpart to the backend's
+/// `GearPreviewMember`. One physical member's own tooth outline (already
+/// translated/rotated by the backend into the chain/assembly's shared 2D
+/// frame - no client-side transform needed, same "don't duplicate the
+/// math client-side" point [GearPreviewDto.outlinePoints] already follows)
+/// plus its reference-circle numbers.
+class GearPreviewMemberDto {
+  final int stageIndex;
+  final String label;
+  final String memberType;
+  final String? groupId;
+  final String? displayColor;
+  final List<double> center;
+  final List<List<double>> outlinePoints;
+  final double? pitchRadius;
+  final double? baseRadius;
+  final double? addendumRadius;
+  final double? dedendumRadius;
+  final double? outerRadius;
+
+  GearPreviewMemberDto({
+    required this.stageIndex,
+    required this.label,
+    required this.memberType,
+    this.groupId,
+    this.displayColor,
+    required this.center,
+    required this.outlinePoints,
+    this.pitchRadius,
+    this.baseRadius,
+    this.addendumRadius,
+    this.dedendumRadius,
+    this.outerRadius,
+  });
+
+  factory GearPreviewMemberDto.fromJson(Map<String, dynamic> json) => GearPreviewMemberDto(
+        stageIndex: json['stage_index'] as int,
+        label: json['label'] as String,
+        memberType: json['member_type'] as String,
+        groupId: json['group_id'] as String?,
+        displayColor: json['display_color'] as String?,
+        center: (json['center'] as List).map((v) => (v as num).toDouble()).toList(),
+        outlinePoints: (json['outline_points'] as List)
+            .map((p) => (p as List).map((v) => (v as num).toDouble()).toList())
+            .toList(),
+        pitchRadius: (json['pitch_radius'] as num?)?.toDouble(),
+        baseRadius: (json['base_radius'] as num?)?.toDouble(),
+        addendumRadius: (json['addendum_radius'] as num?)?.toDouble(),
+        dedendumRadius: (json['dedendum_radius'] as num?)?.toDouble(),
+        outerRadius: (json['outer_radius'] as num?)?.toDouble(),
+      );
+}
+
+/// The wire counterpart to the backend's `GearPreviewInterferenceFinding`
+/// (`app.document.gear_chain_math.InterferenceFinding`'s own wire shape) -
+/// `05-gear-chain-and-planetary.md`'s topology-split interference check.
+class GearPreviewInterferenceFindingDto {
+  final int stageIndexA;
+  final String memberLabelA;
+  final int stageIndexB;
+  final String memberLabelB;
+  final double gap;
+  final String kind; // "overlap" | "clearance"
+
+  GearPreviewInterferenceFindingDto({
+    required this.stageIndexA,
+    required this.memberLabelA,
+    required this.stageIndexB,
+    required this.memberLabelB,
+    required this.gap,
+    required this.kind,
+  });
+
+  factory GearPreviewInterferenceFindingDto.fromJson(Map<String, dynamic> json) => GearPreviewInterferenceFindingDto(
+        stageIndexA: json['stage_index_a'] as int,
+        memberLabelA: json['member_label_a'] as String,
+        stageIndexB: json['stage_index_b'] as int,
+        memberLabelB: json['member_label_b'] as String,
+        gap: (json['gap'] as num).toDouble(),
+        kind: json['kind'] as String,
+      );
+}
+
+/// The wire counterpart to the backend's `GearPreviewLink`
+/// (`app.document.gear_chain_math.LinkRatio`'s own wire shape) - one
+/// meshing relationship's overall-ratio/rotation-direction summary.
+/// [kind] is `"mesh"` (an ordinary link between two adjacent stages) or
+/// `"compound"` (a compound stage's own internal a->b transition, `05-
+/// gear-chain-and-planetary.md`'s "never reverses" rule).
+class GearPreviewLinkDto {
+  final int fromStageIndex;
+  final int toStageIndex;
+  final String kind;
+  final double? ratio;
+  final bool reversesDirection;
+  final double? linearMmPerRevolution;
+
+  GearPreviewLinkDto({
+    required this.fromStageIndex,
+    required this.toStageIndex,
+    required this.kind,
+    this.ratio,
+    required this.reversesDirection,
+    this.linearMmPerRevolution,
+  });
+
+  factory GearPreviewLinkDto.fromJson(Map<String, dynamic> json) => GearPreviewLinkDto(
+        fromStageIndex: json['from_stage_index'] as int,
+        toStageIndex: json['to_stage_index'] as int,
+        kind: json['kind'] as String,
+        ratio: (json['ratio'] as num?)?.toDouble(),
+        reversesDirection: json['reverses_direction'] as bool,
+        linearMmPerRevolution: (json['linear_mm_per_revolution'] as num?)?.toDouble(),
+      );
+}
+
+/// The wire counterpart to the backend's `GearPreviewChainResult` -
+/// [GearPreviewDto.chain]'s own payload when `gearKind == 'chain'`.
+class GearPreviewChainResultDto {
+  final List<GearPreviewMemberDto> members;
+  final List<GearPreviewInterferenceFindingDto> interferenceFindings;
+  final List<GearPreviewLinkDto> links;
+  final double? overallRatio;
+
+  GearPreviewChainResultDto({
+    required this.members,
+    required this.interferenceFindings,
+    required this.links,
+    this.overallRatio,
+  });
+
+  factory GearPreviewChainResultDto.fromJson(Map<String, dynamic> json) => GearPreviewChainResultDto(
+        members: (json['members'] as List)
+            .map((m) => GearPreviewMemberDto.fromJson(m as Map<String, dynamic>))
+            .toList(),
+        interferenceFindings: (json['interference_findings'] as List)
+            .map((f) => GearPreviewInterferenceFindingDto.fromJson(f as Map<String, dynamic>))
+            .toList(),
+        links: (json['links'] as List).map((l) => GearPreviewLinkDto.fromJson(l as Map<String, dynamic>)).toList(),
+        overallRatio: (json['overall_ratio'] as num?)?.toDouble(),
+      );
+}
+
+/// The wire counterpart to the backend's `GearPreviewPlanetaryResult` -
+/// [GearPreviewDto.planetary]'s own payload when `gearKind == 'planetary'`.
+class GearPreviewPlanetaryResultDto {
+  final List<GearPreviewMemberDto> members;
+  final double? sunToPlanetRatio;
+  final double? planetToRingRatio;
+
+  GearPreviewPlanetaryResultDto({required this.members, this.sunToPlanetRatio, this.planetToRingRatio});
+
+  factory GearPreviewPlanetaryResultDto.fromJson(Map<String, dynamic> json) => GearPreviewPlanetaryResultDto(
+        members: (json['members'] as List)
+            .map((m) => GearPreviewMemberDto.fromJson(m as Map<String, dynamic>))
+            .toList(),
+        sunToPlanetRatio: (json['sun_to_planet_ratio'] as num?)?.toDouble(),
+        planetToRingRatio: (json['planet_to_ring_ratio'] as num?)?.toDouble(),
+      );
+}
+
+/// `docs/gear-design/10-bevel-gear.md`/`11-bevel-pair.md` - the wire
+/// counterpart to the backend's `GearPreviewBevelMember`. **Not** a tooth
+/// outline (a bevel tooth has no flat 2D cut profile at all - its flank is
+/// a curved surface on a cone, per that doc's own "structurally unlike
+/// every other gear type" framing) - [outlinePoints] is the standard
+/// bevel-drafting axial cross-section envelope instead (symmetric about
+/// the member's own axis), already positioned/rotated by the backend into
+/// the shared preview frame: apex at the origin, axis along
+/// [axisAngleDegrees] from local +x.
+class GearPreviewBevelMemberDto {
+  final String label;
+  final double axisAngleDegrees;
+  final List<List<double>> outlinePoints;
+  final List<List<double>> pitchLine;
+  final double pitchConeAngleDegrees;
+  final double coneDistance;
+  final double innerConeDistance;
+  final double pitchRadius;
+  final double faceWidth;
+
+  GearPreviewBevelMemberDto({
+    required this.label,
+    required this.axisAngleDegrees,
+    required this.outlinePoints,
+    required this.pitchLine,
+    required this.pitchConeAngleDegrees,
+    required this.coneDistance,
+    required this.innerConeDistance,
+    required this.pitchRadius,
+    required this.faceWidth,
+  });
+
+  factory GearPreviewBevelMemberDto.fromJson(Map<String, dynamic> json) => GearPreviewBevelMemberDto(
+        label: json['label'] as String,
+        axisAngleDegrees: (json['axis_angle_degrees'] as num).toDouble(),
+        outlinePoints: (json['outline_points'] as List)
+            .map((p) => (p as List).map((v) => (v as num).toDouble()).toList())
+            .toList(),
+        pitchLine: (json['pitch_line'] as List)
+            .map((p) => (p as List).map((v) => (v as num).toDouble()).toList())
+            .toList(),
+        pitchConeAngleDegrees: (json['pitch_cone_angle_degrees'] as num).toDouble(),
+        coneDistance: (json['cone_distance'] as num).toDouble(),
+        innerConeDistance: (json['inner_cone_distance'] as num).toDouble(),
+        pitchRadius: (json['pitch_radius'] as num).toDouble(),
+        faceWidth: (json['face_width'] as num).toDouble(),
+      );
+}
+
+/// The wire counterpart to the backend's `GearPreviewBevelPairResult` -
+/// [GearPreviewDto.bevelPair]'s own payload when `gearKind == 'bevel_pair'`
+/// - `11-bevel-pair.md`'s dual-axis apex-aligned pair, projected into 2D.
+class GearPreviewBevelPairResultDto {
+  final List<GearPreviewBevelMemberDto> members;
+  final double shaftAngleDegrees;
+
+  GearPreviewBevelPairResultDto({required this.members, required this.shaftAngleDegrees});
+
+  factory GearPreviewBevelPairResultDto.fromJson(Map<String, dynamic> json) => GearPreviewBevelPairResultDto(
+        members: (json['members'] as List)
+            .map((m) => GearPreviewBevelMemberDto.fromJson(m as Map<String, dynamic>))
+            .toList(),
+        shaftAngleDegrees: (json['shaft_angle_degrees'] as num).toDouble(),
+      );
+}
+
+class GearPreviewDto {
+  final String gearKind;
+  final List<List<double>> outlinePoints;
+  final double? pitchRadius;
+  final double? baseRadius;
+  final double? addendumRadius;
+  final double? dedendumRadius;
+  final double? outerRadius;
+  final double? pitchLineY;
+  final double? addendumLineY;
+  final double? dedendumLineY;
+  final double? rackLength;
+  final List<String> warnings;
+  final GearPreviewChainResultDto? chain;
+  final GearPreviewPlanetaryResultDto? planetary;
+  final GearPreviewBevelMemberDto? bevelGear;
+  final GearPreviewBevelPairResultDto? bevelPair;
+
+  GearPreviewDto({
+    required this.gearKind,
+    required this.outlinePoints,
+    this.pitchRadius,
+    this.baseRadius,
+    this.addendumRadius,
+    this.dedendumRadius,
+    this.outerRadius,
+    this.pitchLineY,
+    this.addendumLineY,
+    this.dedendumLineY,
+    this.rackLength,
+    this.warnings = const [],
+    this.chain,
+    this.planetary,
+    this.bevelGear,
+    this.bevelPair,
+  });
+
+  factory GearPreviewDto.fromJson(Map<String, dynamic> json) => GearPreviewDto(
+        gearKind: json['gear_kind'] as String,
+        outlinePoints: ((json['outline_points'] as List?) ?? const [])
+            .map((p) => (p as List).map((v) => (v as num).toDouble()).toList())
+            .toList(),
+        pitchRadius: (json['pitch_radius'] as num?)?.toDouble(),
+        baseRadius: (json['base_radius'] as num?)?.toDouble(),
+        addendumRadius: (json['addendum_radius'] as num?)?.toDouble(),
+        dedendumRadius: (json['dedendum_radius'] as num?)?.toDouble(),
+        outerRadius: (json['outer_radius'] as num?)?.toDouble(),
+        pitchLineY: (json['pitch_line_y'] as num?)?.toDouble(),
+        addendumLineY: (json['addendum_line_y'] as num?)?.toDouble(),
+        dedendumLineY: (json['dedendum_line_y'] as num?)?.toDouble(),
+        rackLength: (json['rack_length'] as num?)?.toDouble(),
+        warnings: (json['warnings'] as List?)?.cast<String>() ?? const [],
+        chain: json['chain'] == null ? null : GearPreviewChainResultDto.fromJson(json['chain'] as Map<String, dynamic>),
+        planetary: json['planetary'] == null
+            ? null
+            : GearPreviewPlanetaryResultDto.fromJson(json['planetary'] as Map<String, dynamic>),
+        bevelGear: json['bevel_gear'] == null
+            ? null
+            : GearPreviewBevelMemberDto.fromJson(json['bevel_gear'] as Map<String, dynamic>),
+        bevelPair: json['bevel_pair'] == null
+            ? null
+            : GearPreviewBevelPairResultDto.fromJson(json['bevel_pair'] as Map<String, dynamic>),
+      );
+}
+
+/// Request-side input for one `GearChainFeature`/preview stage's single
+/// member (v1 UI scope: single-gear/rack stages only - no compound-station
+/// UI yet, per `05-gear-chain-and-planetary.md`'s own "v1 UI creates
+/// exactly one implicit group per chain" note; the backend's compound
+/// fields are simply never sent). Mirrors the backend's
+/// `GearChainMemberSpecSchema`.
+class GearChainMemberInputDto {
+  final String memberType; // "external" | "internal" | "rack"
+  final String groupId;
+  final int toothCount;
+  final double faceWidth;
+  final double? outerDiameter;
+
+  const GearChainMemberInputDto({
+    required this.memberType,
+    required this.groupId,
+    required this.toothCount,
+    required this.faceWidth,
+    this.outerDiameter,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'member_type': memberType,
+        'group_id': groupId,
+        'tooth_count': toothCount,
+        'face_width': faceWidth,
+        if (outerDiameter != null) 'outer_diameter': outerDiameter,
+      };
+}
+
+/// Request-side input for one chain stage - mirrors the backend's
+/// `GearChainStageSchema`, single-member only (see
+/// [GearChainMemberInputDto]'s own doc comment).
+class GearChainStageInputDto {
+  final double turnAngleDegrees;
+  final GearChainMemberInputDto member;
+
+  const GearChainStageInputDto({this.turnAngleDegrees = 0.0, required this.member});
+
+  Map<String, dynamic> toJson() => {'turn_angle_degrees': turnAngleDegrees, 'member': member.toJson()};
+}
+
+/// Request-side input for a chain's one implicit `GearGroup` (v1 UI scope -
+/// see [GearChainMemberInputDto]'s own doc comment) - mirrors the
+/// backend's `GearGroupSchema`.
+class GearGroupInputDto {
+  final String id;
+  final double module;
+  final double pressureAngleDegrees;
+  final String? displayColor;
+
+  const GearGroupInputDto({
+    required this.id,
+    required this.module,
+    this.pressureAngleDegrees = 20.0,
+    this.displayColor,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'module': module,
+        'pressure_angle_degrees': pressureAngleDegrees,
+        if (displayColor != null) 'display_color': displayColor,
+      };
+}
+
 /// Thin wrapper over the backend's `/document` REST API - same shape and
 /// conventions as [SketchApiClient], kept as a separate client rather than
 /// merged into it because it talks to a different backend router
@@ -771,8 +1152,17 @@ class DocumentApiClient {
   String _detailOf(http.Response response) {
     try {
       final decoded = jsonDecode(response.body);
-      if (decoded is Map<String, dynamic> && decoded['detail'] is String) {
-        return decoded['detail'] as String;
+      if (decoded is Map<String, dynamic>) {
+        final detail = decoded['detail'];
+        if (detail is String) return detail;
+        // Every gear/rack-feature (and now `/gear/preview`) failure uses a
+        // structured `{"type": ..., "detail": "..."}` shape (see the
+        // backend's `app.document.gear._invalid_gear_parameters` and its
+        // siblings) rather than a plain string - surface the inner
+        // human-readable detail instead of the raw dict.
+        if (detail is Map<String, dynamic> && detail['detail'] is String) {
+          return detail['detail'] as String;
+        }
       }
     } catch (_) {
       // Not JSON (or no `detail` field) - fall through to the raw body.
@@ -1478,6 +1868,388 @@ class DocumentApiClient {
               body: jsonEncode({
                 'source_format': sourceFormat,
                 'data_base64': base64Encode(bytes),
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// `docs/gear-design/08-entry-screen-and-preview.md`: the cheap
+  /// `/gear/preview` endpoint - runs only `gear_math` server-side (no OCCT,
+  /// no tessellation), cheap enough to call on every debounced keystroke
+  /// while [GearDesignScreen]'s form is being edited. [gearKind] is
+  /// `'external'`/`'internal'`/`'rack'` - the only two Feature types that
+  /// exist yet (see that workstream's own scoped-down v1 note); a future
+  /// gear type widens this to one more string value, not a new method.
+  /// [outerDiameter] is required for `'internal'`, [backingHeight] optional
+  /// for `'rack'` (omitted resolves to the backend's own default) - same
+  /// rules [createGearFeature]/[createRackFeature] themselves enforce.
+  Future<GearPreviewDto> previewGear({
+    required String gearKind,
+    required double module,
+    required int toothCount,
+    double pressureAngleDegrees = 20.0,
+    double profileShift = 0.0,
+    double backlash = 0.0,
+    double? outerDiameter,
+    double? backingHeight,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/gear/preview'),
+              headers: _headers,
+              body: jsonEncode({
+                'gear_kind': gearKind,
+                'module': module,
+                'tooth_count': toothCount,
+                'pressure_angle_degrees': pressureAngleDegrees,
+                'profile_shift': profileShift,
+                'backlash': backlash,
+                if (outerDiameter != null) 'outer_diameter': outerDiameter,
+                if (backingHeight != null) 'backing_height': backingHeight,
+              }),
+            ),
+        (body) => GearPreviewDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// `docs/gear-design/02-gear-feature.md`: creates the real `GearFeature`
+  /// (external or internal involute spur gear) once the user hits "Create"
+  /// on [GearDesignScreen] - [planeRef] omitted defaults to the fixed XY
+  /// plane at the backend, same as every other call site that leaves it
+  /// unset. [outerDiameter] is required when [isInternal] is true,
+  /// rejected otherwise (`_validate_gear_feature_payload`).
+  ///
+  /// `docs/gear-design/04-helical-herringbone-loft.md`: [helixAngleDegrees]
+  /// (default `0.0`) and [herringbone] (default `false`) mirror
+  /// `GearFeatureCreate`'s own identical fields - the defaults reproduce a
+  /// plain spur gear byte-identically. Deliberately not threaded through
+  /// [previewGear]: that workstream's own spike found a helical/herringbone
+  /// tooth's flat 2D outline (what `/gear/preview` returns) is identical to
+  /// the equivalent spur profile - the twist is a 3D-only effect gear_math's
+  /// preview response has no way to represent and doesn't need to.
+  Future<FeatureDto> createGearFeature(
+    String partId, {
+    required String gearType,
+    required bool isInternal,
+    required double module,
+    required int toothCount,
+    required double faceWidth,
+    double pressureAngleDegrees = 20.0,
+    double profileShift = 0.0,
+    double backlash = 0.0,
+    double rootFilletRadius = 0.0,
+    double? outerDiameter,
+    PlaneRefDto? planeRef,
+    List<String> targetBodyIds = const [],
+    double helixAngleDegrees = 0.0,
+    bool herringbone = false,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/gear-features'),
+              headers: _headers,
+              body: jsonEncode({
+                if (planeRef != null) 'plane_ref': planeRef.toJson(),
+                'gear_type': gearType,
+                'is_internal': isInternal,
+                'module': module,
+                'tooth_count': toothCount,
+                'face_width': faceWidth,
+                'pressure_angle_degrees': pressureAngleDegrees,
+                'profile_shift': profileShift,
+                'backlash': backlash,
+                'root_fillet_radius': rootFilletRadius,
+                if (outerDiameter != null) 'outer_diameter': outerDiameter,
+                'target_body_ids': targetBodyIds,
+                'helix_angle_degrees': helixAngleDegrees,
+                'herringbone': herringbone,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// `docs/gear-design/03-rack.md`: creates the real `RackFeature` once the
+  /// user hits "Create" on [GearDesignScreen] with `gearKind == 'rack'` -
+  /// mirrors [createGearFeature]'s exact shape. [backingHeight] omitted
+  /// resolves to `2 * module` at the backend.
+  Future<FeatureDto> createRackFeature(
+    String partId, {
+    required String rackType,
+    required double module,
+    required int toothCount,
+    required double faceWidth,
+    double pressureAngleDegrees = 20.0,
+    double backlash = 0.0,
+    double? backingHeight,
+    PlaneRefDto? planeRef,
+    List<String> targetBodyIds = const [],
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/rack-features'),
+              headers: _headers,
+              body: jsonEncode({
+                if (planeRef != null) 'plane_ref': planeRef.toJson(),
+                'rack_type': rackType,
+                'module': module,
+                'tooth_count': toothCount,
+                'face_width': faceWidth,
+                'pressure_angle_degrees': pressureAngleDegrees,
+                'backlash': backlash,
+                if (backingHeight != null) 'backing_height': backingHeight,
+                'target_body_ids': targetBodyIds,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// `docs/gear-design/08-entry-screen-and-preview.md`'s "Chain/planetary/
+  /// bevel-pair preview" extension - `/gear/preview` with `gear_kind:
+  /// 'chain'`. [groups]/[stages] mirror `GearChainFeatureCreate`'s own
+  /// shape minus `plane_ref` (the preview always draws in its own local
+  /// frame, same convention [previewGear] already follows).
+  Future<GearPreviewDto> previewGearChain({
+    required List<GearGroupInputDto> groups,
+    required List<GearChainStageInputDto> stages,
+    double startDirectionDegrees = 0.0,
+    double printClearanceMargin = 0.2,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/gear/preview'),
+              headers: _headers,
+              body: jsonEncode({
+                'gear_kind': 'chain',
+                'chain': {
+                  'groups': groups.map((g) => g.toJson()).toList(),
+                  'stages': stages.map((s) => s.toJson()).toList(),
+                  'start_direction_degrees': startDirectionDegrees,
+                  'print_clearance_margin': printClearanceMargin,
+                },
+              }),
+            ),
+        (body) => GearPreviewDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// `/gear/preview` with `gear_kind: 'planetary'` - mirrors
+  /// `PlanetaryGearFeatureCreate`'s own shape minus `plane_ref`.
+  Future<GearPreviewDto> previewGearPlanetary({
+    required double module,
+    required int sunToothCount,
+    required int ringToothCount,
+    required int planetCount,
+    required double faceWidth,
+    required double ringOuterDiameter,
+    double pressureAngleDegrees = 20.0,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/gear/preview'),
+              headers: _headers,
+              body: jsonEncode({
+                'gear_kind': 'planetary',
+                'planetary': {
+                  'module': module,
+                  'sun_tooth_count': sunToothCount,
+                  'ring_tooth_count': ringToothCount,
+                  'planet_count': planetCount,
+                  'face_width': faceWidth,
+                  'ring_outer_diameter': ringOuterDiameter,
+                  'pressure_angle_degrees': pressureAngleDegrees,
+                },
+              }),
+            ),
+        (body) => GearPreviewDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// `docs/gear-design/05-gear-chain-and-planetary.md`: creates the real
+  /// `GearChainFeature` once the user hits "Create" on
+  /// [GearChainDesignScreen] with chain mode selected - [planeRef] omitted
+  /// defaults to the fixed XY plane at the backend, same as every other
+  /// gear Feature create call.
+  Future<FeatureDto> createGearChainFeature(
+    String partId, {
+    required List<GearGroupInputDto> groups,
+    required List<GearChainStageInputDto> stages,
+    double startDirectionDegrees = 0.0,
+    double printClearanceMargin = 0.2,
+    PlaneRefDto? planeRef,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/gear-chain-features'),
+              headers: _headers,
+              body: jsonEncode({
+                if (planeRef != null) 'plane_ref': planeRef.toJson(),
+                'groups': groups.map((g) => g.toJson()).toList(),
+                'stages': stages.map((s) => s.toJson()).toList(),
+                'start_direction_degrees': startDirectionDegrees,
+                'print_clearance_margin': printClearanceMargin,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// `docs/gear-design/05-gear-chain-and-planetary.md`: creates the real
+  /// `PlanetaryGearFeature` once the user hits "Create" on
+  /// [GearChainDesignScreen] with planetary mode selected.
+  Future<FeatureDto> createPlanetaryGearFeature(
+    String partId, {
+    required double module,
+    required int sunToothCount,
+    required int ringToothCount,
+    required int planetCount,
+    required double faceWidth,
+    required double ringOuterDiameter,
+    double pressureAngleDegrees = 20.0,
+    PlaneRefDto? planeRef,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/planetary-gear-features'),
+              headers: _headers,
+              body: jsonEncode({
+                if (planeRef != null) 'plane_ref': planeRef.toJson(),
+                'module': module,
+                'sun_tooth_count': sunToothCount,
+                'ring_tooth_count': ringToothCount,
+                'planet_count': planetCount,
+                'face_width': faceWidth,
+                'ring_outer_diameter': ringOuterDiameter,
+                'pressure_angle_degrees': pressureAngleDegrees,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// `docs/gear-design/10-bevel-gear.md`: `/gear/preview` with `gear_kind:
+  /// 'bevel_gear'` - mirrors `BevelGearFeatureCreate`'s own shape minus
+  /// `plane_ref`/`bevel_type`/`target_body_ids`.
+  Future<GearPreviewDto> previewGearBevelGear({
+    required double module,
+    required int toothCount,
+    required double faceWidth,
+    required double pitchConeAngleDegrees,
+    double pressureAngleDegrees = 20.0,
+    double backlash = 0.0,
+    double profileShift = 0.0,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/gear/preview'),
+              headers: _headers,
+              body: jsonEncode({
+                'gear_kind': 'bevel_gear',
+                'bevel_gear': {
+                  'module': module,
+                  'tooth_count': toothCount,
+                  'face_width': faceWidth,
+                  'pitch_cone_angle_degrees': pitchConeAngleDegrees,
+                  'pressure_angle_degrees': pressureAngleDegrees,
+                  'backlash': backlash,
+                  'profile_shift': profileShift,
+                },
+              }),
+            ),
+        (body) => GearPreviewDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// `docs/gear-design/11-bevel-pair.md`: `/gear/preview` with `gear_kind:
+  /// 'bevel_pair'` - mirrors `BevelPairFeatureCreate`'s own shape minus
+  /// `plane_ref`. Cone angles are auto-derived server-side, not sent here.
+  Future<GearPreviewDto> previewGearBevelPair({
+    required double module,
+    required int toothCount1,
+    double profileShift1 = 0.0,
+    required int toothCount2,
+    double profileShift2 = 0.0,
+    required double faceWidth,
+    double pressureAngleDegrees = 20.0,
+    double shaftAngleDegrees = 90.0,
+    double backlash = 0.0,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/gear/preview'),
+              headers: _headers,
+              body: jsonEncode({
+                'gear_kind': 'bevel_pair',
+                'bevel_pair': {
+                  'module': module,
+                  'member_1': {'tooth_count': toothCount1, 'profile_shift': profileShift1},
+                  'member_2': {'tooth_count': toothCount2, 'profile_shift': profileShift2},
+                  'face_width': faceWidth,
+                  'pressure_angle_degrees': pressureAngleDegrees,
+                  'shaft_angle_degrees': shaftAngleDegrees,
+                  'backlash': backlash,
+                },
+              }),
+            ),
+        (body) => GearPreviewDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// `docs/gear-design/10-bevel-gear.md`: creates the real `BevelGearFeature`
+  /// once the user hits "Create" on [BevelDesignScreen] in single-gear mode.
+  Future<FeatureDto> createBevelGearFeature(
+    String partId, {
+    required String bevelType,
+    required double module,
+    required int toothCount,
+    required double faceWidth,
+    required double pitchConeAngleDegrees,
+    double pressureAngleDegrees = 20.0,
+    double backlash = 0.0,
+    double profileShift = 0.0,
+    PlaneRefDto? planeRef,
+    List<String> targetBodyIds = const [],
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/bevel-gear-features'),
+              headers: _headers,
+              body: jsonEncode({
+                if (planeRef != null) 'plane_ref': planeRef.toJson(),
+                'bevel_type': bevelType,
+                'module': module,
+                'tooth_count': toothCount,
+                'face_width': faceWidth,
+                'pitch_cone_angle_degrees': pitchConeAngleDegrees,
+                'pressure_angle_degrees': pressureAngleDegrees,
+                'backlash': backlash,
+                'profile_shift': profileShift,
+                'target_body_ids': targetBodyIds,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// `docs/gear-design/11-bevel-pair.md`: creates the real `BevelPairFeature`
+  /// once the user hits "Create" on [BevelDesignScreen] in pair mode.
+  Future<FeatureDto> createBevelPairFeature(
+    String partId, {
+    required double module,
+    required int toothCount1,
+    double profileShift1 = 0.0,
+    required int toothCount2,
+    double profileShift2 = 0.0,
+    required double faceWidth,
+    double pressureAngleDegrees = 20.0,
+    double shaftAngleDegrees = 90.0,
+    double backlash = 0.0,
+    PlaneRefDto? planeRef,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/bevel-pair-features'),
+              headers: _headers,
+              body: jsonEncode({
+                if (planeRef != null) 'plane_ref': planeRef.toJson(),
+                'module': module,
+                'member_1': {'tooth_count': toothCount1, 'profile_shift': profileShift1},
+                'member_2': {'tooth_count': toothCount2, 'profile_shift': profileShift2},
+                'face_width': faceWidth,
+                'pressure_angle_degrees': pressureAngleDegrees,
+                'shaft_angle_degrees': shaftAngleDegrees,
+                'backlash': backlash,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

@@ -1,0 +1,822 @@
+"""OCCT geometry construction for `BevelGearFeature`
+(`docs/gear-design/10-bevel-gear.md`) - the OCCT-dependent half of
+`app.document.bevel_math`'s pure math, implementing directly against both
+of that doc's own spikes (2026-08-04: spherical-involute math + single-
+flank `ThruSections` GO; 2026-08-05: full shell/solid assembly GO) rather
+than re-deriving either. Mirrors `app.document.gear`/`app.document.rack`'s
+overall shape (a real OCCT solid straight from parameters, no backing
+Sketch - `00-conventions.md`'s "gear teeth are not Sketch entities"
+decision), but the construction itself has no precedent anywhere else in
+this codebase - every technique below is the one the two spikes above
+found and validated, not an adaptation of an existing planar/prism/loft
+Feature.
+
+**Face inventory** (`4N + 2` faces for `N` teeth, per the 2026-08-05
+spike's own §2): per tooth, 2 flank faces (right, left - the 2026-08-04
+spike's own `ThruSections`-between-two-`Geom_BSplineCurve`-wires
+technique, unchanged) plus 1 tip-land and 1 root-land face (the *same*
+`ThruSections`-between-two-wires technique, just with plain circular arcs
+instead of BSplines, since corresponding outer/inner points at a fixed
+colatitude lie on the same ray from the apex for a straight-bevel tooth);
+plus 2 spherical end-cap faces (outer/inner, one each - not per-tooth,
+per the spike's own §6 topology dead end), built via hand-rolled pcurves
+against a `Geom_SphericalSurface` (`_spherical_cap_face`, the one
+genuinely new technique - see its own docstring).
+
+**Solid assembly**, exact order per the spike's own §4: `BRepBuilderAPI_
+Sewing` (tolerance 1e-4) across all `4N + 2` faces, `ShapeFix_Shell` on
+the whole sewn shell (not per-face), `BRepBuilderAPI_MakeSolid`, then
+`BRepLib.OrientClosedSolid`. `MakeSolid` alone on the raw sewn shell is
+not sufficient (comes back with zero volume - the two end-caps' own
+orientation is genuinely ambiguous to OCCT's default resolution, per the
+spike's own §5/§6).
+
+**Validation deliberately does not gate on `BRepCheck_Analyzer.IsValid()`**
+for the assembled solid - confirmed wrong twice in the 2026-08-04/
+2026-08-05 spikes, in two different ways (a missed self-intersection for
+a single flank; a false-negative `BRepCheck_UnorientableShape` on the
+end-caps for the full assembly, even when the applied orientation is
+correct). Per the spike's own §8 implementation sketch: a per-flank
+grid-injectivity/normal-flip fold check (`_flank_fold_warning`) runs once
+before assembly (all teeth are identical up to rotation - `10-bevel-
+gear.md`'s own §7 finding that ring assembly never shifts this risk
+relative to a single flank), surfaced as a non-blocking warning per
+`00-conventions.md`; `BOPAlgo_CheckerSI` plus an independent mesh-volume
+cross-check run once on the assembled solid afterward, as a final sanity
+pass rather than the primary defense.
+
+**Verification status**: written directly against both spikes' own
+validated findings (not re-derived) and verified for real against genuine
+`pythonocc-core` in this session's own on-device pass - `test_bevel_gear_
+feature.py`'s own volume/apex-radius checks reproduce both spikes' own
+reference numbers closely, and the fold-risk threshold discrepancy the
+two spikes left open was re-resolved against this exact, committed code
+(`_flank_fold_warning`'s own docstring; `docs/status.md`'s matching dated
+entry).
+"""
+
+import logging
+import math
+
+from fastapi import HTTPException
+from OCC.Core.BOPAlgo import BOPAlgo_CheckerSI
+from OCC.Core.BRep import BRep_Tool
+from OCC.Core.BRepBuilderAPI import (
+    BRepBuilderAPI_MakeEdge,
+    BRepBuilderAPI_MakeFace,
+    BRepBuilderAPI_MakeSolid,
+    BRepBuilderAPI_MakeWire,
+    BRepBuilderAPI_Sewing,
+)
+from OCC.Core.BRepGProp import brepgprop
+from OCC.Core.BRepLib import breplib
+from OCC.Core.BRepMesh import BRepMesh_IncrementalMesh
+from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_ThruSections
+from OCC.Core.BRepTools import breptools
+from OCC.Core.Geom import Geom_SphericalSurface
+from OCC.Core.Geom2d import Geom2d_Line
+from OCC.Core.Geom2dAPI import Geom2dAPI_Interpolate
+from OCC.Core.GeomAPI import GeomAPI_Interpolate
+from OCC.Core.GeomLProp import GeomLProp_SLProps
+from OCC.Core.GProp import GProp_GProps
+from OCC.Core.gp import gp_Ax2, gp_Ax3, gp_Circ, gp_Dir, gp_Dir2d, gp_Pnt, gp_Pnt2d, gp_Vec, gp_Vec2d
+from OCC.Core.ShapeFix import ShapeFix_Shell
+from OCC.Core.TColgp import TColgp_HArray1OfPnt, TColgp_HArray1OfPnt2d
+from OCC.Core.TopAbs import TopAbs_FACE, TopAbs_SHELL
+from OCC.Core.TopExp import TopExp_Explorer
+from OCC.Core.TopLoc import TopLoc_Location
+from OCC.Core.TopoDS import TopoDS_Face, TopoDS_Shape, TopoDS_Shell, TopoDS_Solid, TopoDS_Wire, topods
+
+from app.document.bevel_math import (
+    BevelGearGeometry,
+    GearGeometryError,
+    bevel_gear_geometry,
+    bevel_tooth_flank_pair,
+    max_recommended_face_width,
+)
+from app.document.create_plane import resolve_plane_ref
+from app.document.extrude import basis_normal, compute_part_bodies
+from app.document.models import BevelGearFeature, Part, ResolvedPlane
+
+logger = logging.getLogger(__name__)
+
+# 01-gear-math-core.md's own "~10-20 sampled points per flank" target,
+# same default gear_math.py/bevel_math.py's own functions already use.
+_POINTS_PER_FLANK = 12
+
+# The 2026-08-05 spike's own fold-detector shape (§7): a 25x25 (u, v) grid
+# per flank surface.
+_FOLD_GRID_SIZE = 25
+
+
+def _invalid_bevel_parameters(detail: str) -> HTTPException:
+    """A bevel gear parameter combination `bevel_math` itself rejects -
+    mirrors `app.document.gear._invalid_gear_parameters`'s own convention."""
+    return HTTPException(status_code=422, detail={"type": "invalid_bevel_parameters", "detail": detail})
+
+
+def _bevel_failed(detail: str) -> HTTPException:
+    """A structurally-valid bevel gear that OCCT nonetheless couldn't
+    build - mirrors `app.document.gear._gear_failed`'s own convention."""
+    return HTTPException(status_code=422, detail={"type": "bevel_failed", "detail": detail})
+
+
+# ---------------------------------------------------------------------------
+# Local-frame helpers (apex at the origin, gear axis = +Z)
+# ---------------------------------------------------------------------------
+
+
+def _basis_point3_to_world(basis: ResolvedPlane, x: float, y: float, z: float) -> gp_Pnt:
+    """The 3D generalization of `app.document.extrude.basis_point_to_world`
+    (which only ever embeds a 2D (x, y) - every other gear-family Feature
+    builds a flat profile in its own plane before extruding along the
+    normal). A bevel tooth flank is a genuinely 3D space curve in the
+    plane's own local frame (apex at the plane's origin, gear axis along
+    its normal), so this embeds all three local coordinates directly:
+    `origin + x*x_axis + y*y_axis + z*normal`."""
+    ox, oy, oz = basis.origin
+    xx, xy, xz = basis.x_axis
+    yx, yy, yz = basis.y_axis
+    nx, ny, nz = basis.normal
+    return gp_Pnt(ox + x * xx + y * yx + z * nx, oy + x * xy + y * yy + z * ny, oz + x * xz + y * yz + z * nz)
+
+
+def _rotate_about_z(point: tuple[float, float, float], angle: float) -> tuple[float, float, float]:
+    """Rotate a local-frame point by `angle` radians about the gear axis
+    (+Z in this module's own local frame) - places tooth 0's own flank
+    pair (`bevel_math.bevel_tooth_flank_pair`, always built centered on
+    azimuth 0) at tooth `i`'s position, `angle = 2*pi*i/tooth_count`.
+    Duplicates `bevel_math._rotate_about_z` rather than importing it (that
+    one is a private helper of that module) but is the identical
+    computation."""
+    x, y, z = point
+    cos_a, sin_a = math.cos(angle), math.sin(angle)
+    return (x * cos_a - y * sin_a, x * sin_a + y * cos_a, z)
+
+
+def _sphere_axis(basis: ResolvedPlane) -> gp_Ax3:
+    """The world-space `gp_Ax3` for a `Geom_SphericalSurface` centred at
+    the apex (`basis.origin`), main direction along the gear axis
+    (`basis.normal`), X direction along `basis.x_axis` - chosen so that a
+    LOCAL-frame point's own closed-form `(atan2(y, x), asin(z / R))` is
+    exactly that surface's own (u, v) parametrization at the matching
+    world-embedded point (`Geom_SphericalSurface`'s `P(u, v) = O +
+    R*cos(v)*(cos(u)*XDir + sin(u)*YDir) + R*sin(v)*ZDir`), letting
+    `_spherical_cap_face` compute pcurve coordinates directly from local
+    (x, y, z) without any extra projection step."""
+    ox, oy, oz = basis.origin
+    nx, ny, nz = basis.normal
+    xx, xy, xz = basis.x_axis
+    return gp_Ax3(gp_Pnt(ox, oy, oz), gp_Dir(nx, ny, nz), gp_Dir(xx, xy, xz))
+
+
+# ---------------------------------------------------------------------------
+# Flank / tip-land / root-land faces - all `ThruSections`-between-two-wires
+# ---------------------------------------------------------------------------
+
+
+def _bspline_wire(basis: ResolvedPlane, local_points: list[tuple[float, float, float]]) -> TopoDS_Wire:
+    """One tooth flank's sampled points, fit as a single real
+    `Geom_BSplineCurve` edge via `GeomAPI_Interpolate` (`00-conventions.md`'s
+    real-curve requirement) - the 3D generalization of
+    `app.document.gear._bspline_flank_edge` (that one embeds a 2D local
+    profile; a bevel flank is a genuine 3D space curve, so this embeds via
+    `_basis_point3_to_world` instead)."""
+    world_points = [_basis_point3_to_world(basis, x, y, z) for x, y, z in local_points]
+    points_array = TColgp_HArray1OfPnt(1, len(world_points))
+    for i, point in enumerate(world_points, start=1):
+        points_array.SetValue(i, point)
+    interpolator = GeomAPI_Interpolate(points_array, False, 1e-6)
+    interpolator.Perform()
+    if not interpolator.IsDone():
+        raise _bevel_failed("could not fit a smooth curve through a tooth flank's sampled points")
+    edge = BRepBuilderAPI_MakeEdge(interpolator.Curve()).Edge()
+    return BRepBuilderAPI_MakeWire(edge).Wire()
+
+
+def _cone_arc_wire(
+    basis: ResolvedPlane,
+    sphere_radius: float,
+    colatitude: float,
+    p_start_world: gp_Pnt,
+    p_end_world: gp_Pnt,
+) -> TopoDS_Wire:
+    """`_arc_wire` from `10-bevel-gear.md`'s own §8 implementation sketch:
+    a plain circular arc at fixed `colatitude` on the sphere of
+    `sphere_radius` (the tip-land/root-land faces' own wires - a
+    straight-bevel tooth is ruled by lines through the apex, so
+    corresponding outer/inner arc points lie on the same ray, and the
+    arc-to-arc `ThruSections` loft *is* the exact trimmed cone patch - no
+    separate `Geom_ConicalSurface` needed, per that doc's own §2).
+
+    The circle's own reference X direction is pinned to point at
+    `p_start_world` (mirrors `app.document.extrude._arc_axis`'s identical
+    technique for a sketch Arc) so `BRepBuilderAPI_MakeEdge(gp_Circ, P1,
+    P2)` always trims the *short* way from `p_start_world` to
+    `p_end_world` - both callers always pass points already ordered in
+    the tooth-rim's own increasing-azimuth traversal direction, so the
+    short way is always the geometrically-correct one (a tooth's own tip
+    width or the gap to the next tooth, never the long way around)."""
+    circle_radius = sphere_radius * math.sin(colatitude)
+    height = sphere_radius * math.cos(colatitude)
+    center = _basis_point3_to_world(basis, 0.0, 0.0, height)
+    normal = basis_normal(basis)
+    x_ref = gp_Dir(gp_Vec(center, p_start_world))
+    axis = gp_Ax2(center, normal, x_ref)
+    circ = gp_Circ(axis, circle_radius)
+    edge = BRepBuilderAPI_MakeEdge(circ, p_start_world, p_end_world).Edge()
+    return BRepBuilderAPI_MakeWire(edge).Wire()
+
+
+def _explode_faces(shape: TopoDS_Shape) -> list[TopoDS_Face]:
+    faces: list[TopoDS_Face] = []
+    explorer = TopExp_Explorer(shape, TopAbs_FACE)
+    while explorer.More():
+        faces.append(topods.Face(explorer.Current()))
+        explorer.Next()
+    return faces
+
+
+def _thru_sections_face(outer_wire: TopoDS_Wire, inner_wire: TopoDS_Wire) -> TopoDS_Face:
+    """`ThruSections` between two single-edge wires, not built as a solid
+    (`isSolid=False`) since this module sews independently-built faces
+    together itself rather than fusing sub-solids - shared by flank
+    (`_bspline_wire`-built wires) and tip-land/root-land
+    (`_cone_arc_wire`-built wires) faces alike, per `10-bevel-gear.md`'s
+    own §2 finding that both use "the *same* `ThruSections`-between-two-
+    wires idiom." `ruled=True` - the 2026-08-04 spike's own finding that
+    ruled/smoothed modes coincide for exactly two cross-sections."""
+    loft_maker = BRepOffsetAPI_ThruSections(False, True)
+    loft_maker.AddWire(outer_wire)
+    loft_maker.AddWire(inner_wire)
+    loft_maker.Build()
+    if not loft_maker.IsDone():
+        raise _bevel_failed("could not loft a tooth flank/land surface between its outer and inner curves")
+    faces = _explode_faces(loft_maker.Shape())
+    if len(faces) != 1:
+        raise _bevel_failed(
+            f"expected exactly one face from a two-wire ThruSections loft, got {len(faces)}"
+        )
+    return faces[0]
+
+
+def _flank_face(
+    basis: ResolvedPlane, outer_points: list[tuple[float, float, float]], inner_points: list[tuple[float, float, float]]
+) -> TopoDS_Face:
+    """One tooth flank's surface (right or left) - unchanged from the
+    2026-08-04 spike's own confirmed technique."""
+    return _thru_sections_face(_bspline_wire(basis, outer_points), _bspline_wire(basis, inner_points))
+
+
+def _tip_land_face(
+    basis: ResolvedPlane,
+    geometry: BevelGearGeometry,
+    right_outer_tip: gp_Pnt,
+    left_outer_tip: gp_Pnt,
+    right_inner_tip: gp_Pnt,
+    left_inner_tip: gp_Pnt,
+) -> TopoDS_Face:
+    outer_wire = _cone_arc_wire(basis, geometry.cone_distance, geometry.face_cone_angle, right_outer_tip, left_outer_tip)
+    inner_wire = _cone_arc_wire(
+        basis, geometry.inner_cone_distance, geometry.face_cone_angle, right_inner_tip, left_inner_tip
+    )
+    return _thru_sections_face(outer_wire, inner_wire)
+
+
+def _root_land_face(
+    basis: ResolvedPlane,
+    geometry: BevelGearGeometry,
+    root_colatitude: float,
+    left_outer_root: gp_Pnt,
+    next_right_outer_root: gp_Pnt,
+    left_inner_root: gp_Pnt,
+    next_right_inner_root: gp_Pnt,
+) -> TopoDS_Face:
+    outer_wire = _cone_arc_wire(basis, geometry.cone_distance, root_colatitude, left_outer_root, next_right_outer_root)
+    inner_wire = _cone_arc_wire(
+        basis, geometry.inner_cone_distance, root_colatitude, left_inner_root, next_right_inner_root
+    )
+    return _thru_sections_face(outer_wire, inner_wire)
+
+
+# ---------------------------------------------------------------------------
+# Spherical end-caps - the one genuinely new technique (10-bevel-gear.md §3)
+# ---------------------------------------------------------------------------
+
+
+def _unwrap_azimuths(raw_azimuths: list[float]) -> list[float]:
+    """Running-offset azimuth unwrap - matches `numpy.unwrap`'s own
+    algorithm (adjust each step by the nearest multiple of a full turn so
+    consecutive values never jump by more than half a turn), hand-rolled
+    here per `10-bevel-gear.md`'s own explicit "no numpy dependency"
+    finding. Needed because `atan2` wraps to `(-pi, pi]`: naively using
+    its raw per-point value breaks monotonicity every time the rim
+    traversal (`_spherical_cap_face`, all the way around `tooth_count`
+    teeth) crosses that seam, which a whole-gear rim always does for some
+    tooth. Every consecutive pair of points this is applied to is close
+    together in azimuth by construction (at most one tooth-plus-gap's own
+    angular pitch, `2*pi / tooth_count`, always well under half a turn
+    for any real gear), so "nearest multiple of a full turn" always finds
+    the physically-correct unwrap, never an ambiguous one."""
+    if not raw_azimuths:
+        return []
+    result = [raw_azimuths[0]]
+    for raw in raw_azimuths[1:]:
+        prev = result[-1]
+        delta = raw - prev
+        delta -= 2 * math.pi * round(delta / (2 * math.pi))
+        result.append(prev + delta)
+    return result
+
+
+def _cap_rim_points(
+    tooth_count: int, right0: list[tuple[float, float, float]], left0: list[tuple[float, float, float]]
+) -> list[tuple[float, float, float]]:
+    """The whole end-cap rim's local-frame points, in traversal order, one
+    lap around the gear - `tooth_count` repetitions of [tooth's own right
+    flank, root-to-tip] + [tooth's own left flank, tip-to-root] (`right0`/
+    `left0` are tooth 0's own flank points, both already root-to-tip per
+    `bevel_math.bevel_tooth_flank_pair`'s own docstring - the left flank
+    is reversed here, unlike `gear_math`'s planar convention which already
+    stores its own left flank pre-reversed), plus one closing point (a
+    fresh copy of the very first point) so `_unwrap_azimuths` can carry
+    the accumulated azimuth all the way around back to tooth 0's own
+    starting point - needed for the final root-land arc's own pcurve,
+    which spans from the last tooth back to the first."""
+    points: list[tuple[float, float, float]] = []
+    for i in range(tooth_count):
+        angle = 2 * math.pi * i / tooth_count
+        points.extend(_rotate_about_z(p, angle) for p in right0)
+        points.extend(_rotate_about_z(p, angle) for p in reversed(left0))
+    points.append(points[0])
+    return points
+
+
+def _spherical_cap_face(
+    basis: ResolvedPlane,
+    sphere_radius: float,
+    start_colatitude: float,
+    face_colatitude: float,
+    tooth_count: int,
+    right0: list[tuple[float, float, float]],
+    left0: list[tuple[float, float, float]],
+) -> TopoDS_Face:
+    """One end-cap face (outer or inner sphere), bounded by the entire
+    `4*tooth_count`-edge zigzag rim - `10-bevel-gear.md`'s own §3/§8: hand-
+    built pcurves against a `Geom_SphericalSurface`, since
+    `BRepBuilderAPI_MakeFace(Geom_SphericalSurface, wire)` given only 3D
+    edges (no pcurves) silently returns a zero-area face, and
+    `BRepOffsetAPI_MakeFilling` silently returns a ~3.2x-wrong area for a
+    rim this irregular (both are real, measured dead ends per that doc -
+    don't retry either).
+
+    Each edge is built via the `BRepBuilderAPI_MakeEdge(pcurve2d, surface,
+    P1, P2)` overload (a 2D curve on a surface plus two 3D end points, no
+    explicit 3D curve) - a flank edge's pcurve is a `Geom2dAPI_Interpolate`
+    through its own points' `(azimuth, latitude)` pairs (closed-form:
+    `atan2(y, x)`, `asin(z / sphere_radius)` in the LOCAL apex-centred
+    frame, which is exactly `_sphere_axis`'s own `Geom_SphericalSurface`
+    parametrization at the matching world point); a tip-land/root-land
+    arc edge's pcurve is a trivial `Geom2d_Line` between its own two
+    points (constant latitude, azimuth varies) - matching the doc's own
+    "trivial" description exactly, since `MakeEdge`'s 4-argument overload
+    trims an unbounded `Geom2d_Line` to exactly the span between the two
+    given 3D points, no explicit parameter range needed.
+
+    `BRepLib.BuildCurves3d(wire)` runs BEFORE `MakeFace`, not after - per
+    the doc's own second gotcha, an edge built from a pcurve+surface alone
+    carries no 3D curve at all until that call, and `MakeFace`/
+    `BRepCheck_Analyzer` cannot evaluate such an edge outside a face
+    context."""
+    surface = Geom_SphericalSurface(_sphere_axis(basis), sphere_radius)
+    points_per_flank = len(right0)
+
+    local_points = _cap_rim_points(tooth_count, right0, left0)
+    raw_azimuths = [math.atan2(y, x) for x, y, _z in local_points]
+    azimuths = _unwrap_azimuths(raw_azimuths)
+    latitudes = [math.asin(max(-1.0, min(1.0, z / sphere_radius))) for _x, _y, z in local_points]
+    world_points = [_basis_point3_to_world(basis, x, y, z) for x, y, z in local_points]
+
+    def pnt2d(index: int) -> gp_Pnt2d:
+        return gp_Pnt2d(azimuths[index], latitudes[index])
+
+    def interpolated_pcurve(indices: range):
+        points_2d = TColgp_HArray1OfPnt2d(1, len(indices))
+        for offset, index in enumerate(indices, start=1):
+            points_2d.SetValue(offset, pnt2d(index))
+        interpolator = Geom2dAPI_Interpolate(points_2d, False, 1e-6)
+        interpolator.Perform()
+        if not interpolator.IsDone():
+            raise _bevel_failed("could not fit a 2D pcurve through a tooth flank's sampled points")
+        curve = interpolator.Curve()
+        return curve, curve.FirstParameter(), curve.LastParameter()
+
+    def line_pcurve(index_a: int, index_b: int):
+        # `Geom2d_Line` is unbounded (parameter range (-inf, +inf)) - the
+        # 4-arg `BRepBuilderAPI_MakeEdge(pcurve, surface, P1, P2)` overload
+        # does NOT auto-trim an unbounded curve to the span between P1/P2
+        # (confirmed on-device: it raises StdFail_NotDone), so this always
+        # passes explicit parameters via the 6-arg overload instead - `0.0`
+        # at `p_a` (the line's own origin) and the Euclidean 2D distance to
+        # `p_b` (the line's own direction is already a unit vector via
+        # `gp_Dir2d`, so parameter and arc length coincide).
+        p_a, p_b = pnt2d(index_a), pnt2d(index_b)
+        length = p_a.Distance(p_b)
+        line = Geom2d_Line(p_a, gp_Dir2d(gp_Vec2d(p_a, p_b)))
+        return line, 0.0, length
+
+    wire_maker = BRepBuilderAPI_MakeWire()
+    k = points_per_flank
+    span = 2 * k  # one tooth's own share of _cap_rim_points: right (k) + left-reversed (k)
+    for i in range(tooth_count):
+        base = i * span
+        right_range = range(base, base + k)
+        left_range = range(base + k, base + span)
+
+        right_pcurve, right_u1, right_u2 = interpolated_pcurve(right_range)
+        wire_maker.Add(
+            BRepBuilderAPI_MakeEdge(
+                right_pcurve, surface, world_points[base], world_points[base + k - 1], right_u1, right_u2
+            ).Edge()
+        )
+
+        tip_pcurve, tip_u1, tip_u2 = line_pcurve(base + k - 1, base + k)
+        wire_maker.Add(
+            BRepBuilderAPI_MakeEdge(
+                tip_pcurve, surface, world_points[base + k - 1], world_points[base + k], tip_u1, tip_u2
+            ).Edge()
+        )
+
+        left_pcurve, left_u1, left_u2 = interpolated_pcurve(left_range)
+        wire_maker.Add(
+            BRepBuilderAPI_MakeEdge(
+                left_pcurve, surface, world_points[base + k], world_points[base + span - 1], left_u1, left_u2
+            ).Edge()
+        )
+
+        next_base = (base + span) % (tooth_count * span)
+        root_pcurve, root_u1, root_u2 = line_pcurve(base + span - 1, base + span)
+        wire_maker.Add(
+            BRepBuilderAPI_MakeEdge(
+                root_pcurve, surface, world_points[base + span - 1], world_points[next_base], root_u1, root_u2
+            ).Edge()
+        )
+
+    if not wire_maker.IsDone():
+        raise _bevel_failed("could not assemble the spherical end-cap's own zigzag rim into one closed wire")
+    wire = wire_maker.Wire()
+    breplib.BuildCurves3d(wire)
+
+    face_maker = BRepBuilderAPI_MakeFace(surface, wire)
+    if not face_maker.IsDone():
+        raise _bevel_failed("could not build a spherical end-cap face from its own rim wire")
+    return face_maker.Face()
+
+
+# ---------------------------------------------------------------------------
+# Fold-risk validation (10-bevel-gear.md's own resolved §7 finding)
+# ---------------------------------------------------------------------------
+
+
+def _flank_fold_warning(face: TopoDS_Face, grid_size: int = _FOLD_GRID_SIZE) -> str | None:
+    """A real fold/self-intersection detector for one flank surface -
+    `10-bevel-gear.md`'s own §7/§8: `BRepCheck_Analyzer`/`IsDone()` are
+    both confirmed-insufficient signals for this construction (missed a
+    real self-intersection in the 2026-08-04 spike), so this samples the
+    surface on a real `grid_size x grid_size` (u, v) grid and checks two
+    genuine geometric signals, either one sufficient to flag a fold:
+
+    1. **Point coincidence**: any two *non-adjacent* grid points landing
+       at nearly the same 3D position - the direct signature of a folded/
+       self-overlapping surface (adjacent grid points are expected to be
+       close together; only non-adjacent ones colliding is a real fold).
+    2. **Normal sign flip**: the local surface normal (`GeomLProp_SLProps`)
+       at any two adjacent grid points pointing in substantially opposite
+       directions - a surface that's still injective (no two points
+       coincide) can nonetheless be creasing/folding back on itself, which
+       a pure point-coincidence check alone would miss.
+
+    Run once per unique flank shape (all teeth are identical up to
+    rotation - `10-bevel-gear.md`'s own §7 confirms ring assembly never
+    shifts this risk relative to a single flank, so re-checking every
+    flank would be redundant, not more thorough), before assembly -
+    `00-conventions.md`'s non-blocking validation-banner convention.
+    Returns a warning message, or `None` if no fold was detected."""
+    surface = BRep_Tool.Surface(face)
+    u1, u2, v1, v2 = breptools.UVBounds(face)
+
+    grid_points: list[gp_Pnt] = []
+    grid_normals: list[gp_Vec | None] = []
+    for i in range(grid_size):
+        u = u1 + (u2 - u1) * i / (grid_size - 1)
+        for j in range(grid_size):
+            v = v1 + (v2 - v1) * j / (grid_size - 1)
+            props = GeomLProp_SLProps(surface, u, v, 1, 1e-6)
+            grid_points.append(props.Value())
+            grid_normals.append(props.Normal() if props.IsNormalDefined() else None)
+
+    # Point coincidence: only compare non-adjacent grid points (index
+    # difference in EITHER the flattened i or j sense) - immediate
+    # neighbours are expected to be close, that's not a fold.
+    #
+    # 0.05mm (not the sewing tolerance's own 1e-4mm, and not an arbitrary
+    # tiny epsilon): this session's own re-derivation of the spike's
+    # positive control (10-bevel-gear.md's own resolved §7 finding, see
+    # docs/status.md's matching dated entry) found the grid's own minimum
+    # non-adjacent-point gap for the 6T/80T case shrinks smoothly and
+    # predictably with face_width - 0.0989mm at face_width = 2.0x
+    # max_recommended_face_width, 0.0049mm at 2.95x (both bit-for-bit
+    # reproductions of the second spike's own reported numbers) - and never
+    # drops below 0.2mm for any realistic face_width (<=1.2x
+    # max_recommended_face_width) in any of the three canonical test cases.
+    # 0.05mm sits inside that shrinking range at a value with real physical
+    # meaning for this app's own stated audience (a small-module gear
+    # meant to actually mesh with another *3D-printed* gear, per
+    # `00-conventions.md`'s own mesh-quality discussion) - roughly a single
+    # FDM nozzle's own resolution, so two non-adjacent points closer than
+    # this are already at the edge of "the same printed feature," not just
+    # mathematically close. Fires only in the genuinely extreme regime
+    # (empirically, ratio >~2.5 for the tightest tested case) - a realistic
+    # design (ratio <=1.0, the existing `max_recommended_face_width`
+    # warning's own boundary) never approaches it.
+    coincidence_tolerance = 0.05
+    min_neighbor_gap = 2
+    n = len(grid_points)
+    for a in range(n):
+        ia, ja = divmod(a, grid_size)
+        for b in range(a + 1, n):
+            ib, jb = divmod(b, grid_size)
+            if abs(ia - ib) < min_neighbor_gap and abs(ja - jb) < min_neighbor_gap:
+                continue
+            if grid_points[a].Distance(grid_points[b]) < coincidence_tolerance:
+                return (
+                    "This bevel gear's tooth flank surface may fold back on itself (near-coincident "
+                    "non-adjacent points detected) - likely face_width pushed too large relative to "
+                    "cone distance on a tight pitch cone. Try a smaller face_width."
+                )
+
+    # Normal sign flip between adjacent grid points.
+    for i in range(grid_size):
+        for j in range(grid_size):
+            index = i * grid_size + j
+            normal = grid_normals[index]
+            if normal is None:
+                continue
+            for neighbor_index in (index + 1 if j + 1 < grid_size else None, index + grid_size if i + 1 < grid_size else None):
+                if neighbor_index is None:
+                    continue
+                neighbor_normal = grid_normals[neighbor_index]
+                if neighbor_normal is None:
+                    continue
+                if normal.Dot(neighbor_normal) < 0:
+                    return (
+                        "This bevel gear's tooth flank surface may fold back on itself (surface normal "
+                        "sign flip detected) - likely face_width pushed too large relative to cone "
+                        "distance on a tight pitch cone. Try a smaller face_width."
+                    )
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Solid assembly (10-bevel-gear.md's own §4/§8)
+# ---------------------------------------------------------------------------
+
+
+def _single_shell(shape: TopoDS_Shape) -> TopoDS_Shell:
+    if shape.ShapeType() == TopAbs_SHELL:
+        return topods.Shell(shape)
+    shells: list[TopoDS_Shell] = []
+    explorer = TopExp_Explorer(shape, TopAbs_SHELL)
+    while explorer.More():
+        shells.append(topods.Shell(explorer.Current()))
+        explorer.Next()
+    if len(shells) != 1:
+        raise _bevel_failed(f"expected sewing all tooth faces to produce exactly one shell, got {len(shells)}")
+    return shells[0]
+
+
+def _mesh_volume(solid: TopoDS_Shape) -> float:
+    """An independent divergence-theorem volume - genuinely different code
+    from `BRepGProp`'s own analytic integration, per `10-bevel-gear.md`'s
+    own §5 finding that agreement between the two (not `BRepCheck_
+    Analyzer`) is the real evidence a solid is correctly closed and
+    oriented. Sums signed tetrahedron volumes from the world origin over
+    every mesh triangle of a real `BRepMesh_IncrementalMesh` tessellation."""
+    BRepMesh_IncrementalMesh(solid, 0.05, False, 0.5, True)
+    total = 0.0
+    explorer = TopExp_Explorer(solid, TopAbs_FACE)
+    while explorer.More():
+        face = topods.Face(explorer.Current())
+        location = TopLoc_Location()
+        triangulation = BRep_Tool.Triangulation(face, location)
+        explorer.Next()
+        if triangulation is None:
+            continue
+        transform = location.Transformation()
+        is_reversed = face.Orientation() == 1  # TopAbs_REVERSED
+        for tri_index in range(1, triangulation.NbTriangles() + 1):
+            i1, i2, i3 = triangulation.Triangle(tri_index).Get()
+            p1 = triangulation.Node(i1).Transformed(transform)
+            p2 = triangulation.Node(i2).Transformed(transform)
+            p3 = triangulation.Node(i3).Transformed(transform)
+            if is_reversed:
+                p2, p3 = p3, p2
+            total += (
+                p1.X() * (p2.Y() * p3.Z() - p2.Z() * p3.Y())
+                - p1.Y() * (p2.X() * p3.Z() - p2.Z() * p3.X())
+                + p1.Z() * (p2.X() * p3.Y() - p2.Y() * p3.X())
+            ) / 6.0
+    return abs(total)
+
+
+def _assembly_sanity_warnings(solid: TopoDS_Solid) -> list[str]:
+    """The assembled-solid final sanity pass per `10-bevel-gear.md`'s own
+    §8: `BOPAlgo_CheckerSI` (self-intersection) plus an independent mesh-
+    volume cross-check against `BRepGProp`'s own analytic volume - run
+    once, after assembly, deliberately NOT gating on `BRepCheck_Analyzer.
+    IsValid()` (confirmed wrong for this construction's own end-caps, per
+    that doc's §5). Non-blocking, per `00-conventions.md` - a disagreement
+    here is a real, but not certainly-fatal, signal worth surfacing."""
+    warnings: list[str] = []
+
+    checker = BOPAlgo_CheckerSI()
+    checker.AddArgument(solid)
+    checker.Perform()
+    if checker.HasErrors():
+        warnings.append(
+            "This bevel gear's assembled solid failed a self-intersection check (BOPAlgo_CheckerSI) - "
+            "the geometry may not be physically valid. Try a smaller face_width or a less extreme "
+            "pitch cone angle."
+        )
+
+    props = GProp_GProps()
+    brepgprop.VolumeProperties(solid, props)
+    analytic_volume = abs(props.Mass())
+    try:
+        mesh_volume = _mesh_volume(solid)
+    except Exception:  # noqa: BLE001 - best-effort diagnostic only, never fails the Feature itself
+        logger.warning("Bevel gear independent mesh-volume cross-check itself failed - skipping", exc_info=True)
+        return warnings
+    if analytic_volume > 0 and abs(analytic_volume - mesh_volume) / analytic_volume > 0.02:
+        warnings.append(
+            "This bevel gear's assembled solid's analytic volume disagrees with an independent "
+            "mesh-based volume check by more than 2% - the geometry may not be a correctly closed solid."
+        )
+    return warnings
+
+
+def _assemble_gear_solid(
+    basis: ResolvedPlane, geometry: BevelGearGeometry, tooth_count: int, points_per_flank: int = _POINTS_PER_FLANK
+) -> tuple[TopoDS_Shape, list[str]]:
+    """The full bevel gear solid - `10-bevel-gear.md`'s own §8
+    implementation sketch, in order: collect the `4*tooth_count` side
+    faces tooth by tooth, append the 2 end-cap faces, `Sewing` ->
+    `ShapeFix_Shell` -> `MakeSolid` -> `OrientClosedSolid` (§4's exact
+    sequence - `MakeSolid` alone on the raw sewn shell is not sufficient).
+    Root fillet is not supported - see `BevelGearFeature`'s own
+    docstring for why (no `BRepPrimAPI_MakePrism.Generated()`-equivalent
+    vertex-tracking for a `ThruSections`/`Sewing`-built solid)."""
+    right0, left0 = bevel_tooth_flank_pair(geometry, points_per_flank)
+    right0_outer, right0_inner = right0
+    left0_outer, left0_inner = left0
+    start_colatitude = max(geometry.root_cone_angle, geometry.base_cone_angle)
+    face_colatitude = geometry.face_cone_angle
+
+    faces: list[TopoDS_Face] = []
+    fold_warning: str | None = None
+    for i in range(tooth_count):
+        angle = 2 * math.pi * i / tooth_count
+        right_outer = [_rotate_about_z(p, angle) for p in right0_outer]
+        right_inner = [_rotate_about_z(p, angle) for p in right0_inner]
+        left_outer = [_rotate_about_z(p, angle) for p in left0_outer]
+        left_inner = [_rotate_about_z(p, angle) for p in left0_inner]
+
+        right_flank_face = _flank_face(basis, right_outer, right_inner)
+        left_flank_face = _flank_face(basis, left_outer, left_inner)
+        if i == 0:
+            # All teeth are identical up to rotation (10-bevel-gear.md §7) -
+            # checking one flank once is the load-bearing check, not a
+            # per-tooth re-check.
+            fold_warning = _flank_fold_warning(right_flank_face)
+        faces.append(right_flank_face)
+        faces.append(left_flank_face)
+
+        right_outer_tip_world = _basis_point3_to_world(basis, *right_outer[-1])
+        left_outer_tip_world = _basis_point3_to_world(basis, *left_outer[-1])
+        right_inner_tip_world = _basis_point3_to_world(basis, *right_inner[-1])
+        left_inner_tip_world = _basis_point3_to_world(basis, *left_inner[-1])
+        faces.append(
+            _tip_land_face(
+                basis, geometry, right_outer_tip_world, left_outer_tip_world, right_inner_tip_world, left_inner_tip_world
+            )
+        )
+
+        next_angle = 2 * math.pi * ((i + 1) % tooth_count) / tooth_count
+        next_right_outer_root_world = _basis_point3_to_world(basis, *_rotate_about_z(right0_outer[0], next_angle))
+        next_right_inner_root_world = _basis_point3_to_world(basis, *_rotate_about_z(right0_inner[0], next_angle))
+        left_outer_root_world = _basis_point3_to_world(basis, *left_outer[0])
+        left_inner_root_world = _basis_point3_to_world(basis, *left_inner[0])
+        faces.append(
+            _root_land_face(
+                basis,
+                geometry,
+                start_colatitude,
+                left_outer_root_world,
+                next_right_outer_root_world,
+                left_inner_root_world,
+                next_right_inner_root_world,
+            )
+        )
+
+    faces.append(
+        _spherical_cap_face(
+            basis, geometry.cone_distance, start_colatitude, face_colatitude, tooth_count, right0_outer, left0_outer
+        )
+    )
+    faces.append(
+        _spherical_cap_face(
+            basis,
+            geometry.inner_cone_distance,
+            start_colatitude,
+            face_colatitude,
+            tooth_count,
+            right0_inner,
+            left0_inner,
+        )
+    )
+
+    sewing = BRepBuilderAPI_Sewing(1e-4)
+    for face in faces:
+        sewing.Add(face)
+    sewing.Perform()
+    sewn = sewing.SewedShape()
+    shell = _single_shell(sewn)
+
+    fixer = ShapeFix_Shell(shell)
+    fixer.Perform()
+    fixed_shell = fixer.Shell()
+
+    solid_maker = BRepBuilderAPI_MakeSolid(fixed_shell)
+    if not solid_maker.IsDone():
+        raise _bevel_failed("could not build a solid from the sewn tooth shell")
+    solid = solid_maker.Solid()
+    breplib.OrientClosedSolid(solid)
+
+    warnings = [fold_warning] if fold_warning else []
+    warnings.extend(_assembly_sanity_warnings(solid))
+    return solid, warnings
+
+
+# ---------------------------------------------------------------------------
+# Feature entry points
+# ---------------------------------------------------------------------------
+
+
+def resolve_bevel_gear_from_bodies(
+    feature: BevelGearFeature,
+    part: Part,
+    bodies: dict[str, TopoDS_Shape],
+    excluded_feature_ids: frozenset[str],
+) -> tuple[TopoDS_Shape, list[str]]:
+    """The real OCCT solid for one `BevelGearFeature`, plus any non-
+    blocking warnings - mirrors `app.document.gear.resolve_gear_from_
+    bodies`'s overall shape (raises a structured `HTTPException` rather
+    than returning `None`: no backing Sketch, so no "temporarily has
+    nothing to build" state to tolerate)."""
+    try:
+        geometry = bevel_gear_geometry(
+            module=feature.module,
+            tooth_count=feature.tooth_count,
+            face_width=feature.face_width,
+            pressure_angle_degrees=feature.pressure_angle_degrees,
+            backlash=feature.backlash,
+            profile_shift=feature.profile_shift,
+            pitch_cone_angle_degrees=feature.pitch_cone_angle_degrees,
+        )
+    except GearGeometryError as exc:
+        raise _invalid_bevel_parameters(str(exc)) from exc
+
+    if feature.face_width <= 0:
+        raise _invalid_bevel_parameters(f"face_width must be positive, got {feature.face_width!r}")
+
+    warnings: list[str] = []
+    max_face_width = max_recommended_face_width(geometry.cone_distance)
+    if feature.face_width > max_face_width:
+        warnings.append(
+            f"face_width ({feature.face_width!r}) exceeds the recommended maximum "
+            f"({max_face_width!r} = cone_distance / 3) - the tooth thins toward degeneracy near the apex."
+        )
+
+    basis = resolve_plane_ref(part, bodies, feature.plane_ref, excluded_feature_ids)
+    solid, assembly_warnings = _assemble_gear_solid(basis, geometry, feature.tooth_count)
+    warnings.extend(assembly_warnings)
+    return solid, warnings
+
+
+def resolve_bevel_gear(
+    part: Part, feature: BevelGearFeature, excluded_feature_ids: frozenset[str] = frozenset()
+) -> tuple[TopoDS_Shape, list[str]]:
+    """Fresh entry point for the router's create/update validation -
+    mirrors `app.document.gear.resolve_gear`'s exact shape."""
+    bodies = compute_part_bodies(part, excluded_feature_ids | {feature.id})
+    return resolve_bevel_gear_from_bodies(feature, part, bodies, excluded_feature_ids | {feature.id})

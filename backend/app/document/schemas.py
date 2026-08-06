@@ -3,13 +3,18 @@ from typing import Literal, Union
 from pydantic import BaseModel
 
 from app.document.models import (
+    BevelGearType,
     ExtrudeType,
     FixedAxis,
+    GearChainMemberType,
+    GearType,
     ImportSourceFormat,
+    LoftMode,
     MergeMode,
     PatternType,
     PlaneType,
     Produces,
+    RackType,
     RevolveMode,
     SubShapeType,
     SweepMode,
@@ -775,6 +780,741 @@ class ImportFeatureResponse(BaseModel):
     produces: Produces
 
 
+class GearFeatureCreate(BaseModel):
+    """`docs/gear-design/02-gear-feature.md`: creates a `GearFeature` - an
+    external or internal involute spur gear built straight from
+    parameters, no backing SketchFeature (`00-conventions.md`'s "gear
+    teeth are not Sketch entities" decision). `plane_ref` is a full
+    `PlaneRefSchema` (same shape as `MirrorFeatureCreate.mirror_plane`),
+    optional here - omitting it defaults to the fixed XY plane at the
+    router (`app.document.router._default_plane_ref`), per that
+    conventions doc's "always visible [to the client UI], never silently
+    chosen" resolution: the *client* always shows and pre-fills XY rather
+    than hiding the field, but the API itself stays forgiving of a
+    caller/script that omits it entirely.
+
+    `outer_diameter` is required when `is_internal` is True (the ring's
+    own rim diameter), meaningless (and rejected) otherwise - see
+    `app.document.router._validate_gear_feature_payload`. Boss/Cut +
+    `target_body_ids` follow `ExtrudeFeatureCreate`'s exact convention.
+
+    `helix_angle_degrees` (Workstream 4a, default `0.0`) and `herringbone`
+    (default `False`) follow `GearFeature`'s own identical fields - see
+    that dataclass's docstring for the full construction. `0.0`/`False`
+    (the defaults) reproduce every pre-Workstream-4a gear byte-identically."""
+
+    plane_ref: PlaneRefSchema | None = None
+    gear_type: GearType
+    is_internal: bool
+    module: float
+    tooth_count: int
+    face_width: float
+    pressure_angle_degrees: float = 20.0
+    profile_shift: float = 0.0
+    backlash: float = 0.0
+    root_fillet_radius: float = 0.0
+    outer_diameter: float | None = None
+    target_body_ids: list[str] = []
+    helix_angle_degrees: float = 0.0
+    herringbone: bool = False
+
+
+class GearFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `ExtrudeFeatureUpdate`/`MirrorFeatureUpdate`."""
+
+    plane_ref: PlaneRefSchema | None = None
+    gear_type: GearType | None = None
+    is_internal: bool | None = None
+    module: float | None = None
+    tooth_count: int | None = None
+    face_width: float | None = None
+    pressure_angle_degrees: float | None = None
+    profile_shift: float | None = None
+    backlash: float | None = None
+    root_fillet_radius: float | None = None
+    outer_diameter: float | None = None
+    target_body_ids: list[str] | None = None
+    helix_angle_degrees: float | None = None
+    herringbone: bool | None = None
+
+
+class GearFeatureResponse(BaseModel):
+    type: Literal["gear"] = "gear"
+    id: str
+    plane_ref: PlaneRefSchema
+    gear_type: GearType
+    is_internal: bool
+    module: float
+    tooth_count: int
+    face_width: float
+    pressure_angle_degrees: float
+    profile_shift: float
+    backlash: float
+    root_fillet_radius: float
+    outer_diameter: float | None = None
+    target_body_ids: list[str] = []
+    helix_angle_degrees: float = 0.0
+    herringbone: bool = False
+    locked: bool
+    # B1: see SketchFeatureResponse.produces above - always BODY for a
+    # GearFeature.
+    produces: Produces
+    # Non-blocking - a requested root_fillet_radius that was silently
+    # honoured-in-name-only (didn't converge, or unsupported on a
+    # helical/herringbone tooth) - see app.document.gear.resolve_gear_
+    # from_bodies. Same convention as LoftFeatureResponse.warnings/
+    # GearChainFeatureResponse.warnings below.
+    warnings: list[str] = []
+
+
+class RackFeatureCreate(BaseModel):
+    """`docs/gear-design/03-rack.md`: creates a `RackFeature` - a standalone
+    linear trapezoidal-tooth rack over `tooth_count` teeth, no backing
+    SketchFeature (same "gear teeth are not Sketch entities" decision as
+    `GearFeatureCreate`). `plane_ref` follows the identical optional/
+    defaults-to-XY convention. `backing_height` is optional - omitting it
+    (`None`) resolves to `2 * module` at build time
+    (`app.document.gear_math.default_rack_backing_height`); a literal 0.0
+    would silently produce a degenerate zero-area profile, so unlike the
+    other numeric fields there is no plain-float default here. Boss/Cut +
+    `target_body_ids` follow `ExtrudeFeatureCreate`'s exact convention."""
+
+    plane_ref: PlaneRefSchema | None = None
+    rack_type: RackType
+    module: float
+    tooth_count: int
+    face_width: float
+    pressure_angle_degrees: float = 20.0
+    backlash: float = 0.0
+    backing_height: float | None = None
+    target_body_ids: list[str] = []
+
+
+class RackFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `GearFeatureUpdate`."""
+
+    plane_ref: PlaneRefSchema | None = None
+    rack_type: RackType | None = None
+    module: float | None = None
+    tooth_count: int | None = None
+    face_width: float | None = None
+    pressure_angle_degrees: float | None = None
+    backlash: float | None = None
+    backing_height: float | None = None
+    target_body_ids: list[str] | None = None
+
+
+class RackFeatureResponse(BaseModel):
+    type: Literal["rack"] = "rack"
+    id: str
+    plane_ref: PlaneRefSchema
+    rack_type: RackType
+    module: float
+    tooth_count: int
+    face_width: float
+    pressure_angle_degrees: float
+    backlash: float
+    backing_height: float | None = None
+    target_body_ids: list[str] = []
+    locked: bool
+    # B1: see SketchFeatureResponse.produces above - always BODY for a
+    # RackFeature.
+    produces: Produces
+
+
+class BevelGearFeatureCreate(BaseModel):
+    """`docs/gear-design/10-bevel-gear.md`: creates a `BevelGearFeature` -
+    a standalone straight bevel gear built straight from parameters, no
+    backing SketchFeature (same "gear teeth are not Sketch entities"
+    decision as `GearFeatureCreate`/`RackFeatureCreate`). `plane_ref`
+    follows the identical optional/defaults-to-XY convention.
+    `pitch_cone_angle_degrees` is required and direct - a standalone bevel
+    gear has no meshing partner to derive it from (`11-bevel-pair.md`'s
+    own future pairing system does that automatically). Boss/Cut +
+    `target_body_ids` follow `GearFeatureCreate`'s exact convention."""
+
+    plane_ref: PlaneRefSchema | None = None
+    bevel_type: BevelGearType
+    module: float
+    tooth_count: int
+    face_width: float
+    pitch_cone_angle_degrees: float
+    pressure_angle_degrees: float = 20.0
+    backlash: float = 0.0
+    profile_shift: float = 0.0
+    target_body_ids: list[str] = []
+
+
+class BevelGearFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `GearFeatureUpdate`/`RackFeatureUpdate`."""
+
+    plane_ref: PlaneRefSchema | None = None
+    bevel_type: BevelGearType | None = None
+    module: float | None = None
+    tooth_count: int | None = None
+    face_width: float | None = None
+    pitch_cone_angle_degrees: float | None = None
+    pressure_angle_degrees: float | None = None
+    backlash: float | None = None
+    profile_shift: float | None = None
+    target_body_ids: list[str] | None = None
+
+
+class BevelGearFeatureResponse(BaseModel):
+    type: Literal["bevel_gear"] = "bevel_gear"
+    id: str
+    plane_ref: PlaneRefSchema
+    bevel_type: BevelGearType
+    module: float
+    tooth_count: int
+    face_width: float
+    pitch_cone_angle_degrees: float
+    pressure_angle_degrees: float
+    backlash: float
+    profile_shift: float
+    target_body_ids: list[str] = []
+    locked: bool
+    # B1: see SketchFeatureResponse.produces above - always BODY for a
+    # BevelGearFeature.
+    produces: Produces
+    # Non-blocking - face-width-vs-cone-distance, per-flank fold-risk, and
+    # assembled-solid sanity warnings (app.document.bevel.resolve_bevel_
+    # gear_from_bodies's own second return value). Same convention as
+    # GearFeatureResponse.warnings/LoftFeatureResponse.warnings.
+    warnings: list[str] = []
+
+
+class BevelPairMemberSpecSchema(BaseModel):
+    """The wire counterpart to `app.document.models.BevelPairMemberSpec` -
+    the legitimately-differing per-member fields only (see that
+    dataclass's own docstring for why every other bevel pair dimension is
+    flat on `BevelPairFeatureCreate` instead)."""
+
+    tooth_count: int
+    profile_shift: float = 0.0
+
+
+class BevelPairFeatureCreate(BaseModel):
+    """`docs/gear-design/11-bevel-pair.md`: creates a `BevelPairFeature` -
+    two apex-aligned mating bevel gears, exactly 2 members
+    (`member_1`/`member_2`), no backing SketchFeature (same "gear teeth
+    are not Sketch entities" decision as `BevelGearFeatureCreate`).
+    `plane_ref` follows the identical optional/defaults-to-XY convention.
+    Cone angles are **not** accepted here - they're auto-derived from both
+    members' own tooth counts plus `shaft_angle_degrees` (`app.document.
+    bevel_pair.resolve_bevel_pair_from_bodies`), the whole point of
+    automated live bevel pairing vs. `BevelGearFeatureCreate`'s own direct
+    `pitch_cone_angle_degrees` field. No `target_body_ids`/Boss-Cut `mode`
+    at all - a pair always mints two brand-new Bodies (see `BevelPairFeature`'s
+    own docstring)."""
+
+    plane_ref: PlaneRefSchema | None = None
+    module: float
+    member_1: BevelPairMemberSpecSchema
+    member_2: BevelPairMemberSpecSchema
+    face_width: float
+    pressure_angle_degrees: float = 20.0
+    shaft_angle_degrees: float = 90.0
+    backlash: float = 0.0
+
+
+class BevelPairFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `BevelGearFeatureUpdate`."""
+
+    plane_ref: PlaneRefSchema | None = None
+    module: float | None = None
+    member_1: BevelPairMemberSpecSchema | None = None
+    member_2: BevelPairMemberSpecSchema | None = None
+    face_width: float | None = None
+    pressure_angle_degrees: float | None = None
+    shaft_angle_degrees: float | None = None
+    backlash: float | None = None
+
+
+class BevelPairFeatureResponse(BaseModel):
+    type: Literal["bevel_pair"] = "bevel_pair"
+    id: str
+    plane_ref: PlaneRefSchema
+    module: float
+    member_1: BevelPairMemberSpecSchema
+    member_2: BevelPairMemberSpecSchema
+    face_width: float
+    pressure_angle_degrees: float
+    shaft_angle_degrees: float
+    backlash: float
+    locked: bool
+    # B1: see SketchFeatureResponse.produces above - always BODY for a
+    # BevelPairFeature.
+    produces: Produces
+    # Non-blocking - face-width-vs-cone-distance, per-flank fold-risk, and
+    # assembled-solid sanity warnings, one set per member (label-prefixed -
+    # see app.document.bevel_pair.resolve_bevel_pair_from_bodies's own
+    # second return value). Same convention as BevelGearFeatureResponse.warnings.
+    warnings: list[str] = []
+
+
+class LoftSectionSchema(BaseModel):
+    """`docs/gear-design/04-helical-herringbone-loft.md` (4b): the wire
+    counterpart to `app.document.models.LoftSection` - see that dataclass's
+    own docstring for `reference_point`'s alignment semantics."""
+
+    sketch_feature_id: str
+    profile_refs: list[SketchEntityRefSchema] = []
+    reference_point: SketchEntityRefSchema | None = None
+
+
+class LoftFeatureCreate(BaseModel):
+    """Creates a `LoftFeature` lofting between `sections` (2+ required - see
+    `app.document.router._validate_loft_sections`) via `BRepOffsetAPI_
+    ThruSections`. Boss/Cut + `target_body_ids` follow `SweepFeatureCreate`'s
+    exact convention."""
+
+    sections: list[LoftSectionSchema]
+    mode: LoftMode
+    ruled: bool = False
+    target_body_ids: list[str] = []
+
+
+class LoftFeatureUpdate(BaseModel):
+    """Partial update for live-preview re-solves, same omitted-vs-current-
+    value convention as `SweepFeatureUpdate`."""
+
+    sections: list[LoftSectionSchema] | None = None
+    mode: LoftMode | None = None
+    ruled: bool | None = None
+    target_body_ids: list[str] | None = None
+
+
+class LoftFeatureResponse(BaseModel):
+    type: Literal["loft"] = "loft"
+    id: str
+    sections: list[LoftSectionSchema]
+    mode: LoftMode
+    ruled: bool
+    target_body_ids: list[str] = []
+    locked: bool
+    # B1: see SketchFeatureResponse.produces above - always BODY for a
+    # LoftFeature.
+    produces: Produces
+    # `docs/gear-design/04-helical-herringbone-loft.md`'s own Result 2
+    # finding: a real, best-effort geometric self-intersection check
+    # (`app.document.loft._mid_section_warnings`) - non-blocking, per
+    # `00-conventions.md`'s validation-banner convention (empty for the
+    # common, non-self-intersecting case).
+    warnings: list[str] = []
+
+
+class GearGroupSchema(BaseModel):
+    """`docs/gear-design/05-gear-chain-and-planetary.md`: the wire
+    counterpart to `app.document.models.GearGroup` - see that dataclass's
+    own docstring."""
+
+    id: str
+    module: float
+    pressure_angle_degrees: float = 20.0
+    display_color: str | None = None
+
+
+class GearChainMemberSpecSchema(BaseModel):
+    """The wire counterpart to `app.document.models.GearChainMemberSpec`."""
+
+    member_type: GearChainMemberType
+    group_id: str
+    tooth_count: int
+    face_width: float
+    outer_diameter: float | None = None
+
+
+class GearChainStageSchema(BaseModel):
+    """The wire counterpart to `app.document.models.GearChainStage` - see
+    that dataclass's own docstring for the single-vs-compound discriminated-
+    union shape and the a/b=incoming/outgoing compound convention."""
+
+    turn_angle_degrees: float = 0.0
+    member: GearChainMemberSpecSchema | None = None
+    compound_member_a: GearChainMemberSpecSchema | None = None
+    compound_member_b: GearChainMemberSpecSchema | None = None
+    compound_axial_offset: float = 0.0
+    compound_merge: MergeMode = MergeMode.FUSE_INTO_ONE
+
+
+class GearChainFeatureCreate(BaseModel):
+    """`docs/gear-design/05-gear-chain-and-planetary.md`: creates a
+    `GearChainFeature` - an ordered list of N>=2 meshing `stages`, no
+    backing SketchFeature (same "gear teeth are not Sketch entities"
+    decision as `GearFeatureCreate`). `plane_ref` follows the identical
+    optional/defaults-to-XY convention. No `target_body_ids`/Boss-Cut
+    `mode` at all - a chain always mints brand-new Bodies (see
+    `GearChainFeature`'s own docstring)."""
+
+    plane_ref: PlaneRefSchema | None = None
+    groups: list[GearGroupSchema]
+    stages: list[GearChainStageSchema]
+    start_direction_degrees: float = 0.0
+    print_clearance_margin: float = 0.2
+
+
+class GearChainFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `GearFeatureUpdate`."""
+
+    plane_ref: PlaneRefSchema | None = None
+    groups: list[GearGroupSchema] | None = None
+    stages: list[GearChainStageSchema] | None = None
+    start_direction_degrees: float | None = None
+    print_clearance_margin: float | None = None
+
+
+class GearChainFeatureResponse(BaseModel):
+    type: Literal["gear_chain"] = "gear_chain"
+    id: str
+    plane_ref: PlaneRefSchema
+    groups: list[GearGroupSchema]
+    stages: list[GearChainStageSchema]
+    start_direction_degrees: float
+    print_clearance_margin: float
+    locked: bool
+    produces: Produces
+    # Non-blocking interference/compound-join findings from `app.document.
+    # gear_chain.resolve_gear_chain` - same "known only at create/update
+    # time, re-resolved live for a GET" treatment `LoftFeatureResponse.
+    # warnings` already gets (see `app.document.router._gear_chain_
+    # feature_response`).
+    warnings: list[str] = []
+
+
+class PlanetaryGearFeatureCreate(BaseModel):
+    """`docs/gear-design/05-gear-chain-and-planetary.md`: creates a
+    `PlanetaryGearFeature` - sun/ring tooth counts are free inputs, planet
+    tooth count is derived (not accepted here at all). No `GearGroup`
+    concept (one shared `module`/`pressure_angle_degrees` directly on this
+    schema - see that Feature's own docstring for why). `ring_outer_
+    diameter` is always required (a ring is always present, unlike
+    `GearFeatureCreate.outer_diameter`'s internal-only conditional
+    requirement)."""
+
+    plane_ref: PlaneRefSchema | None = None
+    module: float
+    sun_tooth_count: int
+    ring_tooth_count: int
+    planet_count: int
+    face_width: float
+    ring_outer_diameter: float
+    pressure_angle_degrees: float = 20.0
+
+
+class PlanetaryGearFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `GearFeatureUpdate`."""
+
+    plane_ref: PlaneRefSchema | None = None
+    module: float | None = None
+    sun_tooth_count: int | None = None
+    ring_tooth_count: int | None = None
+    planet_count: int | None = None
+    face_width: float | None = None
+    ring_outer_diameter: float | None = None
+    pressure_angle_degrees: float | None = None
+
+
+class PlanetaryGearFeatureResponse(BaseModel):
+    type: Literal["planetary_gear"] = "planetary_gear"
+    id: str
+    plane_ref: PlaneRefSchema
+    module: float
+    sun_tooth_count: int
+    ring_tooth_count: int
+    planet_count: int
+    face_width: float
+    ring_outer_diameter: float
+    pressure_angle_degrees: float
+    locked: bool
+    produces: Produces
+
+
+class GearPreviewChainRequest(BaseModel):
+    """`GearPreviewRequest.chain` - reuses `GearGroupSchema`/
+    `GearChainStageSchema` verbatim (the same shape `GearChainFeatureCreate`
+    itself uses) rather than a parallel duplicate schema set, since the
+    preview payload needs to be structurally identical to the real Feature
+    payload for everything but `plane_ref` anyway."""
+
+    groups: list[GearGroupSchema]
+    stages: list[GearChainStageSchema]
+    start_direction_degrees: float = 0.0
+    print_clearance_margin: float = 0.2
+
+
+class GearPreviewPlanetaryRequest(BaseModel):
+    """`GearPreviewRequest.planetary` - mirrors `PlanetaryGearFeatureCreate`
+    minus `plane_ref`."""
+
+    module: float
+    sun_tooth_count: int
+    ring_tooth_count: int
+    planet_count: int
+    face_width: float
+    ring_outer_diameter: float
+    pressure_angle_degrees: float = 20.0
+
+
+class GearPreviewMember(BaseModel):
+    """One resolved chain/planetary member's own outline + reference-circle
+    numbers, for the preview canvas to draw directly - same "no client-side
+    gear math" principle `GearPreviewResponse.outline_points` already
+    establishes for the single-gear case, just repeated once per member.
+    `outline_points`/`center` are already translated (and, for a rack,
+    rotated - `app.document.gear_chain._rack_rotation`'s own convention)
+    into the chain/assembly's own local 2D frame, so the client applies no
+    further per-member transform - only the shared screen-space scale/pan
+    every preview canvas already does."""
+
+    stage_index: int
+    label: str
+    member_type: Literal["external", "internal", "rack"]
+    group_id: str | None = None
+    display_color: str | None = None
+    center: tuple[float, float]
+    outline_points: list[tuple[float, float]]
+    pitch_radius: float | None = None
+    base_radius: float | None = None
+    addendum_radius: float | None = None
+    dedendum_radius: float | None = None
+    outer_radius: float | None = None
+
+
+class GearPreviewInterferenceFinding(BaseModel):
+    """The wire counterpart to `app.document.gear_chain_math.
+    InterferenceFinding` - see that dataclass's own docstring."""
+
+    stage_index_a: int
+    member_label_a: str
+    stage_index_b: int
+    member_label_b: str
+    gap: float
+    kind: Literal["overlap", "clearance"]
+
+
+class GearPreviewLink(BaseModel):
+    """One meshing relationship's ratio/rotation-direction summary - the
+    wire counterpart to `app.document.gear_chain_math.LinkRatio`, plus
+    which stage(s) it connects. `kind == "mesh"` is an ordinary link
+    between two adjacent stages (`from_stage_index`/`to_stage_index` differ
+    by 1, `mesh_link_ratio`'s own result); `kind == "compound"` is a
+    compound stage's own internal a->b transition (`from_stage_index ==
+    to_stage_index`, `compound_transition_ratio`'s own display-only ratio -
+    see that function's docstring for why it is not folded into
+    `GearPreviewChainResult.overall_ratio`)."""
+
+    from_stage_index: int
+    to_stage_index: int
+    kind: Literal["mesh", "compound"]
+    ratio: float | None = None
+    reverses_direction: bool
+    linear_mm_per_revolution: float | None = None
+
+
+class GearPreviewChainResult(BaseModel):
+    members: list[GearPreviewMember]
+    interference_findings: list[GearPreviewInterferenceFinding]
+    links: list[GearPreviewLink]
+    # `app.document.gear_chain_math.chain_overall_ratio` - null when any
+    # link in the chain is a rack link (no single well-defined angular
+    # ratio spans it - see that function's own docstring).
+    overall_ratio: float | None = None
+
+
+class GearPreviewPlanetaryResult(BaseModel):
+    members: list[GearPreviewMember]
+    # Sun/planet and planet/ring are the two independently meaningful mesh
+    # ratios for a planetary set (no single "overall ratio" the way a chain
+    # has one, since planetary output depends on which member is held
+    # fixed - out of scope here, same static/positioned-only scope
+    # `PlanetaryGearFeature` itself has).
+    sun_to_planet_ratio: float | None = None
+    planet_to_ring_ratio: float | None = None
+
+
+class GearPreviewBevelGearRequest(BaseModel):
+    """`GearPreviewRequest.bevel_gear` - mirrors `BevelGearFeatureCreate`
+    minus `plane_ref`/`bevel_type`/`target_body_ids` (positioning and
+    Boss/Cut mode don't matter for a preview - see `GearPreviewRequest`'s
+    own docstring)."""
+
+    module: float
+    tooth_count: int
+    face_width: float
+    pitch_cone_angle_degrees: float
+    pressure_angle_degrees: float = 20.0
+    backlash: float = 0.0
+    profile_shift: float = 0.0
+
+
+class GearPreviewBevelPairMemberRequest(BaseModel):
+    """The wire counterpart to `app.document.models.BevelPairMemberSpec` -
+    see `BevelPairMemberSpecSchema`'s own docstring for why only these two
+    fields legitimately differ per member."""
+
+    tooth_count: int
+    profile_shift: float = 0.0
+
+
+class GearPreviewBevelPairRequest(BaseModel):
+    """`GearPreviewRequest.bevel_pair` - mirrors `BevelPairFeatureCreate`
+    minus `plane_ref`. Cone angles are not accepted here either - like the
+    real Feature, they're auto-derived from both members' own tooth counts
+    plus `shaft_angle_degrees` (`app.document.bevel_math.pitch_cone_half_
+    angles`)."""
+
+    module: float
+    member_1: GearPreviewBevelPairMemberRequest
+    member_2: GearPreviewBevelPairMemberRequest
+    face_width: float
+    pressure_angle_degrees: float = 20.0
+    shaft_angle_degrees: float = 90.0
+    backlash: float = 0.0
+
+
+class GearPreviewBevelMember(BaseModel):
+    """One bevel gear's axial cross-section schematic - `10-bevel-gear.md`'s
+    own point: a bevel tooth has no flat 2D cut profile at all (its flank
+    is a curved surface on a cone), so unlike every other `gear_kind` this
+    is *not* a tooth outline. It's the standard bevel-drafting side-view
+    envelope instead: the symmetric (about the member's own axis) closed
+    shape bounded by the face cone (addendum) and root cone (dedendum)
+    generators, between the inner (front) and outer (back) cone distances
+    - exactly what a bevel gear catalog/engineering drawing shows for an
+    at-a-glance size/proportion reference. `pitch_line` (one reference
+    segment, the "upper" half only - the outline itself is already
+    symmetric) is the pitch cone generator between the same two cone
+    distances.
+
+    `outline_points`/`pitch_line` are in the shared preview's local 2D
+    frame: the apex at the origin, this member's own axis pointing along
+    `axis_angle_degrees` from local +x (`0` for a standalone bevel gear or
+    a pair's `member_1`; `shaft_angle_degrees` for a pair's `member_2` -
+    `11-bevel-pair.md`'s own apex-aligned, dual-axis positioning, projected
+    into this 2D schematic - both members' apexes coincide at the origin,
+    same as their real 3D cone apexes)."""
+
+    label: str  # "single" | "member_1" | "member_2"
+    axis_angle_degrees: float
+    outline_points: list[tuple[float, float]]
+    pitch_line: tuple[tuple[float, float], tuple[float, float]]
+    pitch_cone_angle_degrees: float
+    cone_distance: float
+    inner_cone_distance: float
+    pitch_radius: float
+    face_width: float
+
+
+class GearPreviewBevelPairResult(BaseModel):
+    members: list[GearPreviewBevelMember]
+    shaft_angle_degrees: float
+
+
+class GearPreviewRequest(BaseModel):
+    """`docs/gear-design/08-entry-screen-and-preview.md`: the cheap
+    `/gear/preview` endpoint's request - runs only `gear_math`/`gear_chain_
+    math`, no OCCT, so it's cheap enough to call on every debounced
+    keystroke while the entry screen's form is still being edited.
+    `gear_kind` is the discriminator (`"external"`/`"internal"`/`"rack"`
+    for a single `GearFeature`/`RackFeature`-shaped preview, `"chain"`/
+    `"planetary"` for `GearChainFeature`/`PlanetaryGearFeature`'s own
+    multi-gear preview via the nested `chain`/`planetary` payloads below,
+    `"bevel_gear"`/`"bevel_pair"` for `BevelGearFeature`/`BevelPairFeature`'s
+    own axial-cross-section schematic via the nested `bevel_gear`/
+    `bevel_pair` payloads - a future gear type still adds one more literal
+    value here plus a new branch in `app.document.router._gear_preview_
+    response`, not a new endpoint, per this field's own original design).
+
+    Deliberately excludes anything `plane_ref`/positioning-related (the
+    preview is always drawn in its own local 2D frame, centred on the
+    origin - positioning only matters once "Create" builds the real
+    Feature) and `root_fillet_radius` (cosmetic only at the OCCT
+    construction stage - `gear_math.tooth_profile_points` never uses it,
+    so it has no effect on this endpoint's own output)."""
+
+    gear_kind: Literal["external", "internal", "rack", "chain", "planetary", "bevel_gear", "bevel_pair"]
+    # Required for gear_kind in ("external", "internal", "rack"); unused
+    # (and ignored) for "chain"/"planetary", which carry their own nested
+    # `chain`/`planetary` payload below instead - widened from a plain
+    # required field so a single-gear kind's blank/irrelevant value doesn't
+    # need a placeholder just to satisfy the schema.
+    module: float | None = None
+    tooth_count: int | None = None
+    pressure_angle_degrees: float = 20.0
+    profile_shift: float = 0.0
+    backlash: float = 0.0
+    # Required when gear_kind == "internal" (the ring's own rim diameter),
+    # meaningless otherwise - same rule as `GearFeatureCreate.outer_diameter`.
+    outer_diameter: float | None = None
+    # Rack only; None resolves to `default_rack_backing_height(module)`,
+    # same convention as `RackFeatureCreate.backing_height`.
+    backing_height: float | None = None
+    # Required when gear_kind == "chain"/"planetary" respectively -
+    # `08-entry-screen-and-preview.md`'s "Chain/planetary/bevel-pair
+    # preview" extension. Each mirrors its real Feature's own Create schema
+    # minus `plane_ref` (the preview always draws in its own local frame,
+    # same convention the single-gear fields above already document).
+    chain: GearPreviewChainRequest | None = None
+    planetary: GearPreviewPlanetaryRequest | None = None
+    # Required when gear_kind == "bevel_gear"/"bevel_pair" respectively -
+    # same nested-payload convention as chain/planetary above.
+    bevel_gear: GearPreviewBevelGearRequest | None = None
+    bevel_pair: GearPreviewBevelPairRequest | None = None
+
+
+class GearPreviewResponse(BaseModel):
+    """`outline_points` is the full 2D tooth-outline polyline (world/local
+    frame, gear or rack centred on the origin) for the live preview canvas
+    to draw directly. The rest are the reference-circle overlay's own
+    numbers - `pitch_radius`/`base_radius`/`addendum_radius`/
+    `dedendum_radius`/`outer_radius` for `"external"`/`"internal"` (a rack
+    has no such circles, so these stay null for `gear_kind == "rack"`);
+    `pitch_line_y`/`addendum_line_y`/`dedendum_line_y`/`rack_length` for
+    `"rack"` instead (null for the two gear kinds). `warnings` carries every
+    non-blocking `gear_math` validation (currently just undercut risk) per
+    `00-conventions.md`'s validation-banner convention - a `GearGeometryError`
+    with no valid geometry at all raises a 422 instead of landing here at
+    all, matching that same doc's stated blocking exception.
+
+    `chain`/`planetary` are populated only for the matching `gear_kind`
+    (null otherwise, mirroring `outline_points`/`pitch_radius`/etc.'s own
+    kind-conditional nullability above) - `GearPreviewChainResult`/
+    `GearPreviewPlanetaryResult`'s own multi-member payload, per
+    `08-entry-screen-and-preview.md`'s "Chain/planetary/bevel-pair preview"
+    extension. `outline_points` and the single-gear reference-circle fields
+    all stay null for these two kinds - there is no one outline/circle set
+    for a multi-member preview, only each member's own (see
+    `GearPreviewMember`)."""
+
+    gear_kind: Literal["external", "internal", "rack", "chain", "planetary", "bevel_gear", "bevel_pair"]
+    outline_points: list[tuple[float, float]] = []
+    pitch_radius: float | None = None
+    base_radius: float | None = None
+    addendum_radius: float | None = None
+    dedendum_radius: float | None = None
+    outer_radius: float | None = None
+    pitch_line_y: float | None = None
+    addendum_line_y: float | None = None
+    dedendum_line_y: float | None = None
+    rack_length: float | None = None
+    warnings: list[str] = []
+    chain: GearPreviewChainResult | None = None
+    planetary: GearPreviewPlanetaryResult | None = None
+    # Populated only for "bevel_gear" (one member, label "single") -
+    # `GearPreviewBevelMember`'s own axial-cross-section schematic.
+    bevel_gear: GearPreviewBevelMember | None = None
+    # Populated only for "bevel_pair" (two members, `11-bevel-pair.md`'s
+    # own dual-axis apex-aligned positioning projected into 2D).
+    bevel_pair: GearPreviewBevelPairResult | None = None
+
+
 FeatureResponse = Union[
     SketchFeatureResponse,
     ExtrudeFeatureResponse,
@@ -786,6 +1526,11 @@ FeatureResponse = Union[
     MirrorFeatureResponse,
     PatternFeatureResponse,
     ImportFeatureResponse,
+    GearFeatureResponse,
+    RackFeatureResponse,
+    LoftFeatureResponse,
+    BevelGearFeatureResponse,
+    BevelPairFeatureResponse,
 ]
 
 

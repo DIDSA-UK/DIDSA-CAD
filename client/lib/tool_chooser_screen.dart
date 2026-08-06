@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'gear/gear_design_screen.dart';
 import 'sketch/sketch_screen.dart';
 import 'viewport3d/part_screen.dart';
 import 'viewport3d/svg_icon.dart';
@@ -54,6 +55,15 @@ class ToolChooserScreen extends StatelessWidget {
                     subtitle: 'Floor plans and other flat drawings',
                     onTap: () => Navigator.of(context).pushReplacement(
                       MaterialPageRoute(builder: (_) => const SketchScreen(standalone: true)),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  _ToolTile(
+                    icon: 'assets/icons/feature/feature_revolve.svg',
+                    label: 'Gear Design',
+                    subtitle: 'External/internal gears and racks',
+                    onTap: () => Navigator.of(context).pushReplacement(
+                      MaterialPageRoute(builder: (_) => const GearDesignScreen()),
                     ),
                   ),
                 ],

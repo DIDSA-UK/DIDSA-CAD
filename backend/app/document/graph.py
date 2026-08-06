@@ -33,19 +33,27 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from app.document.models import (
+    BevelGearFeature,
+    BevelPairFeature,
     ChamferFeature,
     CreatePlaneFeature,
     ExtrudeFeature,
     ExtrudeType,
     Feature,
     FilletFeature,
+    GearChainFeature,
+    GearFeature,
+    LoftFeature,
+    LoftMode,
     MirrorFeature,
     Part,
     PatternAxisRef,
     PatternDirectionRef,
     PatternFeature,
+    PlanetaryGearFeature,
     PlaneRef,
     PlaneType,
+    RackFeature,
     RevolveFeature,
     RevolveMode,
     SketchFeature,
@@ -191,6 +199,8 @@ def tool_feature_qualifies(feature: Feature | None) -> bool:
         return feature.mode == RevolveMode.CUT or bool(feature.target_body_ids)
     if isinstance(feature, SweepFeature):
         return feature.mode == SweepMode.CUT or bool(feature.target_body_ids)
+    if isinstance(feature, LoftFeature):
+        return feature.mode == LoftMode.CUT or bool(feature.target_body_ids)
     return False
 
 
@@ -428,6 +438,20 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
             depends_on = _mirror_dependencies(feature)
         elif isinstance(feature, PatternFeature):
             depends_on = _pattern_dependencies(part, feature)
+        elif isinstance(feature, GearFeature):
+            depends_on = _gear_dependencies(feature)
+        elif isinstance(feature, RackFeature):
+            depends_on = _rack_dependencies(feature)
+        elif isinstance(feature, BevelGearFeature):
+            depends_on = _bevel_gear_dependencies(feature)
+        elif isinstance(feature, LoftFeature):
+            depends_on = _loft_dependencies(part, feature)
+        elif isinstance(feature, GearChainFeature):
+            depends_on = _plane_ref_only_dependencies(feature.plane_ref)
+        elif isinstance(feature, PlanetaryGearFeature):
+            depends_on = _plane_ref_only_dependencies(feature.plane_ref)
+        elif isinstance(feature, BevelPairFeature):
+            depends_on = _plane_ref_only_dependencies(feature.plane_ref)
         nodes.append(GraphNode(id=feature.id, depends_on=depends_on))
     return nodes
 
@@ -498,6 +522,73 @@ def _mirror_dependencies(feature: MirrorFeature) -> tuple[str, ...]:
         deps.add(plane_dep)
     if feature.tool_feature_id is not None:
         deps.add(feature.tool_feature_id)
+    return tuple(deps)
+
+
+def _gear_dependencies(feature: GearFeature) -> tuple[str, ...]:
+    """`docs/gear-design/02-gear-feature.md`: `GearFeature` has no backing
+    Sketch, so its only dependencies are `_plane_ref_dependency`'s own
+    `plane_ref` (same as `_mirror_dependencies`' `mirror_plane` treatment)
+    and `target_body_ids` (same `base_feature_id`-mapped `set` treatment
+    `ExtrudeFeature`'s own branch above already uses)."""
+    deps: set[str] = {base_feature_id(tid) for tid in feature.target_body_ids}
+    plane_dep = _plane_ref_dependency(feature.plane_ref)
+    if plane_dep is not None:
+        deps.add(plane_dep)
+    return tuple(deps)
+
+
+def _plane_ref_only_dependencies(plane_ref: PlaneRef) -> tuple[str, ...]:
+    """`docs/gear-design/05-gear-chain-and-planetary.md`: `GearChainFeature`/
+    `PlanetaryGearFeature` have no backing Sketch and no `target_body_ids`
+    at all (see each dataclass's own docstring - both always mint brand-new
+    Bodies) - their only dependency is whatever `plane_ref` itself depends
+    on, via the same `_plane_ref_dependency` helper `_gear_dependencies`/
+    `_rack_dependencies` already use."""
+    plane_dep = _plane_ref_dependency(plane_ref)
+    return (plane_dep,) if plane_dep is not None else ()
+
+
+def _rack_dependencies(feature: RackFeature) -> tuple[str, ...]:
+    """`docs/gear-design/03-rack.md`: identical shape to `_gear_dependencies`
+    - `RackFeature` has no backing Sketch either, so the same `plane_ref` +
+    `target_body_ids` treatment applies verbatim."""
+    deps: set[str] = {base_feature_id(tid) for tid in feature.target_body_ids}
+    plane_dep = _plane_ref_dependency(feature.plane_ref)
+    if plane_dep is not None:
+        deps.add(plane_dep)
+    return tuple(deps)
+
+
+def _bevel_gear_dependencies(feature: BevelGearFeature) -> tuple[str, ...]:
+    """`docs/gear-design/10-bevel-gear.md`: identical shape to
+    `_gear_dependencies`/`_rack_dependencies` - `BevelGearFeature` has no
+    backing Sketch either, so the same `plane_ref` + `target_body_ids`
+    treatment applies verbatim."""
+    deps: set[str] = {base_feature_id(tid) for tid in feature.target_body_ids}
+    plane_dep = _plane_ref_dependency(feature.plane_ref)
+    if plane_dep is not None:
+        deps.add(plane_dep)
+    return tuple(deps)
+
+
+def _loft_dependencies(part: Part, feature: LoftFeature) -> tuple[str, ...]:
+    """`docs/gear-design/04-helical-herringbone-loft.md` (4b):
+    `build_feature_graph`'s `LoftFeature` dependency-edge logic - every
+    distinct Sketch named across `sections` (each entry may name a
+    different Sketch, mirroring `_sweep_dependencies`' identical
+    `path_refs` treatment) via its own owning SketchFeature, plus every
+    `target_body_ids` entry's owning Feature for Cut mode, deduplicated
+    via a `set`. `reference_point` never adds its own dependency edge -
+    it's always required to name a Point in that same section's own
+    Sketch (enforced by `app.document.loft`), so it never reaches a
+    Sketch not already covered by that section's `sketch_feature_id`."""
+    deps: set[str] = set()
+    for section in feature.sections:
+        sketch_feature_id = section.sketch_feature_id
+        if part.get_feature(sketch_feature_id) is not None:
+            deps.add(sketch_feature_id)
+    deps.update(base_feature_id(tid) for tid in feature.target_body_ids)
     return tuple(deps)
 
 
