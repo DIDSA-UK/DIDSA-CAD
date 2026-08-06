@@ -38,25 +38,64 @@ a session implementing one workstream never needed most of it).
 | 5 | `05-backend-plan-validation.md` | 3 | The one backend addition: a stateless dry-run plan-validation endpoint |
 | 6 | `06-image-input-deferred.md` | 1, 2, 3 | Explicitly **not v1** — image upload, vision strategy, scope cut lines, recorded for when this becomes the active workstream |
 
-## Delivery order
+## Spikes (do these first, before committing to the real build)
 
-1. **Workstream 1** — no dependencies, needed by everything else (even a
-   throwaway scoping-conversation spike needs a way to call a provider).
-2. **Workstream 3**'s schema design, in parallel with/right after 1 — the
-   riskiest, most foundational artifact in this doc set (everything else
-   is plumbing around it). Resolve its flagged edge-selection problem
-   before locking the schema.
-3. **Workstream 5** — small, and workstream 4 can't be tested end-to-end
-   without it (or at least a stub of it).
-4. **Workstream 2** — the chat UI, once there's a provider to talk to and
-   a schema to ask for.
-5. **Workstream 4** — wires 1-3 and 5 together into the real generate
-   button. This is the first point the feature is actually usable
-   end-to-end.
-6. **Workstream 6** — a deliberately separate, later phase. Don't start it
-   until 1-5 are proven on text input; it has its own real R&D risk (a
-   dedicated vision/OCR extraction step) that shouldn't be taken on at the
-   same time as the rest of this feature.
+Two throwaway-code spikes, both aimed at finding a showstopper early —
+same purpose the gear design tool's own pre-build spikes served:
+
+1. **Structured-output reliability spike.** Before investing in the
+   translator, confirm a realistic spread of models — a strong cloud
+   model and at least one mid-weight local model via Ollama — reliably
+   emit valid JSON matching workstream 3's plan schema, across a handful
+   of representative prompts (a simple bracket, a gear-shaped request, a
+   deliberately ambiguous one). Determines whether workstream 1's
+   "advisory-only capability flag + fallback JSON extraction" design is
+   enough on its own, or whether weaker local models need a stronger
+   retry-with-error-feedback loop from day one. Also the place to test
+   whether 1-2 few-shot examples in the system prompt (see
+   `02-scoping-conversation.md`) meaningfully improve reliability over
+   instructions alone — expect they will, but confirm rather than assume.
+2. **Edge-selector heuristic spike** — `03-structured-plan-schema.md`'s
+   own flagged open problem. Build the `top_face_edges`/`vertical_edges`/
+   etc. selectors against a simple test box's real `MeshDto` and confirm
+   they identify the right edges before the plan schema locks for real.
+
+## Delivery order / phased sessions
+
+Roughly 5-6 sessions, in dependency order — each row is a plausible
+single-session unit of work, matching this project's own established
+per-session granularity (see `docs/status.md`'s history):
+
+| Session | Work | Milestone |
+|---|---|---|
+| 1 | Both spikes above | De-risked: know whether the schema/prompting approach actually works on realistic models, before writing any production code |
+| 2 | Workstream 1 (provider abstraction + settings, incl. the Ollama model-list bolt-on) | Settings panel usable standalone — pick a provider, "Test connection" succeeds |
+| 3 | Workstream 3 (lock schema using the spike's findings, incl. resolved edge-selectors) + Workstream 5 (backend dry-run endpoint) | Natural pairing — 5 is small and depends directly on 3's step shapes |
+| 4 | Workstream 2 (chat screen + system prompt, incl. the save-plan-as-preset bolt-on) | Can hold a full scoping conversation and see a plan proposed, even before generation works |
+| 5 | Workstream 4 (translator + execution, incl. the "Undo this generation" bolt-on) | **First end-to-end usable version** — AI Modelling tile to real Feature-tree part |
+| 6+ | On-device feedback round(s) | This project's typical pattern after any client-heavy build — real bugs from a real device/model combo, not assumed working from sandbox-only verification |
+| Later, separate arc | Workstream 6 (image input) | Its own multi-session R&D once text mode is proven — don't pull this forward |
+
+## Bolt-ons folded into v1
+
+Cheap, high-value additions decided alongside the core plan — each lands
+inside the workstream that already owns the relevant code, not as a
+separate workstream:
+
+- **"Undo this generation."** This app has **no Feature-tree-level Undo**
+  at all (confirmed by direct check — only per-interaction undo, e.g. a
+  sweep-path pick, and manual delete/cascade-delete). Since the
+  translator (workstream 4) already tracks every real Feature id it
+  creates in order, exposing one button that deletes them in reverse
+  (reusing the existing single-Feature/cascade-delete endpoint) is the
+  only clean way to back out a whole AI-generated sequence — see
+  `04-translator-and-execution.md`'s own section.
+- **Save-plan-as-preset**, reusing `GearPresetStore`'s exact pattern
+  (client-local, `shared_preferences`, discriminated by `kind`) — see
+  `02-scoping-conversation.md`.
+- **Ollama model-list fetch** for the local-provider settings field (a
+  dropdown from Ollama's native `/api/tags`, falling back to free text) —
+  see `01-provider-abstraction.md`.
 
 ## Key decisions carried through every workstream (don't re-litigate)
 
@@ -87,6 +126,13 @@ settled unless new information genuinely changes the tradeoff:
   concretely an Ollama-style server, but not hardcoded to Ollama by name.
 - **Scoping UX**: an inline chat panel (matches how this very scoping
   session worked), not an LLM-proposed structured form.
+- **v1 always starts a fresh Part**, never adds to whatever Part happens
+  to already be open — the simpler of two options considered. Additive
+  generation (referencing/extending existing geometry) is real,
+  deliberately deferred scope, not designed here: it would need the
+  system prompt to carry a compact summary of the current Feature tree
+  and the translator to reconcile plan-local ids against real
+  pre-existing ones from the first step, neither of which v1 needs.
 - **v1 scope boundary**: single current Part; Sketch geometry composed
   only from existing entity types (Point/Line/Circle/Arc/Ellipse/
   Rectangle/Polygon/Slot); Feature sequence composed only from existing

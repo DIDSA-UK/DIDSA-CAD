@@ -133,9 +133,19 @@ shrinker precisely because the gear tool is now complete
 
 **No multi-Part assemblies.** This app has no "pick an existing Part" or
 multi-Part UI concept at all yet (see `NativeImportResultDto`'s own doc
-comment) — a generated part always targets the single currently-open Part,
-creating one via `createPart` first if none is open, matching how the Gear
-Design entry screens already behave.
+comment).
+
+**v1 always starts a fresh Part.** Unlike the Gear Design entry screens
+(which add to whatever Part is already open, creating one via `createPart`
+first if none is), AI Modelling always creates a brand-new Part via
+`createPart` when the user presses "Generate" — it never targets an
+already-open Part. Decided this way specifically to avoid needing the
+system prompt to carry existing-geometry context or the translator to
+reconcile plan-local ids against real pre-existing ones — both real,
+deliberately deferred scope (see `README.md`'s key decisions). This does
+mean the AI Modelling entry point is really "start a new part with AI
+help," not "AI-assist my current part" — worth being explicit about in
+the tile's own subtitle text (workstream 2).
 
 ## Failure handling and the no-auto-rollback decision
 
@@ -157,8 +167,15 @@ Two layers, not one:
    under, and this codebase's own convention of never silently discarding
    user-visible state). The real error text is surfaced back into the
    chat as a new turn; the user can ask the LLM to propose a revised plan
-   for the remaining steps, or clean up manually with the ordinary
-   Undo/delete-Feature tools this app already has.
+   for the remaining steps, or clean up manually.
+
+   **Cleanup note**: this app has no Feature-tree-level Undo at all (only
+   per-interaction undo, e.g. a sweep-path pick, plus manual delete/
+   cascade-delete) — so "clean up manually" without more would mean
+   deleting each AI-created Feature by hand, one at a time. Workstream 4
+   adds a dedicated "Undo this generation" action for exactly this reason
+   (a bolt-on decided alongside this plan, not a pre-existing app
+   capability) — see that file's own section.
 
 This directly resolves one of the original scoping prompt's own open
 questions ("full rollback vs. partial result vs. non-blocking

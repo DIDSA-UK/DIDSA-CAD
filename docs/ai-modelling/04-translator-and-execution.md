@@ -51,8 +51,24 @@ material):
 3. The real error text is appended to the chat transcript as a new turn
    ("Step 4 (Fillet, 5mm on 4 edges) failed: `<real backend error>`"),
    and the user can either send it back to the LLM for a revised plan
-   covering the remaining steps, or clean up/finish manually with this
-   app's ordinary Undo/delete-Feature tools.
+   covering the remaining steps, or clean up/finish manually — including
+   via the "Undo this generation" bolt-on below, since this app has no
+   general Feature-tree Undo to fall back on otherwise.
+
+## Bolt-on: "Undo this generation"
+
+This app has no Feature-tree-level Undo mechanism at all (confirmed by
+direct check — only per-interaction undo elsewhere, e.g. a sweep-path
+pick, plus manual delete/cascade-delete). Since `PlanTranslator` already
+maintains `localIdToRealId` — every real Feature/Sketch id it created, in
+creation order — exposing one button that deletes them **in reverse
+order**, reusing the existing single-Feature delete endpoint (cascade
+where a deleted Feature owns a Sketch, per the existing cascade-delete
+convention), is nearly free given that tracking already exists for
+translation purposes. Shown after any generation run (full success,
+partial success after a stopped failure, or a run the user simply
+changes their mind about) — the only clean way to back out a whole
+AI-generated sequence in this app.
 
 ## Progress UI
 

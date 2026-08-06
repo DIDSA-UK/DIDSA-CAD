@@ -121,3 +121,19 @@ rather than a `/health` endpoint, since none of these providers expose one
 uniformly. Include a one-line note on the local-provider reachability
 caveat from `00-conventions.md` (LAN-only address won't work if the
 client itself is remote).
+
+## Bolt-on: Ollama model-list fetch
+
+The local-provider model field is free text by default (any string the
+user's endpoint accepts), but Ollama specifically exposes a native
+(non-OpenAI-compat) `GET {baseUrl}/api/tags` listing every model actually
+pulled on that server. Opportunistically fetch it when the local
+`baseUrl` field changes: on success, replace the free-text model field
+with a dropdown of real options; on failure (not Ollama, unreachable, or
+any non-2xx) fall back to the plain text field silently, no error shown —
+this is a convenience layer on top of the free-text field, not a
+requirement, and shouldn't block configuring a non-Ollama local endpoint
+that doesn't expose this. Deliberately outside the OpenAI-compatible
+unification `OpenAiCompatibleProvider` itself relies on — this fetch is a
+settings-screen-only nicety, never part of the actual chat-completion
+call path.
