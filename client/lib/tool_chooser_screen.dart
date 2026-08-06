@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'ai/ai_modelling_screen.dart';
 import 'gear/gear_design_screen.dart';
 import 'sketch/sketch_screen.dart';
 import 'viewport3d/part_screen.dart';
@@ -25,48 +26,66 @@ class ToolChooserScreen extends StatelessWidget {
     const backgroundColor = Color(0xFF1E1E2E);
     return Scaffold(
       backgroundColor: backgroundColor,
+      // Scrollable rather than a bare Center: a fourth tile (AI Modelling)
+      // pushed this past a fixed-height overflow on shorter viewports -
+      // docs/ai-modelling/02-scoping-conversation.md's own doc-fix note.
       body: SafeArea(
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 360),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Text(
-                    'What would you like to open?',
-                    style: TextStyle(color: Colors.white70, fontSize: 16),
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 32),
-                  _ToolTile(
-                    icon: 'assets/icons/feature/feature_extrude.svg',
-                    label: '3D Part Design',
-                    subtitle: 'Sketch, extrude, and build a solid model',
-                    onTap: () => Navigator.of(context).pushReplacement(
-                      MaterialPageRoute(builder: (_) => const PartScreen()),
+        child: SingleChildScrollView(
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 360),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      'What would you like to open?',
+                      style: TextStyle(color: Colors.white70, fontSize: 16),
+                      textAlign: TextAlign.center,
                     ),
-                  ),
-                  const SizedBox(height: 16),
-                  _ToolTile(
-                    icon: 'assets/icons/feature/feature_new_sketch.svg',
-                    label: '2D Drawing',
-                    subtitle: 'Floor plans and other flat drawings',
-                    onTap: () => Navigator.of(context).pushReplacement(
-                      MaterialPageRoute(builder: (_) => const SketchScreen(standalone: true)),
+                    const SizedBox(height: 32),
+                    _ToolTile(
+                      icon: 'assets/icons/feature/feature_extrude.svg',
+                      label: '3D Part Design',
+                      subtitle: 'Sketch, extrude, and build a solid model',
+                      onTap: () => Navigator.of(context).pushReplacement(
+                        MaterialPageRoute(builder: (_) => const PartScreen()),
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 16),
-                  _ToolTile(
-                    icon: 'assets/icons/feature/feature_revolve.svg',
-                    label: 'Gear Design',
-                    subtitle: 'External/internal gears and racks',
-                    onTap: () => Navigator.of(context).pushReplacement(
-                      MaterialPageRoute(builder: (_) => const GearDesignScreen()),
+                    const SizedBox(height: 16),
+                    _ToolTile(
+                      icon: 'assets/icons/feature/feature_new_sketch.svg',
+                      label: '2D Drawing',
+                      subtitle: 'Floor plans and other flat drawings',
+                      onTap: () => Navigator.of(context).pushReplacement(
+                        MaterialPageRoute(builder: (_) => const SketchScreen(standalone: true)),
+                      ),
                     ),
-                  ),
-                ],
+                    const SizedBox(height: 16),
+                    _ToolTile(
+                      icon: 'assets/icons/feature/feature_revolve.svg',
+                      label: 'Gear Design',
+                      subtitle: 'External/internal gears and racks',
+                      onTap: () => Navigator.of(context).pushReplacement(
+                        MaterialPageRoute(builder: (_) => const GearDesignScreen()),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    _ToolTile(
+                      materialIcon: Icons.auto_awesome,
+                      label: 'AI Modelling',
+                      // `docs/ai-modelling/00-conventions.md`'s own explicit
+                      // callout: this always starts a brand-new Part via a
+                      // scoping conversation - it never assists an
+                      // already-open one.
+                      subtitle: 'Start a new part with AI help',
+                      onTap: () => Navigator.of(context).pushReplacement(
+                        MaterialPageRoute(builder: (_) => const AiModellingScreen()),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -77,12 +96,21 @@ class ToolChooserScreen extends StatelessWidget {
 }
 
 class _ToolTile extends StatelessWidget {
-  final String icon;
+  /// An SVG asset path (the original icon set every pre-existing tile
+  /// uses) - exactly one of this or [materialIcon] should be given.
+  final String? icon;
+
+  /// A plain Material [IconData] fallback for a tile with no matching
+  /// hand-off SVG glyph yet (AI Modelling's own tile) - avoids adding a new
+  /// asset just for one tile.
+  final IconData? materialIcon;
+
   final String label;
   final String subtitle;
   final VoidCallback onTap;
 
-  const _ToolTile({required this.icon, required this.label, required this.subtitle, required this.onTap});
+  const _ToolTile({this.icon, this.materialIcon, required this.label, required this.subtitle, required this.onTap})
+      : assert(icon != null || materialIcon != null, 'Provide either icon or materialIcon');
 
   @override
   Widget build(BuildContext context) {
@@ -96,7 +124,7 @@ class _ToolTile extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
           child: Row(
             children: [
-              SvgIcon(icon, color: Colors.white70, size: 32),
+              if (icon != null) SvgIcon(icon!, color: Colors.white70, size: 32) else Icon(materialIcon, color: Colors.white70, size: 32),
               const SizedBox(width: 16),
               Expanded(
                 child: Column(

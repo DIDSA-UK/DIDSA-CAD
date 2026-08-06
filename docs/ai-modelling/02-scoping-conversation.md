@@ -71,17 +71,55 @@ schema types are defined, so the two don't silently drift.
 
 ## Plan-review handoff
 
-Once `AiTurnResult.plan` is non-null, the panel switches from "still
-chatting" to a **Review & Generate** state:
+**Correction (workstream 2 implementation)**: not "once `AiTurnResult.
+plan` is non-null" as originally written here — see `01-provider-
+abstraction.md`'s own correction: no provider implementation ever
+populates that field. The real trigger is the plan-detection fallback
+(`detectPlanInAssistantText`) finding a valid plan in the *current* turn's
+`assistantText`, run by this screen directly after every `sendScopingTurn`
+call. Once that happens, the panel switches from "still chatting" to a
+**Review & Generate** state:
 
 - A human-readable summary of the plan's steps (e.g. "1. New Sketch on
   XY  2. Rectangle 60×40mm  3. Extrude 10mm  4. Fillet 4 edges @5mm" —
-  derived from the plan data, not raw JSON shown to the user).
+  derived from the plan data, not raw JSON shown to the user). **Real
+  implementation note**: producing this line-for-a-composite-entity shape
+  needs real reference resolution, not a per-`kind` template applied in
+  isolation — a `sketch_rectangle` step's own fields carry no width/height
+  at all (`03-structured-plan-schema.md`'s locked shape only gives it 4
+  `corner_point_ids`), so the summary has to look up those `sketch_point`
+  steps by `local_id` and compute a bounding box to show a literal
+  dimension. `sketch_circle`/`sketch_arc` do the same for a
+  `radius_point_id`-only radius. `client/lib/ai/ai_plan_summary.dart`'s
+  `summarizeAiPlan` implements this — worth reusing (or at least
+  cross-checking against) rather than re-deriving independently once
+  workstream 4's translator needs comparable reference resolution for its
+  own real execution.
 - **Generate** button — runs workstream 5's dry-run validation, then (on
-  success) workstream 4's real translator.
+  success) workstream 4's real translator. **Real implementation note**:
+  since validation needs a real, currently-stored Part id to validate
+  against (workstream 5's endpoint calls `get_part_or_404`), and workstream
+  4 doesn't exist yet, this session's "Generate" already does the
+  `createPart` half of `00-conventions.md`'s "v1 always starts a fresh
+  Part" up front, then validates against that Part, then stops (an
+  explicit "ready to generate once Part generation lands" state, not a
+  fake success). **Consequence worth knowing before workstream 4 lands**:
+  every workstream-2-only "Generate" press leaves a real, permanently-empty
+  orphan Part behind in the backend's in-memory store (nothing ever
+  populates it, and this app has no "delete an unwanted Part" affordance
+  at all yet) — a real, load-bearing side effect of validating before
+  execution exists, not a bug in this session's own scope, but worth
+  workstream 4 either reusing that same Part id (rather than creating a
+  second one) or this whole flow being revisited once real execution
+  lands.
 - **Adjust** — drops back into chat mode; the next user message is sent
   with the full transcript *plus* the just-proposed plan included as
-  context, so the LLM revises rather than starting over.
+  context, so the LLM revises rather than starting over. **Real
+  implementation note**: this needs no special handling at all — the
+  assistant turn the plan was detected in is already part of the
+  transcript (it's literally that turn's own raw text) and simply stays
+  there when returning to chat mode, so the next `sendScopingTurn` call
+  resends it automatically.
 
 ## Bolt-on: save plan as preset
 
