@@ -28,6 +28,7 @@ import 'feature_tree_panel.dart';
 import 'export_format_dialog.dart';
 import 'fillet_panel.dart';
 import 'import_format_dialog.dart';
+import 'loft_panel.dart';
 import 'mesh_geometry.dart';
 import 'mirror_panel.dart';
 import 'override_stack.dart';
@@ -64,12 +65,12 @@ enum _ProfilePickerTarget { extrude, revolve, sweep }
 /// `showPattern` gate (on-device feedback: "user should now be able to
 /// start pattern from long press a feature in the tree"), so the two never
 /// drift out of sync about which Feature types can seed a Mirror/Pattern.
-const _bodyProducingFeatureTypes = {'extrude', 'revolve', 'sweep', 'import', 'mirror', 'pattern'};
+const _bodyProducingFeatureTypes = {'extrude', 'revolve', 'sweep', 'loft', 'import', 'mirror', 'pattern'};
 
 /// Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
 /// §2.11/§4): whether [feature] is an eligible `tool_feature_id` target -
 /// mirrors the backend's own `app.document.graph.tool_feature_qualifies`
-/// exactly: an Extrude/Revolve/Sweep Feature in Cut mode, or Boss mode with
+/// exactly: an Extrude/Revolve/Sweep/Loft Feature in Cut mode, or Boss mode with
 /// a non-empty `target_body_ids` (a targetless Boss has no shared-target
 /// problem - the ordinary Body/Feature-tree seed path already copies it
 /// correctly as an independent Body). Computed purely from [FeatureDto]'s
@@ -84,6 +85,7 @@ bool _isEligibleToolFeature(FeatureDto feature) {
     'extrude' => feature.extrudeType == 'cut',
     'revolve' => feature.mode == 'cut',
     'sweep' => feature.mode == 'cut',
+    'loft' => feature.mode == 'cut',
     _ => null,
   };
   if (isCut == null) return false;
@@ -557,6 +559,7 @@ class _PartScreenState extends State<PartScreen> {
       !_chamferActive &&
       !_revolveActive &&
       !_sweepActive &&
+      !_loftActive &&
       !_mirrorActive &&
       !_patternActive &&
       !_profilePickerActive &&
@@ -576,6 +579,7 @@ class _PartScreenState extends State<PartScreen> {
           !_chamferActive &&
           !_revolveActive &&
           !_sweepActive &&
+          !_loftActive &&
           !_mirrorActive &&
           !_patternActive &&
           !_profilePickerActive &&
@@ -622,6 +626,7 @@ class _PartScreenState extends State<PartScreen> {
       _chamferActive ||
       _revolveActive ||
       _sweepActive ||
+      _loftActive ||
       _mirrorActive ||
       _patternActive ||
       _profilePickerActive ||
@@ -691,6 +696,27 @@ class _PartScreenState extends State<PartScreen> {
     // below, same as Extrude's own target-body picking.
     if (_revolveActive && entity.kind == SelectionEntityKind.sketchLine) {
       _setRevolveAxis(entity);
+      return;
+    }
+    // Loft's own advanced "alignment_point"/"guide curve" sub-picks
+    // (LoftPanel's own "Guide curve & alignment points" section) - mirrors
+    // the Revolve axis special-case above exactly: a single reference,
+    // resolved then the sub-mode ends, rather than accumulated the way
+    // target-body picks are. Checked ahead of the generic accumulate-
+    // toggle below for the identical reason every other special-case here
+    // is - these sub-modes are only ever entered from inside an already-
+    // open LoftPanel session, so `_loftActive` is implicitly already true
+    // whenever either fires.
+    if (_loftAlignmentPickIndex != null && entity.kind == SelectionEntityKind.sketchPoint) {
+      _setLoftAlignmentPoint(entity);
+      return;
+    }
+    if (_loftPickingGuideCurve &&
+        (entity.kind == SelectionEntityKind.sketchLine ||
+            entity.kind == SelectionEntityKind.sketchArc ||
+            entity.kind == SelectionEntityKind.sketchEllipse ||
+            entity.kind == SelectionEntityKind.sketchSpline)) {
+      _setLoftGuideCurve(entity);
       return;
     }
     // Pattern/Mirror scoping Phase 1: a face/referencePlane/createPlane tap
@@ -770,6 +796,7 @@ class _PartScreenState extends State<PartScreen> {
     if (_chamferActive) _scheduleChamferPreview();
     if (_revolveActive) _scheduleRevolvePreview();
     if (_sweepActive) _scheduleSweepPreview();
+    if (_loftActive) _scheduleLoftPreview();
   }
 
   /// Pattern/Mirror scoping Phase 1: [_toggleSelectedEntity]'s plane-like-kind
@@ -885,6 +912,7 @@ class _PartScreenState extends State<PartScreen> {
     if (_chamferActive) _scheduleChamferPreview();
     if (_revolveActive) _scheduleRevolvePreview();
     if (_sweepActive) _scheduleSweepPreview();
+    if (_loftActive) _scheduleLoftPreview();
     if (_mirrorActive) _scheduleMirrorPreview();
   }
 
@@ -2839,6 +2867,631 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
+  // --- Loft state -----------------------------------------------------------
+  // A Loft has no single backing SketchFeature the way Extrude/Revolve/Sweep
+  // do, and (unlike every one of those) can take 2 *or more* ordered
+  // sections - the backend's own `LoftFeature.sections` has always accepted
+  // 2+ (`_validate_loft_sections`'s only rule is "at least 2"), so this
+  // reuses [FeatureTreePanel]'s existing multi-select "Feature picker" mode
+  // (`isFeaturePickerMode`/`selectedFeaturePickerIds`/`onFeaturePickerToggle`
+  // - otherwise only ever used by the Mirror/Pattern source-feature picker)
+  // rather than [_ProfilePickerTarget]'s own "pick exactly one Sketch, then
+  // straight to the target panel" shape - that shape has no way to
+  // accumulate an open-ended, user-confirmed count the way this needs.
+  // Order matters here (it's the loft's own section traversal order), which
+  // [FeatureTreePanel]'s own `selectedFeaturePickerIds` (a bare `Set`,
+  // fine for Mirror/Pattern's unordered sources) can't preserve on its own -
+  // [_loftPendingSections] keeps its own ordered `List` instead, and a
+  // `Set` view of it is all [FeatureTreePanel] ever needs for its own
+  // pickable/selected-highlight rendering.
+  //
+  // Unlike every other Boss/Cut Feature here, a Loft accepts either all-
+  // closed profiles (lofted directly into a solid) or all-open chains
+  // (lofted into a shell and thickened - see [LoftPanel]'s own doc
+  // comment), so this deliberately does not filter which Sketches are
+  // pickable the way Extrude/Revolve/Sweep's own `_checkExtrudeEligibility`-
+  // gated pickers do - a genuinely invalid pick (e.g. mixing open and
+  // closed) is reported by the backend's own 422 once Confirm is pressed
+  // (surfaced via [_runGuarded]'s [_errorMessage]), not pre-filtered here.
+
+  /// True while the Feature tree is acting as a multi-select Sketch picker
+  /// for a pending Loft's sections - mirrors [_sweepSketchPickerActive],
+  /// except this drives [FeatureTreePanel]'s `isFeaturePickerMode` (multi-
+  /// select-with-confirm) rather than its `isSketchPickerMode` (single-tap-
+  /// finalizes), per this block's own top comment.
+  bool _loftSketchPickerActive = false;
+
+  /// Every Sketch Feature id, unfiltered (see this block's own top
+  /// comment for why) - mirrors [_pickableSweepSketchIds]'s shape, not its
+  /// eligibility filtering. Doubles as [FeatureTreePanel.pickableFeaturePickerIds]
+  /// while [_loftSketchPickerActive].
+  Set<String> _pickableLoftSketchIds = {};
+
+  /// The sections picked so far this picker session, in tap order - empty
+  /// before the first pick, and again once [_confirmLoftSectionPicker] has
+  /// handed them off to [_openLoftPanel]. Tapping an already-picked Sketch
+  /// again removes it (mirrors [FeatureTreePanel]'s own toggle semantics for
+  /// [_toggleSourceFeaturePick]) rather than reordering it - this session's
+  /// v1 scope has no drag-reorder UI, so a removed-then-re-added section
+  /// simply moves to the end.
+  List<FeatureDto> _loftPendingSections = [];
+
+  /// The ordered SketchFeatures currently being lofted between via
+  /// [LoftPanel] (2+), or empty when the panel is closed - mirrors
+  /// [_sweepSketchFeature], generalized from a single Feature to an ordered
+  /// list since a Loft always needs 2+ sections, never just one.
+  List<FeatureDto> _loftSections = [];
+
+  /// The LoftFeature created by the panel's first live-preview update -
+  /// mirrors [_previewSweepFeatureId].
+  String? _previewLoftFeatureId;
+
+  /// Mirrors [_meshBeforeSweep].
+  List<BodyMeshDto>? _meshBeforeLoft;
+
+  /// Mirrors [_entitiesBeforeSweep] - while the panel is open,
+  /// [_selectedEntities] is dedicated entirely to target-body picking.
+  Set<SelectionEntityRef>? _entitiesBeforeLoft;
+
+  /// B4-style: non-null while [LoftPanel] is editing an *existing*
+  /// LoftFeature - mirrors [_editingSweepFeatureId].
+  String? _editingLoftFeatureId;
+
+  /// The edited Feature's own stored values from just before editing started
+  /// - mirrors [_sweepEditSnapshot]. `alignmentPoints`/`guideCurveRef`
+  /// snapshot [_loftAlignmentPoints]/[_loftGuideCurveRef]'s own pre-edit
+  /// values (unlike `sections` themselves, both of those *can* change
+  /// mid-edit-session via this panel's own advanced picker, so Cancel needs
+  /// its own copy to revert to - same reasoning as `mode`/`ruled`/etc).
+  ({
+    LoftMode mode,
+    bool ruled,
+    double? thickness,
+    List<String> targetBodyIds,
+    List<SketchEntityRefDto?> alignmentPoints,
+    SketchEntityRefDto? guideCurveRef,
+  })? _loftEditSnapshot;
+
+  LoftMode _loftMode = LoftMode.boss;
+  bool _loftRuled = false;
+  double? _loftThickness;
+
+  /// One slot per [_loftSections] entry - the backend `LoftSection.
+  /// alignment_point`, null until that section's own point has been
+  /// picked (see [_startLoftAlignmentPointPick]). Kept the same length as
+  /// [_loftSections] by [_openLoftPanel]/[_openLoftPanelForEdit].
+  List<SketchEntityRefDto?> _loftAlignmentPoints = [];
+
+  /// Non-null while picking an `alignment_point` for `_loftSections[index]`
+  /// in the 3D viewport - mirrors [_revolveActive]'s own "a dedicated
+  /// selection-filter override is live" shape, narrowed to a single
+  /// in-flight pick rather than the whole panel session.
+  int? _loftAlignmentPickIndex;
+
+  /// The picked `guide_curve_refs` entity - this session's own UI
+  /// simplification of the backend's ordered chain to a single entity
+  /// (see [LoftPanel]'s own doc comment for why) - sent as a one-element
+  /// list, or `[]` if null.
+  SketchEntityRefDto? _loftGuideCurveRef;
+
+  /// Whether the guide-curve pick is currently active in the viewport.
+  bool _loftPickingGuideCurve = false;
+
+  /// Stashes [_selectedEntities] (the target-body picker's own selection)
+  /// around an alignment-point/guide-curve sub-pick, restored once it
+  /// concludes - mirrors [_entitiesBeforeLoft]'s own identical "stash/
+  /// restore around a nested selection-mode diversion" shape, one level
+  /// deeper (a sub-pick *within* an already-open Loft panel session).
+  Set<SelectionEntityRef>? _entitiesBeforeLoftSubPick;
+
+  /// Debounces the panel's live-preview PATCH/POST + mesh refresh - mirrors
+  /// [_sweepDebounce].
+  Timer? _loftDebounce;
+
+  /// Mirrors [_sweepActive] - the backend's own "2+ sections" minimum (see
+  /// this block's own top comment), not just "non-empty".
+  bool get _loftActive => _loftSections.length >= 2;
+
+  /// Mirrors [_sweepSelectionFilter] exactly - a Loft's own sections are
+  /// already fixed by the time this panel shows, so this only ever needs
+  /// bodies, same as Sweep's.
+  static const _loftSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: false,
+    body: true,
+    sketchPoint: false,
+    sketchLine: false,
+    sketchCircle: false,
+    plane: false,
+  );
+
+  /// The `alignment_point` sub-pick's own selection filter - a Sketch
+  /// Point only, mirrors [CreatePlanePanel]'s own `threePoints` pool
+  /// (`_pointRefDtoFor`'s doc comment) narrowed to Sketch Points alone (an
+  /// `alignment_point` is always a `POINT` entity in a section's own
+  /// Sketch, never a Body vertex - see the backend `LoftSection.
+  /// alignment_point`'s own docstring).
+  static const _loftAlignmentPointSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: false,
+    body: false,
+    sketchPoint: true,
+    sketchLine: false,
+    sketchCircle: false,
+    plane: false,
+  );
+
+  /// The guide-curve sub-pick's own selection filter - mirrors
+  /// [_pathPickerSelectionFilter] exactly (`sketchLine: true` covers
+  /// Line/Arc/Ellipse/Spline hits alike, per that field's own established
+  /// meaning in this codebase - see [_togglePathPick]'s own dispatch).
+  static const _loftGuideCurveSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: false,
+    body: false,
+    sketchPoint: false,
+    sketchLine: true,
+    sketchCircle: false,
+    plane: false,
+  );
+
+  /// Mirrors [_currentSweepTargetBodyIds] exactly.
+  List<String> _currentLoftTargetBodyIds() => _selectedEntities
+      .where((e) => e.kind == SelectionEntityKind.body)
+      .map((e) => e.bodyId)
+      .toSet()
+      .toList();
+
+  /// Opens [LoftPanel] for [sections] (2+, in order) - mirrors
+  /// [_openSweepPanel] exactly, substituting the fixed ordered sections for
+  /// a fixed path.
+  void _openLoftPanel(List<FeatureDto> sections) {
+    setState(() {
+      _loftSections = sections;
+      _previewLoftFeatureId = null;
+      _meshBeforeLoft = _bodies;
+      _loftMode = LoftMode.boss;
+      _loftRuled = false;
+      _loftThickness = null;
+      _loftAlignmentPoints = List.filled(sections.length, null);
+      _loftGuideCurveRef = null;
+      _entitiesBeforeLoft = _selectedEntities;
+      _selectedEntities = {};
+      _selectionMode = true;
+      _selectionFilterOverrides.push(_loftSelectionFilter);
+    });
+  }
+
+  /// Mirrors [_openSweepPanelForEdit] exactly, resolving every one of
+  /// [feature.sections]' own `sketchFeatureId`s (2+, see the backend
+  /// `_validate_loft_sections`) instead of Sweep's single [sketchFeatureId].
+  bool _openLoftPanelForEdit(FeatureDto feature) {
+    if (feature.sections.length < 2) return false;
+    final sections = [
+      for (final section in feature.sections) _featureById(section.sketchFeatureId),
+    ];
+    if (sections.any((s) => s == null)) return false;
+    final resolvedSections = sections.cast<FeatureDto>();
+
+    final mode = LoftMode.fromApiValue(feature.mode ?? 'boss');
+    final ruled = feature.ruled;
+    final thickness = feature.thickness;
+    final targetBodyIds = feature.targetBodyIds;
+    final alignmentPoints = [for (final section in feature.sections) section.alignmentPoint];
+    final guideCurveRef = feature.guideCurveRefs.isNotEmpty ? feature.guideCurveRefs.first : null;
+
+    setState(() {
+      _loftSections = resolvedSections;
+      _editingLoftFeatureId = feature.id;
+      _previewLoftFeatureId = feature.id;
+      _loftEditSnapshot = (
+        mode: mode,
+        ruled: ruled,
+        thickness: thickness,
+        targetBodyIds: targetBodyIds,
+        alignmentPoints: alignmentPoints,
+        guideCurveRef: guideCurveRef,
+      );
+      _meshBeforeLoft = _bodies;
+      _loftMode = mode;
+      _loftRuled = ruled;
+      _loftThickness = thickness;
+      _loftAlignmentPoints = alignmentPoints;
+      _loftGuideCurveRef = guideCurveRef;
+      _entitiesBeforeLoft = _selectedEntities;
+      _selectedEntities = {
+        for (final bodyId in targetBodyIds)
+          SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: bodyId),
+      };
+      _selectionMode = true;
+      _selectionFilterOverrides.push(_loftSelectionFilter);
+    });
+    return true;
+  }
+
+  /// Mirrors [_ensureSweepFeatureExists] exactly, substituting the fixed,
+  /// ordered [_loftSections] for Sweep's single sketchFeature + path.
+  /// Threads [_loftAlignmentPoints]/[_loftGuideCurveRef] through on every
+  /// call (including the debounced live-preview ones) - the same "always
+  /// resend, even unchanged" convention [_ensureSweepFeatureExists] already
+  /// uses for its own `pathRefs`.
+  Future<void> _ensureLoftFeatureExists(
+    LoftMode mode,
+    bool ruled,
+    double? thickness,
+    List<String> targetBodyIds,
+  ) async {
+    final part = _part;
+    if (part == null || _loftSections.length < 2) return;
+
+    final sections = [
+      for (var i = 0; i < _loftSections.length; i++)
+        LoftSectionDto(
+          sketchFeatureId: _loftSections[i].id,
+          alignmentPoint: i < _loftAlignmentPoints.length ? _loftAlignmentPoints[i] : null,
+        ),
+    ];
+    final guideCurveRefs = _loftGuideCurveRef == null ? <SketchEntityRefDto>[] : [_loftGuideCurveRef!];
+
+    final existingId = _previewLoftFeatureId;
+    if (existingId == null) {
+      final created = await _api.createLoftFeature(
+        part.id,
+        sections: sections,
+        mode: mode.apiValue,
+        ruled: ruled,
+        targetBodyIds: targetBodyIds,
+        thickness: thickness,
+        guideCurveRefs: guideCurveRefs,
+      );
+      _previewLoftFeatureId = created.id;
+    } else {
+      await _api.updateLoftFeature(
+        part.id,
+        existingId,
+        sections: sections,
+        mode: mode.apiValue,
+        ruled: ruled,
+        targetBodyIds: targetBodyIds,
+        thickness: thickness,
+        guideCurveRefs: guideCurveRefs,
+      );
+    }
+    await _refreshMesh();
+  }
+
+  /// [LoftPanel.onChanged] - mirrors [_onSweepValuesChanged], plus the
+  /// ruled/thickness fields Sweep has no equivalent of.
+  void _onLoftValuesChanged(LoftMode mode, bool ruled, double? thickness) {
+    _loftMode = mode;
+    _loftRuled = ruled;
+    _loftThickness = thickness;
+    _scheduleLoftPreview();
+  }
+
+  /// Mirrors [_scheduleSweepPreview] exactly.
+  void _scheduleLoftPreview() {
+    _loftDebounce?.cancel();
+    _loftDebounce = Timer(const Duration(milliseconds: 500), () {
+      _runGuarded(() => _ensureLoftFeatureExists(
+            _loftMode,
+            _loftRuled,
+            _loftThickness,
+            _currentLoftTargetBodyIds(),
+          ));
+    });
+  }
+
+  /// Mirrors [_confirmSweep] exactly, auto-hiding every one of
+  /// [_loftSections] (rather than Sweep's single sketchFeature) on a
+  /// brand-new (not edited) Loft.
+  Future<void> _confirmLoft() async {
+    _loftDebounce?.cancel();
+    final sections = _loftSections;
+    final wasEditing = _editingLoftFeatureId != null;
+    final targetBodyIds = _currentLoftTargetBodyIds();
+    await _runGuarded(() async {
+      await _ensureLoftFeatureExists(_loftMode, _loftRuled, _loftThickness, targetBodyIds);
+      await _refreshFeatures();
+      await _refreshSketchGeometries();
+    });
+    if (!mounted) return;
+    setState(() {
+      _featureTreeVisible = false;
+      if (!wasEditing) {
+        for (final section in sections) {
+          _hiddenFeatureIds.add(section.id);
+          _autoHiddenSketchFeatureIds.add(section.id);
+        }
+      }
+      _recomputeVisibleSketchGeometries();
+      _loftSections = [];
+      _previewLoftFeatureId = null;
+      _meshBeforeLoft = null;
+      _editingLoftFeatureId = null;
+      _loftEditSnapshot = null;
+      _loftAlignmentPoints = [];
+      _loftGuideCurveRef = null;
+      // Defensive: abandons an in-flight alignment-point/guide-curve
+      // sub-pick if Confirm was pressed without finishing it first - pops
+      // its own filter override before the main panel's own pop just below
+      // (LIFO: it was pushed after the panel's own, so must come off
+      // first).
+      if (_loftAlignmentPickIndex != null || _loftPickingGuideCurve) {
+        _loftAlignmentPickIndex = null;
+        _loftPickingGuideCurve = false;
+        _selectionFilterOverrides.pop();
+      }
+      _selectedEntities = _entitiesBeforeLoft ?? {};
+      _entitiesBeforeLoft = null;
+      _selectionFilterOverrides.pop();
+      if (sections.any((section) => _selectedFeatureId == section.id)) {
+        _selectedFeatureId = null;
+      }
+    });
+    await _endRollback();
+  }
+
+  /// Mirrors [_cancelSweep] exactly.
+  Future<void> _cancelLoft() async {
+    _loftDebounce?.cancel();
+    final part = _part;
+    final sections = _loftSections;
+    final previewId = _previewLoftFeatureId;
+    final meshBefore = _meshBeforeLoft;
+    final wasEditing = _editingLoftFeatureId != null;
+    final editSnapshot = _loftEditSnapshot;
+    setState(() {
+      _featureTreeVisible = false;
+      _loftSections = [];
+      _previewLoftFeatureId = null;
+      _meshBeforeLoft = null;
+      _editingLoftFeatureId = null;
+      _loftEditSnapshot = null;
+      _loftAlignmentPoints = [];
+      _loftGuideCurveRef = null;
+      // Mirrors _confirmLoft's own identical defensive cleanup above.
+      if (_loftAlignmentPickIndex != null || _loftPickingGuideCurve) {
+        _loftAlignmentPickIndex = null;
+        _loftPickingGuideCurve = false;
+        _selectionFilterOverrides.pop();
+      }
+      _selectedEntities = _entitiesBeforeLoft ?? {};
+      _entitiesBeforeLoft = null;
+      _selectionFilterOverrides.pop();
+      if (sections.any((section) => _selectedFeatureId == section.id)) {
+        _selectedFeatureId = null;
+      }
+    });
+    if (part != null && previewId != null) {
+      if (wasEditing && editSnapshot != null) {
+        await _runGuarded(() async {
+          final revertSections = [
+            for (var i = 0; i < sections.length; i++)
+              LoftSectionDto(
+                sketchFeatureId: sections[i].id,
+                alignmentPoint: i < editSnapshot.alignmentPoints.length ? editSnapshot.alignmentPoints[i] : null,
+              ),
+          ];
+          final revertGuideCurveRefs =
+              editSnapshot.guideCurveRef == null ? <SketchEntityRefDto>[] : [editSnapshot.guideCurveRef!];
+          await _api.updateLoftFeature(
+            part.id,
+            previewId,
+            sections: revertSections,
+            mode: editSnapshot.mode.apiValue,
+            ruled: editSnapshot.ruled,
+            targetBodyIds: editSnapshot.targetBodyIds,
+            thickness: editSnapshot.thickness,
+            guideCurveRefs: revertGuideCurveRefs,
+          );
+          await _refreshFeatures();
+        });
+      } else {
+        await _runGuarded(() async {
+          await _api.deleteFeature(part.id, previewId);
+          if (meshBefore != null) {
+            _bodies = meshBefore;
+          } else {
+            await _refreshMesh();
+          }
+          await _refreshFeatures();
+        });
+      }
+    }
+    await _endRollback();
+  }
+
+  /// [LoftPanel.onPickAlignmentPoint] - enters the viewport picking
+  /// sub-mode for `_loftSections[index]`'s own `alignment_point`, stashing
+  /// the target-body picker's own [_selectedEntities] the same way
+  /// [_openLoftPanel] itself stashes whatever came before it.
+  void _startLoftAlignmentPointPick(int index) {
+    setState(() {
+      _loftAlignmentPickIndex = index;
+      _entitiesBeforeLoftSubPick = _selectedEntities;
+      _selectedEntities = {};
+      _selectionFilterOverrides.push(_loftAlignmentPointSelectionFilter);
+    });
+  }
+
+  /// [_toggleSelectedEntity]'s own Loft-alignment-point special case -
+  /// mirrors [_setRevolveAxis]'s "single reference, resolved then the
+  /// sub-mode ends" shape, generalized to whichever section index is
+  /// currently being picked for.
+  void _setLoftAlignmentPoint(SelectionEntityRef entity) {
+    final index = _loftAlignmentPickIndex;
+    if (index == null) return;
+    final sketchId = _sketchIdForFeatureId(entity.sketchFeatureId);
+    if (sketchId == null) return; // Defensive - see _sketchIdForFeatureId's own doc comment.
+    setState(() {
+      if (index < _loftAlignmentPoints.length) {
+        _loftAlignmentPoints[index] = SketchEntityRefDto(
+          sketchId: sketchId,
+          entityType: 'point',
+          entityId: entity.sketchEntityId,
+        );
+      }
+      _loftAlignmentPickIndex = null;
+      _selectedEntities = _entitiesBeforeLoftSubPick ?? {};
+      _entitiesBeforeLoftSubPick = null;
+      _selectionFilterOverrides.pop();
+    });
+    _scheduleLoftPreview();
+  }
+
+  /// [LoftPanel.onClearAlignmentPoint].
+  void _clearLoftAlignmentPoint(int index) {
+    if (index >= _loftAlignmentPoints.length) return;
+    setState(() => _loftAlignmentPoints[index] = null);
+    _scheduleLoftPreview();
+  }
+
+  /// Exits the alignment-point sub-pick without picking anything - mirrors
+  /// [_cancelPathPicker]'s own identical "restore the stashed selection,
+  /// pop the filter override" shape.
+  void _cancelLoftAlignmentPointPick() {
+    setState(() {
+      _loftAlignmentPickIndex = null;
+      _selectedEntities = _entitiesBeforeLoftSubPick ?? {};
+      _entitiesBeforeLoftSubPick = null;
+      _selectionFilterOverrides.pop();
+    });
+  }
+
+  /// [LoftPanel.onPickGuideCurve] - mirrors [_startLoftAlignmentPointPick]
+  /// exactly, substituting the guide-curve selection filter (Line/Arc/
+  /// Ellipse/Spline) for Sketch Points.
+  void _startLoftGuideCurvePick() {
+    setState(() {
+      _loftPickingGuideCurve = true;
+      _entitiesBeforeLoftSubPick = _selectedEntities;
+      _selectedEntities = {};
+      _selectionFilterOverrides.push(_loftGuideCurveSelectionFilter);
+    });
+  }
+
+  /// [_toggleSelectedEntity]'s own Loft-guide-curve special case - mirrors
+  /// [_setLoftAlignmentPoint]'s exact shape, resolving [entity]'s own
+  /// concrete curve-entity-type string from its [SelectionEntityKind]
+  /// (this session's own UI narrows `guide_curve_refs` to a single entity
+  /// - see [LoftPanel]'s own doc comment).
+  void _setLoftGuideCurve(SelectionEntityRef entity) {
+    if (!_loftPickingGuideCurve) return;
+    final sketchId = _sketchIdForFeatureId(entity.sketchFeatureId);
+    if (sketchId == null) return;
+    final entityType = switch (entity.kind) {
+      SelectionEntityKind.sketchLine => 'line',
+      SelectionEntityKind.sketchArc => 'arc',
+      SelectionEntityKind.sketchEllipse => 'ellipse',
+      SelectionEntityKind.sketchSpline => 'spline',
+      _ => null,
+    };
+    if (entityType == null) return; // Defensive - the selection filter already excludes every other kind.
+    setState(() {
+      _loftGuideCurveRef = SketchEntityRefDto(
+        sketchId: sketchId,
+        entityType: entityType,
+        entityId: entity.sketchEntityId,
+      );
+      _loftPickingGuideCurve = false;
+      _selectedEntities = _entitiesBeforeLoftSubPick ?? {};
+      _entitiesBeforeLoftSubPick = null;
+      _selectionFilterOverrides.pop();
+    });
+    _scheduleLoftPreview();
+  }
+
+  /// [LoftPanel.onClearGuideCurve].
+  void _clearLoftGuideCurve() {
+    setState(() => _loftGuideCurveRef = null);
+    _scheduleLoftPreview();
+  }
+
+  /// Mirrors [_cancelLoftAlignmentPointPick] exactly.
+  void _cancelLoftGuideCurvePick() {
+    setState(() {
+      _loftPickingGuideCurve = false;
+      _selectedEntities = _entitiesBeforeLoftSubPick ?? {};
+      _entitiesBeforeLoftSubPick = null;
+      _selectionFilterOverrides.pop();
+    });
+  }
+
+  /// Mirrors [_sweepPickerBannerText] exactly.
+  String _loftPickerBannerText() {
+    final count = _currentLoftTargetBodyIds().length;
+    return _loftMode == LoftMode.cut
+        ? (count == 0 ? 'select a target body' : '$count target body/bodies selected')
+        : (count == 0 ? 'tap bodies to merge into (optional)' : '$count target body/bodies selected');
+  }
+
+  /// The "Add" FAB's Loft entry - always starts the multi-select Sketch
+  /// picker (see this block's own top comment), unlike Extrude/Revolve/
+  /// Sweep's own entry points, which shortcut straight to their target flow
+  /// when an eligible Sketch is already selected - a Loft never has just one
+  /// Sketch to shortcut from, so there is no equivalent shortcut here.
+  void _loftSelectedFeature() => _startLoftSketchPicker();
+
+  /// Mirrors [_startSweepSketchPicker], minus the eligibility refresh (see
+  /// this block's own top comment for why every Sketch is pickable here).
+  void _startLoftSketchPicker() {
+    setState(() {
+      _loftSketchPickerActive = true;
+      _featureTreeVisible = true;
+      _toolbarOpen = false;
+      _planeSelectionModeStack.pop();
+      _loftPendingSections = [];
+      _pickableLoftSketchIds = {for (final f in _features) if (f.type == 'sketch') f.id};
+    });
+  }
+
+  /// [FeatureTreePanel.onFeaturePickerToggle] while [_loftSketchPickerActive]
+  /// - toggles [feature]'s membership in the ordered [_loftPendingSections]
+  /// (append if new, remove if already picked - see that field's own doc
+  /// comment for why a re-pick moves to the end rather than restoring its
+  /// old position).
+  void _toggleLoftSectionPick(FeatureDto feature) {
+    setState(() {
+      final index = _loftPendingSections.indexWhere((f) => f.id == feature.id);
+      if (index >= 0) {
+        _loftPendingSections.removeAt(index);
+      } else {
+        _loftPendingSections.add(feature);
+      }
+    });
+  }
+
+  /// The Loft section picker's own "confirm" FAB (mirrors the Pattern/
+  /// Mirror source-feature picker's identical FAB - this session likewise
+  /// has no bottom ribbon of its own, its banner living inside
+  /// [FeatureTreePanel] itself) - closes the picker and opens [LoftPanel]
+  /// with [_loftPendingSections]. Only reachable once 2+ are picked (see
+  /// this FAB's own `onPressed` gating at its call site).
+  void _confirmLoftSectionPicker() {
+    final sections = _loftPendingSections;
+    setState(() {
+      _loftSketchPickerActive = false;
+      _featureTreeVisible = false;
+      _loftPendingSections = [];
+      _pickableLoftSketchIds = {};
+    });
+    _openLoftPanel(sections);
+  }
+
+  /// Mirrors [_cancelSweepSketchPicker] exactly.
+  void _cancelLoftSketchPicker() {
+    setState(() {
+      _loftSketchPickerActive = false;
+      _featureTreeVisible = false;
+      _loftPendingSections = [];
+      _pickableLoftSketchIds = {};
+    });
+  }
+
   /// C2: per-Feature resolved plane geometry for [PartViewport.createPlanes] -
   /// recomputed from [_features] directly (no extra network call - the
   /// resolved `origin`/`normal` already ride along on every
@@ -4071,6 +4724,8 @@ class _PartScreenState extends State<PartScreen> {
         await _revolveSelectedFeature();
       case FeaturePickerAction.sweep:
         await _sweepSelectedFeature();
+      case FeaturePickerAction.loft:
+        _loftSelectedFeature();
       case FeaturePickerAction.mirror:
         _startMirrorPicker();
       case FeaturePickerAction.pattern:
@@ -4352,6 +5007,11 @@ class _PartScreenState extends State<PartScreen> {
       // Rollback is ended by _confirmSweep/_cancelSweep instead - mirrors
       // the revolve branch above exactly.
       final opened = _openSweepPanelForEdit(feature);
+      if (!opened) await _endRollback();
+    } else if (feature.type == 'loft') {
+      // Rollback is ended by _confirmLoft/_cancelLoft instead - mirrors the
+      // sweep branch above exactly.
+      final opened = _openLoftPanelForEdit(feature);
       if (!opened) await _endRollback();
     } else if (feature.type == 'mirror') {
       // Pattern/Mirror scoping Phase 1: rollback is ended by
@@ -8101,6 +8761,7 @@ class _PartScreenState extends State<PartScreen> {
           !_sketchPickerActive &&
           !_revolveSketchPickerActive &&
           !_sweepSketchPickerActive &&
+          !_loftSketchPickerActive &&
           !_profilePickerActive &&
           !_pathPickerActive,
       onPopInvokedWithResult: (didPop, result) {
@@ -8113,6 +8774,8 @@ class _PartScreenState extends State<PartScreen> {
           _cancelRevolveSketchPicker();
         } else if (_sweepSketchPickerActive) {
           _cancelSweepSketchPicker();
+        } else if (_loftSketchPickerActive) {
+          _cancelLoftSketchPicker();
         } else if (_profilePickerActive) {
           _cancelProfilePicker();
         } else if (_pathPickerActive) {
@@ -8338,6 +9001,7 @@ class _PartScreenState extends State<PartScreen> {
                     !_chamferActive &&
                     !_revolveActive &&
                     !_sweepActive &&
+                    !_loftActive &&
                     !_mirrorActive &&
                     !_patternActive &&
                     !_profilePickerActive &&
@@ -8375,6 +9039,8 @@ class _PartScreenState extends State<PartScreen> {
                         _cancelRevolveSketchPicker();
                       } else if (_sweepSketchPickerActive) {
                         _cancelSweepSketchPicker();
+                      } else if (_loftSketchPickerActive) {
+                        _cancelLoftSketchPicker();
                       } else if (_sourceFeaturePickerTarget != null) {
                         _cancelSourceFeaturePicker();
                       } else {
@@ -8387,6 +9053,8 @@ class _PartScreenState extends State<PartScreen> {
                     // invariant every other flow in this file relies on), so a
                     // chain of ternaries picks whichever is live - mirrors the
                     // previewOverlayBodyId/previewOverlayMesh ternary above.
+                    // Loft's own picker uses isFeaturePickerMode instead (see
+                    // that block's own top comment for why), not this one.
                     isSketchPickerMode:
                         _sketchPickerActive || _revolveSketchPickerActive || _sweepSketchPickerActive,
                     pickableSketchIds: _sketchPickerActive
@@ -8399,10 +9067,22 @@ class _PartScreenState extends State<PartScreen> {
                         : _revolveSketchPickerActive
                             ? _onRevolveSketchPicked
                             : _onSweepSketchPicked,
-                    isFeaturePickerMode: _sourceFeaturePickerTarget != null,
-                    pickableFeaturePickerIds: _sourceFeaturePickerPickableIds,
-                    selectedFeaturePickerIds: _selectedSourceFeatureIds,
-                    onFeaturePickerToggle: _toggleSourceFeaturePick,
+                    // Loft's own multi-select section picker shares this
+                    // exact mode with the Pattern/Mirror source-feature
+                    // picker (only one of the two is ever active at a time,
+                    // same invariant as the sketch-picker chain above) -
+                    // see the Loft state block's own top comment for why a
+                    // 2+ ordered pick needs this mode instead of
+                    // isSketchPickerMode's single-tap-finalizes shape.
+                    isFeaturePickerMode: _sourceFeaturePickerTarget != null || _loftSketchPickerActive,
+                    pickableFeaturePickerIds:
+                        _loftSketchPickerActive ? _pickableLoftSketchIds : _sourceFeaturePickerPickableIds,
+                    selectedFeaturePickerIds: _loftSketchPickerActive
+                        ? {for (final f in _loftPendingSections) f.id}
+                        : _selectedSourceFeatureIds,
+                    onFeaturePickerToggle:
+                        _loftSketchPickerActive ? _toggleLoftSectionPick : _toggleSourceFeaturePick,
+                    featurePickerLabel: _loftSketchPickerActive ? 'Select sketches to loft' : 'Select source Features',
                     bodyIds: _computedBodyIds,
                     bodyNames: _bodyNames,
                     onBodyTap: _onBodyTap,
@@ -8672,6 +9352,35 @@ class _PartScreenState extends State<PartScreen> {
                       onChanged: _onSweepValuesChanged,
                       onConfirm: _confirmSweep,
                       onCancel: _cancelSweep,
+                    ),
+                  ),
+                if (_loftActive)
+                  Positioned.fill(
+                    // Bug fix: mirrors the Extrude panel slot's own stable-
+                    // key reasoning exactly, above.
+                    key: const ValueKey('loft-panel-slot'),
+                    child: LoftPanel(
+                      key: ValueKey(_editingLoftFeatureId ?? _loftSections.map((s) => s.id).join('-')),
+                      title: _editingLoftFeatureId != null ? 'Edit Loft' : 'Loft',
+                      tooltip: _loftPickerBannerText(),
+                      initialMode: _loftMode,
+                      initialRuled: _loftRuled,
+                      initialThickness: _loftThickness,
+                      sectionCount: _loftSections.length,
+                      targetBodyCount: _currentLoftTargetBodyIds().length,
+                      alignmentPointsSet: [for (final ref in _loftAlignmentPoints) ref != null],
+                      guideCurveSet: _loftGuideCurveRef != null,
+                      pickingAlignmentPointIndex: _loftAlignmentPickIndex,
+                      pickingGuideCurve: _loftPickingGuideCurve,
+                      onPickAlignmentPoint: _startLoftAlignmentPointPick,
+                      onClearAlignmentPoint: _clearLoftAlignmentPoint,
+                      onCancelAlignmentPointPick: _cancelLoftAlignmentPointPick,
+                      onPickGuideCurve: _startLoftGuideCurvePick,
+                      onClearGuideCurve: _clearLoftGuideCurve,
+                      onCancelGuideCurvePick: _cancelLoftGuideCurvePick,
+                      onChanged: _onLoftValuesChanged,
+                      onConfirm: _confirmLoft,
+                      onCancel: _cancelLoft,
                     ),
                   ),
                 // On-device feedback ("the tooltip at the top of the screen
@@ -8987,6 +9696,7 @@ class _PartScreenState extends State<PartScreen> {
                         _chamferActive ||
                         _revolveActive ||
                         _sweepActive ||
+                        _loftActive ||
                         _mirrorActive ||
                         _patternActive)
                     ? 180
@@ -9001,6 +9711,7 @@ class _PartScreenState extends State<PartScreen> {
                       !_chamferActive &&
                       !_revolveActive &&
                       !_sweepActive &&
+                      !_loftActive &&
                       !_mirrorActive &&
                       !_patternActive &&
                       !_profilePickerActive &&
@@ -9043,6 +9754,22 @@ class _PartScreenState extends State<PartScreen> {
                       heroTag: 'confirm-source-feature-picker-fab',
                       tooltip: 'Confirm Feature selection',
                       onPressed: _busy ? null : _confirmSourceFeaturePicker,
+                      child: const Icon(Icons.check),
+                    ),
+                  // Mirrors the source-feature-picker FAB just above exactly
+                  // - same "no bottom ribbon of its own, banner lives inside
+                  // FeatureTreePanel" reasoning. Unlike that FAB, disabled
+                  // below 2 picked sections - a Loft has nothing to loft
+                  // between with fewer than 2 (see the backend's own
+                  // `_validate_loft_sections`), so confirming early has
+                  // nothing valid to hand off to [_openLoftPanel].
+                  if (_loftSketchPickerActive)
+                    FloatingActionButton(
+                      heroTag: 'confirm-loft-section-picker-fab',
+                      tooltip: 'Confirm Loft sections',
+                      onPressed: _busy || _loftPendingSections.length < 2
+                          ? null
+                          : _confirmLoftSectionPicker,
                       child: const Icon(Icons.check),
                     ),
                 ],

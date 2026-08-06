@@ -65,6 +65,54 @@ class SketchEntityRefDto {
       };
 }
 
+/// The wire counterpart to the backend's `LoftSectionSchema` - one cross-
+/// section of a `"loft"` Feature: an existing SketchFeature's Profile
+/// ([sketchFeatureId]/[profileRefs], same shape [FeatureDto.profileRefs]
+/// already uses for Extrude/Revolve/Sweep) plus an optional
+/// [referencePoint] (a Point in that same Sketch) used to twist-align this
+/// section against the loft's first one - see the backend `LoftSection`'s
+/// own docstring.
+class LoftSectionDto {
+  final String sketchFeatureId;
+  final List<SketchEntityRefDto> profileRefs;
+  final SketchEntityRefDto? referencePoint;
+
+  /// The backend `LoftSection.alignment_point` - a rigid in-plane
+  /// translation target (vertex-to-vertex alignment or a guide-curve rail
+  /// - see that field's own docstring), a separate field from
+  /// [referencePoint] (that one's rotation-only behaviour is load-bearing
+  /// for helical/herringbone gear teeth and must never change meaning).
+  final SketchEntityRefDto? alignmentPoint;
+
+  const LoftSectionDto({
+    required this.sketchFeatureId,
+    this.profileRefs = const [],
+    this.referencePoint,
+    this.alignmentPoint,
+  });
+
+  factory LoftSectionDto.fromJson(Map<String, dynamic> json) => LoftSectionDto(
+        sketchFeatureId: json['sketch_feature_id'] as String,
+        profileRefs: (json['profile_refs'] as List?)
+                ?.map((r) => SketchEntityRefDto.fromJson(r as Map<String, dynamic>))
+                .toList() ??
+            const [],
+        referencePoint: json['reference_point'] == null
+            ? null
+            : SketchEntityRefDto.fromJson(json['reference_point'] as Map<String, dynamic>),
+        alignmentPoint: json['alignment_point'] == null
+            ? null
+            : SketchEntityRefDto.fromJson(json['alignment_point'] as Map<String, dynamic>),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'sketch_feature_id': sketchFeatureId,
+        'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
+        if (referencePoint != null) 'reference_point': referencePoint!.toJson(),
+        if (alignmentPoint != null) 'alignment_point': alignmentPoint!.toJson(),
+      };
+}
+
 /// C4: the wire counterpart to the backend's `PointRefSchema` - exactly one
 /// of [vertexRef]/[sketchPointRef] should be supplied (a Body vertex or a
 /// Sketch Point), matching the backend `PointRef`'s own "one of two optional
@@ -346,6 +394,33 @@ class FeatureDto {
   /// straight reference.
   final List<SketchEntityRefDto> pathRefs;
 
+  /// Only present on a `"loft"` Feature - the 2+ ordered cross-sections it
+  /// lofts between (each its own [LoftSectionDto], the backend's
+  /// `LoftFeature.sections`).
+  final List<LoftSectionDto> sections;
+
+  /// Only present on a `"loft"` Feature - `ThruSections`' own ruled-vs-
+  /// smooth surface mode (the backend `LoftFeature.ruled`); makes no
+  /// measurable difference for exactly 2 sections, only relevant once 3+
+  /// are involved.
+  final bool ruled;
+
+  /// Only present on a `"loft"` Feature, and only when it's a thin/sheet
+  /// Loft between open chains rather than a solid Loft between closed
+  /// Profiles - the signed thickness `[sections]`' lofted shell is
+  /// thickened by (the backend `LoftFeature.thickness`; `null` is the
+  /// original closed-profile solid Loft, completely unchanged).
+  final double? thickness;
+
+  /// Only present on a `"loft"` Feature - the ordered, possibly cross-
+  /// Sketch Line/Arc/Ellipse/Spline chain (the backend `LoftFeature.
+  /// guide_curve_refs`, same shape as [pathRefs]) each `sections` entry
+  /// with an `alignment_point` set is rigidly translated to follow. Empty
+  /// (the default) means no guide curve - vertex-to-vertex alignment
+  /// against the first alignment_point-bearing section instead (see the
+  /// backend's own docstring).
+  final List<SketchEntityRefDto> guideCurveRefs;
+
   /// Sketcher-roadmap Phase 4.3 v1: only meaningful on a `"sketch"`
   /// Feature - true whenever at least one of its Sketch's external Body-
   /// vertex references no longer resolves (see the backend's
@@ -476,6 +551,10 @@ class FeatureDto {
     this.mode,
     this.profileRefs = const [],
     this.pathRefs = const [],
+    this.sections = const [],
+    this.ruled = false,
+    this.thickness,
+    this.guideCurveRefs = const [],
     this.hasLostReference = false,
     this.sourceBodyIds = const [],
     this.sourceFeatureIds = const [],
@@ -553,6 +632,16 @@ class FeatureDto {
                 .toList() ??
             const [],
         pathRefs: (json['path_refs'] as List?)
+                ?.map((r) => SketchEntityRefDto.fromJson(r as Map<String, dynamic>))
+                .toList() ??
+            const [],
+        sections: (json['sections'] as List?)
+                ?.map((s) => LoftSectionDto.fromJson(s as Map<String, dynamic>))
+                .toList() ??
+            const [],
+        ruled: json['ruled'] as bool? ?? false,
+        thickness: (json['thickness'] as num?)?.toDouble(),
+        guideCurveRefs: (json['guide_curve_refs'] as List?)
                 ?.map((r) => SketchEntityRefDto.fromJson(r as Map<String, dynamic>))
                 .toList() ??
             const [],
@@ -1660,6 +1749,76 @@ class DocumentApiClient {
                 if (targetBodyIds != null) 'target_body_ids': targetBodyIds,
                 if (profileRefs != null)
                   'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Creates a LoftFeature between 2+ ordered [sections] - mirrors
+  /// [createSweepFeature]'s exact shape, substituting [sections] for
+  /// [pathRefs]/[sketchFeatureId] (a Loft has no single backing
+  /// SketchFeature of its own - each section names its own). [thickness],
+  /// if set, switches every section from a closed Profile to a single open
+  /// chain and thickens the resulting lofted shell by that signed value
+  /// instead of lofting directly into a solid (see the backend
+  /// `LoftFeature.thickness`'s own docstring) - `null` (the default) is the
+  /// ordinary closed-profile solid Loft.
+  Future<FeatureDto> createLoftFeature(
+    String partId, {
+    required List<LoftSectionDto> sections,
+    required String mode,
+    bool ruled = false,
+    List<String> targetBodyIds = const [],
+    double? thickness,
+    List<SketchEntityRefDto> guideCurveRefs = const [],
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/loft-features'),
+              headers: _headers,
+              body: jsonEncode({
+                'sections': sections.map((s) => s.toJson()).toList(),
+                'mode': mode,
+                'ruled': ruled,
+                'target_body_ids': targetBodyIds,
+                if (thickness != null) 'thickness': thickness,
+                'guide_curve_refs': guideCurveRefs.map((r) => r.toJson()).toList(),
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing LoftFeature - any subset of
+  /// [sections]/[mode]/[ruled]/[targetBodyIds]/[thickness]/[guideCurveRefs]
+  /// may be supplied, mirroring [updateSweepFeature]'s omitted-vs-current-
+  /// value convention - including for [guideCurveRefs]: omitting it keeps
+  /// the Feature's current value, passing `[]` explicitly clears it back
+  /// to "no guide curve" (see the backend `LoftFeatureUpdate.guide_curve_
+  /// refs`'s own docstring for why an empty list is itself meaningful
+  /// here, unlike a bare omission). Used for the live-preview debounced
+  /// re-solve.
+  Future<FeatureDto> updateLoftFeature(
+    String partId,
+    String featureId, {
+    List<LoftSectionDto>? sections,
+    String? mode,
+    bool? ruled,
+    List<String>? targetBodyIds,
+    double? thickness,
+    List<SketchEntityRefDto>? guideCurveRefs,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/loft-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (sections != null) 'sections': sections.map((s) => s.toJson()).toList(),
+                if (mode != null) 'mode': mode,
+                if (ruled != null) 'ruled': ruled,
+                if (targetBodyIds != null) 'target_body_ids': targetBodyIds,
+                if (thickness != null) 'thickness': thickness,
+                if (guideCurveRefs != null)
+                  'guide_curve_refs': guideCurveRefs.map((r) => r.toJson()).toList(),
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

@@ -40,7 +40,7 @@ from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Edge, TopoDS_Shape, TopoDS_W
 from app.document.create_plane import resolve_sketch_basis
 from app.document.extrude import (
     EXTRUDABLE_STATUSES,
-    _arc_axis,
+    arc_axis,
     _ellipse_axis,
     basis_point_to_world,
     compute_part_bodies,
@@ -141,7 +141,7 @@ def _sweep_wire(path_wire: TopoDS_Wire, wire: TopoDS_Wire) -> TopoDS_Shape:
     `SetTransitionMode(BRepBuilderAPI_RightCorner)` was chosen (see
     `resolve_sweep_from_bodies`'s own doc comment) back when every path
     segment was a straight Line - now that `path_wire` can also contain
-    Arc/Ellipse/Spline segments (`_resolve_path_wire`), a genuinely sharp
+    Arc/Ellipse/Spline segments (`resolve_path_wire`), a genuinely sharp
     Line-to-curve corner still gets the same flat-cut treatment, which is
     likely still correct (there's still a real corner to cut), but this
     hasn't been re-verified on-device against a curved path specifically -
@@ -188,7 +188,7 @@ def _resolve_path_segment(
     Line/Arc/Ellipse/Spline, reusing exactly the same OCCT edge-
     construction math `app.document.extrude.wire_for_profile` already
     proved correct for these same four entity types within an ordinary
-    (single-Sketch) Profile - `_arc_axis`'s mirror-aware P1/P2 swap and
+    (single-Sketch) Profile - `arc_axis`'s mirror-aware P1/P2 swap and
     `Spline.segments()`'s own pole ordering in particular, both previously
     fixed against real on-device bugs (see their own doc comments) and
     deliberately not re-derived here.
@@ -200,7 +200,7 @@ def _resolve_path_segment(
     fuses edges by shared vertex position regardless of each edge's own
     parametric direction (see `wire_for_profile`'s own doc comment), so
     every edge here is built once, in its own natural stored orientation,
-    and `_resolve_path_wire` never needs to reverse one.
+    and `resolve_path_wire` never needs to reverse one.
 
     Fails closed with `invalid_path_ref` (never a generic `missing_
     reference` or an uncaught OCCT exception) for every way `ref` can be
@@ -240,7 +240,7 @@ def _resolve_path_segment(
     if ref.entity_type == SketchEntityType.ARC and isinstance(entity, Arc):
         center = sketch.points[entity.center_point_id]
         radius = entity.radius(sketch.points)
-        axis = _arc_axis(basis, center.x, center.y)
+        axis = arc_axis(basis, center.x, center.y)
         start = sketch.points[entity.start_point_id]
         end = sketch.points[entity.end_point_id]
         start_world = basis_point_to_world(basis, start.x, start.y)
@@ -276,7 +276,7 @@ def _resolve_path_segment(
     if ref.entity_type == SketchEntityType.ELLIPSE and isinstance(entity, Ellipse):
         # Always closed/standalone (see the Ellipse class's own doc
         # comment) - no connection endpoints, handled by
-        # _resolve_path_wire as a lone-segment special case.
+        # resolve_path_wire as a lone-segment special case.
         center = sketch.points[entity.center_point_id]
         major_radius = entity.major_radius(sketch.points)
         minor_radius = entity.minor_radius(sketch.points)
@@ -288,7 +288,7 @@ def _resolve_path_segment(
     raise _invalid_path_ref(ref)
 
 
-def _resolve_path_wire(
+def resolve_path_wire(
     part: Part,
     path_refs: list[SketchEntityRef],
     bodies_so_far: dict[str, TopoDS_Shape],
@@ -448,7 +448,7 @@ def resolve_sweep_from_bodies(
         return None
 
     basis = resolve_sketch_basis(part, sketch_feature, bodies_so_far, excluded_feature_ids)
-    path_wire = _resolve_path_wire(part, feature.path_refs, bodies_so_far, excluded_feature_ids)
+    path_wire = resolve_path_wire(part, feature.path_refs, bodies_so_far, excluded_feature_ids)
 
     if result.status == ProfileStatus.CLOSED_LOOP:
         assert result.profile is not None

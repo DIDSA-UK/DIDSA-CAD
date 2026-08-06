@@ -567,7 +567,7 @@ class SweepFeature(Feature):
     SketchFeature's basis (`app.document.create_plane.resolve_sketch_basis`),
     then chained by matching 3D world-space endpoint position (not a shared
     Point id, which cross-Sketch entries never have) within a small
-    tolerance - see `app.document.sweep._resolve_path_wire`. Consecutive
+    tolerance - see `app.document.sweep.resolve_path_wire`. Consecutive
     entries in list order must share a coincident endpoint (`disconnected_
     path` otherwise); the first and last entries' endpoints may also
     coincide, producing a closed (looping) path - both open and closed paths
@@ -1209,11 +1209,29 @@ class LoftSection:
     never rotated - this only ever changes behaviour for a section that
     opts in, so a plain two-section Loft with no alignment picked at all
     behaves exactly as `ThruSections`' own default correspondence would
-    produce unmodified."""
+    produce unmodified.
+
+    `alignment_point` (optional, same `SketchEntityRef`-restricted-to-
+    `POINT`-in-this-section's-own-Sketch shape as `reference_point`, but a
+    genuinely separate field - never conflated with it) is a second,
+    independent alignment mechanism, added later alongside `LoftFeature.
+    guide_curve_refs`: a *translation*, not a rotation, applied after
+    `reference_point`'s rotation (if any) - see `app.document.loft`'s own
+    `_apply_alignment_point_translation` for the exact rule (follow a
+    guide curve if `LoftFeature.guide_curve_refs` is set, otherwise track
+    the first section's own `alignment_point`). Deliberately its own field
+    rather than reusing `reference_point` for this too: `reference_point`'s
+    rotation-only behaviour is load-bearing for helical/herringbone gear
+    teeth (`app.document.gear`'s loft-between-two-rotated-copies technique
+    - a *translation* there would slide a tooth off its own gear axis,
+    silently wrong), so it must never change meaning under it - the two
+    fields compose (both may be set on the same section) rather than one
+    superseding the other."""
 
     sketch_feature_id: str
     profile_refs: list[SketchEntityRef] = field(default_factory=list)
     reference_point: SketchEntityRef | None = None
+    alignment_point: SketchEntityRef | None = None
 
 
 @dataclass
@@ -1245,13 +1263,44 @@ class LoftFeature(Feature):
     profile-with-holes needs its own per-hole correspondence between
     sections (the exact same open "reference point per profile" problem,
     once per hole), rejected outright (`invalid_loft_section`) rather than
-    silently only lofting the outer boundary and dropping the holes."""
+    silently only lofting the outer boundary and dropping the holes.
+
+    `thickness`, when set, switches every `sections` entry from a closed
+    Profile to a single open chain (`app.sketch.profile.detect_open_chain`)
+    - a thin/sheet Loft, lofted as an open shell then thickened by this
+    signed value (`app.document.loft.resolve_loft_from_bodies`) rather than
+    lofted directly into a solid. `None` (the default) is the original
+    closed-profile behaviour, completely unchanged. A `LoftFeature` never
+    mixes open and closed sections - `thickness` applies to every section
+    at once, not per-section.
+
+    `guide_curve_refs` (optional, empty by default - completely unchanged
+    behaviour when omitted): an ordered, possibly cross-Sketch chain of
+    Line/Arc/Ellipse/Spline references - the exact same shape and the same
+    resolution machinery (`app.document.sweep.resolve_path_wire`) as
+    `SweepFeature.path_refs`, just used as a *rail* here rather than an
+    extrusion direction. When set, every `sections` entry must carry a
+    `LoftSection.alignment_point` (`app.document.router._validate_loft_
+    guide_curve_refs`) - `app.document.loft._apply_alignment_point_
+    translation` then slides each section (a rigid in-plane translation,
+    never a reshape) so its own `alignment_point` lands exactly on this
+    curve's own intersection with that section's plane, letting the loft
+    follow a curved backbone (e.g. a bent handle/pipe transition) rather
+    than a straight line between each section's own local origin. Not a
+    reshape of the rest of each section's own boundary to hug the curve
+    (a materially harder, still-unsolved multi-guide-curve surface-fitting
+    problem real CAD tools handle with their own dedicated algorithms) -
+    an honest, narrower v1: one designated point per section rides the
+    rail exactly, the rest of that section's own shape is carried along
+    rigidly with it."""
 
     id: str
     sections: list[LoftSection]
     mode: LoftMode
     ruled: bool = False
     target_body_ids: list[str] = field(default_factory=list)
+    thickness: float | None = None
+    guide_curve_refs: list[SketchEntityRef] = field(default_factory=list)
 
     @property
     def type(self) -> str:

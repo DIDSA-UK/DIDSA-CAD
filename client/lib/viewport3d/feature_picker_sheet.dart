@@ -6,7 +6,7 @@ import 'svg_icon.dart';
 /// [extrude], (C3) [plane], (on-device feedback) [fillet], (Prompt E)
 /// [chamfer], (Prompt F) [revolve], and [sweep] are all wired to a real
 /// flow.
-enum FeaturePickerAction { extrude, plane, fillet, chamfer, revolve, sweep, mirror, pattern }
+enum FeaturePickerAction { extrude, plane, fillet, chamfer, revolve, sweep, loft, mirror, pattern }
 
 /// Shows the fly-up bottom sheet listing every feature type the "Add" FAB's
 /// Feature entry offers - same drag-handle/rounded-top-corner shape as
@@ -56,6 +56,12 @@ Future<FeaturePickerAction?> showFeaturePickerSheet(BuildContext context) {
                 title: const Text('Sweep'),
                 onTap: () =>
                     Navigator.of(context).pop(FeaturePickerAction.sweep),
+              ),
+              ListTile(
+                leading: const SvgIcon('assets/icons/feature/feature_loft.svg'),
+                title: const Text('Loft'),
+                onTap: () =>
+                    Navigator.of(context).pop(FeaturePickerAction.loft),
               ),
               ListTile(
                 leading: const SvgIcon('assets/icons/feature/feature_fillet.svg'),

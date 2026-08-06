@@ -11,12 +11,12 @@ plane_geometry._PLANE_BASIS[Plane.XZ]` already documents `x_axis=(-1, 0,
 normal)` triple left-handed.
 
 First fix attempt: derive a "canonicalized" right-handed X reference
-direction for `app.document.extrude._arc_axis`, ignoring the real
+direction for `app.document.extrude.arc_axis`, ignoring the real
 (possibly left-handed) `x_axis`. Wrong - disproven by direct numeric
 simulation (transforming an entire local arc, point by point, through the
 real embedding, and comparing against what each candidate fix actually
 built): a mirror transform genuinely is supposed to reverse apparent
-CCW/CW for anything embedded through it, and `_arc_axis` passing the real
+CCW/CW for anything embedded through it, and `arc_axis` passing the real
 `x_axis` straight through was never the bug. The canonicalized-axis
 "fix" reproduced the exact same wrong (270-degree, long-way) arc the
 original bug did.
@@ -86,7 +86,7 @@ def _simulated_occt_sweep(basis, p1_world, p2_world, radius=5.0, n=13):
     CCW trim from P1 to P2 using the real `basis.x_axis` as the axis's own
     reference direction and `normal cross x_axis` as its own freshly
     computed Y direction, mirroring gp_Ax2's own internal construction
-    exactly (never `basis.y_axis` directly - see _arc_axis's own doc
+    exactly (never `basis.y_axis` directly - see arc_axis's own doc
     comment for why passing the real x_axis, not a "corrected" one, is
     correct)."""
     x_axis = basis.x_axis

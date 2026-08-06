@@ -265,3 +265,29 @@ profile" control (profiles that are *not* simply rotated copies of each
 other): still an open question per Result 1's "Still open" note above —
 needs its own follow-up spike before that specific UI is built, separate
 from the gear-tooth case this pass focused on.
+
+## 2026-08-05 addendum — Part Designer UI + thin/open-chain mode
+
+A later, separate session (`docs/status.md`'s own 2026-08-05 "Loft
+accessible in the 3D Part Designer" entry) built the general-purpose Part
+Designer UI this doc's own 4b section describes but never had a client
+for, and extended `LoftFeature` with a `thickness` field: when set, every
+section is a single open chain (`app.sketch.profile.detect_open_chain`)
+instead of a closed Profile, lofted into a shell and thickened into a
+solid via `BRepOffsetAPI_MakeThickSolid.MakeThickSolidBySimple` rather than
+lofted directly into a solid. See that status.md entry for the full
+design and verification-status detail - not repeated here.
+
+A same-day follow-up resolved this section's own "Still open" note above
+(a genuinely different mechanism than the twist-only `reference_point`
+this file describes, kept as its own separate field rather than changing
+`reference_point`'s meaning - see `LoftSection.alignment_point`'s own
+docstring): `LoftFeature.guide_curve_refs` + `LoftSection.alignment_point`
+add a rigid in-plane *translation* (not the rotation this file's own
+"reference point per profile" control describes) sliding a designated
+point per section onto a guide curve's own crossing with that section's
+plane, or onto the first alignment_point-bearing section's own position
+if no guide curve is set. See `docs/status.md`'s own "guide curves +
+vertex-to-vertex alignment" entry for the full design, scope (an honest,
+narrower v1 - one point per section, not a full multi-point surface
+reshape), and verification-status detail.

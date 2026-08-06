@@ -210,7 +210,7 @@ def _cone_arc_wire(
     separate `Geom_ConicalSurface` needed, per that doc's own §2).
 
     The circle's own reference X direction is pinned to point at
-    `p_start_world` (mirrors `app.document.extrude._arc_axis`'s identical
+    `p_start_world` (mirrors `app.document.extrude.arc_axis`'s identical
     technique for a sketch Arc) so `BRepBuilderAPI_MakeEdge(gp_Circ, P1,
     P2)` always trims the *short* way from `p_start_world` to
     `p_end_world` - both callers always pass points already ordered in

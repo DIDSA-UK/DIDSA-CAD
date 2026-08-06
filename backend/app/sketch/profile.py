@@ -688,3 +688,140 @@ def _trace_loop(
         current = next_point_id
 
     return point_ids, line_ids
+
+
+class OpenChainStatus(str, Enum):
+    """Outcome of open-chain detection over a Sketch's entities - the
+    open-profile counterpart to `ProfileStatus`, used by a Loft section
+    meant to be thickened into a thin/sheet solid (`app.document.loft`)
+    rather than lofted as a closed cross-section. A Loft between two open
+    chains has no "cross-section area" to loft into a solid directly the
+    way `BRepOffsetAPI_ThruSections(isSolid=True)` does for a closed
+    `Profile` - it needs a user-supplied thickness to turn the lofted
+    *surface* into a solid instead (see `app.document.loft`)."""
+
+    SINGLE_CHAIN = "single_chain"
+    NO_CHAIN = "no_chain"
+    BRANCH = "branch"
+    MULTIPLE_CHAINS = "multiple_chains"
+
+
+@dataclass
+class OpenChain:
+    """An ordered open path of Points/entities - the open-profile
+    counterpart to `Profile`. `point_ids[i]` connects to `point_ids[i + 1]`
+    via `line_ids[i]`, with no wrap-around edge (unlike `Profile`, whose
+    last `line_ids` entry closes `point_ids[-1]` back to `point_ids[0]`) -
+    `line_ids` therefore always has exactly one fewer entry than
+    `point_ids`. Circles/Ellipses/Text have no open-chain interpretation
+    (they're always already closed) and never produce one of these."""
+
+    sketch_id: str
+    point_ids: list[str]
+    line_ids: list[str]
+
+
+@dataclass
+class OpenChainDetectionResult:
+    status: OpenChainStatus
+    detail: str
+    chain: OpenChain | None = None
+
+
+def _trace_chain(start_point_id: str, adjacency: dict[str, list[tuple[str, str]]]) -> tuple[list[str], list[str]]:
+    """Same walk as `_trace_loop`, except starting from one of a chain's
+    own degree-1 endpoints and stopping at the other, rather than wrapping
+    back around to `start_point_id` - there is no wrap-around hop for an
+    open chain."""
+    point_ids = [start_point_id]
+    line_ids: list[str] = []
+    came_from_entity: str | None = None
+    current = start_point_id
+
+    while True:
+        next_entity_id, next_point_id = next(
+            edge for edge in adjacency[current] if edge[0] != came_from_entity
+        )
+        line_ids.append(next_entity_id)
+        point_ids.append(next_point_id)
+        if len(adjacency[next_point_id]) == 1:
+            break
+        came_from_entity = next_entity_id
+        current = next_point_id
+
+    return point_ids, line_ids
+
+
+def detect_open_chain(sketch: Sketch) -> OpenChainDetectionResult:
+    """Detects a single open (unclosed) chain of Line/Arc/Spline entities in
+    `sketch` - mirrors `detect_profile`'s own per-connected-component
+    tolerance (Prompt G: a stray closed loop or branch elsewhere in the
+    sketch doesn't fail detection for a genuinely usable open chain that
+    exists independently of it), narrowed to look for a component with
+    exactly two degree-1 "open end" points and every other point degree 2
+    (a connected graph like that is always a single simple path) instead of
+    `detect_profile`'s "every point degree 2" (a single simple cycle).
+
+    Construction entities are filtered out exactly like `detect_profile`.
+    Circles/Ellipses/Text are never open chains (no endpoints to walk) and
+    are simply not candidates here - a sketch containing only one of those
+    reports `NO_CHAIN`, same as an empty sketch.
+    """
+    sketch = sketch.expand_pattern_and_mirror_instances()
+    real_entities = [entity for entity in sketch.entities.values() if not entity.construction]
+    canonical_point_id = _coincident_canonical_ids(sketch)
+
+    connections: list[tuple[str, tuple[str, str]]] = []
+    for entity in real_entities:
+        endpoints = entity.endpoint_point_ids()
+        if endpoints is None:
+            continue
+        a, b = endpoints
+        connections.append((entity.id, (canonical_point_id.get(a, a), canonical_point_id.get(b, b))))
+
+    if not connections:
+        return OpenChainDetectionResult(
+            status=OpenChainStatus.NO_CHAIN,
+            detail="Sketch has no connectable entities (e.g. lines or arcs).",
+        )
+
+    adjacency: dict[str, list[tuple[str, str]]] = {}
+    for entity_id, (a, b) in connections:
+        adjacency.setdefault(a, []).append((entity_id, b))
+        adjacency.setdefault(b, []).append((entity_id, a))
+
+    any_branch_point = any(len(edges) > 2 for edges in adjacency.values())
+
+    visited: set[str] = set()
+    chains: list[OpenChain] = []
+    for start_point_id in adjacency:
+        if start_point_id in visited:
+            continue
+        component = _connected_component(start_point_id, adjacency)
+        visited.update(component)
+        if any(len(adjacency[point_id]) > 2 for point_id in component):
+            continue  # a branch point in this component - not a candidate chain
+        component_endpoints = [point_id for point_id in component if len(adjacency[point_id]) == 1]
+        if len(component_endpoints) != 2:
+            continue  # a closed loop (0 open ends) - not a candidate open chain
+        point_ids, line_ids = _trace_chain(component_endpoints[0], adjacency)
+        chains.append(OpenChain(sketch_id=sketch.id, point_ids=point_ids, line_ids=line_ids))
+
+    if not chains:
+        if any_branch_point:
+            return OpenChainDetectionResult(
+                status=OpenChainStatus.BRANCH,
+                detail="A point is used by more than two entities.",
+            )
+        return OpenChainDetectionResult(
+            status=OpenChainStatus.NO_CHAIN,
+            detail="Sketch has no open chain of connected entities (it may be a closed loop instead).",
+        )
+    if len(chains) > 1:
+        return OpenChainDetectionResult(
+            status=OpenChainStatus.MULTIPLE_CHAINS,
+            detail=f"{len(chains)} disjoint open chains found in this sketch; a Loft section needs exactly one.",
+        )
+    return OpenChainDetectionResult(
+        status=OpenChainStatus.SINGLE_CHAIN, detail="Single open chain detected.", chain=chains[0]
+    )
