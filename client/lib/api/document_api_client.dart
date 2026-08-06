@@ -798,6 +798,38 @@ class CascadeDeleteResultDto {
       );
 }
 
+/// AI Modelling workstream 5's `POST /document/parts/{part_id}/ai-plan/
+/// validate` response - one entry per plan step
+/// (`backend/app/document/ai_plan_schemas.py`'s `StepResult`). [error] is
+/// always a structured `{"type": "...", ...}` map on failure (never a bare
+/// string), matching every other domain error in this backend.
+class AiPlanStepResultDto {
+  final String localId;
+  final bool ok;
+  final List<String> warnings;
+  final Map<String, dynamic>? error;
+
+  AiPlanStepResultDto({required this.localId, required this.ok, required this.warnings, this.error});
+
+  factory AiPlanStepResultDto.fromJson(Map<String, dynamic> json) => AiPlanStepResultDto(
+        localId: json['local_id'] as String,
+        ok: json['ok'] as bool,
+        warnings: (json['warnings'] as List? ?? const []).cast<String>(),
+        error: json['error'] as Map<String, dynamic>?,
+      );
+}
+
+/// `PlanValidateResponse` (`backend/app/document/ai_plan_schemas.py`).
+class AiPlanValidateResultDto {
+  final List<AiPlanStepResultDto> results;
+
+  AiPlanValidateResultDto({required this.results});
+
+  factory AiPlanValidateResultDto.fromJson(Map<String, dynamic> json) => AiPlanValidateResultDto(
+        results: (json['results'] as List).map((r) => AiPlanStepResultDto.fromJson(r as Map<String, dynamic>)).toList(),
+      );
+}
+
 /// What `POST /document/import/native` hands back once the full-replace
 /// native-file import succeeds - the freshly-imported Document's id and
 /// every Part id now in it. This app has no "pick an existing Part" UI (see
@@ -1922,6 +1954,25 @@ class DocumentApiClient {
               headers: _headers,
             ),
         (body) => ((body as Map<String, dynamic>)['feature_ids'] as List).cast<String>(),
+      );
+
+  /// AI Modelling workstream 5 (`docs/ai-modelling/05-backend-plan-
+  /// validation.md`): given [partId] (a real, currently-stored Part - see
+  /// `00-conventions.md`'s "v1 always starts a fresh Part") and [planJson]
+  /// (workstream 3's locked plan schema - `AiGenerationPlan.toJson()`,
+  /// `client/lib/ai/ai_plan.dart`, unmodified), reports whether each step
+  /// would resolve successfully without creating or persisting anything
+  /// against this Part. [planJson] is a plain `Map` rather than a typed
+  /// `AiGenerationPlan` parameter so this file never has to import `ai/` -
+  /// the caller (workstream 2's `AiModellingScreen`) does the one call to
+  /// `.toJson()`.
+  Future<AiPlanValidateResultDto> validateAiPlan(String partId, Map<String, dynamic> planJson) => _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/ai-plan/validate'),
+              headers: _headers,
+              body: jsonEncode(planJson),
+            ),
+        (body) => AiPlanValidateResultDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Bug fix (post-C4): [hiddenFeatureIds] and [rollbackExcludedFeatureIds]
