@@ -284,11 +284,29 @@ either sandboxed or local sessions so far).
 
 **Not yet done, updated:** Groq coverage (still genuinely blocked from
 every session tried so far — needs a different network path, not just a
-different session type); a third, architecturally-independent model
-(neither Gemini nor `gpt-oss`) to settle the thickness-error
-model-specificity question; more adversarial/underspecified prompts
-beyond the one bracket scenario; the edge-selector spike; the
-validator-gap fix (reject a step reference that points at a `local_id` of
-the wrong kind, e.g. an `extrude.profile` pointing at a `sketch` step
-instead of a sketch-entity step); and a `README.md` correction pass for
-the now-subscription-gated Ollama Cloud model list.
+different session type); more adversarial/underspecified prompts beyond
+the one bracket scenario; the edge-selector spike.
+
+**Closed since the above**: the `README.md` correction pass and the
+validator-gap fix both landed — see `README.md`'s "Testing without cost"
+section and `05-backend-plan-validation.md`'s own new "Real finding from
+spike 1" section (the dry-run endpoint's design now explicitly requires
+reference *kind*-checking, not just existence-checking).
+
+## Third-model attempt (2026-08-06): Anthropic, blocked on billing, deferred by decision
+
+Attempted from the sandboxed session directly (`api.anthropic.com` is
+reachable there, unlike Groq/Ollama Cloud) using a real API key. Auth
+succeeded — the key itself is valid — but the account had no usable
+credit: `"Your credit balance is too low to access the Anthropic API."`
+A different blocker class than Groq's network-level denial or the
+sandbox's own policy denial: billing, not reachability.
+
+**User decision: skip topping up credit for this, concept is considered
+proven from the two models already tested.** Not pursued further this
+round. A third, architecturally-independent model (neither Gemini nor
+`gpt-oss`) to fully settle the thickness-error model-specificity
+question **remains a real open item**, deliberately deferred rather than
+closed — worth picking up opportunistically in a future session (e.g.
+once Anthropic credit exists for other reasons, or Groq's block gets
+resolved) rather than a dedicated session of its own.
