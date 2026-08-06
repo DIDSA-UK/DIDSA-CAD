@@ -143,9 +143,10 @@ per-session granularity (see `docs/status.md`'s history):
 | 2 | Workstream 1 (provider abstraction + settings, incl. the Ollama model-list bolt-on) | Settings panel usable standalone — pick a provider, "Test connection" succeeds |
 | 3 | Workstream 3 (lock schema using the spike's findings, incl. resolved edge-selectors) + Workstream 5 (backend dry-run endpoint) | Natural pairing — 5 is small and depends directly on 3's step shapes |
 | 4 | Workstream 2 (chat screen + system prompt, incl. the save-plan-as-preset bolt-on) | Can hold a full scoping conversation and see a plan proposed, even before generation works |
-| 5 | Workstream 4 (translator + execution, incl. the "Undo this generation" bolt-on) | **First end-to-end usable version** — AI Modelling tile to real Feature-tree part |
+| 5 | Workstream 4 (translator + execution, incl. the "Undo this generation" bolt-on) — **done** | **First end-to-end usable version** — AI Modelling tile to real Feature-tree part, for every step kind except `gear_request` (detected and surfaced, not auto-executed — see `04-translator-and-execution.md`'s "Real scope of `gear_request` handling") |
 | 6+ | On-device feedback round(s) | This project's typical pattern after any client-heavy build — real bugs from a real device/model combo, not assumed working from sandbox-only verification |
 | Later, separate arc | Workstream 6 (image input) | Its own multi-session R&D once text mode is proven — don't pull this forward |
+| Later, separate arc | `gear_request` full hand-off | `GearDesignScreen`/`GearChainDesignScreen`/`BevelDesignScreen` reworked to accept an existing Part id, so a plan's gear step can land in the same Part the rest of it built — real, separate scope, not pulled into workstream 4 |
 
 ## Bolt-ons folded into v1
 

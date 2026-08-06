@@ -72,10 +72,17 @@ here:
   for which no selector heuristic has been designed outside the Fillet/
   Chamfer case. Only the plan-expressible options remain: `create_plane`
   is restricted to `NORMAL_TO_LINE_AT_POINT`/`THREE_POINTS` (the two
-  `PlaneType`s built from Sketch points/lines alone); Pattern/Mirror's
-  direction/axis/plane refs are restricted to `fixed_axis`/`fixed_plane`
-  or a `sketch_line_ref`/`plane_feature_id`. A real, deliberate scope
-  narrowing, not an oversight.
+  `PlaneType`s built from Sketch points/lines alone); Pattern's
+  `direction_1`/`direction_2` and Mirror's `mirror_plane` are restricted to
+  `fixed_axis`/`fixed_plane` or a `sketch_line_ref`/`plane_feature_id`.
+  Pattern's `axis` is narrower still, and for a different reason (bug
+  found while implementing workstream 4, not a v1 scope choice): the real
+  `PatternAxisRef` it mirrors resolves to a full world-space axis (an
+  origin point *and* a direction — a Circular Pattern rotates around a
+  real pivot, not just along a direction) and has **no** `fixed_axis`
+  option at all, unlike `PatternDirectionRef`'s plain direction — `axis`
+  must always be a `sketch_line_ref`. A real, deliberate scope narrowing
+  everywhere else, not an oversight.
 - Routing: `gear_request` — carries gear parameters (type, module, tooth
   count, etc.) rather than a Feature-tree step at all; the translator
   (workstream 4) intercepts this kind before normal execution and hands

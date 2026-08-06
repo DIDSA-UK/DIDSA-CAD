@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
 
 import '../api/document_api_client.dart';
-import '../api/sketch_api_client.dart' show ApiException;
+import '../api/sketch_api_client.dart' show ApiException, SketchApiClient;
 import '../gear/gear_preset_store.dart';
 import 'ai_plan.dart';
 import 'ai_plan_detection.dart';
 import 'ai_plan_summary.dart';
+import 'ai_plan_translator.dart';
 import 'ai_provider.dart';
 import 'ai_provider_preferences.dart';
 import 'ai_scoping_prompt.dart';
@@ -36,13 +37,13 @@ const String aiModellingPlanPresetKind = 'ai_modelling_plan';
 /// "next user message is sent with ... the just-proposed plan included as
 /// context" requirement without extra bookkeeping.
 ///
-/// **Generate's real scope this session**: create a real, fresh Part
-/// (`00-conventions.md`'s "v1 always starts a fresh Part") and run
-/// workstream 5's real dry-run validation endpoint against it, showing
-/// per-step results. It deliberately does **not** execute the plan for
-/// real - that's workstream 4's translator, not built yet - so a fully
-/// validated plan ends in an explicit "ready to generate once Part
-/// generation lands" state rather than a fake success.
+/// **Generate**: creates a real, fresh Part (`00-conventions.md`'s "v1
+/// always starts a fresh Part"), then hands it straight to workstream 4's
+/// [PlanTranslator] - which runs workstream 5's dry-run validation itself
+/// first, and only executes the plan for real once that passes. Reuses
+/// this one Part id for both, rather than creating a second, orphaned one
+/// - the exact gap this doc comment used to describe before workstream 4
+/// was built.
 class AiModellingScreen extends StatefulWidget {
   /// Overridable for tests, so a real call never hits the network.
   final AiProvider? provider;
@@ -50,7 +51,11 @@ class AiModellingScreen extends StatefulWidget {
   /// Overridable for tests, so "Generate" never talks to the real backend.
   final DocumentApiClient? documentApi;
 
-  const AiModellingScreen({super.key, this.provider, this.documentApi});
+  /// Overridable for tests, so [PlanTranslator]'s own sketch-entity calls
+  /// never talk to the real backend either.
+  final SketchApiClient? sketchApi;
+
+  const AiModellingScreen({super.key, this.provider, this.documentApi, this.sketchApi});
 
   @override
   State<AiModellingScreen> createState() => _AiModellingScreenState();
@@ -66,11 +71,34 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
 
   AiGenerationPlan? _proposedPlan;
 
-  bool _validating = false;
-  AiPlanValidateResultDto? _validationResult;
-  String? _validationError;
+  bool _generating = false;
+  // Set while `_generating`, one entry per `_proposedPlan.steps` - drives
+  // the Review & Generate panel's pending -> in-progress -> done/failed
+  // progress list (`04-translator-and-execution.md`'s own "Progress UI"
+  // section).
+  List<TranslationStepStatus>? _stepStatuses;
+  // Only set on a `validationFailed` outcome - the pre-flight dry-run's
+  // own per-step report, shown the same way the old validation-only
+  // "Generate" used to.
+  List<AiPlanStepResultDto>? _validationFailureResults;
+  // Set once a translation run actually finishes (success or a real step
+  // failure) or the whole attempt errors out before a result even comes
+  // back (e.g. a network failure creating the Part).
+  PlanTranslationOutcome? _finishedOutcome;
+  String? _generateError;
+
+  // Persists across `_adjust()`/returning to chat mode (unlike the fields
+  // above, which are Review & Generate-panel-only) - "Undo this
+  // generation" (`04`'s own bolt-on) must stay offered even after a
+  // stopped run's error gets surfaced back into the chat transcript and
+  // the panel switches back to chatting.
+  String? _lastRunPartId;
+  List<String>? _lastRunCreatedFeatureIds;
+  bool _undoing = false;
+  String? _undoError;
 
   DocumentApiClient get _documentApi => widget.documentApi ?? DocumentApiClient();
+  SketchApiClient get _sketchApi => widget.sketchApi ?? SketchApiClient();
 
   @override
   void dispose() {
@@ -127,32 +155,120 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   void _adjust() {
     setState(() {
       _proposedPlan = null;
-      _validationResult = null;
-      _validationError = null;
+      _stepStatuses = null;
+      _validationFailureResults = null;
+      _finishedOutcome = null;
+      _generateError = null;
+      // `_lastRunPartId`/`_lastRunCreatedFeatureIds`/undo state deliberately
+      // NOT cleared here - see their own doc comment.
     });
   }
 
   Future<void> _generate() async {
     final plan = _proposedPlan;
-    if (plan == null || _validating) return;
+    if (plan == null || _generating) return;
     setState(() {
-      _validating = true;
-      _validationError = null;
-      _validationResult = null;
+      _generating = true;
+      _generateError = null;
+      _validationFailureResults = null;
+      _finishedOutcome = null;
+      _stepStatuses = List.filled(plan.steps.length, TranslationStepStatus.pending);
     });
     try {
       final part = await _documentApi.createPart('AI Modelling Part');
-      final result = await _documentApi.validateAiPlan(part.id, plan.toJson());
+      final translator = PlanTranslator(documentApi: _documentApi, sketchApi: _sketchApi);
+      final result = await translator.execute(
+        plan: plan,
+        partId: part.id,
+        onStepStatusChanged: (index, status) {
+          if (!mounted) return;
+          setState(() => _stepStatuses![index] = status);
+        },
+      );
       if (!mounted) return;
       setState(() {
-        _validating = false;
-        _validationResult = result;
+        _generating = false;
+        _finishedOutcome = result.outcome;
+        _validationFailureResults = result.validationResults;
+        if (result.createdFeatureIds.isNotEmpty) {
+          _lastRunPartId = part.id;
+          _lastRunCreatedFeatureIds = result.createdFeatureIds;
+        }
+      });
+      if (result.outcome == PlanTranslationOutcome.stepFailed ||
+          result.outcome == PlanTranslationOutcome.gearRequestEncountered) {
+        _appendStoppedRunToTranscript(plan, result);
+      }
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _generating = false;
+        _generateError = e.message;
+      });
+    }
+  }
+
+  /// `04-translator-and-execution.md`'s own "Real execution and failure
+  /// handling" section: on a real step failure (or a `gear_request` stop),
+  /// the error is appended to the chat transcript as a new turn and the
+  /// panel drops back into chat mode, so the user's next message resends
+  /// this as context the LLM can revise a plan for the remaining steps
+  /// against - same "next message replays the full transcript" mechanism
+  /// `02-scoping-conversation.md`'s "Adjust" already relies on, no extra
+  /// bookkeeping needed. Sent as a `user`-role turn (not `assistant`) since
+  /// this is real information being fed *to* the LLM, not something it
+  /// said - an `assistant`-role bubble here would misleadingly read as the
+  /// model reporting on its own execution.
+  void _appendStoppedRunToTranscript(AiGenerationPlan plan, PlanTranslationResult result) {
+    final summary = summarizeAiPlan(plan);
+    final nonPointSteps = plan.steps.where((s) => s is! AiSketchPointStep).toList();
+    final stepPosition = nonPointSteps.indexWhere((s) => s.localId == result.stoppedAtLocalId);
+    final description = stepPosition >= 0 && stepPosition < summary.length
+        ? '${stepPosition + 1}. ${summary[stepPosition]}'
+        : result.stoppedAtLocalId!;
+    final String text;
+    if (result.outcome == PlanTranslationOutcome.stepFailed) {
+      text = 'Execution stopped at step $description: ${result.errorMessage}\n\n'
+          'Every step before this one was created successfully and is still in the Part '
+          '(no automatic rollback - use "Undo this generation" to remove them, or continue '
+          'manually). Please propose a revised plan for the remaining steps.';
+    } else {
+      text = 'Execution stopped at step $description: this is a gear request, and AI '
+          "Modelling can't create one automatically yet - please use the Gear Design tool "
+          'separately for this part, or propose a revised plan that removes this step.\n\n'
+          'Every step before this one was created successfully and is still in the Part.';
+    }
+    setState(() {
+      _transcript = [..._transcript, AiChatMessage(role: AiMessageRole.user, text: text)];
+      _proposedPlan = null;
+      _stepStatuses = null;
+      _finishedOutcome = null;
+    });
+    _scrollToBottom();
+  }
+
+  Future<void> _undo() async {
+    final partId = _lastRunPartId;
+    final createdFeatureIds = _lastRunCreatedFeatureIds;
+    if (partId == null || createdFeatureIds == null || _undoing) return;
+    setState(() {
+      _undoing = true;
+      _undoError = null;
+    });
+    try {
+      final translator = PlanTranslator(documentApi: _documentApi, sketchApi: _sketchApi);
+      await translator.undo(partId: partId, createdFeatureIds: createdFeatureIds);
+      if (!mounted) return;
+      setState(() {
+        _undoing = false;
+        _lastRunPartId = null;
+        _lastRunCreatedFeatureIds = null;
       });
     } on ApiException catch (e) {
       if (!mounted) return;
       setState(() {
-        _validating = false;
-        _validationError = e.message;
+        _undoing = false;
+        _undoError = e.message;
       });
     }
   }
@@ -246,8 +362,10 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     setState(() {
       _transcript = transcript;
       _proposedPlan = plan;
-      _validationResult = null;
-      _validationError = null;
+      _stepStatuses = null;
+      _validationFailureResults = null;
+      _finishedOutcome = null;
+      _generateError = null;
     });
   }
 
@@ -281,6 +399,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
               textAlign: TextAlign.center,
             ),
           ),
+        if (_lastRunCreatedFeatureIds != null) _buildUndoBanner(),
         Expanded(
           child: ListView.builder(
             controller: _scrollController,
@@ -320,8 +439,18 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   }
 
   Widget _buildReviewAndGenerate(BuildContext context, AiGenerationPlan plan) {
+    // `summarizeAiPlan` skips `sketch_point` steps (they carry no shape of
+    // their own), but `_stepStatuses` is indexed against the raw,
+    // unfiltered `plan.steps` (matching `PlanTranslator.execute`'s own
+    // `onStepStatusChanged` callback, which walks every step for real
+    // execution) - `nonPointStepIndices[i]` maps `summary[i]` back to its
+    // real `plan.steps`/`_stepStatuses` index.
     final summary = summarizeAiPlan(plan);
-    final results = _validationResult?.results;
+    final statuses = _stepStatuses;
+    final nonPointStepIndices = [
+      for (var i = 0; i < plan.steps.length; i++)
+        if (plan.steps[i] is! AiSketchPointStep) i,
+    ];
     return Padding(
       padding: const EdgeInsets.all(16),
       child: Column(
@@ -335,13 +464,22 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
                 for (var i = 0; i < summary.length; i++)
                   Padding(
                     padding: const EdgeInsets.symmetric(vertical: 2),
-                    child: Text('${i + 1}. ${summary[i]}'),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (statuses != null) ...[
+                          _stepStatusIcon(statuses[nonPointStepIndices[i]]),
+                          const SizedBox(width: 6),
+                        ],
+                        Expanded(child: Text('${i + 1}. ${summary[i]}')),
+                      ],
+                    ),
                   ),
-                if (results != null) ...[
+                if (_validationFailureResults != null) ...[
                   const SizedBox(height: 16),
                   Text('Validation results', style: Theme.of(context).textTheme.titleMedium),
                   const SizedBox(height: 8),
-                  for (final r in results)
+                  for (final r in _validationFailureResults!)
                     Padding(
                       padding: const EdgeInsets.symmetric(vertical: 2),
                       child: Row(
@@ -353,13 +491,19 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
                         ],
                       ),
                     ),
-                  const SizedBox(height: 12),
-                  _buildValidationBanner(results),
                 ],
-                if (_validationError != null)
+                if (_finishedOutcome != null) ...[
+                  const SizedBox(height: 12),
+                  _buildOutcomeBanner(_finishedOutcome!, _validationFailureResults),
+                ],
+                if (_lastRunCreatedFeatureIds != null) ...[
+                  const SizedBox(height: 12),
+                  _buildUndoBanner(),
+                ],
+                if (_generateError != null)
                   Padding(
                     padding: const EdgeInsets.only(top: 12),
-                    child: Text(_validationError!, style: const TextStyle(color: Colors.redAccent)),
+                    child: Text(_generateError!, style: const TextStyle(color: Colors.redAccent)),
                   ),
               ],
             ),
@@ -377,8 +521,8 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
               const SizedBox(width: 8),
               Expanded(
                 child: FilledButton(
-                  onPressed: _validating ? null : _generate,
-                  child: _validating
+                  onPressed: _generating ? null : _generate,
+                  child: _generating
                       ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
                       : const Text('Generate'),
                 ),
@@ -390,16 +534,61 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     );
   }
 
-  Widget _buildValidationBanner(List<AiPlanStepResultDto> results) {
-    final failed = results.where((r) => !r.ok).length;
-    if (failed == 0) {
-      return const _Banner(
-        color: Colors.green,
-        text: 'Validated - ready to generate once Part generation (workstream 4) lands. '
-            'No Features have been created yet.',
-      );
+  Widget _stepStatusIcon(TranslationStepStatus status) => switch (status) {
+        TranslationStepStatus.pending => const SizedBox(
+            width: 18,
+            height: 18,
+            child: Icon(Icons.circle_outlined, size: 14, color: Colors.white38),
+          ),
+        TranslationStepStatus.inProgress =>
+          const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+        TranslationStepStatus.done => const Icon(Icons.check_circle, size: 18, color: Colors.green),
+        TranslationStepStatus.failed => const Icon(Icons.error, size: 18, color: Colors.redAccent),
+      };
+
+  Widget _buildOutcomeBanner(PlanTranslationOutcome outcome, List<AiPlanStepResultDto>? validationResults) {
+    switch (outcome) {
+      case PlanTranslationOutcome.success:
+        return const _Banner(color: Colors.green, text: 'Generated - every step created successfully.');
+      case PlanTranslationOutcome.validationFailed:
+        final failed = validationResults?.where((r) => !r.ok).length ?? 0;
+        final total = validationResults?.length ?? 0;
+        return _Banner(
+          color: Colors.redAccent,
+          text: '$failed of $total step(s) failed validation - nothing was created. See above.',
+        );
+      case PlanTranslationOutcome.stepFailed:
+      case PlanTranslationOutcome.gearRequestEncountered:
+        // Both of these switch the panel back to chat mode as soon as the
+        // run finishes (see `_appendStoppedRunToTranscript`), so this
+        // banner is never actually shown for them - kept exhaustive rather
+        // than a default case so a future outcome value can't silently
+        // fall through unbannered.
+        return const SizedBox.shrink();
     }
-    return _Banner(color: Colors.redAccent, text: '$failed of ${results.length} step(s) failed validation - see above.');
+  }
+
+  Widget _buildUndoBanner() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              _undoError ?? 'Undo removes every Feature this generation created.',
+              style: TextStyle(color: _undoError != null ? Colors.redAccent : Colors.white54),
+            ),
+          ),
+          const SizedBox(width: 8),
+          OutlinedButton(
+            onPressed: _undoing ? null : _undo,
+            child: _undoing
+                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Text('Undo this generation'),
+          ),
+        ],
+      ),
+    );
   }
 }
 

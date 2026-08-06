@@ -85,8 +85,12 @@ Each needs "sketch_feature_id" naming an earlier "sketch" step.
   spacing_1?, reverse_1?, direction_2?, count_2?, spacing_2?, reverse_2?,
   axis?, count_angular?, angle_total?, reverse_angular?, skip_indices?,
   merge:"keep_separate"|"fuse_into_one", tool_feature_id?}
-  direction_1/direction_2/axis are each either {"fixed_axis":"x"|"y"|"z"}
-  or {"sketch_line_ref": <local_id>} - exactly one of the two.
+  direction_1/direction_2 are each either {"fixed_axis":"x"|"y"|"z"} or
+  {"sketch_line_ref": <local_id>} - exactly one of the two. axis (only
+  used for circular patterns) is different - a Circular pattern rotates
+  around a real pivot point, not just a direction, so it must always be
+  {"sketch_line_ref": <local_id>} - never a fixed_axis (there is no fixed-
+  world-axis option for this field at all).
 - mirror: {local_id, kind:"mirror", source_body_ids: [...], mirror_plane:
   {"fixed_plane":"XY"|"XZ"|"YZ"} or {"plane_feature_id": <local_id>},
   merge:"keep_separate"|"fuse_into_one", tool_feature_id?}

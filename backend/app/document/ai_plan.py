@@ -34,6 +34,7 @@ that narrower set), a `fillet.edges.of`/`target_body_ids`/
 a `sketch`, `create_plane`, `fillet`, or `chamfer` step).
 """
 
+import math
 import uuid
 from dataclasses import dataclass
 
@@ -65,6 +66,7 @@ from app.document.ai_plan_schemas import (
     StepResult,
     SweepStep,
 )
+from app.document.schemas import SubShapeRefSchema
 from app.document.chamfer import resolve_chamfer
 from app.document.create_plane import resolve_create_plane
 from app.document.extrude import compute_part_bodies, resolve_feature_tool_shape
@@ -143,6 +145,10 @@ class _Resolved:
     point_id: str | None = None  # real Point id (sketch_point steps only)
     entity_id: str | None = None  # real entity id (other sketch-entity steps)
     owning_sketch_id: str | None = None  # the real Sketch id a point/entity belongs to
+    # fillet/chamfer steps only - see `StepResult.resolved_edges`'s own doc
+    # comment for why `body_id` here is a local_id, not this scratch pass's
+    # own Feature id.
+    resolved_edges: list[SubShapeRefSchema] | None = None
 
 
 class _PlanValidator:
@@ -168,7 +174,9 @@ class _PlanValidator:
             if not isinstance(detail, dict):
                 detail = {"type": "error", "message": str(detail)}
             return StepResult(local_id=step.local_id, ok=False, error=detail)
-        return StepResult(local_id=step.local_id, ok=True)
+        resolved = self.resolved.get(step.local_id)
+        resolved_edges = resolved.resolved_edges if resolved is not None else None
+        return StepResult(local_id=step.local_id, ok=True, resolved_edges=resolved_edges)
 
     def _lookup(self, local_id: str, expected_kinds: frozenset[str], field: str) -> _Resolved:
         if local_id in self.failed:
@@ -245,8 +253,9 @@ def _handle_sketch_line(v: _PlanValidator, step: SketchLineStep) -> None:
     end_point_id = None
     if step.end_point_id is not None:
         end_point_id = v._lookup(step.end_point_id, frozenset({"sketch_point"}), "end_point_id").point_id
+    angle_radians = None if step.angle is None else math.radians(step.angle)
     try:
-        line = sketch.add_line(start.point_id, end_point_id, length=step.length, angle=step.angle, construction=step.construction)
+        line = sketch.add_line(start.point_id, end_point_id, length=step.length, angle=angle_radians, construction=step.construction)
     except (KeyError, ValueError, TypeError) as exc:
         raise _StepError({"type": "invalid_geometry", "message": str(exc)}) from exc
     v.resolved[step.local_id] = _Resolved(
@@ -261,9 +270,10 @@ def _handle_sketch_circle(v: _PlanValidator, step: SketchCircleStep) -> None:
     radius_point_id = None
     if step.radius_point_id is not None:
         radius_point_id = v._lookup(step.radius_point_id, frozenset({"sketch_point"}), "radius_point_id").point_id
+    angle_radians = None if step.angle is None else math.radians(step.angle)
     try:
         circle = sketch.add_circle(
-            center.point_id, radius_point_id, radius=step.radius, angle=step.angle, construction=step.construction
+            center.point_id, radius_point_id, radius=step.radius, angle=angle_radians, construction=step.construction
         )
     except (KeyError, ValueError, TypeError) as exc:
         raise _StepError({"type": "invalid_geometry", "message": str(exc)}) from exc
@@ -278,9 +288,10 @@ def _handle_sketch_arc(v: _PlanValidator, step: SketchArcStep) -> None:
     end_point_id = None
     if step.end_point_id is not None:
         end_point_id = v._lookup(step.end_point_id, frozenset({"sketch_point"}), "end_point_id").point_id
+    end_angle_radians = None if step.end_angle is None else math.radians(step.end_angle)
     try:
         arc = sketch.add_arc(
-            center.point_id, start.point_id, end_point_id, end_angle=step.end_angle, construction=step.construction
+            center.point_id, start.point_id, end_point_id, end_angle=end_angle_radians, construction=step.construction
         )
     except (KeyError, ValueError, TypeError) as exc:
         raise _StepError({"type": "invalid_geometry", "message": str(exc)}) from exc
@@ -294,12 +305,13 @@ def _handle_sketch_ellipse(v: _PlanValidator, step: SketchEllipseStep) -> None:
     major_point_id = None
     if step.major_point_id is not None:
         major_point_id = v._lookup(step.major_point_id, frozenset({"sketch_point"}), "major_point_id").point_id
+    angle_radians = None if step.angle is None else math.radians(step.angle)
     try:
         ellipse = sketch.add_ellipse(
             center.point_id,
             major_point_id,
             major_radius=step.major_radius,
-            angle=step.angle,
+            angle=angle_radians,
             minor_radius=step.minor_radius,
             construction=step.construction,
         )
@@ -453,32 +465,43 @@ def _handle_sweep(v: _PlanValidator, step: SweepStep) -> None:
 # --- Fillet / Chamfer ----------------------------------------------------
 
 
-def _resolve_edges(v: _PlanValidator, edges) -> tuple[str, list]:
+def _resolve_edges(v: _PlanValidator, edges) -> tuple[list, list[SubShapeRefSchema]]:
+    """Returns both the real `SubShapeRef`s (for this scratch pass's own
+    `resolve_fillet`/`resolve_chamfer` structural check) and their
+    `StepResult.resolved_edges` wire counterpart, with `body_id` rewritten
+    from this pass's own scratch Feature id back to `edges.of`'s plan
+    local_id (plus any `#N` multi-solid suffix `_resolve_body_shape`
+    added) - see that field's own doc comment."""
     target = v._lookup_body(edges.of, "edges.of")
     bodies = compute_part_bodies(v.part, frozenset())
     body_id, body_shape = v._resolve_body_shape(bodies, target.feature_id)
     edge_refs = resolve_edge_selector(body_shape, body_id, edges.selector, edges.direction)
-    return body_id, edge_refs
+    suffix = body_id[len(target.feature_id) :]
+    resolved_edges = [
+        SubShapeRefSchema(body_id=f"{edges.of}{suffix}", shape_type=ref.shape_type, index=ref.index)
+        for ref in edge_refs
+    ]
+    return edge_refs, resolved_edges
 
 
 def _handle_fillet(v: _PlanValidator, step: FilletStep) -> None:
     if step.radius <= 0:
         raise _StepError({"type": "invalid_step_payload", "message": "radius must be greater than 0"})
-    _body_id, edge_refs = _resolve_edges(v, step.edges)
+    edge_refs, resolved_edges = _resolve_edges(v, step.edges)
     feature = FilletFeature(id=str(uuid.uuid4()), edge_refs=edge_refs, radius=step.radius)
     resolve_fillet(v.part, feature)
     v.part.add_feature(feature)
-    v.resolved[step.local_id] = _Resolved(kind="fillet", feature_id=feature.id)
+    v.resolved[step.local_id] = _Resolved(kind="fillet", feature_id=feature.id, resolved_edges=resolved_edges)
 
 
 def _handle_chamfer(v: _PlanValidator, step: ChamferStep) -> None:
     if step.distance <= 0:
         raise _StepError({"type": "invalid_step_payload", "message": "distance must be greater than 0"})
-    _body_id, edge_refs = _resolve_edges(v, step.edges)
+    edge_refs, resolved_edges = _resolve_edges(v, step.edges)
     feature = ChamferFeature(id=str(uuid.uuid4()), edge_refs=edge_refs, distance=step.distance)
     resolve_chamfer(v.part, feature)
     v.part.add_feature(feature)
-    v.resolved[step.local_id] = _Resolved(kind="chamfer", feature_id=feature.id)
+    v.resolved[step.local_id] = _Resolved(kind="chamfer", feature_id=feature.id, resolved_edges=resolved_edges)
 
 
 # --- Pattern / Mirror / Create Plane -------------------------------------
@@ -498,10 +521,6 @@ def _direction_ref(v: _PlanValidator, step: PatternDirectionStep | None, field: 
 def _axis_ref(v: _PlanValidator, step: PatternAxisStep | None, field: str) -> PatternAxisRef | None:
     if step is None:
         return None
-    if (step.fixed_axis is None) == (step.sketch_line_ref is None):
-        raise _StepError({"type": "invalid_step_payload", "message": f"{field} requires exactly one of fixed_axis or sketch_line_ref"})
-    if step.fixed_axis is not None:
-        return PatternAxisRef(fixed_axis=step.fixed_axis)
     line = v._lookup(step.sketch_line_ref, frozenset({"sketch_line"}), field)
     return PatternAxisRef(sketch_line_ref=v._entity_ref(line, SketchEntityType.LINE))
 

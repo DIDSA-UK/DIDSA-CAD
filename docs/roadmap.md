@@ -45,8 +45,14 @@ existing "3D Part Design"/"2D Drawing"/"Gear Design" tiles on
 `ToolChooserScreen`) - a user describes a part in plain English, an LLM
 asks clarifying questions to scope it, then a client-side translator turns
 the resulting structured plan into a real Feature-tree part via this
-app's own Sketch/Feature API. **Status: scoped, not started** - this is
-the output of an investigation/brainstorm session, no code written yet.
+app's own Sketch/Feature API. **Status: first end-to-end usable version
+done** (workstreams 1-5 all built and tested; see `README.md`'s own
+delivery-order table) - every step kind except `gear_request` (detected
+and surfaced, not auto-executed - a real, deliberate gap, see
+`04-translator-and-execution.md`'s "Real scope of `gear_request`
+handling") goes from a plain-English request to a real Feature-tree part.
+On-device feedback and the `gear_request` full hand-off remain, per that
+same table.
 Key decisions: client-direct (Flutter calls the chosen AI provider - local
 or cloud - directly; no new backend AI-brokering endpoint), a structured
 JSON plan + deterministic client-side translator rather than freeform
