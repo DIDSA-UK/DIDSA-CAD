@@ -48,8 +48,10 @@ real backend call happens.
 
 ## Open design problem: edge selection for Fillet/Chamfer
 
-**Not resolved by this scoping session — needs its own design pass before
-implementation starts on this workstream.**
+**Resolved by real spike 2 testing (2026-08-06) — see "Spike 2 findings"
+below.** Left as originally written immediately below for the reasoning
+that led there; the spike confirmed option (b)'s specific selector
+definitions work against real OCCT geometry, not just in the abstract.
 
 Fillet/Chamfer's `edge_refs` are `SubShapeRef`s (`body_id` + `shape_type`
 + `index`) that only exist after a Body has been computed/tessellated by
@@ -87,6 +89,91 @@ own "tap a face to select its whole edge loop" UI already consumes, per
 `document_api_client.dart`'s own `MeshDto.faceEdgeIds` doc comment — a
 real, existing precedent to build the heuristic set against, not a cold
 start).
+
+## Spike 2 findings (2026-08-06): edge-selector heuristics, confirmed against real OCCT geometry
+
+Run in a freshly-bootstrapped real backend environment (`miniforge` +
+`mamba env create -f backend/environment.yml`, same recipe this
+project's own bevel-gear spike used previously — no sandbox/session so
+far had `pythonocc-core` installed until this one; built it rather than
+working around its absence). Full existing backend test suite re-run
+against the fresh environment first to confirm it wasn't itself the
+source of any finding below: **1527 passed, 0 failed** (`pytest -n
+auto`, 3:59 wall-clock). Script itself is scratch, not committed, per
+this project's
+spike convention - built a real `BRepPrimAPI_MakeBox` shape, tessellated
+it via the real `app.document.mesh.tessellate_shape`, and derived
+selector logic purely from the same `MeshData` fields a real client
+response already carries (`triangles`/`normals`/`face_ids`/`edges`/
+`edge_ids`/`face_edge_ids`) - no shortcut access to OCCT face/edge
+objects the real client-side translator wouldn't also have.
+
+**Concrete selector definitions, confirmed working:**
+
+- **`top_face_edges` / `bottom_face_edges`**: the face whose *triangle-
+  centroid average* has the max/min Z, then that face's own
+  `face_edge_ids` entry. Needs only `face_ids` + `vertices` (for the
+  centroid) + the existing `face_edge_ids` array - no new mesh data.
+- **`vertical_edges`**: an edge where *every* one of its polyline
+  segments keeps (x, y) constant across both endpoints (checking every
+  segment, not just first-to-last endpoints, so a curved-but-vertical
+  edge - not possible on an axis-aligned box, but a real generalization
+  - wouldn't false-negative). Needs only `edges` + `edge_ids`.
+- **`all_edges_of_face_at_position: <direction>`**: generalizes top/
+  bottom to any of the 6 cardinal directions (`+X`/`-X`/`+Y`/`-Y`/`+Z`/
+  `-Z` for now) - the face whose *triangle-normal average* has the
+  highest dot product with the requested direction, rejecting if no
+  face's normal is within a tolerance of it (handles a shape with no
+  face actually facing that way, e.g. after a chamfer removed it).
+  `top_face_edges`/`bottom_face_edges` are just this selector fixed to
+  `+Z`/`-Z` - one implementation, not two.
+
+**Case 1 (plain 60×40×10 box, matching spike 1's own test dimensions for
+continuity)**: all three selectors resolved correctly and **exactly
+partitioned the box's 12 real edges with zero overlap** - 4 top-perimeter
++ 4 bottom-perimeter + 4 vertical, matching real box topology exactly
+(each vertical edge is shared by two *side* faces, never top/bottom, so
+this partition isn't a coincidence of a simple shape - it's the actual
+topology). `all_edges_of_face_at_position(+X)` also resolved to the
+correct 4-edge face.
+
+**Case 2 (the realistic multi-step stress test - not in the original
+spike-2 brief, added because it's the actual use case that matters):**
+applied a **real fillet** (radius 2mm) to the box's own `top_face_edges`
+result first (resolving the selector to real `TopoDS_Edge`s and calling
+`BRepFilletAPI_MakeFillet`, not a shortcut), producing a body with 10
+faces and 20 edges (the rounded corners add new fillet-surface faces and
+edges). Then ran `vertical_edges` **against that already-modified body**
+- correctly found exactly 4 vertical edges again, none of them
+mistakenly picking up any of the new fillet-arc edges. This is the case
+that actually matters for a real multi-step plan ("fillet the top edges,
+then chamfer the vertical edges") - confirms the heuristic isn't only
+correct against a pristine, single-feature body.
+
+**Consequence**: the "Open design problem" above is resolved for v1's
+selector set (`top_face_edges`, `bottom_face_edges`, `vertical_edges`,
+`all_edges_of_face_at_position`) - option (b) is confirmed workable
+against real geometry, not just theoretically preferred. Workstream 3's
+schema can lock these four selectors as-is. **Not yet tested**: a
+non-axis-aligned or curved-primary-geometry shape (e.g. a shape built on
+a rotated `CreatePlaneFeature`, or a cylinder where "vertical" isn't
+obviously the right concept at all) - the selector definitions above are
+written in world-space X/Y/Z, which is correct for everything in v1's
+own scope (Sketches only exist on XY/XZ/YZ fixed planes or a
+`CreatePlaneFeature`, and `vertical_edges`/`top_face_edges` are natural
+concepts for boxy, extruded-along-Z-ish parts) but would need
+revisiting before ever generalizing past that.
+
+**Environment note for future sessions**: this environment now has a
+real `didsacad` conda env at `/tmp/miniforge` with `pythonocc-core`
+installed - but per this container's own ephemeral-session lifecycle,
+that's **not persisted** and won't exist in a future session. The
+bootstrap recipe (`miniforge` installer via GitHub release asset
+redirect - `micro.mamba.pm` itself is blocked, but
+`github.com/.../releases/latest/download/...` works through this
+session's proxy - then `mamba env create -f backend/environment.yml`)
+is worth keeping as the known-working recipe for the next session that
+needs real OCCT, rather than rediscovering it.
 
 ## Excluded on purpose
 
