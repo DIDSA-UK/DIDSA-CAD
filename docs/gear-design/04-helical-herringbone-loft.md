@@ -291,3 +291,141 @@ if no guide curve is set. See `docs/status.md`'s own "guide curves +
 vertex-to-vertex alignment" entry for the full design, scope (an honest,
 narrower v1 - one point per section, not a full multi-point surface
 reshape), and verification-status detail.
+
+## 2026-08-06 addendum — real reported bug: wrong vertex correspondence at a large helix angle, root cause + fix, root fillet added
+
+A real user reported a helical gear built at a large helix angle (~45deg)
+lofting a tooth's tip vertex on one end section to a *different* tooth's
+root vertex on the other, and separately suspected the rendered twist
+didn't match the `helix_angle_degrees` they entered (screenshot: visibly
+crossed/self-intersecting-looking tooth side faces, not a clean helicoid).
+Investigated without shipping the fix blind - both the root-cause
+diagnosis and the fix below are backed by OCCT's own documented behaviour
+(below), not just plausible reasoning, though (same sandbox constraint as
+every other entry in this file) neither has run against a real
+`pythonocc-core` build yet - see "Verification status" at the end of this
+addendum.
+
+### Root cause: `BRepOffsetAPI_ThruSections`' default `CheckCompatibility(True)`
+
+The 2026-08-04 spike above (Result 1) tested whether `ThruSections`'
+vertex correspondence between two wires depends on wire edge-traversal
+order, and found it doesn't - concluding "no wire-reordering step... is
+needed" for the rotated-copy helical-tooth technique. That spike's own
+tests, though, only ever checked (a) whether *re-indexing* a wire's start
+vertex (no real rotation) changes anything (it doesn't), and (b) whether
+the resulting solid is *self-intersection-free* at a given real twist
+(Result 3 - checked up to 1080°, clean every time). Neither check actually
+confirmed the loft's own internal correspondence matches the *intended*
+rotation at large twist - both a self-intersection-free loft and a loft
+whose correspondence has silently snapped to a neighbouring tooth are
+`IsDone()`-valid, real, closed, buildable shapes; the second one is just
+wrong. That gap is exactly where this bug lives, and it's why the existing
+`test_helical_herringbone_gear.py` suite didn't catch it either - every
+existing helical test only samples the loft's own two *end* sections (the
+wires actually fed into `ThruSections`, which are correct and unaffected
+by whatever correspondence the loft chooses to connect them with), never
+the interior lateral surface a wrong correspondence would visibly corrupt.
+
+`BRepOffsetAPI_ThruSections` has a `CheckCompatibility(Standard_Boolean)`
+flag, on (`True`) by default, documented (OCCT forum/docs) as: it "sets/
+unsets the option to compute origin and orientation on wires to avoid
+twisted results and update wires to have the same number of edges. The
+algorithm by default tries to avoid twisting of the resulting shape by
+modifying the wires, though this procedure often fails." In other words:
+by default, `ThruSections` doesn't trust the caller's own wire edge order
+at all - it *searches* for whichever vertex-to-vertex correspondence
+between the two wires produces the *least apparent twist* in the
+resulting surface, on the theory that this is usually what a caller
+actually wants (most callers feeding it two independently-drawn, not-
+deliberately-pre-rotated profiles do want the "obvious", least-twisted
+match). For a real gear tooth's own profile - highly repetitive, every
+tooth nearly identical to its neighbour, just rotated by one angular tooth
+pitch (`360°/tooth_count`) - that "least apparent twist" search has a real
+false-minimum problem once the *true, intended* twist exceeds roughly half
+an angular tooth pitch: connecting a tip vertex to a *neighbouring*
+tooth's differently-shaped point can measure out as a smaller apparent
+twist than connecting it to its own, correctly-twisted counterpart, and
+the search takes it. This directly explains both parts of the report: the
+visibly wrong/crossed geometry (the loft's own chosen correspondence is
+geometrically wrong, not just cosmetically odd), and the "twist doesn't
+match my input" impression (the algorithm has, in a real and literal
+sense, substituted a *smaller* twist than requested by picking a
+different, wrong match) - not an optical illusion, a real consequence of
+the same root cause.
+
+Confirms this session's own math check separately: `gear_math.
+helical_twist_angle` (`face_width * tan(helix_angle) / pitch_radius`) is
+the standard, correct relation and was not the bug - re-verified by
+inspection, not changed.
+
+### Fix: `CheckCompatibility(False)`
+
+`app.document.gear._twisted_tooth_loft` now calls `loft_maker.
+CheckCompatibility(False)` before `Build()`. This is safe specifically
+because (unlike a general two-arbitrary-profiles Loft) the two wires here
+are *always* built by the exact same code path (`_gear_outline_wire`),
+same tooth/flank/point order, same edge count (`4 * tooth_count`,
+identical regardless of twist) - the correspondence this codebase actually
+wants (edge *i* of the bottom wire ↔ edge *i* of the top wire, which is
+already the *correct*, intentional correspondence given how the twist is
+baked into each wire's own basis - see `_twisted_basis`) already matches
+exactly what `CheckCompatibility(False)` makes `ThruSections` trust
+directly, once its own "avoid twisting" search is turned off.
+
+This incidentally also resolves this file's own 2026-08-04 "Still open"
+note about the general `LoftFeature`'s `reference_point`-driven alignment
+not actually steering `ThruSections`' own correspondence for *dissimilar*
+profiles: `CheckCompatibility(False)` requires equal edge counts across
+sections (per the OCCT docs above), which the general Loft can't always
+guarantee (two arbitrarily different Sketch profiles), so this fix is
+applied to the gear-specific loft only, not to `app.document.loft`
+wholesale - but it's now a real, evidenced technique the general Loft
+could opt into whenever it can already guarantee matching edge counts (a
+concrete follow-up, not attempted this pass).
+
+### Root fillet, added
+
+`GearFeature.root_fillet_radius` was previously unconditionally ignored
+(with a warning) for a helical/herringbone tooth, on the belief that
+`BRepOffsetAPI_ThruSections` has no `BRepPrimAPI_MakePrism.Generated()`-
+equivalent vertex-history to hang a fillet off. That belief turned out to
+be based on assumption, not a real check against the OCCT API -
+`ThruSections`, like every `BRepBuilderAPI_MakeShape` subclass, does
+implement real shape history (`BRepOffsetAPI_ThruSections::Generated` is a
+real override, backed by `BRepTools_History`, reporting exactly "which
+lateral rib edge did this input vertex generate"). `app.document.gear.
+_apply_root_fillet_to_loft` reuses `_apply_root_fillet`'s exact idiom (map
+a known root-corner vertex to its `Generated()` lateral edge, fillet that
+edge, fall back to unfilleted-with-a-warning if the fillet doesn't
+converge) against `ThruSections` instead of `BRepPrimAPI_MakePrism` - the
+one real difference is the generated edge is a genuinely curved/twisted 3D
+edge for a helical tooth rather than a straight vertical one, which
+`BRepFilletAPI_MakeFillet.Add` doesn't need to know or care about. A
+herringbone gear fillets each of its two lofted halves separately (using
+each half's own *outer* root-corner vertices) before the boolean Fuse that
+joins them - a Fuse has no `Generated()` history of its own to chain a
+fillet off afterward, and the shared mid-plane seam between the two halves
+is deliberately left unfilleted, matching where a real hobbed herringbone
+gear's own root actually has a reversal, not a rounded corner.
+
+### Verification status
+
+Same constraint as every other entry in this file: this sandbox has no
+working `pythonocc-core` (`conda-forge`'s package index is reachable, but
+the `micromamba` bootstrap binary itself - hosted as a GitHub Releases
+asset - is blocked by this sandbox's own egress policy; `pip install
+pythonocc-core` has no wheel to fall back on either). Both the
+`CheckCompatibility(False)` fix and the new loft-fillet support are backed
+by real, cited OCCT documentation of the exact mechanism involved (not
+just plausible-sounding reasoning), and are verified in this sandbox by
+`py_compile`/`ruff check` (clean) plus careful manual review against this
+codebase's own existing `_apply_root_fillet`/`_twisted_tooth_loft` idioms
+- but, like every other genuinely new OCCT technique in this project, need
+a real on-device/CI `pythonocc-core` pass (this repo's CI does have it)
+before being fully trusted. A new regression test,
+`test_helical_gear_mid_height_cross_section_matches_interpolated_twist_at_a_large_helix_angle`
+(`test_helical_herringbone_gear.py`), specifically targets the gap the
+existing test suite had - sampling an *interior* cross-section rather than
+just the loft's own two end sections - so a real CI run of this suite is
+what actually closes this out, not this addendum by itself.
