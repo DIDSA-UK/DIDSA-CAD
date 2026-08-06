@@ -50,16 +50,27 @@ shape. Covers **two** of the three configured provider slots:
 - **OpenAI cloud**: `baseUrl` fixed to `https://api.openai.com/v1`,
   `apiKey` required.
 - **Local**: `baseUrl` user-entered (e.g. `http://192.168.1.50:11434/v1`
-  for Ollama's own OpenAI-compatible endpoint), `apiKey` optional, `model`
-  whatever the user has pulled locally. **Not strictly LAN-only in
-  practice**: Ollama Cloud (a hosted, GPU-metered service with a genuine
-  $0 tier) speaks the same Ollama API surface — a user can point this
-  same `baseUrl` field at Ollama Cloud instead of a real local server and
-  reach frontier-scale open-weight models (GLM, DeepSeek, Kimi) too large
-  to self-host, with zero code difference from a genuine local endpoint.
-  Worth a one-line mention in the settings screen itself alongside the
-  reachability caveat below, since it's a real, low-cost escape hatch
-  from needing local hardware at all.
+  for a real, self-hosted Ollama instance's own OpenAI-compatible
+  endpoint), `apiKey` optional, `model` whatever the user has pulled
+  locally.
+  - **Correction/refinement**: Ollama Cloud does **not** require a local
+    Ollama install or LAN reachability at all — its OpenAI-compatible
+    endpoint is directly reachable at `https://ollama.com/v1` with an
+    `apiKey` from ollama.com, exactly like OpenAI/Anthropic cloud are.
+    (An earlier version of this note assumed it always needed a local
+    daemon acting as an authenticated proxy — that path also exists
+    [`ollama signin` + `http://localhost:11434/v1`], but is strictly
+    worse than the direct path for a client with no reachable local/LAN
+    host, e.g. a phone-only client with no server infra stood up yet.)
+    This makes Ollama Cloud a genuine fourth quasi-cloud option
+    reachable from the exact same `OpenAiCompatibleProvider`
+    implementation — frontier-scale open-weight models (GLM, DeepSeek,
+    Kimi) at zero cost, zero local component, `baseUrl`/`apiKey` filled
+    in like any other cloud provider despite living in the "local"
+    conceptual bucket (open-weight models) rather than the curated
+    OpenAI/Anthropic slot. Worth surfacing as its own preset option in
+    the settings screen rather than only documented as a manual
+    local-`baseUrl` override.
 
 `supportsStructuredOutput` for this implementation: `true` for OpenAI
 cloud (JSON mode is a real, documented feature there); for local, treat as

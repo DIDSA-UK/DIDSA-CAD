@@ -65,25 +65,38 @@ same purpose the gear design tool's own pre-build spikes served:
 Options confirmed for spike 1 (checked mid-2026 — re-verify before use,
 these terms shift often):
 
-- **Ollama Cloud** ($0 free tier, GPU-time metered, no payment info
-  required to sign in) proxies frontier-scale open-weight models — GLM-
-  5.2, DeepSeek-V4-Pro, Kimi-K2.6 — too large for real local hardware,
-  through the **same Ollama API surface** the local-provider slot already
-  targets. Point the local-provider `baseUrl` at Ollama Cloud's endpoint
-  instead of a real local server for free testing against frontier-class
-  open models with zero new code — see `01-provider-abstraction.md`'s own
-  cross-reference note. This also means the local-provider slot isn't
-  strictly LAN-only in practice, a genuine architectural nuance beyond
-  just a way to save money on this spike.
+**No local install or LAN/server infra needed for any of these** — all
+pure HTTPS APIs, directly reachable from a phone-only client with nothing
+stood up yet:
+
+- **Ollama Cloud** — genuine, ongoing $0 tier, **no local Ollama install
+  required**: reachable directly at `https://ollama.com/v1` with an
+  `apiKey` from ollama.com, exactly like OpenAI/Anthropic cloud (a local-
+  daemon-proxy path also exists — `ollama signin` +
+  `http://localhost:11434/v1` — but isn't needed and is strictly worse
+  when there's no reachable local/LAN host). Reaches frontier-scale
+  open-weight models too large to self-host — GLM-5.2, DeepSeek-V4-Pro,
+  Kimi-K2.6 — through `OpenAiCompatibleProvider` with zero new code. See
+  `01-provider-abstraction.md`'s own note — worth its own preset option
+  in the settings screen rather than only a manual local-`baseUrl`
+  override, given it isn't really "local" at all in practice.
 - **Google Gemini** and **Groq** both have real, ongoing (not one-time)
   free tiers and both speak the OpenAI-compatible dialect
-  `OpenAiCompatibleProvider` already implements — zero new code, good for
-  the "realistic cloud model" side of the spike without spending
-  Anthropic's one-time credit.
-- **DeepSeek, Kimi (Moonshot), GLM (Zhipu)**: all open-weight, all
-  OpenAI-compatible on their own hosted APIs, all confirmed structured-
-  output/tool-calling support — cheap even where not free, and reachable
+  `OpenAiCompatibleProvider` already implements — zero new code. Gemini
+  has the more generous token allowance (~250k tokens/min); Groq the
+  higher daily request count (~14,400/day).
+- **Zhipu/GLM**: two of its smaller models — GLM-4.5-Flash and
+  GLM-4.7-Flash — are priced at $0 **permanently**, not a time-limited
+  trial, on Zhipu's own official API. A genuine fourth always-free
+  option, direct HTTPS, no local component.
+- **DeepSeek**: a one-time 5M-token trial grant (~30 days) on sign-up,
+  not an ongoing free tier — fine for a single concentrated testing
+  burst, then a payment method is required. Still reachable indefinitely
   via Ollama Cloud's free tier regardless, per the point above.
+- **Kimi (Moonshot)**: **no free tier on its own API at all** (only the
+  consumer chat app is free; API access needs a minimum $1 top-up) —
+  drop this from the free-testing list; still reachable via Ollama
+  Cloud's free tier if wanted.
 - **Qwen (Alibaba)**: worth including in the spike for two different
   reasons — the only one of these confirmed to run practically on modest
   *actual* local hardware (not just "open weight" in the abstract, real
