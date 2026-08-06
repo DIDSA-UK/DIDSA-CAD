@@ -13,14 +13,30 @@ abstract class AiProvider {
   /// time (see 02's own note on why: providers themselves are stateless
   /// HTTP APIs regardless of client-direct vs. backend-broker, so this
   /// isn't a cost specific to the client-direct decision).
-  Future<AiTurnResult> sendScopingTurn(List<AiChatMessage> transcript);
+  Future<AiTurnResult> sendScopingTurn(List<AiChatMessage> transcript, {String? systemPrompt});
 
   /// What this configured provider can be relied on for - drives UI
   /// gating (workstream 2's "is this provider ready to receive a plan
   /// request" and workstream 6's future image-upload gating).
   AiProviderCapabilities get capabilities;
 }
+```
 
+**Correction (workstream 1 implementation)**: the interface as originally
+written above took only `transcript` - but `AnthropicProvider`'s own
+section below already describes translating "`system` as a top-level field
+rather than a message role," which presupposes a system prompt exists
+somewhere. Nothing in the original spec actually threaded workstream 2's
+system prompt through this call. Fixed by adding the optional
+`systemPrompt` parameter shown above: `OpenAiCompatibleProvider` sends it
+as a leading `role: "system"` entry in the wire-level `messages` array (a
+wire-level role, not one of `AiMessageRole`'s two values -
+`AiChatMessage` still only models user/assistant turns),
+`AnthropicProvider` sends it as the native top-level `system` field.
+Workstream 2 passes its constructed system prompt here directly; it never
+has to know which wire shape it becomes.
+
+```dart
 class AiChatMessage {
   final AiMessageRole role; // user | assistant
   final String text;

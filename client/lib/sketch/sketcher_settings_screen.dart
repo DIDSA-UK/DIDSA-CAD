@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../ai/ai_provider_settings_screen.dart';
 import '../viewport3d/view_preferences.dart';
 import 'sketcher_preferences.dart';
 
@@ -96,6 +97,24 @@ class _SketcherSettingsScreenState extends State<SketcherSettingsScreen> {
                   title: const Text('Show camera orientation readout'),
                   value: _debugShowCameraOrientation,
                   onChanged: _onDebugShowCameraOrientationChanged,
+                ),
+                const SizedBox(height: 24),
+                Text('AI Modelling', style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 4),
+                Text(
+                  "Which AI provider (local/Ollama, OpenAI, or Anthropic) the AI "
+                  "Modelling scoping conversation sends requests to, and each "
+                  "provider's own connection details.",
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 12),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('AI Provider Settings'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const AiProviderSettingsScreen()),
+                  ),
                 ),
               ],
             ),
