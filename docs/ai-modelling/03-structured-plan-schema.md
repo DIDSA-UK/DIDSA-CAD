@@ -1,8 +1,15 @@
 # Workstream 3: Structured Plan Schema
 
-Read `00-conventions.md` first. No dependencies, but this is the riskiest,
-most foundational artifact in the whole doc set — resolve its own flagged
-open problem (below) before locking the schema for real implementation.
+Read `00-conventions.md` first.
+
+**Locked (this session)**: the schema below is the final, authoritative
+shape — real Pydantic models in `backend/app/document/ai_plan_schemas.py`,
+which is now the actual source of truth; this section is a summary of it,
+not a second independent spec. The "Open design problem" this file used
+to carry (edge selection for Fillet/Chamfer) is resolved — see "Edge
+selection for Fillet/Chamfer" below. Workstream 5's validate endpoint
+(`backend/app/document/ai_plan.py`) implements and exercises every `kind`
+value against real OCCT geometry (`backend/tests/test_ai_plan_validate.py`).
 
 ## Shape
 
@@ -11,12 +18,16 @@ open problem (below) before locking the schema for real implementation.
   "version": 1,
   "steps": [
     { "local_id": "sk1", "kind": "sketch", "plane": "XY" },
-    { "local_id": "e1", "kind": "sketch_rectangle", "sketch": "sk1",
-      "corner": [0, 0], "width": 60, "height": 40 },
-    { "local_id": "f1", "kind": "extrude", "profile": "e1",
-      "start_distance": 0, "end_distance": 10, "mode": "boss" },
-    { "local_id": "f2", "kind": "fillet", "edges": { "selector": "top_face_edges", "of": "f1" },
-      "radius": 5 }
+    { "local_id": "p1", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 0, "y": 0 },
+    { "local_id": "p2", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 60, "y": 0 },
+    { "local_id": "p3", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 60, "y": 40 },
+    { "local_id": "p4", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 0, "y": 40 },
+    { "local_id": "r1", "kind": "sketch_rectangle", "sketch_feature_id": "sk1",
+      "corner_point_ids": ["p1", "p2", "p3", "p4"] },
+    { "local_id": "f1", "kind": "extrude", "sketch_feature_id": "sk1",
+      "extrude_type": "boss", "start_distance": 0, "end_distance": 10 },
+    { "local_id": "f2", "kind": "fillet",
+      "edges": { "selector": "top_face_edges", "of": "f1" }, "radius": 5 }
   ]
 }
 ```
@@ -25,20 +36,58 @@ Every step has a `local_id` (plan-local, never a real backend id — nothing
 is created until the translator runs, per `00-conventions.md`) and a
 `kind`. Later steps reference earlier ones by `local_id`.
 
+**Naming convention (locked)**: every field that would hold a real
+`SketchEntityRef`/`SubShapeRef`/backend id in the corresponding
+`...FeatureCreate` schema (`backend/app/document/schemas.py`) instead
+holds a plan-local `local_id` string (or list of them) here, under the
+*exact same field name* — e.g. `ExtrudeFeatureCreate.sketch_feature_id`
+(a real id) becomes `ExtrudeStep.sketch_feature_id` (a `local_id`) here.
+Only the *value*'s meaning changes; the field name doesn't, so
+workstream 4's translator maps one-to-one by name. Note this corrects the
+original draft's example above, which used ad hoc short names (`"sketch"`,
+`"profile"`) inconsistent with this rule and — for `sketch_rectangle` —
+a `corner`/`width`/`height` convenience shape the real backend API has no
+equivalent for at all (`RectangleCreate.corner_point_ids` always
+references 4 existing Points; there is no server-side corner+width+height
+math). A plan wanting a rectangle emits 4 `sketch_point` steps first, same
+as the client always has to.
+
 **`kind` values for v1**, one per allowed entity/Feature type from
-`00-conventions.md`'s scope-boundary list:
-- Sketch entities: `sketch` (creates the SketchFeature + Sketch),
-  `sketch_point`, `sketch_line`, `sketch_circle`, `sketch_arc`,
-  `sketch_ellipse`, `sketch_rectangle`, `sketch_polygon`, `sketch_slot` —
-  field shapes mirror `SketchApiClient`'s own `createLine`/`createCircle`/
-  etc. parameter lists directly (workstream 4 maps one-to-one).
+`00-conventions.md`'s scope-boundary list — exact field shapes are the
+Pydantic models in `backend/app/document/ai_plan_schemas.py`, not repeated
+here:
+- Sketch entities: `sketch` (creates the SketchFeature + Sketch, mirrors
+  `SketchFeatureCreate`), `sketch_point`, `sketch_line`, `sketch_circle`,
+  `sketch_arc`, `sketch_ellipse`, `sketch_rectangle`, `sketch_polygon`,
+  `sketch_slot` — field shapes mirror `app.sketch.schemas`' own
+  `PointCreate`/`LineCreate`/`CircleCreate`/etc. parameter lists directly.
 - Features: `extrude`, `revolve`, `sweep`, `fillet`, `chamfer`, `pattern`,
   `mirror`, `create_plane` — field shapes mirror
-  `DocumentApiClient`'s own `createExtrudeFeature`/etc. parameter lists.
+  `app.document.schemas`' own `ExtrudeFeatureCreate`/etc. parameter lists,
+  **with one v1 scope narrowing**: `create_plane`, `pattern`'s
+  `direction_1`/`direction_2`/`axis`, and `mirror`'s `mirror_plane` all
+  drop whichever of their real ref options need a Body face/edge/vertex
+  `SubShapeRef` (`face_ref`/`edge_ref`/`vertex_ref`) — the same "doesn't
+  exist yet at plan-authoring time" problem Fillet/Chamfer's edges have,
+  for which no selector heuristic has been designed outside the Fillet/
+  Chamfer case. Only the plan-expressible options remain: `create_plane`
+  is restricted to `NORMAL_TO_LINE_AT_POINT`/`THREE_POINTS` (the two
+  `PlaneType`s built from Sketch points/lines alone); Pattern/Mirror's
+  direction/axis/plane refs are restricted to `fixed_axis`/`fixed_plane`
+  or a `sketch_line_ref`/`plane_feature_id`. A real, deliberate scope
+  narrowing, not an oversight.
 - Routing: `gear_request` — carries gear parameters (type, module, tooth
   count, etc.) rather than a Feature-tree step at all; the translator
   (workstream 4) intercepts this kind before normal execution and hands
-  off to the existing Gear Design screens instead.
+  off to the existing Gear Design screens instead. Workstream 5's
+  validator always reports `ok: true` for a `gear_request` step without
+  attempting any real resolution (there is nothing to resolve — see that
+  doc's own handling), and reports a dedicated
+  `gear_body_not_validatable` error for any later step that names a
+  `gear_request` step's `local_id` as a Body reference (a real reference-
+  kind match, since a routed gear request does produce a real Body once
+  the translator runs it for real, but not something this endpoint can
+  dry-run).
 
 References to earlier steps (a Fillet's edges, an Extrude's profile) use
 `local_id` strings, resolved by the translator's `local_id -> real id` map
@@ -46,47 +95,101 @@ as it executes steps in order — never a real `SubShapeRef`/
 `SketchEntityRef` in the plan itself, since those don't exist until the
 real backend call happens.
 
-## Open design problem: edge selection for Fillet/Chamfer
+## Reference kind-checking (locked schema rule)
 
-**Not resolved by this scoping session — needs its own design pass before
-implementation starts on this workstream.**
+A step reference must resolve to the *right kind* of earlier step, not
+just any earlier `local_id` — this is a schema rule every implementation
+(workstream 5's validator, and workstream 4's real translator) must
+enforce, not just something workstream 5's validator happens to check as
+an implementation detail. The spike run that surfaced this gap (see
+"Spike findings" below) found a real plan where an `extrude`'s
+`sketch_feature_id`-equivalent field pointed at a `sketch_rectangle`
+step's own `local_id` instead of the `sketch` step that owns it, and a
+throwaway validator that only checked "does this `local_id` exist among
+earlier steps" waved it through.
+
+The exact rules (implemented in `backend/app/document/ai_plan.py`, the
+same file every rule name below is drawn from):
+- `sketch_feature_id` fields (`sketch_point`/etc.'s own, `extrude`'s,
+  `revolve`'s, `sweep`'s) must resolve to a `sketch` step — never any
+  other kind.
+- `extrude.profile_refs`/`revolve.profile_refs`/`sweep.profile_refs`/
+  `sweep.path_refs` entries must resolve to a `sketch_line`/
+  `sketch_circle`/`sketch_arc`/`sketch_ellipse` step — never a bare
+  `sketch` step, and never a `sketch_rectangle`/`sketch_polygon`/
+  `sketch_slot` step directly (the real backend's own `select_profiles`
+  only accepts a Line/Circle/Arc/Ellipse/Spline/Text anchor; a composite
+  entity's own boundary Lines stand in for it instead).
+- `revolve.axis_ref` must resolve to a `sketch_line` step specifically
+  (never `sketch_circle`/`sketch_arc`/etc. — mirrors the real
+  `RevolveFeature.axis_ref`'s own "must be a Line" constraint).
+- `fillet.edges.of`/`chamfer.edges.of`/`target_body_ids`/
+  `source_body_ids`/`tool_feature_id` entries must resolve to a step kind
+  that actually produces a Body (`extrude`, `revolve`, `sweep`,
+  `pattern`, `mirror`, `gear_request`) — never a `sketch`, `create_plane`,
+  `fillet`, or `chamfer` step.
+- `create_plane.line_ref`/Pattern-or-Mirror's own `sketch_line_ref` must
+  resolve to a `sketch_line` step; `create_plane.point_ref`/`point_refs`
+  must resolve to `sketch_point` steps; `create_plane.plane_feature_id`/
+  Mirror's own `mirror_plane.plane_feature_id`/`sketch.plane_feature_id`
+  must resolve to a `create_plane` step.
+
+A reference to an unknown `local_id`, or to a `local_id` whose owning
+step already failed validation, are each their own distinct error
+(`unknown_local_id`, `depends_on_failed_step`) — see
+`05-backend-plan-validation.md`'s own short-circuiting rule.
+
+## Edge selection for Fillet/Chamfer (locked)
+
+**Resolved this session** — option (b) below, adopted directly as the
+schema's real edge-selector shape and implemented in
+`backend/app/document/ai_plan_edges.py`, exercised against real OCCT
+geometry by `backend/tests/test_ai_plan_validate.py`. (Historical note:
+this file used to carry this as an "Open design problem" with two named
+candidates; kept below for the record, since the "why not (a)" reasoning
+is still the reason (b) was chosen.)
 
 Fillet/Chamfer's `edge_refs` are `SubShapeRef`s (`body_id` + `shape_type`
-+ `index`) that only exist after a Body has been computed/tessellated by
-the backend. Sketch entities get a plan-local id *before* any backend call
-(the translator assigns real ids only once it creates them for real), but
-a Body's edges have no such luxury — the LLM can't name "edge 7 of body
-X" in a plan authored before that body exists.
++ `index`) that only exist after a Body has been computed by the backend.
+Sketch entities get a plan-local id *before* any backend call (the
+translator assigns real ids only once it creates them for real), but a
+Body's edges have no such luxury — the LLM can't name "edge 7 of body X"
+in a plan authored before that body exists.
 
-Two candidate resolutions, named here so the next implementation session
-doesn't have to rediscover them:
+- **(a) Mid-execution LLM turn** (not chosen). The translator creates the
+  Extrude for real first, fetches the resulting Body's mesh/edge data,
+  then makes a second, narrowly-scoped LLM call before continuing. Most
+  flexible, but breaks the "translator execution is LLM-call-free and
+  deterministic" property the rest of this doc set relies on (see `04`'s
+  own framing), and needs a second real network round-trip per Fillet/
+  Chamfer step.
+- **(b) Coarse plan-level selectors, resolved deterministically —
+  chosen.** The plan names an edge *selector* instead of a specific edge;
+  a small, fixed set of deterministic heuristics resolves the selector
+  against the real Body topology once it exists, no LLM call involved.
 
-- **(a) Mid-execution LLM turn.** The translator creates the Extrude for
-  real first, fetches the resulting Body's mesh/edge data from the
-  backend, then makes a second, narrowly-scoped LLM call ("here are the
-  12 edges of the Body you just described, by position — which ones did
-  you mean by 'the top edges'?") before continuing. Most flexible, but
-  breaks the "translator execution is LLM-call-free and deterministic"
-  property the rest of this doc set relies on (see `04`'s own framing),
-  and needs a second real network round-trip per Fillet/Chamfer step.
-- **(b) Coarse plan-level selectors, resolved deterministically.** The
-  plan names an edge *selector* (`"top_face_edges"`, `"bottom_face_edges"`,
-  `"vertical_edges"`, `"all_edges_of_face_at_position: <face selector>"`)
-  instead of a specific edge — a small, fixed set of deterministic
-  heuristics in the translator resolves the selector against the real
-  mesh/topology once the Body exists, no LLM call involved. The example
-  schema above (`"selector": "top_face_edges"`) assumes this option.
+**The four selectors** (`EdgeSelectorKind` in `ai_plan_schemas.py`),
+resolved by `ai_plan_edges.resolve_edge_selector` via plain OCCT face/
+edge queries (`TopExp_Explorer`/`BRepAdaptor_Surface`), not through
+`MeshDto`'s own dense id scheme (see that module's own docstring for why
+the two id spaces can disagree for a Body with a degenerate edge):
+- `top_face_edges` / `bottom_face_edges`: every edge of whichever planar
+  face's outward normal most closely aligns with `+z`/`-z`.
+- `vertical_edges`: every straight edge whose direction is parallel to
+  the global Z axis.
+- `all_edges_of_face_at_position: <direction>`: every edge of whichever
+  planar face's outward normal most closely aligns with the given
+  `CardinalDirection` (`+x`/`-x`/`+y`/`-y`/`+z`/`-z`).
 
-**Recommend (b)** — it keeps workstream 4's execution loop fully
-LLM-call-free (matching the "safer, reviewable" reasoning that won the
-generation-mechanism decision in the original scoping conversation), at
-the cost of a real, separate design task: enumerating which selectors v1
-actually needs and how each resolves against `MeshDto`'s `faceIds`/
-`edgeIds`/`faceEdgeIds` data (the same hit-testing data the Fillet flow's
-own "tap a face to select its whole edge loop" UI already consumes, per
-`document_api_client.dart`'s own `MeshDto.faceEdgeIds` doc comment — a
-real, existing precedent to build the heuristic set against, not a cold
-start).
+**v1 limitation, stated explicitly since it's real**: every selector is
+relative to the *global* X/Y/Z axes, never a Sketch's own local plane
+normal or a Body's own actual extrusion direction — correct for the
+common case this v1 scope is built around (an XY-plane Sketch extruded
+along Z), not a fully general resolver for a Body built on a tilted
+custom plane. A selector matching zero edges, or a face selector matching
+zero/no unambiguous face, is a real validation failure (`edge_selector_
+no_matching_face`/`edge_selector_no_matching_edges`), never a silent
+empty selection.
 
 ## Excluded on purpose
 
@@ -282,10 +385,28 @@ pass's own single-run-per-scenario approach.
 blocker as the first pass (no `pythonocc-core`/real `MeshDto` fixture in
 either sandboxed or local sessions so far).
 
+**Correction (2026-08-06, workstream 3/5 implementation session): Spike 2
+never actually ran, in any session — the four edge selectors were adopted
+directly from this file's own "recommend (b)" design decision, not
+confirmed by a dedicated OCCT-backed spike.** A prior kickoff prompt for
+this implementation session described "the four real selector definitions
+from spike 2" as an already-confirmed finding to fold into the schema;
+that framing doesn't match this file's own record above, which states
+twice, unambiguously, that spike 2 never ran. What *did* happen this
+session: a real `pythonocc-core` environment was brought up (Docker,
+`backend/environment.yml`), and the four selectors were implemented
+(`app.document.ai_plan_edges`) and exercised end-to-end against real OCCT
+geometry via `backend/tests/test_ai_plan_validate.py` and manual
+verification — which is real evidence the four selectors work for the
+box/rectangle-extrude case v1 targets, but is workstream 5's own
+implementation-time testing, not a standalone "spike 2" that ran
+separately beforehand. Restated so a future session doesn't cite this as
+"spike 2 confirmed" either.
+
 **Not yet done, updated:** Groq coverage (still genuinely blocked from
 every session tried so far — needs a different network path, not just a
 different session type); more adversarial/underspecified prompts beyond
-the one bracket scenario; the edge-selector spike.
+the one bracket scenario.
 
 **Closed since the above**: the `README.md` correction pass and the
 validator-gap fix both landed — see `README.md`'s "Testing without cost"

@@ -8,6 +8,8 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Query, Response
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 
+from app.document.ai_plan import validate_ai_plan as validate_ai_plan_steps
+from app.document.ai_plan_schemas import PlanValidateRequest, PlanValidateResponse
 from app.document.bevel import resolve_bevel_gear
 from app.document.bevel_pair import resolve_bevel_pair
 from app.document.chamfer import resolve_chamfer
@@ -4323,6 +4325,22 @@ def preview_cascade_delete(part_id: str, feature_id: str) -> CascadeDeletePrevie
     _get_feature_or_404(part, feature_id)
     to_delete = transitive_dependents(build_feature_graph(part), feature_id)
     return CascadeDeletePreviewResponse(feature_ids=[f.id for f in part.features if f.id in to_delete])
+
+
+@router.post("/parts/{part_id}/ai-plan/validate", response_model=PlanValidateResponse)
+def validate_ai_plan(part_id: str, payload: PlanValidateRequest) -> PlanValidateResponse:
+    """AI Modelling workstream 5 (docs/ai-modelling/05-backend-plan-
+    validation.md): given a real, currently-stored Part and a hypothetical
+    list of *next* steps (workstream 3's locked plan schema, see
+    `app.document.ai_plan_schemas`), reports whether each would resolve
+    successfully - without creating or persisting anything against this
+    Part. A plain, ordinary compute-only endpoint of the same kind this
+    backend already has plenty of (`/gear/preview`, `cascade-preview`
+    above), not part of the client-direct AI call itself (see
+    docs/ai-modelling/00-conventions.md)."""
+    part = get_part_or_404(part_id)
+    results = validate_ai_plan_steps(part, payload.steps)
+    return PlanValidateResponse(results=results)
 
 
 @router.get("/parts/{part_id}/mesh", response_model=list[BodyMeshResponse])
