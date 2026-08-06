@@ -1063,13 +1063,17 @@ class GearFeature(Feature):
     the full-face-width twist angle, meeting at zero relative twist at
     both the very top and very bottom.
 
-    Root fillet (`root_fillet_radius`) is not currently supported for a
-    helical/herringbone tooth (`app.document.gear._apply_root_fillet`'s
-    `BRepPrimAPI_MakePrism.Generated()` vertex-tracking has no equivalent
-    for a `ThruSections` loft) - a non-zero value is tolerated but ignored
-    with a logged warning, the same best-effort convention an unfilleted
-    straight gear already falls back to when the fillet construction
-    itself doesn't converge."""
+    Root fillet (`root_fillet_radius`) is supported for a helical/
+    herringbone tooth too (`app.document.gear._apply_root_fillet_to_loft`)
+    - `BRepOffsetAPI_ThruSections`, like `BRepPrimAPI_MakePrism`, is a real
+    shape-history producer, so the same "map an original wire vertex to
+    its generated lateral edge, fillet that edge" idiom
+    `_apply_root_fillet` already uses for a straight tooth applies here too
+    (via `ThruSections.Generated()` instead of `MakePrism.Generated()`),
+    just on a genuinely curved/twisted lateral edge rather than a straight
+    vertical one. Same best-effort convention either way: a non-converging
+    fillet at a given radius falls back to an unfilleted gear with a
+    warning rather than failing the whole Feature."""
 
     id: str
     plane_ref: PlaneRef

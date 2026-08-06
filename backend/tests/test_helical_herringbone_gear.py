@@ -135,6 +135,96 @@ def test_helical_gear_tooth_is_twisted_between_its_two_end_faces():
     assert _max_radius_near(vertices, face_width, 0.0) < _NEAR_TIP_THRESHOLD
 
 
+def test_helical_gear_mid_height_cross_section_matches_interpolated_twist_at_a_large_helix_angle():
+    """Regression test for a real reported bug (see `docs/gear-design/
+    04-helical-herringbone-loft.md`'s own dated addendum for the full
+    root-cause writeup): at a large helix angle, `BRepOffsetAPI_
+    ThruSections`' default `CheckCompatibility(True)` behaviour searches
+    for its own vertex-to-vertex correspondence between the two end
+    sections, explicitly trying to *minimise* the resulting surface's
+    apparent twist - for this gear's own highly repetitive, near-symmetric
+    tooth profile (every tooth looks almost identical to its neighbour,
+    just rotated by one angular tooth pitch), that search can converge on
+    an entirely wrong correspondence once the true twist exceeds roughly
+    half an angular tooth pitch: a tooth's own tip vertex connected to a
+    *different* tooth's root vertex, not its own twisted counterpart.
+    `_twisted_tooth_loft`'s `CheckCompatibility(False)` call is the fix.
+
+    Unlike this file's other helical tests (which only ever check the two
+    *end* sections - the loft's own inputs, unaffected by which
+    correspondence `ThruSections` chooses to connect them with), this
+    samples a genuine *interior* cross-section - the actual lofted lateral
+    surface a wrong correspondence would visibly corrupt.
+
+    A first version of this test compared the interior tip's own radius
+    against `_NEAR_TIP_THRESHOLD` (this file's own "near full addendum"
+    cutoff for the loft's two *end* sections) and failed on a real CI run
+    against real `pythonocc-core` - not because the fix is wrong (every
+    other helical/herringbone test in this file passed, including the ones
+    that already exercise `CheckCompatibility(False)` end-to-end), but
+    because that comparison itself was wrong: a tooth-tip *corner* vertex
+    isn't swept along a circular arc with height, it's a straight 3D chord
+    between its own two (twisted-copy) end positions - exactly `04-
+    helical-herringbone-loft.md`'s own 2026-08-04 spike's "1-7% area
+    deviation from a true rotation" finding, measured here a different way.
+    A chord between two points on a circle sags inward of the arc (more so
+    the further apart the two points are), so the interior radius is
+    *expected* to measure measurably below the addendum - this version
+    computes that expected chord position analytically instead of assuming
+    it stays near the addendum, and checks the *angle* (not affected by
+    the chord's own radius sag) plus the *chord-corrected* radius, at
+    whatever height the mesher actually sampled closest to the midpoint."""
+    part = _create_part()
+    # 45deg: the real angle a user reported this bug at, and (at this
+    # gear's 20mm pitch radius/20mm face width) well past the 18deg
+    # angular tooth pitch a wrong correspondence would alias onto.
+    helix_angle_degrees, face_width = 45.0, 20.0
+    response = _create_gear(
+        part["id"], helix_angle_degrees=helix_angle_degrees, tooth_count=20, face_width=face_width
+    )
+    assert response.status_code == 201, response.json()
+    vertices = _mesh(part["id"])[0]["mesh"]["vertices"]
+
+    total_twist = helical_twist_angle(_PITCH_RADIUS, face_width, helix_angle_degrees)
+    addendum_radius = _PITCH_RADIUS + 2.0  # module=2 -> addendum = pitch_radius + module
+    mid_z = face_width / 2
+
+    # The mesher doesn't guarantee an exact z=mid_z sample on a smooth
+    # lofted surface (unlike z=0/z=face_width, which are the loft's own
+    # input wires and always present) - use whichever sampled height is
+    # actually closest to it, and require it to be close enough (within
+    # 1/10 of the face width) for the interpolated-chord comparison below
+    # to still be meaningful.
+    z_values = sorted({z for _, _, z in vertices})
+    sampled_mid_z = min(z_values, key=lambda z: abs(z - mid_z))
+    assert abs(sampled_mid_z - mid_z) < face_width / 10
+
+    # A straight 3D chord from (addendum_radius, angle=0) to
+    # (addendum_radius, angle=total_twist), evaluated at parameter
+    # t = sampled_mid_z / face_width - this is exactly what a tooth tip's
+    # own corner vertex traces between the loft's two end sections for a
+    # correspondence that's actually correct (the specific thing this
+    # test is checking for).
+    t = sampled_mid_z / face_width
+    chord_x = (1 - t) + t * math.cos(total_twist)
+    chord_y = t * math.sin(total_twist)
+    expected_angle = math.atan2(chord_y, chord_x)
+    expected_radius = addendum_radius * math.hypot(chord_x, chord_y)
+
+    # The tip sits at the chord-interpolated twist angle for this height,
+    # at the chord-interpolated (not full-addendum) radius...
+    measured_radius = _max_radius_near(vertices, sampled_mid_z, expected_angle, angle_tolerance=0.02)
+    assert abs(measured_radius - expected_radius) < 0.5
+    # ...not still at the untwisted bottom's own angle, at anywhere near
+    # that same magnitude - the specific failure mode a correspondence
+    # that silently failed to twist at all (this session's real bug, and
+    # separately the reported "twist doesn't match my input" symptom)
+    # would produce, and which the chord check above alone can't rule out
+    # (a correspondence stuck at zero twist would, unlike a real bug,
+    # otherwise still produce *some* real, if wrong, geometry to measure).
+    assert _max_radius_near(vertices, sampled_mid_z, 0.0, angle_tolerance=0.02) < addendum_radius - 1.0
+
+
 def test_helical_gear_twist_direction_flips_with_the_sign_of_helix_angle():
     # face_width=5 keeps the expected twist (~5.2deg) small enough that
     # +expected_twist and -expected_twist are clearly separated from each
@@ -184,12 +274,31 @@ def test_internal_helical_gear_still_produces_an_annulus():
     assert abs(max_radius - 70.0) < 0.5
 
 
-def test_root_fillet_is_ignored_with_a_warning_for_a_helical_gear():
-    """`_helical_or_herringbone_solid` doesn't support root fillet - this
-    just confirms the Feature still builds successfully (best-effort skip,
-    not a hard failure) rather than checking log content."""
+def test_root_fillet_is_attempted_for_a_helical_gear():
+    """`_apply_root_fillet_to_loft` (`app.document.gear`): root fillet is no
+    longer unconditionally unsupported for a helical tooth - this confirms
+    the Feature still builds successfully with a non-zero
+    `root_fillet_radius` set (best-effort: a real fillet if
+    `BRepFilletAPI_MakeFillet` converges via `ThruSections.Generated()`'s
+    own root-corner edges, an unfilleted-but-still-valid gear with a
+    `warnings` entry otherwise - either way, never a hard failure) rather
+    than checking log/warning content, which needs a real on-device/CI
+    `pythonocc-core` pass to verify either way (see this module's own
+    top-of-file docstring)."""
     part = _create_part()
     response = _create_gear(part["id"], helix_angle_degrees=15.0, root_fillet_radius=0.3)
+    assert response.status_code == 201, response.json()
+    assert len(_mesh(part["id"])[0]["mesh"]["vertices"]) > 0
+
+
+def test_root_fillet_is_attempted_for_a_herringbone_gear():
+    """Same as `test_root_fillet_is_attempted_for_a_helical_gear`, but for
+    the herringbone path (`_helical_or_herringbone_solid` fillets each half
+    - bottom and top - before fusing them together)."""
+    part = _create_part()
+    response = _create_gear(
+        part["id"], helix_angle_degrees=15.0, herringbone=True, root_fillet_radius=0.3
+    )
     assert response.status_code == 201, response.json()
     assert len(_mesh(part["id"])[0]["mesh"]["vertices"]) > 0
 

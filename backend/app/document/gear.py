@@ -106,13 +106,15 @@ def _gear_outline_wire(
     between consecutive teeth.
 
     Also returns the world-space vertex at each root-gap edge's two ends
-    (where a flank meets the root gap) - `resolve_gear_from_bodies` needs
-    these afterward to locate the corresponding axial edges of the
-    extruded solid for the optional root fillet (`BRepPrimAPI_MakePrism.
-    Generated()` maps an original wire vertex to its generated lateral
-    edge in the prism - the same "map original topology through the
-    operation" idiom `app.document.fillet`'s own edge picking already
-    relies on OCCT for, just via `Generated()` instead of a `SubShapeRef`)."""
+    (where a flank meets the root gap) - `resolve_gear_from_bodies`'s
+    straight-tooth path and `_twisted_tooth_loft`'s helical/herringbone
+    path each need these afterward to locate the corresponding lateral
+    edges of the extruded/lofted solid for the optional root fillet
+    (`BRepPrimAPI_MakePrism.Generated()`/`BRepOffsetAPI_ThruSections.
+    Generated()` both map an original wire vertex to its generated lateral
+    edge - the same "map original topology through the operation" idiom
+    `app.document.fillet`'s own edge picking already relies on OCCT for,
+    just via `Generated()` instead of a `SubShapeRef`)."""
     by_tooth = full_gear_profile_by_tooth(geometry, points_per_flank)
     wire_maker = BRepBuilderAPI_MakeWire()
 
@@ -257,6 +259,65 @@ def _apply_root_fillet(
     return fillet_maker.Shape(), None
 
 
+def _apply_root_fillet_to_loft(
+    loft_maker: BRepOffsetAPI_ThruSections,
+    solid: TopoDS_Shape,
+    root_corner_vertices: list[TopoDS_Vertex],
+    radius: float,
+) -> tuple[TopoDS_Shape, str | None]:
+    """`_apply_root_fillet`'s counterpart for a twisted-tooth `ThruSections`
+    loft rather than a straight-tooth `BRepPrimAPI_MakePrism`. Same
+    "map an original wire vertex to its generated lateral edge, fillet
+    that edge" idiom, just sourced from `BRepOffsetAPI_ThruSections.
+    Generated()` instead of `BRepPrimAPI_MakePrism.Generated()` -
+    `ThruSections` is, like every `BRepBuilderAPI_MakeShape` subclass, a
+    real shape-history producer (its own `Generated()` override is
+    redefined precisely to report exactly this: which lateral "rib" edge a
+    given input section's vertex generated). The rib edge for a twisted
+    tooth is a genuinely curved 3D edge (it follows the tooth's own twist
+    across the loft's whole height), not the straight vertical edge the
+    prism case fillets - `BRepFilletAPI_MakeFillet.Add` doesn't care, it
+    fillets whichever kind of edge it's given identically either way, so
+    only the *source* of the edge differs from `_apply_root_fillet`, not
+    the fillet construction itself. Passing either section's own root-
+    corner vertices works equally well (`Generated()` on either endpoint
+    of the same rib edge returns that same edge) - the caller picks
+    whichever section is more convenient (see `_helical_or_herringbone_
+    solid`, which uses each herringbone half's own *outer* section so the
+    shared mid-plane seam is left unfilleted, matching how a real hobbed
+    herringbone gear's root looks at that reversal point).
+
+    Newer, less-proven territory than `_apply_root_fillet` (this is the
+    first time this codebase has asked `ThruSections` for its own
+    `Generated()` history at all) - needs the same real on-device/CI
+    `pythonocc-core` pass as the rest of this module before being trusted,
+    doubly so here specifically."""
+    fillet_maker = BRepFilletAPI_MakeFillet(solid)
+    edge_count = 0
+    for vertex in root_corner_vertices:
+        for generated in loft_maker.Generated(vertex):
+            if generated.ShapeType() != TopAbs_EDGE:
+                continue
+            fillet_maker.Add(radius, topods.Edge(generated))
+            edge_count += 1
+    if edge_count == 0:
+        warning = "Root fillet requested but no root-corner edges were found on the twisted tooth loft - skipped"
+        logger.warning(warning)
+        return solid, warning
+    fillet_maker.Build()
+    if not fillet_maker.IsDone():
+        warning = (
+            f"Root fillet radius {radius!r} did not converge for this helical/herringbone gear's geometry - "
+            "falling back to an unfilleted gear. Try a smaller radius."
+        )
+        logger.warning(
+            "Helical/herringbone gear root fillet did not converge (radius=%r) - falling back to unfilleted gear",
+            radius,
+        )
+        return solid, warning
+    return fillet_maker.Shape(), None
+
+
 def _twisted_basis(basis: ResolvedPlane, height: float, twist: float) -> ResolvedPlane:
     """`docs/gear-design/04-helical-herringbone-loft.md` (Workstream 4a): a
     `ResolvedPlane` identical to `basis` except shifted `height` along its
@@ -297,7 +358,7 @@ def _twisted_tooth_loft(
     bottom_twist: float,
     top_height: float,
     top_twist: float,
-) -> TopoDS_Shape:
+) -> tuple[TopoDS_Shape, BRepOffsetAPI_ThruSections, list[TopoDS_Vertex], list[TopoDS_Vertex]]:
     """One helical (or one herringbone half's) tooth-boundary solid: a
     `BRepOffsetAPI_ThruSections` loft between two twisted/shifted copies of
     `_gear_outline_wire`'s ordinary straight-tooth outline - the *primary*
@@ -308,61 +369,118 @@ def _twisted_tooth_loft(
     2-section loft (a spline fit through exactly 2 points degenerates to a
     straight line either way).
 
-    Root-corner vertices aren't threaded through here (unlike
-    `resolve_gear_from_bodies`'s straight-tooth path) - a `ThruSections`
-    loft has no `BRepPrimAPI_MakePrism.Generated()`-equivalent vertex-
-    tracking `_apply_root_fillet` could use, so root fillet is not
-    currently supported for a helical/herringbone tooth (see
-    `GearFeature`'s own docstring) - the caller skips it with a warning
-    instead of calling this differently."""
+    `CheckCompatibility(False)` is the fix for a real reported bug (large
+    helix angle -> a tooth's tip vertex visibly lofts to a *different*
+    tooth's root vertex, not its own twisted counterpart -
+    `docs/gear-design/04-helical-herringbone-loft.md`'s own dated addendum
+    has the full root-cause writeup). `ThruSections` defaults to
+    `CheckCompatibility(True)`: it *searches* for its own vertex-to-vertex
+    correspondence between the two wires, explicitly trying to minimise the
+    resulting surface's apparent twist - which is exactly wrong here, since
+    `bottom_wire`/`top_wire` are already built with a known-correct,
+    already-intentional correspondence (the exact same `_gear_outline_
+    wire` code path, same tooth/flank/point order, same edge count, only
+    ever differing by the deliberate `bottom_twist`/`top_twist` rotation
+    baked into each one's own basis) - for a real gear tooth's own highly
+    repetitive, near-symmetric profile (every tooth looks almost identical
+    to its neighbour, just rotated by one angular tooth pitch), that
+    search's own "minimise apparent twist" heuristic can converge on
+    entirely the wrong correspondence once the *true* twist exceeds roughly
+    half an angular tooth pitch - snapping a tip vertex onto a
+    neighbouring tooth's root instead, still `IsDone()`-valid (a real,
+    closed, buildable surface - just the wrong one). `CheckCompatibility
+    (False)` turns this search off entirely and makes `ThruSections` trust
+    the two wires' own edge-insertion order directly (edge *i* of
+    `bottom_wire` <-> edge *i* of `top_wire`) - exactly the correspondence
+    this function actually wants, and always safe here specifically because
+    both wires are guaranteed the same edge count (`4 * tooth_count`,
+    always, regardless of twist).
+
+    Root-corner vertices for *both* sections are threaded back out (unlike
+    a prior version of this function, which discarded them, before root
+    fillet was believed unsupported here) so the caller can fillet a
+    twisted tooth's root edge too - see `_apply_root_fillet_to_loft`."""
     bottom_basis = _twisted_basis(basis, bottom_height, bottom_twist)
     top_basis = _twisted_basis(basis, top_height, top_twist)
-    bottom_wire, _ = _gear_outline_wire(bottom_basis, geometry, points_per_flank)
-    top_wire, _ = _gear_outline_wire(top_basis, geometry, points_per_flank)
+    bottom_wire, bottom_root_vertices = _gear_outline_wire(bottom_basis, geometry, points_per_flank)
+    top_wire, top_root_vertices = _gear_outline_wire(top_basis, geometry, points_per_flank)
 
     loft_maker = BRepOffsetAPI_ThruSections(True, False)
     loft_maker.AddWire(bottom_wire)
     loft_maker.AddWire(top_wire)
+    loft_maker.CheckCompatibility(False)
     loft_maker.Build()
     if not loft_maker.IsDone():
         raise _gear_failed("could not loft the helical tooth profile between its two twisted end sections")
-    return loft_maker.Shape()
+    return loft_maker.Shape(), loft_maker, bottom_root_vertices, top_root_vertices
 
 
 def _helical_or_herringbone_solid(
     basis: ResolvedPlane, feature: GearFeature, geometry: SpurGearGeometry, points_per_flank: int
-) -> TopoDS_Shape:
-    """The full helical/herringbone gear solid - `resolve_gear_from_bodies`'s
-    branch for `feature.helix_angle_degrees != 0.0`. Builds the twisted
-    tooth-boundary solid (one loft for a plain helical gear, two lofts
-    fused together for a herringbone gear's own mirrored halves - see
-    `GearFeature.herringbone`'s own docstring for the "mirrored, not simply
-    twice as tall" construction: bottom-to-midplane at `+half_twist`,
-    midplane-to-top at `-half_twist` relative to the midplane, so both
-    halves meet at zero *relative* twist at the shared midplane and the
-    whole tooth returns to the same orientation at top and bottom),
-    external exactly as-is, internal by cutting that same twisted solid out
-    of a plain (untwisted - an internal gear's outer rim is a plain
-    cylinder regardless of tooth twist) outer-rim prism, mirroring
-    `_gear_face`'s own external/internal split but as two separate solids
-    plus a boolean Cut instead of one face-with-a-hole plus one prism
-    (`ThruSections` builds from wire sections, not faces-with-holes, so the
-    single-face-with-a-hole trick the straight-tooth path uses doesn't
-    apply directly here)."""
+) -> tuple[TopoDS_Shape, list[str]]:
+    """The full helical/herringbone gear solid, plus any non-blocking root-
+    fillet warnings - `resolve_gear_from_bodies`'s branch for
+    `feature.helix_angle_degrees != 0.0`. Builds the twisted tooth-boundary
+    solid (one loft for a plain helical gear, two lofts fused together for
+    a herringbone gear's own mirrored halves - see `GearFeature.
+    herringbone`'s own docstring for the "mirrored, not simply twice as
+    tall" construction: bottom-to-midplane at `+half_twist`, midplane-to-
+    top at `-half_twist` relative to the midplane, so both halves meet at
+    zero *relative* twist at the shared midplane and the whole tooth
+    returns to the same orientation at top and bottom), external exactly
+    as-is, internal by cutting that same twisted solid out of a plain
+    (untwisted - an internal gear's outer rim is a plain cylinder
+    regardless of tooth twist) outer-rim prism, mirroring `_gear_face`'s
+    own external/internal split but as two separate solids plus a boolean
+    Cut instead of one face-with-a-hole plus one prism (`ThruSections`
+    builds from wire sections, not faces-with-holes, so the single-face-
+    with-a-hole trick the straight-tooth path uses doesn't apply directly
+    here).
+
+    Root fillet, if requested, is applied to each loft *before* the
+    herringbone Fuse (or, for a plain helical gear, to the single loft
+    directly) - using each solid's own `Generated()` history
+    (`_apply_root_fillet_to_loft`) after a boolean Fuse would have no such
+    history to work from. A herringbone gear's two halves are each
+    filleted using only their own *outer* section's root-corner vertices
+    (`bottom_half` at z=0, `top_half` at z=face_width) - the shared mid-
+    plane seam where the two halves meet is deliberately left unfilleted,
+    matching a real hobbed herringbone gear's own root at that reversal
+    point (not a stress-concentration edge in the same way the two outer
+    root corners are)."""
+    warnings: list[str] = []
     total_twist = helical_twist_angle(geometry.pitch_radius, feature.face_width, feature.helix_angle_degrees)
     if feature.herringbone:
         half_width = feature.face_width / 2
         half_twist = helical_twist_angle(geometry.pitch_radius, half_width, feature.helix_angle_degrees)
-        bottom_half = _twisted_tooth_loft(basis, geometry, points_per_flank, 0.0, 0.0, half_width, half_twist)
-        top_half = _twisted_tooth_loft(
+        bottom_shape, bottom_loft, bottom_root_vertices, _ = _twisted_tooth_loft(
+            basis, geometry, points_per_flank, 0.0, 0.0, half_width, half_twist
+        )
+        top_shape, top_loft, _, top_root_vertices = _twisted_tooth_loft(
             basis, geometry, points_per_flank, half_width, half_twist, feature.face_width, 0.0
         )
-        tooth_solid = BRepAlgoAPI_Fuse(bottom_half, top_half).Shape()
+        if feature.root_fillet_radius > 0:
+            bottom_shape, bottom_warning = _apply_root_fillet_to_loft(
+                bottom_loft, bottom_shape, bottom_root_vertices, feature.root_fillet_radius
+            )
+            top_shape, top_warning = _apply_root_fillet_to_loft(
+                top_loft, top_shape, top_root_vertices, feature.root_fillet_radius
+            )
+            warnings.extend(warning for warning in (bottom_warning, top_warning) if warning is not None)
+        tooth_solid = BRepAlgoAPI_Fuse(bottom_shape, top_shape).Shape()
     else:
-        tooth_solid = _twisted_tooth_loft(basis, geometry, points_per_flank, 0.0, 0.0, feature.face_width, total_twist)
+        tooth_solid, loft_maker, bottom_root_vertices, _ = _twisted_tooth_loft(
+            basis, geometry, points_per_flank, 0.0, 0.0, feature.face_width, total_twist
+        )
+        if feature.root_fillet_radius > 0:
+            tooth_solid, fillet_warning = _apply_root_fillet_to_loft(
+                loft_maker, tooth_solid, bottom_root_vertices, feature.root_fillet_radius
+            )
+            if fillet_warning is not None:
+                warnings.append(fillet_warning)
 
     if not feature.is_internal:
-        return tooth_solid
+        return tooth_solid, warnings
 
     assert feature.outer_diameter is not None  # enforced by the router before this is ever called
     outer_radius = feature.outer_diameter / 2
@@ -379,7 +497,7 @@ def _helical_or_herringbone_solid(
     normal = basis_normal(basis)
     prism_vector = gp_Vec(normal.X(), normal.Y(), normal.Z()).Multiplied(feature.face_width)
     outer_solid = BRepPrimAPI_MakePrism(outer_face, prism_vector).Shape()
-    return BRepAlgoAPI_Cut(outer_solid, tooth_solid).Shape()
+    return BRepAlgoAPI_Cut(outer_solid, tooth_solid).Shape(), warnings
 
 
 def resolve_gear_from_bodies(
@@ -398,15 +516,16 @@ def resolve_gear_from_bodies(
     to build" state; a bad parameter combination is always a real error to
     surface, not a transient/expected one to silently skip.
 
-    `warnings` covers every case where a requested `root_fillet_radius` was
-    silently honoured-in-name-only before this - a helical/herringbone
-    tooth (unsupported - no `BRepPrimAPI_MakePrism.Generated()`-equivalent
-    to hang the fillet off) or a straight tooth whose fillet didn't
-    converge (`_apply_root_fillet`) both used to be a `logger.warning`-only
-    server-side event with no signal anywhere in the HTTP response or UI -
-    a real on-device gap (see docs/status.md's dated entry for this fix).
-    Mirrors `app.document.loft.resolve_loft_from_bodies`'s own `(shape,
-    warnings)` shape exactly.
+    `warnings` covers every case where a requested `root_fillet_radius`
+    couldn't actually be honoured - a straight tooth whose fillet didn't
+    converge (`_apply_root_fillet`) or a helical/herringbone tooth's own
+    loft-based fillet (`_apply_root_fillet_to_loft`) either not converging
+    or finding no root-corner edges at all - each used to be (straight-
+    tooth case) a `logger.warning`-only server-side event with no signal
+    anywhere in the HTTP response or UI, or (helical/herringbone case)
+    unsupported outright, a real on-device gap (see docs/status.md's dated
+    entries for both fixes). Mirrors `app.document.loft.
+    resolve_loft_from_bodies`'s own `(shape, warnings)` shape exactly.
 
     `feature.helix_angle_degrees == 0.0` (the default) takes the exact
     original straight-tooth `BRepPrimAPI_MakePrism` path unchanged - see
@@ -439,18 +558,7 @@ def resolve_gear_from_bodies(
     basis = resolve_plane_ref(part, bodies, feature.plane_ref, excluded_feature_ids)
 
     if feature.helix_angle_degrees != 0.0 or feature.herringbone:
-        warnings: list[str] = []
-        if feature.root_fillet_radius > 0:
-            warning = "Root fillet is not supported for a helical/herringbone tooth - skipped"
-            logger.warning(
-                "GearFeature %s: root_fillet_radius is not supported for a helical/herringbone tooth "
-                "(helix_angle_degrees=%r, herringbone=%r) - skipping",
-                feature.id,
-                feature.helix_angle_degrees,
-                feature.herringbone,
-            )
-            warnings.append(warning)
-        return _helical_or_herringbone_solid(basis, feature, geometry, _POINTS_PER_FLANK), warnings
+        return _helical_or_herringbone_solid(basis, feature, geometry, _POINTS_PER_FLANK)
 
     wire, root_corner_vertices = _gear_outline_wire(basis, geometry, _POINTS_PER_FLANK)
     face = _gear_face(basis, feature.is_internal, feature.outer_diameter, geometry, wire)
