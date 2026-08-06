@@ -119,6 +119,21 @@ response as a conversational turn if no valid plan object is found. This
 is the mechanism that makes the "advisory, not a hard gate"
 `supportsStructuredOutput` stance in the section above actually safe.
 
+**Correction (workstream 2 implementation)**: `AiTurnResult.plan` (as built
+in workstream 1) is typed as a bare `Object?` and neither concrete
+provider ever assigns it — `OpenAiCompatibleProvider`/`AnthropicProvider`
+both always return `AiTurnResult(assistantText: ...)` with `plan` left
+null; extracting a plan is entirely workstream 2's own job, done by
+calling the plan-detection fallback directly against `AiTurnResult.
+assistantText` (`client/lib/ai/ai_plan_detection.dart`'s
+`detectPlanInAssistantText`), never by reading `result.plan`. This matches
+this section's own framing ("The scoping-turn parser (workstream 2) must
+not assume...") — `result.plan` itself just isn't the field that
+framing runs through in the real implementation. Worth flagging
+explicitly since the field's presence on `AiTurnResult` could otherwise
+read as "already populated somewhere" to a future session skimming the
+interface rather than this section.
+
 ## `AiProviderPreferences`
 
 ```dart

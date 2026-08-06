@@ -10,9 +10,11 @@ hand. The user picks their AI provider (local or cloud) from a new settings
 panel alongside the existing `SketcherSettingsScreen`/`MeshViewerSettingsScreen`
 precedent.
 
-**Status: scoped, not started.** This doc set is the output of the
-investigation/brainstorm session that produced it — no code has been
-written yet.
+**Status**: workstreams 1 (provider abstraction), 2 (scoping conversation),
+3 (structured plan schema), and 5 (backend plan validation) are built and
+tested — real, committed code, not just this doc set's own original
+scoping/brainstorm output. Workstream 4 (translator/execution) and 6
+(image input, explicitly deferred) are not yet started.
 
 ## How to use these docs in a fresh implementation session
 

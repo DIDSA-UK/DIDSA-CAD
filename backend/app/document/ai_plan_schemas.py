@@ -12,6 +12,13 @@ schema (`app.document.schemas`) instead holds a plan-local `local_id`
 string (or list of them) here, under the *same field name* - so a field's
 name always matches its real-schema counterpart; only the value's meaning
 (local_id vs. real id) differs.
+
+Client-side mirror: `client/lib/ai/ai_plan.dart` (parsing/display only, not
+re-validated there - see that file's own doc comment). System-prompt
+vocabulary reference: `client/lib/ai/ai_scoping_prompt.dart`, a hand-
+maintained copy of this file's shape per `docs/ai-modelling/02-scoping-
+conversation.md`'s own maintenance note - a field or `kind` added here
+needs a matching manual update in both, or they silently drift.
 """
 
 from enum import Enum
