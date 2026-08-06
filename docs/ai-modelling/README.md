@@ -33,7 +33,7 @@ a session implementing one workstream never needed most of it).
 |---|------|-----------|-------|
 | 1 | `01-provider-abstraction.md` | — | The `AiProvider` Dart interface, `OpenAiCompatibleProvider` (OpenAI cloud + local Ollama-style endpoint, same wire shape), `AnthropicProvider` adapter, settings screen + preferences |
 | 2 | `02-scoping-conversation.md` | 1 | The chat panel UI, transcript management, system-prompt design, plan-review handoff |
-| 3 | `03-structured-plan-schema.md` | — | The JSON plan schema itself, which Sketch entity/Feature types v1 can generate, gear-request routing. **Has one flagged unresolved design problem** (edge selection for Fillet/Chamfer) — read its own "Open design problem" section before implementing |
+| 3 | `03-structured-plan-schema.md` | — | The JSON plan schema itself, which Sketch entity/Feature types v1 can generate, gear-request routing. Edge selection for Fillet/Chamfer is **resolved** — see its own "Spike 2 findings" section for the four confirmed selector definitions |
 | 4 | `04-translator-and-execution.md` | 1, 2, 3, 5 | Client-side `PlanTranslator` driving the real `DocumentApiClient`/`SketchApiClient`, failure handling, no auto-rollback |
 | 5 | `05-backend-plan-validation.md` | 3 | The one backend addition: a stateless dry-run plan-validation endpoint |
 | 6 | `06-image-input-deferred.md` | 1, 2, 3 | Explicitly **not v1** — image upload, vision strategy, scope cut lines, recorded for when this becomes the active workstream |
@@ -55,10 +55,17 @@ same purpose the gear design tool's own pre-build spikes served:
    whether 1-2 few-shot examples in the system prompt (see
    `02-scoping-conversation.md`) meaningfully improve reliability over
    instructions alone — expect they will, but confirm rather than assume.
-2. **Edge-selector heuristic spike** — `03-structured-plan-schema.md`'s
-   own flagged open problem. Build the `top_face_edges`/`vertical_edges`/
-   etc. selectors against a simple test box's real `MeshDto` and confirm
-   they identify the right edges before the plan schema locks for real.
+2. **Edge-selector heuristic spike — done (2026-08-06).** Ran against
+   real OCCT-produced geometry (a genuine `pythonocc-core` environment
+   bootstrapped in-session, not a hand-built fixture): all four selectors
+   (`top_face_edges`, `bottom_face_edges`, `vertical_edges`,
+   `all_edges_of_face_at_position`) confirmed correct on a plain box and,
+   more importantly, on the realistic multi-step case (selecting vertical
+   edges *after* a prior fillet already modified the body). See
+   `03-structured-plan-schema.md`'s own "Spike 2 findings" section for
+   the exact definitions and the bootstrap recipe for a future session
+   that needs real OCCT again (this environment's own build doesn't
+   persist).
 
 ### Testing without cost
 
