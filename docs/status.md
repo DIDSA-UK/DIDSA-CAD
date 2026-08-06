@@ -2708,6 +2708,97 @@ New backend tests verify: an intentionally-offset loft straightened back to a de
 
 Same verification-status caveats as every entry above - no `pythonocc-core`/Flutter SDK in this sandbox, verified by `py_compile`/manual review/the new tests (not run for real) and a brace-balance script for the Dart side.
 
+---
+
+## 2026-08-06 — Helical/herringbone gear bug: wrong loft correspondence at a large helix angle, root fillet added
+
+A real user reported a helical gear built at ~45deg helix angle lofting a
+tooth's tip vertex to a *different* tooth's root vertex on the other end
+section (screenshot: visibly crossed tooth side faces), and separately
+suspected the rendered twist didn't match their `helix_angle_degrees`
+input. Investigated (`app.document.gear`, `docs/gear-design/
+04-helical-herringbone-loft.md`) rather than guessed at.
+
+**Root cause**, backed by real OCCT documentation, not just plausible
+reasoning: `BRepOffsetAPI_ThruSections` defaults to `CheckCompatibility
+(True)`, which makes it *search* for its own vertex-to-vertex
+correspondence between the two lofted wires rather than trusting the
+caller's own wire edge order - explicitly trying to *minimise the
+resulting surface's apparent twist*. For a real gear tooth's own highly
+repetitive profile (every tooth nearly identical to its neighbour, just
+rotated by one angular tooth pitch), that search has a real false-minimum
+problem once the true twist exceeds roughly half a tooth pitch: matching a
+tip vertex to a neighbouring tooth's differently-shaped point can measure
+out as *less* apparent twist than the correct match, and the search picks
+it - a real, wrong, but still `IsDone()`-valid loft, which is exactly why
+the existing helical test suite (only ever checking the loft's own two
+*end* sections, never the interior lateral surface) never caught it. This
+also explains the "twist doesn't match my input" half of the report as a
+real consequence of the same bug, not an optical illusion - `gear_math.
+helical_twist_angle`'s own formula was re-checked and confirmed correct,
+not the culprit.
+
+**Fix**: `app.document.gear._twisted_tooth_loft` now calls `loft_maker.
+CheckCompatibility(False)` before `Build()` - safe here specifically
+because the two wires are always built by the identical `_gear_outline_
+wire` code path with identical edge count/order, so the correspondence
+`CheckCompatibility(False)` makes `ThruSections` trust directly (wire-
+order-based) already matches the one this codebase actually wants. Not
+applied to the general `app.document.loft` (`LoftFeature`) - that fix
+requires matching edge counts across sections, which a general Loft
+between dissimilar Sketch profiles can't always guarantee - but it does
+resolve the 04 doc's own 2026-08-04 "Still open" question about whether
+`reference_point`-driven alignment can ever really steer `ThruSections`'
+own correspondence (yes, once paired with `CheckCompatibility(False)` - a
+concrete, evidenced follow-up for the general Loft, not attempted this
+pass).
+
+**Root fillet added for helical/herringbone teeth**: previously
+unconditionally skipped with a warning, on the belief `ThruSections` has
+no `BRepPrimAPI_MakePrism.Generated()`-equivalent to hang a fillet off -
+turned out to be an unverified assumption, not a checked fact.
+`BRepOffsetAPI_ThruSections::Generated` is a real, documented override
+(backed by `BRepTools_History`) reporting exactly which lateral "rib" edge
+a given input vertex generated. New `app.document.gear.
+_apply_root_fillet_to_loft` reuses `_apply_root_fillet`'s exact "map a
+known root-corner vertex to its generated lateral edge, fillet it, fall
+back to unfilleted-with-a-warning if it doesn't converge" idiom against
+that history instead - the one real difference being a genuinely curved/
+twisted generated edge rather than a straight vertical one, which
+`BRepFilletAPI_MakeFillet` doesn't care about either way. A herringbone
+gear fillets its two lofted halves separately, each using its own *outer*
+root-corner vertices, before the boolean Fuse that joins them (a Fuse has
+no `Generated()` history of its own to chain a fillet off afterward) - the
+shared mid-plane seam is deliberately left unfilleted, matching a real
+hobbed herringbone gear's own root at that reversal point.
+`GearFeature.root_fillet_radius`'s own docstring updated to match.
+
+New regression test in `test_helical_herringbone_gear.py`:
+`test_helical_gear_mid_height_cross_section_matches_interpolated_twist_at_a_large_helix_angle`
+- specifically samples an *interior* cross-section (not just the loft's
+own two end sections, which the existing suite already covered and which
+are unaffected by this bug either way) at a 45deg helix angle, confirming
+the tooth tip sits at the linearly-interpolated twist angle there rather
+than the untwisted angle or a neighbouring tooth's own angular position.
+Also updated the existing root-fillet-on-a-helical-gear test (now expects
+the fillet to be genuinely attempted, not unconditionally skipped) and
+added a herringbone counterpart.
+
+**Verification status**: same sandbox constraint as every entry above -
+`conda-forge`'s package index is reachable but the `micromamba` bootstrap
+binary (a GitHub Releases asset) is blocked by this sandbox's own egress
+policy, and `pythonocc-core` has no pip wheel to fall back on, so neither
+the root-cause diagnosis nor the fix has run against a real OCCT build in
+this session. Both are backed by real, cited OCCT documentation of the
+exact mechanism (`CheckCompatibility`'s own documented behaviour;
+`BRepOffsetAPI_ThruSections::Generated`'s own documented history support),
+verified here by `py_compile`/`ruff check` (clean) and careful manual
+review against this codebase's own existing idioms - needs a real on-
+device/CI `pythonocc-core` pass (this repo's CI has it) before being fully
+trusted, same as every other genuinely new OCCT technique in this project.
+
+---
+
 ## 2026-08-06 — AI Modelling Workstream 4: translator + execution (full build) - first end-to-end usable version
 
 Continuing on `claude/new-session-1ttqa4`. The kickoff prompt claimed workstream 2 (the scoping-conversation chat screen) was already done, which turned out to be true but only on `origin` - the local checkout was 2 commits behind and genuinely missing `ai_modelling_screen.dart`/`ai_plan.dart` entirely. Caught by direct file checks before writing any code (this project's own established discipline for exactly this kind of kickoff-prompt claim), traced to a simple `git pull` rather than a real gap once found - see this session's own earlier back-and-forth for the full investigation. Real Flutter SDK (`channel: master`) and a real `pythonocc-core` conda env (`base`, at `~/miniforge3`) were both already present in this environment - no bootstrap needed, unlike prior sessions' sandbox.

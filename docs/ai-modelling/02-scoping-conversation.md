@@ -145,3 +145,78 @@ active workstream; nothing here should be built in a way that blocks that
 extension (e.g. don't hardcode the input row to text-only in a way that's
 awkward to add an attach-image affordance to later), but don't build any
 image UI now either.
+
+## Real end-to-end exercise (2026-08-06): four UX gaps found, not yet fixed
+
+With workstreams 1-4 all built, ran a genuine first-time-user trace — a
+real Gemini call using the real, locked system prompt
+(`ai_scoping_prompt.dart`), the exact request "100mm square plate 10mm
+thick with a 20mm hole in the middle and 1mm chamfered edges," then the
+resulting plan replayed against a real backend (real Sketch/Extrude/
+Chamfer, real OCCT). **The generation pipeline itself produced correct
+geometry** (one real body, correct bounding box, hole genuinely cut
+through, chamfer correctly covering both the outer and hole edges on the
+one annular top face) — no functional bug in the translator/validator.
+The gaps are all in what the user sees and is guided toward. Four found,
+agreed fixes below — **not yet implemented**, this is the record for
+whichever session picks them up next:
+
+1. **No provider-configured guard.** `AiModellingScreen` never checks
+   whether `AiProviderPreferences.active` is actually usable before
+   accepting input — a genuine first-time user (default `local` slot,
+   empty `baseUrl`) hits a confusing failure on Send with zero warning
+   beforehand. **Fix**: a new `AiProviderPreferences.
+   isActiveProviderConfigured` getter (mirrors `ApiConfig.isConfigured`'s
+   own shape — non-empty `baseUrl` for `local`, non-empty `apiKey` for
+   `openai`/`anthropic`), checked in `AiModellingScreen.initState` via a
+   post-frame callback (matches this file's own `_scrollToBottom`
+   pattern). If unconfigured: a dialog ("No AI provider configured yet" +
+   "Open Settings" / "Not now"), plus a second, cheaper layer — grey out
+   Send and show inline text if the user dismisses and tries to type
+   anyway, so a dismissed dialog never means silent failure later.
+2. **Gemini/Groq are invisible in Settings.** `AiProviderSettingsScreen`'s
+   "Local" tab has one preset button ("Ollama Cloud") and its own
+   descriptive text only mentions Ollama — despite `README.md`'s own
+   "Testing without cost" section naming Gemini and Groq as the best free
+   options. **Fix**: presentation-only, no new provider slot (the "Local"
+   tab already *is* the generic "any OpenAI-compatible endpoint" slot,
+   correctly) — add 3-4 one-tap presets (Ollama Cloud, Gemini, Groq,
+   maybe Zhipu/GLM-Flash) next to the existing button, rewrite the
+   helper text to name them.
+3. **The plan/validation UI never says whether a nested entity becomes a
+   hole, or how many edges a Fillet/Chamfer selector actually resolved
+   to.** Two layers:
+   - **Cheap, client-only**: the validate response's `resolved_edges`
+     (`AiPlanStepResultDto.resolvedEdges`) is already fetched but never
+     shown — append "(N edges)" to a Fillet/Chamfer's result row in
+     `AiModellingScreen._buildReviewAndGenerate`.
+   - **The real fix, needs backend work**: don't reimplement nested-loop/
+     profile detection client-side (duplicate geometry reasoning this app
+     already has server-side, real drift risk). Extend `StepResult`
+     (`ai_plan_schemas.py`, workstream 5) with a `hole_count` field for
+     Extrude/Revolve/Sweep steps, sourced from `detect_profile`'s own
+     already-computed `MultiProfile.holes` during dry-run resolution —
+     real backend truth, not a client-side guess. `summarizeAiPlan`
+     appends "— includes N hole(s)" when present.
+4. **The system prompt under-triggers clarifying questions.** Gemini
+   asked zero questions on this request despite two real ambiguities
+   (through vs. blind hole; which edges "chamfered edges" covers) and
+   happened to guess correctly both times — luck, not a guarantee (ties
+   back to the first pass's own Gemini finding under "Spike findings" in
+   `03-structured-plan-schema.md`). Root cause: the current conversation
+   rule only says "do not guess a *number*" — this request never needed
+   the model to invent a missing number (the nested-loop approach and the
+   literal 1mm both sidestepped that), so it technically complied while
+   still silently resolving two real judgment calls. **Fix, two parts**:
+   - Broaden the trigger beyond numbers: "...whenever a dimension,
+     feature, tolerance, **or scope** (which edges/faces a Fillet or
+     Chamfer applies to, whether a hole goes all the way through) is
+     missing or has more than one reasonable interpretation."
+   - Relax "your FINAL reply must contain nothing but the plan" to allow
+     a short "Assumptions:" preamble before the fenced JSON — the
+     plan-detection fallback (`detectPlanInAssistantText`) already
+     extracts JSON from surrounding prose, so this doesn't break parsing,
+     and gives visible reasoning without forcing a question round-trip
+     for every judgment call. Pairs with point 3's backend fix: two
+     independent visibility layers (what the LLM says it assumed, what
+     the backend actually resolved) instead of trusting either alone.

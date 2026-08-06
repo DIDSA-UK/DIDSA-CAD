@@ -10,11 +10,15 @@ hand. The user picks their AI provider (local or cloud) from a new settings
 panel alongside the existing `SketcherSettingsScreen`/`MeshViewerSettingsScreen`
 precedent.
 
-**Status**: workstreams 1 (provider abstraction), 2 (scoping conversation),
-3 (structured plan schema), and 5 (backend plan validation) are built and
-tested — real, committed code, not just this doc set's own original
-scoping/brainstorm output. Workstream 4 (translator/execution) and 6
-(image input, explicitly deferred) are not yet started.
+**Status**: workstreams 1-5 are all built and tested — real, committed
+code, not just this doc set's own original scoping/brainstorm output.
+This is the **first end-to-end usable version**: a plain-English request
+goes from the "AI Modelling" tile to a real Feature-tree Part, for every
+step kind except `gear_request` (detected and surfaced, not
+auto-executed — see `04-translator-and-execution.md`'s "Real scope of
+`gear_request` handling"). Only the `gear_request` full hand-off and
+workstream 6 (image input, explicitly deferred) remain — see the
+delivery-order table below.
 
 ## How to use these docs in a fresh implementation session
 
