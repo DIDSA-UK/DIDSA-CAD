@@ -74,17 +74,31 @@ stood up yet:
   `apiKey` from ollama.com, exactly like OpenAI/Anthropic cloud (a local-
   daemon-proxy path also exists — `ollama signin` +
   `http://localhost:11434/v1` — but isn't needed and is strictly worse
-  when there's no reachable local/LAN host). Reaches frontier-scale
-  open-weight models too large to self-host — GLM-5.2, DeepSeek-V4-Pro,
-  Kimi-K2.6 — through `OpenAiCompatibleProvider` with zero new code. See
+  when there's no reachable local/LAN host). See
   `01-provider-abstraction.md`'s own note — worth its own preset option
   in the settings screen rather than only a manual local-`baseUrl`
   override, given it isn't really "local" at all in practice.
+  **Correction from real spike-1 testing (2026-08-06,
+  `03-structured-plan-schema.md`'s own findings)**: the frontier-scale
+  models named above as free — GLM-5.2, DeepSeek-V4-Pro/Flash, Kimi-K2.6,
+  Qwen3.5 — now all return `HTTP 403 "this model requires a
+  subscription"` on the free tier. **Confirmed still free** on that same
+  pass: `gpt-oss:20b`, `gpt-oss:120b`, `nemotron-3-super`, `gemma4:31b`,
+  `minimax-m3`. Ollama Cloud's own free-tier model list moves — re-check
+  directly (`GET https://ollama.com/v1/models`) rather than trusting
+  either this list or the original one going stale the same way.
 - **Google Gemini** and **Groq** both have real, ongoing (not one-time)
   free tiers and both speak the OpenAI-compatible dialect
   `OpenAiCompatibleProvider` already implements — zero new code. Gemini
   has the more generous token allowance (~250k tokens/min); Groq the
-  higher daily request count (~14,400/day).
+  higher daily request count (~14,400/day). **Groq caveat from the same
+  spike-1 pass**: every request to `api.groq.com` — with a real key, from
+  a genuinely local (non-sandboxed) network — returned `HTTP 403 "Access
+  denied. Please check your network settings"`, distinct from a normal
+  auth failure. Reads as a network/IP/region-level block on Groq's own
+  side for that connection, not an Anthropic-sandbox artifact and not a
+  bad key — but genuinely untested end-to-end as a result. Don't assume
+  Groq is reachable without checking your own account/network first.
 - **Zhipu/GLM**: two of its smaller models — GLM-4.5-Flash and
   GLM-4.7-Flash — are priced at $0 **permanently**, not a time-limited
   trial, on Zhipu's own official API. A genuine fourth always-free

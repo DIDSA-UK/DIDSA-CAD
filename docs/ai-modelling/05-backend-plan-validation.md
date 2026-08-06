@@ -70,3 +70,31 @@ Items 1-5 (dataclass, `depends_on`, `resolve_X` module, `compute_part_
 bodies` branch, schemas) are all reused as-is from whichever existing
 Feature types a given plan happens to use — this endpoint adds no new
 geometry logic anywhere.
+
+## Real finding from spike 1 (2026-08-06): reference *kind*-checking, not just existence-checking
+
+`03-structured-plan-schema.md`'s own spike findings surfaced a genuine
+gap this endpoint must not repeat: the throwaway spike script's own
+structural validator confirmed a step reference (e.g. an `extrude`
+step's `profile`) resolved to *some* earlier `local_id`, but never
+checked that the referenced step was the *right kind* of thing to
+reference — a real spike run produced a plan where an `extrude.profile`
+pointed directly at its parent `sketch` step's `local_id` rather than a
+specific sketch-entity step (`sketch_rectangle`, etc.) within it, and
+the spike's validator waved it through.
+
+This endpoint's own implementation must check reference *kind*
+correctness, not just that a `local_id` exists among earlier steps —
+e.g. `extrude.profile`/`revolve.profile`/`sweep.profile` must resolve to
+a sketch-entity `kind` (`sketch_line`, `sketch_circle`,
+`sketch_rectangle`, etc.), never to a bare `sketch` step itself;
+`fillet.edges.of`/`chamfer.edges.of` must resolve to a Feature `kind`
+that actually produces a Body (`extrude`, `revolve`, `sweep`, `pattern`,
+`mirror`, `gear_request`), never to a `sketch` or another `fillet`/
+`chamfer` step's raw output in a way the real backend wouldn't accept
+either. Whether the real backend's own `resolve_X` calls already reject
+this class of mistake with a clear error (likely, since a `sketch`
+step's id presumably isn't a valid `SketchEntityRef` shape at all) or
+whether it needs an explicit pre-check in this endpoint for a clearer
+error message than whatever `resolve_X` naturally raises is worth
+confirming during implementation, not assumed either way.
