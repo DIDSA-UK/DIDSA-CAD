@@ -96,3 +96,92 @@ not `kind` values in v1's schema at all. A future workstream extending
 this schema (e.g. adding Loft once there's a real user need) follows the
 same pattern: a new `kind`, new fields mirroring that Feature's own
 `createXFeature` signature, no change to the schema's shape.
+
+## Spike findings (2026-08-06)
+
+Real, throwaway-script spike 1 run against **Gemini only**
+(`gemini-flash-lite-latest`, via its OpenAI-compatible endpoint) — Groq
+and Ollama Cloud, the intended second/weaker model data point, were
+blocked by this session's own outbound network egress policy (not the
+providers or the keys) and never got tested. **This is a real gap
+against spike 1's original goal of testing a spread of models, not
+closed** — re-run against at least one non-Gemini model before treating
+these findings as final. System prompt used the exact five-component
+shape from `02-scoping-conversation.md` (role/premise, this file's
+vocabulary as of this session, units convention, one worked few-shot
+example, conversation rules), draft `kind` set narrowed slightly from
+the shape shown earlier in this file for the spike (fewer optional
+fields) — re-align the two before locking anything for real.
+
+**Three scenarios, one model:**
+
+- **Fully-specified single-turn request** ("60x40x10mm block, 5mm
+  fillets on top edges"): clean pass. Valid, schema-conformant plan on
+  the first response, no clarifying questions needed or asked, sensibly
+  centered geometry (rectangle corner correctly derived from the stated
+  width/height to center it on the sketch origin — not something the
+  prompt stated explicitly, a reasonable inferred default).
+- **Gear-shaped request** ("external spur gear, module 2, 20 teeth,
+  10mm face width, 20° pressure angle"): clean pass. Correctly emitted a
+  single `gear_request` step rather than attempting freeform Sketch/
+  Extrude generation — the routing instruction in the system prompt
+  worked as intended.
+- **Ambiguous request** ("Can you make me a mounting bracket?"): asked a
+  real, relevant clarifying question first (dimensions, shape, hole
+  placement) rather than guessing or immediately proposing a plan —
+  matches the intended "ask before generating" behavior. On the
+  follow-up turn (a fuller but still real-world-ambiguous description:
+  "L-shaped bracket, 60x60x5mm thick, four M4 clearance holes near the
+  corners, 3mm fillet on outer corners"), produced a plan that passed
+  every structural/referential check (schema-valid `kind`s, no
+  forward/dangling `local_id` references, valid edge selectors) —
+  **but the boss `extrude` step's `end_distance` was `40`, not the
+  stated `5` (mm)**. Everything else in the plan was correct or
+  reasonable (hole positions, radii, fillet selector/radius).
+
+**The important finding: this exact error reproduced identically across
+two independent runs** (with the few-shot example in the system prompt,
+and with it stripped entirely) — not a one-off random hallucination,
+a repeatable failure mode on this prompt/model pairing. Consequences:
+
+1. **Schema/referential validity does not imply dimensional/requirement
+   correctness.** Workstream 5's dry-run validation endpoint checks
+   structural resolvability (do references resolve, does geometry
+   construct) — it would very likely **not** have caught this, since
+   `end_distance=40` is a perfectly valid, resolvable Extrude on its
+   own. This is a materially different failure class than anything
+   `00-conventions.md`'s two-layer failure-handling section currently
+   accounts for.
+2. **Real design consequence for workstream 2**: the Review & Generate
+   plan summary (`02-scoping-conversation.md`) needs to surface literal
+   numeric values prominently and human-readably ("Extrude 0→40mm"),
+   not just step *types* ("1. Sketch  2. Rectangle  3. Extrude  4.
+   Fillet") — the whole point being that a human skimming real numbers
+   next to what they just typed is currently the only layer that would
+   have caught this specific error before it touched a real Part. Worth
+   promoting from "nice to have" to an explicit requirement in that
+   workstream given this finding.
+3. **Few-shot example impact was inconclusive-to-slightly-negative on
+   this one test**, contrary to this doc set's original assumption that
+   examples would clearly help: the without-example run was arguably
+   *more* structurally sound (a single sketch containing the outline and
+   all four holes together, correctly read as one flat L-shaped profile)
+   than the with-example run (which split holes across two sketches on
+   two different planes, apparently over-interpreting "L-shaped" as a
+   real bent double-flange bracket rather than a flat L-profile plate) —
+   while both made the identical thickness error regardless. **Don't
+   treat the few-shot-examples decision as settled** from this one
+   model/one prompt-pair; needs testing across more models and more
+   prompts before concluding either way, and possibly needs the example
+   itself revised (its own bracket-adjacent wording may be part of what
+   nudged the "bent bracket" misreading).
+
+**Spike 2 (edge-selector heuristic): not run this session.** Needs a
+real OCCT-backed test box or a fixture `MeshDto` — this sandbox has
+never had `pythonocc-core` installed (same standing caveat as this
+project's own Text-tool font work, `docs/roadmap.md`'s Text tool entry)
+— deferred to a session with real backend/CI access.
+
+**Not yet done, before this schema/prompt can be considered validated:**
+non-Gemini model coverage (Groq and/or Ollama Cloud, once reachable),
+more adversarial/underspecified prompts, and the edge-selector spike.
