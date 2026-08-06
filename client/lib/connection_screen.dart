@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show TextInput;
 import 'package:http/http.dart' as http;
 
+import 'ai/ai_provider_preferences.dart';
 import 'config.dart';
 import 'mesh_viewer/mesh_viewer_screen.dart';
 import 'mesh_viewer/mesh_viewer_settings_screen.dart';
@@ -51,8 +52,22 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
   /// Populates the fields from whatever [ApiConfig] already has stored -
   /// runs after the first frame, so a slow `shared_preferences` read never
   /// delays the splash itself from appearing.
+  ///
+  /// Also loads [AiProviderPreferences] here - this is the app's one real
+  /// startup/revisit choke point (cold launch, and every "Connection
+  /// Settings" revisit per this class's own doc comment), the same
+  /// guarantee [ApiConfig] already relies on. Bug fix: `AiModellingScreen`
+  /// reads `AiProviderPreferences.active` directly with no load of its own
+  /// and no `initState` at all - without this call, a returning user's
+  /// already-saved AI provider config would silently never make it out of
+  /// `shared_preferences` into the in-memory statics `.active` actually
+  /// reads, unless they happened to visit AI Provider Settings (the only
+  /// other call site) first in that same app session. No fields on *this*
+  /// screen to populate from it - just needs to be in memory before
+  /// `AiModellingScreen` can be reached.
   Future<void> _loadExisting() async {
     await ApiConfig.load();
+    await AiProviderPreferences.load();
     if (!mounted) return;
     setState(() {
       _serverUrlController.text = ApiConfig.baseUrl;
