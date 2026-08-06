@@ -60,6 +60,41 @@ same purpose the gear design tool's own pre-build spikes served:
    etc. selectors against a simple test box's real `MeshDto` and confirm
    they identify the right edges before the plan schema locks for real.
 
+### Testing without cost
+
+Options confirmed for spike 1 (checked mid-2026 — re-verify before use,
+these terms shift often):
+
+- **Ollama Cloud** ($0 free tier, GPU-time metered, no payment info
+  required to sign in) proxies frontier-scale open-weight models — GLM-
+  5.2, DeepSeek-V4-Pro, Kimi-K2.6 — too large for real local hardware,
+  through the **same Ollama API surface** the local-provider slot already
+  targets. Point the local-provider `baseUrl` at Ollama Cloud's endpoint
+  instead of a real local server for free testing against frontier-class
+  open models with zero new code — see `01-provider-abstraction.md`'s own
+  cross-reference note. This also means the local-provider slot isn't
+  strictly LAN-only in practice, a genuine architectural nuance beyond
+  just a way to save money on this spike.
+- **Google Gemini** and **Groq** both have real, ongoing (not one-time)
+  free tiers and both speak the OpenAI-compatible dialect
+  `OpenAiCompatibleProvider` already implements — zero new code, good for
+  the "realistic cloud model" side of the spike without spending
+  Anthropic's one-time credit.
+- **DeepSeek, Kimi (Moonshot), GLM (Zhipu)**: all open-weight, all
+  OpenAI-compatible on their own hosted APIs, all confirmed structured-
+  output/tool-calling support — cheap even where not free, and reachable
+  via Ollama Cloud's free tier regardless, per the point above.
+- **Qwen (Alibaba)**: worth including in the spike for two different
+  reasons — the only one of these confirmed to run practically on modest
+  *actual* local hardware (not just "open weight" in the abstract, real
+  Ollama/llama.cpp-runnable smaller variants), and the clearest vision
+  story of the bunch (dedicated Qwen-VL variants) — the latter matters
+  for workstream 6 later, not this spike, but worth testing while it's
+  already in scope for the structured-output side.
+- **Anthropic's one-time ~$5 credit**: save it for a final confirmation
+  pass once the schema/prompt is stable from testing against the free
+  options above, rather than spending it on early iteration.
+
 ## Delivery order / phased sessions
 
 Roughly 5-6 sessions, in dependency order — each row is a plausible

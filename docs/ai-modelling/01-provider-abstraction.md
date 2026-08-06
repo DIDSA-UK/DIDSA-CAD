@@ -51,7 +51,15 @@ shape. Covers **two** of the three configured provider slots:
   `apiKey` required.
 - **Local**: `baseUrl` user-entered (e.g. `http://192.168.1.50:11434/v1`
   for Ollama's own OpenAI-compatible endpoint), `apiKey` optional, `model`
-  whatever the user has pulled locally.
+  whatever the user has pulled locally. **Not strictly LAN-only in
+  practice**: Ollama Cloud (a hosted, GPU-metered service with a genuine
+  $0 tier) speaks the same Ollama API surface — a user can point this
+  same `baseUrl` field at Ollama Cloud instead of a real local server and
+  reach frontier-scale open-weight models (GLM, DeepSeek, Kimi) too large
+  to self-host, with zero code difference from a genuine local endpoint.
+  Worth a one-line mention in the settings screen itself alongside the
+  reachability caveat below, since it's a real, low-cost escape hatch
+  from needing local hardware at all.
 
 `supportsStructuredOutput` for this implementation: `true` for OpenAI
 cloud (JSON mode is a real, documented feature there); for local, treat as
