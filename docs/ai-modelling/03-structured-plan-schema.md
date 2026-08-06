@@ -141,13 +141,21 @@ step already failed validation, are each their own distinct error
 
 ## Edge selection for Fillet/Chamfer (locked)
 
-**Resolved this session** — option (b) below, adopted directly as the
-schema's real edge-selector shape and implemented in
-`backend/app/document/ai_plan_edges.py`, exercised against real OCCT
-geometry by `backend/tests/test_ai_plan_validate.py`. (Historical note:
-this file used to carry this as an "Open design problem" with two named
-candidates; kept below for the record, since the "why not (a)" reasoning
-is still the reason (b) was chosen.)
+**Resolved, and confirmed independently twice.** Real spike 2 testing
+(2026-08-06, a separate concurrent session — see "Spike 2 findings"
+below) confirmed option (b)'s four selectors against real OCCT geometry
+via a `MeshData`-based implementation (triangle centroids/normals,
+`face_edge_ids`). This workstream 3/5 implementation session
+independently re-confirmed the same four selectors work, via a different
+implementation (`backend/app/document/ai_plan_edges.py`, plain OCCT
+`TopExp_Explorer`/`BRepAdaptor_Surface` face/edge queries, not the mesh
+layer), exercised end-to-end by `backend/tests/test_ai_plan_validate.py`
+and against a fillet-then-select-again multi-step case. Two independent
+methods landing on the same four selector definitions is stronger
+evidence than either alone. (Historical note: this file used to carry
+this as an "Open design problem" with two named candidates; kept below
+for the record, since the "why not (a)" reasoning is still the reason (b)
+was chosen.)
 
 Fillet/Chamfer's `edge_refs` are `SubShapeRef`s (`body_id` + `shape_type`
 + `index`) that only exist after a Body has been computed by the backend.
@@ -190,6 +198,91 @@ custom plane. A selector matching zero edges, or a face selector matching
 zero/no unambiguous face, is a real validation failure (`edge_selector_
 no_matching_face`/`edge_selector_no_matching_edges`), never a silent
 empty selection.
+
+## Spike 2 findings (2026-08-06): edge-selector heuristics, confirmed against real OCCT geometry
+
+Run in a freshly-bootstrapped real backend environment (`miniforge` +
+`mamba env create -f backend/environment.yml`, same recipe this
+project's own bevel-gear spike used previously — no sandbox/session so
+far had `pythonocc-core` installed until this one; built it rather than
+working around its absence). Full existing backend test suite re-run
+against the fresh environment first to confirm it wasn't itself the
+source of any finding below: **1527 passed, 0 failed** (`pytest -n
+auto`, 3:59 wall-clock). Script itself is scratch, not committed, per
+this project's
+spike convention - built a real `BRepPrimAPI_MakeBox` shape, tessellated
+it via the real `app.document.mesh.tessellate_shape`, and derived
+selector logic purely from the same `MeshData` fields a real client
+response already carries (`triangles`/`normals`/`face_ids`/`edges`/
+`edge_ids`/`face_edge_ids`) - no shortcut access to OCCT face/edge
+objects the real client-side translator wouldn't also have.
+
+**Concrete selector definitions, confirmed working:**
+
+- **`top_face_edges` / `bottom_face_edges`**: the face whose *triangle-
+  centroid average* has the max/min Z, then that face's own
+  `face_edge_ids` entry. Needs only `face_ids` + `vertices` (for the
+  centroid) + the existing `face_edge_ids` array - no new mesh data.
+- **`vertical_edges`**: an edge where *every* one of its polyline
+  segments keeps (x, y) constant across both endpoints (checking every
+  segment, not just first-to-last endpoints, so a curved-but-vertical
+  edge - not possible on an axis-aligned box, but a real generalization
+  - wouldn't false-negative). Needs only `edges` + `edge_ids`.
+- **`all_edges_of_face_at_position: <direction>`**: generalizes top/
+  bottom to any of the 6 cardinal directions (`+X`/`-X`/`+Y`/`-Y`/`+Z`/
+  `-Z` for now) - the face whose *triangle-normal average* has the
+  highest dot product with the requested direction, rejecting if no
+  face's normal is within a tolerance of it (handles a shape with no
+  face actually facing that way, e.g. after a chamfer removed it).
+  `top_face_edges`/`bottom_face_edges` are just this selector fixed to
+  `+Z`/`-Z` - one implementation, not two.
+
+**Case 1 (plain 60×40×10 box, matching spike 1's own test dimensions for
+continuity)**: all three selectors resolved correctly and **exactly
+partitioned the box's 12 real edges with zero overlap** - 4 top-perimeter
++ 4 bottom-perimeter + 4 vertical, matching real box topology exactly
+(each vertical edge is shared by two *side* faces, never top/bottom, so
+this partition isn't a coincidence of a simple shape - it's the actual
+topology). `all_edges_of_face_at_position(+X)` also resolved to the
+correct 4-edge face.
+
+**Case 2 (the realistic multi-step stress test - not in the original
+spike-2 brief, added because it's the actual use case that matters):**
+applied a **real fillet** (radius 2mm) to the box's own `top_face_edges`
+result first (resolving the selector to real `TopoDS_Edge`s and calling
+`BRepFilletAPI_MakeFillet`, not a shortcut), producing a body with 10
+faces and 20 edges (the rounded corners add new fillet-surface faces and
+edges). Then ran `vertical_edges` **against that already-modified body**
+- correctly found exactly 4 vertical edges again, none of them
+mistakenly picking up any of the new fillet-arc edges. This is the case
+that actually matters for a real multi-step plan ("fillet the top edges,
+then chamfer the vertical edges") - confirms the heuristic isn't only
+correct against a pristine, single-feature body.
+
+**Consequence**: the "Open design problem" above is resolved for v1's
+selector set (`top_face_edges`, `bottom_face_edges`, `vertical_edges`,
+`all_edges_of_face_at_position`) - option (b) is confirmed workable
+against real geometry, not just theoretically preferred. Workstream 3's
+schema can lock these four selectors as-is. **Not yet tested**: a
+non-axis-aligned or curved-primary-geometry shape (e.g. a shape built on
+a rotated `CreatePlaneFeature`, or a cylinder where "vertical" isn't
+obviously the right concept at all) - the selector definitions above are
+written in world-space X/Y/Z, which is correct for everything in v1's
+own scope (Sketches only exist on XY/XZ/YZ fixed planes or a
+`CreatePlaneFeature`, and `vertical_edges`/`top_face_edges` are natural
+concepts for boxy, extruded-along-Z-ish parts) but would need
+revisiting before ever generalizing past that.
+
+**Environment note for future sessions**: this environment now has a
+real `didsacad` conda env at `/tmp/miniforge` with `pythonocc-core`
+installed - but per this container's own ephemeral-session lifecycle,
+that's **not persisted** and won't exist in a future session. The
+bootstrap recipe (`miniforge` installer via GitHub release asset
+redirect - `micro.mamba.pm` itself is blocked, but
+`github.com/.../releases/latest/download/...` works through this
+session's proxy - then `mamba env create -f backend/environment.yml`)
+is worth keeping as the known-working recipe for the next session that
+needs real OCCT, rather than rediscovering it.
 
 ## Excluded on purpose
 
@@ -385,23 +478,23 @@ pass's own single-run-per-scenario approach.
 blocker as the first pass (no `pythonocc-core`/real `MeshDto` fixture in
 either sandboxed or local sessions so far).
 
-**Correction (2026-08-06, workstream 3/5 implementation session): Spike 2
-never actually ran, in any session — the four edge selectors were adopted
-directly from this file's own "recommend (b)" design decision, not
-confirmed by a dedicated OCCT-backed spike.** A prior kickoff prompt for
-this implementation session described "the four real selector definitions
-from spike 2" as an already-confirmed finding to fold into the schema;
-that framing doesn't match this file's own record above, which states
-twice, unambiguously, that spike 2 never ran. What *did* happen this
-session: a real `pythonocc-core` environment was brought up (Docker,
-`backend/environment.yml`), and the four selectors were implemented
-(`app.document.ai_plan_edges`) and exercised end-to-end against real OCCT
-geometry via `backend/tests/test_ai_plan_validate.py` and manual
-verification — which is real evidence the four selectors work for the
-box/rectangle-extrude case v1 targets, but is workstream 5's own
-implementation-time testing, not a standalone "spike 2" that ran
-separately beforehand. Restated so a future session doesn't cite this as
-"spike 2 confirmed" either.
+**Correction/update (2026-08-06, workstream 3/5 implementation session):
+at the moment this implementation session started reading this file,
+spike 2 genuinely had not yet run in *any* session it could see — the
+record above states so twice, unambiguously, and the kickoff prompt this
+session was given ("the four real selector definitions from spike 2")
+didn't match that record. That gap has since closed for real: a separate,
+concurrent session ran spike 2 properly (see "Spike 2 findings" above,
+inserted right after this file's own "Edge selection for Fillet/Chamfer"
+section) while this implementation session was independently building and
+testing the same four selectors against real OCCT geometry via a
+different method (`app.document.ai_plan_edges`, exercised by
+`backend/tests/test_ai_plan_validate.py`). Both landed on the same four
+selector definitions. Left here for the record as a real example of this
+doc set's own "verify the doc's current state, don't trust a kickoff
+prompt's framing of it" discipline paying off — the discrepancy was real
+at the time it was flagged, not a false alarm, even though it resolved
+itself before this session finished.
 
 **Not yet done, updated:** Groq coverage (still genuinely blocked from
 every session tried so far — needs a different network path, not just a
