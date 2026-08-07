@@ -12,6 +12,7 @@ import 'package:didsa_cad_client/ai/ai_provider_preferences.dart';
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
 import 'package:didsa_cad_client/gear/gear_preset_store.dart';
+import 'package:didsa_cad_client/viewport3d/part_screen.dart';
 
 /// AI Modelling workstream 2: widget-level coverage for
 /// [AiModellingScreen] - the chat -> plan-detection -> Review & Generate
@@ -270,6 +271,54 @@ Here's the plan:
     expect(find.text('Undo this generation'), findsOneWidget);
   });
 
+  testWidgets(
+      'Fix 5: a successful Generate offers "View Part", which pushes (not replaces) PartScreen with the real Part id',
+      (tester) async {
+    final mock = MockClient((request) async => realPlanHandler()(request));
+    final client = DocumentApiClient(httpClient: mock);
+    final sketchClient = SketchApiClient(httpClient: mock);
+    final provider = FakeAiProvider((transcript, systemPrompt) async => const AiTurnResult(assistantText: realPlanText));
+
+    await tester.pumpWidget(
+      MaterialApp(home: AiModellingScreen(provider: provider, documentApi: client, sketchApi: sketchClient)),
+    );
+    await sendMessage(tester, 'A 60x40x10mm block');
+    await tester.tap(find.text('Generate'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('View Part'), findsOneWidget);
+
+    await tester.ensureVisible(find.text('View Part'));
+    await tester.tap(find.text('View Part'));
+    // The pushed PartScreen's own mesh/feature/sketch fetches aren't
+    // stubbed here (irrelevant to what this test is checking - the
+    // navigation itself). `pumpAndSettle` would never observe a settled
+    // state - once mounted, `PartViewport`'s own render loop keeps
+    // requesting frames - so the push transition is driven by a fixed
+    // number of pumps instead.
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+
+    // Pushed, not replaced - both screens are still in the widget tree.
+    expect(find.byType(AiModellingScreen), findsOneWidget);
+    final partScreen = tester.widget<PartScreen>(find.byType(PartScreen));
+    expect(partScreen.initialPartId, 'part-1');
+
+    // Popping back returns to `AiModellingScreen` with its state (the Undo
+    // banner) intact - a one-way `pushReplacement` would have destroyed it.
+    // Not `tester.pageBack()`: it looks for a standard platform back-button
+    // widget type, but `PartScreen`'s own `AppBar` uses a custom leading
+    // action (its toolbar/plane-selection-mode back handling), so popping
+    // directly through the `Navigator` is the reliable way to trigger it in
+    // a test.
+    Navigator.of(tester.element(find.byType(PartScreen))).pop();
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    expect(find.text('Undo this generation'), findsOneWidget);
+  });
+
   testWidgets('Generate on a validation failure shows the per-step report and never executes anything for real', (
     tester,
   ) async {
@@ -374,6 +423,46 @@ Here's the plan:
     await tester.tap(find.text('Generate'));
     await tester.pumpAndSettle();
 
+    expect(find.textContaining('f1: ok — includes 1 hole'), findsOneWidget);
+  });
+
+  testWidgets(
+      'Fix 6: a genuinely all-ok validation response still renders its annotations on a fully successful run',
+      (tester) async {
+    // Every prior fix-3a/3b test's mocked validate response includes a
+    // failing step (the real gap fix 6 closes: `preflightResults` used to
+    // be `validationFailed`-only, so a clean run's own `ok: true` rows -
+    // this test's whole point - never made it to the panel at all).
+    final mock = MockClient((request) async {
+      if (request.url.path.endsWith('/ai-plan/validate')) {
+        return jsonResponse({
+          'results': [
+            for (final localId in realPlanLocalIds)
+              if (localId == 'f1')
+                {'local_id': 'f1', 'ok': true, 'warnings': [], 'error': null, 'hole_count': 1}
+              else
+                {'local_id': localId, 'ok': true, 'warnings': [], 'error': null},
+          ],
+        });
+      }
+      return realPlanHandler()(request);
+    });
+    final client = DocumentApiClient(httpClient: mock);
+    final sketchClient = SketchApiClient(httpClient: mock);
+    final provider = FakeAiProvider((transcript, systemPrompt) async => const AiTurnResult(assistantText: realPlanText));
+
+    await tester.pumpWidget(
+      MaterialApp(home: AiModellingScreen(provider: provider, documentApi: client, sketchApi: sketchClient)),
+    );
+    await sendMessage(tester, 'A 60x40x10mm block');
+    await tester.tap(find.text('Generate'));
+    await tester.pumpAndSettle();
+
+    // Both the success outcome and the ok-row annotation render together -
+    // the panel no longer forces a choice between "see what was built" and
+    // "see the hole-count annotation" (fix 6's own reasoning for bundling
+    // with fix 5).
+    expect(find.textContaining('Generated - every step created successfully'), findsOneWidget);
     expect(find.textContaining('f1: ok — includes 1 hole'), findsOneWidget);
   });
 

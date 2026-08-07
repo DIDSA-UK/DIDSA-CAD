@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../api/document_api_client.dart';
 import '../api/sketch_api_client.dart' show ApiException, SketchApiClient;
 import '../gear/gear_preset_store.dart';
+import '../viewport3d/part_screen.dart';
 import 'ai_plan.dart';
 import 'ai_plan_detection.dart';
 import 'ai_plan_summary.dart';
@@ -78,15 +79,25 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   // progress list (`04-translator-and-execution.md`'s own "Progress UI"
   // section).
   List<TranslationStepStatus>? _stepStatuses;
-  // Only set on a `validationFailed` outcome - the pre-flight dry-run's
-  // own per-step report, shown the same way the old validation-only
-  // "Generate" used to.
-  List<AiPlanStepResultDto>? _validationFailureResults;
+  // The pre-flight dry-run's own per-step report - always set once a
+  // `_generate()` run finishes (`execute()` runs this one validate call
+  // before doing anything else, regardless of outcome), shown the same
+  // way the old validation-only "Generate" used to.
+  List<AiPlanStepResultDto>? _preflightResults;
   // Set once a translation run actually finishes (success or a real step
   // failure) or the whole attempt errors out before a result even comes
   // back (e.g. a network failure creating the Part).
   PlanTranslationOutcome? _finishedOutcome;
   String? _generateError;
+
+  // Fix 5 from the `02` doc's own real end-to-end exercise: only set on a
+  // `PlanTranslationOutcome.success` run - the Part id "View Part" pushes
+  // `PartScreen` onto, distinct from `_lastRunPartId` (which also stays set
+  // through a stopped run purely to drive the "Undo this generation"
+  // banner, and persists past `_adjust()`/back-to-chat - `_generatedPartId`
+  // is Review & Generate-panel-only, like `_stepStatuses`/`_finishedOutcome`
+  // above).
+  String? _generatedPartId;
 
   // Persists across `_adjust()`/returning to chat mode (unlike the fields
   // above, which are Review & Generate-panel-only) - "Undo this
@@ -201,9 +212,10 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     setState(() {
       _proposedPlan = null;
       _stepStatuses = null;
-      _validationFailureResults = null;
+      _preflightResults = null;
       _finishedOutcome = null;
       _generateError = null;
+      _generatedPartId = null;
       // `_lastRunPartId`/`_lastRunCreatedFeatureIds`/undo state deliberately
       // NOT cleared here - see their own doc comment.
     });
@@ -215,8 +227,9 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     setState(() {
       _generating = true;
       _generateError = null;
-      _validationFailureResults = null;
+      _preflightResults = null;
       _finishedOutcome = null;
+      _generatedPartId = null;
       _stepStatuses = List.filled(plan.steps.length, TranslationStepStatus.pending);
     });
     try {
@@ -234,7 +247,8 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       setState(() {
         _generating = false;
         _finishedOutcome = result.outcome;
-        _validationFailureResults = result.validationResults;
+        _preflightResults = result.preflightResults;
+        if (result.outcome == PlanTranslationOutcome.success) _generatedPartId = part.id;
         if (result.createdFeatureIds.isNotEmpty) {
           _lastRunPartId = part.id;
           _lastRunCreatedFeatureIds = result.createdFeatureIds;
@@ -408,9 +422,10 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       _transcript = transcript;
       _proposedPlan = plan;
       _stepStatuses = null;
-      _validationFailureResults = null;
+      _preflightResults = null;
       _finishedOutcome = null;
       _generateError = null;
+      _generatedPartId = null;
     });
   }
 
@@ -532,11 +547,11 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
                       ],
                     ),
                   ),
-                if (_validationFailureResults != null) ...[
+                if (_preflightResults != null) ...[
                   const SizedBox(height: 16),
                   Text('Validation results', style: Theme.of(context).textTheme.titleMedium),
                   const SizedBox(height: 8),
-                  for (final r in _validationFailureResults!)
+                  for (final r in _preflightResults!)
                     Padding(
                       padding: const EdgeInsets.symmetric(vertical: 2),
                       child: Row(
@@ -551,7 +566,25 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
                 ],
                 if (_finishedOutcome != null) ...[
                   const SizedBox(height: 12),
-                  _buildOutcomeBanner(_finishedOutcome!, _validationFailureResults),
+                  _buildOutcomeBanner(_finishedOutcome!, _preflightResults),
+                ],
+                // Fix 5 from the `02` doc's own real end-to-end exercise:
+                // `push` (not `pushReplacement`, unlike `GearDesignScreen`'s
+                // own successful-creation navigation this otherwise copies)
+                // so this screen stays underneath - the "Undo this
+                // generation" banner below is meant to survive a look at the
+                // result, not get torn down the instant Generate finishes.
+                if (_finishedOutcome == PlanTranslationOutcome.success && _generatedPartId != null) ...[
+                  const SizedBox(height: 8),
+                  OutlinedButton.icon(
+                    onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => PartScreen(documentApi: widget.documentApi, initialPartId: _generatedPartId),
+                      ),
+                    ),
+                    icon: const Icon(Icons.visibility_outlined),
+                    label: const Text('View Part'),
+                  ),
                 ],
                 if (_lastRunCreatedFeatureIds != null) ...[
                   const SizedBox(height: 12),
@@ -593,12 +626,11 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
 
   /// Fixes 3a/3b from the `02` doc's own real end-to-end exercise. Both are
   /// shown as an annotation next to the existing per-step validation row
-  /// (only ever rendered when the plan's validation reports at least one
-  /// failure - `_validationFailureResults` is never populated on a clean
-  /// pass, see `PlanTranslationResult.validationFailed`'s own doc comment)
-  /// rather than baked into `summarizeAiPlan`'s plan-only output, since
-  /// only this validation response - not the plan itself - carries
-  /// `resolvedEdges`/`holeCount` at all:
+  /// (rendered for every run - `_preflightResults` is populated regardless
+  /// of outcome, see `PlanTranslationResult.preflightResults`'s own doc
+  /// comment, fix 6) rather than baked into `summarizeAiPlan`'s plan-only
+  /// output, since only this validation response - not the plan itself -
+  /// carries `resolvedEdges`/`holeCount` at all:
   /// - **3a**: a Fillet/Chamfer step's `resolvedEdges` was already fetched
   ///   but never shown - append the real resolved edge count.
   /// - **3b**: an Extrude/Revolve/Sweep step's `holeCount` (real backend
@@ -624,13 +656,13 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         TranslationStepStatus.failed => const Icon(Icons.error, size: 18, color: Colors.redAccent),
       };
 
-  Widget _buildOutcomeBanner(PlanTranslationOutcome outcome, List<AiPlanStepResultDto>? validationResults) {
+  Widget _buildOutcomeBanner(PlanTranslationOutcome outcome, List<AiPlanStepResultDto>? preflightResults) {
     switch (outcome) {
       case PlanTranslationOutcome.success:
         return const _Banner(color: Colors.green, text: 'Generated - every step created successfully.');
       case PlanTranslationOutcome.validationFailed:
-        final failed = validationResults?.where((r) => !r.ok).length ?? 0;
-        final total = validationResults?.length ?? 0;
+        final failed = preflightResults?.where((r) => !r.ok).length ?? 0;
+        final total = preflightResults?.length ?? 0;
         return _Banner(
           color: Colors.redAccent,
           text: '$failed of $total step(s) failed validation - nothing was created. See above.',

@@ -275,3 +275,93 @@ shipped, since one diverged slightly from the plan below once written.
    since the fenced-code-block candidate path never depended on the fence
    being the very first thing in the message, but confirmed rather than
    assumed.
+
+## Two follow-ups found after session 6 (2026-08-06) — both fixed (2026-08-07)
+
+Both touch `AiModellingScreen._generate()`'s handling of a *successful*
+`PlanTranslator.execute()` outcome specifically — found while confirming
+session 6's own work, one by the reviewing session re-reading the code
+directly, one by the user asking a plain "how do I actually see the
+result?" question that the app currently has no answer to. **Both
+implemented and tested on 2026-08-07** (session 7); each item below is
+annotated with what actually shipped.
+
+5. **No navigation to the 3D viewport after a successful Generate.**
+   `AiModellingScreen` never pushes `PartScreen` on success — the run
+   creates a real Part with real Features (confirmed working end-to-end
+   in the exercise above), but the user is left on the chat screen with
+   nothing but per-step status icons, no way to actually see what got
+   built. Going via `ToolChooserScreen`'s "3D Part Design" tile instead
+   doesn't help — it always calls `createPart` fresh (no "open an
+   existing Part" concept anywhere in this app), so it opens a *different*,
+   brand-new empty Part, not the one AI Modelling just made. The Part
+   is real and sitting in the backend's in-memory store, but has no
+   first-class path to it once you leave this screen. **This is arguably
+   more fundamental than fix 3's own gap above**: without it, "first
+   end-to-end usable version" is true at the data layer but not yet true
+   at the UI layer.
+
+   **Fix, with an exact existing precedent to copy**: `PartScreen`
+   already supports opening a specific existing Part
+   (`initialPartId`/`initialWarnings` constructor params, built for
+   Native Load) - `GearDesignScreen`'s own successful-creation path
+   already uses exactly this:
+   ```dart
+   Navigator.of(context).pushReplacement(
+     MaterialPageRoute(builder: (_) => PartScreen(initialPartId: part.id, initialWarnings: warnings)),
+   );
+   ```
+   `AiModellingScreen._generate()` needs the same call on
+   `PlanTranslationOutcome.success` - not new design work, a copy of a
+   proven pattern already used elsewhere in this exact codebase.
+
+   **Shipped, deliberately diverging from the snippet above**: a "View
+   Part" `OutlinedButton.icon`, shown alongside the outcome banner once
+   `_finishedOutcome == PlanTranslationOutcome.success`, calling
+   `Navigator.of(context).push` (not `pushReplacement`) so
+   `AiModellingScreen` stays underneath - a straight `pushReplacement` on
+   success would have torn down this same screen's own "Undo this
+   generation" banner (`04-translator-and-execution.md`'s bolt-on) the
+   instant Generate finished, silently breaking an already-shipped
+   feature. The pushed `PartScreen` is also handed `documentApi:
+   widget.documentApi` (matching `part_screen.dart`'s own internal
+   fresh-`PartScreen`-push precedent in `_openNativeFile`, a second real
+   precedent found while implementing this), so a test/override provider
+   carries through to the pushed screen too. New state:
+   `_generatedPartId`, Review & Generate-panel-only like
+   `_stepStatuses`/`_finishedOutcome` (cleared on `_adjust`/next
+   `_generate`/`_loadPreset`, unlike `_lastRunPartId` which persists for
+   Undo). Covered by a new widget test confirming the push (not replace)
+   and that "Undo this generation" still works after popping back to
+   `AiModellingScreen`.
+
+6. **Fix 3's own disclosed gap, now closed**: `_validationFailureResults`
+   was only ever populated on `PlanTranslationOutcome.validationFailed`,
+   so the `hole_count`/`resolved_edges` annotations never rendered on a
+   fully clean run (the common case) — see fix 3's own "Real caveat
+   carried over" note above for the full detail. Bundled with fix 5 here
+   since both are `_generate()` success-handling gaps in the same spot,
+   worth one session closing both together: thread the pre-flight
+   validation results through regardless of outcome (rename
+   `_validationFailureResults` to something outcome-neutral once it's no
+   longer failure-only), so the panel can show alongside/before the
+   `PartScreen` navigation from fix 5 - the user sees what was built,
+   then goes to look at it, rather than choosing one or the other.
+
+   **Shipped as planned**: `PlanTranslationResult.validationResults` is
+   now `preflightResults` (non-nullable - `execute()` always runs the one
+   pre-flight `validateAiPlan` call before doing anything else,
+   regardless of outcome), added as a required parameter to every
+   factory (`.success`/`.stepFailed`/`.gearRequestEncountered` now
+   receive `validation.results` too, not just `.validationFailed`).
+   `AiModellingScreen._validationFailureResults` renamed to
+   `_preflightResults`; its own render gate (`if (_preflightResults !=
+   null)`) needed no other change - it was already rendering both
+   ok/failed rows generically, the only reason ok rows never appeared on
+   a clean run was that the field itself stayed null. Verified directly
+   (not just "renamed and compiles"): a new widget test drives a fully
+   successful `realPlanText` run with an all-`ok: true` validate response
+   that includes a `hole_count`, and confirms both the success banner
+   *and* the `f1: ok — includes 1 hole` annotation render together -
+   every prior fix-3a/3b test only ever exercised a response with one
+   failing step, exactly the blind spot this fix closes.

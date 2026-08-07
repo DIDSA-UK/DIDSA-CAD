@@ -89,9 +89,11 @@ class PlanTranslationResult {
   /// reverse.
   final List<String> createdFeatureIds;
 
-  /// Only set when [outcome] is [PlanTranslationOutcome.validationFailed] -
-  /// workstream 5's full per-step dry-run report.
-  final List<AiPlanStepResultDto>? validationResults;
+  /// Workstream 5's full per-step pre-flight dry-run report - `execute()`
+  /// always runs this one validate call before doing anything else, so
+  /// it's populated regardless of [outcome], not just on
+  /// [PlanTranslationOutcome.validationFailed].
+  final List<AiPlanStepResultDto> preflightResults;
 
   /// Only set when [outcome] is [PlanTranslationOutcome.stepFailed] or
   /// [PlanTranslationOutcome.gearRequestEncountered] - the index into
@@ -109,7 +111,7 @@ class PlanTranslationResult {
     required this.outcome,
     required this.localIdToRealId,
     required this.createdFeatureIds,
-    this.validationResults,
+    required this.preflightResults,
     this.stoppedAtIndex,
     this.stoppedAtLocalId,
     this.errorMessage,
@@ -118,18 +120,20 @@ class PlanTranslationResult {
   factory PlanTranslationResult.success({
     required Map<String, String> localIdToRealId,
     required List<String> createdFeatureIds,
+    required List<AiPlanStepResultDto> preflightResults,
   }) =>
       PlanTranslationResult._(
         outcome: PlanTranslationOutcome.success,
         localIdToRealId: localIdToRealId,
         createdFeatureIds: createdFeatureIds,
+        preflightResults: preflightResults,
       );
 
   factory PlanTranslationResult.validationFailed(List<AiPlanStepResultDto> results) => PlanTranslationResult._(
         outcome: PlanTranslationOutcome.validationFailed,
         localIdToRealId: const {},
         createdFeatureIds: const [],
-        validationResults: results,
+        preflightResults: results,
       );
 
   factory PlanTranslationResult.stepFailed({
@@ -138,11 +142,13 @@ class PlanTranslationResult {
     required String message,
     required Map<String, String> localIdToRealId,
     required List<String> createdFeatureIds,
+    required List<AiPlanStepResultDto> preflightResults,
   }) =>
       PlanTranslationResult._(
         outcome: PlanTranslationOutcome.stepFailed,
         localIdToRealId: localIdToRealId,
         createdFeatureIds: createdFeatureIds,
+        preflightResults: preflightResults,
         stoppedAtIndex: index,
         stoppedAtLocalId: localId,
         errorMessage: message,
@@ -153,11 +159,13 @@ class PlanTranslationResult {
     required String localId,
     required Map<String, String> localIdToRealId,
     required List<String> createdFeatureIds,
+    required List<AiPlanStepResultDto> preflightResults,
   }) =>
       PlanTranslationResult._(
         outcome: PlanTranslationOutcome.gearRequestEncountered,
         localIdToRealId: localIdToRealId,
         createdFeatureIds: createdFeatureIds,
+        preflightResults: preflightResults,
         stoppedAtIndex: index,
         stoppedAtLocalId: localId,
       );
@@ -229,6 +237,7 @@ class PlanTranslator {
           localId: step.localId,
           localIdToRealId: localIdToRealId,
           createdFeatureIds: createdFeatureIds,
+          preflightResults: validation.results,
         );
       }
 
@@ -253,11 +262,16 @@ class PlanTranslator {
           message: e.message,
           localIdToRealId: localIdToRealId,
           createdFeatureIds: createdFeatureIds,
+          preflightResults: validation.results,
         );
       }
     }
 
-    return PlanTranslationResult.success(localIdToRealId: localIdToRealId, createdFeatureIds: createdFeatureIds);
+    return PlanTranslationResult.success(
+      localIdToRealId: localIdToRealId,
+      createdFeatureIds: createdFeatureIds,
+      preflightResults: validation.results,
+    );
   }
 
   /// The "Undo this generation" bolt-on (`04`'s own section): deletes

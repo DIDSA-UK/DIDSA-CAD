@@ -328,7 +328,7 @@ void main() {
       final result = await translator.execute(plan: plan, partId: 'part-1');
 
       expect(result.outcome, PlanTranslationOutcome.validationFailed);
-      expect(result.validationResults!.single.ok, isFalse);
+      expect(result.preflightResults.single.ok, isFalse);
       expect(result.createdFeatureIds, isEmpty);
       expect(paths, ['/document/parts/part-1/ai-plan/validate']);
     });
