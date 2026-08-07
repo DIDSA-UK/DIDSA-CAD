@@ -53,10 +53,6 @@ from app.document.models import GearFeature, Part, ResolvedPlane
 
 logger = logging.getLogger(__name__)
 
-# 01-gear-math-core.md's own "~10-20 sampled points per flank" target,
-# same default gear_math.py's own functions already use.
-_POINTS_PER_FLANK = 12
-
 
 def _invalid_gear_parameters(detail: str) -> HTTPException:
     """A gear parameter combination `gear_math` itself rejects
@@ -537,6 +533,14 @@ def resolve_gear_from_bodies(
         raise _invalid_gear_parameters(
             f"helix_angle_degrees must be in (-90, 90), got {feature.helix_angle_degrees!r}"
         )
+    if feature.points_per_flank < 2:
+        # Mirrors gear_math.sample_involute_flank's own `point_count must be
+        # >= 2` floor - checked here too (rather than only inside gear_math,
+        # several calls deep) so a bad value fails closed with the same
+        # clean 422 every other bad GearFeature parameter gets, instead of
+        # an uncaught GearGeometryError surfacing as a 500 from partway
+        # through wire construction.
+        raise _invalid_gear_parameters(f"points_per_flank must be >= 2, got {feature.points_per_flank!r}")
     try:
         geometry = spur_gear_geometry(
             module=feature.module,
@@ -558,9 +562,9 @@ def resolve_gear_from_bodies(
     basis = resolve_plane_ref(part, bodies, feature.plane_ref, excluded_feature_ids)
 
     if feature.helix_angle_degrees != 0.0 or feature.herringbone:
-        return _helical_or_herringbone_solid(basis, feature, geometry, _POINTS_PER_FLANK)
+        return _helical_or_herringbone_solid(basis, feature, geometry, feature.points_per_flank)
 
-    wire, root_corner_vertices = _gear_outline_wire(basis, geometry, _POINTS_PER_FLANK)
+    wire, root_corner_vertices = _gear_outline_wire(basis, geometry, feature.points_per_flank)
     face = _gear_face(basis, feature.is_internal, feature.outer_diameter, geometry, wire)
 
     normal = basis_normal(basis)

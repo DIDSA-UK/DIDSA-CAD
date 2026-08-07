@@ -1,5 +1,6 @@
 from fastapi import HTTPException
 
+from app.document import body_cache
 from app.document.models import Document, Part, SketchFeature
 
 # Temporary in-memory store, same stopgap as app.sketch.store - see the note
@@ -18,9 +19,17 @@ def replace_document(document: Document) -> None:
     endpoint, immediately followed by `app.sketch.store.replace_all_sketches`
     doing the same for the Sketch side - together they make an import a
     clean, atomic full replacement rather than a merge with whatever
-    Document/Sketches were open before."""
+    Document/Sketches were open before.
+
+    On-device feedback (herringbone/complex-gear timeout investigation):
+    also drops every cached `compute_part_bodies` checkpoint chain (`app.
+    document.body_cache.clear`) - the incoming `document`'s Parts can reuse
+    ids a stale cache entry still references with completely different
+    content, and there's no cheaper per-part signal available here to tell
+    which entries are actually still valid."""
     global _document
     _document = document
+    body_cache.clear()
 
 
 def get_part_or_404(part_id: str) -> Part:
