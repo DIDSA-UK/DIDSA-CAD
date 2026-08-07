@@ -9,6 +9,7 @@ import 'ai_plan_summary.dart';
 import 'ai_plan_translator.dart';
 import 'ai_provider.dart';
 import 'ai_provider_preferences.dart';
+import 'ai_provider_settings_screen.dart';
 import 'ai_scoping_prompt.dart';
 
 /// `GearPresetStore`'s discriminator for a saved AI Modelling plan -
@@ -97,8 +98,52 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   bool _undoing = false;
   String? _undoError;
 
+  // Fix 1 from the `02` doc's own real end-to-end exercise: set once the
+  // user dismisses the "no provider configured" dialog with "Not now" -
+  // the belt-and-suspenders second layer (`_providerUnconfigured`) reads
+  // this to grey out Send rather than letting a dismissed dialog mean
+  // silent failure later.
+  bool _providerConfigDialogDismissed = false;
+
   DocumentApiClient get _documentApi => widget.documentApi ?? DocumentApiClient();
   SketchApiClient get _sketchApi => widget.sketchApi ?? SketchApiClient();
+
+  // Deliberately skipped whenever `widget.provider` is overridden - that's
+  // a caller (tests, or any future caller) supplying its own provider and
+  // bypassing `AiProviderPreferences` entirely, same as `_send()` already
+  // does via `widget.provider ?? AiProviderPreferences.active`.
+  bool get _providerUnconfigured => widget.provider == null && !AiProviderPreferences.isActiveProviderConfigured;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _checkProviderConfigured());
+  }
+
+  Future<void> _checkProviderConfigured() async {
+    if (!mounted || !_providerUnconfigured) return;
+    final openSettings = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('No AI provider configured yet'),
+        content: const Text(
+          'Pick a provider and test the connection in AI Provider Settings before starting a conversation.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Not now')),
+          FilledButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Open Settings')),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (openSettings == true) {
+      await Navigator.of(context).push(MaterialPageRoute(builder: (_) => const AiProviderSettingsScreen()));
+      await AiProviderPreferences.load();
+      await _checkProviderConfigured();
+    } else {
+      setState(() => _providerConfigDialogDismissed = true);
+    }
+  }
 
   @override
   void dispose() {
@@ -120,7 +165,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
 
   Future<void> _send() async {
     final text = _inputController.text.trim();
-    if (text.isEmpty || _sending) return;
+    if (text.isEmpty || _sending || (_providerConfigDialogDismissed && _providerUnconfigured)) return;
 
     final provider = widget.provider ?? AiProviderPreferences.active;
     final userMessage = AiChatMessage(role: AiMessageRole.user, text: text);
@@ -414,6 +459,14 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
             child: Text(_sendError!, style: const TextStyle(color: Colors.redAccent)),
           ),
+        if (_providerConfigDialogDismissed && _providerUnconfigured)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            child: Text(
+              'No AI provider configured - open AI Provider Settings before sending a message.',
+              style: TextStyle(color: Colors.white54),
+            ),
+          ),
         Padding(
           padding: const EdgeInsets.all(12),
           child: Row(
@@ -430,7 +483,11 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
                 ),
               ),
               const SizedBox(width: 8),
-              IconButton.filled(key: const Key('aiModellingSend'), onPressed: _sending ? null : _send, icon: const Icon(Icons.send)),
+              IconButton.filled(
+                key: const Key('aiModellingSend'),
+                onPressed: (_sending || (_providerConfigDialogDismissed && _providerUnconfigured)) ? null : _send,
+                icon: const Icon(Icons.send),
+              ),
             ],
           ),
         ),
@@ -487,7 +544,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
                         children: [
                           Icon(r.ok ? Icons.check_circle_outline : Icons.error_outline, color: r.ok ? Colors.green : Colors.redAccent, size: 18),
                           const SizedBox(width: 6),
-                          Expanded(child: Text('${r.localId}: ${r.ok ? 'ok' : (r.error?['type'] ?? r.error ?? 'failed')}')),
+                          Expanded(child: Text('${r.localId}: ${_validationResultText(r)}')),
                         ],
                       ),
                     ),
@@ -532,6 +589,27 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         ],
       ),
     );
+  }
+
+  /// Fixes 3a/3b from the `02` doc's own real end-to-end exercise. Both are
+  /// shown as an annotation next to the existing per-step validation row
+  /// (only ever rendered when the plan's validation reports at least one
+  /// failure - `_validationFailureResults` is never populated on a clean
+  /// pass, see `PlanTranslationResult.validationFailed`'s own doc comment)
+  /// rather than baked into `summarizeAiPlan`'s plan-only output, since
+  /// only this validation response - not the plan itself - carries
+  /// `resolvedEdges`/`holeCount` at all:
+  /// - **3a**: a Fillet/Chamfer step's `resolvedEdges` was already fetched
+  ///   but never shown - append the real resolved edge count.
+  /// - **3b**: an Extrude/Revolve/Sweep step's `holeCount` (real backend
+  ///   truth from `detect_profile`, never a client-side guess).
+  String _validationResultText(AiPlanStepResultDto r) {
+    if (!r.ok) return (r.error?['type'] ?? r.error ?? 'failed').toString();
+    final edgeCount = r.resolvedEdges?.length;
+    if (edgeCount != null) return 'ok ($edgeCount edge${edgeCount == 1 ? '' : 's'})';
+    final holeCount = r.holeCount;
+    if (holeCount != null && holeCount > 0) return 'ok — includes $holeCount hole${holeCount == 1 ? '' : 's'}';
+    return 'ok';
   }
 
   Widget _stepStatusIcon(TranslationStepStatus status) => switch (status) {

@@ -33,6 +33,19 @@ Let me know if you want any changes.''';
     expect(plan!.steps.single.localId, 'g1');
   });
 
+  test('detects a plan preceded by an "Assumptions:" preamble (fix 4 - relaxed FINAL-reply rule)', () {
+    final text = '''
+Assumptions: hole goes all the way through; chamfer applies to every edge of the top face.
+
+```json
+$minimalPlanJson
+```''';
+
+    final plan = detectPlanInAssistantText(text);
+    expect(plan, isNotNull);
+    expect(plan!.steps.single.localId, 'g1');
+  });
+
   test('detects a plan embedded mid-prose with no fence at all', () {
     final text = 'Sounds good, here is the plan: $minimalPlanJson - generated as requested.';
 

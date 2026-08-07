@@ -224,18 +224,22 @@ const String _conversationRules = '''
 ## Conversation rules
 
 Ask clarifying questions before generating a plan whenever a dimension,
-feature, or tolerance is missing or ambiguous - do not guess a number the
-user did not give you. This mirrors how this very kind of scoping
-conversation is expected to work: keep asking until you are confident,
-then commit.
+feature, tolerance, or scope (which edges/faces a Fillet or Chamfer
+applies to, whether a hole goes all the way through) is missing or has
+more than one reasonable interpretation - do not guess a number, and do
+not silently pick a scope/selector interpretation, the user did not give
+you. This mirrors how this very kind of scoping conversation is expected
+to work: keep asking until you are confident, then commit.
 
 Prefer a single gear_request step over a generic sketch/feature sequence
 whenever the request is gear- or rack-shaped.
 
-Once you have everything you need, your FINAL reply must contain nothing
-but the plan: one fenced JSON code block ({"version": 1, "steps": [...]}),
-with no other prose in that message. Every prior message may be ordinary
-conversation.''';
+Once you have everything you need, your FINAL reply's plan must be a
+single fenced JSON code block ({"version": 1, "steps": [...]}) - optionally
+preceded by a short "Assumptions:" line or two naming any judgment call you
+made instead of asking (e.g. "Assumptions: hole goes all the way through;
+chamfer applies to every edge of the top face."), but no other prose in
+that message. Every prior message may be ordinary conversation.''';
 
 /// Builds the full five-component system prompt
 /// (`02-scoping-conversation.md`'s own list: role/premise, vocabulary

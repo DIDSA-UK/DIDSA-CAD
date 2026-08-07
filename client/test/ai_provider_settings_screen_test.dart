@@ -69,6 +69,32 @@ void main() {
     expect(baseUrlField.controller?.text, 'https://ollama.com/v1');
   });
 
+  testWidgets('Gemini preset button fills the local baseUrl field', (tester) async {
+    final client = MockClient((request) async => http.Response('not ollama', 404));
+    await tester.pumpWidget(MaterialApp(home: AiProviderSettingsScreen(httpClient: client)));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Gemini'));
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pumpAndSettle();
+
+    final baseUrlField = tester.widget<TextField>(find.widgetWithText(TextField, 'Base URL'));
+    expect(baseUrlField.controller?.text, 'https://generativelanguage.googleapis.com/v1beta/openai');
+  });
+
+  testWidgets('Groq preset button fills the local baseUrl field', (tester) async {
+    final client = MockClient((request) async => http.Response('not ollama', 404));
+    await tester.pumpWidget(MaterialApp(home: AiProviderSettingsScreen(httpClient: client)));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Groq'));
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pumpAndSettle();
+
+    final baseUrlField = tester.widget<TextField>(find.widgetWithText(TextField, 'Base URL'));
+    expect(baseUrlField.controller?.text, 'https://api.groq.com/openai/v1');
+  });
+
   testWidgets('a successful Ollama /api/tags fetch replaces the free-text model field with a dropdown',
       (tester) async {
     final client = MockClient((request) async {

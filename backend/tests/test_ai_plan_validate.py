@@ -88,6 +88,60 @@ def test_fully_valid_plan_all_steps_ok() -> None:
     assert all(r["error"] is None for r in response["results"])
 
 
+def test_extrude_step_reports_hole_count_for_a_square_with_a_nested_circle() -> None:
+    """`02-scoping-conversation.md`'s own real end-to-end exercise (fix 3b):
+    a square Sketch with one circle nested inside it (a hole, not a second
+    outer profile - `detect_profile`'s own C1 nesting classification) should
+    report `hole_count: 1` on the Extrude step that consumes it - mirrors
+    the exact "100mm square plate ... with a 20mm hole in the middle" case
+    from that exercise, at a smaller/faster scale. Real backend truth from
+    `app.sketch.profile.detect_profile`, not a client-side guess."""
+    part = _create_part()
+    steps = _rectangle_sketch_steps() + [
+        {"local_id": "pc", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 30, "y": 20},
+        {"local_id": "c1", "kind": "sketch_circle", "sketch_feature_id": "sk1", "center_point_id": "pc", "radius": 10},
+        {
+            "local_id": "f1",
+            "kind": "extrude",
+            "sketch_feature_id": "sk1",
+            "extrude_type": "boss",
+            "start_distance": 0,
+            "end_distance": 10,
+        },
+    ]
+
+    response = _validate(part["id"], steps)
+    results = _results_by_local_id(response)
+
+    assert results["f1"]["ok"] is True
+    assert results["f1"]["hole_count"] == 1
+    # Non-extrude/revolve/sweep steps never carry a hole_count at all.
+    assert results["r1"]["hole_count"] is None
+
+
+def test_extrude_step_reports_zero_hole_count_for_a_plain_rectangle() -> None:
+    """A plain rectangle Extrude (no nested hole) reports `hole_count: 0`,
+    not `None`/missing - `hole_count` is only ever absent for a step kind
+    that isn't extrude/revolve/sweep, never merely "no holes found"."""
+    part = _create_part()
+    steps = _rectangle_sketch_steps() + [
+        {
+            "local_id": "f1",
+            "kind": "extrude",
+            "sketch_feature_id": "sk1",
+            "extrude_type": "boss",
+            "start_distance": 0,
+            "end_distance": 10,
+        },
+    ]
+
+    response = _validate(part["id"], steps)
+    results = _results_by_local_id(response)
+
+    assert results["f1"]["ok"] is True
+    assert results["f1"]["hole_count"] == 0
+
+
 def test_valid_plan_persists_nothing_against_the_real_part() -> None:
     part = _create_part()
     steps = _rectangle_sketch_steps() + [

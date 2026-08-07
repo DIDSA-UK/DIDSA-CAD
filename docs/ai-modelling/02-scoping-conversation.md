@@ -146,7 +146,7 @@ extension (e.g. don't hardcode the input row to text-only in a way that's
 awkward to add an attach-image affordance to later), but don't build any
 image UI now either.
 
-## Real end-to-end exercise (2026-08-06): four UX gaps found, not yet fixed
+## Real end-to-end exercise (2026-08-06): four UX gaps found — all fixed (2026-08-07)
 
 With workstreams 1-4 all built, ran a genuine first-time-user trace — a
 real Gemini call using the real, locked system prompt
@@ -158,8 +158,9 @@ geometry** (one real body, correct bounding box, hole genuinely cut
 through, chamfer correctly covering both the outer and hole edges on the
 one annular top face) — no functional bug in the translator/validator.
 The gaps are all in what the user sees and is guided toward. Four found,
-agreed fixes below — **not yet implemented**, this is the record for
-whichever session picks them up next:
+agreed fixes below — **all implemented and tested on 2026-08-07** (this
+session picked them up); each item is annotated with what actually
+shipped, since one diverged slightly from the plan below once written.
 
 1. **No provider-configured guard.** `AiModellingScreen` never checks
    whether `AiProviderPreferences.active` is actually usable before
@@ -174,6 +175,13 @@ whichever session picks them up next:
    "Open Settings" / "Not now"), plus a second, cheaper layer — grey out
    Send and show inline text if the user dismisses and tries to type
    anyway, so a dismissed dialog never means silent failure later.
+   **Shipped as planned** — `AiProviderPreferences.isActiveProviderConfigured`,
+   `AiModellingScreen`'s post-frame guard/dialog, and the grey-out-Send
+   belt-and-suspenders layer are all real, tested code. The guard is
+   skipped entirely whenever a caller supplies its own `AiProvider`
+   override (tests, or any future caller bypassing preferences on
+   purpose) — same "only apply to the real preferences-driven path"
+   reasoning `_send()` already used for that override.
 2. **Gemini/Groq are invisible in Settings.** `AiProviderSettingsScreen`'s
    "Local" tab has one preset button ("Ollama Cloud") and its own
    descriptive text only mentions Ollama — despite `README.md`'s own
@@ -183,6 +191,11 @@ whichever session picks them up next:
    correctly) — add 3-4 one-tap presets (Ollama Cloud, Gemini, Groq,
    maybe Zhipu/GLM-Flash) next to the existing button, rewrite the
    helper text to name them.
+   **Shipped narrower than planned**: Ollama Cloud, Gemini, and Groq
+   presets (the three this doc's own "Testing without cost" section
+   actually recommends) — Zhipu/GLM-Flash left out, not because of a
+   problem, just not named in the fix's own agreed scope above and no
+   real need surfaced to add a fourth.
 3. **The plan/validation UI never says whether a nested entity becomes a
    hole, or how many edges a Fillet/Chamfer selector actually resolved
    to.** Two layers:
@@ -198,6 +211,37 @@ whichever session picks them up next:
      already-computed `MultiProfile.holes` during dry-run resolution —
      real backend truth, not a client-side guess. `summarizeAiPlan`
      appends "— includes N hole(s)" when present.
+
+   **Shipped, one real correction and one deliberate divergence**:
+   - `detect_profile`'s actual return shape has no `MultiProfile.holes`
+     field (that name doesn't exist in `app.sketch.profile` — verified by
+     reading the module, not assumed from this doc's own wording, per
+     this project's standing "verify, don't trust docs" discipline). The
+     real per-loop hole count is `Profile.inner_loops`'s length, summed
+     over whichever profile(s) `app.document.extrude.select_profiles`
+     actually selects for the step's own `profile_refs` — a new
+     `app.document.ai_plan._hole_count` helper reuses `detect_profile`/
+     `select_profiles` directly (the exact functions the real Extrude/
+     Revolve/Sweep resolution path already calls internally) rather than
+     re-deriving anything. `StepResult.hole_count`/`AiPlanStepResultDto.
+     holeCount` land as planned.
+   - Surfaced as an annotation on the existing per-step validation row in
+     `AiModellingScreen._buildReviewAndGenerate` ("ok — includes N
+     hole(s)"), not baked into `summarizeAiPlan`: that function only ever
+     sees the plan itself, never a validation result, and the validation
+     results panel already exists as the natural home for anything
+     `StepResult` reports (it's also where fix 3a's own edge-count
+     annotation landed, right above this same row) — threading validation
+     data into `summarizeAiPlan` would have meant a new parameter for a
+     panel that already renders this data source elsewhere. Real caveat
+     carried over from before this fix: that panel (`_validationFailureResults`)
+     is currently only ever populated when the plan's own dry-run
+     validation reports at least one failing step (see
+     `PlanTranslationResult.validationFailed`'s own doc comment) — so
+     today, both the edge-count and hole-count annotations are only
+     visible on a run with a failure somewhere in it, never on a fully
+     clean pass. Real, pre-existing scope gap, not something this fix
+     introduced or was asked to close.
 4. **The system prompt under-triggers clarifying questions.** Gemini
    asked zero questions on this request despite two real ambiguities
    (through vs. blind hole; which edges "chamfered edges" covers) and
@@ -220,3 +264,14 @@ whichever session picks them up next:
      for every judgment call. Pairs with point 3's backend fix: two
      independent visibility layers (what the LLM says it assumed, what
      the backend actually resolved) instead of trusting either alone.
+
+   **Shipped as planned** — `ai_scoping_prompt.dart`'s `_conversationRules`
+   now names scope/selector ambiguity explicitly (which edges/faces a
+   Fillet/Chamfer applies to, through-vs-blind hole) alongside missing
+   dimensions/features/tolerances, and the FINAL-reply rule now allows an
+   optional short "Assumptions:" preamble before the fenced plan.
+   Confirmed `detectPlanInAssistantText` still finds the plan with a
+   preamble present (new regression test) — expected to keep working
+   since the fenced-code-block candidate path never depended on the fence
+   being the very first thing in the message, but confirmed rather than
+   assumed.

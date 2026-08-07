@@ -820,12 +820,22 @@ class AiPlanStepResultDto {
   /// resolved_edges`'s own doc comment in `ai_plan_schemas.py`.
   final List<SubShapeRefDto>? resolvedEdges;
 
+  /// Fix 3b from `02-scoping-conversation.md`'s own real end-to-end
+  /// exercise: only present (and only meaningful) on a successful
+  /// `extrude`/`revolve`/`sweep` step - the real number of holes its
+  /// selected profile(s) carry, sourced from the backend's own
+  /// `detect_profile` during dry-run resolution (see `StepResult.
+  /// hole_count`'s own doc comment in `ai_plan_schemas.py`) - real backend
+  /// truth, never a client-side geometric guess.
+  final int? holeCount;
+
   AiPlanStepResultDto({
     required this.localId,
     required this.ok,
     required this.warnings,
     this.error,
     this.resolvedEdges,
+    this.holeCount,
   });
 
   factory AiPlanStepResultDto.fromJson(Map<String, dynamic> json) => AiPlanStepResultDto(
@@ -836,6 +846,7 @@ class AiPlanStepResultDto {
         resolvedEdges: (json['resolved_edges'] as List?)
             ?.map((e) => SubShapeRefDto.fromJson(e as Map<String, dynamic>))
             .toList(),
+        holeCount: json['hole_count'] as int?,
       );
 }
 

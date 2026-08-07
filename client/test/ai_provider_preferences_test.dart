@@ -131,6 +131,30 @@ void main() {
     expect(provider.model, 'llama3');
   });
 
+  test('isActiveProviderConfigured is false for local with an empty baseUrl (first-ever launch)', () async {
+    await AiProviderPreferences.load();
+    expect(AiProviderPreferences.isActiveProviderConfigured, isFalse);
+  });
+
+  test('isActiveProviderConfigured is true for local once a baseUrl is saved', () async {
+    await AiProviderPreferences.load();
+    await AiProviderPreferences.saveLocal(baseUrl: 'http://localhost:11434/v1', model: 'llama3');
+    expect(AiProviderPreferences.isActiveProviderConfigured, isTrue);
+  });
+
+  test('isActiveProviderConfigured is false for openai/anthropic with no apiKey, true once saved', () async {
+    await AiProviderPreferences.load();
+    await AiProviderPreferences.setActiveProvider('openai');
+    expect(AiProviderPreferences.isActiveProviderConfigured, isFalse);
+    await AiProviderPreferences.saveOpenAi(apiKey: 'sk-openai', model: 'gpt-5');
+    expect(AiProviderPreferences.isActiveProviderConfigured, isTrue);
+
+    await AiProviderPreferences.setActiveProvider('anthropic');
+    expect(AiProviderPreferences.isActiveProviderConfigured, isFalse);
+    await AiProviderPreferences.saveAnthropic(apiKey: 'sk-ant', model: 'claude-opus-5');
+    expect(AiProviderPreferences.isActiveProviderConfigured, isTrue);
+  });
+
   test('active defaults to local when the stored active-provider value is unrecognized', () async {
     SharedPreferences.setMockInitialValues({'ai_active_provider': 'something-unexpected'});
     await AiProviderPreferences.load();
