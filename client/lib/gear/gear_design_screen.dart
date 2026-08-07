@@ -494,7 +494,9 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
             // this value.
             Row(
               children: [
-                Text('Tooth curve precision', style: Theme.of(context).textTheme.bodyMedium),
+                Expanded(
+                  child: Text('Tooth curve precision', style: Theme.of(context).textTheme.bodyMedium),
+                ),
                 fieldHelpIcon(
                   'How many points each tooth flank is sampled at before fitting a smooth curve through '
                   'them. Lower is faster to build (fewer points for the backend to loft/fuse) but gives a '
