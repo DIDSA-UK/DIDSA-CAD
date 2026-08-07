@@ -94,6 +94,22 @@ class AiProviderPreferences {
     _anthropicModel = model;
   }
 
+  /// Mirrors `ApiConfig.isConfigured`'s own shape: whether the *active*
+  /// provider slot has enough set to actually make a call, not just whether
+  /// `load()` has run - a genuine first-time user (default `local` slot,
+  /// empty `baseUrl`) should be guarded against, not just an unloaded state.
+  static bool get isActiveProviderConfigured {
+    switch (_activeProvider) {
+      case 'openai':
+        return _openAiApiKey.isNotEmpty;
+      case 'anthropic':
+        return _anthropicApiKey.isNotEmpty;
+      case 'local':
+      default:
+        return _localBaseUrl.isNotEmpty;
+    }
+  }
+
   /// Builds the right concrete provider from whatever [load] last populated -
   /// every consumer above the interface calls this and `AiProvider` only,
   /// never a concrete provider type directly.

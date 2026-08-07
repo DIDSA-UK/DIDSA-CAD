@@ -403,6 +403,15 @@ class StepResult(BaseModel):
     # here behaves identically once workstream 4's translator executes it
     # for real").
     resolved_edges: list[SubShapeRefSchema] | None = None
+    # `02-scoping-conversation.md`'s own "Real end-to-end exercise" fix 3b:
+    # only present (and only meaningful) on a successful `extrude`/
+    # `revolve`/`sweep` step - the real number of holes (nested inner
+    # loops) its selected profile(s) carry, sourced from `app.sketch.
+    # profile.detect_profile`'s own already-computed `Profile.inner_loops`
+    # during this endpoint's own dry-run resolution (see `app.document.
+    # ai_plan._hole_count`) - real backend truth, not a client-side guess
+    # (the client has no OCCT topology to reason about this with at all).
+    hole_count: int | None = None
 
 
 class PlanValidateResponse(BaseModel):

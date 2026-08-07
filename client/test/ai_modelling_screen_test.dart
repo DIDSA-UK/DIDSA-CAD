@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:didsa_cad_client/ai/ai_modelling_screen.dart';
 import 'package:didsa_cad_client/ai/ai_provider.dart';
+import 'package:didsa_cad_client/ai/ai_provider_preferences.dart';
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
 import 'package:didsa_cad_client/gear/gear_preset_store.dart';
@@ -147,6 +148,70 @@ Here's the plan:
     await tester.pumpAndSettle();
   }
 
+  group('provider-configured guard (fix 1 from the `02` doc\'s real end-to-end exercise)', () {
+    setUp(() async {
+      SharedPreferences.setMockInitialValues({});
+      await AiProviderPreferences.load();
+    });
+
+    testWidgets('shows a dialog on a fresh, unconfigured launch (no provider override)', (tester) async {
+      await tester.pumpWidget(const MaterialApp(home: AiModellingScreen()));
+      await tester.pumpAndSettle();
+
+      expect(find.text('No AI provider configured yet'), findsOneWidget);
+    });
+
+    testWidgets('does not show a dialog once the active provider is configured', (tester) async {
+      await AiProviderPreferences.saveLocal(baseUrl: 'http://localhost:11434/v1', model: 'llama3');
+
+      await tester.pumpWidget(const MaterialApp(home: AiModellingScreen()));
+      await tester.pumpAndSettle();
+
+      expect(find.text('No AI provider configured yet'), findsNothing);
+    });
+
+    testWidgets('a provider override bypasses the guard entirely, configured or not', (tester) async {
+      final provider = FakeAiProvider((transcript, systemPrompt) async => const AiTurnResult(assistantText: 'hi'));
+
+      await tester.pumpWidget(MaterialApp(home: AiModellingScreen(provider: provider)));
+      await tester.pumpAndSettle();
+
+      expect(find.text('No AI provider configured yet'), findsNothing);
+    });
+
+    testWidgets('dismissing with "Not now" greys out Send and shows inline text', (tester) async {
+      await tester.pumpWidget(const MaterialApp(home: AiModellingScreen()));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Not now'));
+      await tester.pumpAndSettle();
+
+      final sendButton = tester.widget<IconButton>(find.byKey(const Key('aiModellingSend')));
+      expect(sendButton.onPressed, isNull);
+      expect(find.textContaining('No AI provider configured'), findsOneWidget);
+    });
+
+    testWidgets('"Open Settings" navigates to AiProviderSettingsScreen and re-checks on return', (tester) async {
+      await tester.pumpWidget(const MaterialApp(home: AiModellingScreen()));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Open Settings'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('AI Provider Settings'), findsOneWidget);
+      // Configure directly via preferences (mirrors what a real Test
+      // Connection & Save would persist) then pop back, as if the user
+      // cancelled out of the settings screen after saving another way.
+      await AiProviderPreferences.saveLocal(baseUrl: 'http://localhost:11434/v1', model: 'llama3');
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+
+      expect(find.text('No AI provider configured yet'), findsNothing);
+      final sendButton = tester.widget<IconButton>(find.byKey(const Key('aiModellingSend')));
+      expect(sendButton.onPressed, isNotNull);
+    });
+  });
+
   testWidgets('sending a message shows both the user and assistant turns in the chat', (tester) async {
     final provider = FakeAiProvider((transcript, systemPrompt) async {
       expect(systemPrompt, isNotNull);
@@ -238,6 +303,78 @@ Here's the plan:
     expect(find.textContaining('1 of 1 step(s) failed validation - nothing was created'), findsOneWidget);
     // Only the create-Part and validate calls happened - no execution.
     expect(requestedPaths, ['/document/parts', '/document/parts/part-1/ai-plan/validate']);
+  });
+
+  testWidgets(
+      'Fix 3a: a validation report shows the resolved edge count on an ok Fillet/Chamfer row (`02` doc exercise)',
+      (tester) async {
+    final client = DocumentApiClient(
+      httpClient: MockClient((request) async {
+        if (request.url.path == '/document/parts') {
+          return jsonResponse({'id': 'part-1', 'name': 'AI Modelling Part', 'feature_ids': []});
+        }
+        return jsonResponse({
+          'results': [
+            {
+              'local_id': 'f1',
+              'ok': true,
+              'warnings': [],
+              'error': null,
+              'resolved_edges': [
+                {'body_id': 'f1', 'shape_type': 'edge', 'index': 0},
+                {'body_id': 'f1', 'shape_type': 'edge', 'index': 1},
+              ],
+            },
+            {
+              'local_id': 'g1',
+              'ok': false,
+              'warnings': [],
+              'error': {'type': 'unknown_local_id'},
+            },
+          ],
+        });
+      }),
+    );
+    final provider = FakeAiProvider((transcript, systemPrompt) async => const AiTurnResult(assistantText: minimalPlanText));
+
+    await tester.pumpWidget(MaterialApp(home: AiModellingScreen(provider: provider, documentApi: client)));
+    await sendMessage(tester, 'External spur gear, module 2, 20 teeth');
+    await tester.tap(find.text('Generate'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('f1: ok (2 edges)'), findsOneWidget);
+    expect(find.textContaining('unknown_local_id'), findsOneWidget);
+  });
+
+  testWidgets(
+      'Fix 3b: a validation report shows the real hole count on an ok Extrude/Revolve/Sweep row (`02` doc exercise)',
+      (tester) async {
+    final client = DocumentApiClient(
+      httpClient: MockClient((request) async {
+        if (request.url.path == '/document/parts') {
+          return jsonResponse({'id': 'part-1', 'name': 'AI Modelling Part', 'feature_ids': []});
+        }
+        return jsonResponse({
+          'results': [
+            {'local_id': 'f1', 'ok': true, 'warnings': [], 'error': null, 'hole_count': 1},
+            {
+              'local_id': 'g1',
+              'ok': false,
+              'warnings': [],
+              'error': {'type': 'unknown_local_id'},
+            },
+          ],
+        });
+      }),
+    );
+    final provider = FakeAiProvider((transcript, systemPrompt) async => const AiTurnResult(assistantText: minimalPlanText));
+
+    await tester.pumpWidget(MaterialApp(home: AiModellingScreen(provider: provider, documentApi: client)));
+    await sendMessage(tester, 'External spur gear, module 2, 20 teeth');
+    await tester.tap(find.text('Generate'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('f1: ok — includes 1 hole'), findsOneWidget);
   });
 
   testWidgets('Generate on a real step failure stops immediately, keeps earlier Features, and offers Undo via chat', (

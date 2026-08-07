@@ -212,6 +212,18 @@ class _AiProviderSettingsScreenState extends State<AiProviderSettingsScreen> {
     });
   }
 
+  void _applyGeminiPreset() {
+    setState(() {
+      _localBaseUrlController.text = 'https://generativelanguage.googleapis.com/v1beta/openai';
+    });
+  }
+
+  void _applyGroqPreset() {
+    setState(() {
+      _localBaseUrlController.text = 'https://api.groq.com/openai/v1';
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -266,24 +278,28 @@ class _AiProviderSettingsScreenState extends State<AiProviderSettingsScreen> {
   List<Widget> _buildLocalFields(BuildContext context) {
     return [
       Text(
-        "Local provider reachability: the client (not the CAD backend) makes this "
-        "call directly, so a LAN-only address only works when the client itself is "
-        "on that network - a real limitation when the client is used remotely, not "
-        "a bug.",
+        "Local covers any OpenAI-compatible HTTP endpoint - a self-hosted Ollama "
+        "server, or a free-tier cloud option like Ollama Cloud, Google Gemini, or "
+        "Groq (presets below). The client (not the CAD backend) makes this call "
+        "directly, so a LAN-only address only works when the client itself is on "
+        "that network - a real limitation when the client is used remotely, not a "
+        "bug.",
         style: Theme.of(context).textTheme.bodySmall,
       ),
       const SizedBox(height: 12),
-      Row(
+      TextField(
+        controller: _localBaseUrlController,
+        keyboardType: TextInputType.url,
+        decoration: const InputDecoration(labelText: 'Base URL', border: OutlineInputBorder()),
+      ),
+      const SizedBox(height: 8),
+      Wrap(
+        spacing: 8,
+        runSpacing: 8,
         children: [
-          Expanded(
-            child: TextField(
-              controller: _localBaseUrlController,
-              keyboardType: TextInputType.url,
-              decoration: const InputDecoration(labelText: 'Base URL', border: OutlineInputBorder()),
-            ),
-          ),
-          const SizedBox(width: 8),
           OutlinedButton(onPressed: _applyOllamaCloudPreset, child: const Text('Ollama Cloud')),
+          OutlinedButton(onPressed: _applyGeminiPreset, child: const Text('Gemini')),
+          OutlinedButton(onPressed: _applyGroqPreset, child: const Text('Groq')),
         ],
       ),
       const SizedBox(height: 12),

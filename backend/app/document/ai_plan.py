@@ -69,7 +69,7 @@ from app.document.ai_plan_schemas import (
 from app.document.schemas import SubShapeRefSchema
 from app.document.chamfer import resolve_chamfer
 from app.document.create_plane import resolve_create_plane
-from app.document.extrude import compute_part_bodies, resolve_feature_tool_shape
+from app.document.extrude import EXTRUDABLE_STATUSES, compute_part_bodies, resolve_feature_tool_shape, select_profiles
 from app.document.fillet import resolve_fillet
 from app.document.mirror import resolve_mirror
 from app.document.models import (
@@ -96,6 +96,7 @@ from app.document.pattern import resolve_pattern
 from app.document.revolve import resolve_revolve
 from app.document.sweep import resolve_sweep
 from app.sketch.models import SketchEntityRef, SketchEntityType
+from app.sketch.profile import ProfileStatus, detect_profile
 from app.sketch.store import create_sketch, delete_sketch, get_sketch_or_404
 from OCC.Core.TopoDS import TopoDS_Shape
 
@@ -149,6 +150,9 @@ class _Resolved:
     # comment for why `body_id` here is a local_id, not this scratch pass's
     # own Feature id.
     resolved_edges: list[SubShapeRefSchema] | None = None
+    # extrude/revolve/sweep steps only - see `StepResult.hole_count`'s own
+    # doc comment.
+    hole_count: int | None = None
 
 
 class _PlanValidator:
@@ -176,7 +180,8 @@ class _PlanValidator:
             return StepResult(local_id=step.local_id, ok=False, error=detail)
         resolved = self.resolved.get(step.local_id)
         resolved_edges = resolved.resolved_edges if resolved is not None else None
-        return StepResult(local_id=step.local_id, ok=True, resolved_edges=resolved_edges)
+        hole_count = resolved.hole_count if resolved is not None else None
+        return StepResult(local_id=step.local_id, ok=True, resolved_edges=resolved_edges, hole_count=hole_count)
 
     def _lookup(self, local_id: str, expected_kinds: frozenset[str], field: str) -> _Resolved:
         if local_id in self.failed:
@@ -379,6 +384,25 @@ def _profile_refs(v: _PlanValidator, sketch_id: str, local_ids: list[str], field
     return refs
 
 
+def _hole_count(sketch_id: str, profile_refs: list[SketchEntityRef]) -> int:
+    """`StepResult.hole_count`'s real value for an Extrude/Revolve/Sweep
+    step: reuses `detect_profile`/`select_profiles` directly - the exact
+    same nested-loop detection `extrude._solid_for_extrude_feature`/
+    `revolve.resolve_revolve`/`sweep.resolve_sweep` already run internally
+    to build the real shape - rather than reimplementing nested-loop
+    detection here or client-side (real drift risk, see `02-scoping-
+    conversation.md`'s own "Real end-to-end exercise" finding). Called
+    only after the step's own `resolve_X` call has already succeeded, so
+    `result.status` is guaranteed to be one of `EXTRUDABLE_STATUSES`."""
+    sketch = get_sketch_or_404(sketch_id).expand_pattern_and_mirror_instances()
+    result = detect_profile(sketch)
+    if result.status not in EXTRUDABLE_STATUSES:
+        return 0
+    candidates = [result.profile] if result.status == ProfileStatus.CLOSED_LOOP else result.loops
+    profiles = select_profiles(candidates, profile_refs)
+    return sum(len(p.inner_loops) for p in profiles)
+
+
 def _handle_extrude(v: _PlanValidator, step: ExtrudeStep) -> None:
     sk = v._lookup(step.sketch_feature_id, frozenset({"sketch"}), "sketch_feature_id")
     if step.end_distance <= step.start_distance:
@@ -407,7 +431,8 @@ def _handle_extrude(v: _PlanValidator, step: ExtrudeStep) -> None:
     if result is None:
         v.part.delete_feature(feature.id)
         raise _StepError({"type": "no_extrudable_profile", "sketch_feature_id": step.sketch_feature_id})
-    v.resolved[step.local_id] = _Resolved(kind="extrude", feature_id=feature.id)
+    hole_count = _hole_count(sk.sketch_id, profile_refs)
+    v.resolved[step.local_id] = _Resolved(kind="extrude", feature_id=feature.id, hole_count=hole_count)
 
 
 def _handle_revolve(v: _PlanValidator, step: RevolveStep) -> None:
@@ -431,7 +456,8 @@ def _handle_revolve(v: _PlanValidator, step: RevolveStep) -> None:
     if result is None:
         raise _StepError({"type": "no_revolvable_profile", "sketch_feature_id": step.sketch_feature_id})
     v.part.add_feature(feature)
-    v.resolved[step.local_id] = _Resolved(kind="revolve", feature_id=feature.id)
+    hole_count = _hole_count(sk.sketch_id, profile_refs)
+    v.resolved[step.local_id] = _Resolved(kind="revolve", feature_id=feature.id, hole_count=hole_count)
 
 
 def _handle_sweep(v: _PlanValidator, step: SweepStep) -> None:
@@ -459,7 +485,8 @@ def _handle_sweep(v: _PlanValidator, step: SweepStep) -> None:
     if result is None:
         raise _StepError({"type": "no_sweepable_profile", "sketch_feature_id": step.sketch_feature_id})
     v.part.add_feature(feature)
-    v.resolved[step.local_id] = _Resolved(kind="sweep", feature_id=feature.id)
+    hole_count = _hole_count(sk.sketch_id, profile_refs)
+    v.resolved[step.local_id] = _Resolved(kind="sweep", feature_id=feature.id, hole_count=hole_count)
 
 
 # --- Fillet / Chamfer ----------------------------------------------------
