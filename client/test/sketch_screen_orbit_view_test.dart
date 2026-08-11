@@ -169,8 +169,15 @@ void main() {
     // Not find.text('Exit') - see the hamburger-menu test above for why
     // that's ambiguous.
     await tester.tap(find.widgetWithIcon(ListTile, Icons.exit_to_app));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 300));
+    // The pop's page-route transition needs to fully finish, and its
+    // cleanup (dropping the outgoing route's RenderObjects from the
+    // Overlay) needs a frame after that - a single 300ms jump can land
+    // before that cleanup frame runs. Many small steps instead, same
+    // convention part_screen_test.dart's own exit-sketch-fab test already
+    // established for the identical pop-transition-settling problem.
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
 
     expect(find.byType(SketchScreen), findsNothing);
     expect(find.text('start'), findsOneWidget);
