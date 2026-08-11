@@ -244,6 +244,25 @@ void main() {
     expect(biased[0].$1, vm.Vector3(5, 5, 5));
   });
 
+  test('biasPointsTowardCamera pushes each point towards the camera by amount (on-device feedback: '
+      'sketch entities hidden behind a Body from an earlier feature)', () {
+    final points = [vm.Vector3(0, 0, 0), vm.Vector3(10, 0, 0)];
+
+    final biased = biasPointsTowardCamera(points, vm.Vector3(-5, 0, 0), 1.0);
+
+    // Camera is at x=-5. Both points move 1 unit along -x, towards it.
+    expect(biased[0], vm.Vector3(-1, 0, 0));
+    expect(biased[1], vm.Vector3(9, 0, 0));
+  });
+
+  test('biasPointsTowardCamera leaves a point exactly at the camera unchanged', () {
+    final points = [vm.Vector3(5, 5, 5)];
+
+    final biased = biasPointsTowardCamera(points, vm.Vector3(5, 5, 5), 1.0);
+
+    expect(biased[0], vm.Vector3(5, 5, 5));
+  });
+
   group('vertexMarkerSegments', () {
     test('turns each position into a near-zero-length segment starting at that position', () {
       final segments = vertexMarkerSegments([vm.Vector3(1, 2, 3), vm.Vector3(4, 5, 6)]);

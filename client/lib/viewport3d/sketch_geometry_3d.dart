@@ -8,7 +8,7 @@ import 'package:vector_math/vector_math.dart' as vm;
 import '../api/document_api_client.dart' show MeshDto;
 import '../api/sketch_api_client.dart';
 import '../sketch/pattern_mirror_expansion.dart';
-import 'mesh_geometry.dart' show vertexMarkerSegments;
+import 'mesh_geometry.dart' show biasPointsTowardCamera, kEdgeDepthBias, vertexMarkerSegments;
 import 'reference_planes.dart';
 
 /// C3: a Sketch's local-(x, y) -> world embedding basis - either one of the
@@ -1029,8 +1029,16 @@ Node buildSketchGeometryNode(
   String featureId,
   SketchGeometry3D geometry, {
   Map<String, vm.Vector4>? entityColors,
+  required vm.Vector3 cameraPosition,
 }) {
   vm.Vector4 colorFor(String id) => entityColors?[id] ?? sketchLineColor;
+  // Bug fix ("sketch entities should always be visible"): every vertex this
+  // function builds is nudged towards [cameraPosition] before it reaches a
+  // [PolylineGeometry] - see [biasPointsTowardCamera]'s own doc comment for
+  // why. Applied once, here, rather than at each of the call sites below,
+  // so nothing drawn by this function can accidentally skip it.
+  List<vm.Vector3> biased(List<vm.Vector3> points) =>
+      biasPointsTowardCamera(points, cameraPosition, kEdgeDepthBias);
   // On-device feedback ("points are not visible"): a Point marker's own
   // round-cap disk (see vertexMarkerSegments' doc comment for why a Point
   // renders as one) comes from PolylineGeometry's fan-triangulated cap,
@@ -1054,11 +1062,12 @@ Node buildSketchGeometryNode(
   // same material) when [id] is in [SketchGeometry3D.constructionIds].
   Iterable<MeshPrimitive> outlinePrimitivesFor(String id, List<vm.Vector3> polyline) sync* {
     final material = materialFor(id);
+    final biasedPolyline = biased(polyline);
     if (!geometry.constructionIds.contains(id)) {
-      yield MeshPrimitive(PolylineGeometry(polyline, width: sketchLineWidth), material);
+      yield MeshPrimitive(PolylineGeometry(biasedPolyline, width: sketchLineWidth), material);
       return;
     }
-    for (final dash in dashedSegments(polyline)) {
+    for (final dash in dashedSegments(biasedPolyline)) {
       yield MeshPrimitive(PolylineGeometry([dash.$1, dash.$2], width: sketchLineWidth), material);
     }
   }
@@ -1094,7 +1103,7 @@ Node buildSketchGeometryNode(
     // [materialFor] (there's no owning entity id to key a color lookup
     // off - this isn't a real sketch entity).
     for (final line in geometry.textHandleLines)
-      for (final dash in dashedSegments([line.$1, line.$2]))
+      for (final dash in dashedSegments(biased([line.$1, line.$2])))
         MeshPrimitive(
           PolylineGeometry([dash.$1, dash.$2], width: sketchLineWidth),
           UnlitMaterial()
@@ -1108,7 +1117,7 @@ Node buildSketchGeometryNode(
     // every ordinary Point marker below, just in a distinct color so they
     // read as a different affordance.
     for (final marker in geometry.textHandleMarkers)
-      for (final segment in vertexMarkerSegments([marker]))
+      for (final segment in vertexMarkerSegments(biased([marker])))
         MeshPrimitive(
           PolylineGeometry([segment.$1, segment.$2], width: sketchPointMarkerWidth, cap: PolylineCap.round),
           UnlitMaterial()
@@ -1119,7 +1128,7 @@ Node buildSketchGeometryNode(
     for (var i = 0; i < geometry.points.length; i++)
       if (!geometry.hiddenPointIds.contains(geometry.pointIds[i]) &&
           geometry.pointIds[i] != geometry.originPointId)
-        for (final segment in vertexMarkerSegments([geometry.points[i]]))
+        for (final segment in vertexMarkerSegments(biased([geometry.points[i]])))
           MeshPrimitive(
             PolylineGeometry(
               [segment.$1, segment.$2],
