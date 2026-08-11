@@ -1364,8 +1364,31 @@ class SketchController extends ChangeNotifier {
 
   /// How close (in sketch units) the cursor must be to a chain's start
   /// Point before a tap is treated as "close the loop" rather than "place
-  /// a new point".
-  static const double snapRadius = 0.5;
+  /// a new point". Also [_existingPointIdNear]'s own merge radius (used by
+  /// every tap-to-place path via [_pointIdAt]) and the floor
+  /// [hitRadiusForPixelsPerUnit] clamps its own zoom-scaled radius to
+  /// (`math.max(snapRadius, ...)`).
+  ///
+  /// Bug fix (on-device feedback: "sketching becomes very difficult at
+  /// sub-millimetre scale... drawing a corner-to-corner rectangle results
+  /// in an error"): this used to be `0.5`, a full sketch-unit - large
+  /// enough that a small-but-not-tiny sub-mm rectangle's own corners could
+  /// fall within it of one another, so [_pointIdAt] silently merged
+  /// distinct corners into the same Point id, which then failed the
+  /// backend's distinct-corners validation (`A rectangle's 4 corner Points
+  /// must all be distinct`). Lowered - chosen to stay above every existing
+  /// "near tap should still snap" test fixture in `sketch_controller_test
+  /// .dart` (the widest of which taps ~0.14 sketch units off a target,
+  /// e.g. `(0.1, 0.1)` from the origin), since this constant is also relied
+  /// on for that legitimate "imprecise tap still finds the Point/closes the
+  /// loop" convenience - shrinking it further without a zoom-relative
+  /// tolerance (this file's other sessions own that deeper change, so it's
+  /// out of scope here) would trade that convenience away instead of just
+  /// fixing small geometry. Not a complete fix for arbitrarily tiny
+  /// (sub-0.2-unit) geometry - see [hitRadiusForPixelsPerUnit]'s own doc
+  /// comment for the real, zoom-scaled fix this sets up but doesn't itself
+  /// wire into [_existingPointIdNear].
+  static const double snapRadius = 0.2;
 
   /// Phase 6.1: how many degrees off true horizontal/vertical a Line's
   /// in-progress angle can be before [_lineSnapAxis] stops reporting a
