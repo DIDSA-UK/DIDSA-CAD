@@ -43,7 +43,6 @@ import 'sketch_ribbon.dart';
 import 'sketch_speed_dial.dart';
 import 'sketch_text_bar.dart';
 import 'sketch_trim_bar.dart';
-import 'sketcher_preferences.dart';
 
 /// Phase 4.1/4.2: converts [controller]'s live points into the
 /// [PointDto]/[LineDto]/[CircleDto] shapes [sketchGeometry3DFrom] expects -
@@ -238,16 +237,13 @@ class SketchScreen extends StatefulWidget {
 
   /// The standalone "2D Drawing" tool (floor plans and other Part-free
   /// drawings, reached from the app's own chooser screen rather than
-  /// [PartScreen]) - true here means two things: [_loadInitialOrbitViewPreference]
-  /// never auto-enters Orbit View regardless of [SketcherPreferences.
-  /// use3DSketcher] (that default is for in-Part sketching, not a flat
-  /// drafting tool with no Bodies/planes to show), and the hamburger menu's
-  /// File section gains Save/Open/Exit entries for this Sketch's own local
-  /// file, in place of the Part-level native file format a Part-anchored
-  /// Sketch relies on instead (see [_saveStandaloneSketch]/
-  /// [_openStandaloneSketch]/[_exitStandaloneSketch]), and the top-right
-  /// Exit Sketch FAB an embedded Sketch shows instead is hidden (there's no
-  /// File menu Exit there - see that FAB's own comment).
+  /// [PartScreen]) - true here means the hamburger menu's File section
+  /// gains Save/Open/Exit entries for this Sketch's own local file, in
+  /// place of the Part-level native file format a Part-anchored Sketch
+  /// relies on instead (see [_saveStandaloneSketch]/[_openStandaloneSketch]/
+  /// [_exitStandaloneSketch]), and the top-right Exit Sketch FAB an
+  /// embedded Sketch shows instead is hidden (there's no File menu Exit
+  /// there - see that FAB's own comment).
   final bool standalone;
 
   /// Stage 12 item 9: the existing solid's mesh edges, already projected
@@ -379,10 +375,13 @@ class _SketchScreenState extends State<SketchScreen> {
   /// pre-cursor-retrofit behaviour (single-finger drag orbits, a tap hits
   /// [_handleEmbeddedSketchTap]/[_handleEmbeddedSketchEntityTap] straight
   /// away) - so switching to Orbit sub-mode is a real "look around freely"
-  /// mode, not merely a relabelled cursor mode. [SketcherPreferences.
-  /// use3DSketcher] (device-wide, in Settings) is now the only way back to
-  /// the flat 2D canvas - accepted deliberately in place of a live
-  /// mid-session exit, since this FAB no longer offers one.
+  /// mode, not merely a relabelled cursor mode. The device-wide "default
+  /// sketcher" setting this FAB's own doc comment used to point to as "the
+  /// only way back to the flat 2D canvas" has since been removed entirely
+  /// (see [_loadInitialOrbitViewPreference]'s own doc comment) - Orbit View
+  /// is never auto-entered any more, so this field's `true` default is now
+  /// dead in practice, kept only because the [PartViewport] cursor/orbit
+  /// machinery it drives is otherwise untouched.
   bool _orbitCursorActive = true;
 
   /// Lets [_returnOrbitToDefaultView] drive the embedded [PartViewport]'s
@@ -437,29 +436,20 @@ class _SketchScreenState extends State<SketchScreen> {
     _loadInitialOrbitViewPreference();
   }
 
-  /// Sketcher restructure Phase 2's rollout default: [SketcherPreferences]
-  /// decides whether a newly opened Sketch starts in Orbit View (the
-  /// 3D-embedded sketcher) or the flat 2D canvas - the live toggle FAB
-  /// still works regardless once loaded. Starts `false` (2D) until this
-  /// resolves, same one-frame-behind tradeoff `MeshViewerSettingsScreen`
-  /// accepts for the same `shared_preferences` load.
+  /// The device-wide "default sketcher" setting (CAD Settings' own
+  /// SegmentedButton, backed by the now-removed `SketcherPreferences`) used
+  /// to decide whether a newly opened Sketch started in Orbit View (the
+  /// 3D-embedded sketcher) or the flat 2D canvas. The 2D canvas is now the
+  /// only path - it's the same widget the standalone "2D Drawing" tool
+  /// already builds on, so there's no longer a separate 3D-embedded default
+  /// to opt into for a Part-anchored Sketch either. Still loads
+  /// [ViewPreferences] here (unrelated to that old default - the main 3D
+  /// viewport's own background colour/etc, read defensively since a bare,
+  /// Part-less Sketch may never go through [PartScreen]'s own load) so
+  /// [ViewPreferences.bgColourHex] reflects the real persisted value by the
+  /// time [_buildBaseLayer] first reads it.
   Future<void> _loadInitialOrbitViewPreference() async {
-    // On-device feedback: the embedded Orbit View's background used to
-    // always fall back to [ViewPreferences.defaultBgColourHex] regardless
-    // of what the user already set for the main 3D viewport - loaded here
-    // (defensively, alongside [SketcherPreferences] - a bare, Part-less
-    // Sketch may never go through [PartScreen]'s own load) so
-    // [ViewPreferences.bgColourHex] reflects the real persisted value by
-    // the time [_buildBaseLayer] first reads it.
-    await Future.wait([SketcherPreferences.load(), ViewPreferences.load()]);
-    if (!mounted || _orbitViewActive || widget.standalone) return;
-    if (SketcherPreferences.use3DSketcher && _effectiveOrbitBasis != null) {
-      _enterOrbitView();
-    } else if (SketcherPreferences.use3DSketcher) {
-      // Plane basis hasn't resolved yet (adoptSketch/ensureSketch is still
-      // in flight) - retry once the controller notifies.
-      _controller.addListener(_enterOrbitViewOncePlaneReadyIfPreferred);
-    }
+    await ViewPreferences.load();
   }
 
   void _enterOrbitViewOncePlaneReadyIfPreferred() {
