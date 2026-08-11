@@ -366,9 +366,14 @@ Future<void> _showSetLengthDialog(
   String lineId,
 ) async {
   final currentLength = controller.lineLength(lineId);
-  final textController = TextEditingController(
-    text: currentLength == null ? '' : currentLength.toStringAsFixed(2),
-  );
+  final text = currentLength == null ? '' : currentLength.toStringAsFixed(2);
+  // On-device feedback ("the text box for length dimension isn't
+  // pre-selected... it should be highlighted so user can type over it
+  // directly"): pre-selects the whole value rather than just prefilling it
+  // with the cursor at the end - same fix as `_ConstraintValueEditor` and
+  // `sketch_canvas.dart`'s `GhostValueEditor`.
+  final textController = TextEditingController(text: text)
+    ..selection = TextSelection(baseOffset: 0, extentOffset: text.length);
   final value = await showDialog<double>(
     context: context,
     builder: (context) => _SetLengthDialog(textController: textController),
