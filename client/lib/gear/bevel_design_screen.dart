@@ -208,6 +208,12 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
       _createError = null;
     });
     try {
+      // Bug fix (on-device feedback): this always starts a brand-new Part
+      // - without resetting the session's Document first, it would just
+      // pile onto whatever Document a previous tool-chooser entry already
+      // created this session (see `DocumentApiClient.startNewDocument`'s
+      // own doc comment).
+      await _api.startNewDocument();
       final part = await _api.createPart(_mode == BevelMultiKind.gear ? 'Bevel Gear Part' : 'Bevel Pair Part');
       final planeRef = PlaneRefDto(fixedPlane: _plane);
       List<String> warnings = const [];

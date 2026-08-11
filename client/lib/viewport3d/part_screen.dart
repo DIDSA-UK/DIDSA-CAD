@@ -4055,6 +4055,14 @@ class _PartScreenState extends State<PartScreen> {
         part = await _api.getPart(widget.initialPartId!);
         debugPrint('[PartScreen] getPart done: ${part.id}');
       } else {
+        // Bug fix (on-device feedback): without this, "New Part"/cold
+        // launch just added another Part onto whatever Document the
+        // session already had (see `DocumentApiClient.startNewDocument`'s
+        // own doc comment) - a later Save could then export a Document
+        // holding every Part ever created that session, with Open only
+        // ever showing the first one, silently orphaning the rest.
+        debugPrint('[PartScreen] startNewDocument...');
+        await _api.startNewDocument();
         debugPrint('[PartScreen] createPart...');
         part = await _api.createPart('Part 1');
         debugPrint('[PartScreen] createPart done: ${part.id}');

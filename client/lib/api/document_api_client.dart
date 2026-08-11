@@ -1323,6 +1323,18 @@ class DocumentApiClient {
     return response.body;
   }
 
+  /// Bug fix (on-device feedback): starts a fresh, empty Document for the
+  /// current session (full replace - see the backend's
+  /// `start_new_document`'s own doc comment) - must be called before the
+  /// first [createPart] of a "New Part"/cold-launch flow (see
+  /// `PartScreen._loadPart`), otherwise that Part just piles onto whatever
+  /// Document the session already has, rather than starting a genuinely
+  /// independent one.
+  Future<void> startNewDocument() => _send(
+        () => _httpClient.post(_uri('/document/new'), headers: _headers),
+        (_) {},
+      );
+
   Future<PartDto> createPart(String name) => _send(
         () => _httpClient.post(
               _uri('/document/parts'),
