@@ -23,6 +23,12 @@ class SelectionContextPanel extends StatelessWidget {
   /// [SelectionEntityRef] alone.
   final PointOnLineChecker? isPointOnLine;
 
+  /// On-device feedback ("allow 'point and curve' as a valid combination to
+  /// create a plane, on point and normal to arc"): [isPointOnLine]'s
+  /// Arc-shaped sibling, threaded through to [contextActionsFor] the same
+  /// way - see [PointOnArcChecker]'s own doc comment.
+  final PointOnArcChecker? isPointOnArc;
+
   /// C2/C3/C4: fired when the user taps an *enabled* Create Plane button -
   /// never called for a disabled/placeholder one. [PartScreen] inspects
   /// [selectedEntities] itself to decide which of the six flows to open,
@@ -67,6 +73,7 @@ class SelectionContextPanel extends StatelessWidget {
     super.key,
     required this.selectedEntities,
     this.isPointOnLine,
+    this.isPointOnArc,
     this.onCreatePlane,
     this.onFillet,
     this.onChamfer,
@@ -78,7 +85,8 @@ class SelectionContextPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final actions = contextActionsFor(selectedEntities, isPointOnLine: isPointOnLine);
+    final actions =
+        contextActionsFor(selectedEntities, isPointOnLine: isPointOnLine, isPointOnArc: isPointOnArc);
     if (actions.isEmpty) return const SizedBox.shrink();
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),

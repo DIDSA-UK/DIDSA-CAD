@@ -15,7 +15,7 @@ from fastapi import HTTPException
 
 from app.document.models import ResolvedPlane
 from app.sketch.intersections import angle_in_ccw_sweep
-from app.sketch.models import Line, Plane, Point, SketchEntityRef
+from app.sketch.models import Arc, Line, Plane, Point, SketchEntityRef
 from app.sketch.store import get_sketch_or_404, resolve_sketch_entity
 
 Vector3 = tuple[float, float, float]
@@ -444,6 +444,74 @@ def resolve_normal_to_line_at_point(
     end = sketch.points[line.end_point_id]
 
     dx, dy = end.x - start.x, end.y - start.y
+    direction = _basis_vector(basis, dx, dy)
+    length = math.sqrt(sum(c * c for c in direction))
+    normal = tuple(c / length for c in direction)
+
+    origin = basis_point(basis, point.x, point.y)
+    x_axis, y_axis = arbitrary_perpendicular_basis(normal)
+    return ResolvedPlane(origin=origin, normal=normal, x_axis=x_axis, y_axis=y_axis)
+
+
+def _point_not_on_curve(line_ref: SketchEntityRef, point_ref: SketchEntityRef) -> HTTPException:
+    """[_point_not_on_line]'s Arc-shaped sibling, for `NORMAL_TO_CURVE_AT_
+    POINT` - same 422 envelope, same id-comparison-not-tolerance-check
+    reasoning, just against an Arc's own two endpoints instead of a Line's.
+    Named `point_not_on_curve` (not `..._on_arc`) since `PlaneType`'s own
+    doc comment already frames this as the general "point and curve"
+    combination the on-device feedback asked for, even though only Arc is
+    wired up so far."""
+    return HTTPException(
+        status_code=422,
+        detail={
+            "type": "point_not_on_curve",
+            "sketch_id": line_ref.sketch_id,
+            "curve_id": line_ref.entity_id,
+            "point_id": point_ref.entity_id,
+        },
+    )
+
+
+def resolve_normal_to_arc_at_point(
+    line_ref: SketchEntityRef, point_ref: SketchEntityRef, basis: ResolvedPlane
+) -> ResolvedPlane:
+    """On-device feedback ("allow 'point and curve' as a valid combination
+    to create a plane, on point and normal to arc"): [resolve_normal_to_
+    line_at_point]'s Arc-shaped sibling - a plane normal to a Sketch Arc's
+    *tangent* direction at one of its own endpoints, through that same
+    Point (a Line's direction is constant along its whole length, so
+    normal-to-line needs no "at which point" question beyond which endpoint
+    to center the plane on; an Arc's direction varies continuously, so
+    which endpoint is picked genuinely changes the resulting normal, not
+    just the origin). `line_ref` names the Arc despite the field's name -
+    see `PlaneType.NORMAL_TO_CURVE_AT_POINT`'s own doc comment for why this
+    reuses the same field pair `NORMAL_TO_LINE_AT_POINT` does rather than
+    adding a parallel one.
+
+    Fails closed with `point_not_on_curve` (see `_point_not_on_curve`)
+    unless `point_ref` is literally the resolved Arc's own `start_point_id`
+    or `end_point_id` - center doesn't count, same "an id comparison, not a
+    distance/tolerance check" principle `_point_not_on_line` already uses.
+
+    The tangent at a Point `P` on a circle of centre `C`, swept
+    counter-clockwise (`Sketch.add_arc`'s own fixed convention - see the
+    `Arc` class's own doc comment), is the radius vector `P - C` rotated 90
+    degrees counter-clockwise: `d/dtheta (cos theta, sin theta) = (-sin
+    theta, cos theta)`, i.e. `(-(Py - Cy), Px - Cx)` before normalizing.
+    Maps into world space via `_basis_vector` the same way `resolve_normal_
+    to_line_at_point`'s own direction vector does."""
+    arc = resolve_sketch_entity(line_ref)
+    assert isinstance(arc, Arc)  # entity_type already validated ARC by resolve_sketch_entity
+    point = resolve_sketch_entity(point_ref)
+    assert isinstance(point, Point)  # entity_type already validated POINT by resolve_sketch_entity
+
+    if point_ref.entity_id not in (arc.start_point_id, arc.end_point_id):
+        raise _point_not_on_curve(line_ref, point_ref)
+
+    sketch = get_sketch_or_404(line_ref.sketch_id)
+    center = sketch.points[arc.center_point_id]
+
+    dx, dy = -(point.y - center.y), point.x - center.x
     direction = _basis_vector(basis, dx, dy)
     length = math.sqrt(sum(c * c for c in direction))
     normal = tuple(c / length for c in direction)

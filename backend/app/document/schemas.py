@@ -315,6 +315,8 @@ class CreatePlaneFeatureCreate(BaseModel):
     - `OFFSET_FACE`: `face_refs` (one entry), `offset`.
     - `MIDPLANE`: `face_refs` (two entries).
     - `NORMAL_TO_LINE_AT_POINT`: `line_ref`, `point_ref`.
+    - `NORMAL_TO_CURVE_AT_POINT`: `line_ref` (an Arc, despite the field's
+      name - see `PlaneType`'s own doc comment), `point_ref`.
     - `NORMAL_TO_EDGE_THROUGH_VERTEX`: `edge_ref`, `vertex_ref`.
     - `PARALLEL_TO_FACE_THROUGH_VERTEX`: `face_refs` (one entry), `vertex_ref`.
     - `THREE_POINTS`: `point_refs` (three entries).

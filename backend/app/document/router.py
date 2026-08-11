@@ -1722,6 +1722,20 @@ def _validate_create_plane_payload(
             raise HTTPException(status_code=422, detail="line_ref must have entity_type=LINE")
         if point_ref.entity_type != SketchEntityType.POINT:
             raise HTTPException(status_code=422, detail="point_ref must have entity_type=POINT")
+    elif plane_type == PlaneType.NORMAL_TO_CURVE_AT_POINT:
+        # On-device feedback ("allow 'point and curve' as a valid
+        # combination to create a plane, on point and normal to arc"):
+        # reuses `line_ref`/`point_ref` verbatim (see `PlaneType`'s own doc
+        # comment) - `line_ref` names the Arc here despite the field's name.
+        if line_ref is None or point_ref is None or not other_fields_empty({"line_ref", "point_ref"}):
+            raise HTTPException(
+                status_code=422,
+                detail="NORMAL_TO_CURVE_AT_POINT requires both line_ref and point_ref, and nothing else",
+            )
+        if line_ref.entity_type != SketchEntityType.ARC:
+            raise HTTPException(status_code=422, detail="line_ref must have entity_type=ARC")
+        if point_ref.entity_type != SketchEntityType.POINT:
+            raise HTTPException(status_code=422, detail="point_ref must have entity_type=POINT")
     elif plane_type == PlaneType.NORMAL_TO_EDGE_THROUGH_VERTEX:
         if edge_ref is None or vertex_ref is None or not other_fields_empty({"edge_ref", "vertex_ref"}):
             raise HTTPException(

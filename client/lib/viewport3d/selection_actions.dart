@@ -53,6 +53,17 @@ typedef PointOnLineChecker = bool Function(
   String pointEntityId,
 );
 
+/// On-device feedback ("allow 'point and curve' as a valid combination to
+/// create a plane, on point and normal to arc"): [PointOnLineChecker]'s
+/// Arc-shaped sibling - whether [pointEntityId] is one of [arcEntityId]'s
+/// own two endpoint ids (its centre doesn't count, same as a Line's
+/// endpoints-only rule), within the Sketch Feature [sketchFeatureId].
+typedef PointOnArcChecker = bool Function(
+  String sketchFeatureId,
+  String arcEntityId,
+  String pointEntityId,
+);
+
 /// The Item 6 composition table: which operations are offered for a given
 /// selection, based on which [SelectionEntityKind]s it contains (and, for
 /// C2's two new combos, exact count and - for the sketch-entity one - the
@@ -62,6 +73,7 @@ typedef PointOnLineChecker = bool Function(
 List<SelectionContextAction> contextActionsFor(
   Set<SelectionEntityRef> selection, {
   PointOnLineChecker? isPointOnLine,
+  PointOnArcChecker? isPointOnArc,
 }) {
   if (selection.isEmpty) return const [];
 
@@ -100,6 +112,7 @@ List<SelectionContextAction> contextActionsFor(
 
   final sketchPoints = selection.where((s) => s.kind == SelectionEntityKind.sketchPoint).toList();
   final sketchLines = selection.where((s) => s.kind == SelectionEntityKind.sketchLine).toList();
+  final sketchArcs = selection.where((s) => s.kind == SelectionEntityKind.sketchArc).toList();
   final vertices = selection.where((s) => s.kind == SelectionEntityKind.vertex).toList();
 
   // C4: exactly three points total, nothing else - Three Points, mixing Body
@@ -114,7 +127,7 @@ List<SelectionContextAction> contextActionsFor(
     return const [SelectionContextAction('Create Plane (Three Points)', enabled: true)];
   }
 
-  if (sketchPoints.isNotEmpty || sketchLines.isNotEmpty) {
+  if (sketchPoints.isNotEmpty || sketchLines.isNotEmpty || sketchArcs.isNotEmpty) {
     // C2: the one sketch-entity combo this prompt wires (normal-to-line-at-
     // point) - everything else involving a Sketch Point/Line (a lone Point,
     // a lone Line, two of either, a Point that isn't the Line's own
@@ -125,14 +138,32 @@ List<SelectionContextAction> contextActionsFor(
     // to the generic vertex/edge/face buckets below and nonsensically
     // offer a placeholder "Create Plane", since hasFace/hasEdge/hasVertex
     // would all be false for it.
-    final onlySketchEntities = selection.length == sketchPoints.length + sketchLines.length;
-    if (onlySketchEntities && sketchPoints.length == 1 && sketchLines.length == 1) {
+    //
+    // On-device feedback ("allow 'point and curve' as a valid combination
+    // to create a plane, on point and normal to arc"): a second sketch-
+    // entity combo, normal-to-arc-at-point - a Sketch Arc plus the Point
+    // that's one of its own two endpoints, same "explicit references over
+    // implicit geometric inference" shape the Line combo above already
+    // uses, just checked via [isPointOnArc] instead of [isPointOnLine].
+    final onlySketchEntities =
+        selection.length == sketchPoints.length + sketchLines.length + sketchArcs.length;
+    if (onlySketchEntities && sketchPoints.length == 1 && sketchLines.length == 1 && sketchArcs.isEmpty) {
       final point = sketchPoints.single;
       final line = sketchLines.single;
       final sameFeature = point.sketchFeatureId == line.sketchFeatureId;
       final isEndpoint = sameFeature &&
           (isPointOnLine?.call(line.sketchFeatureId, line.sketchEntityId, point.sketchEntityId) ??
               false);
+      if (isEndpoint) {
+        return const [SelectionContextAction('Create Plane', enabled: true)];
+      }
+    }
+    if (onlySketchEntities && sketchPoints.length == 1 && sketchArcs.length == 1 && sketchLines.isEmpty) {
+      final point = sketchPoints.single;
+      final arc = sketchArcs.single;
+      final sameFeature = point.sketchFeatureId == arc.sketchFeatureId;
+      final isEndpoint = sameFeature &&
+          (isPointOnArc?.call(arc.sketchFeatureId, arc.sketchEntityId, point.sketchEntityId) ?? false);
       if (isEndpoint) {
         return const [SelectionContextAction('Create Plane', enabled: true)];
       }
