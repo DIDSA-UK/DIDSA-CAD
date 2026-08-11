@@ -247,6 +247,7 @@ def _circle_response(sketch: Sketch, circle: Circle) -> CircleResponse:
         radius=circle.radius(sketch.points),
         construction=circle.construction,
         cardinal_point_ids=circle.cardinal_point_ids,
+        radius_constraint_id=circle.radius_constraint_id,
     )
 
 
@@ -258,6 +259,7 @@ def _arc_response(sketch: Sketch, arc: Arc) -> ArcResponse:
         end_point_id=arc.end_point_id,
         radius=arc.radius(sketch.points),
         construction=arc.construction,
+        radius_constraint_id=arc.radius_constraint_id,
     )
 
 

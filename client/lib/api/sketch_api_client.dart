@@ -310,6 +310,18 @@ class CircleDto {
   /// `Circle.cardinal_point_ids` docstring for how each is solver-locked.
   final List<String> cardinalPointIds;
 
+  /// On-device feedback ("converted edges... are not constrained to their
+  /// parent edge"): the id of `radius`'s own backing `DistanceConstraint`
+  /// (`Sketch.add_circle`'s own doc comment) - always present on the wire
+  /// now, but kept nullable here (rather than `required`) so every existing
+  /// call site that builds a [CircleDto] by hand (tests, the Pattern/Mirror
+  /// merge in `sketch_geometry_3d.dart`) keeps compiling unchanged.
+  /// [SketchController._convertBodyEdgeToLocalState] uses this to confirm a
+  /// converted Circle's own radius constraint - see that method's own doc
+  /// comment for why a freshly-converted Circle needs that and a normally-
+  /// drawn one doesn't.
+  final String? radiusConstraintId;
+
   CircleDto({
     required this.id,
     required this.centerPointId,
@@ -317,6 +329,7 @@ class CircleDto {
     required this.radius,
     this.construction = false,
     this.cardinalPointIds = const [],
+    this.radiusConstraintId,
   });
 
   factory CircleDto.fromJson(Map<String, dynamic> json) => CircleDto(
@@ -328,6 +341,7 @@ class CircleDto {
         cardinalPointIds: (json['cardinal_point_ids'] as List<dynamic>? ?? const [])
             .map((e) => e as String)
             .toList(),
+        radiusConstraintId: json['radius_constraint_id'] as String?,
       );
 }
 
@@ -339,6 +353,11 @@ class ArcDto {
   final double radius;
   final bool construction;
 
+  /// [CircleDto.radiusConstraintId]'s Arc-shaped sibling - `radius`'s own
+  /// backing `DistanceConstraint` id (`Sketch.add_arc`'s own doc comment).
+  /// Same nullable-for-compatibility reasoning as that field.
+  final String? radiusConstraintId;
+
   ArcDto({
     required this.id,
     required this.centerPointId,
@@ -346,6 +365,7 @@ class ArcDto {
     required this.endPointId,
     required this.radius,
     this.construction = false,
+    this.radiusConstraintId,
   });
 
   factory ArcDto.fromJson(Map<String, dynamic> json) => ArcDto(
@@ -355,6 +375,7 @@ class ArcDto {
         endPointId: json['end_point_id'] as String,
         radius: (json['radius'] as num).toDouble(),
         construction: json['construction'] as bool? ?? false,
+        radiusConstraintId: json['radius_constraint_id'] as String?,
       );
 }
 

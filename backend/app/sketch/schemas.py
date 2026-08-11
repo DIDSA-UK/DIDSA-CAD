@@ -252,6 +252,15 @@ class CircleResponse(BaseModel):
     # [north, east, south, west] - see the backend's Circle.cardinal_point_ids
     # docstring for how each is solver-locked.
     cardinal_point_ids: list[str]
+    # On-device feedback ("converted edges... are not constrained to their
+    # parent edge"): `radius`'s own backing DistanceConstraint id (see
+    # `Sketch.add_circle`'s own doc comment) - lets a caller that creates a
+    # Circle outside the normal draw-then-confirm flow (`app.document.
+    # router.convert_body_edge`) explicitly confirm this constraint's own
+    # `provisional` flag via the existing PATCH .../constraints/{id}
+    # endpoint, the same "any explicit value PATCH clears provisional"
+    # mechanism the ghost-dimension confirm flow already uses.
+    radius_constraint_id: str
 
 
 class CircleUpdate(BaseModel):
@@ -294,6 +303,8 @@ class ArcResponse(BaseModel):
     end_point_id: str
     radius: float
     construction: bool = False
+    # See CircleResponse.radius_constraint_id's own doc comment.
+    radius_constraint_id: str
 
 
 class OffsetCircleResponse(BaseModel):

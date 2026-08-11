@@ -10287,6 +10287,28 @@ class SketchController extends ChangeNotifier {
           points.remove(pointId);
         }
       });
+      // On-device feedback ("converted edges when dimensioning from edge
+      // or created using the create edge tool are not constrained to
+      // parent edge"): start_point/end_point are real, associative
+      // external vertex references that keep tracking the parent Body
+      // edge on every future refresh (see this method's own doc comment) -
+      // but `Sketch.add_arc` always creates its own radius-pinning
+      // DistanceConstraint as `provisional` (the same flag a freshly-drawn,
+      // not-yet-dimensioned Arc from the drawing tool needs), so it's
+      // skipped by the solver entirely until something explicitly confirms
+      // it. A hand-drawn Arc gets that confirm from the ghost-dimension
+      // flow once the user types a radius; a converted Arc never goes
+      // through that flow at all, so its centre Point was silently left
+      // free to drift off-round the next time start/end move. PATCHing the
+      // constraint's own already-correct value is the exact same "confirm"
+      // mechanism [confirmGhostValue] itself uses (see `update_constraint_
+      // value`'s own doc comment: "any explicit value PATCH is the user
+      // confirming a size") - no new mechanism, just triggering the
+      // existing one for a Constraint the backend already created.
+      if (arc.radiusConstraintId case final radiusConstraintId?) {
+        await _api.updateConstraintValue(sketchId, radiusConstraintId, arc.radius);
+        await _solveAndTrackDof();
+      }
       return SketchSelection(kind: SelectionKind.arc, id: arc.id);
     }
 
@@ -10325,6 +10347,13 @@ class SketchController extends ChangeNotifier {
           points.remove(pointId);
         }
       });
+      // See the Arc branch's own doc comment above - `Sketch.add_circle`
+      // has the exact same "own radius DistanceConstraint, but left
+      // provisional" shape `Sketch.add_arc` does, for the same reason.
+      if (circle.radiusConstraintId case final radiusConstraintId?) {
+        await _api.updateConstraintValue(sketchId, radiusConstraintId, circle.radius);
+        await _solveAndTrackDof();
+      }
       return SketchSelection(kind: SelectionKind.circle, id: circle.id);
     }
 
