@@ -1587,12 +1587,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   ///
   /// C3: since this bias depends on the *current* camera position, this is
   /// re-run (not just on mesh/render-mode change, as before) whenever the
-  /// camera itself moves - see the `setState(_syncCameraBiasedOverlays)`
-  /// calls in `_onPointerEnd`/`_onPointerSignal`/`_doRecentre`/
-  /// `animateToPlane`. Those all resync once a gesture/animation
-  /// *completes* rather than on every intermediate frame, trading a small
-  /// amount of staleness while orbiting for not rebuilding every
-  /// `PolylineGeometry` primitive on every pointer-move delta.
+  /// camera itself moves - see the `setState(_syncEdgesNode)` calls in
+  /// `_onPointerEnd`/`_onPointerSignal`/`_doRecentre`/`animateToPlane`. Those
+  /// all resync once a gesture/animation *completes* rather than on every
+  /// intermediate frame, trading a small amount of staleness while
+  /// orbiting for not rebuilding every `PolylineGeometry` primitive on
+  /// every pointer-move delta.
   void _syncEdgesNode() {
     final scene = _scene;
     if (scene == null) return;
@@ -1677,14 +1677,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// node from scratch from [PartViewport.sketchGeometries] - relies on the
   /// widget's own contract (see its doc comment) that a new `Map` instance
   /// only arrives when content genuinely changed, so this never runs more
-  /// often than that *for content changes*.
-  ///
-  /// Bug fix ("sketch entities should always be visible"): [buildSketchGeometryNode]
-  /// now biases every vertex it builds towards `_camera.position` (see its
-  /// own doc comment), so - like [_syncEdgesNode]'s identical edge bias -
-  /// this must also be re-run whenever the camera itself moves, not just on
-  /// content changes. Every call site that resyncs [_syncEdgesNode] for that
-  /// reason resyncs this alongside it.
+  /// often than that.
   void _syncSketchNodes() {
     final scene = _scene;
     if (scene == null) return;
@@ -1698,7 +1691,6 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             entry.key,
             entry.value,
             entityColors: widget.sketchEntityColors,
-            cameraPosition: _camera.position,
           ),
     };
     for (final node in _sketchNodes.values) {
@@ -1710,17 +1702,6 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // happen to change (which, for a bare Sketch with no reference Body, it
     // never will) - see [_syncZoomBounds]'s own doc comment.
     _syncZoomBounds(boundsOfBodies(widget.bodies));
-  }
-
-  /// Bug fix ("sketch entities should always be visible"): resyncs both of
-  /// this viewport's camera-position-dependent towards-camera biases
-  /// ([_syncEdgesNode]'s edge bias and [_syncSketchNodes]'s sketch-entity
-  /// bias) together - every call site that used to resync only the former
-  /// after a camera move now resyncs both, since [buildSketchGeometryNode]
-  /// grew the exact same camera-position dependency.
-  void _syncCameraBiasedOverlays() {
-    _syncEdgesNode();
-    _syncSketchNodes();
   }
 
   /// C2: mirrors [_syncSketchNodes] for [PartViewport.createPlanes] - one
@@ -1979,10 +1960,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     } finally {
       controller.removeListener(tick);
       controller.dispose();
-      // C3: the camera orientation just changed - resync the edge/sketch
-      // overlays' towards-camera biases (see [_syncCameraBiasedOverlays])
-      // for the new view.
-      if (mounted) setState(_syncCameraBiasedOverlays);
+      // C3: the camera orientation just changed - resync the edge overlay's
+      // towards-camera bias (see [_syncEdgesNode]) for the new view.
+      if (mounted) setState(_syncEdgesNode);
     }
   }
 
@@ -2328,7 +2308,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         }
         setState(() {
           _endMarquee();
-          _syncCameraBiasedOverlays();
+          _syncEdgesNode();
         });
         return;
       }
@@ -2352,9 +2332,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       }
       if (wasTap) _commitSelection();
       // C3: a two-finger pinch-zoom/pan (_applyPinchPan) can still move the
-      // camera while selecting - resync the edge/sketch overlays' towards-
-      // camera biases the same as the orbit-mode path below does.
-      setState(_syncCameraBiasedOverlays);
+      // camera while selecting - resync the edge overlay's towards-camera
+      // bias the same as the orbit-mode path below does.
+      setState(_syncEdgesNode);
       return;
     }
     if (widget.drawCursorMode) {
@@ -2368,15 +2348,15 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         if (_activeTouches.isEmpty) _hadMultiTouch = false;
       }
       if (wasTap) _commitDrawCursor();
-      setState(_syncCameraBiasedOverlays);
+      setState(_syncEdgesNode);
       return;
     }
     _handlePointerEnd(event);
     // C3: the orbit/pan/zoom gesture that just ended may have moved the
-    // camera - resync the edge/sketch overlays' towards-camera biases (see
-    // [_syncCameraBiasedOverlays]) once per completed gesture, not on every
+    // camera - resync the edge overlay's towards-camera bias (see
+    // [_syncEdgesNode]) once per completed gesture, not on every
     // intermediate pointer-move delta.
-    setState(_syncCameraBiasedOverlays);
+    setState(_syncEdgesNode);
   }
 
   void _onPointerHover(PointerHoverEvent event) {
@@ -3053,10 +3033,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// loaded, auto-fits the far clip to `max(kDefaultFarClip, 2 * diagonal)`.
   void _doRecentre() {
     _camera.reset();
-    // C3: "Reset view" moves the camera - resync the edge/sketch overlays'
-    // towards-camera biases (see [_syncCameraBiasedOverlays]) for the new
-    // position.
-    _syncCameraBiasedOverlays();
+    // C3: "Reset view" moves the camera - resync the edge overlay's
+    // towards-camera bias (see [_syncEdgesNode]) for the new position.
+    _syncEdgesNode();
     double minX = double.infinity, maxX = double.negativeInfinity;
     double minY = double.infinity, maxY = double.negativeInfinity;
     double minZ = double.infinity, maxZ = double.negativeInfinity;
@@ -3658,9 +3637,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   // same distance every rebuild.
   void _onPointerSignal(PointerSignalEvent event) {
     _handlePointerSignal(event);
-    // C3: a scroll-wheel zoom moves the camera - resync the edge/sketch
-    // overlays' towards-camera biases (see [_syncCameraBiasedOverlays]).
-    setState(_syncCameraBiasedOverlays);
+    // C3: a scroll-wheel zoom moves the camera - resync the edge overlay's
+    // towards-camera bias (see [_syncEdgesNode]).
+    setState(_syncEdgesNode);
   }
 }
 

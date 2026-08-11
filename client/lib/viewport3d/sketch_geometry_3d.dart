@@ -8,7 +8,7 @@ import 'package:vector_math/vector_math.dart' as vm;
 import '../api/document_api_client.dart' show MeshDto;
 import '../api/sketch_api_client.dart';
 import '../sketch/pattern_mirror_expansion.dart';
-import 'mesh_geometry.dart' show biasPointsTowardCamera, kEdgeDepthBias, vertexMarkerSegments;
+import 'mesh_geometry.dart' show vertexMarkerSegments;
 import 'reference_planes.dart';
 
 /// C3: a Sketch's local-(x, y) -> world embedding basis - either one of the
@@ -1029,45 +1029,72 @@ Node buildSketchGeometryNode(
   String featureId,
   SketchGeometry3D geometry, {
   Map<String, vm.Vector4>? entityColors,
-  required vm.Vector3 cameraPosition,
 }) {
   vm.Vector4 colorFor(String id) => entityColors?[id] ?? sketchLineColor;
-  // Bug fix ("sketch entities should always be visible"): every vertex this
-  // function builds is nudged towards [cameraPosition] before it reaches a
-  // [PolylineGeometry] - see [biasPointsTowardCamera]'s own doc comment for
-  // why. Applied once, here, rather than at each of the call sites below,
-  // so nothing drawn by this function can accidentally skip it.
-  List<vm.Vector3> biased(List<vm.Vector3> points) =>
-      biasPointsTowardCamera(points, cameraPosition, kEdgeDepthBias);
-  // On-device feedback ("points are not visible"): a Point marker's own
-  // round-cap disk (see vertexMarkerSegments' doc comment for why a Point
-  // renders as one) comes from PolylineGeometry's fan-triangulated cap,
-  // whose winding - unlike the ordinary line-strip triangles every other
-  // primitive here uses - reads as back-facing under this renderer's
-  // default counter-clockwise-front convention (Material.bind's own doc
-  // comment) and was being silently culled regardless of marker width, no
-  // matter how many times that width got bumped. `doubleSided` is only
-  // honored for opaque materials (also that same doc comment) - true here
-  // for all of them, so this fixes the Point markers without needing to
-  // reverse-engineer/patch the third-party disk-winding math itself, at no
-  // cost to the Line/Circle/etc. outlines also built from this material
-  // (thin geometry with no real "back" to hide either way).
-  UnlitMaterial materialFor(String id) => UnlitMaterial()
+  // Bug fix round 2 (on-device feedback: "the entities in the sketch should
+  // always be visible... nothing seems to have changed after this work" -
+  // a towards-camera vertex bias, round 1's attempt, never had a chance:
+  // biasing by 0.05 units cannot beat a Body face whole millimetres closer
+  // to the camera, which is the actual, common shape of this bug - starting
+  // a new Sketch on a plane a previous feature's solid already occupies,
+  // not a coincident-surface z-fight). [outlineMaterialFor] below instead
+  // routes every outline primitive (every entity here except the Point/
+  // text-handle round-cap disk markers - see [pointMaterialFor]'s own doc
+  // comment for why those stay behind) through [AlphaMode.blend] (the
+  // translucent pass) - `mesh_geometry.dart`'s own
+  // [buildMeshEdgesNode]/[buildHighlightFacesNode] doc comments already
+  // document, from independent real on-device testing, that this
+  // `flutter_scene` 0.18.1 build's translucent pass does not reliably
+  // depth-test against the opaque buffer at all on this hardware ("renders
+  // through the body with total disregard for what's in front of it") -
+  // a bug everywhere else in this file, but exactly the "always draw on
+  // top, regardless of real occlusion" behaviour a Sketch actively being
+  // edited actually wants. No vertex bias needed any more - every position
+  // below is exactly what [sketchGeometry3DFrom] computed, unperturbed
+  // (round 1's bias is also the prime suspect behind a second on-device
+  // report - some sub-mm lines disappearing at extreme zoom - since it's
+  // the only thing this round's work ever perturbed a vertex position by).
+  UnlitMaterial outlineMaterialFor(String id) => UnlitMaterial()
+    ..alphaMode = AlphaMode.blend
+    ..baseColorFactor = colorFor(id);
+
+  // Round-cap disk markers (Point markers, text-handle markers) can't take
+  // the same fix: [UnlitMaterial.doubleSided] is only ever honored while
+  // [AlphaMode.opaque] (`Material.bind`'s own `!doubleSided || !isOpaque()`
+  // cull decision - never for [AlphaMode.blend]), and a disk's own
+  // fan-triangulated winding reads as back-facing under this renderer's
+  // default counter-clockwise-front convention regardless of viewing angle
+  // (confirmed by reading `flutter_scene`'s own `PolylineGeometry._emitDisk`
+  // - the fan winding depends only on the camera-facing basis it derives
+  // from `viewDirection`, not on anything this file controls) - switching
+  // these to blend would silently re-cull every marker, the exact "points
+  // are not visible" bug `doubleSided` was already added to fix. No public,
+  // analyzer-clean way exists in this `flutter_scene` build to force the
+  // cull mode back open per-material (a custom [Material.bind] override
+  // needs `gpu.RenderPass`/`gpu.HostBuffer`, and this package's own
+  // internal conditional-export shim resolves those to a different type
+  // than `package:flutter_gpu/gpu.dart`'s under plain static analysis,
+  // which `flutter analyze` then rejects as an invalid override). Left on
+  // [AlphaMode.opaque] with no bias, exactly as before any of this file's
+  // Sketch-visibility work - real, but narrower and pre-existing (a Point
+  // marker sitting behind a large Body can still be occluded); the outline
+  // fix above already covers the entities the on-device report actually
+  // reproduced against.
+  UnlitMaterial pointMaterialFor(vm.Vector4 color) => UnlitMaterial()
     ..alphaMode = AlphaMode.opaque
-    ..baseColorFactor = colorFor(id)
+    ..baseColorFactor = color
     ..doubleSided = true;
 
   // P26: [id]'s outline as one or more [MeshPrimitive]s - a single solid
   // polyline normally, or a run of short dash primitives (all sharing the
   // same material) when [id] is in [SketchGeometry3D.constructionIds].
   Iterable<MeshPrimitive> outlinePrimitivesFor(String id, List<vm.Vector3> polyline) sync* {
-    final material = materialFor(id);
-    final biasedPolyline = biased(polyline);
+    final material = outlineMaterialFor(id);
     if (!geometry.constructionIds.contains(id)) {
-      yield MeshPrimitive(PolylineGeometry(biasedPolyline, width: sketchLineWidth), material);
+      yield MeshPrimitive(PolylineGeometry(polyline, width: sketchLineWidth), material);
       return;
     }
-    for (final dash in dashedSegments(biasedPolyline)) {
+    for (final dash in dashedSegments(polyline)) {
       yield MeshPrimitive(PolylineGeometry([dash.$1, dash.$2], width: sketchLineWidth), material);
     }
   }
@@ -1100,42 +1127,40 @@ Node buildSketchGeometryNode(
     // [SketchGeometry3D.textHandleLines]'s own doc comment for why this
     // never consults [constructionIds] the way [outlinePrimitivesFor]
     // does), using a dedicated construction-style material distinct from
-    // [materialFor] (there's no owning entity id to key a color lookup
-    // off - this isn't a real sketch entity).
+    // [outlineMaterialFor] (there's no owning entity id to key a color
+    // lookup off - this isn't a real sketch entity). Not a round-cap disk,
+    // so - unlike the two marker loops below - this is safe on
+    // [outlineMaterialFor]'s own [AlphaMode.blend].
     for (final line in geometry.textHandleLines)
-      for (final dash in dashedSegments(biased([line.$1, line.$2])))
+      for (final dash in dashedSegments([line.$1, line.$2]))
         MeshPrimitive(
           PolylineGeometry([dash.$1, dash.$2], width: sketchLineWidth),
           UnlitMaterial()
-            ..alphaMode = AlphaMode.opaque
-            ..baseColorFactor = sketchConstructionColor
-            ..doubleSided = true,
+            ..alphaMode = AlphaMode.blend
+            ..baseColorFactor = sketchConstructionColor,
         ),
     // The two handle markers themselves (center, then corner - see
     // [SketchGeometry3D.textHandleMarkers]'s own doc comment) - same
     // round-cap disk primitive [vertexMarkerSegments] already builds for
     // every ordinary Point marker below, just in a distinct color so they
-    // read as a different affordance.
+    // read as a different affordance - so, like those, on [pointMaterialFor].
     for (final marker in geometry.textHandleMarkers)
-      for (final segment in vertexMarkerSegments(biased([marker])))
+      for (final segment in vertexMarkerSegments([marker]))
         MeshPrimitive(
           PolylineGeometry([segment.$1, segment.$2], width: sketchPointMarkerWidth, cap: PolylineCap.round),
-          UnlitMaterial()
-            ..alphaMode = AlphaMode.opaque
-            ..baseColorFactor = sketchIndicatorAnchorColor
-            ..doubleSided = true,
+          pointMaterialFor(sketchIndicatorAnchorColor),
         ),
     for (var i = 0; i < geometry.points.length; i++)
       if (!geometry.hiddenPointIds.contains(geometry.pointIds[i]) &&
           geometry.pointIds[i] != geometry.originPointId)
-        for (final segment in vertexMarkerSegments(biased([geometry.points[i]])))
+        for (final segment in vertexMarkerSegments([geometry.points[i]]))
           MeshPrimitive(
             PolylineGeometry(
               [segment.$1, segment.$2],
               width: sketchPointMarkerWidth,
               cap: PolylineCap.round,
             ),
-            materialFor(geometry.pointIds[i]),
+            pointMaterialFor(colorFor(geometry.pointIds[i])),
           ),
   ];
 

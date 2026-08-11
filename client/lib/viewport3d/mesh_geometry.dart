@@ -465,34 +465,6 @@ List<(vm.Vector3, vm.Vector3, vm.Vector3)> biasTrianglesTowardCamera(
   return [for (final triangle in triangles) (biased(triangle.$1), biased(triangle.$2), biased(triangle.$3))];
 }
 
-/// [biasSegmentsTowardCamera]'s bare-point sibling, for callers (e.g.
-/// [buildSketchGeometryNode]) building geometry directly from a flat list
-/// of points rather than paired segments/triangles - a Sketch's own drawn
-/// entities (lines, curve outlines, Point markers) sit in the same
-/// Z-buffered opaque pass as Body faces (`part_viewport.dart`'s
-/// `_syncMeshNode`/`_syncSketchNodes`), so a nearer Body face legitimately
-/// wins the depth test against Sketch geometry behind or coplanar with it -
-/// on-device feedback ("sketch entities should always be visible") wants
-/// the opposite: a Sketch actively being edited should never be occluded
-/// by a Body from an earlier feature. Nudging every vertex towards the
-/// camera by [kEdgeDepthBias] (the same constant/approach already
-/// established for edge/highlight overlays hitting this identical class of
-/// bug) gives Sketch geometry the depth-order win without needing a
-/// per-primitive depth-test override the renderer doesn't expose.
-List<vm.Vector3> biasPointsTowardCamera(
-  List<vm.Vector3> points,
-  vm.Vector3 cameraPosition,
-  double amount,
-) {
-  vm.Vector3 biased(vm.Vector3 point) {
-    final direction = cameraPosition - point;
-    if (direction.length2 < 1e-12) return point.clone();
-    return point + direction.normalized() * amount;
-  }
-
-  return [for (final point in points) biased(point)];
-}
-
 /// Builds the [Node] rendering [segments] as [color]d polylines - one
 /// [MeshPrimitive] per segment, combined into a single [Mesh]/[Node] so
 /// they share one per-frame `updateForCamera` scan (see `PartViewport`'s
