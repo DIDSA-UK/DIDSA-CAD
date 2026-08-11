@@ -91,7 +91,13 @@ void main() {
     await tester.pump();
     expect(find.text('Save'), findsOneWidget);
     expect(find.text('Open'), findsOneWidget);
-    expect(find.text('Exit'), findsOneWidget);
+    // Not find.text('Exit') - SketchConstructionMethodBar's own Exit button
+    // (a *different* widget, always mounted off-screen via AnimatedSlide
+    // whenever SketchMode.select is active - see sketch_screen.dart's
+    // `Positioned.fill`/`switch (mode)` bar selection) carries the exact
+    // same label text, so a plain text match is ambiguous. The File menu's
+    // own Exit entry is a ListTile with a distinct icon.
+    expect(find.widgetWithIcon(ListTile, Icons.exit_to_app), findsOneWidget);
   });
 
   testWidgets('an ordinary (Part-anchored) SketchScreen\'s hamburger menu has no Save/Open/Exit entries',
@@ -104,7 +110,8 @@ void main() {
     await tester.pump();
     expect(find.text('Save'), findsNothing);
     expect(find.text('Open'), findsNothing);
-    expect(find.text('Exit'), findsNothing);
+    // See the standalone test above for why this isn't find.text('Exit').
+    expect(find.widgetWithIcon(ListTile, Icons.exit_to_app), findsNothing);
   });
 
   testWidgets(
@@ -147,14 +154,23 @@ void main() {
       ),
     ));
 
+    // Bounded pumps rather than pumpAndSettle throughout this test -
+    // SketchConstructionMethodBar's own always-mounted AnimatedSlide (see
+    // the hamburger-menu test above) never fully settles while off-screen,
+    // so pumpAndSettle can time out here even once the right widget is
+    // tapped.
     await tester.tap(find.text('start'));
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
     expect(find.byType(SketchScreen), findsOneWidget);
 
     await tester.tap(find.byTooltip('Menu'));
     await tester.pump();
-    await tester.tap(find.text('Exit'));
-    await tester.pumpAndSettle();
+    // Not find.text('Exit') - see the hamburger-menu test above for why
+    // that's ambiguous.
+    await tester.tap(find.widgetWithIcon(ListTile, Icons.exit_to_app));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
 
     expect(find.byType(SketchScreen), findsNothing);
     expect(find.text('start'), findsOneWidget);
