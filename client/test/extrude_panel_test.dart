@@ -116,6 +116,77 @@ void main() {
     });
   });
 
+  group('ExtrudePanel flip direction', () {
+    testWidgets('tapping flip negates and swaps start/end distance', (tester) async {
+      ExtrudeType? lastType;
+      double? lastStart;
+      double? lastEnd;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ExtrudePanel(
+              initialType: ExtrudeType.boss,
+              initialStartDistance: 0,
+              initialEndDistance: 10,
+              targetBodyCount: 0,
+              onChanged: (type, start, end) {
+                lastType = type;
+                lastStart = start;
+                lastEnd = end;
+              },
+              onConfirm: () {},
+              onCancel: () {},
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      await tester.tap(find.byTooltip('Flip direction'));
+      await tester.pump();
+
+      expect(lastType, ExtrudeType.boss);
+      expect(lastStart, -10);
+      expect(lastEnd, 0);
+      expect(find.text('Depth: 10'), findsOneWidget);
+    });
+
+    testWidgets('flipping an asymmetric span keeps end greater than start',
+        (tester) async {
+      double? lastStart;
+      double? lastEnd;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ExtrudePanel(
+              initialType: ExtrudeType.boss,
+              initialStartDistance: -2,
+              initialEndDistance: 8,
+              targetBodyCount: 0,
+              onChanged: (_, start, end) {
+                lastStart = start;
+                lastEnd = end;
+              },
+              onConfirm: () {},
+              onCancel: () {},
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      await tester.tap(find.byTooltip('Flip direction'));
+      await tester.pump();
+
+      expect(lastStart, -8);
+      expect(lastEnd, 2);
+      expect(
+        tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed,
+        isNotNull,
+      );
+    });
+  });
+
   group('ExtrudePanel title (B4)', () {
     testWidgets('defaults to "Extrude"', (tester) async {
       await tester.pumpWidget(
