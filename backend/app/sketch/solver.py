@@ -143,6 +143,30 @@ def _signed_point_line_distance(point: Point, line_start: Point, line_end: Point
     return cross / length
 
 
+def _lines_parallel(line1_start: Point, line1_end: Point, line2_start: Point, line2_end: Point) -> bool:
+    """Whether two Lines' direction vectors are parallel within a small,
+    scale-invariant tolerance - shared by `ParallelConstraint`'s own
+    residual check and (on-device feedback: "a dimension between two
+    parallel lines should be line to line... their parallelism should be
+    part of the dimension") `LineDistanceConstraint`'s, now that the latter
+    also adds a real ParallelConstraint via `add_to_solver` and so needs the
+    exact same residual verified. A zero-length Line has no direction to
+    compare - treated as trivially parallel (returns True) rather than
+    flagging a residual failure neither constraint's own `add_to_solver`
+    would have been able to detect either."""
+    dir1 = (line1_end.x - line1_start.x, line1_end.y - line1_start.y)
+    dir2 = (line2_end.x - line2_start.x, line2_end.y - line2_start.y)
+    len1 = math.hypot(*dir1)
+    len2 = math.hypot(*dir2)
+    if len1 < 1e-9 or len2 < 1e-9:
+        return True
+    # sin(angle between the two directions) - scale-invariant (unlike the
+    # raw cross product, which carries units of length^2), so a fixed small
+    # threshold works regardless of the Sketch's own size.
+    sin_angle = abs(dir1[0] * dir2[1] - dir1[1] * dir2[0]) / (len1 * len2)
+    return sin_angle <= 1e-4
+
+
 def _angle_between_degrees(line1_start: Point, line1_end: Point, line2_start: Point, line2_end: Point) -> float:
     """Unsigned angle (0-180) between two Lines' direction vectors -
     deliberately unsigned since verifying an already-supposedly-satisfied
@@ -277,6 +301,19 @@ def _residual_verified_convergence(sketch: Sketch) -> bool | None:
             )
             if abs(actual_distance - constraint.distance) > tolerance:
                 return False
+            # On-device feedback: `add_to_solver` now also pins the two
+            # Lines parallel (not just Line 2's start Point's distance from
+            # Line 1) - verify that half too, or a residual-verified solve
+            # could report `converged=True` for a Line 2 that's drifted out
+            # of parallel while its start Point happened to stay the right
+            # distance away.
+            if not _lines_parallel(
+                points[constraint.line1_start_id],
+                points[constraint.line1_end_id],
+                points[constraint.line2_start_id],
+                points[constraint.line2_end_id],
+            ):
+                return False
         elif isinstance(constraint, HorizontalConstraint):
             point_a = points[constraint.point_a_id]
             point_b = points[constraint.point_b_id]
@@ -288,23 +325,12 @@ def _residual_verified_convergence(sketch: Sketch) -> bool | None:
             if abs(point_b.x - point_a.x) > tolerance:
                 return False
         elif isinstance(constraint, ParallelConstraint):
-            dir1 = (
-                points[constraint.line1_end_id].x - points[constraint.line1_start_id].x,
-                points[constraint.line1_end_id].y - points[constraint.line1_start_id].y,
-            )
-            dir2 = (
-                points[constraint.line2_end_id].x - points[constraint.line2_start_id].x,
-                points[constraint.line2_end_id].y - points[constraint.line2_start_id].y,
-            )
-            len1 = math.hypot(*dir1)
-            len2 = math.hypot(*dir2)
-            if len1 < 1e-9 or len2 < 1e-9:
-                continue  # A zero-length Line has no direction to compare - nothing to check.
-            # sin(angle between the two directions) - scale-invariant (unlike
-            # the raw cross product, which carries units of length^2), so a
-            # fixed small threshold works regardless of the Sketch's own size.
-            sin_angle = abs(dir1[0] * dir2[1] - dir1[1] * dir2[0]) / (len1 * len2)
-            if sin_angle > 1e-4:
+            if not _lines_parallel(
+                points[constraint.line1_start_id],
+                points[constraint.line1_end_id],
+                points[constraint.line2_start_id],
+                points[constraint.line2_end_id],
+            ):
                 return False
 
     return True

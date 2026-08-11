@@ -569,6 +569,17 @@ class LineDistanceConstraint(Constraint):
     here (Parallel, Perpendicular, ...) works directly against the Lines'
     own endpoints.
 
+    On-device feedback ("a dimension between two parallel lines should be
+    line to line, not point to point - their parallelism should be part of
+    the dimension"): this constraint is only ever offered for a pair of
+    Lines the client has already confirmed are parallel (see the client's
+    own `_linesAreParallel` gate), but `point_line_distance` alone never
+    actually *enforces* that - it only pins Line 2's start Point's distance
+    from Line 1, leaving Line 2 free to rotate about that Point. Also
+    adding a real ParallelConstraint between the two Lines closes that gap:
+    dragging either Line now keeps them genuinely parallel, not just
+    momentarily so at creation time.
+
     References both Lines' ids for display/API purposes; each Line's
     endpoint Point ids are captured at creation time, same rationale as
     ParallelConstraint above.
@@ -594,6 +605,10 @@ class LineDistanceConstraint(Constraint):
         line1 = builder.line_segment(
             builder.point2d(self.line1_start_id), builder.point2d(self.line1_end_id)
         )
+        line2 = builder.line_segment(
+            builder.point2d(self.line2_start_id), builder.point2d(self.line2_end_id)
+        )
+        builder.parallel(line1, line2)
         point2_start = builder.point2d(self.line2_start_id)
         return builder.point_line_distance(point2_start, line1, self.distance)
 

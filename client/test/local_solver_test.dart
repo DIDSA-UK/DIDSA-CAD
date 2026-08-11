@@ -276,4 +276,52 @@ void main() {
         reason: 'the horizontal separation (5) is exactly satisfied - only the *Euclidean* distance '
             '(~100.1, since the Points are 100 apart in Y) would wrongly look unsatisfied');
   });
+
+  test(
+      'LineDistanceConstraintDto genuinely locks the two Lines parallel, not just Line 2\'s start '
+      'Point\'s distance from Line 1 - on-device feedback: "a dimension between two parallel lines '
+      'should be line to line, not point to point - their parallelism should be part of the '
+      'dimension"', () {
+    // Line 1 is vertical; Line 2 starts out deliberately NOT parallel to it
+    // (its own start/end aren't aligned with Line 1's direction at all) -
+    // if the dimension only pinned point2Start's distance from Line 1 (the
+    // pre-fix behaviour), Line 2 would stay free to rotate about that
+    // Point and the solve would converge without ever becoming parallel.
+    final points = {
+      'a1': (0.0, 0.0),
+      'a2': (0.0, 10.0),
+      'b1': (5.0, 1.0),
+      'b2': (6.0, 9.0),
+    };
+    final lines = {'line1': ('a1', 'a2'), 'line2': ('b1', 'b2')};
+    final constraints = <ConstraintDto>[
+      const LineDistanceConstraintDto(id: 'dim', line1Id: 'line1', line2Id: 'line2', distance: 5.0),
+    ];
+
+    final result = solveSketchLocally(
+      bindings: bindings,
+      points: points,
+      constraints: constraints,
+      lineEndpoints: (id) => _lineEndpoints(lines, id),
+      anchorPointIds: {'a1', 'a2'},
+    );
+
+    expect(result.converged, isTrue);
+    final (a1x, a1y) = result.solvedPoints['a1']!;
+    final (a2x, a2y) = result.solvedPoints['a2']!;
+    final (b1x, b1y) = result.solvedPoints['b1']!;
+    final (b2x, b2y) = result.solvedPoints['b2']!;
+
+    final dir1 = (a2x - a1x, a2y - a1y);
+    final dir2 = (b2x - b1x, b2y - b1y);
+    final len1 = math.sqrt(dir1.$1 * dir1.$1 + dir1.$2 * dir1.$2);
+    final len2 = math.sqrt(dir2.$1 * dir2.$1 + dir2.$2 * dir2.$2);
+    final sinAngle = (dir1.$1 * dir2.$2 - dir1.$2 * dir2.$1).abs() / (len1 * len2);
+    expect(sinAngle, closeTo(0.0, 1e-6), reason: 'Line 2 must end up parallel to Line 1');
+
+    // The perpendicular distance itself is still exactly the dimensioned value.
+    final dx = a2x - a1x, dy = a2y - a1y;
+    final cross = (b1x - a1x) * dy - (b1y - a1y) * dx;
+    expect(cross / len1, closeTo(5.0, 1e-6));
+  });
 }

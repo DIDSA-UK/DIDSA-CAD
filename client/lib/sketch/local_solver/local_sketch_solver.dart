@@ -94,6 +94,31 @@ double _signedPointLineDistance((double, double) point, (double, double) lineSta
   return cross / length;
 }
 
+/// Whether two Lines' direction vectors are parallel within a small,
+/// scale-invariant tolerance - direct port of solver.py's own
+/// `_lines_parallel`, used by [_residualVerifiedConvergence]'s
+/// [LineDistanceConstraintDto] branch (on-device feedback: "a dimension
+/// between two parallel lines should be line to line... their parallelism
+/// should be part of the dimension" - see that DTO's own dispatch in
+/// [_addToSolver] for the matching [SolverBuilder.parallel] addition this
+/// verifies). A zero-length Line has no direction to compare - treated as
+/// trivially parallel rather than flagging a residual failure neither
+/// constraint's own solver dispatch could have detected either.
+bool _linesParallel(
+  (double, double) line1Start,
+  (double, double) line1End,
+  (double, double) line2Start,
+  (double, double) line2End,
+) {
+  final dir1 = (line1End.$1 - line1Start.$1, line1End.$2 - line1Start.$2);
+  final dir2 = (line2End.$1 - line2Start.$1, line2End.$2 - line2Start.$2);
+  final len1 = math.sqrt(dir1.$1 * dir1.$1 + dir1.$2 * dir1.$2);
+  final len2 = math.sqrt(dir2.$1 * dir2.$1 + dir2.$2 * dir2.$2);
+  if (len1 < 1e-9 || len2 < 1e-9) return true;
+  final sinAngle = (dir1.$1 * dir2.$2 - dir1.$2 * dir2.$1).abs() / (len1 * len2);
+  return sinAngle <= 1e-4;
+}
+
 double _angleBetweenDegrees(
   (double, double) line1Start,
   (double, double) line1End,
@@ -198,9 +223,15 @@ bool _residualVerifiedConvergence({
       if ((actualDistance - radius).abs() > tolerance) return false;
     } else if (c is LineDistanceConstraintDto) {
       final (s1, e1) = lineEndpoints(c.line1Id);
-      final (s2, _) = lineEndpoints(c.line2Id);
+      final (s2, e2) = lineEndpoints(c.line2Id);
       final actualDistance = _signedPointLineDistance(resolvePoint(s2), resolvePoint(s1), resolvePoint(e1));
       if ((actualDistance - c.distance).abs() > tolerance) return false;
+      // On-device feedback: `_addToSolver` now also pins the two Lines
+      // parallel (not just Line 2's start Point's distance from Line 1) -
+      // verify that half too, or a residual-verified solve could report
+      // converged for a Line 2 that's drifted out of parallel while its
+      // start Point happened to stay the right distance away.
+      if (!_linesParallel(resolvePoint(s1), resolvePoint(e1), resolvePoint(s2), resolvePoint(e2))) return false;
     }
   }
   return true;
@@ -261,9 +292,21 @@ int _addToSolver(ConstraintDto c, SolverBuilder b, LineEndpoints lineEndpoints) 
     return b.equalLength(line1, line2);
   }
   if (c is LineDistanceConstraintDto) {
+    // On-device feedback ("a dimension between two parallel lines should
+    // be line to line, not point to point - their parallelism should be
+    // part of the dimension"): `pointLineDistance` alone only pins Line
+    // 2's start Point's distance from Line 1, leaving Line 2 free to
+    // rotate about that Point - this constraint is only ever offered for a
+    // pair the client already confirmed parallel (see `_linesAreParallel`),
+    // but nothing kept enforcing that afterward. Also adding a real
+    // `parallel` constraint (its own handle discarded, same "second
+    // constraint created, handle discarded" pattern
+    // [CollinearConstraintDto] already uses below) closes that gap.
     final (s1, e1) = lineEndpoints(c.line1Id);
-    final (s2, _) = lineEndpoints(c.line2Id);
+    final (s2, e2) = lineEndpoints(c.line2Id);
     final line1 = b.lineSegment(b.point2d(s1), b.point2d(e1));
+    final line2 = b.lineSegment(b.point2d(s2), b.point2d(e2));
+    b.parallel(line1, line2);
     final point2Start = b.point2d(s2);
     return b.pointLineDistance(point2Start, line1, c.distance);
   }
