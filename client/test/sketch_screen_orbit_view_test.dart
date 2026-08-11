@@ -112,8 +112,8 @@ void main() {
   });
 
   testWidgets(
-      'a standalone SketchScreen\'s hamburger menu offers Save/Open for this Sketch\'s own file, '
-      'unlike an ordinary (Part-anchored) SketchScreen, which has neither', (tester) async {
+      'a standalone SketchScreen\'s hamburger menu offers Save/Open/Exit for this Sketch\'s own file, '
+      'unlike an ordinary (Part-anchored) SketchScreen, which has none of them', (tester) async {
     final controller = await _freshController();
     SharedPreferences.setMockInitialValues({SketcherPreferences.use3DSketcherPrefKey: false});
 
@@ -123,9 +123,10 @@ void main() {
     await tester.pump();
     expect(find.text('Save'), findsOneWidget);
     expect(find.text('Open'), findsOneWidget);
+    expect(find.text('Exit'), findsOneWidget);
   });
 
-  testWidgets('an ordinary (Part-anchored) SketchScreen\'s hamburger menu has no Save/Open entries',
+  testWidgets('an ordinary (Part-anchored) SketchScreen\'s hamburger menu has no Save/Open/Exit entries',
       (tester) async {
     final controller = await _freshController();
     SharedPreferences.setMockInitialValues({SketcherPreferences.use3DSketcherPrefKey: false});
@@ -136,6 +137,63 @@ void main() {
     await tester.pump();
     expect(find.text('Save'), findsNothing);
     expect(find.text('Open'), findsNothing);
+    expect(find.text('Exit'), findsNothing);
+  });
+
+  testWidgets(
+      'nav cleanup regression: the top-right "Exit Sketch" FAB shows for an embedded '
+      '(Part-anchored) SketchScreen, which is always reached via Navigator.push so .pop() has '
+      'somewhere to return to', (tester) async {
+    final controller = await _freshController();
+    SharedPreferences.setMockInitialValues({SketcherPreferences.use3DSketcherPrefKey: false});
+    await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller)));
+    await tester.pump();
+    expect(find.byTooltip('Exit Sketch'), findsOneWidget);
+  });
+
+  testWidgets(
+      'nav cleanup regression: the standalone "2D Drawing" tool has no top-right "Exit Sketch" FAB '
+      '- a bare .pop() there used to have nothing on the stack to return to (see the standalone '
+      'File menu\'s Exit entry instead)', (tester) async {
+    final controller = await _freshController();
+    SharedPreferences.setMockInitialValues({SketcherPreferences.use3DSketcherPrefKey: false});
+    await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller, standalone: true)));
+    await tester.pump();
+    expect(find.byTooltip('Exit Sketch'), findsNothing);
+  });
+
+  testWidgets(
+      'nav cleanup regression: the standalone File menu\'s Exit entry pops back to whatever '
+      'pushed this SketchScreen (ToolChooserScreen in the real app)', (tester) async {
+    final controller = await _freshController();
+    SharedPreferences.setMockInitialValues({SketcherPreferences.use3DSketcherPrefKey: false});
+
+    await tester.pumpWidget(MaterialApp(
+      home: Builder(
+        builder: (context) => Scaffold(
+          body: Center(
+            child: ElevatedButton(
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => SketchScreen(controller: controller, standalone: true)),
+              ),
+              child: const Text('start'),
+            ),
+          ),
+        ),
+      ),
+    ));
+
+    await tester.tap(find.text('start'));
+    await tester.pumpAndSettle();
+    expect(find.byType(SketchScreen), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Menu'));
+    await tester.pump();
+    await tester.tap(find.text('Exit'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(SketchScreen), findsNothing);
+    expect(find.text('start'), findsOneWidget);
   });
 
   testWidgets(

@@ -107,7 +107,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
       if (widget.isSettingsRevisit) {
         Navigator.of(context).pop();
       } else {
-        Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const ToolChooserScreen()));
+        Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ToolChooserScreen()));
       }
     } catch (_) {
       if (!mounted) return;
