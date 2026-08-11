@@ -5,7 +5,7 @@ import math
 import uuid
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 
 from app.document.ai_plan import validate_ai_plan as validate_ai_plan_steps
@@ -208,6 +208,7 @@ from app.document.schemas import (
 )
 from app.document.sweep import resolve_sweep
 from app.document.store import get_document, get_part_or_404, replace_document
+from app.session_context import bind_session_id
 from app.sketch.models import ExternalVertexReference, Plane, SketchEntityRef, SketchEntityType
 from app.sketch.profile import ProfileStatus, detect_profile
 from app.sketch.schemas import ArcResponse, CircleResponse, LineResponse, PointResponse
@@ -215,7 +216,10 @@ from app.sketch.store import all_sketches, create_sketch, delete_sketch, get_ske
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/document", tags=["document"])
+# `bind_session_id` (not "default" for every caller) is what keeps this
+# router's Document/Sketch state from being shared across every connection
+# to the backend - see app.session_context's docstring.
+router = APIRouter(prefix="/document", tags=["document"], dependencies=[Depends(bind_session_id)])
 
 # A1: body id used for the fixed placeholder box returned while a Part has
 # no ExtrudeFeature yet (see `Part.produces_solid_geometry`) - never a real
