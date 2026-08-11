@@ -4,12 +4,16 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/viewport3d/body_naming.dart';
 import 'package:didsa_cad_client/viewport3d/feature_tree_panel.dart';
+import 'package:didsa_cad_client/viewport3d/svg_icon.dart';
 
 FeatureDto _sketch(String id, {bool locked = true}) =>
     FeatureDto(type: 'sketch', id: id, locked: locked, produces: 'sketch');
 
 FeatureDto _extrude(String id, {bool locked = true}) =>
     FeatureDto(type: 'extrude', id: id, locked: locked, produces: 'body');
+
+FeatureDto _gearFamily(String type, String id, {bool locked = true}) =>
+    FeatureDto(type: type, id: id, locked: locked, produces: 'body');
 
 Widget _wrap(FeatureTreePanel panel) => MaterialApp(home: Scaffold(body: panel));
 
@@ -489,5 +493,57 @@ void main() {
 
       expect(longPressed, isFalse);
     });
+  });
+
+  group('Gear-tree UX: gear-family Feature types get a "Gear" category, not generic "Sketch"', () {
+    test('featureDisplayName labels every gear-family type with its own design-screen vocabulary', () {
+      final features = [
+        _gearFamily('gear', 'f1'),
+        _gearFamily('rack', 'f2'),
+        _gearFamily('gear_chain', 'f3'),
+        _gearFamily('planetary_gear', 'f4'),
+        _gearFamily('bevel_gear', 'f5'),
+        _gearFamily('bevel_pair', 'f6'),
+      ];
+      expect(featureDisplayName(features, 0), 'Gear 1');
+      expect(featureDisplayName(features, 1), 'Rack 1');
+      expect(featureDisplayName(features, 2), 'Gear Chain 1');
+      expect(featureDisplayName(features, 3), 'Planetary Gear 1');
+      expect(featureDisplayName(features, 4), 'Bevel Gear 1');
+      expect(featureDisplayName(features, 5), 'Bevel Pair 1');
+    });
+
+    for (final type in ['gear', 'rack', 'gear_chain', 'planetary_gear', 'bevel_gear', 'bevel_pair']) {
+      testWidgets('a "$type" Feature row shows the shared gear category icon, not the Sketch fallback', (
+        tester,
+      ) async {
+        await tester.pumpWidget(
+          _wrap(
+            FeatureTreePanel(
+              visible: true,
+              features: [_gearFamily(type, 'f1')],
+              selectedFeatureId: null,
+              onFeatureTap: (_) {},
+              onFeatureLongPress: (_) {},
+              onClose: () {},
+              onBodyTap: (_) {},
+            ),
+          ),
+        );
+
+        expect(
+          find.byWidgetPredicate(
+            (w) => w is SvgIcon && w.asset == 'assets/icons/feature/feature_gear.svg',
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.byWidgetPredicate(
+            (w) => w is SvgIcon && w.asset == 'assets/icons/feature/feature_new_sketch.svg',
+          ),
+          findsNothing,
+        );
+      });
+    }
   });
 }
