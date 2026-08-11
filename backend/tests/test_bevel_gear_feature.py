@@ -12,8 +12,15 @@ for the fold-risk boundary specifically.
 import math
 
 from fastapi.testclient import TestClient
+from OCC.Core.BRepAdaptor import BRepAdaptor_Surface
+from OCC.Core.GeomAbs import GeomAbs_Plane, GeomAbs_Sphere
 
+from app.document.bevel import _cap_collar_and_flat_faces
+from app.document.bevel_math import bevel_gear_geometry, bevel_tooth_flank_pair
+from app.document.create_plane import resolve_plane_ref
+from app.document.models import PlaneRef
 from app.main import app
+from app.sketch.models import Plane
 from tests.conftest import TEST_API_KEY
 
 client = TestClient(app)
@@ -59,15 +66,50 @@ def _apex_radii(vertices: list[list[float]]) -> tuple[float, float]:
     geometric property unique to a bevel gear's own spherical-involute
     construction, not a generic bounding-box check: every point on the
     outer cap/flank/land boundary lies on the sphere of radius exactly
-    `cone_distance`, every point on the inner boundary lies on the sphere
-    of radius exactly `inner_cone_distance`, and every other point (the
-    ruled `ThruSections` interior between them) lies on the same ray
-    through the apex at a radius strictly between the two - since both
-    curves being ruled between are themselves already on their own two
-    spheres, and both are sampled at colatitude/azimuth values that only
-    ever fall between the root and face cone angles."""
+    `cone_distance`, and every other point (the ruled `ThruSections`
+    interior between the outer and inner boundaries, or - on-device
+    feedback, "these should be flattened off" - the flat end-cap's own
+    interior/collar, see `app.document.bevel._cap_collar_and_flat_faces`)
+    lies at a radius at most `cone_distance`. Unlike the outer boundary,
+    the inner boundary is NOT all at exactly `inner_cone_distance` any
+    more - the flat cap intentionally pulls its own interior closer to the
+    apex than the sphere it replaces (`_min_apex_radius_after_flattening`
+    computes exactly how much closer, analytically)."""
     distances = [math.sqrt(x * x + y * y + z * z) for x, y, z in vertices]
     return min(distances), max(distances)
+
+
+def _min_apex_radius_after_flattening(
+    *,
+    module: float,
+    tooth_count: int,
+    face_width: float,
+    pitch_cone_angle_degrees: float,
+    pressure_angle_degrees: float = 20.0,
+    backlash: float = 0.0,
+    profile_shift: float = 0.0,
+) -> float:
+    """The flattened inner cap's own closest-to-apex mesh vertex - a tooth
+    root corner, whose (x, y) is unchanged but whose own axial position is
+    pulled to the tooth-TIP's axial position (`app.document.bevel.
+    _cap_collar_and_flat_faces`'s own `z_flat = sphere_radius *
+    cos(face_colatitude)`, tangent to the sphere at the tip so the collar
+    is a no-op there) - exactly mirrors that function's own projection, so
+    this is the real replacement for the pre-flattening "every inner-cap
+    vertex sits exactly on the inner sphere" invariant `_apex_radii`'s own
+    docstring used to describe, not a re-guessed literal."""
+    geometry = bevel_gear_geometry(
+        module=module,
+        tooth_count=tooth_count,
+        face_width=face_width,
+        pressure_angle_degrees=pressure_angle_degrees,
+        backlash=backlash,
+        profile_shift=profile_shift,
+        pitch_cone_angle_degrees=pitch_cone_angle_degrees,
+    )
+    start_colatitude = max(geometry.root_cone_angle, geometry.base_cone_angle)
+    face_colatitude = geometry.face_cone_angle
+    return geometry.inner_cone_distance * math.hypot(math.sin(start_colatitude), math.cos(face_colatitude))
 
 
 # --- Basic construction --------------------------------------------------
@@ -87,11 +129,15 @@ def test_bevel_gear_produces_one_body_with_real_mesh_geometry():
     assert len(vertices) > 0
 
     # module=4, tooth_count=20, pitch_cone_angle=atan(20/40): pitch_radius
-    # = 40, cone_distance = 40 / sin(pitch_cone_angle) = 89.4427,
-    # inner_cone_distance = cone_distance - face_width(15) = 74.4427 - see
-    # _apex_radii's own docstring for why this exact bound holds.
+    # = 40, cone_distance = 40 / sin(pitch_cone_angle) = 89.4427 - the outer
+    # cap/flank/land boundary is still exactly on this sphere (unaffected
+    # by the flat-cap fix). The inner cap is now flattened, not spherical -
+    # see `_min_apex_radius_after_flattening`.
     min_radius, max_radius = _apex_radii(vertices)
-    assert 74.4427 - 0.5 <= min_radius <= 74.4427 + 0.5
+    expected_min_radius = _min_apex_radius_after_flattening(
+        module=4.0, tooth_count=20, face_width=15.0, pitch_cone_angle_degrees=_PITCH_ANGLE_20_40
+    )
+    assert expected_min_radius - 0.5 <= min_radius <= expected_min_radius + 0.5
     assert 89.4427 - 0.5 <= max_radius <= 89.4427 + 0.5
 
 
@@ -109,7 +155,10 @@ def test_bevel_gear_on_an_explicit_xz_plane():
     mesh = _mesh(part["id"])
     vertices = mesh[0]["mesh"]["vertices"]
     min_radius, max_radius = _apex_radii(vertices)
-    assert 74.4427 - 0.5 <= min_radius <= 74.4427 + 0.5
+    expected_min_radius = _min_apex_radius_after_flattening(
+        module=4.0, tooth_count=20, face_width=15.0, pitch_cone_angle_degrees=_PITCH_ANGLE_20_40
+    )
+    assert expected_min_radius - 0.5 <= min_radius <= expected_min_radius + 0.5
     assert 89.4427 - 0.5 <= max_radius <= 89.4427 + 0.5
 
 
@@ -129,10 +178,56 @@ def test_a_tighter_pitch_cone_gear_produces_a_smaller_valid_body():
     mesh = _mesh(part["id"])
     vertices = mesh[0]["mesh"]["vertices"]
     # pitch_radius = 2.5*18/2 = 22.5, cone_distance = 22.5/sin(11.31deg) =
-    # 114.728, inner_cone_distance = 114.728 - 19.1 = 95.628.
+    # 114.728 - the outer boundary's own sphere, unaffected by the flat-cap
+    # fix. The inner cap is now flattened - see
+    # `_min_apex_radius_after_flattening`.
     min_radius, max_radius = _apex_radii(vertices)
-    assert 95.628 - 0.5 <= min_radius <= 95.628 + 0.5
+    expected_min_radius = _min_apex_radius_after_flattening(
+        module=2.5, tooth_count=18, face_width=19.1, pitch_cone_angle_degrees=_PITCH_ANGLE_18_90
+    )
+    assert expected_min_radius - 0.5 <= min_radius <= expected_min_radius + 0.5
     assert 114.728 - 0.5 <= max_radius <= 114.728 + 0.5
+
+
+# --- Flat end-caps (on-device feedback: "these should be flattened off") --
+
+
+def test_bevel_gear_end_cap_face_is_flat_not_spherical():
+    """On-device feedback ("bevel gears are currently produced with a
+    convex and concave face... these should be flattened off"): both the
+    outer and inner end-cap faces `_cap_collar_and_flat_faces` builds must
+    be genuine planar (`GeomAbs_Plane`) surfaces, not a patch of the
+    `Geom_SphericalSurface` the pre-fix `_spherical_cap_face` deliberately
+    built (a real geometric type check via `BRepAdaptor_Surface`, not just
+    'the mesh looks flat-ish' - the whole reason the old face read as
+    visibly convex/concave in the first place)."""
+    geometry = bevel_gear_geometry(
+        module=4.0,
+        tooth_count=6,
+        face_width=10.0,
+        pressure_angle_degrees=20.0,
+        backlash=0.0,
+        profile_shift=0.0,
+        pitch_cone_angle_degrees=_PITCH_ANGLE_20_40,
+    )
+    basis = resolve_plane_ref(None, {}, PlaneRef(fixed_plane=Plane.XY), frozenset())
+    right0, left0 = bevel_tooth_flank_pair(geometry, 12)
+    right0_outer, right0_inner = right0
+    left0_outer, left0_inner = left0
+    face_colatitude = geometry.face_cone_angle
+
+    for sphere_radius, right_points, left_points in (
+        (geometry.cone_distance, right0_outer, left0_outer),
+        (geometry.inner_cone_distance, right0_inner, left0_inner),
+    ):
+        faces = _cap_collar_and_flat_faces(basis, sphere_radius, face_colatitude, 6, right_points, left_points)
+        # The flat cap is the last face _cap_collar_and_flat_faces returns
+        # (the collar faces bridging the true rim to it come first - see
+        # that function's own doc comment).
+        flat_face = faces[-1]
+        surface = BRepAdaptor_Surface(flat_face, True)
+        assert surface.GetType() == GeomAbs_Plane
+        assert surface.GetType() != GeomAbs_Sphere
 
 
 # --- Non-blocking validation warnings -------------------------------------

@@ -30,7 +30,7 @@ from fastapi.testclient import TestClient
 from app.document.bevel_pair import _tilted_basis
 from app.document.create_plane import resolve_plane_ref
 from app.document.models import PlaneRef
-from app.document.bevel_math import pitch_cone_half_angles
+from app.document.bevel_math import bevel_gear_geometry, pitch_cone_half_angles
 from app.main import app
 from app.sketch.models import Plane
 from tests.conftest import TEST_API_KEY
@@ -150,12 +150,15 @@ def test_equal_tooth_counts_at_90_degrees_split_the_pitch_cone_evenly():
 
     mesh = _mesh(part["id"])
     assert len(mesh) == 2
-    # pitch_radius = 4*20/2 = 40, cone_distance = 40 / sin(45deg) = 56.5685,
-    # inner_cone_distance = 56.5685 - 10 = 46.5685 - identical for both
-    # members since gamma_1 == gamma_2 == 45deg exactly.
+    # pitch_radius = 4*20/2 = 40, cone_distance = 40 / sin(45deg) = 56.5685 -
+    # identical for both members since gamma_1 == gamma_2 == 45deg exactly;
+    # still the outer boundary's own sphere, unaffected by the flat-cap
+    # fix. The inner cap is now flattened - see
+    # `_min_apex_radius_after_flattening`.
+    expected_min_radius = _min_apex_radius_after_flattening(20, 4.0, 10.0, math.radians(45.0))
     for entry in mesh:
         min_radius, max_radius = _apex_radii(entry["mesh"]["vertices"])
-        assert 46.5685 - 0.5 <= min_radius <= 46.5685 + 0.5
+        assert expected_min_radius - 0.5 <= min_radius <= expected_min_radius + 0.5
         assert 56.5685 - 0.5 <= max_radius <= 56.5685 + 0.5
 
 
@@ -169,12 +172,34 @@ def _expected_cone_distances(tooth_count_1: int, tooth_count_2: int, module: flo
     return pitch_radius_1 / math.sin(gamma_1), pitch_radius_2 / math.sin(gamma_2)
 
 
+def _min_apex_radius_after_flattening(tooth_count: int, module: float, face_width: float, gamma: float) -> float:
+    """The flattened inner cap's own closest-to-apex mesh vertex, for one
+    pair member - mirrors `test_bevel_gear_feature._min_apex_radius_after_
+    flattening` exactly (a tooth root corner, (x, y) unchanged but pulled
+    to the tooth-tip's own axial position - see `app.document.bevel.
+    _cap_collar_and_flat_faces`'s own `z_flat`), not the pre-flattening
+    "every inner-cap vertex sits exactly on the inner sphere" invariant."""
+    geometry = bevel_gear_geometry(
+        module=module,
+        tooth_count=tooth_count,
+        face_width=face_width,
+        pressure_angle_degrees=20.0,
+        backlash=0.0,
+        profile_shift=0.0,
+        pitch_cone_angle_degrees=math.degrees(gamma),
+    )
+    start_colatitude = max(geometry.root_cone_angle, geometry.base_cone_angle)
+    face_colatitude = geometry.face_cone_angle
+    return geometry.inner_cone_distance * math.hypot(math.sin(start_colatitude), math.cos(face_colatitude))
+
+
 def test_both_members_apex_adjacent_vertices_coincide_at_the_shared_apex_at_90_degrees():
     part = _create_part()
     response = _create_pair(part["id"], member_1=_member(20), member_2=_member(40), module=4.0, face_width=10.0)
     assert response.status_code == 201, response.json()
 
     cone_distance_1, cone_distance_2 = _expected_cone_distances(20, 40, 4.0, 90.0)
+    gamma_1, gamma_2 = pitch_cone_half_angles(20, 40, 90.0)
     mesh = _mesh(part["id"])
     assert len(mesh) == 2
     # Body registration order mirrors _register_solids' own #0/#1 suffixing
@@ -185,11 +210,13 @@ def test_both_members_apex_adjacent_vertices_coincide_at_the_shared_apex_at_90_d
     entry_2 = next(e for bid, e in mesh_by_body_id.items() if bid.endswith("#1"))
 
     # The shared apex is plane_ref's own origin - the default XY plane's
-    # origin is the world origin.
+    # origin is the world origin. The outer boundary is still exactly on
+    # its own sphere (unaffected by the flat-cap fix); the inner cap is
+    # now flattened - see `_min_apex_radius_after_flattening`.
     min_1, max_1 = _apex_radii(entry_1["mesh"]["vertices"])
     min_2, max_2 = _apex_radii(entry_2["mesh"]["vertices"])
-    inner_1 = cone_distance_1 - 10.0
-    inner_2 = cone_distance_2 - 10.0
+    inner_1 = _min_apex_radius_after_flattening(20, 4.0, 10.0, gamma_1)
+    inner_2 = _min_apex_radius_after_flattening(40, 4.0, 10.0, gamma_2)
     assert inner_1 - 0.5 <= min_1 <= inner_1 + 0.5
     assert cone_distance_1 - 0.5 <= max_1 <= cone_distance_1 + 0.5
     assert inner_2 - 0.5 <= min_2 <= inner_2 + 0.5
@@ -209,6 +236,7 @@ def test_both_members_apex_adjacent_vertices_coincide_at_the_shared_apex_for_a_n
     assert response.status_code == 201, response.json()
 
     cone_distance_1, cone_distance_2 = _expected_cone_distances(20, 40, 4.0, 60.0)
+    gamma_1, gamma_2 = pitch_cone_half_angles(20, 40, 60.0)
     mesh = _mesh(part["id"])
     mesh_by_body_id = {entry["body_id"]: entry for entry in mesh}
     entry_1 = next(e for bid, e in mesh_by_body_id.items() if bid.endswith("#0"))
@@ -216,8 +244,8 @@ def test_both_members_apex_adjacent_vertices_coincide_at_the_shared_apex_for_a_n
 
     min_1, max_1 = _apex_radii(entry_1["mesh"]["vertices"])
     min_2, max_2 = _apex_radii(entry_2["mesh"]["vertices"])
-    inner_1 = cone_distance_1 - 10.0
-    inner_2 = cone_distance_2 - 10.0
+    inner_1 = _min_apex_radius_after_flattening(20, 4.0, 10.0, gamma_1)
+    inner_2 = _min_apex_radius_after_flattening(40, 4.0, 10.0, gamma_2)
     assert inner_1 - 0.5 <= min_1 <= inner_1 + 0.5
     assert cone_distance_1 - 0.5 <= max_1 <= cone_distance_1 + 0.5
     assert inner_2 - 0.5 <= min_2 <= inner_2 + 0.5
