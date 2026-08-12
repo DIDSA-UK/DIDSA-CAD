@@ -9,7 +9,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
 import 'package:didsa_cad_client/sketch/sketch_controller.dart';
 import 'package:didsa_cad_client/sketch/sketch_screen.dart';
-import 'package:didsa_cad_client/sketch/sketcher_preferences.dart';
 import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
 import 'package:didsa_cad_client/viewport3d/selection_hit_test.dart';
 
@@ -27,6 +26,12 @@ import 'package:didsa_cad_client/viewport3d/selection_hit_test.dart';
 /// (`_handleEmbeddedSelectionToggle`) that converts a 3D ray-hit back into
 /// a real `SketchController` selection - the ray-hit-testing math itself is
 /// covered separately and more thoroughly by `selection_hit_test_test.dart`.
+///
+/// Nav/UI cleanup: Orbit View is now the unconditional default for a
+/// Part-anchored `SketchScreen` (the old `SketcherPreferences.use3DSketcher`
+/// device setting this test used to force is gone entirely - see
+/// `sketch_screen.dart`'s own `_loadInitialOrbitViewPreference`), so this
+/// test no longer needs to opt into it.
 http.Response _handle(http.Request request) {
   if (request.url.path == '/sketch/sketches' && request.method == 'POST') {
     return http.Response(jsonEncode({'id': 'sketch-1', 'plane': 'XY', 'origin_point_id': 'origin-1'}), 201);
@@ -80,6 +85,16 @@ Future<void> _settlePartViewport(WidgetTester tester, {int maxPumps = 100}) asyn
 }
 
 void main() {
+  // SketchScreen._loadInitialOrbitViewPreference now unconditionally awaits
+  // ViewPreferences.load() before ever entering Orbit View - shared_preferences
+  // has no real platform channel under `flutter test`, so without this mock
+  // that await never resolves and Orbit View never activates within any
+  // bounded pump budget (same reason gear_design_screen_test.dart/
+  // part_screen_test.dart already mock it in their own setUp).
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+  });
+
   testWidgets(
     'tapping a committed pattern instance\'s own derived copy in the embedded 3D view '
     'selects it (SelectionKind.patternInstance), the same way the flat 2D canvas already does',
@@ -103,7 +118,6 @@ void main() {
       controller.exitToSelectMode();
       expect(controller.mode, SketchMode.select);
 
-      SharedPreferences.setMockInitialValues({SketcherPreferences.use3DSketcherPrefKey: true});
       await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller)));
       for (var i = 0; i < 50; i++) {
         if (find.byType(PartViewport).evaluate().isNotEmpty) break;

@@ -43,7 +43,6 @@ import 'sketch_ribbon.dart';
 import 'sketch_speed_dial.dart';
 import 'sketch_text_bar.dart';
 import 'sketch_trim_bar.dart';
-import 'sketcher_preferences.dart';
 
 /// Phase 4.1/4.2: converts [controller]'s live points into the
 /// [PointDto]/[LineDto]/[CircleDto] shapes [sketchGeometry3DFrom] expects -
@@ -238,13 +237,17 @@ class SketchScreen extends StatefulWidget {
 
   /// The standalone "2D Drawing" tool (floor plans and other Part-free
   /// drawings, reached from the app's own chooser screen rather than
-  /// [PartScreen]) - true here means two things: [_loadInitialOrbitViewPreference]
-  /// never auto-enters Orbit View regardless of [SketcherPreferences.
-  /// use3DSketcher] (that default is for in-Part sketching, not a flat
-  /// drafting tool with no Bodies/planes to show), and the hamburger menu
-  /// gains Save/Open entries for this Sketch's own local file, in place of
+  /// [PartScreen]) - true here means three things: this Sketch always
+  /// stays on the flat 2D canvas ([_loadInitialOrbitViewPreference]'s own
+  /// early-return - there's no Part/Body/plane context of its own to embed
+  /// a 3D view of, unlike a Part-anchored Sketch, which now always opens in
+  /// Orbit View instead); the hamburger menu's File section gains
+  /// Save/Open/Exit entries for this Sketch's own local file, in place of
   /// the Part-level native file format a Part-anchored Sketch relies on
-  /// instead (see [_saveStandaloneSketch]/[_openStandaloneSketch]).
+  /// instead (see [_saveStandaloneSketch]/[_openStandaloneSketch]/
+  /// [_exitStandaloneSketch]); and the top-right Exit Sketch FAB an
+  /// embedded Sketch shows instead is hidden (there's no File menu Exit
+  /// there - see that FAB's own comment).
   final bool standalone;
 
   /// Stage 12 item 9: the existing solid's mesh edges, already projected
@@ -376,10 +379,12 @@ class _SketchScreenState extends State<SketchScreen> {
   /// pre-cursor-retrofit behaviour (single-finger drag orbits, a tap hits
   /// [_handleEmbeddedSketchTap]/[_handleEmbeddedSketchEntityTap] straight
   /// away) - so switching to Orbit sub-mode is a real "look around freely"
-  /// mode, not merely a relabelled cursor mode. [SketcherPreferences.
-  /// use3DSketcher] (device-wide, in Settings) is now the only way back to
-  /// the flat 2D canvas - accepted deliberately in place of a live
-  /// mid-session exit, since this FAB no longer offers one.
+  /// mode, not merely a relabelled cursor mode. The device-wide "default
+  /// sketcher" setting this FAB's own doc comment used to point to as "the
+  /// only way back to the flat 2D canvas" has since been removed entirely
+  /// (see [_loadInitialOrbitViewPreference]'s own doc comment) - Orbit View
+  /// is now the only place a Part-anchored Sketch is ever edited, so there
+  /// is no "back to the flat 2D canvas" to go to any more regardless.
   bool _orbitCursorActive = true;
 
   /// Lets [_returnOrbitToDefaultView] drive the embedded [PartViewport]'s
@@ -434,25 +439,27 @@ class _SketchScreenState extends State<SketchScreen> {
     _loadInitialOrbitViewPreference();
   }
 
-  /// Sketcher restructure Phase 2's rollout default: [SketcherPreferences]
-  /// decides whether a newly opened Sketch starts in Orbit View (the
-  /// 3D-embedded sketcher) or the flat 2D canvas - the live toggle FAB
-  /// still works regardless once loaded. Starts `false` (2D) until this
-  /// resolves, same one-frame-behind tradeoff `MeshViewerSettingsScreen`
-  /// accepts for the same `shared_preferences` load.
+  /// The device-wide "default sketcher" setting (CAD Settings' own
+  /// SegmentedButton, backed by the now-removed `SketcherPreferences`) used
+  /// to decide whether a newly opened Sketch started in Orbit View (the
+  /// 3D-embedded sketcher) or the flat 2D canvas. Orbit View is now the
+  /// only path for a Part-anchored Sketch - the 3D part design environment
+  /// is meant to sketch directly in the same 3D viewport/camera as the rest
+  /// of that environment, not on a flat 2D canvas underneath it. The flat
+  /// 2D canvas remains [widget.standalone]'s own early-return below - it's
+  /// the same widget the standalone "2D Drawing" tool builds on, which has
+  /// no Part/Body/plane of its own to embed a 3D view of. Still loads
+  /// [ViewPreferences] unconditionally (the main 3D viewport's own
+  /// background colour/etc, read defensively since a bare, Part-less
+  /// Sketch may never go through [PartScreen]'s own load) so
+  /// [ViewPreferences.bgColourHex] reflects the real persisted value by the
+  /// time [_buildBaseLayer] first reads it.
   Future<void> _loadInitialOrbitViewPreference() async {
-    // On-device feedback: the embedded Orbit View's background used to
-    // always fall back to [ViewPreferences.defaultBgColourHex] regardless
-    // of what the user already set for the main 3D viewport - loaded here
-    // (defensively, alongside [SketcherPreferences] - a bare, Part-less
-    // Sketch may never go through [PartScreen]'s own load) so
-    // [ViewPreferences.bgColourHex] reflects the real persisted value by
-    // the time [_buildBaseLayer] first reads it.
-    await Future.wait([SketcherPreferences.load(), ViewPreferences.load()]);
+    await ViewPreferences.load();
     if (!mounted || _orbitViewActive || widget.standalone) return;
-    if (SketcherPreferences.use3DSketcher && _effectiveOrbitBasis != null) {
+    if (_effectiveOrbitBasis != null) {
       _enterOrbitView();
-    } else if (SketcherPreferences.use3DSketcher) {
+    } else {
       // Plane basis hasn't resolved yet (adoptSketch/ensureSketch is still
       // in flight) - retry once the controller notifies.
       _controller.addListener(_enterOrbitViewOncePlaneReadyIfPreferred);
@@ -638,8 +645,9 @@ class _SketchScreenState extends State<SketchScreen> {
                     builder: (context, _) => _buildBaseLayer(),
                   ),
                   // Top-right: Exit Sketch (most prominent/most reached-for
-                  // action) plus the optional reference-body visibility
-                  // toggle.
+                  // action, embedded/Part-anchored sketches only - see the
+                  // FAB's own comment below) plus the optional
+                  // reference-body visibility toggle.
                   Positioned(
                     top: 8,
                     right: 8,
@@ -649,20 +657,29 @@ class _SketchScreenState extends State<SketchScreen> {
                         crossAxisAlignment: CrossAxisAlignment.end,
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          FloatingActionButton.small(
-                            heroTag: 'exit-sketch-fab',
-                            tooltip: 'Exit Sketch',
-                            onPressed: () => Navigator.of(context).pop(),
-                            child: SvgPicture.asset(
-                              'assets/icons/sketchbar/sketchbar_exit.svg',
-                              width: 30,
-                              height: 30,
-                              colorFilter: ColorFilter.mode(
-                                Theme.of(context).colorScheme.onPrimaryContainer,
-                                BlendMode.srcIn,
+                          // Embedded (Part-anchored) only - reached via
+                          // `Navigator.push` from `PartScreen`, so `.pop()`
+                          // always has this Sketch's own route to return
+                          // through. The standalone "2D Drawing" tool has no
+                          // equivalent FAB - its File menu's Exit entry
+                          // (`_buildStandaloneFileMenu`) is the only exit
+                          // path there, since a bare `.pop()` here would have
+                          // nothing left on the stack to return to.
+                          if (!widget.standalone)
+                            FloatingActionButton.small(
+                              heroTag: 'exit-sketch-fab',
+                              tooltip: 'Exit Sketch',
+                              onPressed: () => Navigator.of(context).pop(),
+                              child: SvgPicture.asset(
+                                'assets/icons/sketchbar/sketchbar_exit.svg',
+                                width: 30,
+                                height: 30,
+                                colorFilter: ColorFilter.mode(
+                                  Theme.of(context).colorScheme.onPrimaryContainer,
+                                  BlendMode.srcIn,
+                                ),
                               ),
                             ),
-                          ),
                           if (widget.referenceGhostSegments.isNotEmpty || widget.otherSketchGeometries.isNotEmpty) ...[
                             const SizedBox(height: 8),
                             FloatingActionButton.small(
@@ -2473,8 +2490,10 @@ class _SketchScreenState extends State<SketchScreen> {
 
   /// Stage 23f: the hamburger menu's content - a View submenu for the
   /// constraint-label-visibility toggle and the canvas colour/transparency
-  /// controls. Exit Sketch lives in its own dedicated FAB (top-right of the
-  /// canvas) rather than as an entry here, so it isn't repeated.
+  /// controls, plus (standalone only) the File section's Save/Open/Exit -
+  /// see [_buildStandaloneFileMenu]. An embedded (Part-anchored) Sketch's
+  /// Exit lives in its own dedicated FAB (top-right of the canvas) instead,
+  /// so it isn't repeated here for that case.
   ///
   /// `shrinkWrap: true` so this sizes to its own (short) content within
   /// whatever [ConstrainedBox] the caller (the menu overlay above) wraps it
@@ -2522,6 +2541,13 @@ class _SketchScreenState extends State<SketchScreen> {
           leading: const Icon(Icons.folder_open_outlined, size: 20),
           title: Text('Open', style: titleStyle),
           onTap: _openStandaloneSketch,
+        ),
+        ListTile(
+          dense: true,
+          visualDensity: density,
+          leading: const Icon(Icons.exit_to_app, size: 20),
+          title: Text('Exit', style: titleStyle),
+          onTap: _exitStandaloneSketch,
         ),
       ],
     );
@@ -2781,6 +2807,16 @@ class _SketchScreenState extends State<SketchScreen> {
     await Navigator.of(context).pushReplacement(
       MaterialPageRoute(builder: (context) => SketchScreen(adoptSketchId: imported!.id, standalone: true)),
     );
+  }
+
+  /// The standalone "2D Drawing" tool's own File > Exit - the embedded
+  /// (Part-anchored) case gets an equivalent top-right FAB instead (see its
+  /// own comment); a bare, Part-less Sketch has only this File menu entry,
+  /// since it's reached via `Navigator.push` from `ToolChooserScreen` and
+  /// so always has a route underneath for `.pop()` to return to.
+  void _exitStandaloneSketch() {
+    setState(() => _menuOpen = false);
+    Navigator.of(context).pop();
   }
 }
 

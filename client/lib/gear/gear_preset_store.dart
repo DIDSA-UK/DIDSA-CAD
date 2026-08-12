@@ -13,8 +13,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// a plain, screen-defined `{fieldName: value}` map - this store has no
 /// opinion on what a preset holds, only on persisting/listing/deleting it
 /// (`00-conventions.md`'s "reusable, not reinvented per screen" spirit,
-/// applied to client-local storage the same way `SketcherPreferences`/
-/// `MeshViewerPreferences` already established for scalar settings).
+/// applied to client-local storage the same way `MeshViewerPreferences`
+/// already established for scalar settings).
 ///
 /// **Convenience for re-populating a form, not a live link** - per that
 /// doc's own explicit note, loading a preset and creating a gear produces
@@ -49,11 +49,10 @@ class GearPreset {
 /// `docs/gear-design/09-presets.md`'s own explicit resolution: **client-
 /// local** storage (this app's backend "persists no model data" boundary,
 /// `docs/project-brief.md` §3, stays intact), the same `shared_preferences`
-/// mechanism `SketcherPreferences`/`MeshViewerPreferences` already use -
-/// just one JSON-encoded list under a single key rather than scalar values,
-/// since a preset store's own shape (a named, growable collection) is
-/// genuinely different from either of those classes' own "one persisted
-/// default" shape.
+/// mechanism `MeshViewerPreferences` already uses - just one JSON-encoded
+/// list under a single key rather than scalar values, since a preset
+/// store's own shape (a named, growable collection) is genuinely different
+/// from that class' own "one persisted default" shape.
 class GearPresetStore {
   GearPresetStore._();
 

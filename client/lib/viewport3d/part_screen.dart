@@ -1006,6 +1006,21 @@ class _PartScreenState extends State<PartScreen> {
   bool _busy = false;
   String? _errorMessage;
 
+  /// On-device feedback (herringbone/complex-gear timeout investigation):
+  /// [_busy] alone drives 40+ button `onPressed: _busy ? null : ...` guards
+  /// throughout this screen, most of which cover genuinely-instant local
+  /// actions (toggling a mode, confirming a picker) - showing a full
+  /// "building geometry" overlay for every single one of those would be
+  /// distracting flicker, not reassurance. This flag instead only flips true
+  /// once [_busy] has stayed true for [_busyOverlayDelay] straight (see
+  /// [_runGuarded]), so only a genuinely slow backend call (a complex
+  /// helical/herringbone Gear Feature's recompute, or any later Feature
+  /// added to a Part that already contains one - `compute_part_bodies`
+  /// replays the whole history uncached) ever surfaces it.
+  bool _showBusyOverlay = false;
+  Timer? _busyOverlayTimer;
+  static const Duration _busyOverlayDelay = Duration(milliseconds: 600);
+
   /// The Feature tree is hidden by default so the 3D viewport gets full
   /// space - revealed via [_toolbarOpen]'s "Show Feature Tree" action.
   bool _featureTreeVisible = false;
@@ -4043,6 +4058,7 @@ class _PartScreenState extends State<PartScreen> {
   @override
   void dispose() {
     _extrudeDebounce?.cancel();
+    _busyOverlayTimer?.cancel();
     if (widget.documentApi == null) {
       _api.close();
     }
@@ -8828,12 +8844,22 @@ class _PartScreenState extends State<PartScreen> {
       _busy = true;
       _errorMessage = null;
     });
+    _busyOverlayTimer?.cancel();
+    _busyOverlayTimer = Timer(_busyOverlayDelay, () {
+      if (mounted) setState(() => _showBusyOverlay = true);
+    });
     try {
       await body();
     } on ApiException catch (e) {
       _errorMessage = e.message;
     } finally {
-      if (mounted) setState(() => _busy = false);
+      _busyOverlayTimer?.cancel();
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _showBusyOverlay = false;
+        });
+      }
     }
   }
 
@@ -8875,7 +8901,12 @@ class _PartScreenState extends State<PartScreen> {
           _cancelPlaneSelectionMode();
         }
       },
-      child: _buildScaffold(context),
+      child: Stack(
+        children: [
+          _buildScaffold(context),
+          if (_showBusyOverlay) const _BuildingGeometryOverlay(),
+        ],
+      ),
     );
   }
 
@@ -9866,6 +9897,63 @@ class _PartScreenState extends State<PartScreen> {
                 ],
               ),
             ),
+    );
+  }
+}
+
+/// [_PartScreenState._showBusyOverlay]'s own reassurance banner - shown
+/// only once a backend call has stayed in flight past [_PartScreenState.
+/// _busyOverlayDelay], so a genuinely slow recompute (a complex helical/
+/// herringbone Gear Feature, or any later Feature added to a Part that
+/// already contains one) tells the user it's still working instead of
+/// looking hung until either it finishes or `ApiConfig.documentRequestTimeout`
+/// gives up. Top-anchored rather than a full-screen scrim so the 3D
+/// viewport stays visible underneath, and deliberately not placed at the
+/// bottom - that's where [PickerRibbon]/confirm FABs already live for
+/// several of this screen's other modes.
+class _BuildingGeometryOverlay extends StatelessWidget {
+  const _BuildingGeometryOverlay();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Positioned(
+      top: 0,
+      left: 0,
+      right: 0,
+      child: SafeArea(
+        child: IgnorePointer(
+          child: Align(
+            alignment: Alignment.topCenter,
+            child: Container(
+              margin: const EdgeInsets.only(top: 72, left: 24, right: 24),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surface.withValues(alpha: 0.95),
+                borderRadius: BorderRadius.circular(24),
+                boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 8, offset: Offset(0, 2))],
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  const SizedBox(width: 12),
+                  Flexible(
+                    child: Text(
+                      'Building geometry - complex gears can take a while...',
+                      style: theme.textTheme.bodyMedium,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
