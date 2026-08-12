@@ -39,17 +39,7 @@ class TermuxCommands {
   /// deliberately discards any local drift in the Termux clone rather than
   /// merging/rebasing, since that clone exists purely to run whatever a
   /// branch currently contains, not to carry its own edits.
-  static String pullLatest(String branch) {
-    final quotedBranch = _shellQuote(branch);
-    return _wrapInDistro(
-      'cd $repoDir '
-      '&& git fetch origin $quotedBranch '
-      '&& git checkout $quotedBranch '
-      // FETCH_HEAD (not "origin/$branch" interpolated again) - avoids a
-      // third, unquoted embedding of the branch name in this script.
-      '&& git reset --hard FETCH_HEAD',
-    );
-  }
+  static String pullLatest(String branch) => _wrapInDistro(_pullScript(branch));
 
   /// [apiKey] should be [ApiConfig.apiKey] - the backend refuses to start
   /// without CAD_API_KEY set, and the client can only talk to it if that
@@ -67,19 +57,51 @@ class TermuxCommands {
   static String restartServer(String apiKey) =>
       _wrapInDistro("pkill -f ${_shellQuote(processMatch)} 2>/dev/null; sleep 1; ${_startScript(apiKey)}");
 
+  /// Pull then start in *one* dispatched command, not two separate
+  /// RUN_COMMAND intents - RUN_COMMAND_BACKGROUND returns as soon as
+  /// Android hands the intent to Termux, not when the command inside it
+  /// finishes (see MainActivity.kt's own doc comment), so firing a second
+  /// intent right after the first would race the git pull actually
+  /// finishing. Chaining both inside one `&&`-joined script guarantees the
+  /// pull completes before the start script even begins - the whole point
+  /// of this being one shell parse rather than an ordering assumption
+  /// about two independent ones.
+  static String pullAndStart(String branch, String apiKey) =>
+      _wrapInDistro('${_pullScript(branch)} && ${_startScript(apiKey)}');
+
+  static String _pullScript(String branch) {
+    final quotedBranch = _shellQuote(branch);
+    return 'cd $repoDir '
+        '&& git fetch origin $quotedBranch '
+        '&& git checkout $quotedBranch '
+        // FETCH_HEAD (not "origin/$branch" interpolated again) - avoids a
+        // third, unquoted embedding of the branch name in this script.
+        '&& git reset --hard FETCH_HEAD';
+  }
+
   static String _startScript(String apiKey) =>
       'cd $backendDir '
       '&& eval "\$(micromamba shell hook --shell bash)" '
       '&& micromamba activate $condaEnv '
       '&& export CAD_API_KEY=${_shellQuote(apiKey)} '
-      "&& pkill -f ${_shellQuote(processMatch)} 2>/dev/null; "
+      // (pkill ... || true): pkill legitimately exits nonzero when nothing
+      // was running to kill - expected, not a real failure - but that
+      // still has to be normalized to a real success (0) rather than
+      // joined with a bare ";", or every step before this one (cd, the
+      // conda activation, export) would silently stop gating whether the
+      // server actually starts: a bare ";" runs the next command
+      // unconditionally, regardless of the exit status of an entire
+      // preceding "&&" chain, not just the one command right before it -
+      // confirmed by testing the failure path directly during this
+      // feature's own development, not just by inspection.
+      "&& (pkill -f ${_shellQuote(processMatch)} 2>/dev/null || true) "
       // setsid + nohup + redirected stdin/stdout/stderr: the standard,
       // fully-detached-daemon pattern - survives this script's own exit
       // (and the RUN_COMMAND_BACKGROUND execution finishing) rather than
       // relying on job-control-only tricks like a bare "&"/disown, which
       // are best-effort at the interactive-shell level, not guaranteed
       // against a service tearing down its exec'd process tree.
-      'setsid nohup python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 '
+      '&& setsid nohup python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 '
       '> $logFile 2>&1 < /dev/null &';
 
   /// RUN_COMMAND_ARGUMENTS is delivered as a real argv array (see

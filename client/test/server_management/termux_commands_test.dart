@@ -33,6 +33,7 @@ void main() {
         TermuxCommands.startServer('key'),
         TermuxCommands.stopServer(),
         TermuxCommands.restartServer('key'),
+        TermuxCommands.pullAndStart('main', 'key'),
       ]) {
         expect(argv.take(4), ['login', 'debian', '--', 'bash']);
         expect(argv[4], '-lc');
@@ -67,6 +68,18 @@ void main() {
       expect(script, contains("pkill -f 'uvicorn app.main:app'"));
     });
 
+    test('startServer normalizes pkill finding nothing to a real success, chained with &&', () {
+      // Regression guard: this used to be a bare ";" before pkill, which
+      // meant the start step ran *unconditionally* - even if an earlier
+      // step in a chained command (e.g. pullAndStart's own git pull) had
+      // already failed. Verified against real bash during development
+      // (both the failure-still-blocks and success-still-proceeds paths).
+      final script = TermuxCommands.startServer('key').last;
+      expect(script, contains("(pkill -f 'uvicorn app.main:app' 2>/dev/null || true)"));
+      expect(script, contains('|| true) && setsid nohup'));
+      expect(script, isNot(contains('2>/dev/null; setsid')));
+    });
+
     test('stopServer reports whether anything was actually running', () {
       final script = TermuxCommands.stopServer().last;
       expect(script, contains("pkill -f 'uvicorn app.main:app' && echo stopped || echo not_running"));
@@ -82,6 +95,36 @@ void main() {
     test('API key containing a single quote is escaped, not left to break the export', () {
       final script = TermuxCommands.startServer("k'ey").last;
       expect(script, contains(r"CAD_API_KEY='k'\''ey'"));
+    });
+
+    test('pullAndStart contains both the pull and the start scripts', () {
+      final script = TermuxCommands.pullAndStart('claude/foo', 'super-secret').last;
+      expect(script, contains("git fetch origin 'claude/foo'"));
+      expect(script, contains("git checkout 'claude/foo'"));
+      expect(script, contains('git reset --hard FETCH_HEAD'));
+      expect(script, contains('micromamba activate didsa'));
+      expect(script, contains("export CAD_API_KEY='super-secret'"));
+      expect(script, contains('setsid nohup'));
+    });
+
+    test('pullAndStart joins pull and start with && (single command chain), not two dispatches', () {
+      // The whole point of pullAndStart existing as its own command rather
+      // than the caller just calling pullLatest then startServer
+      // separately: RUN_COMMAND_BACKGROUND returns before the dispatched
+      // command finishes, so two separate intents would race the pull
+      // actually completing. Verified against real bash during development
+      // that a failure partway through the pull genuinely prevents the
+      // start step from running at all, not just that this text is present.
+      final script = TermuxCommands.pullAndStart('main', 'key').last;
+      final pullEnd = script.indexOf('git reset --hard FETCH_HEAD');
+      final startBegin = script.indexOf('cd ~/DIDSA-CAD/backend');
+      expect(pullEnd, greaterThanOrEqualTo(0));
+      expect(startBegin, greaterThan(pullEnd));
+      expect(script.substring(pullEnd, startBegin), contains('&&'));
+    });
+
+    test('pullAndStart is a single dispatched command, not two', () {
+      expect(TermuxCommands.pullAndStart('main', 'key').length, 6);
     });
   });
 }

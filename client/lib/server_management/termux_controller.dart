@@ -54,6 +54,18 @@ class TermuxController {
 
   Future<bool> pullLatest(String branch) => _dispatch(TermuxCommands.pullLatest(branch));
 
+  /// Pull [branch] then start, as one dispatched command - see
+  /// [TermuxCommands.pullAndStart]'s own doc comment for why this can't be
+  /// two separate calls to [pullLatest] and [startServer] (a real race:
+  /// RUN_COMMAND_BACKGROUND returns before the command it dispatched has
+  /// actually finished). The single most useful action for "test this
+  /// branch" - fetches it fresh and boots it in one tap, rather than the
+  /// user having to Pull, wait, then separately remember to Start.
+  Future<bool> pullAndStart(String branch) async {
+    await ApiConfig.saveLocalApiKey(ApiConfig.apiKey);
+    return _dispatch(TermuxCommands.pullAndStart(branch, ApiConfig.apiKey));
+  }
+
   /// Stamps [ApiConfig.localApiKey] with whatever key is exported, before
   /// dispatching - so the Connection screen's "Use Local Server" button
   /// always reflects what this call actually attempted, even if the

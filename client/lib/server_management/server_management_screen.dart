@@ -189,12 +189,30 @@ class _ServerManagementScreenState extends State<ServerManagementScreen> {
             ),
           ),
           const SizedBox(height: 16),
+          // The main "test this branch" action - fetches it fresh and
+          // boots it in one tap/one dispatched command (see
+          // TermuxController.pullAndStart's own doc comment for why this
+          // has to be one command, not Pull followed by a separate Start).
           FilledButton.icon(
+            onPressed: canAct && _branchValid
+                ? () => _run(
+                      'Pull & start',
+                      () => _controller.pullAndStart(_branchController.text.trim()),
+                      expect: ServerReachability.reachable,
+                    )
+                : null,
+            icon: const Icon(Icons.rocket_launch),
+            label: const Text('Pull & start'),
+          ),
+          const SizedBox(height: 8),
+          // Secondary: sync the clone without touching whatever's already
+          // running - e.g. to inspect the pulled code before restarting.
+          OutlinedButton.icon(
             onPressed: canAct && _branchValid
                 ? () => _run('Pull latest', () => _controller.pullLatest(_branchController.text.trim()))
                 : null,
             icon: const Icon(Icons.download),
-            label: const Text('Pull latest changes'),
+            label: const Text('Pull latest changes only'),
           ),
           const SizedBox(height: 24),
           Text('Server', style: Theme.of(context).textTheme.titleMedium),
