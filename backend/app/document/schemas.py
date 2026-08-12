@@ -803,7 +803,12 @@ class GearFeatureCreate(BaseModel):
     `helix_angle_degrees` (Workstream 4a, default `0.0`) and `herringbone`
     (default `False`) follow `GearFeature`'s own identical fields - see
     that dataclass's docstring for the full construction. `0.0`/`False`
-    (the defaults) reproduce every pre-Workstream-4a gear byte-identically."""
+    (the defaults) reproduce every pre-Workstream-4a gear byte-identically.
+
+    `points_per_flank` (default `12`) follows `GearFeature.points_per_
+    flank`'s own identical field - a lower value trades tooth-flank
+    smoothness for a cheaper OCCT build, most useful for a helical/
+    herringbone gear on modest hardware."""
 
     plane_ref: PlaneRefSchema | None = None
     gear_type: GearType
@@ -819,6 +824,7 @@ class GearFeatureCreate(BaseModel):
     target_body_ids: list[str] = []
     helix_angle_degrees: float = 0.0
     herringbone: bool = False
+    points_per_flank: int = 12
 
 
 class GearFeatureUpdate(BaseModel):
@@ -839,6 +845,7 @@ class GearFeatureUpdate(BaseModel):
     target_body_ids: list[str] | None = None
     helix_angle_degrees: float | None = None
     herringbone: bool | None = None
+    points_per_flank: int | None = None
 
 
 class GearFeatureResponse(BaseModel):
@@ -858,6 +865,7 @@ class GearFeatureResponse(BaseModel):
     target_body_ids: list[str] = []
     helix_angle_degrees: float = 0.0
     herringbone: bool = False
+    points_per_flank: int = 12
     locked: bool
     # B1: see SketchFeatureResponse.produces above - always BODY for a
     # GearFeature.
