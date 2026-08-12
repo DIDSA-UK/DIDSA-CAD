@@ -7,6 +7,7 @@ import 'config.dart';
 import 'mesh_viewer/mesh_viewer_screen.dart';
 import 'mesh_viewer/mesh_viewer_settings_screen.dart';
 import 'server_management/server_management_screen.dart';
+import 'server_management/termux_controller.dart';
 import 'sketch/sketcher_settings_screen.dart';
 import 'tool_chooser_screen.dart';
 import 'viewport3d/svg_icon.dart';
@@ -85,6 +86,27 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
 
   bool get _canConnect =>
       !_busy && _serverUrlController.text.trim().isNotEmpty && _apiKeyController.text.trim().isNotEmpty;
+
+  /// Fills the fields with the fixed local address plus whatever key
+  /// Server Management's own startServer/restartServer last stamped as
+  /// [ApiConfig.localApiKey] - deliberately does *not* call [_handleConnect]
+  /// itself, so the existing "never save without a real health check
+  /// succeeding" guarantee still applies; this only fills the fields, same
+  /// as autofill would.
+  void _useLocalServer() {
+    if (ApiConfig.localApiKey.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No local server key recorded yet - start it once from Server Management first.'),
+        ),
+      );
+      return;
+    }
+    setState(() {
+      _serverUrlController.text = TermuxController.localBaseUrl;
+      _apiKeyController.text = ApiConfig.localApiKey;
+    });
+  }
 
   Future<void> _handleConnect() async {
     final url = _serverUrlController.text.trim();
@@ -190,7 +212,17 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                       ],
                     ),
                   ),
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton.icon(
+                      onPressed: _busy ? null : _useLocalServer,
+                      style: TextButton.styleFrom(foregroundColor: Colors.white70),
+                      icon: const Icon(Icons.smartphone, size: 18),
+                      label: const Text('Use Local Server'),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
                   // On-device feedback: restyled to match the mesh-viewer
                   // bar's own stadium-split shape/size exactly (see below) -
                   // Connect as the 80% action, a new settings entry for the

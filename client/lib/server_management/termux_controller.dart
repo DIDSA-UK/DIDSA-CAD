@@ -54,11 +54,22 @@ class TermuxController {
 
   Future<bool> pullLatest(String branch) => _dispatch(TermuxCommands.pullLatest(branch));
 
-  Future<bool> startServer() => _dispatch(TermuxCommands.startServer(ApiConfig.apiKey));
+  /// Stamps [ApiConfig.localApiKey] with whatever key is exported, before
+  /// dispatching - so the Connection screen's "Use Local Server" button
+  /// always reflects what this call actually attempted, even if the
+  /// intent dispatch itself then fails (matches [ApiConfig.saveLocalApiKey]
+  /// 's own doc comment: this records an attempt, not a confirmed result).
+  Future<bool> startServer() async {
+    await ApiConfig.saveLocalApiKey(ApiConfig.apiKey);
+    return _dispatch(TermuxCommands.startServer(ApiConfig.apiKey));
+  }
 
   Future<bool> stopServer() => _dispatch(TermuxCommands.stopServer());
 
-  Future<bool> restartServer() => _dispatch(TermuxCommands.restartServer(ApiConfig.apiKey));
+  Future<bool> restartServer() async {
+    await ApiConfig.saveLocalApiKey(ApiConfig.apiKey);
+    return _dispatch(TermuxCommands.restartServer(ApiConfig.apiKey));
+  }
 
   /// A single GET /health round trip against [localBaseUrl] - always uses
   /// [ApiConfig.apiKey] as the X-API-Key (the same value startServer/
