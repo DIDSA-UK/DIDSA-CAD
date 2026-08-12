@@ -919,6 +919,11 @@ def _feature_to_dict(feature: Feature) -> dict:
             # before these two fields existed.
             "helix_angle_degrees": feature.helix_angle_degrees,
             "herringbone": feature.herringbone,
+            # On-device feedback (herringbone/complex-gear timeout
+            # investigation): default 12 for every gear persisted before
+            # this field existed - see GearFeature.points_per_flank's own
+            # docstring.
+            "points_per_flank": feature.points_per_flank,
         }
     if isinstance(feature, RackFeature):
         return {
@@ -1141,6 +1146,7 @@ def _feature_from_dict(data: dict) -> Feature:
             # behaviour, per that field's own docstring.
             helix_angle_degrees=data.get("helix_angle_degrees", 0.0),
             herringbone=data.get("herringbone", False),
+            points_per_flank=data.get("points_per_flank", 12),
         )
     if feature_type == "rack":
         return RackFeature(

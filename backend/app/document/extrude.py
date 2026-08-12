@@ -31,6 +31,7 @@ from OCC.Core.TopExp import TopExp_Explorer, topexp
 from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape, TopoDS_Vertex, TopoDS_Wire, topods
 from OCC.Core.TopTools import TopTools_IndexedMapOfShape
 
+from app.document import body_cache
 from app.document.graph import base_feature_id, build_feature_graph, topological_order
 from app.document.plane_geometry import (
     is_mirrored_basis,
@@ -45,6 +46,7 @@ from app.document.models import (
     ChamferFeature,
     ExtrudeFeature,
     ExtrudeType,
+    Feature,
     FilletFeature,
     GearChainFeature,
     GearFeature,
@@ -874,17 +876,21 @@ def resolve_feature_tool_shape(
     return None
 
 
-def compute_part_bodies(
-    part: Part, excluded_feature_ids: frozenset[str] = frozenset()
-) -> dict[str, TopoDS_Shape]:
-    """Recomputes every Body in `part`, keyed by stable Body id (A1) -
-    replaces the old single-accumulated-solid `compute_part_solid`.
-
-    Processes `part.features` in dependency-graph topological order (see
-    `build_feature_graph`/app.document.graph.topological_order) rather than
-    raw list order, though for every Part with no `target_body_ids` edge
-    reaching back past its immediately preceding Feature this produces
-    exactly the same order list order already did.
+def _apply_feature_to_bodies(
+    feature: Feature,
+    part: Part,
+    bodies: dict[str, TopoDS_Shape],
+    feature_index: dict[str, int],
+    excluded_feature_ids: frozenset[str],
+) -> None:
+    """The per-Feature-type dispatch `compute_part_bodies` calls once per
+    Feature id in its own topological order, mutating `bodies` in place -
+    split out from that function (which now only handles topological
+    ordering, the `excluded_feature_ids` exclusion check, and - since the
+    herringbone/complex-gear timeout investigation - checkpoint-chain
+    caching via `app.document.body_cache`) so its own per-step boundary is
+    a real function call `body_cache.compute_with_cache` can snapshot
+    around, not just a bare `continue` inside a big shared loop.
 
     Boss: fuses its new solid into every Body named in
     `feature.target_body_ids`. If that list is empty, the solid becomes a
@@ -909,26 +915,6 @@ def compute_part_bodies(
     produces multiple Bodies from that one operation, not one compound
     Body. The common single-solid case is entirely unaffected (same ids as
     before this amendment).
-
-    An ExtrudeFeature whose id is in `excluded_feature_ids` is skipped
-    entirely, as if it weren't in the Part's history at all - used ONLY for
-    B4 true-rollback ("pretend this Feature and everything after it doesn't
-    exist yet while I edit an earlier one"), never for the client's plain
-    Hide/Show. Bug fix (post-C4): those two were originally the same
-    client-side set/query-param (`hidden_feature_ids`) on the theory that
-    "hidden" and "doesn't exist for recompute purposes" were equivalent -
-    true as long as nothing else could ever reference a hidden Body's own
-    topology. Once Create Plane (C2) could anchor a Plane to a Body face,
-    that stopped holding: hiding the Extrude that produced a Body used by a
-    *different*, still-visible Plane (and anything built on that Plane -
-    C3's Sketch-on-Plane/Extrude-on-that-Sketch) made the Plane's own
-    face_ref resolve to nothing, throwing `missing_reference` and taking
-    the *entire* `/mesh` response down with it - including unrelated Bodies
-    that had nothing wrong with them. `excluded_feature_ids` now carries
-    only the true-rollback set; a Body hidden via plain Hide/Show is always
-    still fully computed here and only filtered out afterward, at the
-    response layer - see app.document.router.get_part_mesh's own
-    `hidden_feature_ids` (the renamed, now purely cosmetic parameter).
 
     Prompt D: a `FilletFeature` modifies a Body already in `bodies` in
     place (see `app.document.fillet.resolve_fillet_from_bodies`), rather
@@ -985,445 +971,507 @@ def compute_part_bodies(
         resolve_pattern_tool_feature_from_bodies,
     )
 
-    feature_index = {feature.id: i for i, feature in enumerate(part.features)}
-    bodies: dict[str, TopoDS_Shape] = {}
+    if isinstance(feature, FilletFeature):
+        try:
+            body_id, filleted_shape = resolve_fillet_from_bodies(bodies, feature)
+        except HTTPException:
+            logger.warning("Skipping FilletFeature %s: could not be resolved", feature.id)
+            return
+        bodies[body_id] = filleted_shape
+        return
 
-    order = topological_order(build_feature_graph(part))
-    for feature_id in order:
-        feature = part.get_feature(feature_id)
-        if feature.id in excluded_feature_ids:
-            continue
+    if isinstance(feature, ChamferFeature):
+        try:
+            body_id, chamfered_shape = resolve_chamfer_from_bodies(bodies, feature)
+        except HTTPException:
+            logger.warning("Skipping ChamferFeature %s: could not be resolved", feature.id)
+            return
+        bodies[body_id] = chamfered_shape
+        return
 
-        if isinstance(feature, FilletFeature):
+    if isinstance(feature, ImportFeature):
+        try:
+            solid = resolve_import(feature)
+        except HTTPException as exc:
+            # Mirrors the Sweep/Extrude branches' own narrow-catch fix:
+            # only this Feature's own "bad file" failures are tolerated
+            # (the router's create endpoint already validates eagerly,
+            # so this only matters for a hand-crafted/legacy document);
+            # anything else must still propagate.
+            if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
+                "import_failed",
+                "invalid_import_data",
+            ):
+                raise
+            logger.warning("Skipping ImportFeature %s: could not be resolved", feature.id)
+            return
+        # Deliberately not `_apply_boss_or_cut` (which registers via
+        # `_register_solids`, splitting a result by walking its
+        # `TopAbs_SOLID`s - correct for a real Extrude/Revolve/Sweep
+        # boss, wrong here): a mesh import's own shape (see
+        # `_shape_from_mesh_data`) is a bare, surface-less face with no
+        # `TopoDS_Solid` at all, so that path would silently register
+        # zero Bodies for it (caught by CI - an imported STL vanished
+        # from `/mesh` entirely). ImportFeature has no Boss/Cut merge
+        # concept of its own anyway (see its own docstring) - always
+        # exactly one Body, keyed by this Feature's own id, whatever
+        # `resolve_import` returned (a real B-rep solid for STEP, a
+        # bare face for a mesh format) - never split even if a STEP
+        # import happens to contain multiple disjoint solids.
+        bodies[feature.id] = solid
+        return
+
+    if isinstance(feature, MirrorFeature):
+        if feature.tool_feature_id is not None:
+            # Phase 8 (§2.11): a third, mutually-exclusive seed-picking
+            # mode - mirrors the referenced upstream Cut/Boss-into-
+            # target Feature's own tool shape once and applies a single
+            # Cut/Fuse directly against its own target Body, in place -
+            # see `resolve_mirror_tool_feature_from_bodies`'s own
+            # docstring. Registered the same way `_apply_boss_or_cut`'s
+            # own Cut-mode branch registers its result (re-split via
+            # `_register_solids` in case the boolean happens to produce
+            # more than one disconnected solid).
             try:
-                body_id, filleted_shape = resolve_fillet_from_bodies(bodies, feature)
-            except HTTPException:
-                logger.warning("Skipping FilletFeature %s: could not be resolved", feature.id)
-                continue
-            bodies[body_id] = filleted_shape
-            continue
-
-        if isinstance(feature, ChamferFeature):
-            try:
-                body_id, chamfered_shape = resolve_chamfer_from_bodies(bodies, feature)
-            except HTTPException:
-                logger.warning("Skipping ChamferFeature %s: could not be resolved", feature.id)
-                continue
-            bodies[body_id] = chamfered_shape
-            continue
-
-        if isinstance(feature, ImportFeature):
-            try:
-                solid = resolve_import(feature)
-            except HTTPException as exc:
-                # Mirrors the Sweep/Extrude branches' own narrow-catch fix:
-                # only this Feature's own "bad file" failures are tolerated
-                # (the router's create endpoint already validates eagerly,
-                # so this only matters for a hand-crafted/legacy document);
-                # anything else must still propagate.
-                if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
-                    "import_failed",
-                    "invalid_import_data",
-                ):
-                    raise
-                logger.warning("Skipping ImportFeature %s: could not be resolved", feature.id)
-                continue
-            # Deliberately not `_apply_boss_or_cut` (which registers via
-            # `_register_solids`, splitting a result by walking its
-            # `TopAbs_SOLID`s - correct for a real Extrude/Revolve/Sweep
-            # boss, wrong here): a mesh import's own shape (see
-            # `_shape_from_mesh_data`) is a bare, surface-less face with no
-            # `TopoDS_Solid` at all, so that path would silently register
-            # zero Bodies for it (caught by CI - an imported STL vanished
-            # from `/mesh` entirely). ImportFeature has no Boss/Cut merge
-            # concept of its own anyway (see its own docstring) - always
-            # exactly one Body, keyed by this Feature's own id, whatever
-            # `resolve_import` returned (a real B-rep solid for STEP, a
-            # bare face for a mesh format) - never split even if a STEP
-            # import happens to contain multiple disjoint solids.
-            bodies[feature.id] = solid
-            continue
-
-        if isinstance(feature, MirrorFeature):
-            if feature.tool_feature_id is not None:
-                # Phase 8 (§2.11): a third, mutually-exclusive seed-picking
-                # mode - mirrors the referenced upstream Cut/Boss-into-
-                # target Feature's own tool shape once and applies a single
-                # Cut/Fuse directly against its own target Body, in place -
-                # see `resolve_mirror_tool_feature_from_bodies`'s own
-                # docstring. Registered the same way `_apply_boss_or_cut`'s
-                # own Cut-mode branch registers its result (re-split via
-                # `_register_solids` in case the boolean happens to produce
-                # more than one disconnected solid).
-                try:
-                    target_id, new_shape = resolve_mirror_tool_feature_from_bodies(
-                        part, bodies, feature, excluded_feature_ids
-                    )
-                except HTTPException:
-                    logger.warning("Skipping MirrorFeature %s: could not be resolved", feature.id)
-                    continue
-                del bodies[target_id]
-                _register_solids(bodies, target_id, new_shape)
-                continue
-
-            try:
-                mirrored_shapes = resolve_mirror_from_bodies(part, bodies, feature, excluded_feature_ids)
+                target_id, new_shape = resolve_mirror_tool_feature_from_bodies(
+                    part, bodies, feature, excluded_feature_ids
+                )
             except HTTPException:
                 logger.warning("Skipping MirrorFeature %s: could not be resolved", feature.id)
-                continue
-            # Boss-with-no-target semantics (see MirrorFeature's own
-            # docstring) - every mirrored copy is a brand-new, never-merged
-            # Body in Phase 1, so this reuses `_register_solids` directly
-            # rather than `_apply_boss_or_cut` (which also knows how to
-            # fuse/cut into `target_body_ids`, a concept Mirror doesn't have
-            # until Phase 5's merge option). One source Body registers under
-            # this Feature's own id directly (unchanged from before multi-
-            # body seeding); 2+ sources - Phase 6's `source_feature_ids`
-            # expansion included - each get their own `#N`-suffixed id
-            # (mirrors `_register_solids`'s own single-vs-multiple naming
-            # convention, applied here across sources rather than within
-            # one already-registered shape).
-            #
-            # `merge == FUSE_INTO_ONE` (Phase 5) instead fuses every mirrored
-            # copy plus every source Body together into one Body, via the
-            # shared `_fuse_realized_instances` helper above - `base_ids` is
-            # the Phase 6 effective (source_body_ids + resolved source_
-            # feature_ids) list, not the raw field, so a Feature-tree-picked
-            # source's own real Body is absorbed into the fuse too.
-            if feature.merge == MergeMode.FUSE_INTO_ONE:
-                base_ids = effective_mirror_source_body_ids(bodies, feature)
-                _fuse_realized_instances(bodies, feature_index, base_ids, mirrored_shapes)
-            elif len(mirrored_shapes) == 1:
-                _register_solids(bodies, feature.id, mirrored_shapes[0])
-            else:
-                for i, shape in enumerate(mirrored_shapes):
-                    _register_solids(bodies, f"{feature.id}#{i}", shape)
-            continue
+                return
+            del bodies[target_id]
+            _register_solids(bodies, target_id, new_shape)
+            return
 
-        if isinstance(feature, PatternFeature):
-            if feature.tool_feature_id is not None:
-                # Phase 8 (§2.11): mirrors MirrorFeature's own tool_
-                # feature_id branch above - see `resolve_pattern_tool_
-                # feature_from_bodies`'s own docstring for the "union every
-                # realized copy into one combined tool, then one boolean"
-                # shape.
-                try:
-                    target_id, new_shape = resolve_pattern_tool_feature_from_bodies(
-                        part, bodies, feature, excluded_feature_ids
-                    )
-                except HTTPException:
-                    logger.warning("Skipping PatternFeature %s: could not be resolved", feature.id)
-                    continue
-                del bodies[target_id]
-                _register_solids(bodies, target_id, new_shape)
-                continue
+        try:
+            mirrored_shapes = resolve_mirror_from_bodies(part, bodies, feature, excluded_feature_ids)
+        except HTTPException:
+            logger.warning("Skipping MirrorFeature %s: could not be resolved", feature.id)
+            return
+        # Boss-with-no-target semantics (see MirrorFeature's own
+        # docstring) - every mirrored copy is a brand-new, never-merged
+        # Body in Phase 1, so this reuses `_register_solids` directly
+        # rather than `_apply_boss_or_cut` (which also knows how to
+        # fuse/cut into `target_body_ids`, a concept Mirror doesn't have
+        # until Phase 5's merge option). One source Body registers under
+        # this Feature's own id directly (unchanged from before multi-
+        # body seeding); 2+ sources - Phase 6's `source_feature_ids`
+        # expansion included - each get their own `#N`-suffixed id
+        # (mirrors `_register_solids`'s own single-vs-multiple naming
+        # convention, applied here across sources rather than within
+        # one already-registered shape).
+        #
+        # `merge == FUSE_INTO_ONE` (Phase 5) instead fuses every mirrored
+        # copy plus every source Body together into one Body, via the
+        # shared `_fuse_realized_instances` helper above - `base_ids` is
+        # the Phase 6 effective (source_body_ids + resolved source_
+        # feature_ids) list, not the raw field, so a Feature-tree-picked
+        # source's own real Body is absorbed into the fuse too.
+        if feature.merge == MergeMode.FUSE_INTO_ONE:
+            base_ids = effective_mirror_source_body_ids(bodies, feature)
+            _fuse_realized_instances(bodies, feature_index, base_ids, mirrored_shapes)
+        elif len(mirrored_shapes) == 1:
+            _register_solids(bodies, feature.id, mirrored_shapes[0])
+        else:
+            for i, shape in enumerate(mirrored_shapes):
+                _register_solids(bodies, f"{feature.id}#{i}", shape)
+        return
 
+    if isinstance(feature, PatternFeature):
+        if feature.tool_feature_id is not None:
+            # Phase 8 (§2.11): mirrors MirrorFeature's own tool_
+            # feature_id branch above - see `resolve_pattern_tool_
+            # feature_from_bodies`'s own docstring for the "union every
+            # realized copy into one combined tool, then one boolean"
+            # shape.
             try:
-                per_source_instances = resolve_pattern_from_bodies(
+                target_id, new_shape = resolve_pattern_tool_feature_from_bodies(
                     part, bodies, feature, excluded_feature_ids
                 )
             except HTTPException:
                 logger.warning("Skipping PatternFeature %s: could not be resolved", feature.id)
-                continue
-            # Index 0 (each source's own seed Body) is never a key in that
-            # source's own inner dict (see `PatternFeature`'s own docstring)
-            # - a source's seed Body is already registered under its own id
-            # by whichever earlier Feature produced it, and this Feature
-            # never touches it, same Boss-with-no-target semantics
-            # `MirrorFeature` uses.
-            #
-            # `merge == FUSE_INTO_ONE` (Phase 5) instead fuses every realized
-            # (non-skipped) instance across every source plus every source's
-            # own untouched seed Body together into one Body, registered
-            # under whichever source's own id sorts lowest - via the shared
-            # `_fuse_realized_instances` helper above. `base_ids` is the
-            # Phase 6 effective (source_body_ids + resolved source_
-            # feature_ids) list, not the raw field.
-            if feature.merge == MergeMode.FUSE_INTO_ONE:
-                base_ids = effective_pattern_source_body_ids(bodies, feature)
-                realized_shapes = [
-                    shape for instances in per_source_instances.values() for shape in instances.values()
-                ]
-                _fuse_realized_instances(bodies, feature_index, base_ids, realized_shapes)
-            elif len(per_source_instances) == 1:
-                # The pre-Phase-6 single-source shape, unchanged: every new
-                # instance is a brand-new Body keyed by the pattern's own
-                # linear index alone - `feature.id` for exactly one (a
-                # `count_1 * count_2 == 2` Rectangular pattern, or a
-                # `count_angular == 2` Circular one), `f"{feature.id}#
-                # {index}"` per instance otherwise (mirrors `_register_
-                # solids`'s own single-vs-multiple naming convention, keyed
-                # by the pattern's own linear index - row-major
-                # `i*count_2+j` for Rectangular, the plain angular-step
-                # index for Circular - not a freshly reindexed 0..N-1
-                # either way, so a skip-instance picker can address the
-                # exact same indices).
-                ((_, instances),) = per_source_instances.items()
-                if len(instances) == 1:
-                    ((_, only_shape),) = instances.items()
-                    _register_solids(bodies, feature.id, only_shape)
-                else:
-                    for index, shape in instances.items():
-                        _register_solids(bodies, f"{feature.id}#{index}", shape)
+                return
+            del bodies[target_id]
+            _register_solids(bodies, target_id, new_shape)
+            return
+
+        try:
+            per_source_instances = resolve_pattern_from_bodies(
+                part, bodies, feature, excluded_feature_ids
+            )
+        except HTTPException:
+            logger.warning("Skipping PatternFeature %s: could not be resolved", feature.id)
+            return
+        # Index 0 (each source's own seed Body) is never a key in that
+        # source's own inner dict (see `PatternFeature`'s own docstring)
+        # - a source's seed Body is already registered under its own id
+        # by whichever earlier Feature produced it, and this Feature
+        # never touches it, same Boss-with-no-target semantics
+        # `MirrorFeature` uses.
+        #
+        # `merge == FUSE_INTO_ONE` (Phase 5) instead fuses every realized
+        # (non-skipped) instance across every source plus every source's
+        # own untouched seed Body together into one Body, registered
+        # under whichever source's own id sorts lowest - via the shared
+        # `_fuse_realized_instances` helper above. `base_ids` is the
+        # Phase 6 effective (source_body_ids + resolved source_
+        # feature_ids) list, not the raw field.
+        if feature.merge == MergeMode.FUSE_INTO_ONE:
+            base_ids = effective_pattern_source_body_ids(bodies, feature)
+            realized_shapes = [
+                shape for instances in per_source_instances.values() for shape in instances.values()
+            ]
+            _fuse_realized_instances(bodies, feature_index, base_ids, realized_shapes)
+        elif len(per_source_instances) == 1:
+            # The pre-Phase-6 single-source shape, unchanged: every new
+            # instance is a brand-new Body keyed by the pattern's own
+            # linear index alone - `feature.id` for exactly one (a
+            # `count_1 * count_2 == 2` Rectangular pattern, or a
+            # `count_angular == 2` Circular one), `f"{feature.id}#
+            # {index}"` per instance otherwise (mirrors `_register_
+            # solids`'s own single-vs-multiple naming convention, keyed
+            # by the pattern's own linear index - row-major
+            # `i*count_2+j` for Rectangular, the plain angular-step
+            # index for Circular - not a freshly reindexed 0..N-1
+            # either way, so a skip-instance picker can address the
+            # exact same indices).
+            ((_, instances),) = per_source_instances.items()
+            if len(instances) == 1:
+                ((_, only_shape),) = instances.items()
+                _register_solids(bodies, feature.id, only_shape)
             else:
-                # Phase 6: 2+ sources - every instance is a brand-new Body
-                # keyed by both which source it belongs to (`source_index`,
-                # the source's own position in `effective_pattern_source_
-                # body_ids`' order) and the pattern's own linear index
-                # within that source, `f"{feature.id}#{source_index}_
-                # {index}"` - a new, source-aware generalization of the
-                # single-source `#{index}` scheme above (kept distinct
-                # rather than always prefixing a source index, so every
-                # pre-Phase-6 single-source Pattern's own Body ids are
-                # completely unaffected by this change).
-                for source_index, (_, instances) in enumerate(per_source_instances.items()):
-                    for index, shape in instances.items():
-                        _register_solids(bodies, f"{feature.id}#{source_index}_{index}", shape)
-            continue
+                for index, shape in instances.items():
+                    _register_solids(bodies, f"{feature.id}#{index}", shape)
+        else:
+            # Phase 6: 2+ sources - every instance is a brand-new Body
+            # keyed by both which source it belongs to (`source_index`,
+            # the source's own position in `effective_pattern_source_
+            # body_ids`' order) and the pattern's own linear index
+            # within that source, `f"{feature.id}#{source_index}_
+            # {index}"` - a new, source-aware generalization of the
+            # single-source `#{index}` scheme above (kept distinct
+            # rather than always prefixing a source index, so every
+            # pre-Phase-6 single-source Pattern's own Body ids are
+            # completely unaffected by this change).
+            for source_index, (_, instances) in enumerate(per_source_instances.items()):
+                for index, shape in instances.items():
+                    _register_solids(bodies, f"{feature.id}#{source_index}_{index}", shape)
+        return
 
-        if isinstance(feature, RevolveFeature):
-            # Phase 8: this branch's own solid computation now goes through
-            # `resolve_feature_tool_shape`, the same shared entry point
-            # Pattern/Mirror's new `tool_feature_id` path uses - see that
-            # function's own docstring. The try/except here keeps this
-            # branch's own pre-existing blanket-tolerance policy unchanged
-            # (any `HTTPException` from resolving this Revolve is tolerated,
-            # not just a narrow subset - matching the pre-extraction code
-            # exactly).
-            try:
-                result = resolve_feature_tool_shape(part, bodies, feature.id, excluded_feature_ids)
-            except HTTPException:
-                logger.warning("Skipping RevolveFeature %s: could not be resolved", feature.id)
-                continue
-            if result is None:
-                continue
-            solid, target_body_ids, is_cut = result
-            _apply_boss_or_cut(bodies, feature.id, feature_index, is_cut, target_body_ids, solid)
-            continue
+    if isinstance(feature, RevolveFeature):
+        # Phase 8: this branch's own solid computation now goes through
+        # `resolve_feature_tool_shape`, the same shared entry point
+        # Pattern/Mirror's new `tool_feature_id` path uses - see that
+        # function's own docstring. The try/except here keeps this
+        # branch's own pre-existing blanket-tolerance policy unchanged
+        # (any `HTTPException` from resolving this Revolve is tolerated,
+        # not just a narrow subset - matching the pre-extraction code
+        # exactly).
+        try:
+            result = resolve_feature_tool_shape(part, bodies, feature.id, excluded_feature_ids)
+        except HTTPException:
+            logger.warning("Skipping RevolveFeature %s: could not be resolved", feature.id)
+            return
+        if result is None:
+            return
+        solid, target_body_ids, is_cut = result
+        _apply_boss_or_cut(bodies, feature.id, feature_index, is_cut, target_body_ids, solid)
+        return
 
-        if isinstance(feature, SweepFeature):
-            try:
-                result = resolve_feature_tool_shape(part, bodies, feature.id, excluded_feature_ids)
-            except HTTPException as exc:
-                # Tolerates this Sweep's own stale/broken references
-                # (an edited-away path segment, a disconnected path, a
-                # geometrically-invalid sweep, a stale profile_refs pick) -
-                # deliberately narrower than a blanket `except
-                # HTTPException`, matching the fix applied to the
-                # ExtrudeFeature branch below for the identical reason: a
-                # `missing_reference` from `resolve_sketch_basis` (B4 true
-                # rollback deliberately excluding an upstream Feature this
-                # Sweep's Profile or path depends on) must still propagate
-                # and fail the whole request, not be swallowed as "this
-                # Sweep is just stale."
-                if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
-                    "invalid_path_ref",
-                    "disconnected_path",
-                    "sweep_failed",
-                    "invalid_profile_ref",
-                ):
-                    raise
-                logger.warning("Skipping SweepFeature %s: could not be resolved", feature.id)
-                continue
-            if result is None:
-                continue
-            solid, target_body_ids, is_cut = result
-            _apply_boss_or_cut(bodies, feature.id, feature_index, is_cut, target_body_ids, solid)
-            continue
-
-        if isinstance(feature, GearFeature):
-            # docs/gear-design/02-gear-feature.md: resolve_gear_from_bodies
-            # always raises a structured HTTPException on failure rather
-            # than resolve_feature_tool_shape returning None for it (no
-            # backing Sketch, so no "currently has nothing to build" state
-            # to tolerate) - every gear-specific failure mode is caught
-            # and skipped here the same way every other Feature type's own
-            # branch tolerates its own structured errors; anything else
-            # (e.g. a missing_reference from an upstream plane_ref) still
-            # propagates and fails the whole request.
-            try:
-                result = resolve_feature_tool_shape(part, bodies, feature.id, excluded_feature_ids)
-            except HTTPException as exc:
-                if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
-                    "invalid_gear_parameters",
-                    "gear_failed",
-                ):
-                    raise
-                logger.warning("Skipping GearFeature %s: could not be resolved", feature.id)
-                continue
-            if result is None:
-                continue
-            solid, target_body_ids, is_cut = result
-            _apply_boss_or_cut(bodies, feature.id, feature_index, is_cut, target_body_ids, solid)
-            continue
-
-        if isinstance(feature, RackFeature):
-            # docs/gear-design/03-rack.md: mirrors the GearFeature branch
-            # just above exactly, including its own structured error types.
-            try:
-                result = resolve_feature_tool_shape(part, bodies, feature.id, excluded_feature_ids)
-            except HTTPException as exc:
-                if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
-                    "invalid_rack_parameters",
-                    "rack_failed",
-                ):
-                    raise
-                logger.warning("Skipping RackFeature %s: could not be resolved", feature.id)
-                continue
-            if result is None:
-                continue
-            solid, target_body_ids, is_cut = result
-            _apply_boss_or_cut(bodies, feature.id, feature_index, is_cut, target_body_ids, solid)
-            continue
-
-        if isinstance(feature, BevelGearFeature):
-            # docs/gear-design/10-bevel-gear.md: mirrors the GearFeature/
-            # RackFeature branches above exactly, including their own
-            # structured error types.
-            try:
-                result = resolve_feature_tool_shape(part, bodies, feature.id, excluded_feature_ids)
-            except HTTPException as exc:
-                if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
-                    "invalid_bevel_parameters",
-                    "bevel_failed",
-                ):
-                    raise
-                logger.warning("Skipping BevelGearFeature %s: could not be resolved", feature.id)
-                continue
-            if result is None:
-                continue
-            solid, target_body_ids, is_cut = result
-            _apply_boss_or_cut(bodies, feature.id, feature_index, is_cut, target_body_ids, solid)
-            continue
-
-        if isinstance(feature, LoftFeature):
-            # docs/gear-design/04-helical-herringbone-loft.md: tolerates
-            # this Loft's own stale/broken references (an edited-away
-            # section, an unresolvable reference_point, a geometrically-
-            # invalid loft) - mirrors the SweepFeature branch above's
-            # deliberately narrow catch for the identical reason (a
-            # missing_reference from an upstream plane/Sketch dependency
-            # must still propagate and fail the whole request).
-            try:
-                result = resolve_feature_tool_shape(part, bodies, feature.id, excluded_feature_ids)
-            except HTTPException as exc:
-                if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
-                    "invalid_loft_section",
-                    "loft_failed",
-                ):
-                    raise
-                logger.warning("Skipping LoftFeature %s: could not be resolved", feature.id)
-                continue
-            if result is None:
-                continue
-            solid, target_body_ids, is_cut = result
-            _apply_boss_or_cut(bodies, feature.id, feature_index, is_cut, target_body_ids, solid)
-            continue
-
-        if isinstance(feature, GearChainFeature):
-            # docs/gear-design/05-gear-chain-and-planetary.md: no Boss/Cut
-            # concept at all (see that Feature's own docstring) - always
-            # mints brand-new Bodies, so this registers the returned
-            # compound directly via `_register_solids` rather than going
-            # through `_apply_boss_or_cut`/`resolve_feature_tool_shape`.
-            # `resolve_gear_chain_from_bodies` reuses `app.document.gear`'s
-            # and `app.document.rack`'s own construction internally, so it
-            # can raise any of their structured error types too, in
-            # addition to its own.
-            from app.document.gear_chain import resolve_gear_chain_from_bodies
-
-            try:
-                shape, _warnings = resolve_gear_chain_from_bodies(feature, part, bodies, excluded_feature_ids)
-            except HTTPException as exc:
-                if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
-                    "invalid_gear_chain_parameters",
-                    "gear_chain_compound_join_failed",
-                    "gear_chain_failed",
-                    "invalid_gear_parameters",
-                    "gear_failed",
-                    "invalid_rack_parameters",
-                    "rack_failed",
-                ):
-                    raise
-                logger.warning("Skipping GearChainFeature %s: could not be resolved", feature.id)
-                continue
-            _register_solids(bodies, feature.id, shape)
-            continue
-
-        if isinstance(feature, PlanetaryGearFeature):
-            # Same "no Boss/Cut, always mints brand-new Bodies" shape as
-            # GearChainFeature just above - see that branch's own comment.
-            from app.document.planetary_gear import resolve_planetary_from_bodies
-
-            try:
-                shape = resolve_planetary_from_bodies(feature, part, bodies, excluded_feature_ids)
-            except HTTPException as exc:
-                if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
-                    "invalid_planetary_parameters",
-                    "invalid_gear_parameters",
-                    "gear_failed",
-                ):
-                    raise
-                logger.warning("Skipping PlanetaryGearFeature %s: could not be resolved", feature.id)
-                continue
-            _register_solids(bodies, feature.id, shape)
-            continue
-
-        if isinstance(feature, BevelPairFeature):
-            # docs/gear-design/11-bevel-pair.md: same "no Boss/Cut, always
-            # mints brand-new Bodies" shape as GearChainFeature/
-            # PlanetaryGearFeature just above - see GearChainFeature's own
-            # comment. resolve_bevel_pair_from_bodies reuses app.document.
-            # bevel's own _assemble_gear_solid internally, so it can raise
-            # that module's own bevel_failed error type too, in addition to
-            # its own invalid_bevel_pair_parameters.
-            from app.document.bevel_pair import resolve_bevel_pair_from_bodies
-
-            try:
-                shape, _warnings = resolve_bevel_pair_from_bodies(feature, part, bodies, excluded_feature_ids)
-            except HTTPException as exc:
-                if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
-                    "invalid_bevel_pair_parameters",
-                    "bevel_failed",
-                ):
-                    raise
-                logger.warning("Skipping BevelPairFeature %s: could not be resolved", feature.id)
-                continue
-            _register_solids(bodies, feature.id, shape)
-            continue
-
-        if not isinstance(feature, ExtrudeFeature):
-            continue
-
+    if isinstance(feature, SweepFeature):
         try:
             result = resolve_feature_tool_shape(part, bodies, feature.id, excluded_feature_ids)
         except HTTPException as exc:
-            # Prompt G: profile_refs can now raise invalid_profile_ref (e.g.
-            # topology drift since creation) - tolerated here the same way
-            # Fillet/Chamfer/Revolve's own branches tolerate their own
-            # topology-drift failures, so one Extrude with a stale
-            # profile_refs pick doesn't take down every other Body's
-            # response. Deliberately narrower than a blanket `except
-            # HTTPException`, though (bug fix: a blanket catch here briefly
-            # regressed `test_rollback_excluded_feature_ids_still_breaks_a_
-            # downstream_plane_as_intended` - a `missing_reference` raised
-            # by `resolve_sketch_basis` because B4's true rollback
-            # deliberately excluded an upstream Feature must still
-            # propagate and fail the whole request, exactly as it did
-            # before profile_refs existed; only `invalid_profile_ref`
-            # itself is a "this Extrude specifically has stale data"
-            # failure worth swallowing).
-            if not isinstance(exc.detail, dict) or exc.detail.get("type") != "invalid_profile_ref":
+            # Tolerates this Sweep's own stale/broken references
+            # (an edited-away path segment, a disconnected path, a
+            # geometrically-invalid sweep, a stale profile_refs pick) -
+            # deliberately narrower than a blanket `except
+            # HTTPException`, matching the fix applied to the
+            # ExtrudeFeature branch below for the identical reason: a
+            # `missing_reference` from `resolve_sketch_basis` (B4 true
+            # rollback deliberately excluding an upstream Feature this
+            # Sweep's Profile or path depends on) must still propagate
+            # and fail the whole request, not be swallowed as "this
+            # Sweep is just stale."
+            if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
+                "invalid_path_ref",
+                "disconnected_path",
+                "sweep_failed",
+                "invalid_profile_ref",
+            ):
                 raise
-            logger.warning("Skipping ExtrudeFeature %s: could not be resolved", feature.id)
-            continue
+            logger.warning("Skipping SweepFeature %s: could not be resolved", feature.id)
+            return
         if result is None:
-            continue
-
+            return
         solid, target_body_ids, is_cut = result
         _apply_boss_or_cut(bodies, feature.id, feature_index, is_cut, target_body_ids, solid)
+        return
 
-    return bodies
+    if isinstance(feature, GearFeature):
+        # docs/gear-design/02-gear-feature.md: resolve_gear_from_bodies
+        # always raises a structured HTTPException on failure rather
+        # than resolve_feature_tool_shape returning None for it (no
+        # backing Sketch, so no "currently has nothing to build" state
+        # to tolerate) - every gear-specific failure mode is caught
+        # and skipped here the same way every other Feature type's own
+        # branch tolerates its own structured errors; anything else
+        # (e.g. a missing_reference from an upstream plane_ref) still
+        # propagates and fails the whole request.
+        try:
+            result = resolve_feature_tool_shape(part, bodies, feature.id, excluded_feature_ids)
+        except HTTPException as exc:
+            if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
+                "invalid_gear_parameters",
+                "gear_failed",
+            ):
+                raise
+            logger.warning("Skipping GearFeature %s: could not be resolved", feature.id)
+            return
+        if result is None:
+            return
+        solid, target_body_ids, is_cut = result
+        _apply_boss_or_cut(bodies, feature.id, feature_index, is_cut, target_body_ids, solid)
+        return
+
+    if isinstance(feature, RackFeature):
+        # docs/gear-design/03-rack.md: mirrors the GearFeature branch
+        # just above exactly, including its own structured error types.
+        try:
+            result = resolve_feature_tool_shape(part, bodies, feature.id, excluded_feature_ids)
+        except HTTPException as exc:
+            if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
+                "invalid_rack_parameters",
+                "rack_failed",
+            ):
+                raise
+            logger.warning("Skipping RackFeature %s: could not be resolved", feature.id)
+            return
+        if result is None:
+            return
+        solid, target_body_ids, is_cut = result
+        _apply_boss_or_cut(bodies, feature.id, feature_index, is_cut, target_body_ids, solid)
+        return
+
+    if isinstance(feature, BevelGearFeature):
+        # docs/gear-design/10-bevel-gear.md: mirrors the GearFeature/
+        # RackFeature branches above exactly, including their own
+        # structured error types.
+        try:
+            result = resolve_feature_tool_shape(part, bodies, feature.id, excluded_feature_ids)
+        except HTTPException as exc:
+            if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
+                "invalid_bevel_parameters",
+                "bevel_failed",
+            ):
+                raise
+            logger.warning("Skipping BevelGearFeature %s: could not be resolved", feature.id)
+            return
+        if result is None:
+            return
+        solid, target_body_ids, is_cut = result
+        _apply_boss_or_cut(bodies, feature.id, feature_index, is_cut, target_body_ids, solid)
+        return
+
+    if isinstance(feature, LoftFeature):
+        # docs/gear-design/04-helical-herringbone-loft.md: tolerates
+        # this Loft's own stale/broken references (an edited-away
+        # section, an unresolvable reference_point, a geometrically-
+        # invalid loft) - mirrors the SweepFeature branch above's
+        # deliberately narrow catch for the identical reason (a
+        # missing_reference from an upstream plane/Sketch dependency
+        # must still propagate and fail the whole request).
+        try:
+            result = resolve_feature_tool_shape(part, bodies, feature.id, excluded_feature_ids)
+        except HTTPException as exc:
+            if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
+                "invalid_loft_section",
+                "loft_failed",
+            ):
+                raise
+            logger.warning("Skipping LoftFeature %s: could not be resolved", feature.id)
+            return
+        if result is None:
+            return
+        solid, target_body_ids, is_cut = result
+        _apply_boss_or_cut(bodies, feature.id, feature_index, is_cut, target_body_ids, solid)
+        return
+
+    if isinstance(feature, GearChainFeature):
+        # docs/gear-design/05-gear-chain-and-planetary.md: no Boss/Cut
+        # concept at all (see that Feature's own docstring) - always
+        # mints brand-new Bodies, so this registers the returned
+        # compound directly via `_register_solids` rather than going
+        # through `_apply_boss_or_cut`/`resolve_feature_tool_shape`.
+        # `resolve_gear_chain_from_bodies` reuses `app.document.gear`'s
+        # and `app.document.rack`'s own construction internally, so it
+        # can raise any of their structured error types too, in
+        # addition to its own.
+        from app.document.gear_chain import resolve_gear_chain_from_bodies
+
+        try:
+            shape, _warnings = resolve_gear_chain_from_bodies(feature, part, bodies, excluded_feature_ids)
+        except HTTPException as exc:
+            if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
+                "invalid_gear_chain_parameters",
+                "gear_chain_compound_join_failed",
+                "gear_chain_failed",
+                "invalid_gear_parameters",
+                "gear_failed",
+                "invalid_rack_parameters",
+                "rack_failed",
+            ):
+                raise
+            logger.warning("Skipping GearChainFeature %s: could not be resolved", feature.id)
+            return
+        _register_solids(bodies, feature.id, shape)
+        return
+
+    if isinstance(feature, PlanetaryGearFeature):
+        # Same "no Boss/Cut, always mints brand-new Bodies" shape as
+        # GearChainFeature just above - see that branch's own comment.
+        from app.document.planetary_gear import resolve_planetary_from_bodies
+
+        try:
+            shape = resolve_planetary_from_bodies(feature, part, bodies, excluded_feature_ids)
+        except HTTPException as exc:
+            if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
+                "invalid_planetary_parameters",
+                "invalid_gear_parameters",
+                "gear_failed",
+            ):
+                raise
+            logger.warning("Skipping PlanetaryGearFeature %s: could not be resolved", feature.id)
+            return
+        _register_solids(bodies, feature.id, shape)
+        return
+
+    if isinstance(feature, BevelPairFeature):
+        # docs/gear-design/11-bevel-pair.md: same "no Boss/Cut, always
+        # mints brand-new Bodies" shape as GearChainFeature/
+        # PlanetaryGearFeature just above - see GearChainFeature's own
+        # comment. resolve_bevel_pair_from_bodies reuses app.document.
+        # bevel's own _assemble_gear_solid internally, so it can raise
+        # that module's own bevel_failed error type too, in addition to
+        # its own invalid_bevel_pair_parameters.
+        from app.document.bevel_pair import resolve_bevel_pair_from_bodies
+
+        try:
+            shape, _warnings = resolve_bevel_pair_from_bodies(feature, part, bodies, excluded_feature_ids)
+        except HTTPException as exc:
+            if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
+                "invalid_bevel_pair_parameters",
+                "bevel_failed",
+            ):
+                raise
+            logger.warning("Skipping BevelPairFeature %s: could not be resolved", feature.id)
+            return
+        _register_solids(bodies, feature.id, shape)
+        return
+
+    if not isinstance(feature, ExtrudeFeature):
+        return
+
+    try:
+        result = resolve_feature_tool_shape(part, bodies, feature.id, excluded_feature_ids)
+    except HTTPException as exc:
+        # Prompt G: profile_refs can now raise invalid_profile_ref (e.g.
+        # topology drift since creation) - tolerated here the same way
+        # Fillet/Chamfer/Revolve's own branches tolerate their own
+        # topology-drift failures, so one Extrude with a stale
+        # profile_refs pick doesn't take down every other Body's
+        # response. Deliberately narrower than a blanket `except
+        # HTTPException`, though (bug fix: a blanket catch here briefly
+        # regressed `test_rollback_excluded_feature_ids_still_breaks_a_
+        # downstream_plane_as_intended` - a `missing_reference` raised
+        # by `resolve_sketch_basis` because B4's true rollback
+        # deliberately excluded an upstream Feature must still
+        # propagate and fail the whole request, exactly as it did
+        # before profile_refs existed; only `invalid_profile_ref`
+        # itself is a "this Extrude specifically has stale data"
+        # failure worth swallowing).
+        if not isinstance(exc.detail, dict) or exc.detail.get("type") != "invalid_profile_ref":
+            raise
+        logger.warning("Skipping ExtrudeFeature %s: could not be resolved", feature.id)
+        return
+    if result is None:
+        return
+
+    solid, target_body_ids, is_cut = result
+    _apply_boss_or_cut(bodies, feature.id, feature_index, is_cut, target_body_ids, solid)
+
+
+def compute_part_bodies(
+    part: Part, excluded_feature_ids: frozenset[str] = frozenset()
+) -> dict[str, TopoDS_Shape]:
+    """Recomputes every Body in `part`, keyed by stable Body id (A1) -
+    replaces the old single-accumulated-solid `compute_part_solid`. Each
+    Feature's own effect on `bodies` is `_apply_feature_to_bodies`'s job
+    (see its own docstring for the Boss/Cut/Fillet/Chamfer/etc. semantics)
+    - this function only handles topological ordering, the
+    `excluded_feature_ids` exclusion check, and (below) checkpoint-chain
+    caching.
+
+    Processes `part.features` in dependency-graph topological order (see
+    `build_feature_graph`/app.document.graph.topological_order) rather than
+    raw list order, though for every Part with no `target_body_ids` edge
+    reaching back past its immediately preceding Feature this produces
+    exactly the same order list order already did.
+
+    An ExtrudeFeature (or any other Feature type) whose id is in
+    `excluded_feature_ids` is skipped entirely, as if it weren't in the
+    Part's history at all - used ONLY for B4 true-rollback ("pretend this
+    Feature and everything after it doesn't exist yet while I edit an
+    earlier one"), never for the client's plain Hide/Show. Bug fix
+    (post-C4): those two were originally the same client-side set/query-
+    param (`hidden_feature_ids`) on the theory that "hidden" and "doesn't
+    exist for recompute purposes" were equivalent - true as long as
+    nothing else could ever reference a hidden Body's own topology. Once
+    Create Plane (C2) could anchor a Plane to a Body face, that stopped
+    holding: hiding the Extrude that produced a Body used by a *different*,
+    still-visible Plane (and anything built on that Plane - C3's Sketch-on-
+    Plane/Extrude-on-that-Sketch) made the Plane's own face_ref resolve to
+    nothing, throwing `missing_reference` and taking the *entire* `/mesh`
+    response down with it - including unrelated Bodies that had nothing
+    wrong with them. `excluded_feature_ids` now carries only the
+    true-rollback set; a Body hidden via plain Hide/Show is always still
+    fully computed here and only filtered out afterward, at the response
+    layer - see app.document.router.get_part_mesh's own
+    `hidden_feature_ids` (the renamed, now purely cosmetic parameter).
+
+    On-device feedback (herringbone/complex-gear timeout investigation):
+    a non-empty `excluded_feature_ids` (the B4 true-rollback preview) is
+    deliberately never cached - it's a temporary, per-call "as if these
+    didn't exist" view rather than the Part's own real current state, and
+    mixing it into the same checkpoint chain as ordinary calls would risk
+    a rollback preview accidentally poisoning (or being poisoned by) the
+    real cache. Every ordinary call - every Feature create/update's own
+    eager validation, every `GET /mesh` fetch - passes the default empty
+    `frozenset()` and goes through `app.document.body_cache.
+    compute_with_cache` instead: the whole point of that module is that a
+    Part containing one genuinely expensive Feature (a complex helical/
+    herringbone `GearFeature`, say) no longer pays that Feature's own cost
+    again on every later, otherwise-unrelated edit to the same Part - see
+    that module's own docstring for the full design and correctness
+    argument."""
+    feature_index = {feature.id: i for i, feature in enumerate(part.features)}
+    order = topological_order(build_feature_graph(part))
+
+    if excluded_feature_ids:
+        bodies: dict[str, TopoDS_Shape] = {}
+        for feature_id in order:
+            feature = part.get_feature(feature_id)
+            if feature.id in excluded_feature_ids:
+                continue
+            _apply_feature_to_bodies(feature, part, bodies, feature_index, excluded_feature_ids)
+        return bodies
+
+    features_by_id = {feature_id: part.get_feature(feature_id) for feature_id in order}
+
+    def _apply_step(feature_id: str, bodies: dict[str, TopoDS_Shape]) -> None:
+        _apply_feature_to_bodies(features_by_id[feature_id], part, bodies, feature_index, excluded_feature_ids)
+
+    return body_cache.compute_with_cache(part.id, order, features_by_id, _apply_step)
 
 
 _TOPABS_FOR_SUBSHAPE_TYPE = {
