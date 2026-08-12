@@ -39,22 +39,22 @@ class TermuxCommands {
   /// deliberately discards any local drift in the Termux clone rather than
   /// merging/rebasing, since that clone exists purely to run whatever a
   /// branch currently contains, not to carry its own edits.
-  static String pullLatest(String branch) => _wrapInDistro(_pullScript(branch));
+  static List<String> pullLatest(String branch) => _wrapInDistro(_pullScript(branch));
 
   /// [apiKey] should be [ApiConfig.apiKey] - the backend refuses to start
   /// without CAD_API_KEY set, and the client can only talk to it if that
   /// key matches what ConnectionScreen already has stored, so the caller
   /// must pass the same value rather than this screen collecting its own.
-  static String startServer(String apiKey) => _wrapInDistro(_startScript(apiKey));
+  static List<String> startServer(String apiKey) => _wrapInDistro(_startScript(apiKey));
 
-  static String stopServer() =>
+  static List<String> stopServer() =>
       _wrapInDistro("pkill -f ${_shellQuote(processMatch)} && echo stopped || echo not_running");
 
   /// Stop then start in one dispatched command (rather than two separate
   /// RUN_COMMAND intents) so there's no window where the app could observe
   /// "not running" between them and no ordering dependency on Android's
   /// own intent delivery timing.
-  static String restartServer(String apiKey) =>
+  static List<String> restartServer(String apiKey) =>
       _wrapInDistro("pkill -f ${_shellQuote(processMatch)} 2>/dev/null; sleep 1; ${_startScript(apiKey)}");
 
   /// Pull then start in *one* dispatched command, not two separate
@@ -66,7 +66,7 @@ class TermuxCommands {
   /// pull completes before the start script even begins - the whole point
   /// of this being one shell parse rather than an ordering assumption
   /// about two independent ones.
-  static String pullAndStart(String branch, String apiKey) =>
+  static List<String> pullAndStart(String branch, String apiKey) =>
       _wrapInDistro('${_pullScript(branch)} && ${_startScript(apiKey)}');
 
   static String _pullScript(String branch) {
