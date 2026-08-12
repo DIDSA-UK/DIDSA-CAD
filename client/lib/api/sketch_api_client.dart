@@ -66,12 +66,25 @@ class PointDto {
   final double x;
   final double y;
 
-  PointDto({required this.id, required this.x, required this.y});
+  /// On-device feedback ("converted edges... the converted entities
+  /// should be projected onto the sketch plane and locked at that
+  /// projection point"): whether the backend has this Point pinned in
+  /// `solve_sketch`'s own fixed group (a live external vertex reference,
+  /// or a statically pinned one - see the backend's `PointResponse.
+  /// is_locked` and `Sketch.is_point_locked`) - [SketchController] uses
+  /// this to exclude such a Point from drag targeting, the same way it
+  /// already excludes the sketch origin. Defaults `false` so every
+  /// existing call site that builds a [PointDto] by hand (tests, ...)
+  /// keeps compiling unchanged.
+  final bool isLocked;
+
+  PointDto({required this.id, required this.x, required this.y, this.isLocked = false});
 
   factory PointDto.fromJson(Map<String, dynamic> json) => PointDto(
         id: json['id'] as String,
         x: (json['x'] as num).toDouble(),
         y: (json['y'] as num).toDouble(),
+        isLocked: json['is_locked'] as bool? ?? false,
       );
 }
 

@@ -985,6 +985,19 @@ class Sketch:
     # leaving the Point at its last-known position (and reporting the id as
     # lost) whenever a reference no longer resolves.
     external_references: dict[str, ExternalVertexReference] = field(default_factory=dict)
+    # On-device feedback ("converted edges... all the converted lines are
+    # completely mobile... the converted entities should be projected onto
+    # the sketch plane and locked at that projection point"):
+    # `external_references`'s sibling for a Point that must be pinned the
+    # exact same way (excluded from the solver's free parameters, excluded
+    # from the client's own drag targeting - see `PointResponse.is_locked`)
+    # but has no live Body vertex of its own to refresh from - e.g. a
+    # converted Arc's centre (`app.document.router.convert_body_edge`),
+    # which OCCT never exposes a real vertex for. Plain point ids, not an
+    # id -> reference mapping like `external_references`, since there is
+    # nothing to re-resolve here - once pinned, a Point just stays exactly
+    # where conversion put it.
+    pinned_point_ids: set[str] = field(default_factory=set)
     _origin_point_id: str | None = field(default=None, repr=False)
     # Sketcher-roadmap Phase 7 (2D Pattern/Mirror, §2.9 Option 2): lightweight,
     # non-solved instances - see SketchPatternInstance/SketchMirrorInstance's
@@ -993,6 +1006,17 @@ class Sketch:
     # `expand_pattern_and_mirror_instances` below.
     pattern_instances: dict[str, SketchPatternInstance] = field(default_factory=dict)
     mirror_instances: dict[str, SketchMirrorInstance] = field(default_factory=dict)
+
+    def is_point_locked(self, point_id: str) -> bool:
+        """Whether `point_id` must be treated as immobile - a live-tracked
+        `external_references` Point or a statically `pinned_point_ids` one
+        alike, both pinned into `solve_sketch`'s fixed group the same way
+        (see that function's own doc comment) and both reported via
+        `PointResponse.is_locked` so the client can exclude them from drag
+        targeting too. The one client-facing distinction between the two
+        (live-refreshed vs. frozen-in-place) is invisible from here - both
+        answer this the same way."""
+        return point_id in self.external_references or point_id in self.pinned_point_ids
 
     def set_orientation(self, *, flip: bool, rotation_quarter_turns: int) -> None:
         """The one mutator for `flip`/`rotation_quarter_turns` - normalizes

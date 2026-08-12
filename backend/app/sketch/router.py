@@ -225,8 +225,8 @@ def _get_constraint_or_404(sketch: Sketch, constraint_id: str) -> Constraint:
     return constraint
 
 
-def _point_response(point: Point) -> PointResponse:
-    return PointResponse(id=point.id, x=point.x, y=point.y)
+def _point_response(sketch: Sketch, point: Point) -> PointResponse:
+    return PointResponse(id=point.id, x=point.x, y=point.y, is_locked=sketch.is_point_locked(point.id))
 
 
 def _line_response(sketch: Sketch, line: Line) -> LineResponse:
@@ -569,7 +569,7 @@ def update_sketch_orientation(sketch_id: str, payload: SketchOrientationUpdate) 
 def create_point(sketch_id: str, payload: PointCreate) -> PointResponse:
     sketch = _get_sketch_or_404(sketch_id)
     point = sketch.add_point(payload.x, payload.y)
-    return _point_response(point)
+    return _point_response(sketch, point)
 
 
 @router.get("/sketches/{sketch_id}/points", response_model=list[PointResponse])
@@ -578,13 +578,13 @@ def list_points(sketch_id: str) -> list[PointResponse]:
     learn what a Sketch contains without already knowing specific ids (e.g.
     re-entering a Sketch it didn't just create), mirroring list_constraints."""
     sketch = _get_sketch_or_404(sketch_id)
-    return [_point_response(point) for point in sketch.points.values()]
+    return [_point_response(sketch, point) for point in sketch.points.values()]
 
 
 @router.get("/sketches/{sketch_id}/points/{point_id}", response_model=PointResponse)
 def get_point(sketch_id: str, point_id: str) -> PointResponse:
     sketch = _get_sketch_or_404(sketch_id)
-    return _point_response(_get_point_or_404(sketch, point_id))
+    return _point_response(sketch, _get_point_or_404(sketch, point_id))
 
 
 @router.patch("/sketches/{sketch_id}/points/{point_id}", response_model=PointResponse)
@@ -595,7 +595,7 @@ def update_point(sketch_id: str, point_id: str, payload: PointUpdate) -> PointRe
         raise HTTPException(status_code=400, detail="Cannot move the sketch's origin point")
     point.x = payload.x
     point.y = payload.y
-    return _point_response(point)
+    return _point_response(sketch, point)
 
 
 @router.delete("/sketches/{sketch_id}/points/{point_id}", status_code=204)
@@ -679,7 +679,7 @@ def trim_line(sketch_id: str, line_id: str, payload: LineTrimRequest) -> LineTri
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return LineTrimResponse(
         line=_line_response(sketch, line),
-        moved_point=_point_response(moved_point),
+        moved_point=_point_response(sketch, moved_point),
         created_new_point=created_new_point,
     )
 
@@ -724,8 +724,8 @@ def offset_line(sketch_id: str, line_id: str, payload: OffsetRequest) -> OffsetL
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return OffsetLineResponse(
         line=_line_response(sketch, line),
-        start_point=_point_response(sketch.points[line.start_point_id]),
-        end_point=_point_response(sketch.points[line.end_point_id]),
+        start_point=_point_response(sketch, sketch.points[line.start_point_id]),
+        end_point=_point_response(sketch, sketch.points[line.end_point_id]),
     )
 
 
@@ -762,7 +762,7 @@ def offset_chain(sketch_id: str, payload: OffsetChainRequest) -> OffsetChainResp
             if point_id in seen_point_ids:
                 continue
             seen_point_ids.add(point_id)
-            points.append(_point_response(sketch.points[point_id]))
+            points.append(_point_response(sketch, sketch.points[point_id]))
     return OffsetChainResponse(lines=lines, arcs=arcs, points=points)
 
 
@@ -847,7 +847,7 @@ def offset_circle(sketch_id: str, circle_id: str, payload: OffsetRequest) -> Off
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return OffsetCircleResponse(
         circle=_circle_response(sketch, circle),
-        radius_point=_point_response(sketch.points[circle.radius_point_id]),
+        radius_point=_point_response(sketch, sketch.points[circle.radius_point_id]),
     )
 
 
@@ -917,7 +917,7 @@ def trim_arc(sketch_id: str, arc_id: str, payload: ArcTrimRequest) -> ArcTrimRes
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return ArcTrimResponse(
         arc=_arc_response(sketch, arc),
-        moved_point=_point_response(moved_point),
+        moved_point=_point_response(sketch, moved_point),
         created_new_point=created_new_point,
     )
 
@@ -935,8 +935,8 @@ def offset_arc(sketch_id: str, arc_id: str, payload: OffsetRequest) -> OffsetArc
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return OffsetArcResponse(
         arc=_arc_response(sketch, arc),
-        start_point=_point_response(sketch.points[arc.start_point_id]),
-        end_point=_point_response(sketch.points[arc.end_point_id]),
+        start_point=_point_response(sketch, sketch.points[arc.start_point_id]),
+        end_point=_point_response(sketch, sketch.points[arc.end_point_id]),
     )
 
 
@@ -1616,7 +1616,7 @@ def solve_and_refresh(sketch_id: str, payload: SolveRequest | None = None) -> Sk
     result = solve_sketch(sketch, anchor_point_ids=anchor_point_ids)
     return SketchStateResponse(
         solve=_solve_result_response(result),
-        points=[_point_response(point) for point in sketch.points.values()],
+        points=[_point_response(sketch, point) for point in sketch.points.values()],
         constraints=[_constraint_response(constraint) for constraint in sketch.constraints.values()],
         profile=_profile_detection_response(sketch),
     )

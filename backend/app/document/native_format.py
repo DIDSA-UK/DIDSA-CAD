@@ -529,6 +529,10 @@ def sketch_to_dict(sketch: Sketch) -> dict:
             {"point_id": point_id, "body_id": ref.body_id, "vertex_index": ref.vertex_index}
             for point_id, ref in sketch.external_references.items()
         ],
+        # On-device feedback ("converted edges... should be... locked at
+        # that projection point") - see `Sketch.pinned_point_ids`'s own doc
+        # comment.
+        "pinned_point_ids": sorted(sketch.pinned_point_ids),
         # Sketcher-roadmap Phase 7 (2D Pattern/Mirror).
         "pattern_instances": [_pattern_instance_to_dict(i) for i in sketch.pattern_instances.values()],
         "mirror_instances": [_mirror_instance_to_dict(i) for i in sketch.mirror_instances.values()],
@@ -563,6 +567,9 @@ def sketch_from_dict(data: dict) -> Sketch:
         sketch.external_references[ref_data["point_id"]] = ExternalVertexReference(
             body_id=ref_data["body_id"], vertex_index=ref_data["vertex_index"]
         )
+    # Same "a file saved before this feature existed has no opinion on it"
+    # reasoning as external_references above.
+    sketch.pinned_point_ids.update(data.get("pinned_point_ids", []))
     # Sketcher-roadmap Phase 7 (2D Pattern/Mirror) - defaulted to `[]`, same
     # "a file saved before this feature existed has no opinion on it"
     # reasoning as external_references above.

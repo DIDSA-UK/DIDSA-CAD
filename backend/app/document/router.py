@@ -1892,7 +1892,7 @@ def create_external_vertex_reference(
     bodies = compute_part_bodies(part)
     x, y = resolve_external_vertex_position(part, sketch, ref, bodies)
     point = sketch.add_external_vertex_reference(x, y, ref)
-    return PointResponse(id=point.id, x=point.x, y=point.y)
+    return PointResponse(id=point.id, x=point.x, y=point.y, is_locked=sketch.is_point_locked(point.id))
 
 
 @router.post(
@@ -1953,8 +1953,12 @@ def create_external_edge_reference(
             length=line.length(sketch.points),
             construction=line.construction,
         ),
-        start_point=PointResponse(id=start_point.id, x=start_point.x, y=start_point.y),
-        end_point=PointResponse(id=end_point.id, x=end_point.x, y=end_point.y),
+        start_point=PointResponse(
+            id=start_point.id, x=start_point.x, y=start_point.y, is_locked=sketch.is_point_locked(start_point.id)
+        ),
+        end_point=PointResponse(
+            id=end_point.id, x=end_point.x, y=end_point.y, is_locked=sketch.is_point_locked(end_point.id)
+        ),
     )
 
 
@@ -1982,14 +1986,15 @@ def convert_body_vertex(part_id: str, feature_id: str, payload: ConvertVertexCre
     any changes of their own.
 
     v1 (frozen, one-time copy, no live link) is gone - this replaces it at
-    the same endpoint/wire shape, not a new parallel mode. Known,
-    inherited limitation from reusing Phase 4.3's pinning mechanism
-    verbatim: like every other external-reference Point, this one is
-    pinned (`solve_sketch` never moves it) but the client's own
-    `dragTargetPointIdAt` has no explicit exclusion for external-reference
-    Points (only the origin is excluded) - dragging one *looks* possible
-    but the next solve snaps it back to its Body-derived position. Not
-    introduced by this change; not fixed by it either.
+    the same endpoint/wire shape, not a new parallel mode. Like every other
+    external-reference Point, this one is pinned (`solve_sketch` never
+    moves it) and reports `PointResponse.is_locked=True` so the client's
+    own `dragTargetPointIdAt` can exclude it from drag targeting too (on-
+    device feedback: "all the converted lines are completely mobile... the
+    converted entities should be... locked" - a first version of this
+    endpoint reused Phase 4.3's pinning mechanism verbatim but never
+    surfaced it to the client this way, so dragging one *looked* possible
+    even though the next solve would have snapped it back regardless).
 
     Same `missing_reference` 422 as the reference-picking endpoint if
     `payload` doesn't resolve against this Part's current Bodies."""
@@ -2000,7 +2005,7 @@ def convert_body_vertex(part_id: str, feature_id: str, payload: ConvertVertexCre
     bodies = compute_part_bodies(part)
     x, y = resolve_external_vertex_position(part, sketch, ref, bodies)
     point = sketch.add_or_reuse_external_vertex_reference(x, y, ref)
-    return PointResponse(id=point.id, x=point.x, y=point.y)
+    return PointResponse(id=point.id, x=point.x, y=point.y, is_locked=sketch.is_point_locked(point.id))
 
 
 @router.post(
@@ -2076,8 +2081,24 @@ def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate)
             )
         center_x, center_y, radius = circle_params
         center_point = sketch.add_point(center_x, center_y)
+        # On-device feedback ("converted edges... the converted entities
+        # should be projected onto the sketch plane and locked at that
+        # projection point"): a full circular Body edge has no vertex of
+        # its own to make this centre a live external reference, but it
+        # must still be pinned - see `Sketch.pinned_point_ids`'s own doc
+        # comment.
+        sketch.pinned_point_ids.add(center_point.id)
         circle = sketch.add_circle(center_point.id, radius=radius, construction=payload.construction)
-        center_response = PointResponse(id=center_point.id, x=center_point.x, y=center_point.y)
+        # Same reasoning, applied to all four cardinal Points too (`Sketch.
+        # add_circle`'s own radius DistanceConstraint starts `provisional`,
+        # same as any freshly-drawn Circle - it alone would leave the
+        # radius, and so the whole Circle's size, still free to drift/drag)
+        # - pinning the centre alone isn't enough to freeze the Circle as a
+        # whole; every Point that defines it needs to be.
+        sketch.pinned_point_ids.update(circle.cardinal_point_ids)
+        center_response = PointResponse(
+            id=center_point.id, x=center_point.x, y=center_point.y, is_locked=True
+        )
         return ConvertEdgeResponse(
             circle=CircleResponse(
                 id=circle.id,
@@ -2110,6 +2131,9 @@ def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate)
         else:
             arc_start_point, arc_end_point = end_point, start_point
         center_point = sketch.add_point(center_x, center_y)
+        # See the full-circle branch's own identical comment above - an
+        # Arc's centre has no Body vertex of its own either.
+        sketch.pinned_point_ids.add(center_point.id)
         arc = sketch.add_arc(center_point.id, arc_start_point.id, arc_end_point.id, construction=payload.construction)
         return ConvertEdgeResponse(
             arc=ArcResponse(
@@ -2121,9 +2145,13 @@ def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate)
                 construction=arc.construction,
                 radius_constraint_id=arc.radius_constraint_id,
             ),
-            start_point=PointResponse(id=start_point.id, x=start_point.x, y=start_point.y),
-            end_point=PointResponse(id=end_point.id, x=end_point.x, y=end_point.y),
-            center_point=PointResponse(id=center_point.id, x=center_point.x, y=center_point.y),
+            start_point=PointResponse(
+                id=start_point.id, x=start_point.x, y=start_point.y, is_locked=sketch.is_point_locked(start_point.id)
+            ),
+            end_point=PointResponse(
+                id=end_point.id, x=end_point.x, y=end_point.y, is_locked=sketch.is_point_locked(end_point.id)
+            ),
+            center_point=PointResponse(id=center_point.id, x=center_point.x, y=center_point.y, is_locked=True),
         )
 
     line = sketch.add_line(start_point.id, end_point.id, construction=payload.construction)
@@ -2135,8 +2163,12 @@ def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate)
             length=line.length(sketch.points),
             construction=line.construction,
         ),
-        start_point=PointResponse(id=start_point.id, x=start_point.x, y=start_point.y),
-        end_point=PointResponse(id=end_point.id, x=end_point.x, y=end_point.y),
+        start_point=PointResponse(
+            id=start_point.id, x=start_point.x, y=start_point.y, is_locked=sketch.is_point_locked(start_point.id)
+        ),
+        end_point=PointResponse(
+            id=end_point.id, x=end_point.x, y=end_point.y, is_locked=sketch.is_point_locked(end_point.id)
+        ),
     )
 
 

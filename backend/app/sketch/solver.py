@@ -687,12 +687,18 @@ def solve_sketch(sketch: Sketch, anchor_point_ids: frozenset[str] = frozenset())
     access to *refresh* those positions from the Body's current topology
     (see `app.document.create_plane.refresh_external_references` for that
     half) - this only ever pins whatever `(x, y)` the Point already holds.
+
+    On-device feedback ("converted edges... the converted entities should
+    be projected onto the sketch plane and locked at that projection
+    point"): `sketch.pinned_point_ids` (a converted Arc/Circle's own centre
+    - see that field's own doc comment) is folded in here too, pinned on
+    both attempts for the exact same "never this Sketch's to move" reason.
     """
 
-    external_point_ids = frozenset(sketch.external_references)
-    result = _solve_sketch_once(sketch, anchor_point_ids | external_point_ids)
+    locked_point_ids = frozenset(sketch.external_references) | frozenset(sketch.pinned_point_ids)
+    result = _solve_sketch_once(sketch, anchor_point_ids | locked_point_ids)
     if anchor_point_ids and not result.converged:
-        result = _solve_sketch_once(sketch, external_point_ids)
+        result = _solve_sketch_once(sketch, locked_point_ids)
     if result.converged:
         _fix_circle_cardinal_point_signs(sketch)
     return result

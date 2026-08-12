@@ -51,6 +51,15 @@ class PointResponse(BaseModel):
     id: str
     x: float
     y: float
+    # On-device feedback ("converted edges... all the converted lines are
+    # completely mobile... the converted entities should be projected onto
+    # the sketch plane and locked at that projection point"): whether this
+    # Point is pinned in `solve_sketch`'s own fixed group - a live-tracked
+    # `Sketch.external_references` Point or a statically `Sketch.
+    # pinned_point_ids` one alike (see `Sketch.is_point_locked`). The
+    # client uses this to exclude such a Point from drag targeting, the
+    # same way it already excludes the sketch origin.
+    is_locked: bool = False
 
 
 class DeleteEntityResponse(BaseModel):
