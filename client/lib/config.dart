@@ -14,9 +14,11 @@ class ApiConfig {
 
   static const String serverUrlPrefKey = 'server_url';
   static const String apiKeyPrefKey = 'api_key';
+  static const String localApiKeyPrefKey = 'local_api_key';
 
   static String _baseUrl = '';
   static String _apiKey = '';
+  static String _localApiKey = '';
 
   /// The backend base URL, e.g. `https://cad-api.snail-shell.uk` - empty
   /// until [load] or [save] has run at least once.
@@ -25,6 +27,17 @@ class ApiConfig {
   /// Sent as the `X-API-Key` header on every request - empty until [load]
   /// or [save] has run at least once.
   static String get apiKey => _apiKey;
+
+  /// The API key most recently used to start the on-device standalone
+  /// backend (see [saveLocalApiKey]/`server_management/termux_controller
+  /// .dart`'s `startServer`/`restartServer`) - deliberately tracked
+  /// separately from [apiKey] rather than reusing it directly, since
+  /// [apiKey] reflects whichever server the client is *currently* pointed
+  /// at (which may since have changed to a different, remote server) and
+  /// would otherwise go stale as a record of what the local server was
+  /// actually last told to use. Empty until a local start/restart has
+  /// happened at least once, on this device, since install.
+  static String get localApiKey => _localApiKey;
 
   /// Whether both [baseUrl] and [apiKey] are non-empty - drives whether
   /// [ConnectionScreen] can pre-fill its fields and offer Connect on cold
@@ -38,6 +51,7 @@ class ApiConfig {
     final prefs = await SharedPreferences.getInstance();
     _baseUrl = prefs.getString(serverUrlPrefKey) ?? '';
     _apiKey = prefs.getString(apiKeyPrefKey) ?? '';
+    _localApiKey = prefs.getString(localApiKeyPrefKey) ?? '';
   }
 
   /// Persists [baseUrl]/[apiKey] to `shared_preferences` and updates the
@@ -50,6 +64,22 @@ class ApiConfig {
     await prefs.setString(apiKeyPrefKey, apiKey);
     _baseUrl = baseUrl;
     _apiKey = apiKey;
+  }
+
+  /// Stamps [key] as [localApiKey] - called by `TermuxController`'s own
+  /// `startServer`/`restartServer` with whatever key it just exported as
+  /// CAD_API_KEY inside Termux, so this always reflects what the local
+  /// server actually has, independent of [save]'s own [apiKey] (which may
+  /// point at a different server entirely by the time anything reads this
+  /// back). Unlike [save], not gated on a health check succeeding first -
+  /// the dispatched command may still fail for reasons this method can't
+  /// see, so this records what was *attempted*, not a confirmed-working
+  /// value; [ConnectionScreen]'s own health check on Connect is still what
+  /// actually verifies it.
+  static Future<void> saveLocalApiKey(String key) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(localApiKeyPrefKey, key);
+    _localApiKey = key;
   }
 
   /// The backend is a Raspberry Pi over a home internet connection and
