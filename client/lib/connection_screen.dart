@@ -6,6 +6,7 @@ import 'ai/ai_provider_preferences.dart';
 import 'config.dart';
 import 'mesh_viewer/mesh_viewer_screen.dart';
 import 'mesh_viewer/mesh_viewer_settings_screen.dart';
+import 'server_management/server_management_screen.dart';
 import 'sketch/sketcher_settings_screen.dart';
 import 'tool_chooser_screen.dart';
 import 'viewport3d/svg_icon.dart';
@@ -242,6 +243,28 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                     const SizedBox(height: 16),
                     Text(_error!, style: const TextStyle(color: Colors.redAccent), textAlign: TextAlign.center),
                   ],
+                  const SizedBox(height: 16),
+                  // Controls an on-device standalone backend (Termux +
+                  // proot-distro) via Termux's RUN_COMMAND intent - shown
+                  // both on cold launch and on a settings revisit, unlike
+                  // the mesh-viewer entry below, since it's about the
+                  // backend itself rather than something independent of it.
+                  SizedBox(
+                    width: double.infinity,
+                    height: 44,
+                    child: OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.white70,
+                        side: const BorderSide(color: Colors.white24),
+                        shape: const StadiumBorder(),
+                      ),
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const ServerManagementScreen()),
+                      ),
+                      icon: const Icon(Icons.dns_outlined, size: 20),
+                      label: const Text('Server Management'),
+                    ),
+                  ),
                   // On-device feedback: "View Complex Mesh" (see
                   // mesh_viewer/mesh_viewer_screen.dart) decodes and renders
                   // an STL/OBJ/glTF file entirely on-device, with no server
