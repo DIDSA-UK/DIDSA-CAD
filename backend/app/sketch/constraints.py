@@ -574,11 +574,23 @@ class LineDistanceConstraint(Constraint):
     the dimension"): this constraint is only ever offered for a pair of
     Lines the client has already confirmed are parallel (see the client's
     own `_linesAreParallel` gate), but `point_line_distance` alone never
-    actually *enforces* that - it only pins Line 2's start Point's distance
-    from Line 1, leaving Line 2 free to rotate about that Point. Also
-    adding a real ParallelConstraint between the two Lines closes that gap:
-    dragging either Line now keeps them genuinely parallel, not just
-    momentarily so at creation time.
+    actually *enforces* that on its own - it only pins Line 2's start
+    Point's distance from Line 1, leaving Line 2 free to rotate about that
+    Point. A first attempt at closing that gap baked a real Parallel call
+    directly into this class's own `add_to_solver` unconditionally - reverted
+    (on-device feedback: "adding a dimension between two parallel edges of
+    a rectangle makes it over constrained") once that turned out to stack a
+    now-redundant Parallel equation on top of a pair of Lines *already*
+    forced parallel some other way (opposite sides of a rectangle, both
+    already Horizontal/Vertical - a rectangle's own diagonal-tying
+    AtMidpointConstraint is deliberately excluded from both `solve_sketch`
+    redundancy overrides, so nothing rescues that particular stacked-
+    redundancy shape the way the Polygon-across-flats case above is
+    rescued). The client now decides whether a *separate* ParallelConstraint
+    is actually needed (and rolls it back if adding one turns out to be
+    redundant after all) - see `SketchController.confirmGhostValue`'s own
+    `lineDistance` branch - rather than this class unconditionally assuming
+    it always is.
 
     References both Lines' ids for display/API purposes; each Line's
     endpoint Point ids are captured at creation time, same rationale as
@@ -605,10 +617,6 @@ class LineDistanceConstraint(Constraint):
         line1 = builder.line_segment(
             builder.point2d(self.line1_start_id), builder.point2d(self.line1_end_id)
         )
-        line2 = builder.line_segment(
-            builder.point2d(self.line2_start_id), builder.point2d(self.line2_end_id)
-        )
-        builder.parallel(line1, line2)
         point2_start = builder.point2d(self.line2_start_id)
         return builder.point_line_distance(point2_start, line1, self.distance)
 

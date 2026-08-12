@@ -278,15 +278,13 @@ void main() {
   });
 
   test(
-      'LineDistanceConstraintDto genuinely locks the two Lines parallel, not just Line 2\'s start '
-      'Point\'s distance from Line 1 - on-device feedback: "a dimension between two parallel lines '
-      'should be line to line, not point to point - their parallelism should be part of the '
-      'dimension"', () {
-    // Line 1 is vertical; Line 2 starts out deliberately NOT parallel to it
-    // (its own start/end aren't aligned with Line 1's direction at all) -
-    // if the dimension only pinned point2Start's distance from Line 1 (the
-    // pre-fix behaviour), Line 2 would stay free to rotate about that
-    // Point and the solve would converge without ever becoming parallel.
+      'LineDistanceConstraintDto alone leaves Line 2 free to rotate about its own start Point - '
+      'genuinely locking the two Lines parallel is the client\'s own job now (a separate, real '
+      'ParallelConstraintDto - see the next test), not something baked into this DTO\'s own solver '
+      'dispatch (on-device feedback: "adding a dimension between two parallel edges of a rectangle '
+      'makes it over constrained" - a first attempt that baked Parallel in here unconditionally '
+      'stacked a redundant equation on top of a pair of Lines already forced parallel some other '
+      'way, e.g. a rectangle\'s own opposite Horizontal-constrained sides)', () {
     final points = {
       'a1': (0.0, 0.0),
       'a2': (0.0, 10.0),
@@ -311,17 +309,100 @@ void main() {
     final (a2x, a2y) = result.solvedPoints['a2']!;
     final (b1x, b1y) = result.solvedPoints['b1']!;
     final (b2x, b2y) = result.solvedPoints['b2']!;
+    final dir1 = (a2x - a1x, a2y - a1y);
+    final dir2 = (b2x - b1x, b2y - b1y);
+    final len1 = math.sqrt(dir1.$1 * dir1.$1 + dir1.$2 * dir1.$2);
+    final len2 = math.sqrt(dir2.$1 * dir2.$1 + dir2.$2 * dir2.$2);
+    final sinAngle = (dir1.$1 * dir2.$2 - dir1.$2 * dir2.$1).abs() / (len1 * len2);
+    expect(sinAngle, greaterThan(1e-3),
+        reason: 'sanity check: Line 2 must NOT end up parallel from the distance constraint alone');
 
+    // The perpendicular distance itself is still exactly the dimensioned value.
+    final dx = a2x - a1x, dy = a2y - a1y;
+    final cross = (b1x - a1x) * dy - (b1y - a1y) * dx;
+    expect(cross / len1, closeTo(5.0, 1e-6));
+  });
+
+  test(
+      'LineDistanceConstraintDto plus a separate, real ParallelConstraintDto together genuinely '
+      'lock the two Lines parallel - the composition SketchController.confirmGhostValue now uses '
+      'for a freeform (not already axis-locked) parallel pair', () {
+    final points = {
+      'a1': (0.0, 0.0),
+      'a2': (0.0, 10.0),
+      'b1': (5.0, 1.0),
+      'b2': (6.0, 9.0),
+    };
+    final lines = {'line1': ('a1', 'a2'), 'line2': ('b1', 'b2')};
+    final constraints = <ConstraintDto>[
+      const LineDistanceConstraintDto(id: 'dim', line1Id: 'line1', line2Id: 'line2', distance: 5.0),
+      const ParallelConstraintDto(id: 'par', line1Id: 'line1', line2Id: 'line2'),
+    ];
+
+    final result = solveSketchLocally(
+      bindings: bindings,
+      points: points,
+      constraints: constraints,
+      lineEndpoints: (id) => _lineEndpoints(lines, id),
+      anchorPointIds: {'a1', 'a2'},
+    );
+
+    expect(result.converged, isTrue);
+    final (a1x, a1y) = result.solvedPoints['a1']!;
+    final (a2x, a2y) = result.solvedPoints['a2']!;
+    final (b1x, b1y) = result.solvedPoints['b1']!;
+    final (b2x, b2y) = result.solvedPoints['b2']!;
     final dir1 = (a2x - a1x, a2y - a1y);
     final dir2 = (b2x - b1x, b2y - b1y);
     final len1 = math.sqrt(dir1.$1 * dir1.$1 + dir1.$2 * dir1.$2);
     final len2 = math.sqrt(dir2.$1 * dir2.$1 + dir2.$2 * dir2.$2);
     final sinAngle = (dir1.$1 * dir2.$2 - dir1.$2 * dir2.$1).abs() / (len1 * len2);
     expect(sinAngle, closeTo(0.0, 1e-6), reason: 'Line 2 must end up parallel to Line 1');
-
-    // The perpendicular distance itself is still exactly the dimensioned value.
     final dx = a2x - a1x, dy = a2y - a1y;
     final cross = (b1x - a1x) * dy - (b1y - a1y) * dx;
     expect(cross / len1, closeTo(5.0, 1e-6));
+  });
+
+  test(
+      'reproduces the on-device "rectangle becomes over constrained" report: a pair of Lines '
+      'already forced parallel via matching Horizontal constraints solves cleanly with just a '
+      'LineDistanceConstraintDto, but stacking a redundant ParallelConstraintDto on top of that '
+      'fails to converge - this is exactly what SketchController.confirmGhostValue\'s own trial-add '
+      '+ rollback now guards against', () {
+    final points = {
+      'a1': (0.0, 0.0),
+      'a2': (10.0, 0.0),
+      'b1': (0.0, 5.0),
+      'b2': (10.0, 5.0),
+    };
+    final lines = {'line1': ('a1', 'a2'), 'line2': ('b1', 'b2')};
+    final baseConstraints = <ConstraintDto>[
+      const HorizontalConstraintDto(id: 'h1', lineId: 'line1', pointAId: 'a1', pointBId: 'a2'),
+      const HorizontalConstraintDto(id: 'h2', lineId: 'line2', pointAId: 'b1', pointBId: 'b2'),
+      const LineDistanceConstraintDto(id: 'dim', line1Id: 'line1', line2Id: 'line2', distance: 5.0),
+    ];
+
+    final distanceOnly = solveSketchLocally(
+      bindings: bindings,
+      points: points,
+      constraints: baseConstraints,
+      lineEndpoints: (id) => _lineEndpoints(lines, id),
+    );
+    expect(distanceOnly.converged, isTrue,
+        reason: 'distance alone between two already-Horizontal Lines must converge cleanly');
+
+    final withRedundantParallel = solveSketchLocally(
+      bindings: bindings,
+      points: points,
+      constraints: [
+        ...baseConstraints,
+        const ParallelConstraintDto(id: 'par', line1Id: 'line1', line2Id: 'line2'),
+      ],
+      lineEndpoints: (id) => _lineEndpoints(lines, id),
+    );
+    expect(withRedundantParallel.converged, isFalse,
+        reason: 'a redundant Parallel on top of an already-Horizontal-locked pair must NOT be '
+            'silently accepted - this is why confirmGhostValue rolls it back rather than adding it '
+            'unconditionally');
   });
 }

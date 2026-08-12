@@ -11071,6 +11071,40 @@ class SketchController extends ChangeNotifier {
             value,
           );
           _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
+
+          // On-device feedback ("a dimension between two parallel lines
+          // should be line to line, not point to point - their
+          // parallelism should be part of the dimension" / follow-up:
+          // "adding this dimension to a rectangle's own already-H/V-locked
+          // opposite sides makes it over constrained"): a
+          // LineDistanceConstraint alone only pins Line 2's start Point's
+          // distance from Line 1, leaving Line 2 free to rotate about that
+          // Point - genuinely locking the Lines parallel needs a real
+          // ParallelConstraint alongside it. But the two Lines might
+          // already be forced parallel some other way (opposite sides of
+          // a rectangle, both Horizontal/Vertical; a Slot's own
+          // Tangent+EqualRadius chain; an explicit user-added Parallel/
+          // Collinear; ...) - blindly adding a second, now-redundant
+          // Parallel on top of an already-fully-determined pair produces
+          // exactly the kind of stacked redundancy py-slvs's own
+          // rank-deficiency handling can't always certify (a rectangle's
+          // own diagonal-tying AtMidpoint constraint in particular blocks
+          // both of solve_sketch's own redundancy-rescue overrides - see
+          // that function's own doc comments). Rather than trying to
+          // enumerate every possible already-parallel pattern, this tries
+          // adding the Parallel constraint and asks the solver directly:
+          // if the resulting solve doesn't converge, the Lines were
+          // already locked parallel some other way and the addition was
+          // redundant - drop it and fall back to the distance alone,
+          // still fully correct since the parallelism is still enforced
+          // by whatever already enforced it.
+          final parallel = await _api.createParallelConstraint(_sketchId!, target.lineAId!, target.lineBId!);
+          await _solveAndTrackDof();
+          if (_lastSolveConverged) {
+            _pushUndo(() async => _api.deleteConstraint(_sketchId!, parallel.id));
+          } else {
+            await _api.deleteConstraint(_sketchId!, parallel.id);
+          }
         }
         await _solveAndTrackDof();
         _ghosts = [];

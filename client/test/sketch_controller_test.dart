@@ -7872,6 +7872,59 @@ void main() {
   });
 
   test(
+      'confirming a fresh lineDistance ghost also creates a real ParallelConstraint locking the '
+      'two Lines parallel, when doing so solves cleanly (on-device feedback: "a dimension between '
+      'two parallel lines should be line to line - their parallelism should be part of the '
+      'dimension")', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 5);
+    await controller.handleCanvasTap(10, 5);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1);
+    await controller.handleCanvasTap(8, 5.1);
+
+    await controller.confirmGhostValue('lineDistance', 7.0);
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.constraints.values.whereType<LineDistanceConstraintDto>(), hasLength(1));
+    expect(controller.constraints.values.whereType<ParallelConstraintDto>(), hasLength(1));
+  });
+
+  test(
+      'confirming a fresh lineDistance ghost rolls the auxiliary ParallelConstraint back (keeping '
+      'only the LineDistanceConstraint) when adding it would be redundant and fails to converge - '
+      'on-device feedback: "adding a dimension between two parallel edges of a rectangle makes it '
+      'over constrained... it looks like a clash between the horizontal (or vertical) constraints '
+      'attached to the lines which indirectly causes them to be parallel"', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 5);
+    await controller.handleCanvasTap(10, 5);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1);
+    await controller.handleCanvasTap(8, 5.1);
+
+    // Simulates the two Lines already being forced parallel some other way
+    // (e.g. a rectangle's own opposite Horizontal-constrained sides) - the
+    // fake backend can't run a real solve, so this stands in for "adding
+    // the trial Parallel constraint made the system fail to converge".
+    backend.converged = false;
+
+    await controller.confirmGhostValue('lineDistance', 7.0);
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.constraints.values.whereType<LineDistanceConstraintDto>(), hasLength(1));
+    expect(controller.constraints.values.whereType<ParallelConstraintDto>(), isEmpty);
+  });
+
+  test(
       'dimensioning a Slot\'s two parallel straight sides shows a lineDistance ghost, not a '
       'mismatched point-to-point one (on-device feedback: "I experienced an issue adding a '
       'dimension between the two parallel lines in a slot. it offered dimensions between the '

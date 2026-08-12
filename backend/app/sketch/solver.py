@@ -301,19 +301,6 @@ def _residual_verified_convergence(sketch: Sketch) -> bool | None:
             )
             if abs(actual_distance - constraint.distance) > tolerance:
                 return False
-            # On-device feedback: `add_to_solver` now also pins the two
-            # Lines parallel (not just Line 2's start Point's distance from
-            # Line 1) - verify that half too, or a residual-verified solve
-            # could report `converged=True` for a Line 2 that's drifted out
-            # of parallel while its start Point happened to stay the right
-            # distance away.
-            if not _lines_parallel(
-                points[constraint.line1_start_id],
-                points[constraint.line1_end_id],
-                points[constraint.line2_start_id],
-                points[constraint.line2_end_id],
-            ):
-                return False
         elif isinstance(constraint, HorizontalConstraint):
             point_a = points[constraint.point_a_id]
             point_b = points[constraint.point_b_id]
