@@ -61,6 +61,8 @@ class _ServerManagementScreenState extends State<ServerManagementScreen> {
 
   bool get _branchValid => TermuxCommands.isValidBranchName(_branchController.text.trim());
 
+  static const String _localAddress = TermuxController.localBaseUrl;
+
   Future<void> _run(String label, Future<bool> Function() dispatch, {ServerReachability? expect}) async {
     setState(() {
       _busy = true;
@@ -85,7 +87,7 @@ class _ServerManagementScreenState extends State<ServerManagementScreen> {
       _busy = false;
       _reachability = result;
       _statusMessage = switch (result) {
-        ServerReachability.reachable => '$label - server responding at ${ApiConfig.baseUrl}.',
+        ServerReachability.reachable => '$label - server responding at $_localAddress.',
         ServerReachability.unreachable =>
           '$label - dispatched, but the server is not responding yet. Check ~/didsa-backend.log in Termux.',
         ServerReachability.unknown => '$label - dispatched.',
@@ -101,8 +103,8 @@ class _ServerManagementScreenState extends State<ServerManagementScreen> {
       _busy = false;
       _reachability = result;
       _statusMessage = result == ServerReachability.reachable
-          ? 'Server responding at ${ApiConfig.baseUrl}.'
-          : 'Server not responding at ${ApiConfig.baseUrl}.';
+          ? 'Server responding at $_localAddress.'
+          : 'Server not responding at $_localAddress.';
     });
   }
 
@@ -125,6 +127,35 @@ class _ServerManagementScreenState extends State<ServerManagementScreen> {
             "installed, and allow-external-apps=true set in ~/.termux/termux.properties.",
             style: Theme.of(context).textTheme.bodySmall,
           ),
+          const SizedBox(height: 8),
+          // Scope, stated plainly: this only ever reaches a backend on this
+          // same device at a fixed address - it has no way to reach, and no
+          // effect on, a remote server (the Pi, or any future cloud
+          // deployment). A valid API key is still needed to actually talk
+          // to a remote server, same as always - this screen just can't be
+          // the thing that manages one.
+          Text(
+            "This only ever controls a backend on this device, at $_localAddress - it cannot reach, "
+            "and has no effect on, any remote server (e.g. the Pi) you may have configured in "
+            "Connection Settings.",
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(fontStyle: FontStyle.italic),
+          ),
+          if (ApiConfig.baseUrl.isNotEmpty && ApiConfig.baseUrl != _localAddress) ...[
+            const SizedBox(height: 8),
+            Text(
+              "Connection Settings currently points at ${ApiConfig.baseUrl}, not $_localAddress - "
+              "point it at $_localAddress to actually use the server controlled here.",
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(fontStyle: FontStyle.italic),
+            ),
+          ],
+          if (ApiConfig.apiKey.isEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              "No API key set in Connection Settings yet - Start will still work, but you won't be "
+              "able to Connect to this server until you set one there.",
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(fontStyle: FontStyle.italic),
+            ),
+          ],
           const SizedBox(height: 16),
           if (_hasPermission == null)
             const Center(child: CircularProgressIndicator())

@@ -10,16 +10,24 @@ enum ServerReachability { unknown, reachable, unreachable }
 
 /// Thin wrapper over the `uk.snail_shell.didsa_cad_client/termux`
 /// MethodChannel (see android/.../MainActivity.kt) plus a real /health poll
-/// against [ApiConfig] - the platform channel only confirms Android handed
-/// an intent to Termux, never that the command inside it actually
-/// succeeded (Termux might not be installed, the proot-distro environment
-/// might be missing, the server might crash on startup, etc.), so every
-/// action here is followed by asking the backend itself whether it's
-/// actually there, the same way ConnectionScreen already does.
+/// - the platform channel only confirms Android handed an intent to
+/// Termux, never that the command inside it actually succeeded (Termux
+/// might not be installed, the proot-distro environment might be missing,
+/// the server might crash on startup, etc.), so every action here is
+/// followed by asking the backend itself whether it's actually there.
 class TermuxController {
   TermuxController({http.Client? httpClient}) : _httpClient = httpClient ?? http.Client();
 
   static const MethodChannel _channel = MethodChannel('uk.snail_shell.didsa_cad_client/termux');
+
+  /// Fixed, not [ApiConfig.baseUrl] - this screen only ever controls a
+  /// backend on *this* device, on the fixed port termux_commands.dart
+  /// starts it on, regardless of where [ApiConfig] happens to be pointed
+  /// right now. If Connection Settings currently points somewhere else
+  /// (e.g. the Pi over Cloudflare Tunnel), health-checking that address
+  /// instead would silently tell the user nothing true about what this
+  /// screen's own Start/Stop/Restart buttons actually did.
+  static const String localBaseUrl = 'http://127.0.0.1:8000';
 
   final http.Client _httpClient;
 
@@ -52,18 +60,22 @@ class TermuxController {
 
   Future<bool> restartServer() => _dispatch(TermuxCommands.restartServer(ApiConfig.apiKey));
 
-  /// A single GET /health round trip - reuses [ApiConfig]'s already-stored
-  /// base URL/key (the same value that just got exported as CAD_API_KEY, if
-  /// this followed a start/restart) rather than this screen tracking its
-  /// own separate connection details. Short timeout: this is a local,
-  /// same-device call (unlike [ApiConfig.requestTimeout]'s own comment
-  /// about allowing headroom for a real network round trip to the Pi), so a
-  /// slow response is itself a meaningful "something's wrong" signal.
+  /// A single GET /health round trip against [localBaseUrl] - always uses
+  /// [ApiConfig.apiKey] as the X-API-Key (the same value startServer/
+  /// restartServer exported as CAD_API_KEY, so this checks with whatever
+  /// key the local server actually has, even an empty one - there's no
+  /// meaningful auth boundary to protect against on a loopback-only,
+  /// same-device call, so an empty key is a "you won't be able to Connect
+  /// to this yet" usability note for the caller to surface, not something
+  /// this method itself needs to guard against). Short timeout: this is a
+  /// local, same-device call (unlike [ApiConfig.requestTimeout]'s own
+  /// comment about allowing headroom for a real network round trip to the
+  /// Pi), so a slow response is itself a meaningful "something's wrong"
+  /// signal.
   Future<ServerReachability> check() async {
-    if (!ApiConfig.isConfigured) return ServerReachability.unreachable;
     try {
       final response = await _httpClient
-          .get(Uri.parse('${ApiConfig.baseUrl}/health'), headers: {'X-API-Key': ApiConfig.apiKey})
+          .get(Uri.parse('$localBaseUrl/health'), headers: {'X-API-Key': ApiConfig.apiKey})
           .timeout(const Duration(seconds: 5));
       return (response.statusCode >= 200 && response.statusCode < 300)
           ? ServerReachability.reachable
