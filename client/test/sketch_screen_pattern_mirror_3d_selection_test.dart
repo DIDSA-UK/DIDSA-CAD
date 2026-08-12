@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
 import 'package:didsa_cad_client/sketch/sketch_controller.dart';
@@ -84,6 +85,16 @@ Future<void> _settlePartViewport(WidgetTester tester, {int maxPumps = 100}) asyn
 }
 
 void main() {
+  // SketchScreen._loadInitialOrbitViewPreference now unconditionally awaits
+  // ViewPreferences.load() before ever entering Orbit View - shared_preferences
+  // has no real platform channel under `flutter test`, so without this mock
+  // that await never resolves and Orbit View never activates within any
+  // bounded pump budget (same reason gear_design_screen_test.dart/
+  // part_screen_test.dart already mock it in their own setUp).
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+  });
+
   testWidgets(
     'tapping a committed pattern instance\'s own derived copy in the embedded 3D view '
     'selects it (SelectionKind.patternInstance), the same way the flat 2D canvas already does',

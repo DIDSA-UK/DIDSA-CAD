@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
@@ -96,6 +97,16 @@ Future<void> _openInOrbitView(WidgetTester tester, SketchController controller) 
 }
 
 void main() {
+  // SketchScreen._loadInitialOrbitViewPreference now unconditionally awaits
+  // ViewPreferences.load() before ever entering Orbit View - shared_preferences
+  // has no real platform channel under `flutter test`, so without this mock
+  // that await never resolves and Orbit View never activates within any
+  // bounded pump budget (same reason gear_design_screen_test.dart/
+  // part_screen_test.dart already mock it in their own setUp).
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+  });
+
   testWidgets(
       'nav cleanup regression: a Part-anchored SketchScreen always enters Orbit View now, the '
       'same 3D viewport/camera as the rest of the 3D part design environment - there is no '
