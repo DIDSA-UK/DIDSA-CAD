@@ -224,6 +224,8 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
       _herringbone = json['herringbone'] as bool? ?? _herringbone;
       final outerDiameter = json['outer_diameter'] as num?;
       if (outerDiameter != null) _outerDiameterController.text = _formatDouble(outerDiameter.toDouble());
+      final pointsPerFlank = json['points_per_flank'] as num?;
+      if (pointsPerFlank != null) _pointsPerFlank = pointsPerFlank.toInt();
     }
   }
 
@@ -408,6 +410,7 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
             targetBodyIds: _targetBodyIds,
             helixAngleDegrees: _helixAngleDegrees,
             herringbone: _herringbone,
+            pointsPerFlank: _pointsPerFlank,
           );
         }
         if (!mounted) return;

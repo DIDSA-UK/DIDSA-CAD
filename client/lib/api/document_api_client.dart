@@ -2249,6 +2249,7 @@ class DocumentApiClient {
     List<String>? targetBodyIds,
     double? helixAngleDegrees,
     bool? herringbone,
+    int? pointsPerFlank,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -2269,6 +2270,7 @@ class DocumentApiClient {
                 if (targetBodyIds != null) 'target_body_ids': targetBodyIds,
                 if (helixAngleDegrees != null) 'helix_angle_degrees': helixAngleDegrees,
                 if (herringbone != null) 'herringbone': herringbone,
+                if (pointsPerFlank != null) 'points_per_flank': pointsPerFlank,
               }),
             ),
         (body) => body as Map<String, dynamic>,
