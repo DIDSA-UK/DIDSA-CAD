@@ -11,6 +11,9 @@ on:
     paths:
       - "client/**"
 
+permissions:
+  contents: write
+
 jobs:
   analyze-and-test:
     runs-on: ubuntu-latest
@@ -47,3 +50,36 @@ jobs:
       - name: Run tests
         if: ${{ !cancelled() }}
         run: flutter test
+
+      # Debug-signed only (no release keystore configured) - good enough for
+      # sideloading onto a test device, not a Play Store-ready build. No
+      # externalNativeBuild is wired up for client/native/slvs (see its own
+      # CMakeLists.txt header - that's still a separate, partly-manual cross
+      # -compile step), so this APK doesn't bundle the local FFI sketch
+      # solver; the app's own documented network fallback covers that gap,
+      # not a build failure here. Runs only after analyze+test both pass
+      # (default `if: success()`, unlike the `!cancelled()` steps above).
+      - name: Build debug APK
+        run: flutter build apk --debug
+
+      # Committed straight to the branch that triggered this build, at the
+      # repo root (not under client/) specifically so this step's own commit
+      # doesn't re-trigger this workflow's `paths: client/**` filter - the
+      # `[skip ci]` in the commit message is a second, redundant guard
+      # against that same loop. Only runs for a real push (not a
+      # pull_request build, which may come from a fork without push access
+      # back to this repo).
+      - name: Publish debug APK to repo root
+        if: ${{ github.event_name == 'push' }}
+        run: |
+          cp build/app/outputs/flutter-apk/app-debug.apk ../DIDSA-CAD-client-debug.apk
+          cd ..
+          if git diff --quiet -- DIDSA-CAD-client-debug.apk; then
+            echo "APK unchanged, nothing to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add DIDSA-CAD-client-debug.apk
+          git commit -m "Update client install APK [skip ci]"
+          git push origin HEAD:${{ github.ref_name }}
