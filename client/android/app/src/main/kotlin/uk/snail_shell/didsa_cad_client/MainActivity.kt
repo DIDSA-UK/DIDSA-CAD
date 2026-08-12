@@ -8,14 +8,22 @@ import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
-import io.flutter.plugin.common.PluginRegistry.RequestPermissionsResultListener
 
 /// Bridges the Server Management screen's Termux control calls (see
 /// client/lib/server_management/termux_controller.dart) to Android's
 /// Intent/permission APIs - no Flutter plugin exposes an explicit-component
 /// Service intent carrying a third-party app's own custom permission, so
 /// this is a small hand-written channel rather than a dependency.
-class MainActivity : FlutterActivity(), RequestPermissionsResultListener {
+///
+/// This class *is* the single FlutterActivity, not a separate plugin, so it
+/// gets onRequestPermissionsResult as an ordinary inherited Activity
+/// override - no PluginRegistry.RequestPermissionsResultListener
+/// registration needed (that interface, and addRequestPermissionsResultListener,
+/// are for plugins hooking into an Activity's callback from outside it; both
+/// also declare a Boolean-returning onRequestPermissionsResult, which can't
+/// coexist with FlutterActivity's own Unit-returning override of the same
+/// signature).
+class MainActivity : FlutterActivity() {
     private val channelName = "uk.snail_shell.didsa_cad_client/termux"
     private val runCommandPermission = "com.termux.permission.RUN_COMMAND"
     private val permissionRequestCode = 7421
@@ -28,7 +36,6 @@ class MainActivity : FlutterActivity(), RequestPermissionsResultListener {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        addRequestPermissionsResultListener(this)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName).setMethodCallHandler { call, result ->
             when (call.method) {
                 "hasPermission" -> result.success(hasRunCommandPermission())
@@ -63,12 +70,12 @@ class MainActivity : FlutterActivity(), RequestPermissionsResultListener {
         requestCode: Int,
         permissions: Array<out String>,
         grantResults: IntArray,
-    ): Boolean {
-        if (requestCode != permissionRequestCode) return false
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != permissionRequestCode) return
         val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
         pendingPermissionResult?.success(granted)
         pendingPermissionResult = null
-        return true
     }
 
     /// Fires a RUN_COMMAND intent at Termux's RunCommandService - see
