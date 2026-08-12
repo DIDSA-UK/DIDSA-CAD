@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
@@ -9,7 +10,15 @@ import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart';
 import '../api/sketch_api_client.dart'
-    show ApiException, ArcDto, LineDto, ProfileDetectionDto, ProfileLoopDto, SketchApiClient, TextContourDto;
+    show
+        ApiException,
+        ArcDto,
+        LineDto,
+        PointDto,
+        ProfileDetectionDto,
+        ProfileLoopDto,
+        SketchApiClient,
+        TextContourDto;
 import '../connection_screen.dart';
 import '../didsa_logo_button.dart';
 import '../sketch/sketch_controller.dart';
@@ -1004,6 +1013,12 @@ class _PartScreenState extends State<PartScreen> {
   /// create a plane, on point and normal to arc"): [_linesByFeatureId]'s
   /// Arc-shaped sibling, populated the same way, for [_isPointOnArc].
   Map<String, List<ArcDto>> _arcsByFeatureId = {};
+
+  /// On-device feedback ("it should also support a point on the curve
+  /// that is not the end point"): each Point's own (x, y), keyed by owning
+  /// Sketch Feature id - [_isPointOnArc] needs real positions (not just
+  /// ids) to check a Point against an Arc's curve geometrically.
+  Map<String, List<PointDto>> _pointsByFeatureId = {};
 
   bool _busy = false;
   String? _errorMessage;
@@ -3598,17 +3613,50 @@ class _PartScreenState extends State<PartScreen> {
 
   /// [_isPointOnLine]'s Arc-shaped sibling - the real lookup
   /// `selection_actions.dart`'s `PointOnArcChecker` needs, backed by
-  /// [_arcsByFeatureId]. An Arc's centre Point doesn't count, same as a
-  /// Line's own endpoints-only rule.
+  /// [_arcsByFeatureId]/[_pointsByFeatureId]. On-device feedback ("it
+  /// should also support a point on the curve that is not the end
+  /// point"): unlike a Line's fixed two endpoints, an Arc's curve has no
+  /// finite set of ids to compare against, so this checks geometrically -
+  /// the Point's distance from centre must match the Arc's own radius
+  /// (within a small, radius-scaled tolerance) and its angle must fall
+  /// within the Arc's CCW sweep (`angleWithinArcSweep`, the same "which of
+  /// the two possible arcs is 'the' arc" convention the 2D sketch canvas's
+  /// own hit-testing/rendering already uses - see that function's own doc
+  /// comment) - the backend's `resolve_normal_to_arc_at_point` re-checks
+  /// the exact same two conditions itself before ever resolving a plane
+  /// from them, so this is purely a "should the button even appear"
+  /// pre-check, not the actual authority.
   bool _isPointOnArc(String sketchFeatureId, String arcEntityId, String pointEntityId) {
     final arcs = _arcsByFeatureId[sketchFeatureId];
-    if (arcs == null) return false;
-    for (final arc in arcs) {
-      if (arc.id == arcEntityId) {
-        return arc.startPointId == pointEntityId || arc.endPointId == pointEntityId;
+    final points = _pointsByFeatureId[sketchFeatureId];
+    if (arcs == null || points == null) return false;
+    ArcDto? arc;
+    for (final candidate in arcs) {
+      if (candidate.id == arcEntityId) {
+        arc = candidate;
+        break;
       }
     }
-    return false;
+    if (arc == null) return false;
+    PointDto? center, start, end, point;
+    for (final candidate in points) {
+      if (candidate.id == arc.centerPointId) center = candidate;
+      if (candidate.id == arc.startPointId) start = candidate;
+      if (candidate.id == arc.endPointId) end = candidate;
+      if (candidate.id == pointEntityId) point = candidate;
+    }
+    if (center == null || start == null || end == null || point == null) return false;
+    if (point.id == center.id) return false; // The centre itself never counts.
+
+    final radius = math.sqrt(math.pow(start.x - center.x, 2) + math.pow(start.y - center.y, 2));
+    final pointDist = math.sqrt(math.pow(point.x - center.x, 2) + math.pow(point.y - center.y, 2));
+    final tolerance = math.max(radius * 1e-3, 1e-6);
+    if ((pointDist - radius).abs() > tolerance) return false;
+
+    final pointAngle = math.atan2(point.y - center.y, point.x - center.x);
+    final startAngle = math.atan2(start.y - center.y, start.x - center.x);
+    final endAngle = math.atan2(end.y - center.y, end.x - center.x);
+    return angleWithinArcSweep(pointAngle, startAngle, endAngle);
   }
 
   @override
@@ -4178,6 +4226,7 @@ class _PartScreenState extends State<PartScreen> {
     final updated = <String, SketchGeometry3D>{};
     final updatedLines = <String, List<LineDto>>{};
     final updatedArcs = <String, List<ArcDto>>{};
+    final updatedPoints = <String, List<PointDto>>{};
     for (final feature in _features) {
       final sketchId = feature.sketchId;
       if (sketchId == null) continue; // An ExtrudeFeature - no Sketch of its own.
@@ -4225,6 +4274,7 @@ class _PartScreenState extends State<PartScreen> {
         );
         updatedLines[feature.id] = lines;
         updatedArcs[feature.id] = arcs;
+        updatedPoints[feature.id] = points;
         final geometry = sketchGeometry3DFrom(
           basis: basis,
           points: points,
@@ -4246,6 +4296,7 @@ class _PartScreenState extends State<PartScreen> {
       _allSketchGeometries = updated;
       _linesByFeatureId = updatedLines;
       _arcsByFeatureId = updatedArcs;
+      _pointsByFeatureId = updatedPoints;
       _recomputeVisibleSketchGeometries();
     });
   }

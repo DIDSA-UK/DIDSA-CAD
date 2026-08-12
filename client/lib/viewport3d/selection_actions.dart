@@ -54,10 +54,14 @@ typedef PointOnLineChecker = bool Function(
 );
 
 /// On-device feedback ("allow 'point and curve' as a valid combination to
-/// create a plane, on point and normal to arc"): [PointOnLineChecker]'s
-/// Arc-shaped sibling - whether [pointEntityId] is one of [arcEntityId]'s
-/// own two endpoint ids (its centre doesn't count, same as a Line's
-/// endpoints-only rule), within the Sketch Feature [sketchFeatureId].
+/// create a plane, on point and normal to arc" / follow-up: "it should
+/// also support a point on the curve that is not the end point"):
+/// [PointOnLineChecker]'s Arc-shaped sibling - whether [pointEntityId]
+/// lies on [arcEntityId]'s own curve (its centre doesn't count), within
+/// the Sketch Feature [sketchFeatureId]. Unlike a Line's fixed two
+/// endpoints, an Arc's curve has no finite set of ids to compare against,
+/// so the real implementation checks geometrically (distance from centre
+/// plus sweep containment - see `PartScreen._isPointOnArc`), not by id.
 typedef PointOnArcChecker = bool Function(
   String sketchFeatureId,
   String arcEntityId,
