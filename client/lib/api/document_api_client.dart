@@ -2222,6 +2222,60 @@ class DocumentApiClient {
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// Gear-tree UX: partial update for an existing GearFeature, same
+  /// omitted-keeps-current convention as [updateExtrudeFeature] - including
+  /// when called with every optional argument omitted, which is a genuine
+  /// no-op PATCH (`{}`) used purely to read back the Feature's current full
+  /// state (every PATCH gear-family endpoint always returns the complete
+  /// post-update Response, never just the changed fields). Returns the raw
+  /// decoded response body rather than [FeatureDto] - a GearFeature carries
+  /// far more type-specific data (module/toothCount/helix angle/...) than
+  /// that shared DTO tracks, so [GearDesignScreen]'s own edit flow reads
+  /// the fields it needs directly by key instead.
+  Future<Map<String, dynamic>> updateGearFeature(
+    String partId,
+    String featureId, {
+    PlaneRefDto? planeRef,
+    String? gearType,
+    bool? isInternal,
+    double? module,
+    int? toothCount,
+    double? faceWidth,
+    double? pressureAngleDegrees,
+    double? profileShift,
+    double? backlash,
+    double? rootFilletRadius,
+    double? outerDiameter,
+    List<String>? targetBodyIds,
+    double? helixAngleDegrees,
+    bool? herringbone,
+    int? pointsPerFlank,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/gear-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (planeRef != null) 'plane_ref': planeRef.toJson(),
+                if (gearType != null) 'gear_type': gearType,
+                if (isInternal != null) 'is_internal': isInternal,
+                if (module != null) 'module': module,
+                if (toothCount != null) 'tooth_count': toothCount,
+                if (faceWidth != null) 'face_width': faceWidth,
+                if (pressureAngleDegrees != null) 'pressure_angle_degrees': pressureAngleDegrees,
+                if (profileShift != null) 'profile_shift': profileShift,
+                if (backlash != null) 'backlash': backlash,
+                if (rootFilletRadius != null) 'root_fillet_radius': rootFilletRadius,
+                if (outerDiameter != null) 'outer_diameter': outerDiameter,
+                if (targetBodyIds != null) 'target_body_ids': targetBodyIds,
+                if (helixAngleDegrees != null) 'helix_angle_degrees': helixAngleDegrees,
+                if (herringbone != null) 'herringbone': herringbone,
+                if (pointsPerFlank != null) 'points_per_flank': pointsPerFlank,
+              }),
+            ),
+        (body) => body as Map<String, dynamic>,
+      );
+
   /// `docs/gear-design/03-rack.md`: creates the real `RackFeature` once the
   /// user hits "Create" on [GearDesignScreen] with `gearKind == 'rack'` -
   /// mirrors [createGearFeature]'s exact shape. [backingHeight] omitted
@@ -2255,6 +2309,41 @@ class DocumentApiClient {
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Gear-tree UX: partial update for an existing RackFeature - mirrors
+  /// [updateGearFeature] exactly, including its no-op-PATCH-to-read-current-
+  /// state usage.
+  Future<Map<String, dynamic>> updateRackFeature(
+    String partId,
+    String featureId, {
+    PlaneRefDto? planeRef,
+    String? rackType,
+    double? module,
+    int? toothCount,
+    double? faceWidth,
+    double? pressureAngleDegrees,
+    double? backlash,
+    double? backingHeight,
+    List<String>? targetBodyIds,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/rack-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (planeRef != null) 'plane_ref': planeRef.toJson(),
+                if (rackType != null) 'rack_type': rackType,
+                if (module != null) 'module': module,
+                if (toothCount != null) 'tooth_count': toothCount,
+                if (faceWidth != null) 'face_width': faceWidth,
+                if (pressureAngleDegrees != null) 'pressure_angle_degrees': pressureAngleDegrees,
+                if (backlash != null) 'backlash': backlash,
+                if (backingHeight != null) 'backing_height': backingHeight,
+                if (targetBodyIds != null) 'target_body_ids': targetBodyIds,
+              }),
+            ),
+        (body) => body as Map<String, dynamic>,
       );
 
   /// `docs/gear-design/08-entry-screen-and-preview.md`'s "Chain/planetary/
@@ -2344,6 +2433,34 @@ class DocumentApiClient {
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// Gear-tree UX: partial update for an existing GearChainFeature - mirrors
+  /// [updateGearFeature]'s shape/no-op-PATCH usage, [groups]/[stages]
+  /// substituting `GearChainFeatureCreate`'s own list fields for
+  /// `GearFeatureCreate`'s flat ones.
+  Future<Map<String, dynamic>> updateGearChainFeature(
+    String partId,
+    String featureId, {
+    PlaneRefDto? planeRef,
+    List<GearGroupInputDto>? groups,
+    List<GearChainStageInputDto>? stages,
+    double? startDirectionDegrees,
+    double? printClearanceMargin,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/gear-chain-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (planeRef != null) 'plane_ref': planeRef.toJson(),
+                if (groups != null) 'groups': groups.map((g) => g.toJson()).toList(),
+                if (stages != null) 'stages': stages.map((s) => s.toJson()).toList(),
+                if (startDirectionDegrees != null) 'start_direction_degrees': startDirectionDegrees,
+                if (printClearanceMargin != null) 'print_clearance_margin': printClearanceMargin,
+              }),
+            ),
+        (body) => body as Map<String, dynamic>,
+      );
+
   /// `docs/gear-design/05-gear-chain-and-planetary.md`: creates the real
   /// `PlanetaryGearFeature` once the user hits "Create" on
   /// [GearChainDesignScreen] with planetary mode selected.
@@ -2374,6 +2491,38 @@ class DocumentApiClient {
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Gear-tree UX: partial update for an existing PlanetaryGearFeature -
+  /// mirrors [updateGearFeature]'s shape/no-op-PATCH usage.
+  Future<Map<String, dynamic>> updatePlanetaryGearFeature(
+    String partId,
+    String featureId, {
+    PlaneRefDto? planeRef,
+    double? module,
+    int? sunToothCount,
+    int? ringToothCount,
+    int? planetCount,
+    double? faceWidth,
+    double? ringOuterDiameter,
+    double? pressureAngleDegrees,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/planetary-gear-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (planeRef != null) 'plane_ref': planeRef.toJson(),
+                if (module != null) 'module': module,
+                if (sunToothCount != null) 'sun_tooth_count': sunToothCount,
+                if (ringToothCount != null) 'ring_tooth_count': ringToothCount,
+                if (planetCount != null) 'planet_count': planetCount,
+                if (faceWidth != null) 'face_width': faceWidth,
+                if (ringOuterDiameter != null) 'ring_outer_diameter': ringOuterDiameter,
+                if (pressureAngleDegrees != null) 'pressure_angle_degrees': pressureAngleDegrees,
+              }),
+            ),
+        (body) => body as Map<String, dynamic>,
       );
 
   /// `docs/gear-design/10-bevel-gear.md`: `/gear/preview` with `gear_kind:
@@ -2477,6 +2626,42 @@ class DocumentApiClient {
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// Gear-tree UX: partial update for an existing BevelGearFeature - mirrors
+  /// [updateGearFeature]'s shape/no-op-PATCH usage.
+  Future<Map<String, dynamic>> updateBevelGearFeature(
+    String partId,
+    String featureId, {
+    PlaneRefDto? planeRef,
+    String? bevelType,
+    double? module,
+    int? toothCount,
+    double? faceWidth,
+    double? pitchConeAngleDegrees,
+    double? pressureAngleDegrees,
+    double? backlash,
+    double? profileShift,
+    List<String>? targetBodyIds,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/bevel-gear-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (planeRef != null) 'plane_ref': planeRef.toJson(),
+                if (bevelType != null) 'bevel_type': bevelType,
+                if (module != null) 'module': module,
+                if (toothCount != null) 'tooth_count': toothCount,
+                if (faceWidth != null) 'face_width': faceWidth,
+                if (pitchConeAngleDegrees != null) 'pitch_cone_angle_degrees': pitchConeAngleDegrees,
+                if (pressureAngleDegrees != null) 'pressure_angle_degrees': pressureAngleDegrees,
+                if (backlash != null) 'backlash': backlash,
+                if (profileShift != null) 'profile_shift': profileShift,
+                if (targetBodyIds != null) 'target_body_ids': targetBodyIds,
+              }),
+            ),
+        (body) => body as Map<String, dynamic>,
+      );
+
   /// `docs/gear-design/11-bevel-pair.md`: creates the real `BevelPairFeature`
   /// once the user hits "Create" on [BevelDesignScreen] in pair mode.
   Future<FeatureDto> createBevelPairFeature(
@@ -2508,6 +2693,49 @@ class DocumentApiClient {
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Gear-tree UX: partial update for an existing BevelPairFeature - mirrors
+  /// [updateGearFeature]'s shape/no-op-PATCH usage. `member_1`/`member_2`
+  /// are only ever sent as a whole pair (matching the backend's
+  /// `BevelPairMemberSpecSchema` - there's no way to update just one
+  /// member's tooth count while leaving its profile shift alone at the wire
+  /// level), so [toothCount1]/[toothCount2] gate whether each member is
+  /// sent at all - a caller updating a pair always has its own full current
+  /// form state for both fields anyway, the same way [createBevelPairFeature]
+  /// is always called with every field populated.
+  Future<Map<String, dynamic>> updateBevelPairFeature(
+    String partId,
+    String featureId, {
+    PlaneRefDto? planeRef,
+    double? module,
+    int? toothCount1,
+    double profileShift1 = 0.0,
+    int? toothCount2,
+    double profileShift2 = 0.0,
+    double? faceWidth,
+    double? pressureAngleDegrees,
+    double? shaftAngleDegrees,
+    double? backlash,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/bevel-pair-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (planeRef != null) 'plane_ref': planeRef.toJson(),
+                if (module != null) 'module': module,
+                if (toothCount1 != null)
+                  'member_1': {'tooth_count': toothCount1, 'profile_shift': profileShift1},
+                if (toothCount2 != null)
+                  'member_2': {'tooth_count': toothCount2, 'profile_shift': profileShift2},
+                if (faceWidth != null) 'face_width': faceWidth,
+                if (pressureAngleDegrees != null) 'pressure_angle_degrees': pressureAngleDegrees,
+                if (shaftAngleDegrees != null) 'shaft_angle_degrees': shaftAngleDegrees,
+                if (backlash != null) 'backlash': backlash,
+              }),
+            ),
+        (body) => body as Map<String, dynamic>,
       );
 
   void close() => _httpClient.close();

@@ -22,6 +22,21 @@ String featureDisplayName(List<FeatureDto> features, int index) {
     'import' => 'Import',
     'mirror' => 'Mirror',
     'pattern' => 'Pattern',
+    // Gear-tree UX: the gear-family Feature types (built straight from
+    // parameters via their own dedicated design screen - GearDesignScreen/
+    // BevelDesignScreen/GearChainDesignScreen - never through a Sketch, see
+    // `00-conventions.md`'s "gear teeth are not Sketch entities" decision)
+    // used to fall into the default arm below and show up mislabelled as a
+    // generic "Sketch". Labels match the vocabulary each Feature type's own
+    // design screen already uses for it (e.g. GearChainDesignScreen's
+    // "Chain"/"Planetary" segmented-button labels), not a bare `feature.type`
+    // dump, so a tapped tree row reads the same as the screen it reopens.
+    'gear' => 'Gear',
+    'rack' => 'Rack',
+    'gear_chain' => 'Gear Chain',
+    'planetary_gear' => 'Planetary Gear',
+    'bevel_gear' => 'Bevel Gear',
+    'bevel_pair' => 'Bevel Pair',
     _ => 'Sketch',
   };
   final ordinal = features.take(index + 1).where((f) => f.type == feature.type).length;
@@ -55,6 +70,19 @@ String _featureTypeAsset(String type) => switch (type) {
       'import' => 'assets/icons/feature/parttoolbar_import.svg',
       'mirror' => 'assets/icons/feature/feature_mirror.svg',
       'pattern' => 'assets/icons/feature/feature_pattern.svg',
+      // Gear-tree UX: one shared "gear" category glyph for every gear-family
+      // Feature type (spur/internal gear, rack, bevel gear, bevel pair, gear
+      // chain, planetary set) - they're all built by the same family of
+      // dedicated design screens and read as one recognizable category in the
+      // tree, the same way `featureDisplayName` above still gives each its
+      // own distinct text label.
+      'gear' ||
+      'rack' ||
+      'gear_chain' ||
+      'planetary_gear' ||
+      'bevel_gear' ||
+      'bevel_pair' =>
+        'assets/icons/feature/feature_gear.svg',
       _ => 'assets/icons/feature/feature_new_sketch.svg',
     };
 
