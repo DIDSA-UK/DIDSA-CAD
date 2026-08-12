@@ -62,25 +62,29 @@ jobs:
       - name: Build debug APK
         run: flutter build apk --debug
 
-      # Committed straight to the branch that triggered this build, at the
-      # repo root (not under client/) specifically so this step's own commit
-      # doesn't re-trigger this workflow's `paths: client/**` filter - the
-      # `[skip ci]` in the commit message is a second, redundant guard
-      # against that same loop. Only runs for a real push (not a
-      # pull_request build, which may come from a fork without push access
-      # back to this repo).
-      - name: Publish debug APK to repo root
+      # Published as a GitHub Release asset rather than committed into the
+      # tracked tree: git can't delta-compress a binary against its prior
+      # version, so committing a new APK on every push (this workflow
+      # triggers on every branch touching client/**) would grow the repo's
+      # object store by one full APK's size per push, forever - a Release
+      # asset lives in GitHub's separate storage instead, so the repo itself
+      # never grows. Always the same fixed tag (`client-debug-latest`), so
+      # this reuses/updates one release rather than creating a new one per
+      # push - `gh release upload --clobber` replaces the asset in place;
+      # falls back to `gh release create` the first time the tag doesn't
+      # exist yet. Only runs for a real push (not a pull_request build,
+      # which may come from a fork without release-creation access here).
+      - name: Publish debug APK as a GitHub Release asset
         if: ${{ github.event_name == 'push' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          cp build/app/outputs/flutter-apk/app-debug.apk ../DIDSA-CAD-client-debug.apk
           cd ..
-          if git diff --quiet -- DIDSA-CAD-client-debug.apk; then
-            echo "APK unchanged, nothing to commit"
-            exit 0
+          APK=client/build/app/outputs/flutter-apk/app-debug.apk
+          if gh release view client-debug-latest >/dev/null 2>&1; then
+            gh release upload client-debug-latest "$APK" --clobber
+          else
+            gh release create client-debug-latest "$APK" \
+              --title "Latest client debug build" \
+              --notes "Debug-signed sideload build, auto-published by CI from the latest push touching client/**. Not a Play Store-ready release."
           fi
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add DIDSA-CAD-client-debug.apk
-          git commit -m "Update client install APK [skip ci]"
-          git push origin HEAD:${{ github.ref_name }}
-
