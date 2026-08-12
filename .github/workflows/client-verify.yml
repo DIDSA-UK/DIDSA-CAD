@@ -83,3 +83,4 @@ jobs:
           git add DIDSA-CAD-client-debug.apk
           git commit -m "Update client install APK [skip ci]"
           git push origin HEAD:${{ github.ref_name }}
+
