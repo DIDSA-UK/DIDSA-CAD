@@ -1273,7 +1273,12 @@ class DocumentApiClient {
   ) async {
     http.Response response;
     try {
-      response = await request().timeout(ApiConfig.requestTimeout);
+      // See ApiConfig.documentRequestTimeout's own doc comment: every
+      // /document call gets the long timeout, not just the ones that are
+      // obviously heavy - a Part's cost is data-dependent (a complex Gear
+      // Feature makes every later call against that same Part expensive
+      // too, not just the call that created it).
+      response = await request().timeout(ApiConfig.documentRequestTimeout);
     } on Exception catch (e) {
       throw ApiException('Could not reach the server: $e');
     }
@@ -1291,7 +1296,7 @@ class DocumentApiClient {
   Future<Uint8List> _sendBytes(Future<http.Response> Function() request) async {
     http.Response response;
     try {
-      response = await request().timeout(ApiConfig.requestTimeout);
+      response = await request().timeout(ApiConfig.documentRequestTimeout);
     } on Exception catch (e) {
       throw ApiException('Could not reach the server: $e');
     }
@@ -2167,6 +2172,13 @@ class DocumentApiClient {
   /// tooth's flat 2D outline (what `/gear/preview` returns) is identical to
   /// the equivalent spur profile - the twist is a 3D-only effect gear_math's
   /// preview response has no way to represent and doesn't need to.
+  ///
+  /// On-device feedback (herringbone/complex-gear timeout investigation):
+  /// [pointsPerFlank] (default `12`, matching the backend's own default)
+  /// mirrors `GearFeatureCreate.points_per_flank` - [GearDesignScreen]'s
+  /// draft-precision slider lowers it for a helical/herringbone gear, whose
+  /// two twisted `ThruSections` lofts are the most expensive OCCT build
+  /// this app can trigger from a single request.
   Future<FeatureDto> createGearFeature(
     String partId, {
     required String gearType,
@@ -2183,6 +2195,7 @@ class DocumentApiClient {
     List<String> targetBodyIds = const [],
     double helixAngleDegrees = 0.0,
     bool herringbone = false,
+    int pointsPerFlank = 12,
   }) =>
       _send(
         () => _httpClient.post(
@@ -2203,6 +2216,7 @@ class DocumentApiClient {
                 'target_body_ids': targetBodyIds,
                 'helix_angle_degrees': helixAngleDegrees,
                 'herringbone': herringbone,
+                'points_per_flank': pointsPerFlank,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
