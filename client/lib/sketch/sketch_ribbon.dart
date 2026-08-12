@@ -87,7 +87,7 @@ class SketchRibbon extends StatelessWidget {
     // Stage 23d: the ribbon can no longer be opened with an empty selection
     // (tapping blank canvas is now a no-op - see
     // SketchController._handleSelectTap), so this is unreachable in
-    // practice. Exit Sketch now lives in the hamburger menu (Stage 23f).
+    // practice.
     if (selectionSet.isEmpty) {
       return const SizedBox.shrink();
     }

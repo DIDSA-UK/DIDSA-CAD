@@ -693,6 +693,7 @@ def _gear_feature_response(
         target_body_ids=feature.target_body_ids,
         helix_angle_degrees=feature.helix_angle_degrees,
         herringbone=feature.herringbone,
+        points_per_flank=feature.points_per_flank,
         locked=part.is_locked(feature.id),
         produces=feature.produces,
         warnings=warnings,
@@ -2857,6 +2858,7 @@ def create_gear_feature(part_id: str, payload: GearFeatureCreate) -> GearFeature
         target_body_ids=list(payload.target_body_ids),
         helix_angle_degrees=payload.helix_angle_degrees,
         herringbone=payload.herringbone,
+        points_per_flank=payload.points_per_flank,
     )
     _, warnings = resolve_gear(part, feature)  # raises on an unresolvable/invalid gear
     part.add_feature(feature)
@@ -2908,6 +2910,9 @@ def update_gear_feature(part_id: str, feature_id: str, payload: GearFeatureUpdat
         payload.helix_angle_degrees if payload.helix_angle_degrees is not None else feature.helix_angle_degrees
     )
     new_herringbone = payload.herringbone if payload.herringbone is not None else feature.herringbone
+    new_points_per_flank = (
+        payload.points_per_flank if payload.points_per_flank is not None else feature.points_per_flank
+    )
 
     _validate_gear_feature_payload(new_is_internal, new_outer_diameter)
     _validate_plane_ref(part, new_plane_ref)
@@ -2929,6 +2934,7 @@ def update_gear_feature(part_id: str, feature_id: str, payload: GearFeatureUpdat
         target_body_ids=new_target_body_ids,
         helix_angle_degrees=new_helix_angle_degrees,
         herringbone=new_herringbone,
+        points_per_flank=new_points_per_flank,
     )
     _, warnings = resolve_gear(part, candidate)  # raises on an unresolvable/invalid gear
 
@@ -2946,6 +2952,7 @@ def update_gear_feature(part_id: str, feature_id: str, payload: GearFeatureUpdat
     feature.target_body_ids = candidate.target_body_ids
     feature.helix_angle_degrees = candidate.helix_angle_degrees
     feature.herringbone = candidate.herringbone
+    feature.points_per_flank = candidate.points_per_flank
     return _gear_feature_response(part, feature, warnings)
 
 

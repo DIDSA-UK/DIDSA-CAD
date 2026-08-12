@@ -18,6 +18,12 @@ import 'viewport3d/svg_icon.dart';
 /// already succeeded, never before it the way `MeshViewerScreen` (fully
 /// on-device, no server needed) can be reached from [ConnectionScreen]
 /// directly.
+///
+/// Every tile below `push`es its destination (not `pushReplacement`) and
+/// `ConnectionScreen` itself now `push`es this screen - so the Navigator
+/// stack is preserved end to end, and each destination's default/automatic
+/// back arrow correctly pops back to this screen rather than skipping past
+/// it straight to [ConnectionScreen].
 class ToolChooserScreen extends StatelessWidget {
   const ToolChooserScreen({super.key});
 
@@ -26,6 +32,12 @@ class ToolChooserScreen extends StatelessWidget {
     const backgroundColor = Color(0xFF1E1E2E);
     return Scaffold(
       backgroundColor: backgroundColor,
+      // A real (non-replacement) AppBar, now that the tiles below `push`
+      // rather than `pushReplacement` - gives this screen its own back
+      // affordance to `ConnectionScreen`/settings, and means the automatic
+      // back arrow on whichever tool screen a tile leads to actually lands
+      // back here instead of skipping past this screen entirely.
+      appBar: AppBar(backgroundColor: backgroundColor, elevation: 0, foregroundColor: Colors.white70),
       // Scrollable rather than a bare Center: a fourth tile (AI Modelling)
       // pushed this past a fixed-height overflow on shorter viewports -
       // docs/ai-modelling/02-scoping-conversation.md's own doc-fix note.
@@ -49,7 +61,7 @@ class ToolChooserScreen extends StatelessWidget {
                       icon: 'assets/icons/feature/feature_extrude.svg',
                       label: '3D Part Design',
                       subtitle: 'Sketch, extrude, and build a solid model',
-                      onTap: () => Navigator.of(context).pushReplacement(
+                      onTap: () => Navigator.of(context).push(
                         MaterialPageRoute(builder: (_) => const PartScreen()),
                       ),
                     ),
@@ -58,7 +70,7 @@ class ToolChooserScreen extends StatelessWidget {
                       icon: 'assets/icons/feature/feature_new_sketch.svg',
                       label: '2D Drawing',
                       subtitle: 'Floor plans and other flat drawings',
-                      onTap: () => Navigator.of(context).pushReplacement(
+                      onTap: () => Navigator.of(context).push(
                         MaterialPageRoute(builder: (_) => const SketchScreen(standalone: true)),
                       ),
                     ),
@@ -67,7 +79,7 @@ class ToolChooserScreen extends StatelessWidget {
                       icon: 'assets/icons/feature/feature_revolve.svg',
                       label: 'Gear Design',
                       subtitle: 'External/internal gears and racks',
-                      onTap: () => Navigator.of(context).pushReplacement(
+                      onTap: () => Navigator.of(context).push(
                         MaterialPageRoute(builder: (_) => const GearDesignScreen()),
                       ),
                     ),
@@ -80,7 +92,7 @@ class ToolChooserScreen extends StatelessWidget {
                       // scoping conversation - it never assists an
                       // already-open one.
                       subtitle: 'Start a new part with AI help',
-                      onTap: () => Navigator.of(context).pushReplacement(
+                      onTap: () => Navigator.of(context).push(
                         MaterialPageRoute(builder: (_) => const AiModellingScreen()),
                       ),
                     ),

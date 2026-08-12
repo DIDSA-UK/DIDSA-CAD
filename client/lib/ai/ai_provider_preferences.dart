@@ -6,9 +6,8 @@ import 'openai_compatible_provider.dart';
 
 /// AI Modelling workstream 1: which AI provider is active, plus each
 /// provider slot's own `baseUrl`/`apiKey`/`model` fields - mirrors
-/// `ApiConfig`/`SketcherPreferences`'s own `shared_preferences`-backed,
-/// load-then-read-getters pattern exactly (`client/lib/config.dart`,
-/// `client/lib/sketch/sketcher_preferences.dart`).
+/// `ApiConfig`'s own `shared_preferences`-backed, load-then-read-getters
+/// pattern exactly (`client/lib/config.dart`).
 class AiProviderPreferences {
   AiProviderPreferences._();
 
