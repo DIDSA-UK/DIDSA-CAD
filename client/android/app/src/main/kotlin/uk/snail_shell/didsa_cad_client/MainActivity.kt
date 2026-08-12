@@ -1,5 +1,116 @@
 package uk.snail_shell.didsa_cad_client
 
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.MethodChannel
 
-class MainActivity: FlutterActivity()
+/// Bridges the Server Management screen's Termux control calls (see
+/// client/lib/server_management/termux_controller.dart) to Android's
+/// Intent/permission APIs - no Flutter plugin exposes an explicit-component
+/// Service intent carrying a third-party app's own custom permission, so
+/// this is a small hand-written channel rather than a dependency.
+///
+/// This class *is* the single FlutterActivity, not a separate plugin, so it
+/// gets onRequestPermissionsResult as an ordinary inherited Activity
+/// override - no PluginRegistry.RequestPermissionsResultListener
+/// registration needed (that interface, and addRequestPermissionsResultListener,
+/// are for plugins hooking into an Activity's callback from outside it; both
+/// also declare a Boolean-returning onRequestPermissionsResult, which can't
+/// coexist with FlutterActivity's own Unit-returning override of the same
+/// signature).
+class MainActivity : FlutterActivity() {
+    private val channelName = "uk.snail_shell.didsa_cad_client/termux"
+    private val runCommandPermission = "com.termux.permission.RUN_COMMAND"
+    private val permissionRequestCode = 7421
+
+    // Only one request can be in flight at a time (the screen disables its
+    // own "Grant permission" button while a request is pending), so a
+    // single field - not a queue - is enough to carry the pending Flutter
+    // result across onRequestPermissionsResult's own separate callback.
+    private var pendingPermissionResult: MethodChannel.Result? = null
+
+    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+        super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "hasPermission" -> result.success(hasRunCommandPermission())
+                "requestPermission" -> requestRunCommandPermission(result)
+                "runCommand" -> {
+                    val executable = call.argument<String>("executable")
+                    val arguments = call.argument<List<String>>("arguments")
+                    if (executable == null || arguments == null) {
+                        result.error("bad_args", "executable and arguments are required", null)
+                    } else {
+                        result.success(sendRunCommandIntent(executable, arguments))
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
+    }
+
+    private fun hasRunCommandPermission(): Boolean =
+        ContextCompat.checkSelfPermission(this, runCommandPermission) == PackageManager.PERMISSION_GRANTED
+
+    private fun requestRunCommandPermission(result: MethodChannel.Result) {
+        if (hasRunCommandPermission()) {
+            result.success(true)
+            return
+        }
+        pendingPermissionResult = result
+        ActivityCompat.requestPermissions(this, arrayOf(runCommandPermission), permissionRequestCode)
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != permissionRequestCode) return
+        val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
+        pendingPermissionResult?.success(granted)
+        pendingPermissionResult = null
+    }
+
+    /// Fires a RUN_COMMAND intent at Termux's RunCommandService - see
+    /// https://github.com/termux/termux-app/wiki/RUN_COMMAND-Intent.
+    /// [arguments] is delivered to Android as a real String[] extra (an
+    /// exec()-style argv array, never re-parsed as a shell string by
+    /// Android or by Termux), so [executable]/[arguments] need no shell
+    /// escaping at this layer - only the final "bash -lc <script>" element
+    /// built by termux_commands.dart's own command builders needs the
+    /// values it interpolates (branch name, API key) shell-quoted, which it
+    /// already does. Background (no visible terminal session): this
+    /// returns as soon as Android accepts the intent, without waiting for
+    /// the command to finish - actual success/failure is confirmed by the
+    /// Dart side polling the backend's own /health endpoint afterward, not
+    /// by this call's return value. Returns false only if the intent
+    /// couldn't be dispatched at all (missing permission, Termux not
+    /// installed, or the call itself throwing) - true means Android handed
+    /// the intent to Termux, not that the command inside it succeeded.
+    private fun sendRunCommandIntent(executable: String, arguments: List<String>): Boolean {
+        if (!hasRunCommandPermission()) return false
+        return try {
+            val intent = Intent()
+            intent.setClassName("com.termux", "com.termux.app.RunCommandService")
+            intent.action = "com.termux.RUN_COMMAND"
+            intent.putExtra("com.termux.RUN_COMMAND_PATH", executable)
+            intent.putExtra("com.termux.RUN_COMMAND_ARGUMENTS", arguments.toTypedArray())
+            intent.putExtra("com.termux.RUN_COMMAND_BACKGROUND", true)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+}

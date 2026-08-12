@@ -11,6 +11,9 @@ on:
     paths:
       - "client/**"
 
+permissions:
+  contents: write
+
 jobs:
   analyze-and-test:
     runs-on: ubuntu-latest
@@ -47,3 +50,57 @@ jobs:
       - name: Run tests
         if: ${{ !cancelled() }}
         run: flutter test
+
+      # Debug-signed only (no release keystore configured) - good enough for
+      # sideloading onto a test device, not a Play Store-ready build. No
+      # externalNativeBuild is wired up for client/native/slvs (see its own
+      # CMakeLists.txt header - that's still a separate, partly-manual cross
+      # -compile step), so this APK doesn't bundle the local FFI sketch
+      # solver; the app's own documented network fallback covers that gap,
+      # not a build failure here. Runs only after analyze+test both pass
+      # (default `if: success()`, unlike the `!cancelled()` steps above).
+      - name: Build debug APK
+        run: flutter build apk --debug
+
+      # Published as a GitHub Release asset rather than committed into the
+      # tracked tree: git can't delta-compress a binary against its prior
+      # version, so committing a new APK on every push (this workflow
+      # triggers on every branch touching client/**) would grow the repo's
+      # object store by one full APK's size per push, forever - a Release
+      # asset lives in GitHub's separate storage instead, so the repo itself
+      # never grows.
+      #
+      # One release *per branch* (tag client-debug-<branch, slashes as
+      # dashes>), not one shared "latest" - several branches can be under
+      # test at once, and a single shared tag would mean whichever branch
+      # pushed most recently silently clobbers every other branch's APK.
+      # `gh release upload --clobber` replaces that branch's own asset in
+      # place on a later push to the same branch; `gh release create` only
+      # the first time. The asset filename itself also carries the branch
+      # name, so the downloaded file is identifiable on-device, not just on
+      # the GitHub Releases page. Known limitation, not handled here: a
+      # release isn't cleaned up when its branch is later deleted/merged -
+      # stale per-branch releases accumulate until manually removed.
+      #
+      # Only runs for a real push (not a pull_request build, which may come
+      # from a fork without release-creation access here).
+      - name: Publish debug APK as a GitHub Release asset
+        if: ${{ github.event_name == 'push' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd ..
+          BRANCH="${{ github.ref_name }}"
+          SLUG=$(echo "$BRANCH" | tr '/' '-')
+          TAG="client-debug-$SLUG"
+          ASSET_NAME="DIDSA-CAD-client-$SLUG.apk"
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          NOTES="Debug-signed sideload build for branch \`$BRANCH\` at commit \`$SHORT_SHA\`. Auto-published by CI - not a Play Store-ready release."
+          cp client/build/app/outputs/flutter-apk/app-debug.apk "$ASSET_NAME"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ASSET_NAME" --clobber
+            gh release edit "$TAG" --notes "$NOTES"
+          else
+            gh release create "$TAG" "$ASSET_NAME" --title "Client debug build - $BRANCH" --notes "$NOTES"
+          fi
+

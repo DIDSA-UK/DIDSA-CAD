@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Standalone on-device backend (Termux/proot-hosted, no HTTPS in front of
+     it - see docs discussion): Android blocks cleartext (plain HTTP)
+     traffic by default for this app's target SDK, which would otherwise
+     block ApiConfig.baseUrl pointed at http://127.0.0.1:8000. Scoped to the
+     loopback interface only - every other host (the Cloudflare Tunnel
+     deployment, or any future non-loopback host) still requires HTTPS under
+     the platform default (base-config below), unchanged. -->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>
