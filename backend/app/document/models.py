@@ -1091,6 +1091,18 @@ class GearFeature(Feature):
     helix_angle_degrees: float = 0.0
     herringbone: bool = False
 
+    # On-device feedback (herringbone/complex-gear timeout investigation):
+    # how many points `app.document.gear` samples per tooth flank when
+    # fitting each one's `Geom_BSplineCurve` - previously a fixed module
+    # constant there, matching `01-gear-math-core.md`'s "~10-20 sampled
+    # points per flank" target - lower trades tooth-flank smoothness for a
+    # cheaper OCCT build, which matters most for a helical/herringbone gear
+    # (two twisted `ThruSections` lofts, each
+    # wire carrying `4 * tooth_count` edges, then fused) on modest
+    # hardware. `12` (the default) reproduces every GearFeature persisted
+    # before this field existed byte-identically.
+    points_per_flank: int = 12
+
     @property
     def type(self) -> str:
         return "gear"

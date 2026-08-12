@@ -91,6 +91,16 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
   double _rootFilletRadius = 0.0;
   double _helixAngleDegrees = 0.0;
   bool _herringbone = false;
+
+  /// On-device feedback (herringbone/complex-gear timeout investigation):
+  /// how many points the backend samples per tooth flank when fitting its
+  /// smooth curve (`GearFeatureCreate.points_per_flank`) - `12` (the
+  /// backend's own default) reproduces the exact geometry every gear built
+  /// before this control existed. Lower trades tooth-flank smoothness for
+  /// a cheaper OCCT build, most useful for a helical/herringbone gear
+  /// (`_helixAngleDegrees != 0.0`) - its two twisted `ThruSections` lofts
+  /// are the slowest thing this screen can ask the backend to build.
+  int _pointsPerFlank = 12;
   String _plane = 'XY';
   bool _showReferenceOverlay = true;
 
@@ -290,6 +300,7 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
           planeRef: planeRef,
           helixAngleDegrees: _helixAngleDegrees,
           herringbone: _herringbone,
+          pointsPerFlank: _pointsPerFlank,
         );
         warnings = feature.warnings;
       }
@@ -481,6 +492,50 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
               value: _herringbone,
               onChanged: (value) => setState(() => _herringbone = value),
             ),
+            // On-device feedback (herringbone/complex-gear timeout
+            // investigation): a helical/herringbone tooth is the slowest
+            // gear this screen can build (two twisted ThruSections lofts,
+            // fused for herringbone) - only shown here, not for a plain
+            // spur gear, since that path is already fast regardless of
+            // this value.
+            Row(
+              children: [
+                Expanded(
+                  child: Text('Tooth curve precision', style: Theme.of(context).textTheme.bodyMedium),
+                ),
+                fieldHelpIcon(
+                  'How many points each tooth flank is sampled at before fitting a smooth curve through '
+                  'them. Lower is faster to build (fewer points for the backend to loft/fuse) but gives a '
+                  'more faceted tooth flank - most noticeable on a large module or low tooth count.',
+                ),
+              ],
+            ),
+            Row(
+              children: [
+                Expanded(
+                  child: Slider(
+                    value: _pointsPerFlank.toDouble(),
+                    min: 4,
+                    max: 20,
+                    divisions: 16,
+                    label: '$_pointsPerFlank',
+                    onChanged: (value) => setState(() => _pointsPerFlank = value.round()),
+                  ),
+                ),
+                SizedBox(
+                  width: 88,
+                  child: Text(
+                    _pointsPerFlank <= 6
+                        ? 'Draft ($_pointsPerFlank)'
+                        : _pointsPerFlank >= 16
+                            ? 'Fine ($_pointsPerFlank)'
+                            : '$_pointsPerFlank pts',
+                    textAlign: TextAlign.end,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+              ],
+            ),
           ],
         ],
         const SizedBox(height: 12),
@@ -575,6 +630,23 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
                 )
               : const Text('Create'),
         ),
+        // On-device feedback (herringbone/complex-gear timeout
+        // investigation): a helical/herringbone tooth is a real, known-
+        // upfront-slow OCCT build (two twisted ThruSections lofts fused
+        // together, per `app.document.gear._helical_or_herringbone_solid`)
+        // - shown unconditionally while `_creating` rather than after a
+        // delay (contrast [PartScreen]'s own delayed overlay, which covers
+        // every kind of guarded call and can't tell slow from instant
+        // upfront) since this screen already knows exactly which gears are
+        // the slow ones.
+        if (_creating && _helixAngleDegrees != 0.0)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(
+              'Building ${_herringbone ? 'herringbone' : 'helical'} gear geometry - this can take a while...',
+              style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12),
+            ),
+          ),
       ],
     );
   }
@@ -594,6 +666,7 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
         'rootFilletRadius': _rootFilletRadius,
         'helixAngleDegrees': _helixAngleDegrees,
         'herringbone': _herringbone,
+        'pointsPerFlank': _pointsPerFlank,
         'outerDiameter': _outerDiameterController.text,
         'backingHeight': _backingHeightController.text,
         'plane': _plane,
@@ -619,6 +692,7 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
       _rootFilletRadius = (fields['rootFilletRadius'] as num?)?.toDouble() ?? _rootFilletRadius;
       _helixAngleDegrees = (fields['helixAngleDegrees'] as num?)?.toDouble() ?? _helixAngleDegrees;
       _herringbone = fields['herringbone'] as bool? ?? _herringbone;
+      _pointsPerFlank = (fields['pointsPerFlank'] as num?)?.toInt() ?? _pointsPerFlank;
       if (fields['outerDiameter'] is String) _outerDiameterController.text = fields['outerDiameter'] as String;
       if (fields['backingHeight'] is String) _backingHeightController.text = fields['backingHeight'] as String;
       _plane = fields['plane'] as String? ?? _plane;

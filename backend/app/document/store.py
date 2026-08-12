@@ -3,6 +3,7 @@ from collections import OrderedDict
 
 from fastapi import HTTPException
 
+from app.document import body_cache
 from app.document.models import Document, Part, SketchFeature
 from app.session_context import get_current_session_id
 
@@ -47,12 +48,25 @@ def replace_document(document: Document) -> None:
     `app.sketch.store.replace_all_sketches` doing the same for the Sketch
     side - together they make an import a clean, atomic full replacement
     rather than a merge with whatever Document/Sketches were open before,
-    scoped to this one session."""
+    scoped to this one session.
+
+    On-device feedback (herringbone/complex-gear timeout investigation):
+    also drops every cached `compute_part_bodies` checkpoint chain (`app.
+    document.body_cache.clear`) - the incoming `document`'s Parts can reuse
+    ids a stale cache entry still references with completely different
+    content, and there's no cheaper per-part signal available here to tell
+    which entries are actually still valid. `body_cache` is keyed by Part
+    id (a fresh uuid4 per Part, never reused across sessions in practice),
+    so clearing it globally rather than per-session is harmless - it just
+    means an import in one session can force a cache rebuild for another
+    session's unrelated Part in the vanishingly unlikely event of a uuid4
+    collision."""
     session_id = get_current_session_id()
     with _lock:
         _documents[session_id] = document
         _documents.move_to_end(session_id)
         _evict_oldest_locked()
+    body_cache.clear()
 
 
 def _evict_oldest_locked() -> None:

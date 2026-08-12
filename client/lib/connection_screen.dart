@@ -6,6 +6,8 @@ import 'ai/ai_provider_preferences.dart';
 import 'config.dart';
 import 'mesh_viewer/mesh_viewer_screen.dart';
 import 'mesh_viewer/mesh_viewer_settings_screen.dart';
+import 'server_management/server_management_screen.dart';
+import 'server_management/termux_controller.dart';
 import 'sketch/sketcher_settings_screen.dart';
 import 'tool_chooser_screen.dart';
 import 'viewport3d/svg_icon.dart';
@@ -85,6 +87,27 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
   bool get _canConnect =>
       !_busy && _serverUrlController.text.trim().isNotEmpty && _apiKeyController.text.trim().isNotEmpty;
 
+  /// Fills the fields with the fixed local address plus whatever key
+  /// Server Management's own startServer/restartServer last stamped as
+  /// [ApiConfig.localApiKey] - deliberately does *not* call [_handleConnect]
+  /// itself, so the existing "never save without a real health check
+  /// succeeding" guarantee still applies; this only fills the fields, same
+  /// as autofill would.
+  void _useLocalServer() {
+    if (ApiConfig.localApiKey.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No local server key recorded yet - start it once from Server Management first.'),
+        ),
+      );
+      return;
+    }
+    setState(() {
+      _serverUrlController.text = TermuxController.localBaseUrl;
+      _apiKeyController.text = ApiConfig.localApiKey;
+    });
+  }
+
   Future<void> _handleConnect() async {
     final url = _serverUrlController.text.trim();
     final key = _apiKeyController.text.trim();
@@ -107,7 +130,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
       if (widget.isSettingsRevisit) {
         Navigator.of(context).pop();
       } else {
-        Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const ToolChooserScreen()));
+        Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ToolChooserScreen()));
       }
     } catch (_) {
       if (!mounted) return;
@@ -189,7 +212,17 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                       ],
                     ),
                   ),
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton.icon(
+                      onPressed: _busy ? null : _useLocalServer,
+                      style: TextButton.styleFrom(foregroundColor: Colors.white70),
+                      icon: const Icon(Icons.smartphone, size: 18),
+                      label: const Text('Use Local Server'),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
                   // On-device feedback: restyled to match the mesh-viewer
                   // bar's own stadium-split shape/size exactly (see below) -
                   // Connect as the 80% action, a new settings entry for the
@@ -242,6 +275,28 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                     const SizedBox(height: 16),
                     Text(_error!, style: const TextStyle(color: Colors.redAccent), textAlign: TextAlign.center),
                   ],
+                  const SizedBox(height: 16),
+                  // Controls an on-device standalone backend (Termux +
+                  // proot-distro) via Termux's RUN_COMMAND intent - shown
+                  // both on cold launch and on a settings revisit, unlike
+                  // the mesh-viewer entry below, since it's about the
+                  // backend itself rather than something independent of it.
+                  SizedBox(
+                    width: double.infinity,
+                    height: 44,
+                    child: OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.white70,
+                        side: const BorderSide(color: Colors.white24),
+                        shape: const StadiumBorder(),
+                      ),
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const ServerManagementScreen()),
+                      ),
+                      icon: const Icon(Icons.dns_outlined, size: 20),
+                      label: const Text('Server Management'),
+                    ),
+                  ),
                   // On-device feedback: "View Complex Mesh" (see
                   // mesh_viewer/mesh_viewer_screen.dart) decodes and renders
                   // an STL/OBJ/glTF file entirely on-device, with no server
