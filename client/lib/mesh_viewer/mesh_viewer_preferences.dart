@@ -43,9 +43,12 @@ class MeshViewerPreferences {
   /// [defaultUpAxis] is `y`: most files need no correction at all.
   static const bool defaultMirror = false;
 
-  // On while the camera-calibration round is still active - see this key's
-  // own doc comment.
-  static const bool defaultDebugShowCameraOrientation = true;
+  // Off by default - a debug aid (see this key's own doc comment), not
+  // something a normal user should see on first launch. Still reachable via
+  // this viewer's own settings screen for whoever needs it - same change,
+  // same reasoning, as ViewPreferences.defaultDebugShowCameraOrientation's
+  // identical toggle for the main CAD viewport.
+  static const bool defaultDebugShowCameraOrientation = false;
 
   static int _maxTriangles = defaultMaxTriangles;
   static MeshUpAxis _upAxis = defaultUpAxis;

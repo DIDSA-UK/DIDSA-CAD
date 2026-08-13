@@ -25,19 +25,22 @@ class ViewPreferences {
   // screen.
   static const String debugShowCameraOrientationPrefKey = 'view_debug_camera_orientation';
 
-  /// Stage 19a Item 4: was `#1E1E2E` (Studio Dark) through Stage 18 - anyone
-  /// who already has that stored keeps it (see [load]); this only changes
-  /// the fallback for new installs / cleared preferences.
-  static const String defaultBgColourHex = '#F5F5F0';
+  /// Was `#1E1E2E` (Studio Dark) through Stage 18, then `#F5F5F0`
+  /// (Off-white) through Stage 19a - now Charcoal (matches
+  /// `view_prefs_sheets.dart`'s own `backgroundColourSwatches` entry).
+  /// Anyone who already has a value stored keeps it (see [load]); this only
+  /// changes the fallback for new installs / cleared preferences.
+  static const String defaultBgColourHex = '#2C2C2C';
 
   /// Was `#B0B8C1` ("Aluminium") through the `UnlitMaterial`-only rendering
-  /// era - changed to mid-grey alongside the `PhysicallyBasedMaterial`
-  /// lighting/shading upgrade (see `scene_preferences.dart`), per the user's
-  /// explicit requested default for the new Scene menu. Anyone with an
-  /// existing stored value keeps it (see [load]) - this only changes the
-  /// fallback for new installs / cleared preferences, same non-destructive
-  /// convention as [defaultBgColourHex]'s own past change.
-  static const String defaultBodyColourHex = '#808080';
+  /// era, then mid-grey (`#808080`) alongside the `PhysicallyBasedMaterial`
+  /// lighting/shading upgrade (see `scene_preferences.dart`) - now back to
+  /// Aluminium (matches `view_prefs_sheets.dart`'s own `bodyColourSwatches`
+  /// entry). Anyone with an existing stored value keeps it (see [load]) -
+  /// this only changes the fallback for new installs / cleared preferences,
+  /// same non-destructive convention as [defaultBgColourHex]'s own past
+  /// changes.
+  static const String defaultBodyColourHex = '#B0B8C1';
   static const double defaultBodyOpacity = 1.0;
 
   /// Stage 19a Item 5: the most common default render mode in professional
@@ -48,9 +51,10 @@ class ViewPreferences {
   static const bool defaultIsPerspective = false;
   // A3: default far clip imported from orbit_camera.dart's constant.
   static double get defaultFarClip => kDefaultFarClip;
-  // On while the camera-calibration round is still active - see this key's
-  // own doc comment.
-  static const bool defaultDebugShowCameraOrientation = true;
+  // Off by default - a debug aid (see this key's own doc comment), not
+  // something a normal user should see on first launch. Still reachable via
+  // CAD Settings for whoever needs it.
+  static const bool defaultDebugShowCameraOrientation = false;
 
   static String _bgColourHex = defaultBgColourHex;
   static String _bodyColourHex = defaultBodyColourHex;
