@@ -82,6 +82,12 @@ class _ServerManagementScreenState extends State<ServerManagementScreen> {
     final result = expect == null
         ? await _controller.check()
         : await _controller.pollUntil(expect: expect);
+    // On anything other than a clean success, also fetch whatever Termux
+    // actually reported back for this dispatch (see TermuxResultService's
+    // own doc comment) - a /health timeout alone doesn't say *why*, and the
+    // raw result (or the lack of one) is the most direct diagnostic
+    // available without a device debugger attached.
+    final lastResult = result == ServerReachability.reachable ? null : await _controller.getLastCommandResult();
     if (!mounted) return;
     setState(() {
       _busy = false;
@@ -89,9 +95,20 @@ class _ServerManagementScreenState extends State<ServerManagementScreen> {
       _statusMessage = switch (result) {
         ServerReachability.reachable => '$label - server responding at $_localAddress.',
         ServerReachability.unreachable =>
-          '$label - dispatched, but the server is not responding yet. Check ~/didsa-backend.log in Termux.',
-        ServerReachability.unknown => '$label - dispatched.',
+          '$label - dispatched, but the server is not responding yet. Check ~/didsa-backend.log in Termux.\n\n'
+              'Last Termux result:\n$lastResult',
+        ServerReachability.unknown => '$label - dispatched.\n\nLast Termux result:\n$lastResult',
       };
+    });
+  }
+
+  Future<void> _showLastResult() async {
+    setState(() => _busy = true);
+    final result = await _controller.getLastCommandResult();
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      _statusMessage = 'Last Termux result:\n$result';
     });
   }
 
@@ -246,6 +263,11 @@ class _ServerManagementScreenState extends State<ServerManagementScreen> {
                 onPressed: _busy ? null : _checkHealth,
                 icon: const Icon(Icons.favorite_border),
                 label: const Text('Check health'),
+              ),
+              TextButton.icon(
+                onPressed: _busy ? null : _showLastResult,
+                icon: const Icon(Icons.receipt_long_outlined),
+                label: const Text('Show last Termux result'),
               ),
             ],
           ),

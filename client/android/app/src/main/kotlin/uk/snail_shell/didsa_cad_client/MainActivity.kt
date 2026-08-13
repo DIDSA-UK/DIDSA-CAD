@@ -1,7 +1,9 @@
 package uk.snail_shell.didsa_cad_client
 
+import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
@@ -49,6 +51,7 @@ class MainActivity : FlutterActivity() {
                         result.success(sendRunCommandIntent(executable, arguments))
                     }
                 }
+                "getLastCommandResult" -> result.success(getLastCommandResult())
                 else -> result.notImplemented()
             }
         }
@@ -123,10 +126,47 @@ class MainActivity : FlutterActivity() {
             intent.putExtra("com.termux.RUN_COMMAND_PATH", executable)
             intent.putExtra("com.termux.RUN_COMMAND_ARGUMENTS", arguments.toTypedArray())
             intent.putExtra("com.termux.RUN_COMMAND_BACKGROUND", true)
+            intent.putExtra("com.termux.RUN_COMMAND_PENDING_INTENT", buildResultPendingIntent())
             startService(intent)
             true
         } catch (e: Exception) {
             false
         }
+    }
+
+    /// A PendingIntent targeting TermuxResultService, passed to Termux as
+    /// com.termux.RUN_COMMAND_PENDING_INTENT so it can hand back the real
+    /// result (whatever shape that actually turns out to be - see
+    /// TermuxResultService's own doc comment on why the receiver doesn't
+    /// assume an exact schema) instead of this app having to infer success/
+    /// failure purely from polling /health afterward.
+    ///
+    /// FLAG_MUTABLE is required on API 31+ (Android 12+): Termux fills in
+    /// its own result extras onto this PendingIntent's Intent when it fires
+    /// it, and an immutable PendingIntent (the default on 31+ when neither
+    /// flag is specified) silently drops any extras the sender tries to
+    /// add - the result would arrive with none of what Termux actually
+    /// meant to send. FLAG_ONE_SHOT since each dispatched command only
+    /// expects one result delivery.
+    private fun buildResultPendingIntent(): PendingIntent {
+        val resultIntent = Intent(this, TermuxResultService::class.java)
+        var flags = PendingIntent.FLAG_ONE_SHOT
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            flags = flags or PendingIntent.FLAG_MUTABLE
+        }
+        return PendingIntent.getService(this, 0, resultIntent, flags)
+    }
+
+    /// Reads back whatever TermuxResultService last wrote - see that
+    /// class's own doc comment for why this is a raw, generic dump rather
+    /// than parsed named fields. Returns a human-readable placeholder
+    /// (never null/throws) if nothing has arrived yet, so the Dart side can
+    /// always just display whatever this returns directly.
+    private fun getLastCommandResult(): String {
+        val prefs = getSharedPreferences(TermuxResultService.prefsName, MODE_PRIVATE)
+        val result = prefs.getString(TermuxResultService.lastResultKey, null)
+            ?: return "(no result received yet from any dispatched command)"
+        val time = prefs.getLong(TermuxResultService.lastResultTimeKey, 0L)
+        return "Received at $time (epoch ms):\n$result"
     }
 }

@@ -41,6 +41,19 @@ class TermuxController {
     return result ?? false;
   }
 
+  /// The raw dump TermuxResultService last captured from whatever Termux
+  /// actually sent back via the RUN_COMMAND_PENDING_INTENT result callback
+  /// - see that class's own doc comment for why this is unparsed text
+  /// rather than a typed result (the exact Termux result-bundle schema
+  /// wasn't confirmed against primary source, so the native side captures
+  /// everything present rather than betting on assumed key names). Always
+  /// returns *something* displayable, never null/throws - a placeholder
+  /// string if nothing has arrived yet.
+  Future<String> getLastCommandResult() async {
+    final result = await _channel.invokeMethod<String>('getLastCommandResult');
+    return result ?? '(no result available)';
+  }
+
   /// Returns false only if the intent itself couldn't be dispatched
   /// (missing permission, Termux not installed) - see MainActivity.kt's
   /// own doc comment on what this return value does and doesn't confirm.
