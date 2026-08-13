@@ -1,3 +1,6 @@
+import subprocess
+from pathlib import Path
+
 from fastapi import Depends, FastAPI
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 
@@ -18,8 +21,36 @@ app = FastAPI(dependencies=[Depends(verify_api_key)])
 app.include_router(sketch_router)
 app.include_router(document_router)
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def _read_git_branch() -> str:
+    # Read once at import time (like app.auth's API key), not per-request -
+    # the branch a running server is on doesn't change without a restart,
+    # so there's no reason to shell out to git on every /health call. Used
+    # by the Server Management screen's status pane to show which branch
+    # the backend it's actually talking to is running, without needing a
+    # separate Termux RUN_COMMAND round trip just to read a git ref -
+    # informational only, so any failure here (git missing, not a repo)
+    # falls back to "unknown" rather than affecting startup at all.
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=_REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+        return result.stdout.strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
+_GIT_BRANCH = _read_git_branch()
+
 
 @app.get("/health")
 def health() -> dict:
     box = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
-    return {"status": "ok", "occt_shape_valid": not box.IsNull()}
+    return {"status": "ok", "occt_shape_valid": not box.IsNull(), "git_branch": _GIT_BRANCH}

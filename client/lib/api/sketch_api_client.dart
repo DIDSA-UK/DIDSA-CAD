@@ -1292,6 +1292,7 @@ class SketchApiClient {
   Map<String, String> get _headers => {
         'Content-Type': 'application/json',
         'X-API-Key': ApiConfig.apiKey,
+        'X-Document-Session': ApiConfig.sessionId,
       };
 
   Uri _uri(String path) => Uri.parse('${ApiConfig.baseUrl}$path');

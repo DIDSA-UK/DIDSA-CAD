@@ -50,6 +50,13 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- Receives the async result Termux sends back via the
+             PendingIntent passed as com.termux.RUN_COMMAND_PENDING_INTENT
+             (MainActivity.kt's buildResultPendingIntent) - not exported,
+             only Termux (holding the PendingIntent itself) can invoke it. -->
+        <service
+            android:name=".TermuxResultService"
+            android:exported="false" />
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

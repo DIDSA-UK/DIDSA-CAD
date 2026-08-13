@@ -1,7 +1,7 @@
 import math
 import uuid
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.sketch.constraints import (
     AngleConstraint,
@@ -139,13 +139,17 @@ from app.sketch.schemas import (
     VerticalConstraintCreate,
     VerticalConstraintResponse,
 )
+from app.session_context import bind_session_id
 from app.sketch.solver import SolveResult, solve_sketch
 from app.sketch.store import add_sketch as _add_sketch
 from app.sketch.store import create_sketch as _create_sketch
 from app.sketch.store import get_sketch_or_404 as _get_sketch_or_404
 from app.sketch.text_geometry import place_local_point, text_to_polygons
 
-router = APIRouter(prefix="/sketch", tags=["sketch"])
+# `bind_session_id` (not "default" for every caller) is what keeps this
+# router's Sketch state from being shared across every connection to the
+# backend - see app.session_context's docstring.
+router = APIRouter(prefix="/sketch", tags=["sketch"], dependencies=[Depends(bind_session_id)])
 
 
 def _get_point_or_404(sketch: Sketch, point_id: str) -> Point:

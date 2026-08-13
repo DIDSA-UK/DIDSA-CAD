@@ -16,7 +16,34 @@ class TermuxCommands {
   static const String backendDir = '$repoDir/backend';
   static const String condaEnv = 'didsa';
   static const String logFile = '~/didsa-backend.log';
-  static const String processMatch = 'uvicorn app.main:app';
+
+  /// Anchored ("^..."), deliberately not a bare substring - pkill -f
+  /// matches a process's *entire* command line, and proot has no real
+  /// PID-namespace isolation (it's ptrace-based emulation, not namespaces),
+  /// so a search run "inside" the distro can see and signal host-side
+  /// ancestor processes too, not just descendants. Every script this class
+  /// builds embeds this constant's own eventual "exec python -m uvicorn
+  /// ..." invocation as literal text *within* the same larger script
+  /// string that is still the currently-running dispatching shell's own
+  /// command line while pkill executes - an unanchored pattern therefore
+  /// matches that shell (and every proot-distro/proot wrapper layer above
+  /// it, which all carry the identical full script text as their own
+  /// command line too) and kills the whole dispatch out from under itself.
+  /// This was the real, complete explanation for every on-device "server
+  /// won't start" failure investigated for this screen - confirmed by
+  /// reproducing the exact "proot info: vpid 1: terminated with signal 15"
+  /// failure by running this line's own script directly at an interactive
+  /// Termux prompt, no RUN_COMMAND/backgrounding/Termux service involved
+  /// at all, which self-matching pkill alone fully explains. Two earlier,
+  /// plausible-looking fixes - foregrounding uvicorn via exec, then teeing
+  /// its output instead of redirecting it away - did not and could not
+  /// have fixed this, since neither touched it (kept anyway: both are
+  /// still independently correct practice). Anchoring to the real uvicorn
+  /// process's own argv0 ("python", from this class's own
+  /// "exec python -m uvicorn ...") is the fix - no wrapper layer's command
+  /// line starts with that, only a genuinely running uvicorn process's
+  /// does.
+  static const String processMatch = '^python -m uvicorn app.main:app';
 
   /// The executable RUN_COMMAND_PATH points at - proot-distro itself, not
   /// bash directly, since every command here needs to run inside the
@@ -95,14 +122,21 @@ class TermuxCommands {
       // confirmed by testing the failure path directly during this
       // feature's own development, not just by inspection.
       "&& (pkill -f ${_shellQuote(processMatch)} 2>/dev/null || true) "
-      // setsid + nohup + redirected stdin/stdout/stderr: the standard,
-      // fully-detached-daemon pattern - survives this script's own exit
-      // (and the RUN_COMMAND_BACKGROUND execution finishing) rather than
-      // relying on job-control-only tricks like a bare "&"/disown, which
-      // are best-effort at the interactive-shell level, not guaranteed
-      // against a service tearing down its exec'd process tree.
-      '&& setsid nohup python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 '
-      '> $logFile 2>&1 < /dev/null &';
+      // exec (not backgrounding with "&"/setsid/nohup): makes uvicorn the
+      // actual foreground process of the whole dispatched command, so the
+      // proot-distro/bash/uvicorn chain stays alive together for as long
+      // as the server runs. Output goes to $logFile via a teed process
+      // substitution rather than a plain "> $logFile" redirect, so this
+      // script's own stdout/stderr fds - the same pipe Termux's background-
+      // execution runner reads to capture this dispatch's output - stay
+      // connected for uvicorn's entire lifetime instead of being closed out
+      // from under it the moment this line runs. Neither of these was
+      // actually the fix for the real on-device "server won't start"
+      // failures hit during this feature's development - see
+      // [processMatch]'s own doc comment for what was - but both remain
+      // independently correct practice, so they're kept.
+      '&& exec python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 '
+      '> >(tee -a $logFile) 2>&1';
 
   /// RUN_COMMAND_ARGUMENTS is delivered as a real argv array (see
   /// MainActivity.kt's own doc comment), never re-parsed as a shell string
