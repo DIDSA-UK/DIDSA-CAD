@@ -123,12 +123,15 @@ class TermuxController {
 
   /// Polls [check] every [interval] until it reports [expect] or [timeout]
   /// elapses - a start/restart takes a real, variable amount of time
-  /// (micromamba activation, uvicorn's own boot), so a single immediate
-  /// check right after dispatching the intent would almost always read
-  /// "unreachable" even on a genuinely successful start.
+  /// (micromamba activation, then uvicorn importing pythonocc-core - a
+  /// large compiled CAD kernel - all under proot's ptrace overhead), so a
+  /// single immediate check right after dispatching the intent would
+  /// almost always read "unreachable" even on a genuinely successful
+  /// start. 60s (not a shorter default) because on-device testing showed a
+  /// cold start alone can take longer than 20s to become reachable.
   Future<ServerReachability> pollUntil({
     required ServerReachability expect,
-    Duration timeout = const Duration(seconds: 20),
+    Duration timeout = const Duration(seconds: 60),
     Duration interval = const Duration(seconds: 2),
   }) async {
     final deadline = DateTime.now().add(timeout);
