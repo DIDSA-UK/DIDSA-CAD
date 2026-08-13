@@ -165,11 +165,12 @@ class _ServerManagementScreenState extends State<ServerManagementScreen> {
               style: Theme.of(context).textTheme.bodySmall?.copyWith(fontStyle: FontStyle.italic),
             ),
           ],
-          if (ApiConfig.apiKey.isEmpty) ...[
+          if (ApiConfig.localApiKey.isEmpty) ...[
             const SizedBox(height: 8),
             Text(
-              "No API key set in Connection Settings yet - Start will still work, but you won't be "
-              "able to Connect to this server until you set one there.",
+              "First start on this device: a random API key will be generated automatically and used "
+              "to start the server - use the \"Use Local Server\" button on Connection Settings "
+              "afterward to pick it up and connect.",
               style: Theme.of(context).textTheme.bodySmall?.copyWith(fontStyle: FontStyle.italic),
             ),
           ],

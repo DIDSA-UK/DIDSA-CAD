@@ -75,43 +75,43 @@ class TermuxController {
   /// branch" - fetches it fresh and boots it in one tap, rather than the
   /// user having to Pull, wait, then separately remember to Start.
   Future<bool> pullAndStart(String branch) async {
-    await ApiConfig.saveLocalApiKey(ApiConfig.apiKey);
-    return _dispatch(TermuxCommands.pullAndStart(branch, ApiConfig.apiKey));
+    final key = await ApiConfig.ensureLocalApiKey();
+    return _dispatch(TermuxCommands.pullAndStart(branch, key));
   }
 
-  /// Stamps [ApiConfig.localApiKey] with whatever key is exported, before
-  /// dispatching - so the Connection screen's "Use Local Server" button
-  /// always reflects what this call actually attempted, even if the
-  /// intent dispatch itself then fails (matches [ApiConfig.saveLocalApiKey]
-  /// 's own doc comment: this records an attempt, not a confirmed result).
+  /// Uses [ApiConfig.ensureLocalApiKey] - not [ApiConfig.apiKey] - as the
+  /// key exported as CAD_API_KEY, so a local start never depends on a
+  /// remote-server key that may not exist yet (see that method's own doc
+  /// comment for why using [ApiConfig.apiKey] here would be circular:
+  /// it's only ever set *after* a successful connection to a server that,
+  /// on first install, doesn't exist until something starts it).
   Future<bool> startServer() async {
-    await ApiConfig.saveLocalApiKey(ApiConfig.apiKey);
-    return _dispatch(TermuxCommands.startServer(ApiConfig.apiKey));
+    final key = await ApiConfig.ensureLocalApiKey();
+    return _dispatch(TermuxCommands.startServer(key));
   }
 
   Future<bool> stopServer() => _dispatch(TermuxCommands.stopServer());
 
   Future<bool> restartServer() async {
-    await ApiConfig.saveLocalApiKey(ApiConfig.apiKey);
-    return _dispatch(TermuxCommands.restartServer(ApiConfig.apiKey));
+    final key = await ApiConfig.ensureLocalApiKey();
+    return _dispatch(TermuxCommands.restartServer(key));
   }
 
   /// A single GET /health round trip against [localBaseUrl] - always uses
-  /// [ApiConfig.apiKey] as the X-API-Key (the same value startServer/
-  /// restartServer exported as CAD_API_KEY, so this checks with whatever
-  /// key the local server actually has, even an empty one - there's no
-  /// meaningful auth boundary to protect against on a loopback-only,
-  /// same-device call, so an empty key is a "you won't be able to Connect
-  /// to this yet" usability note for the caller to surface, not something
-  /// this method itself needs to guard against). Short timeout: this is a
-  /// local, same-device call (unlike [ApiConfig.requestTimeout]'s own
-  /// comment about allowing headroom for a real network round trip to the
-  /// Pi), so a slow response is itself a meaningful "something's wrong"
-  /// signal.
+  /// [ApiConfig.localApiKey], not [ApiConfig.apiKey]: /health requires the
+  /// API key too (see app/main.py's own comment - deliberately, not an
+  /// oversight), and the local server is started with [ApiConfig
+  /// .localApiKey] (via [startServer]/[restartServer]/[pullAndStart]), not
+  /// whatever [ApiConfig.apiKey] happens to currently hold - those two can
+  /// easily differ (e.g. [ApiConfig.apiKey] pointing at a remote server,
+  /// or still empty on a fresh install). Short timeout: this is a local,
+  /// same-device call (unlike [ApiConfig.requestTimeout]'s own comment
+  /// about allowing headroom for a real network round trip to the Pi), so
+  /// a slow response is itself a meaningful "something's wrong" signal.
   Future<ServerReachability> check() async {
     try {
       final response = await _httpClient
-          .get(Uri.parse('$localBaseUrl/health'), headers: {'X-API-Key': ApiConfig.apiKey})
+          .get(Uri.parse('$localBaseUrl/health'), headers: {'X-API-Key': ApiConfig.localApiKey})
           .timeout(const Duration(seconds: 5));
       return (response.statusCode >= 200 && response.statusCode < 300)
           ? ServerReachability.reachable
