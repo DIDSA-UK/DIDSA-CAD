@@ -114,8 +114,28 @@ class TermuxCommands {
       // dispatch like this (that's the normal shape for a persistent
       // daemon); Termux's own execution notification just stays up the
       // whole time, which is correct, not a bug.
+      //
+      // Output goes to $logFile via a teed process substitution
+      // (`> >(tee -a ...)`), NOT a plain `> $logFile` redirect - a second
+      // real on-device failure after the exec fix above (confirmed via
+      // TermuxResultService again: exitCode 0, stderr containing Termux's
+      // own "proot info: vpid 1: terminated with signal 15", with captured
+      // stdout/stderr ending exactly at the preceding pull script's own
+      // output - nothing from this line ever appeared) points at why: a
+      // plain `> $logFile` redirect closes this whole script's stdout/
+      // stderr *before* exec-ing into uvicorn, and those file descriptors
+      // are the same pipe Termux itself is reading to capture this
+      // dispatch's output - Termux's background-execution runner reads
+      // that pipe to EOF, and evidently treats EOF as "the command is
+      // done" and kills the still-running process (the observed SIGTERM)
+      // rather than continuing to wait for it to actually exit. Piping
+      // through a teed process substitution instead means uvicorn's
+      // stdout/stderr fds stay connected to Termux's own capture pipe for
+      // the process's entire lifetime (tee also writes everything to
+      // $logFile on the side) - it only reaches EOF when uvicorn itself
+      // actually exits, not before.
       '&& exec python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 '
-      '> $logFile 2>&1';
+      '> >(tee -a $logFile) 2>&1';
 
   /// RUN_COMMAND_ARGUMENTS is delivered as a real argv array (see
   /// MainActivity.kt's own doc comment), never re-parsed as a shell string

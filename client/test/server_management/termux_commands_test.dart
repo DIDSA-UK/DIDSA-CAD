@@ -80,6 +80,25 @@ void main() {
       expect(script.trim(), isNot(endsWith('&')));
     });
 
+    test('startServer tees uvicorn output instead of redirecting it away outright', () {
+      // Regression guard for a second real on-device bug found *after* the
+      // exec fix above: a plain "> $logFile" redirect closes this whole
+      // script's stdout/stderr before exec-ing into uvicorn, which are the
+      // same fds Termux itself reads to capture this dispatch's output -
+      // Termux's background-execution runner reads that to EOF and kills
+      // the still-running process rather than continuing to wait for it.
+      // Confirmed via TermuxResultService's captured real result on-device
+      // (exitCode 0, stderr containing "proot info: vpid 1: terminated
+      // with signal 15", captured output ending exactly where the pull
+      // script's own output ended - nothing from the start script's own
+      // run ever appeared). A teed process substitution keeps that pipe
+      // connected to Termux for uvicorn's whole lifetime while still
+      // writing everything to the log file on the side.
+      final script = TermuxCommands.startServer('key').last;
+      expect(script, contains('> >(tee -a ~/didsa-backend.log) 2>&1'));
+      expect(script, isNot(contains('> ~/didsa-backend.log 2>&1')));
+    });
+
     test('startServer kills any already-running instance before starting a new one', () {
       final script = TermuxCommands.startServer('key').last;
       expect(script, contains("pkill -f 'uvicorn app.main:app'"));
