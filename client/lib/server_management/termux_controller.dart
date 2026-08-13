@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
@@ -7,6 +9,19 @@ import 'termux_commands.dart';
 /// Whether a dispatched command's result is currently unknown, or has been
 /// confirmed via a real /health round trip - see [TermuxController.check].
 enum ServerReachability { unknown, reachable, unreachable }
+
+/// A single /health round trip's full result - see [TermuxController
+/// .checkStatus]. [branch] is only ever non-null when [reachability] is
+/// [ServerReachability.reachable] with a response body that actually
+/// included it - the backend reports its own git branch (see
+/// app/main.py's own `git_branch` field), so this reflects what's really
+/// running, not a value guessed or remembered client-side.
+class ServerStatus {
+  const ServerStatus({required this.reachability, this.branch});
+
+  final ServerReachability reachability;
+  final String? branch;
+}
 
 /// Thin wrapper over the `uk.snail_shell.didsa_cad_client/termux`
 /// MethodChannel (see android/.../MainActivity.kt) plus a real /health poll
@@ -108,18 +123,31 @@ class TermuxController {
   /// same-device call (unlike [ApiConfig.requestTimeout]'s own comment
   /// about allowing headroom for a real network round trip to the Pi), so
   /// a slow response is itself a meaningful "something's wrong" signal.
-  Future<ServerReachability> check() async {
+  /// [ServerStatus.branch] parsing failures (bad JSON, missing field) are
+  /// swallowed to null rather than affecting [ServerStatus.reachability] -
+  /// a 2xx /health response is still a genuinely reachable server even if
+  /// its body doesn't parse the way this client expects.
+  Future<ServerStatus> checkStatus() async {
     try {
       final response = await _httpClient
           .get(Uri.parse('$localBaseUrl/health'), headers: {'X-API-Key': ApiConfig.localApiKey})
           .timeout(const Duration(seconds: 5));
-      return (response.statusCode >= 200 && response.statusCode < 300)
-          ? ServerReachability.reachable
-          : ServerReachability.unreachable;
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        return const ServerStatus(reachability: ServerReachability.unreachable);
+      }
+      String? branch;
+      try {
+        branch = (jsonDecode(response.body) as Map<String, dynamic>)['git_branch'] as String?;
+      } catch (_) {
+        branch = null;
+      }
+      return ServerStatus(reachability: ServerReachability.reachable, branch: branch);
     } catch (_) {
-      return ServerReachability.unreachable;
+      return const ServerStatus(reachability: ServerReachability.unreachable);
     }
   }
+
+  Future<ServerReachability> check() async => (await checkStatus()).reachability;
 
   /// Polls [check] every [interval] until it reports [expect] or [timeout]
   /// elapses - a start/restart takes a real, variable amount of time
