@@ -95,14 +95,27 @@ class TermuxCommands {
       // confirmed by testing the failure path directly during this
       // feature's own development, not just by inspection.
       "&& (pkill -f ${_shellQuote(processMatch)} 2>/dev/null || true) "
-      // setsid + nohup + redirected stdin/stdout/stderr: the standard,
-      // fully-detached-daemon pattern - survives this script's own exit
-      // (and the RUN_COMMAND_BACKGROUND execution finishing) rather than
-      // relying on job-control-only tricks like a bare "&"/disown, which
-      // are best-effort at the interactive-shell level, not guaranteed
-      // against a service tearing down its exec'd process tree.
-      '&& setsid nohup python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 '
-      '> $logFile 2>&1 < /dev/null &';
+      // No backgrounding (no "&"/setsid/nohup) - a real on-device failure
+      // (confirmed via TermuxResultService's captured result: exitCode 0,
+      // empty stdout/stderr - the dispatched script itself succeeded
+      // instantly, exactly what backgrounding produces) showed why that
+      // doesn't work under proot: proot isn't a real container, it
+      // emulates the sandbox via ptrace, so the *proot process itself*
+      // must stay alive to keep servicing syscalls for anything running
+      // inside it. Backgrounding uvicorn and letting this script return
+      // exits the whole "proot-distro login" process tree immediately,
+      // which kills the "backgrounded" uvicorn with it - setsid/nohup only
+      // protect against normal shell-job-control teardown (SIGHUP from the
+      // parent shell exiting), not against the ptrace supervisor itself
+      // disappearing. Fix: make uvicorn the actual foreground process of
+      // the whole dispatched command (exec replaces this shell with it),
+      // so the proot-distro/bash/uvicorn chain stays alive together for as
+      // long as the server runs - RUN_COMMAND fully supports a long-running
+      // dispatch like this (that's the normal shape for a persistent
+      // daemon); Termux's own execution notification just stays up the
+      // whole time, which is correct, not a bug.
+      '&& exec python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 '
+      '> $logFile 2>&1';
 
   /// RUN_COMMAND_ARGUMENTS is delivered as a real argv array (see
   /// MainActivity.kt's own doc comment), never re-parsed as a shell string
