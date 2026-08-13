@@ -13,17 +13,27 @@ on:
 
 jobs:
   build-and-test:
-    runs-on: ubuntu-latest
+    # Each matrix leg now runs on a *native* runner for its own platform -
+    # no QEMU. The backend pulls in pythonocc-core (OCCT, a large native
+    # C++ geometry kernel) and py-slvs (a native constraint solver); running
+    # that under QEMU's user-mode binary translation on the arm64 leg was
+    # not just slow but prone to genuinely stalling for 40+ minutes on a
+    # step the native amd64 leg finished in ~2 - a known bad combination for
+    # emulating heavy native/floating-point code, not something tunable
+    # away with more parallelism or caching. GitHub's arm64-hosted runners
+    # (ubuntu-24.04-arm) are free for public repos and remove the emulation
+    # layer entirely, so this leg now builds and runs on real arm64
+    # hardware, same as the amd64 leg already did on real amd64 hardware.
+    runs-on: ${{ matrix.runs-on }}
     strategy:
       matrix:
-        platform:
-          - linux/amd64
-          - linux/arm64
+        include:
+          - platform: linux/amd64
+            runs-on: ubuntu-latest
+          - platform: linux/arm64
+            runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
