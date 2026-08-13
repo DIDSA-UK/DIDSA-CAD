@@ -33,7 +33,20 @@ class BevelDesignScreen extends StatefulWidget {
   final DocumentApiClient? documentApi;
   final BevelMultiKind initialMode;
 
-  const BevelDesignScreen({super.key, this.documentApi, this.initialMode = BevelMultiKind.gear});
+  /// Gear-tree UX: non-null (together with [editingFeatureId]) switches
+  /// this screen from "create a new Part" into "reopen an existing
+  /// BevelGearFeature/BevelPairFeature for editing" - see [GearDesignScreen]'s
+  /// own identically-shaped pair of fields for the full reasoning.
+  final String? editingPartId;
+  final String? editingFeatureId;
+
+  const BevelDesignScreen({
+    super.key,
+    this.documentApi,
+    this.initialMode = BevelMultiKind.gear,
+    this.editingPartId,
+    this.editingFeatureId,
+  });
 
   @override
   State<BevelDesignScreen> createState() => _BevelDesignScreenState();
@@ -72,13 +85,93 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
   bool _creating = false;
   String? _createError;
 
+  bool get _isEditing => widget.editingPartId != null && widget.editingFeatureId != null;
+  bool _loadingExisting = false;
+  String? _loadError;
+
+  /// Gear-tree UX: round-tripped unchanged on Save, same reasoning as
+  /// `GearDesignScreen._mode`/`_targetBodyIds` - this screen has no Boss/Cut
+  /// or target-Body picker UI, and `BevelPairFeature` has no Boss/Cut/
+  /// target-Body concept at all.
+  String _bevelGearMode = 'boss';
+  List<String> _targetBodyIds = const [];
+
   @override
   void initState() {
     super.initState();
     _mode = widget.initialMode;
     _api = widget.documentApi ?? DocumentApiClient();
-    _schedulePreview();
+    if (_isEditing) {
+      _loadExistingFeature();
+    } else {
+      _schedulePreview();
+    }
     _loadPresets();
+  }
+
+  /// Mirrors `GearDesignScreen._loadExistingFeature` exactly - see that
+  /// method's own doc comment for why a no-op PATCH is used to read the
+  /// Feature's current state.
+  Future<void> _loadExistingFeature() async {
+    setState(() => _loadingExisting = true);
+    try {
+      final partId = widget.editingPartId!;
+      final featureId = widget.editingFeatureId!;
+      final json = _mode == BevelMultiKind.gear
+          ? await _api.updateBevelGearFeature(partId, featureId)
+          : await _api.updateBevelPairFeature(partId, featureId);
+      if (!mounted) return;
+      setState(() {
+        _applyExistingFeatureJson(json);
+        _loadingExisting = false;
+      });
+      _schedulePreview();
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loadError = e.message;
+        _loadingExisting = false;
+      });
+    }
+  }
+
+  void _applyExistingFeatureJson(Map<String, dynamic> json) {
+    final planeRef =
+        json['plane_ref'] == null ? null : PlaneRefDto.fromJson(json['plane_ref'] as Map<String, dynamic>);
+    if (planeRef?.fixedPlane != null) _plane = planeRef!.fixedPlane!;
+    _module = (json['module'] as num?)?.toDouble() ?? _module;
+    _pressureAngleDegrees = (json['pressure_angle_degrees'] as num?)?.toDouble() ?? _pressureAngleDegrees;
+    if (_mode == BevelMultiKind.gear) {
+      _bevelGearMode = json['bevel_type'] as String? ?? _bevelGearMode;
+      _targetBodyIds = (json['target_body_ids'] as List?)?.cast<String>() ?? _targetBodyIds;
+      final toothCount = json['tooth_count'] as num?;
+      if (toothCount != null) _toothCountController.text = toothCount.toInt().toString();
+      final faceWidth = json['face_width'] as num?;
+      if (faceWidth != null) _faceWidthController.text = faceWidth.toString();
+      final pitchConeAngle = json['pitch_cone_angle_degrees'] as num?;
+      if (pitchConeAngle != null) _pitchConeAngleController.text = pitchConeAngle.toString();
+      final backlash = json['backlash'] as num?;
+      if (backlash != null) _backlashController.text = backlash.toString();
+      final profileShift = json['profile_shift'] as num?;
+      if (profileShift != null) _profileShiftController.text = profileShift.toString();
+    } else {
+      final member1 = json['member_1'] as Map<String, dynamic>?;
+      final member2 = json['member_2'] as Map<String, dynamic>?;
+      if (member1 != null) {
+        _toothCount1Controller.text = (member1['tooth_count'] as num).toInt().toString();
+        _profileShift1Controller.text = (member1['profile_shift'] as num).toString();
+      }
+      if (member2 != null) {
+        _toothCount2Controller.text = (member2['tooth_count'] as num).toInt().toString();
+        _profileShift2Controller.text = (member2['profile_shift'] as num).toString();
+      }
+      final faceWidth = json['face_width'] as num?;
+      if (faceWidth != null) _pairFaceWidthController.text = faceWidth.toString();
+      final shaftAngle = json['shaft_angle_degrees'] as num?;
+      if (shaftAngle != null) _shaftAngleController.text = shaftAngle.toString();
+      final backlash = json['backlash'] as num?;
+      if (backlash != null) _pairBacklashController.text = backlash.toString();
+    }
   }
 
   /// Mirrors `GearDesignScreen._loadPresets`'s own fire-and-forget warm-up.
@@ -199,7 +292,7 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
     }
   }
 
-  bool get _canCreate => _blockingError == null && _preview != null && !_creating;
+  bool get _canCreate => _blockingError == null && _preview != null && !_creating && !_loadingExisting;
 
   Future<void> _create() async {
     if (!_canCreate) return;
@@ -208,8 +301,48 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
       _createError = null;
     });
     try {
-      final part = await _api.createPart(_mode == BevelMultiKind.gear ? 'Bevel Gear Part' : 'Bevel Pair Part');
       final planeRef = PlaneRefDto(fixedPlane: _plane);
+      if (_isEditing) {
+        // Gear-tree UX: saves back onto the same Feature instead of minting
+        // a new Part - mirrors GearDesignScreen._create's own editing
+        // branch exactly.
+        if (_mode == BevelMultiKind.gear) {
+          await _api.updateBevelGearFeature(
+            widget.editingPartId!,
+            widget.editingFeatureId!,
+            bevelType: _bevelGearMode,
+            module: _module,
+            toothCount: int.parse(_toothCountController.text),
+            faceWidth: double.parse(_faceWidthController.text),
+            pitchConeAngleDegrees: double.parse(_pitchConeAngleController.text),
+            pressureAngleDegrees: _pressureAngleDegrees,
+            backlash: double.parse(_backlashController.text),
+            profileShift: double.parse(_profileShiftController.text),
+            planeRef: planeRef,
+            targetBodyIds: _targetBodyIds,
+          );
+        } else {
+          await _api.updateBevelPairFeature(
+            widget.editingPartId!,
+            widget.editingFeatureId!,
+            module: _module,
+            toothCount1: int.parse(_toothCount1Controller.text),
+            profileShift1: double.parse(_profileShift1Controller.text),
+            toothCount2: int.parse(_toothCount2Controller.text),
+            profileShift2: double.parse(_profileShift2Controller.text),
+            faceWidth: double.parse(_pairFaceWidthController.text),
+            pressureAngleDegrees: _pressureAngleDegrees,
+            shaftAngleDegrees: double.parse(_shaftAngleController.text),
+            backlash: double.parse(_pairBacklashController.text),
+            planeRef: planeRef,
+          );
+        }
+        if (!mounted) return;
+        Navigator.of(context).pop();
+        return;
+      }
+
+      final part = await _api.createPart(_mode == BevelMultiKind.gear ? 'Bevel Gear Part' : 'Bevel Pair Part');
       List<String> warnings = const [];
       if (_mode == BevelMultiKind.gear) {
         final feature = await _api.createBevelGearFeature(
@@ -257,8 +390,21 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Bevel Gear Design')),
-      body: LayoutBuilder(
+      appBar: AppBar(
+        title: Text(
+          _isEditing ? 'Edit ${_mode == BevelMultiKind.gear ? 'Bevel Gear' : 'Bevel Pair'}' : 'Bevel Gear Design',
+        ),
+      ),
+      body: _loadingExisting
+          ? const Center(child: CircularProgressIndicator())
+          : _loadError != null
+              ? Center(
+                  child: Text(
+                    'Could not load this bevel gear: $_loadError',
+                    style: TextStyle(color: Theme.of(context).colorScheme.error),
+                  ),
+                )
+              : LayoutBuilder(
         builder: (context, constraints) {
           final List<GearPreviewBevelMemberDto> members = _mode == BevelMultiKind.gear
               ? (_preview?.bevelGear != null ? [_preview!.bevelGear!] : const <GearPreviewBevelMemberDto>[])
@@ -289,10 +435,21 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         SegmentedButton<BevelMultiKind>(
-          segments: const [
-            ButtonSegment(value: BevelMultiKind.gear, label: Text('Bevel Gear')),
-            ButtonSegment(value: BevelMultiKind.pair, label: Text('Bevel Pair')),
-          ],
+          // Gear-tree UX: while editing, a BevelGearFeature can't become a
+          // BevelPairFeature (or vice versa) via this same Update endpoint,
+          // so only the current mode is offered - mirrors
+          // GearDesignScreen's own identical restriction.
+          segments: _isEditing
+              ? [
+                  ButtonSegment(
+                    value: _mode,
+                    label: Text(_mode == BevelMultiKind.gear ? 'Bevel Gear' : 'Bevel Pair'),
+                  ),
+                ]
+              : const [
+                  ButtonSegment(value: BevelMultiKind.gear, label: Text('Bevel Gear')),
+                  ButtonSegment(value: BevelMultiKind.pair, label: Text('Bevel Pair')),
+                ],
           selected: {_mode},
           onSelectionChanged: (selection) {
             setState(() => _mode = selection.first);
@@ -356,7 +513,7 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
           onPressed: _canCreate ? _create : null,
           child: _creating
               ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
-              : const Text('Create'),
+              : Text(_isEditing ? 'Save' : 'Create'),
         ),
       ],
     );
