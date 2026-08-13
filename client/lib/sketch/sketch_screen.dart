@@ -237,11 +237,15 @@ class SketchScreen extends StatefulWidget {
 
   /// The standalone "2D Drawing" tool (floor plans and other Part-free
   /// drawings, reached from the app's own chooser screen rather than
-  /// [PartScreen]) - true here means the hamburger menu's File section
-  /// gains Save/Open/Exit entries for this Sketch's own local file, in
-  /// place of the Part-level native file format a Part-anchored Sketch
-  /// relies on instead (see [_saveStandaloneSketch]/[_openStandaloneSketch]/
-  /// [_exitStandaloneSketch]), and the top-right Exit Sketch FAB an
+  /// [PartScreen]) - true here means three things: this Sketch always
+  /// stays on the flat 2D canvas ([_loadInitialOrbitViewPreference]'s own
+  /// early-return - there's no Part/Body/plane context of its own to embed
+  /// a 3D view of, unlike a Part-anchored Sketch, which now always opens in
+  /// Orbit View instead); the hamburger menu's File section gains
+  /// Save/Open/Exit entries for this Sketch's own local file, in place of
+  /// the Part-level native file format a Part-anchored Sketch relies on
+  /// instead (see [_saveStandaloneSketch]/[_openStandaloneSketch]/
+  /// [_exitStandaloneSketch]); and the top-right Exit Sketch FAB an
   /// embedded Sketch shows instead is hidden (there's no File menu Exit
   /// there - see that FAB's own comment).
   final bool standalone;
@@ -379,9 +383,8 @@ class _SketchScreenState extends State<SketchScreen> {
   /// sketcher" setting this FAB's own doc comment used to point to as "the
   /// only way back to the flat 2D canvas" has since been removed entirely
   /// (see [_loadInitialOrbitViewPreference]'s own doc comment) - Orbit View
-  /// is never auto-entered any more, so this field's `true` default is now
-  /// dead in practice, kept only because the [PartViewport] cursor/orbit
-  /// machinery it drives is otherwise untouched.
+  /// is now the only place a Part-anchored Sketch is ever edited, so there
+  /// is no "back to the flat 2D canvas" to go to any more regardless.
   bool _orbitCursorActive = true;
 
   /// Lets [_returnOrbitToDefaultView] drive the embedded [PartViewport]'s
@@ -439,17 +442,28 @@ class _SketchScreenState extends State<SketchScreen> {
   /// The device-wide "default sketcher" setting (CAD Settings' own
   /// SegmentedButton, backed by the now-removed `SketcherPreferences`) used
   /// to decide whether a newly opened Sketch started in Orbit View (the
-  /// 3D-embedded sketcher) or the flat 2D canvas. The 2D canvas is now the
-  /// only path - it's the same widget the standalone "2D Drawing" tool
-  /// already builds on, so there's no longer a separate 3D-embedded default
-  /// to opt into for a Part-anchored Sketch either. Still loads
-  /// [ViewPreferences] here (unrelated to that old default - the main 3D
-  /// viewport's own background colour/etc, read defensively since a bare,
-  /// Part-less Sketch may never go through [PartScreen]'s own load) so
+  /// 3D-embedded sketcher) or the flat 2D canvas. Orbit View is now the
+  /// only path for a Part-anchored Sketch - the 3D part design environment
+  /// is meant to sketch directly in the same 3D viewport/camera as the rest
+  /// of that environment, not on a flat 2D canvas underneath it. The flat
+  /// 2D canvas remains [widget.standalone]'s own early-return below - it's
+  /// the same widget the standalone "2D Drawing" tool builds on, which has
+  /// no Part/Body/plane of its own to embed a 3D view of. Still loads
+  /// [ViewPreferences] unconditionally (the main 3D viewport's own
+  /// background colour/etc, read defensively since a bare, Part-less
+  /// Sketch may never go through [PartScreen]'s own load) so
   /// [ViewPreferences.bgColourHex] reflects the real persisted value by the
   /// time [_buildBaseLayer] first reads it.
   Future<void> _loadInitialOrbitViewPreference() async {
     await ViewPreferences.load();
+    if (!mounted || _orbitViewActive || widget.standalone) return;
+    if (_effectiveOrbitBasis != null) {
+      _enterOrbitView();
+    } else {
+      // Plane basis hasn't resolved yet (adoptSketch/ensureSketch is still
+      // in flight) - retry once the controller notifies.
+      _controller.addListener(_enterOrbitViewOncePlaneReadyIfPreferred);
+    }
   }
 
   void _enterOrbitViewOncePlaneReadyIfPreferred() {

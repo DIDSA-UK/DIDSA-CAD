@@ -11,7 +11,15 @@ class ColourSwatch {
 }
 
 const List<ColourSwatch> backgroundColourSwatches = [
-  ColourSwatch('Studio Dark', ViewPreferences.defaultBgColourHex),
+  // Hardcoded to its own real historical value, not
+  // ViewPreferences.defaultBgColourHex - that constant has moved on to a
+  // couple of other defaults since (Off-white, then Charcoal - see its own
+  // doc comment), and piggybacking this swatch on "whatever the current
+  // default is" left it silently mislabeled each time (most recently:
+  // showing as "Studio Dark" while actually applying Off-white). A named
+  // swatch should always be that one specific colour, independent of
+  // whatever the fallback default happens to be this release.
+  ColourSwatch('Studio Dark', '#1E1E2E'),
   ColourSwatch('Charcoal', '#2C2C2C'),
   ColourSwatch('Slate', '#4A5568'),
   ColourSwatch('Off-white', '#F5F5F0'),
@@ -19,7 +27,10 @@ const List<ColourSwatch> backgroundColourSwatches = [
 ];
 
 const List<ColourSwatch> bodyColourSwatches = [
-  ColourSwatch('Mid Grey', ViewPreferences.defaultBodyColourHex),
+  // Hardcoded to its own real value for the same reason
+  // backgroundColourSwatches' own "Studio Dark" entry now is - see that
+  // entry's doc comment.
+  ColourSwatch('Mid Grey', '#808080'),
   // The pre-PBR-upgrade default - kept as its own named swatch so it's still
   // reachable, just no longer the fallback for new installs (see
   // ViewPreferences.defaultBodyColourHex's own doc comment).

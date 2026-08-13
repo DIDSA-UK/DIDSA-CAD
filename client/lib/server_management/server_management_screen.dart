@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../config.dart';
 import 'termux_commands.dart';
@@ -29,11 +32,18 @@ class _ServerManagementScreenState extends State<ServerManagementScreen> {
   String? _statusMessage;
   ServerReachability _reachability = ServerReachability.unknown;
 
+  // The top status pane's own state - independent of _reachability/
+  // _statusMessage below, which track the result of a dispatched action
+  // rather than "what's true on entering this screen".
+  bool _checkingLiveStatus = true;
+  ServerStatus _liveStatus = const ServerStatus(reachability: ServerReachability.unknown);
+
   @override
   void initState() {
     super.initState();
     _branchController.addListener(() => setState(() {}));
     _refreshPermission();
+    _refreshLiveStatus();
   }
 
   @override
@@ -47,6 +57,16 @@ class _ServerManagementScreenState extends State<ServerManagementScreen> {
     final granted = await _controller.hasPermission();
     if (!mounted) return;
     setState(() => _hasPermission = granted);
+  }
+
+  Future<void> _refreshLiveStatus() async {
+    setState(() => _checkingLiveStatus = true);
+    final status = await _controller.checkStatus();
+    if (!mounted) return;
+    setState(() {
+      _checkingLiveStatus = false;
+      _liveStatus = status;
+    });
   }
 
   Future<void> _grantPermission() async {
@@ -82,6 +102,12 @@ class _ServerManagementScreenState extends State<ServerManagementScreen> {
     final result = expect == null
         ? await _controller.check()
         : await _controller.pollUntil(expect: expect);
+    // On anything other than a clean success, also fetch whatever Termux
+    // actually reported back for this dispatch (see TermuxResultService's
+    // own doc comment) - a /health timeout alone doesn't say *why*, and the
+    // raw result (or the lack of one) is the most direct diagnostic
+    // available without a device debugger attached.
+    final lastResult = result == ServerReachability.reachable ? null : await _controller.getLastCommandResult();
     if (!mounted) return;
     setState(() {
       _busy = false;
@@ -89,22 +115,24 @@ class _ServerManagementScreenState extends State<ServerManagementScreen> {
       _statusMessage = switch (result) {
         ServerReachability.reachable => '$label - server responding at $_localAddress.',
         ServerReachability.unreachable =>
-          '$label - dispatched, but the server is not responding yet. Check ~/didsa-backend.log in Termux.',
-        ServerReachability.unknown => '$label - dispatched.',
+          '$label - dispatched, but the server is not responding yet. Check ~/didsa-backend.log in Termux.\n\n'
+              'Last Termux result:\n$lastResult',
+        ServerReachability.unknown => '$label - dispatched.\n\nLast Termux result:\n$lastResult',
       };
     });
+    // The action just changed what's actually running (or stopped it), so
+    // the top status pane's own snapshot is now stale - refresh it too,
+    // not just the action-result message below.
+    unawaited(_refreshLiveStatus());
   }
 
-  Future<void> _checkHealth() async {
+  Future<void> _showLastResult() async {
     setState(() => _busy = true);
-    final result = await _controller.check();
+    final result = await _controller.getLastCommandResult();
     if (!mounted) return;
     setState(() {
       _busy = false;
-      _reachability = result;
-      _statusMessage = result == ServerReachability.reachable
-          ? 'Server responding at $_localAddress.'
-          : 'Server not responding at $_localAddress.';
+      _statusMessage = 'Last Termux result:\n$result';
     });
   }
 
@@ -118,28 +146,15 @@ class _ServerManagementScreenState extends State<ServerManagementScreen> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          Text('On-device standalone backend', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 4),
+          _StatusPane(checking: _checkingLiveStatus, status: _liveStatus, onRefresh: _refreshLiveStatus),
+          const SizedBox(height: 16),
           Text(
-            "Controls a backend running locally in Termux (proot-distro Debian + the "
-            "backend/environment.yml conda env, cloned to ~/DIDSA-CAD) via Termux's RUN_COMMAND "
-            "intent. Requires the F-Droid/GitHub build of Termux (not Play Store), Termux:API "
-            "installed, and allow-external-apps=true set in ~/.termux/termux.properties.",
+            "Controls a backend running locally on this device, via Termux - it cannot reach, and has "
+            "no effect on, any remote server (e.g. the Pi) you may have configured in Connection "
+            "Settings.",
             style: Theme.of(context).textTheme.bodySmall,
           ),
-          const SizedBox(height: 8),
-          // Scope, stated plainly: this only ever reaches a backend on this
-          // same device at a fixed address - it has no way to reach, and no
-          // effect on, a remote server (the Pi, or any future cloud
-          // deployment). A valid API key is still needed to actually talk
-          // to a remote server, same as always - this screen just can't be
-          // the thing that manages one.
-          Text(
-            "This only ever controls a backend on this device, at $_localAddress - it cannot reach, "
-            "and has no effect on, any remote server (e.g. the Pi) you may have configured in "
-            "Connection Settings.",
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(fontStyle: FontStyle.italic),
-          ),
+          const _SetupInstructions(),
           if (ApiConfig.baseUrl.isNotEmpty && ApiConfig.baseUrl != _localAddress) ...[
             const SizedBox(height: 8),
             Text(
@@ -148,11 +163,12 @@ class _ServerManagementScreenState extends State<ServerManagementScreen> {
               style: Theme.of(context).textTheme.bodySmall?.copyWith(fontStyle: FontStyle.italic),
             ),
           ],
-          if (ApiConfig.apiKey.isEmpty) ...[
+          if (ApiConfig.localApiKey.isEmpty) ...[
             const SizedBox(height: 8),
             Text(
-              "No API key set in Connection Settings yet - Start will still work, but you won't be "
-              "able to Connect to this server until you set one there.",
+              "First start on this device: a random API key will be generated automatically and used "
+              "to start the server - use the \"Use Local Server\" button on Connection Settings "
+              "afterward to pick it up and connect.",
               style: Theme.of(context).textTheme.bodySmall?.copyWith(fontStyle: FontStyle.italic),
             ),
           ],
@@ -243,9 +259,9 @@ class _ServerManagementScreenState extends State<ServerManagementScreen> {
                 label: const Text('Restart'),
               ),
               TextButton.icon(
-                onPressed: _busy ? null : _checkHealth,
-                icon: const Icon(Icons.favorite_border),
-                label: const Text('Check health'),
+                onPressed: _busy ? null : _showLastResult,
+                icon: const Icon(Icons.receipt_long_outlined),
+                label: const Text('Show last Termux result'),
               ),
             ],
           ),
@@ -272,6 +288,123 @@ class _ServerManagementScreenState extends State<ServerManagementScreen> {
                 ],
               ),
             ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The always-visible top-of-screen pane: what's actually running right now
+/// (a real /health round trip, not a remembered value) and which branch it
+/// reports - reachability alone doesn't say *which* branch's code is
+/// answering, and the whole point of this screen is testing branches, so
+/// that's the one fact worth surfacing before scrolling to any button.
+class _StatusPane extends StatelessWidget {
+  const _StatusPane({required this.checking, required this.status, required this.onRefresh});
+
+  final bool checking;
+  final ServerStatus status;
+  final Future<void> Function() onRefresh;
+
+  @override
+  Widget build(BuildContext context) {
+    final (Color color, IconData icon, String label) = switch ((checking, status.reachability)) {
+      (true, _) => (Theme.of(context).colorScheme.surfaceContainerHighest, Icons.hourglass_empty, 'Checking...'),
+      (false, ServerReachability.reachable) => (Colors.green, Icons.check_circle, 'Server running'),
+      (false, ServerReachability.unreachable) => (Colors.red, Icons.error, 'Server not running'),
+      (false, ServerReachability.unknown) => (Colors.grey, Icons.help_outline, 'Unknown'),
+    };
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: 0.4)),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: color),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(label, style: Theme.of(context).textTheme.titleSmall),
+                if (!checking && status.reachability == ServerReachability.reachable)
+                  Text('Branch: ${status.branch ?? "unknown"}', style: Theme.of(context).textTheme.bodySmall),
+              ],
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            tooltip: 'Refresh status',
+            onPressed: checking ? null : onRefresh,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Collapsed-by-default setup instructions - the four things a user needs
+/// to have done before this screen's buttons work at all. Kept out of the
+/// way (an [ExpansionTile], not always-on text) since anyone who's already
+/// set this up once shouldn't have to scroll past it every visit.
+class _SetupInstructions extends StatelessWidget {
+  const _SetupInstructions();
+
+  static const _termuxUrl = 'https://f-droid.org/en/packages/com.termux/';
+  static const _termuxApiUrl = 'https://f-droid.org/en/packages/com.termux.api/';
+
+  @override
+  Widget build(BuildContext context) {
+    final bodyStyle = Theme.of(context).textTheme.bodySmall;
+    final linkStyle = bodyStyle?.copyWith(decoration: TextDecoration.underline);
+
+    Widget point(String number, Widget content) => Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('$number. ', style: bodyStyle),
+              Expanded(child: content),
+            ],
+          ),
+        );
+
+    return Theme(
+      // Removes the default ExpansionTile top/bottom divider lines so it
+      // sits flush with the surrounding text instead of looking like a
+      // separate card.
+      data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+      child: ExpansionTile(
+        tilePadding: EdgeInsets.zero,
+        childrenPadding: const EdgeInsets.only(bottom: 8),
+        title: Text('Setup requirements', style: Theme.of(context).textTheme.bodySmall),
+        children: [
+          point('1', Text('This page controls a backend running locally on this device.', style: bodyStyle)),
+          point(
+            '2',
+            GestureDetector(
+              onTap: () => launchUrl(Uri.parse(_termuxUrl), mode: LaunchMode.externalApplication),
+              child: Text('Termux must be installed (F-Droid, not Play Store).', style: linkStyle),
+            ),
+          ),
+          point(
+            '3',
+            GestureDetector(
+              onTap: () => launchUrl(Uri.parse(_termuxApiUrl), mode: LaunchMode.externalApplication),
+              child: Text('Termux:API must be installed.', style: linkStyle),
+            ),
+          ),
+          point(
+            '4',
+            Text(
+              'In Termux, set allow-external-apps=true in ~/.termux/termux.properties.',
+              style: bodyStyle,
+            ),
+          ),
         ],
       ),
     );

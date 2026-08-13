@@ -52,6 +52,17 @@ const List<double> _standardModules = [0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3, 4, 5,
 const List<double> _standardPressureAngles = [14.5, 20, 25];
 const List<String> _fixedPlanes = ['XY', 'XZ', 'YZ'];
 
+/// Gear-tree UX: thrown by [_GearChainDesignScreenState._applyExistingFeatureJson]
+/// for an existing Feature this screen can read but can't safely represent
+/// (currently just a GearChainFeature with a compound stage - v1 UI scope,
+/// see that method's own comment) - caught by [_GearChainDesignScreenState._loadExistingFeature]
+/// and surfaced the same way a failed fetch itself would be, rather than
+/// falling through to a mangled or silently-wrong form.
+class _UnsupportedExistingFeature implements Exception {
+  final String message;
+  const _UnsupportedExistingFeature(this.message);
+}
+
 class _ChainStageForm {
   ChainStageKind kind;
   final TextEditingController toothCountController;
@@ -82,7 +93,21 @@ class GearChainDesignScreen extends StatefulWidget {
   final DocumentApiClient? documentApi;
   final GearMultiKind initialMode;
 
-  const GearChainDesignScreen({super.key, this.documentApi, this.initialMode = GearMultiKind.chain});
+  /// Gear-tree UX: non-null (together with [editingFeatureId]) switches
+  /// this screen from "create a new Part" into "reopen an existing
+  /// GearChainFeature/PlanetaryGearFeature for editing" - see
+  /// [GearDesignScreen]'s own identically-shaped pair of fields for the full
+  /// reasoning.
+  final String? editingPartId;
+  final String? editingFeatureId;
+
+  const GearChainDesignScreen({
+    super.key,
+    this.documentApi,
+    this.initialMode = GearMultiKind.chain,
+    this.editingPartId,
+    this.editingFeatureId,
+  });
 
   @override
   State<GearChainDesignScreen> createState() => _GearChainDesignScreenState();
@@ -120,13 +145,127 @@ class _GearChainDesignScreenState extends State<GearChainDesignScreen> {
   bool _creating = false;
   String? _createError;
 
+  bool get _isEditing => widget.editingPartId != null && widget.editingFeatureId != null;
+  bool _loadingExisting = false;
+  String? _loadError;
+
   @override
   void initState() {
     super.initState();
     _mode = widget.initialMode;
     _api = widget.documentApi ?? DocumentApiClient();
-    _schedulePreview();
+    if (_isEditing) {
+      _loadExistingFeature();
+    } else {
+      _schedulePreview();
+    }
     _loadPresets();
+  }
+
+  /// Mirrors `GearDesignScreen._loadExistingFeature` exactly - see that
+  /// method's own doc comment for why a no-op PATCH is used to read the
+  /// Feature's current state.
+  Future<void> _loadExistingFeature() async {
+    setState(() => _loadingExisting = true);
+    try {
+      final partId = widget.editingPartId!;
+      final featureId = widget.editingFeatureId!;
+      final json = _mode == GearMultiKind.chain
+          ? await _api.updateGearChainFeature(partId, featureId)
+          : await _api.updatePlanetaryGearFeature(partId, featureId);
+      if (!mounted) return;
+      setState(() {
+        _applyExistingFeatureJson(json);
+        _loadingExisting = false;
+      });
+      _schedulePreview();
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loadError = e.message;
+        _loadingExisting = false;
+      });
+    } on _UnsupportedExistingFeature catch (e) {
+      // v1 UI scope: a chain with a compound stage - this screen can't
+      // represent or resave one (see `_applyExistingFeatureJson`'s own
+      // comment), so this fails the load outright rather than silently
+      // showing/saving a mangled placeholder that would corrupt the real
+      // chain on Save. [_loadError] being set keeps the form (and its Save
+      // button) from ever rendering at all - see `build`'s own branch.
+      if (!mounted) return;
+      setState(() {
+        _loadError = e.message;
+        _loadingExisting = false;
+      });
+    }
+  }
+
+  void _applyExistingFeatureJson(Map<String, dynamic> json) {
+    final planeRef =
+        json['plane_ref'] == null ? null : PlaneRefDto.fromJson(json['plane_ref'] as Map<String, dynamic>);
+    if (planeRef?.fixedPlane != null) _plane = planeRef!.fixedPlane!;
+    if (_mode == GearMultiKind.chain) {
+      // v1 UI scope (`05-gear-chain-and-planetary.md`'s own note, see this
+      // screen's top-of-file comment): exactly one implicit group, so
+      // module/pressure angle are read from `groups[0]` the same way
+      // [_groups] always sends exactly one group back.
+      final groups = json['groups'] as List?;
+      if (groups != null && groups.isNotEmpty) {
+        final group0 = groups.first as Map<String, dynamic>;
+        _module = (group0['module'] as num?)?.toDouble() ?? _module;
+        _pressureAngleDegrees = (group0['pressure_angle_degrees'] as num?)?.toDouble() ?? _pressureAngleDegrees;
+      }
+      final startDirection = json['start_direction_degrees'] as num?;
+      if (startDirection != null) _startDirectionController.text = startDirection.toString();
+      final printClearance = json['print_clearance_margin'] as num?;
+      if (printClearance != null) _printClearanceController.text = printClearance.toString();
+      // Same v1 UI scope: single-member stages only - a stage this screen
+      // never could have created (a compound stage) can't be safely edited
+      // here at all: rebuilding [_stages] would have to drop it, and
+      // resaving would then silently replace the real compound stage with
+      // whatever placeholder took its place. Fails the whole load instead.
+      final stagesJson = (json['stages'] as List?)?.cast<Map<String, dynamic>>();
+      if (stagesJson != null && stagesJson.any((s) => s['member'] == null)) {
+        throw _UnsupportedExistingFeature(
+          'This chain has a compound stage, which this screen can\'t edit yet.',
+        );
+      }
+      if (stagesJson != null && stagesJson.length >= 2) {
+        for (final stage in _stages) {
+          stage.dispose();
+        }
+        _stages.clear();
+        for (final stageJson in stagesJson) {
+          final member = stageJson['member'] as Map<String, dynamic>;
+          final kind = ChainStageKind.values.firstWhere(
+            (k) => k.apiValue == member['member_type'],
+            orElse: () => ChainStageKind.external,
+          );
+          _stages.add(
+            _ChainStageForm(
+              kind: kind,
+              toothCount: (member['tooth_count'] as num).toInt().toString(),
+              faceWidth: (member['face_width'] as num).toString(),
+              turnAngle: ((stageJson['turn_angle_degrees'] as num?) ?? 0.0).toString(),
+              outerDiameter: (member['outer_diameter'] as num?)?.toString() ?? '',
+            ),
+          );
+        }
+      }
+    } else {
+      _module = (json['module'] as num?)?.toDouble() ?? _module;
+      _pressureAngleDegrees = (json['pressure_angle_degrees'] as num?)?.toDouble() ?? _pressureAngleDegrees;
+      final sunToothCount = json['sun_tooth_count'] as num?;
+      if (sunToothCount != null) _sunToothCountController.text = sunToothCount.toInt().toString();
+      final ringToothCount = json['ring_tooth_count'] as num?;
+      if (ringToothCount != null) _ringToothCountController.text = ringToothCount.toInt().toString();
+      final planetCount = json['planet_count'] as num?;
+      if (planetCount != null) _planetCountController.text = planetCount.toInt().toString();
+      final faceWidth = json['face_width'] as num?;
+      if (faceWidth != null) _planetaryFaceWidthController.text = faceWidth.toString();
+      final ringOuterDiameter = json['ring_outer_diameter'] as num?;
+      if (ringOuterDiameter != null) _ringOuterDiameterController.text = ringOuterDiameter.toString();
+    }
   }
 
   /// Mirrors `GearDesignScreen._loadPresets`'s own fire-and-forget warm-up.
@@ -298,7 +437,7 @@ class _GearChainDesignScreenState extends State<GearChainDesignScreen> {
     _schedulePreview();
   }
 
-  bool get _canCreate => _blockingError == null && _preview != null && !_creating;
+  bool get _canCreate => _blockingError == null && _preview != null && !_creating && !_loadingExisting;
 
   Future<void> _create() async {
     if (!_canCreate) return;
@@ -307,8 +446,51 @@ class _GearChainDesignScreenState extends State<GearChainDesignScreen> {
       _createError = null;
     });
     try {
-      final part = await _api.createPart(_mode == GearMultiKind.chain ? 'Gear Chain Part' : 'Planetary Gear Part');
       final planeRef = PlaneRefDto(fixedPlane: _plane);
+      if (_isEditing) {
+        // Gear-tree UX: saves back onto the same Feature instead of minting
+        // a new Part - mirrors GearDesignScreen._create's own editing
+        // branch exactly.
+        if (_mode == GearMultiKind.chain) {
+          final stages = _buildStages()!;
+          await _api.updateGearChainFeature(
+            widget.editingPartId!,
+            widget.editingFeatureId!,
+            groups: _groups(),
+            stages: stages,
+            startDirectionDegrees: double.parse(_startDirectionController.text),
+            printClearanceMargin: double.parse(_printClearanceController.text),
+            planeRef: planeRef,
+          );
+        } else {
+          await _api.updatePlanetaryGearFeature(
+            widget.editingPartId!,
+            widget.editingFeatureId!,
+            module: _module,
+            sunToothCount: int.parse(_sunToothCountController.text),
+            ringToothCount: int.parse(_ringToothCountController.text),
+            planetCount: int.parse(_planetCountController.text),
+            faceWidth: double.parse(_planetaryFaceWidthController.text),
+            ringOuterDiameter: double.parse(_ringOuterDiameterController.text),
+            pressureAngleDegrees: _pressureAngleDegrees,
+            planeRef: planeRef,
+          );
+        }
+        if (!mounted) return;
+        Navigator.of(context).pop();
+        return;
+      }
+
+      // Bug fix (on-device feedback): this always starts a brand-new Part
+      // - without resetting the session's Document first, it would just
+      // pile onto whatever Document a previous tool-chooser entry already
+      // created this session (see `DocumentApiClient.startNewDocument`'s
+      // own doc comment). Only reached on the create-new path above (never
+      // when `_isEditing`, which returns earlier) - editing in place must
+      // never reset the session's Document out from under the Part being
+      // edited.
+      await _api.startNewDocument();
+      final part = await _api.createPart(_mode == GearMultiKind.chain ? 'Gear Chain Part' : 'Planetary Gear Part');
       List<String> warnings = const [];
       if (_mode == GearMultiKind.chain) {
         final stages = _buildStages()!;
@@ -351,8 +533,23 @@ class _GearChainDesignScreenState extends State<GearChainDesignScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Gear Chain / Planetary')),
-      body: LayoutBuilder(
+      appBar: AppBar(
+        title: Text(
+          _isEditing
+              ? 'Edit ${_mode == GearMultiKind.chain ? 'Gear Chain' : 'Planetary Gear'}'
+              : 'Gear Chain / Planetary',
+        ),
+      ),
+      body: _loadingExisting
+          ? const Center(child: CircularProgressIndicator())
+          : _loadError != null
+              ? Center(
+                  child: Text(
+                    'Could not load this Feature: $_loadError',
+                    style: TextStyle(color: Theme.of(context).colorScheme.error),
+                  ),
+                )
+              : LayoutBuilder(
         builder: (context, constraints) {
           final canvas = GearChainPreviewCanvas(
             members: (_mode == GearMultiKind.chain ? _preview?.chain?.members : _preview?.planetary?.members) ??
@@ -384,10 +581,21 @@ class _GearChainDesignScreenState extends State<GearChainDesignScreen> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         SegmentedButton<GearMultiKind>(
-          segments: const [
-            ButtonSegment(value: GearMultiKind.chain, label: Text('Chain')),
-            ButtonSegment(value: GearMultiKind.planetary, label: Text('Planetary')),
-          ],
+          // Gear-tree UX: while editing, a GearChainFeature can't become a
+          // PlanetaryGearFeature (or vice versa) via this same Update
+          // endpoint, so only the current mode is offered - mirrors
+          // GearDesignScreen's own identical restriction.
+          segments: _isEditing
+              ? [
+                  ButtonSegment(
+                    value: _mode,
+                    label: Text(_mode == GearMultiKind.chain ? 'Chain' : 'Planetary'),
+                  ),
+                ]
+              : const [
+                  ButtonSegment(value: GearMultiKind.chain, label: Text('Chain')),
+                  ButtonSegment(value: GearMultiKind.planetary, label: Text('Planetary')),
+                ],
           selected: {_mode},
           onSelectionChanged: (selection) {
             setState(() => _mode = selection.first);
@@ -456,7 +664,7 @@ class _GearChainDesignScreenState extends State<GearChainDesignScreen> {
           onPressed: _canCreate ? _create : null,
           child: _creating
               ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
-              : const Text('Create'),
+              : Text(_isEditing ? 'Save' : 'Create'),
         ),
       ],
     );
