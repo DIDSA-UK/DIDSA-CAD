@@ -74,6 +74,15 @@ class _FakeDocumentBackend {
     final method = request.method;
     final body = request.body.isEmpty ? <String, dynamic>{} : jsonDecode(request.body) as Map<String, dynamic>;
 
+    if (path == '/document/new' && method == 'POST') {
+      // Bug fix (on-device feedback): `PartScreen._loadPart` now calls
+      // this before its first `createPart` whenever `initialPartId` is
+      // null - see `DocumentApiClient.startNewDocument`'s own doc
+      // comment. Every test here that constructs a plain `PartScreen()`
+      // with no `initialPartId` hits this first.
+      return _json({'document_id': 'doc-1', 'part_ids': <String>[]}, 201);
+    }
+
     if (path == '/document/parts' && method == 'POST') {
       return _json({
         'id': 'part-1',

@@ -21,6 +21,7 @@ class ApiConfig {
   static String _baseUrl = '';
   static String _apiKey = '';
   static String _localApiKey = '';
+  static String? _sessionId;
 
   /// The backend base URL, e.g. `https://cad-api.snail-shell.uk` - empty
   /// until [load] or [save] has run at least once.
@@ -45,6 +46,30 @@ class ApiConfig {
   /// [ConnectionScreen] can pre-fill its fields and offer Connect on cold
   /// launch.
   static bool get isConfigured => _baseUrl.isNotEmpty && _apiKey.isNotEmpty;
+
+  /// Sent as the `X-Document-Session` header on every `DocumentApiClient`/
+  /// `SketchApiClient` request - identifies this app process's own
+  /// document-editing session to the backend, so a second tab/device/app
+  /// instance pointed at the same [baseUrl] (the backend has no isolation
+  /// of its own beyond this header - see the backend's own
+  /// `app.session_context` docstring) never shares or silently overwrites
+  /// this session's in-memory Document/Sketch state. That cross-session
+  /// clobbering - not this app's own Save-reuses-the-last-path behaviour -
+  /// was the actual cause of a Save writing out a different, unrelated
+  /// model.
+  ///
+  /// Generated once per process, lazily on first use, and cached for the
+  /// rest of the process's lifetime - deliberately NOT reset by [load] or
+  /// [save], so revisiting Connection Settings mid-session (which re-runs
+  /// [load]) never orphans in-progress unsaved backend state under a freshly
+  /// generated id.
+  static String get sessionId => _sessionId ??= _generateSessionId();
+
+  static String _generateSessionId() {
+    final random = Random.secure();
+    final bytes = List<int>.generate(16, (_) => random.nextInt(256));
+    return bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+  }
 
   /// Populates the in-memory cache from `shared_preferences` - a no-op
   /// (leaves both empty) on first-ever launch, before any value has been

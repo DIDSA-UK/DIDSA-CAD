@@ -1,7 +1,10 @@
+import threading
 import uuid
+from collections import OrderedDict
 
 from fastapi import HTTPException
 
+from app.session_context import get_current_session_id
 from app.sketch.models import (
     Arc,
     Circle,
@@ -31,38 +34,72 @@ _ENTITY_TYPE_BY_REF: dict[SketchEntityType, type] = {
     SketchEntityType.TEXT: TextEntity,
 }
 
-# Temporary in-memory store, Stage 2 only - see the note in router.py. Pulled
-# out of router.py in Stage 7 so other modules (the Document/Part/Feature
-# model in app.document) can create and look up Sketches without reaching
-# into router internals.
-_sketches: dict[str, Sketch] = {}
+# Per-session in-memory store, Stage 2 only - see the note in router.py.
+# Pulled out of router.py in Stage 7 so other modules (the Document/Part/
+# Feature model in app.document) can create and look up Sketches without
+# reaching into router internals.
+#
+# Bug history: this used to be one bare `_sketches: dict[str, Sketch] = {}`
+# module global, shared by every connection to the backend regardless of
+# session - see app.document.store's matching note and
+# app.session_context's docstring for the full data-loss story. Keyed by
+# session id instead (one Sketch-dict per session), with the same
+# `_MAX_SESSIONS` LRU bound as app.document.store, for the same reason.
+_MAX_SESSIONS = 200
+
+_lock = threading.Lock()
+_sketches_by_session: "OrderedDict[str, dict[str, Sketch]]" = OrderedDict()
+
+
+def _current_sketches() -> dict[str, Sketch]:
+    session_id = get_current_session_id()
+    with _lock:
+        sketches = _sketches_by_session.get(session_id)
+        if sketches is None:
+            sketches = {}
+            _sketches_by_session[session_id] = sketches
+        _sketches_by_session.move_to_end(session_id)
+        _evict_oldest_locked()
+        return sketches
+
+
+def _evict_oldest_locked() -> None:
+    """Caller must hold `_lock`. Bounds `_sketches_by_session` to
+    `_MAX_SESSIONS` entries, evicting the least-recently-used session
+    first."""
+    while len(_sketches_by_session) > _MAX_SESSIONS:
+        _sketches_by_session.popitem(last=False)
 
 
 def all_sketches() -> dict[str, Sketch]:
-    """Every Sketch currently in the store, keyed by id - read-only access
-    for a whole-store consumer (native file export, see
+    """Every Sketch currently in the current session's store, keyed by id -
+    read-only access for a whole-store consumer (native file export, see
     `app.document.native_format.export_native`) that has no single Sketch
     id to look up by. Returns the live dict itself, not a copy - callers
     must not mutate it (mirrors `app.document.store.get_document`'s same
     live-reference convention)."""
-    return _sketches
+    return _current_sketches()
 
 
 def replace_all_sketches(sketches: dict[str, Sketch]) -> None:
     """Native file import's "full replace, not merge" (client-owned files,
-    locked-in scope): swaps out every Sketch currently in the store for
-    exactly the ones in `sketches`. Only intended to be called by
-    `app.document.router`'s native-import endpoint, immediately after
-    `app.document.store.replace_document` does the same for the Document
-    side - together they make an import a clean, atomic full replacement
-    rather than a merge with whatever was open before."""
-    global _sketches
-    _sketches = sketches
+    locked-in scope): swaps out every Sketch currently in the current
+    session's store for exactly the ones in `sketches`. Only intended to be
+    called by `app.document.router`'s native-import endpoint, immediately
+    after `app.document.store.replace_document` does the same for the
+    Document side - together they make an import a clean, atomic full
+    replacement rather than a merge with whatever was open before, scoped
+    to this one session."""
+    session_id = get_current_session_id()
+    with _lock:
+        _sketches_by_session[session_id] = sketches
+        _sketches_by_session.move_to_end(session_id)
+        _evict_oldest_locked()
 
 
 def add_sketch(sketch: Sketch) -> None:
-    """Inserts an already-built `Sketch` into the store under its own
-    current id, overwriting any existing entry at that id.
+    """Inserts an already-built `Sketch` into the current session's store
+    under its own current id, overwriting any existing entry at that id.
 
     The standalone "2D Drawing" tool's own sketch-import endpoint
     (`app.sketch.router`) is the intended caller: the `Sketch` there was
@@ -71,7 +108,7 @@ def add_sketch(sketch: Sketch) -> None:
     whatever's already in the store, unlike `import_native`'s own "full
     replace" semantics via `replace_all_sketches`, which clears the store
     first so collision is a non-issue there)."""
-    _sketches[sketch.id] = sketch
+    _current_sketches()[sketch.id] = sketch
 
 
 def create_sketch(plane: Plane | None, *, flip: bool = False, rotation_quarter_turns: int = 0) -> Sketch:
@@ -88,12 +125,12 @@ def create_sketch(plane: Plane | None, *, flip: bool = False, rotation_quarter_t
     see `Sketch`'s own docstring) is unaffected."""
     sketch = Sketch(id=str(uuid.uuid4()), plane=plane)
     sketch.set_orientation(flip=flip, rotation_quarter_turns=rotation_quarter_turns)
-    _sketches[sketch.id] = sketch
+    _current_sketches()[sketch.id] = sketch
     return sketch
 
 
 def get_sketch_or_404(sketch_id: str) -> Sketch:
-    sketch = _sketches.get(sketch_id)
+    sketch = _current_sketches().get(sketch_id)
     if sketch is None:
         raise HTTPException(status_code=404, detail="Sketch not found")
     return sketch
@@ -116,15 +153,15 @@ def _missing_sketch_entity_reference(ref: SketchEntityRef) -> HTTPException:
 
 
 def resolve_sketch_entity(ref: SketchEntityRef) -> Point | Line | Circle | Arc | Ellipse | Spline | TextEntity:
-    """C1: resolves `ref` against the current store - a direct dict lookup
-    (`Sketch.points` for POINT, `Sketch.entities` for LINE/CIRCLE/ARC, with
-    an `isinstance` check so asking for a LINE at a Point/Circle/Arc's own
-    id fails closed rather than returning the wrong type), unlike
-    `resolve_subshape`'s OCCT re-derivation. Fails closed with the
-    structured `missing_reference` error above for an unknown `sketch_id`,
-    an unknown `entity_id`, or an `entity_id` that exists but is the wrong
-    `entity_type`."""
-    sketch = _sketches.get(ref.sketch_id)
+    """C1: resolves `ref` against the current session's store - a direct
+    dict lookup (`Sketch.points` for POINT, `Sketch.entities` for
+    LINE/CIRCLE/ARC, with an `isinstance` check so asking for a LINE at a
+    Point/Circle/Arc's own id fails closed rather than returning the wrong
+    type), unlike `resolve_subshape`'s OCCT re-derivation. Fails closed
+    with the structured `missing_reference` error above for an unknown
+    `sketch_id`, an unknown `entity_id`, or an `entity_id` that exists but
+    is the wrong `entity_type`."""
+    sketch = _current_sketches().get(ref.sketch_id)
     if sketch is None:
         raise _missing_sketch_entity_reference(ref)
 
@@ -142,10 +179,11 @@ def resolve_sketch_entity(ref: SketchEntityRef) -> Point | Line | Circle | Arc |
 
 
 def delete_sketch(sketch_id: str) -> None:
-    """Removes a Sketch from the store. Only intended to be called by
-    app.document's cascade-delete, for a Sketch it has just confirmed is
-    owned by a SketchFeature it is deleting - there is no other reference
-    to a Sketch created via that flow, so no other caller should ever
-    need this. Pops rather than 404ing on a missing id since cascade-delete
-    is the sole caller and already knows the Sketch exists."""
-    _sketches.pop(sketch_id, None)
+    """Removes a Sketch from the current session's store. Only intended to
+    be called by app.document's cascade-delete, for a Sketch it has just
+    confirmed is owned by a SketchFeature it is deleting - there is no
+    other reference to a Sketch created via that flow, so no other caller
+    should ever need this. Pops rather than 404ing on a missing id since
+    cascade-delete is the sole caller and already knows the Sketch
+    exists."""
+    _current_sketches().pop(sketch_id, None)

@@ -342,6 +342,15 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
         return;
       }
 
+      // Bug fix (on-device feedback): this always starts a brand-new Part
+      // - without resetting the session's Document first, it would just
+      // pile onto whatever Document a previous tool-chooser entry already
+      // created this session (see `DocumentApiClient.startNewDocument`'s
+      // own doc comment). Only reached on the create-new path above (never
+      // when `_isEditing`, which returns earlier) - editing in place must
+      // never reset the session's Document out from under the Part being
+      // edited.
+      await _api.startNewDocument();
       final part = await _api.createPart(_mode == BevelMultiKind.gear ? 'Bevel Gear Part' : 'Bevel Pair Part');
       List<String> warnings = const [];
       if (_mode == BevelMultiKind.gear) {
