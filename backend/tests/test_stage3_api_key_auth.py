@@ -27,6 +27,17 @@ def test_health_with_correct_api_key_succeeds():
     assert response.json()["status"] == "ok"
 
 
+def test_health_reports_the_running_git_branch():
+    # Falls back to "unknown" rather than failing (see app.main's own
+    # _read_git_branch) if git/the repo isn't available in whatever
+    # environment runs this test, so this only checks the field's shape,
+    # not a specific branch name.
+    response = client.get("/health", headers={"X-API-Key": TEST_API_KEY})
+
+    assert isinstance(response.json()["git_branch"], str)
+    assert response.json()["git_branch"] != ""
+
+
 def test_sketch_endpoint_without_api_key_is_rejected():
     response = client.post("/sketch/sketches", json={"plane": "XY"})
 

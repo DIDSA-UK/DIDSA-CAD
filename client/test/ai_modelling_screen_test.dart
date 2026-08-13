@@ -84,6 +84,9 @@ Here's the plan:
       if (failAtPath != null && path == failAtPath) {
         return http.Response(jsonEncode({'detail': {'type': 'geometry_failed'}}), 422);
       }
+      if (path == '/document/new') {
+        return http.Response(jsonEncode({'document_id': 'doc-1', 'part_ids': []}), 201);
+      }
       if (path == '/document/parts') {
         return http.Response(jsonEncode({'id': 'part-1', 'name': 'AI Modelling Part', 'feature_ids': []}), 201);
       }
@@ -351,7 +354,7 @@ Here's the plan:
     expect(find.textContaining('unknown_local_id'), findsOneWidget);
     expect(find.textContaining('1 of 1 step(s) failed validation - nothing was created'), findsOneWidget);
     // Only the create-Part and validate calls happened - no execution.
-    expect(requestedPaths, ['/document/parts', '/document/parts/part-1/ai-plan/validate']);
+    expect(requestedPaths, ['/document/new', '/document/parts', '/document/parts/part-1/ai-plan/validate']);
   });
 
   testWidgets(
@@ -517,7 +520,7 @@ Here's the plan:
     expect(find.textContaining("AI Modelling can't create one automatically yet"), findsOneWidget);
     // Nothing beyond create-Part + validate - a gear_request step is never
     // itself executed against the real backend.
-    expect(requestedPaths, ['/document/parts', '/document/parts/part-1/ai-plan/validate']);
+    expect(requestedPaths, ['/document/new', '/document/parts', '/document/parts/part-1/ai-plan/validate']);
     // No Features were ever created, so no Undo is offered.
     expect(find.text('Undo this generation'), findsNothing);
   });

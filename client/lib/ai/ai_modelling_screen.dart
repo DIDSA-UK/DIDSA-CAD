@@ -233,6 +233,13 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       _stepStatuses = List.filled(plan.steps.length, TranslationStepStatus.pending);
     });
     try {
+      // Bug fix (on-device feedback): AI Modelling always starts a
+      // brand-new Part (see this screen's own class doc comment) - without
+      // resetting the session's Document first, this Part would just pile
+      // onto whatever Document a previous tool-chooser entry already
+      // created this session (see `DocumentApiClient.startNewDocument`'s
+      // own doc comment).
+      await _documentApi.startNewDocument();
       final part = await _documentApi.createPart('AI Modelling Part');
       final translator = PlanTranslator(documentApi: _documentApi, sketchApi: _sketchApi);
       final result = await translator.execute(

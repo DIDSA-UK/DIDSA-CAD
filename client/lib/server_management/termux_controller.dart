@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
@@ -7,6 +9,19 @@ import 'termux_commands.dart';
 /// Whether a dispatched command's result is currently unknown, or has been
 /// confirmed via a real /health round trip - see [TermuxController.check].
 enum ServerReachability { unknown, reachable, unreachable }
+
+/// A single /health round trip's full result - see [TermuxController
+/// .checkStatus]. [branch] is only ever non-null when [reachability] is
+/// [ServerReachability.reachable] with a response body that actually
+/// included it - the backend reports its own git branch (see
+/// app/main.py's own `git_branch` field), so this reflects what's really
+/// running, not a value guessed or remembered client-side.
+class ServerStatus {
+  const ServerStatus({required this.reachability, this.branch});
+
+  final ServerReachability reachability;
+  final String? branch;
+}
 
 /// Thin wrapper over the `uk.snail_shell.didsa_cad_client/termux`
 /// MethodChannel (see android/.../MainActivity.kt) plus a real /health poll
@@ -41,6 +56,19 @@ class TermuxController {
     return result ?? false;
   }
 
+  /// The raw dump TermuxResultService last captured from whatever Termux
+  /// actually sent back via the RUN_COMMAND_PENDING_INTENT result callback
+  /// - see that class's own doc comment for why this is unparsed text
+  /// rather than a typed result (the exact Termux result-bundle schema
+  /// wasn't confirmed against primary source, so the native side captures
+  /// everything present rather than betting on assumed key names). Always
+  /// returns *something* displayable, never null/throws - a placeholder
+  /// string if nothing has arrived yet.
+  Future<String> getLastCommandResult() async {
+    final result = await _channel.invokeMethod<String>('getLastCommandResult');
+    return result ?? '(no result available)';
+  }
+
   /// Returns false only if the intent itself couldn't be dispatched
   /// (missing permission, Termux not installed) - see MainActivity.kt's
   /// own doc comment on what this return value does and doesn't confirm.
@@ -62,60 +90,76 @@ class TermuxController {
   /// branch" - fetches it fresh and boots it in one tap, rather than the
   /// user having to Pull, wait, then separately remember to Start.
   Future<bool> pullAndStart(String branch) async {
-    await ApiConfig.saveLocalApiKey(ApiConfig.apiKey);
-    return _dispatch(TermuxCommands.pullAndStart(branch, ApiConfig.apiKey));
+    final key = await ApiConfig.ensureLocalApiKey();
+    return _dispatch(TermuxCommands.pullAndStart(branch, key));
   }
 
-  /// Stamps [ApiConfig.localApiKey] with whatever key is exported, before
-  /// dispatching - so the Connection screen's "Use Local Server" button
-  /// always reflects what this call actually attempted, even if the
-  /// intent dispatch itself then fails (matches [ApiConfig.saveLocalApiKey]
-  /// 's own doc comment: this records an attempt, not a confirmed result).
+  /// Uses [ApiConfig.ensureLocalApiKey] - not [ApiConfig.apiKey] - as the
+  /// key exported as CAD_API_KEY, so a local start never depends on a
+  /// remote-server key that may not exist yet (see that method's own doc
+  /// comment for why using [ApiConfig.apiKey] here would be circular:
+  /// it's only ever set *after* a successful connection to a server that,
+  /// on first install, doesn't exist until something starts it).
   Future<bool> startServer() async {
-    await ApiConfig.saveLocalApiKey(ApiConfig.apiKey);
-    return _dispatch(TermuxCommands.startServer(ApiConfig.apiKey));
+    final key = await ApiConfig.ensureLocalApiKey();
+    return _dispatch(TermuxCommands.startServer(key));
   }
 
   Future<bool> stopServer() => _dispatch(TermuxCommands.stopServer());
 
   Future<bool> restartServer() async {
-    await ApiConfig.saveLocalApiKey(ApiConfig.apiKey);
-    return _dispatch(TermuxCommands.restartServer(ApiConfig.apiKey));
+    final key = await ApiConfig.ensureLocalApiKey();
+    return _dispatch(TermuxCommands.restartServer(key));
   }
 
   /// A single GET /health round trip against [localBaseUrl] - always uses
-  /// [ApiConfig.apiKey] as the X-API-Key (the same value startServer/
-  /// restartServer exported as CAD_API_KEY, so this checks with whatever
-  /// key the local server actually has, even an empty one - there's no
-  /// meaningful auth boundary to protect against on a loopback-only,
-  /// same-device call, so an empty key is a "you won't be able to Connect
-  /// to this yet" usability note for the caller to surface, not something
-  /// this method itself needs to guard against). Short timeout: this is a
-  /// local, same-device call (unlike [ApiConfig.requestTimeout]'s own
-  /// comment about allowing headroom for a real network round trip to the
-  /// Pi), so a slow response is itself a meaningful "something's wrong"
-  /// signal.
-  Future<ServerReachability> check() async {
+  /// [ApiConfig.localApiKey], not [ApiConfig.apiKey]: /health requires the
+  /// API key too (see app/main.py's own comment - deliberately, not an
+  /// oversight), and the local server is started with [ApiConfig
+  /// .localApiKey] (via [startServer]/[restartServer]/[pullAndStart]), not
+  /// whatever [ApiConfig.apiKey] happens to currently hold - those two can
+  /// easily differ (e.g. [ApiConfig.apiKey] pointing at a remote server,
+  /// or still empty on a fresh install). Short timeout: this is a local,
+  /// same-device call (unlike [ApiConfig.requestTimeout]'s own comment
+  /// about allowing headroom for a real network round trip to the Pi), so
+  /// a slow response is itself a meaningful "something's wrong" signal.
+  /// [ServerStatus.branch] parsing failures (bad JSON, missing field) are
+  /// swallowed to null rather than affecting [ServerStatus.reachability] -
+  /// a 2xx /health response is still a genuinely reachable server even if
+  /// its body doesn't parse the way this client expects.
+  Future<ServerStatus> checkStatus() async {
     try {
       final response = await _httpClient
-          .get(Uri.parse('$localBaseUrl/health'), headers: {'X-API-Key': ApiConfig.apiKey})
+          .get(Uri.parse('$localBaseUrl/health'), headers: {'X-API-Key': ApiConfig.localApiKey})
           .timeout(const Duration(seconds: 5));
-      return (response.statusCode >= 200 && response.statusCode < 300)
-          ? ServerReachability.reachable
-          : ServerReachability.unreachable;
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        return const ServerStatus(reachability: ServerReachability.unreachable);
+      }
+      String? branch;
+      try {
+        branch = (jsonDecode(response.body) as Map<String, dynamic>)['git_branch'] as String?;
+      } catch (_) {
+        branch = null;
+      }
+      return ServerStatus(reachability: ServerReachability.reachable, branch: branch);
     } catch (_) {
-      return ServerReachability.unreachable;
+      return const ServerStatus(reachability: ServerReachability.unreachable);
     }
   }
 
+  Future<ServerReachability> check() async => (await checkStatus()).reachability;
+
   /// Polls [check] every [interval] until it reports [expect] or [timeout]
   /// elapses - a start/restart takes a real, variable amount of time
-  /// (micromamba activation, uvicorn's own boot), so a single immediate
-  /// check right after dispatching the intent would almost always read
-  /// "unreachable" even on a genuinely successful start.
+  /// (micromamba activation, then uvicorn importing pythonocc-core - a
+  /// large compiled CAD kernel - all under proot's ptrace overhead), so a
+  /// single immediate check right after dispatching the intent would
+  /// almost always read "unreachable" even on a genuinely successful
+  /// start. 60s (not a shorter default) because on-device testing showed a
+  /// cold start alone can take longer than 20s to become reachable.
   Future<ServerReachability> pollUntil({
     required ServerReachability expect,
-    Duration timeout = const Duration(seconds: 20),
+    Duration timeout = const Duration(seconds: 60),
     Duration interval = const Duration(seconds: 2),
   }) async {
     final deadline = DateTime.now().add(timeout);
