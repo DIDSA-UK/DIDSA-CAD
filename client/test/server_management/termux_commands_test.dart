@@ -60,12 +60,53 @@ void main() {
       expect(script, contains('micromamba activate didsa'));
       expect(script, contains("export CAD_API_KEY='super-secret'"));
       expect(script, contains('uvicorn app.main:app --host 127.0.0.1 --port 8000'));
-      expect(script, contains('setsid nohup'));
+      expect(script, contains('exec python -m uvicorn'));
+    });
+
+    test('startServer runs uvicorn in the foreground (exec), not backgrounded', () {
+      final script = TermuxCommands.startServer('key').last;
+      expect(script, isNot(contains('setsid')));
+      expect(script, isNot(contains('nohup')));
+      expect(script, isNot(contains(r'uvicorn app.main:app --host 127.0.0.1 --port 8000 > ~/didsa-backend.log 2>&1 < /dev/null &')));
+      expect(script.trim(), isNot(endsWith('&')));
+    });
+
+    test('startServer tees uvicorn output instead of redirecting it away outright', () {
+      final script = TermuxCommands.startServer('key').last;
+      expect(script, contains('> >(tee -a ~/didsa-backend.log) 2>&1'));
+      expect(script, isNot(contains('> ~/didsa-backend.log 2>&1')));
     });
 
     test('startServer kills any already-running instance before starting a new one', () {
       final script = TermuxCommands.startServer('key').last;
-      expect(script, contains("pkill -f 'uvicorn app.main:app'"));
+      expect(script, contains("pkill -f '^python -m uvicorn app.main:app'"));
+    });
+
+    test('pkill pattern is anchored, so it cannot self-match the dispatching shell', () {
+      // Regression guard for the actual, complete explanation behind every
+      // real on-device "server won't start" failure investigated for this
+      // screen (see TermuxCommands.processMatch's own doc comment):
+      // pkill -f matches a process's *entire* command line, and every
+      // script this class builds embeds its own eventual
+      // "exec python -m uvicorn ..." invocation as literal text within the
+      // same larger script string that is still the currently-running
+      // dispatching shell's own command line while pkill executes. An
+      // unanchored pattern therefore matches - and kills - that shell (and
+      // every proot-distro/proot wrapper layer above it) before uvicorn
+      // ever starts. Confirmed by reproducing the exact "proot info: vpid
+      // 1: terminated with signal 15" failure by running the unanchored
+      // version of this exact script directly at an interactive Termux
+      // prompt - no RUN_COMMAND, no backgrounding, no Termux service
+      // involved at all - which self-matching pkill alone fully explains.
+      final script = TermuxCommands.startServer('key').last;
+      expect(TermuxCommands.processMatch, startsWith('^'));
+      expect(script, contains("pkill -f '^python -m uvicorn app.main:app'"));
+      // The anchor has to target the real uvicorn process's own argv0
+      // ("python") - not just any anchored-looking pattern - since no
+      // wrapper shell's command line starts with that, only a genuinely
+      // running "exec python -m uvicorn ..." process's does.
+      expect(RegExp(r'^python -m uvicorn app\.main:app').hasMatch('python -m uvicorn app.main:app --host 127.0.0.1 --port 8000'), isTrue);
+      expect(RegExp(r'^python -m uvicorn app\.main:app').hasMatch(script), isFalse);
     });
 
     test('startServer normalizes pkill finding nothing to a real success, chained with &&', () {
@@ -75,21 +116,21 @@ void main() {
       // already failed. Verified against real bash during development
       // (both the failure-still-blocks and success-still-proceeds paths).
       final script = TermuxCommands.startServer('key').last;
-      expect(script, contains("(pkill -f 'uvicorn app.main:app' 2>/dev/null || true)"));
-      expect(script, contains('|| true) && setsid nohup'));
-      expect(script, isNot(contains('2>/dev/null; setsid')));
+      expect(script, contains("(pkill -f '^python -m uvicorn app.main:app' 2>/dev/null || true)"));
+      expect(script, contains('|| true) && exec python -m uvicorn'));
+      expect(script, isNot(contains('2>/dev/null; exec')));
     });
 
     test('stopServer reports whether anything was actually running', () {
       final script = TermuxCommands.stopServer().last;
-      expect(script, contains("pkill -f 'uvicorn app.main:app' && echo stopped || echo not_running"));
+      expect(script, contains("pkill -f '^python -m uvicorn app.main:app' && echo stopped || echo not_running"));
     });
 
     test('restartServer both stops and starts in the one dispatched command', () {
       final script = TermuxCommands.restartServer('key').last;
-      expect(script, contains("pkill -f 'uvicorn app.main:app'"));
+      expect(script, contains("pkill -f '^python -m uvicorn app.main:app'"));
       expect(script, contains('micromamba activate didsa'));
-      expect(script, contains('setsid nohup'));
+      expect(script, contains('exec python -m uvicorn'));
     });
 
     test('API key containing a single quote is escaped, not left to break the export', () {
@@ -104,7 +145,7 @@ void main() {
       expect(script, contains('git reset --hard FETCH_HEAD'));
       expect(script, contains('micromamba activate didsa'));
       expect(script, contains("export CAD_API_KEY='super-secret'"));
-      expect(script, contains('setsid nohup'));
+      expect(script, contains('exec python -m uvicorn'));
     });
 
     test('pullAndStart joins pull and start with && (single command chain), not two dispatches', () {

@@ -109,6 +109,31 @@ class ApiConfig {
     _localApiKey = key;
   }
 
+  /// Returns [localApiKey], generating and persisting a fresh random one
+  /// first if it's still empty (first local start ever, on this device).
+  /// This is what actually breaks a circular dependency that otherwise
+  /// stops the local server from ever starting the *first* time: the
+  /// backend refuses to start without a non-empty CAD_API_KEY (see
+  /// app/auth.py), but [apiKey] only ever gets set by [save], which
+  /// [ConnectionScreen] only calls after a *successful* health check
+  /// against a server already running with that exact key - a server that,
+  /// on first install, doesn't exist yet because nothing has started it.
+  /// Using [apiKey] (or requiring the user type one in Connection Settings
+  /// first) as the local server's own key would leave that loop with no
+  /// way in. Generating [localApiKey] independently, right here, is what
+  /// lets `TermuxController.startServer`/`pullAndStart`/`restartServer`
+  /// bootstrap a working server with no pre-existing key at all - the
+  /// Connection screen's own "Use Local Server" button then reads this
+  /// same value back afterward.
+  static Future<String> ensureLocalApiKey() async {
+    if (_localApiKey.isNotEmpty) return _localApiKey;
+    final random = Random.secure();
+    final bytes = List<int>.generate(32, (_) => random.nextInt(256));
+    final key = bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    await saveLocalApiKey(key);
+    return key;
+  }
+
   /// The backend is a Raspberry Pi over a home internet connection and
   /// Cloudflare Tunnel, not localhost - allow real headroom for latency
   /// before treating a request as failed.
