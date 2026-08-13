@@ -12,6 +12,9 @@ import '../api/sketch_api_client.dart'
     show ApiException, LineDto, ProfileDetectionDto, ProfileLoopDto, SketchApiClient, TextContourDto;
 import '../connection_screen.dart';
 import '../didsa_logo_button.dart';
+import '../gear/bevel_design_screen.dart';
+import '../gear/gear_chain_design_screen.dart';
+import '../gear/gear_design_screen.dart';
 import '../sketch/sketch_controller.dart';
 import '../sketch/sketch_screen.dart';
 import 'add_button_menu.dart';
@@ -5042,12 +5045,100 @@ class _PartScreenState extends State<PartScreen> {
       // above exactly.
       final opened = _openPatternPanelForEdit(feature);
       if (!opened) await _endRollback();
+    } else if (_gearFamilyFeatureTypes.contains(feature.type)) {
+      // Gear-tree UX: GearFeature/RackFeature/BevelGearFeature/
+      // BevelPairFeature/GearChainFeature/PlanetaryGearFeature are built
+      // straight from parameters via their own full-screen design screen
+      // (GearDesignScreen/BevelDesignScreen/GearChainDesignScreen) - unlike
+      // Extrude/Revolve/etc. there is no inline edit panel to reopen, so a
+      // tap re-enters that same screen instead. That screen is a full-page
+      // route already, exactly like SketchScreen, so this mirrors the
+      // Sketch branch above (Navigator.push + await, then end rollback once
+      // it returns) rather than the confirm/cancel-pair shape every inline
+      // panel branch above uses.
+      await _openGearScreenForEdit(feature);
+      if (!mounted) return;
+      await _endRollback();
     } else {
       // Defensive: no known editable panel for this Feature type yet
       // (every type today is handled above) - never leave rollback
       // engaged with nothing that will ever end it.
       await _endRollback();
     }
+  }
+
+  /// Gear-tree UX: every gear-family Feature `type` string - `GearFeature`/
+  /// `RackFeature` (`GearDesignScreen`), `BevelGearFeature`/
+  /// `BevelPairFeature` (`BevelDesignScreen`), `GearChainFeature`/
+  /// `PlanetaryGearFeature` (`GearChainDesignScreen`) - see
+  /// `backend/app/document/models.py`'s own Feature subclasses for the
+  /// authoritative list. Shared between [_onFeatureTap]'s dispatch and
+  /// [_openGearScreenForEdit]'s own routing below so the two can never drift
+  /// out of sync.
+  static const Set<String> _gearFamilyFeatureTypes = {
+    'gear',
+    'rack',
+    'bevel_gear',
+    'bevel_pair',
+    'gear_chain',
+    'planetary_gear',
+  };
+
+  /// Gear-tree UX: pushes [feature]'s own dedicated design screen in edit
+  /// mode (pre-populated from its current stored parameters, per that
+  /// screen's own `editingPartId`/`editingFeatureId` handling), awaits it,
+  /// then refreshes the Feature list/mesh once it returns - mirrors
+  /// [_openSketch]'s exact "push a full-page route, refresh on return"
+  /// shape, not the inline-panel confirm/cancel pattern every other Feature
+  /// type's edit branch in [_onFeatureTap] uses, since these design screens
+  /// are full-page routes themselves (like [SketchScreen]), not an inline
+  /// panel docked into this screen. Whether the user actually saved a
+  /// change or just backed out unchanged, refreshing here is always safe -
+  /// same "harmless no-op when nothing changed" reasoning [_openSketch]'s
+  /// own post-navigation refresh already relies on.
+  Future<void> _openGearScreenForEdit(FeatureDto feature) async {
+    final partId = _part?.id;
+    if (partId == null) return;
+    switch (feature.type) {
+      case 'gear':
+      case 'rack':
+        await Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => GearDesignScreen(
+              initialKind: feature.type == 'rack' ? GearDesignKind.rack : GearDesignKind.external,
+              editingPartId: partId,
+              editingFeatureId: feature.id,
+            ),
+          ),
+        );
+      case 'bevel_gear':
+      case 'bevel_pair':
+        await Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => BevelDesignScreen(
+              initialMode: feature.type == 'bevel_pair' ? BevelMultiKind.pair : BevelMultiKind.gear,
+              editingPartId: partId,
+              editingFeatureId: feature.id,
+            ),
+          ),
+        );
+      case 'gear_chain':
+      case 'planetary_gear':
+        await Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => GearChainDesignScreen(
+              initialMode: feature.type == 'planetary_gear' ? GearMultiKind.planetary : GearMultiKind.chain,
+              editingPartId: partId,
+              editingFeatureId: feature.id,
+            ),
+          ),
+        );
+    }
+    if (!mounted) return;
+    await _runGuarded(() async {
+      await _refreshFeatures();
+      await _refreshMesh();
+    });
   }
 
   /// B4: engages true rollback - adds [rollbackIds] to
