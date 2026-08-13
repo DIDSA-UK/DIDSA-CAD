@@ -16,7 +16,34 @@ class TermuxCommands {
   static const String backendDir = '$repoDir/backend';
   static const String condaEnv = 'didsa';
   static const String logFile = '~/didsa-backend.log';
-  static const String processMatch = 'uvicorn app.main:app';
+
+  /// Anchored ("^..."), deliberately not a bare substring - pkill -f
+  /// matches a process's *entire* command line, and proot has no real
+  /// PID-namespace isolation (it's ptrace-based emulation, not namespaces),
+  /// so a search run "inside" the distro can see and signal host-side
+  /// ancestor processes too, not just descendants. Every script this class
+  /// builds embeds this constant's own eventual "exec python -m uvicorn
+  /// ..." invocation as literal text *within* the same larger script
+  /// string that is still the currently-running dispatching shell's own
+  /// command line while pkill executes - an unanchored pattern therefore
+  /// matches that shell (and every proot-distro/proot wrapper layer above
+  /// it, which all carry the identical full script text as their own
+  /// command line too) and kills the whole dispatch out from under itself.
+  /// This was the real, complete explanation for every on-device "server
+  /// won't start" failure investigated for this screen - confirmed by
+  /// reproducing the exact "proot info: vpid 1: terminated with signal 15"
+  /// failure by running this line's own script directly at an interactive
+  /// Termux prompt, no RUN_COMMAND/backgrounding/Termux service involved
+  /// at all, which self-matching pkill alone fully explains. Two earlier,
+  /// plausible-looking fixes - foregrounding uvicorn via exec, then teeing
+  /// its output instead of redirecting it away - did not and could not
+  /// have fixed this, since neither touched it (kept anyway: both are
+  /// still independently correct practice). Anchoring to the real uvicorn
+  /// process's own argv0 ("python", from this class's own
+  /// "exec python -m uvicorn ...") is the fix - no wrapper layer's command
+  /// line starts with that, only a genuinely running uvicorn process's
+  /// does.
+  static const String processMatch = '^python -m uvicorn app.main:app';
 
   /// The executable RUN_COMMAND_PATH points at - proot-distro itself, not
   /// bash directly, since every command here needs to run inside the
@@ -95,45 +122,19 @@ class TermuxCommands {
       // confirmed by testing the failure path directly during this
       // feature's own development, not just by inspection.
       "&& (pkill -f ${_shellQuote(processMatch)} 2>/dev/null || true) "
-      // No backgrounding (no "&"/setsid/nohup) - a real on-device failure
-      // (confirmed via TermuxResultService's captured result: exitCode 0,
-      // empty stdout/stderr - the dispatched script itself succeeded
-      // instantly, exactly what backgrounding produces) showed why that
-      // doesn't work under proot: proot isn't a real container, it
-      // emulates the sandbox via ptrace, so the *proot process itself*
-      // must stay alive to keep servicing syscalls for anything running
-      // inside it. Backgrounding uvicorn and letting this script return
-      // exits the whole "proot-distro login" process tree immediately,
-      // which kills the "backgrounded" uvicorn with it - setsid/nohup only
-      // protect against normal shell-job-control teardown (SIGHUP from the
-      // parent shell exiting), not against the ptrace supervisor itself
-      // disappearing. Fix: make uvicorn the actual foreground process of
-      // the whole dispatched command (exec replaces this shell with it),
-      // so the proot-distro/bash/uvicorn chain stays alive together for as
-      // long as the server runs - RUN_COMMAND fully supports a long-running
-      // dispatch like this (that's the normal shape for a persistent
-      // daemon); Termux's own execution notification just stays up the
-      // whole time, which is correct, not a bug.
-      //
-      // Output goes to $logFile via a teed process substitution
-      // (`> >(tee -a ...)`), NOT a plain `> $logFile` redirect - a second
-      // real on-device failure after the exec fix above (confirmed via
-      // TermuxResultService again: exitCode 0, stderr containing Termux's
-      // own "proot info: vpid 1: terminated with signal 15", with captured
-      // stdout/stderr ending exactly at the preceding pull script's own
-      // output - nothing from this line ever appeared) points at why: a
-      // plain `> $logFile` redirect closes this whole script's stdout/
-      // stderr *before* exec-ing into uvicorn, and those file descriptors
-      // are the same pipe Termux itself is reading to capture this
-      // dispatch's output - Termux's background-execution runner reads
-      // that pipe to EOF, and evidently treats EOF as "the command is
-      // done" and kills the still-running process (the observed SIGTERM)
-      // rather than continuing to wait for it to actually exit. Piping
-      // through a teed process substitution instead means uvicorn's
-      // stdout/stderr fds stay connected to Termux's own capture pipe for
-      // the process's entire lifetime (tee also writes everything to
-      // $logFile on the side) - it only reaches EOF when uvicorn itself
-      // actually exits, not before.
+      // exec (not backgrounding with "&"/setsid/nohup): makes uvicorn the
+      // actual foreground process of the whole dispatched command, so the
+      // proot-distro/bash/uvicorn chain stays alive together for as long
+      // as the server runs. Output goes to $logFile via a teed process
+      // substitution rather than a plain "> $logFile" redirect, so this
+      // script's own stdout/stderr fds - the same pipe Termux's background-
+      // execution runner reads to capture this dispatch's output - stay
+      // connected for uvicorn's entire lifetime instead of being closed out
+      // from under it the moment this line runs. Neither of these was
+      // actually the fix for the real on-device "server won't start"
+      // failures hit during this feature's development - see
+      // [processMatch]'s own doc comment for what was - but both remain
+      // independently correct practice, so they're kept.
       '&& exec python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 '
       '> >(tee -a $logFile) 2>&1';
 

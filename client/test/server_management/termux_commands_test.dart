@@ -64,15 +64,6 @@ void main() {
     });
 
     test('startServer runs uvicorn in the foreground (exec), not backgrounded', () {
-      // Regression guard for a real on-device bug: backgrounding uvicorn
-      // (setsid/nohup/trailing "&") let the whole proot-distro process tree
-      // exit immediately after backgrounding it, which killed the
-      // "detached" uvicorn along with it - proot isn't a real container, it
-      // has to stay running to keep servicing syscalls for anything inside
-      // it via ptrace, so nothing can outlive it by backgrounding alone.
-      // Confirmed via TermuxResultService's captured real result on-device
-      // (exitCode 0, empty stdout/stderr - the dispatched script itself
-      // completing instantly, exactly what backgrounding produces).
       final script = TermuxCommands.startServer('key').last;
       expect(script, isNot(contains('setsid')));
       expect(script, isNot(contains('nohup')));
@@ -81,19 +72,6 @@ void main() {
     });
 
     test('startServer tees uvicorn output instead of redirecting it away outright', () {
-      // Regression guard for a second real on-device bug found *after* the
-      // exec fix above: a plain "> $logFile" redirect closes this whole
-      // script's stdout/stderr before exec-ing into uvicorn, which are the
-      // same fds Termux itself reads to capture this dispatch's output -
-      // Termux's background-execution runner reads that to EOF and kills
-      // the still-running process rather than continuing to wait for it.
-      // Confirmed via TermuxResultService's captured real result on-device
-      // (exitCode 0, stderr containing "proot info: vpid 1: terminated
-      // with signal 15", captured output ending exactly where the pull
-      // script's own output ended - nothing from the start script's own
-      // run ever appeared). A teed process substitution keeps that pipe
-      // connected to Termux for uvicorn's whole lifetime while still
-      // writing everything to the log file on the side.
       final script = TermuxCommands.startServer('key').last;
       expect(script, contains('> >(tee -a ~/didsa-backend.log) 2>&1'));
       expect(script, isNot(contains('> ~/didsa-backend.log 2>&1')));
@@ -101,7 +79,34 @@ void main() {
 
     test('startServer kills any already-running instance before starting a new one', () {
       final script = TermuxCommands.startServer('key').last;
-      expect(script, contains("pkill -f 'uvicorn app.main:app'"));
+      expect(script, contains("pkill -f '^python -m uvicorn app.main:app'"));
+    });
+
+    test('pkill pattern is anchored, so it cannot self-match the dispatching shell', () {
+      // Regression guard for the actual, complete explanation behind every
+      // real on-device "server won't start" failure investigated for this
+      // screen (see TermuxCommands.processMatch's own doc comment):
+      // pkill -f matches a process's *entire* command line, and every
+      // script this class builds embeds its own eventual
+      // "exec python -m uvicorn ..." invocation as literal text within the
+      // same larger script string that is still the currently-running
+      // dispatching shell's own command line while pkill executes. An
+      // unanchored pattern therefore matches - and kills - that shell (and
+      // every proot-distro/proot wrapper layer above it) before uvicorn
+      // ever starts. Confirmed by reproducing the exact "proot info: vpid
+      // 1: terminated with signal 15" failure by running the unanchored
+      // version of this exact script directly at an interactive Termux
+      // prompt - no RUN_COMMAND, no backgrounding, no Termux service
+      // involved at all - which self-matching pkill alone fully explains.
+      final script = TermuxCommands.startServer('key').last;
+      expect(TermuxCommands.processMatch, startsWith('^'));
+      expect(script, contains("pkill -f '^python -m uvicorn app.main:app'"));
+      // The anchor has to target the real uvicorn process's own argv0
+      // ("python") - not just any anchored-looking pattern - since no
+      // wrapper shell's command line starts with that, only a genuinely
+      // running "exec python -m uvicorn ..." process's does.
+      expect(RegExp(r'^python -m uvicorn app\.main:app').hasMatch('python -m uvicorn app.main:app --host 127.0.0.1 --port 8000'), isTrue);
+      expect(RegExp(r'^python -m uvicorn app\.main:app').hasMatch(script), isFalse);
     });
 
     test('startServer normalizes pkill finding nothing to a real success, chained with &&', () {
@@ -111,19 +116,19 @@ void main() {
       // already failed. Verified against real bash during development
       // (both the failure-still-blocks and success-still-proceeds paths).
       final script = TermuxCommands.startServer('key').last;
-      expect(script, contains("(pkill -f 'uvicorn app.main:app' 2>/dev/null || true)"));
+      expect(script, contains("(pkill -f '^python -m uvicorn app.main:app' 2>/dev/null || true)"));
       expect(script, contains('|| true) && exec python -m uvicorn'));
       expect(script, isNot(contains('2>/dev/null; exec')));
     });
 
     test('stopServer reports whether anything was actually running', () {
       final script = TermuxCommands.stopServer().last;
-      expect(script, contains("pkill -f 'uvicorn app.main:app' && echo stopped || echo not_running"));
+      expect(script, contains("pkill -f '^python -m uvicorn app.main:app' && echo stopped || echo not_running"));
     });
 
     test('restartServer both stops and starts in the one dispatched command', () {
       final script = TermuxCommands.restartServer('key').last;
-      expect(script, contains("pkill -f 'uvicorn app.main:app'"));
+      expect(script, contains("pkill -f '^python -m uvicorn app.main:app'"));
       expect(script, contains('micromamba activate didsa'));
       expect(script, contains('exec python -m uvicorn'));
     });
