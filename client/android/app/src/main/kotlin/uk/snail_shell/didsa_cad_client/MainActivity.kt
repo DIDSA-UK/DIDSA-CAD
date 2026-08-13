@@ -1,5 +1,6 @@
 package uk.snail_shell.didsa_cad_client
 
+import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
@@ -15,14 +16,15 @@ import io.flutter.plugin.common.MethodChannel
 /// Service intent carrying a third-party app's own custom permission, so
 /// this is a small hand-written channel rather than a dependency.
 ///
-/// This class *is* the single FlutterActivity, not a separate plugin, so it
-/// gets onRequestPermissionsResult as an ordinary inherited Activity
-/// override - no PluginRegistry.RequestPermissionsResultListener
-/// registration needed (that interface, and addRequestPermissionsResultListener,
-/// are for plugins hooking into an Activity's callback from outside it; both
-/// also declare a Boolean-returning onRequestPermissionsResult, which can't
-/// coexist with FlutterActivity's own Unit-returning override of the same
-/// signature).
+/// Permission results: MainActivity *is* the Activity that calls
+/// ActivityCompat.requestPermissions below, so Android delivers the result
+/// straight to this class's own onRequestPermissionsResult override - no
+/// PluginRegistry.RequestPermissionsResultListener/addRequestPermissionsResultListener
+/// needed (that mechanism is for a separate Flutter *plugin* listening via
+/// an ActivityPluginBinding it doesn't itself own; FlutterActivity doesn't
+/// expose it as a method to call on itself at all - confirmed the hard way,
+/// by a real Kotlin compile failure - "Unresolved reference" - the first
+/// time this actually got compiled against the real Flutter embedding API).
 class MainActivity : FlutterActivity() {
     private val channelName = "uk.snail_shell.didsa_cad_client/termux"
     private val runCommandPermission = "com.termux.permission.RUN_COMMAND"
@@ -49,6 +51,7 @@ class MainActivity : FlutterActivity() {
                         result.success(sendRunCommandIntent(executable, arguments))
                     }
                 }
+                "getLastCommandResult" -> result.success(getLastCommandResult())
                 else -> result.notImplemented()
             }
         }
@@ -71,6 +74,10 @@ class MainActivity : FlutterActivity() {
         permissions: Array<out String>,
         grantResults: IntArray,
     ) {
+        // Real Activity/FlutterActivity override (Unit-returning) - forward
+        // to super first in case any other Flutter plugin's own permission
+        // handling depends on it, same as any responsible override of a
+        // framework callback.
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode != permissionRequestCode) return
         val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
@@ -94,6 +101,22 @@ class MainActivity : FlutterActivity() {
     /// couldn't be dispatched at all (missing permission, Termux not
     /// installed, or the call itself throwing) - true means Android handed
     /// the intent to Termux, not that the command inside it succeeded.
+    ///
+    /// Plain startService, not startForegroundService, despite the Termux
+    /// wiki recommending the latter for API 26+: on-device testing showed
+    /// the notification for a dispatched command flashing briefly and then
+    /// nothing running at all, with the exact same script succeeding
+    /// instantly when run by hand - consistent with Android killing
+    /// RunCommandService for not calling Service.startForeground() within
+    /// its ~5s grace window after being started via startForegroundService,
+    /// before the script ever got to run. startService has no such window
+    /// to miss, and Android's background-service-start restrictions it
+    /// would otherwise be subject to don't apply here anyway - this is
+    /// always called while DIDSA itself is in the foreground (a direct
+    /// button tap), which is the standard exemption. Not confirmed against
+    /// a system log (no adb access in that debugging session), but this
+    /// matches every symptom observed and is the documented failure mode
+    /// for exactly this Android API.
     private fun sendRunCommandIntent(executable: String, arguments: List<String>): Boolean {
         if (!hasRunCommandPermission()) return false
         return try {
@@ -103,14 +126,47 @@ class MainActivity : FlutterActivity() {
             intent.putExtra("com.termux.RUN_COMMAND_PATH", executable)
             intent.putExtra("com.termux.RUN_COMMAND_ARGUMENTS", arguments.toTypedArray())
             intent.putExtra("com.termux.RUN_COMMAND_BACKGROUND", true)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(intent)
-            } else {
-                startService(intent)
-            }
+            intent.putExtra("com.termux.RUN_COMMAND_PENDING_INTENT", buildResultPendingIntent())
+            startService(intent)
             true
         } catch (e: Exception) {
             false
         }
+    }
+
+    /// A PendingIntent targeting TermuxResultService, passed to Termux as
+    /// com.termux.RUN_COMMAND_PENDING_INTENT so it can hand back the real
+    /// result (whatever shape that actually turns out to be - see
+    /// TermuxResultService's own doc comment on why the receiver doesn't
+    /// assume an exact schema) instead of this app having to infer success/
+    /// failure purely from polling /health afterward.
+    ///
+    /// FLAG_MUTABLE is required on API 31+ (Android 12+): Termux fills in
+    /// its own result extras onto this PendingIntent's Intent when it fires
+    /// it, and an immutable PendingIntent (the default on 31+ when neither
+    /// flag is specified) silently drops any extras the sender tries to
+    /// add - the result would arrive with none of what Termux actually
+    /// meant to send. FLAG_ONE_SHOT since each dispatched command only
+    /// expects one result delivery.
+    private fun buildResultPendingIntent(): PendingIntent {
+        val resultIntent = Intent(this, TermuxResultService::class.java)
+        var flags = PendingIntent.FLAG_ONE_SHOT
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            flags = flags or PendingIntent.FLAG_MUTABLE
+        }
+        return PendingIntent.getService(this, 0, resultIntent, flags)
+    }
+
+    /// Reads back whatever TermuxResultService last wrote - see that
+    /// class's own doc comment for why this is a raw, generic dump rather
+    /// than parsed named fields. Returns a human-readable placeholder
+    /// (never null/throws) if nothing has arrived yet, so the Dart side can
+    /// always just display whatever this returns directly.
+    private fun getLastCommandResult(): String {
+        val prefs = getSharedPreferences(TermuxResultService.prefsName, MODE_PRIVATE)
+        val result = prefs.getString(TermuxResultService.lastResultKey, null)
+            ?: return "(no result received yet from any dispatched command)"
+        val time = prefs.getLong(TermuxResultService.lastResultTimeKey, 0L)
+        return "Received at $time (epoch ms):\n$result"
     }
 }

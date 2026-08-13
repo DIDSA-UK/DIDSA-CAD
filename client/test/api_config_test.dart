@@ -45,4 +45,39 @@ void main() {
     await ApiConfig.save(baseUrl: 'https://cad-api.snail-shell.uk', apiKey: 'remote-key');
     expect(ApiConfig.localApiKey, 'local-key');
   });
+
+  group('ApiConfig.ensureLocalApiKey', () {
+    test('generates and persists a key on first call, with no apiKey needed at all', () async {
+      // The whole point of this method existing: TermuxController.startServer
+      // must be able to bootstrap a working local server on a completely
+      // fresh install, where apiKey/baseUrl have never been set - see this
+      // method's own doc comment for why using apiKey here would be
+      // circular.
+      await ApiConfig.load();
+      expect(ApiConfig.apiKey, isEmpty);
+
+      final key = await ApiConfig.ensureLocalApiKey();
+      expect(key, isNotEmpty);
+      expect(ApiConfig.localApiKey, key);
+      expect(ApiConfig.apiKey, isEmpty); // still untouched
+
+      // Persisted, not just held in memory.
+      await ApiConfig.load();
+      expect(ApiConfig.localApiKey, key);
+    });
+
+    test('returns the same key on every subsequent call, not a fresh one each time', () async {
+      await ApiConfig.load();
+      final first = await ApiConfig.ensureLocalApiKey();
+      final second = await ApiConfig.ensureLocalApiKey();
+      expect(second, first);
+    });
+
+    test('leaves an already-set localApiKey untouched', () async {
+      await ApiConfig.load();
+      await ApiConfig.saveLocalApiKey('existing-key');
+      final key = await ApiConfig.ensureLocalApiKey();
+      expect(key, 'existing-key');
+    });
+  });
 }
