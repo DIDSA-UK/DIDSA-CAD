@@ -5,7 +5,7 @@ import math
 import uuid
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 
 from app.document.ai_plan import validate_ai_plan as validate_ai_plan_steps
@@ -77,6 +77,7 @@ from app.document.models import (
     BevelPairMemberSpec,
     ChamferFeature,
     CreatePlaneFeature,
+    Document,
     ExtrudeFeature,
     ExtrudeType,
     Feature,
@@ -208,6 +209,7 @@ from app.document.schemas import (
 )
 from app.document.sweep import resolve_sweep
 from app.document.store import get_document, get_part_or_404, replace_document
+from app.session_context import bind_session_id
 from app.sketch.models import ExternalVertexReference, Plane, SketchEntityRef, SketchEntityType
 from app.sketch.profile import ProfileStatus, detect_profile
 from app.sketch.schemas import ArcResponse, CircleResponse, LineResponse, PointResponse
@@ -215,7 +217,10 @@ from app.sketch.store import all_sketches, create_sketch, delete_sketch, get_ske
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/document", tags=["document"])
+# `bind_session_id` (not "default" for every caller) is what keeps this
+# router's Document/Sketch state from being shared across every connection
+# to the backend - see app.session_context's docstring.
+router = APIRouter(prefix="/document", tags=["document"], dependencies=[Depends(bind_session_id)])
 
 # A1: body id used for the fixed placeholder box returned while a Part has
 # no ExtrudeFeature yet (see `Part.produces_solid_geometry`) - never a real
@@ -1800,6 +1805,36 @@ def _validate_sketch_feature_payload(
                 detail="plane_feature_id does not refer to a CreatePlaneFeature in this Part",
             )
         resolve_create_plane(part, plane_feature)  # raises on an unresolvable reference
+
+
+@router.post("/new", response_model=NativeImportResponse, status_code=201)
+def start_new_document() -> NativeImportResponse:
+    """Bug fix (on-device feedback): starts a fresh, empty Document (and
+    clears the Sketch store) for the current session - a full replace, the
+    same "whatever was open before is discarded entirely" semantics as
+    `import_native_document`, just with an empty Document instead of file
+    contents.
+
+    `create_part` below is strictly additive - it always adds onto
+    whatever Document the current session already has (see
+    `app.document.store.get_document`), with no reset of its own. Before
+    this endpoint existed, the client's "New Part"/cold-launch flow called
+    `create_part` directly with nothing to reset the Document first, so
+    every "New Part" press within one running session kept silently
+    piling another Part onto the *same* Document rather than starting a
+    genuinely independent one. Native Save then exported the whole pile
+    (every Part ever created that session, not just the one being worked
+    on), and native Open always displayed only the first Part in that pile
+    (`NativeImportResultDto`'s own doc comment) - so a later Part could
+    survive inside a saved file's data yet never be reachable again,
+    reading as "Save keeps reproducing the first file." The client now
+    calls this endpoint immediately before its first `create_part` of a
+    "New Part"/cold-launch flow (see `PartScreen._loadPart`), so that
+    Part is always the sole Part in a brand-new Document."""
+    document = Document(id=str(uuid.uuid4()))
+    replace_document(document)
+    replace_all_sketches({})
+    return NativeImportResponse(document_id=document.id, part_ids=[])
 
 
 @router.post("/parts", response_model=PartResponse, status_code=201)

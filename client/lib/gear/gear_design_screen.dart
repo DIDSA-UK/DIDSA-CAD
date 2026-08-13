@@ -74,7 +74,27 @@ class GearDesignScreen extends StatefulWidget {
   /// Overridable for tests, so they don't talk to the real backend.
   final DocumentApiClient? documentApi;
 
-  const GearDesignScreen({super.key, this.documentApi});
+  /// Gear-tree UX: which kind this screen opens on - the free create flow
+  /// always starts at [GearDesignKind.external] (unchanged), but a Build
+  /// Tree tap re-entering this screen to edit an existing GearFeature/
+  /// RackFeature already knows which one it is (`FeatureDto.type`) and
+  /// passes it here so the form doesn't open on the wrong kind for a beat
+  /// before [_loadExistingFeature] corrects it.
+  final GearDesignKind initialKind;
+
+  /// Gear-tree UX: non-null (together with [editingFeatureId]) switches
+  /// this screen from "create a new Part with a fresh gear" into "reopen an
+  /// existing GearFeature/RackFeature for editing" - see [_isEditing].
+  final String? editingPartId;
+  final String? editingFeatureId;
+
+  const GearDesignScreen({
+    super.key,
+    this.documentApi,
+    this.initialKind = GearDesignKind.external,
+    this.editingPartId,
+    this.editingFeatureId,
+  });
 
   @override
   State<GearDesignScreen> createState() => _GearDesignScreenState();
@@ -118,12 +138,95 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
   bool _creating = false;
   String? _createError;
 
+  /// Gear-tree UX: true once [widget.editingPartId]/[widget.editingFeatureId]
+  /// are both set - see those fields' own doc comments.
+  bool get _isEditing => widget.editingPartId != null && widget.editingFeatureId != null;
+
+  bool _loadingExisting = false;
+  String? _loadError;
+
+  /// Gear-tree UX: the existing Feature's own `gear_type`/`rack_type`
+  /// (Boss/Cut) and `target_body_ids`, round-tripped unchanged on Save -
+  /// this screen has no Boss/Cut or target-Body picker UI at all (a brand
+  /// new gear/rack it creates is always `'boss'` with no targets), so
+  /// editing must never silently downgrade an existing Cut gear (or one
+  /// fused into specific Bodies) back to a targetless Boss.
+  String _mode = 'boss';
+  List<String> _targetBodyIds = const [];
+
   @override
   void initState() {
     super.initState();
     _api = widget.documentApi ?? DocumentApiClient();
-    _schedulePreview();
+    _kind = widget.initialKind;
+    if (_isEditing) {
+      _loadExistingFeature();
+    } else {
+      _schedulePreview();
+    }
     _loadPresets();
+  }
+
+  /// Gear-tree UX: reads the Feature's current full parameter set via a
+  /// no-op PATCH (every gear-family Update endpoint always returns its
+  /// complete post-update state, so calling it with every field omitted is
+  /// a harmless way to read the current one back - see
+  /// `DocumentApiClient.updateGearFeature`'s own doc comment), then
+  /// populates every form field from it exactly as if the user had entered
+  /// them, mirroring [_applyPresetFields]'s own "repopulate the form"
+  /// shape.
+  Future<void> _loadExistingFeature() async {
+    setState(() => _loadingExisting = true);
+    try {
+      final partId = widget.editingPartId!;
+      final featureId = widget.editingFeatureId!;
+      final json = _kind == GearDesignKind.rack
+          ? await _api.updateRackFeature(partId, featureId)
+          : await _api.updateGearFeature(partId, featureId);
+      if (!mounted) return;
+      setState(() {
+        _applyExistingFeatureJson(json);
+        _loadingExisting = false;
+      });
+      _schedulePreview();
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loadError = e.message;
+        _loadingExisting = false;
+      });
+    }
+  }
+
+  void _applyExistingFeatureJson(Map<String, dynamic> json) {
+    final planeRef = json['plane_ref'] == null
+        ? null
+        : PlaneRefDto.fromJson(json['plane_ref'] as Map<String, dynamic>);
+    if (planeRef?.fixedPlane != null) _plane = planeRef!.fixedPlane!;
+    _module = (json['module'] as num?)?.toDouble() ?? _module;
+    _pressureAngleDegrees = (json['pressure_angle_degrees'] as num?)?.toDouble() ?? _pressureAngleDegrees;
+    final toothCount = json['tooth_count'] as num?;
+    if (toothCount != null) _toothCountController.text = toothCount.toInt().toString();
+    final faceWidth = json['face_width'] as num?;
+    if (faceWidth != null) _faceWidthController.text = _formatDouble(faceWidth.toDouble());
+    _backlash = (json['backlash'] as num?)?.toDouble() ?? _backlash;
+    _targetBodyIds = (json['target_body_ids'] as List?)?.cast<String>() ?? _targetBodyIds;
+    if (_kind == GearDesignKind.rack) {
+      _mode = json['rack_type'] as String? ?? _mode;
+      final backingHeight = json['backing_height'] as num?;
+      if (backingHeight != null) _backingHeightController.text = _formatDouble(backingHeight.toDouble());
+    } else {
+      _mode = json['gear_type'] as String? ?? _mode;
+      _kind = (json['is_internal'] as bool? ?? false) ? GearDesignKind.internal : GearDesignKind.external;
+      _profileShift = (json['profile_shift'] as num?)?.toDouble() ?? _profileShift;
+      _rootFilletRadius = (json['root_fillet_radius'] as num?)?.toDouble() ?? _rootFilletRadius;
+      _helixAngleDegrees = (json['helix_angle_degrees'] as num?)?.toDouble() ?? _helixAngleDegrees;
+      _herringbone = json['herringbone'] as bool? ?? _herringbone;
+      final outerDiameter = json['outer_diameter'] as num?;
+      if (outerDiameter != null) _outerDiameterController.text = _formatDouble(outerDiameter.toDouble());
+      final pointsPerFlank = json['points_per_flank'] as num?;
+      if (pointsPerFlank != null) _pointsPerFlank = pointsPerFlank.toInt();
+    }
   }
 
   /// Mirrors `MeshViewerScreen._loadScenePrefs`'s own "don't block the
@@ -250,7 +353,11 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
       value == value.roundToDouble() ? value.toStringAsFixed(0) : value.toString();
 
   bool get _canCreate =>
-      _blockingError == null && _preview != null && !_creating && double.tryParse(_faceWidthController.text) != null;
+      _blockingError == null &&
+      _preview != null &&
+      !_creating &&
+      !_loadingExisting &&
+      double.tryParse(_faceWidthController.text) != null;
 
   Future<void> _create() async {
     if (!_canCreate) return;
@@ -263,8 +370,64 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
       _createError = null;
     });
     try {
-      final part = await _api.createPart('Gear Part');
       final planeRef = PlaneRefDto(fixedPlane: _plane);
+      if (_isEditing) {
+        // Gear-tree UX: saves back onto the same Feature instead of minting
+        // a new Part - the Build Tree tap that opened this screen already
+        // engaged rollback around every Feature after this one
+        // (`PartScreen._onFeatureTap`), so it (and the Part it belongs to)
+        // is still exactly where it was; there's nothing to navigate to but
+        // back.
+        if (_kind == GearDesignKind.rack) {
+          await _api.updateRackFeature(
+            widget.editingPartId!,
+            widget.editingFeatureId!,
+            rackType: _mode,
+            module: _module,
+            toothCount: toothCount,
+            faceWidth: faceWidth,
+            pressureAngleDegrees: _pressureAngleDegrees,
+            backlash: _backlash,
+            backingHeight: double.tryParse(_backingHeightController.text),
+            planeRef: planeRef,
+            targetBodyIds: _targetBodyIds,
+          );
+        } else {
+          await _api.updateGearFeature(
+            widget.editingPartId!,
+            widget.editingFeatureId!,
+            gearType: _mode,
+            isInternal: _kind == GearDesignKind.internal,
+            module: _module,
+            toothCount: toothCount,
+            faceWidth: faceWidth,
+            pressureAngleDegrees: _pressureAngleDegrees,
+            profileShift: _profileShift,
+            backlash: _backlash,
+            rootFilletRadius: _rootFilletRadius,
+            outerDiameter: _kind == GearDesignKind.internal ? double.tryParse(_outerDiameterController.text) : null,
+            planeRef: planeRef,
+            targetBodyIds: _targetBodyIds,
+            helixAngleDegrees: _helixAngleDegrees,
+            herringbone: _herringbone,
+            pointsPerFlank: _pointsPerFlank,
+          );
+        }
+        if (!mounted) return;
+        Navigator.of(context).pop();
+        return;
+      }
+
+      // Bug fix (on-device feedback): this always starts a brand-new Part
+      // - without resetting the session's Document first, it would just
+      // pile onto whatever Document a previous tool-chooser entry already
+      // created this session (see `DocumentApiClient.startNewDocument`'s
+      // own doc comment). Only reached on the create-new path above (never
+      // when `_isEditing`, which returns earlier) - editing in place must
+      // never reset the session's Document out from under the Part being
+      // edited.
+      await _api.startNewDocument();
+      final part = await _api.createPart('Gear Part');
       List<String> warnings = const [];
       if (_kind == GearDesignKind.rack) {
         await _api.createRackFeature(
@@ -315,23 +478,38 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Gear Design'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const GearChainDesignScreen()),
-            ),
-            child: const Text('Chain / Planetary'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const BevelDesignScreen()),
-            ),
-            child: const Text('Bevel'),
-          ),
-        ],
+        title: Text(_isEditing ? 'Edit ${_kind == GearDesignKind.rack ? 'Rack' : 'Gear'}' : 'Gear Design'),
+        // Gear-tree UX: the "discover a different gear-family screen"
+        // actions only make sense from the free-create entry point - while
+        // editing an existing Feature there is nowhere else to go but back
+        // to this same one.
+        actions: _isEditing
+            ? null
+            : [
+                TextButton(
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const GearChainDesignScreen()),
+                  ),
+                  child: const Text('Chain / Planetary'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const BevelDesignScreen()),
+                  ),
+                  child: const Text('Bevel'),
+                ),
+              ],
       ),
-      body: LayoutBuilder(
+      body: _loadingExisting
+          ? const Center(child: CircularProgressIndicator())
+          : _loadError != null
+              ? Center(
+                  child: Text(
+                    'Could not load this gear: $_loadError',
+                    style: TextStyle(color: Theme.of(context).colorScheme.error),
+                  ),
+                )
+              : LayoutBuilder(
         builder: (context, constraints) {
           final canvas = GearPreviewCanvas(preview: _preview, showReferenceOverlay: _showReferenceOverlay);
           final form = SingleChildScrollView(padding: const EdgeInsets.all(16), child: _buildForm());
@@ -359,8 +537,20 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         SegmentedButton<GearDesignKind>(
+          // Gear-tree UX: while editing, only offer the kinds the current
+          // Feature type could actually become - a RackFeature has no
+          // internal/external concept and a GearFeature can't turn into a
+          // standalone RackFeature via this same Update endpoint, so
+          // switching families mid-edit isn't offered (only External <->
+          // Internal, both still real `is_internal` toggles on the same
+          // GearFeature).
           segments: [
-            for (final kind in GearDesignKind.values) ButtonSegment(value: kind, label: Text(kind.label)),
+            for (final kind in _isEditing
+                ? (_kind == GearDesignKind.rack
+                    ? const [GearDesignKind.rack]
+                    : const [GearDesignKind.external, GearDesignKind.internal])
+                : GearDesignKind.values)
+              ButtonSegment(value: kind, label: Text(kind.label)),
           ],
           selected: {_kind},
           onSelectionChanged: (selection) => _onKindChanged(selection.first),
@@ -622,7 +812,7 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
                   height: 20,
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
-              : const Text('Create'),
+              : Text(_isEditing ? 'Save' : 'Create'),
         ),
         // On-device feedback (herringbone/complex-gear timeout
         // investigation): a helical/herringbone tooth is a real, known-

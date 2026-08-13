@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// Single source of truth for backend connection details, per the project
@@ -19,6 +21,7 @@ class ApiConfig {
   static String _baseUrl = '';
   static String _apiKey = '';
   static String _localApiKey = '';
+  static String? _sessionId;
 
   /// The backend base URL, e.g. `https://cad-api.snail-shell.uk` - empty
   /// until [load] or [save] has run at least once.
@@ -43,6 +46,30 @@ class ApiConfig {
   /// [ConnectionScreen] can pre-fill its fields and offer Connect on cold
   /// launch.
   static bool get isConfigured => _baseUrl.isNotEmpty && _apiKey.isNotEmpty;
+
+  /// Sent as the `X-Document-Session` header on every `DocumentApiClient`/
+  /// `SketchApiClient` request - identifies this app process's own
+  /// document-editing session to the backend, so a second tab/device/app
+  /// instance pointed at the same [baseUrl] (the backend has no isolation
+  /// of its own beyond this header - see the backend's own
+  /// `app.session_context` docstring) never shares or silently overwrites
+  /// this session's in-memory Document/Sketch state. That cross-session
+  /// clobbering - not this app's own Save-reuses-the-last-path behaviour -
+  /// was the actual cause of a Save writing out a different, unrelated
+  /// model.
+  ///
+  /// Generated once per process, lazily on first use, and cached for the
+  /// rest of the process's lifetime - deliberately NOT reset by [load] or
+  /// [save], so revisiting Connection Settings mid-session (which re-runs
+  /// [load]) never orphans in-progress unsaved backend state under a freshly
+  /// generated id.
+  static String get sessionId => _sessionId ??= _generateSessionId();
+
+  static String _generateSessionId() {
+    final random = Random.secure();
+    final bytes = List<int>.generate(16, (_) => random.nextInt(256));
+    return bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+  }
 
   /// Populates the in-memory cache from `shared_preferences` - a no-op
   /// (leaves both empty) on first-ever launch, before any value has been
@@ -80,6 +107,31 @@ class ApiConfig {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(localApiKeyPrefKey, key);
     _localApiKey = key;
+  }
+
+  /// Returns [localApiKey], generating and persisting a fresh random one
+  /// first if it's still empty (first local start ever, on this device).
+  /// This is what actually breaks a circular dependency that otherwise
+  /// stops the local server from ever starting the *first* time: the
+  /// backend refuses to start without a non-empty CAD_API_KEY (see
+  /// app/auth.py), but [apiKey] only ever gets set by [save], which
+  /// [ConnectionScreen] only calls after a *successful* health check
+  /// against a server already running with that exact key - a server that,
+  /// on first install, doesn't exist yet because nothing has started it.
+  /// Using [apiKey] (or requiring the user type one in Connection Settings
+  /// first) as the local server's own key would leave that loop with no
+  /// way in. Generating [localApiKey] independently, right here, is what
+  /// lets `TermuxController.startServer`/`pullAndStart`/`restartServer`
+  /// bootstrap a working server with no pre-existing key at all - the
+  /// Connection screen's own "Use Local Server" button then reads this
+  /// same value back afterward.
+  static Future<String> ensureLocalApiKey() async {
+    if (_localApiKey.isNotEmpty) return _localApiKey;
+    final random = Random.secure();
+    final bytes = List<int>.generate(32, (_) => random.nextInt(256));
+    final key = bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    await saveLocalApiKey(key);
+    return key;
   }
 
   /// The backend is a Raspberry Pi over a home internet connection and
