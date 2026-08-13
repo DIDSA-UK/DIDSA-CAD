@@ -2,7 +2,6 @@ package uk.snail_shell.didsa_cad_client
 
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.os.Build
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
@@ -99,6 +98,22 @@ class MainActivity : FlutterActivity() {
     /// couldn't be dispatched at all (missing permission, Termux not
     /// installed, or the call itself throwing) - true means Android handed
     /// the intent to Termux, not that the command inside it succeeded.
+    ///
+    /// Plain startService, not startForegroundService, despite the Termux
+    /// wiki recommending the latter for API 26+: on-device testing showed
+    /// the notification for a dispatched command flashing briefly and then
+    /// nothing running at all, with the exact same script succeeding
+    /// instantly when run by hand - consistent with Android killing
+    /// RunCommandService for not calling Service.startForeground() within
+    /// its ~5s grace window after being started via startForegroundService,
+    /// before the script ever got to run. startService has no such window
+    /// to miss, and Android's background-service-start restrictions it
+    /// would otherwise be subject to don't apply here anyway - this is
+    /// always called while DIDSA itself is in the foreground (a direct
+    /// button tap), which is the standard exemption. Not confirmed against
+    /// a system log (no adb access in that debugging session), but this
+    /// matches every symptom observed and is the documented failure mode
+    /// for exactly this Android API.
     private fun sendRunCommandIntent(executable: String, arguments: List<String>): Boolean {
         if (!hasRunCommandPermission()) return false
         return try {
@@ -108,11 +123,7 @@ class MainActivity : FlutterActivity() {
             intent.putExtra("com.termux.RUN_COMMAND_PATH", executable)
             intent.putExtra("com.termux.RUN_COMMAND_ARGUMENTS", arguments.toTypedArray())
             intent.putExtra("com.termux.RUN_COMMAND_BACKGROUND", true)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(intent)
-            } else {
-                startService(intent)
-            }
+            startService(intent)
             true
         } catch (e: Exception) {
             false
