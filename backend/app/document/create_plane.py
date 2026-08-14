@@ -64,6 +64,7 @@ from app.document.plane_geometry import (
     arbitrary_perpendicular_basis,
     basis_point,
     oriented_basis_for_plane,
+    resolve_normal_to_arc_at_point,
     resolve_normal_to_line_at_point,
     resolve_three_points,
     sketch_basis_for_plane,
@@ -600,6 +601,8 @@ def resolve_create_plane_from_bodies(
     assert feature.line_ref is not None and feature.point_ref is not None
     sketch = get_sketch_or_404(feature.line_ref.sketch_id)
     basis = basis_for_sketch(part, sketch, bodies, excluded_feature_ids)
+    if feature.plane_type == PlaneType.NORMAL_TO_CURVE_AT_POINT:
+        return resolve_normal_to_arc_at_point(feature.line_ref, feature.point_ref, basis)
     return resolve_normal_to_line_at_point(feature.line_ref, feature.point_ref, basis)
 
 

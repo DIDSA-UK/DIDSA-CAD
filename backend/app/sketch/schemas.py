@@ -51,6 +51,15 @@ class PointResponse(BaseModel):
     id: str
     x: float
     y: float
+    # On-device feedback ("converted edges... all the converted lines are
+    # completely mobile... the converted entities should be projected onto
+    # the sketch plane and locked at that projection point"): whether this
+    # Point is pinned in `solve_sketch`'s own fixed group - a live-tracked
+    # `Sketch.external_references` Point or a statically `Sketch.
+    # pinned_point_ids` one alike (see `Sketch.is_point_locked`). The
+    # client uses this to exclude such a Point from drag targeting, the
+    # same way it already excludes the sketch origin.
+    is_locked: bool = False
 
 
 class DeleteEntityResponse(BaseModel):
@@ -252,6 +261,15 @@ class CircleResponse(BaseModel):
     # [north, east, south, west] - see the backend's Circle.cardinal_point_ids
     # docstring for how each is solver-locked.
     cardinal_point_ids: list[str]
+    # On-device feedback ("converted edges... are not constrained to their
+    # parent edge"): `radius`'s own backing DistanceConstraint id (see
+    # `Sketch.add_circle`'s own doc comment) - lets a caller that creates a
+    # Circle outside the normal draw-then-confirm flow (`app.document.
+    # router.convert_body_edge`) explicitly confirm this constraint's own
+    # `provisional` flag via the existing PATCH .../constraints/{id}
+    # endpoint, the same "any explicit value PATCH clears provisional"
+    # mechanism the ghost-dimension confirm flow already uses.
+    radius_constraint_id: str
 
 
 class CircleUpdate(BaseModel):
@@ -294,6 +312,8 @@ class ArcResponse(BaseModel):
     end_point_id: str
     radius: float
     construction: bool = False
+    # See CircleResponse.radius_constraint_id's own doc comment.
+    radius_constraint_id: str
 
 
 class OffsetCircleResponse(BaseModel):

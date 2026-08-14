@@ -513,6 +513,7 @@ class _FakeBackend {
         'id': id,
         'x': (body['body_id'] as String).length.toDouble(),
         'y': (body['vertex_index'] as num).toDouble(),
+        'is_locked': true,
       };
       points[id] = point;
       return _json(point, 201);
@@ -532,8 +533,8 @@ class _FakeBackend {
       final edgeIndex = (body['edge_index'] as num).toDouble();
       final startId = _newId('point');
       final endId = _newId('point');
-      final startPoint = {'id': startId, 'x': bodyId.length.toDouble(), 'y': edgeIndex};
-      final endPoint = {'id': endId, 'x': bodyId.length.toDouble() + 10, 'y': edgeIndex};
+      final startPoint = {'id': startId, 'x': bodyId.length.toDouble(), 'y': edgeIndex, 'is_locked': true};
+      final endPoint = {'id': endId, 'x': bodyId.length.toDouble() + 10, 'y': edgeIndex, 'is_locked': true};
       points[startId] = startPoint;
       points[endId] = endPoint;
       final lineId = _newId('line');
@@ -571,6 +572,11 @@ class _FakeBackend {
         'id': id,
         'x': (body['body_id'] as String).length.toDouble(),
         'y': (body['vertex_index'] as num).toDouble(),
+        // On-device feedback ("converted edges... should be... locked at
+        // that projection point"): matches the real backend's
+        // `PointResponse.is_locked` for a converted (associative,
+        // external-reference) Point.
+        'is_locked': true,
       };
       points[id] = point;
       _convertedVertexPointIds[key] = id;
@@ -588,8 +594,13 @@ class _FakeBackend {
       final construction = (body['construction'] as bool?) ?? false;
       final startId = _newId('point');
       final endId = _newId('point');
-      final startPoint = {'id': startId, 'x': bodyId.length.toDouble(), 'y': edgeIndex};
-      final endPoint = {'id': endId, 'x': bodyId.length.toDouble() + 10, 'y': edgeIndex};
+      // 'is_locked': true throughout this route - matches the real
+      // backend's own `PointResponse.is_locked` for a converted edge's
+      // associative endpoints and (`Sketch.pinned_point_ids`) its centre/
+      // cardinal Points alike - see on-device feedback "converted
+      // edges... should be... locked at that projection point".
+      final startPoint = {'id': startId, 'x': bodyId.length.toDouble(), 'y': edgeIndex, 'is_locked': true};
+      final endPoint = {'id': endId, 'x': bodyId.length.toDouble() + 10, 'y': edgeIndex, 'is_locked': true};
       points[startId] = startPoint;
       points[endId] = endPoint;
       // On-device feedback ("when I offset a curved edge it creates a
@@ -599,7 +610,7 @@ class _FakeBackend {
       // whichever of the two the response actually carries.
       if (edgeIndex == 99) {
         final centerId = _newId('point');
-        final centerPoint = {'id': centerId, 'x': bodyId.length.toDouble() + 5, 'y': edgeIndex};
+        final centerPoint = {'id': centerId, 'x': bodyId.length.toDouble() + 5, 'y': edgeIndex, 'is_locked': true};
         points[centerId] = centerPoint;
         final arcId = _newId('arc');
         final arc = {
@@ -629,7 +640,7 @@ class _FakeBackend {
         final centerX = bodyId.length.toDouble() + 5;
         const centerY = 0.0;
         const radius = 5.0;
-        final centerPoint = {'id': centerId, 'x': centerX, 'y': centerY};
+        final centerPoint = {'id': centerId, 'x': centerX, 'y': centerY, 'is_locked': true};
         points[centerId] = centerPoint;
         final cardinalPointIds = <String>[];
         final cardinalOffsets = <String, (double, double)>{
@@ -641,7 +652,7 @@ class _FakeBackend {
         for (final key in ['north', 'east', 'south', 'west']) {
           final newId = _newId('point');
           final offset = cardinalOffsets[key]!;
-          points[newId] = {'id': newId, 'x': offset.$1, 'y': offset.$2};
+          points[newId] = {'id': newId, 'x': offset.$1, 'y': offset.$2, 'is_locked': true};
           cardinalPointIds.add(newId);
         }
         final circleId = _newId('circle');
@@ -6309,6 +6320,21 @@ void main() {
 
       expect(controller.points, hasLength(pointCountBefore));
     });
+
+    test(
+        'on-device feedback ("all the converted lines are completely mobile... should be locked at '
+        'that projection point"): the converted Point refuses to start a drag', () async {
+      final (freshController, _) = await adoptedController();
+      freshController.enterConvertEntitiesMode();
+      await freshController.pickConvertEntityVertex('body-1', 3);
+      final pointId = freshController.points.keys.firstWhere((id) => id != 'origin-99');
+      freshController.exitToSelectMode();
+
+      final started = freshController.beginPointDrag(pointId);
+
+      expect(started, isFalse);
+      expect(freshController.draggingPointId, isNull);
+    });
   });
 
   group('pickConvertEntityEdge (P48, Sketcher-roadmap Phase 9 v1: Convert Entities)', () {
@@ -6361,6 +6387,65 @@ void main() {
       await controller.pickConvertEntityEdge('body-1', 0);
 
       expect(controller.lines, hasLength(lineCountBefore));
+    });
+
+    test(
+        'on-device feedback ("all the converted lines are completely mobile... should be locked at '
+        'that projection point"): neither of the converted Line\'s two endpoints can start a drag, '
+        'nor can the Line itself be grabbed as a rigid body', () async {
+      final (freshController, _) = await adoptedController();
+      freshController.enterConvertEntitiesMode();
+      await freshController.pickConvertEntityEdge('body-1', 0);
+      final line = freshController.lines.values.single;
+      freshController.exitToSelectMode();
+
+      expect(freshController.beginPointDrag(line.startPointId), isFalse);
+      expect(freshController.beginPointDrag(line.endPointId), isFalse);
+      expect(freshController.beginLineDrag(line.id), isFalse);
+      expect(freshController.draggingPointId, isNull);
+      expect(freshController.draggingLineId, isNull);
+    });
+
+    test(
+        'on-device feedback ("there is a visible radius dimension... any constraining constraints '
+        'should not be visible to the user" / "should be locked at that projection point"): '
+        'converting a circular edge into an Arc locks its centre Point too, with no auto-created '
+        'visible dimension Constraint', () async {
+      final (freshController, _) = await adoptedController();
+      freshController.enterConvertEntitiesMode();
+      // edgeIndex 99 is the fake backend's own sentinel for "resolves as a
+      // coplanar circular edge" - see its own handler doc comment.
+      await freshController.pickConvertEntityEdge('body-1', 99);
+      final arc = freshController.arcs.values.single;
+      freshController.exitToSelectMode();
+
+      expect(freshController.beginPointDrag(arc.centerPointId), isFalse);
+      expect(freshController.beginPointDrag(arc.startPointId), isFalse);
+      expect(freshController.beginPointDrag(arc.endPointId), isFalse);
+      // The whole point of pinning every defining Point directly is that no
+      // visible Constraint is needed to hold the shape rigid - a first
+      // attempt instead confirmed the Arc's own provisional radius
+      // DistanceConstraint, which surfaced as an unwanted user-facing
+      // dimension (reverted - see this method's own doc comment).
+      expect(freshController.constraints.values.whereType<DistanceConstraintDto>(), isEmpty);
+    });
+
+    test(
+        'converting a full circular edge into a Circle locks its centre AND all four cardinal '
+        'Points too', () async {
+      final (freshController, _) = await adoptedController();
+      freshController.enterConvertEntitiesMode();
+      // edgeIndex 100 is the fake backend's own sentinel for "resolves as a
+      // coplanar *full* circular edge" - see its own handler doc comment.
+      await freshController.pickConvertEntityEdge('body-1', 100);
+      final circle = freshController.circles.values.single;
+      freshController.exitToSelectMode();
+
+      expect(freshController.beginPointDrag(circle.centerPointId), isFalse);
+      for (final cardinalId in circle.cardinalPointIds) {
+        expect(freshController.beginPointDrag(cardinalId), isFalse);
+      }
+      expect(freshController.constraints.values.whereType<DistanceConstraintDto>(), isEmpty);
     });
   });
 
@@ -7784,6 +7869,59 @@ void main() {
     final lineDistanceConstraints = controller.constraints.values.whereType<LineDistanceConstraintDto>();
     expect(lineDistanceConstraints.length, 1);
     expect(lineDistanceConstraints.single.distance, 9.0);
+  });
+
+  test(
+      'confirming a fresh lineDistance ghost also creates a real ParallelConstraint locking the '
+      'two Lines parallel, when doing so solves cleanly (on-device feedback: "a dimension between '
+      'two parallel lines should be line to line - their parallelism should be part of the '
+      'dimension")', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 5);
+    await controller.handleCanvasTap(10, 5);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1);
+    await controller.handleCanvasTap(8, 5.1);
+
+    await controller.confirmGhostValue('lineDistance', 7.0);
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.constraints.values.whereType<LineDistanceConstraintDto>(), hasLength(1));
+    expect(controller.constraints.values.whereType<ParallelConstraintDto>(), hasLength(1));
+  });
+
+  test(
+      'confirming a fresh lineDistance ghost rolls the auxiliary ParallelConstraint back (keeping '
+      'only the LineDistanceConstraint) when adding it would be redundant and fails to converge - '
+      'on-device feedback: "adding a dimension between two parallel edges of a rectangle makes it '
+      'over constrained... it looks like a clash between the horizontal (or vertical) constraints '
+      'attached to the lines which indirectly causes them to be parallel"', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 5);
+    await controller.handleCanvasTap(10, 5);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1);
+    await controller.handleCanvasTap(8, 5.1);
+
+    // Simulates the two Lines already being forced parallel some other way
+    // (e.g. a rectangle's own opposite Horizontal-constrained sides) - the
+    // fake backend can't run a real solve, so this stands in for "adding
+    // the trial Parallel constraint made the system fail to converge".
+    backend.converged = false;
+
+    await controller.confirmGhostValue('lineDistance', 7.0);
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.constraints.values.whereType<LineDistanceConstraintDto>(), hasLength(1));
+    expect(controller.constraints.values.whereType<ParallelConstraintDto>(), isEmpty);
   });
 
   test(

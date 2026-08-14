@@ -1418,6 +1418,17 @@ class SketchController extends ChangeNotifier {
   /// snapping.
   String? get originPointId => _originPointId;
 
+  /// On-device feedback ("converted edges... all the converted lines are
+  /// completely mobile... should be locked"): whether [pointId] must be
+  /// refused as a *drag* target - the sketch origin (already excluded from
+  /// [_entityAt]'s own default hit-test), or anything in [_lockedPointIds].
+  /// Deliberately not folded into [_entityAt] itself: that resolver also
+  /// backs plain tap-to-*select* (e.g. picking a converted Point as a new
+  /// dimension's own reference), which must keep working for a locked
+  /// Point - only the drag-specific call sites ([dragTargetPointIdAt],
+  /// [dragGrabTargetAt], [beginPointDrag], [beginLineDrag]) call this.
+  bool _isPointDragLocked(String pointId) => pointId == _originPointId || _lockedPointIds.contains(pointId);
+
   String? _plane;
 
   /// This Sketch's reference plane (`'XY'`/`'XZ'`/`'YZ'`) - null until
@@ -1458,6 +1469,26 @@ class SketchController extends ChangeNotifier {
   }
 
   final Map<String, SketchPointView> points = {};
+
+  /// On-device feedback ("converted edges... all the converted lines are
+  /// completely mobile... the converted entities should be projected onto
+  /// the sketch plane and locked at that projection point"): every Point
+  /// id the backend currently reports as pinned (`PointResponse.
+  /// is_locked` - a live external vertex reference or a statically
+  /// `Sketch.pinned_point_ids` one, e.g. a converted Arc/Circle's own
+  /// centre) - refreshed alongside [points] itself everywhere that gets
+  /// bulk-replaced from the backend ([_solveAndTrackDof], initial sketch
+  /// load), so [dragTargetPointIdAt] can exclude these the same way it
+  /// already excludes the sketch origin, regardless of which flow
+  /// materialized them. A dedicated `Set` rather than a field on
+  /// [SketchPointView] itself - the dozens of call sites throughout this
+  /// file that materialize a fresh [SketchPointView] from a freshly-
+  /// created Point (drawing tools, offsets, ...) would otherwise all need
+  /// updating to thread a flag through that is `false` for every one of
+  /// them; refreshing this one `Set` at the handful of bulk-refresh points
+  /// instead keeps it authoritative without touching any of those.
+  final Set<String> _lockedPointIds = {};
+
   final Map<String, SketchLineView> lines = {};
   final Map<String, SketchCircleView> circles = {};
   final Map<String, SketchArcView> arcs = {};
@@ -2323,6 +2354,9 @@ class SketchController extends ChangeNotifier {
     points
       ..removeWhere((id, _) => !freshIds.contains(id))
       ..addEntries(result.points.map((p) => MapEntry(p.id, SketchPointView(id: p.id, x: p.x, y: p.y))));
+    _lockedPointIds
+      ..clear()
+      ..addAll(result.points.where((p) => p.isLocked).map((p) => p.id));
     constraints
       ..clear()
       ..addEntries(result.constraints.map((c) => MapEntry(c.id, c)));
@@ -3575,7 +3609,12 @@ class SketchController extends ChangeNotifier {
     if (hit == null) return null;
     switch (hit.kind) {
       case SelectionKind.point:
-        return hit.id;
+        // On-device feedback ("converted edges... all the converted lines
+        // are completely mobile... should be locked"): a directly-hit
+        // Point offers nothing if it's locked (origin or otherwise), same
+        // "nothing to offer, not a fallback" reasoning as the Line/Circle/
+        // ... cases below.
+        return _isPointDragLocked(hit.id) ? null : hit.id;
       case SelectionKind.line:
         final line = lines[hit.id]!;
         final start = points[line.startPointId]!;
@@ -3583,10 +3622,11 @@ class SketchController extends ChangeNotifier {
         final distToStart = math.pow(x - start.x, 2) + math.pow(y - start.y, 2);
         final distToEnd = math.pow(x - end.x, 2) + math.pow(y - end.y, 2);
         final nearerId = distToStart <= distToEnd ? line.startPointId : line.endPointId;
-        // The origin is never a valid drag target (see _entityAt's own
-        // exclusion for a direct hit) - if it's the nearer endpoint, there's
-        // nothing to offer, not a silent fallback to the farther one.
-        return nearerId == _originPointId ? null : nearerId;
+        // A locked Point (the origin, or - on-device feedback - a
+        // converted/external-reference one) is never a valid drag target -
+        // if it's the nearer endpoint, there's nothing to offer, not a
+        // silent fallback to the farther one.
+        return _isPointDragLocked(nearerId) ? null : nearerId;
       case SelectionKind.circle:
         final circle = circles[hit.id]!;
         final nearerId = _nearestOf(
@@ -3594,23 +3634,23 @@ class SketchController extends ChangeNotifier {
           y,
           [circle.centerPointId, circle.radiusPointId, ...circle.cardinalPointIds],
         );
-        // Mirrors the Line case above - the origin is never offered.
-        return nearerId == _originPointId ? null : nearerId;
+        // Mirrors the Line case above.
+        return _isPointDragLocked(nearerId) ? null : nearerId;
       case SelectionKind.arc:
         final arc = arcs[hit.id]!;
         final nearerId = _nearestOf(x, y, [arc.centerPointId, arc.startPointId, arc.endPointId]);
-        return nearerId == _originPointId ? null : nearerId;
+        return _isPointDragLocked(nearerId) ? null : nearerId;
       case SelectionKind.ellipse:
         final ellipse = ellipses[hit.id]!;
         final nearerId = _nearestOf(x, y, [ellipse.centerPointId, ellipse.majorPointId]);
-        return nearerId == _originPointId ? null : nearerId;
+        return _isPointDragLocked(nearerId) ? null : nearerId;
       case SelectionKind.spline:
         final spline = splines[hit.id]!;
         final nearerId = _nearestOf(x, y, [...spline.throughPointIds, ...spline.controlPointIds]);
-        return nearerId == _originPointId ? null : nearerId;
+        return _isPointDragLocked(nearerId) ? null : nearerId;
       case SelectionKind.text:
         final text = texts[hit.id]!;
-        return text.anchorPointId == _originPointId ? null : text.anchorPointId;
+        return _isPointDragLocked(text.anchorPointId) ? null : text.anchorPointId;
       case SelectionKind.constraint:
       // [_entityAt] (this method's only caller of [hit]) never returns
       // either of these two kinds - only [_patternMirrorEntityAt] does,
@@ -3654,8 +3694,16 @@ class SketchController extends ChangeNotifier {
     if (hit == null) return null;
     switch (hit.kind) {
       case SelectionKind.point:
-        return hit;
+        // On-device feedback ("converted edges... all the converted lines
+        // are completely mobile... should be locked").
+        return _isPointDragLocked(hit.id) ? null : hit;
       case SelectionKind.line:
+        final line = lines[hit.id]!;
+        // A converted/external-reference Line has both endpoints locked -
+        // refusing the grab here (rather than leaving it to [beginLineDrag]
+        // to silently no-op) keeps this resolver's return value an honest
+        // "yes, this can actually be dragged".
+        if (_isPointDragLocked(line.startPointId) || _isPointDragLocked(line.endPointId)) return null;
         return hit;
       case SelectionKind.circle:
         final circle = circles[hit.id]!;
@@ -3664,30 +3712,30 @@ class SketchController extends ChangeNotifier {
           y,
           [circle.centerPointId, circle.radiusPointId, ...circle.cardinalPointIds],
         );
-        return nearerId == _originPointId
+        return _isPointDragLocked(nearerId)
             ? null
             : SketchSelection(kind: SelectionKind.point, id: nearerId);
       case SelectionKind.arc:
         final arc = arcs[hit.id]!;
         final nearerId = _nearestOf(x, y, [arc.centerPointId, arc.startPointId, arc.endPointId]);
-        return nearerId == _originPointId
+        return _isPointDragLocked(nearerId)
             ? null
             : SketchSelection(kind: SelectionKind.point, id: nearerId);
       case SelectionKind.ellipse:
         final ellipse = ellipses[hit.id]!;
         final nearerId = _nearestOf(x, y, [ellipse.centerPointId, ellipse.majorPointId]);
-        return nearerId == _originPointId
+        return _isPointDragLocked(nearerId)
             ? null
             : SketchSelection(kind: SelectionKind.point, id: nearerId);
       case SelectionKind.spline:
         final spline = splines[hit.id]!;
         final nearerId = _nearestOf(x, y, [...spline.throughPointIds, ...spline.controlPointIds]);
-        return nearerId == _originPointId
+        return _isPointDragLocked(nearerId)
             ? null
             : SketchSelection(kind: SelectionKind.point, id: nearerId);
       case SelectionKind.text:
         final text = texts[hit.id]!;
-        return text.anchorPointId == _originPointId
+        return _isPointDragLocked(text.anchorPointId)
             ? null
             : SketchSelection(kind: SelectionKind.point, id: text.anchorPointId);
       case SelectionKind.constraint:
@@ -4574,8 +4622,14 @@ class SketchController extends ChangeNotifier {
     // sketch origin (see `selectedPointDeleteBlockedReason`'s own analogous
     // delete-side guard) - refusing the grab here as well means every drag
     // path, not just the closed-form one, is protected even if some future
-    // caller reaches this directly with the origin's own id.
-    if (pointId == _originPointId) return false;
+    // caller reaches this directly with the origin's own id. On-device
+    // feedback ("converted edges... all the converted lines are completely
+    // mobile... should be locked"): [_isPointDragLocked] extends this same
+    // defence-in-depth to a converted/external-reference Point too, not
+    // just the origin - [dragTargetPointIdAt]/[dragGrabTargetAt] already
+    // refuse to offer one as a grab target, but this is the one place that
+    // actually enforces it regardless of how the caller got this id.
+    if (_isPointDragLocked(pointId)) return false;
     // A Polygon/Slot vertex drag is reinterpreted as a closed-form geometry
     // edit (see [updatePointDrag]'s own doc comment) whenever the shape is
     // still intact, whether or not its one real radius dimension has been
@@ -5164,6 +5218,14 @@ class SketchController extends ChangeNotifier {
     // that the same way a Polygon edge's would.
     if (_intactSlotForPoint(line.startPointId) != null) {
       return beginPointDrag(line.startPointId);
+    }
+    // On-device feedback ("converted edges... all the converted lines are
+    // completely mobile... should be locked"): mirrors [beginPointDrag]'s
+    // own [_isPointDragLocked] refusal, checked against both endpoints -
+    // a converted/external-reference Line has both locked by construction,
+    // but this stays correct even for some future Line with only one.
+    if (_isPointDragLocked(line.startPointId) || _isPointDragLocked(line.endPointId)) {
+      return false;
     }
     // Phase 3 (3.2): mirrors [beginPointDrag]'s over-constrained refusal,
     // checked against both endpoints since either one being implicated is
@@ -10173,10 +10235,13 @@ class SketchController extends ChangeNotifier {
   /// feature tree's "lost reference" indicator if the Body changes
   /// underneath it), but non-construction: real geometry meant to
   /// participate in a profile/Extrude, not a dimensioning-only reference.
-  /// Known, inherited limitation: like any external-reference Point, this
-  /// one is pinned server-side, but nothing here excludes it from
-  /// [dragTargetPointIdAt] - dragging one visually "works" but the next
-  /// solve snaps it back to its Body-derived position.
+  /// On-device feedback ("converted edges... are not constrained to
+  /// parent edge" / follow-up: "all the converted lines are completely
+  /// mobile... locked at that projection point"): like any external-
+  /// reference Point, this one is pinned server-side and now reports
+  /// `PointResponse.is_locked=True` too, refreshed into [_lockedPointIds]
+  /// below so [dragTargetPointIdAt] excludes it from drag targeting -
+  /// dragging one no longer even visually "works".
   ///
   /// One undo entry per commit, mirroring every other single-commit draw
   /// action - a no-op (not pushed) if the backend reused an existing,
@@ -10200,6 +10265,7 @@ class SketchController extends ChangeNotifier {
         await _api.deletePoint(sketchId, point.id);
         points.remove(point.id);
       });
+      await _solveAndTrackDof();
     });
   }
 
@@ -10287,6 +10353,24 @@ class SketchController extends ChangeNotifier {
           points.remove(pointId);
         }
       });
+      // On-device feedback ("converted edges... are not constrained to
+      // parent edge" / follow-up: "all the converted lines are completely
+      // mobile... the converted entities should be projected onto the
+      // sketch plane and locked at that projection point"): start_point/
+      // end_point are real, associative external vertex references, and
+      // the backend now also pins the centre Point directly (`Sketch.
+      // pinned_point_ids` - see `convert_body_edge`'s own doc comment) -
+      // every Point defining this Arc is excluded from `solve_sketch`'s
+      // free parameters, reported via `radiusConstraintId`'s sibling
+      // `PointResponse.is_locked`, and refreshed into [_lockedPointIds]
+      // below so [dragTargetPointIdAt] excludes them too. A first attempt
+      // instead confirmed the Arc's own provisional radius
+      // DistanceConstraint - reverted (on-device feedback: "there is a
+      // visible radius dimension... any constraining constraints should
+      // not be visible to the user") since that made an implementation
+      // detail show up as a real, user-facing dimension; pinning the
+      // Points directly needs no visible Constraint at all.
+      await _solveAndTrackDof();
       return SketchSelection(kind: SelectionKind.arc, id: arc.id);
     }
 
@@ -10325,6 +10409,11 @@ class SketchController extends ChangeNotifier {
           points.remove(pointId);
         }
       });
+      // See the Arc branch's own doc comment above - the backend now pins
+      // this Circle's centre AND all four cardinal Points directly
+      // (`convert_body_edge`'s own full-circular-edge branch), so the
+      // whole Circle is locked with no visible Constraint needed.
+      await _solveAndTrackDof();
       return SketchSelection(kind: SelectionKind.circle, id: circle.id);
     }
 
@@ -10345,6 +10434,12 @@ class SketchController extends ChangeNotifier {
         points.remove(pointId);
       }
     });
+    // See the Arc branch's own doc comment above - a converted Line's own
+    // two endpoints are external vertex references too; solving/refreshing
+    // now (rather than waiting for some later, unrelated mutation to do it)
+    // gets them into [_lockedPointIds] immediately, so they can't be
+    // dragged even before anything else touches this Sketch.
+    await _solveAndTrackDof();
     return SketchSelection(kind: SelectionKind.line, id: line.id);
   }
 
@@ -10976,6 +11071,40 @@ class SketchController extends ChangeNotifier {
             value,
           );
           _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
+
+          // On-device feedback ("a dimension between two parallel lines
+          // should be line to line, not point to point - their
+          // parallelism should be part of the dimension" / follow-up:
+          // "adding this dimension to a rectangle's own already-H/V-locked
+          // opposite sides makes it over constrained"): a
+          // LineDistanceConstraint alone only pins Line 2's start Point's
+          // distance from Line 1, leaving Line 2 free to rotate about that
+          // Point - genuinely locking the Lines parallel needs a real
+          // ParallelConstraint alongside it. But the two Lines might
+          // already be forced parallel some other way (opposite sides of
+          // a rectangle, both Horizontal/Vertical; a Slot's own
+          // Tangent+EqualRadius chain; an explicit user-added Parallel/
+          // Collinear; ...) - blindly adding a second, now-redundant
+          // Parallel on top of an already-fully-determined pair produces
+          // exactly the kind of stacked redundancy py-slvs's own
+          // rank-deficiency handling can't always certify (a rectangle's
+          // own diagonal-tying AtMidpoint constraint in particular blocks
+          // both of solve_sketch's own redundancy-rescue overrides - see
+          // that function's own doc comments). Rather than trying to
+          // enumerate every possible already-parallel pattern, this tries
+          // adding the Parallel constraint and asks the solver directly:
+          // if the resulting solve doesn't converge, the Lines were
+          // already locked parallel some other way and the addition was
+          // redundant - drop it and fall back to the distance alone,
+          // still fully correct since the parallelism is still enforced
+          // by whatever already enforced it.
+          final parallel = await _api.createParallelConstraint(_sketchId!, target.lineAId!, target.lineBId!);
+          await _solveAndTrackDof();
+          if (_lastSolveConverged) {
+            _pushUndo(() async => _api.deleteConstraint(_sketchId!, parallel.id));
+          } else {
+            await _api.deleteConstraint(_sketchId!, parallel.id);
+          }
         }
         await _solveAndTrackDof();
         _ghosts = [];
@@ -11178,6 +11307,7 @@ class SketchController extends ChangeNotifier {
   Future<void> _loadExistingContent(String sketchId) async {
     for (final point in await _api.listPoints(sketchId)) {
       points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
+      if (point.isLocked) _lockedPointIds.add(point.id);
     }
     for (final line in await _api.listLines(sketchId)) {
       lines[line.id] = SketchLineView(

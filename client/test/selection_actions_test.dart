@@ -207,6 +207,73 @@ void main() {
     });
   });
 
+  group('on-device feedback ("point and curve" plane, normal to arc): contextActionsFor with sketch '
+      'Point/Arc entities', () {
+    const arc = SelectionEntityRef(
+      kind: SelectionEntityKind.sketchArc,
+      sketchFeatureId: 'f1',
+      sketchEntityId: 'arc-1',
+    );
+    const endpointPoint = SelectionEntityRef(
+      kind: SelectionEntityKind.sketchPoint,
+      sketchFeatureId: 'f1',
+      sketchEntityId: 'point-1',
+    );
+    const otherPoint = SelectionEntityRef(
+      kind: SelectionEntityKind.sketchPoint,
+      sketchFeatureId: 'f1',
+      sketchEntityId: 'point-2',
+    );
+    const differentFeaturePoint = SelectionEntityRef(
+      kind: SelectionEntityKind.sketchPoint,
+      sketchFeatureId: 'f2',
+      sketchEntityId: 'point-1',
+    );
+    const line = SelectionEntityRef(
+      kind: SelectionEntityKind.sketchLine,
+      sketchFeatureId: 'f1',
+      sketchEntityId: 'line-1',
+    );
+
+    bool alwaysTrue(String sketchFeatureId, String arcId, String pointId) => true;
+    bool alwaysFalse(String sketchFeatureId, String arcId, String pointId) => false;
+
+    test('an Arc + its own endpoint Point offers a real, enabled Create Plane', () {
+      final actions = contextActionsFor({arc, endpointPoint}, isPointOnArc: alwaysTrue);
+      expect(actions, [const SelectionContextAction('Create Plane', enabled: true)]);
+    });
+
+    test('an Arc + a Point that is not its endpoint (e.g. its own centre) offers nothing', () {
+      final actions = contextActionsFor({arc, otherPoint}, isPointOnArc: alwaysFalse);
+      expect(actions, isEmpty);
+    });
+
+    test('no isPointOnArc callback supplied defaults to not-an-endpoint (offers nothing)', () {
+      final actions = contextActionsFor({arc, endpointPoint});
+      expect(actions, isEmpty);
+    });
+
+    test('an Arc + a Point from a different Sketch Feature offers nothing, regardless of the checker', () {
+      final actions = contextActionsFor({arc, differentFeaturePoint}, isPointOnArc: alwaysTrue);
+      expect(actions, isEmpty);
+    });
+
+    test('a lone Sketch Arc offers nothing', () {
+      expect(contextActionsFor({arc}, isPointOnArc: alwaysTrue), isEmpty);
+    });
+
+    test('an Arc, a Line, and a Point together offers nothing (not exactly one Arc + one Point)', () {
+      final actions =
+          contextActionsFor({arc, line, endpointPoint}, isPointOnLine: alwaysTrue, isPointOnArc: alwaysTrue);
+      expect(actions, isEmpty);
+    });
+
+    test('a Sketch Arc mixed with a Body sub-shape offers nothing', () {
+      final actions = contextActionsFor({arc, endpointPoint, _face0}, isPointOnArc: alwaysTrue);
+      expect(actions, isEmpty);
+    });
+  });
+
   group('Pattern/Mirror scoping Phase 1/2/6: contextActionsFor Mirror/Pattern', () {
     test('a lone Body offers a real, enabled Mirror and a real, enabled Pattern', () {
       const body = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b1');

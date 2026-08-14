@@ -153,7 +153,7 @@ def test_create_sketch_exposes_a_real_origin_point_id():
 
     response = client.get(f"/sketch/sketches/{sketch['id']}/points/{origin_id}")
     assert response.status_code == 200
-    assert response.json() == {"id": origin_id, "x": 0.0, "y": 0.0}
+    assert response.json() == {"id": origin_id, "x": 0.0, "y": 0.0, "is_locked": False}
 
 
 def test_get_sketch_round_trip():
@@ -245,7 +245,7 @@ def test_redefining_orientation_does_not_move_any_existing_point():
     )
 
     refetched_point = client.get(f"/sketch/sketches/{sketch['id']}/points/{point_id}").json()
-    assert refetched_point == {"id": point_id, "x": 3.0, "y": 4.0}
+    assert refetched_point == {"id": point_id, "x": 3.0, "y": 4.0, "is_locked": False}
 
 
 def test_create_and_get_point():

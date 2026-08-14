@@ -261,6 +261,18 @@ int _addToSolver(ConstraintDto c, SolverBuilder b, LineEndpoints lineEndpoints) 
     return b.equalLength(line1, line2);
   }
   if (c is LineDistanceConstraintDto) {
+    // On-device feedback ("a dimension between two parallel lines should
+    // be line to line... their parallelism should be part of the
+    // dimension" / follow-up: "adding this to a rectangle's own
+    // already-H/V-locked opposite sides makes it over constrained"): a
+    // first attempt baked a real `parallel` call directly in here
+    // unconditionally - reverted once that turned out to stack a
+    // now-redundant Parallel equation on top of a pair of Lines already
+    // forced parallel some other way. Genuinely enforcing parallelism (when
+    // it isn't already implied) is now the client's own call, via a
+    // separate, real `ParallelConstraintDto` it adds (and rolls back if
+    // redundant) alongside this one - see `SketchController.
+    // confirmGhostValue`'s own `lineDistance` branch.
     final (s1, e1) = lineEndpoints(c.line1Id);
     final (s2, _) = lineEndpoints(c.line2Id);
     final line1 = b.lineSegment(b.point2d(s1), b.point2d(e1));

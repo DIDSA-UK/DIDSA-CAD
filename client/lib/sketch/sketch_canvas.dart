@@ -2433,6 +2433,13 @@ class _SketchPainter extends CustomPainter {
     canvas.drawLine(from + direction * _extensionLineGap, to + direction * _extensionLineOvershoot, paint);
   }
 
+  /// [_paintLineDistanceDimension]'s own "leader lines should originate
+  /// from the ends of the lines, not the point" fix: whichever of a Line's
+  /// two screen-space endpoints sits closer to [target] (the dimension
+  /// segment's own end on that Line's side).
+  Offset _nearerEndpoint(Offset a, Offset b, Offset target) =>
+      (a - target).distanceSquared <= (b - target).distanceSquared ? a : b;
+
   /// ISO 129/ASME Y14.5-style dimension-line arrowhead: a small filled
   /// triangle with its tip at [tip], pointing along [direction] (a unit
   /// vector pointing outward, away from the dimension line's other end) -
@@ -2749,6 +2756,16 @@ class _SketchPainter extends CustomPainter {
   /// `canApplyConstraint`'s own gating), so the perpendicular to Line 1 is
   /// guaranteed perpendicular to Line 2 too, and the projection is
   /// independent of which point on Line 2 is used to find it.
+  ///
+  /// Bug fix (on-device feedback: "the leader lines should also originate
+  /// from the ends of the lines, not the point - the dimension should feel
+  /// line to line, not point to point"): the dimension segment itself
+  /// (`p1`/`p2`, still anchored via the midpoint-based perpendicular
+  /// projection above, so its length stays exactly [c.distance]) is
+  /// unchanged, but each extension/leader line now starts from whichever
+  /// of its own Line's two actual endpoints sits nearer the dimension
+  /// segment, instead of from that Line's midpoint - a floating point with
+  /// no relation to either Line's own geometry.
   void _paintLineDistanceDimension(Canvas canvas, LineDistanceConstraintDto c, Color color, Offset labelOffset) {
     final midA = _lineMidpointScreen(c.line1Id);
     final endpointsA = _lineEndpointsScreenFor(controller, transform, c.line1Id);
@@ -2783,8 +2800,10 @@ class _SketchPainter extends CustomPainter {
       ..strokeWidth = _dimensionStrokeWidth;
     final p1 = midA + offset;
     final p2 = midB + offset;
-    _drawExtensionLine(canvas, midA, p1, dimPaint);
-    _drawExtensionLine(canvas, midB, p2, dimPaint);
+    final leaderStartA = _nearerEndpoint(endpointsA.$1, endpointsA.$2, p1);
+    final leaderStartB = _nearerEndpoint(endpointsB.$1, endpointsB.$2, p2);
+    _drawExtensionLine(canvas, leaderStartA, p1, dimPaint);
+    _drawExtensionLine(canvas, leaderStartB, p2, dimPaint);
     canvas.drawLine(p1, p2, dimPaint);
     _drawDimensionArrows(canvas, p1, p2, color);
 

@@ -235,7 +235,15 @@ class PlaneType(str, Enum):
     All six share the same `CreatePlaneFeature` shape (see its own
     docstring). C5: `OFFSET_FACE`/`MIDPLANE`/`PARALLEL_TO_FACE_THROUGH_VERTEX`'s
     "plane-like reference" is a `PlaneRef` - a Body face, a fixed reference
-    plane, or an existing Plane, not just a Body face as before."""
+    plane, or an existing Plane, not just a Body face as before.
+
+    On-device feedback ("allow 'point and curve' as a valid combination to
+    create a plane, on point and normal to arc"): `NORMAL_TO_CURVE_AT_POINT`
+    adds a seventh method, `NORMAL_TO_LINE_AT_POINT`'s Arc-shaped sibling - a
+    Sketch Arc's tangent direction at one of its own endpoints, through that
+    same Point. Reuses `line_ref`/`point_ref` verbatim (an Arc reference
+    fits the same "one Sketch entity + one of its own Points" shape a Line
+    reference already does) rather than adding a parallel pair of fields."""
 
     OFFSET_FACE = "offset_face"
     NORMAL_TO_LINE_AT_POINT = "normal_to_line_at_point"
@@ -243,6 +251,7 @@ class PlaneType(str, Enum):
     NORMAL_TO_EDGE_THROUGH_VERTEX = "normal_to_edge_through_vertex"
     PARALLEL_TO_FACE_THROUGH_VERTEX = "parallel_to_face_through_vertex"
     THREE_POINTS = "three_points"
+    NORMAL_TO_CURVE_AT_POINT = "normal_to_curve_at_point"
 
 
 @dataclass(frozen=True)
@@ -328,6 +337,10 @@ class CreatePlaneFeature(Feature):
       `offset` is unset).
     - `NORMAL_TO_LINE_AT_POINT`: a Sketch Line's direction through one of
       its own endpoints (`line_ref`/`point_ref` set, `face_refs` empty).
+    - `NORMAL_TO_CURVE_AT_POINT`: a Sketch Arc's tangent direction at one of
+      its own endpoints, through that same Point (`line_ref`/`point_ref`
+      set, same shape as `NORMAL_TO_LINE_AT_POINT` - `line_ref` names the
+      Arc despite the field's name, see `PlaneType`'s own doc comment).
     - `NORMAL_TO_EDGE_THROUGH_VERTEX` (C4): a straight Body edge's direction
       through a given Body vertex (`edge_ref`/`vertex_ref` set).
     - `PARALLEL_TO_FACE_THROUGH_VERTEX` (C4): parallel to a plane-like
