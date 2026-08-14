@@ -11,28 +11,20 @@ this codebase - every technique below is the one the two spikes above
 found and validated, not an adaptation of an existing planar/prism/loft
 Feature.
 
-**Face inventory**: per tooth, 2 flank faces (right, left - the 2026-08-04
+**Face inventory** (`4N + 2` faces for `N` teeth, per the 2026-08-05
+spike's own §2): per tooth, 2 flank faces (right, left - the 2026-08-04
 spike's own `ThruSections`-between-two-`Geom_BSplineCurve`-wires
 technique, unchanged) plus 1 tip-land and 1 root-land face (the *same*
 `ThruSections`-between-two-wires technique, just with plain circular arcs
 instead of BSplines, since corresponding outer/inner points at a fixed
-colatitude lie on the same ray from the apex for a straight-bevel tooth) -
-`4N` faces for `N` teeth, per the 2026-08-05 spike's own §2, all
-unchanged since that spike.
-
-The 2 end-cap faces (outer/inner, one each - not per-tooth, per the
-spike's own §6 topology dead end) are NOT flat single faces: on-device
-feedback ("bevel gears are currently produced with a convex and concave
-face... these should be flattened off") replaced the spike's own literal
-spherical-patch end-cap (`Geom_SphericalSurface` + hand-rolled pcurves)
-with a flat cap PLUS a thin `4N`-face "collar" bridging it back to the
-true spherical rim (`_cap_collar_and_flat_faces` - see its own docstring
-for why a collar is needed rather than just flattening the rim in place).
-`4N + 2` faces total for the tooth geometry, `2*(4N + 1)` for the two
-end-caps' own collar+flat construction: `12N + 2` faces for `N` teeth.
+colatitude lie on the same ray from the apex for a straight-bevel tooth);
+plus 2 spherical end-cap faces (outer/inner, one each - not per-tooth,
+per the spike's own §6 topology dead end), built via hand-rolled pcurves
+against a `Geom_SphericalSurface` (`_spherical_cap_face`, the one
+genuinely new technique - see its own docstring).
 
 **Solid assembly**, exact order per the spike's own §4: `BRepBuilderAPI_
-Sewing` (tolerance 1e-4) across all `12N + 2` faces, `ShapeFix_Shell` on
+Sewing` (tolerance 1e-4) across all `4N + 2` faces, `ShapeFix_Shell` on
 the whole sewn shell (not per-face), `BRepBuilderAPI_MakeSolid`, then
 `BRepLib.OrientClosedSolid`. `MakeSolid` alone on the raw sewn shell is
 not sufficient (comes back with zero volume - the two end-caps' own
@@ -65,7 +57,6 @@ entry).
 
 import logging
 import math
-from typing import Callable
 
 from fastapi import HTTPException
 from OCC.Core.BOPAlgo import BOPAlgo_CheckerSI
@@ -77,22 +68,24 @@ from OCC.Core.BRepBuilderAPI import (
     BRepBuilderAPI_MakeWire,
     BRepBuilderAPI_Sewing,
 )
-from OCC.Core.BRepFill import brepfill
 from OCC.Core.BRepGProp import brepgprop
 from OCC.Core.BRepLib import breplib
 from OCC.Core.BRepMesh import BRepMesh_IncrementalMesh
 from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_ThruSections
 from OCC.Core.BRepTools import breptools
+from OCC.Core.Geom import Geom_SphericalSurface
+from OCC.Core.Geom2d import Geom2d_Line
+from OCC.Core.Geom2dAPI import Geom2dAPI_Interpolate
 from OCC.Core.GeomAPI import GeomAPI_Interpolate
 from OCC.Core.GeomLProp import GeomLProp_SLProps
 from OCC.Core.GProp import GProp_GProps
-from OCC.Core.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pnt, gp_Vec
+from OCC.Core.gp import gp_Ax2, gp_Ax3, gp_Circ, gp_Dir, gp_Dir2d, gp_Pnt, gp_Pnt2d, gp_Vec, gp_Vec2d
 from OCC.Core.ShapeFix import ShapeFix_Shell
-from OCC.Core.TColgp import TColgp_HArray1OfPnt
+from OCC.Core.TColgp import TColgp_HArray1OfPnt, TColgp_HArray1OfPnt2d
 from OCC.Core.TopAbs import TopAbs_FACE, TopAbs_SHELL
 from OCC.Core.TopExp import TopExp_Explorer
 from OCC.Core.TopLoc import TopLoc_Location
-from OCC.Core.TopoDS import TopoDS_Edge, TopoDS_Face, TopoDS_Shape, TopoDS_Shell, TopoDS_Solid, TopoDS_Wire, topods
+from OCC.Core.TopoDS import TopoDS_Face, TopoDS_Shape, TopoDS_Shell, TopoDS_Solid, TopoDS_Wire, topods
 
 from app.document.bevel_math import (
     BevelGearGeometry,
@@ -161,18 +154,35 @@ def _rotate_about_z(point: tuple[float, float, float], angle: float) -> tuple[fl
     return (x * cos_a - y * sin_a, x * sin_a + y * cos_a, z)
 
 
+def _sphere_axis(basis: ResolvedPlane) -> gp_Ax3:
+    """The world-space `gp_Ax3` for a `Geom_SphericalSurface` centred at
+    the apex (`basis.origin`), main direction along the gear axis
+    (`basis.normal`), X direction along `basis.x_axis` - chosen so that a
+    LOCAL-frame point's own closed-form `(atan2(y, x), asin(z / R))` is
+    exactly that surface's own (u, v) parametrization at the matching
+    world-embedded point (`Geom_SphericalSurface`'s `P(u, v) = O +
+    R*cos(v)*(cos(u)*XDir + sin(u)*YDir) + R*sin(v)*ZDir`), letting
+    `_spherical_cap_face` compute pcurve coordinates directly from local
+    (x, y, z) without any extra projection step."""
+    ox, oy, oz = basis.origin
+    nx, ny, nz = basis.normal
+    xx, xy, xz = basis.x_axis
+    return gp_Ax3(gp_Pnt(ox, oy, oz), gp_Dir(nx, ny, nz), gp_Dir(xx, xy, xz))
+
+
 # ---------------------------------------------------------------------------
 # Flank / tip-land / root-land faces - all `ThruSections`-between-two-wires
 # ---------------------------------------------------------------------------
 
 
-def _interpolated_edge(world_points: list[gp_Pnt]) -> TopoDS_Edge:
-    """A single real `Geom_BSplineCurve` edge fit through `world_points` via
-    `GeomAPI_Interpolate` (`00-conventions.md`'s real-curve requirement) -
-    factored out of `_bspline_wire` so `_cap_collar_and_flat_faces` can
-    reuse the exact same curve-fitting technique for its own (already
-    world-embedded) rim points, without going through `_bspline_wire`'s own
-    local-frame embedding step a second time."""
+def _bspline_wire(basis: ResolvedPlane, local_points: list[tuple[float, float, float]]) -> TopoDS_Wire:
+    """One tooth flank's sampled points, fit as a single real
+    `Geom_BSplineCurve` edge via `GeomAPI_Interpolate` (`00-conventions.md`'s
+    real-curve requirement) - the 3D generalization of
+    `app.document.gear._bspline_flank_edge` (that one embeds a 2D local
+    profile; a bevel flank is a genuine 3D space curve, so this embeds via
+    `_basis_point3_to_world` instead)."""
+    world_points = [_basis_point3_to_world(basis, x, y, z) for x, y, z in local_points]
     points_array = TColgp_HArray1OfPnt(1, len(world_points))
     for i, point in enumerate(world_points, start=1):
         points_array.SetValue(i, point)
@@ -180,45 +190,24 @@ def _interpolated_edge(world_points: list[gp_Pnt]) -> TopoDS_Edge:
     interpolator.Perform()
     if not interpolator.IsDone():
         raise _bevel_failed("could not fit a smooth curve through a tooth flank's sampled points")
-    return BRepBuilderAPI_MakeEdge(interpolator.Curve()).Edge()
+    edge = BRepBuilderAPI_MakeEdge(interpolator.Curve()).Edge()
+    return BRepBuilderAPI_MakeWire(edge).Wire()
 
 
-def _bspline_wire(basis: ResolvedPlane, local_points: list[tuple[float, float, float]]) -> TopoDS_Wire:
-    """One tooth flank's sampled points, fit as a single real
-    `Geom_BSplineCurve` edge (`_interpolated_edge`) - the 3D generalization
-    of `app.document.gear._bspline_flank_edge` (that one embeds a 2D local
-    profile; a bevel flank is a genuine 3D space curve, so this embeds via
-    `_basis_point3_to_world` instead)."""
-    world_points = [_basis_point3_to_world(basis, x, y, z) for x, y, z in local_points]
-    return BRepBuilderAPI_MakeWire(_interpolated_edge(world_points)).Wire()
-
-
-def _cone_arc_edge(
+def _cone_arc_wire(
     basis: ResolvedPlane,
     sphere_radius: float,
     colatitude: float,
     p_start_world: gp_Pnt,
     p_end_world: gp_Pnt,
-) -> TopoDS_Edge:
-    """The single circular-arc edge `_cone_arc_wire` wraps in a Wire -
-    `_arc_wire` from `10-bevel-gear.md`'s own §8 implementation sketch: a
-    plain circular arc at fixed `colatitude` on the sphere of
+) -> TopoDS_Wire:
+    """`_arc_wire` from `10-bevel-gear.md`'s own §8 implementation sketch:
+    a plain circular arc at fixed `colatitude` on the sphere of
     `sphere_radius` (the tip-land/root-land faces' own wires - a
     straight-bevel tooth is ruled by lines through the apex, so
     corresponding outer/inner arc points lie on the same ray, and the
     arc-to-arc `ThruSections` loft *is* the exact trimmed cone patch - no
     separate `Geom_ConicalSurface` needed, per that doc's own §2).
-    Factored out (not just `_cone_arc_wire`'s own internal detail) so
-    `_cap_rim_edges`'s own TRUE-rim tip/root connector legs can build the
-    exact same edge `_tip_land_face`/`_root_land_face` use for their own
-    matching boundary - on-device feedback ("the flat face... is cutting
-    away part of the teeth... leaving bits of surface of the teeth...
-    outside the body"): those connectors used to be a straight chord
-    between the same two points instead, which cuts *inside* this arc (a
-    chord is always closer to the circle's own centre than the arc it
-    subtends) - for a full-size gear that gap is well beyond `BRepBuilderAPI_
-    Sewing`'s own 1e-4 tolerance, so the collar and the land faces never
-    actually closed into one shell there.
 
     The circle's own reference X direction is pinned to point at
     `p_start_world` (mirrors `app.document.extrude.arc_axis`'s identical
@@ -235,19 +224,7 @@ def _cone_arc_edge(
     x_ref = gp_Dir(gp_Vec(center, p_start_world))
     axis = gp_Ax2(center, normal, x_ref)
     circ = gp_Circ(axis, circle_radius)
-    return BRepBuilderAPI_MakeEdge(circ, p_start_world, p_end_world).Edge()
-
-
-def _cone_arc_wire(
-    basis: ResolvedPlane,
-    sphere_radius: float,
-    colatitude: float,
-    p_start_world: gp_Pnt,
-    p_end_world: gp_Pnt,
-) -> TopoDS_Wire:
-    """`_cone_arc_edge`, wrapped as a standalone Wire - see that function's
-    own doc comment for the actual construction."""
-    edge = _cone_arc_edge(basis, sphere_radius, colatitude, p_start_world, p_end_world)
+    edge = BRepBuilderAPI_MakeEdge(circ, p_start_world, p_end_world).Edge()
     return BRepBuilderAPI_MakeWire(edge).Wire()
 
 
@@ -323,10 +300,33 @@ def _root_land_face(
 
 
 # ---------------------------------------------------------------------------
-# Flat end-caps (10-bevel-gear.md §3's spherical patch, flattened - on-device
-# feedback: "bevel gears are currently produced with a convex and concave
-# face... these should be flattened off")
+# Spherical end-caps - the one genuinely new technique (10-bevel-gear.md §3)
 # ---------------------------------------------------------------------------
+
+
+def _unwrap_azimuths(raw_azimuths: list[float]) -> list[float]:
+    """Running-offset azimuth unwrap - matches `numpy.unwrap`'s own
+    algorithm (adjust each step by the nearest multiple of a full turn so
+    consecutive values never jump by more than half a turn), hand-rolled
+    here per `10-bevel-gear.md`'s own explicit "no numpy dependency"
+    finding. Needed because `atan2` wraps to `(-pi, pi]`: naively using
+    its raw per-point value breaks monotonicity every time the rim
+    traversal (`_spherical_cap_face`, all the way around `tooth_count`
+    teeth) crosses that seam, which a whole-gear rim always does for some
+    tooth. Every consecutive pair of points this is applied to is close
+    together in azimuth by construction (at most one tooth-plus-gap's own
+    angular pitch, `2*pi / tooth_count`, always well under half a turn
+    for any real gear), so "nearest multiple of a full turn" always finds
+    the physically-correct unwrap, never an ambiguous one."""
+    if not raw_azimuths:
+        return []
+    result = [raw_azimuths[0]]
+    for raw in raw_azimuths[1:]:
+        prev = result[-1]
+        delta = raw - prev
+        delta -= 2 * math.pi * round(delta / (2 * math.pi))
+        result.append(prev + delta)
+    return result
 
 
 def _cap_rim_points(
@@ -338,58 +338,21 @@ def _cap_rim_points(
     `left0` are tooth 0's own flank points, both already root-to-tip per
     `bevel_math.bevel_tooth_flank_pair`'s own docstring - the left flank
     is reversed here, unlike `gear_math`'s planar convention which already
-    stores its own left flank pre-reversed). `_cap_rim_edges`'s own final
-    root-land leg (last tooth back to the first) wraps back to index 0 by
-    plain modulo - a genuine 3D point, no seam-continuity concern - so no
-    closing duplicate point is needed here."""
+    stores its own left flank pre-reversed), plus one closing point (a
+    fresh copy of the very first point) so `_unwrap_azimuths` can carry
+    the accumulated azimuth all the way around back to tooth 0's own
+    starting point - needed for the final root-land arc's own pcurve,
+    which spans from the last tooth back to the first."""
     points: list[tuple[float, float, float]] = []
     for i in range(tooth_count):
         angle = 2 * math.pi * i / tooth_count
         points.extend(_rotate_about_z(p, angle) for p in right0)
         points.extend(_rotate_about_z(p, angle) for p in reversed(left0))
+    points.append(points[0])
     return points
 
 
-def _cap_rim_edges(
-    world_points: list[gp_Pnt],
-    tooth_count: int,
-    points_per_flank: int,
-    tip_corner_edge: Callable[[gp_Pnt, gp_Pnt], TopoDS_Edge],
-    root_corner_edge: Callable[[gp_Pnt, gp_Pnt], TopoDS_Edge],
-) -> list[TopoDS_Edge]:
-    """The end-cap rim's `4*tooth_count` edges (right flank, tip corner,
-    left flank, root corner - per tooth), built directly from
-    already-world-embedded `world_points` (`_cap_rim_points`, embedded via
-    `_basis_point3_to_world`) - shared by `_cap_collar_and_flat_faces`
-    for both the true (still on the sphere) rim and its flattened copy
-    (same point count/order, only each point's own z differs), so a collar
-    face built leg-by-leg between corresponding true/flat edges (see that
-    function) always connects the right curve type to the right one.
-
-    `tip_corner_edge`/`root_corner_edge` (each `(p1, p2) -> TopoDS_Edge`)
-    build the tip-to-tip/root-to-root connector legs - a parameter, not a
-    fixed straight line, because the TRUE rim's own connectors must be
-    genuine circular arcs (`_cone_arc_edge`, matching `_tip_land_face`'s/
-    `_root_land_face`'s own boundary exactly - see `_cap_collar_and_flat_
-    faces`'s own doc comment for why a straight chord there is a real
-    bug), while the FLATTENED rim's connectors are legitimately straight
-    (its own points no longer lie on the original sphere, so there's no
-    matching arc to reproduce - and nothing else's boundary depends on
-    this copy's own exact shape)."""
-    k = points_per_flank
-    span = 2 * k  # one tooth's own share of world_points: right (k) + left-reversed (k)
-    edges: list[TopoDS_Edge] = []
-    for i in range(tooth_count):
-        base = i * span
-        edges.append(_interpolated_edge(world_points[base : base + k]))
-        edges.append(tip_corner_edge(world_points[base + k - 1], world_points[base + k]))
-        edges.append(_interpolated_edge(world_points[base + k : base + span]))
-        next_base = (base + span) % (tooth_count * span)
-        edges.append(root_corner_edge(world_points[base + span - 1], world_points[next_base]))
-    return edges
-
-
-def _cap_collar_and_flat_faces(
+def _spherical_cap_face(
     basis: ResolvedPlane,
     sphere_radius: float,
     start_colatitude: float,
@@ -397,92 +360,117 @@ def _cap_collar_and_flat_faces(
     tooth_count: int,
     right0: list[tuple[float, float, float]],
     left0: list[tuple[float, float, float]],
-) -> list[TopoDS_Face]:
-    """One end-cap's faces (outer or inner) - on-device feedback: the
-    original spike's own literal spherical-patch end-cap (hand-rolled
-    pcurves against a `Geom_SphericalSurface`, `10-bevel-gear.md`'s own
-    §3) produced a visibly convex/concave face; real bevel gears cut this
-    flat instead (the standard "back cone" approximation).
+) -> TopoDS_Face:
+    """One end-cap face (outer or inner sphere), bounded by the entire
+    `4*tooth_count`-edge zigzag rim - `10-bevel-gear.md`'s own §3/§8: hand-
+    built pcurves against a `Geom_SphericalSurface`, since
+    `BRepBuilderAPI_MakeFace(Geom_SphericalSurface, wire)` given only 3D
+    edges (no pcurves) silently returns a zero-area face, and
+    `BRepOffsetAPI_MakeFilling` silently returns a ~3.2x-wrong area for a
+    rim this irregular (both are real, measured dead ends per that doc -
+    don't retry either).
 
-    A genuinely flat (planar) face's ENTIRE boundary must be coplanar, but
-    the true `4*tooth_count`-edge zigzag rim isn't (it follows the tooth
-    flank's own spherical-involute shape, root to tip) - and that same rim
-    is exactly the boundary the neighbouring flank/tip-land/root-land
-    faces already share (built from these same `right0`/`left0` points),
-    so simply moving the rim's own points to one flat z (an earlier
-    attempt at this fix) breaks watertightness: the flat cap's edges no
-    longer coincide with those unchanged neighbours', and `BRepBuilderAPI_
-    Sewing` can't stitch a millimetre-scale gap shut.
+    Each edge is built via the `BRepBuilderAPI_MakeEdge(pcurve2d, surface,
+    P1, P2)` overload (a 2D curve on a surface plus two 3D end points, no
+    explicit 3D curve) - a flank edge's pcurve is a `Geom2dAPI_Interpolate`
+    through its own points' `(azimuth, latitude)` pairs (closed-form:
+    `atan2(y, x)`, `asin(z / sphere_radius)` in the LOCAL apex-centred
+    frame, which is exactly `_sphere_axis`'s own `Geom_SphericalSurface`
+    parametrization at the matching world point); a tip-land/root-land
+    arc edge's pcurve is a trivial `Geom2d_Line` between its own two
+    points (constant latitude, azimuth varies) - matching the doc's own
+    "trivial" description exactly, since `MakeEdge`'s 4-argument overload
+    trims an unbounded `Geom2d_Line` to exactly the span between the two
+    given 3D points, no explicit parameter range needed.
 
-    Instead this returns the flat cap face PLUS a thin `4*tooth_count`-face
-    "collar" bridging the true rim back to a flattened copy of itself (each
-    corresponding true/flat edge pair joined via `BRepFill.Face`, a plain
-    ruled surface between two edges - unlike `BRepOffsetAPI_ThruSections`,
-    which on-device testing found `IsDone() == False` for a straight,
-    already-degenerate-looking single-edge-to-single-edge loft here) - the
-    true rim edges are reused as-is (still exactly matching the flank/land
-    faces' own boundary, so sewing them into the same shell in
-    `_assemble_gear_solid` still closes cleanly), and the collar's own far
-    edge is the flat cap's boundary. Verified on-device (this session):
-    sewn together with the flank/tip-land/root-land faces, the resulting
-    solid's independent mesh-volume cross-check (`_mesh_volume`) agrees
-    with its analytic volume to within 0.2% and `BOPAlgo_CheckerSI` finds
-    no self-intersections.
+    `BRepLib.BuildCurves3d(wire)` runs BEFORE `MakeFace`, not after - per
+    the doc's own second gotcha, an edge built from a pcurve+surface alone
+    carries no 3D curve at all until that call, and `MakeFace`/
+    `BRepCheck_Analyzer` cannot evaluate such an edge outside a face
+    context."""
+    surface = Geom_SphericalSurface(_sphere_axis(basis), sphere_radius)
+    points_per_flank = len(right0)
 
-    On-device feedback (second round - "the flat face at the larger
-    diameter end... is cutting away part of the teeth... leaving bits of
-    surface of the teeth... outside the body"): "the true rim edges are
-    reused as-is" above was only true for the flank legs - the tip-corner
-    and root-corner connector legs were built as a plain straight chord
-    between the same two points, NOT the circular arc `_tip_land_face`/
-    `_root_land_face` actually use for their own matching boundary
-    (`_cone_arc_edge`, at the tip/root colatitude on this same
-    `sphere_radius`). A chord is always closer to the circle's own centre
-    than the arc it subtends, so the collar and the land faces never
-    shared a real edge there - for a realistically-sized gear that gap is
-    far beyond `BRepBuilderAPI_Sewing`'s own 1e-4 tolerance (worse at the
-    outer/larger-diameter end, where the sphere - and so the gap - is
-    biggest), leaving the shell unclosed exactly there. Fixed by building
-    the TRUE rim's own connector legs via `_cone_arc_edge` instead - the
-    FLATTENED rim's own connectors stay straight (see `_cap_rim_edges`'s
-    own doc comment for why that's still correct there).
-
-    The flat plane sits at `sphere_radius * cos(face_colatitude)` - this
-    cone's own tooth-TIP axial position (the real "back cone" is
-    conventionally tangent to the true sphere at the tip circle) - so the
-    collar is a no-op at the tip corners (already exactly on that plane)
-    and only bridges the gap elsewhere along the rim."""
-    k = len(right0)
     local_points = _cap_rim_points(tooth_count, right0, left0)
-    true_world = [_basis_point3_to_world(basis, x, y, z) for x, y, z in local_points]
-    z_flat = sphere_radius * math.cos(face_colatitude)
-    flat_world = [_basis_point3_to_world(basis, x, y, z_flat) for x, y, _z in local_points]
+    raw_azimuths = [math.atan2(y, x) for x, y, _z in local_points]
+    azimuths = _unwrap_azimuths(raw_azimuths)
+    latitudes = [math.asin(max(-1.0, min(1.0, z / sphere_radius))) for _x, _y, z in local_points]
+    world_points = [_basis_point3_to_world(basis, x, y, z) for x, y, z in local_points]
 
-    true_edges = _cap_rim_edges(
-        true_world,
-        tooth_count,
-        k,
-        tip_corner_edge=lambda p1, p2: _cone_arc_edge(basis, sphere_radius, face_colatitude, p1, p2),
-        root_corner_edge=lambda p1, p2: _cone_arc_edge(basis, sphere_radius, start_colatitude, p1, p2),
-    )
-    def straight_edge(p1: gp_Pnt, p2: gp_Pnt) -> TopoDS_Edge:
-        return BRepBuilderAPI_MakeEdge(p1, p2).Edge()
+    def pnt2d(index: int) -> gp_Pnt2d:
+        return gp_Pnt2d(azimuths[index], latitudes[index])
 
-    flat_edges = _cap_rim_edges(
-        flat_world, tooth_count, k, tip_corner_edge=straight_edge, root_corner_edge=straight_edge
-    )
-    collar_faces = [brepfill.Face(true_edge, flat_edge) for true_edge, flat_edge in zip(true_edges, flat_edges)]
+    def interpolated_pcurve(indices: range):
+        points_2d = TColgp_HArray1OfPnt2d(1, len(indices))
+        for offset, index in enumerate(indices, start=1):
+            points_2d.SetValue(offset, pnt2d(index))
+        interpolator = Geom2dAPI_Interpolate(points_2d, False, 1e-6)
+        interpolator.Perform()
+        if not interpolator.IsDone():
+            raise _bevel_failed("could not fit a 2D pcurve through a tooth flank's sampled points")
+        curve = interpolator.Curve()
+        return curve, curve.FirstParameter(), curve.LastParameter()
 
-    flat_wire_maker = BRepBuilderAPI_MakeWire()
-    for edge in flat_edges:
-        flat_wire_maker.Add(edge)
-    if not flat_wire_maker.IsDone():
-        raise _bevel_failed("could not assemble the flat end-cap's own zigzag rim into one closed wire")
-    flat_face_maker = BRepBuilderAPI_MakeFace(flat_wire_maker.Wire())
-    if not flat_face_maker.IsDone():
-        raise _bevel_failed("could not build a flat end-cap face from its own rim wire")
+    def line_pcurve(index_a: int, index_b: int):
+        # `Geom2d_Line` is unbounded (parameter range (-inf, +inf)) - the
+        # 4-arg `BRepBuilderAPI_MakeEdge(pcurve, surface, P1, P2)` overload
+        # does NOT auto-trim an unbounded curve to the span between P1/P2
+        # (confirmed on-device: it raises StdFail_NotDone), so this always
+        # passes explicit parameters via the 6-arg overload instead - `0.0`
+        # at `p_a` (the line's own origin) and the Euclidean 2D distance to
+        # `p_b` (the line's own direction is already a unit vector via
+        # `gp_Dir2d`, so parameter and arc length coincide).
+        p_a, p_b = pnt2d(index_a), pnt2d(index_b)
+        length = p_a.Distance(p_b)
+        line = Geom2d_Line(p_a, gp_Dir2d(gp_Vec2d(p_a, p_b)))
+        return line, 0.0, length
 
-    return collar_faces + [flat_face_maker.Face()]
+    wire_maker = BRepBuilderAPI_MakeWire()
+    k = points_per_flank
+    span = 2 * k  # one tooth's own share of _cap_rim_points: right (k) + left-reversed (k)
+    for i in range(tooth_count):
+        base = i * span
+        right_range = range(base, base + k)
+        left_range = range(base + k, base + span)
+
+        right_pcurve, right_u1, right_u2 = interpolated_pcurve(right_range)
+        wire_maker.Add(
+            BRepBuilderAPI_MakeEdge(
+                right_pcurve, surface, world_points[base], world_points[base + k - 1], right_u1, right_u2
+            ).Edge()
+        )
+
+        tip_pcurve, tip_u1, tip_u2 = line_pcurve(base + k - 1, base + k)
+        wire_maker.Add(
+            BRepBuilderAPI_MakeEdge(
+                tip_pcurve, surface, world_points[base + k - 1], world_points[base + k], tip_u1, tip_u2
+            ).Edge()
+        )
+
+        left_pcurve, left_u1, left_u2 = interpolated_pcurve(left_range)
+        wire_maker.Add(
+            BRepBuilderAPI_MakeEdge(
+                left_pcurve, surface, world_points[base + k], world_points[base + span - 1], left_u1, left_u2
+            ).Edge()
+        )
+
+        next_base = (base + span) % (tooth_count * span)
+        root_pcurve, root_u1, root_u2 = line_pcurve(base + span - 1, base + span)
+        wire_maker.Add(
+            BRepBuilderAPI_MakeEdge(
+                root_pcurve, surface, world_points[base + span - 1], world_points[next_base], root_u1, root_u2
+            ).Edge()
+        )
+
+    if not wire_maker.IsDone():
+        raise _bevel_failed("could not assemble the spherical end-cap's own zigzag rim into one closed wire")
+    wire = wire_maker.Wire()
+    breplib.BuildCurves3d(wire)
+
+    face_maker = BRepBuilderAPI_MakeFace(surface, wire)
+    if not face_maker.IsDone():
+        raise _bevel_failed("could not build a spherical end-cap face from its own rim wire")
+    return face_maker.Face()
 
 
 # ---------------------------------------------------------------------------
@@ -648,21 +636,10 @@ def _assembly_sanity_warnings(solid: TopoDS_Solid) -> list[str]:
     once, after assembly, deliberately NOT gating on `BRepCheck_Analyzer.
     IsValid()` (confirmed wrong for this construction's own end-caps, per
     that doc's §5). Non-blocking, per `00-conventions.md` - a disagreement
-    here is a real, but not certainly-fatal, signal worth surfacing.
-
-    `SetRunParallel(True)` (on-device feedback this session, after the
-    flat-end-cap fix's own `_cap_collar_and_flat_faces` added `4*tooth_
-    count` extra collar faces per cap): `BOPAlgo_CheckerSI`'s own
-    pairwise-face cost scales with total face count, and profiling this
-    session found it dominating this function's own runtime by roughly
-    two orders of magnitude over everything else combined once those
-    extra faces are in the shell - `SetRunParallel` roughly halves it back
-    down, a pure performance win with no change to what gets checked or
-    reported."""
+    here is a real, but not certainly-fatal, signal worth surfacing."""
     warnings: list[str] = []
 
     checker = BOPAlgo_CheckerSI()
-    checker.SetRunParallel(True)
     checker.AddArgument(solid)
     checker.Perform()
     if checker.HasErrors():
@@ -751,13 +728,13 @@ def _assemble_gear_solid(
             )
         )
 
-    faces.extend(
-        _cap_collar_and_flat_faces(
+    faces.append(
+        _spherical_cap_face(
             basis, geometry.cone_distance, start_colatitude, face_colatitude, tooth_count, right0_outer, left0_outer
         )
     )
-    faces.extend(
-        _cap_collar_and_flat_faces(
+    faces.append(
+        _spherical_cap_face(
             basis,
             geometry.inner_cone_distance,
             start_colatitude,
