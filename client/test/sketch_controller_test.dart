@@ -2953,6 +2953,69 @@ void main() {
   });
 
   test(
+      'bug fix (on-device feedback: "on a vertical dimension, up/down swiping is reversed") - dragging '
+      'a vertical point-to-point DistanceConstraint label by an identical delta lands at the same '
+      'relative offset off its own dimension line, regardless of which of its two Points was tapped '
+      'first when the dimension was created (unlike a Line-length dimension, a point-to-point one lets '
+      'the user tap either Point first, so nothing else pins their pointA/pointB order)', () async {
+    const transform = ViewTransform(pixelsPerUnit: 20, originScreen: Offset(400, 300));
+
+    // Pair A: the lower Point (0, 0) tapped first, then the upper one (0, 5).
+    controller.selectDrawTool(SketchTool.point);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(0, 5);
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(0, 5);
+    await controller.confirmGhostValue('v', 5.0);
+    final idA = controller.constraints.entries.firstWhere((e) => e.value is DistanceConstraintDto).key;
+    controller.exitToSelectMode();
+
+    // Pair B: the same 5-unit vertical separation, offset sideways so its own
+    // dimension line never overlaps pair A's - but tapped in the OPPOSITE
+    // order (the upper Point (20, 5) first, then the lower one (20, 0)).
+    controller.selectDrawTool(SketchTool.point);
+    await controller.handleCanvasTap(20, 0);
+    await controller.handleCanvasTap(20, 5);
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(20, 5);
+    await controller.handleCanvasTap(20, 0);
+    await controller.confirmGhostValue('v', 5.0);
+    final idB =
+        controller.constraints.entries.firstWhere((e) => e.value is DistanceConstraintDto && e.key != idA).key;
+    controller.exitToSelectMode();
+
+    // Both dimension lines rest at their own default anchor: (offsetX, the
+    // midpoint of the two Points' screen y) - offsetX = the pair's max
+    // screen x plus the 18px default offset (see _dimensionOffsetDistance).
+    // Pair A's Points sit at screen x 400 (sketch x=0), pair B's at 800
+    // (sketch x=20); both pairs share the same screen-y midpoint (250,
+    // between sketch y=0's screen y=300 and y=5's screen y=200).
+    const anchorA = Offset(418, 250);
+    const anchorB = Offset(818, 250);
+    expect(dimensionLabelAt(controller, transform, anchorA, 5), idA);
+    expect(dimensionLabelAt(controller, transform, anchorB, 5), idB);
+
+    // Drag both labels down by the same 20px, regardless of tap order.
+    controller.beginLabelDrag(idA);
+    controller.updateLabelDrag(const Offset(0, 20));
+    controller.endLabelDrag();
+    controller.beginLabelDrag(idB);
+    controller.updateLabelDrag(const Offset(0, 20));
+    controller.endLabelDrag();
+
+    // Both must have moved straight down by the same 20px - never up, and
+    // never by different amounts - regardless of which Point was tapped
+    // first when each dimension was created.
+    const draggedA = Offset(418, 270);
+    const draggedB = Offset(818, 270);
+    expect(dimensionLabelAt(controller, transform, anchorA, 5), isNull);
+    expect(dimensionLabelAt(controller, transform, anchorB, 5), isNull);
+    expect(dimensionLabelAt(controller, transform, draggedA, 5), idA);
+    expect(dimensionLabelAt(controller, transform, draggedB, 5), idB);
+  });
+
+  test(
       'P52 bug fix: setLinearOffsetDistance flows through constraintOverlayItems as '
       'sketchLocalOffsetDistance for a confirmed DistanceConstraint, camera-independent unlike '
       'labelOffset', () async {

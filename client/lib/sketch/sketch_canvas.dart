@@ -1677,19 +1677,40 @@ Offset _canonicalPerpendicular(Offset delta) {
 /// new freedom this fix adds, not the old complaint reappearing.
 const double _dimensionLeaderThreshold = 4.0;
 
+/// [tangent] lets a caller whose dimension line runs along a fixed,
+/// orientation-defined axis (vertical/horizontal - see
+/// [_constraintLabelCenter]/[_SketchPainter._paintDistanceDimension]'s own
+/// `vertical`/`horizontal` cases) pass that axis in directly instead of
+/// deriving it from `p2 - p1`, mirroring why those same call sites already
+/// use a fixed [_canonicalPerpendicular]-style normal rather than one
+/// derived from `aScreen`/`bScreen`'s own arbitrary point-storage order
+/// (`p1`/`p2` there are built from whichever Point the backend happens to
+/// store as A vs B, not a stable "start"/"end" the way a Line's own
+/// endpoints are) - so the sign of the *along*-the-line drag direction
+/// itself can never depend on that order either, kept explicit and
+/// order-independent the same way the perpendicular offset already is,
+/// rather than left implicit in `p2 - p1`. Left null (derived from `p2 -
+/// p1` as before) for the generic/diagonal case, which has no fixed axis to
+/// pass.
 ({Offset labelCenter, Offset? leaderFrom}) _dimensionLabelPlacement(
   Offset p1,
   Offset p2,
-  Offset labelOffset,
-) {
+  Offset labelOffset, {
+  Offset? tangent,
+}) {
   final anchor = (p1 + p2) / 2;
-  final delta = p2 - p1;
-  final length = delta.distance;
-  if (length < 1e-6) return (labelCenter: anchor, leaderFrom: null);
-  final tangent = delta / length;
-  final along = labelOffset.dx * tangent.dx + labelOffset.dy * tangent.dy;
+  final Offset resolvedTangent;
+  if (tangent != null) {
+    resolvedTangent = tangent;
+  } else {
+    final delta = p2 - p1;
+    final length = delta.distance;
+    if (length < 1e-6) return (labelCenter: anchor, leaderFrom: null);
+    resolvedTangent = delta / length;
+  }
+  final along = labelOffset.dx * resolvedTangent.dx + labelOffset.dy * resolvedTangent.dy;
   if (along.abs() < _dimensionLeaderThreshold) return (labelCenter: anchor, leaderFrom: null);
-  return (labelCenter: anchor + tangent * along, leaderFrom: anchor);
+  return (labelCenter: anchor + resolvedTangent * along, leaderFrom: anchor);
 }
 
 /// [constraint]'s actual on-screen label center (with [labelOffset] already
@@ -1743,17 +1764,27 @@ Offset? _constraintLabelCenter(
       // caused).
       final Offset p1;
       final Offset p2;
+      Offset? tangent;
       switch (c.orientation) {
         case 'vertical':
           const normal = Offset(1, 0);
           final offsetX = math.max(aScreen.dx, bScreen.dx) + _dimensionOffsetDistance(normal, labelOffset);
           p1 = Offset(offsetX, aScreen.dy);
           p2 = Offset(offsetX, bScreen.dy);
+          // Bug fix (on-device feedback: "on a vertical dimension, up/down
+          // swiping is reversed"): a fixed down-screen tangent, independent
+          // of whether `a`/`b` (arbitrary tap order for a point-to-point
+          // dimension, unlike a Line's own fixed start/end) put the higher
+          // or lower Point first - see [_dimensionLabelPlacement]'s own
+          // `tangent` doc comment.
+          tangent = const Offset(0, 1);
         case 'horizontal':
           const normal = Offset(0, 1);
           final offsetY = math.max(aScreen.dy, bScreen.dy) + _dimensionOffsetDistance(normal, labelOffset);
           p1 = Offset(aScreen.dx, offsetY);
           p2 = Offset(bScreen.dx, offsetY);
+          // Same fix as `vertical` above, for left/right instead of up/down.
+          tangent = const Offset(1, 0);
         default:
           final delta = bScreen - aScreen;
           if (delta.distance < 1e-6) return null;
@@ -1762,7 +1793,7 @@ Offset? _constraintLabelCenter(
           p1 = aScreen + offsetVec;
           p2 = bScreen + offsetVec;
       }
-      return _dimensionLabelPlacement(p1, p2, labelOffset).labelCenter;
+      return _dimensionLabelPlacement(p1, p2, labelOffset, tangent: tangent).labelCenter;
     case VerticalConstraintDto c:
       final base = _pointPairMidpointScreen(controller, transform, c.pointAId, c.pointBId);
       return base == null ? null : base + labelOffset;
@@ -2580,17 +2611,25 @@ class _SketchPainter extends CustomPainter {
     // the ghost preview the user placed.
     final Offset p1;
     final Offset p2;
+    Offset? tangent;
     switch (c.orientation) {
       case 'vertical':
         const normal = Offset(1, 0);
         final offsetX = math.max(aScreen.dx, bScreen.dx) + _dimensionOffsetDistance(normal, labelOffset);
         p1 = Offset(offsetX, aScreen.dy);
         p2 = Offset(offsetX, bScreen.dy);
+        // Bug fix (on-device feedback: "on a vertical dimension, up/down
+        // swiping is reversed") - see [_dimensionLabelPlacement]'s own
+        // `tangent` doc comment, and [_constraintLabelCenter]'s matching fix
+        // (this function's own twin, which this must never drift from).
+        tangent = const Offset(0, 1);
       case 'horizontal':
         const normal = Offset(0, 1);
         final offsetY = math.max(aScreen.dy, bScreen.dy) + _dimensionOffsetDistance(normal, labelOffset);
         p1 = Offset(aScreen.dx, offsetY);
         p2 = Offset(bScreen.dx, offsetY);
+        // Same fix as `vertical` above, for left/right instead of up/down.
+        tangent = const Offset(1, 0);
       default:
         final delta = bScreen - aScreen;
         if (delta.distance < 1e-6) return;
@@ -2609,7 +2648,7 @@ class _SketchPainter extends CustomPainter {
     // and extension lines should work as expected"): the label can now
     // slide along the dimension line too, not just sit at its midpoint -
     // see [_dimensionLabelPlacement]'s own doc comment.
-    final placement = _dimensionLabelPlacement(p1, p2, labelOffset);
+    final placement = _dimensionLabelPlacement(p1, p2, labelOffset, tangent: tangent);
     if (placement.leaderFrom != null) {
       canvas.drawLine(placement.leaderFrom!, placement.labelCenter, dimPaint);
     }
