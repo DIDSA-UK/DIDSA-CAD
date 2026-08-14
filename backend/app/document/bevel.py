@@ -65,6 +65,7 @@ entry).
 
 import logging
 import math
+from typing import Callable
 
 from fastapi import HTTPException
 from OCC.Core.BOPAlgo import BOPAlgo_CheckerSI
@@ -192,20 +193,32 @@ def _bspline_wire(basis: ResolvedPlane, local_points: list[tuple[float, float, f
     return BRepBuilderAPI_MakeWire(_interpolated_edge(world_points)).Wire()
 
 
-def _cone_arc_wire(
+def _cone_arc_edge(
     basis: ResolvedPlane,
     sphere_radius: float,
     colatitude: float,
     p_start_world: gp_Pnt,
     p_end_world: gp_Pnt,
-) -> TopoDS_Wire:
-    """`_arc_wire` from `10-bevel-gear.md`'s own §8 implementation sketch:
-    a plain circular arc at fixed `colatitude` on the sphere of
+) -> TopoDS_Edge:
+    """The single circular-arc edge `_cone_arc_wire` wraps in a Wire -
+    `_arc_wire` from `10-bevel-gear.md`'s own §8 implementation sketch: a
+    plain circular arc at fixed `colatitude` on the sphere of
     `sphere_radius` (the tip-land/root-land faces' own wires - a
     straight-bevel tooth is ruled by lines through the apex, so
     corresponding outer/inner arc points lie on the same ray, and the
     arc-to-arc `ThruSections` loft *is* the exact trimmed cone patch - no
     separate `Geom_ConicalSurface` needed, per that doc's own §2).
+    Factored out (not just `_cone_arc_wire`'s own internal detail) so
+    `_cap_rim_edges`'s own TRUE-rim tip/root connector legs can build the
+    exact same edge `_tip_land_face`/`_root_land_face` use for their own
+    matching boundary - on-device feedback ("the flat face... is cutting
+    away part of the teeth... leaving bits of surface of the teeth...
+    outside the body"): those connectors used to be a straight chord
+    between the same two points instead, which cuts *inside* this arc (a
+    chord is always closer to the circle's own centre than the arc it
+    subtends) - for a full-size gear that gap is well beyond `BRepBuilderAPI_
+    Sewing`'s own 1e-4 tolerance, so the collar and the land faces never
+    actually closed into one shell there.
 
     The circle's own reference X direction is pinned to point at
     `p_start_world` (mirrors `app.document.extrude.arc_axis`'s identical
@@ -222,7 +235,19 @@ def _cone_arc_wire(
     x_ref = gp_Dir(gp_Vec(center, p_start_world))
     axis = gp_Ax2(center, normal, x_ref)
     circ = gp_Circ(axis, circle_radius)
-    edge = BRepBuilderAPI_MakeEdge(circ, p_start_world, p_end_world).Edge()
+    return BRepBuilderAPI_MakeEdge(circ, p_start_world, p_end_world).Edge()
+
+
+def _cone_arc_wire(
+    basis: ResolvedPlane,
+    sphere_radius: float,
+    colatitude: float,
+    p_start_world: gp_Pnt,
+    p_end_world: gp_Pnt,
+) -> TopoDS_Wire:
+    """`_cone_arc_edge`, wrapped as a standalone Wire - see that function's
+    own doc comment for the actual construction."""
+    edge = _cone_arc_edge(basis, sphere_radius, colatitude, p_start_world, p_end_world)
     return BRepBuilderAPI_MakeWire(edge).Wire()
 
 
@@ -325,7 +350,13 @@ def _cap_rim_points(
     return points
 
 
-def _cap_rim_edges(world_points: list[gp_Pnt], tooth_count: int, points_per_flank: int) -> list[TopoDS_Edge]:
+def _cap_rim_edges(
+    world_points: list[gp_Pnt],
+    tooth_count: int,
+    points_per_flank: int,
+    tip_corner_edge: Callable[[gp_Pnt, gp_Pnt], TopoDS_Edge],
+    root_corner_edge: Callable[[gp_Pnt, gp_Pnt], TopoDS_Edge],
+) -> list[TopoDS_Edge]:
     """The end-cap rim's `4*tooth_count` edges (right flank, tip corner,
     left flank, root corner - per tooth), built directly from
     already-world-embedded `world_points` (`_cap_rim_points`, embedded via
@@ -333,23 +364,35 @@ def _cap_rim_edges(world_points: list[gp_Pnt], tooth_count: int, points_per_flan
     for both the true (still on the sphere) rim and its flattened copy
     (same point count/order, only each point's own z differs), so a collar
     face built leg-by-leg between corresponding true/flat edges (see that
-    function) always connects the right curve type to the right one."""
+    function) always connects the right curve type to the right one.
+
+    `tip_corner_edge`/`root_corner_edge` (each `(p1, p2) -> TopoDS_Edge`)
+    build the tip-to-tip/root-to-root connector legs - a parameter, not a
+    fixed straight line, because the TRUE rim's own connectors must be
+    genuine circular arcs (`_cone_arc_edge`, matching `_tip_land_face`'s/
+    `_root_land_face`'s own boundary exactly - see `_cap_collar_and_flat_
+    faces`'s own doc comment for why a straight chord there is a real
+    bug), while the FLATTENED rim's connectors are legitimately straight
+    (its own points no longer lie on the original sphere, so there's no
+    matching arc to reproduce - and nothing else's boundary depends on
+    this copy's own exact shape)."""
     k = points_per_flank
     span = 2 * k  # one tooth's own share of world_points: right (k) + left-reversed (k)
     edges: list[TopoDS_Edge] = []
     for i in range(tooth_count):
         base = i * span
         edges.append(_interpolated_edge(world_points[base : base + k]))
-        edges.append(BRepBuilderAPI_MakeEdge(world_points[base + k - 1], world_points[base + k]).Edge())
+        edges.append(tip_corner_edge(world_points[base + k - 1], world_points[base + k]))
         edges.append(_interpolated_edge(world_points[base + k : base + span]))
         next_base = (base + span) % (tooth_count * span)
-        edges.append(BRepBuilderAPI_MakeEdge(world_points[base + span - 1], world_points[next_base]).Edge())
+        edges.append(root_corner_edge(world_points[base + span - 1], world_points[next_base]))
     return edges
 
 
 def _cap_collar_and_flat_faces(
     basis: ResolvedPlane,
     sphere_radius: float,
+    start_colatitude: float,
     face_colatitude: float,
     tooth_count: int,
     right0: list[tuple[float, float, float]],
@@ -386,6 +429,24 @@ def _cap_collar_and_flat_faces(
     with its analytic volume to within 0.2% and `BOPAlgo_CheckerSI` finds
     no self-intersections.
 
+    On-device feedback (second round - "the flat face at the larger
+    diameter end... is cutting away part of the teeth... leaving bits of
+    surface of the teeth... outside the body"): "the true rim edges are
+    reused as-is" above was only true for the flank legs - the tip-corner
+    and root-corner connector legs were built as a plain straight chord
+    between the same two points, NOT the circular arc `_tip_land_face`/
+    `_root_land_face` actually use for their own matching boundary
+    (`_cone_arc_edge`, at the tip/root colatitude on this same
+    `sphere_radius`). A chord is always closer to the circle's own centre
+    than the arc it subtends, so the collar and the land faces never
+    shared a real edge there - for a realistically-sized gear that gap is
+    far beyond `BRepBuilderAPI_Sewing`'s own 1e-4 tolerance (worse at the
+    outer/larger-diameter end, where the sphere - and so the gap - is
+    biggest), leaving the shell unclosed exactly there. Fixed by building
+    the TRUE rim's own connector legs via `_cone_arc_edge` instead - the
+    FLATTENED rim's own connectors stay straight (see `_cap_rim_edges`'s
+    own doc comment for why that's still correct there).
+
     The flat plane sits at `sphere_radius * cos(face_colatitude)` - this
     cone's own tooth-TIP axial position (the real "back cone" is
     conventionally tangent to the true sphere at the tip circle) - so the
@@ -397,8 +458,19 @@ def _cap_collar_and_flat_faces(
     z_flat = sphere_radius * math.cos(face_colatitude)
     flat_world = [_basis_point3_to_world(basis, x, y, z_flat) for x, y, _z in local_points]
 
-    true_edges = _cap_rim_edges(true_world, tooth_count, k)
-    flat_edges = _cap_rim_edges(flat_world, tooth_count, k)
+    true_edges = _cap_rim_edges(
+        true_world,
+        tooth_count,
+        k,
+        tip_corner_edge=lambda p1, p2: _cone_arc_edge(basis, sphere_radius, face_colatitude, p1, p2),
+        root_corner_edge=lambda p1, p2: _cone_arc_edge(basis, sphere_radius, start_colatitude, p1, p2),
+    )
+    def straight_edge(p1: gp_Pnt, p2: gp_Pnt) -> TopoDS_Edge:
+        return BRepBuilderAPI_MakeEdge(p1, p2).Edge()
+
+    flat_edges = _cap_rim_edges(
+        flat_world, tooth_count, k, tip_corner_edge=straight_edge, root_corner_edge=straight_edge
+    )
     collar_faces = [brepfill.Face(true_edge, flat_edge) for true_edge, flat_edge in zip(true_edges, flat_edges)]
 
     flat_wire_maker = BRepBuilderAPI_MakeWire()
@@ -681,12 +753,18 @@ def _assemble_gear_solid(
 
     faces.extend(
         _cap_collar_and_flat_faces(
-            basis, geometry.cone_distance, face_colatitude, tooth_count, right0_outer, left0_outer
+            basis, geometry.cone_distance, start_colatitude, face_colatitude, tooth_count, right0_outer, left0_outer
         )
     )
     faces.extend(
         _cap_collar_and_flat_faces(
-            basis, geometry.inner_cone_distance, face_colatitude, tooth_count, right0_inner, left0_inner
+            basis,
+            geometry.inner_cone_distance,
+            start_colatitude,
+            face_colatitude,
+            tooth_count,
+            right0_inner,
+            left0_inner,
         )
     )
 

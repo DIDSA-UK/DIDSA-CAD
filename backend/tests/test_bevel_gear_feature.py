@@ -12,8 +12,10 @@ for the fold-risk boundary specifically.
 import math
 
 from fastapi.testclient import TestClient
-from OCC.Core.BRepAdaptor import BRepAdaptor_Surface
-from OCC.Core.GeomAbs import GeomAbs_Plane, GeomAbs_Sphere
+from OCC.Core.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
+from OCC.Core.GeomAbs import GeomAbs_Circle, GeomAbs_Plane, GeomAbs_Sphere
+from OCC.Core.TopAbs import TopAbs_EDGE
+from OCC.Core.TopExp import TopExp_Explorer
 
 from app.document.bevel import _cap_collar_and_flat_faces
 from app.document.bevel_math import bevel_gear_geometry, bevel_tooth_flank_pair
@@ -214,13 +216,16 @@ def test_bevel_gear_end_cap_face_is_flat_not_spherical():
     right0, left0 = bevel_tooth_flank_pair(geometry, 12)
     right0_outer, right0_inner = right0
     left0_outer, left0_inner = left0
+    start_colatitude = max(geometry.root_cone_angle, geometry.base_cone_angle)
     face_colatitude = geometry.face_cone_angle
 
     for sphere_radius, right_points, left_points in (
         (geometry.cone_distance, right0_outer, left0_outer),
         (geometry.inner_cone_distance, right0_inner, left0_inner),
     ):
-        faces = _cap_collar_and_flat_faces(basis, sphere_radius, face_colatitude, 6, right_points, left_points)
+        faces = _cap_collar_and_flat_faces(
+            basis, sphere_radius, start_colatitude, face_colatitude, 6, right_points, left_points
+        )
         # The flat cap is the last face _cap_collar_and_flat_faces returns
         # (the collar faces bridging the true rim to it come first - see
         # that function's own doc comment).
@@ -228,6 +233,58 @@ def test_bevel_gear_end_cap_face_is_flat_not_spherical():
         surface = BRepAdaptor_Surface(flat_face, True)
         assert surface.GetType() == GeomAbs_Plane
         assert surface.GetType() != GeomAbs_Sphere
+
+
+def test_bevel_gear_collar_tip_and_root_connectors_are_arcs_matching_the_land_faces():
+    """On-device feedback (second round: "the flat face at the larger
+    diameter end... is cutting away part of the teeth... leaving bits of
+    surface of the teeth... outside the body"): the collar's own
+    tip-corner and root-corner connector legs used to be a straight chord
+    between the same two points `_tip_land_face`/`_root_land_face`
+    themselves connect via a genuine circular arc (`_cone_arc_edge`, at
+    the matching colatitude on the same sphere) - a chord is always
+    closer to the circle's own centre than the arc it subtends, so the
+    collar and the land faces never actually shared a real boundary edge,
+    leaving the sewn shell open there (worse at the outer/larger-diameter
+    end, where the sphere - and so the gap - is biggest). Each collar
+    face bridging a tip/root corner (a ruled `BRepFill.Face` between the
+    TRUE edge and its flattened copy) must therefore contain a genuine
+    `GeomAbs_Circle` edge (the TRUE side), not two straight lines."""
+    geometry = bevel_gear_geometry(
+        module=4.0,
+        tooth_count=6,
+        face_width=10.0,
+        pressure_angle_degrees=20.0,
+        backlash=0.0,
+        profile_shift=0.0,
+        pitch_cone_angle_degrees=_PITCH_ANGLE_20_40,
+    )
+    basis = resolve_plane_ref(None, {}, PlaneRef(fixed_plane=Plane.XY), frozenset())
+    right0, left0 = bevel_tooth_flank_pair(geometry, 12)
+    right0_outer, _right0_inner = right0
+    left0_outer, _left0_inner = left0
+    start_colatitude = max(geometry.root_cone_angle, geometry.base_cone_angle)
+    face_colatitude = geometry.face_cone_angle
+
+    faces = _cap_collar_and_flat_faces(
+        basis, geometry.cone_distance, start_colatitude, face_colatitude, 6, right0_outer, left0_outer
+    )
+    # Collar faces come first, in _cap_rim_edges' own per-tooth ordering
+    # (right flank, tip corner, left flank, root corner) - tooth 0's tip
+    # connector is index 1, its root connector index 3.
+    tip_collar_face = faces[1]
+    root_collar_face = faces[3]
+
+    def has_circle_edge(face) -> bool:
+        explorer = TopExp_Explorer(face, TopAbs_EDGE)
+        while explorer.More():
+            if BRepAdaptor_Curve(explorer.Current()).GetType() == GeomAbs_Circle:
+                return True
+            explorer.Next()
+        return False
+
+    assert has_circle_edge(tip_collar_face)
+    assert has_circle_edge(root_collar_face)
 
 
 # --- Non-blocking validation warnings -------------------------------------
