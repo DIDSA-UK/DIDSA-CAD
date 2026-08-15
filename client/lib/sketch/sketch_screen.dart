@@ -1249,6 +1249,13 @@ class _SketchScreenState extends State<SketchScreen> {
         activeConstraintOverlayItemId: _controller.activeGhostKey,
         activeConstraintOverlayItemBuilder: _buildActiveGhostValueEditor,
         sketchGeometries: _embeddedSketchGeometries,
+        // Bug fix (on-device feedback: "when editing a sketch, the entities
+        // in that sketch should be visible, selectable... it shouldn't be
+        // obscured or restricted by bodies"): same Feature id
+        // [_embeddedSketchGeometries] itself keys the active Sketch's own
+        // entry under - see [PartViewport.activeSketchFeatureId]'s own doc
+        // comment for what this unlocks.
+        activeSketchFeatureId: _controller.sketchId ?? 'active-sketch',
         patternMirrorGhostSegments: _embeddedPatternMirrorGhostSegments,
         patternMirrorSketchFeatureId: _controller.sketchId ?? 'active-sketch',
         sketchEntityColors: _embeddedSketchEntityColors,

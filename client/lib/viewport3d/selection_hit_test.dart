@@ -1009,6 +1009,25 @@ HoverHit? hitTestBodies({
   // there is nothing rendered to be "behind", so reaching through stays
   // intentional there.
   bool facesOccludeOtherHits = false,
+  // Bug fix (on-device feedback: "when editing a sketch, the entities in
+  // that sketch should be visible, selectable... it shouldn't be obscured
+  // or restricted by bodies"): [facesOccludeOtherHits] above is otherwise
+  // unconditional - a nearer Body face drops *any* farther vertex/edge
+  // candidate, sketch entities included, so a Sketch actively being edited
+  // could be rendered on top of a Body (see [buildSketchGeometryNode]'s
+  // own doc comment) yet still be unselectable underneath it, since
+  // hit-testing never stopped respecting real depth the way rendering now
+  // does. When non-empty, exempts only the sketch whose
+  // [SelectionEntityRef.sketchFeatureId] equals this from the occlusion
+  // check below - every other candidate (Body vertices/edges, and any
+  // *other* Sketch's entities, e.g. `PartViewport.otherSketchGeometries`'
+  // read-only reference geometry) still gets dropped exactly as before.
+  // The caller is expected to pass the Feature id of whichever Sketch is
+  // actually being edited (empty string - the default - preserves the
+  // pre-fix behaviour everywhere else, e.g. Part-level face/edge
+  // selection for Fillet/Extrude, which must keep genuinely respecting
+  // occlusion).
+  String activeSketchFeatureId = '',
   double? orthographicHalfHeight,
 }) {
   HoverHit taggedWithBody(HoverHit hit, String bodyId) => HoverHit(
@@ -1195,10 +1214,16 @@ HoverHit? hitTestBodies({
   }
 
   if (facesOccludeOtherHits && bestFace != null) {
-    if (bestVertex != null && bestVertex.rayT > bestFace.rayT + kFaceOcclusionEpsilon) {
+    bool isActiveSketchEntity(HoverHit hit) =>
+        activeSketchFeatureId.isNotEmpty && hit.entity.sketchFeatureId == activeSketchFeatureId;
+    if (bestVertex != null &&
+        !isActiveSketchEntity(bestVertex) &&
+        bestVertex.rayT > bestFace.rayT + kFaceOcclusionEpsilon) {
       bestVertex = null;
     }
-    if (bestEdge != null && bestEdge.rayT > bestFace.rayT + kFaceOcclusionEpsilon) {
+    if (bestEdge != null &&
+        !isActiveSketchEntity(bestEdge) &&
+        bestEdge.rayT > bestFace.rayT + kFaceOcclusionEpsilon) {
       bestEdge = null;
     }
   }

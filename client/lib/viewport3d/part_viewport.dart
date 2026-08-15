@@ -79,6 +79,26 @@ class PartViewport extends StatefulWidget {
   /// instance triggers a full GPU geometry rebuild of every entry.
   final Map<String, SketchGeometry3D> sketchGeometries;
 
+  /// Bug fix (on-device feedback: "when editing a sketch, the entities in
+  /// that sketch should be visible, selectable... it shouldn't be obscured
+  /// or restricted by bodies, faces which should remain visual and active
+  /// but secondary during the edit"): the Feature id (a key into
+  /// [sketchGeometries]) of whichever Sketch, if any, is actively being
+  /// edited right now - threaded straight through to
+  /// [hitTestBodies]'s own `activeSketchFeatureId` (see that parameter's
+  /// own doc comment) everywhere this widget hit-tests Sketch entities, so
+  /// a nearer Body face can no longer make that one Sketch's own points/
+  /// lines/curves unselectable, matching [buildSketchGeometryNode]'s
+  /// identical "always visible" treatment for how they render. Empty (the
+  /// default) preserves ordinary face-occlusion for every caller that
+  /// isn't actively editing a Sketch (e.g. `part_screen.dart`'s own
+  /// Part-level face/edge selection for Fillet/Extrude) - and, within
+  /// `sketch_screen.dart` itself, still leaves any *other*, merely-shown-
+  /// for-reference Sketch (`SketchScreen.otherSketchGeometries`, folded
+  /// into [sketchGeometries] alongside the active one) properly occludable,
+  /// since only the one Feature id named here is exempted.
+  final String activeSketchFeatureId;
+
   /// On-device feedback ("the patterned circle under the cursor is not
   /// highlighted and will not select"): a committed Pattern/Mirror
   /// instance's own derived (ghost) geometry, keyed by *owning instance*
@@ -739,6 +759,7 @@ class PartViewport extends StatefulWidget {
     required this.onPlaneTap,
     required this.onBackgroundTap,
     this.sketchGeometries = const {},
+    this.activeSketchFeatureId = '',
     this.patternMirrorGhostSegments = const {},
     this.patternMirrorSketchFeatureId = '',
     this.sketchEntityColors = const {},
@@ -2441,6 +2462,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             patternMirrorSketchFeatureId: widget.patternMirrorSketchFeatureId,
             filter: widget.selectionFilter,
             facesOccludeOtherHits: widget.renderMode.showsFilledFaces && !widget.bodiesHidden,
+            activeSketchFeatureId: widget.activeSketchFeatureId,
             orthographicHalfHeight: _orthographicHalfHeightOf(camera),
           );
     final planeHit = _hoverHitTestPlanes(ray);
@@ -2542,6 +2564,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             patternMirrorSketchFeatureId: widget.patternMirrorSketchFeatureId,
             filter: widget.selectionFilter,
             facesOccludeOtherHits: widget.renderMode.showsFilledFaces && !widget.bodiesHidden,
+            activeSketchFeatureId: widget.activeSketchFeatureId,
             orthographicHalfHeight: _orthographicHalfHeightOf(camera),
           );
     return meshHit != null || _hoverHitTestPlanes(ray) != null;
