@@ -3,6 +3,13 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show listEquals, setEquals;
 import 'package:flutter_scene/scene.dart';
+// See `_SketchPointMaterial`'s own doc comment for why this internal shim
+// path, not `package:flutter_gpu/gpu.dart` (a different, incompatible type
+// under static analysis) or `package:flutter_scene/gpu.dart` (the
+// package's curated public surface, which doesn't expose RenderPass/
+// HostBuffer/CullMode at all).
+// ignore: implementation_imports
+import 'package:flutter_scene/src/gpu/gpu.dart' as gpu;
 import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart' show MeshDto;
@@ -1058,32 +1065,46 @@ Node buildSketchGeometryNode(
     ..alphaMode = AlphaMode.blend
     ..baseColorFactor = colorFor(id);
 
-  // Round-cap disk markers (Point markers, text-handle markers) can't take
-  // the same fix: [UnlitMaterial.doubleSided] is only ever honored while
-  // [AlphaMode.opaque] (`Material.bind`'s own `!doubleSided || !isOpaque()`
-  // cull decision - never for [AlphaMode.blend]), and a disk's own
-  // fan-triangulated winding reads as back-facing under this renderer's
-  // default counter-clockwise-front convention regardless of viewing angle
-  // (confirmed by reading `flutter_scene`'s own `PolylineGeometry._emitDisk`
-  // - the fan winding depends only on the camera-facing basis it derives
-  // from `viewDirection`, not on anything this file controls) - switching
-  // these to blend would silently re-cull every marker, the exact "points
-  // are not visible" bug `doubleSided` was already added to fix. No public,
-  // analyzer-clean way exists in this `flutter_scene` build to force the
-  // cull mode back open per-material (a custom [Material.bind] override
-  // needs `gpu.RenderPass`/`gpu.HostBuffer`, and this package's own
-  // internal conditional-export shim resolves those to a different type
-  // than `package:flutter_gpu/gpu.dart`'s under plain static analysis,
-  // which `flutter analyze` then rejects as an invalid override). Left on
-  // [AlphaMode.opaque] with no bias, exactly as before any of this file's
-  // Sketch-visibility work - real, but narrower and pre-existing (a Point
-  // marker sitting behind a large Body can still be occluded); the outline
-  // fix above already covers the entities the on-device report actually
-  // reproduced against.
-  UnlitMaterial pointMaterialFor(vm.Vector4 color) => UnlitMaterial()
-    ..alphaMode = AlphaMode.opaque
-    ..baseColorFactor = color
-    ..doubleSided = true;
+  // Bug fix round 3 (on-device feedback: "close the gap left where points
+  // are still [occluded] by bodies" - round 2 deliberately left this gap:
+  // round-cap disk markers (Point markers, text-handle markers) can't take
+  // [outlineMaterialFor]'s own fix as-is, since [UnlitMaterial.doubleSided]
+  // is only ever honored while [AlphaMode.opaque] (`Material.bind`'s own
+  // `!doubleSided || !isOpaque()` cull decision - never for
+  // [AlphaMode.blend]), and a disk's own fan-triangulated winding reads as
+  // back-facing under this renderer's default counter-clockwise-front
+  // convention regardless of viewing angle (confirmed by reading
+  // `flutter_scene`'s own `PolylineGeometry._emitDisk` - the fan winding
+  // depends only on the camera-facing basis it derives from
+  // `viewDirection`, not on anything this file controls) - so switching to
+  // blend with no other change would silently re-cull every marker again.
+  // [_SketchPointMaterial] below fixes this by overriding [Material.bind]
+  // to force the cull mode back to [gpu.CullMode.none] right after the
+  // inherited blend-mode logic sets it closed - safe per-primitive, since
+  // [Material.bind] runs immediately before every primitive's own draw
+  // call and every material (this one included) sets its own cull mode
+  // unconditionally on every bind, so nothing here leaks into an unrelated
+  // primitive's draw. Round 2's own doc comment (see git history) records
+  // why this looked unreachable at the time: importing `gpu.RenderPass`/
+  // `gpu.HostBuffer` from `package:flutter_gpu/gpu.dart` directly resolved
+  // to a *different* type than [UnlitMaterial.bind]'s own inherited
+  // signature under plain static analysis, because `flutter_scene`
+  // resolves its own internal `RenderPass`/`HostBuffer` through its own
+  // conditional-export shim (native/web/analyzer-stub branches), not
+  // through the public `flutter_gpu` package directly. Importing that same
+  // internal shim path ourselves (`package:flutter_scene/src/gpu/gpu.dart`
+  // - not `package:flutter_scene/gpu.dart`'s curated public surface, which
+  // deliberately omits `RenderPass`/`HostBuffer`/`CullMode` since they're
+  // meant to stay an implementation detail) resolves through the exact
+  // same conditional branch [UnlitMaterial.bind] itself does, for any
+  // single analysis/compile - so the two types match by construction,
+  // whichever branch gets picked. On native (what this app ships on),
+  // that branch is a verbatim `export 'package:flutter_gpu/gpu.dart';`, so
+  // this is the real GPU cull-mode call at runtime, not just an
+  // analyzer-satisfying stand-in.
+  UnlitMaterial pointMaterialFor(vm.Vector4 color) => _SketchPointMaterial()
+    ..alphaMode = AlphaMode.blend
+    ..baseColorFactor = color;
 
   // P26: [id]'s outline as one or more [MeshPrimitive]s - a single solid
   // polyline normally, or a run of short dash primitives (all sharing the
@@ -1165,6 +1186,22 @@ Node buildSketchGeometryNode(
   ];
 
   return Node(name: 'sketch-$featureId', mesh: Mesh.primitives(primitives: primitives));
+}
+
+/// [UnlitMaterial] with [Material.bind]'s own cull-mode decision
+/// (`!doubleSided || !isOpaque()` - double-sided is only ever honored while
+/// [AlphaMode.opaque], never for [AlphaMode.blend]) overridden back open
+/// regardless of [alphaMode] - see [pointMaterialFor]'s own doc comment
+/// (inside [buildSketchGeometryNode]) for the full story of why Point/
+/// text-handle markers need this and outline entities don't, and why this
+/// is analyzer-clean now when an earlier attempt (round 2, see git
+/// history) wasn't.
+class _SketchPointMaterial extends UnlitMaterial {
+  @override
+  void bind(gpu.RenderPass pass, gpu.HostBuffer transientsBuffer, Lighting lighting) {
+    super.bind(pass, transientsBuffer, lighting);
+    pass.setCullMode(gpu.CullMode.none);
+  }
 }
 
 /// Sketcher restructure Phase 2 follow-up (P8/P9): side length of the active
