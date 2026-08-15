@@ -15,9 +15,18 @@ rather than assume an answer, but this is flagged as the first thing to
 double-check once this runs somewhere with a real OCCT kernel.
 """
 
-from fastapi.testclient import TestClient
+import math
 
+from fastapi.testclient import TestClient
+from OCC.Core.BRepAdaptor import BRepAdaptor_Curve
+from OCC.Core.BRepTools import BRepTools_WireExplorer
+from OCC.Core.GeomAbs import GeomAbs_Circle
+from OCC.Core.TopAbs import TopAbs_FORWARD
+
+from app.document.sweep import resolve_path_wire
+from app.document.store import get_part_or_404
 from app.main import app
+from app.sketch.models import SketchEntityRef, SketchEntityType
 from tests.conftest import TEST_API_KEY
 
 client = TestClient(app)
@@ -631,3 +640,124 @@ def test_cascade_deleting_a_path_sketch_takes_the_sweep_with_it():
     response = client.delete(f"/document/parts/{part['id']}/features/{path_feature['id']}/cascade")
     assert response.status_code == 200
     assert sweep["id"] in response.json()["deleted_feature_ids"]
+
+
+# --- Sweep direction (on-device feedback: "went in the wrong direction... ---
+# ...not always the case") --------------------------------------------------
+
+
+def test_resolve_path_wire_reverses_an_arc_segment_walked_back_to_front():
+    """On-device feedback ("sweep around an arc guide curve went the wrong
+    direction ... not always the case"): `_resolve_path_segment` always
+    builds an Arc's edge in the fixed sense its own stored start/end point
+    give it, regardless of which way the path is actually being walked -
+    `resolve_path_wire` must reverse that edge (`_reversed_edge`, a real
+    `Geom_Curve.Reversed()`) whenever the chain walks it back-to-front, not
+    leave it in its arbitrary drawn sense.
+
+    Verified directly against the wire's own edges (not just "the sweep
+    didn't 500") - a bare `TopoDS_Shape.Reversed()` flag flip is NOT
+    sufficient here (confirmed on-device this session:
+    `BRepBuilderAPI_MakeWire.Add` already re-derives each edge's own
+    Orientation flag from real connectivity regardless of what the caller
+    passed in, silently discarding a flag-only reversal) - the real
+    signature of a correct fix is that every edge's own RAW curve
+    parametrization (`BRepAdaptor_Curve`, ignoring Orientation) already
+    matches the wire's connected walk direction, so `MakeWire` never needs
+    to store any edge as `TopAbs_REVERSED` at all.
+
+    Same Line/Arc pair for both cases, only `path_refs`' own list order
+    swapped (exactly what picking the same two path segments in the
+    opposite order in the UI would produce) - the Line is built with its
+    own natural direction *opposite* of how the chain needs it walked when
+    placed second, so whichever segment ends up second is the one that
+    must flip."""
+    part = _create_part()
+    path_feature = _create_sketch_feature(part["id"], "XZ")
+    p_origin = _add_point(path_feature["sketch_id"], 0.0, 0.0)
+    p_mid = _add_point(path_feature["sketch_id"], 10.0, 10.0)
+    p_far = _add_point(path_feature["sketch_id"], 20.0, 10.0)
+    center = _add_point(path_feature["sketch_id"], 0.0, 10.0)
+    # Quarter-circle Arc, always stored p_origin -> p_mid (end_angle=0.0
+    # places the computed end Point at (10, 10), mirroring
+    # _create_arc_path_sketch_feature's own convention).
+    arc = _add_arc(path_feature["sketch_id"], center, p_origin, end_angle=0.0)
+    # The Line's own natural (start -> end) direction is p_far -> p_mid -
+    # the opposite of how it needs to be walked once it's chained after
+    # the Arc (which ends at p_mid).
+    line = _add_line(path_feature["sketch_id"], p_far["id"], p_mid["id"])
+
+    part_obj = get_part_or_404(part["id"])
+    arc_ref = SketchEntityRef(
+        sketch_id=path_feature["sketch_id"], entity_type=SketchEntityType.ARC, entity_id=arc["id"]
+    )
+    line_ref = SketchEntityRef(
+        sketch_id=path_feature["sketch_id"], entity_type=SketchEntityType.LINE, entity_id=line["id"]
+    )
+
+    def wire_edges(path_refs):
+        wire = resolve_path_wire(part_obj, path_refs, {}, frozenset())
+        explorer = BRepTools_WireExplorer(wire)
+        edges = []
+        while explorer.More():
+            edges.append(explorer.Current())
+            explorer.Next()
+        return edges
+
+    def arc_edge_world_span(edges):
+        """The one CIRCLE-type edge's own raw (Orientation-ignoring)
+        first/last 3D points - `.Value(first)`/`.Value(last)`."""
+        for edge in edges:
+            adaptor = BRepAdaptor_Curve(edge)
+            if adaptor.GetType() == GeomAbs_Circle:
+                a = adaptor.Value(adaptor.FirstParameter())
+                b = adaptor.Value(adaptor.LastParameter())
+                return edge, (a.X(), a.Y(), a.Z()), (b.X(), b.Y(), b.Z())
+        raise AssertionError("no circle-type edge found in the resolved path wire")
+
+    # Arc first (segment 0, never reversed) - its raw curve keeps its own
+    # natural (p_origin -> p_mid) direction.
+    edges_arc_first = wire_edges([arc_ref, line_ref])
+    arc_edge_1, first_span_a, first_span_b = arc_edge_world_span(edges_arc_first)
+    assert arc_edge_1.Orientation() == TopAbs_FORWARD
+
+    # Arc second (segment 1) - now walked back-to-front (the chain arrives
+    # at p_mid via the Line first, so the Arc must be traversed p_mid ->
+    # p_origin) - its raw curve span must be the exact reverse of the
+    # arc-first case's, not the entity's own fixed drawn direction.
+    edges_line_first = wire_edges([line_ref, arc_ref])
+    arc_edge_2, second_span_a, second_span_b = arc_edge_world_span(edges_line_first)
+    assert arc_edge_2.Orientation() == TopAbs_FORWARD
+
+    tolerance = 1e-6
+    assert math.dist(first_span_a, second_span_b) < tolerance
+    assert math.dist(first_span_b, second_span_a) < tolerance
+
+
+def test_sweep_along_an_arc_guide_drawn_in_either_direction_still_produces_a_body():
+    """The end-to-end regression the on-device report itself describes: a
+    sweep along a 2-segment (Line + Arc) path succeeds and produces a
+    single body regardless of which of the two segments happens to be
+    picked (listed in `path_refs`) first - exercising the exact
+    back-to-front Arc-reversal path `test_resolve_path_wire_reverses_an_
+    arc_segment_walked_back_to_front` verifies directly at the wire level,
+    through the full HTTP create + mesh surface."""
+    part = _create_part()
+    profile = _create_profile_sketch_feature(part["id"])
+    path_feature = _create_sketch_feature(part["id"], "XZ")
+    p_origin = _add_point(path_feature["sketch_id"], 0.0, 0.0)
+    p_mid = _add_point(path_feature["sketch_id"], 10.0, 10.0)
+    p_far = _add_point(path_feature["sketch_id"], 20.0, 10.0)
+    center = _add_point(path_feature["sketch_id"], 0.0, 10.0)
+    arc = _add_arc(path_feature["sketch_id"], center, p_origin, end_angle=0.0)
+    line = _add_line(path_feature["sketch_id"], p_far["id"], p_mid["id"])
+
+    arc_ref = _path_ref(path_feature["sketch_id"], arc["id"], "arc")
+    line_ref = _path_ref(path_feature["sketch_id"], line["id"])
+
+    for path_refs in ([arc_ref, line_ref], [line_ref, arc_ref]):
+        response = _create_sweep(part["id"], profile["id"], path_refs)
+        assert response.status_code == 201, response.json()
+
+    mesh = _mesh(part["id"])
+    assert len(mesh) == 2

@@ -24,7 +24,7 @@ import logging
 from dataclasses import dataclass
 
 from fastapi import HTTPException
-from OCC.Core.BRep import BRep_Builder
+from OCC.Core.BRep import BRep_Builder, BRep_Tool
 from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Cut
 from OCC.Core.BRepBuilderAPI import (
     BRepBuilderAPI_MakeEdge,
@@ -175,6 +175,36 @@ class _PathSegment:
     closed: bool = False
 
 
+def _reversed_edge(edge: TopoDS_Edge) -> TopoDS_Edge:
+    """The same physical edge, walked in the opposite direction - used by
+    `resolve_path_wire` for a segment traversed back-to-front.
+
+    On-device feedback ("sweep around an arc guide curve went the wrong
+    direction"): `TopoDS_Shape.Reversed()` (a bare `TopAbs_Orientation`
+    flag flip, no change to the underlying `Geom_Curve` at all) is NOT
+    enough here - confirmed by direct on-device inspection this session:
+    `BRepBuilderAPI_MakeWire.Add` already re-derives each edge's own
+    Orientation flag from real vertex-position connectivity regardless of
+    whatever Orientation the caller handed it, so a bare `.Reversed()`
+    before `.Add()` is silently discarded, never reaching `_sweep_wire`'s
+    `BRepOffsetAPI_MakePipeShell` as any real difference at all. This
+    instead rebuilds the edge from its own underlying curve's `.Reversed()`
+    (a genuinely different `Geom_Curve` object, re-parametrized start-to-
+    end the other way around - the same physical arc/line/Bezier span,
+    same shape, just walked backward) via `BRep_Tool.Curve`, so the
+    resulting edge's own natural parametrization - what `MakePipeShell`
+    actually reorients the profile against - is truly reversed, not just
+    relabeled. `ReversedParameter` maps the original curve's own First/
+    Last parameters onto the reversed curve's matching ones (needed since
+    a reversed curve's own parametrization is `t' = -t` for most curve
+    types, so the trimmed range's bounds swap and negate together)."""
+    curve, first, last = BRep_Tool.Curve(edge)
+    reversed_curve = curve.Reversed()
+    new_first = curve.ReversedParameter(last)
+    new_last = curve.ReversedParameter(first)
+    return BRepBuilderAPI_MakeEdge(reversed_curve, new_first, new_last).Edge()
+
+
 def _resolve_path_segment(
     part: Part,
     ref: SketchEntityRef,
@@ -195,12 +225,18 @@ def _resolve_path_segment(
 
     A path segment's orientation relative to its neighbours is not yet
     known here (an Arc/Spline's own stored start/end may need to be
-    traversed backwards once the full chain order is resolved) - unlike
-    `wire_for_profile`, this doesn't matter: `BRepBuilderAPI_MakeWire.Add`
-    fuses edges by shared vertex position regardless of each edge's own
-    parametric direction (see `wire_for_profile`'s own doc comment), so
-    every edge here is built once, in its own natural stored orientation,
-    and `resolve_path_wire` never needs to reverse one.
+    traversed backwards once the full chain order is resolved) - each edge
+    here is still built once, in its own natural stored orientation;
+    `resolve_path_wire` is the one that reverses it (`_reversed_edge`) once
+    the chain order is known, exactly mirroring `wire_for_profile`'s own
+    Spline branch (see that function's own doc comment for why a Line-
+    chain's shared-vertex fuse alone is NOT enough here - unlike
+    `wire_for_profile`, which only needs `BRepBuilderAPI_MakeWire` for
+    visual connectivity before a Face/Prism, this wire feeds
+    `BRepOffsetAPI_MakePipeShell`, which sweeps along each edge's own
+    parametric direction, not just its topological connectivity - see
+    `_reversed_edge`'s own doc comment for why a bare `.Reversed()` isn't
+    enough for that).
 
     Fails closed with `invalid_path_ref` (never a generic `missing_
     reference` or an uncaught OCCT exception) for every way `ref` can be
@@ -314,17 +350,37 @@ def resolve_path_wire(
     from the very first segment - raising `disconnected_path` (never
     silently guessing a connection) if neither end matches.
 
-    The wire itself is then built separately from every segment's own
-    already-resolved `edges`, added to `BRepBuilderAPI_MakeWire` in
-    `path_refs` order - since that order has just been positionally
-    verified as a genuine connected chain, and `MakeWire.Add` fuses shared
-    vertices regardless of an individual edge's own parametric direction
-    (see `_resolve_path_segment`'s own doc comment), no explicit `.Close()`
-    call or point-list reversal is needed the way the old, Line-only
+    The wire itself is then built from every segment's own already-resolved
+    `edges`, added to `BRepBuilderAPI_MakeWire` in `path_refs` order - since
+    that order has just been positionally verified as a genuine connected
+    chain. `MakeWire.Add` fuses shared vertices regardless of an individual
+    edge's own parametric direction, so no explicit `.Close()` call or
+    point-list reversal is needed the way the old, Line-only
     `BRepBuilderAPI_MakePolygon`-based version needed - a chain whose first
-    and last points coincide fuses into a genuinely closed wire on its
-    own, structurally, the same way `wire_for_profile`'s own mixed-chain
-    branch already relies on `MakeWire` to do."""
+    and last points coincide fuses into a genuinely closed wire on its own,
+    structurally, the same way `wire_for_profile`'s own mixed-chain branch
+    already relies on `MakeWire` to do.
+
+    On-device feedback ("sweep around an arc guide curve went the wrong
+    direction ... not always the case"): that connectivity fuse is NOT
+    enough on its own here, unlike `wire_for_profile` - this wire feeds
+    `BRepOffsetAPI_MakePipeShell` (`_sweep_wire`), which sweeps along each
+    edge's own parametric direction (used to reorient the profile as it
+    goes), not just the wire's topological connectivity. An Arc/Spline
+    segment's edge(s) are always built in `_resolve_path_segment`'s own
+    fixed sense (`entity.start_point_id` -> `entity.end_point_id`) -
+    whichever the user happened to click first/last while drawing it,
+    unrelated to which way this chain is actually being walked - so each
+    segment's actual walk direction is tracked alongside `points` above
+    (`reversed_flags`: True whenever a segment's own `end` is what connects
+    to the chain's existing endpoint, i.e. it's being walked back-to-front)
+    and its edge(s) are rebuilt reversed (`_reversed_edge` - a real
+    `Geom_Curve.Reversed()`, not a bare `TopoDS_Shape.Reversed()` flag flip;
+    see that function's own doc comment for why the flag alone is silently
+    discarded here) before being added, exactly mirroring `wire_for_profile`'s
+    own Spline branch (`segments = reversed(...)` when `profile.point_ids[i]`
+    is the entity's last through-point) generalized to every segment type
+    via `_PathSegment.edges` rather than re-derived per entity type."""
     segments = [
         _resolve_path_segment(part, ref, bodies_so_far, excluded_feature_ids) for ref in path_refs
     ]
@@ -340,27 +396,34 @@ def resolve_path_wire(
             raise _invalid_path_ref(ref)
 
     points: list[gp_Pnt] = []
+    reversed_flags: list[bool] = []
     for index, (ref, segment) in enumerate(zip(path_refs, segments)):
         start_world, end_world = segment.start, segment.end
         if not points:
             points.append(start_world)
             points.append(end_world)
+            reversed_flags.append(False)
             continue
         front, back = points[0], points[-1]
         if back.Distance(start_world) < _PATH_POINT_TOLERANCE:
             points.append(end_world)
+            reversed_flags.append(False)
         elif back.Distance(end_world) < _PATH_POINT_TOLERANCE:
             points.append(start_world)
+            reversed_flags.append(True)
         elif front.Distance(start_world) < _PATH_POINT_TOLERANCE:
             points.insert(0, end_world)
+            reversed_flags.append(True)
         elif front.Distance(end_world) < _PATH_POINT_TOLERANCE:
             points.insert(0, start_world)
+            reversed_flags.append(False)
         else:
             raise _disconnected_path(ref, index)
 
     wire_maker = BRepBuilderAPI_MakeWire()
-    for segment in segments:
-        for edge in segment.edges:
+    for segment, is_reversed in zip(segments, reversed_flags):
+        edges = [_reversed_edge(edge) for edge in reversed(segment.edges)] if is_reversed else segment.edges
+        for edge in edges:
             wire_maker.Add(edge)
     return wire_maker.Wire()
 

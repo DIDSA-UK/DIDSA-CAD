@@ -13,7 +13,18 @@ import math
 
 from fastapi.testclient import TestClient
 
+import app.document.bevel as bevel_module
+from app.document.bevel_math import bevel_gear_geometry
+from app.document.models import ResolvedPlane
 from app.main import app
+from OCC.Core.BRep import BRep_Tool
+from OCC.Core.BRepMesh import BRepMesh_IncrementalMesh
+from OCC.Core.GeomAbs import GeomAbs_Plane
+from OCC.Core.GeomAdaptor import GeomAdaptor_Surface
+from OCC.Core.TopAbs import TopAbs_FACE
+from OCC.Core.TopExp import TopExp_Explorer
+from OCC.Core.TopLoc import TopLoc_Location
+from OCC.Core.TopoDS import topods
 from tests.conftest import TEST_API_KEY
 
 client = TestClient(app)
@@ -380,3 +391,125 @@ def test_native_export_import_round_trips_a_bevel_gear_feature():
     finally:
         replace_document(saved_document)
         replace_all_sketches(saved_sketches)
+
+
+# --- End-cap flattening (bevel._flatten_end_caps) ---------------------------
+#
+# Module-level, not HTTP+mesh-vertex-based like the tests above, and
+# inspecting real face GEOMETRY, not tessellated mesh vertices: confirmed
+# on-device that `BRepMesh_IncrementalMesh` never places a vertex strictly
+# inside a genuinely flat face's own interior, at ANY deflection (down to
+# 0.02mm tried directly) - a flat face has zero curvature deviation from
+# its own boundary polygon, so no Steiner point is ever mathematically
+# "needed", and OCCT correctly never adds one. That makes mesh vertices
+# fundamentally unable to prove flatness here; `GeomAdaptor_Surface`
+# directly on each face's own underlying surface (`GeomAbs_Plane`, plus its
+# own `gp_Pln`'s location) is the reliable, mesh-independent way to check.
+
+_XY_BASIS = ResolvedPlane(origin=(0.0, 0.0, 0.0), x_axis=(1.0, 0.0, 0.0), y_axis=(0.0, 1.0, 0.0), normal=(0.0, 0.0, 1.0))
+
+
+def _plane_faces_by_z(solid) -> dict[float, "TopoDS_Face"]:
+    """Every genuinely planar face in `solid`, keyed by its own plane's Z
+    (rounded to 4dp, since `_flat_root_cap_face`'s own two flat discs are
+    the only planar faces this construction ever produces - every other
+    face is a curved `ThruSections` loft)."""
+    result: dict[float, "TopoDS_Face"] = {}
+    explorer = TopExp_Explorer(solid, TopAbs_FACE)
+    while explorer.More():
+        face = topods.Face(explorer.Current())
+        explorer.Next()
+        surface = BRep_Tool.Surface(face)
+        adaptor = GeomAdaptor_Surface(surface)
+        if adaptor.GetType() != GeomAbs_Plane:
+            continue
+        location = adaptor.Plane().Location()
+        result[round(location.Z(), 4)] = face
+    return result
+
+
+def test_end_caps_are_flattened_at_the_tooth_root_not_left_spherical():
+    """Direct, on-the-nose regression for this session's own explicit
+    request ("the convex face needs to be taken off at the outboard tooth
+    root [and] the concave space needs filling in at the tooth outboard
+    root"): `_assemble_gear_solid` produces exactly 2 genuinely planar
+    faces (`_flat_root_cap_face`, one per end cap - every other face is a
+    curved `ThruSections` loft), each at exactly its own cap's flat target
+    z - not left as the true spherical dome/dish `_spherical_cap_face`
+    alone would still produce."""
+    geometry = bevel_gear_geometry(
+        module=2.5, tooth_count=18, face_width=19.1, pitch_cone_angle_degrees=_PITCH_ANGLE_18_90
+    )
+    solid, warnings = bevel_module._assemble_gear_solid(_XY_BASIS, geometry, 18)
+    assert warnings == []
+
+    start_colatitude = max(geometry.root_cone_angle, geometry.base_cone_angle)
+    outer_flat_z = geometry.cone_distance * math.cos(start_colatitude)
+    inner_flat_z = geometry.inner_cone_distance * math.cos(start_colatitude)
+
+    plane_faces = _plane_faces_by_z(solid)
+    assert len(plane_faces) == 2, f"expected exactly 2 planar (flattened) end-cap faces, got {list(plane_faces)}"
+    plane_zs = sorted(plane_faces)
+    assert abs(plane_zs[0] - inner_flat_z) < 0.01, f"inner end-cap plane at z={plane_zs[0]}, expected {inner_flat_z}"
+    assert abs(plane_zs[1] - outer_flat_z) < 0.01, f"outer end-cap plane at z={plane_zs[1]}, expected {outer_flat_z}"
+
+
+def test_end_cap_flattening_never_touches_real_tooth_flank_material():
+    """The other half of the same regression - flattening must be a no-op
+    everywhere a tooth actually is. Every non-planar (flank/tip-land/root-
+    land) face's own fine-mesh vertex must still sit AT OR BEHIND the outer
+    cap's own flat target z, never past it - if flattening had eaten into
+    real tooth material, some of those vertices would have been clipped
+    forward past that plane instead. (Unlike the two flat cap faces, these
+    ARE genuinely curved, so `BRepMesh_IncrementalMesh` does subdivide
+    them - fine mesh vertices are a reliable signal here.)"""
+    geometry = bevel_gear_geometry(
+        module=2.5, tooth_count=18, face_width=19.1, pitch_cone_angle_degrees=_PITCH_ANGLE_18_90
+    )
+    solid, warnings = bevel_module._assemble_gear_solid(_XY_BASIS, geometry, 18)
+    assert warnings == []
+
+    start_colatitude = max(geometry.root_cone_angle, geometry.base_cone_angle)
+    outer_flat_z = geometry.cone_distance * math.cos(start_colatitude)
+
+    BRepMesh_IncrementalMesh(solid, 0.02, False, 0.1, True)
+    max_excess = float("-inf")
+    explorer = TopExp_Explorer(solid, TopAbs_FACE)
+    while explorer.More():
+        face = topods.Face(explorer.Current())
+        explorer.Next()
+        surface = BRep_Tool.Surface(face)
+        if GeomAdaptor_Surface(surface).GetType() == GeomAbs_Plane:
+            continue
+        location = TopLoc_Location()
+        triangulation = BRep_Tool.Triangulation(face, location)
+        if triangulation is None:
+            continue
+        transform = location.Transformation()
+        for i in range(1, triangulation.NbNodes() + 1):
+            point = triangulation.Node(i).Transformed(transform)
+            max_excess = max(max_excess, point.Z() - outer_flat_z)
+    assert max_excess > float("-inf"), "expected at least one non-planar (tooth) face with mesh vertices"
+    assert max_excess < 0.05, f"a tooth-region vertex sits {max_excess}mm past the outer flat cap - real material was cut"
+
+
+def test_flattening_falls_back_silently_on_a_marginal_gear_it_cannot_flatten():
+    """The one on-device-confirmed case `bevel._flatten_end_caps` itself
+    cannot handle (module 2.5, 6 teeth, face_width 33.0 - already flagged
+    by `BRepCheck_Analyzer` before either boolean even runs, deep in the
+    fold-risk regime `test_a_realistic_very_tight_cone_gear_has_no_fold_
+    risk_warning` also exercises): `_assemble_gear_solid` falls back to the
+    un-flattened spherical cap rather than raising - same face count as
+    the un-flattened construction (`4*tooth_count + 2`), no warning
+    surfaced (`_assemble_gear_solid`'s own docstring - this mirrors `_
+    assembly_sanity_warnings`'s own identical silent-fallback precedent)."""
+    geometry = bevel_gear_geometry(module=2.5, tooth_count=6, face_width=33.0, pitch_cone_angle_degrees=_PITCH_ANGLE_6_80)
+    solid, warnings = bevel_module._assemble_gear_solid(_XY_BASIS, geometry, 6)
+    assert warnings == []
+
+    face_count = 0
+    explorer = TopExp_Explorer(solid, TopAbs_FACE)
+    while explorer.More():
+        face_count += 1
+        explorer.Next()
+    assert face_count == 4 * 6 + 2

@@ -145,6 +145,25 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
     _emitChange();
   }
 
+  /// On-device feedback ("add flip button to extrude to reverse
+  /// direction"): `start_distance`/`end_distance` are already signed
+  /// offsets from the sketch plane (see [ExtrudePanel.initialStartDistance]'s
+  /// own doc comment), so reversing the extrude's direction is just
+  /// negating both and swapping which is "start" vs "end" - a plain
+  /// per-field negate would leave `end <= start` whenever the span doesn't
+  /// straddle zero symmetrically, tripping the same depth validation
+  /// [_canConfirm]/the backend both enforce; swapping first keeps
+  /// `end > start` automatically (it held before negation, so it still
+  /// holds after negating and swapping the pair).
+  void _flipDirection() {
+    final start = double.tryParse(_startController.text);
+    final end = double.tryParse(_endController.text);
+    if (start == null || end == null) return;
+    _startController.text = _formatDistance(-end);
+    _endController.text = _formatDistance(-start);
+    _emitChange();
+  }
+
   @override
   Widget build(BuildContext context) {
     return ResizableToolPanel(
@@ -154,21 +173,33 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          SegmentedButton<ExtrudeType>(
-            segments: const [
-              ButtonSegment(
-                value: ExtrudeType.boss,
-                label: Text('Boss'),
-                icon: SvgIcon('assets/icons/feature/feature_boss.svg'),
+          Row(
+            children: [
+              Expanded(
+                child: SegmentedButton<ExtrudeType>(
+                  segments: const [
+                    ButtonSegment(
+                      value: ExtrudeType.boss,
+                      label: Text('Boss'),
+                      icon: SvgIcon('assets/icons/feature/feature_boss.svg'),
+                    ),
+                    ButtonSegment(
+                      value: ExtrudeType.cut,
+                      label: Text('Cut'),
+                      icon: SvgIcon('assets/icons/feature/feature_cut.svg'),
+                    ),
+                  ],
+                  selected: {_type},
+                  onSelectionChanged: (selection) => _onTypeChanged(selection.first),
+                ),
               ),
-              ButtonSegment(
-                value: ExtrudeType.cut,
-                label: Text('Cut'),
-                icon: SvgIcon('assets/icons/feature/feature_cut.svg'),
+              const SizedBox(width: 8),
+              IconButton(
+                tooltip: 'Flip direction',
+                icon: const Icon(Icons.swap_vert),
+                onPressed: _flipDirection,
               ),
             ],
-            selected: {_type},
-            onSelectionChanged: (selection) => _onTypeChanged(selection.first),
           ),
           const SizedBox(height: 12),
           Row(
