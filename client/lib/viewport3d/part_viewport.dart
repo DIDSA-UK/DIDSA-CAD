@@ -79,6 +79,26 @@ class PartViewport extends StatefulWidget {
   /// instance triggers a full GPU geometry rebuild of every entry.
   final Map<String, SketchGeometry3D> sketchGeometries;
 
+  /// Bug fix (on-device feedback: "when editing a sketch, the entities in
+  /// that sketch should be visible, selectable... it shouldn't be obscured
+  /// or restricted by bodies, faces which should remain visual and active
+  /// but secondary during the edit"): the Feature id (a key into
+  /// [sketchGeometries]) of whichever Sketch, if any, is actively being
+  /// edited right now - threaded straight through to
+  /// [hitTestBodies]'s own `activeSketchFeatureId` (see that parameter's
+  /// own doc comment) everywhere this widget hit-tests Sketch entities, so
+  /// a nearer Body face can no longer make that one Sketch's own points/
+  /// lines/curves unselectable, matching [buildSketchGeometryNode]'s
+  /// identical "always visible" treatment for how they render. Empty (the
+  /// default) preserves ordinary face-occlusion for every caller that
+  /// isn't actively editing a Sketch (e.g. `part_screen.dart`'s own
+  /// Part-level face/edge selection for Fillet/Extrude) - and, within
+  /// `sketch_screen.dart` itself, still leaves any *other*, merely-shown-
+  /// for-reference Sketch (`SketchScreen.otherSketchGeometries`, folded
+  /// into [sketchGeometries] alongside the active one) properly occludable,
+  /// since only the one Feature id named here is exempted.
+  final String activeSketchFeatureId;
+
   /// On-device feedback ("the patterned circle under the cursor is not
   /// highlighted and will not select"): a committed Pattern/Mirror
   /// instance's own derived (ghost) geometry, keyed by *owning instance*
@@ -739,6 +759,7 @@ class PartViewport extends StatefulWidget {
     required this.onPlaneTap,
     required this.onBackgroundTap,
     this.sketchGeometries = const {},
+    this.activeSketchFeatureId = '',
     this.patternMirrorGhostSegments = const {},
     this.patternMirrorSketchFeatureId = '',
     this.sketchEntityColors = const {},
@@ -983,7 +1004,37 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// into this one field instead, so there is nothing to hand across at
   /// all: whichever mode is active just keeps reading/writing the same
   /// position the other one already left it at.
+  ///
+  /// Bug fix (on-device feedback: "when the cursor hits the edge of the
+  /// screen the user can no longer move the entity that is grabbed"): this
+  /// is the *logical* position - every write below (delta-accumulating
+  /// touch drag included) now leaves it unclamped, so it keeps accumulating
+  /// past the viewport's edge exactly like a real, un-hidden OS cursor
+  /// would if it could keep moving off-screen. [_recomputeHover]/
+  /// [_recomputeDrawCursor] (and every other ray-cast/drag-math site that
+  /// reads this field directly) deliberately keep using this raw value, not
+  /// [_displayCursorPosition] - `Camera.screenPointToRay` is a plain NDC
+  /// unprojection with no dependency on the point being inside the
+  /// viewport rectangle, so a hit-test/drag delta computed from a position
+  /// past the edge is exactly as valid as one from inside it. Previously
+  /// this field was clamped on every write (the same clamp
+  /// [_displayCursorPosition] now applies only for painting), which pinned
+  /// the ray-cast to the boundary the instant the cursor reached it -
+  /// freezing whatever was being dragged even as the user's pointer/finger
+  /// kept moving, since a clamped position stops changing (and so produces
+  /// zero further delta) the moment it saturates.
   Offset? _cursorPosition;
+
+  /// The crosshair's own on-screen position - [_cursorPosition] clamped
+  /// into the visible viewport rectangle, purely for painting
+  /// [_CursorCrosshairPainter]. See [_cursorPosition]'s own doc comment for
+  /// why hit-testing/drag-math must never read this instead: only the
+  /// crosshair itself needs to stay visually pinned at the edge rather than
+  /// travel off-screen with the logical position.
+  Offset? get _displayCursorPosition {
+    final position = _cursorPosition;
+    return position == null ? null : _clampToViewport(position);
+  }
 
   /// P16: the draw cursor's current resolved hit on
   /// [PartViewport.sketchPlaneBasis] (via [hitTestSketchPlane]) - null if the
@@ -2350,7 +2401,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   void _handleSelectionPointerMove(Offset delta) {
     final current = _cursorPosition ?? _viewportCenter();
     setState(() {
-      _cursorPosition = _clampToViewport(current + delta * _cursorDragSensitivity);
+      // Bug fix ("cursor hits the edge of the screen... can no longer move
+      // the entity that is grabbed"): unclamped - see [_cursorPosition]'s
+      // own doc comment for why.
+      _cursorPosition = current + delta * _cursorDragSensitivity;
       _recomputeHover();
       _syncHoverNode();
     });
@@ -2360,7 +2414,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// since a real mouse's position is meaningful on its own.
   void _handleSelectionPointerHover(Offset localPosition) {
     setState(() {
-      _cursorPosition = _clampToViewport(localPosition);
+      // Bug fix: unclamped, same reason as [_handleSelectionPointerMove] -
+      // a captured mouse-drag can report [localPosition] past the viewport
+      // edge exactly like an accumulating touch delta can.
+      _cursorPosition = localPosition;
       _recomputeHover();
       _syncHoverNode();
     });
@@ -2405,6 +2462,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             patternMirrorSketchFeatureId: widget.patternMirrorSketchFeatureId,
             filter: widget.selectionFilter,
             facesOccludeOtherHits: widget.renderMode.showsFilledFaces && !widget.bodiesHidden,
+            activeSketchFeatureId: widget.activeSketchFeatureId,
             orthographicHalfHeight: _orthographicHalfHeightOf(camera),
           );
     final planeHit = _hoverHitTestPlanes(ray);
@@ -2506,6 +2564,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             patternMirrorSketchFeatureId: widget.patternMirrorSketchFeatureId,
             filter: widget.selectionFilter,
             facesOccludeOtherHits: widget.renderMode.showsFilledFaces && !widget.bodiesHidden,
+            activeSketchFeatureId: widget.activeSketchFeatureId,
             orthographicHalfHeight: _orthographicHalfHeightOf(camera),
           );
     return meshHit != null || _hoverHitTestPlanes(ray) != null;
@@ -2589,7 +2648,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final scaledDelta = delta * _cursorDragSensitivity;
     final current = _cursorPosition ?? _viewportCenter();
     setState(() {
-      _cursorPosition = _clampToViewport(current + scaledDelta);
+      // Bug fix ("cursor hits the edge of the screen... can no longer move
+      // the entity that is grabbed"): unclamped - see [_cursorPosition]'s
+      // own doc comment for why.
+      _cursorPosition = current + scaledDelta;
       _recomputeDrawCursor();
       // P46 bug fix (on-device feedback: "when i enter the dimension tool,
       // dynamic highlight stops working"): drawCursorMode never ran an
@@ -2865,7 +2927,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// [_recomputeDrawCursor].
   void _handleDrawCursorHover(Offset localPosition) {
     setState(() {
-      _cursorPosition = _clampToViewport(localPosition);
+      // Bug fix: unclamped, same reason as [_handleSelectionPointerHover].
+      _cursorPosition = localPosition;
       _recomputeDrawCursor();
       // P46: see [_handleDrawCursorMove]'s own doc comment on this pair.
       _recomputeHover();
@@ -3523,11 +3586,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                 if (anchor == null) return const SizedBox.shrink();
                 return widget.activeConstraintOverlayItemBuilder!(anchor);
               }),
-            if (widget.selectionMode && _cursorPosition != null)
+            if (widget.selectionMode && _displayCursorPosition != null)
               IgnorePointer(
                 child: CustomPaint(
                   size: size,
-                  painter: _CursorCrosshairPainter(position: _cursorPosition!, hasHover: _hoverHit != null),
+                  painter: _CursorCrosshairPainter(position: _displayCursorPosition!, hasHover: _hoverHit != null),
                 ),
               ),
             // P25: the marquee's own screen-space rectangle outline, live
@@ -3556,12 +3619,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             // [PartViewport.drawCursorHoverColor]'s own doc comment - Trim/
             // Extend now shares this same crosshair but with 2D's own
             // red-for-non-draw tint instead).
-            if (widget.drawCursorMode && _cursorPosition != null && !widget.suppressDrawCursor)
+            if (widget.drawCursorMode && _displayCursorPosition != null && !widget.suppressDrawCursor)
               IgnorePointer(
                 child: CustomPaint(
                   size: size,
                   painter: _CursorCrosshairPainter(
-                    position: _cursorPosition!,
+                    position: _displayCursorPosition!,
                     hasHover: _drawCursorWorldHit != null,
                     hoverColor: widget.drawCursorHoverColor ?? const Color(0xFF4CAF50),
                   ),

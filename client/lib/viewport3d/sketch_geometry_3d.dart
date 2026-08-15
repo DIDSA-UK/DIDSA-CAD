@@ -3,6 +3,13 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show listEquals, setEquals;
 import 'package:flutter_scene/scene.dart';
+// See `_SketchPointMaterial`'s own doc comment for why this internal shim
+// path, not `package:flutter_gpu/gpu.dart` (a different, incompatible type
+// under static analysis) or `package:flutter_scene/gpu.dart` (the
+// package's curated public surface, which doesn't expose RenderPass/
+// HostBuffer/CullMode at all).
+// ignore: implementation_imports
+import 'package:flutter_scene/src/gpu/gpu.dart' as gpu;
 import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart' show MeshDto;
@@ -1031,29 +1038,68 @@ Node buildSketchGeometryNode(
   Map<String, vm.Vector4>? entityColors,
 }) {
   vm.Vector4 colorFor(String id) => entityColors?[id] ?? sketchLineColor;
-  // On-device feedback ("points are not visible"): a Point marker's own
-  // round-cap disk (see vertexMarkerSegments' doc comment for why a Point
-  // renders as one) comes from PolylineGeometry's fan-triangulated cap,
-  // whose winding - unlike the ordinary line-strip triangles every other
-  // primitive here uses - reads as back-facing under this renderer's
-  // default counter-clockwise-front convention (Material.bind's own doc
-  // comment) and was being silently culled regardless of marker width, no
-  // matter how many times that width got bumped. `doubleSided` is only
-  // honored for opaque materials (also that same doc comment) - true here
-  // for all of them, so this fixes the Point markers without needing to
-  // reverse-engineer/patch the third-party disk-winding math itself, at no
-  // cost to the Line/Circle/etc. outlines also built from this material
-  // (thin geometry with no real "back" to hide either way).
-  UnlitMaterial materialFor(String id) => UnlitMaterial()
-    ..alphaMode = AlphaMode.opaque
-    ..baseColorFactor = colorFor(id)
-    ..doubleSided = true;
+  // Bug fix round 4 (on-device feedback, with screenshots: a Sketch on the
+  // exact plane of an opaque Body's face was still completely invisible
+  // against it - "let's try sketches always render on top regardless").
+  // Rounds 1-3 (see git history) tried, in turn: a small towards-camera
+  // vertex bias (round 1 - too small to beat a Body face whole millimetres
+  // closer to the camera, the actual common shape of this bug); switching
+  // to [AlphaMode.blend] on the theory that this `flutter_scene` build's
+  // translucent pass doesn't reliably depth-test against the opaque buffer
+  // (round 2, extended to Point markers in round 3) - a theory
+  // `mesh_geometry.dart`'s own [buildMeshEdgesNode]/[buildHighlightFacesNode]
+  // doc comments record from independent on-device testing elsewhere in
+  // this file, but the round-2/3 screenshots directly disprove it for
+  // Sketch entities specifically: blend mode's depth test evidently *does*
+  // reliably respect an opaque Body's depth here, so a Sketch coplanar
+  // with (or behind) one still lost outright.
+  //
+  // [_SketchMaterial] below is the actual, guaranteed fix: it overrides
+  // [Material.bind] to force [gpu.CompareFunction.always] on the render
+  // pass right before its own primitive draws - the depth *test* Body
+  // faces would otherwise win is skipped entirely for Sketch geometry, so
+  // it always draws regardless of what's already in the depth buffer,
+  // with no dependency on any particular GPU's depth-test behavior for
+  // translucent draws. Still [AlphaMode.blend] (the translucent pass,
+  // which runs in its own pass *after* every opaque Body draw has already
+  // completed - see `scene_encoder.dart`'s own `flush()` - so this can
+  // never make a Sketch draw *before*, and so get incorrectly painted
+  // over by, a Body's own opaque draw) - depth *write* stays off for that
+  // whole pass regardless (`flush()`'s own `setDepthWriteEnable(false)`,
+  // untouched here), so this doesn't perturb the opaque depth buffer real
+  // Body-vs-Body occlusion still depends on. `always` is deliberately not
+  // reset afterwards (there is no post-draw hook - [Material.bind] runs
+  // once, immediately before its own primitive's draw call, and nothing
+  // else in this pass currently needs a real depth test of its own: every
+  // other translucent draw in this app - the sketch plane surface/grid,
+  // draw-ghost previews, indicator markers - already wants this identical
+  // "always visible while editing" treatment, and a live feature-preview
+  // overlay mesh drawing over another Body it normally wouldn't is a rare,
+  // cosmetic-only edge case, not a functional regression).
+  //
+  // No vertex bias needed for any of this - every position below is
+  // exactly what [sketchGeometry3DFrom] computed, unperturbed (round 1's
+  // bias is also the prime suspect behind a since-fixed on-device report
+  // of some sub-mm lines disappearing at extreme zoom).
+  //
+  // [_SketchMaterial] also folds in round 3's cull-mode fix (Point/
+  // text-handle round-cap disk markers otherwise get silently culled under
+  // [AlphaMode.blend] - see that override's own doc comment for the full
+  // story, including why `package:flutter_scene/src/gpu/gpu.dart`, not
+  // `package:flutter_gpu/gpu.dart` directly, is what makes this
+  // analyzer-clean) - harmless to apply uniformly to every entity here now,
+  // not just round-cap disks, since ordinary line-strip triangles have no
+  // real "back" to hide either way.
+  UnlitMaterial materialFor(vm.Vector4 color) => _SketchMaterial()
+    ..alphaMode = AlphaMode.blend
+    ..baseColorFactor = color;
+  UnlitMaterial outlineMaterialFor(String id) => materialFor(colorFor(id));
 
   // P26: [id]'s outline as one or more [MeshPrimitive]s - a single solid
   // polyline normally, or a run of short dash primitives (all sharing the
   // same material) when [id] is in [SketchGeometry3D.constructionIds].
   Iterable<MeshPrimitive> outlinePrimitivesFor(String id, List<vm.Vector3> polyline) sync* {
-    final material = materialFor(id);
+    final material = outlineMaterialFor(id);
     if (!geometry.constructionIds.contains(id)) {
       yield MeshPrimitive(PolylineGeometry(polyline, width: sketchLineWidth), material);
       return;
@@ -1091,16 +1137,13 @@ Node buildSketchGeometryNode(
     // [SketchGeometry3D.textHandleLines]'s own doc comment for why this
     // never consults [constructionIds] the way [outlinePrimitivesFor]
     // does), using a dedicated construction-style material distinct from
-    // [materialFor] (there's no owning entity id to key a color lookup
-    // off - this isn't a real sketch entity).
+    // [outlineMaterialFor] (there's no owning entity id to key a color
+    // lookup off - this isn't a real sketch entity).
     for (final line in geometry.textHandleLines)
       for (final dash in dashedSegments([line.$1, line.$2]))
         MeshPrimitive(
           PolylineGeometry([dash.$1, dash.$2], width: sketchLineWidth),
-          UnlitMaterial()
-            ..alphaMode = AlphaMode.opaque
-            ..baseColorFactor = sketchConstructionColor
-            ..doubleSided = true,
+          materialFor(sketchConstructionColor),
         ),
     // The two handle markers themselves (center, then corner - see
     // [SketchGeometry3D.textHandleMarkers]'s own doc comment) - same
@@ -1111,10 +1154,7 @@ Node buildSketchGeometryNode(
       for (final segment in vertexMarkerSegments([marker]))
         MeshPrimitive(
           PolylineGeometry([segment.$1, segment.$2], width: sketchPointMarkerWidth, cap: PolylineCap.round),
-          UnlitMaterial()
-            ..alphaMode = AlphaMode.opaque
-            ..baseColorFactor = sketchIndicatorAnchorColor
-            ..doubleSided = true,
+          materialFor(sketchIndicatorAnchorColor),
         ),
     for (var i = 0; i < geometry.points.length; i++)
       if (!geometry.hiddenPointIds.contains(geometry.pointIds[i]) &&
@@ -1126,11 +1166,37 @@ Node buildSketchGeometryNode(
               width: sketchPointMarkerWidth,
               cap: PolylineCap.round,
             ),
-            materialFor(geometry.pointIds[i]),
+            materialFor(colorFor(geometry.pointIds[i])),
           ),
   ];
 
   return Node(name: 'sketch-$featureId', mesh: Mesh.primitives(primitives: primitives));
+}
+
+/// [UnlitMaterial] with two of [Material.bind]'s own decisions overridden -
+/// see [materialFor]'s own doc comment (inside [buildSketchGeometryNode])
+/// for the full story of why each is needed and why this is analyzer-clean:
+///
+///  * The depth *test* [Material.bind] would otherwise leave in place
+///    (`gpu.CompareFunction.always` instead) - guarantees every Sketch
+///    primitive draws regardless of what's already in the depth buffer,
+///    with no dependency on any particular GPU's depth-test behavior for
+///    translucent draws.
+///  * The cull-mode decision (`!doubleSided || !isOpaque()` - double-sided
+///    is only ever honored while [AlphaMode.opaque], never for
+///    [AlphaMode.blend]) back open (`gpu.CullMode.none` instead) - a Point/
+///    text-handle marker's own round-cap disk otherwise gets silently
+///    culled again under [AlphaMode.blend].
+///
+/// Both are safe to force per-primitive like this: [Material.bind] runs
+/// immediately before every primitive's own draw call.
+class _SketchMaterial extends UnlitMaterial {
+  @override
+  void bind(gpu.RenderPass pass, gpu.HostBuffer transientsBuffer, Lighting lighting) {
+    super.bind(pass, transientsBuffer, lighting);
+    pass.setDepthCompareOperation(gpu.CompareFunction.always);
+    pass.setCullMode(gpu.CullMode.none);
+  }
 }
 
 /// Sketcher restructure Phase 2 follow-up (P8/P9): side length of the active

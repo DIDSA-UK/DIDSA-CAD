@@ -1005,6 +1005,118 @@ void main() {
     });
   });
 
+  group('Bug fix (on-device feedback: "when editing a sketch, the entities in that sketch should be '
+      'visible, selectable... it shouldn\'t be obscured or restricted by bodies"): activeSketchFeatureId', () {
+    // Mirrors occludingBody() above: a face at z=5, with a Sketch Point (not
+    // Body geometry) behind it at z=10, in pixel range.
+    BodyMeshDto occludingFaceOnly() => BodyMeshDto(
+          bodyId: 'occluding',
+          source: 'computed',
+          mesh: MeshDto(
+            vertices: const [
+              [-1, -1, 5],
+              [1, -1, 5],
+              [0, 1, 5],
+            ],
+            normals: const [],
+            triangleIndices: const [
+              [0, 1, 2],
+            ],
+            faceIds: const [7],
+            topologyVertices: const [],
+            topologyVertexIds: const [],
+            edges: const [],
+            edgeIds: const [],
+          ),
+        );
+    final sketchBehindFace = {
+      'sketch-feature-1': SketchGeometry3D(
+        lineSegments: const [],
+        lineIds: const [],
+        points: [vm.Vector3(0.06, 0, 10)],
+        pointIds: const ['point-a'],
+        circlePolygons: const [],
+        circleIds: const [],
+      ),
+    };
+
+    test('with no activeSketchFeatureId, a Sketch Point behind the nearest face is occluded like a Body '
+        'vertex would be - no regression', () {
+      final hit = hitTestBodies(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
+        bodies: [occludingFaceOnly()],
+        sketchGeometries: sketchBehindFace,
+        filter: const SelectionFilterState(vertex: true, edge: true, face: true, body: false),
+        facesOccludeOtherHits: true,
+      );
+      expect(hit?.entity.kind, SelectionEntityKind.face);
+    });
+
+    test('activeSketchFeatureId matching the Sketch Point\'s own Feature id exempts it from occlusion', () {
+      final hit = hitTestBodies(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
+        bodies: [occludingFaceOnly()],
+        sketchGeometries: sketchBehindFace,
+        filter: const SelectionFilterState(vertex: true, edge: true, face: true, body: false),
+        facesOccludeOtherHits: true,
+        activeSketchFeatureId: 'sketch-feature-1',
+      );
+      expect(hit?.entity.kind, SelectionEntityKind.sketchPoint);
+      expect(hit?.entity.sketchFeatureId, 'sketch-feature-1');
+    });
+
+    test('activeSketchFeatureId naming a *different* Sketch does not exempt this one - only the named '
+        'Sketch is unblockable, not every Sketch', () {
+      final hit = hitTestBodies(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
+        bodies: [occludingFaceOnly()],
+        sketchGeometries: sketchBehindFace,
+        filter: const SelectionFilterState(vertex: true, edge: true, face: true, body: false),
+        facesOccludeOtherHits: true,
+        activeSketchFeatureId: 'some-other-sketch',
+      );
+      expect(hit?.entity.kind, SelectionEntityKind.face);
+    });
+
+    test('a Body vertex is still occluded even when activeSketchFeatureId is set - only Sketch entities '
+        'in the named Sketch are exempt, Bodies never are', () {
+      final occludingWithVertex = BodyMeshDto(
+        bodyId: 'occluding',
+        source: 'computed',
+        mesh: MeshDto(
+          vertices: const [
+            [-1, -1, 5],
+            [1, -1, 5],
+            [0, 1, 5],
+          ],
+          normals: const [],
+          triangleIndices: const [
+            [0, 1, 2],
+          ],
+          faceIds: const [7],
+          topologyVertices: const [
+            [0.06, 0, 10],
+          ],
+          topologyVertexIds: const [3],
+          edges: const [],
+          edgeIds: const [],
+        ),
+      );
+      final hit = hitTestBodies(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
+        bodies: [occludingWithVertex],
+        filter: const SelectionFilterState(vertex: true, edge: true, face: true, body: false),
+        facesOccludeOtherHits: true,
+        activeSketchFeatureId: 'sketch-feature-1',
+      );
+      expect(hit?.entity.kind, SelectionEntityKind.face);
+    });
+  });
+
   group('Prompt C1: hitTestBodies with sketchGeometries', () {
     // A lone Sketch Point/Line, no Body geometry at all - the "bare Sketch,
     // no Extrude yet" case _recomputeHover's own fix (see part_viewport.dart)
