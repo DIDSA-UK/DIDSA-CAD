@@ -518,10 +518,31 @@ class _ConstraintOverlayPainter extends CustomPainter {
     // never overshoots past the arrows (it terminates exactly at [p1]/[p2],
     // the same point the arrows already anchor to), and always retraces the
     // *least* possible amount of the line's own length.
-    final e1 = (p1 - line1Start).distanceSquared <= (p1 - line1End).distanceSquared ? line1Start : line1End;
-    final e2 = (p2 - line2Start).distanceSquared <= (p2 - line2End).distanceSquared ? line2Start : line2End;
-    _drawExtensionLine(canvas, e1, p1, dimPaint);
-    _drawExtensionLine(canvas, e2, p2, dimPaint);
+    //
+    // On-device feedback, round 2 ("when the dimension is inside the lines,
+    // an extension line is not required as the dimension arrows terminate
+    // on the actual lines"): [p1]/[p2] always sit exactly on line1's/line2's
+    // own infinite extension (they're each line's own midpoint plus a
+    // vector parallel to that line - see [offset] above), so whenever the
+    // connector point falls *within* that line's own drawn segment (not
+    // past either end), the arrow already terminates right on the sketch
+    // line itself - no witness line needed at all, only once the connector
+    // has been dragged past one of the line's own real ends.
+    final s1 = (p1 - line1Start).dx * alongA.dx + (p1 - line1Start).dy * alongA.dy;
+    if (s1 < 0 || s1 > lengthA) {
+      final e1 = s1 < 0 ? line1Start : line1End;
+      _drawExtensionLine(canvas, e1, p1, dimPaint);
+    }
+    final dirB = line2End - line2Start;
+    final lengthB = dirB.distance;
+    if (lengthB > 1e-6) {
+      final alongB = dirB / lengthB;
+      final s2 = (p2 - line2Start).dx * alongB.dx + (p2 - line2Start).dy * alongB.dy;
+      if (s2 < 0 || s2 > lengthB) {
+        final e2 = s2 < 0 ? line2Start : line2End;
+        _drawExtensionLine(canvas, e2, p2, dimPaint);
+      }
+    }
     canvas.drawLine(p1, p2, dimPaint);
     _drawDimensionArrows(canvas, p1, p2, color);
     // Bug fix (on-device feedback: "the dimension...moves left right, it

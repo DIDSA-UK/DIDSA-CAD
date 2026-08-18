@@ -2883,10 +2883,29 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             final offsetScreenMagnitude = offsetDelta.dx * alongScreen.dx + offsetDelta.dy * alongScreen.dy;
             widget.onLineDistanceLabelOffsetDragged?.call(offsetScreenMagnitude * ratio);
 
-            final dimAnchorScreen = (midAScreen + midBScreen) / 2;
-            final alongDelta = cursor - dimAnchorScreen;
-            final alongScreenMagnitude = alongDelta.dx * perpScreen.dx + alongDelta.dy * perpScreen.dy;
-            widget.onLineDistanceLabelAlongDragged?.call(alongScreenMagnitude * ratio);
+            // Bug fix (on-device feedback, round 2: "the up/down movement is
+            // still reversed"): the paint side's actual along-direction
+            // isn't [perpScreen] itself - [_paintLineDistanceDimension]
+            // derives its `tangent` from `p2 - p1`, which is `midB - midA`
+            // (offset cancels in the subtraction), i.e. `perpToA * t.sign`,
+            // not `perpToA` unflipped. `t`'s sign depends on which side of
+            // line1 line2 sits on relative to [perpScreen]'s own (arbitrary,
+            // line1Start-to-line1End-derived) direction - the first attempt
+            // at this branch dotted straight against [perpScreen], which
+            // only agreed with the paint side when [t] happened to be
+            // positive. Deriving the tangent directly from
+            // `midBScreen - midAScreen`, exactly like the paint side derives
+            // it from `p2 - p1`, makes the two impossible to disagree on
+            // regardless of which side line2 falls on.
+            final midDeltaScreen = midBScreen - midAScreen;
+            final midDeltaLength = midDeltaScreen.distance;
+            if (midDeltaLength > 1e-6) {
+              final tangentScreen = midDeltaScreen / midDeltaLength;
+              final dimAnchorScreen = (midAScreen + midBScreen) / 2;
+              final alongDelta = cursor - dimAnchorScreen;
+              final alongScreenMagnitude = alongDelta.dx * tangentScreen.dx + alongDelta.dy * tangentScreen.dy;
+              widget.onLineDistanceLabelAlongDragged?.call(alongScreenMagnitude * ratio);
+            }
             return;
           }
         }

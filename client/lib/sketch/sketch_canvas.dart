@@ -2801,14 +2801,30 @@ class _SketchPainter extends CustomPainter {
     // *least* possible amount of the Line's own length. Mirrors the
     // 3D-embedded sketcher's own copy of this same painter/bug
     // (`sketch_constraint_overlay.dart`'s `_paintLineDistanceDimension`).
-    final e1 = (p1 - endpointsA.$1).distanceSquared <= (p1 - endpointsA.$2).distanceSquared
-        ? endpointsA.$1
-        : endpointsA.$2;
-    final e2 = (p2 - endpointsB.$1).distanceSquared <= (p2 - endpointsB.$2).distanceSquared
-        ? endpointsB.$1
-        : endpointsB.$2;
-    _drawExtensionLine(canvas, e1, p1, dimPaint);
-    _drawExtensionLine(canvas, e2, p2, dimPaint);
+    //
+    // On-device feedback, round 2 ("when the dimension is inside the lines,
+    // an extension line is not required as the dimension arrows terminate
+    // on the actual lines"): [p1]/[p2] always sit exactly on Line 1's/
+    // Line 2's own infinite extension (each is that Line's own midpoint plus
+    // a vector parallel to that Line - see [offset] above), so whenever the
+    // connector point falls *within* that Line's own drawn segment (not past
+    // either end), the arrow already terminates right on the sketch Line
+    // itself - no witness line needed at all, only once the connector has
+    // been dragged past one of the Line's own real ends. Mirrors the
+    // 3D-embedded sketcher's own copy of this same painter/bug.
+    final s1 = (p1 - endpointsA.$1).dx * alongA.dx + (p1 - endpointsA.$1).dy * alongA.dy;
+    if (s1 < 0 || s1 > lengthA) {
+      _drawExtensionLine(canvas, s1 < 0 ? endpointsA.$1 : endpointsA.$2, p1, dimPaint);
+    }
+    final dirB = endpointsB.$2 - endpointsB.$1;
+    final lengthB = dirB.distance;
+    if (lengthB > 1e-6) {
+      final alongB = dirB / lengthB;
+      final s2 = (p2 - endpointsB.$1).dx * alongB.dx + (p2 - endpointsB.$1).dy * alongB.dy;
+      if (s2 < 0 || s2 > lengthB) {
+        _drawExtensionLine(canvas, s2 < 0 ? endpointsB.$1 : endpointsB.$2, p2, dimPaint);
+      }
+    }
     canvas.drawLine(p1, p2, dimPaint);
     _drawDimensionArrows(canvas, p1, p2, color);
 
