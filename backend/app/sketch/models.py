@@ -15,11 +15,14 @@ from app.sketch.constraints import (
     DistanceConstraint,
     EqualLengthConstraint,
     EqualRadiusConstraint,
+    FixedConstraint,
     HorizontalConstraint,
     LineDistanceConstraint,
     ParallelConstraint,
     PerpendicularConstraint,
     PointLineDistanceConstraint,
+    PointOnCircleConstraint,
+    PointOnLineConstraint,
     SplineTangentConstraint,
     TangentConstraint,
     VerticalConstraint,
@@ -985,19 +988,6 @@ class Sketch:
     # leaving the Point at its last-known position (and reporting the id as
     # lost) whenever a reference no longer resolves.
     external_references: dict[str, ExternalVertexReference] = field(default_factory=dict)
-    # On-device feedback ("converted edges... all the converted lines are
-    # completely mobile... the converted entities should be projected onto
-    # the sketch plane and locked at that projection point"):
-    # `external_references`'s sibling for a Point that must be pinned the
-    # exact same way (excluded from the solver's free parameters, excluded
-    # from the client's own drag targeting - see `PointResponse.is_locked`)
-    # but has no live Body vertex of its own to refresh from - e.g. a
-    # converted Arc's centre (`app.document.router.convert_body_edge`),
-    # which OCCT never exposes a real vertex for. Plain point ids, not an
-    # id -> reference mapping like `external_references`, since there is
-    # nothing to re-resolve here - once pinned, a Point just stays exactly
-    # where conversion put it.
-    pinned_point_ids: set[str] = field(default_factory=set)
     _origin_point_id: str | None = field(default=None, repr=False)
     # Sketcher-roadmap Phase 7 (2D Pattern/Mirror, §2.9 Option 2): lightweight,
     # non-solved instances - see SketchPatternInstance/SketchMirrorInstance's
@@ -1009,14 +999,29 @@ class Sketch:
 
     def is_point_locked(self, point_id: str) -> bool:
         """Whether `point_id` must be treated as immobile - a live-tracked
-        `external_references` Point or a statically `pinned_point_ids` one
-        alike, both pinned into `solve_sketch`'s fixed group the same way
-        (see that function's own doc comment) and both reported via
-        `PointResponse.is_locked` so the client can exclude them from drag
-        targeting too. The one client-facing distinction between the two
-        (live-refreshed vs. frozen-in-place) is invisible from here - both
-        answer this the same way."""
-        return point_id in self.external_references or point_id in self.pinned_point_ids
+        `external_references` Point or one covered by a user-authored
+        `FixedConstraint` alike, both reported via `PointResponse.is_locked`
+        so the client can exclude them from drag targeting too. The one
+        client-facing distinction between the two (live-refreshed vs.
+        pinned-in-place, deletable) is invisible from here - both answer
+        this the same way.
+
+        This is the single canonical predicate for "is this point fixed" -
+        `solve_sketch`'s own `external_references` pinning and
+        `app.document.router`'s dimension-rescale `fixed_ids` check both
+        call this rather than re-deriving their own version, after the two
+        were found to have drifted (the rescale check didn't know about the
+        `pinned_point_ids` this replaced - see FixedConstraint's own doc
+        comment). Deliberately excludes the sketch's own origin Point - that
+        one is structural (exactly one per Sketch, never deletable, pinned
+        unconditionally by `solve_sketch` regardless of this predicate), not
+        a fact this method or any Constraint tracks."""
+        if point_id in self.external_references:
+            return True
+        return any(
+            isinstance(constraint, FixedConstraint) and point_id in constraint.fixed_point_ids
+            for constraint in self.constraints.values()
+        )
 
     def set_orientation(self, *, flip: bool, rotation_quarter_turns: int) -> None:
         """The one mutator for `flip`/`rotation_quarter_turns` - normalizes
@@ -3992,6 +3997,91 @@ class Sketch:
             line_start_id=line.start_point_id,
             line_end_id=line.end_point_id,
         )
+        self.constraints[constraint.id] = constraint
+        return constraint
+
+    def add_point_on_line_constraint(self, point_id: str, line_id: str) -> PointOnLineConstraint:
+        """The "Line" half of the sketcher's "point coincident to line/
+        curve" context-menu feature (add_point_on_circle_constraint below is
+        the curved-entity half) - pins point_id onto line_id's own infinite
+        extension via SolverBuilder.point_on_line, the same primitive
+        add_collinear_constraint already uses twice per call."""
+        if point_id not in self.points:
+            raise KeyError(point_id)
+        line = self.entities.get(line_id)
+        if not isinstance(line, Line):
+            raise KeyError(line_id)
+        if point_id in (line.start_point_id, line.end_point_id):
+            raise ValueError("Point is already an endpoint of this line")
+
+        constraint = PointOnLineConstraint(
+            id=str(uuid.uuid4()),
+            point_id=point_id,
+            line_id=line_id,
+            line_start_id=line.start_point_id,
+            line_end_id=line.end_point_id,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
+
+    def add_point_on_circle_constraint(
+        self, point_id: str, circle_or_arc_id: str
+    ) -> PointOnCircleConstraint:
+        """The curved-entity half of "point coincident to line/curve" -
+        pins point_id onto circle_or_arc_id's own circular locus (see
+        PointOnCircleConstraint's own doc comment for why this reuses
+        equal_length rather than a native point-on-circle primitive).
+        Ellipse/Spline are deliberately out of scope - neither has a clean
+        py-slvs-primitive equivalent the rest of this module already
+        trusts, the same reasoning TangentConstraint/EqualRadiusConstraint
+        already apply to avoid native curve entities."""
+        center_point_id, radius_point_id = self._center_radius_point_ids(circle_or_arc_id)
+        if point_id not in self.points:
+            raise KeyError(point_id)
+        if point_id == center_point_id:
+            raise ValueError("Point cannot be coincident with its own circle's/arc's centre")
+
+        constraint = PointOnCircleConstraint(
+            id=str(uuid.uuid4()),
+            point_id=point_id,
+            circle_or_arc_id=circle_or_arc_id,
+            center_point_id=center_point_id,
+            radius_point_id=radius_point_id,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
+
+    def add_fixed_constraint(self, entity_id: str) -> FixedConstraint:
+        """The sketcher's "Fix" constraint - deployable to any entity
+        (entity_id may be a Point directly, or a Line/Circle/Arc/Ellipse/
+        Polygon/Slot/Rectangle/Spline/Text, resolved to every Point that
+        defines it via `_entity_defining_point_ids`, the same helper the
+        deletion-cascade path already uses to answer "which Points does
+        this entity reference"). One FixedConstraint per call, covering
+        every Point the entity resolves to, so Fix/Unfix on a multi-Point
+        entity (e.g. a Line's two endpoints, or a Circle's centre + radius
+        + cardinal Points) is a single undoable/deletable action, not one
+        per Point.
+
+        Raises KeyError if entity_id resolves to neither a Point nor a
+        known SketchEntity, and ValueError if every one of the entity's own
+        Points is already covered by an existing FixedConstraint (nothing
+        new to fix - see Sketch.is_point_locked)."""
+        if entity_id in self.points:
+            point_ids: tuple[str, ...] = (entity_id,)
+        else:
+            entity = self.entities.get(entity_id)
+            if entity is None:
+                raise KeyError(entity_id)
+            point_ids = self._entity_defining_point_ids(entity)
+            if not point_ids:
+                raise ValueError(f"{entity_id} has no Points of its own to fix")
+
+        new_point_ids = [pid for pid in point_ids if not self.is_point_locked(pid)]
+        if not new_point_ids:
+            raise ValueError("Every point of this entity is already fixed or externally referenced")
+
+        constraint = FixedConstraint(id=str(uuid.uuid4()), fixed_point_ids=new_point_ids)
         self.constraints[constraint.id] = constraint
         return constraint
 

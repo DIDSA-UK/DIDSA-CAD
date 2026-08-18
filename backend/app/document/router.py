@@ -2117,21 +2117,20 @@ def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate)
             )
         center_x, center_y, radius = circle_params
         center_point = sketch.add_point(center_x, center_y)
+        circle = sketch.add_circle(center_point.id, radius=radius, construction=payload.construction)
         # On-device feedback ("converted edges... the converted entities
         # should be projected onto the sketch plane and locked at that
         # projection point"): a full circular Body edge has no vertex of
         # its own to make this centre a live external reference, but it
-        # must still be pinned - see `Sketch.pinned_point_ids`'s own doc
-        # comment.
-        sketch.pinned_point_ids.add(center_point.id)
-        circle = sketch.add_circle(center_point.id, radius=radius, construction=payload.construction)
-        # Same reasoning, applied to all four cardinal Points too (`Sketch.
-        # add_circle`'s own radius DistanceConstraint starts `provisional`,
-        # same as any freshly-drawn Circle - it alone would leave the
-        # radius, and so the whole Circle's size, still free to drift/drag)
-        # - pinning the centre alone isn't enough to freeze the Circle as a
-        # whole; every Point that defines it needs to be.
-        sketch.pinned_point_ids.update(circle.cardinal_point_ids)
+        # must still be pinned - see `FixedConstraint`'s own doc comment.
+        # One call covers the centre, `radius_point_id`, and all four
+        # cardinal Points together (`Sketch.add_circle`'s own radius
+        # DistanceConstraint starts `provisional`, same as any freshly-
+        # drawn Circle - it alone would leave the radius, and so the whole
+        # Circle's size, still free to drift/drag) - pinning the centre
+        # alone isn't enough to freeze the Circle as a whole, every Point
+        # that defines it needs to be.
+        sketch.add_fixed_constraint(circle.id)
         center_response = PointResponse(
             id=center_point.id, x=center_point.x, y=center_point.y, is_locked=True
         )
@@ -2167,10 +2166,15 @@ def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate)
         else:
             arc_start_point, arc_end_point = end_point, start_point
         center_point = sketch.add_point(center_x, center_y)
-        # See the full-circle branch's own identical comment above - an
-        # Arc's centre has no Body vertex of its own either.
-        sketch.pinned_point_ids.add(center_point.id)
         arc = sketch.add_arc(center_point.id, arc_start_point.id, arc_end_point.id, construction=payload.construction)
+        # See the full-circle branch's own identical comment above - an
+        # Arc's centre has no Body vertex of its own either. Its start/end
+        # Points are already `external_references`-locked (see above), so
+        # `add_fixed_constraint`'s own already-locked filter leaves only
+        # the centre to actually add here - same net effect as the old
+        # centre-only `pinned_point_ids.add`, without hardcoding that this
+        # is the only Point Arc needs pinned.
+        sketch.add_fixed_constraint(arc.id)
         return ConvertEdgeResponse(
             arc=ArcResponse(
                 id=arc.id,

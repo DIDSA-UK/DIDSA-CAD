@@ -21,11 +21,14 @@ from app.sketch.constraints import (
     DistanceConstraint,
     EqualLengthConstraint,
     EqualRadiusConstraint,
+    FixedConstraint,
     HorizontalConstraint,
     LineDistanceConstraint,
     ParallelConstraint,
     PerpendicularConstraint,
     PointLineDistanceConstraint,
+    PointOnCircleConstraint,
+    PointOnLineConstraint,
     SplineTangentConstraint,
     TangentConstraint,
     VerticalConstraint,
@@ -36,6 +39,17 @@ from app.sketch.models import Point, Sketch
 # redundancy detection to distrust a converged solve - see `converged`'s
 # own comment in solve_sketch below for why this allowlist exists and, just
 # as importantly, why AtMidpointConstraint is deliberately excluded from it.
+#
+# PointOnLineConstraint/PointOnCircleConstraint: safe by direct analogy -
+# both are thin wrappers around primitives (point_on_line, equal_length)
+# already trusted here via CollinearConstraint/EqualRadiusConstraint, which
+# use the exact same underlying py-slvs calls with no ambiguity of their
+# own (unlike e.g. AngleConstraint's supplement-angle case).
+#
+# FixedConstraint: safe - SolverBuilder.where_dragged (addWhereDragged) pins
+# a point deterministically to its own seeded position, no mirror-root or
+# sign ambiguity possible (confirmed empirically - see that method's own
+# doc comment).
 _REDUNDANCY_SAFE_CONSTRAINT_TYPES = (
     DistanceConstraint,
     VerticalConstraint,
@@ -51,6 +65,9 @@ _REDUNDANCY_SAFE_CONSTRAINT_TYPES = (
     SplineTangentConstraint,
     TangentConstraint,
     EqualRadiusConstraint,
+    PointOnLineConstraint,
+    PointOnCircleConstraint,
+    FixedConstraint,
 )
 
 # Constraint types `_residual_verified_convergence` (below) knows how to
@@ -631,6 +648,9 @@ class _PySlvsBuilder:
             point_handle, line_handle, wrkpln=self._workplane, group=_SOLVE_GROUP
         )
 
+    def where_dragged(self, point_handle: int) -> int:
+        return self._system.addWhereDragged(point_handle, wrkpln=self._workplane, group=_SOLVE_GROUP)
+
     def solved_point_ids(self) -> list[str]:
         return list(self._point_handles)
 
@@ -677,12 +697,16 @@ def solve_sketch(sketch: Sketch, anchor_point_ids: frozenset[str] = frozenset())
 
     On-device feedback ("converted edges... the converted entities should
     be projected onto the sketch plane and locked at that projection
-    point"): `sketch.pinned_point_ids` (a converted Arc/Circle's own centre
-    - see that field's own doc comment) is folded in here too, pinned on
-    both attempts for the exact same "never this Sketch's to move" reason.
+    point"): a converted Arc/Circle's own centre (which OCCT gives no live
+    vertex to track as an `external_references` entry) is pinned via a real
+    `FixedConstraint` instead (see `app.document.router.convert_body_edge`)
+    - that pins itself directly through `FixedConstraint.add_to_solver`
+    (SolverBuilder.where_dragged), so unlike `external_references` it needs
+    no entry in `locked_point_ids` here at all to stay immobile on both
+    solve attempts.
     """
 
-    locked_point_ids = frozenset(sketch.external_references) | frozenset(sketch.pinned_point_ids)
+    locked_point_ids = frozenset(sketch.external_references)
     result = _solve_sketch_once(sketch, anchor_point_ids | locked_point_ids)
     if anchor_point_ids and not result.converged:
         result = _solve_sketch_once(sketch, locked_point_ids)

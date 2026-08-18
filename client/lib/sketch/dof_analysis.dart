@@ -111,6 +111,29 @@ const Map<String, int> dofCostByConstraintType = {
   // equations (see constraints.py's CollinearConstraint.add_to_solver).
   'point_line_distance': 1, // perpendicular distance(point, line) = value
   'at_midpoint': 2, // point == midpoint(line) - an x and a y equation.
+  // Pre-existing gap fix (found while adding point_on_line/point_on_circle
+  // below): tangent/equal_radius/spline_tangent already existed as real,
+  // wired backend constraint types but had no entry here at all, silently
+  // under-reporting DOF/grounding for any Sketch using them. All three
+  // confirmed empirically against the installed py-slvs (see the backend
+  // investigation this fix came out of) rather than guessed:
+  'tangent': 1, // equal_length_point_line_distance(centre, radius_line,
+  // tangent_line) - confirmed via direct py-slvs probe: 4 free params -> 3
+  // after adding the constraint.
+  'equal_radius': 1, // the exact same equal_length call 'equal_length'
+  // above already uses (two virtual centre->rim lines), just applied to
+  // Circles/Arcs instead of Lines - same cost by construction.
+  'spline_tangent': 1, // addCurvesTangent - confirmed via direct py-slvs
+  // probe: 14 free params -> 13 after adding the constraint (a single
+  // tangent-direction-alignment equation, not the 2 one might expect from
+  // "match a 2D direction").
+  'point_on_line': 1, // point_on_line(point, line) - point lies anywhere
+  // on the line's own infinite extension, same primitive/cost as
+  // point_line_distance above.
+  'point_on_circle': 1, // equal_length(centre->point, centre->radius_point)
+  // - confirmed via direct py-slvs probe: a free Point pulled onto a
+  // radius-5 circle converges with Dof == 1 (the Point's own remaining
+  // angular freedom around the circle).
 };
 
 /// Resolves a Constraint to its backend `type` discriminator string (the
@@ -204,6 +227,55 @@ const Map<String, int> dofCostByConstraintType = {
   }
   if (constraint is AtMidpointConstraintDto) {
     return (type: 'at_midpoint', pointIds: ofLine(constraint.lineId, constraint.pointId));
+  }
+  // Pre-existing gap fix (found alongside dofCostByConstraintType's own -
+  // see that map's doc comment): Tangent/EqualRadius/SplineTangent had no
+  // dispatch case here at all, silently falling through to the `type: ''`
+  // default below - meaning even *with* a dofCostByConstraintType entry,
+  // the cost could never actually be looked up for a Sketch using any of
+  // these three, since describeConstraint never named the type or the
+  // Points it grounds together.
+  if (constraint is TangentConstraintDto) {
+    final ids = [constraint.centerPointId, constraint.radiusPointId];
+    final start = lineStartPointId[constraint.lineId];
+    final end = lineEndPointId[constraint.lineId];
+    if (start != null) ids.add(start);
+    if (end != null) ids.add(end);
+    return (type: 'tangent', pointIds: ids);
+  }
+  if (constraint is EqualRadiusConstraintDto) {
+    return (
+      type: 'equal_radius',
+      pointIds: [
+        constraint.center1PointId,
+        constraint.radius1PointId,
+        constraint.center2PointId,
+        constraint.radius2PointId,
+      ],
+    );
+  }
+  if (constraint is SplineTangentConstraintDto) {
+    return (
+      type: 'spline_tangent',
+      pointIds: [
+        constraint.segmentAP0,
+        constraint.segmentAP1,
+        constraint.segmentAP2,
+        constraint.segmentAP3,
+        constraint.segmentBP1,
+        constraint.segmentBP2,
+        constraint.segmentBP3,
+      ],
+    );
+  }
+  if (constraint is PointOnLineConstraintDto) {
+    return (type: 'point_on_line', pointIds: ofLine(constraint.lineId, constraint.pointId));
+  }
+  if (constraint is PointOnCircleConstraintDto) {
+    return (
+      type: 'point_on_circle',
+      pointIds: [constraint.pointId, constraint.centerPointId, constraint.radiusPointId],
+    );
   }
   return (type: '', pointIds: const []);
 }

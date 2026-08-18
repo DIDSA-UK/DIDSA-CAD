@@ -1285,6 +1285,10 @@ enum ConstraintOptionType {
   tangent,
   radius,
   diameter,
+  pointOnLine,
+  pointOnCircle,
+  fix,
+  unfix,
 }
 
 class ConstraintOption {
@@ -2251,7 +2255,19 @@ class SketchController extends ChangeNotifier {
   /// [rigidity] alone can't produce).
   SketchRigidity get rigidity => SketchRigidity.analyze(
         pointIds: points.keys,
-        fixedPointIds: {if (_originPointId != null) _originPointId!},
+        // Bug fix (found while adding the "Fix" constraint): this used to
+        // seed only the origin, leaving every externally-referenced or
+        // Fixed Point ungrounded from this preview's own point of view -
+        // an entity anchored solely through one of those could render as
+        // "not fully constrained" here even though the backend solver
+        // already treats it as immovable. `_lockedPointIds` (populated
+        // from `PointDto.isLocked`, refreshed on every solve - see
+        // `_solveAndTrackDof`) is the single client-side source for "is
+        // this Point locked" and already drives drag-exclusion
+        // ([_isPointDragLocked]); folding it in here too means a
+        // FixedConstraint's own target Points get correct grounding
+        // automatically, with no separate tracking of their own.
+        fixedPointIds: {if (_originPointId != null) _originPointId!, ..._lockedPointIds},
         lineStartPointId: {for (final line in lines.values) line.id: line.startPointId},
         lineEndPointId: {for (final line in lines.values) line.id: line.endPointId},
         constraints: constraints.values,
@@ -4877,6 +4893,7 @@ class SketchController extends ChangeNotifier {
         lineEndpoints: (id) => lineEndpoints[id]!,
         originPointId: _originPointId,
         anchorPointIds: anchorPointIds.toSet(),
+        lockedPointIds: _lockedPointIds,
       );
       final anchorSet = anchorPointIds.toSet();
       // Safety check (on-device feedback investigation, Batch 7 - dragging
@@ -8133,6 +8150,131 @@ class SketchController extends ChangeNotifier {
     });
   }
 
+  /// Every Point id [selection] itself references - the client-side mirror
+  /// of the backend's `Sketch._entity_defining_point_ids` (used there by
+  /// `add_fixed_constraint`/the deletion-cascade path for the same "which
+  /// Points does this entity own" question). Only used to *decide* whether
+  /// Fix/Unfix should be offered for [selectionSet] (see
+  /// [availableFixToggles]) - creating a Fix itself just passes the
+  /// entity's own id straight through to [SketchApiClient.
+  /// createFixedConstraint], which resolves this same set server-side.
+  Set<String> _pointIdsForSelection(SketchSelection selection) => switch (selection.kind) {
+        SelectionKind.point => {selection.id},
+        SelectionKind.line => {
+            if (lines[selection.id] case final line?) ...[line.startPointId, line.endPointId],
+          },
+        SelectionKind.circle => {
+            if (circles[selection.id] case final circle?) ...[
+              circle.centerPointId,
+              circle.radiusPointId,
+              ...circle.cardinalPointIds,
+            ],
+          },
+        SelectionKind.arc => {
+            if (arcs[selection.id] case final arc?) ...[arc.centerPointId, arc.startPointId, arc.endPointId],
+          },
+        SelectionKind.ellipse => {
+            if (ellipses[selection.id] case final ellipse?) ...[
+              ellipse.centerPointId,
+              ellipse.majorPointId,
+              ellipse.majorPointNegId,
+              ellipse.minorPointId,
+              ellipse.minorPointNegId,
+            ],
+          },
+        SelectionKind.spline => {
+            if (splines[selection.id] case final spline?) ...[
+              ...spline.throughPointIds,
+              ...spline.controlPointIds,
+            ],
+          },
+        SelectionKind.text => {
+            if (texts[selection.id] case final text?) text.anchorPointId,
+          },
+        SelectionKind.constraint || SelectionKind.patternInstance || SelectionKind.mirrorInstance => const {},
+      };
+
+  /// Every Point id currently covered by a real, deletable [FixedConstraintDto]
+  /// - distinct from [_lockedPointIds] (which also includes live external
+  /// references, not removable via Unfix). Drives [availableFixToggles]'s
+  /// own "is there something real to Unfix here" check.
+  Set<String> get _fixedConstraintPointIds => {
+        for (final c in constraints.values)
+          if (c is FixedConstraintDto) ...c.pointIds,
+      };
+
+  /// Mirrors [availableConstructionToggles]'s exact shape/reasoning: both
+  /// Fix and Unfix can be true at once for a multi-entity selection mixing
+  /// already-fixed and still-free geometry - offered as separate actions
+  /// rather than a single ambiguous toggle, same as Make-Construction/
+  /// Make-Solid.
+  ({bool showFix, bool showUnfix}) get availableFixToggles {
+    if (_selectionSet.isEmpty) return (showFix: false, showUnfix: false);
+    final selectedPointIds = {for (final s in _selectionSet) ..._pointIdsForSelection(s)};
+    if (selectedPointIds.isEmpty) return (showFix: false, showUnfix: false);
+    return (
+      showFix: selectedPointIds.any((id) => !_lockedPointIds.contains(id)),
+      showUnfix: selectedPointIds.any(_fixedConstraintPointIds.contains),
+    );
+  }
+
+  /// Fixes every entity in [selectionSet] that has at least one not-yet-
+  /// locked Point of its own - skips any entity that's already fully
+  /// fixed/externally-referenced (matches the backend's own `add_fixed_
+  /// constraint` filtering, so this never tries to create a redundant
+  /// no-op Fix). One [SketchApiClient.createFixedConstraint] call per
+  /// entity, each undoable independently.
+  Future<void> fixSelected() async {
+    if (_busy || _sketchId == null) return;
+    final targets = _selectionSet
+        .where((s) => _pointIdsForSelection(s).any((id) => !_lockedPointIds.contains(id)))
+        .toList();
+    if (targets.isEmpty) return;
+    await _runGuarded(() async {
+      final created = <ConstraintDto>[];
+      for (final target in targets) {
+        created.add(await _api.createFixedConstraint(_sketchId!, target.id));
+      }
+      _pushUndo(() async {
+        for (final constraint in created.reversed) {
+          await _api.deleteConstraint(_sketchId!, constraint.id);
+        }
+      });
+      await _solveAndTrackDof();
+    });
+  }
+
+  /// Unfixes every [FixedConstraintDto] covering any Point of any entity in
+  /// [selectionSet] - deleting the whole constraint (all of its own Points,
+  /// not just the selected ones), symmetric with how one [fixSelected] call
+  /// creates it. Undo recreates the same locked Points via one [SketchApiClient.
+  /// createFixedConstraint] call per Point rather than restoring the exact
+  /// original (possibly multi-Point) constraint object - a different
+  /// constraint id, but the same Points end up locked again, which is all
+  /// undo needs to restore here.
+  Future<void> unfixSelected() async {
+    if (_busy || _sketchId == null) return;
+    final selectedPointIds = {for (final s in _selectionSet) ..._pointIdsForSelection(s)};
+    final targets = constraints.values
+        .whereType<FixedConstraintDto>()
+        .where((c) => c.pointIds.any(selectedPointIds.contains))
+        .toList();
+    if (targets.isEmpty) return;
+    await _runGuarded(() async {
+      for (final constraint in targets) {
+        await _api.deleteConstraint(_sketchId!, constraint.id);
+      }
+      _pushUndo(() async {
+        for (final constraint in targets.reversed) {
+          for (final pointId in constraint.pointIds) {
+            await _api.createFixedConstraint(_sketchId!, pointId);
+          }
+        }
+      });
+      await _solveAndTrackDof();
+    });
+  }
+
   /// Stage 13 item 6 (extended by Stage 16 item 7): which constraint-type
   /// buttons the flyout should offer for the current [selectionSet], per the
   /// prompt's selection-set table. Coincident/Parallel/Perpendicular/
@@ -8214,8 +8356,27 @@ class SketchController extends ChangeNotifier {
       return const [ConstraintOption(type: ConstraintOptionType.tangent, label: 'Tangent', wired: false)];
     }
 
-    if (kinds.every((k) => k == SelectionKind.point || k == SelectionKind.line)) {
+    if (kinds.length == 1 && kinds.single == SelectionKind.point) {
       return const [ConstraintOption(type: ConstraintOptionType.coincident, label: 'Coinc.', wired: true)];
+    }
+
+    // Bug fix (found while adding "point coincident to line/curve"): this
+    // row used to match *any* Point+Line pair too (kinds.every((k) => k ==
+    // point || k == line)), offering a "Coinc." button that called
+    // [addCoincidentConstraint] - which always 404s, since a Line's id is
+    // never a valid Point id server-side. A Point can be coincident with a
+    // Line, just not via [CoincidentConstraint] - split into its own,
+    // correctly-wired row instead.
+    if (kinds.length == 2 && kinds.contains(SelectionKind.point) && kinds.contains(SelectionKind.line)) {
+      return const [ConstraintOption(type: ConstraintOptionType.pointOnLine, label: 'Coinc.', wired: true)];
+    }
+
+    // Same fix, curved-entity half: a Point coincident with a Circle/Arc's
+    // own circular locus - see backend PointOnCircleConstraint.
+    if (kinds.length == 2 &&
+        kinds.contains(SelectionKind.point) &&
+        (kinds.contains(SelectionKind.circle) || kinds.contains(SelectionKind.arc))) {
+      return const [ConstraintOption(type: ConstraintOptionType.pointOnCircle, label: 'Coinc.', wired: true)];
     }
 
     return const [];
@@ -8252,6 +8413,12 @@ class SketchController extends ChangeNotifier {
         break;
       case ConstraintOptionType.diameter:
         await addRadiusDimensionFor(_selectionSet.first, diameter: true);
+        break;
+      case ConstraintOptionType.pointOnLine:
+        await addPointOnLineConstraint();
+        break;
+      case ConstraintOptionType.pointOnCircle:
+        await addPointOnCircleConstraint();
         break;
       default:
         break;
@@ -11275,6 +11442,52 @@ class SketchController extends ChangeNotifier {
     await _createSelectionSetConstraint(_api.createCoincidentConstraint);
   }
 
+  /// Like [_createSelectionSetConstraint], but for a constraint type whose
+  /// two arguments have fixed, non-interchangeable roles - a Point plus a
+  /// Line/Circle/Arc - rather than being symmetric. The pair must be
+  /// resolved by *kind*, not by click order (the user may select either
+  /// one first), unlike every `_createSelectionSetConstraint` caller above,
+  /// where "first selected" being treated as `point_a`/`line1` is
+  /// arbitrary but harmless either way.
+  Future<void> _createPointAndEntityConstraint(
+    bool Function(SelectionKind) isEntityKind,
+    Future<ConstraintDto> Function(String sketchId, String pointId, String entityId) create,
+  ) async {
+    if (_selectionSet.length != 2 || _busy || _sketchId == null) return;
+    final pointSel = _selectionSet.where((s) => s.kind == SelectionKind.point);
+    final entitySel = _selectionSet.where((s) => isEntityKind(s.kind));
+    if (pointSel.length != 1 || entitySel.length != 1) return;
+    final pointId = pointSel.first.id;
+    final entityId = entitySel.first.id;
+    await _runGuarded(() async {
+      final constraint = await create(_sketchId!, pointId, entityId);
+      _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
+      await _solveAndTrackDof();
+      _selectionSet.clear();
+      _ribbonVisible = false;
+    });
+  }
+
+  /// The "Line" half of "point coincident to line/curve" - see
+  /// [SketchApiClient.createPointOnLineConstraint].
+  Future<void> addPointOnLineConstraint() async {
+    if (!canApplyConstraint(ConstraintOptionType.pointOnLine)) return;
+    await _createPointAndEntityConstraint(
+      (kind) => kind == SelectionKind.line,
+      _api.createPointOnLineConstraint,
+    );
+  }
+
+  /// The curved-entity half of "point coincident to line/curve" (Circle/Arc
+  /// only) - see [SketchApiClient.createPointOnCircleConstraint].
+  Future<void> addPointOnCircleConstraint() async {
+    if (!canApplyConstraint(ConstraintOptionType.pointOnCircle)) return;
+    await _createPointAndEntityConstraint(
+      (kind) => kind == SelectionKind.circle || kind == SelectionKind.arc,
+      _api.createPointOnCircleConstraint,
+    );
+  }
+
   Future<void> addParallelConstraint() async {
     if (!canApplyConstraint(ConstraintOptionType.parallel)) return;
     await _createSelectionSetConstraint(_api.createParallelConstraint);
@@ -13467,6 +13680,23 @@ class SketchController extends ChangeNotifier {
             sketchLocalOffsetDistance: linearOffsetDistanceFor(entry.key),
             sketchLocalAlongOffset: linearAlongOffsetFor(entry.key),
           ));
+        case PointOnLineConstraintDto c:
+          final labelItem = _pointGlyphLabel(c.pointId, 'Coinc.', entry.key, isSelected, labelOffset);
+          if (labelItem != null) items.add(labelItem);
+        case PointOnCircleConstraintDto c:
+          final labelItem = _pointGlyphLabel(c.pointId, 'Coinc.', entry.key, isSelected, labelOffset);
+          if (labelItem != null) items.add(labelItem);
+        case FixedConstraintDto c:
+          // One small "Fix" glyph per Point this constraint actually
+          // covers (a Line's own 2 endpoints, a Circle's centre + radius +
+          // cardinal Points, ...) - each Point it locks is individually
+          // immovable, so each gets its own marker, all sharing this same
+          // constraint's id (selecting/deleting any one glyph acts on the
+          // whole Fix, same as every other multi-Point constraint here).
+          for (final pointId in c.pointIds) {
+            final labelItem = _pointGlyphLabel(pointId, 'Fix', entry.key, isSelected, labelOffset);
+            if (labelItem != null) items.add(labelItem);
+          }
         default:
           break;
       }
@@ -13627,6 +13857,36 @@ class SketchController extends ChangeNotifier {
       selected: selected,
       anchorA: (a.x, a.y),
       anchorB: (b.x, b.y),
+      text: text,
+      labelOffset: labelOffset,
+      plainBlackText: false,
+    );
+  }
+
+  /// A small label glyph anchored at a single Point - [_pairMidpointLabel]'s
+  /// own "both anchors coincide" case (see `sketch_canvas.dart`'s
+  /// `_constraintLabelCenter`/`_coincidentGlyphNudge` for how that's
+  /// rendered: nudged to one side rather than centered exactly on the
+  /// Point, so the glyph stays legible instead of sitting directly under
+  /// it), reused here for constraints with no natural *second* anchor
+  /// Point of their own - PointOnLineConstraintDto/PointOnCircleConstraintDto
+  /// ("this Point coincides with that Line/Circle", not with another
+  /// Point) and FixedConstraintDto (one glyph per locked Point, not a pair
+  /// relationship at all).
+  ConstraintLabelItem? _pointGlyphLabel(
+    String pointId,
+    String text,
+    String constraintId,
+    bool selected,
+    Offset labelOffset,
+  ) {
+    final p = points[pointId];
+    if (p == null) return null;
+    return ConstraintLabelItem(
+      constraintId: constraintId,
+      selected: selected,
+      anchorA: (p.x, p.y),
+      anchorB: (p.x, p.y),
       text: text,
       labelOffset: labelOffset,
       plainBlackText: false,

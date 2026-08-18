@@ -102,6 +102,7 @@ class SketchRibbon extends StatelessWidget {
         (selectionSet.first.kind == SelectionKind.patternInstance ||
             selectionSet.first.kind == SelectionKind.mirrorInstance);
     final constructionToggles = controller.availableConstructionToggles;
+    final fixToggles = controller.availableFixToggles;
 
     final chips = <Widget>[
       // Stage 19b item 6: only meaningful for a single selected Line -
@@ -158,6 +159,24 @@ class SketchRibbon extends StatelessWidget {
           svgAsset: 'assets/icons/ribbon/ribbon_make_construction.svg',
           label: 'Make Solid',
           onTap: controller.busy ? null : () => controller.setSelectedConstruction(false),
+        ),
+      // The sketcher's "Fix" constraint - deployable to any entity (Point,
+      // Line, Circle, Arc, ...), not gated behind a specific selection-pair
+      // shape the way [SketchController.availableConstraintOptions]' own
+      // table is, so it's offered here as its own always-available toggle
+      // pair instead - same "both can show at once for a mixed selection"
+      // shape as Make-Construction/Make-Solid above.
+      if (fixToggles.showFix)
+        _RibbonActionChip(
+          svgAsset: _svgAssetFor(ConstraintOptionType.fix),
+          label: 'Fix',
+          onTap: controller.busy ? null : () => controller.fixSelected(),
+        ),
+      if (fixToggles.showUnfix)
+        _RibbonActionChip(
+          svgAsset: _svgAssetFor(ConstraintOptionType.unfix),
+          label: 'Unfix',
+          onTap: controller.busy ? null : () => controller.unfixSelected(),
         ),
       for (final option in controller.availableConstraintOptions)
         _RibbonActionChip(
@@ -261,6 +280,18 @@ class SketchRibbon extends StatelessWidget {
       ConstraintOptionType.radius => 'assets/icons/actions/action_dimensions.svg',
       // P45: same fast-path-into-Dimension-mode rationale as radius above.
       ConstraintOptionType.diameter => 'assets/icons/actions/action_dimensions.svg',
+      // Point coincident to line/curve - no dedicated glyph yet, reuses the
+      // same "Coinc." icon the point-to-point row above uses, since both
+      // render the same "Coinc." label and express the same underlying
+      // relationship (this Point sits exactly on that geometry).
+      ConstraintOptionType.pointOnLine => 'assets/icons/ribbon/ribbon_coincident.svg',
+      ConstraintOptionType.pointOnCircle => 'assets/icons/ribbon/ribbon_coincident.svg',
+      // Reuses the same padlock pair the sketchbar's own whole-sketch
+      // fully-constrained indicator already uses (see sketch_screen.dart) -
+      // one consistent "this can't move" visual language across both the
+      // per-Point Fix action here and the whole-sketch status glyph there.
+      ConstraintOptionType.fix => 'assets/icons/sketchbar/sketchbar_lock_full.svg',
+      ConstraintOptionType.unfix => 'assets/icons/sketchbar/sketchbar_lock_partial.svg',
     };
   }
 }
