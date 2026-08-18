@@ -12,11 +12,14 @@ from app.sketch.constraints import (
     DistanceConstraint,
     EqualLengthConstraint,
     EqualRadiusConstraint,
+    FixedConstraint,
     HorizontalConstraint,
     LineDistanceConstraint,
     ParallelConstraint,
     PerpendicularConstraint,
     PointLineDistanceConstraint,
+    PointOnCircleConstraint,
+    PointOnLineConstraint,
     SplineTangentConstraint,
     TangentConstraint,
     VerticalConstraint,
@@ -75,6 +78,8 @@ from app.sketch.schemas import (
     EqualRadiusConstraintCreate,
     EqualRadiusConstraintResponse,
     EqualRadiusPointsConstraintCreate,
+    FixedConstraintCreate,
+    FixedConstraintResponse,
     HorizontalConstraintCreate,
     HorizontalConstraintResponse,
     LineCreate,
@@ -99,6 +104,10 @@ from app.sketch.schemas import (
     PointCreate,
     PointLineDistanceConstraintCreate,
     PointLineDistanceConstraintResponse,
+    PointOnCircleConstraintCreate,
+    PointOnCircleConstraintResponse,
+    PointOnLineConstraintCreate,
+    PointOnLineConstraintResponse,
     PointResponse,
     PointUpdate,
     PolygonCreate,
@@ -468,6 +477,25 @@ def _constraint_response(constraint: Constraint) -> ConstraintResponse:
             radius1_point_id=constraint.radius1_point_id,
             center2_point_id=constraint.center2_point_id,
             radius2_point_id=constraint.radius2_point_id,
+        )
+    if isinstance(constraint, PointOnLineConstraint):
+        return PointOnLineConstraintResponse(
+            id=constraint.id,
+            point_id=constraint.point_id,
+            line_id=constraint.line_id,
+        )
+    if isinstance(constraint, PointOnCircleConstraint):
+        return PointOnCircleConstraintResponse(
+            id=constraint.id,
+            point_id=constraint.point_id,
+            circle_or_arc_id=constraint.circle_or_arc_id,
+            center_point_id=constraint.center_point_id,
+            radius_point_id=constraint.radius_point_id,
+        )
+    if isinstance(constraint, FixedConstraint):
+        return FixedConstraintResponse(
+            id=constraint.id,
+            point_ids=list(constraint.fixed_point_ids),
         )
     raise NotImplementedError(f"No response mapping for constraint type: {constraint.type}")
 
@@ -1376,6 +1404,14 @@ def create_constraint(sketch_id: str, payload: ConstraintCreate) -> ConstraintRe
                 payload.center2_point_id,
                 payload.radius2_point_id,
             )
+        elif isinstance(payload, PointOnLineConstraintCreate):
+            constraint = sketch.add_point_on_line_constraint(payload.point_id, payload.line_id)
+        elif isinstance(payload, PointOnCircleConstraintCreate):
+            constraint = sketch.add_point_on_circle_constraint(
+                payload.point_id, payload.circle_or_arc_id
+            )
+        elif isinstance(payload, FixedConstraintCreate):
+            constraint = sketch.add_fixed_constraint(payload.entity_id)
         else:
             raise NotImplementedError(f"No constraint creation mapping for payload: {payload}")
     except KeyError as exc:
@@ -1436,11 +1472,21 @@ def _scale_sketch_for_first_dimension(
     nothing sharing this sketch is left referring to its pre-scale size.
 
     Falls back to the ordinary single-point reseed when either endpoint is
-    a Point this function must not move: one tracking an external
-    reference (`sketch.external_references` - pinned to a Body vertex/edge,
-    refreshed from OCCT, not freehand-editable) or the sketch origin. There
-    is no "whole freehand sketch" scale to establish against a dimension
-    anchored to something outside the sketch's own control.
+    a Point this function must not move: one `Sketch.is_point_locked` (an
+    external reference pinned to a Body vertex/edge and refreshed from
+    OCCT, or covered by a user-authored FixedConstraint - neither is
+    freehand-editable) or the sketch origin. There is no "whole freehand
+    sketch" scale to establish against a dimension anchored to something
+    outside the sketch's own control.
+
+    Calls `sketch.is_point_locked` rather than re-deriving its own locked-
+    point set (as this used to) - a prior hand-copied version here (`fixed_
+    ids = external_references only, plus origin`) silently missed Points
+    pinned by the since-removed `pinned_point_ids`/now `FixedConstraint`,
+    so a sketch's first real dimension landing on a converted, pinned
+    Circle/Arc centre could wrongly trigger the whole-sketch uniform scale
+    instead of this fallback. `is_point_locked` is the single canonical
+    predicate specifically to prevent this class of drift happening again.
 
     A no-op (same as the reseed it replaces) when the current measured
     value is exactly zero - no direction/ratio to scale by in that
@@ -1451,10 +1497,10 @@ def _scale_sketch_for_first_dimension(
     if point_a is None or point_b is None:
         return
 
-    fixed_ids = set(sketch.external_references)
-    if sketch.origin_point_id is not None:
-        fixed_ids.add(sketch.origin_point_id)
-    if constraint.point_a_id in fixed_ids or constraint.point_b_id in fixed_ids:
+    def is_fixed(point_id: str) -> bool:
+        return point_id == sketch.origin_point_id or sketch.is_point_locked(point_id)
+
+    if is_fixed(constraint.point_a_id) or is_fixed(constraint.point_b_id):
         _reseed_distance_constraint_free_point(sketch, constraint, new_distance)
         return
 
@@ -1472,7 +1518,7 @@ def _scale_sketch_for_first_dimension(
     scale = new_distance / current_distance
     anchor_x, anchor_y = point_a.x, point_a.y
     for point_id, point in sketch.points.items():
-        if point_id in fixed_ids:
+        if is_fixed(point_id):
             continue
         point.x = anchor_x + (point.x - anchor_x) * scale
         point.y = anchor_y + (point.y - anchor_y) * scale

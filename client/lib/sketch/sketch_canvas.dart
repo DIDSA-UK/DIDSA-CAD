@@ -1914,6 +1914,32 @@ Offset? _constraintLabelCenter(
       final p1 = pointScreen + offsetVec;
       final p2 = footScreen + offsetVec;
       return _dimensionLabelPlacement(p1, p2, labelOffset).labelCenter;
+    case PointOnLineConstraintDto c:
+      // Same "single Point, no natural second anchor" shape as Coincident's
+      // own case above, just with the pair collapsed to one Point id -
+      // [_pointPairMidpointScreen] already handles two-identical-anchors
+      // via the same nudge [SketchController._pointGlyphLabel]'s own
+      // anchorA==anchorB does for painting, so hit-testing and painting can
+      // never drift apart here.
+      final base = _pointPairMidpointScreen(controller, transform, c.pointId, c.pointId);
+      return base == null ? null : base + labelOffset;
+    case PointOnCircleConstraintDto c:
+      final base = _pointPairMidpointScreen(controller, transform, c.pointId, c.pointId);
+      return base == null ? null : base + labelOffset;
+    case FixedConstraintDto c:
+      // Known, narrow gap: this function (and dimensionLabelAt, which
+      // calls it once per constraint id) assumes one label center per
+      // constraint - true for every other type here, but FixedConstraint
+      // is the first to paint N independent glyphs (one per locked Point -
+      // see SketchController.constraintOverlayItems' own FixedConstraintDto
+      // case). Hit-testing only the first Point's glyph means a tap on any
+      // *other* one of a multi-Point Fix's glyphs won't select/delete it
+      // this way - Unfix via the ribbon (SketchController.unfixSelected)
+      // remains the fully general path regardless of which Point's glyph
+      // was tapped, so this is an incompleteness, not a dead end.
+      if (c.pointIds.isEmpty) return null;
+      final base = _pointPairMidpointScreen(controller, transform, c.pointIds.first, c.pointIds.first);
+      return base == null ? null : base + labelOffset;
     default:
       return null;
   }
@@ -2442,6 +2468,17 @@ class _SketchPainter extends CustomPainter {
           _paintTwoLineGlyph(canvas, c.line1Id, c.line2Id, 'Collin.', badgeColor, labelOffset);
         case PointLineDistanceConstraintDto c:
           _paintPointLineDistanceDimension(canvas, c, dimensionColor, labelOffset);
+        case PointOnLineConstraintDto c:
+          _paintAxisIndicator(canvas, c.pointId, c.pointId, 'Coinc.', badgeColor, labelOffset);
+        case PointOnCircleConstraintDto c:
+          _paintAxisIndicator(canvas, c.pointId, c.pointId, 'Coinc.', badgeColor, labelOffset);
+        case FixedConstraintDto c:
+          // One small "Fix" glyph per Point this constraint covers - see
+          // SketchController.constraintOverlayItems' own FixedConstraintDto
+          // case for the same one-glyph-per-locked-Point reasoning.
+          for (final pointId in c.pointIds) {
+            _paintAxisIndicator(canvas, pointId, pointId, 'Fix', badgeColor, labelOffset);
+          }
         default:
           break;
       }

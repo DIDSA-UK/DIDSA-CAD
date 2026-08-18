@@ -698,6 +698,12 @@ abstract class ConstraintDto {
         return TangentConstraintDto.fromJson(json);
       case 'equal_radius':
         return EqualRadiusConstraintDto.fromJson(json);
+      case 'point_on_line':
+        return PointOnLineConstraintDto.fromJson(json);
+      case 'point_on_circle':
+        return PointOnCircleConstraintDto.fromJson(json);
+      case 'fixed':
+        return FixedConstraintDto.fromJson(json);
       default:
         return DistanceConstraintDto.fromJson(json);
     }
@@ -1051,6 +1057,78 @@ class EqualRadiusConstraintDto extends ConstraintDto {
         radius1PointId: json['radius1_point_id'] as String,
         center2PointId: json['center2_point_id'] as String,
         radius2PointId: json['radius2_point_id'] as String,
+      );
+}
+
+/// The "Line" half of "point coincident to line/curve" - pins a Point onto
+/// a Line's own infinite extension. See backend `PointOnLineConstraint`.
+class PointOnLineConstraintDto extends ConstraintDto {
+  final String pointId;
+  final String lineId;
+
+  const PointOnLineConstraintDto({
+    required super.id,
+    required this.pointId,
+    required this.lineId,
+  });
+
+  factory PointOnLineConstraintDto.fromJson(Map<String, dynamic> json) => PointOnLineConstraintDto(
+        id: json['id'] as String,
+        pointId: json['point_id'] as String,
+        lineId: json['line_id'] as String,
+      );
+}
+
+/// The curved-entity half of "point coincident to line/curve" - pins a
+/// Point onto a Circle's or Arc's own circular locus. See backend
+/// `PointOnCircleConstraint`.
+class PointOnCircleConstraintDto extends ConstraintDto {
+  final String pointId;
+  final String circleOrArcId;
+
+  /// Captured at creation time, same as [TangentConstraintDto]'s own
+  /// centerPointId/radiusPointId - lets the local solver dispatch this
+  /// constraint directly without a second lookup back to the Circle/Arc
+  /// entity.
+  final String centerPointId;
+  final String radiusPointId;
+
+  const PointOnCircleConstraintDto({
+    required super.id,
+    required this.pointId,
+    required this.circleOrArcId,
+    required this.centerPointId,
+    required this.radiusPointId,
+  });
+
+  factory PointOnCircleConstraintDto.fromJson(Map<String, dynamic> json) => PointOnCircleConstraintDto(
+        id: json['id'] as String,
+        pointId: json['point_id'] as String,
+        circleOrArcId: json['circle_or_arc_id'] as String,
+        centerPointId: json['center_point_id'] as String,
+        radiusPointId: json['radius_point_id'] as String,
+      );
+}
+
+/// The sketcher's "Fix" constraint - pins every one of [pointIds] to its own
+/// current position, removing it from the solver's free unknowns. Created
+/// against a single entity id (a Point, or any multi-Point entity - see
+/// [SketchApiClient.createFixedConstraint]/backend `Sketch.add_fixed_
+/// constraint`), but always reports back the *resolved* Point ids it
+/// actually covers - [pointIds], not the entity id that was passed in - so
+/// the client can drive drag-exclusion/locked styling directly from this
+/// list without re-resolving the entity itself.
+class FixedConstraintDto extends ConstraintDto {
+  final List<String> pointIds;
+
+  const FixedConstraintDto({
+    required super.id,
+    required this.pointIds,
+  });
+
+  factory FixedConstraintDto.fromJson(Map<String, dynamic> json) => FixedConstraintDto(
+        id: json['id'] as String,
+        pointIds: (json['point_ids'] as List<dynamic>).cast<String>(),
       );
 }
 
@@ -2538,6 +2616,68 @@ class SketchApiClient {
                 'radius1_point_id': radius1PointId,
                 'center2_point_id': center2PointId,
                 'radius2_point_id': radius2PointId,
+              }),
+            ),
+        (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// The "Line" half of "point coincident to line/curve" - see
+  /// [PointOnLineConstraintDto]/backend `Sketch.add_point_on_line_constraint`.
+  Future<ConstraintDto> createPointOnLineConstraint(
+    String sketchId,
+    String pointId,
+    String lineId,
+  ) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/constraints'),
+              headers: _headers,
+              body: jsonEncode({
+                'type': 'point_on_line',
+                'point_id': pointId,
+                'line_id': lineId,
+              }),
+            ),
+        (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// The curved-entity half of "point coincident to line/curve" (Circle/Arc
+  /// only) - see [PointOnCircleConstraintDto]/backend `Sketch.add_point_on_
+  /// circle_constraint`.
+  Future<ConstraintDto> createPointOnCircleConstraint(
+    String sketchId,
+    String pointId,
+    String circleOrArcId,
+  ) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/constraints'),
+              headers: _headers,
+              body: jsonEncode({
+                'type': 'point_on_circle',
+                'point_id': pointId,
+                'circle_or_arc_id': circleOrArcId,
+              }),
+            ),
+        (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// The sketcher's "Fix" constraint - [entityId] may be a Point directly,
+  /// or any multi-Point entity (Line/Circle/Arc/...), resolved server-side
+  /// to every Point that defines it - see [FixedConstraintDto]/backend
+  /// `Sketch.add_fixed_constraint`. "Unfix" is just [deleteConstraint] on
+  /// the returned constraint's own id, same as any other constraint type.
+  Future<ConstraintDto> createFixedConstraint(
+    String sketchId,
+    String entityId,
+  ) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/constraints'),
+              headers: _headers,
+              body: jsonEncode({
+                'type': 'fixed',
+                'entity_id': entityId,
               }),
             ),
         (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),

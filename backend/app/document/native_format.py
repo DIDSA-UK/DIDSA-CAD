@@ -75,11 +75,14 @@ from app.sketch.constraints import (
     DistanceConstraint,
     EqualLengthConstraint,
     EqualRadiusConstraint,
+    FixedConstraint,
     HorizontalConstraint,
     LineDistanceConstraint,
     ParallelConstraint,
     PerpendicularConstraint,
     PointLineDistanceConstraint,
+    PointOnCircleConstraint,
+    PointOnLineConstraint,
     SplineTangentConstraint,
     TangentConstraint,
     VerticalConstraint,
@@ -128,6 +131,9 @@ _CONSTRAINT_CLASSES: dict[str, type[Constraint]] = {
     "spline_tangent": SplineTangentConstraint,
     "tangent": TangentConstraint,
     "equal_radius": EqualRadiusConstraint,
+    "point_on_line": PointOnLineConstraint,
+    "point_on_circle": PointOnCircleConstraint,
+    "fixed": FixedConstraint,
 }
 
 
@@ -529,10 +535,14 @@ def sketch_to_dict(sketch: Sketch) -> dict:
             {"point_id": point_id, "body_id": ref.body_id, "vertex_index": ref.vertex_index}
             for point_id, ref in sketch.external_references.items()
         ],
-        # On-device feedback ("converted edges... should be... locked at
-        # that projection point") - see `Sketch.pinned_point_ids`'s own doc
-        # comment.
-        "pinned_point_ids": sorted(sketch.pinned_point_ids),
+        # A converted Arc/Circle centre's own pin (On-device feedback:
+        # "converted edges... should be... locked at that projection
+        # point") is a `FixedConstraint` now, not a separate field - it
+        # round-trips through the ordinary "constraints" list above via
+        # `_constraint_to_dict`/`_CONSTRAINT_CLASSES` like any other
+        # Constraint. See `sketch_from_dict`'s own backward-compat handling
+        # of a pre-FixedConstraint file's now-removed `pinned_point_ids`
+        # key.
         # Sketcher-roadmap Phase 7 (2D Pattern/Mirror).
         "pattern_instances": [_pattern_instance_to_dict(i) for i in sketch.pattern_instances.values()],
         "mirror_instances": [_mirror_instance_to_dict(i) for i in sketch.mirror_instances.values()],
@@ -567,9 +577,21 @@ def sketch_from_dict(data: dict) -> Sketch:
         sketch.external_references[ref_data["point_id"]] = ExternalVertexReference(
             body_id=ref_data["body_id"], vertex_index=ref_data["vertex_index"]
         )
-    # Same "a file saved before this feature existed has no opinion on it"
-    # reasoning as external_references above.
-    sketch.pinned_point_ids.update(data.get("pinned_point_ids", []))
+    # Backward compatibility: a file saved before `pinned_point_ids` was
+    # replaced by `FixedConstraint` still has that key, naming Points a
+    # converted Arc/Circle centre pinned in the old, non-Constraint way
+    # (see `sketch_to_dict`'s own doc comment). One FixedConstraint per
+    # legacy point id here, not a single one covering all of them, since
+    # `Sketch.add_fixed_constraint` also accepts a bare Point id directly
+    # and there's no entity grouping information left to recover from the
+    # old flat id list - each Point becomes its own independently
+    # deletable Fix, which is a strict UX improvement over the un-
+    # deletable set entry it replaces, not a behaviour regression. Points
+    # are already loaded above, so `add_fixed_constraint` can resolve
+    # every id here.
+    for point_id in data.get("pinned_point_ids", []):
+        if point_id in sketch.points and not sketch.is_point_locked(point_id):
+            sketch.add_fixed_constraint(point_id)
     # Sketcher-roadmap Phase 7 (2D Pattern/Mirror) - defaulted to `[]`, same
     # "a file saved before this feature existed has no opinion on it"
     # reasoning as external_references above.

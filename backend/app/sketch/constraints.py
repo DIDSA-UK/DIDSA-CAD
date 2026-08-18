@@ -189,6 +189,35 @@ class SolverBuilder(Protocol):
         that verified combination."""
         ...
 
+    def where_dragged(self, point_handle: int) -> int:
+        """Add a py-slvs constraint (addWhereDragged, SLVS_C_WHERE_DRAGGED)
+        pinning a point handle to whatever (u, v) it was already seeded with
+        this solve, returning the resulting py-slvs constraint handle.
+        FixedConstraint uses this - confirmed empirically (this codebase's
+        installed py-slvs exposes it directly, unlike the native arc/circle
+        entities TangentConstraint's own doc comment found unreliable here):
+        a SOLVE-group point given only this constraint converges with
+        Dof == 0 and stays exactly at its seeded position; paired with a
+        further Constraint tying it to a second, free point, the free point
+        alone moves to satisfy that tie while the dragged point stays put;
+        and a deliberately conflicting pair (e.g. also Coincident with the
+        fixed origin at a different position) reports a genuine solve
+        failure with *this* constraint's own real handle in `system.Failed`
+        - not silent immobility. That last property is what makes this a
+        strictly better fit for FixedConstraint than the fixed-group
+        placement `origin`/`external_references`/`anchor_point_ids` use
+        (see `_PySlvsBuilder.point2d`'s own doc comment): a real py-slvs
+        constraint handle needs no special-casing in `_solve_sketch_once`'s
+        `constraint_id_by_handle` bookkeeping, and a Fixed point that
+        conflicts with another Constraint is diagnosed instead of just
+        never converging. Left origin/external_references/anchor_point_ids
+        on their existing, already-proven mechanism rather than migrating
+        all four to this one for a single PR - a defensible follow-up, not
+        bundled in here to avoid regression risk on that foundational,
+        heavily-exercised path for a purely mechanism-level (not
+        behavioural) gain."""
+        ...
+
 
 class Constraint(ABC):
     """Base type for anything that can live in a Sketch's constraint
@@ -793,3 +822,156 @@ class SplineTangentConstraint(Constraint):
             builder.point2d(self.segment_b_p3),
         )
         return builder.curves_tangent(True, False, segment_a, segment_b)
+
+
+@dataclass
+class PointOnLineConstraint(Constraint):
+    """Forces a Point to lie somewhere on a Line's own infinite extension -
+    the same "point coincident with a line" relationship CollinearConstraint
+    already builds from two of these (see SolverBuilder.point_on_line's own
+    doc comment - the point may sit anywhere along the line, not just
+    between its endpoints, exactly like the standard SolveSpace primitive
+    Collinear itself relies on), exposed here as its own first-class,
+    single-Point constraint rather than only ever appearing as half of a
+    Collinear pair. This is the "Line" half of the sketcher's context-menu
+    "point coincident to line/curve" feature; PointOnCircleConstraint below
+    is the curved-entity half.
+
+    References the Line's id for display/API purposes; its endpoint Point
+    ids are captured at creation time, same rationale as
+    PointLineDistanceConstraint above.
+    """
+
+    id: str
+    point_id: str
+    line_id: str
+    line_start_id: str
+    line_end_id: str
+
+    @property
+    def type(self) -> str:
+        return "point_on_line"
+
+    def point_ids(self) -> tuple[str, str, str]:
+        return (self.point_id, self.line_start_id, self.line_end_id)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        point = builder.point2d(self.point_id)
+        line = builder.line_segment(
+            builder.point2d(self.line_start_id), builder.point2d(self.line_end_id)
+        )
+        return builder.point_on_line(point, line)
+
+
+@dataclass
+class PointOnCircleConstraint(Constraint):
+    """Forces a Point onto a Circle's or Arc's own circular locus -
+    `|point - centre| = radius` - the curved-entity half of the sketcher's
+    "point coincident to line/curve" feature (PointOnLineConstraint above is
+    the straight-line half).
+
+    Expressed via SolverBuilder.equal_length between a virtual centre->point
+    line and the entity's own existing centre->radius-point line, the exact
+    same trick EqualRadiusConstraint uses to tie two Circles/Arcs to one
+    radius (see that class's own doc comment) - no native py-slvs
+    point-on-circle primitive needed (confirmed empirically that this
+    installed py-slvs *does* expose one, addPointOnCircle, but it requires a
+    real py-slvs circle entity built from a centre/normal/radius param,
+    which this codebase deliberately never creates anywhere else - see
+    TangentConstraint's own doc comment for why the native arc/circle
+    entities are avoided throughout. The equal_length approach was verified
+    directly against the installed py-slvs instead: a free Point pulled
+    exactly onto a radius-5 circle, converged, Dof == 1 - one remaining
+    degree of freedom being the Point's own angular position around the
+    circle, exactly as expected).
+
+    References the Circle/Arc's id for display/API purposes; its centre and
+    radius-defining Point ids are captured at creation time, same rationale
+    as TangentConstraint above.
+    """
+
+    id: str
+    point_id: str
+    circle_or_arc_id: str
+    center_point_id: str
+    radius_point_id: str
+
+    @property
+    def type(self) -> str:
+        return "point_on_circle"
+
+    def point_ids(self) -> tuple[str, str, str]:
+        return (self.point_id, self.center_point_id, self.radius_point_id)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        point = builder.point2d(self.point_id)
+        center = builder.point2d(self.center_point_id)
+        radius_point = builder.point2d(self.radius_point_id)
+        point_line = builder.line_segment(center, point)
+        radius_line = builder.line_segment(center, radius_point)
+        return builder.equal_length(point_line, radius_line)
+
+
+@dataclass
+class FixedConstraint(Constraint):
+    """Pins one or more Points to their own current (x, y), removing them
+    from the solver's free unknowns - the sketcher's "Fix" constraint,
+    deployable to any entity (a Point directly, or a Line/Circle/Arc/
+    Ellipse/Polygon/Slot/Rectangle/Spline/Text, fixed by fixing every Point
+    that defines it - see Sketch.add_fixed_constraint, which resolves an
+    entity id to its own constituent Point ids via the same
+    `_entity_defining_point_ids` helper the deletion-cascade path already
+    uses).
+
+    Deliberately the *single* mechanism for "this Point is user-fixed" -
+    replaces the earlier `Sketch.pinned_point_ids` bare set, which achieved
+    the same effect but bypassed the constraint list, DOF accounting,
+    redundancy checking, and needed its own hand-written serialization in
+    native_format.py. A real Constraint gets all of that for free, and -
+    unlike a bare set entry - is deletable (Unfix) the same way any other
+    Constraint already is.
+
+    `add_to_solver` uses SolverBuilder.where_dragged (py-slvs's native
+    addWhereDragged) rather than the fixed-group placement `origin`/
+    `external_references`/the old `pinned_point_ids` all use - see
+    `where_dragged`'s own doc comment for why this is a better fit for a
+    *persisted, user-authored, deletable* fix specifically: it's a real
+    py-slvs constraint with a real handle (no `constraint_id_by_handle`
+    special-casing needed, unlike a group-placement trick would require),
+    it participates in ordinary DOF accounting like every other Constraint
+    here, and a Fixed Point that conflicts with another Constraint reports
+    a genuine solve failure instead of silently never converging. Each of
+    `point_ids` gets its own `where_dragged` call - one real py-slvs
+    constraint per fixed Point, since py-slvs's own primitive only ever
+    pins a single point handle at a time - but only the *first* call's
+    handle is returned/registered for `_solve_sketch_once`'s own
+    `constraint_id_by_handle` blame-tracking, same as
+    CollinearConstraint's own two `point_on_line` calls above (see that
+    class's own doc comment: "second constraint created, handle
+    discarded"). Every Point still gets genuinely pinned regardless - this
+    only affects which single py-slvs handle a solve failure on one of
+    this Constraint's *other* Points gets attributed back to.
+    """
+
+    id: str
+    # list, not tuple, like SketchPatternInstance.source_entity_ids -
+    # app.document.native_format's own `_constraint_to_dict`/`_constraint_
+    # from_dict` round-trip every Constraint through plain JSON (via
+    # dataclasses.asdict + `cls(**kwargs)`), which has no tuple type of its
+    # own; a tuple field here would silently become a list after a single
+    # save/load cycle - this avoids that quiet type drift by just being a
+    # list from the start.
+    fixed_point_ids: list[str]
+
+    @property
+    def type(self) -> str:
+        return "fixed"
+
+    def point_ids(self) -> tuple[str, ...]:
+        return tuple(self.fixed_point_ids)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        handle = builder.where_dragged(builder.point2d(self.fixed_point_ids[0]))
+        for point_id in self.fixed_point_ids[1:]:
+            builder.where_dragged(builder.point2d(point_id))
+        return handle
