@@ -503,8 +503,22 @@ class _ConstraintOverlayPainter extends CustomPainter {
       ..strokeWidth = _dimensionStrokeWidth;
     final p1 = midA + offset;
     final p2 = midB + offset;
-    _drawExtensionLine(canvas, midA, p1, dimPaint);
-    _drawExtensionLine(canvas, midB, p2, dimPaint);
+    // On-device feedback ("the leader lines should originate from the ends
+    // of the lines, not the mid point... to give the feeling the dimension
+    // is line to line, not point to point"): [offset] runs parallel to each
+    // line's own direction (it's how far along the shared length the
+    // draggable connector [p1]/[p2] sits - see [_resolveDimensionOffsetMagnitude]
+    // above), so adding it to a line's real endpoints (not just its
+    // midpoint) produces a genuine witness line from each end, still
+    // parallel to that same line. Four extension lines total (two per line)
+    // instead of one each - the connector segment/arrows between [p1]/[p2]
+    // (and its own drag handling, `part_viewport.dart`'s
+    // `onLineDistanceLabelOffsetDragged`/`onLineDistanceLabelAlongDragged`)
+    // are unchanged.
+    _drawExtensionLine(canvas, line1Start, line1Start + offset, dimPaint);
+    _drawExtensionLine(canvas, line1End, line1End + offset, dimPaint);
+    _drawExtensionLine(canvas, line2Start, line2Start + offset, dimPaint);
+    _drawExtensionLine(canvas, line2End, line2End + offset, dimPaint);
     canvas.drawLine(p1, p2, dimPaint);
     _drawDimensionArrows(canvas, p1, p2, color);
     // Bug fix (on-device feedback: "the dimension...moves left right, it
@@ -860,6 +874,36 @@ Offset canonicalPerpendicular(Offset delta) {
     normal = -normal;
   }
   return normal;
+}
+
+/// On-device feedback ("dragging left moves the dimension left, dragging
+/// right moves the dimension left" / "dragging up moves the dimension down,
+/// dragging down moves the dimension up") - the same bug class
+/// [canonicalPerpendicular] already fixed for the perpendicular *offset*,
+/// but for an axis-locked linear dimension's *along-the-line* drag instead
+/// (`part_viewport.dart`'s `_handleDrawCursorMove`, the `orientation ==
+/// 'vertical' || 'horizontal'` branch).
+///
+/// That branch measures the cursor's raw signed distance from the midpoint
+/// of [pointA]/[pointB]'s own along-axis coordinate - positive whenever the
+/// cursor sits on the numerically-larger-coordinate side, regardless of
+/// which of the two points the solver happened to store as A vs B. But the
+/// consumer, [_dimensionLabelPlacementAlong], places the label at `anchor +
+/// tangent * along` where `tangent = (p2 - p1) / length` and `p1`/`p2`
+/// correspond to [pointA]/[pointB] respectively (`_axisLockedDimensionEndpoints`
+/// builds them directly from each point's own along-axis coordinate) - so
+/// the label only moves in the cursor's actual direction when [pointA]'s
+/// coordinate happens to be the smaller of the two; the other half of the
+/// time [tangent] points the opposite way and the raw signed distance drives
+/// the label backwards. Multiplying the raw delta by this function's return
+/// value cancels that mismatch, mirroring how the *unlocked*/diagonal
+/// dimension branch just below already gets this right "for free" by
+/// dotting the cursor delta directly against `(bScreen - aScreen) /
+/// screenLength` instead of a raw coordinate difference.
+double canonicalAlongSign((double, double) pointA, (double, double) pointB, bool vertical) {
+  final a = vertical ? pointA.$2 : pointA.$1;
+  final b = vertical ? pointB.$2 : pointB.$1;
+  return a <= b ? 1.0 : -1.0;
 }
 
 /// On-device feedback ("dimensions should be movable anywhere, leaders and

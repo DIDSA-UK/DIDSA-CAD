@@ -3,19 +3,12 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show listEquals, setEquals;
 import 'package:flutter_scene/scene.dart';
-// See `_SketchPointMaterial`'s own doc comment for why this internal shim
-// path, not `package:flutter_gpu/gpu.dart` (a different, incompatible type
-// under static analysis) or `package:flutter_scene/gpu.dart` (the
-// package's curated public surface, which doesn't expose RenderPass/
-// HostBuffer/CullMode at all).
-// ignore: implementation_imports
-import 'package:flutter_scene/src/gpu/gpu.dart' as gpu;
 import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart' show MeshDto;
 import '../api/sketch_api_client.dart';
 import '../sketch/pattern_mirror_expansion.dart';
-import 'mesh_geometry.dart' show vertexMarkerSegments;
+import 'mesh_geometry.dart' show AlwaysOnTopMaterial, vertexMarkerSegments;
 import 'reference_planes.dart';
 
 /// C3: a Sketch's local-(x, y) -> world embedding basis - either one of the
@@ -1082,15 +1075,16 @@ Node buildSketchGeometryNode(
   // bias is also the prime suspect behind a since-fixed on-device report
   // of some sub-mm lines disappearing at extreme zoom).
   //
-  // [_SketchMaterial] also folds in round 3's cull-mode fix (Point/
-  // text-handle round-cap disk markers otherwise get silently culled under
-  // [AlphaMode.blend] - see that override's own doc comment for the full
-  // story, including why `package:flutter_scene/src/gpu/gpu.dart`, not
+  // [AlwaysOnTopMaterial] (`mesh_geometry.dart`) also folds in round 3's
+  // cull-mode fix (Point/text-handle round-cap disk markers otherwise get
+  // silently culled under [AlphaMode.blend] - see that class's own doc
+  // comment for the full story, including why
+  // `package:flutter_scene/src/gpu/gpu.dart`, not
   // `package:flutter_gpu/gpu.dart` directly, is what makes this
   // analyzer-clean) - harmless to apply uniformly to every entity here now,
   // not just round-cap disks, since ordinary line-strip triangles have no
   // real "back" to hide either way.
-  UnlitMaterial materialFor(vm.Vector4 color) => _SketchMaterial()
+  UnlitMaterial materialFor(vm.Vector4 color) => AlwaysOnTopMaterial()
     ..alphaMode = AlphaMode.blend
     ..baseColorFactor = color;
   UnlitMaterial outlineMaterialFor(String id) => materialFor(colorFor(id));
@@ -1171,32 +1165,6 @@ Node buildSketchGeometryNode(
   ];
 
   return Node(name: 'sketch-$featureId', mesh: Mesh.primitives(primitives: primitives));
-}
-
-/// [UnlitMaterial] with two of [Material.bind]'s own decisions overridden -
-/// see [materialFor]'s own doc comment (inside [buildSketchGeometryNode])
-/// for the full story of why each is needed and why this is analyzer-clean:
-///
-///  * The depth *test* [Material.bind] would otherwise leave in place
-///    (`gpu.CompareFunction.always` instead) - guarantees every Sketch
-///    primitive draws regardless of what's already in the depth buffer,
-///    with no dependency on any particular GPU's depth-test behavior for
-///    translucent draws.
-///  * The cull-mode decision (`!doubleSided || !isOpaque()` - double-sided
-///    is only ever honored while [AlphaMode.opaque], never for
-///    [AlphaMode.blend]) back open (`gpu.CullMode.none` instead) - a Point/
-///    text-handle marker's own round-cap disk otherwise gets silently
-///    culled again under [AlphaMode.blend].
-///
-/// Both are safe to force per-primitive like this: [Material.bind] runs
-/// immediately before every primitive's own draw call.
-class _SketchMaterial extends UnlitMaterial {
-  @override
-  void bind(gpu.RenderPass pass, gpu.HostBuffer transientsBuffer, Lighting lighting) {
-    super.bind(pass, transientsBuffer, lighting);
-    pass.setDepthCompareOperation(gpu.CompareFunction.always);
-    pass.setCullMode(gpu.CullMode.none);
-  }
 }
 
 /// Sketcher restructure Phase 2 follow-up (P8/P9): side length of the active
@@ -1750,18 +1718,25 @@ Node? buildDrawIndicatorsNode(List<DrawIndicatorMarker> markers) {
       for (final segment in vertexMarkerSegments([marker.point]))
         MeshPrimitive(
           PolylineGeometry([segment.$1, segment.$2], width: marker.width, cap: PolylineCap.round),
-          UnlitMaterial()
-            // On-device feedback ("the invisible cursor being naughty in the
-            // background" - the in-progress draw anchor/snap/candidate dots
-            // this Node renders): same round-cap culling bug as
-            // [buildSketchGeometryNode]'s own Point markers (see that
-            // function's own doc comment) - `doubleSided` is only honored
-            // for opaque materials, so switching out of AlphaMode.blend is
-            // required here too, same trade-off `buildMeshEdgesNode`'s own
-            // doc comment already accepted (a partial-alpha colour, e.g.
-            // [sketchIndicatorCandidateColor]'s 0.9, renders fully solid
-            // instead of its intended slight translucency) - an actually-
-            // visible solid dot beats a correctly-translucent invisible one.
+          // On-device feedback ("the invisible cursor being naughty in the
+          // background" - the in-progress draw anchor/snap/candidate dots
+          // this Node renders): same round-cap culling bug as
+          // [buildSketchGeometryNode]'s own Point markers (see that
+          // function's own doc comment) - `doubleSided` is only honored
+          // for opaque materials, so switching out of AlphaMode.blend is
+          // required here too, same trade-off `buildMeshEdgesNode`'s own
+          // doc comment already accepted (a partial-alpha colour, e.g.
+          // [sketchIndicatorCandidateColor]'s 0.9, renders fully solid
+          // instead of its intended slight translucency) - an actually-
+          // visible solid dot beats a correctly-translucent invisible one.
+          //
+          // [AlwaysOnTopMaterial] (`mesh_geometry.dart`): these indicators -
+          // the in-progress anchor/snap/chain-close dots - are always about
+          // the live, actively-edited Sketch, so (like its committed
+          // geometry) they must stay visible over a Body drawn in front of
+          // them; there's no Body-vs-Sketch distinction to make here, unlike
+          // [buildMeshEdgesNode]'s opt-in `alwaysOnTop`.
+          AlwaysOnTopMaterial()
             ..alphaMode = AlphaMode.opaque
             ..baseColorFactor = marker.color
             ..doubleSided = true,

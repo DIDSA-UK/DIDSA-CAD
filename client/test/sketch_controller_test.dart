@@ -7787,6 +7787,82 @@ void main() {
   });
 
   test(
+      'confirming a fresh lineDistance ghost also creates a ParallelConstraint between the same '
+      'two Lines (on-device feedback: "the user should get the feeling that the dimension is '
+      'line to line, not point to point, and their parallelism should be included") - only a '
+      'LineDistanceConstraint alone (py-slvs addPointLineDistance) does not constrain rotation', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 5);
+    await controller.handleCanvasTap(10, 5);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1);
+    await controller.handleCanvasTap(8, 5.1);
+
+    await controller.confirmGhostValue('lineDistance', 7.0);
+
+    expect(controller.errorMessage, isNull);
+    final lineDistance = controller.constraints.values.whereType<LineDistanceConstraintDto>().single;
+    final parallel = controller.constraints.values.whereType<ParallelConstraintDto>().single;
+    expect({parallel.line1Id, parallel.line2Id}, {lineDistance.line1Id, lineDistance.line2Id});
+  });
+
+  test(
+      'confirming an existing lineDistance ghost a second time does not create a second '
+      'ParallelConstraint - the implied parallelism only needs asserting once, on first creation',
+      () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 5);
+    await controller.handleCanvasTap(10, 5);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1);
+    await controller.handleCanvasTap(8, 5.1);
+    await controller.confirmGhostValue('lineDistance', 7.0);
+
+    await controller.handleCanvasTap(8, 0.1);
+    await controller.handleCanvasTap(8, 5.1);
+    await controller.confirmGhostValue('lineDistance', 9.0);
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.constraints.values.whereType<ParallelConstraintDto>().length, 1);
+  });
+
+  test(
+      'undo after confirming a fresh lineDistance ghost removes the ParallelConstraint first, '
+      'then the LineDistanceConstraint, in two steps - mirrors the auto-coincident Point/'
+      'CoincidentConstraint two-step undo pattern elsewhere in this file', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 5);
+    await controller.handleCanvasTap(10, 5);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1);
+    await controller.handleCanvasTap(8, 5.1);
+    await controller.confirmGhostValue('lineDistance', 7.0);
+    expect(controller.constraints.values.whereType<LineDistanceConstraintDto>(), isNotEmpty);
+    expect(controller.constraints.values.whereType<ParallelConstraintDto>(), isNotEmpty);
+
+    await controller.undo();
+
+    expect(controller.constraints.values.whereType<ParallelConstraintDto>(), isEmpty);
+    expect(controller.constraints.values.whereType<LineDistanceConstraintDto>(), isNotEmpty);
+
+    await controller.undo();
+
+    expect(controller.constraints.values.whereType<LineDistanceConstraintDto>(), isEmpty);
+  });
+
+  test(
       'dimensioning a Slot\'s two parallel straight sides shows a lineDistance ghost, not a '
       'mismatched point-to-point one (on-device feedback: "I experienced an issue adding a '
       'dimension between the two parallel lines in a slot. it offered dimensions between the '

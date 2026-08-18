@@ -10999,6 +10999,24 @@ class SketchController extends ChangeNotifier {
             value,
           );
           _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
+          // On-device feedback ("the user should get the feeling that the
+          // dimension is line to line, not point to point, and their
+          // parallelism should be included in this dimension but not
+          // explicitly shown to the user"): `LineDistanceConstraint` alone
+          // (py-slvs `addPointLineDistance`) only pins one line's own
+          // perpendicular distance to the other - it doesn't constrain
+          // rotation, so the two lines could otherwise rotate out of
+          // parallel while staying numerically valid. Creating a
+          // `ParallelConstraint` alongside it (only on first creation, not
+          // on a later value-only update) makes that implied relationship
+          // real. Its own separate [_pushUndo] entry mirrors this
+          // codebase's established pattern for a single user action that
+          // creates more than one backend object (e.g. materializing a
+          // midpoint Point then a constraint on it, elsewhere in this file)
+          // - two backend objects, two separate undo-stack pushes, popped
+          // one undo-press at a time.
+          final parallel = await _api.createParallelConstraint(_sketchId!, target.lineAId!, target.lineBId!);
+          _pushUndo(() async => _api.deleteConstraint(_sketchId!, parallel.id));
         }
         await _solveAndTrackDof();
         _ghosts = [];

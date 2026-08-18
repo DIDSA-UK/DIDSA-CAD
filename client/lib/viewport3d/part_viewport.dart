@@ -1059,6 +1059,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   Node? _selectedFacesNode;
   Node? _selectedEdgesNode;
   Node? _selectedVerticesNode;
+  // On-device feedback ("dynamic highlight is not showing up on sketch
+  // entities behind a body"): the active-Sketch counterparts of
+  // [_selectedEdgesNode]/[_selectedVerticesNode] above, built with
+  // [AlwaysOnTopMaterial] (via [buildMeshEdgesNode]/[buildVertexMarkersNode]'s
+  // `alwaysOnTop`) so a *selected* (not just hovered) sketch entity stays
+  // visible over a Body too - see [_syncSelectedEntityNodes].
+  Node? _selectedActiveSketchEdgesNode;
+  Node? _selectedActiveSketchVerticesNode;
 
   static final vm.Vector4 _hoverColor = vector4FromHex('#FFC107', opacity: 0.55);
   static final vm.Vector4 _selectedColor = vector4FromHex('#2196F3', opacity: 0.85);
@@ -2761,7 +2769,16 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             final alongReference = vertical
                 ? (linearItem.pointA.$2 + linearItem.pointB.$2) / 2
                 : (linearItem.pointA.$1 + linearItem.pointB.$1) / 2;
-            widget.onLinearLabelAlongDragged?.call(alongAxis - alongReference);
+            // Bug fix (on-device feedback: "dragging left moves the
+            // dimension left, dragging right moves the dimension left" /
+            // up-down likewise inverted): see [canonicalAlongSign]'s own doc
+            // comment - the raw coordinate difference above is positive
+            // whenever the cursor is on the numerically-larger side of
+            // pointA/pointB's midpoint, regardless of which point is
+            // actually A vs B, but the paint side's tangent direction does
+            // depend on that order.
+            final alongSign = canonicalAlongSign(linearItem.pointA, linearItem.pointB, vertical);
+            widget.onLinearLabelAlongDragged?.call((alongAxis - alongReference) * alongSign);
             return;
           }
         } else {
@@ -3129,20 +3146,37 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   void _syncSelectedEntityNodes() {
     final scene = _scene;
     if (scene == null) return;
-    for (final node in [_selectedFacesNode, _selectedEdgesNode, _selectedVerticesNode]) {
+    for (final node in [
+      _selectedFacesNode,
+      _selectedEdgesNode,
+      _selectedVerticesNode,
+      _selectedActiveSketchEdgesNode,
+      _selectedActiveSketchVerticesNode,
+    ]) {
       if (node != null) scene.remove(node);
     }
     _selectedFacesNode = null;
     _selectedEdgesNode = null;
     _selectedVerticesNode = null;
+    _selectedActiveSketchEdgesNode = null;
+    _selectedActiveSketchVerticesNode = null;
 
     final faceTriangles = <(vm.Vector3, vm.Vector3, vm.Vector3)>[];
     final edgeSegments = <(vm.Vector3, vm.Vector3)>[];
     final vertexPositions = <vm.Vector3>[];
-    // Prompt C1: sketchPoint/sketchLine entities feed the same
-    // vertexPositions/edgeSegments accumulators as Body vertices/edges -
-    // the final highlight [Node]s (buildVertexMarkersNode/buildMeshEdgesNode)
-    // don't care whether a point/segment came from mesh or Sketch geometry.
+    // On-device feedback ("dynamic highlight is not showing up on sketch
+    // entities behind a body"): sketch*-kind entities belonging to the
+    // actively-edited Sketch feed these two separate accumulators instead,
+    // so their highlight [Node]s can opt into [AlwaysOnTopMaterial] (via
+    // [buildMeshEdgesNode]/[buildVertexMarkersNode]'s `alwaysOnTop`) the
+    // same way [_buildEntityHighlightNode]'s hover case already does -
+    // matching every other sketch*-kind entity (not belonging to the active
+    // Sketch) and every Body vertex/edge, which keep feeding
+    // vertexPositions/edgeSegments above, normally depth-tested.
+    final edgeSegmentsActiveSketch = <(vm.Vector3, vm.Vector3)>[];
+    final vertexPositionsActiveSketch = <vm.Vector3>[];
+    bool isActiveSketchEntity(SelectionEntityRef entity) =>
+        entity.sketchFeatureId.isNotEmpty && entity.sketchFeatureId == widget.activeSketchFeatureId;
     for (final entity in widget.selectedEntities) {
       switch (entity.kind) {
         case SelectionEntityKind.face:
@@ -3164,49 +3198,57 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         case SelectionEntityKind.sketchPoint:
           final geometry = widget.sketchGeometries[entity.sketchFeatureId];
           final index = geometry?.pointIds.indexOf(entity.sketchEntityId) ?? -1;
-          if (geometry != null && index != -1) vertexPositions.add(geometry.points[index]);
+          if (geometry != null && index != -1) {
+            (isActiveSketchEntity(entity) ? vertexPositionsActiveSketch : vertexPositions)
+                .add(geometry.points[index]);
+          }
         case SelectionEntityKind.sketchLine:
           final geometry = widget.sketchGeometries[entity.sketchFeatureId];
           if (geometry != null) {
+            final target = isActiveSketchEntity(entity) ? edgeSegmentsActiveSketch : edgeSegments;
             for (var i = 0; i < geometry.lineIds.length; i++) {
               if (geometry.lineIds[i] == entity.sketchEntityId) {
-                edgeSegments.add(geometry.lineSegments[i]);
+                target.add(geometry.lineSegments[i]);
               }
             }
           }
         case SelectionEntityKind.sketchCircle:
           final geometry = widget.sketchGeometries[entity.sketchFeatureId];
           if (geometry != null) {
+            final target = isActiveSketchEntity(entity) ? edgeSegmentsActiveSketch : edgeSegments;
             for (var i = 0; i < geometry.circleIds.length; i++) {
               if (geometry.circleIds[i] == entity.sketchEntityId) {
-                edgeSegments.addAll(_polygonSegments(geometry.circlePolygons[i]));
+                target.addAll(_polygonSegments(geometry.circlePolygons[i]));
               }
             }
           }
         case SelectionEntityKind.sketchArc:
           final geometry = widget.sketchGeometries[entity.sketchFeatureId];
           if (geometry != null) {
+            final target = isActiveSketchEntity(entity) ? edgeSegmentsActiveSketch : edgeSegments;
             for (var i = 0; i < geometry.arcIds.length; i++) {
               if (geometry.arcIds[i] == entity.sketchEntityId) {
-                edgeSegments.addAll(_polygonSegments(geometry.arcPolylines[i]));
+                target.addAll(_polygonSegments(geometry.arcPolylines[i]));
               }
             }
           }
         case SelectionEntityKind.sketchEllipse:
           final geometry = widget.sketchGeometries[entity.sketchFeatureId];
           if (geometry != null) {
+            final target = isActiveSketchEntity(entity) ? edgeSegmentsActiveSketch : edgeSegments;
             for (var i = 0; i < geometry.ellipseIds.length; i++) {
               if (geometry.ellipseIds[i] == entity.sketchEntityId) {
-                edgeSegments.addAll(_polygonSegments(geometry.ellipsePolygons[i]));
+                target.addAll(_polygonSegments(geometry.ellipsePolygons[i]));
               }
             }
           }
         case SelectionEntityKind.sketchSpline:
           final geometry = widget.sketchGeometries[entity.sketchFeatureId];
           if (geometry != null) {
+            final target = isActiveSketchEntity(entity) ? edgeSegmentsActiveSketch : edgeSegments;
             for (var i = 0; i < geometry.splineIds.length; i++) {
               if (geometry.splineIds[i] == entity.sketchEntityId) {
-                edgeSegments.addAll(_polygonSegments(geometry.splinePolylines[i]));
+                target.addAll(_polygonSegments(geometry.splinePolylines[i]));
               }
             }
           }
@@ -3220,14 +3262,16 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           // same "append every matching index" loop, not just the first.
           final geometry = widget.sketchGeometries[entity.sketchFeatureId];
           if (geometry != null) {
+            final target = isActiveSketchEntity(entity) ? edgeSegmentsActiveSketch : edgeSegments;
             for (var i = 0; i < geometry.textIds.length; i++) {
               if (geometry.textIds[i] == entity.sketchEntityId) {
-                edgeSegments.addAll(_polygonSegments(geometry.textPolygons[i]));
+                target.addAll(_polygonSegments(geometry.textPolygons[i]));
               }
             }
           }
         case SelectionEntityKind.sketchPatternMirrorInstance:
-          edgeSegments.addAll(widget.patternMirrorGhostSegments[entity.sketchEntityId] ?? const []);
+          (isActiveSketchEntity(entity) ? edgeSegmentsActiveSketch : edgeSegments)
+              .addAll(widget.patternMirrorGhostSegments[entity.sketchEntityId] ?? const []);
         case SelectionEntityKind.referencePlane:
         case SelectionEntityKind.createPlane:
           // C5: a selected plane's highlight is its own quad rendering
@@ -3269,6 +3313,21 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       scene.add(node);
       _selectedVerticesNode = node;
     }
+    if (edgeSegmentsActiveSketch.isNotEmpty) {
+      final node = buildMeshEdgesNode(
+        edgeSegmentsActiveSketch,
+        color: _selectedEdgeColor,
+        width: kHighlightEdgeStrokeWidth,
+        alwaysOnTop: true,
+      );
+      scene.add(node);
+      _selectedActiveSketchEdgesNode = node;
+    }
+    if (vertexPositionsActiveSketch.isNotEmpty) {
+      final node = buildVertexMarkersNode(vertexPositionsActiveSketch, color: _selectedColor, alwaysOnTop: true);
+      scene.add(node);
+      _selectedActiveSketchVerticesNode = node;
+    }
   }
 
   /// Consecutive-pair segments making up a rendered Circle outline (see
@@ -3290,6 +3349,17 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// [SelectionEntityRef.sketchFeatureId]) instead of [_bodyFor] - mirrors
   /// [_syncSelectedEntityNodes]'s own per-case lookup.
   Node? _buildEntityHighlightNode(SelectionEntityRef entity, vm.Vector4 color) {
+    // On-device feedback ("dynamic highlight is not showing up on sketch
+    // entities behind a body"): a `sketch*`-kind entity belonging to the
+    // actively-edited Sketch gets the same always-visible-over-a-Body
+    // treatment its own committed geometry already has (see
+    // [AlwaysOnTopMaterial]'s own doc comment, `mesh_geometry.dart`) - a
+    // Body's own face/edge/vertex highlight (this same [entity.kind] switch,
+    // `face`/`edge`/`vertex`/`body` cases below) stays normally depth-tested
+    // regardless, since a highlighted Body edge behind another Body face
+    // should still be hidden.
+    final alwaysOnTop = entity.sketchFeatureId.isNotEmpty &&
+        entity.sketchFeatureId == widget.activeSketchFeatureId;
     switch (entity.kind) {
       case SelectionEntityKind.face:
         final body = _bodyFor(entity.bodyId);
@@ -3330,7 +3400,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         if (geometry == null) return null;
         final index = geometry.pointIds.indexOf(entity.sketchEntityId);
         if (index == -1) return null;
-        return buildVertexMarkersNode([geometry.points[index]], color: color);
+        return buildVertexMarkersNode([geometry.points[index]], color: color, alwaysOnTop: alwaysOnTop);
       case SelectionEntityKind.sketchLine:
         final geometry = widget.sketchGeometries[entity.sketchFeatureId];
         if (geometry == null) return null;
@@ -3344,7 +3414,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             if (entityIds.contains(geometry.lineIds[i])) geometry.lineSegments[i],
         ];
         if (segments.isEmpty) return null;
-        return buildMeshEdgesNode(segments, color: color, width: kHighlightEdgeStrokeWidth);
+        return buildMeshEdgesNode(
+          segments,
+          color: color,
+          width: kHighlightEdgeStrokeWidth,
+          alwaysOnTop: alwaysOnTop,
+        );
       case SelectionEntityKind.sketchCircle:
         final geometry = widget.sketchGeometries[entity.sketchFeatureId];
         if (geometry == null) return null;
@@ -3360,7 +3435,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             if (entityIds.contains(geometry.circleIds[i])) ..._polygonSegments(geometry.circlePolygons[i]),
         ];
         if (circleSegments.isEmpty) return null;
-        return buildMeshEdgesNode(circleSegments, color: color, width: kHighlightEdgeStrokeWidth);
+        return buildMeshEdgesNode(
+          circleSegments,
+          color: color,
+          width: kHighlightEdgeStrokeWidth,
+          alwaysOnTop: alwaysOnTop,
+        );
       case SelectionEntityKind.sketchArc:
         final geometry = widget.sketchGeometries[entity.sketchFeatureId];
         if (geometry == null) return null;
@@ -3368,7 +3448,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         if (index == -1) return null;
         final segments = _polygonSegments(geometry.arcPolylines[index]);
         if (segments.isEmpty) return null;
-        return buildMeshEdgesNode(segments, color: color, width: kHighlightEdgeStrokeWidth);
+        return buildMeshEdgesNode(
+          segments,
+          color: color,
+          width: kHighlightEdgeStrokeWidth,
+          alwaysOnTop: alwaysOnTop,
+        );
       case SelectionEntityKind.sketchEllipse:
         final geometry = widget.sketchGeometries[entity.sketchFeatureId];
         if (geometry == null) return null;
@@ -3376,7 +3461,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         if (index == -1) return null;
         final segments = _polygonSegments(geometry.ellipsePolygons[index]);
         if (segments.isEmpty) return null;
-        return buildMeshEdgesNode(segments, color: color, width: kHighlightEdgeStrokeWidth);
+        return buildMeshEdgesNode(
+          segments,
+          color: color,
+          width: kHighlightEdgeStrokeWidth,
+          alwaysOnTop: alwaysOnTop,
+        );
       case SelectionEntityKind.sketchSpline:
         final geometry = widget.sketchGeometries[entity.sketchFeatureId];
         if (geometry == null) return null;
@@ -3384,7 +3474,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         if (index == -1) return null;
         final segments = _polygonSegments(geometry.splinePolylines[index]);
         if (segments.isEmpty) return null;
-        return buildMeshEdgesNode(segments, color: color, width: kHighlightEdgeStrokeWidth);
+        return buildMeshEdgesNode(
+          segments,
+          color: color,
+          width: kHighlightEdgeStrokeWidth,
+          alwaysOnTop: alwaysOnTop,
+        );
       case SelectionEntityKind.referencePlane:
         final plane = entity.referencePlaneKind;
         if (plane == null) return null;
@@ -3409,11 +3504,21 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             if (geometry.textIds[i] == entity.sketchEntityId) ..._polygonSegments(geometry.textPolygons[i]),
         ];
         if (textSegments.isEmpty) return null;
-        return buildMeshEdgesNode(textSegments, color: color, width: kHighlightEdgeStrokeWidth);
+        return buildMeshEdgesNode(
+          textSegments,
+          color: color,
+          width: kHighlightEdgeStrokeWidth,
+          alwaysOnTop: alwaysOnTop,
+        );
       case SelectionEntityKind.sketchPatternMirrorInstance:
         final segments = widget.patternMirrorGhostSegments[entity.sketchEntityId];
         if (segments == null || segments.isEmpty) return null;
-        return buildMeshEdgesNode(segments, color: color, width: kHighlightEdgeStrokeWidth);
+        return buildMeshEdgesNode(
+          segments,
+          color: color,
+          width: kHighlightEdgeStrokeWidth,
+          alwaysOnTop: alwaysOnTop,
+        );
     }
   }
 
@@ -3525,6 +3630,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                     if (_hoverNode != null) _hoverNode!,
                     if (_selectedEdgesNode != null) _selectedEdgesNode!,
                     if (_selectedVerticesNode != null) _selectedVerticesNode!,
+                    if (_selectedActiveSketchEdgesNode != null) _selectedActiveSketchEdgesNode!,
+                    if (_selectedActiveSketchVerticesNode != null) _selectedActiveSketchVerticesNode!,
                   ],
                   anchorTriadAtOrigin: widget.anchorTriadAtOrigin,
                 ),
