@@ -18,6 +18,7 @@ import 'slvs_bindings.dart';
 /// integer handles returned by [point2d]/[lineSegment]/[cubic].
 abstract class SolverBuilder {
   int point2d(String pointId);
+  int ephemeralPoint2d(String seedFromPointId);
   int distance(int pointAHandle, int pointBHandle, double value);
   int horizontalDistance(String pointAId, String pointBId, double value);
   int verticalDistance(String pointAId, String pointBId, double value);
@@ -92,6 +93,23 @@ class NativeSolverBuilder implements SolverBuilder {
       final pv = _b.addParamV(_sys, y, group);
       return _b.addPoint2d(_sys, _workplane, pu, pv, group);
     });
+  }
+
+  /// Mirrors solver.py's `ephemeral_point2d` - a fresh, un-memoized py-slvs
+  /// point every call (unlike [point2d], never cached in [_pointHandles]),
+  /// always in the free-to-move solve group regardless of whether the seed
+  /// Point itself happens to be pinned, since an ephemeral point's own
+  /// position is never meant to be pinned to anything - only the seed
+  /// *value* is borrowed, not the seed Point's own pinned-ness. Used by
+  /// [PointOnEllipseConstraintDto]'s Trammel of Archimedes construction for
+  /// its two solver-internal auxiliary points, which have no meaning of
+  /// their own a user could ever select/drag.
+  @override
+  int ephemeralPoint2d(String seedFromPointId) {
+    final (x, y) = _pointXY(seedFromPointId);
+    final pu = _b.addParamV(_sys, x, slvsSolveGroup);
+    final pv = _b.addParamV(_sys, y, slvsSolveGroup);
+    return _b.addPoint2d(_sys, _workplane, pu, pv, slvsSolveGroup);
   }
 
   @override

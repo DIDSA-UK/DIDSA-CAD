@@ -286,6 +286,7 @@ class SketchRibbon extends StatelessWidget {
       // relationship (this Point sits exactly on that geometry).
       ConstraintOptionType.pointOnLine => 'assets/icons/ribbon/ribbon_coincident.svg',
       ConstraintOptionType.pointOnCircle => 'assets/icons/ribbon/ribbon_coincident.svg',
+      ConstraintOptionType.pointOnEllipse => 'assets/icons/ribbon/ribbon_coincident.svg',
       // Reuses the same padlock pair the sketchbar's own whole-sketch
       // fully-constrained indicator already uses (see sketch_screen.dart) -
       // one consistent "this can't move" visual language across both the

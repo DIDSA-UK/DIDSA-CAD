@@ -1287,6 +1287,7 @@ enum ConstraintOptionType {
   diameter,
   pointOnLine,
   pointOnCircle,
+  pointOnEllipse,
   fix,
   unfix,
 }
@@ -8379,6 +8380,13 @@ class SketchController extends ChangeNotifier {
       return const [ConstraintOption(type: ConstraintOptionType.pointOnCircle, label: 'Coinc.', wired: true)];
     }
 
+    // Same fix, ellipse half: a Point coincident with an Ellipse's own
+    // curve via the Trammel of Archimedes - see backend
+    // PointOnEllipseConstraint.
+    if (kinds.length == 2 && kinds.contains(SelectionKind.point) && kinds.contains(SelectionKind.ellipse)) {
+      return const [ConstraintOption(type: ConstraintOptionType.pointOnEllipse, label: 'Coinc.', wired: true)];
+    }
+
     return const [];
   }
 
@@ -8419,6 +8427,9 @@ class SketchController extends ChangeNotifier {
         break;
       case ConstraintOptionType.pointOnCircle:
         await addPointOnCircleConstraint();
+        break;
+      case ConstraintOptionType.pointOnEllipse:
+        await addPointOnEllipseConstraint();
         break;
       default:
         break;
@@ -11488,6 +11499,16 @@ class SketchController extends ChangeNotifier {
     );
   }
 
+  /// The ellipse half of "point coincident to line/curve" - see
+  /// [SketchApiClient.createPointOnEllipseConstraint].
+  Future<void> addPointOnEllipseConstraint() async {
+    if (!canApplyConstraint(ConstraintOptionType.pointOnEllipse)) return;
+    await _createPointAndEntityConstraint(
+      (kind) => kind == SelectionKind.ellipse,
+      _api.createPointOnEllipseConstraint,
+    );
+  }
+
   Future<void> addParallelConstraint() async {
     if (!canApplyConstraint(ConstraintOptionType.parallel)) return;
     await _createSelectionSetConstraint(_api.createParallelConstraint);
@@ -13686,6 +13707,9 @@ class SketchController extends ChangeNotifier {
         case PointOnCircleConstraintDto c:
           final labelItem = _pointGlyphLabel(c.pointId, 'Coinc.', entry.key, isSelected, labelOffset);
           if (labelItem != null) items.add(labelItem);
+        case PointOnEllipseConstraintDto c:
+          final labelItem = _pointGlyphLabel(c.pointId, 'Coinc.', entry.key, isSelected, labelOffset);
+          if (labelItem != null) items.add(labelItem);
         case FixedConstraintDto c:
           // One small "Fix" glyph per Point this constraint actually
           // covers (a Line's own 2 endpoints, a Circle's centre + radius +
@@ -13869,10 +13893,10 @@ class SketchController extends ChangeNotifier {
   /// rendered: nudged to one side rather than centered exactly on the
   /// Point, so the glyph stays legible instead of sitting directly under
   /// it), reused here for constraints with no natural *second* anchor
-  /// Point of their own - PointOnLineConstraintDto/PointOnCircleConstraintDto
-  /// ("this Point coincides with that Line/Circle", not with another
-  /// Point) and FixedConstraintDto (one glyph per locked Point, not a pair
-  /// relationship at all).
+  /// Point of their own - PointOnLineConstraintDto/PointOnCircleConstraintDto/
+  /// PointOnEllipseConstraintDto ("this Point coincides with that
+  /// Line/Circle/Ellipse", not with another Point) and FixedConstraintDto
+  /// (one glyph per locked Point, not a pair relationship at all).
   ConstraintLabelItem? _pointGlyphLabel(
     String pointId,
     String text,

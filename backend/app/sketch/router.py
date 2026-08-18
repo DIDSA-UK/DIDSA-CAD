@@ -19,6 +19,7 @@ from app.sketch.constraints import (
     PerpendicularConstraint,
     PointLineDistanceConstraint,
     PointOnCircleConstraint,
+    PointOnEllipseConstraint,
     PointOnLineConstraint,
     SplineTangentConstraint,
     TangentConstraint,
@@ -106,6 +107,8 @@ from app.sketch.schemas import (
     PointLineDistanceConstraintResponse,
     PointOnCircleConstraintCreate,
     PointOnCircleConstraintResponse,
+    PointOnEllipseConstraintCreate,
+    PointOnEllipseConstraintResponse,
     PointOnLineConstraintCreate,
     PointOnLineConstraintResponse,
     PointResponse,
@@ -491,6 +494,15 @@ def _constraint_response(constraint: Constraint) -> ConstraintResponse:
             circle_or_arc_id=constraint.circle_or_arc_id,
             center_point_id=constraint.center_point_id,
             radius_point_id=constraint.radius_point_id,
+        )
+    if isinstance(constraint, PointOnEllipseConstraint):
+        return PointOnEllipseConstraintResponse(
+            id=constraint.id,
+            point_id=constraint.point_id,
+            ellipse_id=constraint.ellipse_id,
+            center_point_id=constraint.center_point_id,
+            major_point_id=constraint.major_point_id,
+            minor_point_id=constraint.minor_point_id,
         )
     if isinstance(constraint, FixedConstraint):
         return FixedConstraintResponse(
@@ -1410,6 +1422,8 @@ def create_constraint(sketch_id: str, payload: ConstraintCreate) -> ConstraintRe
             constraint = sketch.add_point_on_circle_constraint(
                 payload.point_id, payload.circle_or_arc_id
             )
+        elif isinstance(payload, PointOnEllipseConstraintCreate):
+            constraint = sketch.add_point_on_ellipse_constraint(payload.point_id, payload.ellipse_id)
         elif isinstance(payload, FixedConstraintCreate):
             constraint = sketch.add_fixed_constraint(payload.entity_id)
         else:

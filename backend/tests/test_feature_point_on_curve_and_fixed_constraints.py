@@ -6,7 +6,12 @@ from fastapi.testclient import TestClient
 
 from app.document.native_format import sketch_from_dict, sketch_to_dict
 from app.main import app
-from app.sketch.constraints import FixedConstraint, PointOnCircleConstraint, PointOnLineConstraint
+from app.sketch.constraints import (
+    FixedConstraint,
+    PointOnCircleConstraint,
+    PointOnEllipseConstraint,
+    PointOnLineConstraint,
+)
 from app.sketch.models import Plane, Sketch
 from app.sketch.solver import solve_sketch
 from tests.conftest import TEST_API_KEY
@@ -420,3 +425,179 @@ def test_loading_a_pre_fixed_constraint_file_migrates_pinned_point_ids_to_a_real
     fixed_constraints = [c for c in restored.constraints.values() if isinstance(c, FixedConstraint)]
     assert len(fixed_constraints) == 1
     assert fixed_constraints[0].fixed_point_ids == [legacy_pinned_point.id]
+
+
+# --- PointOnEllipseConstraint: pure domain model ------------------------------
+
+
+def test_add_point_on_ellipse_constraint_between_an_existing_point_and_ellipse():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    ellipse = sketch.add_ellipse(center.id, major_radius=8.0, angle=0.0, minor_radius=3.0)
+    p = sketch.add_point(5.0, 2.0)
+
+    constraint = sketch.add_point_on_ellipse_constraint(p.id, ellipse.id)
+
+    assert isinstance(constraint, PointOnEllipseConstraint)
+    assert constraint.id in sketch.constraints
+    assert constraint.center_point_id == center.id
+    assert constraint.major_point_id == ellipse.major_point_id
+    assert constraint.minor_point_id == ellipse.minor_point_id
+
+
+def test_add_point_on_ellipse_constraint_with_unknown_point_raises():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    ellipse = sketch.add_ellipse(center.id, major_radius=8.0, angle=0.0, minor_radius=3.0)
+    with pytest.raises(KeyError):
+        sketch.add_point_on_ellipse_constraint("does-not-exist", ellipse.id)
+
+
+def test_add_point_on_ellipse_constraint_with_non_ellipse_entity_raises():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(10.0, 0.0)
+    line = sketch.add_line(a.id, b.id)
+    p = sketch.add_point(1.0, 1.0)
+    with pytest.raises(KeyError):
+        sketch.add_point_on_ellipse_constraint(p.id, line.id)
+
+
+def test_add_point_on_ellipse_constraint_rejects_the_ellipses_own_centre():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    ellipse = sketch.add_ellipse(center.id, major_radius=8.0, angle=0.0, minor_radius=3.0)
+    with pytest.raises(ValueError):
+        sketch.add_point_on_ellipse_constraint(center.id, ellipse.id)
+
+
+def _ellipse_equation_residual(sketch: Sketch, ellipse, point_id: str) -> float:
+    """`(u/a)^2 + (v/b)^2 - 1` in the Ellipse's own (possibly rotated,
+    possibly off-origin) frame - reads centre/major/minor Point positions
+    straight from `sketch.points` rather than the literal values the
+    Ellipse was created with, so this stays correct even after a solve
+    that moved the Ellipse itself (e.g. an unfixed one)."""
+    center = sketch.points[ellipse.center_point_id]
+    major = sketch.points[ellipse.major_point_id]
+    minor = sketch.points[ellipse.minor_point_id]
+    point = sketch.points[point_id]
+    major_radius = math.hypot(major.x - center.x, major.y - center.y)
+    minor_radius = math.hypot(minor.x - center.x, minor.y - center.y)
+    angle = math.atan2(major.y - center.y, major.x - center.x)
+    dx, dy = point.x - center.x, point.y - center.y
+    ca, sa = math.cos(-angle), math.sin(-angle)
+    u = dx * ca - dy * sa
+    v = dx * sa + dy * ca
+    return (u / major_radius) ** 2 + (v / minor_radius) ** 2 - 1.0
+
+
+def test_solving_pulls_a_free_point_onto_a_fixed_ellipse():
+    """Mirrors test_solving_pulls_a_free_point_onto_a_fixed_circle - the
+    Ellipse's own defining Points are pinned via FixedConstraint (the
+    single, unified "this is immobile" mechanism every entity type shares)
+    so the point-on-curve effect is isolated from the rest of an
+    under-determined system finding some other valid configuration."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    ellipse = sketch.add_ellipse(center.id, major_radius=8.0, angle=0.0, minor_radius=3.0)
+    sketch.add_fixed_constraint(ellipse.id)
+    p = sketch.add_point(5.0, 2.0)
+    sketch.add_point_on_ellipse_constraint(p.id, ellipse.id)
+
+    result = solve_sketch(sketch)
+
+    assert result.converged, result.detail
+    assert result.dof == 1
+    assert _ellipse_equation_residual(sketch, ellipse, p.id) == pytest.approx(0.0, abs=1e-6)
+    assert sketch.points[center.id].x == pytest.approx(0.0)
+    assert sketch.points[center.id].y == pytest.approx(0.0)
+
+
+def test_solving_pulls_a_free_point_onto_a_fixed_rotated_ellipse():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(-3.0, 5.0)
+    ellipse = sketch.add_ellipse(
+        center.id, major_radius=7.0, angle=math.radians(-60), minor_radius=4.0
+    )
+    sketch.add_fixed_constraint(ellipse.id)
+    p = sketch.add_point(-1.0, 2.0)
+    sketch.add_point_on_ellipse_constraint(p.id, ellipse.id)
+
+    result = solve_sketch(sketch)
+
+    assert result.converged, result.detail
+    assert result.dof == 1
+    assert _ellipse_equation_residual(sketch, ellipse, p.id) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_fixing_an_ellipse_alone_converges_cleanly():
+    """Regression test for a gap this feature's own verification uncovered:
+    `add_fixed_constraint` on an Ellipse (no PointOnEllipseConstraint
+    involved at all) used to report `converged=False`/`dof=0` even though
+    every Point landed exactly where it should - `add_ellipse`'s own
+    DistanceConstraint(radius)/PerpendicularConstraint chain becomes a
+    zero-derivative ("redundant") row in py-slvs's Jacobian the moment
+    every Point it references is pinned, the same structural situation
+    Circle's own Fix already had to be rescued from (see
+    `_REDUNDANCY_SAFE_CONSTRAINT_TYPES`'s own comment in solver.py) - see
+    the new override in `_solve_sketch_once` (gated on
+    `_ellipse_owned_at_midpoint_constraint_ids`) for the fix."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    ellipse = sketch.add_ellipse(center.id, major_radius=8.0, angle=0.0, minor_radius=3.0)
+
+    sketch.add_fixed_constraint(ellipse.id)
+    result = solve_sketch(sketch)
+
+    assert result.converged, result.detail
+
+
+def test_point_on_ellipse_constraint_over_the_api():
+    sketch = client.post("/sketch/sketches", json={"plane": "XY"}).json()
+    sketch_id = sketch["id"]
+    center = client.post(f"/sketch/sketches/{sketch_id}/points", json={"x": 0, "y": 0}).json()
+    ellipse = client.post(
+        f"/sketch/sketches/{sketch_id}/ellipses",
+        json={"center_point_id": center["id"], "major_radius": 8, "angle": 0, "minor_radius": 3},
+    ).json()
+    p = client.post(f"/sketch/sketches/{sketch_id}/points", json={"x": 5, "y": 2}).json()
+
+    resp = client.post(
+        f"/sketch/sketches/{sketch_id}/constraints",
+        json={"type": "point_on_ellipse", "point_id": p["id"], "ellipse_id": ellipse["id"]},
+    )
+
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["type"] == "point_on_ellipse"
+    assert body["ellipse_id"] == ellipse["id"]
+    assert body["center_point_id"] == center["id"]
+    assert body["major_point_id"] == ellipse["major_point_id"]
+    assert body["minor_point_id"] == ellipse["minor_point_id"]
+
+    fix_resp = client.post(
+        f"/sketch/sketches/{sketch_id}/constraints",
+        json={"type": "fixed", "entity_id": ellipse["id"]},
+    )
+    assert fix_resp.status_code == 201
+
+    solve_resp = client.post(f"/sketch/sketches/{sketch_id}/solve")
+    assert solve_resp.status_code == 200
+    assert solve_resp.json()["converged"] is True
+
+
+def test_point_on_ellipse_constraint_round_trips_through_native_format_json():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    ellipse = sketch.add_ellipse(center.id, major_radius=8.0, angle=0.0, minor_radius=3.0)
+    p = sketch.add_point(5.0, 2.0)
+    sketch.add_point_on_ellipse_constraint(p.id, ellipse.id)
+    sketch.add_fixed_constraint(ellipse.id)
+
+    data = sketch_to_dict(sketch)
+    restored = sketch_from_dict(json.loads(json.dumps(data)))
+
+    restored_types = {c.type for c in restored.constraints.values()}
+    assert "point_on_ellipse" in restored_types
+    result = solve_sketch(restored)
+    assert result.converged, result.detail

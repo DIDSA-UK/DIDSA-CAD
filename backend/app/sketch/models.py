@@ -22,6 +22,7 @@ from app.sketch.constraints import (
     PerpendicularConstraint,
     PointLineDistanceConstraint,
     PointOnCircleConstraint,
+    PointOnEllipseConstraint,
     PointOnLineConstraint,
     SplineTangentConstraint,
     TangentConstraint,
@@ -4031,10 +4032,12 @@ class Sketch:
         pins point_id onto circle_or_arc_id's own circular locus (see
         PointOnCircleConstraint's own doc comment for why this reuses
         equal_length rather than a native point-on-circle primitive).
-        Ellipse/Spline are deliberately out of scope - neither has a clean
-        py-slvs-primitive equivalent the rest of this module already
-        trusts, the same reasoning TangentConstraint/EqualRadiusConstraint
-        already apply to avoid native curve entities."""
+        Ellipse is covered separately (see add_point_on_ellipse_constraint)
+        - it needs a materially different construction (the Trammel of
+        Archimedes), not just this same trick applied to a second curve
+        type. Spline remains out of scope - no equivalent construction
+        found (see add_point_on_ellipse_constraint's own doc comment for
+        why the ellipse case works and spline doesn't)."""
         center_point_id, radius_point_id = self._center_radius_point_ids(circle_or_arc_id)
         if point_id not in self.points:
             raise KeyError(point_id)
@@ -4047,6 +4050,42 @@ class Sketch:
             circle_or_arc_id=circle_or_arc_id,
             center_point_id=center_point_id,
             radius_point_id=radius_point_id,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
+
+    def add_point_on_ellipse_constraint(
+        self, point_id: str, ellipse_id: str
+    ) -> PointOnEllipseConstraint:
+        """The ellipse half of "point coincident to line/curve" - pins
+        point_id onto ellipse_id's own curve via the Trammel of Archimedes
+        (see PointOnEllipseConstraint's own doc comment for the full
+        construction and its empirical verification). Spline remains out
+        of scope: De Casteljau's algorithm (the standard way to evaluate a
+        point on a cubic Bezier) needs the same interpolation *ratio*
+        shared consistently across multiple independent line segments, and
+        no construction from this module's own primitives was found that
+        ties two ratios together without already knowing one of them - the
+        parallel-line shortcut that works for some similar-triangle
+        problems doesn't hold here (checked directly), and unlike the
+        ellipse case there's no simpler special-case linkage to fall back
+        on, since a general cubic has no comparable single-parameter
+        mechanical analogue the way a conic section does."""
+        ellipse = self.entities.get(ellipse_id)
+        if not isinstance(ellipse, Ellipse):
+            raise KeyError(ellipse_id)
+        if point_id not in self.points:
+            raise KeyError(point_id)
+        if point_id == ellipse.center_point_id:
+            raise ValueError("Point cannot be coincident with its own ellipse's centre")
+
+        constraint = PointOnEllipseConstraint(
+            id=str(uuid.uuid4()),
+            point_id=point_id,
+            ellipse_id=ellipse_id,
+            center_point_id=ellipse.center_point_id,
+            major_point_id=ellipse.major_point_id,
+            minor_point_id=ellipse.minor_point_id,
         )
         self.constraints[constraint.id] = constraint
         return constraint

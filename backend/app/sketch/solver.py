@@ -16,6 +16,7 @@ from py_slvs import slvs
 
 from app.sketch.constraints import (
     AngleConstraint,
+    AtMidpointConstraint,
     CoincidentConstraint,
     CollinearConstraint,
     DistanceConstraint,
@@ -28,12 +29,13 @@ from app.sketch.constraints import (
     PerpendicularConstraint,
     PointLineDistanceConstraint,
     PointOnCircleConstraint,
+    PointOnEllipseConstraint,
     PointOnLineConstraint,
     SplineTangentConstraint,
     TangentConstraint,
     VerticalConstraint,
 )
-from app.sketch.models import Point, Sketch
+from app.sketch.models import Ellipse, Point, Sketch
 
 # Constraint types empirically confirmed to never need py-slvs's own
 # redundancy detection to distrust a converged solve - see `converged`'s
@@ -50,6 +52,14 @@ from app.sketch.models import Point, Sketch
 # a point deterministically to its own seeded position, no mirror-root or
 # sign ambiguity possible (confirmed empirically - see that method's own
 # doc comment).
+#
+# PointOnEllipseConstraint: safe - confirmed empirically (see that class's
+# own doc comment) across 6 configurations (axis-aligned and rotated,
+# different major/minor radii, multiple initial guesses/quadrants), every
+# one a clean result_code == 0 with Dof == 1 and the ellipse equation exact
+# to floating-point precision - no result_code 4/5 ambiguity observed in
+# any of them, despite the trammel construction's own 7 chained primitive
+# calls being the most complex single Constraint in this module.
 _REDUNDANCY_SAFE_CONSTRAINT_TYPES = (
     DistanceConstraint,
     VerticalConstraint,
@@ -68,6 +78,7 @@ _REDUNDANCY_SAFE_CONSTRAINT_TYPES = (
     PointOnLineConstraint,
     PointOnCircleConstraint,
     FixedConstraint,
+    PointOnEllipseConstraint,
 )
 
 # Constraint types `_residual_verified_convergence` (below) knows how to
@@ -340,6 +351,36 @@ def _residual_verified_convergence(sketch: Sketch) -> bool | None:
     return True
 
 
+def _ellipse_owned_at_midpoint_constraint_ids(sketch: Sketch) -> frozenset[str]:
+    """The AtMidpointConstraint ids `add_ellipse` itself always creates
+    (`major_midpoint_constraint_id`/`minor_midpoint_constraint_id`) - used
+    by the redundant-Fix override below to trust *only* these specific
+    instances, never an arbitrary user-created AtMidpointConstraint
+    elsewhere in the Sketch.
+
+    AtMidpointConstraint is deliberately excluded from
+    `_REDUNDANCY_SAFE_CONSTRAINT_TYPES` as a *type* (see that allowlist's
+    own comment): `test_two_at_midpoint_constraints_on_the_same_point_is_
+    singular_once_hv_ties_diagonals_together` proves a user-built rectangle
+    with two AtMidpointConstraints sharing one centre Point can be
+    tautologically satisfied at *any* size/position (any parallelogram's
+    diagonals share a midpoint by construction), which would make a
+    type-based override falsely trust a genuinely still-free shape. An
+    Ellipse's own two are structurally different, not just coincidentally
+    safe: each pins a Point (major_point_neg_id/minor_point_neg_id) that
+    has no other Constraint of its own at all - the AtMidpointConstraint is
+    the *sole* equation determining it, never a redundant restatement of
+    something already implied elsewhere - so trusting these two specific,
+    identified instances (by id, not by type) carries none of the
+    rectangle case's ambiguity."""
+    return frozenset(
+        constraint_id
+        for entity in sketch.entities.values()
+        if isinstance(entity, Ellipse)
+        for constraint_id in (entity.major_midpoint_constraint_id, entity.minor_midpoint_constraint_id)
+    )
+
+
 # Group 1 holds the fixed workplane (origin + normal); group 2 holds every
 # Point/Constraint being solved. There is no need for finer-grained groups
 # at this stage - the whole Sketch is solved as one batch.
@@ -436,6 +477,18 @@ class _PySlvsBuilder:
                 self._workplane, pu, pv, group=group
             )
         return self._point_handles[point_id]
+
+    def ephemeral_point2d(self, seed_from_point_id: str) -> int:
+        # Deliberately not cached/memoized in self._point_handles (unlike
+        # point2d) - every call gets a genuinely fresh py-slvs point, always
+        # in the free-to-move solve group regardless of whether the seed
+        # Point itself happens to be pinned, since an ephemeral point's own
+        # position is never meant to be pinned to anything - only the seed
+        # *value* is borrowed, not the seed Point's own pinned-ness.
+        seed = self._points[seed_from_point_id]
+        pu = self._system.addParamV(seed.x, group=_SOLVE_GROUP)
+        pv = self._system.addParamV(seed.y, group=_SOLVE_GROUP)
+        return self._system.addPoint2d(self._workplane, pu, pv, group=_SOLVE_GROUP)
 
     def distance(self, point_a_handle: int, point_b_handle: int, value: float) -> int:
         return self._system.addPointsDistance(
@@ -865,6 +918,9 @@ def _solve_sketch_once(sketch: Sketch, anchor_point_ids: frozenset[str]) -> Solv
     # rule on this Sketch at all (`None`), never when it confidently ruled
     # `False`.
     residual_result = _residual_verified_convergence(sketch) if not converged else None
+    ellipse_owned_at_midpoint_ids = (
+        _ellipse_owned_at_midpoint_constraint_ids(sketch) if not converged and residual_result is None else frozenset()
+    )
     if residual_result is True:
         # Stacked redundancy (e.g. a Polygon's own already-redundant
         # EqualLength/EqualRadius/Angle chain plus a further genuinely-
@@ -913,6 +969,47 @@ def _solve_sketch_once(sketch: Sketch, anchor_point_ids: frozenset[str]) -> Solv
         # Sketch, so this is a documented fallback for constraint-type
         # combinations that check doesn't understand, not the primary
         # source of truth it used to be.
+        converged = True
+
+    if (
+        not converged
+        and residual_result is None
+        and result_code in (4, 5)
+        and any(isinstance(entity, Ellipse) for entity in sketch.entities.values())
+        and all(
+            isinstance(c, _REDUNDANCY_SAFE_CONSTRAINT_TYPES)
+            or (isinstance(c, AtMidpointConstraint) and c.id in ellipse_owned_at_midpoint_ids)
+            for c in sketch.constraints.values()
+        )
+    ):
+        # Fixing an Ellipse (any Point of it - drag, FixedConstraint/Fix,
+        # or the fixed-group `anchor_point_ids` drag-solve mechanism) is
+        # *always* reported redundant by this py-slvs build, regardless of
+        # exactly which/how many of the Ellipse's own Points end up fixed:
+        # `add_ellipse` always ties major_point/minor_point to centre via a
+        # DistanceConstraint (the radius) - once every Point a
+        # DistanceConstraint references is fixed/anchored, that
+        # constraint's row in the solver's Jacobian is identically zero
+        # (no remaining free unknown it has any derivative with respect
+        # to), which this build's rank-deficiency detection reports as
+        # `result_code` 4/5 even though the equation is, numerically,
+        # already exactly satisfied - confirmed empirically: this reproduces
+        # identically whether the centre/axis Points are pinned via
+        # `FixedConstraint`/`where_dragged` (a real, independent extra
+        # equation) or via `anchor_point_ids`' fixed-group placement (zero
+        # extra equations at all), so it is not an artifact of *how* the
+        # Points get fixed - it's inherent to fixing any DistanceConstraint-
+        # bearing entity at all. Circle has the exact same structure
+        # (cardinal Points each tied to centre via EqualRadius/Distance)
+        # and is already rescued by the override immediately above this one
+        # - Ellipse needs its own because it has no Tangent/EqualRadius of
+        # its own to trigger that one, and its two AtMidpointConstraints
+        # (for major_point_neg/minor_point_neg) are not members of
+        # `_REDUNDANCY_SAFE_CONSTRAINT_TYPES` at all - seeing `all(...)`
+        # explicitly matches those two specific, identified instances via
+        # `_ellipse_owned_at_midpoint_constraint_ids` (see that function's
+        # own doc comment for why only *these* two are safe to trust,
+        # unlike an arbitrary user-created AtMidpointConstraint elsewhere).
         converged = True
 
     # On-device feedback: a freshly-drawn Slot (2 Arcs tied together via

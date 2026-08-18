@@ -405,4 +405,56 @@ void main() {
             'silently accepted - this is why confirmGhostValue rolls it back rather than adding it '
             'unconditionally');
   });
+
+  test(
+      'PointOnEllipseConstraintDto: the Trammel of Archimedes construction pulls a free Point onto '
+      'a fixed Ellipse\'s own curve - mirrors backend test_solving_pulls_a_free_point_onto_a_fixed_'
+      'ellipse, ground truth captured from the same real py-slvs build via anchorPointIds (fixed-'
+      'group placement - no redundant equation, unlike FixedConstraint\'s own where_dragged, so this '
+      'isolates the construction itself)', () {
+    const centerXY = (0.0, 0.0);
+    const majorRadius = 8.0, minorRadius = 3.0;
+    final points = {
+      'center': centerXY,
+      'major': (centerXY.$1 + majorRadius, centerXY.$2),
+      'minor': (centerXY.$1, centerXY.$2 + minorRadius),
+      'p': (5.0, 2.0),
+    };
+    final constraints = <ConstraintDto>[
+      const PointOnEllipseConstraintDto(
+        id: 'poe',
+        pointId: 'p',
+        ellipseId: 'ellipse1',
+        centerPointId: 'center',
+        majorPointId: 'major',
+        minorPointId: 'minor',
+      ),
+    ];
+
+    final result = solveSketchLocally(
+      bindings: bindings,
+      points: points,
+      constraints: constraints,
+      lineEndpoints: (id) => _lineEndpoints(const {}, id),
+      anchorPointIds: {'center', 'major', 'minor'},
+    );
+
+    expect(result.converged, isTrue);
+    expect(result.dof, 1);
+    final (cx, cy) = result.solvedPoints['center']!;
+    final (mx, my) = result.solvedPoints['major']!;
+    final (nx, ny) = result.solvedPoints['minor']!;
+    final (px, py) = result.solvedPoints['p']!;
+    expect(cx, closeTo(centerXY.$1, 1e-9));
+    expect(cy, closeTo(centerXY.$2, 1e-9));
+    final a = math.sqrt((mx - cx) * (mx - cx) + (my - cy) * (my - cy));
+    final b = math.sqrt((nx - cx) * (nx - cx) + (ny - cy) * (ny - cy));
+    final angle = math.atan2(my - cy, mx - cx);
+    final dx = px - cx, dy = py - cy;
+    final ca = math.cos(-angle), sa = math.sin(-angle);
+    final u = dx * ca - dy * sa;
+    final v = dx * sa + dy * ca;
+    final residual = (u / a) * (u / a) + (v / b) * (v / b) - 1.0;
+    expect(residual, closeTo(0.0, 1e-6));
+  });
 }

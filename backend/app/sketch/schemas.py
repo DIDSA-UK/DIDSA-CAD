@@ -860,6 +860,17 @@ class PointOnCircleConstraintCreate(BaseModel):
     circle_or_arc_id: str
 
 
+class PointOnEllipseConstraintCreate(BaseModel):
+    """The ellipse half of "point coincident to line/curve" - see
+    Sketch.add_point_on_ellipse_constraint (Trammel of Archimedes
+    construction; spline remains out of scope, see that method's own doc
+    comment)."""
+
+    type: Literal["point_on_ellipse"]
+    point_id: str
+    ellipse_id: str
+
+
 class FixedConstraintCreate(BaseModel):
     """The sketcher's "Fix" constraint - deployable to any entity, not just
     a Point (see Sketch.add_fixed_constraint, which resolves entity_id to
@@ -887,6 +898,7 @@ ConstraintCreate = Union[
     EqualRadiusPointsConstraintCreate,
     PointOnLineConstraintCreate,
     PointOnCircleConstraintCreate,
+    PointOnEllipseConstraintCreate,
     FixedConstraintCreate,
 ]
 
@@ -1034,6 +1046,21 @@ class PointOnCircleConstraintResponse(BaseModel):
     radius_point_id: str
 
 
+class PointOnEllipseConstraintResponse(BaseModel):
+    type: Literal["point_on_ellipse"] = "point_on_ellipse"
+    id: str
+    point_id: str
+    ellipse_id: str
+    # Captured at creation time, same rationale as
+    # PointOnCircleConstraintResponse's own center_point_id/radius_point_id
+    # - lets the client (e.g. the Dart local-solver port) rebuild the
+    # Trammel of Archimedes construction directly, no second lookup back to
+    # the Ellipse entity needed.
+    center_point_id: str
+    major_point_id: str
+    minor_point_id: str
+
+
 class FixedConstraintResponse(BaseModel):
     type: Literal["fixed"] = "fixed"
     id: str
@@ -1063,6 +1090,7 @@ ConstraintResponse = Union[
     EqualRadiusConstraintResponse,
     PointOnLineConstraintResponse,
     PointOnCircleConstraintResponse,
+    PointOnEllipseConstraintResponse,
     FixedConstraintResponse,
 ]
 

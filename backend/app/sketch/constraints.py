@@ -18,6 +18,24 @@ class SolverBuilder(Protocol):
         (from that Point's current x/y as the initial guess) on first use."""
         ...
 
+    def ephemeral_point2d(self, seed_from_point_id: str) -> int:
+        """Return a fresh py-slvs point handle, seeded at seed_from_point_id's
+        own current (x, y) as its initial guess - purely solver-internal
+        auxiliary geometry with no meaning of its own, scoped to this one
+        solve call only. Unlike point2d, never persisted to any Sketch
+        Point and never written back after solving - a fresh one is created
+        every solve, the same "rebuilt fresh every call, nothing persistent"
+        convention line_segment/cubic already follow for virtual geometry,
+        just for a Point rather than a Line/Cubic entity.
+        PointOnEllipseConstraint's own trammel construction (see its own
+        doc comment) is the first, and so far only, user - its two
+        auxiliary "trammel" points have no independent existence a user
+        could ever select or drag, so giving them a real, persisted Sketch
+        Point id (with all the deletion-cascade/hiding/serialization
+        machinery that would require) would be pure overhead for something
+        nothing else ever needs to reference."""
+        ...
+
     def distance(self, point_a_handle: int, point_b_handle: int, value: float) -> int:
         """Add a distance constraint between two py-slvs point handles,
         returning the resulting py-slvs constraint handle."""
@@ -974,4 +992,107 @@ class FixedConstraint(Constraint):
         handle = builder.where_dragged(builder.point2d(self.fixed_point_ids[0]))
         for point_id in self.fixed_point_ids[1:]:
             builder.where_dragged(builder.point2d(point_id))
+        return handle
+
+
+@dataclass
+class PointOnEllipseConstraint(Constraint):
+    """Forces a Point onto an Ellipse's own curve - the ellipse half of
+    "point coincident to line/curve" (PointOnLineConstraint/
+    PointOnCircleConstraint cover Line/Circle/Arc).
+
+    Unlike Circle ("`|point - centre| = radius`", a single scalar
+    equation), an ellipse's own curve membership - `(u/a)^2 + (v/b)^2 = 1`
+    in its own axis-aligned frame - isn't expressible as any single
+    py-slvs primitive, and this installed py-slvs has no native ellipse
+    entity at all (confirmed directly against the exact vendored commit's
+    own `slvs.h`, and against canonical upstream SolveSpace too - genuinely
+    absent everywhere, not an under-exposed wrapper). Expressed instead via
+    the **Trammel of Archimedes** - the same mechanical linkage real
+    ellipsographs use to physically draw an ellipse - built entirely from
+    primitives already trusted elsewhere in this module:
+
+    Two auxiliary points M (constrained onto the line through centre and
+    major_point) and N (constrained onto the line through centre and
+    minor_point), with `|M - target| = minor_radius`, `|N - target| =
+    major_radius` (both tied to the *live* radius via equal_length, same
+    "never bake in a snapshot value" convention EqualRadiusConstraint
+    already uses - not a stored float, so this keeps tracking correctly if
+    the Ellipse's own radius is edited later), and M/target/N collinear
+    (target on the virtual line through M and N). Standard trammel algebra:
+    with L = |MN| = major_radius + minor_radius fixed by the two
+    equal_length ties above, and target dividing segment M-N at the fixed
+    ratio |M-target| = minor_radius from M, this traces exactly
+    `(major_radius*cos(t), minor_radius*sin(t))` in the ellipse's own frame
+    as M/N slide - confirmed empirically against the installed py-slvs
+    (not just derived on paper): 6 configurations (different a/b, rotated
+    and axis-aligned, multiple initial guesses/quadrants) all converged
+    with Dof == 1 (one remaining degree of freedom - the Point's own
+    position along the curve, exactly as expected) and the ellipse
+    equation held to floating-point precision every time.
+
+    M and N have no meaning of their own a user could ever select or
+    drag - purely solver-internal linkage geometry - so they're created via
+    SolverBuilder.ephemeral_point2d (see its own doc comment) rather than
+    as real Sketch Points: recreated fresh every solve, never persisted,
+    never exposed to the client at all. This sidesteps what would otherwise
+    be a substantial new problem this module has never had to solve before
+    (a Constraint that creates its own hidden Points needs deletion-cascade
+    protection, hiding from selection/rendering/drag-targeting, and
+    serialization - none of which apply to solver-scratch geometry that
+    never outlives one solve call).
+
+    References the Ellipse's id for display/API purposes; its centre and
+    both axis-tip Point ids are captured at creation time, same rationale
+    as TangentConstraint above.
+    """
+
+    id: str
+    point_id: str
+    ellipse_id: str
+    center_point_id: str
+    major_point_id: str
+    minor_point_id: str
+
+    @property
+    def type(self) -> str:
+        return "point_on_ellipse"
+
+    def point_ids(self) -> tuple[str, str, str, str]:
+        return (self.point_id, self.center_point_id, self.major_point_id, self.minor_point_id)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        target = builder.point2d(self.point_id)
+        center = builder.point2d(self.center_point_id)
+        major_point = builder.point2d(self.major_point_id)
+        minor_point = builder.point2d(self.minor_point_id)
+
+        major_line = builder.line_segment(center, major_point)
+        minor_line = builder.line_segment(center, minor_point)
+
+        # M seeded from major_point's own position, N from minor_point's -
+        # confirmed empirically to converge reliably from exactly this seed
+        # across every configuration tested (see this class's own doc
+        # comment), no cleverer projection needed.
+        trammel_major = builder.ephemeral_point2d(self.major_point_id)
+        trammel_minor = builder.ephemeral_point2d(self.minor_point_id)
+        builder.point_on_line(trammel_major, major_line)
+        builder.point_on_line(trammel_minor, minor_line)
+
+        major_side_line = builder.line_segment(trammel_minor, target)
+        minor_side_line = builder.line_segment(trammel_major, target)
+        # |N - target| = major_radius, |M - target| = minor_radius - see
+        # this class's own doc comment for why these two are swapped
+        # relative to which axis each auxiliary point slides on.
+        # major_line/minor_line (center->major_point/center->minor_point,
+        # already built above) are reused as-is rather than rebuilt - the
+        # exact same point pair, and SolverBuilder's own line_segment is
+        # cached by point-pair, so a second builder.line_segment(center,
+        # major_point) call here would just resolve to the identical
+        # handle anyway.
+        handle = builder.equal_length(major_side_line, major_line)
+        builder.equal_length(minor_side_line, minor_line)
+
+        trammel_line = builder.line_segment(trammel_major, trammel_minor)
+        builder.point_on_line(target, trammel_line)
         return handle

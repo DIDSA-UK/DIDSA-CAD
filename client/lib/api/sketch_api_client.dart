@@ -702,6 +702,8 @@ abstract class ConstraintDto {
         return PointOnLineConstraintDto.fromJson(json);
       case 'point_on_circle':
         return PointOnCircleConstraintDto.fromJson(json);
+      case 'point_on_ellipse':
+        return PointOnEllipseConstraintDto.fromJson(json);
       case 'fixed':
         return FixedConstraintDto.fromJson(json);
       default:
@@ -1107,6 +1109,40 @@ class PointOnCircleConstraintDto extends ConstraintDto {
         circleOrArcId: json['circle_or_arc_id'] as String,
         centerPointId: json['center_point_id'] as String,
         radiusPointId: json['radius_point_id'] as String,
+      );
+}
+
+/// The ellipse half of "point coincident to line/curve" - pins a Point onto
+/// an Ellipse's own curve via the Trammel of Archimedes. See backend
+/// `PointOnEllipseConstraint`.
+class PointOnEllipseConstraintDto extends ConstraintDto {
+  final String pointId;
+  final String ellipseId;
+
+  /// Captured at creation time, same rationale as
+  /// [PointOnCircleConstraintDto]'s own centerPointId/radiusPointId - lets
+  /// the local solver rebuild the Trammel of Archimedes construction
+  /// directly, no second lookup back to the Ellipse entity needed.
+  final String centerPointId;
+  final String majorPointId;
+  final String minorPointId;
+
+  const PointOnEllipseConstraintDto({
+    required super.id,
+    required this.pointId,
+    required this.ellipseId,
+    required this.centerPointId,
+    required this.majorPointId,
+    required this.minorPointId,
+  });
+
+  factory PointOnEllipseConstraintDto.fromJson(Map<String, dynamic> json) => PointOnEllipseConstraintDto(
+        id: json['id'] as String,
+        pointId: json['point_id'] as String,
+        ellipseId: json['ellipse_id'] as String,
+        centerPointId: json['center_point_id'] as String,
+        majorPointId: json['major_point_id'] as String,
+        minorPointId: json['minor_point_id'] as String,
       );
 }
 
@@ -2657,6 +2693,27 @@ class SketchApiClient {
                 'type': 'point_on_circle',
                 'point_id': pointId,
                 'circle_or_arc_id': circleOrArcId,
+              }),
+            ),
+        (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// The ellipse half of "point coincident to line/curve" - see
+  /// [PointOnEllipseConstraintDto]/backend `Sketch.add_point_on_ellipse_
+  /// constraint`.
+  Future<ConstraintDto> createPointOnEllipseConstraint(
+    String sketchId,
+    String pointId,
+    String ellipseId,
+  ) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/constraints'),
+              headers: _headers,
+              body: jsonEncode({
+                'type': 'point_on_ellipse',
+                'point_id': pointId,
+                'ellipse_id': ellipseId,
               }),
             ),
         (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),

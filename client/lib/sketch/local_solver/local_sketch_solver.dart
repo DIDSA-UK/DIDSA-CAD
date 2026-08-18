@@ -325,6 +325,40 @@ int _addToSolver(ConstraintDto c, SolverBuilder b, LineEndpoints lineEndpoints) 
     final radiusLine = b.lineSegment(center, b.point2d(c.radiusPointId));
     return b.equalLength(pointLine, radiusLine);
   }
+  if (c is PointOnEllipseConstraintDto) {
+    // Mirrors constraints.py's PointOnEllipseConstraint exactly - the
+    // Trammel of Archimedes construction (see that class's own doc comment
+    // for the full derivation/empirical verification): two solver-internal
+    // auxiliary points (M on the centre->major line, N on the centre->minor
+    // line), tied to the target Point via equalLength against the Ellipse's
+    // own *live* major/minor radius lines (never a baked-in snapshot value),
+    // with the target collinear with M and N.
+    final target = b.point2d(c.pointId);
+    final center = b.point2d(c.centerPointId);
+    final majorPoint = b.point2d(c.majorPointId);
+    final minorPoint = b.point2d(c.minorPointId);
+
+    final majorLine = b.lineSegment(center, majorPoint);
+    final minorLine = b.lineSegment(center, minorPoint);
+
+    final trammelMajor = b.ephemeralPoint2d(c.majorPointId);
+    final trammelMinor = b.ephemeralPoint2d(c.minorPointId);
+    b.pointOnLine(trammelMajor, majorLine);
+    b.pointOnLine(trammelMinor, minorLine);
+
+    final majorSideLine = b.lineSegment(trammelMinor, target);
+    final minorSideLine = b.lineSegment(trammelMajor, target);
+    // |N - target| = major_radius, |M - target| = minor_radius - see
+    // constraints.py's PointOnEllipseConstraint doc comment for why these
+    // two are swapped relative to which axis each auxiliary point slides
+    // on.
+    final handle = b.equalLength(majorSideLine, majorLine);
+    b.equalLength(minorSideLine, minorLine);
+
+    final trammelLine = b.lineSegment(trammelMajor, trammelMinor);
+    b.pointOnLine(target, trammelLine);
+    return handle;
+  }
   if (c is FixedConstraintDto) {
     // Not a real py-slvs call here - FixedConstraint's own pinning is
     // achieved by folding its Point ids into solveSketchLocally's

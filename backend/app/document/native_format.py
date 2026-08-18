@@ -82,6 +82,7 @@ from app.sketch.constraints import (
     PerpendicularConstraint,
     PointLineDistanceConstraint,
     PointOnCircleConstraint,
+    PointOnEllipseConstraint,
     PointOnLineConstraint,
     SplineTangentConstraint,
     TangentConstraint,
@@ -133,6 +134,7 @@ _CONSTRAINT_CLASSES: dict[str, type[Constraint]] = {
     "equal_radius": EqualRadiusConstraint,
     "point_on_line": PointOnLineConstraint,
     "point_on_circle": PointOnCircleConstraint,
+    "point_on_ellipse": PointOnEllipseConstraint,
     "fixed": FixedConstraint,
 }
 
