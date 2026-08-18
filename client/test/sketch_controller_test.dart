@@ -7811,6 +7811,46 @@ void main() {
   });
 
   test(
+      'the ParallelConstraint implied by a lineDistance ghost does not render its own ∥ badge '
+      '(on-device feedback: "their parallelism should be included in this dimension but not '
+      'explicitly shown to the user") - only the ConstraintLineDistanceDimensionItem itself '
+      'shows, same as before this Parallel existed', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 5);
+    await controller.handleCanvasTap(10, 5);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1);
+    await controller.handleCanvasTap(8, 5.1);
+    await controller.confirmGhostValue('lineDistance', 7.0);
+
+    final items = controller.constraintOverlayItems();
+
+    expect(items.whereType<ConstraintLineDistanceDimensionItem>(), hasLength(1));
+    expect(items.whereType<ConstraintLabelItem>().where((i) => i.text == '∥'), isEmpty);
+  });
+
+  test(
+      'a ParallelConstraint that is NOT paired with a LineDistanceConstraint between the same '
+      'two Lines still renders its own ∥ badge - isImplicitLineDistanceParallel only suppresses '
+      'the specific pairing this dimension kind creates, not every Parallel', () {
+    controller.points['p0'] = const SketchPointView(id: 'p0', x: 0, y: 0);
+    controller.points['p1'] = const SketchPointView(id: 'p1', x: 5, y: 0);
+    controller.lines['l0'] = const SketchLineView(id: 'l0', startPointId: 'p0', endPointId: 'p1');
+    controller.points['p2'] = const SketchPointView(id: 'p2', x: 0, y: 3);
+    controller.points['p3'] = const SketchPointView(id: 'p3', x: 5, y: 3);
+    controller.lines['l1'] = const SketchLineView(id: 'l1', startPointId: 'p2', endPointId: 'p3');
+    controller.constraints['c0'] = const ParallelConstraintDto(id: 'c0', line1Id: 'l0', line2Id: 'l1');
+
+    final items = controller.constraintOverlayItems();
+
+    expect(items.whereType<ConstraintLabelItem>().where((i) => i.text == '∥'), hasLength(1));
+  });
+
+  test(
       'confirming an existing lineDistance ghost a second time does not create a second '
       'ParallelConstraint - the implied parallelism only needs asserting once, on first creation',
       () async {

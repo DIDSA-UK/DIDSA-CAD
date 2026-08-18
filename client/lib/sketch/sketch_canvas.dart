@@ -2786,18 +2786,29 @@ class _SketchPainter extends CustomPainter {
     final p2 = midB + offset;
     // On-device feedback ("the leader lines should originate from the ends
     // of the lines, not the mid point... to give the feeling the dimension
-    // is line to line, not point to point"): [offset] runs parallel to each
-    // Line's own direction (`alongA`), so adding it to a Line's real
-    // endpoints (not just its midpoint) produces a genuine witness line from
-    // each end, still parallel to that same Line - mirrors the 3D-embedded
-    // sketcher's own copy of this same painter/bug
+    // is line to line, not point to point"): the previous attempt here drew
+    // *two* extension lines per Line (from both real endpoints, each offset
+    // by the same along-the-Line vector) - since it's one absolute vector
+    // added to both ends, whichever end is farther from the connector ends
+    // up drawing a line that retraces the *entire* Line's own length before
+    // reaching [p1]/[p2] (on-device feedback: "the extension lines cover
+    // the sketch lines" / "originate from the wrong end" / "extend too far
+    // beyond the dimension arrows"). Instead, draw exactly one extension
+    // line per Line, from whichever real endpoint is nearest to that Line's
+    // own connector point - always a real endpoint (per the original ask),
+    // never overshoots past the arrows (it terminates exactly at [p1]/[p2],
+    // the same point the arrows already anchor to), and always retraces the
+    // *least* possible amount of the Line's own length. Mirrors the
+    // 3D-embedded sketcher's own copy of this same painter/bug
     // (`sketch_constraint_overlay.dart`'s `_paintLineDistanceDimension`).
-    // Four extension lines total (two per Line) instead of one each - the
-    // connector segment/arrows between [p1]/[p2] are unchanged.
-    _drawExtensionLine(canvas, endpointsA.$1, endpointsA.$1 + offset, dimPaint);
-    _drawExtensionLine(canvas, endpointsA.$2, endpointsA.$2 + offset, dimPaint);
-    _drawExtensionLine(canvas, endpointsB.$1, endpointsB.$1 + offset, dimPaint);
-    _drawExtensionLine(canvas, endpointsB.$2, endpointsB.$2 + offset, dimPaint);
+    final e1 = (p1 - endpointsA.$1).distanceSquared <= (p1 - endpointsA.$2).distanceSquared
+        ? endpointsA.$1
+        : endpointsA.$2;
+    final e2 = (p2 - endpointsB.$1).distanceSquared <= (p2 - endpointsB.$2).distanceSquared
+        ? endpointsB.$1
+        : endpointsB.$2;
+    _drawExtensionLine(canvas, e1, p1, dimPaint);
+    _drawExtensionLine(canvas, e2, p2, dimPaint);
     canvas.drawLine(p1, p2, dimPaint);
     _drawDimensionArrows(canvas, p1, p2, color);
 

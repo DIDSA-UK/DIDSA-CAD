@@ -2839,40 +2839,54 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         }
       }
       if (lineDistanceItem != null && basis != null && cursor != null) {
-        final ray = _camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize);
-        final hit = hitTestSketchPlane(ray, basis);
-        if (hit != null) {
-          final (cursorX, cursorY) = worldPointToSketch(basis, hit.$1);
-          final dx = lineDistanceItem.line1End.$1 - lineDistanceItem.line1Start.$1;
-          final dy = lineDistanceItem.line1End.$2 - lineDistanceItem.line1Start.$2;
-          final lengthA = math.sqrt(dx * dx + dy * dy);
-          if (lengthA > 1e-9) {
-            final alongX = dx / lengthA;
-            final alongY = dy / lengthA;
-            final midAx = (lineDistanceItem.line1Start.$1 + lineDistanceItem.line1End.$1) / 2;
-            final midAy = (lineDistanceItem.line1Start.$2 + lineDistanceItem.line1End.$2) / 2;
-            final distance = (cursorX - midAx) * alongX + (cursorY - midAy) * alongY;
-            widget.onLineDistanceLabelOffsetDragged?.call(distance);
-            // Bug fix (on-device feedback: "the dimension...is restricted
-            // in movement. it moves left right. it can't be moved up
-            // down"): [distance] above only ever moves the label along the
-            // two Lines' own shared direction (left/right, for two
-            // horizontal Lines) - this mirrors
-            // [_ConstraintOverlayPainter._paintLineDistanceDimension]'s own
-            // `perpToA`/`midB` construction to also resolve the label's
-            // position along the dimension line itself (up/down, for the
-            // same two horizontal Lines), entirely in sketch-local space.
-            final perpX = -alongY;
-            final perpY = alongX;
-            final toLineBx = lineDistanceItem.line2Start.$1 - midAx;
-            final toLineBy = lineDistanceItem.line2Start.$2 - midAy;
-            final t = toLineBx * perpX + toLineBy * perpY;
-            final midBx = midAx + perpX * t;
-            final midBy = midAy + perpY * t;
-            final dimAnchorX = (midAx + midBx) / 2;
-            final dimAnchorY = (midAy + midBy) / 2;
-            final along = (cursorX - dimAnchorX) * perpX + (cursorY - dimAnchorY) * perpY;
-            widget.onLineDistanceLabelAlongDragged?.call(along);
+        // Bug fix (on-device feedback: "dragging the dimension up and down
+        // is still inverted"): the previous version of this branch computed
+        // its perpendicular direction (`perpX`/`perpY`) by rotating
+        // `line1Start -> line1End` *in sketch-local space*, then dotted the
+        // raw sketch-local cursor position against it. But the paint side
+        // this has to match, [_ConstraintOverlayPainter._paintLineDistanceDimension]
+        // (`sketch_constraint_overlay.dart`), projects `line1Start`/
+        // `line1End` to screen *first* and only rotates the *projected*
+        // delta to get its own `perpToA`. A 90-degree rotation doesn't
+        // commute with a camera projection unless the sketch plane's local
+        // basis happens to already be screen-aligned, so "rotate-then-
+        // project" and "project-then-rotate" only agree by coincidence -
+        // this shows up as a consistent inversion for whatever the current
+        // camera orbit happens to be, not merely half the time. Mirrors the
+        // "unlocked"/diagonal [ConstraintLinearDimensionItem] branch just
+        // above (already correct, for exactly this reason): project first,
+        // then do every dot product in screen space, so it can never
+        // disagree with the paint side regardless of camera orbit.
+        final camera = _camera.cameraFor(_viewportSize);
+        Offset? project((double, double) sketchXY) =>
+            worldToScreen(camera, _viewportSize, sketchPointToWorld(basis, sketchXY.$1, sketchXY.$2));
+        final line1StartScreen = project(lineDistanceItem.line1Start);
+        final line1EndScreen = project(lineDistanceItem.line1End);
+        final line2StartScreen = project(lineDistanceItem.line2Start);
+        if (line1StartScreen != null && line1EndScreen != null && line2StartScreen != null) {
+          final dirAScreen = line1EndScreen - line1StartScreen;
+          final screenLengthA = dirAScreen.distance;
+          if (screenLengthA > 1e-6) {
+            final alongScreen = dirAScreen / screenLengthA;
+            final perpScreen = Offset(-alongScreen.dy, alongScreen.dx);
+            final midAScreen = (line1StartScreen + line1EndScreen) / 2;
+            final toLineBScreen = line2StartScreen - midAScreen;
+            final t = toLineBScreen.dx * perpScreen.dx + toLineBScreen.dy * perpScreen.dy;
+            final midBScreen = midAScreen + perpScreen * t;
+
+            final dx = lineDistanceItem.line1End.$1 - lineDistanceItem.line1Start.$1;
+            final dy = lineDistanceItem.line1End.$2 - lineDistanceItem.line1Start.$2;
+            final sketchLengthA = math.sqrt(dx * dx + dy * dy);
+            final ratio = sketchLengthA > 1e-9 ? sketchLengthA / screenLengthA : 1.0;
+
+            final offsetDelta = cursor - midAScreen;
+            final offsetScreenMagnitude = offsetDelta.dx * alongScreen.dx + offsetDelta.dy * alongScreen.dy;
+            widget.onLineDistanceLabelOffsetDragged?.call(offsetScreenMagnitude * ratio);
+
+            final dimAnchorScreen = (midAScreen + midBScreen) / 2;
+            final alongDelta = cursor - dimAnchorScreen;
+            final alongScreenMagnitude = alongDelta.dx * perpScreen.dx + alongDelta.dy * perpScreen.dy;
+            widget.onLineDistanceLabelAlongDragged?.call(alongScreenMagnitude * ratio);
             return;
           }
         }

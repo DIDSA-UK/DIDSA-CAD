@@ -505,20 +505,23 @@ class _ConstraintOverlayPainter extends CustomPainter {
     final p2 = midB + offset;
     // On-device feedback ("the leader lines should originate from the ends
     // of the lines, not the mid point... to give the feeling the dimension
-    // is line to line, not point to point"): [offset] runs parallel to each
-    // line's own direction (it's how far along the shared length the
-    // draggable connector [p1]/[p2] sits - see [_resolveDimensionOffsetMagnitude]
-    // above), so adding it to a line's real endpoints (not just its
-    // midpoint) produces a genuine witness line from each end, still
-    // parallel to that same line. Four extension lines total (two per line)
-    // instead of one each - the connector segment/arrows between [p1]/[p2]
-    // (and its own drag handling, `part_viewport.dart`'s
-    // `onLineDistanceLabelOffsetDragged`/`onLineDistanceLabelAlongDragged`)
-    // are unchanged.
-    _drawExtensionLine(canvas, line1Start, line1Start + offset, dimPaint);
-    _drawExtensionLine(canvas, line1End, line1End + offset, dimPaint);
-    _drawExtensionLine(canvas, line2Start, line2Start + offset, dimPaint);
-    _drawExtensionLine(canvas, line2End, line2End + offset, dimPaint);
+    // is line to line, not point to point"): the previous attempt here drew
+    // *two* extension lines per line (from both real endpoints, each offset
+    // by the same along-the-line vector) - since it's one absolute vector
+    // added to both ends, whichever end is farther from the connector ends
+    // up drawing a line that retraces the *entire* line's own length before
+    // reaching [p1]/[p2] (on-device feedback: "the extension lines cover
+    // the sketch lines" / "originate from the wrong end" / "extend too far
+    // beyond the dimension arrows"). Instead, draw exactly one extension
+    // line per line, from whichever real endpoint is nearest to that line's
+    // own connector point - always a real endpoint (per the original ask),
+    // never overshoots past the arrows (it terminates exactly at [p1]/[p2],
+    // the same point the arrows already anchor to), and always retraces the
+    // *least* possible amount of the line's own length.
+    final e1 = (p1 - line1Start).distanceSquared <= (p1 - line1End).distanceSquared ? line1Start : line1End;
+    final e2 = (p2 - line2Start).distanceSquared <= (p2 - line2End).distanceSquared ? line2Start : line2End;
+    _drawExtensionLine(canvas, e1, p1, dimPaint);
+    _drawExtensionLine(canvas, e2, p2, dimPaint);
     canvas.drawLine(p1, p2, dimPaint);
     _drawDimensionArrows(canvas, p1, p2, color);
     // Bug fix (on-device feedback: "the dimension...moves left right, it

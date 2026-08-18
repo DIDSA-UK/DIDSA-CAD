@@ -6202,6 +6202,22 @@ class SketchController extends ChangeNotifier {
     return false;
   }
 
+  /// Whether [lineAId]/[lineBId] carry a `LineDistanceConstraint` between
+  /// them - the exact same reasoning [isImplicitPolygonEdgeTie]/
+  /// [isImplicitEllipseAxisPerpendicular] already established for other
+  /// backend-auto-created "plumbing" constraints: [confirmGhostValue]'s
+  /// `lineDistance` branch creates a `ParallelConstraint` alongside a
+  /// LineDistanceConstraint purely to make the already-implied parallelism
+  /// real (see that branch's own doc comment) - the on-device ask was for
+  /// this dimension to *feel* line-to-line without the parallelism ever
+  /// being shown explicitly, so this Parallel isn't a real user-facing
+  /// constraint to display or let the user delete on its own; the
+  /// LineDistance dimension itself already communicates the relationship.
+  /// Reuses [_findLineDistanceConstraint]'s existing order-independent
+  /// lookup rather than a second membership scan.
+  bool isImplicitLineDistanceParallel(String lineAId, String lineBId) =>
+      _findLineDistanceConstraint(lineAId, lineBId) != null;
+
   double _distanceToSegment(
     double px,
     double py,
@@ -13300,6 +13316,7 @@ class SketchController extends ChangeNotifier {
           final labelItem = _pairMidpointLabel(c.pointAId, c.pointBId, 'Coinc.', entry.key, isSelected, labelOffset);
           if (labelItem != null) items.add(labelItem);
         case ParallelConstraintDto c:
+          if (isImplicitLineDistanceParallel(c.line1Id, c.line2Id)) break;
           final labelItem =
               _lineMidpointPairLabel(c.line1Id, c.line2Id, '∥', entry.key, isSelected, labelOffset);
           if (labelItem != null) items.add(labelItem);
