@@ -827,7 +827,7 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
           Padding(
             padding: const EdgeInsets.only(top: 8),
             child: Text(
-              'Building ${_herringbone ? 'herringbone' : 'helical'} gear geometry - this can take a while...',
+              kComplexShapeBuildHint,
               style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12),
             ),
           ),

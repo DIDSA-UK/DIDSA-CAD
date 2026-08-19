@@ -144,16 +144,22 @@ class ApiConfig {
   /// create/update, `GET /mesh`, native import/export, STEP/STL/glb export)
   /// can trigger a full-Part OCCT recompute server-side (`compute_part_
   /// bodies` replays the whole Feature history from scratch, uncached), and
-  /// a complex helical/herringbone `GearFeature` alone can take well past
-  /// [requestTimeout] on the Pi 5 target hardware - see `docs/gear-design/`
-  /// for the shape of that cost. [SketchApiClient]'s own calls (2D
-  /// constraint solving via py-slvs) stay on the short [requestTimeout] -
-  /// they've never been reported slow, and a genuinely unreachable server
-  /// should still fail fast for those. Deliberately blanket across every
-  /// `/document` endpoint rather than triaged call-by-call: which Parts are
-  /// expensive is data-dependent (any call that touches a Part containing a
-  /// slow Feature inherits its cost, not just the call that first created
-  /// it), so a per-endpoint split would just be a slower-to-maintain, easier
-  /// -to-get-wrong version of the same blanket allowance.
-  static const Duration documentRequestTimeout = Duration(seconds: 90);
+  /// a complex helical/herringbone `GearFeature` - or worse, a `BevelGear`/
+  /// `BevelPairFeature` (spherical-involute flanks sewn into a solid,
+  /// doubled for a pair's two members - the single most expensive build in
+  /// this codebase) - alone can take well past [requestTimeout] on the Pi 5
+  /// target hardware - see `docs/gear-design/` for the shape of that cost.
+  /// [SketchApiClient]'s own calls (2D constraint solving via py-slvs) stay
+  /// on the short [requestTimeout] - they've never been reported slow, and
+  /// a genuinely unreachable server should still fail fast for those.
+  /// Deliberately blanket across every `/document` endpoint rather than
+  /// triaged call-by-call: which Parts are expensive is data-dependent (any
+  /// call that touches a Part containing a slow Feature inherits its cost,
+  /// not just the call that first created it), so a per-endpoint split
+  /// would just be a slower-to-maintain, easier-to-get-wrong version of the
+  /// same blanket allowance - raised from 90s to 180s (on-device feedback,
+  /// bevel timeout investigation) for headroom on a complex Bevel Pair,
+  /// alongside the `points_per_flank` control on both gear screens that
+  /// lets a user dial the cost down directly.
+  static const Duration documentRequestTimeout = Duration(seconds: 180);
 }

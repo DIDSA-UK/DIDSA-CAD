@@ -60,6 +60,16 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
   double _pressureAngleDegrees = 20.0;
   String _plane = 'XY';
 
+  // On-device feedback (bevel timeout investigation): mirrors
+  // `GearDesignScreen._pointsPerFlank` - a bevel tooth's spherical-involute
+  // flank is at least as expensive to build as a helical one (`app.
+  // document.bevel._assemble_gear_solid`'s own `4*tooth_count + 2` face
+  // sew/solid/flatten pipeline, doubled for a pair's two members), so the
+  // same accuracy/build-cost tradeoff control applies here - unlike the
+  // helical screen's slider, this one isn't gated behind any other field
+  // since every bevel build (gear or pair) uses it.
+  int _pointsPerFlank = 12;
+
   // Single bevel gear mode.
   final _toothCountController = TextEditingController(text: '20');
   final _faceWidthController = TextEditingController(text: '15');
@@ -141,6 +151,7 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
     if (planeRef?.fixedPlane != null) _plane = planeRef!.fixedPlane!;
     _module = (json['module'] as num?)?.toDouble() ?? _module;
     _pressureAngleDegrees = (json['pressure_angle_degrees'] as num?)?.toDouble() ?? _pressureAngleDegrees;
+    _pointsPerFlank = (json['points_per_flank'] as num?)?.toInt() ?? _pointsPerFlank;
     if (_mode == BevelMultiKind.gear) {
       _bevelGearMode = json['bevel_type'] as String? ?? _bevelGearMode;
       _targetBodyIds = (json['target_body_ids'] as List?)?.cast<String>() ?? _targetBodyIds;
@@ -320,6 +331,7 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
             profileShift: double.parse(_profileShiftController.text),
             planeRef: planeRef,
             targetBodyIds: _targetBodyIds,
+            pointsPerFlank: _pointsPerFlank,
           );
         } else {
           await _api.updateBevelPairFeature(
@@ -335,6 +347,7 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
             shaftAngleDegrees: double.parse(_shaftAngleController.text),
             backlash: double.parse(_pairBacklashController.text),
             planeRef: planeRef,
+            pointsPerFlank: _pointsPerFlank,
           );
         }
         if (!mounted) return;
@@ -365,6 +378,7 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
           backlash: double.parse(_backlashController.text),
           profileShift: double.parse(_profileShiftController.text),
           planeRef: planeRef,
+          pointsPerFlank: _pointsPerFlank,
         );
         warnings = feature.warnings;
       } else {
@@ -380,6 +394,7 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
           shaftAngleDegrees: double.parse(_shaftAngleController.text),
           backlash: double.parse(_pairBacklashController.text),
           planeRef: planeRef,
+          pointsPerFlank: _pointsPerFlank,
         );
         warnings = feature.warnings;
       }
@@ -487,6 +502,47 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
             _schedulePreview();
           },
         ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: Text('Tooth curve precision', style: Theme.of(context).textTheme.bodyMedium),
+            ),
+            fieldHelpIcon(
+              'How many points each tooth flank is sampled at before fitting a smooth curve through '
+              'them. Lower is faster to build (fewer points for the backend to loft/sew) but gives a '
+              'more faceted tooth flank - most noticeable on a large module or low tooth count. A bevel '
+              'tooth is one of the most expensive shapes this app builds, so this matters even for a '
+              'plain Bevel Gear, and doubly so for a Bevel Pair (two full solids per build).',
+            ),
+          ],
+        ),
+        Row(
+          children: [
+            Expanded(
+              child: Slider(
+                value: _pointsPerFlank.toDouble(),
+                min: 4,
+                max: 20,
+                divisions: 16,
+                label: '$_pointsPerFlank',
+                onChanged: (value) => setState(() => _pointsPerFlank = value.round()),
+              ),
+            ),
+            SizedBox(
+              width: 88,
+              child: Text(
+                _pointsPerFlank <= 6
+                    ? 'Draft ($_pointsPerFlank)'
+                    : _pointsPerFlank >= 16
+                        ? 'Fine ($_pointsPerFlank)'
+                        : '$_pointsPerFlank pts',
+                textAlign: TextAlign.end,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ),
+          ],
+        ),
         const SizedBox(height: 16),
         if (_mode == BevelMultiKind.gear) ..._buildBevelGearForm() else ..._buildBevelPairForm(),
         const SizedBox(height: 12),
@@ -524,6 +580,19 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
               ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
               : Text(_isEditing ? 'Save' : 'Create'),
         ),
+        // On-device feedback (bevel timeout investigation): a bevel gear/pair
+        // is a real, known-upfront-slow OCCT build (spherical-involute
+        // flanks sewn into a solid, doubled for a pair's two members) -
+        // shown unconditionally while `_creating`, mirroring
+        // `GearDesignScreen`'s identical helical/herringbone hint.
+        if (_creating)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(
+              kComplexShapeBuildHint,
+              style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12),
+            ),
+          ),
       ],
     );
   }
@@ -671,6 +740,7 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
         'mode': _mode.name,
         'module': _module,
         'pressureAngleDegrees': _pressureAngleDegrees,
+        'pointsPerFlank': _pointsPerFlank,
         'plane': _plane,
         'toothCount': _toothCountController.text,
         'faceWidth': _faceWidthController.text,
@@ -694,6 +764,7 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
       }
       _module = (fields['module'] as num?)?.toDouble() ?? _module;
       _pressureAngleDegrees = (fields['pressureAngleDegrees'] as num?)?.toDouble() ?? _pressureAngleDegrees;
+      _pointsPerFlank = (fields['pointsPerFlank'] as num?)?.toInt() ?? _pointsPerFlank;
       _plane = fields['plane'] as String? ?? _plane;
       if (fields['toothCount'] is String) _toothCountController.text = fields['toothCount'] as String;
       if (fields['faceWidth'] is String) _faceWidthController.text = fields['faceWidth'] as String;

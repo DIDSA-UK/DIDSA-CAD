@@ -1611,6 +1611,12 @@ class BevelGearFeature(Feature):
     backlash: float = 0.0
     profile_shift: float = 0.0
     target_body_ids: list[str] = field(default_factory=list)
+    # Mirrors `GearFeature.points_per_flank` - a bevel tooth's spherical-
+    # involute flank is at least as expensive to build as a helical one
+    # (`app.document.bevel._assemble_gear_solid`'s own `4*tooth_count + 2`
+    # face sew/solid/flatten pipeline), so the same accuracy/build-cost
+    # tradeoff control applies here.
+    points_per_flank: int = 12
 
     @property
     def type(self) -> str:
@@ -1706,6 +1712,11 @@ class BevelPairFeature(Feature):
     pressure_angle_degrees: float = 20.0
     shaft_angle_degrees: float = 90.0
     backlash: float = 0.0
+    # Mirrors `BevelGearFeature.points_per_flank` - applies to both
+    # members' own tooth flanks (`app.document.bevel_pair.resolve_bevel_
+    # pair_from_bodies` builds two full bevel solids per recompute, so this
+    # matters even more here than for a standalone bevel gear).
+    points_per_flank: int = 12
 
     @property
     def type(self) -> str:

@@ -955,6 +955,10 @@ class BevelGearFeatureCreate(BaseModel):
     backlash: float = 0.0
     profile_shift: float = 0.0
     target_body_ids: list[str] = []
+    # See `GearFeatureCreate.points_per_flank`'s own docstring - identical
+    # accuracy/build-cost tradeoff, applied to a bevel tooth's spherical-
+    # involute flank instead of a planar involute one.
+    points_per_flank: int = 12
 
 
 class BevelGearFeatureUpdate(BaseModel):
@@ -971,6 +975,7 @@ class BevelGearFeatureUpdate(BaseModel):
     backlash: float | None = None
     profile_shift: float | None = None
     target_body_ids: list[str] | None = None
+    points_per_flank: int | None = None
 
 
 class BevelGearFeatureResponse(BaseModel):
@@ -986,6 +991,7 @@ class BevelGearFeatureResponse(BaseModel):
     backlash: float
     profile_shift: float
     target_body_ids: list[str] = []
+    points_per_flank: int = 12
     locked: bool
     # B1: see SketchFeatureResponse.produces above - always BODY for a
     # BevelGearFeature.
@@ -1029,6 +1035,9 @@ class BevelPairFeatureCreate(BaseModel):
     pressure_angle_degrees: float = 20.0
     shaft_angle_degrees: float = 90.0
     backlash: float = 0.0
+    # See `BevelGearFeatureCreate.points_per_flank`'s own docstring -
+    # applies to both members' own tooth flanks.
+    points_per_flank: int = 12
 
 
 class BevelPairFeatureUpdate(BaseModel):
@@ -1043,6 +1052,7 @@ class BevelPairFeatureUpdate(BaseModel):
     pressure_angle_degrees: float | None = None
     shaft_angle_degrees: float | None = None
     backlash: float | None = None
+    points_per_flank: int | None = None
 
 
 class BevelPairFeatureResponse(BaseModel):
@@ -1056,6 +1066,7 @@ class BevelPairFeatureResponse(BaseModel):
     pressure_angle_degrees: float
     shaft_angle_degrees: float
     backlash: float
+    points_per_flank: int = 12
     locked: bool
     # B1: see SketchFeatureResponse.produces above - always BODY for a
     # BevelPairFeature.

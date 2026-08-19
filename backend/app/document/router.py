@@ -736,6 +736,7 @@ def _bevel_gear_feature_response(
         backlash=feature.backlash,
         profile_shift=feature.profile_shift,
         target_body_ids=feature.target_body_ids,
+        points_per_flank=feature.points_per_flank,
         locked=part.is_locked(feature.id),
         produces=feature.produces,
         warnings=warnings,
@@ -770,6 +771,7 @@ def _bevel_pair_feature_response(
         pressure_angle_degrees=feature.pressure_angle_degrees,
         shaft_angle_degrees=feature.shaft_angle_degrees,
         backlash=feature.backlash,
+        points_per_flank=feature.points_per_flank,
         locked=part.is_locked(feature.id),
         produces=feature.produces,
         warnings=warnings,
@@ -3162,6 +3164,7 @@ def create_bevel_gear_feature(part_id: str, payload: BevelGearFeatureCreate) -> 
         backlash=payload.backlash,
         profile_shift=payload.profile_shift,
         target_body_ids=list(payload.target_body_ids),
+        points_per_flank=payload.points_per_flank,
     )
     _, warnings = resolve_bevel_gear(part, feature)  # raises on an unresolvable/invalid bevel gear
     part.add_feature(feature)
@@ -3202,6 +3205,9 @@ def update_bevel_gear_feature(part_id: str, feature_id: str, payload: BevelGearF
     new_target_body_ids = (
         list(payload.target_body_ids) if payload.target_body_ids is not None else feature.target_body_ids
     )
+    new_points_per_flank = (
+        payload.points_per_flank if payload.points_per_flank is not None else feature.points_per_flank
+    )
 
     _validate_plane_ref(part, new_plane_ref)
     _validate_target_body_ids(part, new_bevel_type == BevelGearType.CUT, new_target_body_ids)
@@ -3218,6 +3224,7 @@ def update_bevel_gear_feature(part_id: str, feature_id: str, payload: BevelGearF
         backlash=new_backlash,
         profile_shift=new_profile_shift,
         target_body_ids=new_target_body_ids,
+        points_per_flank=new_points_per_flank,
     )
     _, warnings = resolve_bevel_gear(part, candidate)  # raises on an unresolvable/invalid bevel gear
 
@@ -3231,6 +3238,7 @@ def update_bevel_gear_feature(part_id: str, feature_id: str, payload: BevelGearF
     feature.backlash = candidate.backlash
     feature.profile_shift = candidate.profile_shift
     feature.target_body_ids = candidate.target_body_ids
+    feature.points_per_flank = candidate.points_per_flank
     return _bevel_gear_feature_response(part, feature, warnings)
 
 
@@ -3433,6 +3441,7 @@ def create_bevel_pair_feature(part_id: str, payload: BevelPairFeatureCreate) -> 
         pressure_angle_degrees=payload.pressure_angle_degrees,
         shaft_angle_degrees=payload.shaft_angle_degrees,
         backlash=payload.backlash,
+        points_per_flank=payload.points_per_flank,
     )
     _, warnings = resolve_bevel_pair(part, feature)  # raises on an unresolvable/invalid bevel pair
     part.add_feature(feature)
@@ -3472,6 +3481,9 @@ def update_bevel_pair_feature(part_id: str, feature_id: str, payload: BevelPairF
         payload.shaft_angle_degrees if payload.shaft_angle_degrees is not None else feature.shaft_angle_degrees
     )
     new_backlash = payload.backlash if payload.backlash is not None else feature.backlash
+    new_points_per_flank = (
+        payload.points_per_flank if payload.points_per_flank is not None else feature.points_per_flank
+    )
 
     _validate_plane_ref(part, new_plane_ref)
 
@@ -3485,6 +3497,7 @@ def update_bevel_pair_feature(part_id: str, feature_id: str, payload: BevelPairF
         pressure_angle_degrees=new_pressure_angle_degrees,
         shaft_angle_degrees=new_shaft_angle_degrees,
         backlash=new_backlash,
+        points_per_flank=new_points_per_flank,
     )
     _, warnings = resolve_bevel_pair(part, candidate)  # raises on an unresolvable/invalid bevel pair
 
@@ -3496,6 +3509,7 @@ def update_bevel_pair_feature(part_id: str, feature_id: str, payload: BevelPairF
     feature.pressure_angle_degrees = candidate.pressure_angle_degrees
     feature.shaft_angle_degrees = candidate.shaft_angle_degrees
     feature.backlash = candidate.backlash
+    feature.points_per_flank = candidate.points_per_flank
     return _bevel_pair_feature_response(part, feature, warnings)
 
 

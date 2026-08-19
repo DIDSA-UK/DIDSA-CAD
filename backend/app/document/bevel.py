@@ -1018,6 +1018,14 @@ def resolve_bevel_gear_from_bodies(
     bodies`'s overall shape (raises a structured `HTTPException` rather
     than returning `None`: no backing Sketch, so no "temporarily has
     nothing to build" state to tolerate)."""
+    if feature.points_per_flank < 2:
+        # Mirrors `app.document.gear.resolve_gear_from_bodies`'s own
+        # `points_per_flank must be >= 2` floor (`gear.py:536-543`) - same
+        # `sample_spherical_involute_flank`/`sample_involute_flank` `point_
+        # count must be >= 2` requirement underneath, checked here so a bad
+        # value fails closed with a clean 422 instead of an uncaught
+        # GearGeometryError surfacing as a 500 partway through flank sampling.
+        raise _invalid_bevel_parameters(f"points_per_flank must be >= 2, got {feature.points_per_flank!r}")
     try:
         geometry = bevel_gear_geometry(
             module=feature.module,
@@ -1043,7 +1051,7 @@ def resolve_bevel_gear_from_bodies(
         )
 
     basis = resolve_plane_ref(part, bodies, feature.plane_ref, excluded_feature_ids)
-    solid, assembly_warnings = _assemble_gear_solid(basis, geometry, feature.tooth_count)
+    solid, assembly_warnings = _assemble_gear_solid(basis, geometry, feature.tooth_count, feature.points_per_flank)
     warnings.extend(assembly_warnings)
     return solid, warnings
 

@@ -46,7 +46,7 @@ from fastapi import HTTPException
 from OCC.Core.BRep import BRep_Builder
 from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape
 
-from app.document.bevel import _POINTS_PER_FLANK, _assemble_gear_solid
+from app.document.bevel import _assemble_gear_solid
 from app.document.bevel_math import (
     BevelGearGeometry,
     GearGeometryError,
@@ -136,6 +136,12 @@ def resolve_bevel_pair_from_bodies(
     rather than returning `None` on any failure - a `BevelPairFeature` has
     no "temporarily has nothing to build" state, same reasoning every
     other gear-family Feature here already uses."""
+    if feature.points_per_flank < 2:
+        # Mirrors `app.document.bevel.resolve_bevel_gear_from_bodies`'s own
+        # identical guard - applies to both members here, built via the same
+        # `_assemble_gear_solid` call.
+        raise _invalid_bevel_pair_parameters(f"points_per_flank must be >= 2, got {feature.points_per_flank!r}")
+
     try:
         gamma_1, gamma_2 = pitch_cone_half_angles(
             feature.member_1.tooth_count, feature.member_2.tooth_count, feature.shaft_angle_degrees
@@ -164,8 +170,12 @@ def resolve_bevel_pair_from_bodies(
     basis_1 = resolve_plane_ref(part, bodies, feature.plane_ref, excluded_feature_ids)
     basis_2 = _tilted_basis(basis_1, math.radians(feature.shaft_angle_degrees))
 
-    solid_1, warnings_1 = _assemble_gear_solid(basis_1, geometry_1, feature.member_1.tooth_count, _POINTS_PER_FLANK)
-    solid_2, warnings_2 = _assemble_gear_solid(basis_2, geometry_2, feature.member_2.tooth_count, _POINTS_PER_FLANK)
+    solid_1, warnings_1 = _assemble_gear_solid(
+        basis_1, geometry_1, feature.member_1.tooth_count, feature.points_per_flank
+    )
+    solid_2, warnings_2 = _assemble_gear_solid(
+        basis_2, geometry_2, feature.member_2.tooth_count, feature.points_per_flank
+    )
     warnings.extend(f"member_1: {w}" for w in warnings_1)
     warnings.extend(f"member_2: {w}" for w in warnings_2)
 

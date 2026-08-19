@@ -2618,6 +2618,7 @@ class DocumentApiClient {
     double profileShift = 0.0,
     PlaneRefDto? planeRef,
     List<String> targetBodyIds = const [],
+    int pointsPerFlank = 12,
   }) =>
       _send(
         () => _httpClient.post(
@@ -2634,6 +2635,7 @@ class DocumentApiClient {
                 'backlash': backlash,
                 'profile_shift': profileShift,
                 'target_body_ids': targetBodyIds,
+                'points_per_flank': pointsPerFlank,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -2654,6 +2656,7 @@ class DocumentApiClient {
     double? backlash,
     double? profileShift,
     List<String>? targetBodyIds,
+    int? pointsPerFlank,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -2670,6 +2673,7 @@ class DocumentApiClient {
                 if (backlash != null) 'backlash': backlash,
                 if (profileShift != null) 'profile_shift': profileShift,
                 if (targetBodyIds != null) 'target_body_ids': targetBodyIds,
+                if (pointsPerFlank != null) 'points_per_flank': pointsPerFlank,
               }),
             ),
         (body) => body as Map<String, dynamic>,
@@ -2689,6 +2693,7 @@ class DocumentApiClient {
     double shaftAngleDegrees = 90.0,
     double backlash = 0.0,
     PlaneRefDto? planeRef,
+    int pointsPerFlank = 12,
   }) =>
       _send(
         () => _httpClient.post(
@@ -2703,6 +2708,7 @@ class DocumentApiClient {
                 'pressure_angle_degrees': pressureAngleDegrees,
                 'shaft_angle_degrees': shaftAngleDegrees,
                 'backlash': backlash,
+                'points_per_flank': pointsPerFlank,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -2730,6 +2736,7 @@ class DocumentApiClient {
     double? pressureAngleDegrees,
     double? shaftAngleDegrees,
     double? backlash,
+    int? pointsPerFlank,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -2746,6 +2753,7 @@ class DocumentApiClient {
                 if (pressureAngleDegrees != null) 'pressure_angle_degrees': pressureAngleDegrees,
                 if (shaftAngleDegrees != null) 'shaft_angle_degrees': shaftAngleDegrees,
                 if (backlash != null) 'backlash': backlash,
+                if (pointsPerFlank != null) 'points_per_flank': pointsPerFlank,
               }),
             ),
         (body) => body as Map<String, dynamic>,
