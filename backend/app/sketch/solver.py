@@ -486,9 +486,29 @@ class _PySlvsBuilder:
         # position is never meant to be pinned to anything - only the seed
         # *value* is borrowed, not the seed Point's own pinned-ness.
         seed = self._points[seed_from_point_id]
-        pu = self._system.addParamV(seed.x, group=_SOLVE_GROUP)
-        pv = self._system.addParamV(seed.y, group=_SOLVE_GROUP)
+        return self.ephemeral_point2d_at(seed.x, seed.y)
+
+    def ephemeral_point2d_at(self, x: float, y: float) -> int:
+        # [ephemeral_point2d]'s own raw-coordinate sibling, for a Constraint
+        # that needs to seed its own scratch geometry at a *derived*
+        # position (e.g. PointOnEllipseConstraint's trammel auxiliary
+        # points, seeded at a computed trammel-rod position rather than any
+        # single existing Point's own literal position) instead of directly
+        # borrowing an existing Point's value.
+        pu = self._system.addParamV(x, group=_SOLVE_GROUP)
+        pv = self._system.addParamV(y, group=_SOLVE_GROUP)
         return self._system.addPoint2d(self._workplane, pu, pv, group=_SOLVE_GROUP)
+
+    def seed_xy(self, point_id: str) -> tuple[float, float]:
+        # The *current* (pre-solve) raw position backing `point_id` - for a
+        # Constraint that needs to compute a derived initial guess for its
+        # own scratch geometry (see [ephemeral_point2d_at]) from more than
+        # one existing Point's position at once, the same raw values
+        # [point2d]/[ephemeral_point2d] already read internally, exposed
+        # here since a Constraint's own `add_to_solver` lives in a
+        # different module and has no other way to reach them.
+        point = self._points[point_id]
+        return (point.x, point.y)
 
     def distance(self, point_a_handle: int, point_b_handle: int, value: float) -> int:
         return self._system.addPointsDistance(

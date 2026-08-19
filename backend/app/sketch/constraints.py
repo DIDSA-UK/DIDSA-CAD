@@ -1,3 +1,4 @@
+import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Literal, Protocol
@@ -1070,12 +1071,53 @@ class PointOnEllipseConstraint(Constraint):
         major_line = builder.line_segment(center, major_point)
         minor_line = builder.line_segment(center, minor_point)
 
-        # M seeded from major_point's own position, N from minor_point's -
-        # confirmed empirically to converge reliably from exactly this seed
-        # across every configuration tested (see this class's own doc
-        # comment), no cleverer projection needed.
-        trammel_major = builder.ephemeral_point2d(self.major_point_id)
-        trammel_minor = builder.ephemeral_point2d(self.minor_point_id)
+        # M/N seeded at their own true trammel-rod position - on the major/
+        # minor axis respectively, at distance major_radius+minor_radius
+        # from centre (the rod's own fixed length L - see this class's own
+        # doc comment for the algebra), at whichever parametric angle
+        # `target`'s own *current* position is nearest. Bug fix (on-device
+        # feedback: "the elliptical arc is not as the user draws it...
+        # solver changes the shape after drawing"): the previous seed
+        # (major_point's/minor_point's own literal position, at distance
+        # major_radius/minor_radius - the WRONG distance for M/N) started
+        # every solve with a nonzero residual on the equal_length ties
+        # below, even when `target` was already placed exactly on the
+        # curve by `Sketch.add_ellipse_arc` - and since nothing else pins a
+        # freshly-drawn EllipseArc's own centre/rotation, Newton absorbed
+        # that residual as a visible rigid shift of the whole arc on its
+        # very first solve. This seed makes every constraint here already
+        # exactly satisfied whenever `target` starts exactly on the curve,
+        # so that first solve now moves nothing; it also gives the
+        # general "arbitrary Point being dragged onto the curve" case (this
+        # constraint's own original use case) a genuinely closer initial
+        # guess than blindly reusing major_point's/minor_point's position,
+        # rather than a worse one.
+        cx, cy = builder.seed_xy(self.center_point_id)
+        major_x, major_y = builder.seed_xy(self.major_point_id)
+        minor_x, minor_y = builder.seed_xy(self.minor_point_id)
+        target_x, target_y = builder.seed_xy(self.point_id)
+        major_radius = math.hypot(major_x - cx, major_y - cy)
+        minor_radius = math.hypot(minor_x - cx, minor_y - cy)
+        if major_radius > 1e-9 and minor_radius > 1e-9:
+            major_dir = ((major_x - cx) / major_radius, (major_y - cy) / major_radius)
+            minor_dir = ((minor_x - cx) / minor_radius, (minor_y - cy) / minor_radius)
+            u = (target_x - cx) * major_dir[0] + (target_y - cy) * major_dir[1]
+            v = (target_x - cx) * minor_dir[0] + (target_y - cy) * minor_dir[1]
+            angle = math.atan2(v / minor_radius, u / major_radius)
+            rod_length = major_radius + minor_radius
+            major_seed_dist = rod_length * math.cos(angle)
+            minor_seed_dist = rod_length * math.sin(angle)
+            trammel_major = builder.ephemeral_point2d_at(
+                cx + major_seed_dist * major_dir[0], cy + major_seed_dist * major_dir[1]
+            )
+            trammel_minor = builder.ephemeral_point2d_at(
+                cx + minor_seed_dist * minor_dir[0], cy + minor_seed_dist * minor_dir[1]
+            )
+        else:
+            # Degenerate (zero-radius) axis, only ever transient mid-drag -
+            # falls back to the old seed rather than dividing by zero.
+            trammel_major = builder.ephemeral_point2d(self.major_point_id)
+            trammel_minor = builder.ephemeral_point2d(self.minor_point_id)
         builder.point_on_line(trammel_major, major_line)
         builder.point_on_line(trammel_minor, minor_line)
 

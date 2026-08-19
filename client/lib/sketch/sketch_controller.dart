@@ -1667,6 +1667,21 @@ class SketchController extends ChangeNotifier {
       include(center.x - majorRadius, center.y - majorRadius);
       include(center.x + majorRadius, center.y + majorRadius);
     }
+    for (final ellipseArc in ellipseArcs.values) {
+      // Same conservative majorRadius-square as the Ellipse case above - a
+      // partial ellipse's own curve is always fully contained within its
+      // full ellipse's square regardless of which portion is swept, so
+      // this stays a safe (if occasionally oversized) superset without
+      // needing the swept range's own exact parametric extent.
+      final center = points[ellipseArc.centerPointId];
+      final major = points[ellipseArc.majorPointId];
+      if (center == null || major == null) continue;
+      final majorRadius = math.sqrt(
+        math.pow(major.x - center.x, 2) + math.pow(major.y - center.y, 2),
+      );
+      include(center.x - majorRadius, center.y - majorRadius);
+      include(center.x + majorRadius, center.y + majorRadius);
+    }
     for (final spline in splines.values) {
       // A cubic Bezier curve never leaves its own control polygon's convex
       // hull, so including every through-point and control-handle Point

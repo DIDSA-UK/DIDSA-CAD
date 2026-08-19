@@ -19,6 +19,8 @@ import 'slvs_bindings.dart';
 abstract class SolverBuilder {
   int point2d(String pointId);
   int ephemeralPoint2d(String seedFromPointId);
+  int ephemeralPoint2dAt(double x, double y);
+  (double x, double y) seedXY(String pointId);
   int distance(int pointAHandle, int pointBHandle, double value);
   int horizontalDistance(String pointAId, String pointBId, double value);
   int verticalDistance(String pointAId, String pointBId, double value);
@@ -107,10 +109,29 @@ class NativeSolverBuilder implements SolverBuilder {
   @override
   int ephemeralPoint2d(String seedFromPointId) {
     final (x, y) = _pointXY(seedFromPointId);
+    return ephemeralPoint2dAt(x, y);
+  }
+
+  /// [ephemeralPoint2d]'s own raw-coordinate sibling, for a Constraint that
+  /// needs to seed its own scratch geometry at a *derived* position (e.g.
+  /// PointOnEllipseConstraintDto's trammel auxiliary points, seeded at a
+  /// computed trammel-rod position rather than any single existing Point's
+  /// own literal position) instead of directly borrowing an existing
+  /// Point's value. Mirrors solver.py's `ephemeral_point2d_at`.
+  @override
+  int ephemeralPoint2dAt(double x, double y) {
     final pu = _b.addParamV(_sys, x, slvsSolveGroup);
     final pv = _b.addParamV(_sys, y, slvsSolveGroup);
     return _b.addPoint2d(_sys, _workplane, pu, pv, slvsSolveGroup);
   }
+
+  /// The *current* (pre-solve) raw position backing [pointId] - mirrors
+  /// solver.py's `seed_xy`, exposing the same [_pointXY] lookup
+  /// [point2d]/[ephemeralPoint2d] already use internally to a Constraint
+  /// that needs to compute a derived initial guess from more than one
+  /// existing Point's position at once.
+  @override
+  (double x, double y) seedXY(String pointId) => _pointXY(pointId);
 
   @override
   int distance(int pointAHandle, int pointBHandle, double value) =>

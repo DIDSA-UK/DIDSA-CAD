@@ -192,6 +192,42 @@ def test_solving_a_fixed_ellipse_arc_converges_across_varied_configurations(
     assert _ellipse_equation_residual(sketch, arc, arc.end_point_id) == pytest.approx(0.0, abs=1e-6)
 
 
+def test_solving_a_freshly_drawn_unanchored_ellipse_arc_does_not_move_it():
+    """Bug fix (on-device feedback: "the elliptical arc is not as the user
+    draws it... feels like the solver changes the shape after drawing and
+    does not respect the points placed by user"): unlike the two tests
+    above, this leaves *everything* free - no FixedConstraint, no anchors -
+    exactly the state right after the draw tool places an EllipseArc and
+    calls /solve for the first time, before any drag ever touches it.
+
+    Root cause: PointOnEllipseConstraint's trammel auxiliary points (M/N)
+    used to be seeded at major_point's/minor_point's own position - at
+    distance major_radius/minor_radius from centre, the WRONG distance for
+    the trammel rod (which is major_radius+minor_radius long - see that
+    class's own doc comment for the algebra). That seed carried a nonzero
+    residual into the very first solve even though every Point started
+    exactly self-consistent (add_ellipse_arc places start/end exactly on
+    the curve by construction) - and since nothing here pins the arc's own
+    centre/rotation, Newton absorbed that spurious residual as a visible
+    rigid shift/rotation of the whole arc. Confirmed empirically before this
+    fix: the exact same setup below drifted individual Points by 1.4-2.5
+    units (on a shape with major_radius=6) after a single unanchored solve.
+    """
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(3.0, -2.0)
+    major = sketch.add_point(9.0, -2.0)
+    arc = sketch.add_ellipse_arc(center.id, major.id, minor_radius=2.5, start_angle=0.3, end_angle=2.1)
+    before = {point_id: (p.x, p.y) for point_id, p in sketch.points.items()}
+
+    result = solve_sketch(sketch)
+
+    assert result.converged, result.detail
+    for point_id, (bx, by) in before.items():
+        after = sketch.points[point_id]
+        assert after.x == pytest.approx(bx, abs=1e-6), f"{point_id}.x drifted"
+        assert after.y == pytest.approx(by, abs=1e-6), f"{point_id}.y drifted"
+
+
 # --- profile.py chain detection -----------------------------------------------
 
 

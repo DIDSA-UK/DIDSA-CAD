@@ -11210,4 +11210,72 @@ void main() {
       expect(instance.directionFixedAxis, 'y');
     });
   });
+
+  group('geometryBoundingBox (Zoom to Fit)', () {
+    Future<SketchController> adoptedControllerWithEllipseArc() async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-bbox-1', 'origin-bbox-1');
+      freshBackend.points['center'] = {'id': 'center', 'x': 0.0, 'y': 0.0};
+      freshBackend.points['major'] = {'id': 'major', 'x': 20.0, 'y': 0.0};
+      freshBackend.points['minor'] = {'id': 'minor', 'x': 0.0, 'y': 5.0};
+      freshBackend.points['start'] = {'id': 'start', 'x': 20.0, 'y': 0.0};
+      freshBackend.points['end'] = {'id': 'end', 'x': 0.0, 'y': 5.0};
+      freshBackend.ellipseArcs['ea-1'] = {
+        'id': 'ea-1',
+        'center_point_id': 'center',
+        'major_point_id': 'major',
+        'minor_point_id': 'minor',
+        'start_point_id': 'start',
+        'end_point_id': 'end',
+        'major_axis_line_id': 'ea-1-major-line',
+        'minor_axis_line_id': 'ea-1-minor-line',
+        'major_radius': 20.0,
+        'minor_radius': 5.0,
+        'rotation': 0.0,
+        'construction': false,
+      };
+      freshBackend.lines['ea-1-major-line'] = {
+        'id': 'ea-1-major-line',
+        'start_point_id': 'center',
+        'end_point_id': 'major',
+        'length': 20.0,
+        'construction': true,
+      };
+      freshBackend.lines['ea-1-minor-line'] = {
+        'id': 'ea-1-minor-line',
+        'start_point_id': 'center',
+        'end_point_id': 'minor',
+        'length': 5.0,
+        'construction': true,
+      };
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-bbox-1');
+      return freshController;
+    }
+
+    test(
+        'bug fix (on-device feedback: "the zoom level feels clamped, can\'t zoom out beyond a '
+        'certain level" after drawing an ellipse): an EllipseArc-only sketch is bounded by its own '
+        'majorRadius square, not just its own defining Points - the origin Point alone (0,0) would '
+        'otherwise undersize Zoom to Fit for a sketch whose only real content is an EllipseArc far '
+        'from the origin\'s own immediate neighbourhood', () async {
+      final freshController = await adoptedControllerWithEllipseArc();
+
+      final box = freshController.geometryBoundingBox;
+
+      expect(box, isNotNull);
+      // Conservative majorRadius-square around the arc's own centre (0,0),
+      // radius 20 - covers every Point already (start/major both sit
+      // exactly on that square's own edge), but the point-only bound would
+      // still have found them; this is really guarding against a *rotated*
+      // partial ellipse whose curve bulges beyond its own start/end Points'
+      // own straight-line extent, which the square catches and a plain
+      // per-Point bound would not.
+      expect(box!.left, closeTo(-20.0, 1e-9));
+      expect(box.right, closeTo(20.0, 1e-9));
+      expect(box.top, closeTo(-20.0, 1e-9));
+      expect(box.bottom, closeTo(20.0, 1e-9));
+    });
+  });
 }

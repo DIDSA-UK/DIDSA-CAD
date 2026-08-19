@@ -535,4 +535,81 @@ void main() {
     expect(residualFor('start'), closeTo(0.0, 1e-6));
     expect(residualFor('end'), closeTo(0.0, 1e-6));
   });
+
+  test(
+      'bug fix (on-device feedback: "the elliptical arc is not as the user draws it... solver '
+      'changes the shape after drawing"): a freshly-drawn EllipseArc - every Point placed exactly '
+      'where app.sketch.models.add_ellipse_arc would place it, nothing anchored (the real shape '
+      'right after the draw tool places it and calls solve, before any drag) - solves with '
+      'negligible drift on every Point, not just start/end. Unlike the test above, this leaves '
+      'centre/major/minor free too, so it actually exercises the rigid-frame slack the bad trammel '
+      'seed used to leak into.', () {
+    const centerXY = (1.0, -2.0);
+    const majorRadius = 7.0, minorRadius = 3.0;
+    final rotation = math.pi / 6;
+    const startAngle = 0.4, endAngle = 2.3;
+    (double, double) pointOnEllipse(double localAngle) {
+      final u = majorRadius * math.cos(localAngle);
+      final v = minorRadius * math.sin(localAngle);
+      final ca = math.cos(rotation), sa = math.sin(rotation);
+      return (centerXY.$1 + u * ca - v * sa, centerXY.$2 + u * sa + v * ca);
+    }
+
+    final majorXY = (
+      centerXY.$1 + majorRadius * math.cos(rotation),
+      centerXY.$2 + majorRadius * math.sin(rotation),
+    );
+    final minorXY = (
+      centerXY.$1 + minorRadius * math.cos(rotation + math.pi / 2),
+      centerXY.$2 + minorRadius * math.sin(rotation + math.pi / 2),
+    );
+    final points = {
+      'center': centerXY,
+      'major': majorXY,
+      'minor': minorXY,
+      'start': pointOnEllipse(startAngle),
+      'end': pointOnEllipse(endAngle),
+    };
+    final lines = {
+      'majorAxis': ('center', 'major'),
+      'minorAxis': ('center', 'minor'),
+    };
+    final constraints = <ConstraintDto>[
+      const DistanceConstraintDto(id: 'majorDist', pointAId: 'center', pointBId: 'major', distance: majorRadius),
+      const DistanceConstraintDto(id: 'minorDist', pointAId: 'center', pointBId: 'minor', distance: minorRadius),
+      const PerpendicularConstraintDto(id: 'perp', line1Id: 'majorAxis', line2Id: 'minorAxis'),
+      const PointOnEllipseConstraintDto(
+        id: 'startOnEllipse',
+        pointId: 'start',
+        ellipseId: 'arc2',
+        centerPointId: 'center',
+        majorPointId: 'major',
+        minorPointId: 'minor',
+      ),
+      const PointOnEllipseConstraintDto(
+        id: 'endOnEllipse',
+        pointId: 'end',
+        ellipseId: 'arc2',
+        centerPointId: 'center',
+        majorPointId: 'major',
+        minorPointId: 'minor',
+      ),
+    ];
+
+    final result = solveSketchLocally(
+      bindings: bindings,
+      points: points,
+      constraints: constraints,
+      lineEndpoints: (id) => _lineEndpoints(lines, id),
+      anchorPointIds: const {},
+    );
+
+    expect(result.converged, isTrue, reason: 'resultCode=${result.resultCode}');
+    for (final id in points.keys) {
+      final (sx, sy) = points[id]!;
+      final (rx, ry) = result.solvedPoints[id]!;
+      expect(rx, closeTo(sx, 1e-6), reason: '$id.x drifted');
+      expect(ry, closeTo(sy, 1e-6), reason: '$id.y drifted');
+    }
+  });
 }
