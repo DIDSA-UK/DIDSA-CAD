@@ -15,6 +15,7 @@ import '../api/sketch_api_client.dart'
         ApiException,
         ArcDto,
         CircleDto,
+        EllipseArcDto,
         EllipseDto,
         LineDto,
         PointDto,
@@ -156,6 +157,37 @@ List<EllipseDto> _ellipseDtosFrom(SketchController controller) => [
               controller.points[ellipse.majorPointId]!.x - controller.points[ellipse.centerPointId]!.x,
             ),
             construction: ellipse.construction,
+          ),
+    ];
+
+/// [_arcDtosFrom]'s Ellipse-Arc-shaped sibling, mirroring [_ellipseDtosFrom]'s
+/// own majorRadius/rotation recompute (an EllipseArc has no stored radius/
+/// rotation of its own either - see that class's backend docstring).
+List<EllipseArcDto> _ellipseArcDtosFrom(SketchController controller) => [
+      for (final ellipseArc in controller.ellipseArcs.values)
+        if (controller.points[ellipseArc.centerPointId] != null &&
+            controller.points[ellipseArc.majorPointId] != null &&
+            controller.points[ellipseArc.startPointId] != null &&
+            controller.points[ellipseArc.endPointId] != null)
+          EllipseArcDto(
+            id: ellipseArc.id,
+            centerPointId: ellipseArc.centerPointId,
+            majorPointId: ellipseArc.majorPointId,
+            minorPointId: ellipseArc.minorPointId,
+            startPointId: ellipseArc.startPointId,
+            endPointId: ellipseArc.endPointId,
+            majorAxisLineId: ellipseArc.majorAxisLineId,
+            minorAxisLineId: ellipseArc.minorAxisLineId,
+            majorRadius: _sketchPointDistance(
+              controller.points[ellipseArc.centerPointId]!,
+              controller.points[ellipseArc.majorPointId]!,
+            ),
+            minorRadius: ellipseArc.minorRadius,
+            rotation: math.atan2(
+              controller.points[ellipseArc.majorPointId]!.y - controller.points[ellipseArc.centerPointId]!.y,
+              controller.points[ellipseArc.majorPointId]!.x - controller.points[ellipseArc.centerPointId]!.x,
+            ),
+            construction: ellipseArc.construction,
           ),
     ];
 
@@ -1423,6 +1455,7 @@ class _SketchScreenState extends State<SketchScreen> {
       sketchCircle: true,
       sketchArc: true,
       sketchEllipse: true,
+      sketchEllipseArc: true,
       sketchSpline: true,
       sketchText: true,
       plane: false,
@@ -1469,6 +1502,7 @@ class _SketchScreenState extends State<SketchScreen> {
       SelectionEntityKind.sketchCircle => SelectionKind.circle,
       SelectionEntityKind.sketchArc => SelectionKind.arc,
       SelectionEntityKind.sketchEllipse => SelectionKind.ellipse,
+      SelectionEntityKind.sketchEllipseArc => SelectionKind.ellipseArc,
       SelectionEntityKind.sketchSpline => SelectionKind.spline,
       // 3D-viewport Text tool round: closes the gap that left Text only
       // selectable via box-select/"select all" in the embedded 3D
@@ -1575,15 +1609,12 @@ class _SketchScreenState extends State<SketchScreen> {
         SelectionKind.circle => SelectionEntityKind.sketchCircle,
         SelectionKind.arc => SelectionEntityKind.sketchArc,
         SelectionKind.ellipse => SelectionEntityKind.sketchEllipse,
-        // Scoped out for now, same as [SelectionKind.constraint] below: the
-        // 3D-viewport cursor mode has no real hit-test/[SelectionEntityKind]
-        // of its own yet for a partial ellipse curve (would need its own
-        // [SelectionFilterState] flag plus new 3D raycast geometry in
-        // selection_hit_test.dart) - EllipseArc is drawable/editable in the
-        // 2D sketch canvas today, just not yet pickable from Orbit View,
-        // mirroring how Text itself wasn't until a later, dedicated round
-        // (see this method's own doc comment).
-        SelectionKind.ellipseArc => null,
+        // Pattern/Mirror roadmap follow-up: now has a real 3D hit-test of
+        // its own (`selection_hit_test.dart`'s `hitTestSketchEllipseArcs`/
+        // `SelectionFilterState.sketchEllipseArc`), closing the gap this
+        // case's own doc comment used to describe - mirrors how Text itself
+        // wasn't pickable from Orbit View until a later, dedicated round.
+        SelectionKind.ellipseArc => SelectionEntityKind.sketchEllipseArc,
         SelectionKind.spline => SelectionEntityKind.sketchSpline,
         SelectionKind.text => SelectionEntityKind.sketchText,
         SelectionKind.constraint => null,
@@ -2201,6 +2232,7 @@ class _SketchScreenState extends State<SketchScreen> {
       circles: _circleDtosFrom(_controller),
       arcs: _arcDtosFrom(_controller),
       ellipses: _ellipseDtosFrom(_controller),
+      ellipseArcs: _ellipseArcDtosFrom(_controller),
       splines: _splineDtosFrom(_controller),
       texts: _textDtosFrom(_controller),
       textContours: _textContoursFrom(_controller),

@@ -68,6 +68,13 @@ enum SelectionEntityKind {
   sketchCircle,
   sketchArc,
   sketchEllipse,
+
+  /// Pattern/Mirror roadmap follow-up: gates `sketch_geometry_3d.dart`'s
+  /// `ellipseArcPolylines` the same way [sketchArc] gates `arcPolylines` -
+  /// a partial ellipse had no 3D-viewport hit-test of its own at all until
+  /// this round, mirroring [sketchArc]'s/[sketchEllipse]'s own "missing
+  /// entirely, not just gated off" history.
+  sketchEllipseArc,
   sketchSpline,
 
   /// On-device feedback (3D-viewport Text tool round: "text is not
@@ -184,6 +191,7 @@ class SelectionEntityRef {
         SelectionEntityKind.sketchCircle ||
         SelectionEntityKind.sketchArc ||
         SelectionEntityKind.sketchEllipse ||
+        SelectionEntityKind.sketchEllipseArc ||
         SelectionEntityKind.sketchSpline ||
         SelectionEntityKind.sketchText ||
         SelectionEntityKind.sketchPatternMirrorInstance =>
@@ -603,6 +611,30 @@ HoverHit? hitTestSketchEllipses(
       polygons,
       ids,
       SelectionEntityKind.sketchEllipse,
+      radiusPixels: radiusPixels,
+      orthographicHalfHeight: orthographicHalfHeight,
+    );
+
+/// Mirrors [hitTestSketchArcs] for an EllipseArc's own open polyline (see
+/// `sketch_geometry_3d.dart`'s `ellipseArcPolylines`) - Pattern/Mirror
+/// roadmap follow-up: an EllipseArc had no 3D-viewport hit-test of its own
+/// at all, mirroring [hitTestSketchArcs]'s own doc comment for why.
+HoverHit? hitTestSketchEllipseArcs(
+  vm.Ray ray,
+  Size viewportSize,
+  String sketchFeatureId,
+  List<List<vm.Vector3>> polylines,
+  List<String> ids, {
+  double radiusPixels = kSelectionHitRadiusPixels,
+  double? orthographicHalfHeight,
+}) =>
+    _hitTestSketchPolylines(
+      ray,
+      viewportSize,
+      sketchFeatureId,
+      polylines,
+      ids,
+      SelectionEntityKind.sketchEllipseArc,
       radiusPixels: radiusPixels,
       orthographicHalfHeight: orthographicHalfHeight,
     );
@@ -1143,6 +1175,20 @@ HoverHit? hitTestBodies({
         entry.key,
         geometry.ellipsePolygons,
         geometry.ellipseIds,
+        radiusPixels: radiusPixels,
+        orthographicHalfHeight: orthographicHalfHeight,
+      );
+      if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
+        bestEdge = hit;
+      }
+    }
+    if (filter.sketchEllipseArc) {
+      final hit = hitTestSketchEllipseArcs(
+        ray,
+        viewportSize,
+        entry.key,
+        geometry.ellipseArcPolylines,
+        geometry.ellipseArcIds,
         radiusPixels: radiusPixels,
         orthographicHalfHeight: orthographicHalfHeight,
       );

@@ -148,6 +148,7 @@ class SelectionListDrawer extends StatelessWidget {
         return const SvgIcon('assets/icons/viewport/selection_sketch_circle.svg');
       case SelectionEntityKind.sketchArc:
       case SelectionEntityKind.sketchEllipse:
+      case SelectionEntityKind.sketchEllipseArc:
       case SelectionEntityKind.sketchSpline:
         // P33: no dedicated icon exists for these yet - the Circle glyph
         // reads as "a curved Sketch entity" closely enough until one does,
@@ -155,7 +156,7 @@ class SelectionListDrawer extends StatelessWidget {
         // above already established for this list.
         return const SvgIcon('assets/icons/viewport/selection_sketch_circle.svg');
       case SelectionEntityKind.sketchText:
-        // Unlike sketchArc/sketchEllipse/sketchSpline above, a real,
+        // Unlike sketchArc/sketchEllipse/sketchEllipseArc/sketchSpline above, a real,
         // dedicated icon already exists - the same one the Text draw tool
         // itself uses in the speed dial.
         return const SvgIcon('assets/icons/sketch_tools/sketch_tool_text.svg');
@@ -191,6 +192,8 @@ class SelectionListDrawer extends StatelessWidget {
         return 'Sketch Arc';
       case SelectionEntityKind.sketchEllipse:
         return 'Sketch Ellipse';
+      case SelectionEntityKind.sketchEllipseArc:
+        return 'Sketch Ellipse Arc';
       case SelectionEntityKind.sketchSpline:
         return 'Sketch Spline';
       case SelectionEntityKind.sketchText:

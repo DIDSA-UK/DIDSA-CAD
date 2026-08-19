@@ -4264,7 +4264,8 @@ class _PartScreenState extends State<PartScreen> {
         final rawLines = await _sketchApi.listLines(sketchId);
         final rawCircles = await _sketchApi.listCircles(sketchId);
         final rawArcs = await _sketchApi.listArcs(sketchId);
-        final ellipses = await _sketchApi.listEllipses(sketchId);
+        final rawEllipses = await _sketchApi.listEllipses(sketchId);
+        final rawEllipseArcs = await _sketchApi.listEllipseArcs(sketchId);
         final splines = await _sketchApi.listSplines(sketchId);
         // 3D-viewport Text tool round (`docs/text-tool-3d-viewport-scope.md`
         // §2.1): a reference Sketch (this method's own read-only context,
@@ -4291,11 +4292,13 @@ class _PartScreenState extends State<PartScreen> {
         // own doc comment.
         final patternInstances = await _sketchApi.listPatternInstances(sketchId);
         final mirrorInstances = await _sketchApi.listMirrorInstances(sketchId);
-        final (points, lines, circles, arcs) = expandPatternMirrorDtos(
+        final (points, lines, circles, arcs, ellipses, ellipseArcs) = expandPatternMirrorDtos(
           points: rawPoints,
           lines: rawLines,
           circles: rawCircles,
           arcs: rawArcs,
+          ellipses: rawEllipses,
+          ellipseArcs: rawEllipseArcs,
           patternInstances: patternInstances,
           mirrorInstances: mirrorInstances,
         );
@@ -4309,6 +4312,7 @@ class _PartScreenState extends State<PartScreen> {
           circles: circles,
           arcs: arcs,
           ellipses: ellipses,
+          ellipseArcs: ellipseArcs,
           splines: splines,
           texts: texts,
           textContours: textContours,
