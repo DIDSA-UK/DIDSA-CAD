@@ -97,6 +97,7 @@ function's own inputs) are already plain-dataclass/tuple-of-floats, no
 OCCT types, so they pickle across the process boundary for free."""
 
 import math
+import multiprocessing
 import os
 import tempfile
 from concurrent.futures import ProcessPoolExecutor
@@ -347,7 +348,29 @@ def resolve_bevel_pair_from_bodies(
     # top-level "meshing phase alignment" docstring for the derivation:
     # member 1 gets a tooth exactly on the shared tangency line, member 2
     # gets a gap there instead, so the two interlock rather than collide.
-    with ProcessPoolExecutor(max_workers=2) as executor:
+    #
+    # `mp_context=spawn`, not the platform-default `fork` on Linux -
+    # confirmed on-device this is a real, reproducible deadlock, not a
+    # theoretical concern: a *second* `BevelPairFeature` build within the
+    # same server process (e.g. two `create_bevel_pair_feature` requests, or
+    # simply the real pytest suite's own several bevel-pair tests running in
+    # one session) would hang indefinitely with the default `fork` context -
+    # reproduced directly (`pytest tests/test_bevel_pair_feature.py -v` gets
+    # through the *first* bevel-pair-building test fine, then hangs forever
+    # on the *second* one), and confirmed fixed by switching to `spawn`.
+    # Root cause: OCCT (a large native C++ library, imported into this same
+    # process for the *first* build) is not `fork()`-safe across repeated
+    # forks - some global/static state it holds gets left in a state that
+    # deadlocks a subsequent fork, the well-documented general hazard
+    # Python's own `multiprocessing` docs warn about for "programs that use
+    # threads or other complex libraries" under `fork`. `spawn` starts each
+    # worker as a genuinely fresh interpreter (re-imports everything, no
+    # inherited memory/locks from this process at all) - slower to start per
+    # worker (a fresh Python + OCCT import, not free, but a small, bounded
+    # cost next to the multi-second-plus builds this is parallelizing), but
+    # immune to this whole class of post-fork corruption.
+    mp_context = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=2, mp_context=mp_context) as executor:
         future_1 = executor.submit(
             _build_member_solid,
             basis_1,
