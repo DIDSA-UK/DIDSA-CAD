@@ -51,6 +51,15 @@ class PointResponse(BaseModel):
     id: str
     x: float
     y: float
+    # On-device feedback ("converted edges... all the converted lines are
+    # completely mobile... the converted entities should be projected onto
+    # the sketch plane and locked at that projection point"): whether this
+    # Point must be treated as immobile - a live-tracked `Sketch.external_
+    # references` Point or one covered by a user-authored `FixedConstraint`
+    # alike (see `Sketch.is_point_locked`, the single canonical predicate
+    # for this). The client uses this to exclude such a Point from drag
+    # targeting, the same way it already excludes the sketch origin.
+    is_locked: bool = False
 
 
 class DeleteEntityResponse(BaseModel):
@@ -252,6 +261,15 @@ class CircleResponse(BaseModel):
     # [north, east, south, west] - see the backend's Circle.cardinal_point_ids
     # docstring for how each is solver-locked.
     cardinal_point_ids: list[str]
+    # On-device feedback ("converted edges... are not constrained to their
+    # parent edge"): `radius`'s own backing DistanceConstraint id (see
+    # `Sketch.add_circle`'s own doc comment) - lets a caller that creates a
+    # Circle outside the normal draw-then-confirm flow (`app.document.
+    # router.convert_body_edge`) explicitly confirm this constraint's own
+    # `provisional` flag via the existing PATCH .../constraints/{id}
+    # endpoint, the same "any explicit value PATCH clears provisional"
+    # mechanism the ghost-dimension confirm flow already uses.
+    radius_constraint_id: str
 
 
 class CircleUpdate(BaseModel):
@@ -294,6 +312,8 @@ class ArcResponse(BaseModel):
     end_point_id: str
     radius: float
     construction: bool = False
+    # See CircleResponse.radius_constraint_id's own doc comment.
+    radius_constraint_id: str
 
 
 class OffsetCircleResponse(BaseModel):
@@ -821,6 +841,34 @@ class EqualRadiusPointsConstraintCreate(BaseModel):
     radius2_point_id: str
 
 
+class PointOnLineConstraintCreate(BaseModel):
+    """The "Line" half of the sketcher's "point coincident to line/curve"
+    context-menu feature - see Sketch.add_point_on_line_constraint."""
+
+    type: Literal["point_on_line"]
+    point_id: str
+    line_id: str
+
+
+class PointOnCircleConstraintCreate(BaseModel):
+    """The curved-entity half of "point coincident to line/curve" - see
+    Sketch.add_point_on_circle_constraint. Circle/Arc only (see that
+    method's own doc comment for why Ellipse/Spline are out of scope)."""
+
+    type: Literal["point_on_circle"]
+    point_id: str
+    circle_or_arc_id: str
+
+
+class FixedConstraintCreate(BaseModel):
+    """The sketcher's "Fix" constraint - deployable to any entity, not just
+    a Point (see Sketch.add_fixed_constraint, which resolves entity_id to
+    every Point that defines it)."""
+
+    type: Literal["fixed"]
+    entity_id: str
+
+
 ConstraintCreate = Union[
     DistanceConstraintCreate,
     VerticalConstraintCreate,
@@ -837,6 +885,9 @@ ConstraintCreate = Union[
     TangentConstraintCreate,
     EqualRadiusConstraintCreate,
     EqualRadiusPointsConstraintCreate,
+    PointOnLineConstraintCreate,
+    PointOnCircleConstraintCreate,
+    FixedConstraintCreate,
 ]
 
 
@@ -963,6 +1014,37 @@ class EqualRadiusConstraintResponse(BaseModel):
     radius2_point_id: str
 
 
+class PointOnLineConstraintResponse(BaseModel):
+    type: Literal["point_on_line"] = "point_on_line"
+    id: str
+    point_id: str
+    line_id: str
+
+
+class PointOnCircleConstraintResponse(BaseModel):
+    type: Literal["point_on_circle"] = "point_on_circle"
+    id: str
+    point_id: str
+    circle_or_arc_id: str
+    # Captured at creation time, same as TangentConstraintResponse's own
+    # center_point_id/radius_point_id - lets a client (e.g. the Dart local
+    # solver port) dispatch this constraint directly without a second
+    # lookup back to the Circle/Arc entity.
+    center_point_id: str
+    radius_point_id: str
+
+
+class FixedConstraintResponse(BaseModel):
+    type: Literal["fixed"] = "fixed"
+    id: str
+    # Every Point this Fix actually covers - not the single `entity_id` the
+    # client passed to create it (a Line's own 2 endpoints, a Circle's
+    # centre + radius + cardinal Points, etc. - see
+    # Sketch.add_fixed_constraint). The client needs the resolved list to
+    # know which Points to exclude from drag targeting/show locked.
+    point_ids: list[str]
+
+
 ConstraintResponse = Union[
     DistanceConstraintResponse,
     VerticalConstraintResponse,
@@ -979,6 +1061,9 @@ ConstraintResponse = Union[
     SplineTangentConstraintResponse,
     TangentConstraintResponse,
     EqualRadiusConstraintResponse,
+    PointOnLineConstraintResponse,
+    PointOnCircleConstraintResponse,
+    FixedConstraintResponse,
 ]
 
 

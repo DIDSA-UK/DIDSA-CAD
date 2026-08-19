@@ -21,11 +21,14 @@ from app.sketch.constraints import (
     DistanceConstraint,
     EqualLengthConstraint,
     EqualRadiusConstraint,
+    FixedConstraint,
     HorizontalConstraint,
     LineDistanceConstraint,
     ParallelConstraint,
     PerpendicularConstraint,
     PointLineDistanceConstraint,
+    PointOnCircleConstraint,
+    PointOnLineConstraint,
     SplineTangentConstraint,
     TangentConstraint,
     VerticalConstraint,
@@ -36,6 +39,17 @@ from app.sketch.models import Point, Sketch
 # redundancy detection to distrust a converged solve - see `converged`'s
 # own comment in solve_sketch below for why this allowlist exists and, just
 # as importantly, why AtMidpointConstraint is deliberately excluded from it.
+#
+# PointOnLineConstraint/PointOnCircleConstraint: safe by direct analogy -
+# both are thin wrappers around primitives (point_on_line, equal_length)
+# already trusted here via CollinearConstraint/EqualRadiusConstraint, which
+# use the exact same underlying py-slvs calls with no ambiguity of their
+# own (unlike e.g. AngleConstraint's supplement-angle case).
+#
+# FixedConstraint: safe - SolverBuilder.where_dragged (addWhereDragged) pins
+# a point deterministically to its own seeded position, no mirror-root or
+# sign ambiguity possible (confirmed empirically - see that method's own
+# doc comment).
 _REDUNDANCY_SAFE_CONSTRAINT_TYPES = (
     DistanceConstraint,
     VerticalConstraint,
@@ -51,6 +65,9 @@ _REDUNDANCY_SAFE_CONSTRAINT_TYPES = (
     SplineTangentConstraint,
     TangentConstraint,
     EqualRadiusConstraint,
+    PointOnLineConstraint,
+    PointOnCircleConstraint,
+    FixedConstraint,
 )
 
 # Constraint types `_residual_verified_convergence` (below) knows how to
@@ -141,6 +158,30 @@ def _signed_point_line_distance(point: Point, line_start: Point, line_end: Point
         return 0.0
     cross = (point.x - line_start.x) * dy - (point.y - line_start.y) * dx
     return cross / length
+
+
+def _lines_parallel(line1_start: Point, line1_end: Point, line2_start: Point, line2_end: Point) -> bool:
+    """Whether two Lines' direction vectors are parallel within a small,
+    scale-invariant tolerance - shared by `ParallelConstraint`'s own
+    residual check and (on-device feedback: "a dimension between two
+    parallel lines should be line to line... their parallelism should be
+    part of the dimension") `LineDistanceConstraint`'s, now that the latter
+    also adds a real ParallelConstraint via `add_to_solver` and so needs the
+    exact same residual verified. A zero-length Line has no direction to
+    compare - treated as trivially parallel (returns True) rather than
+    flagging a residual failure neither constraint's own `add_to_solver`
+    would have been able to detect either."""
+    dir1 = (line1_end.x - line1_start.x, line1_end.y - line1_start.y)
+    dir2 = (line2_end.x - line2_start.x, line2_end.y - line2_start.y)
+    len1 = math.hypot(*dir1)
+    len2 = math.hypot(*dir2)
+    if len1 < 1e-9 or len2 < 1e-9:
+        return True
+    # sin(angle between the two directions) - scale-invariant (unlike the
+    # raw cross product, which carries units of length^2), so a fixed small
+    # threshold works regardless of the Sketch's own size.
+    sin_angle = abs(dir1[0] * dir2[1] - dir1[1] * dir2[0]) / (len1 * len2)
+    return sin_angle <= 1e-4
 
 
 def _angle_between_degrees(line1_start: Point, line1_end: Point, line2_start: Point, line2_end: Point) -> float:
@@ -288,23 +329,12 @@ def _residual_verified_convergence(sketch: Sketch) -> bool | None:
             if abs(point_b.x - point_a.x) > tolerance:
                 return False
         elif isinstance(constraint, ParallelConstraint):
-            dir1 = (
-                points[constraint.line1_end_id].x - points[constraint.line1_start_id].x,
-                points[constraint.line1_end_id].y - points[constraint.line1_start_id].y,
-            )
-            dir2 = (
-                points[constraint.line2_end_id].x - points[constraint.line2_start_id].x,
-                points[constraint.line2_end_id].y - points[constraint.line2_start_id].y,
-            )
-            len1 = math.hypot(*dir1)
-            len2 = math.hypot(*dir2)
-            if len1 < 1e-9 or len2 < 1e-9:
-                continue  # A zero-length Line has no direction to compare - nothing to check.
-            # sin(angle between the two directions) - scale-invariant (unlike
-            # the raw cross product, which carries units of length^2), so a
-            # fixed small threshold works regardless of the Sketch's own size.
-            sin_angle = abs(dir1[0] * dir2[1] - dir1[1] * dir2[0]) / (len1 * len2)
-            if sin_angle > 1e-4:
+            if not _lines_parallel(
+                points[constraint.line1_start_id],
+                points[constraint.line1_end_id],
+                points[constraint.line2_start_id],
+                points[constraint.line2_end_id],
+            ):
                 return False
 
     return True
@@ -618,6 +648,9 @@ class _PySlvsBuilder:
             point_handle, line_handle, wrkpln=self._workplane, group=_SOLVE_GROUP
         )
 
+    def where_dragged(self, point_handle: int) -> int:
+        return self._system.addWhereDragged(point_handle, wrkpln=self._workplane, group=_SOLVE_GROUP)
+
     def solved_point_ids(self) -> list[str]:
         return list(self._point_handles)
 
@@ -661,12 +694,22 @@ def solve_sketch(sketch: Sketch, anchor_point_ids: frozenset[str] = frozenset())
     access to *refresh* those positions from the Body's current topology
     (see `app.document.create_plane.refresh_external_references` for that
     half) - this only ever pins whatever `(x, y)` the Point already holds.
+
+    On-device feedback ("converted edges... the converted entities should
+    be projected onto the sketch plane and locked at that projection
+    point"): a converted Arc/Circle's own centre (which OCCT gives no live
+    vertex to track as an `external_references` entry) is pinned via a real
+    `FixedConstraint` instead (see `app.document.router.convert_body_edge`)
+    - that pins itself directly through `FixedConstraint.add_to_solver`
+    (SolverBuilder.where_dragged), so unlike `external_references` it needs
+    no entry in `locked_point_ids` here at all to stay immobile on both
+    solve attempts.
     """
 
-    external_point_ids = frozenset(sketch.external_references)
-    result = _solve_sketch_once(sketch, anchor_point_ids | external_point_ids)
+    locked_point_ids = frozenset(sketch.external_references)
+    result = _solve_sketch_once(sketch, anchor_point_ids | locked_point_ids)
     if anchor_point_ids and not result.converged:
-        result = _solve_sketch_once(sketch, external_point_ids)
+        result = _solve_sketch_once(sketch, locked_point_ids)
     if result.converged:
         _fix_circle_cardinal_point_signs(sketch)
     return result

@@ -12,11 +12,14 @@ from app.sketch.constraints import (
     DistanceConstraint,
     EqualLengthConstraint,
     EqualRadiusConstraint,
+    FixedConstraint,
     HorizontalConstraint,
     LineDistanceConstraint,
     ParallelConstraint,
     PerpendicularConstraint,
     PointLineDistanceConstraint,
+    PointOnCircleConstraint,
+    PointOnLineConstraint,
     SplineTangentConstraint,
     TangentConstraint,
     VerticalConstraint,
@@ -75,6 +78,8 @@ from app.sketch.schemas import (
     EqualRadiusConstraintCreate,
     EqualRadiusConstraintResponse,
     EqualRadiusPointsConstraintCreate,
+    FixedConstraintCreate,
+    FixedConstraintResponse,
     HorizontalConstraintCreate,
     HorizontalConstraintResponse,
     LineCreate,
@@ -99,6 +104,10 @@ from app.sketch.schemas import (
     PointCreate,
     PointLineDistanceConstraintCreate,
     PointLineDistanceConstraintResponse,
+    PointOnCircleConstraintCreate,
+    PointOnCircleConstraintResponse,
+    PointOnLineConstraintCreate,
+    PointOnLineConstraintResponse,
     PointResponse,
     PointUpdate,
     PolygonCreate,
@@ -229,8 +238,8 @@ def _get_constraint_or_404(sketch: Sketch, constraint_id: str) -> Constraint:
     return constraint
 
 
-def _point_response(point: Point) -> PointResponse:
-    return PointResponse(id=point.id, x=point.x, y=point.y)
+def _point_response(sketch: Sketch, point: Point) -> PointResponse:
+    return PointResponse(id=point.id, x=point.x, y=point.y, is_locked=sketch.is_point_locked(point.id))
 
 
 def _line_response(sketch: Sketch, line: Line) -> LineResponse:
@@ -251,6 +260,7 @@ def _circle_response(sketch: Sketch, circle: Circle) -> CircleResponse:
         radius=circle.radius(sketch.points),
         construction=circle.construction,
         cardinal_point_ids=circle.cardinal_point_ids,
+        radius_constraint_id=circle.radius_constraint_id,
     )
 
 
@@ -262,6 +272,7 @@ def _arc_response(sketch: Sketch, arc: Arc) -> ArcResponse:
         end_point_id=arc.end_point_id,
         radius=arc.radius(sketch.points),
         construction=arc.construction,
+        radius_constraint_id=arc.radius_constraint_id,
     )
 
 
@@ -467,6 +478,25 @@ def _constraint_response(constraint: Constraint) -> ConstraintResponse:
             center2_point_id=constraint.center2_point_id,
             radius2_point_id=constraint.radius2_point_id,
         )
+    if isinstance(constraint, PointOnLineConstraint):
+        return PointOnLineConstraintResponse(
+            id=constraint.id,
+            point_id=constraint.point_id,
+            line_id=constraint.line_id,
+        )
+    if isinstance(constraint, PointOnCircleConstraint):
+        return PointOnCircleConstraintResponse(
+            id=constraint.id,
+            point_id=constraint.point_id,
+            circle_or_arc_id=constraint.circle_or_arc_id,
+            center_point_id=constraint.center_point_id,
+            radius_point_id=constraint.radius_point_id,
+        )
+    if isinstance(constraint, FixedConstraint):
+        return FixedConstraintResponse(
+            id=constraint.id,
+            point_ids=list(constraint.fixed_point_ids),
+        )
     raise NotImplementedError(f"No response mapping for constraint type: {constraint.type}")
 
 
@@ -571,7 +601,7 @@ def update_sketch_orientation(sketch_id: str, payload: SketchOrientationUpdate) 
 def create_point(sketch_id: str, payload: PointCreate) -> PointResponse:
     sketch = _get_sketch_or_404(sketch_id)
     point = sketch.add_point(payload.x, payload.y)
-    return _point_response(point)
+    return _point_response(sketch, point)
 
 
 @router.get("/sketches/{sketch_id}/points", response_model=list[PointResponse])
@@ -580,13 +610,13 @@ def list_points(sketch_id: str) -> list[PointResponse]:
     learn what a Sketch contains without already knowing specific ids (e.g.
     re-entering a Sketch it didn't just create), mirroring list_constraints."""
     sketch = _get_sketch_or_404(sketch_id)
-    return [_point_response(point) for point in sketch.points.values()]
+    return [_point_response(sketch, point) for point in sketch.points.values()]
 
 
 @router.get("/sketches/{sketch_id}/points/{point_id}", response_model=PointResponse)
 def get_point(sketch_id: str, point_id: str) -> PointResponse:
     sketch = _get_sketch_or_404(sketch_id)
-    return _point_response(_get_point_or_404(sketch, point_id))
+    return _point_response(sketch, _get_point_or_404(sketch, point_id))
 
 
 @router.patch("/sketches/{sketch_id}/points/{point_id}", response_model=PointResponse)
@@ -597,7 +627,7 @@ def update_point(sketch_id: str, point_id: str, payload: PointUpdate) -> PointRe
         raise HTTPException(status_code=400, detail="Cannot move the sketch's origin point")
     point.x = payload.x
     point.y = payload.y
-    return _point_response(point)
+    return _point_response(sketch, point)
 
 
 @router.delete("/sketches/{sketch_id}/points/{point_id}", status_code=204)
@@ -681,7 +711,7 @@ def trim_line(sketch_id: str, line_id: str, payload: LineTrimRequest) -> LineTri
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return LineTrimResponse(
         line=_line_response(sketch, line),
-        moved_point=_point_response(moved_point),
+        moved_point=_point_response(sketch, moved_point),
         created_new_point=created_new_point,
     )
 
@@ -726,8 +756,8 @@ def offset_line(sketch_id: str, line_id: str, payload: OffsetRequest) -> OffsetL
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return OffsetLineResponse(
         line=_line_response(sketch, line),
-        start_point=_point_response(sketch.points[line.start_point_id]),
-        end_point=_point_response(sketch.points[line.end_point_id]),
+        start_point=_point_response(sketch, sketch.points[line.start_point_id]),
+        end_point=_point_response(sketch, sketch.points[line.end_point_id]),
     )
 
 
@@ -764,7 +794,7 @@ def offset_chain(sketch_id: str, payload: OffsetChainRequest) -> OffsetChainResp
             if point_id in seen_point_ids:
                 continue
             seen_point_ids.add(point_id)
-            points.append(_point_response(sketch.points[point_id]))
+            points.append(_point_response(sketch, sketch.points[point_id]))
     return OffsetChainResponse(lines=lines, arcs=arcs, points=points)
 
 
@@ -849,7 +879,7 @@ def offset_circle(sketch_id: str, circle_id: str, payload: OffsetRequest) -> Off
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return OffsetCircleResponse(
         circle=_circle_response(sketch, circle),
-        radius_point=_point_response(sketch.points[circle.radius_point_id]),
+        radius_point=_point_response(sketch, sketch.points[circle.radius_point_id]),
     )
 
 
@@ -919,7 +949,7 @@ def trim_arc(sketch_id: str, arc_id: str, payload: ArcTrimRequest) -> ArcTrimRes
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return ArcTrimResponse(
         arc=_arc_response(sketch, arc),
-        moved_point=_point_response(moved_point),
+        moved_point=_point_response(sketch, moved_point),
         created_new_point=created_new_point,
     )
 
@@ -937,8 +967,8 @@ def offset_arc(sketch_id: str, arc_id: str, payload: OffsetRequest) -> OffsetArc
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return OffsetArcResponse(
         arc=_arc_response(sketch, arc),
-        start_point=_point_response(sketch.points[arc.start_point_id]),
-        end_point=_point_response(sketch.points[arc.end_point_id]),
+        start_point=_point_response(sketch, sketch.points[arc.start_point_id]),
+        end_point=_point_response(sketch, sketch.points[arc.end_point_id]),
     )
 
 
@@ -1374,6 +1404,14 @@ def create_constraint(sketch_id: str, payload: ConstraintCreate) -> ConstraintRe
                 payload.center2_point_id,
                 payload.radius2_point_id,
             )
+        elif isinstance(payload, PointOnLineConstraintCreate):
+            constraint = sketch.add_point_on_line_constraint(payload.point_id, payload.line_id)
+        elif isinstance(payload, PointOnCircleConstraintCreate):
+            constraint = sketch.add_point_on_circle_constraint(
+                payload.point_id, payload.circle_or_arc_id
+            )
+        elif isinstance(payload, FixedConstraintCreate):
+            constraint = sketch.add_fixed_constraint(payload.entity_id)
         else:
             raise NotImplementedError(f"No constraint creation mapping for payload: {payload}")
     except KeyError as exc:
@@ -1434,11 +1472,21 @@ def _scale_sketch_for_first_dimension(
     nothing sharing this sketch is left referring to its pre-scale size.
 
     Falls back to the ordinary single-point reseed when either endpoint is
-    a Point this function must not move: one tracking an external
-    reference (`sketch.external_references` - pinned to a Body vertex/edge,
-    refreshed from OCCT, not freehand-editable) or the sketch origin. There
-    is no "whole freehand sketch" scale to establish against a dimension
-    anchored to something outside the sketch's own control.
+    a Point this function must not move: one `Sketch.is_point_locked` (an
+    external reference pinned to a Body vertex/edge and refreshed from
+    OCCT, or covered by a user-authored FixedConstraint - neither is
+    freehand-editable) or the sketch origin. There is no "whole freehand
+    sketch" scale to establish against a dimension anchored to something
+    outside the sketch's own control.
+
+    Calls `sketch.is_point_locked` rather than re-deriving its own locked-
+    point set (as this used to) - a prior hand-copied version here (`fixed_
+    ids = external_references only, plus origin`) silently missed Points
+    pinned by the since-removed `pinned_point_ids`/now `FixedConstraint`,
+    so a sketch's first real dimension landing on a converted, pinned
+    Circle/Arc centre could wrongly trigger the whole-sketch uniform scale
+    instead of this fallback. `is_point_locked` is the single canonical
+    predicate specifically to prevent this class of drift happening again.
 
     A no-op (same as the reseed it replaces) when the current measured
     value is exactly zero - no direction/ratio to scale by in that
@@ -1449,10 +1497,10 @@ def _scale_sketch_for_first_dimension(
     if point_a is None or point_b is None:
         return
 
-    fixed_ids = set(sketch.external_references)
-    if sketch.origin_point_id is not None:
-        fixed_ids.add(sketch.origin_point_id)
-    if constraint.point_a_id in fixed_ids or constraint.point_b_id in fixed_ids:
+    def is_fixed(point_id: str) -> bool:
+        return point_id == sketch.origin_point_id or sketch.is_point_locked(point_id)
+
+    if is_fixed(constraint.point_a_id) or is_fixed(constraint.point_b_id):
         _reseed_distance_constraint_free_point(sketch, constraint, new_distance)
         return
 
@@ -1470,7 +1518,7 @@ def _scale_sketch_for_first_dimension(
     scale = new_distance / current_distance
     anchor_x, anchor_y = point_a.x, point_a.y
     for point_id, point in sketch.points.items():
-        if point_id in fixed_ids:
+        if is_fixed(point_id):
             continue
         point.x = anchor_x + (point.x - anchor_x) * scale
         point.y = anchor_y + (point.y - anchor_y) * scale
@@ -1618,7 +1666,7 @@ def solve_and_refresh(sketch_id: str, payload: SolveRequest | None = None) -> Sk
     result = solve_sketch(sketch, anchor_point_ids=anchor_point_ids)
     return SketchStateResponse(
         solve=_solve_result_response(result),
-        points=[_point_response(point) for point in sketch.points.values()],
+        points=[_point_response(sketch, point) for point in sketch.points.values()],
         constraints=[_constraint_response(constraint) for constraint in sketch.constraints.values()],
         profile=_profile_detection_response(sketch),
     )

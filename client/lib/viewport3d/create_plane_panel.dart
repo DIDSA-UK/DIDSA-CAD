@@ -11,6 +11,10 @@ import 'package:flutter/material.dart';
 /// a selected Vertex), [parallelToFaceThroughVertex] (parallel to a selected
 /// planar Face, through a selected Vertex), and [threePoints] (through three
 /// selected points, each a Body Vertex or a Sketch Point).
+/// On-device feedback ("allow 'point and curve' as a valid combination to
+/// create a plane, on point and normal to arc"): [normalToArcAtPoint] adds a
+/// seventh flow, [normalToLineAtPoint]'s Arc-shaped sibling - a selected
+/// Sketch Arc plus the Point that's one of its own two endpoints.
 enum CreatePlaneMode {
   offsetFace,
   normalToLineAtPoint,
@@ -18,6 +22,7 @@ enum CreatePlaneMode {
   normalToEdgeThroughVertex,
   parallelToFaceThroughVertex,
   threePoints,
+  normalToArcAtPoint,
 }
 
 /// The bottom-sheet-style panel [PartScreen] opens once Create Plane is
@@ -98,6 +103,8 @@ class _CreatePlanePanelState extends State<CreatePlanePanel> {
         return 'Plane equidistant between the two selected faces';
       case CreatePlaneMode.normalToLineAtPoint:
         return 'Plane normal to the selected line, through the selected point';
+      case CreatePlaneMode.normalToArcAtPoint:
+        return 'Plane normal to the selected arc, through the selected point';
       case CreatePlaneMode.normalToEdgeThroughVertex:
         return 'Plane normal to the selected edge, through the selected vertex';
       case CreatePlaneMode.parallelToFaceThroughVertex:

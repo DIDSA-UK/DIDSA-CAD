@@ -215,4 +215,50 @@ void main() {
       );
     },
   );
+
+  testWidgets(
+    'bug fix (on-device feedback: "the text box for length dimension isn\'t pre-selected... it should '
+    'be highlighted so user can type over it directly"): opening the ribbon\'s Set Length dialog '
+    'pre-selects the whole prefilled value rather than leaving the cursor at its end',
+    (tester) async {
+      final backend = _FakeBackend();
+      final mockClient = MockClient((request) async => backend.handle(request));
+      final controller = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await controller.ensureSketch();
+
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(10, 3);
+      controller.finishChain();
+      controller.exitToSelectMode();
+
+      await controller.handleCanvasTap(8, 2.4);
+      expect(controller.selectionSet.length, 1);
+      expect(controller.selectionSet.first.kind, SelectionKind.line);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 400,
+              height: 400,
+              child: SketchRibbon(controller: controller),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      await tester.tap(find.byTooltip('Length'));
+      await tester.pumpAndSettle();
+
+      final textField = tester.widget<TextField>(find.byType(TextField));
+      final prefilled = textField.controller!.text;
+      expect(prefilled, isNotEmpty);
+      expect(
+        textField.controller!.selection,
+        TextSelection(baseOffset: 0, extentOffset: prefilled.length),
+      );
+    },
+  );
 }

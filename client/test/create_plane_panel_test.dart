@@ -62,6 +62,14 @@ void main() {
       expect(find.textContaining('through the three selected points'), findsOneWidget);
     });
 
+    testWidgets(
+        'on-device feedback ("point and curve" plane, normal to arc): normalToArcAtPoint has no '
+        'numeric field and is always enabled', (tester) async {
+      expect(await confirmEnabled(tester, CreatePlaneMode.normalToArcAtPoint), isTrue);
+      expect(find.byType(TextField), findsNothing);
+      expect(find.textContaining('normal to the selected arc'), findsOneWidget);
+    });
+
     testWidgets('offsetFace shows a numeric offset field', (tester) async {
       await confirmEnabled(tester, CreatePlaneMode.offsetFace);
       expect(find.byType(TextField), findsOneWidget);

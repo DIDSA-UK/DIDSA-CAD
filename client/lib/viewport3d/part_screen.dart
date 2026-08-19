@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
@@ -9,7 +10,15 @@ import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart';
 import '../api/sketch_api_client.dart'
-    show ApiException, LineDto, ProfileDetectionDto, ProfileLoopDto, SketchApiClient, TextContourDto;
+    show
+        ApiException,
+        ArcDto,
+        LineDto,
+        PointDto,
+        ProfileDetectionDto,
+        ProfileLoopDto,
+        SketchApiClient,
+        TextContourDto;
 import '../connection_screen.dart';
 import '../didsa_logo_button.dart';
 import '../gear/bevel_design_screen.dart';
@@ -1002,6 +1011,17 @@ class _PartScreenState extends State<PartScreen> {
   /// tell a Line's real endpoint apart from an unrelated Point elsewhere in
   /// the same Sketch.
   Map<String, List<LineDto>> _linesByFeatureId = {};
+
+  /// On-device feedback ("allow 'point and curve' as a valid combination to
+  /// create a plane, on point and normal to arc"): [_linesByFeatureId]'s
+  /// Arc-shaped sibling, populated the same way, for [_isPointOnArc].
+  Map<String, List<ArcDto>> _arcsByFeatureId = {};
+
+  /// On-device feedback ("it should also support a point on the curve
+  /// that is not the end point"): each Point's own (x, y), keyed by owning
+  /// Sketch Feature id - [_isPointOnArc] needs real positions (not just
+  /// ids) to check a Point against an Arc's curve geometrically.
+  Map<String, List<PointDto>> _pointsByFeatureId = {};
 
   bool _busy = false;
   String? _errorMessage;
@@ -3609,6 +3629,54 @@ class _PartScreenState extends State<PartScreen> {
     return false;
   }
 
+  /// [_isPointOnLine]'s Arc-shaped sibling - the real lookup
+  /// `selection_actions.dart`'s `PointOnArcChecker` needs, backed by
+  /// [_arcsByFeatureId]/[_pointsByFeatureId]. On-device feedback ("it
+  /// should also support a point on the curve that is not the end
+  /// point"): unlike a Line's fixed two endpoints, an Arc's curve has no
+  /// finite set of ids to compare against, so this checks geometrically -
+  /// the Point's distance from centre must match the Arc's own radius
+  /// (within a small, radius-scaled tolerance) and its angle must fall
+  /// within the Arc's CCW sweep (`angleWithinArcSweep`, the same "which of
+  /// the two possible arcs is 'the' arc" convention the 2D sketch canvas's
+  /// own hit-testing/rendering already uses - see that function's own doc
+  /// comment) - the backend's `resolve_normal_to_arc_at_point` re-checks
+  /// the exact same two conditions itself before ever resolving a plane
+  /// from them, so this is purely a "should the button even appear"
+  /// pre-check, not the actual authority.
+  bool _isPointOnArc(String sketchFeatureId, String arcEntityId, String pointEntityId) {
+    final arcs = _arcsByFeatureId[sketchFeatureId];
+    final points = _pointsByFeatureId[sketchFeatureId];
+    if (arcs == null || points == null) return false;
+    ArcDto? arc;
+    for (final candidate in arcs) {
+      if (candidate.id == arcEntityId) {
+        arc = candidate;
+        break;
+      }
+    }
+    if (arc == null) return false;
+    PointDto? center, start, end, point;
+    for (final candidate in points) {
+      if (candidate.id == arc.centerPointId) center = candidate;
+      if (candidate.id == arc.startPointId) start = candidate;
+      if (candidate.id == arc.endPointId) end = candidate;
+      if (candidate.id == pointEntityId) point = candidate;
+    }
+    if (center == null || start == null || end == null || point == null) return false;
+    if (point.id == center.id) return false; // The centre itself never counts.
+
+    final radius = math.sqrt(math.pow(start.x - center.x, 2) + math.pow(start.y - center.y, 2));
+    final pointDist = math.sqrt(math.pow(point.x - center.x, 2) + math.pow(point.y - center.y, 2));
+    final tolerance = math.max(radius * 1e-3, 1e-6);
+    if ((pointDist - radius).abs() > tolerance) return false;
+
+    final pointAngle = math.atan2(point.y - center.y, point.x - center.x);
+    final startAngle = math.atan2(start.y - center.y, start.x - center.x);
+    final endAngle = math.atan2(end.y - center.y, end.x - center.x);
+    return angleWithinArcSweep(pointAngle, startAngle, endAngle);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -4184,6 +4252,8 @@ class _PartScreenState extends State<PartScreen> {
   Future<void> _refreshSketchGeometries() async {
     final updated = <String, SketchGeometry3D>{};
     final updatedLines = <String, List<LineDto>>{};
+    final updatedArcs = <String, List<ArcDto>>{};
+    final updatedPoints = <String, List<PointDto>>{};
     for (final feature in _features) {
       final sketchId = feature.sketchId;
       if (sketchId == null) continue; // An ExtrudeFeature - no Sketch of its own.
@@ -4230,6 +4300,8 @@ class _PartScreenState extends State<PartScreen> {
           mirrorInstances: mirrorInstances,
         );
         updatedLines[feature.id] = lines;
+        updatedArcs[feature.id] = arcs;
+        updatedPoints[feature.id] = points;
         final geometry = sketchGeometry3DFrom(
           basis: basis,
           points: points,
@@ -4250,6 +4322,8 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _allSketchGeometries = updated;
       _linesByFeatureId = updatedLines;
+      _arcsByFeatureId = updatedArcs;
+      _pointsByFeatureId = updatedPoints;
       _recomputeVisibleSketchGeometries();
     });
   }
@@ -6026,6 +6100,7 @@ class _PartScreenState extends State<PartScreen> {
     final vertices = _selectedEntities.where((e) => e.kind == SelectionEntityKind.vertex).toList();
     final points = _selectedEntities.where((e) => e.kind == SelectionEntityKind.sketchPoint).toList();
     final lines = _selectedEntities.where((e) => e.kind == SelectionEntityKind.sketchLine).toList();
+    final arcs = _selectedEntities.where((e) => e.kind == SelectionEntityKind.sketchArc).toList();
     // C5: a fixed reference plane or an existing Plane is "plane-like" for
     // the same three combos a Body face already was - see
     // `selection_actions.dart`'s own `planeLikeCount`, which this mirrors
@@ -6073,6 +6148,19 @@ class _PartScreenState extends State<PartScreen> {
       _openCreatePlanePanel(
         mode: CreatePlaneMode.normalToLineAtPoint,
         lineEntity: lines.single,
+        pointEntity: points.single,
+      );
+      return;
+    }
+    // On-device feedback ("allow 'point and curve' as a valid combination
+    // to create a plane, on point and normal to arc"): a Point plus a
+    // Sketch Arc - normalToLineAtPoint's own Arc-shaped sibling.
+    // [_openCreatePlanePanel] reuses [lineEntity] for this too (see that
+    // method's own doc comment on why).
+    if (points.length == 1 && arcs.length == 1) {
+      _openCreatePlanePanel(
+        mode: CreatePlaneMode.normalToArcAtPoint,
+        lineEntity: arcs.single,
         pointEntity: points.single,
       );
     }
@@ -6250,11 +6338,19 @@ class _PartScreenState extends State<PartScreen> {
           pointRefs: pointRefs.cast<PointRefDto>(),
         );
       } else {
+        // normalToLineAtPoint, or (on-device feedback: "allow 'point and
+        // curve' as a valid combination to create a plane, on point and
+        // normal to arc") its Arc-shaped sibling normalToArcAtPoint - both
+        // share the exact same `line_ref`/`point_ref` request shape (see
+        // `_openCreatePlanePanel`'s own doc comment on why [lineEntity] is
+        // reused for the Arc case too), differing only in `entity_type`/
+        // `plane_type`.
+        final isArc = mode == CreatePlaneMode.normalToArcAtPoint;
         final sketchId = _sketchIdForFeatureId(lineEntity!.sketchFeatureId);
         if (sketchId == null) return; // Defensive - see _sketchIdForFeatureId's own doc comment.
         final lineRef = SketchEntityRefDto(
           sketchId: sketchId,
-          entityType: 'line',
+          entityType: isArc ? 'arc' : 'line',
           entityId: lineEntity.sketchEntityId,
         );
         final pointRef = SketchEntityRefDto(
@@ -6264,7 +6360,7 @@ class _PartScreenState extends State<PartScreen> {
         );
         feature = await _api.createCreatePlaneFeature(
           part.id,
-          planeType: 'normal_to_line_at_point',
+          planeType: isArc ? 'normal_to_curve_at_point' : 'normal_to_line_at_point',
           lineRef: lineRef,
           pointRef: pointRef,
         );
@@ -6296,6 +6392,7 @@ class _PartScreenState extends State<PartScreen> {
       'normal_to_edge_through_vertex' => CreatePlaneMode.normalToEdgeThroughVertex,
       'parallel_to_face_through_vertex' => CreatePlaneMode.parallelToFaceThroughVertex,
       'three_points' => CreatePlaneMode.threePoints,
+      'normal_to_curve_at_point' => CreatePlaneMode.normalToArcAtPoint,
       _ => CreatePlaneMode.normalToLineAtPoint,
     };
     setState(() {
@@ -9143,6 +9240,7 @@ class _PartScreenState extends State<PartScreen> {
                       header: SelectionContextPanel(
                         selectedEntities: _selectedEntities,
                         isPointOnLine: _isPointOnLine,
+                        isPointOnArc: _isPointOnArc,
                         onCreatePlane: _onCreatePlaneTapped,
                         onFillet: _onFilletTapped,
                         onChamfer: _onChamferTapped,

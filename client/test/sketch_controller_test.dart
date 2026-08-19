@@ -478,7 +478,17 @@ class _FakeBackend {
 
     final constraintDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/constraints/(.+)$').firstMatch(path);
     if (constraintDeleteMatch != null && request.method == 'DELETE') {
-      constraints.remove(constraintDeleteMatch.group(1));
+      final removed = constraints.remove(constraintDeleteMatch.group(1));
+      // Mirrors the real backend: deleting a FixedConstraint (Unfix) frees
+      // every Point it covered, unless something else (e.g. an external
+      // reference) also locks it - this fake has no such overlap in any
+      // test using 'fixed', so unconditional unlock is a faithful enough
+      // model here.
+      if (removed != null && removed['type'] == 'fixed') {
+        for (final pointId in (removed['point_ids'] as List).cast<String>()) {
+          points[pointId]?['is_locked'] = false;
+        }
+      }
       return http.Response('', 204);
     }
 
@@ -513,6 +523,7 @@ class _FakeBackend {
         'id': id,
         'x': (body['body_id'] as String).length.toDouble(),
         'y': (body['vertex_index'] as num).toDouble(),
+        'is_locked': true,
       };
       points[id] = point;
       return _json(point, 201);
@@ -532,8 +543,8 @@ class _FakeBackend {
       final edgeIndex = (body['edge_index'] as num).toDouble();
       final startId = _newId('point');
       final endId = _newId('point');
-      final startPoint = {'id': startId, 'x': bodyId.length.toDouble(), 'y': edgeIndex};
-      final endPoint = {'id': endId, 'x': bodyId.length.toDouble() + 10, 'y': edgeIndex};
+      final startPoint = {'id': startId, 'x': bodyId.length.toDouble(), 'y': edgeIndex, 'is_locked': true};
+      final endPoint = {'id': endId, 'x': bodyId.length.toDouble() + 10, 'y': edgeIndex, 'is_locked': true};
       points[startId] = startPoint;
       points[endId] = endPoint;
       final lineId = _newId('line');
@@ -571,6 +582,11 @@ class _FakeBackend {
         'id': id,
         'x': (body['body_id'] as String).length.toDouble(),
         'y': (body['vertex_index'] as num).toDouble(),
+        // On-device feedback ("converted edges... should be... locked at
+        // that projection point"): matches the real backend's
+        // `PointResponse.is_locked` for a converted (associative,
+        // external-reference) Point.
+        'is_locked': true,
       };
       points[id] = point;
       _convertedVertexPointIds[key] = id;
@@ -588,8 +604,13 @@ class _FakeBackend {
       final construction = (body['construction'] as bool?) ?? false;
       final startId = _newId('point');
       final endId = _newId('point');
-      final startPoint = {'id': startId, 'x': bodyId.length.toDouble(), 'y': edgeIndex};
-      final endPoint = {'id': endId, 'x': bodyId.length.toDouble() + 10, 'y': edgeIndex};
+      // 'is_locked': true throughout this route - matches the real
+      // backend's own `PointResponse.is_locked` for a converted edge's
+      // associative endpoints and (`Sketch.pinned_point_ids`) its centre/
+      // cardinal Points alike - see on-device feedback "converted
+      // edges... should be... locked at that projection point".
+      final startPoint = {'id': startId, 'x': bodyId.length.toDouble(), 'y': edgeIndex, 'is_locked': true};
+      final endPoint = {'id': endId, 'x': bodyId.length.toDouble() + 10, 'y': edgeIndex, 'is_locked': true};
       points[startId] = startPoint;
       points[endId] = endPoint;
       // On-device feedback ("when I offset a curved edge it creates a
@@ -599,7 +620,7 @@ class _FakeBackend {
       // whichever of the two the response actually carries.
       if (edgeIndex == 99) {
         final centerId = _newId('point');
-        final centerPoint = {'id': centerId, 'x': bodyId.length.toDouble() + 5, 'y': edgeIndex};
+        final centerPoint = {'id': centerId, 'x': bodyId.length.toDouble() + 5, 'y': edgeIndex, 'is_locked': true};
         points[centerId] = centerPoint;
         final arcId = _newId('arc');
         final arc = {
@@ -629,7 +650,7 @@ class _FakeBackend {
         final centerX = bodyId.length.toDouble() + 5;
         const centerY = 0.0;
         const radius = 5.0;
-        final centerPoint = {'id': centerId, 'x': centerX, 'y': centerY};
+        final centerPoint = {'id': centerId, 'x': centerX, 'y': centerY, 'is_locked': true};
         points[centerId] = centerPoint;
         final cardinalPointIds = <String>[];
         final cardinalOffsets = <String, (double, double)>{
@@ -641,7 +662,7 @@ class _FakeBackend {
         for (final key in ['north', 'east', 'south', 'west']) {
           final newId = _newId('point');
           final offset = cardinalOffsets[key]!;
-          points[newId] = {'id': newId, 'x': offset.$1, 'y': offset.$2};
+          points[newId] = {'id': newId, 'x': offset.$1, 'y': offset.$2, 'is_locked': true};
           cardinalPointIds.add(newId);
         }
         final circleId = _newId('circle');
@@ -1834,6 +1855,58 @@ class _FakeBackend {
             'radius2_point_id': body['radius2_point_id'],
           };
           break;
+        case 'point_on_line':
+          constraint = {
+            'id': id,
+            'type': 'point_on_line',
+            'point_id': body['point_id'],
+            'line_id': body['line_id'],
+          };
+          break;
+        case 'point_on_circle':
+          final centerRadius = _centerRadiusPointIds(body['circle_or_arc_id'] as String);
+          constraint = {
+            'id': id,
+            'type': 'point_on_circle',
+            'point_id': body['point_id'],
+            'circle_or_arc_id': body['circle_or_arc_id'],
+            'center_point_id': centerRadius.$1,
+            'radius_point_id': centerRadius.$2,
+          };
+          break;
+        case 'fixed':
+          // Mirrors the real backend's Sketch.add_fixed_constraint: resolves
+          // entity_id to every Point it references (a bare Point id resolves
+          // to itself; Line/Circle resolve to their own defining Points -
+          // Arc/Ellipse/etc. aren't needed by any test using this fake yet,
+          // so aren't modeled here), then marks each one locked the same way
+          // this fake's convert-body-edge routes already do above.
+          final entityId = body['entity_id'] as String;
+          final List<String> fixedPointIds;
+          if (points.containsKey(entityId)) {
+            fixedPointIds = [entityId];
+          } else if (lines.containsKey(entityId)) {
+            final line = lines[entityId]!;
+            fixedPointIds = [line['start_point_id'] as String, line['end_point_id'] as String];
+          } else if (circles.containsKey(entityId)) {
+            final circle = circles[entityId]!;
+            fixedPointIds = [
+              circle['center_point_id'] as String,
+              circle['radius_point_id'] as String,
+              ...(circle['cardinal_point_ids'] as List).cast<String>(),
+            ];
+          } else {
+            fixedPointIds = const [];
+          }
+          for (final pointId in fixedPointIds) {
+            points[pointId]?['is_locked'] = true;
+          }
+          constraint = {
+            'id': id,
+            'type': 'fixed',
+            'point_ids': fixedPointIds,
+          };
+          break;
         default:
           constraint = {
             'id': id,
@@ -2939,6 +3012,69 @@ void main() {
     // identically by the painter and this hit-test.
     expect(dimensionLabelAt(controller, transform, defaultAnchor, 5), isNull);
     expect(dimensionLabelAt(controller, transform, const Offset(530, 272), 5), constraintId);
+  });
+
+  test(
+      'bug fix (on-device feedback: "on a vertical dimension, up/down swiping is reversed") - dragging '
+      'a vertical point-to-point DistanceConstraint label by an identical delta lands at the same '
+      'relative offset off its own dimension line, regardless of which of its two Points was tapped '
+      'first when the dimension was created (unlike a Line-length dimension, a point-to-point one lets '
+      'the user tap either Point first, so nothing else pins their pointA/pointB order)', () async {
+    const transform = ViewTransform(pixelsPerUnit: 20, originScreen: Offset(400, 300));
+
+    // Pair A: the lower Point (0, 0) tapped first, then the upper one (0, 5).
+    controller.selectDrawTool(SketchTool.point);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(0, 5);
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(0, 5);
+    await controller.confirmGhostValue('v', 5.0);
+    final idA = controller.constraints.entries.firstWhere((e) => e.value is DistanceConstraintDto).key;
+    controller.exitToSelectMode();
+
+    // Pair B: the same 5-unit vertical separation, offset sideways so its own
+    // dimension line never overlaps pair A's - but tapped in the OPPOSITE
+    // order (the upper Point (20, 5) first, then the lower one (20, 0)).
+    controller.selectDrawTool(SketchTool.point);
+    await controller.handleCanvasTap(20, 0);
+    await controller.handleCanvasTap(20, 5);
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(20, 5);
+    await controller.handleCanvasTap(20, 0);
+    await controller.confirmGhostValue('v', 5.0);
+    final idB =
+        controller.constraints.entries.firstWhere((e) => e.value is DistanceConstraintDto && e.key != idA).key;
+    controller.exitToSelectMode();
+
+    // Both dimension lines rest at their own default anchor: (offsetX, the
+    // midpoint of the two Points' screen y) - offsetX = the pair's max
+    // screen x plus the 18px default offset (see _dimensionOffsetDistance).
+    // Pair A's Points sit at screen x 400 (sketch x=0), pair B's at 800
+    // (sketch x=20); both pairs share the same screen-y midpoint (250,
+    // between sketch y=0's screen y=300 and y=5's screen y=200).
+    const anchorA = Offset(418, 250);
+    const anchorB = Offset(818, 250);
+    expect(dimensionLabelAt(controller, transform, anchorA, 5), idA);
+    expect(dimensionLabelAt(controller, transform, anchorB, 5), idB);
+
+    // Drag both labels down by the same 20px, regardless of tap order.
+    controller.beginLabelDrag(idA);
+    controller.updateLabelDrag(const Offset(0, 20));
+    controller.endLabelDrag();
+    controller.beginLabelDrag(idB);
+    controller.updateLabelDrag(const Offset(0, 20));
+    controller.endLabelDrag();
+
+    // Both must have moved straight down by the same 20px - never up, and
+    // never by different amounts - regardless of which Point was tapped
+    // first when each dimension was created.
+    const draggedA = Offset(418, 270);
+    const draggedB = Offset(818, 270);
+    expect(dimensionLabelAt(controller, transform, anchorA, 5), isNull);
+    expect(dimensionLabelAt(controller, transform, anchorB, 5), isNull);
+    expect(dimensionLabelAt(controller, transform, draggedA, 5), idA);
+    expect(dimensionLabelAt(controller, transform, draggedB, 5), idB);
   });
 
   test(
@@ -6309,6 +6445,21 @@ void main() {
 
       expect(controller.points, hasLength(pointCountBefore));
     });
+
+    test(
+        'on-device feedback ("all the converted lines are completely mobile... should be locked at '
+        'that projection point"): the converted Point refuses to start a drag', () async {
+      final (freshController, _) = await adoptedController();
+      freshController.enterConvertEntitiesMode();
+      await freshController.pickConvertEntityVertex('body-1', 3);
+      final pointId = freshController.points.keys.firstWhere((id) => id != 'origin-99');
+      freshController.exitToSelectMode();
+
+      final started = freshController.beginPointDrag(pointId);
+
+      expect(started, isFalse);
+      expect(freshController.draggingPointId, isNull);
+    });
   });
 
   group('pickConvertEntityEdge (P48, Sketcher-roadmap Phase 9 v1: Convert Entities)', () {
@@ -6361,6 +6512,65 @@ void main() {
       await controller.pickConvertEntityEdge('body-1', 0);
 
       expect(controller.lines, hasLength(lineCountBefore));
+    });
+
+    test(
+        'on-device feedback ("all the converted lines are completely mobile... should be locked at '
+        'that projection point"): neither of the converted Line\'s two endpoints can start a drag, '
+        'nor can the Line itself be grabbed as a rigid body', () async {
+      final (freshController, _) = await adoptedController();
+      freshController.enterConvertEntitiesMode();
+      await freshController.pickConvertEntityEdge('body-1', 0);
+      final line = freshController.lines.values.single;
+      freshController.exitToSelectMode();
+
+      expect(freshController.beginPointDrag(line.startPointId), isFalse);
+      expect(freshController.beginPointDrag(line.endPointId), isFalse);
+      expect(freshController.beginLineDrag(line.id), isFalse);
+      expect(freshController.draggingPointId, isNull);
+      expect(freshController.draggingLineId, isNull);
+    });
+
+    test(
+        'on-device feedback ("there is a visible radius dimension... any constraining constraints '
+        'should not be visible to the user" / "should be locked at that projection point"): '
+        'converting a circular edge into an Arc locks its centre Point too, with no auto-created '
+        'visible dimension Constraint', () async {
+      final (freshController, _) = await adoptedController();
+      freshController.enterConvertEntitiesMode();
+      // edgeIndex 99 is the fake backend's own sentinel for "resolves as a
+      // coplanar circular edge" - see its own handler doc comment.
+      await freshController.pickConvertEntityEdge('body-1', 99);
+      final arc = freshController.arcs.values.single;
+      freshController.exitToSelectMode();
+
+      expect(freshController.beginPointDrag(arc.centerPointId), isFalse);
+      expect(freshController.beginPointDrag(arc.startPointId), isFalse);
+      expect(freshController.beginPointDrag(arc.endPointId), isFalse);
+      // The whole point of pinning every defining Point directly is that no
+      // visible Constraint is needed to hold the shape rigid - a first
+      // attempt instead confirmed the Arc's own provisional radius
+      // DistanceConstraint, which surfaced as an unwanted user-facing
+      // dimension (reverted - see this method's own doc comment).
+      expect(freshController.constraints.values.whereType<DistanceConstraintDto>(), isEmpty);
+    });
+
+    test(
+        'converting a full circular edge into a Circle locks its centre AND all four cardinal '
+        'Points too', () async {
+      final (freshController, _) = await adoptedController();
+      freshController.enterConvertEntitiesMode();
+      // edgeIndex 100 is the fake backend's own sentinel for "resolves as a
+      // coplanar *full* circular edge" - see its own handler doc comment.
+      await freshController.pickConvertEntityEdge('body-1', 100);
+      final circle = freshController.circles.values.single;
+      freshController.exitToSelectMode();
+
+      expect(freshController.beginPointDrag(circle.centerPointId), isFalse);
+      for (final cardinalId in circle.cardinalPointIds) {
+        expect(freshController.beginPointDrag(cardinalId), isFalse);
+      }
+      expect(freshController.constraints.values.whereType<DistanceConstraintDto>(), isEmpty);
     });
   });
 
@@ -7787,10 +7997,10 @@ void main() {
   });
 
   test(
-      'confirming a fresh lineDistance ghost also creates a ParallelConstraint between the same '
-      'two Lines (on-device feedback: "the user should get the feeling that the dimension is '
-      'line to line, not point to point, and their parallelism should be included") - only a '
-      'LineDistanceConstraint alone (py-slvs addPointLineDistance) does not constrain rotation', () async {
+      'confirming a fresh lineDistance ghost also creates a real ParallelConstraint locking the '
+      'two Lines parallel, when doing so solves cleanly (on-device feedback: "a dimension between '
+      'two parallel lines should be line to line - their parallelism should be part of the '
+      'dimension")', () async {
     controller.selectDrawTool(SketchTool.line);
     await controller.handleCanvasTap(0, 0);
     await controller.handleCanvasTap(10, 0);
@@ -7904,6 +8114,36 @@ void main() {
 
     expect(controller.constraints.values.whereType<LineDistanceConstraintDto>(), hasLength(1));
     expect(controller.constraints.values.whereType<ParallelConstraintDto>(), hasLength(1));
+  });
+
+  test(
+      'confirming a fresh lineDistance ghost rolls the auxiliary ParallelConstraint back (keeping '
+      'only the LineDistanceConstraint) when adding it would be redundant and fails to converge - '
+      'on-device feedback: "adding a dimension between two parallel edges of a rectangle makes it '
+      'over constrained... it looks like a clash between the horizontal (or vertical) constraints '
+      'attached to the lines which indirectly causes them to be parallel"', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 5);
+    await controller.handleCanvasTap(10, 5);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1);
+    await controller.handleCanvasTap(8, 5.1);
+
+    // Simulates the two Lines already being forced parallel some other way
+    // (e.g. a rectangle's own opposite Horizontal-constrained sides) - the
+    // fake backend can't run a real solve, so this stands in for "adding
+    // the trial Parallel constraint made the system fail to converge".
+    backend.converged = false;
+
+    await controller.confirmGhostValue('lineDistance', 7.0);
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.constraints.values.whereType<LineDistanceConstraintDto>(), hasLength(1));
+    expect(controller.constraints.values.whereType<ParallelConstraintDto>(), isEmpty);
   });
 
   test(
@@ -8809,7 +9049,7 @@ void main() {
     // Off every cardinal axis - every Circle gets all four North/East/
     // South/West Points (see Sketch._add_cardinal_points).
     await controller.handleCanvasTap(5 * math.cos(math.pi / 4), 5 * math.sin(math.pi / 4)); // the circle's edge
-    await controller.handleCanvasTap(25, 10.1); // the line, away from its midpoint
+    await controller.handleCanvasTap(23, 10.1); // the line, away from its midpoint
 
     expect(controller.selectionSet.length, 2);
     for (final type in ConstraintOptionType.values) {
@@ -8835,6 +9075,121 @@ void main() {
     expect(controller.ribbonVisible, isFalse);
     final created = controller.constraints.values.whereType<CoincidentConstraintDto>().single;
     expect({created.pointAId, created.pointBId}, {pointA, pointB});
+  });
+
+  test('availableConstraintOptions offers pointOnLine (not coincident) for a Point+Line selection, '
+      'regressing the bug where this row called createCoincidentConstraint with a Line id', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    controller.selectDrawTool(SketchTool.point);
+    await controller.handleCanvasTap(3, 4);
+    controller.exitToSelectMode();
+    await controller.handleCanvasTap(3, 4); // the Point
+    await controller.handleCanvasTap(8, 0.1); // the Line, away from its midpoint (snapRadius=0.2 would materialize a midpoint Point there) and endpoints
+
+    expect(controller.selectionSet.map((s) => s.kind).toSet(), {SelectionKind.point, SelectionKind.line});
+    final options = controller.availableConstraintOptions;
+    expect(options.map((o) => o.type), [ConstraintOptionType.pointOnLine]);
+    expect(options.single.wired, isTrue);
+    expect(controller.canApplyConstraint(ConstraintOptionType.coincident), isFalse);
+  });
+
+  test('addPointOnLineConstraint creates a PointOnLineConstraint regardless of which of the two '
+      'was selected first', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    final lineId = controller.lines.keys.single;
+    controller.selectDrawTool(SketchTool.point);
+    await controller.handleCanvasTap(3, 4);
+    final pointId = controller.points.values.firstWhere((p) => p.x == 3 && p.y == 4).id;
+    controller.exitToSelectMode();
+    // Line selected first this time, Point second - the reverse order from
+    // the row-shape test above, deliberately, since the two arguments have
+    // fixed roles (unlike e.g. Coincident's interchangeable pair).
+    await controller.handleCanvasTap(8, 0.1); // away from the midpoint snap zone
+    await controller.handleCanvasTap(3, 4);
+
+    await controller.addPointOnLineConstraint();
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.selectionSet, isEmpty);
+    final created = controller.constraints.values.whereType<PointOnLineConstraintDto>().single;
+    expect(created.pointId, pointId);
+    expect(created.lineId, lineId);
+  });
+
+  test('availableConstraintOptions offers pointOnCircle for a Point+Circle selection', () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+    controller.selectDrawTool(SketchTool.point);
+    await controller.handleCanvasTap(20, 20);
+    controller.exitToSelectMode();
+    await controller.handleCanvasTap(20, 20); // the Point
+    await controller.handleCanvasTap(5 * math.cos(math.pi / 4), 5 * math.sin(math.pi / 4)); // the Circle's edge
+
+    expect(controller.selectionSet.map((s) => s.kind).toSet(), {SelectionKind.point, SelectionKind.circle});
+    final options = controller.availableConstraintOptions;
+    expect(options.map((o) => o.type), [ConstraintOptionType.pointOnCircle]);
+    expect(options.single.wired, isTrue);
+  });
+
+  test('addPointOnCircleConstraint creates a PointOnCircleConstraint with the Circle\'s own '
+      'centre/radius Point ids', () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+    final circleId = controller.circles.keys.single;
+    final centerId = controller.circles[circleId]!.centerPointId;
+    controller.selectDrawTool(SketchTool.point);
+    await controller.handleCanvasTap(20, 20);
+    final pointId = controller.points.values.firstWhere((p) => p.x == 20 && p.y == 20).id;
+    controller.exitToSelectMode();
+    await controller.handleCanvasTap(5 * math.cos(math.pi / 4), 5 * math.sin(math.pi / 4));
+    await controller.handleCanvasTap(20, 20);
+
+    await controller.addPointOnCircleConstraint();
+
+    expect(controller.errorMessage, isNull);
+    final created = controller.constraints.values.whereType<PointOnCircleConstraintDto>().single;
+    expect(created.pointId, pointId);
+    expect(created.circleOrArcId, circleId);
+    expect(created.centerPointId, centerId);
+  });
+
+  test('availableFixToggles/fixSelected/unfixSelected: Fix a Line, then Unfix it', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    final line = controller.lines.values.single;
+    controller.exitToSelectMode();
+    await controller.handleCanvasTap(8, 0.1); // select the Line, away from its midpoint snap zone
+
+    expect(controller.availableFixToggles, (showFix: true, showUnfix: false));
+    await controller.fixSelected();
+
+    expect(controller.errorMessage, isNull);
+    final fixed = controller.constraints.values.whereType<FixedConstraintDto>().single;
+    expect(fixed.pointIds.toSet(), {line.startPointId, line.endPointId});
+
+    // Re-select the now-fixed Line and confirm the toggle flips - this also
+    // exercises that _lockedPointIds (refreshed from PointResponse.is_locked
+    // by _solveAndTrackDof, which fixSelected calls) now reports both of the
+    // Line's own endpoints as locked, since availableFixToggles reads that
+    // same set.
+    await controller.handleCanvasTap(8, 0.1);
+    expect(controller.availableFixToggles, (showFix: false, showUnfix: true));
+    await controller.unfixSelected();
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.constraints.values.whereType<FixedConstraintDto>(), isEmpty);
+    await controller.handleCanvasTap(8, 0.1);
+    expect(controller.availableFixToggles, (showFix: true, showUnfix: false));
   });
 
   test(

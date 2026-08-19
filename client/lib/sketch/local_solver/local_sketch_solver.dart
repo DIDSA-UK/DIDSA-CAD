@@ -261,6 +261,18 @@ int _addToSolver(ConstraintDto c, SolverBuilder b, LineEndpoints lineEndpoints) 
     return b.equalLength(line1, line2);
   }
   if (c is LineDistanceConstraintDto) {
+    // On-device feedback ("a dimension between two parallel lines should
+    // be line to line... their parallelism should be part of the
+    // dimension" / follow-up: "adding this to a rectangle's own
+    // already-H/V-locked opposite sides makes it over constrained"): a
+    // first attempt baked a real `parallel` call directly in here
+    // unconditionally - reverted once that turned out to stack a
+    // now-redundant Parallel equation on top of a pair of Lines already
+    // forced parallel some other way. Genuinely enforcing parallelism (when
+    // it isn't already implied) is now the client's own call, via a
+    // separate, real `ParallelConstraintDto` it adds (and rolls back if
+    // redundant) alongside this one - see `SketchController.
+    // confirmGhostValue`'s own `lineDistance` branch.
     final (s1, e1) = lineEndpoints(c.line1Id);
     final (s2, _) = lineEndpoints(c.line2Id);
     final line1 = b.lineSegment(b.point2d(s1), b.point2d(e1));
@@ -295,6 +307,34 @@ int _addToSolver(ConstraintDto c, SolverBuilder b, LineEndpoints lineEndpoints) 
     final segmentB = b.cubic(b.point2d(c.segmentBP0), b.point2d(c.segmentBP1), b.point2d(c.segmentBP2),
         b.point2d(c.segmentBP3));
     return b.curvesTangent(true, false, segmentA, segmentB);
+  }
+  if (c is PointOnLineConstraintDto) {
+    final (ls, le) = lineEndpoints(c.lineId);
+    final point = b.point2d(c.pointId);
+    final line = b.lineSegment(b.point2d(ls), b.point2d(le));
+    return b.pointOnLine(point, line);
+  }
+  if (c is PointOnCircleConstraintDto) {
+    // Mirrors constraints.py's PointOnCircleConstraint: no native point-on-
+    // circle primitive in this shim either (see slvs_ffi_shim.h - only
+    // slvs_add_point_on_line exists), so this reuses equalLength between a
+    // virtual centre->point line and the Circle's/Arc's own centre->radius-
+    // point line, same trick as the EqualRadiusConstraintDto branch above.
+    final center = b.point2d(c.centerPointId);
+    final pointLine = b.lineSegment(center, b.point2d(c.pointId));
+    final radiusLine = b.lineSegment(center, b.point2d(c.radiusPointId));
+    return b.equalLength(pointLine, radiusLine);
+  }
+  if (c is FixedConstraintDto) {
+    // Not a real py-slvs call here - FixedConstraint's own pinning is
+    // achieved by folding its Point ids into solveSketchLocally's
+    // pinnedPointIds set *before* this dispatch loop runs (same fixed-
+    // group mechanism origin/anchorPointIds already use on this client),
+    // not through a solver primitive. The dispatch loop above skips this
+    // type entirely for that reason - this branch only exists so an
+    // unrecognized-type StateError is never thrown if it's ever reached
+    // directly.
+    return 0;
   }
   throw StateError('No solver dispatch for constraint type: ${c.runtimeType}');
 }
@@ -332,6 +372,11 @@ LocalSolveResult _solveOnce({
       // exactly as if it didn't exist, until confirmed (mirrors
       // DistanceConstraint.provisional's own doc comment).
       if (c is DistanceConstraintDto && c.provisional) continue;
+      // FixedConstraint pins itself entirely through pinnedPointIds (see
+      // solveSketchLocally's own doc comment) - not a real py-slvs call
+      // here, so it's skipped from this loop the same way a provisional
+      // DistanceConstraint is, rather than given a meaningless handle.
+      if (c is FixedConstraintDto) continue;
       final handle = _addToSolver(c, builder, lineEndpoints);
       constraintIdByHandle[handle] = c.id;
     }
@@ -435,11 +480,22 @@ LocalSolveResult _solveOnce({
 }
 
 /// Mirrors solver.py's `solve_sketch`: solves once with [anchorPointIds]
-/// (plus [originPointId], if any) pinned into the fixed group, and retries
-/// once with no anchors at all if that fails to converge - e.g. the dragged
-/// Point is Coincident with the fixed origin, or with another anchored
-/// Point, which the anchored attempt can never satisfy since neither side
-/// is free to move to match the other.
+/// (plus [originPointId] and [lockedPointIds], if any) pinned into the
+/// fixed group, and retries once with no anchors at all if that fails to
+/// converge - e.g. the dragged Point is Coincident with the fixed origin,
+/// or with another anchored Point, which the anchored attempt can never
+/// satisfy since neither side is free to move to match the other.
+///
+/// [lockedPointIds] mirrors solver.py's own `locked_point_ids` (an external
+/// reference, or a Point covered by a `FixedConstraintDto` - see
+/// `SketchController`'s own `_lockedPointIds`, the single set both drag-
+/// exclusion and this now share) - pinned on *both* attempts, never dropped
+/// on retry, since (like the backend) it represents geometry this local
+/// solve has no business moving under any circumstance. Previously this
+/// port didn't pin these at all (a known, narrower-than-backend gap - see
+/// this file's own header comment); passing the same set the client
+/// already computes for drag-exclusion closes it for free, no new
+/// tracking needed.
 LocalSolveResult solveSketchLocally({
   required SlvsNativeBindings bindings,
   required Map<String, (double, double)> points,
@@ -447,8 +503,9 @@ LocalSolveResult solveSketchLocally({
   required LineEndpoints lineEndpoints,
   String? originPointId,
   Set<String> anchorPointIds = const {},
+  Set<String> lockedPointIds = const {},
 }) {
-  final pinned = {...anchorPointIds, if (originPointId != null) originPointId};
+  final pinned = {...anchorPointIds, ...lockedPointIds, if (originPointId != null) originPointId};
   var result = _solveOnce(
     bindings: bindings,
     points: points,
@@ -462,7 +519,7 @@ LocalSolveResult solveSketchLocally({
       points: points,
       constraints: constraints,
       lineEndpoints: lineEndpoints,
-      pinnedPointIds: {if (originPointId != null) originPointId},
+      pinnedPointIds: {...lockedPointIds, if (originPointId != null) originPointId},
     );
   }
   return result;

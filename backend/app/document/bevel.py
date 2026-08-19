@@ -61,6 +61,7 @@ import math
 from fastapi import HTTPException
 from OCC.Core.BOPAlgo import BOPAlgo_CheckerSI
 from OCC.Core.BRep import BRep_Tool
+from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
 from OCC.Core.BRepBuilderAPI import (
     BRepBuilderAPI_MakeEdge,
     BRepBuilderAPI_MakeFace,
@@ -72,6 +73,7 @@ from OCC.Core.BRepGProp import brepgprop
 from OCC.Core.BRepLib import breplib
 from OCC.Core.BRepMesh import BRepMesh_IncrementalMesh
 from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_ThruSections
+from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakeSphere
 from OCC.Core.BRepTools import breptools
 from OCC.Core.Geom import Geom_SphericalSurface
 from OCC.Core.Geom2d import Geom2d_Line
@@ -82,7 +84,7 @@ from OCC.Core.GProp import GProp_GProps
 from OCC.Core.gp import gp_Ax2, gp_Ax3, gp_Circ, gp_Dir, gp_Dir2d, gp_Pnt, gp_Pnt2d, gp_Vec, gp_Vec2d
 from OCC.Core.ShapeFix import ShapeFix_Shell
 from OCC.Core.TColgp import TColgp_HArray1OfPnt, TColgp_HArray1OfPnt2d
-from OCC.Core.TopAbs import TopAbs_FACE, TopAbs_SHELL
+from OCC.Core.TopAbs import TopAbs_FACE, TopAbs_SHELL, TopAbs_SOLID
 from OCC.Core.TopExp import TopExp_Explorer
 from OCC.Core.TopLoc import TopLoc_Location
 from OCC.Core.TopoDS import TopoDS_Face, TopoDS_Shape, TopoDS_Shell, TopoDS_Solid, TopoDS_Wire, topods
@@ -107,6 +109,23 @@ _POINTS_PER_FLANK = 12
 # The 2026-08-05 spike's own fold-detector shape (§7): a 25x25 (u, v) grid
 # per flank surface.
 _FOLD_GRID_SIZE = 25
+
+# `_outer_cap_flattening_tool`'s own two safety margins - both confirmed
+# on-device against this module's own real bevel gear geometry (0.1mm avoids
+# a real, silently-wrong `BRepAlgoAPI_Cut` degeneracy at exact tangency; the
+# height margin is a generous, arbitrary clearance past the sphere's own
+# pole so the cut tool always fully spans the dome regardless of a given
+# gear's own dimensions - safe to overshoot, see that function's own
+# docstring for why).
+_END_CAP_RADIUS_MARGIN = 0.1
+_END_CAP_HEIGHT_MARGIN = 1.0
+
+# `_flatten_end_caps`'s own `BRepAlgoAPI_Fuse`/`Cut` fuzzy tolerance -
+# confirmed on-device to fix the inner cap's own coincident-edge boolean
+# degeneracy (`_inner_cap_flattening_tool`'s own flat base sits exactly on
+# the sewn shell's own root-land boundary, by construction) for realistic
+# gears; a small enough value to stay far below any real gear dimension.
+_END_CAP_FUZZY_VALUE = 1e-3
 
 
 def _invalid_bevel_parameters(detail: str) -> HTTPException:
@@ -474,6 +493,204 @@ def _spherical_cap_face(
 
 
 # ---------------------------------------------------------------------------
+# End-cap flattening - trims each spherical end-cap's own dome/dish
+# (`radius_from_axis < root_radius`, no tooth ever reaches there) down to a
+# flat disc at the tooth root's own latitude, on the fully-assembled solid.
+# ---------------------------------------------------------------------------
+
+
+def _outer_cap_flattening_tool(basis: ResolvedPlane, sphere_radius: float, start_colatitude: float) -> TopoDS_Shape:
+    """A plain coaxial cylinder, tangent to the outer cap's own tooth-root
+    latitude circle, spanning from that tangent plane out to (and safely
+    past) the sphere's own pole - used to `BRepAlgoAPI_Cut` away the outer
+    cap's forward dome (`_flatten_end_caps`'s own docstring has the
+    geometric argument for why every point at `radius < root_radius` is
+    solid material bulging past this exact plane, and every point at
+    `radius >= root_radius` - every real tooth flank/land face - never is).
+
+    A plain, possibly-overshooting-height cylinder is provably safe here
+    specifically for `Cut` (unlike the analogous `Fuse` case on the inner
+    cap, which needs `_inner_cap_flattening_tool`'s own exact spherical-
+    segment solid instead - see that function's own docstring for why):
+    `Cut` only ever removes `existing_solid ∩ tool`, and the dome's own
+    cross-sectional radius (`sphere_radius * sin(colatitude)`) is <=
+    `root_radius` at every colatitude from the root up to the pole (root_
+    radius is that function's own maximum over the range), so a cylinder
+    of exactly `root_radius` fully contains the dome at every height -
+    remove exactly the dome, nothing more (any part of the tool beyond the
+    pole intersects nothing, since there's no material there to begin
+    with) and nothing less.
+
+    The radius is shrunk by a small `_END_CAP_RADIUS_MARGIN` below the
+    root latitude circle's own exact radius rather than built exactly on
+    it - confirmed on-device that an exactly-tangent cylinder (its own rim
+    edge exactly coincident with the sewn shell's own root-land/flank
+    boundary) makes `BRepAlgoAPI_Cut` drop most of the flat disc face it
+    should produce (silently, no exception - the boolean's own coincident-
+    edge degeneracy)."""
+    radius = sphere_radius * math.sin(start_colatitude) - _END_CAP_RADIUS_MARGIN
+    tangent_z = sphere_radius * math.cos(start_colatitude)
+    height = (sphere_radius - tangent_z) + _END_CAP_HEIGHT_MARGIN
+    base_center = _basis_point3_to_world(basis, 0.0, 0.0, tangent_z)
+    normal = basis_normal(basis)
+    axis = gp_Ax2(base_center, normal)
+    return BRepPrimAPI_MakeCylinder(axis, radius, height).Shape()
+
+
+def _inner_cap_flattening_tool(basis: ResolvedPlane, sphere_radius: float, start_colatitude: float) -> TopoDS_Shape:
+    """The EXACT solid needed to `BRepAlgoAPI_Fuse`-fill the inner cap's
+    own recessed dish: a genuine `BRepPrimAPI_MakeSphere` spherical
+    SEGMENT (the "latitude1/latitude2" overload, not the plain-radius one)
+    spanning from the root latitude up to the pole - not an approximation
+    like a cylinder or cone, the literal solid region `{points within
+    sphere_radius of the local apex} ∩ {at or past the root's own
+    latitude}`.
+
+    This is the one tool shape that's simultaneously exact both AT the
+    flat cut plane (its own flat end is a genuine circle of exactly
+    `root_radius`, since that's just this same sphere's own cross-section
+    at the root colatitude) AND along its own curved portion (identical
+    to - not merely close to - the true dish it's replacing, since it's
+    cut from the SAME sphere, same radius, same center). Confirmed
+    on-device to be REQUIRED, not merely tidier, over a plain cylinder: a
+    cylinder's constant radius vastly overshoots the dish's own rapidly-
+    narrowing cross-section near the pole for any steep pitch cone (a
+    45-degree-cone case measured a completely exposed extra cylindrical
+    "shelf" face and `BRepCheck_Analyzer.IsValid() is False` before this
+    fix), even though the same cylinder shape looks fine on a shallow one -
+    `docs/status.md`'s matching dated entry has the full angle-dependent
+    argument for why only the exact spherical segment is safe for every
+    cone angle, not just the ones this session happened to check first.
+
+    `gp_Ax2`'s own Z direction is the sphere's polar axis (`basis_normal`);
+    OCCT's own latitude convention measures from the equator (`+-pi/2` at
+    the poles), so `angle1 = pi/2 - start_colatitude` (colatitude is
+    measured from the OTHER pole) and `angle2 = pi/2` (the pole itself).
+
+    Built at the exact `sphere_radius`/`start_colatitude` - NOT shrunk -
+    unlike `_outer_cap_flattening_tool`'s own cylinder (which very
+    deliberately shrinks its radius by `_END_CAP_RADIUS_MARGIN` to dodge a
+    coincident-edge degeneracy). A shrunk sphere here was tried and
+    confirmed WORSE on-device: `_flatten_end_caps`'s own `Fuse` then
+    routinely lands as two touching-but-separate solids (a genuinely
+    different failure than the un-shrunk exact tool's own occasional-but-
+    rarer empty-result degeneracy) - `_flatten_end_caps`'s own `SetFuzzyValue`
+    call on both booleans is this module's real answer to the coincident-
+    edge case instead, and `_flatten_end_caps`'s own post-boolean face-count
+    check (`_single_solid_face_count`) is the backstop for the cases even
+    that doesn't resolve - see both of those for the full picture."""
+    axis = gp_Ax2(_basis_point3_to_world(basis, 0.0, 0.0, 0.0), basis_normal(basis))
+    angle1 = math.pi / 2 - start_colatitude
+    angle2 = math.pi / 2
+    return BRepPrimAPI_MakeSphere(axis, sphere_radius, angle1, angle2).Shape()
+
+
+def _flatten_end_caps(
+    basis: ResolvedPlane, geometry: BevelGearGeometry, start_colatitude: float, solid: TopoDS_Shape
+) -> TopoDS_Shape:
+    """Trims both spherical end-caps (`_spherical_cap_face`, one per
+    `_assemble_gear_solid` call - outer at `geometry.cone_distance`, inner
+    at `geometry.inner_cone_distance`) down to a flat disc at the tooth
+    root's own latitude - the change this session's own user testing asked
+    for directly: "the convex face needs to be taken off at the outboard
+    tooth root [and] the concave space needs filling in at the tooth
+    outboard root."
+
+    **Why a flat disc at the root's own latitude, not the tip's**: every
+    end-cap point at `colatitude < start_colatitude` (i.e. `radius <
+    root_radius`, the region strictly under the gear's own central hub, no
+    tooth ever reaches there - `_cap_rim_points`'s own zigzag rim never
+    dips below `start_colatitude`, since root-land arcs sit at exactly that
+    colatitude and flank curves only ever increase from it toward the tip)
+    sits at `z = R*cos(colatitude) > R*cos(start_colatitude)` - strictly
+    PAST the root's own flat plane, since cosine is strictly decreasing
+    over this range. That's the dome/dish this trims away or fills in.
+    Conversely every point at `colatitude >= start_colatitude` (i.e.
+    `radius >= root_radius`) sits at `z <= R*cos(start_colatitude)` - AT OR
+    BEHIND that same flat plane, never past it - and that's exactly where
+    every real tooth flank/tip-land/root-land face lives (by the same
+    zigzag-rim fact above). So a flat cut/fill exactly at the root's own
+    latitude is provably the ONE choice that removes 100% of the dome/dish
+    (nothing with `radius < root_radius` is ever left un-trimmed) while
+    touching 0% of real tooth material (nothing with `radius >= root_radius`
+    is ever in front of that plane to begin with).
+
+    A flat cut at the TIP's own (larger) colatitude instead - the more
+    obvious-looking choice, since it's the tooth's own visible top land -
+    was this session's own earlier, wrong attempt: measured to remove
+    ~12% of each flank's own real surface area, because the tip-land arc's
+    own radius is only reached at the narrow top-land azimuths, not all the
+    way around, so a full circle that size necessarily eats into the
+    flank's own material everywhere else around that radius.
+
+    `Fuse` first, for the inner cap's own recessed dish (`_inner_cap_
+    flattening_tool`'s own EXACT spherical-segment solid - required, not
+    just tidier, for `Fuse` to stay correct across every cone angle, per
+    that function's own docstring), THEN `Cut`, for the outer cap's own
+    forward dome (`_outer_cap_flattening_tool`'s own plain, oversized-on-
+    purpose cylinder - provably safe for `Cut` regardless of cone angle) -
+    fuse-before-cut, not the other way round, matters for real: the inner
+    tool's own solid sphere segment reaches all the way up to `inner_cone_
+    distance` itself (that sphere's own pole, at `radius = 0`) to correctly
+    close the gap there, and for a large enough `face_width` relative to
+    `cone_distance` on a steep pitch cone, that pole can sit PAST the outer
+    cap's own flat target z (confirmed on-device: a 45-degree/`face_width`-
+    heavy case measured `inner_cone_distance` itself landing above `outer_
+    tangent_z`) - i.e. the fuse can genuinely overshoot past where the
+    outer cap's own flat plane belongs. Cutting last always re-establishes
+    that exact plane regardless, trimming away any such overshoot along
+    with the original dome in the same pass; cutting first would leave that
+    overshoot in place uncorrected, since nothing runs after it to catch it."""
+    inner_tool = _inner_cap_flattening_tool(basis, geometry.inner_cone_distance, start_colatitude)
+    fuse = BRepAlgoAPI_Fuse(solid, inner_tool)
+    fuse.SetFuzzyValue(_END_CAP_FUZZY_VALUE)
+    fuse.Build()
+    if not fuse.IsDone():
+        raise _bevel_failed("could not fill the inner end-cap's own central spherical dish")
+    filled = fuse.Shape()
+
+    outer_tool = _outer_cap_flattening_tool(basis, geometry.cone_distance, start_colatitude)
+    cut = BRepAlgoAPI_Cut(filled, outer_tool)
+    cut.SetFuzzyValue(_END_CAP_FUZZY_VALUE)
+    cut.Build()
+    if not cut.IsDone():
+        raise _bevel_failed("could not flatten the outer end-cap's own central spherical dome")
+    result = cut.Shape()
+
+    # `IsDone()` alone isn't sufficient evidence the booleans above actually
+    # produced a real, single, closed solid - confirmed on-device that a
+    # marginal-geometry gear (one already flagged by `BRepCheck_Analyzer`
+    # before either boolean even runs - the fold-risk regime's own known
+    # false-negative, see this module's own top-level docstring) can make
+    # `BRepAlgoAPI_Fuse` report `IsDone() == True` while silently returning
+    # an empty compound (0 faces, 0 solids) - a hard failure `IsDone()`
+    # itself never surfaces. `_assemble_gear_solid`'s own caller falls back
+    # to the un-flattened solid (with a warning) if this raises.
+    if _single_solid_face_count(result) == 0:
+        raise _bevel_failed("end-cap flattening produced an empty or non-solid result")
+    return result
+
+
+def _single_solid_face_count(shape: TopoDS_Shape) -> int:
+    """0 if `shape` isn't exactly one closed solid (an empty compound, or
+    more than one disjoint piece) - `_flatten_end_caps`'s own post-boolean
+    sanity check, not a generic utility."""
+    n_solids = 0
+    explorer = TopExp_Explorer(shape, TopAbs_SOLID)
+    while explorer.More():
+        n_solids += 1
+        explorer.Next()
+    if n_solids != 1:
+        return 0
+    n_faces = 0
+    face_explorer = TopExp_Explorer(shape, TopAbs_FACE)
+    while face_explorer.More():
+        n_faces += 1
+        face_explorer.Next()
+    return n_faces
+
+
+# ---------------------------------------------------------------------------
 # Fold-risk validation (10-bevel-gear.md's own resolved §7 finding)
 # ---------------------------------------------------------------------------
 
@@ -763,8 +980,26 @@ def _assemble_gear_solid(
     breplib.OrientClosedSolid(solid)
 
     warnings = [fold_warning] if fold_warning else []
-    warnings.extend(_assembly_sanity_warnings(solid))
-    return solid, warnings
+    try:
+        flattened = _flatten_end_caps(basis, geometry, start_colatitude, solid)
+    except HTTPException:
+        # A real, on-device-confirmed failure mode (`_flatten_end_caps`'s
+        # own docstring/`_single_solid_face_count`): an already-marginal
+        # gear (one deep in the fold-risk regime, itself already flagged by
+        # `BRepCheck_Analyzer` before either boolean even runs) can make
+        # `BRepAlgoAPI_Fuse` silently return an empty/non-solid result.
+        # Falling back to the un-flattened spherical cap - not re-raising,
+        # and not a user-facing warning either, mirroring `_assembly_
+        # sanity_warnings`'s own identical "best-effort, log only" handling
+        # of its mesh-volume cross-check failing outright: an unflattened
+        # (still fully valid, just visibly domed/dished) end-cap on an
+        # extreme-geometry gear is the same real-but-non-fatal degradation
+        # this whole module already tolerates elsewhere, not a reason to
+        # refuse the gear or surface a warning for a case this rare.
+        logger.warning("Bevel gear end-cap flattening itself failed - falling back to the true spherical cap", exc_info=True)
+        flattened = solid
+    warnings.extend(_assembly_sanity_warnings(flattened))
+    return flattened, warnings
 
 
 # ---------------------------------------------------------------------------
