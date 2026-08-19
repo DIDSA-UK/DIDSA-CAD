@@ -115,6 +115,7 @@ from app.document.bevel_math import (
     BevelGearGeometry,
     GearGeometryError,
     bevel_gear_geometry,
+    bevel_pair_mesh_interference_warning,
     max_recommended_face_width,
     pitch_cone_half_angles,
     thin_hub_warning,
@@ -336,6 +337,15 @@ def resolve_bevel_pair_from_bodies(
                 f"{label}: face_width ({feature.face_width!r}) exceeds the recommended maximum "
                 f"({max_face_width!r} = cone_distance / 3) - the tooth thins toward degeneracy near the apex."
             )
+
+    # Pair-level (not per-member) - checks the two members' geometry
+    # *against each other*, not either one in isolation, so it lives outside
+    # the per-member loop above. See `bevel_pair_mesh_interference_warning`'s
+    # own docstring for the on-device measurements this predictive check is
+    # calibrated against.
+    mesh_warning = bevel_pair_mesh_interference_warning(geometry_1, geometry_2, feature.shaft_angle_degrees)
+    if mesh_warning:
+        warnings.append(mesh_warning)
 
     basis_1 = resolve_plane_ref(part, bodies, feature.plane_ref, excluded_feature_ids)
     basis_2 = _tilted_basis(basis_1, math.radians(feature.shaft_angle_degrees))

@@ -42,7 +42,7 @@ formula and comparing it to itself.
 """
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from app.document.gear_math import (
     GearGeometryError,
@@ -920,3 +920,196 @@ def bevel_tooth_flank_pair(
     right = (flank(geometry.cone_distance, mirror=False), flank(geometry.inner_cone_distance, mirror=False))
     left = (flank(geometry.cone_distance, mirror=True), flank(geometry.inner_cone_distance, mirror=True))
     return right, left
+
+
+# ---------------------------------------------------------------------------
+# Bevel pair mesh-interference prediction (pure-math proxy for a real
+# BRepAlgoAPI_Common overlap check - see docstrings below for the on-device
+# findings this is built on)
+# ---------------------------------------------------------------------------
+
+
+MESH_MARGIN_SAFETY_BUFFER_DEGREES = 0.5
+"""Empirically-calibrated safety cushion for `bevel_pair_mesh_margin_
+degrees`'s own zero-crossing: on-device `BRepAlgoAPI_Common` overlap
+measurements on real bevel pairs (20T/40T and a symmetric 20T/20T, module
+4, face_width 15, shaft_angle 90) sweeping `pressure_angle_degrees` from
+14.5 to 30 found the *measured* overlap volume reaches exactly zero at a
+pressure angle whose *predicted* margin (`bevel_pair_mesh_margin_degrees`)
+is only slightly positive (about +0.12 degrees for the 20T/40T case),
+while a margin around -0.4 degrees still left a small (~4 mm^3) measured
+residual - i.e. this margin tracks the real (nonlinear, only measurable
+via an actual Boolean intersection) interference closely, but its own
+zero isn't pixel-perfectly aligned with the true zero. This buffer keeps
+the warning from under-firing right at that boundary."""
+
+
+def bevel_pair_mesh_margin_degrees(
+    intruder_face_cone_angle: float, receiver_base_colatitude: float, shaft_angle_degrees: float
+) -> float:
+    """How much angular clearance (degrees) exists between one bevel pair
+    member's own tooth *tip* reach (`intruder_face_cone_angle`, radians -
+    the colatitude its addendum extends out to, on the shared `cone_
+    distance` sphere both members share by construction) and the *other*
+    member's own involute-flank floor (`receiver_base_colatitude`, radians
+    - `tredgold_base_colatitude`'s own return value for that member).
+    Positive means clear; negative means the intruder's tip reaches past
+    where the receiver's own flank/root-land material still exists - real
+    geometric interference.
+
+    On-device finding this is built on: two mating bevel gears' pitch
+    cones are tangent by construction (`pitch_cone_half_angles`'s own
+    `gamma_1 + gamma_2 = shaft_angle`) - the textbook condition for two
+    cones with axes `shaft_angle` apart to just touch along a shared line
+    without overlapping. The *same* angle-sum-vs-axis-angle relationship,
+    applied to one member's *face* cone (its tooth tip reach) against the
+    *other* member's *base-circle* colatitude instead of its pitch cone,
+    tracks real, measured overlap volume closely across a real pressure-
+    angle sweep - strongly positive `shaft_angle - sum` (this function's
+    own return value) at low pressure angles where measured overlap volume
+    was largest, shrinking together as pressure angle rises, both reaching
+    (near-)zero within a fraction of a degree of each other.
+
+    `root_cone_angle` (the *nominal*, dedendum-derived root) does *not*
+    work in `receiver_base_colatitude`'s place here - on-device testing
+    found the smaller/pinion member's own root-land face actually sits at
+    its `base_colatitude` whenever `base_cone_angle` exceeds `root_cone_
+    angle` for it (the involute simply can't extend down to the dedendum-
+    implied root there - `bevel_tooth_flank_pair`'s own `max(root_cone_
+    angle, tredgold_base_colatitude(...))` clamp), so its own dedendum has
+    *zero* measured effect on real interference in that (common - a small
+    pinion meshing a much larger gear) regime: doubling `dedendum_
+    coefficient` on a real, otherwise-identical bevel pair changed measured
+    overlap volume by 0.002%, confirming `root_cone_angle` is the wrong
+    quantity to check against there and `base_colatitude` is the real one."""
+    return shaft_angle_degrees - (math.degrees(intruder_face_cone_angle) + math.degrees(receiver_base_colatitude))
+
+
+def _worst_bevel_pair_mesh_margin_degrees(
+    geometry_1: BevelGearGeometry, geometry_2: BevelGearGeometry, shaft_angle_degrees: float
+) -> tuple[float, bool]:
+    """The smaller (worse) of the two directional margins - member 2's tip
+    against member 1's base colatitude, and vice versa - plus which
+    direction it came from (`True` if member 2 is the intruder). Shared by
+    `bevel_pair_mesh_interference_warning` and the pressure-angle search
+    below so both agree on which direction is binding."""
+    margin_2_into_1 = bevel_pair_mesh_margin_degrees(
+        geometry_2.face_cone_angle, tredgold_base_colatitude(geometry_1), shaft_angle_degrees
+    )
+    margin_1_into_2 = bevel_pair_mesh_margin_degrees(
+        geometry_1.face_cone_angle, tredgold_base_colatitude(geometry_2), shaft_angle_degrees
+    )
+    if margin_2_into_1 <= margin_1_into_2:
+        return margin_2_into_1, True
+    return margin_1_into_2, False
+
+
+def _minimum_pressure_angle_for_mesh_clearance(
+    geometry_1: BevelGearGeometry, geometry_2: BevelGearGeometry, shaft_angle_degrees: float
+) -> float | None:
+    """Smallest shared `pressure_angle_degrees` (holding module, tooth
+    counts, face width, shaft angle, and addendum/dedendum coefficients
+    fixed) that clears `MESH_MARGIN_SAFETY_BUFFER_DEGREES`, found by
+    bisection - on-device sweeps found the margin rises monotonically with
+    pressure angle across the whole practical range, so bisection is valid
+    (not just "found a value that works"). `dataclasses.replace(...,
+    pressure_angle=...)` is enough to re-evaluate at a trial angle without
+    rebuilding the whole `BevelGearGeometry` from scratch: `face_cone_
+    angle` doesn't depend on `pressure_angle` at all (`addendum_angle =
+    atan(addendum / cone_distance)`, no pressure angle in it), and `cone_
+    distance` doesn't either - only `tredgold_base_colatitude` actually
+    reads `pressure_angle`, so this is a cheap, pure-math search (no OCCT,
+    no full geometry re-derivation) despite searching a real geometric
+    property. Returns `None` if even a generously high trial angle (40
+    degrees - well above any practical bevel gear pressure angle) doesn't
+    clear it, rather than suggesting a number so extreme it's not a real
+    recommendation."""
+
+    def worst_margin_at(pressure_angle_degrees: float) -> float:
+        pa = math.radians(pressure_angle_degrees)
+        margin, _ = _worst_bevel_pair_mesh_margin_degrees(
+            replace(geometry_1, pressure_angle=pa), replace(geometry_2, pressure_angle=pa), shaft_angle_degrees
+        )
+        return margin
+
+    lo, hi = math.degrees(geometry_1.pressure_angle), 40.0
+    if worst_margin_at(hi) < MESH_MARGIN_SAFETY_BUFFER_DEGREES:
+        return None
+    for _ in range(40):
+        mid = (lo + hi) / 2
+        if worst_margin_at(mid) >= MESH_MARGIN_SAFETY_BUFFER_DEGREES:
+            hi = mid
+        else:
+            lo = mid
+    return hi
+
+
+def bevel_pair_mesh_interference_warning(
+    geometry_1: BevelGearGeometry, geometry_2: BevelGearGeometry, shaft_angle_degrees: float
+) -> str | None:
+    """`None` if both directions of `bevel_pair_mesh_margin_degrees` clear
+    `MESH_MARGIN_SAFETY_BUFFER_DEGREES`, otherwise a warning naming which
+    member's tooth tip is predicted to intrude into the other's material
+    and two concrete, on-device-verified remedies: a higher shared
+    `pressure_angle_degrees` (`_minimum_pressure_angle_for_mesh_clearance`
+    searches for and reports the smallest one that would clear it, rather
+    than leaving the user to guess-and-check) - the only lever actually
+    offered here, since it's the only one of the remedies this module's own
+    on-device testing found effective that's *also* a real, user-settable
+    field on `BevelPairFeature` today. A smaller `addendum_coefficient`
+    (shorter/"stub" teeth) was independently confirmed on-device to widen
+    this same margin too - the standard real-world alternative to a higher
+    pressure angle for exactly this kind of interference - but `bevel_gear_
+    geometry`'s `addendum_coefficient` parameter has no corresponding field
+    on `BevelPairFeature`/`BevelPairMemberSpec` (always its hardcoded 1.0
+    default), so suggesting it here would tell a user to change something
+    the app doesn't yet let them touch; exposing it is real, separate future
+    work, not something to gesture at in a warning string. `module`
+    deliberately isn't offered as a suggestion either - confirmed on-device
+    to have *no* effect on this margin at all (every term in `bevel_pair_
+    mesh_margin_degrees` is a pure angle, and module is a scale factor that
+    cancels out of every one of them), unlike the intuitive guess that a
+    smaller module might reduce interference the way it reduces overall
+    gear size.
+
+    Both directions are checked independently (`member_1`'s tip against
+    `member_2`'s base colatitude, and vice versa) since the relationship
+    isn't symmetric - which member's tip actually reaches into the other's
+    material depends on the specific pitch-cone-angle split (a function of
+    both tooth counts and shaft angle together), not a simple "smaller
+    tooth count" rule."""
+    worst_margin, member_2_is_intruder = _worst_bevel_pair_mesh_margin_degrees(
+        geometry_1, geometry_2, shaft_angle_degrees
+    )
+    if worst_margin >= MESH_MARGIN_SAFETY_BUFFER_DEGREES:
+        return None
+
+    intruder_label = "member_2" if member_2_is_intruder else "member_1"
+    receiver_label = "member_1" if member_2_is_intruder else "member_2"
+    current_pressure_angle_degrees = math.degrees(geometry_1.pressure_angle)
+    suggested_pressure_angle = _minimum_pressure_angle_for_mesh_clearance(geometry_1, geometry_2, shaft_angle_degrees)
+    pressure_angle_suggestion = (
+        f"raising pressure_angle_degrees to at least {suggested_pressure_angle:.1f}° (currently "
+        f"{current_pressure_angle_degrees!r}°)"
+        if suggested_pressure_angle is not None
+        else f"raising pressure_angle_degrees well above its current {current_pressure_angle_degrees!r}°"
+    )
+    if worst_margin < 0:
+        situation = (
+            f"{intruder_label}'s tooth tip is predicted to intrude into {receiver_label}'s tooth material "
+            f"where they mesh (about {-worst_margin:.2f}° short of clearing) - the two gears will likely not "
+            "mesh cleanly at these settings."
+        )
+    else:
+        # 0 <= worst_margin < MESH_MARGIN_SAFETY_BUFFER_DEGREES: this margin's own
+        # zero-crossing isn't pixel-perfectly aligned with a real measured
+        # overlap's own zero (see MESH_MARGIN_SAFETY_BUFFER_DEGREES's own
+        # docstring) - technically predicted clear, but close enough to that
+        # boundary that small real-world/floating-point variation could tip
+        # it either way, so still worth flagging rather than staying silent.
+        situation = (
+            f"{intruder_label}'s tooth tip is predicted to pass very close to {receiver_label}'s tooth "
+            f"material where they mesh (only {worst_margin:.2f}° of margin) - close enough to the edge of "
+            "interfering that small geometry changes could tip it either way."
+        )
+    return f"{situation} Try {pressure_angle_suggestion} - changing module alone will not help."

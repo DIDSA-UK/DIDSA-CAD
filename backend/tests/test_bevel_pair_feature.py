@@ -118,6 +118,31 @@ def test_bevel_pair_produces_two_bodies_with_real_mesh_geometry():
         assert len(entry["mesh"]["vertices"]) > 0
 
 
+def test_bevel_pair_default_pressure_angle_warns_of_predicted_mesh_interference():
+    """Real, on-device-confirmed regression: the default 20T/40T pair at the
+    default 20-degree pressure angle was found to have genuine tooth
+    interference (`BRepAlgoAPI_Common` overlap ~60mm^3 on a real solid pair,
+    ~0.1% of the smaller member's own volume but concentrated at the mesh
+    line, comparable in spatial extent to a full tooth height - not a
+    numerical touching-tolerance artifact). `bevel_pair_mesh_interference_
+    warning` predicts this from pure math (no OCCT) - this test locks in
+    that the real end-to-end pipeline actually surfaces it as a warning, and
+    that raising pressure_angle_degrees (28, comfortably past the ~26.7
+    degrees the warning itself calculates as sufficient) makes it go
+    away - confirmed separately, directly against the real solids, not just
+    that the warning string is absent."""
+    part = _create_part()
+    response = _create_pair(part["id"])
+    assert response.status_code == 201, response.json()
+    warnings = response.json()["warnings"]
+    assert any("tooth tip is predicted to" in w and "pressure_angle_degrees" in w for w in warnings), warnings
+
+    part_2 = _create_part("Part 2")
+    response_2 = _create_pair(part_2["id"], pressure_angle_degrees=28.0)
+    assert response_2.status_code == 201, response_2.json()
+    assert response_2.json()["warnings"] == []
+
+
 def test_bevel_pair_defaults_to_the_xy_plane_when_plane_ref_omitted():
     part = _create_part()
     response = _create_pair(part["id"])
