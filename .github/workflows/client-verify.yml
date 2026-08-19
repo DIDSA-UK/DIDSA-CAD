@@ -10,6 +10,10 @@ on:
   pull_request:
     paths:
       - "client/**"
+  # Manual trigger for any branch, even one with no client/** changes of its
+  # own (e.g. a backend-only branch where someone just wants a debug APK
+  # built and published as this branch's own Release asset).
+  workflow_dispatch: {}
 
 permissions:
   contents: write
