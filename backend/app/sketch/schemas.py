@@ -479,6 +479,28 @@ class EllipseArcResponse(BaseModel):
     construction: bool = False
 
 
+class EllipseTrimRequest(BaseModel):
+    """`Sketch.trim_ellipse`'s own request shape - mirrors
+    `CircleTrimRequest` exactly: an Ellipse has no endpoint to name either,
+    so the click position itself determines which segment is excluded from
+    the resulting EllipseArc."""
+
+    click_x: float
+    click_y: float
+
+
+class EllipseTrimResponse(BaseModel):
+    """Mirrors `CircleTrimResponse` exactly, for an Ellipse converting into
+    an EllipseArc instead of a Circle converting into an Arc - the Ellipse
+    no longer exists (converted, not just modified); `pruned_point_ids`
+    covers its own now-orphaned negative axis-tip Points, which the new
+    EllipseArc never reuses (EllipseArc has no negative tips of its own -
+    see that class's own docstring)."""
+
+    ellipse_arc: EllipseArcResponse
+    pruned_point_ids: list[str] = []
+
+
 class EllipseUpdate(BaseModel):
     """Update an ellipse's construction flag. There is no radius field
     here: like Circle/Arc, both of an Ellipse's radii are now driven by

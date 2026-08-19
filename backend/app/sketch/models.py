@@ -34,6 +34,7 @@ from app.sketch.intersections import (
     circle_vs_circle,
     line_vs_arc,
     line_vs_circle,
+    line_vs_ellipse,
     line_vs_line,
     line_vs_segment,
 )
@@ -476,6 +477,27 @@ class EllipseArc(SketchEntity):
         u = dx * ca - dy * sa
         v = dx * sa + dy * ca
         return math.atan2(v / minor_radius, u / major_radius)
+
+
+def _ellipse_local_angle_at(
+    center: tuple[float, float],
+    major_radius: float,
+    minor_radius: float,
+    rotation: float,
+    point: tuple[float, float],
+) -> float:
+    """Free-function twin of [EllipseArc.local_angle], for a raw
+    (center, major_radius, minor_radius, rotation) tuple with no
+    Ellipse/EllipseArc instance yet to hang it off of - used by
+    [Sketch.trim_ellipse], which computes candidate cut angles before any
+    EllipseArc exists (the Ellipse being trimmed is deleted, not converted
+    in place)."""
+    cx, cy = center
+    dx, dy = point[0] - cx, point[1] - cy
+    ca, sa = math.cos(-rotation), math.sin(-rotation)
+    u = dx * ca - dy * sa
+    v = dx * sa + dy * ca
+    return math.atan2(v / minor_radius, u / major_radius)
 
 
 @dataclass
@@ -1572,6 +1594,8 @@ class Sketch:
         end_angle: float,
         *,
         construction: bool = False,
+        existing_start_point_id: str | None = None,
+        existing_end_point_id: str | None = None,
     ) -> EllipseArc:
         """Add a partial ellipse from an existing centre Point and an
         existing major-axis Point (together fixing the major radius and
@@ -1583,6 +1607,15 @@ class Sketch:
         curve, mirroring add_arc's own end_angle parameter. Like Arc, the
         angles themselves are never stored - only the Points' own solved
         positions are the source of truth from here on.
+
+        `existing_start_point_id`/`existing_end_point_id` - `add_arc`'s own
+        "explicit sharing" pattern for its end Point, extended to both ends
+        here since neither is otherwise tied to an existing Point the way
+        Arc's own start (its radius-defining Point) always is: when given,
+        reuses that Point instead of creating a new one at the computed
+        angle - the caller is responsible for it already sitting exactly on
+        the curve at that angle (`trim_ellipse` is the only caller that
+        does; every other caller leaves both None).
         """
         center = self.points[center_point_id]
         if major_point_id not in self.points:
@@ -1613,10 +1646,20 @@ class Sketch:
             v = minor_radius * math.sin(local_angle)
             return (center.x + u * ca - v * sa, center.y + u * sa + v * ca)
 
-        start_x, start_y = _point_on_ellipse(start_angle)
-        end_x, end_y = _point_on_ellipse(end_angle)
-        start_point_id = self.add_point(start_x, start_y).id
-        end_point_id = self.add_point(end_x, end_y).id
+        if existing_start_point_id is not None:
+            if existing_start_point_id not in self.points:
+                raise KeyError(existing_start_point_id)
+            start_point_id = existing_start_point_id
+        else:
+            start_x, start_y = _point_on_ellipse(start_angle)
+            start_point_id = self.add_point(start_x, start_y).id
+        if existing_end_point_id is not None:
+            if existing_end_point_id not in self.points:
+                raise KeyError(existing_end_point_id)
+            end_point_id = existing_end_point_id
+        else:
+            end_x, end_y = _point_on_ellipse(end_angle)
+            end_point_id = self.add_point(end_x, end_y).id
 
         major_constraint = self.add_distance_constraint(
             center_point_id, major_point_id, major_radius, provisional=True
@@ -2446,6 +2489,54 @@ class Sketch:
                 )
         return points
 
+    def _ellipse_candidates_against(
+        self,
+        center: tuple[float, float],
+        major_radius: float,
+        minor_radius: float,
+        rotation: float,
+        exclude_ids: frozenset[str],
+    ) -> list[tuple[float, float]]:
+        """[_circle_candidates_against]'s Ellipse-shaped sibling, used by
+        [trim_ellipse]. v1 scope: Line targets only - `line_vs_ellipse`
+        substitutes the line's own parametric form into the ellipse's
+        implicit equation, a plain quadratic; a Circle/Arc/Ellipse/
+        EllipseArc target would need quartic root-finding instead - a
+        materially bigger, separate undertaking (see intersections.py's own
+        module doc comment), deliberately out of scope for this round, same
+        "not every combination has to compose into something yet"
+        precedent this file's own Pattern/Mirror source-kind checks and C2
+        sketch-entity-combo gating already establish elsewhere.
+
+        `exclude_ids` (a set, unlike `_circle_candidates_against`'s own
+        single `exclude_id` - Circle has no construction geometry of its
+        own to worry about) must cover both the Ellipse itself AND its own
+        `major_axis_line_id`/`minor_axis_line_id`: those two full-diameter
+        construction Lines always have their own endpoints sitting exactly
+        on the ellipse's own curve (the 4 cardinal tip Points, by
+        construction), so left uncounted they'd contribute 4 fake
+        "crossings" against every Ellipse ever - real Line/Circle/Arc
+        geometry the user actually drew never gets that free pass.
+        """
+        points: list[tuple[float, float]] = []
+        for entity in self.entities.values():
+            if entity.id in exclude_ids:
+                continue
+            if isinstance(entity, Line):
+                other_start = self.points[entity.start_point_id]
+                other_end = self.points[entity.end_point_id]
+                for t, point in line_vs_ellipse(
+                    (other_start.x, other_start.y),
+                    (other_end.x, other_end.y),
+                    center,
+                    major_radius,
+                    minor_radius,
+                    rotation,
+                ):
+                    if -1e-9 <= t <= 1 + 1e-9:
+                        points.append(point)
+        return points
+
     def trim_or_extend_arc(self, arc_id: str, moved_point_id: str) -> tuple["Arc", "Point", bool]:
         """[trim_or_extend_line]'s own algorithm, ported to an Arc's angular
         sweep instead of a Line's linear extent - on-device feedback ("trim/
@@ -2545,6 +2636,95 @@ class Sketch:
             return (arc, existing, True)
         moved_point.x, moved_point.y = best_point
         return (arc, moved_point, False)
+
+    def trim_ellipse(self, ellipse_id: str, click_x: float, click_y: float) -> tuple["EllipseArc", list[str]]:
+        """[trim_circle]'s Ellipse-shaped sibling - converts a full Ellipse
+        into an EllipseArc that excludes whichever segment was clicked, the
+        same standard CAD trim-a-closed-curve convention. v1 scope: only
+        Line crossings are considered as brackets (see
+        [_ellipse_candidates_against]'s own doc comment) - trimming an
+        Ellipse against another curved entity isn't supported yet.
+
+        Candidates are converted to the ellipse's own *parametric* angle
+        (`_ellipse_local_angle_at`), not a plain polar `atan2` - the same
+        distinction `EllipseArc.local_angle`'s own doc comment draws, and
+        required here for the same reason: the new EllipseArc's own
+        start/end angles are parametric, so bracketing must happen in that
+        same frame or the wrong segment could get excluded off-axis.
+
+        Delegates the new EllipseArc's own construction to [add_ellipse_arc]
+        (reusing the Ellipse's existing centre/major Points, a fresh minor
+        Point at the live minor_radius, and two freshly-placed or reused
+        boundary Points - see that method's own `existing_start_point_id`/
+        `existing_end_point_id` doc comment for why "reused" is possible at
+        all) rather than hand-building its constraint scaffolding. The
+        original Ellipse (and its own axis/radius/perpendicular
+        constraints, negative tip Points) is then removed via the existing
+        [delete_ellipse], unmodified - mirrors [trim_circle]'s own identical
+        "delegate then delete the source" shape, including its own
+        existing-Point-reuse fix for a closed-profile loop that only looks
+        closed topologically otherwise. Returns `(ellipse_arc,
+        pruned_point_ids)` - [delete_ellipse]'s own return value, passed
+        straight through.
+        """
+        ellipse = self.entities.get(ellipse_id)
+        if not isinstance(ellipse, Ellipse):
+            raise KeyError(ellipse_id)
+        center = self.points[ellipse.center_point_id]
+        center_xy = (center.x, center.y)
+        major_radius = ellipse.major_radius(self.points)
+        minor_radius = ellipse.minor_radius(self.points)
+        rotation = ellipse.rotation(self.points)
+        if major_radius < 1e-9 or minor_radius < 1e-9:
+            raise ValueError(f"Cannot trim a degenerate ellipse {ellipse_id}")
+
+        candidate_points = self._ellipse_candidates_against(
+            center_xy,
+            major_radius,
+            minor_radius,
+            rotation,
+            exclude_ids=frozenset({ellipse_id, ellipse.major_axis_line_id, ellipse.minor_axis_line_id}),
+        )
+        two_pi = 2 * math.pi
+        angles = sorted(
+            {
+                _ellipse_local_angle_at(center_xy, major_radius, minor_radius, rotation, p) % two_pi
+                for p in candidate_points
+            }
+        )
+        if len(angles) < 2:
+            raise NoIntersectionFoundError(f"Fewer than 2 crossings found to trim ellipse {ellipse_id} at")
+
+        click_angle = (
+            _ellipse_local_angle_at(center_xy, major_radius, minor_radius, rotation, (click_x, click_y)) % two_pi
+        )
+        next_angle = next((a for a in angles if a > click_angle + 1e-9), angles[0])
+        prev_angle = next((a for a in reversed(angles) if a < click_angle - 1e-9), angles[-1])
+
+        def _point_at(local_angle: float) -> tuple[float, float]:
+            u = major_radius * math.cos(local_angle)
+            v = minor_radius * math.sin(local_angle)
+            ca, sa = math.cos(rotation), math.sin(rotation)
+            return (center.x + u * ca - v * sa, center.y + u * sa + v * ca)
+
+        start_xy = _point_at(next_angle)
+        end_xy = _point_at(prev_angle)
+        # Same closed-profile bug fix as trim_circle's own identical step -
+        # see that method's own doc comment for the full rationale.
+        existing_at_start = self._existing_point_at(*start_xy)
+        existing_at_end = self._existing_point_at(*end_xy)
+        ellipse_arc = self.add_ellipse_arc(
+            ellipse.center_point_id,
+            ellipse.major_point_id,
+            minor_radius,
+            next_angle,
+            prev_angle,
+            construction=ellipse.construction,
+            existing_start_point_id=existing_at_start.id if existing_at_start is not None else None,
+            existing_end_point_id=existing_at_end.id if existing_at_end is not None else None,
+        )
+        pruned_point_ids = self.delete_ellipse(ellipse_id)
+        return ellipse_arc, pruned_point_ids
 
     def trim_circle(self, circle_id: str, click_x: float, click_y: float) -> tuple["Arc", list[str]]:
         """On-device feedback ("trim/extend should work on circles curves

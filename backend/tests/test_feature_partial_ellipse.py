@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.document.native_format import sketch_from_dict, sketch_to_dict
 from app.main import app
-from app.sketch.models import EllipseArc, Plane, Sketch
+from app.sketch.models import EllipseArc, NoIntersectionFoundError, Plane, Sketch
 from app.sketch.profile import ProfileStatus, detect_profile
 from app.sketch.solver import solve_sketch
 from tests.conftest import TEST_API_KEY
@@ -226,6 +226,159 @@ def test_solving_a_freshly_drawn_unanchored_ellipse_arc_does_not_move_it():
         after = sketch.points[point_id]
         assert after.x == pytest.approx(bx, abs=1e-6), f"{point_id}.x drifted"
         assert after.y == pytest.approx(by, abs=1e-6), f"{point_id}.y drifted"
+
+
+# --- trim_ellipse (v1: Line targets only) --------------------------------------
+
+
+def test_trim_ellipse_excludes_the_clicked_segment_and_keeps_the_rest():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    major = sketch.add_point(10.0, 0.0)
+    ellipse = sketch.add_ellipse(center.id, major.id, minor_radius=5.0)
+    a = sketch.add_point(5.0, -20.0)
+    b = sketch.add_point(5.0, 20.0)
+    sketch.add_line(a.id, b.id)
+
+    # The vertical line x=5 crosses the ellipse at (5, +/-5*sqrt(3)/2), a
+    # local-angle 60deg/300deg pair. Clicking near the top (0, 5) - inside
+    # the 240deg span between them, going the long way through 90/180/270 -
+    # should exclude that whole span, keeping only the short 120deg arc on
+    # the ellipse's own right side.
+    arc, pruned_point_ids = sketch.trim_ellipse(ellipse.id, 0.0, 5.0)
+
+    assert isinstance(arc, EllipseArc)
+    assert ellipse.id not in sketch.entities
+    assert arc.major_radius(sketch.points) == pytest.approx(10.0)
+    assert arc.minor_radius(sketch.points) == pytest.approx(5.0)
+    start = sketch.points[arc.start_point_id]
+    end = sketch.points[arc.end_point_id]
+    assert (start.x, start.y) == pytest.approx((5.0, -4.330127018922193))
+    assert (end.x, end.y) == pytest.approx((5.0, 4.330127018922193))
+    # The old Ellipse's own negative axis tips are pruned - the new
+    # EllipseArc never reuses them.
+    assert len(pruned_point_ids) == 3
+
+
+def test_trim_ellipse_reuses_an_existing_point_at_the_crossing():
+    """Mirrors trim_circle's own closed-profile fix: a Line whose own
+    endpoint already sits exactly on the ellipse boundary (e.g. from a
+    prior trim/extend) must have that same Point id reused, not a new
+    coincident duplicate."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    major = sketch.add_point(10.0, 0.0)
+    ellipse = sketch.add_ellipse(center.id, major.id, minor_radius=5.0)
+    a = sketch.add_point(5.0, -20.0)
+    b = sketch.add_point(5.0, 20.0)
+    sketch.add_line(a.id, b.id)
+    existing = sketch.add_point(5.0, -4.330127018922193)
+    sketch.add_line(existing.id, sketch.add_point(30.0, -30.0).id)
+
+    arc, _ = sketch.trim_ellipse(ellipse.id, 0.0, 5.0)
+
+    assert existing.id in (arc.start_point_id, arc.end_point_id)
+    matching = [p for p in sketch.points.values() if math.isclose(p.x, 5.0) and math.isclose(p.y, -4.330127018922193)]
+    assert len(matching) == 1
+
+
+def test_trim_ellipse_raises_when_fewer_than_two_crossings_found():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    major = sketch.add_point(10.0, 0.0)
+    ellipse = sketch.add_ellipse(center.id, major.id, minor_radius=5.0)
+
+    with pytest.raises(NoIntersectionFoundError):
+        sketch.trim_ellipse(ellipse.id, 0.0, 5.0)
+
+
+def test_trim_ellipse_does_not_bracket_against_its_own_axis_construction_lines():
+    """Regression guard for the bug found while building this: an
+    Ellipse's own major/minor axis construction Lines always have their
+    endpoints sitting exactly on its own curve (the 4 cardinal tip
+    Points), so without excluding them they'd contribute 4 free
+    "crossings" against every Ellipse ever, even one with nothing else
+    drawn against it - this is the same scenario as the "fewer than two
+    crossings" test above, just confirming the axis lines specifically
+    are never counted."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    major = sketch.add_point(10.0, 0.0)
+    ellipse = sketch.add_ellipse(center.id, major.id, minor_radius=5.0)
+    candidates = sketch._ellipse_candidates_against(
+        (0.0, 0.0),
+        10.0,
+        5.0,
+        0.0,
+        exclude_ids=frozenset({ellipse.id, ellipse.major_axis_line_id, ellipse.minor_axis_line_id}),
+    )
+    assert candidates == []
+
+
+def test_trim_ellipse_rejects_unknown_ellipse_id():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    with pytest.raises(KeyError):
+        sketch.trim_ellipse("does-not-exist", 0.0, 0.0)
+
+
+def test_trim_ellipse_over_the_api():
+    sketch = _create_sketch()
+    center = _create_point(sketch["id"], 0.0, 0.0)
+    major = _create_point(sketch["id"], 10.0, 0.0)
+    ellipse_response = client.post(
+        f"/sketch/sketches/{sketch['id']}/ellipses",
+        json={"center_point_id": center["id"], "major_point_id": major["id"], "minor_radius": 5.0},
+    )
+    assert ellipse_response.status_code == 201
+    ellipse_id = ellipse_response.json()["id"]
+    a = _create_point(sketch["id"], 5.0, -20.0)
+    b = _create_point(sketch["id"], 5.0, 20.0)
+    line_response = client.post(
+        f"/sketch/sketches/{sketch['id']}/lines",
+        json={"start_point_id": a["id"], "end_point_id": b["id"]},
+    )
+    assert line_response.status_code == 201
+
+    response = client.post(
+        f"/sketch/sketches/{sketch['id']}/ellipses/{ellipse_id}/trim",
+        json={"click_x": 0.0, "click_y": 5.0},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ellipse_arc"]["type"] == "ellipse_arc"
+    assert body["ellipse_arc"]["major_radius"] == pytest.approx(10.0)
+    assert body["ellipse_arc"]["minor_radius"] == pytest.approx(5.0)
+    assert len(body["pruned_point_ids"]) == 3
+    get_response = client.get(f"/sketch/sketches/{sketch['id']}/ellipses/{ellipse_id}")
+    assert get_response.status_code == 404
+
+
+def test_trim_ellipse_with_no_intersection_returns_422_over_the_api():
+    sketch = _create_sketch()
+    center = _create_point(sketch["id"], 0.0, 0.0)
+    major = _create_point(sketch["id"], 10.0, 0.0)
+    ellipse_response = client.post(
+        f"/sketch/sketches/{sketch['id']}/ellipses",
+        json={"center_point_id": center["id"], "major_point_id": major["id"], "minor_radius": 5.0},
+    )
+    ellipse_id = ellipse_response.json()["id"]
+
+    response = client.post(
+        f"/sketch/sketches/{sketch['id']}/ellipses/{ellipse_id}/trim",
+        json={"click_x": 0.0, "click_y": 5.0},
+    )
+
+    assert response.status_code == 422
+
+
+def test_trim_ellipse_with_unknown_id_returns_404_over_the_api():
+    sketch = _create_sketch()
+    response = client.post(
+        f"/sketch/sketches/{sketch['id']}/ellipses/does-not-exist/trim",
+        json={"click_x": 0.0, "click_y": 5.0},
+    )
+    assert response.status_code == 404
 
 
 # --- profile.py chain detection -----------------------------------------------

@@ -1267,6 +1267,57 @@ class _FakeBackend {
       return _jsonList(ellipses.values.toList(), 200);
     }
 
+    final ellipseTrimMatch = RegExp(r'^/sketch/sketches/[^/]+/ellipses/([^/]+)/trim$').firstMatch(path);
+    if (ellipseTrimMatch != null && request.method == 'POST') {
+      final ellipseId = ellipseTrimMatch.group(1)!;
+      final ellipse = ellipses[ellipseId];
+      if (ellipse == null) return http.Response('not found', 404);
+      final target = curveTrimTargetPoint;
+      if (target == null) {
+        return _json({'detail': 'Fewer than 2 crossings found to trim ellipse at'}, 422);
+      }
+      final minorPointId = _newId('point');
+      points[minorPointId] = {'id': minorPointId, 'x': target.$1, 'y': target.$2};
+      final startId = _newId('point');
+      points[startId] = {'id': startId, 'x': target.$1, 'y': target.$2};
+      final endId = _newId('point');
+      points[endId] = {'id': endId, 'x': target.$1, 'y': target.$2};
+      final majorAxisLineId = _newId('line');
+      lines[majorAxisLineId] = {
+        'id': majorAxisLineId,
+        'start_point_id': ellipse['center_point_id'],
+        'end_point_id': ellipse['major_point_id'],
+        'length': ellipse['major_radius'],
+        'construction': true,
+      };
+      final minorAxisLineId = _newId('line');
+      lines[minorAxisLineId] = {
+        'id': minorAxisLineId,
+        'start_point_id': ellipse['center_point_id'],
+        'end_point_id': minorPointId,
+        'length': ellipse['minor_radius'],
+        'construction': true,
+      };
+      final ellipseArcId = _newId('ellipseArc');
+      final ellipseArc = {
+        'id': ellipseArcId,
+        'center_point_id': ellipse['center_point_id'],
+        'major_point_id': ellipse['major_point_id'],
+        'minor_point_id': minorPointId,
+        'start_point_id': startId,
+        'end_point_id': endId,
+        'major_axis_line_id': majorAxisLineId,
+        'minor_axis_line_id': minorAxisLineId,
+        'major_radius': ellipse['major_radius'],
+        'minor_radius': ellipse['minor_radius'],
+        'rotation': ellipse['rotation'],
+        'construction': ellipse['construction'],
+      };
+      ellipseArcs[ellipseArcId] = ellipseArc;
+      ellipses.remove(ellipseId);
+      return _json({'ellipse_arc': ellipseArc, 'pruned_point_ids': _reportAndApplyPrunedPoints()}, 200);
+    }
+
     final ellipseArcsCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/ellipse-arcs$').hasMatch(path);
     if (ellipseArcsCollectionMatch && request.method == 'POST') {
       final id = _newId('ellipseArc');
@@ -10294,6 +10345,76 @@ void main() {
 
       expect(freshController.arcs, isEmpty);
       expect(freshController.circles, hasLength(1));
+    });
+
+    test('trimming an Ellipse converts it into an EllipseArc (v1: against a Line only)', () async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-ellipse-trim-1', 'origin-ellipse-trim-1');
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-ellipse-trim-1');
+      freshController.selectDrawTool(SketchTool.ellipse);
+      await freshController.handleCanvasTap(0, 0); // center
+      await freshController.handleCanvasTap(10, 0); // major point - major radius 10
+      await freshController.handleCanvasTap(5, 4); // minor radius 4
+      final ellipseId = freshController.ellipses.keys.single;
+
+      freshBackend.curveTrimTargetPoint = (0.0, 4.0);
+      freshController.enterTrimMode();
+      await freshController.handleCanvasTap(7.0710678, 2.8284271);
+
+      expect(freshController.errorMessage, isNull);
+      expect(freshController.ellipses.containsKey(ellipseId), isFalse);
+      expect(freshController.ellipseArcs, hasLength(1));
+      expect(freshController.mode, SketchMode.trim);
+    });
+
+    test(
+        'undo after trimming an Ellipse deletes the new EllipseArc and recreates a plain Ellipse',
+        () async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-ellipse-trim-2', 'origin-ellipse-trim-2');
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-ellipse-trim-2');
+      freshController.selectDrawTool(SketchTool.ellipse);
+      await freshController.handleCanvasTap(0, 0);
+      await freshController.handleCanvasTap(10, 0);
+      await freshController.handleCanvasTap(5, 4);
+
+      freshBackend.curveTrimTargetPoint = (0.0, 4.0);
+      freshController.enterTrimMode();
+      await freshController.handleCanvasTap(7.0710678, 2.8284271);
+      expect(freshController.canUndo, isTrue);
+
+      await freshController.undo();
+
+      expect(freshController.ellipseArcs, isEmpty);
+      expect(freshController.ellipses, hasLength(1));
+      final restored = freshController.ellipses.values.single;
+      expect(restored.minorRadius, closeTo(4, 1e-9));
+    });
+
+    test('trimming an Ellipse with no intersection surfaces the 422 as errorMessage, leaving it untouched',
+        () async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-ellipse-trim-3', 'origin-ellipse-trim-3');
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-ellipse-trim-3');
+      freshController.selectDrawTool(SketchTool.ellipse);
+      await freshController.handleCanvasTap(0, 0);
+      await freshController.handleCanvasTap(10, 0);
+      await freshController.handleCanvasTap(5, 4);
+      final ellipseId = freshController.ellipses.keys.single;
+
+      // curveTrimTargetPoint left null - the fake backend's own 422 path.
+      freshController.enterTrimMode();
+      await freshController.handleCanvasTap(7.0710678, 2.8284271);
+
+      expect(freshController.errorMessage, isNotNull);
+      expect(freshController.ellipses.containsKey(ellipseId), isTrue);
+      expect(freshController.ellipseArcs, isEmpty);
     });
 
     test('P36: trimming an Arc extends its end Point to the configured target, in place',

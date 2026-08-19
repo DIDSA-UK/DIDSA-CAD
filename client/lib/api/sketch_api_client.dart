@@ -312,6 +312,26 @@ class CircleTrimResultDto {
       );
 }
 
+/// [CircleTrimResultDto]'s Ellipse-shaped sibling - `ellipseArc` is the new
+/// entity replacing the trimmed Ellipse, `prunedPointIds` the old Ellipse's
+/// own negative axis-tip Points (plus its own minor-axis Point, never
+/// reused - `add_ellipse_arc` always places a fresh one) the new
+/// EllipseArc never reuses, already removed server-side. See
+/// [SketchApiClient.trimEllipse].
+class EllipseTrimResultDto {
+  final EllipseArcDto ellipseArc;
+  final List<String> prunedPointIds;
+
+  EllipseTrimResultDto({required this.ellipseArc, this.prunedPointIds = const []});
+
+  factory EllipseTrimResultDto.fromJson(Map<String, dynamic> json) => EllipseTrimResultDto(
+        ellipseArc: EllipseArcDto.fromJson(json['ellipse_arc'] as Map<String, dynamic>),
+        prunedPointIds: (json['pruned_point_ids'] as List<dynamic>? ?? const [])
+            .map((e) => e as String)
+            .toList(),
+      );
+}
+
 class CircleDto {
   final String id;
   final String centerPointId;
@@ -2245,6 +2265,20 @@ class SketchApiClient {
               body: jsonEncode({'click_x': clickX, 'click_y': clickY}),
             ),
         (body) => CircleTrimResultDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// [trimCircle]'s Ellipse-shaped sibling: converts [ellipseId] into an
+  /// EllipseArc excluding whichever segment [clickX]/[clickY] falls on -
+  /// see the backend's `Sketch.trim_ellipse`. v1 scope: only trims against
+  /// Line targets (see that method's own doc comment) - a 422 means fewer
+  /// than 2 real crossings were found, not a client error.
+  Future<EllipseTrimResultDto> trimEllipse(String sketchId, String ellipseId, double clickX, double clickY) => _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/ellipses/$ellipseId/trim'),
+              headers: _headers,
+              body: jsonEncode({'click_x': clickX, 'click_y': clickY}),
+            ),
+        (body) => EllipseTrimResultDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Sketcher-roadmap Phase 9 v1 (Offset Entities): a new, real Line

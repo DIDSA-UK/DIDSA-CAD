@@ -77,6 +77,8 @@ from app.sketch.schemas import (
     EllipseArcUpdate,
     EllipseCreate,
     EllipseResponse,
+    EllipseTrimRequest,
+    EllipseTrimResponse,
     EllipseUpdate,
     EqualLengthConstraintCreate,
     EqualLengthConstraintResponse,
@@ -1058,6 +1060,27 @@ def delete_ellipse(sketch_id: str, ellipse_id: str) -> DeleteEntityResponse:
     _get_ellipse_or_404(sketch, ellipse_id)
     pruned_point_ids = sketch.delete_ellipse(ellipse_id)
     return DeleteEntityResponse(pruned_point_ids=pruned_point_ids)
+
+
+@router.post("/sketches/{sketch_id}/ellipses/{ellipse_id}/trim", response_model=EllipseTrimResponse)
+def trim_ellipse(sketch_id: str, ellipse_id: str, payload: EllipseTrimRequest) -> EllipseTrimResponse:
+    """`trim_circle`'s Ellipse-shaped sibling: see `Sketch.trim_ellipse`'s
+    own doc comment - converts [ellipse_id] into an EllipseArc excluding
+    whichever segment was clicked. 404 for a missing Ellipse; 422
+    specifically for `NoIntersectionFoundError` (fewer than 2 real
+    crossings found - nothing to trim against, a real expected outcome,
+    not a client error)."""
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_ellipse_or_404(sketch, ellipse_id)
+    try:
+        ellipse_arc, pruned_point_ids = sketch.trim_ellipse(ellipse_id, payload.click_x, payload.click_y)
+    except NoIntersectionFoundError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return EllipseTrimResponse(
+        ellipse_arc=_ellipse_arc_response(sketch, ellipse_arc), pruned_point_ids=pruned_point_ids
+    )
 
 
 @router.post("/sketches/{sketch_id}/ellipse-arcs", response_model=EllipseArcResponse, status_code=201)

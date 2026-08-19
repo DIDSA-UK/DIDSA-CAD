@@ -9031,12 +9031,14 @@ class SketchController extends ChangeNotifier {
   }
 
   /// [SketchMode.trim]'s tap handling (Phase 11, extended by the on-device
-  /// feedback round that added Circle/Arc/split-Line support) - reuses
-  /// [_entityAt] (the same nearest-entity hit-test Select mode's own tap
-  /// handling uses) rather than a Line-only search, then dispatches by
-  /// kind: [_handleTrimLineTap]/[_handleTrimCircleTap]/[_handleTrimArcTap].
-  /// Point/Ellipse/Spline/Text/Constraint hits are silently ignored (not
-  /// valid trim targets - Spline/Ellipse have no backend intersection
+  /// feedback round that added Circle/Arc/split-Line support, and later by
+  /// Ellipse - v1: only trims against a Line, see `Sketch.trim_ellipse`'s
+  /// own doc comment) - reuses [_entityAt] (the same nearest-entity
+  /// hit-test Select mode's own tap handling uses) rather than a Line-only
+  /// search, then dispatches by kind: [_handleTrimLineTap]/
+  /// [_handleTrimCircleTap]/[_handleTrimArcTap]/[_handleTrimEllipseTap].
+  /// Point/EllipseArc/Spline/Text/Constraint hits are silently ignored (not
+  /// valid trim targets - Spline/EllipseArc have no backend intersection
   /// support at all, see `intersections.py`'s own module doc comment).
   /// Stays in trim mode after every tap, hit or miss - a miss is silently
   /// ignored, and a 400/422 from the backend surfaces via [errorMessage]
@@ -10482,6 +10484,8 @@ class SketchController extends ChangeNotifier {
         await _handleTrimCircleTap(hit.id);
       case SelectionKind.arc:
         await _handleTrimArcTap(hit.id);
+      case SelectionKind.ellipse:
+        await _handleTrimEllipseTap(hit.id);
       default:
         return;
     }
@@ -10735,6 +10739,105 @@ class SketchController extends ChangeNotifier {
           radiusPointId: restored.radiusPointId,
           construction: restored.construction,
           cardinalPointIds: restored.cardinalPointIds,
+        );
+      });
+      await _solveAndTrackDof();
+    });
+  }
+
+  /// [_handleTrimCircleTap]'s Ellipse-shaped sibling: v1 (only trims
+  /// against a Line - see the backend's `Sketch.trim_ellipse` doc comment)
+  /// converts [ellipseId] into an EllipseArc excluding whichever segment
+  /// [cursorX]/[cursorY] falls on. The original Ellipse's own negative
+  /// axis-tip Points (and its own minor-axis Point, never reused -
+  /// `add_ellipse_arc` always places a fresh one) are pruned server-side
+  /// and dropped from local state here too via `result.prunedPointIds`,
+  /// same "no floating, redundant points" fix [_handleTrimCircleTap]
+  /// already established. Undo recreates a plain Ellipse at the original
+  /// centre/major Points and live minor radius, not the exact pruned
+  /// Points/constraints - same accepted "additive, not exhaustive"
+  /// imperfection [_handleTrimCircleTap]'s own doc comment already notes.
+  Future<void> _handleTrimEllipseTap(String ellipseId) async {
+    final ellipse = ellipses[ellipseId];
+    if (ellipse == null) return;
+    final centerPointId = ellipse.centerPointId;
+    final majorPointId = ellipse.majorPointId;
+    final minorRadius = ellipse.minorRadius;
+    final originalConstruction = ellipse.construction;
+
+    await _runGuarded(() async {
+      final result = await _api.trimEllipse(_sketchId!, ellipseId, cursorX, cursorY);
+      final ellipseArcDto = result.ellipseArc;
+      ellipses.remove(ellipseId);
+      // The old Ellipse's own axis Lines are deleted server-side too (see
+      // `Sketch.delete_ellipse`), but that isn't reflected in
+      // `prunedPointIds` (Point ids only) - same cleanup the "Delete"
+      // selection action already does for a plain Ellipse delete.
+      lines.remove(ellipse.majorAxisLineId);
+      lines.remove(ellipse.minorAxisLineId);
+      for (final pointId in result.prunedPointIds) {
+        points.remove(pointId);
+      }
+      ellipseArcs[ellipseArcDto.id] = SketchEllipseArcView(
+        id: ellipseArcDto.id,
+        centerPointId: ellipseArcDto.centerPointId,
+        majorPointId: ellipseArcDto.majorPointId,
+        minorPointId: ellipseArcDto.minorPointId,
+        startPointId: ellipseArcDto.startPointId,
+        endPointId: ellipseArcDto.endPointId,
+        majorAxisLineId: ellipseArcDto.majorAxisLineId,
+        minorAxisLineId: ellipseArcDto.minorAxisLineId,
+        minorRadius: ellipseArcDto.minorRadius,
+        construction: ellipseArcDto.construction,
+      );
+      lines[ellipseArcDto.majorAxisLineId] = SketchLineView(
+        id: ellipseArcDto.majorAxisLineId,
+        startPointId: ellipseArcDto.centerPointId,
+        endPointId: ellipseArcDto.majorPointId,
+        construction: true,
+      );
+      lines[ellipseArcDto.minorAxisLineId] = SketchLineView(
+        id: ellipseArcDto.minorAxisLineId,
+        startPointId: ellipseArcDto.centerPointId,
+        endPointId: ellipseArcDto.minorPointId,
+        construction: true,
+      );
+      final newArcId = ellipseArcDto.id;
+      _pushUndo(() async {
+        await _api.deleteEllipseArc(_sketchId!, newArcId);
+        ellipseArcs.remove(newArcId);
+        lines.remove(ellipseArcDto.majorAxisLineId);
+        lines.remove(ellipseArcDto.minorAxisLineId);
+        final restored = await _api.createEllipse(
+          _sketchId!,
+          centerPointId,
+          majorPointId,
+          minorRadius,
+          construction: originalConstruction,
+        );
+        ellipses[restored.id] = SketchEllipseView(
+          id: restored.id,
+          centerPointId: restored.centerPointId,
+          majorPointId: restored.majorPointId,
+          majorPointNegId: restored.majorPointNegId,
+          minorPointId: restored.minorPointId,
+          minorPointNegId: restored.minorPointNegId,
+          majorAxisLineId: restored.majorAxisLineId,
+          minorAxisLineId: restored.minorAxisLineId,
+          minorRadius: restored.minorRadius,
+          construction: restored.construction,
+        );
+        lines[restored.majorAxisLineId] = SketchLineView(
+          id: restored.majorAxisLineId,
+          startPointId: restored.majorPointNegId,
+          endPointId: restored.majorPointId,
+          construction: true,
+        );
+        lines[restored.minorAxisLineId] = SketchLineView(
+          id: restored.minorAxisLineId,
+          startPointId: restored.minorPointNegId,
+          endPointId: restored.minorPointId,
+          construction: true,
         );
       });
       await _solveAndTrackDof();
