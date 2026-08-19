@@ -570,6 +570,29 @@ def _inner_cap_flattening_tool(basis: ResolvedPlane, sphere_radius: float, start
     OCCT's own latitude convention measures from the equator (`+-pi/2` at
     the poles), so `angle1 = pi/2 - start_colatitude` (colatitude is
     measured from the OTHER pole) and `angle2 = pi/2` (the pole itself).
+    The X direction is `basis.x_axis`, given explicitly - on-device feedback
+    (bevel-pair end-cap investigation) found this matters for real, not
+    just tidiness: the 2-argument `gp_Ax2(point, direction)` form (no X
+    given) lets OCCT auto-pick an arbitrary X perpendicular to the main
+    direction, which this sphere's own Fuse target - `_spherical_cap_face`'s
+    identical sphere, always built via `_sphere_axis`'s explicit-X `gp_Ax3`
+    - has no reason to share. When the two happen to agree (as they always
+    did for every basis this module was tested against before - the fixed
+    XY plane, `normal = (0, 0, 1)`, apparently lands on the same auto-picked
+    X OCCT would choose anyway) the Fuse cleanly recognizes the tool's
+    sphere and the solid's own inner-cap sphere as the same surface and
+    flattens correctly; for *any* other basis (confirmed on a plain 90-
+    degree tilt, a generic 37-degree tilt, and a tilt about a different
+    axis entirely - i.e. every `BevelPairFeature` member 2, which is never
+    built on the untouched plane_ref) the mismatched parametrization
+    silently breaks the Fuse - `IsDone()` still reports success, but the
+    inner cap comes back still domed, not flattened, with no warning
+    (`_single_solid_face_count`'s own post-boolean check only counts total
+    faces, not planarity, so it doesn't catch this). Giving both spheres
+    the exact same explicit X direction removes the mismatch entirely -
+    verified on-device: the tilted-basis case that used to come back with
+    only 1 planar face (should be 2) now matches the untilted case exactly,
+    same face count, same planar count.
 
     Built at the exact `sphere_radius`/`start_colatitude` - NOT shrunk -
     unlike `_outer_cap_flattening_tool`'s own cylinder (which very
@@ -583,7 +606,11 @@ def _inner_cap_flattening_tool(basis: ResolvedPlane, sphere_radius: float, start
     edge case instead, and `_flatten_end_caps`'s own post-boolean face-count
     check (`_single_solid_face_count`) is the backstop for the cases even
     that doesn't resolve - see both of those for the full picture."""
-    axis = gp_Ax2(_basis_point3_to_world(basis, 0.0, 0.0, 0.0), basis_normal(basis))
+    ox, oy, oz = basis.origin
+    nx, ny, nz = basis.normal
+    xx, xy, xz = basis.x_axis
+    apex = _basis_point3_to_world(basis, 0.0, 0.0, 0.0)
+    axis = gp_Ax2(apex, gp_Dir(nx, ny, nz), gp_Dir(xx, xy, xz))
     angle1 = math.pi / 2 - start_colatitude
     angle2 = math.pi / 2
     return BRepPrimAPI_MakeSphere(axis, sphere_radius, angle1, angle2).Shape()
