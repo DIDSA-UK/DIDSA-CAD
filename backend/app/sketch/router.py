@@ -19,6 +19,7 @@ from app.sketch.constraints import (
     PerpendicularConstraint,
     PointLineDistanceConstraint,
     PointOnCircleConstraint,
+    PointOnEllipseConstraint,
     PointOnLineConstraint,
     SplineTangentConstraint,
     TangentConstraint,
@@ -28,6 +29,7 @@ from app.sketch.models import (
     Arc,
     Circle,
     Ellipse,
+    EllipseArc,
     Line,
     NoIntersectionFoundError,
     Point,
@@ -70,8 +72,13 @@ from app.sketch.schemas import (
     DeletePatternMirrorInstanceResponse,
     DistanceConstraintCreate,
     DistanceConstraintResponse,
+    EllipseArcCreate,
+    EllipseArcResponse,
+    EllipseArcUpdate,
     EllipseCreate,
     EllipseResponse,
+    EllipseTrimRequest,
+    EllipseTrimResponse,
     EllipseUpdate,
     EqualLengthConstraintCreate,
     EqualLengthConstraintResponse,
@@ -106,6 +113,8 @@ from app.sketch.schemas import (
     PointLineDistanceConstraintResponse,
     PointOnCircleConstraintCreate,
     PointOnCircleConstraintResponse,
+    PointOnEllipseConstraintCreate,
+    PointOnEllipseConstraintResponse,
     PointOnLineConstraintCreate,
     PointOnLineConstraintResponse,
     PointResponse,
@@ -193,6 +202,13 @@ def _get_ellipse_or_404(sketch: Sketch, ellipse_id: str) -> Ellipse:
     entity = sketch.entities.get(ellipse_id)
     if not isinstance(entity, Ellipse):
         raise HTTPException(status_code=404, detail="Ellipse not found")
+    return entity
+
+
+def _get_ellipse_arc_or_404(sketch: Sketch, ellipse_arc_id: str) -> EllipseArc:
+    entity = sketch.entities.get(ellipse_arc_id)
+    if not isinstance(entity, EllipseArc):
+        raise HTTPException(status_code=404, detail="Ellipse arc not found")
     return entity
 
 
@@ -290,6 +306,23 @@ def _ellipse_response(sketch: Sketch, ellipse: Ellipse) -> EllipseResponse:
         minor_radius=ellipse.minor_radius(sketch.points),
         rotation=ellipse.rotation(sketch.points),
         construction=ellipse.construction,
+    )
+
+
+def _ellipse_arc_response(sketch: Sketch, ellipse_arc: EllipseArc) -> EllipseArcResponse:
+    return EllipseArcResponse(
+        id=ellipse_arc.id,
+        center_point_id=ellipse_arc.center_point_id,
+        major_point_id=ellipse_arc.major_point_id,
+        minor_point_id=ellipse_arc.minor_point_id,
+        start_point_id=ellipse_arc.start_point_id,
+        end_point_id=ellipse_arc.end_point_id,
+        major_axis_line_id=ellipse_arc.major_axis_line_id,
+        minor_axis_line_id=ellipse_arc.minor_axis_line_id,
+        major_radius=ellipse_arc.major_radius(sketch.points),
+        minor_radius=ellipse_arc.minor_radius(sketch.points),
+        rotation=ellipse_arc.rotation(sketch.points),
+        construction=ellipse_arc.construction,
     )
 
 
@@ -491,6 +524,15 @@ def _constraint_response(constraint: Constraint) -> ConstraintResponse:
             circle_or_arc_id=constraint.circle_or_arc_id,
             center_point_id=constraint.center_point_id,
             radius_point_id=constraint.radius_point_id,
+        )
+    if isinstance(constraint, PointOnEllipseConstraint):
+        return PointOnEllipseConstraintResponse(
+            id=constraint.id,
+            point_id=constraint.point_id,
+            ellipse_id=constraint.ellipse_id,
+            center_point_id=constraint.center_point_id,
+            major_point_id=constraint.major_point_id,
+            minor_point_id=constraint.minor_point_id,
         )
     if isinstance(constraint, FixedConstraint):
         return FixedConstraintResponse(
@@ -1020,6 +1062,75 @@ def delete_ellipse(sketch_id: str, ellipse_id: str) -> DeleteEntityResponse:
     return DeleteEntityResponse(pruned_point_ids=pruned_point_ids)
 
 
+@router.post("/sketches/{sketch_id}/ellipses/{ellipse_id}/trim", response_model=EllipseTrimResponse)
+def trim_ellipse(sketch_id: str, ellipse_id: str, payload: EllipseTrimRequest) -> EllipseTrimResponse:
+    """`trim_circle`'s Ellipse-shaped sibling: see `Sketch.trim_ellipse`'s
+    own doc comment - converts [ellipse_id] into an EllipseArc excluding
+    whichever segment was clicked. 404 for a missing Ellipse; 422
+    specifically for `NoIntersectionFoundError` (fewer than 2 real
+    crossings found - nothing to trim against, a real expected outcome,
+    not a client error)."""
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_ellipse_or_404(sketch, ellipse_id)
+    try:
+        ellipse_arc, pruned_point_ids = sketch.trim_ellipse(ellipse_id, payload.click_x, payload.click_y)
+    except NoIntersectionFoundError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return EllipseTrimResponse(
+        ellipse_arc=_ellipse_arc_response(sketch, ellipse_arc), pruned_point_ids=pruned_point_ids
+    )
+
+
+@router.post("/sketches/{sketch_id}/ellipse-arcs", response_model=EllipseArcResponse, status_code=201)
+def create_ellipse_arc(sketch_id: str, payload: EllipseArcCreate) -> EllipseArcResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    try:
+        ellipse_arc = sketch.add_ellipse_arc(
+            payload.center_point_id,
+            payload.major_point_id,
+            payload.minor_radius,
+            payload.start_angle,
+            payload.end_angle,
+            construction=payload.construction,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _ellipse_arc_response(sketch, ellipse_arc)
+
+
+@router.get("/sketches/{sketch_id}/ellipse-arcs", response_model=list[EllipseArcResponse])
+def list_ellipse_arcs(sketch_id: str) -> list[EllipseArcResponse]:
+    sketch = _get_sketch_or_404(sketch_id)
+    return [_ellipse_arc_response(sketch, ellipse_arc) for ellipse_arc in sketch.ellipse_arcs()]
+
+
+@router.get("/sketches/{sketch_id}/ellipse-arcs/{ellipse_arc_id}", response_model=EllipseArcResponse)
+def get_ellipse_arc(sketch_id: str, ellipse_arc_id: str) -> EllipseArcResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    return _ellipse_arc_response(sketch, _get_ellipse_arc_or_404(sketch, ellipse_arc_id))
+
+
+@router.patch("/sketches/{sketch_id}/ellipse-arcs/{ellipse_arc_id}", response_model=EllipseArcResponse)
+def update_ellipse_arc(sketch_id: str, ellipse_arc_id: str, payload: EllipseArcUpdate) -> EllipseArcResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    ellipse_arc = _get_ellipse_arc_or_404(sketch, ellipse_arc_id)
+    if payload.construction is not None:
+        ellipse_arc.construction = payload.construction
+    return _ellipse_arc_response(sketch, ellipse_arc)
+
+
+@router.delete("/sketches/{sketch_id}/ellipse-arcs/{ellipse_arc_id}", response_model=DeleteEntityResponse)
+def delete_ellipse_arc(sketch_id: str, ellipse_arc_id: str) -> DeleteEntityResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_ellipse_arc_or_404(sketch, ellipse_arc_id)
+    pruned_point_ids = sketch.delete_ellipse_arc(ellipse_arc_id)
+    return DeleteEntityResponse(pruned_point_ids=pruned_point_ids)
+
+
 @router.post("/sketches/{sketch_id}/polygons", response_model=PolygonResponse, status_code=201)
 def create_polygon(sketch_id: str, payload: PolygonCreate) -> PolygonResponse:
     sketch = _get_sketch_or_404(sketch_id)
@@ -1410,6 +1521,8 @@ def create_constraint(sketch_id: str, payload: ConstraintCreate) -> ConstraintRe
             constraint = sketch.add_point_on_circle_constraint(
                 payload.point_id, payload.circle_or_arc_id
             )
+        elif isinstance(payload, PointOnEllipseConstraintCreate):
+            constraint = sketch.add_point_on_ellipse_constraint(payload.point_id, payload.ellipse_id)
         elif isinstance(payload, FixedConstraintCreate):
             constraint = sketch.add_fixed_constraint(payload.entity_id)
         else:

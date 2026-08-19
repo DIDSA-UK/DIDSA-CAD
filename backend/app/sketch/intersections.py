@@ -10,14 +10,17 @@ coordinate solve. Deliberately plain `(x, y)` tuples throughout, not
 `Point`/`Sketch` - this module is pure geometry, decoupled from the domain
 model the same way `_segments_intersect` already is.
 
-Splines and Ellipses are still out of scope (no closed-form intersection
-without curve-specific root-finding/numerical subdivision - a materially
-bigger, separate undertaking) - neither is ever an intersection target, and
-neither can itself be trimmed/extended. Line/Circle/Arc are now all valid
-both as intersection targets AND as the entity trimmed/extended - Phase 11
-only supported Line as the trimmed entity; the on-device feedback round
-that added `circle_vs_circle`/`circle_vs_arc`/`arc_vs_arc` below (plus
+Splines are still out of scope (no closed-form intersection without
+curve-specific root-finding/numerical subdivision - a materially bigger,
+separate undertaking) - never an intersection target, and can't itself be
+trimmed/extended. Line/Circle/Arc are all valid both as intersection
+targets AND as the entity trimmed/extended - Phase 11 only supported Line
+as the trimmed entity; the on-device feedback round that added
+`circle_vs_circle`/`circle_vs_arc`/`arc_vs_arc` below (plus
 `Sketch.trim_or_extend_arc`/`trim_circle`) closed that gap for Circle/Arc.
+Ellipse can now be trimmed too (`Sketch.trim_ellipse`), but only against a
+Line target (`line_vs_ellipse` below) - Circle/Arc/Ellipse/EllipseArc-vs-
+Ellipse would need quartic root-finding, deliberately deferred.
 """
 
 import math
@@ -116,6 +119,50 @@ def line_vs_circle(a1: Point2D, a2: Point2D, center: Point2D, radius: float) -> 
     for t in ((-b - sqrt_discriminant) / (2 * a), (-b + sqrt_discriminant) / (2 * a)):
         results.append((t, (ax1 + t * dx, ay1 + t * dy)))
     return results
+
+
+def line_vs_ellipse(
+    a1: Point2D,
+    a2: Point2D,
+    center: Point2D,
+    major_radius: float,
+    minor_radius: float,
+    rotation: float,
+) -> list[tuple[float, Point2D]]:
+    """[line_vs_circle]'s Ellipse-shaped sibling - every point (0, 1
+    tangent, or 2) where the infinite line through (a1, a2) crosses the
+    ellipse at `center`/`major_radius`/`minor_radius`/`rotation`. Standard
+    technique: transform both line endpoints into the ellipse's own local
+    frame (un-rotate, then un-scale each axis by its own radius, making the
+    ellipse a unit circle there), solve [line_vs_circle] against that unit
+    circle, and recompute the world point at the returned `t` directly from
+    the *original* (a1, a2) - since an affine map (rotation + independent
+    per-axis scale) preserves a line's own parametric `t` (t=0 still maps
+    to a1, t=1 still maps to a2 either side), the local solve's own `t` is
+    already the correct world-space one, so there's no need to transform
+    the local point back and risk a second rounding step.
+
+    Circle/Arc/Ellipse/EllipseArc targets are deliberately out of scope
+    (see this module's own doc comment) - substituting a line is a plain
+    quadratic; two conics generally need quartic root-finding instead, a
+    materially bigger, separate undertaking.
+    """
+    cx, cy = center
+    if major_radius < 1e-9 or minor_radius < 1e-9:
+        return []
+    cos_r, sin_r = math.cos(rotation), math.sin(rotation)
+
+    def to_local(p: Point2D) -> Point2D:
+        dx, dy = p[0] - cx, p[1] - cy
+        u = dx * cos_r + dy * sin_r
+        v = -dx * sin_r + dy * cos_r
+        return (u / major_radius, v / minor_radius)
+
+    local_candidates = line_vs_circle(to_local(a1), to_local(a2), (0.0, 0.0), 1.0)
+    ax1, ay1 = a1
+    ax2, ay2 = a2
+    dx, dy = ax2 - ax1, ay2 - ay1
+    return [(t, (ax1 + t * dx, ay1 + t * dy)) for t, _ in local_candidates]
 
 
 def line_vs_arc(

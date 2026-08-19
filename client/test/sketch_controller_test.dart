@@ -43,6 +43,7 @@ class _FakeBackend {
   final Map<String, Map<String, dynamic>> circles = {};
   final Map<String, Map<String, dynamic>> arcs = {};
   final Map<String, Map<String, dynamic>> ellipses = {};
+  final Map<String, Map<String, dynamic>> ellipseArcs = {};
   final Map<String, Map<String, dynamic>> polygons = {};
   final Map<String, Map<String, dynamic>> slots = {};
   final Map<String, Map<String, dynamic>> rectangles = {};
@@ -243,6 +244,28 @@ class _FakeBackend {
         ellipse['construction'] = body['construction'] as bool;
       }
       return _json(ellipse, 200);
+    }
+
+    final ellipseArcDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/ellipse-arcs/(.+)$').firstMatch(path);
+    if (ellipseArcDeleteMatch != null && request.method == 'DELETE') {
+      final ellipseArc = ellipseArcs.remove(ellipseArcDeleteMatch.group(1));
+      if (ellipseArc != null) {
+        // Mirrors the real backend's Sketch.delete_ellipse_arc, which also
+        // deletes both axis Lines as part of deleting the EllipseArc itself.
+        lines.remove(ellipseArc['major_axis_line_id']);
+        lines.remove(ellipseArc['minor_axis_line_id']);
+      }
+      return _json({'pruned_point_ids': _reportAndApplyPrunedPoints()}, 200);
+    }
+
+    final ellipseArcPatchMatch = RegExp(r'^/sketch/sketches/[^/]+/ellipse-arcs/(.+)$').firstMatch(path);
+    if (ellipseArcPatchMatch != null && request.method == 'PATCH') {
+      final ellipseArc = ellipseArcs[ellipseArcPatchMatch.group(1)];
+      if (ellipseArc == null) return http.Response('not found', 404);
+      if (body.containsKey('construction')) {
+        ellipseArc['construction'] = body['construction'] as bool;
+      }
+      return _json(ellipseArc, 200);
     }
 
     final polygonDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/polygons/(.+)$').firstMatch(path);
@@ -1242,6 +1265,181 @@ class _FakeBackend {
     }
     if (ellipsesCollectionMatch && request.method == 'GET') {
       return _jsonList(ellipses.values.toList(), 200);
+    }
+
+    final ellipseTrimMatch = RegExp(r'^/sketch/sketches/[^/]+/ellipses/([^/]+)/trim$').firstMatch(path);
+    if (ellipseTrimMatch != null && request.method == 'POST') {
+      final ellipseId = ellipseTrimMatch.group(1)!;
+      final ellipse = ellipses[ellipseId];
+      if (ellipse == null) return http.Response('not found', 404);
+      final target = curveTrimTargetPoint;
+      if (target == null) {
+        return _json({'detail': 'Fewer than 2 crossings found to trim ellipse at'}, 422);
+      }
+      final minorPointId = _newId('point');
+      points[minorPointId] = {'id': minorPointId, 'x': target.$1, 'y': target.$2};
+      final startId = _newId('point');
+      points[startId] = {'id': startId, 'x': target.$1, 'y': target.$2};
+      final endId = _newId('point');
+      points[endId] = {'id': endId, 'x': target.$1, 'y': target.$2};
+      final majorAxisLineId = _newId('line');
+      lines[majorAxisLineId] = {
+        'id': majorAxisLineId,
+        'start_point_id': ellipse['center_point_id'],
+        'end_point_id': ellipse['major_point_id'],
+        'length': ellipse['major_radius'],
+        'construction': true,
+      };
+      final minorAxisLineId = _newId('line');
+      lines[minorAxisLineId] = {
+        'id': minorAxisLineId,
+        'start_point_id': ellipse['center_point_id'],
+        'end_point_id': minorPointId,
+        'length': ellipse['minor_radius'],
+        'construction': true,
+      };
+      final ellipseArcId = _newId('ellipseArc');
+      final ellipseArc = {
+        'id': ellipseArcId,
+        'center_point_id': ellipse['center_point_id'],
+        'major_point_id': ellipse['major_point_id'],
+        'minor_point_id': minorPointId,
+        'start_point_id': startId,
+        'end_point_id': endId,
+        'major_axis_line_id': majorAxisLineId,
+        'minor_axis_line_id': minorAxisLineId,
+        'major_radius': ellipse['major_radius'],
+        'minor_radius': ellipse['minor_radius'],
+        'rotation': ellipse['rotation'],
+        'construction': ellipse['construction'],
+      };
+      ellipseArcs[ellipseArcId] = ellipseArc;
+      ellipses.remove(ellipseId);
+      return _json({'ellipse_arc': ellipseArc, 'pruned_point_ids': _reportAndApplyPrunedPoints()}, 200);
+    }
+
+    final ellipseArcsCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/ellipse-arcs$').hasMatch(path);
+    if (ellipseArcsCollectionMatch && request.method == 'POST') {
+      final id = _newId('ellipseArc');
+      final centerPoint = points[body['center_point_id']]!;
+      final majorPoint = points[body['major_point_id']]!;
+      final cx = (centerPoint['x'] as num).toDouble();
+      final cy = (centerPoint['y'] as num).toDouble();
+      final majorRadius = math.sqrt(
+        math.pow((majorPoint['x'] as num) - cx, 2) + math.pow((majorPoint['y'] as num) - cy, 2),
+      );
+      final rotation = math.atan2((majorPoint['y'] as num) - cy, (majorPoint['x'] as num) - cx);
+      final minorRadius = (body['minor_radius'] as num).toDouble();
+      final startAngle = (body['start_angle'] as num).toDouble();
+      final endAngle = (body['end_angle'] as num).toDouble();
+
+      // Mirrors the real backend's Sketch.add_ellipse_arc: a new minor-axis
+      // Point placed exactly perpendicular to the major axis, plus two new
+      // Points placed exactly on the curve at start_angle/end_angle - see
+      // that method's own `_point_on_ellipse` closure.
+      final minorAngle = rotation + math.pi / 2;
+      final minorPointId = _newId('point');
+      points[minorPointId] = {
+        'id': minorPointId,
+        'x': cx + minorRadius * math.cos(minorAngle),
+        'y': cy + minorRadius * math.sin(minorAngle),
+      };
+      (double, double) pointOnEllipse(double localAngle) {
+        final u = majorRadius * math.cos(localAngle);
+        final v = minorRadius * math.sin(localAngle);
+        final cosR = math.cos(rotation), sinR = math.sin(rotation);
+        return (cx + u * cosR - v * sinR, cy + u * sinR + v * cosR);
+      }
+
+      final (startX, startY) = pointOnEllipse(startAngle);
+      final startPointId = _newId('point');
+      points[startPointId] = {'id': startPointId, 'x': startX, 'y': startY};
+      final (endX, endY) = pointOnEllipse(endAngle);
+      final endPointId = _newId('point');
+      points[endPointId] = {'id': endPointId, 'x': endX, 'y': endY};
+
+      final majorAxisLineId = _newId('line');
+      lines[majorAxisLineId] = {
+        'id': majorAxisLineId,
+        'start_point_id': body['center_point_id'],
+        'end_point_id': body['major_point_id'],
+        'length': majorRadius,
+        'construction': true,
+      };
+      final minorAxisLineId = _newId('line');
+      lines[minorAxisLineId] = {
+        'id': minorAxisLineId,
+        'start_point_id': body['center_point_id'],
+        'end_point_id': minorPointId,
+        'length': minorRadius,
+        'construction': true,
+      };
+      final ellipseArc = {
+        'id': id,
+        'center_point_id': body['center_point_id'],
+        'major_point_id': body['major_point_id'],
+        'minor_point_id': minorPointId,
+        'start_point_id': startPointId,
+        'end_point_id': endPointId,
+        'major_axis_line_id': majorAxisLineId,
+        'minor_axis_line_id': minorAxisLineId,
+        'major_radius': majorRadius,
+        'minor_radius': minorRadius,
+        'rotation': rotation,
+        'construction': body['construction'] as bool? ?? false,
+      };
+      ellipseArcs[id] = ellipseArc;
+      // Mirrors the real backend's Sketch.add_ellipse_arc, which auto-
+      // creates major/minor DistanceConstraints, a PerpendicularConstraint
+      // tying the two axis Lines together, and a PointOnEllipseConstraint
+      // per curve Point.
+      final majorConstraintId = _newId('constraint');
+      constraints[majorConstraintId] = {
+        'id': majorConstraintId,
+        'point_a_id': body['center_point_id'],
+        'point_b_id': body['major_point_id'],
+        'distance': majorRadius,
+        'provisional': true,
+      };
+      final minorConstraintId = _newId('constraint');
+      constraints[minorConstraintId] = {
+        'id': minorConstraintId,
+        'point_a_id': body['center_point_id'],
+        'point_b_id': minorPointId,
+        'distance': minorRadius,
+        'provisional': true,
+      };
+      final perpendicularConstraintId = _newId('constraint');
+      constraints[perpendicularConstraintId] = {
+        'id': perpendicularConstraintId,
+        'type': 'perpendicular',
+        'line1_id': majorAxisLineId,
+        'line2_id': minorAxisLineId,
+      };
+      final startOnEllipseConstraintId = _newId('constraint');
+      constraints[startOnEllipseConstraintId] = {
+        'id': startOnEllipseConstraintId,
+        'type': 'point_on_ellipse',
+        'point_id': startPointId,
+        'ellipse_id': id,
+        'center_point_id': body['center_point_id'],
+        'major_point_id': body['major_point_id'],
+        'minor_point_id': minorPointId,
+      };
+      final endOnEllipseConstraintId = _newId('constraint');
+      constraints[endOnEllipseConstraintId] = {
+        'id': endOnEllipseConstraintId,
+        'type': 'point_on_ellipse',
+        'point_id': endPointId,
+        'ellipse_id': id,
+        'center_point_id': body['center_point_id'],
+        'major_point_id': body['major_point_id'],
+        'minor_point_id': minorPointId,
+      };
+      return _json(ellipseArc, 201);
+    }
+    if (ellipseArcsCollectionMatch && request.method == 'GET') {
+      return _jsonList(ellipseArcs.values.toList(), 200);
     }
 
     final polygonsCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/polygons$').hasMatch(path);
@@ -5340,6 +5538,158 @@ void main() {
       expect(majorAfter.x, closeTo(majorBefore.x, 1e-9));
       expect(majorAfter.y, closeTo(majorBefore.y, 1e-9));
     });
+  });
+
+  // --- Partial-ellipse (EllipseArc) tool -------------------------------------
+
+  test('activeDrawGhost previews a plain circle while only the ellipse-arc center is placed', () async {
+    controller.selectDrawTool(SketchTool.ellipseArc);
+    await controller.handleCanvasTap(2, 2);
+    expect(controller.ellipseArcInProgress, isTrue);
+    final ghost = controller.activeDrawGhost;
+    expect(ghost, isA<CircleGhost>());
+  });
+
+  test(
+      'activeDrawGhost previews the ellipse outline (clamped minor radius) once center and major '
+      'point are placed, then the swept EllipseArcGhost once the minor radius is fixed too', () async {
+    controller.selectDrawTool(SketchTool.ellipseArc);
+    await controller.handleCanvasTap(0, 0); // center
+    await controller.handleCanvasTap(10, 0); // major point - major radius 10
+    controller.cursorX = 5;
+    controller.cursorY = 4;
+    final ellipseGhost = controller.activeDrawGhost;
+    expect(ellipseGhost, isA<EllipseGhost>());
+
+    await controller.handleCanvasTap(5, 4); // minor radius 4 (perpendicular distance)
+    expect(controller.ellipseArcMinorRadius, closeTo(4, 1e-9));
+    controller.cursorX = 0;
+    controller.cursorY = 4;
+    final arcGhost = controller.activeDrawGhost;
+    expect(arcGhost, isA<EllipseArcGhost>());
+  });
+
+  test(
+      'the ellipse-arc tool places center, major point, minor radius, start angle, then end angle '
+      'across five taps, creating one EllipseArc with real major/minor/start/end Points, '
+      'construction axis Lines, and the full Distance+Perpendicular+PointOnEllipse constraint set '
+      'app.sketch.models.add_ellipse_arc builds server-side', () async {
+    controller.selectDrawTool(SketchTool.ellipseArc);
+    await controller.handleCanvasTap(0, 0); // center
+    await controller.handleCanvasTap(10, 0); // major point - major radius 10, rotation 0
+    await controller.handleCanvasTap(5, 4); // minor radius 4 (perpendicular distance)
+    await controller.handleCanvasTap(0, 4); // start angle: local (0, 4) -> pi/2
+    await controller.handleCanvasTap(-10, 0); // end angle: local (-10, 0) -> pi
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.ellipseArcInProgress, isFalse);
+    expect(controller.ellipseArcs.length, 1);
+    final ellipseArc = controller.ellipseArcs.values.single;
+    expect(ellipseArc.minorRadius, closeTo(4, 1e-9));
+    expect(controller.points[ellipseArc.majorPointId]!.x, closeTo(10, 1e-9));
+    expect(controller.points[ellipseArc.majorPointId]!.y, closeTo(0, 1e-9));
+    expect(controller.points[ellipseArc.minorPointId]!.x, closeTo(0, 1e-9));
+    expect(controller.points[ellipseArc.minorPointId]!.y, closeTo(4, 1e-9));
+    // Start/end Points placed exactly on the curve at the tapped angles -
+    // pi/2 (major axis frame) is (0, minorRadius) = (0, 4); pi is
+    // (-majorRadius, 0) = (-10, 0), both already axis-aligned since rotation
+    // is 0 here.
+    expect(controller.points[ellipseArc.startPointId]!.x, closeTo(0, 1e-6));
+    expect(controller.points[ellipseArc.startPointId]!.y, closeTo(4, 1e-6));
+    expect(controller.points[ellipseArc.endPointId]!.x, closeTo(-10, 1e-6));
+    expect(controller.points[ellipseArc.endPointId]!.y, closeTo(0, 1e-6));
+    // No negative/opposite axis tips (unlike Ellipse) - center-to-tip spoke
+    // Lines only, see EllipseArc's own docstring.
+    final majorAxisLine = controller.lines[ellipseArc.majorAxisLineId]!;
+    final minorAxisLine = controller.lines[ellipseArc.minorAxisLineId]!;
+    expect(majorAxisLine.construction, isTrue);
+    expect(minorAxisLine.construction, isTrue);
+    expect({majorAxisLine.startPointId, majorAxisLine.endPointId},
+        {ellipseArc.centerPointId, ellipseArc.majorPointId});
+    expect({minorAxisLine.startPointId, minorAxisLine.endPointId},
+        {ellipseArc.centerPointId, ellipseArc.minorPointId});
+    // Major-axis DistanceConstraint, minor-axis DistanceConstraint, the
+    // PerpendicularConstraint, 2 PointOnEllipseConstraints (start/end), and
+    // the CoincidentConstraint tying the new centre Point to the origin
+    // (see SketchController._pointIdAt's own doc comment).
+    expect(controller.constraints.length, 6);
+  });
+
+  test('tapping an EllipseArc in select mode recognizes SelectionKind.ellipseArc', () async {
+    controller.selectDrawTool(SketchTool.ellipseArc);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    await controller.handleCanvasTap(5, 4);
+    await controller.handleCanvasTap(0, 4);
+    await controller.handleCanvasTap(-10, 0);
+    controller.exitToSelectMode();
+
+    // Exactly on the swept quarter-arc at local angle 3*pi/4 (midway between
+    // the pi/2 start and pi end): (10*cos(3pi/4), 4*sin(3pi/4)).
+    await controller.handleCanvasTap(-7.0710678, 2.8284271);
+
+    expect(controller.selectionSet.length, 1);
+    expect(controller.selectionSet.single.kind, SelectionKind.ellipseArc);
+  });
+
+  test(
+      'computeDeleteCascade cascades a directly-selected axis Line up to its owning EllipseArc, and '
+      'drops the Line from its own cascade set - mirrors the analogous Ellipse fix', () async {
+    controller.selectDrawTool(SketchTool.ellipseArc);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    await controller.handleCanvasTap(5, 4);
+    await controller.handleCanvasTap(0, 4);
+    await controller.handleCanvasTap(-10, 0);
+    final ellipseArc = controller.ellipseArcs.values.single;
+
+    final cascade = controller.computeDeleteCascade(
+      [SketchSelection(kind: SelectionKind.line, id: ellipseArc.majorAxisLineId)],
+    );
+
+    expect(cascade.ellipseArcs, {ellipseArc.id});
+    expect(cascade.lines, isNot(contains(ellipseArc.majorAxisLineId)));
+  });
+
+  test('deleting an EllipseArc removes its axis Lines, prunes orphaned Points, and undo restores it',
+      () async {
+    controller.selectDrawTool(SketchTool.ellipseArc);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    await controller.handleCanvasTap(5, 4);
+    await controller.handleCanvasTap(0, 4);
+    await controller.handleCanvasTap(-10, 0);
+    final ellipseArc = controller.ellipseArcs.values.single;
+
+    controller.exitToSelectMode();
+    controller.selectEntity(SketchSelection(kind: SelectionKind.ellipseArc, id: ellipseArc.id));
+    // Mirrors the real backend's delete_ellipse_arc: centre/major/minor/
+    // start/end are all pruned as part of deleting the EllipseArc itself
+    // (nothing else references them) - the tap at (0, 0) created a new
+    // Point coincident-constrained to the sketch's own origin (see
+    // SketchController._pointIdAt's own doc comment), not a literal reuse
+    // of the origin Point's own id, so centre is a real, prunable Point
+    // here too.
+    backend.prunedPointIdsOnNextDelete = [
+      ellipseArc.centerPointId,
+      ellipseArc.majorPointId,
+      ellipseArc.minorPointId,
+      ellipseArc.startPointId,
+      ellipseArc.endPointId,
+    ];
+
+    await controller.deleteSelected();
+
+    expect(controller.ellipseArcs, isEmpty);
+    expect(controller.lines, isEmpty);
+    expect(controller.points.length, 1);
+    expect(controller.points.keys.single, controller.originPointId);
+
+    await controller.undo();
+
+    expect(controller.ellipseArcs.length, 1);
+    final restored = controller.ellipseArcs.values.single;
+    expect(restored.minorRadius, closeTo(4, 1e-9));
   });
 
   // --- Phase 6.2.5: Spline tool ---------------------------------------------
@@ -10146,6 +10496,76 @@ void main() {
       expect(freshController.circles, hasLength(1));
     });
 
+    test('trimming an Ellipse converts it into an EllipseArc (v1: against a Line only)', () async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-ellipse-trim-1', 'origin-ellipse-trim-1');
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-ellipse-trim-1');
+      freshController.selectDrawTool(SketchTool.ellipse);
+      await freshController.handleCanvasTap(0, 0); // center
+      await freshController.handleCanvasTap(10, 0); // major point - major radius 10
+      await freshController.handleCanvasTap(5, 4); // minor radius 4
+      final ellipseId = freshController.ellipses.keys.single;
+
+      freshBackend.curveTrimTargetPoint = (0.0, 4.0);
+      freshController.enterTrimMode();
+      await freshController.handleCanvasTap(7.0710678, 2.8284271);
+
+      expect(freshController.errorMessage, isNull);
+      expect(freshController.ellipses.containsKey(ellipseId), isFalse);
+      expect(freshController.ellipseArcs, hasLength(1));
+      expect(freshController.mode, SketchMode.trim);
+    });
+
+    test(
+        'undo after trimming an Ellipse deletes the new EllipseArc and recreates a plain Ellipse',
+        () async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-ellipse-trim-2', 'origin-ellipse-trim-2');
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-ellipse-trim-2');
+      freshController.selectDrawTool(SketchTool.ellipse);
+      await freshController.handleCanvasTap(0, 0);
+      await freshController.handleCanvasTap(10, 0);
+      await freshController.handleCanvasTap(5, 4);
+
+      freshBackend.curveTrimTargetPoint = (0.0, 4.0);
+      freshController.enterTrimMode();
+      await freshController.handleCanvasTap(7.0710678, 2.8284271);
+      expect(freshController.canUndo, isTrue);
+
+      await freshController.undo();
+
+      expect(freshController.ellipseArcs, isEmpty);
+      expect(freshController.ellipses, hasLength(1));
+      final restored = freshController.ellipses.values.single;
+      expect(restored.minorRadius, closeTo(4, 1e-9));
+    });
+
+    test('trimming an Ellipse with no intersection surfaces the 422 as errorMessage, leaving it untouched',
+        () async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-ellipse-trim-3', 'origin-ellipse-trim-3');
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-ellipse-trim-3');
+      freshController.selectDrawTool(SketchTool.ellipse);
+      await freshController.handleCanvasTap(0, 0);
+      await freshController.handleCanvasTap(10, 0);
+      await freshController.handleCanvasTap(5, 4);
+      final ellipseId = freshController.ellipses.keys.single;
+
+      // curveTrimTargetPoint left null - the fake backend's own 422 path.
+      freshController.enterTrimMode();
+      await freshController.handleCanvasTap(7.0710678, 2.8284271);
+
+      expect(freshController.errorMessage, isNotNull);
+      expect(freshController.ellipses.containsKey(ellipseId), isTrue);
+      expect(freshController.ellipseArcs, isEmpty);
+    });
+
     test('P36: trimming an Arc extends its end Point to the configured target, in place',
         () async {
       final freshBackend = _FakeBackend();
@@ -10612,6 +11032,155 @@ void main() {
       expect(freshController.selectionSet, isEmpty);
     });
 
+    /// Ellipse/EllipseArc became valid Pattern/Mirror sources alongside
+    /// Line/Circle/Arc - an Ellipse centred at the origin, plus a quarter
+    /// EllipseArc centred well away from it so the two shapes' own curves
+    /// never overlap in a hit-test.
+    Future<(SketchController, _FakeBackend)> adoptedControllerWithEllipseAndEllipseArc() async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-pattern-ellipse', 'origin-pattern-ellipse');
+      freshBackend.points['ec'] = {'id': 'ec', 'x': 0.0, 'y': 0.0};
+      freshBackend.points['emaj'] = {'id': 'emaj', 'x': 4.0, 'y': 0.0};
+      freshBackend.points['emajneg'] = {'id': 'emajneg', 'x': -4.0, 'y': 0.0};
+      freshBackend.points['emin'] = {'id': 'emin', 'x': 0.0, 'y': 2.0};
+      freshBackend.points['eminneg'] = {'id': 'eminneg', 'x': 0.0, 'y': -2.0};
+      freshBackend.ellipses['ellipse-a'] = {
+        'id': 'ellipse-a',
+        'center_point_id': 'ec',
+        'major_point_id': 'emaj',
+        'major_point_neg_id': 'emajneg',
+        'minor_point_id': 'emin',
+        'minor_point_neg_id': 'eminneg',
+        'major_axis_line_id': 'ellipse-a-major-line',
+        'minor_axis_line_id': 'ellipse-a-minor-line',
+        'major_radius': 4.0,
+        'minor_radius': 2.0,
+        'rotation': 0.0,
+        'construction': false,
+      };
+      freshBackend.lines['ellipse-a-major-line'] = {
+        'id': 'ellipse-a-major-line',
+        'start_point_id': 'emajneg',
+        'end_point_id': 'emaj',
+        'length': 8.0,
+        'construction': true,
+      };
+      freshBackend.lines['ellipse-a-minor-line'] = {
+        'id': 'ellipse-a-minor-line',
+        'start_point_id': 'eminneg',
+        'end_point_id': 'emin',
+        'length': 4.0,
+        'construction': true,
+      };
+
+      freshBackend.points['ac'] = {'id': 'ac', 'x': 0.0, 'y': 50.0};
+      freshBackend.points['amaj'] = {'id': 'amaj', 'x': 4.0, 'y': 50.0};
+      freshBackend.points['amin'] = {'id': 'amin', 'x': 0.0, 'y': 52.0};
+      freshBackend.points['astart'] = {'id': 'astart', 'x': 4.0, 'y': 50.0};
+      freshBackend.points['aend'] = {'id': 'aend', 'x': 0.0, 'y': 52.0};
+      freshBackend.ellipseArcs['ellipsearc-a'] = {
+        'id': 'ellipsearc-a',
+        'center_point_id': 'ac',
+        'major_point_id': 'amaj',
+        'minor_point_id': 'amin',
+        'start_point_id': 'astart',
+        'end_point_id': 'aend',
+        'major_axis_line_id': 'ellipsearc-a-major-line',
+        'minor_axis_line_id': 'ellipsearc-a-minor-line',
+        'major_radius': 4.0,
+        'minor_radius': 2.0,
+        'rotation': 0.0,
+        'construction': false,
+      };
+      freshBackend.lines['ellipsearc-a-major-line'] = {
+        'id': 'ellipsearc-a-major-line',
+        'start_point_id': 'ac',
+        'end_point_id': 'amaj',
+        'length': 4.0,
+        'construction': true,
+      };
+      freshBackend.lines['ellipsearc-a-minor-line'] = {
+        'id': 'ellipsearc-a-minor-line',
+        'start_point_id': 'ac',
+        'end_point_id': 'amin',
+        'length': 2.0,
+        'construction': true,
+      };
+
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-pattern-ellipse');
+      return (freshController, freshBackend);
+    }
+
+    test('tapping an Ellipse accumulates into selectionSet as a valid pattern/mirror source', () async {
+      final (freshController, _) = await adoptedControllerWithEllipseAndEllipseArc();
+      freshController.enterPatternMode();
+
+      // A point on the curve away from the axis Points/Lines, so the hit
+      // resolves to the Ellipse itself, not a Point or a construction Line.
+      await freshController.handleCanvasTap(4 * math.cos(math.pi / 4), 2 * math.sin(math.pi / 4));
+
+      expect(freshController.selectionSet, hasLength(1));
+      expect(freshController.selectionSet.single.kind, SelectionKind.ellipse);
+      expect(freshController.selectionSet.single.id, 'ellipse-a');
+    });
+
+    test('tapping an EllipseArc accumulates into selectionSet as a valid pattern/mirror source', () async {
+      final (freshController, _) = await adoptedControllerWithEllipseAndEllipseArc();
+      freshController.enterPatternMode();
+
+      await freshController.handleCanvasTap(4 * math.cos(math.pi / 4), 50 + 2 * math.sin(math.pi / 4));
+
+      expect(freshController.selectionSet, hasLength(1));
+      expect(freshController.selectionSet.single.kind, SelectionKind.ellipseArc);
+      expect(freshController.selectionSet.single.id, 'ellipsearc-a');
+    });
+
+    test('confirmPatternMirrorPreview for an Ellipse source produces a translated EllipseGhost', () async {
+      final (freshController, _) = await adoptedControllerWithEllipseAndEllipseArc();
+      freshController.enterPatternMode();
+      await freshController.handleCanvasTap(4 * math.cos(math.pi / 4), 2 * math.sin(math.pi / 4));
+      freshController.finishPatternPick();
+      freshController.setPatternDirectionFixedAxis('x');
+      freshController.setPatternSpacing1(10.0);
+      freshController.setPatternCount1(2);
+
+      await freshController.confirmPatternMirrorPreview();
+
+      final ellipseGhosts = freshController.patternMirrorGhosts.whereType<EllipseGhost>();
+      expect(ellipseGhosts, hasLength(1));
+      final ghost = ellipseGhosts.single;
+      expect(ghost.centerX, closeTo(10.0, 1e-9));
+      expect(ghost.centerY, closeTo(0.0, 1e-9));
+      expect(ghost.majorX, closeTo(14.0, 1e-9));
+      expect(ghost.minorRadius, closeTo(2.0, 1e-9));
+    });
+
+    test('confirmPatternMirrorPreview for an EllipseArc source produces a translated EllipseArcGhost', () async {
+      final (freshController, _) = await adoptedControllerWithEllipseAndEllipseArc();
+      freshController.enterPatternMode();
+      await freshController.handleCanvasTap(4 * math.cos(math.pi / 4), 50 + 2 * math.sin(math.pi / 4));
+      freshController.finishPatternPick();
+      freshController.setPatternDirectionFixedAxis('y');
+      freshController.setPatternSpacing1(10.0);
+      freshController.setPatternCount1(2);
+
+      await freshController.confirmPatternMirrorPreview();
+
+      final arcGhosts = freshController.patternMirrorGhosts.whereType<EllipseArcGhost>();
+      expect(arcGhosts, hasLength(1));
+      final ghost = arcGhosts.single;
+      expect(ghost.centerX, closeTo(0.0, 1e-9));
+      expect(ghost.centerY, closeTo(60.0, 1e-9));
+      expect(ghost.majorX, closeTo(4.0, 1e-9));
+      expect(ghost.majorY, closeTo(60.0, 1e-9));
+      expect(ghost.minorRadius, closeTo(2.0, 1e-9));
+      // The swept range (start->end, CCW) is unaffected by a pure
+      // translation - still the same quarter turn as the source.
+      expect(ghost.endAngle - ghost.startAngle, closeTo(math.pi / 2, 1e-6));
+    });
+
     test('finishPatternPick with nothing picked exits to select mode', () async {
       final (freshController, _) = await adoptedControllerWithLine();
       freshController.enterPatternMode();
@@ -10909,6 +11478,74 @@ void main() {
       final instance = freshController.patternInstances.values.single;
       expect(instance.spacing1, 7.0);
       expect(instance.directionFixedAxis, 'y');
+    });
+  });
+
+  group('geometryBoundingBox (Zoom to Fit)', () {
+    Future<SketchController> adoptedControllerWithEllipseArc() async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-bbox-1', 'origin-bbox-1');
+      freshBackend.points['center'] = {'id': 'center', 'x': 0.0, 'y': 0.0};
+      freshBackend.points['major'] = {'id': 'major', 'x': 20.0, 'y': 0.0};
+      freshBackend.points['minor'] = {'id': 'minor', 'x': 0.0, 'y': 5.0};
+      freshBackend.points['start'] = {'id': 'start', 'x': 20.0, 'y': 0.0};
+      freshBackend.points['end'] = {'id': 'end', 'x': 0.0, 'y': 5.0};
+      freshBackend.ellipseArcs['ea-1'] = {
+        'id': 'ea-1',
+        'center_point_id': 'center',
+        'major_point_id': 'major',
+        'minor_point_id': 'minor',
+        'start_point_id': 'start',
+        'end_point_id': 'end',
+        'major_axis_line_id': 'ea-1-major-line',
+        'minor_axis_line_id': 'ea-1-minor-line',
+        'major_radius': 20.0,
+        'minor_radius': 5.0,
+        'rotation': 0.0,
+        'construction': false,
+      };
+      freshBackend.lines['ea-1-major-line'] = {
+        'id': 'ea-1-major-line',
+        'start_point_id': 'center',
+        'end_point_id': 'major',
+        'length': 20.0,
+        'construction': true,
+      };
+      freshBackend.lines['ea-1-minor-line'] = {
+        'id': 'ea-1-minor-line',
+        'start_point_id': 'center',
+        'end_point_id': 'minor',
+        'length': 5.0,
+        'construction': true,
+      };
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-bbox-1');
+      return freshController;
+    }
+
+    test(
+        'bug fix (on-device feedback: "the zoom level feels clamped, can\'t zoom out beyond a '
+        'certain level" after drawing an ellipse): an EllipseArc-only sketch is bounded by its own '
+        'majorRadius square, not just its own defining Points - the origin Point alone (0,0) would '
+        'otherwise undersize Zoom to Fit for a sketch whose only real content is an EllipseArc far '
+        'from the origin\'s own immediate neighbourhood', () async {
+      final freshController = await adoptedControllerWithEllipseArc();
+
+      final box = freshController.geometryBoundingBox;
+
+      expect(box, isNotNull);
+      // Conservative majorRadius-square around the arc's own centre (0,0),
+      // radius 20 - covers every Point already (start/major both sit
+      // exactly on that square's own edge), but the point-only bound would
+      // still have found them; this is really guarding against a *rotated*
+      // partial ellipse whose curve bulges beyond its own start/end Points'
+      // own straight-line extent, which the square catches and a plain
+      // per-Point bound would not.
+      expect(box!.left, closeTo(-20.0, 1e-9));
+      expect(box.right, closeTo(20.0, 1e-9));
+      expect(box.top, closeTo(-20.0, 1e-9));
+      expect(box.bottom, closeTo(20.0, 1e-9));
     });
   });
 }

@@ -325,6 +325,76 @@ int _addToSolver(ConstraintDto c, SolverBuilder b, LineEndpoints lineEndpoints) 
     final radiusLine = b.lineSegment(center, b.point2d(c.radiusPointId));
     return b.equalLength(pointLine, radiusLine);
   }
+  if (c is PointOnEllipseConstraintDto) {
+    // Mirrors constraints.py's PointOnEllipseConstraint exactly - the
+    // Trammel of Archimedes construction (see that class's own doc comment
+    // for the full derivation/empirical verification): two solver-internal
+    // auxiliary points (M on the centre->major line, N on the centre->minor
+    // line), tied to the target Point via equalLength against the Ellipse's
+    // own *live* major/minor radius lines (never a baked-in snapshot value),
+    // with the target collinear with M and N.
+    final target = b.point2d(c.pointId);
+    final center = b.point2d(c.centerPointId);
+    final majorPoint = b.point2d(c.majorPointId);
+    final minorPoint = b.point2d(c.minorPointId);
+
+    final majorLine = b.lineSegment(center, majorPoint);
+    final minorLine = b.lineSegment(center, minorPoint);
+
+    // M/N seeded at their own true trammel-rod position - on the major/
+    // minor axis respectively, at distance major_radius+minor_radius from
+    // centre (the rod's own fixed length L), at whichever parametric angle
+    // `target`'s own *current* position is nearest. Bug fix (on-device
+    // feedback: "the elliptical arc is not as the user draws it... solver
+    // changes the shape after drawing") - mirrors constraints.py's
+    // identical fix: the previous seed (majorPoint's/minorPoint's own
+    // literal position, at distance major_radius/minor_radius - the WRONG
+    // distance for M/N) started every solve with a nonzero residual on the
+    // equalLength ties below, even when `target` was already placed
+    // exactly on the curve - and since nothing else pins a freshly-drawn
+    // EllipseArc's own centre/rotation, that residual got absorbed as a
+    // visible rigid shift of the whole arc on its very first local solve.
+    final (cx, cy) = b.seedXY(c.centerPointId);
+    final (majorX, majorY) = b.seedXY(c.majorPointId);
+    final (minorX, minorY) = b.seedXY(c.minorPointId);
+    final (targetX, targetY) = b.seedXY(c.pointId);
+    final majorRadius = math.sqrt(math.pow(majorX - cx, 2) + math.pow(majorY - cy, 2));
+    final minorRadius = math.sqrt(math.pow(minorX - cx, 2) + math.pow(minorY - cy, 2));
+    final int trammelMajor;
+    final int trammelMinor;
+    if (majorRadius > 1e-9 && minorRadius > 1e-9) {
+      final majorDirX = (majorX - cx) / majorRadius, majorDirY = (majorY - cy) / majorRadius;
+      final minorDirX = (minorX - cx) / minorRadius, minorDirY = (minorY - cy) / minorRadius;
+      final u = (targetX - cx) * majorDirX + (targetY - cy) * majorDirY;
+      final v = (targetX - cx) * minorDirX + (targetY - cy) * minorDirY;
+      final angle = math.atan2(v / minorRadius, u / majorRadius);
+      final rodLength = majorRadius + minorRadius;
+      final majorSeedDist = rodLength * math.cos(angle);
+      final minorSeedDist = rodLength * math.sin(angle);
+      trammelMajor = b.ephemeralPoint2dAt(cx + majorSeedDist * majorDirX, cy + majorSeedDist * majorDirY);
+      trammelMinor = b.ephemeralPoint2dAt(cx + minorSeedDist * minorDirX, cy + minorSeedDist * minorDirY);
+    } else {
+      // Degenerate (zero-radius) axis, only ever transient mid-drag - falls
+      // back to the old seed rather than dividing by zero.
+      trammelMajor = b.ephemeralPoint2d(c.majorPointId);
+      trammelMinor = b.ephemeralPoint2d(c.minorPointId);
+    }
+    b.pointOnLine(trammelMajor, majorLine);
+    b.pointOnLine(trammelMinor, minorLine);
+
+    final majorSideLine = b.lineSegment(trammelMinor, target);
+    final minorSideLine = b.lineSegment(trammelMajor, target);
+    // |N - target| = major_radius, |M - target| = minor_radius - see
+    // constraints.py's PointOnEllipseConstraint doc comment for why these
+    // two are swapped relative to which axis each auxiliary point slides
+    // on.
+    final handle = b.equalLength(majorSideLine, majorLine);
+    b.equalLength(minorSideLine, minorLine);
+
+    final trammelLine = b.lineSegment(trammelMajor, trammelMinor);
+    b.pointOnLine(target, trammelLine);
+    return handle;
+  }
   if (c is FixedConstraintDto) {
     // Not a real py-slvs call here - FixedConstraint's own pinning is
     // achieved by folding its Point ids into solveSketchLocally's

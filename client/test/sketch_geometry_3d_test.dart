@@ -302,6 +302,68 @@ void main() {
       expect(polygon[quarterIndex].y, closeTo(5, 1e-6));
     });
 
+    test('resolves an EllipseArc into an open polyline using its own parametric start/end angle', () {
+      final ellipseArc = EllipseArcDto(
+        id: 'ea1',
+        centerPointId: 'p1',
+        majorPointId: 'p2',
+        minorPointId: 'unused-1',
+        startPointId: 'p2',
+        endPointId: 'p3',
+        majorAxisLineId: 'unused-2',
+        minorAxisLineId: 'unused-3',
+        majorRadius: 10,
+        minorRadius: 5,
+        rotation: 0,
+      );
+      final geometry = sketchGeometry3DFrom(
+        basis: SketchPlaneBasis.fixed(ReferencePlaneKind.xy),
+        points: points,
+        lines: const [],
+        circles: const [],
+        ellipseArcs: [ellipseArc],
+      );
+
+      expect(geometry.ellipseArcPolylines, hasLength(1));
+      expect(geometry.ellipseArcIds, ['ea1']);
+      final polyline = geometry.ellipseArcPolylines.single;
+      // Starts at the major axis (10, 0) - the same 0 local angle
+      // [EllipseDto]'s own test above starts from - and sweeps CCW a
+      // quarter turn to (0, 5), the minor-axis point at this shape's own
+      // minorRadius (5), not p3's literal (0, 10) - local angle only
+      // depends on p3's direction from centre, not its exact distance.
+      expect(polyline.first.x, closeTo(10, 1e-6));
+      expect(polyline.first.y, closeTo(0, 1e-6));
+      expect(polyline.last.x, closeTo(0, 1e-6));
+      expect(polyline.last.y, closeTo(5, 1e-6));
+    });
+
+    test('an EllipseArc referencing a missing point is skipped, not thrown', () {
+      final ellipseArc = EllipseArcDto(
+        id: 'ea1',
+        centerPointId: 'p1',
+        majorPointId: 'p2',
+        minorPointId: 'unused-1',
+        startPointId: 'missing',
+        endPointId: 'p3',
+        majorAxisLineId: 'unused-2',
+        minorAxisLineId: 'unused-3',
+        majorRadius: 10,
+        minorRadius: 5,
+        rotation: 0,
+      );
+      final geometry = sketchGeometry3DFrom(
+        basis: SketchPlaneBasis.fixed(ReferencePlaneKind.xy),
+        points: points,
+        lines: const [],
+        circles: const [],
+        ellipseArcs: [ellipseArc],
+      );
+
+      expect(geometry.ellipseArcPolylines, isEmpty);
+      expect(geometry.ellipseArcIds, isEmpty);
+    });
+
     test('resolves a Spline into a world-space polyline through its cubic Bezier segments', () {
       final splinePoints = [
         ...points,
@@ -386,7 +448,7 @@ void main() {
       final circles = <CircleDto>[];
       final arcs = <ArcDto>[];
 
-      final (rp, rl, rc, ra) = expandPatternMirrorDtos(
+      final (rp, rl, rc, ra, _, _) = expandPatternMirrorDtos(
         points: points,
         lines: lines,
         circles: circles,
@@ -409,7 +471,7 @@ void main() {
       ];
       final lines = [LineDto(id: 'l0', startPointId: 'p0', endPointId: 'p1', length: 5)];
 
-      final (mergedPoints, mergedLines, mergedCircles, mergedArcs) = expandPatternMirrorDtos(
+      final (mergedPoints, mergedLines, mergedCircles, mergedArcs, _, _) = expandPatternMirrorDtos(
         points: points,
         lines: lines,
         circles: const [],
@@ -445,7 +507,7 @@ void main() {
       ];
       final circles = [CircleDto(id: 'circ0', centerPointId: 'c0', radiusPointId: 'r0', radius: 3)];
 
-      final (mergedPoints, _, mergedCircles, _) = expandPatternMirrorDtos(
+      final (mergedPoints, _, mergedCircles, _, _, _) = expandPatternMirrorDtos(
         points: points,
         lines: const [],
         circles: circles,
@@ -469,6 +531,104 @@ void main() {
       expect((center.x, center.y), (0.0, 4.0));
     });
 
+    test('an Ellipse Pattern source produces a derived Ellipse DTO with the same radii', () {
+      final points = [
+        PointDto(id: 'c0', x: 0, y: 0),
+        PointDto(id: 'maj0', x: 4, y: 0),
+        PointDto(id: 'majneg0', x: -4, y: 0),
+        PointDto(id: 'min0', x: 0, y: 2),
+        PointDto(id: 'minneg0', x: 0, y: -2),
+      ];
+      final ellipses = [
+        EllipseDto(
+          id: 'e0',
+          centerPointId: 'c0',
+          majorPointId: 'maj0',
+          majorPointNegId: 'majneg0',
+          minorPointId: 'min0',
+          minorPointNegId: 'minneg0',
+          majorAxisLineId: 'unused-1',
+          minorAxisLineId: 'unused-2',
+          majorRadius: 4,
+          minorRadius: 2,
+          rotation: 0,
+        ),
+      ];
+
+      final (mergedPoints, _, _, _, mergedEllipses, _) = expandPatternMirrorDtos(
+        points: points,
+        lines: const [],
+        circles: const [],
+        arcs: const [],
+        ellipses: ellipses,
+        patternInstances: [
+          SketchPatternInstanceDto(
+            id: 'pat2',
+            sourceEntityIds: ['e0'],
+            direction1: const SketchPatternDirectionDto.fixedAxis('x'),
+            count1: 2,
+            spacing1: 10.0,
+          ),
+        ],
+        mirrorInstances: const [],
+      );
+
+      expect(mergedEllipses.map((e) => e.id), ['e0', 'pat2#1#e0']);
+      final derived = mergedEllipses.last;
+      expect(derived.majorRadius, closeTo(4.0, 1e-9));
+      expect(derived.minorRadius, closeTo(2.0, 1e-9));
+      final center = mergedPoints.firstWhere((p) => p.id == derived.centerPointId);
+      expect((center.x, center.y), (10.0, 0.0));
+    });
+
+    test('an EllipseArc Mirror source swaps endpoints to preserve the visually-correct CCW arc', () {
+      final points = [
+        PointDto(id: 'mirrorA', x: 0, y: -5),
+        PointDto(id: 'mirrorB', x: 0, y: 5),
+        PointDto(id: 'c0', x: 0, y: 0),
+        PointDto(id: 'maj0', x: 2, y: 0),
+        PointDto(id: 'min0', x: 0, y: 1),
+        PointDto(id: 'start0', x: 2, y: 0),
+        PointDto(id: 'end0', x: 0, y: 1),
+      ];
+      final lines = [LineDto(id: 'mirrorLine', startPointId: 'mirrorA', endPointId: 'mirrorB', length: 10)];
+      final ellipseArcs = [
+        EllipseArcDto(
+          id: 'ea0',
+          centerPointId: 'c0',
+          majorPointId: 'maj0',
+          minorPointId: 'min0',
+          startPointId: 'start0',
+          endPointId: 'end0',
+          majorAxisLineId: 'unused-1',
+          minorAxisLineId: 'unused-2',
+          majorRadius: 2,
+          minorRadius: 1,
+          rotation: 0,
+        ),
+      ];
+
+      final (mergedPoints, _, _, _, _, mergedEllipseArcs) = expandPatternMirrorDtos(
+        points: points,
+        lines: lines,
+        circles: const [],
+        arcs: const [],
+        ellipseArcs: ellipseArcs,
+        patternInstances: const [],
+        mirrorInstances: [
+          SketchMirrorInstanceDto(id: 'mir1', sourceEntityIds: ['ea0'], mirrorLineId: 'mirrorLine'),
+        ],
+      );
+
+      final mirrored = mergedEllipseArcs.firstWhere((e) => e.id != 'ea0');
+      // The source's own end Point (0, 1) sits exactly on the mirror axis
+      // (x=0), so it's welded back onto its own real id, unmoved - and,
+      // per the swap, becomes the *mirrored* curve's own start.
+      expect(mirrored.startPointId, 'end0');
+      final mirroredEnd = mergedPoints.firstWhere((p) => p.id == mirrored.endPointId);
+      expect((mirroredEnd.x, mirroredEnd.y), (-2.0, 0.0));
+    });
+
     test('a Mirror instance welds an axis-crossing endpoint back onto its own real Point id', () {
       // A Line straddling the mirror axis (x=0): p0 at x=-2 (off-axis),
       // p1 at x=0 (on-axis) - reflecting across the Y axis (mirrorLine from
@@ -484,7 +644,7 @@ void main() {
         LineDto(id: 'axisLine', startPointId: 'axisA', endPointId: 'axisB', length: 2),
       ];
 
-      final (mergedPoints, mergedLines, _, _) = expandPatternMirrorDtos(
+      final (mergedPoints, mergedLines, _, _, _, _) = expandPatternMirrorDtos(
         points: points,
         lines: lines,
         circles: const [],

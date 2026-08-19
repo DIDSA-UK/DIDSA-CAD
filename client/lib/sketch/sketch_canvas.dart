@@ -2400,6 +2400,41 @@ class _SketchPainter extends CustomPainter {
     return (-startAngle, -sweep);
   }
 
+  /// [_arcScreenAngles]'s elliptical analogue: (start, end) are converted
+  /// to the ellipse's own *parametric* angle (matching the backend's
+  /// `EllipseArc.local_angle` and [SketchController._ellipseParametricAngle]
+  /// - not a plain polar `atan2`, since the caller has already rotated the
+  /// canvas into the ellipse's own local frame via `canvas.rotate(-rotation)`
+  /// before drawing the returned angles against a plain axis-aligned oval)
+  /// before the same negate-for-screen-Y-flip [_arcScreenAngles] itself
+  /// applies.
+  (double, double) _ellipseArcScreenAngles(
+    double centerX,
+    double centerY,
+    double majorX,
+    double majorY,
+    double minorRadius,
+    double startX,
+    double startY,
+    double endX,
+    double endY,
+  ) {
+    final majorRadius = math.sqrt(math.pow(majorX - centerX, 2) + math.pow(majorY - centerY, 2));
+    final rotation = math.atan2(majorY - centerY, majorX - centerX);
+    double localAngle(double x, double y) {
+      final dx = x - centerX, dy = y - centerY;
+      final cosR = math.cos(-rotation), sinR = math.sin(-rotation);
+      final lx = dx * cosR - dy * sinR;
+      final ly = dx * sinR + dy * cosR;
+      return math.atan2(ly / minorRadius, lx / majorRadius);
+    }
+
+    final startAngle = localAngle(startX, startY);
+    final endAngle = localAngle(endX, endY);
+    final sweep = normalizeSketchAngle(endAngle - startAngle);
+    return (-startAngle, -sweep);
+  }
+
   /// Stage 12 item 10: renders every Constraint in [SketchController.constraints]
   /// as a render-only overlay - there is no client-side UI to create or edit
   /// a Distance/Angle value yet (the backend has no PATCH endpoint for
@@ -3412,6 +3447,28 @@ class _SketchPainter extends CustomPainter {
         canvas.rotate(-rotation);
         _drawDashedOval(canvas, ovalRect, paint);
         canvas.restore();
+      case EllipseArcGhost g:
+        final center = transform.sketchToScreen(g.centerX, g.centerY);
+        final major = transform.sketchToScreen(g.majorX, g.majorY);
+        final majorRadiusPixels = (major - center).distance;
+        final minorRadiusPixels = g.minorRadius * transform.pixelsPerUnit;
+        final rotation = math.atan2(g.majorY - g.centerY, g.majorX - g.centerX);
+        final ovalRect = Rect.fromCenter(
+          center: Offset.zero,
+          width: majorRadiusPixels * 2,
+          height: minorRadiusPixels * 2,
+        );
+        // g.startAngle/g.endAngle are already the ellipse's own parametric
+        // angles (see [EllipseArcGhost]'s own doc comment) - just the same
+        // negate-for-screen-Y-flip [_arcScreenAngles]/
+        // [_ellipseArcScreenAngles] apply, not a full re-derivation from
+        // (x, y) positions.
+        final sweep = normalizeSketchAngle(g.endAngle - g.startAngle);
+        canvas.save();
+        canvas.translate(center.dx, center.dy);
+        canvas.rotate(-rotation);
+        _drawDashedArc(canvas, ovalRect, -g.startAngle, -sweep, paint);
+        canvas.restore();
       case SplineGhost g:
         // See SplineGhost's own doc comment / catmullRomPolyline's own doc
         // comment: a smooth approximation of the eventual curve, not the
@@ -4079,6 +4136,78 @@ class _SketchPainter extends CustomPainter {
         _drawDashedOval(canvas, ovalRect, ellipsePaint);
       } else {
         canvas.drawOval(ovalRect, ellipsePaint);
+      }
+      canvas.restore();
+    }
+
+    for (final ellipseArc in controller.ellipseArcs.values) {
+      final center = controller.points[ellipseArc.centerPointId];
+      final major = controller.points[ellipseArc.majorPointId];
+      final minorPoint = controller.points[ellipseArc.minorPointId];
+      final start = controller.points[ellipseArc.startPointId];
+      final end = controller.points[ellipseArc.endPointId];
+      if (center == null || major == null || minorPoint == null || start == null || end == null) continue;
+      final majorRadius = math.sqrt(math.pow(major.x - center.x, 2) + math.pow(major.y - center.y, 2));
+      final minorRadius = math.sqrt(math.pow(minorPoint.x - center.x, 2) + math.pow(minorPoint.y - center.y, 2));
+      if (majorRadius < 1e-9 || minorRadius < 1e-9) continue;
+      final rotation = math.atan2(major.y - center.y, major.x - center.x);
+      final ellipseArcIsSelected = isSelected(SelectionKind.ellipseArc, ellipseArc.id);
+      final isHovered = hovered?.kind == SelectionKind.ellipseArc && hovered!.id == ellipseArc.id;
+      final ellipseArcIsOverConstrained =
+          controller.rigidity.isSegmentOverConstrained(ellipseArc.centerPointId, ellipseArc.majorPointId) ||
+              controller.rigidity.isSegmentOverConstrained(ellipseArc.centerPointId, ellipseArc.minorPointId) ||
+              controller.rigidity.isSegmentOverConstrained(ellipseArc.centerPointId, ellipseArc.startPointId) ||
+              controller.rigidity.isSegmentOverConstrained(ellipseArc.centerPointId, ellipseArc.endPointId) ||
+              controller.isPointForcedOverConstrained(ellipseArc.centerPointId) ||
+              controller.isPointForcedOverConstrained(ellipseArc.majorPointId) ||
+              controller.isPointForcedOverConstrained(ellipseArc.minorPointId) ||
+              controller.isPointForcedOverConstrained(ellipseArc.startPointId) ||
+              controller.isPointForcedOverConstrained(ellipseArc.endPointId);
+      final ellipseArcIsFullyConstrained = controller.isFullyConstrained ||
+          (controller.rigidity.isSegmentFullyConstrained(ellipseArc.centerPointId, ellipseArc.majorPointId) &&
+              controller.rigidity.isSegmentFullyConstrained(ellipseArc.centerPointId, ellipseArc.minorPointId) &&
+              controller.rigidity.isSegmentFullyConstrained(ellipseArc.centerPointId, ellipseArc.startPointId) &&
+              controller.rigidity.isSegmentFullyConstrained(ellipseArc.centerPointId, ellipseArc.endPointId));
+      final ellipseArcPaint = Paint()
+        ..color = ellipseArcIsSelected
+            ? _selectedColor
+            : isHovered
+                ? _hoverColor
+                : ellipseArcIsOverConstrained
+                    ? _overConstrainedColor
+                    : ellipseArc.construction
+                        ? _constructionColor
+                        : ellipseArcIsFullyConstrained
+                            ? _fullyConstrainedColor
+                            : _unconstrainedColor
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = ellipseArcIsSelected || isHovered ? _lineStrokeWidthEmphasis : _lineStrokeWidth;
+      final centerScreen = transform.sketchToScreen(center.x, center.y);
+      final majorRadiusPixels = majorRadius * transform.pixelsPerUnit;
+      final minorRadiusPixels = minorRadius * transform.pixelsPerUnit;
+      final ovalRect = Rect.fromCenter(
+        center: Offset.zero,
+        width: majorRadiusPixels * 2,
+        height: minorRadiusPixels * 2,
+      );
+      final (screenStartAngle, screenSweepAngle) = _ellipseArcScreenAngles(
+        center.x,
+        center.y,
+        major.x,
+        major.y,
+        minorRadius,
+        start.x,
+        start.y,
+        end.x,
+        end.y,
+      );
+      canvas.save();
+      canvas.translate(centerScreen.dx, centerScreen.dy);
+      canvas.rotate(-rotation);
+      if (ellipseArc.construction) {
+        _drawDashedArc(canvas, ovalRect, screenStartAngle, screenSweepAngle, ellipseArcPaint);
+      } else {
+        canvas.drawArc(ovalRect, screenStartAngle, screenSweepAngle, false, ellipseArcPaint);
       }
       canvas.restore();
     }

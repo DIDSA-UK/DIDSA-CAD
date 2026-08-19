@@ -252,6 +252,15 @@ class SketchGeometry3D {
   final List<String> arcIds;
   final List<List<vm.Vector3>> ellipsePolygons;
   final List<String> ellipseIds;
+
+  /// EllipseArc's own [arcPolylines]-shaped sibling - a partial ellipse
+  /// tessellated as an open polyline (no closing point, mirroring
+  /// [arcPolylines]'s own "already open" note), swept in the ellipse's own
+  /// parametric frame (see `SketchController._ellipseParametricAngle`) from
+  /// its start Point to its end Point, CCW - the same convention
+  /// [sketchGeometry3DFrom] uses to build it.
+  final List<List<vm.Vector3>> ellipseArcPolylines;
+  final List<String> ellipseArcIds;
   final List<List<vm.Vector3>> splinePolylines;
   final List<String> splineIds;
 
@@ -344,6 +353,8 @@ class SketchGeometry3D {
     this.arcIds = const [],
     this.ellipsePolygons = const [],
     this.ellipseIds = const [],
+    this.ellipseArcPolylines = const [],
+    this.ellipseArcIds = const [],
     this.splinePolylines = const [],
     this.splineIds = const [],
     this.textPolygons = const [],
@@ -370,6 +381,7 @@ class SketchGeometry3D {
       circlePolygons.isEmpty &&
       arcPolylines.isEmpty &&
       ellipsePolygons.isEmpty &&
+      ellipseArcPolylines.isEmpty &&
       splinePolylines.isEmpty &&
       textPolygons.isEmpty;
 }
@@ -414,6 +426,8 @@ bool sketchGeometry3DEquals(SketchGeometry3D a, SketchGeometry3D b) {
       listEquals(a.arcIds, b.arcIds) &&
       nestedListEquals(a.ellipsePolygons, b.ellipsePolygons) &&
       listEquals(a.ellipseIds, b.ellipseIds) &&
+      nestedListEquals(a.ellipseArcPolylines, b.ellipseArcPolylines) &&
+      listEquals(a.ellipseArcIds, b.ellipseArcIds) &&
       nestedListEquals(a.splinePolylines, b.splinePolylines) &&
       listEquals(a.splineIds, b.splineIds) &&
       nestedListEquals(a.textPolygons, b.textPolygons) &&
@@ -438,20 +452,26 @@ bool sketchGeometry3DEquals(SketchGeometry3D a, SketchGeometry3D b) {
 /// common case - no reason to allocate new lists for every Sketch that has
 /// no Pattern/Mirror at all.
 ///
-/// Pattern/Mirror never produces a synthetic Ellipse or Spline (see
-/// `PatternMirrorEntityKind` - only Line/Circle/Arc are ever a source), so
-/// [ellipses]/[splines] pass straight through untouched; callers still
-/// merge them into [sketchGeometry3DFrom] directly.
-(List<PointDto>, List<LineDto>, List<CircleDto>, List<ArcDto>) expandPatternMirrorDtos({
+/// Ellipse/EllipseArc are valid Pattern/Mirror sources too (client-side:
+/// `pattern_mirror_expansion.dart`'s `PatternMirrorEntityKind.ellipse`/
+/// `.ellipseArc`) - [ellipses]/[ellipseArcs] are fed into the expansion the
+/// same way [lines]/[circles]/[arcs] are, and the returned lists carry
+/// their own derived copies too; [splines] alone passes straight through
+/// untouched (never a valid source), and callers still merge it into
+/// [sketchGeometry3DFrom] directly.
+(List<PointDto>, List<LineDto>, List<CircleDto>, List<ArcDto>, List<EllipseDto>, List<EllipseArcDto>)
+    expandPatternMirrorDtos({
   required List<PointDto> points,
   required List<LineDto> lines,
   required List<CircleDto> circles,
   required List<ArcDto> arcs,
+  List<EllipseDto> ellipses = const [],
+  List<EllipseArcDto> ellipseArcs = const [],
   required List<SketchPatternInstanceDto> patternInstances,
   required List<SketchMirrorInstanceDto> mirrorInstances,
 }) {
   if (patternInstances.isEmpty && mirrorInstances.isEmpty) {
-    return (points, lines, circles, arcs);
+    return (points, lines, circles, arcs, ellipses, ellipseArcs);
   }
 
   final pointsMap = <String, (double, double)>{for (final p in points) p.id: (p.x, p.y)};
@@ -480,6 +500,29 @@ bool sketchGeometry3DEquals(SketchGeometry3D a, SketchGeometry3D b) {
         centerPointId: arc.centerPointId,
         startPointId: arc.startPointId,
         endPointId: arc.endPointId,
+      ),
+    for (final ellipse in ellipses)
+      ellipse.id: PatternMirrorSourceEntity(
+        id: ellipse.id,
+        kind: PatternMirrorEntityKind.ellipse,
+        construction: ellipse.construction,
+        startPointId: '',
+        majorPointId: ellipse.majorPointId,
+        minorPointId: ellipse.minorPointId,
+        majorPointNegId: ellipse.majorPointNegId,
+        minorPointNegId: ellipse.minorPointNegId,
+        centerPointId: ellipse.centerPointId,
+      ),
+    for (final ellipseArc in ellipseArcs)
+      ellipseArc.id: PatternMirrorSourceEntity(
+        id: ellipseArc.id,
+        kind: PatternMirrorEntityKind.ellipseArc,
+        construction: ellipseArc.construction,
+        centerPointId: ellipseArc.centerPointId,
+        startPointId: ellipseArc.startPointId,
+        endPointId: ellipseArc.endPointId,
+        majorPointId: ellipseArc.majorPointId,
+        minorPointId: ellipseArc.minorPointId,
       ),
   };
 
@@ -510,7 +553,7 @@ bool sketchGeometry3DEquals(SketchGeometry3D a, SketchGeometry3D b) {
         PatternMirrorMirrorInstance(id: dto.id, sourceEntityIds: dto.sourceEntityIds, mirrorLineId: dto.mirrorLineId),
     ],
   );
-  if (expansion.isEmpty) return (points, lines, circles, arcs);
+  if (expansion.isEmpty) return (points, lines, circles, arcs, ellipses, ellipseArcs);
 
   (double, double)? resolvePoint(String id) => pointsMap[id] ?? expansion.points[id];
 
@@ -521,6 +564,8 @@ bool sketchGeometry3DEquals(SketchGeometry3D a, SketchGeometry3D b) {
   final mergedLines = [...lines];
   final mergedCircles = [...circles];
   final mergedArcs = [...arcs];
+  final mergedEllipses = [...ellipses];
+  final mergedEllipseArcs = [...ellipseArcs];
 
   for (final entity in expansion.entities) {
     switch (entity.kind) {
@@ -564,10 +609,52 @@ bool sketchGeometry3DEquals(SketchGeometry3D a, SketchGeometry3D b) {
           radius: math.sqrt(dx * dx + dy * dy),
           construction: entity.construction,
         ));
+      case PatternMirrorEntityKind.ellipse:
+        final center = resolvePoint(entity.centerPointId!);
+        final major = resolvePoint(entity.majorPointId!);
+        final minor = resolvePoint(entity.minorPointId!);
+        if (center == null || major == null || minor == null) continue;
+        final majorDx = major.$1 - center.$1, majorDy = major.$2 - center.$2;
+        final minorDx = minor.$1 - center.$1, minorDy = minor.$2 - center.$2;
+        mergedEllipses.add(EllipseDto(
+          id: entity.id,
+          centerPointId: entity.centerPointId!,
+          majorPointId: entity.majorPointId!,
+          majorPointNegId: entity.majorPointNegId!,
+          minorPointId: entity.minorPointId!,
+          minorPointNegId: entity.minorPointNegId!,
+          majorAxisLineId: '',
+          minorAxisLineId: '',
+          majorRadius: math.sqrt(majorDx * majorDx + majorDy * majorDy),
+          minorRadius: math.sqrt(minorDx * minorDx + minorDy * minorDy),
+          rotation: math.atan2(majorDy, majorDx),
+          construction: entity.construction,
+        ));
+      case PatternMirrorEntityKind.ellipseArc:
+        final center = resolvePoint(entity.centerPointId!);
+        final major = resolvePoint(entity.majorPointId!);
+        final minor = resolvePoint(entity.minorPointId!);
+        if (center == null || major == null || minor == null) continue;
+        final majorDx = major.$1 - center.$1, majorDy = major.$2 - center.$2;
+        final minorDx = minor.$1 - center.$1, minorDy = minor.$2 - center.$2;
+        mergedEllipseArcs.add(EllipseArcDto(
+          id: entity.id,
+          centerPointId: entity.centerPointId!,
+          majorPointId: entity.majorPointId!,
+          minorPointId: entity.minorPointId!,
+          startPointId: entity.startPointId,
+          endPointId: entity.endPointId,
+          majorAxisLineId: '',
+          minorAxisLineId: '',
+          majorRadius: math.sqrt(majorDx * majorDx + majorDy * majorDy),
+          minorRadius: math.sqrt(minorDx * minorDx + minorDy * minorDy),
+          rotation: math.atan2(majorDy, majorDx),
+          construction: entity.construction,
+        ));
     }
   }
 
-  return (mergedPoints, mergedLines, mergedCircles, mergedArcs);
+  return (mergedPoints, mergedLines, mergedCircles, mergedArcs, mergedEllipses, mergedEllipseArcs);
 }
 
 /// Builds [SketchGeometry3D] from a Sketch's raw DTOs - resolving each
@@ -593,6 +680,7 @@ SketchGeometry3D sketchGeometry3DFrom({
   required List<CircleDto> circles,
   List<ArcDto> arcs = const [],
   List<EllipseDto> ellipses = const [],
+  List<EllipseArcDto> ellipseArcs = const [],
   List<SplineDto> splines = const [],
   List<TextDto> texts = const [],
   // 3D-viewport Text tool round: already-absolute (anchor + rotation
@@ -702,6 +790,48 @@ SketchGeometry3D sketchGeometry3DFrom({
     ellipsePolygons.add(polygon);
     ellipseIds.add(ellipse.id);
     if (ellipse.construction) constructionIds.add(ellipse.id);
+  }
+
+  // EllipseArc: [arcPolylines]'s open-sweep shape, laid onto [ellipsePolygons]'s
+  // rotated-axis math - the ellipse's own parametric angle (0 at the major
+  // axis, CCW; matches the backend's `EllipseArc.local_angle` and
+  // `SketchController._ellipseParametricAngle`), not a plain polar `atan2`,
+  // for the same reason [_ellipseParametricAngle]'s own doc comment gives:
+  // off the 4 axis points, the two differ.
+  final ellipseArcPolylines = <List<vm.Vector3>>[];
+  final ellipseArcIds = <String>[];
+  for (final ellipseArc in ellipseArcs) {
+    final center = pointsById[ellipseArc.centerPointId];
+    final start = pointsById[ellipseArc.startPointId];
+    final end = pointsById[ellipseArc.endPointId];
+    if (center == null || start == null || end == null) continue;
+    final majorRadius = ellipseArc.majorRadius;
+    final minorRadius = ellipseArc.minorRadius;
+    if (majorRadius <= 0 || minorRadius <= 0) continue;
+    final cosR = math.cos(ellipseArc.rotation);
+    final sinR = math.sin(ellipseArc.rotation);
+    double localAngle(PointDto p) {
+      final dx = p.x - center.x, dy = p.y - center.y;
+      final u = dx * cosR + dy * sinR;
+      final v = -dx * sinR + dy * cosR;
+      return math.atan2(v / minorRadius, u / majorRadius);
+    }
+
+    final startAngle = localAngle(start);
+    final endAngle = localAngle(end);
+    final sweep = _normalizeAngle(endAngle - startAngle);
+    final polyline = <vm.Vector3>[];
+    for (var i = 0; i <= arcSegments3D; i++) {
+      final t = startAngle + sweep * i / arcSegments3D;
+      final localX = majorRadius * math.cos(t);
+      final localY = minorRadius * math.sin(t);
+      final x = center.x + localX * cosR - localY * sinR;
+      final y = center.y + localX * sinR + localY * cosR;
+      polyline.add(sketchPointToWorld(basis, x, y));
+    }
+    ellipseArcPolylines.add(polyline);
+    ellipseArcIds.add(ellipseArc.id);
+    if (ellipseArc.construction) constructionIds.add(ellipseArc.id);
   }
 
   final splinePolylines = <List<vm.Vector3>>[];
@@ -814,6 +944,8 @@ SketchGeometry3D sketchGeometry3DFrom({
     arcIds: arcIds,
     ellipsePolygons: ellipsePolygons,
     ellipseIds: ellipseIds,
+    ellipseArcPolylines: ellipseArcPolylines,
+    ellipseArcIds: ellipseArcIds,
     splinePolylines: splinePolylines,
     splineIds: splineIds,
     textPolygons: textPolygons,
@@ -1115,6 +1247,8 @@ Node buildSketchGeometryNode(
       ...outlinePrimitivesFor(geometry.arcIds[i], geometry.arcPolylines[i]),
     for (var i = 0; i < geometry.ellipsePolygons.length; i++)
       ...outlinePrimitivesFor(geometry.ellipseIds[i], geometry.ellipsePolygons[i]),
+    for (var i = 0; i < geometry.ellipseArcPolylines.length; i++)
+      ...outlinePrimitivesFor(geometry.ellipseArcIds[i], geometry.ellipseArcPolylines[i]),
     for (var i = 0; i < geometry.splinePolylines.length; i++)
       ...outlinePrimitivesFor(geometry.splineIds[i], geometry.splinePolylines[i]),
     // 3D-viewport Text tool round: outline-only, same as every other

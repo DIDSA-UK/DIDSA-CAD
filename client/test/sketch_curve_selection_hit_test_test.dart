@@ -34,6 +34,15 @@ void main() {
     expect(hit.entity.sketchEntityId, 'ellipse-1');
   });
 
+  test('hitTestSketchEllipseArcs finds a hit on an open polyline (was missing entirely before Pattern/Mirror round)', () {
+    final polyline = [vm.Vector3(0, 0, 0), vm.Vector3(1, 0, 0), vm.Vector3(2, 0, 0)];
+    final hit = hitTestSketchEllipseArcs(rayAt(1, 0), viewportSize, 'feature-1', [polyline], ['ellipsearc-1']);
+
+    expect(hit, isNotNull);
+    expect(hit!.entity.kind, SelectionEntityKind.sketchEllipseArc);
+    expect(hit.entity.sketchEntityId, 'ellipsearc-1');
+  });
+
   test('hitTestSketchSplines finds a hit on an open polyline (was missing entirely before P33)', () {
     final polyline = [vm.Vector3(0, 0, 0), vm.Vector3(1, 0, 0)];
     final hit = hitTestSketchSplines(rayAt(0.5, 0), viewportSize, 'feature-1', [polyline], ['spline-1']);
@@ -47,6 +56,7 @@ void main() {
     final polyline = [vm.Vector3(0, 0, 0), vm.Vector3(1, 0, 0)];
     expect(hitTestSketchArcs(rayAt(50, 50), viewportSize, 'f', [polyline], ['a']), isNull);
     expect(hitTestSketchEllipses(rayAt(50, 50), viewportSize, 'f', [polyline], ['e']), isNull);
+    expect(hitTestSketchEllipseArcs(rayAt(50, 50), viewportSize, 'f', [polyline], ['ea']), isNull);
     expect(hitTestSketchSplines(rayAt(50, 50), viewportSize, 'f', [polyline], ['s']), isNull);
   });
 
@@ -104,6 +114,58 @@ void main() {
       bodies: const [],
       sketchGeometries: {'feature-1': geometry},
       filter: SelectionFilterState.defaults.copyWith(sketchArc: false),
+    );
+
+    expect(hit, isNull);
+  });
+
+  test('hitTestBodies picks up an EllipseArc hit when its filter flag is on', () {
+    final geometry = SketchGeometry3D(
+      lineSegments: const [],
+      lineIds: const [],
+      points: const [],
+      pointIds: const [],
+      circlePolygons: const [],
+      circleIds: const [],
+      ellipseArcPolylines: [
+        [vm.Vector3(0, 0, 0), vm.Vector3(1, 0, 0)]
+      ],
+      ellipseArcIds: ['ellipsearc-1'],
+    );
+
+    final hit = hitTestBodies(
+      ray: rayAt(0.5, 0),
+      viewportSize: viewportSize,
+      bodies: const [],
+      sketchGeometries: {'feature-1': geometry},
+      filter: SelectionFilterState.defaults,
+    );
+
+    expect(hit, isNotNull);
+    expect(hit!.entity.kind, SelectionEntityKind.sketchEllipseArc);
+    expect(hit.entity.sketchEntityId, 'ellipsearc-1');
+  });
+
+  test('hitTestBodies skips EllipseArc hits when sketchEllipseArc filter is off', () {
+    final geometry = SketchGeometry3D(
+      lineSegments: const [],
+      lineIds: const [],
+      points: const [],
+      pointIds: const [],
+      circlePolygons: const [],
+      circleIds: const [],
+      ellipseArcPolylines: [
+        [vm.Vector3(0, 0, 0), vm.Vector3(1, 0, 0)]
+      ],
+      ellipseArcIds: ['ellipsearc-1'],
+    );
+
+    final hit = hitTestBodies(
+      ray: rayAt(0.5, 0),
+      viewportSize: viewportSize,
+      bodies: const [],
+      sketchGeometries: {'feature-1': geometry},
+      filter: SelectionFilterState.defaults.copyWith(sketchEllipseArc: false),
     );
 
     expect(hit, isNull);

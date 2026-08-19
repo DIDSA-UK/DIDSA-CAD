@@ -22,6 +22,7 @@ from app.sketch.constraints import (
     PerpendicularConstraint,
     PointLineDistanceConstraint,
     PointOnCircleConstraint,
+    PointOnEllipseConstraint,
     PointOnLineConstraint,
     SplineTangentConstraint,
     TangentConstraint,
@@ -33,6 +34,7 @@ from app.sketch.intersections import (
     circle_vs_circle,
     line_vs_arc,
     line_vs_circle,
+    line_vs_ellipse,
     line_vs_line,
     line_vs_segment,
 )
@@ -354,6 +356,148 @@ class Ellipse(SketchEntity):
         center = points[self.center_point_id]
         major = points[self.major_point_id]
         return math.atan2(major.y - center.y, major.x - center.x)
+
+
+@dataclass
+class EllipseArc(SketchEntity):
+    """A partial ellipse - the elliptical analogue of Arc, mirroring its
+    "center + start/end Points on the curve" shape but layered onto an
+    ellipse's shape (major/minor radius + rotation) instead of a circle's
+    single radius, the same way Ellipse itself layers onto Circle's.
+
+    Five real, independently addressable Points: `center_point_id` plus a
+    `major_point_id`/`minor_point_id` pair defining the ellipse's own
+    shape (each solver-tracked via its own DistanceConstraint to centre,
+    exactly like Ellipse's *positive* axis tips - see that class's own
+    docstring), and a `start_point_id`/`end_point_id` pair marking where
+    the arc begins/ends on that ellipse's curve. Unlike Ellipse, there are
+    no negative/opposite axis tips here - full-diameter construction
+    lines exist there purely so a user can grab either end of an axis on
+    an already-symmetric closed curve; a partial ellipse's own natural
+    drag handles are its start/end Points instead, so that machinery
+    (AtMidpointConstraint pair, 2 extra Points per axis) would be pure
+    unused overhead here. `major_axis_line_id`/`minor_axis_line_id` are
+    real (but `construction=True`) centre-to-tip spoke Lines, existing
+    solely to give `PerpendicularConstraint` (`perpendicular_constraint_id`)
+    something to reference - the same role Ellipse's own full-diameter
+    axis Lines play for its own PerpendicularConstraint, just half the
+    length since there's no opposite tip here to span to.
+
+    `start_point_id`/`end_point_id` are pinned onto the ellipse's own
+    curve by directly reusing `PointOnEllipseConstraint`'s Trammel-of-
+    Archimedes construction as an internal implementation detail
+    (`start_on_ellipse_constraint_id`/`end_on_ellipse_constraint_id`) -
+    the exact same "point coincident to this ellipse's curve" problem
+    `Sketch.add_point_on_ellipse_constraint` already solves, just invoked
+    twice internally instead of once by a caller. Each constraint's own
+    `ellipse_id` is set to *this* EllipseArc's id, not a separate `Ellipse`
+    entity's id - that field is never dereferenced by `add_to_solver`
+    (only `center_point_id`/`major_point_id`/`minor_point_id` are), it
+    exists purely for display/API purposes, so it means "the entity this
+    Point lies on the curve of" in general, not "specifically an Ellipse
+    instance" - same latitude TangentConstraint-style captured-id fields
+    already have elsewhere in this module.
+
+    No stored start/end angle - exactly like Arc's own radius, these are
+    real solver-tracked positions, not stored numbers; `add_ellipse_arc`
+    only uses the angles it's given to compute where to initially place
+    the start/end Points. The arc traced from start to end is always the
+    one going counter-clockwise around centre in the ellipse's own
+    (rotated) parametric frame - the direct elliptical analogue of Arc's
+    own gp_Circ-parametrization convention - see
+    `app.document.extrude.wire_for_profile`'s own EllipseArc branch and
+    the client's rendering/tool code, which must both agree with this.
+
+    Overrides `endpoint_point_ids()` (unlike Ellipse, which never does):
+    an EllipseArc's start/end Points ARE real chain-connection points for
+    closed-loop detection, exactly like Arc's - a Line-and-EllipseArc
+    chain that closes into a loop is a valid profile, detected by the
+    same generic connectivity walk `profile.py` already runs. The centre/
+    major/minor Points are deliberately excluded from that tuple, same as
+    Arc's own centre.
+    """
+
+    id: str
+    center_point_id: str
+    major_point_id: str
+    minor_point_id: str
+    start_point_id: str
+    end_point_id: str
+    major_constraint_id: str
+    minor_constraint_id: str
+    major_axis_line_id: str
+    minor_axis_line_id: str
+    perpendicular_constraint_id: str
+    start_on_ellipse_constraint_id: str
+    end_on_ellipse_constraint_id: str
+
+    @property
+    def type(self) -> str:
+        return "ellipse_arc"
+
+    def endpoint_point_ids(self) -> tuple[str, str]:
+        return (self.start_point_id, self.end_point_id)
+
+    def major_radius(self, points: dict[str, Point]) -> float:
+        center = points[self.center_point_id]
+        major = points[self.major_point_id]
+        return math.hypot(major.x - center.x, major.y - center.y)
+
+    def minor_radius(self, points: dict[str, Point]) -> float:
+        center = points[self.center_point_id]
+        minor = points[self.minor_point_id]
+        return math.hypot(minor.x - center.x, minor.y - center.y)
+
+    def rotation(self, points: dict[str, Point]) -> float:
+        """Same meaning as Ellipse.rotation - the major axis's direction
+        from centre, in radians from the +x axis."""
+        center = points[self.center_point_id]
+        major = points[self.major_point_id]
+        return math.atan2(major.y - center.y, major.x - center.x)
+
+    def local_angle(self, points: dict[str, Point], point_id: str) -> float:
+        """The ellipse's own parametric angle (radians, 0 at the major
+        axis, increasing counter-clockwise in the ellipse's own rotated
+        frame - `x = cx + a*cos(t)*cos(rot) - b*sin(t)*sin(rot)`,
+        `y = cy + a*cos(t)*sin(rot) + b*sin(t)*cos(rot)`) for whichever
+        Point on this ellipse's curve `point_id` names - typically
+        `start_point_id`/`end_point_id`. Not the same as the Point's plain
+        polar angle from centre except exactly on the 4 axis Points -
+        `app.document.extrude.wire_for_profile`'s OCCT trimming and the
+        client's own rendering both need this specific parametric form,
+        not a polar `atan2`, to agree on which of the two possible arcs
+        between two curve Points is "the" arc."""
+        center = points[self.center_point_id]
+        point = points[point_id]
+        rotation = self.rotation(points)
+        major_radius = self.major_radius(points)
+        minor_radius = self.minor_radius(points)
+        dx, dy = point.x - center.x, point.y - center.y
+        ca, sa = math.cos(-rotation), math.sin(-rotation)
+        u = dx * ca - dy * sa
+        v = dx * sa + dy * ca
+        return math.atan2(v / minor_radius, u / major_radius)
+
+
+def _ellipse_local_angle_at(
+    center: tuple[float, float],
+    major_radius: float,
+    minor_radius: float,
+    rotation: float,
+    point: tuple[float, float],
+) -> float:
+    """Free-function twin of [EllipseArc.local_angle], for a raw
+    (center, major_radius, minor_radius, rotation) tuple with no
+    Ellipse/EllipseArc instance yet to hang it off of - used by
+    [Sketch.trim_ellipse], which computes candidate cut angles before any
+    EllipseArc exists (the Ellipse being trimmed is deleted, not converted
+    in place)."""
+    cx, cy = center
+    dx, dy = point[0] - cx, point[1] - cy
+    ca, sa = math.cos(-rotation), math.sin(-rotation)
+    u = dx * ca - dy * sa
+    v = dx * sa + dy * ca
+    return math.atan2(v / minor_radius, u / major_radius)
 
 
 @dataclass
@@ -769,6 +913,7 @@ class SketchEntityType(str, Enum):
     CIRCLE = "circle"
     ARC = "arc"
     ELLIPSE = "ellipse"
+    ELLIPSE_ARC = "ellipse_arc"
     POLYGON = "polygon"
     SLOT = "slot"
     RECTANGLE = "rectangle"
@@ -829,8 +974,9 @@ class SketchPatternDirection:
 @dataclass
 class SketchPatternInstance:
     """Sketcher-roadmap Phase 7 (§2.9 Option 2): a lightweight, non-solved
-    linear pattern of one or more of this same Sketch's own Line/Circle/Arc
-    entities - structurally identical in spirit to the 3D `PatternFeature`
+    linear pattern of one or more of this same Sketch's own Line/Circle/
+    Arc/Ellipse/EllipseArc entities - structurally identical in spirit to
+    the 3D `PatternFeature`
     (`app.document.models`), but pure 2D math with no OCCT/py-slvs
     involvement at all, and never materialized into `Sketch.points`/
     `Sketch.entities` - see `Sketch.expand_pattern_and_mirror_instances`,
@@ -873,7 +1019,8 @@ class SketchPatternInstance:
 class SketchMirrorInstance:
     """Sketcher-roadmap Phase 7 (§2.9 Option 2): `SketchPatternInstance`'s
     mirror-shaped sibling - one reflected copy of one or more of this same
-    Sketch's own Line/Circle/Arc entities across an existing Line
+    Sketch's own Line/Circle/Arc/Ellipse/EllipseArc entities across an
+    existing Line
     (`mirror_line_id`, real or construction - "construction-geometry
     support already exists in the sketcher" per §2.9), reflected across the
     *infinite* line through that Line's two Points, not just its own
@@ -1437,6 +1584,139 @@ class Sketch:
 
     def ellipses(self) -> list[Ellipse]:
         return [entity for entity in self.entities.values() if isinstance(entity, Ellipse)]
+
+    def add_ellipse_arc(
+        self,
+        center_point_id: str,
+        major_point_id: str,
+        minor_radius: float,
+        start_angle: float,
+        end_angle: float,
+        *,
+        construction: bool = False,
+        existing_start_point_id: str | None = None,
+        existing_end_point_id: str | None = None,
+    ) -> EllipseArc:
+        """Add a partial ellipse from an existing centre Point and an
+        existing major-axis Point (together fixing the major radius and
+        rotation, same as add_ellipse's own major-axis Point), a minor
+        radius, and a start/end angle pair - both radians in the ellipse's
+        own *parametric* frame (0 at the major axis, increasing counter-
+        clockwise; see EllipseArc.local_angle) - used only to compute
+        where to place new start/end Points exactly on that ellipse's
+        curve, mirroring add_arc's own end_angle parameter. Like Arc, the
+        angles themselves are never stored - only the Points' own solved
+        positions are the source of truth from here on.
+
+        `existing_start_point_id`/`existing_end_point_id` - `add_arc`'s own
+        "explicit sharing" pattern for its end Point, extended to both ends
+        here since neither is otherwise tied to an existing Point the way
+        Arc's own start (its radius-defining Point) always is: when given,
+        reuses that Point instead of creating a new one at the computed
+        angle - the caller is responsible for it already sitting exactly on
+        the curve at that angle (`trim_ellipse` is the only caller that
+        does; every other caller leaves both None).
+        """
+        center = self.points[center_point_id]
+        if major_point_id not in self.points:
+            raise KeyError(major_point_id)
+        if center_point_id == major_point_id:
+            raise ValueError("An ellipse arc cannot have the same centre and major-axis point")
+        major_point = self.points[major_point_id]
+        major_radius = math.hypot(major_point.x - center.x, major_point.y - center.y)
+        if major_radius == 0:
+            raise ValueError("An ellipse arc's major-axis point cannot coincide with its centre point")
+        if minor_radius <= 0:
+            raise ValueError("An ellipse arc's minor radius must be positive")
+        if minor_radius > major_radius:
+            raise ValueError("An ellipse arc's minor radius cannot exceed its major radius")
+        if math.isclose(start_angle % (2 * math.pi), end_angle % (2 * math.pi), abs_tol=1e-9):
+            raise ValueError("An ellipse arc's start and end angles cannot coincide")
+
+        rotation = math.atan2(major_point.y - center.y, major_point.x - center.x)
+        minor_angle = rotation + math.pi / 2
+        minor_point_id = self.add_point(
+            center.x + minor_radius * math.cos(minor_angle),
+            center.y + minor_radius * math.sin(minor_angle),
+        ).id
+
+        def _point_on_ellipse(local_angle: float) -> tuple[float, float]:
+            ca, sa = math.cos(rotation), math.sin(rotation)
+            u = major_radius * math.cos(local_angle)
+            v = minor_radius * math.sin(local_angle)
+            return (center.x + u * ca - v * sa, center.y + u * sa + v * ca)
+
+        if existing_start_point_id is not None:
+            if existing_start_point_id not in self.points:
+                raise KeyError(existing_start_point_id)
+            start_point_id = existing_start_point_id
+        else:
+            start_x, start_y = _point_on_ellipse(start_angle)
+            start_point_id = self.add_point(start_x, start_y).id
+        if existing_end_point_id is not None:
+            if existing_end_point_id not in self.points:
+                raise KeyError(existing_end_point_id)
+            end_point_id = existing_end_point_id
+        else:
+            end_x, end_y = _point_on_ellipse(end_angle)
+            end_point_id = self.add_point(end_x, end_y).id
+
+        major_constraint = self.add_distance_constraint(
+            center_point_id, major_point_id, major_radius, provisional=True
+        )
+        minor_constraint = self.add_distance_constraint(
+            center_point_id, minor_point_id, minor_radius, provisional=True
+        )
+        major_axis_line = self.add_line(center_point_id, major_point_id, construction=True)
+        minor_axis_line = self.add_line(center_point_id, minor_point_id, construction=True)
+        perpendicular = self.add_perpendicular_constraint(major_axis_line.id, minor_axis_line.id)
+
+        # Generated up front so the two PointOnEllipseConstraint instances
+        # below can reference it as their own `ellipse_id` - see
+        # EllipseArc's own docstring for why that field means "the entity
+        # this Point lies on the curve of" in general, not specifically an
+        # `Ellipse` instance.
+        arc_id = str(uuid.uuid4())
+        start_on_ellipse = PointOnEllipseConstraint(
+            id=str(uuid.uuid4()),
+            point_id=start_point_id,
+            ellipse_id=arc_id,
+            center_point_id=center_point_id,
+            major_point_id=major_point_id,
+            minor_point_id=minor_point_id,
+        )
+        end_on_ellipse = PointOnEllipseConstraint(
+            id=str(uuid.uuid4()),
+            point_id=end_point_id,
+            ellipse_id=arc_id,
+            center_point_id=center_point_id,
+            major_point_id=major_point_id,
+            minor_point_id=minor_point_id,
+        )
+        self.constraints[start_on_ellipse.id] = start_on_ellipse
+        self.constraints[end_on_ellipse.id] = end_on_ellipse
+
+        ellipse_arc = EllipseArc(
+            id=arc_id,
+            center_point_id=center_point_id,
+            major_point_id=major_point_id,
+            minor_point_id=minor_point_id,
+            start_point_id=start_point_id,
+            end_point_id=end_point_id,
+            major_constraint_id=major_constraint.id,
+            minor_constraint_id=minor_constraint.id,
+            major_axis_line_id=major_axis_line.id,
+            minor_axis_line_id=minor_axis_line.id,
+            perpendicular_constraint_id=perpendicular.id,
+            start_on_ellipse_constraint_id=start_on_ellipse.id,
+            end_on_ellipse_constraint_id=end_on_ellipse.id,
+            construction=construction,
+        )
+        self.entities[ellipse_arc.id] = ellipse_arc
+        return ellipse_arc
+
+    def ellipse_arcs(self) -> list[EllipseArc]:
+        return [entity for entity in self.entities.values() if isinstance(entity, EllipseArc)]
 
     def add_polygon(
         self,
@@ -2209,6 +2489,54 @@ class Sketch:
                 )
         return points
 
+    def _ellipse_candidates_against(
+        self,
+        center: tuple[float, float],
+        major_radius: float,
+        minor_radius: float,
+        rotation: float,
+        exclude_ids: frozenset[str],
+    ) -> list[tuple[float, float]]:
+        """[_circle_candidates_against]'s Ellipse-shaped sibling, used by
+        [trim_ellipse]. v1 scope: Line targets only - `line_vs_ellipse`
+        substitutes the line's own parametric form into the ellipse's
+        implicit equation, a plain quadratic; a Circle/Arc/Ellipse/
+        EllipseArc target would need quartic root-finding instead - a
+        materially bigger, separate undertaking (see intersections.py's own
+        module doc comment), deliberately out of scope for this round, same
+        "not every combination has to compose into something yet"
+        precedent this file's own Pattern/Mirror source-kind checks and C2
+        sketch-entity-combo gating already establish elsewhere.
+
+        `exclude_ids` (a set, unlike `_circle_candidates_against`'s own
+        single `exclude_id` - Circle has no construction geometry of its
+        own to worry about) must cover both the Ellipse itself AND its own
+        `major_axis_line_id`/`minor_axis_line_id`: those two full-diameter
+        construction Lines always have their own endpoints sitting exactly
+        on the ellipse's own curve (the 4 cardinal tip Points, by
+        construction), so left uncounted they'd contribute 4 fake
+        "crossings" against every Ellipse ever - real Line/Circle/Arc
+        geometry the user actually drew never gets that free pass.
+        """
+        points: list[tuple[float, float]] = []
+        for entity in self.entities.values():
+            if entity.id in exclude_ids:
+                continue
+            if isinstance(entity, Line):
+                other_start = self.points[entity.start_point_id]
+                other_end = self.points[entity.end_point_id]
+                for t, point in line_vs_ellipse(
+                    (other_start.x, other_start.y),
+                    (other_end.x, other_end.y),
+                    center,
+                    major_radius,
+                    minor_radius,
+                    rotation,
+                ):
+                    if -1e-9 <= t <= 1 + 1e-9:
+                        points.append(point)
+        return points
+
     def trim_or_extend_arc(self, arc_id: str, moved_point_id: str) -> tuple["Arc", "Point", bool]:
         """[trim_or_extend_line]'s own algorithm, ported to an Arc's angular
         sweep instead of a Line's linear extent - on-device feedback ("trim/
@@ -2308,6 +2636,95 @@ class Sketch:
             return (arc, existing, True)
         moved_point.x, moved_point.y = best_point
         return (arc, moved_point, False)
+
+    def trim_ellipse(self, ellipse_id: str, click_x: float, click_y: float) -> tuple["EllipseArc", list[str]]:
+        """[trim_circle]'s Ellipse-shaped sibling - converts a full Ellipse
+        into an EllipseArc that excludes whichever segment was clicked, the
+        same standard CAD trim-a-closed-curve convention. v1 scope: only
+        Line crossings are considered as brackets (see
+        [_ellipse_candidates_against]'s own doc comment) - trimming an
+        Ellipse against another curved entity isn't supported yet.
+
+        Candidates are converted to the ellipse's own *parametric* angle
+        (`_ellipse_local_angle_at`), not a plain polar `atan2` - the same
+        distinction `EllipseArc.local_angle`'s own doc comment draws, and
+        required here for the same reason: the new EllipseArc's own
+        start/end angles are parametric, so bracketing must happen in that
+        same frame or the wrong segment could get excluded off-axis.
+
+        Delegates the new EllipseArc's own construction to [add_ellipse_arc]
+        (reusing the Ellipse's existing centre/major Points, a fresh minor
+        Point at the live minor_radius, and two freshly-placed or reused
+        boundary Points - see that method's own `existing_start_point_id`/
+        `existing_end_point_id` doc comment for why "reused" is possible at
+        all) rather than hand-building its constraint scaffolding. The
+        original Ellipse (and its own axis/radius/perpendicular
+        constraints, negative tip Points) is then removed via the existing
+        [delete_ellipse], unmodified - mirrors [trim_circle]'s own identical
+        "delegate then delete the source" shape, including its own
+        existing-Point-reuse fix for a closed-profile loop that only looks
+        closed topologically otherwise. Returns `(ellipse_arc,
+        pruned_point_ids)` - [delete_ellipse]'s own return value, passed
+        straight through.
+        """
+        ellipse = self.entities.get(ellipse_id)
+        if not isinstance(ellipse, Ellipse):
+            raise KeyError(ellipse_id)
+        center = self.points[ellipse.center_point_id]
+        center_xy = (center.x, center.y)
+        major_radius = ellipse.major_radius(self.points)
+        minor_radius = ellipse.minor_radius(self.points)
+        rotation = ellipse.rotation(self.points)
+        if major_radius < 1e-9 or minor_radius < 1e-9:
+            raise ValueError(f"Cannot trim a degenerate ellipse {ellipse_id}")
+
+        candidate_points = self._ellipse_candidates_against(
+            center_xy,
+            major_radius,
+            minor_radius,
+            rotation,
+            exclude_ids=frozenset({ellipse_id, ellipse.major_axis_line_id, ellipse.minor_axis_line_id}),
+        )
+        two_pi = 2 * math.pi
+        angles = sorted(
+            {
+                _ellipse_local_angle_at(center_xy, major_radius, minor_radius, rotation, p) % two_pi
+                for p in candidate_points
+            }
+        )
+        if len(angles) < 2:
+            raise NoIntersectionFoundError(f"Fewer than 2 crossings found to trim ellipse {ellipse_id} at")
+
+        click_angle = (
+            _ellipse_local_angle_at(center_xy, major_radius, minor_radius, rotation, (click_x, click_y)) % two_pi
+        )
+        next_angle = next((a for a in angles if a > click_angle + 1e-9), angles[0])
+        prev_angle = next((a for a in reversed(angles) if a < click_angle - 1e-9), angles[-1])
+
+        def _point_at(local_angle: float) -> tuple[float, float]:
+            u = major_radius * math.cos(local_angle)
+            v = minor_radius * math.sin(local_angle)
+            ca, sa = math.cos(rotation), math.sin(rotation)
+            return (center.x + u * ca - v * sa, center.y + u * sa + v * ca)
+
+        start_xy = _point_at(next_angle)
+        end_xy = _point_at(prev_angle)
+        # Same closed-profile bug fix as trim_circle's own identical step -
+        # see that method's own doc comment for the full rationale.
+        existing_at_start = self._existing_point_at(*start_xy)
+        existing_at_end = self._existing_point_at(*end_xy)
+        ellipse_arc = self.add_ellipse_arc(
+            ellipse.center_point_id,
+            ellipse.major_point_id,
+            minor_radius,
+            next_angle,
+            prev_angle,
+            construction=ellipse.construction,
+            existing_start_point_id=existing_at_start.id if existing_at_start is not None else None,
+            existing_end_point_id=existing_at_end.id if existing_at_end is not None else None,
+        )
+        pruned_point_ids = self.delete_ellipse(ellipse_id)
+        return ellipse_arc, pruned_point_ids
 
     def trim_circle(self, circle_id: str, click_x: float, click_y: float) -> tuple["Arc", list[str]]:
         """On-device feedback ("trim/extend should work on circles curves
@@ -2460,6 +2877,30 @@ class Sketch:
         self.constraints.pop(ellipse.major_midpoint_constraint_id, None)
         self.constraints.pop(ellipse.minor_midpoint_constraint_id, None)
         self.constraints.pop(ellipse.perpendicular_constraint_id, None)
+        return self._prune_orphaned_points(candidates)
+
+    def delete_ellipse_arc(self, ellipse_arc_id: str) -> list[str]:
+        """Remove an EllipseArc and everything `add_ellipse_arc` always
+        creates alongside it - both radius DistanceConstraints, the
+        PerpendicularConstraint tying its two axis spokes together, both
+        axis construction Lines, and both start/end PointOnEllipseConstraint
+        instances - same "internal implementation detail" exception
+        `delete_ellipse`/`delete_arc` already make for their own internal
+        constraints. The centre/major/minor/start/end Points themselves are
+        pruned automatically if nothing else still needs them, same as
+        `delete_ellipse`. Returns the ids of any Points actually removed."""
+        ellipse_arc = self.entities.get(ellipse_arc_id)
+        if not isinstance(ellipse_arc, EllipseArc):
+            raise KeyError(ellipse_arc_id)
+        candidates = self._entity_defining_point_ids(ellipse_arc)
+        del self.entities[ellipse_arc_id]
+        self.entities.pop(ellipse_arc.major_axis_line_id, None)
+        self.entities.pop(ellipse_arc.minor_axis_line_id, None)
+        self.constraints.pop(ellipse_arc.major_constraint_id, None)
+        self.constraints.pop(ellipse_arc.minor_constraint_id, None)
+        self.constraints.pop(ellipse_arc.perpendicular_constraint_id, None)
+        self.constraints.pop(ellipse_arc.start_on_ellipse_constraint_id, None)
+        self.constraints.pop(ellipse_arc.end_on_ellipse_constraint_id, None)
         return self._prune_orphaned_points(candidates)
 
     def delete_polygon(self, polygon_id: str) -> list[str]:
@@ -3034,25 +3475,31 @@ class Sketch:
             return None
         return min(candidates, key=lambda p: math.hypot(p[0] - corner_xy[0], p[1] - corner_xy[1]))
 
-    _PATTERNABLE_ENTITY_TYPES = (Line, Circle, Arc)
+    _PATTERNABLE_ENTITY_TYPES = (Line, Circle, Arc, Ellipse, EllipseArc)
 
-    def _patternable_entities(self, entity_ids: list[str]) -> list["Line | Circle | Arc"]:
+    def _patternable_entities(self, entity_ids: list[str]) -> list["Line | Circle | Arc | Ellipse | EllipseArc"]:
         """Validates `entity_ids` for both `add_pattern_instance` and
         `add_mirror_instance`: non-empty, every id resolves, and every one
-        is a Line/Circle/Arc - the exact same accepted-kinds boundary
-        `offset_line`/`offset_circle`/`offset_arc`/`offset_chain` already
-        established (Ellipse/Spline/Text/Polygon/Slot/Rectangle are all
-        deliberately out of v1 scope here too - see `SketchPatternInstance`'s
-        own docstring)."""
+        is a Line/Circle/Arc/Ellipse/EllipseArc (Spline/Text/Polygon/Slot/
+        Rectangle are still deliberately out of v1 scope here - see
+        `SketchPatternInstance`'s own docstring). Unlike
+        `offset_line`/`offset_circle`/`offset_arc`/`offset_chain`, which
+        this boundary used to match exactly, Ellipse/EllipseArc don't need
+        any offset-curve math to be patternable/mirrorable at all - a
+        translated or reflected copy of an ellipse is still an ellipse
+        (unlike its true offset curve, which generally isn't one) - see
+        `_place_transformed_entity`'s own Ellipse/EllipseArc branches."""
         if not entity_ids:
             raise ValueError("At least one source entity is required")
-        resolved: list[Line | Circle | Arc] = []
+        resolved: list[Line | Circle | Arc | Ellipse | EllipseArc] = []
         for entity_id in entity_ids:
             entity = self.entities.get(entity_id)
             if entity is None:
                 raise KeyError(entity_id)
             if not isinstance(entity, self._PATTERNABLE_ENTITY_TYPES):
-                raise ValueError(f"Pattern/Mirror only supports Lines, Circles and Arcs, got {entity_id!r}")
+                raise ValueError(
+                    f"Pattern/Mirror only supports Lines, Circles, Arcs, Ellipses and Ellipse Arcs, got {entity_id!r}"
+                )
             resolved.append(entity)
         return resolved
 
@@ -3406,7 +3853,7 @@ class Sketch:
 
     def _place_transformed_entity(
         self,
-        entity: "Line | Circle | Arc",
+        entity: "Line | Circle | Arc | Ellipse | EllipseArc",
         points: dict[str, Point],
         entities: dict[str, SketchEntity],
         *,
@@ -3485,6 +3932,62 @@ class Sketch:
                 end_point_id=transformed_point(end_point_id),
                 radius_constraint_id="",
                 end_radius_constraint_id="",
+                construction=entity.construction,
+            )
+        elif isinstance(entity, Ellipse):
+            # Every one of the 5 defining Points transformed independently
+            # (like Circle's own center/radius pair above), not derived
+            # from each other - `transform` is a pure geometric map
+            # (translation or reflection) well-defined for any (x, y)
+            # regardless of how that Point's original position came to be,
+            # and both kinds of transform this module ever applies
+            # (translation, reflection) preserve the AtMidpoint symmetry
+            # `major_point_neg_id`/`minor_point_neg_id` need automatically
+            # (an affine map always sends a midpoint to the midpoint of the
+            # transformed endpoints) - so no special-case re-derivation of
+            # the negative tips is needed here, unlike what a first glance
+            # might suggest.
+            entities[new_id] = Ellipse(
+                id=new_id,
+                center_point_id=transformed_point(entity.center_point_id),
+                major_point_id=transformed_point(entity.major_point_id),
+                major_point_neg_id=transformed_point(entity.major_point_neg_id),
+                major_constraint_id="",
+                major_midpoint_constraint_id="",
+                minor_point_id=transformed_point(entity.minor_point_id),
+                minor_point_neg_id=transformed_point(entity.minor_point_neg_id),
+                minor_constraint_id="",
+                minor_midpoint_constraint_id="",
+                major_axis_line_id="",
+                minor_axis_line_id="",
+                perpendicular_constraint_id="",
+                construction=entity.construction,
+            )
+        elif isinstance(entity, EllipseArc):
+            # Same swap_arc_endpoints reasoning as the Arc branch above - a
+            # reflection reverses orientation for *any* curve, ellipse or
+            # circle alike, so the same fix applies unchanged. Rotation
+            # needs no special handling either: EllipseArc.rotation() is
+            # always re-derived from center/major_point's own (now
+            # transformed) positions, exactly like Ellipse's above, so a
+            # reflected major_point already encodes the correctly-flipped
+            # axis direction with no extra intervention.
+            start_point_id = entity.end_point_id if swap_arc_endpoints else entity.start_point_id
+            end_point_id = entity.start_point_id if swap_arc_endpoints else entity.end_point_id
+            entities[new_id] = EllipseArc(
+                id=new_id,
+                center_point_id=transformed_point(entity.center_point_id),
+                major_point_id=transformed_point(entity.major_point_id),
+                minor_point_id=transformed_point(entity.minor_point_id),
+                start_point_id=transformed_point(start_point_id),
+                end_point_id=transformed_point(end_point_id),
+                major_constraint_id="",
+                minor_constraint_id="",
+                major_axis_line_id="",
+                minor_axis_line_id="",
+                perpendicular_constraint_id="",
+                start_on_ellipse_constraint_id="",
+                end_on_ellipse_constraint_id="",
                 construction=entity.construction,
             )
         # Every other SketchEntity subclass is already excluded by
@@ -3623,6 +4126,14 @@ class Sketch:
                 entity.major_point_neg_id,
                 entity.minor_point_id,
                 entity.minor_point_neg_id,
+            )
+        if isinstance(entity, EllipseArc):
+            return (
+                entity.center_point_id,
+                entity.major_point_id,
+                entity.minor_point_id,
+                entity.start_point_id,
+                entity.end_point_id,
             )
         if isinstance(entity, Polygon):
             return (entity.center_point_id, *entity.vertex_point_ids)
@@ -4031,10 +4542,12 @@ class Sketch:
         pins point_id onto circle_or_arc_id's own circular locus (see
         PointOnCircleConstraint's own doc comment for why this reuses
         equal_length rather than a native point-on-circle primitive).
-        Ellipse/Spline are deliberately out of scope - neither has a clean
-        py-slvs-primitive equivalent the rest of this module already
-        trusts, the same reasoning TangentConstraint/EqualRadiusConstraint
-        already apply to avoid native curve entities."""
+        Ellipse is covered separately (see add_point_on_ellipse_constraint)
+        - it needs a materially different construction (the Trammel of
+        Archimedes), not just this same trick applied to a second curve
+        type. Spline remains out of scope - no equivalent construction
+        found (see add_point_on_ellipse_constraint's own doc comment for
+        why the ellipse case works and spline doesn't)."""
         center_point_id, radius_point_id = self._center_radius_point_ids(circle_or_arc_id)
         if point_id not in self.points:
             raise KeyError(point_id)
@@ -4047,6 +4560,42 @@ class Sketch:
             circle_or_arc_id=circle_or_arc_id,
             center_point_id=center_point_id,
             radius_point_id=radius_point_id,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
+
+    def add_point_on_ellipse_constraint(
+        self, point_id: str, ellipse_id: str
+    ) -> PointOnEllipseConstraint:
+        """The ellipse half of "point coincident to line/curve" - pins
+        point_id onto ellipse_id's own curve via the Trammel of Archimedes
+        (see PointOnEllipseConstraint's own doc comment for the full
+        construction and its empirical verification). Spline remains out
+        of scope: De Casteljau's algorithm (the standard way to evaluate a
+        point on a cubic Bezier) needs the same interpolation *ratio*
+        shared consistently across multiple independent line segments, and
+        no construction from this module's own primitives was found that
+        ties two ratios together without already knowing one of them - the
+        parallel-line shortcut that works for some similar-triangle
+        problems doesn't hold here (checked directly), and unlike the
+        ellipse case there's no simpler special-case linkage to fall back
+        on, since a general cubic has no comparable single-parameter
+        mechanical analogue the way a conic section does."""
+        ellipse = self.entities.get(ellipse_id)
+        if not isinstance(ellipse, Ellipse):
+            raise KeyError(ellipse_id)
+        if point_id not in self.points:
+            raise KeyError(point_id)
+        if point_id == ellipse.center_point_id:
+            raise ValueError("Point cannot be coincident with its own ellipse's centre")
+
+        constraint = PointOnEllipseConstraint(
+            id=str(uuid.uuid4()),
+            point_id=point_id,
+            ellipse_id=ellipse_id,
+            center_point_id=ellipse.center_point_id,
+            major_point_id=ellipse.major_point_id,
+            minor_point_id=ellipse.minor_point_id,
         )
         self.constraints[constraint.id] = constraint
         return constraint

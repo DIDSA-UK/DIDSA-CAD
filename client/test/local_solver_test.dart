@@ -405,4 +405,211 @@ void main() {
             'silently accepted - this is why confirmGhostValue rolls it back rather than adding it '
             'unconditionally');
   });
+
+  test(
+      'PointOnEllipseConstraintDto: the Trammel of Archimedes construction pulls a free Point onto '
+      'a fixed Ellipse\'s own curve - mirrors backend test_solving_pulls_a_free_point_onto_a_fixed_'
+      'ellipse, ground truth captured from the same real py-slvs build via anchorPointIds (fixed-'
+      'group placement - no redundant equation, unlike FixedConstraint\'s own where_dragged, so this '
+      'isolates the construction itself)', () {
+    const centerXY = (0.0, 0.0);
+    const majorRadius = 8.0, minorRadius = 3.0;
+    final points = {
+      'center': centerXY,
+      'major': (centerXY.$1 + majorRadius, centerXY.$2),
+      'minor': (centerXY.$1, centerXY.$2 + minorRadius),
+      'p': (5.0, 2.0),
+    };
+    final constraints = <ConstraintDto>[
+      const PointOnEllipseConstraintDto(
+        id: 'poe',
+        pointId: 'p',
+        ellipseId: 'ellipse1',
+        centerPointId: 'center',
+        majorPointId: 'major',
+        minorPointId: 'minor',
+      ),
+    ];
+
+    final result = solveSketchLocally(
+      bindings: bindings,
+      points: points,
+      constraints: constraints,
+      lineEndpoints: (id) => _lineEndpoints(const {}, id),
+      anchorPointIds: {'center', 'major', 'minor'},
+    );
+
+    expect(result.converged, isTrue);
+    expect(result.dof, 1);
+    final (cx, cy) = result.solvedPoints['center']!;
+    final (mx, my) = result.solvedPoints['major']!;
+    final (nx, ny) = result.solvedPoints['minor']!;
+    final (px, py) = result.solvedPoints['p']!;
+    expect(cx, closeTo(centerXY.$1, 1e-9));
+    expect(cy, closeTo(centerXY.$2, 1e-9));
+    final a = math.sqrt((mx - cx) * (mx - cx) + (my - cy) * (my - cy));
+    final b = math.sqrt((nx - cx) * (nx - cx) + (ny - cy) * (ny - cy));
+    final angle = math.atan2(my - cy, mx - cx);
+    final dx = px - cx, dy = py - cy;
+    final ca = math.cos(-angle), sa = math.sin(-angle);
+    final u = dx * ca - dy * sa;
+    final v = dx * sa + dy * ca;
+    final residual = (u / a) * (u / a) + (v / b) * (v / b) - 1.0;
+    expect(residual, closeTo(0.0, 1e-6));
+  });
+
+  test(
+      'EllipseArc constraint set (Distance x2 + Perpendicular + PointOnEllipse x2) - the exact '
+      'constraint graph app.sketch.models.add_ellipse_arc builds server-side - converges locally '
+      'with both start/end Points landing exactly on the curve. No new local-solver dispatch code '
+      'was needed for EllipseArc itself (unlike PointOnEllipseConstraint above): it composes '
+      'entirely from constraint types the dispatch table already handles generically.', () {
+    const centerXY = (1.0, -2.0);
+    const majorRadius = 7.0, minorRadius = 3.0;
+    final rotation = math.pi / 6;
+    final majorXY = (
+      centerXY.$1 + majorRadius * math.cos(rotation),
+      centerXY.$2 + majorRadius * math.sin(rotation),
+    );
+    final minorXY = (
+      centerXY.$1 + minorRadius * math.cos(rotation + math.pi / 2),
+      centerXY.$2 + minorRadius * math.sin(rotation + math.pi / 2),
+    );
+    final points = {
+      'center': centerXY,
+      'major': majorXY,
+      'minor': minorXY,
+      'start': (3.0, -4.0),
+      'end': (-2.0, 1.0),
+    };
+    final lines = {
+      'majorAxis': ('center', 'major'),
+      'minorAxis': ('center', 'minor'),
+    };
+    final constraints = <ConstraintDto>[
+      const DistanceConstraintDto(id: 'majorDist', pointAId: 'center', pointBId: 'major', distance: majorRadius),
+      const DistanceConstraintDto(id: 'minorDist', pointAId: 'center', pointBId: 'minor', distance: minorRadius),
+      const PerpendicularConstraintDto(id: 'perp', line1Id: 'majorAxis', line2Id: 'minorAxis'),
+      const PointOnEllipseConstraintDto(
+        id: 'startOnEllipse',
+        pointId: 'start',
+        ellipseId: 'arc1',
+        centerPointId: 'center',
+        majorPointId: 'major',
+        minorPointId: 'minor',
+      ),
+      const PointOnEllipseConstraintDto(
+        id: 'endOnEllipse',
+        pointId: 'end',
+        ellipseId: 'arc1',
+        centerPointId: 'center',
+        majorPointId: 'major',
+        minorPointId: 'minor',
+      ),
+    ];
+
+    final result = solveSketchLocally(
+      bindings: bindings,
+      points: points,
+      constraints: constraints,
+      lineEndpoints: (id) => _lineEndpoints(lines, id),
+      anchorPointIds: {'center', 'major', 'minor'},
+    );
+
+    expect(result.converged, isTrue, reason: 'resultCode=${result.resultCode}');
+    double residualFor(String pointId) {
+      final (cx, cy) = result.solvedPoints['center']!;
+      final (mx, my) = result.solvedPoints['major']!;
+      final (nx, ny) = result.solvedPoints['minor']!;
+      final (px, py) = result.solvedPoints[pointId]!;
+      final a = math.sqrt((mx - cx) * (mx - cx) + (my - cy) * (my - cy));
+      final b = math.sqrt((nx - cx) * (nx - cx) + (ny - cy) * (ny - cy));
+      final angle = math.atan2(my - cy, mx - cx);
+      final dx = px - cx, dy = py - cy;
+      final ca = math.cos(-angle), sa = math.sin(-angle);
+      final u = dx * ca - dy * sa;
+      final v = dx * sa + dy * ca;
+      return (u / a) * (u / a) + (v / b) * (v / b) - 1.0;
+    }
+
+    expect(residualFor('start'), closeTo(0.0, 1e-6));
+    expect(residualFor('end'), closeTo(0.0, 1e-6));
+  });
+
+  test(
+      'bug fix (on-device feedback: "the elliptical arc is not as the user draws it... solver '
+      'changes the shape after drawing"): a freshly-drawn EllipseArc - every Point placed exactly '
+      'where app.sketch.models.add_ellipse_arc would place it, nothing anchored (the real shape '
+      'right after the draw tool places it and calls solve, before any drag) - solves with '
+      'negligible drift on every Point, not just start/end. Unlike the test above, this leaves '
+      'centre/major/minor free too, so it actually exercises the rigid-frame slack the bad trammel '
+      'seed used to leak into.', () {
+    const centerXY = (1.0, -2.0);
+    const majorRadius = 7.0, minorRadius = 3.0;
+    final rotation = math.pi / 6;
+    const startAngle = 0.4, endAngle = 2.3;
+    (double, double) pointOnEllipse(double localAngle) {
+      final u = majorRadius * math.cos(localAngle);
+      final v = minorRadius * math.sin(localAngle);
+      final ca = math.cos(rotation), sa = math.sin(rotation);
+      return (centerXY.$1 + u * ca - v * sa, centerXY.$2 + u * sa + v * ca);
+    }
+
+    final majorXY = (
+      centerXY.$1 + majorRadius * math.cos(rotation),
+      centerXY.$2 + majorRadius * math.sin(rotation),
+    );
+    final minorXY = (
+      centerXY.$1 + minorRadius * math.cos(rotation + math.pi / 2),
+      centerXY.$2 + minorRadius * math.sin(rotation + math.pi / 2),
+    );
+    final points = {
+      'center': centerXY,
+      'major': majorXY,
+      'minor': minorXY,
+      'start': pointOnEllipse(startAngle),
+      'end': pointOnEllipse(endAngle),
+    };
+    final lines = {
+      'majorAxis': ('center', 'major'),
+      'minorAxis': ('center', 'minor'),
+    };
+    final constraints = <ConstraintDto>[
+      const DistanceConstraintDto(id: 'majorDist', pointAId: 'center', pointBId: 'major', distance: majorRadius),
+      const DistanceConstraintDto(id: 'minorDist', pointAId: 'center', pointBId: 'minor', distance: minorRadius),
+      const PerpendicularConstraintDto(id: 'perp', line1Id: 'majorAxis', line2Id: 'minorAxis'),
+      const PointOnEllipseConstraintDto(
+        id: 'startOnEllipse',
+        pointId: 'start',
+        ellipseId: 'arc2',
+        centerPointId: 'center',
+        majorPointId: 'major',
+        minorPointId: 'minor',
+      ),
+      const PointOnEllipseConstraintDto(
+        id: 'endOnEllipse',
+        pointId: 'end',
+        ellipseId: 'arc2',
+        centerPointId: 'center',
+        majorPointId: 'major',
+        minorPointId: 'minor',
+      ),
+    ];
+
+    final result = solveSketchLocally(
+      bindings: bindings,
+      points: points,
+      constraints: constraints,
+      lineEndpoints: (id) => _lineEndpoints(lines, id),
+      anchorPointIds: const {},
+    );
+
+    expect(result.converged, isTrue, reason: 'resultCode=${result.resultCode}');
+    for (final id in points.keys) {
+      final (sx, sy) = points[id]!;
+      final (rx, ry) = result.solvedPoints[id]!;
+      expect(rx, closeTo(sx, 1e-6), reason: '$id.x drifted');
+      expect(ry, closeTo(sy, 1e-6), reason: '$id.y drifted');
+    }
+  });
 }

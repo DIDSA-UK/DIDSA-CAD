@@ -312,6 +312,26 @@ class CircleTrimResultDto {
       );
 }
 
+/// [CircleTrimResultDto]'s Ellipse-shaped sibling - `ellipseArc` is the new
+/// entity replacing the trimmed Ellipse, `prunedPointIds` the old Ellipse's
+/// own negative axis-tip Points (plus its own minor-axis Point, never
+/// reused - `add_ellipse_arc` always places a fresh one) the new
+/// EllipseArc never reuses, already removed server-side. See
+/// [SketchApiClient.trimEllipse].
+class EllipseTrimResultDto {
+  final EllipseArcDto ellipseArc;
+  final List<String> prunedPointIds;
+
+  EllipseTrimResultDto({required this.ellipseArc, this.prunedPointIds = const []});
+
+  factory EllipseTrimResultDto.fromJson(Map<String, dynamic> json) => EllipseTrimResultDto(
+        ellipseArc: EllipseArcDto.fromJson(json['ellipse_arc'] as Map<String, dynamic>),
+        prunedPointIds: (json['pruned_point_ids'] as List<dynamic>? ?? const [])
+            .map((e) => e as String)
+            .toList(),
+      );
+}
+
 class CircleDto {
   final String id;
   final String centerPointId;
@@ -428,6 +448,57 @@ class EllipseDto {
         majorPointNegId: json['major_point_neg_id'] as String,
         minorPointId: json['minor_point_id'] as String,
         minorPointNegId: json['minor_point_neg_id'] as String,
+        majorAxisLineId: json['major_axis_line_id'] as String,
+        minorAxisLineId: json['minor_axis_line_id'] as String,
+        majorRadius: (json['major_radius'] as num).toDouble(),
+        minorRadius: (json['minor_radius'] as num).toDouble(),
+        rotation: (json['rotation'] as num).toDouble(),
+        construction: json['construction'] as bool? ?? false,
+      );
+}
+
+/// A partial ellipse - the elliptical analogue of [ArcDto], layered onto
+/// an ellipse's own shape the same way [EllipseDto] layers onto
+/// [CircleDto]. See the backend's `app.sketch.models.EllipseArc` docstring
+/// for why there's no `majorPointNegId`/`minorPointNegId` pair here
+/// (unlike [EllipseDto]) - a partial ellipse's natural drag handles are
+/// its own [startPointId]/[endPointId] instead.
+class EllipseArcDto {
+  final String id;
+  final String centerPointId;
+  final String majorPointId;
+  final String minorPointId;
+  final String startPointId;
+  final String endPointId;
+  final String majorAxisLineId;
+  final String minorAxisLineId;
+  final double majorRadius;
+  final double minorRadius;
+  final double rotation;
+  final bool construction;
+
+  EllipseArcDto({
+    required this.id,
+    required this.centerPointId,
+    required this.majorPointId,
+    required this.minorPointId,
+    required this.startPointId,
+    required this.endPointId,
+    required this.majorAxisLineId,
+    required this.minorAxisLineId,
+    required this.majorRadius,
+    required this.minorRadius,
+    required this.rotation,
+    this.construction = false,
+  });
+
+  factory EllipseArcDto.fromJson(Map<String, dynamic> json) => EllipseArcDto(
+        id: json['id'] as String,
+        centerPointId: json['center_point_id'] as String,
+        majorPointId: json['major_point_id'] as String,
+        minorPointId: json['minor_point_id'] as String,
+        startPointId: json['start_point_id'] as String,
+        endPointId: json['end_point_id'] as String,
         majorAxisLineId: json['major_axis_line_id'] as String,
         minorAxisLineId: json['minor_axis_line_id'] as String,
         majorRadius: (json['major_radius'] as num).toDouble(),
@@ -702,6 +773,8 @@ abstract class ConstraintDto {
         return PointOnLineConstraintDto.fromJson(json);
       case 'point_on_circle':
         return PointOnCircleConstraintDto.fromJson(json);
+      case 'point_on_ellipse':
+        return PointOnEllipseConstraintDto.fromJson(json);
       case 'fixed':
         return FixedConstraintDto.fromJson(json);
       default:
@@ -1107,6 +1180,40 @@ class PointOnCircleConstraintDto extends ConstraintDto {
         circleOrArcId: json['circle_or_arc_id'] as String,
         centerPointId: json['center_point_id'] as String,
         radiusPointId: json['radius_point_id'] as String,
+      );
+}
+
+/// The ellipse half of "point coincident to line/curve" - pins a Point onto
+/// an Ellipse's own curve via the Trammel of Archimedes. See backend
+/// `PointOnEllipseConstraint`.
+class PointOnEllipseConstraintDto extends ConstraintDto {
+  final String pointId;
+  final String ellipseId;
+
+  /// Captured at creation time, same rationale as
+  /// [PointOnCircleConstraintDto]'s own centerPointId/radiusPointId - lets
+  /// the local solver rebuild the Trammel of Archimedes construction
+  /// directly, no second lookup back to the Ellipse entity needed.
+  final String centerPointId;
+  final String majorPointId;
+  final String minorPointId;
+
+  const PointOnEllipseConstraintDto({
+    required super.id,
+    required this.pointId,
+    required this.ellipseId,
+    required this.centerPointId,
+    required this.majorPointId,
+    required this.minorPointId,
+  });
+
+  factory PointOnEllipseConstraintDto.fromJson(Map<String, dynamic> json) => PointOnEllipseConstraintDto(
+        id: json['id'] as String,
+        pointId: json['point_id'] as String,
+        ellipseId: json['ellipse_id'] as String,
+        centerPointId: json['center_point_id'] as String,
+        majorPointId: json['major_point_id'] as String,
+        minorPointId: json['minor_point_id'] as String,
       );
 }
 
@@ -1615,6 +1722,13 @@ class SketchApiClient {
             .toList(),
       );
 
+  Future<List<EllipseArcDto>> listEllipseArcs(String sketchId) => _send(
+        () => _httpClient.get(_uri('/sketch/sketches/$sketchId/ellipse-arcs'), headers: _headers),
+        (body) => (body as List)
+            .map((e) => EllipseArcDto.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+
   Future<List<PolygonDto>> listPolygons(String sketchId) => _send(
         () => _httpClient.get(_uri('/sketch/sketches/$sketchId/polygons'), headers: _headers),
         (body) => (body as List)
@@ -1770,6 +1884,37 @@ class SketchApiClient {
               }),
             ),
         (body) => EllipseDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Always creates from an existing centre Point and an existing major-
+  /// axis Point (mirrors [createEllipse]'s own existing-point-only
+  /// creation path) - [startAngle]/[endAngle] are radians in the ellipse's
+  /// own parametric frame (see the backend's `app.sketch.models.
+  /// EllipseArc.local_angle` docstring), never stored server-side, only
+  /// used to place the new start/end Points exactly on the curve.
+  Future<EllipseArcDto> createEllipseArc(
+    String sketchId,
+    String centerPointId,
+    String majorPointId,
+    double minorRadius,
+    double startAngle,
+    double endAngle, {
+    bool construction = false,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/ellipse-arcs'),
+              headers: _headers,
+              body: jsonEncode({
+                'center_point_id': centerPointId,
+                'major_point_id': majorPointId,
+                'minor_radius': minorRadius,
+                'start_angle': startAngle,
+                'end_angle': endAngle,
+                'construction': construction,
+              }),
+            ),
+        (body) => EllipseArcDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Always creates from an existing center Point and an existing first-
@@ -1960,6 +2105,17 @@ class SketchApiClient {
         (body) => EllipseDto.fromJson(body as Map<String, dynamic>),
       );
 
+  Future<EllipseArcDto> updateEllipseArc(String sketchId, String ellipseArcId, {bool? construction}) => _send(
+        () => _httpClient.patch(
+              _uri('/sketch/sketches/$sketchId/ellipse-arcs/$ellipseArcId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (construction != null) 'construction': construction,
+              }),
+            ),
+        (body) => EllipseArcDto.fromJson(body as Map<String, dynamic>),
+      );
+
   /// Toggles a Polygon's construction flag - mirrors [updateArc]. There is
   /// no radius field here either: a Polygon's radius is driven by its own
   /// DistanceConstraint (see the backend's `Sketch.add_polygon`), resized
@@ -2111,6 +2267,20 @@ class SketchApiClient {
         (body) => CircleTrimResultDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// [trimCircle]'s Ellipse-shaped sibling: converts [ellipseId] into an
+  /// EllipseArc excluding whichever segment [clickX]/[clickY] falls on -
+  /// see the backend's `Sketch.trim_ellipse`. v1 scope: only trims against
+  /// Line targets (see that method's own doc comment) - a 422 means fewer
+  /// than 2 real crossings were found, not a client error.
+  Future<EllipseTrimResultDto> trimEllipse(String sketchId, String ellipseId, double clickX, double clickY) => _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/ellipses/$ellipseId/trim'),
+              headers: _headers,
+              body: jsonEncode({'click_x': clickX, 'click_y': clickY}),
+            ),
+        (body) => EllipseTrimResultDto.fromJson(body as Map<String, dynamic>),
+      );
+
   /// Sketcher-roadmap Phase 9 v1 (Offset Entities): a new, real Line
   /// parallel to [lineId] - see the backend's `Sketch.offset_line` for the
   /// sign convention (positive = left of travel direction, negative =
@@ -2195,6 +2365,16 @@ class SketchApiClient {
   Future<List<String>> deleteEllipse(String sketchId, String ellipseId) => _send(
         () => _httpClient.delete(
               _uri('/sketch/sketches/$sketchId/ellipses/$ellipseId'),
+              headers: _headers,
+            ),
+        (body) => ((body as Map<String, dynamic>)['pruned_point_ids'] as List<dynamic>)
+            .map((e) => e as String)
+            .toList(),
+      );
+
+  Future<List<String>> deleteEllipseArc(String sketchId, String ellipseArcId) => _send(
+        () => _httpClient.delete(
+              _uri('/sketch/sketches/$sketchId/ellipse-arcs/$ellipseArcId'),
               headers: _headers,
             ),
         (body) => ((body as Map<String, dynamic>)['pruned_point_ids'] as List<dynamic>)
@@ -2657,6 +2837,27 @@ class SketchApiClient {
                 'type': 'point_on_circle',
                 'point_id': pointId,
                 'circle_or_arc_id': circleOrArcId,
+              }),
+            ),
+        (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// The ellipse half of "point coincident to line/curve" - see
+  /// [PointOnEllipseConstraintDto]/backend `Sketch.add_point_on_ellipse_
+  /// constraint`.
+  Future<ConstraintDto> createPointOnEllipseConstraint(
+    String sketchId,
+    String pointId,
+    String ellipseId,
+  ) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/constraints'),
+              headers: _headers,
+              body: jsonEncode({
+                'type': 'point_on_ellipse',
+                'point_id': pointId,
+                'ellipse_id': ellipseId,
               }),
             ),
         (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),

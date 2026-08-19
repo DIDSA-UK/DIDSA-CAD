@@ -134,6 +134,14 @@ const Map<String, int> dofCostByConstraintType = {
   // - confirmed via direct py-slvs probe: a free Point pulled onto a
   // radius-5 circle converges with Dof == 1 (the Point's own remaining
   // angular freedom around the circle).
+  'point_on_ellipse': 1, // Trammel of Archimedes (2 ephemeral auxiliary
+  // points, 5 chained primitives - see backend PointOnEllipseConstraint's
+  // own doc comment) - confirmed via direct py-slvs probe across 6
+  // configurations (axis-aligned/rotated, varied radii): a free Point
+  // pulled onto a fully-fixed ellipse converges with Dof == 1 every time
+  // (the Point's own remaining freedom along the curve), same net cost as
+  // point_on_line/point_on_circle above despite the construction's own
+  // extra internal auxiliary points.
 };
 
 /// Resolves a Constraint to its backend `type` discriminator string (the
@@ -275,6 +283,17 @@ const Map<String, int> dofCostByConstraintType = {
     return (
       type: 'point_on_circle',
       pointIds: [constraint.pointId, constraint.centerPointId, constraint.radiusPointId],
+    );
+  }
+  if (constraint is PointOnEllipseConstraintDto) {
+    return (
+      type: 'point_on_ellipse',
+      pointIds: [
+        constraint.pointId,
+        constraint.centerPointId,
+        constraint.majorPointId,
+        constraint.minorPointId,
+      ],
     );
   }
   return (type: '', pointIds: const []);

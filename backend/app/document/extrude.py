@@ -74,6 +74,7 @@ from app.sketch.models import (
     Arc,
     Circle,
     Ellipse,
+    EllipseArc,
     Line,
     Sketch,
     SketchEntityRef,
@@ -261,7 +262,7 @@ def wire_for_profile(sketch: Sketch, profile: Profile, basis: ResolvedPlane):
         return topods.Wire(BRepBuilderAPI_Transform(local_wire, transform, True).Shape())
 
     if not any(
-        isinstance(sketch.entities.get(entity_id), (Arc, Spline)) for entity_id in profile.line_ids
+        isinstance(sketch.entities.get(entity_id), (Arc, EllipseArc, Spline)) for entity_id in profile.line_ids
     ):
         polygon = BRepBuilderAPI_MakePolygon()
         for point_id in profile.point_ids:
@@ -319,6 +320,40 @@ def wire_for_profile(sketch: Sketch, profile: Profile, basis: ResolvedPlane):
             p1, p2 = (end, start) if is_mirrored_basis(basis) else (start, end)
             edge = BRepBuilderAPI_MakeEdge(
                 gp_Circ(axis, radius),
+                basis_point_to_world(basis, p1.x, p1.y),
+                basis_point_to_world(basis, p2.x, p2.y),
+            ).Edge()
+            wire_maker.Add(edge)
+        elif isinstance(entity, EllipseArc):
+            # The elliptical analogue of the Arc branch immediately above -
+            # `BRepBuilderAPI_MakeEdge(gp_Elips, P1, P2)` is a real OCCT
+            # overload (OCCT trims an ellipse between two points on it the
+            # same way it trims a circle: CCW from P1 to P2 in the curve's
+            # own increasing-parameter direction), so this mirrors that
+            # branch's structure exactly, swapping gp_Circ/radius for
+            # gp_Elips/major+minor radius and `arc_axis` for `_ellipse_axis`
+            # (which needs the EllipseArc's own rotation too, unlike a
+            # circle's axis). The same mirrored-basis P1/P2 swap is applied
+            # here by direct analogy to Arc's own fix, on the reasoning that
+            # OCCT's CCW-from-P1-trim convention is a general property of
+            # how it parametrizes *any* closed conic curve (gp_Circ and
+            # gp_Elips alike), not something specific to circles - but
+            # unlike Arc's own fix, this has not been independently
+            # re-confirmed by direct numeric simulation against real OCCT
+            # (no pythonocc-core install available in this environment - see
+            # this feature's own PR description) and should be treated as
+            # reasoned-but-unverified until exercised on-device against a
+            # mirrored Sketch containing a partial ellipse.
+            center = sketch.points[entity.center_point_id]
+            major_radius = entity.major_radius(sketch.points)
+            minor_radius = entity.minor_radius(sketch.points)
+            rotation = entity.rotation(sketch.points)
+            axis = _ellipse_axis(basis, center.x, center.y, rotation)
+            start = sketch.points[entity.start_point_id]
+            end = sketch.points[entity.end_point_id]
+            p1, p2 = (end, start) if is_mirrored_basis(basis) else (start, end)
+            edge = BRepBuilderAPI_MakeEdge(
+                gp_Elips(axis, major_radius, minor_radius),
                 basis_point_to_world(basis, p1.x, p1.y),
                 basis_point_to_world(basis, p2.x, p2.y),
             ).Edge()
@@ -484,6 +519,7 @@ def select_profiles(candidates: list[Profile], profile_refs: list[SketchEntityRe
             SketchEntityType.CIRCLE,
             SketchEntityType.ARC,
             SketchEntityType.ELLIPSE,
+            SketchEntityType.ELLIPSE_ARC,
             SketchEntityType.SPLINE,
             SketchEntityType.TEXT,
         ):
@@ -492,7 +528,7 @@ def select_profiles(candidates: list[Profile], profile_refs: list[SketchEntityRe
             entity = resolve_sketch_entity(ref)
         except HTTPException:
             raise invalid_profile_ref(ref) from None
-        if not isinstance(entity, (Line, Circle, Arc, Ellipse, Spline, TextEntity)):
+        if not isinstance(entity, (Line, Circle, Arc, Ellipse, EllipseArc, Spline, TextEntity)):
             raise invalid_profile_ref(ref)
 
         # A Text entity can own several top-level candidates at once (one

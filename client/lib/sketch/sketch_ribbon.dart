@@ -74,6 +74,7 @@ class SketchRibbon extends StatelessWidget {
       SelectionKind.circle => 'Circle selected',
       SelectionKind.arc => 'Arc selected',
       SelectionKind.ellipse => 'Ellipse selected',
+      SelectionKind.ellipseArc => 'Ellipse Arc selected',
       SelectionKind.spline => 'Spline selected',
       SelectionKind.text => 'Text selected',
       SelectionKind.constraint => 'Constraint selected',
@@ -286,6 +287,7 @@ class SketchRibbon extends StatelessWidget {
       // relationship (this Point sits exactly on that geometry).
       ConstraintOptionType.pointOnLine => 'assets/icons/ribbon/ribbon_coincident.svg',
       ConstraintOptionType.pointOnCircle => 'assets/icons/ribbon/ribbon_coincident.svg',
+      ConstraintOptionType.pointOnEllipse => 'assets/icons/ribbon/ribbon_coincident.svg',
       // Reuses the same padlock pair the sketchbar's own whole-sketch
       // fully-constrained indicator already uses (see sketch_screen.dart) -
       // one consistent "this can't move" visual language across both the

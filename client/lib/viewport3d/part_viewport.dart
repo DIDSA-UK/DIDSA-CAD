@@ -3275,6 +3275,15 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               }
             }
           }
+        case SelectionEntityKind.sketchEllipseArc:
+          final geometry = widget.sketchGeometries[entity.sketchFeatureId];
+          if (geometry != null) {
+            for (var i = 0; i < geometry.ellipseArcIds.length; i++) {
+              if (geometry.ellipseArcIds[i] == entity.sketchEntityId) {
+                edgeSegments.addAll(_polygonSegments(geometry.ellipseArcPolylines[i]));
+              }
+            }
+          }
         case SelectionEntityKind.sketchSpline:
           final geometry = widget.sketchGeometries[entity.sketchFeatureId];
           if (geometry != null) {
@@ -3493,6 +3502,19 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         final index = geometry.ellipseIds.indexOf(entity.sketchEntityId);
         if (index == -1) return null;
         final segments = _polygonSegments(geometry.ellipsePolygons[index]);
+        if (segments.isEmpty) return null;
+        return buildMeshEdgesNode(
+          segments,
+          color: color,
+          width: kHighlightEdgeStrokeWidth,
+          alwaysOnTop: alwaysOnTop,
+        );
+      case SelectionEntityKind.sketchEllipseArc:
+        final geometry = widget.sketchGeometries[entity.sketchFeatureId];
+        if (geometry == null) return null;
+        final index = geometry.ellipseArcIds.indexOf(entity.sketchEntityId);
+        if (index == -1) return null;
+        final segments = _polygonSegments(geometry.ellipseArcPolylines[index]);
         if (segments.isEmpty) return null;
         return buildMeshEdgesNode(
           segments,
