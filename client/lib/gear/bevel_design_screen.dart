@@ -23,7 +23,15 @@ import 'standard_value_field.dart';
 /// own "structurally unlike every other gear type" framing) - the preview
 /// this screen shows is the standard bevel-drafting axial cross-section
 /// envelope (`BevelPreviewCanvas`'s own doc comment), not a tooth outline.
-enum BevelMultiKind { gear, pair }
+///
+/// [crown] is not its own backend Feature type - a crown gear is exactly a
+/// `BevelGearFeature` with `pitch_cone_angle_degrees` fixed at 90 (the
+/// pitch cone flattens into a disc - confirmed on-device that `bevel_math`'s
+/// spherical-involute formulas stay perfectly finite there, no asymptote).
+/// So [crown] shares every code path [gear] does (same `createBevelGearFeature`/
+/// `updateBevelGearFeature` calls) - it only changes the Pitch cone angle
+/// field (fixed, hidden) and a few display strings. See `_isSingleGear`.
+enum BevelMultiKind { gear, crown, pair }
 
 const List<double> _standardModules = [0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10];
 const List<double> _standardPressureAngles = [14.5, 20, 25];
@@ -106,10 +114,28 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
   String _bevelGearMode = 'boss';
   List<String> _targetBodyIds = const [];
 
+  /// True for both [BevelMultiKind.gear] and [BevelMultiKind.crown] - they
+  /// share every single-gear code path (both hit `BevelGearFeature`'s own
+  /// create/update/preview calls), differing only in a few display strings
+  /// and whether the Pitch cone angle field is editable.
+  bool get _isSingleGear => _mode != BevelMultiKind.pair;
+
+  String _labelFor(BevelMultiKind kind) => switch (kind) {
+        BevelMultiKind.gear => 'Bevel Gear',
+        BevelMultiKind.crown => 'Crown Gear',
+        BevelMultiKind.pair => 'Bevel Pair',
+      };
+
+  String get _modeLabel => _labelFor(_mode);
+
   @override
   void initState() {
     super.initState();
     _mode = widget.initialMode;
+    // A crown gear's pitch cone is fixed at 90 by definition - the field is
+    // hidden (see `_buildBevelGearForm`), so this needs to be set up front
+    // rather than left at the regular Bevel Gear default of 30.
+    if (_mode == BevelMultiKind.crown) _pitchConeAngleController.text = '90';
     _api = widget.documentApi ?? DocumentApiClient();
     if (_isEditing) {
       _loadExistingFeature();
@@ -127,7 +153,7 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
     try {
       final partId = widget.editingPartId!;
       final featureId = widget.editingFeatureId!;
-      final json = _mode == BevelMultiKind.gear
+      final json = _isSingleGear
           ? await _api.updateBevelGearFeature(partId, featureId)
           : await _api.updateBevelPairFeature(partId, featureId);
       if (!mounted) return;
@@ -152,7 +178,7 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
     _module = (json['module'] as num?)?.toDouble() ?? _module;
     _pressureAngleDegrees = (json['pressure_angle_degrees'] as num?)?.toDouble() ?? _pressureAngleDegrees;
     _pointsPerFlank = (json['points_per_flank'] as num?)?.toInt() ?? _pointsPerFlank;
-    if (_mode == BevelMultiKind.gear) {
+    if (_isSingleGear) {
       _bevelGearMode = json['bevel_type'] as String? ?? _bevelGearMode;
       _targetBodyIds = (json['target_body_ids'] as List?)?.cast<String>() ?? _targetBodyIds;
       final toothCount = json['tooth_count'] as num?;
@@ -165,6 +191,11 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
       if (backlash != null) _backlashController.text = backlash.toString();
       final profileShift = json['profile_shift'] as num?;
       if (profileShift != null) _profileShiftController.text = profileShift.toString();
+      // A crown gear isn't its own Feature type on the wire - derive it
+      // from the loaded pitch cone angle being (essentially) 90, same
+      // "fixed by definition" threshold `_buildBevelGearForm` uses to
+      // decide whether the field is editable.
+      _mode = (pitchConeAngle != null && pitchConeAngle >= 89.999) ? BevelMultiKind.crown : BevelMultiKind.gear;
     } else {
       final member1 = json['member_1'] as Map<String, dynamic>?;
       final member2 = json['member_2'] as Map<String, dynamic>?;
@@ -220,7 +251,7 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
     setState(() => _previewLoading = true);
     try {
       GearPreviewDto result;
-      if (_mode == BevelMultiKind.gear) {
+      if (_isSingleGear) {
         final toothCount = int.tryParse(_toothCountController.text);
         final faceWidth = double.tryParse(_faceWidthController.text);
         final pitchConeAngle = double.tryParse(_pitchConeAngleController.text);
@@ -317,7 +348,7 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
         // Gear-tree UX: saves back onto the same Feature instead of minting
         // a new Part - mirrors GearDesignScreen._create's own editing
         // branch exactly.
-        if (_mode == BevelMultiKind.gear) {
+        if (_isSingleGear) {
           await _api.updateBevelGearFeature(
             widget.editingPartId!,
             widget.editingFeatureId!,
@@ -364,9 +395,9 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
       // never reset the session's Document out from under the Part being
       // edited.
       await _api.startNewDocument();
-      final part = await _api.createPart(_mode == BevelMultiKind.gear ? 'Bevel Gear Part' : 'Bevel Pair Part');
+      final part = await _api.createPart('$_modeLabel Part');
       List<String> warnings = const [];
-      if (_mode == BevelMultiKind.gear) {
+      if (_isSingleGear) {
         final feature = await _api.createBevelGearFeature(
           part.id,
           bevelType: 'boss',
@@ -415,9 +446,7 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(
-          _isEditing ? 'Edit ${_mode == BevelMultiKind.gear ? 'Bevel Gear' : 'Bevel Pair'}' : 'Bevel Gear Design',
-        ),
+        title: Text(_isEditing ? 'Edit $_modeLabel' : '$_modeLabel Design'),
       ),
       body: _loadingExisting
           ? const Center(child: CircularProgressIndicator())
@@ -430,7 +459,7 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
                 )
               : LayoutBuilder(
         builder: (context, constraints) {
-          final List<GearPreviewBevelMemberDto> members = _mode == BevelMultiKind.gear
+          final List<GearPreviewBevelMemberDto> members = _isSingleGear
               ? (_preview?.bevelGear != null ? [_preview!.bevelGear!] : const <GearPreviewBevelMemberDto>[])
               : (_preview?.bevelPair?.members ?? const <GearPreviewBevelMemberDto>[]);
           final canvas = BevelPreviewCanvas(members: members);
@@ -461,22 +490,25 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
         SegmentedButton<BevelMultiKind>(
           // Gear-tree UX: while editing, a BevelGearFeature can't become a
           // BevelPairFeature (or vice versa) via this same Update endpoint,
-          // so only the current mode is offered - mirrors
-          // GearDesignScreen's own identical restriction.
-          segments: _isEditing
-              ? [
-                  ButtonSegment(
-                    value: _mode,
-                    label: Text(_mode == BevelMultiKind.gear ? 'Bevel Gear' : 'Bevel Pair'),
-                  ),
-                ]
-              : const [
-                  ButtonSegment(value: BevelMultiKind.gear, label: Text('Bevel Gear')),
-                  ButtonSegment(value: BevelMultiKind.pair, label: Text('Bevel Pair')),
-                ],
+          // so pair stays locked to itself - mirrors GearDesignScreen's own
+          // identical restriction. Gear <-> Crown Gear *is* offered while
+          // editing (unlike pair), since they're the same Feature type on
+          // the wire - switching just changes pitch_cone_angle_degrees via
+          // the same update call.
+          segments: [
+            for (final kind in _isEditing
+                ? (_mode == BevelMultiKind.pair
+                    ? const [BevelMultiKind.pair]
+                    : const [BevelMultiKind.gear, BevelMultiKind.crown])
+                : BevelMultiKind.values)
+              ButtonSegment(value: kind, label: Text(_labelFor(kind))),
+          ],
           selected: {_mode},
           onSelectionChanged: (selection) {
-            setState(() => _mode = selection.first);
+            setState(() {
+              _mode = selection.first;
+              if (_mode == BevelMultiKind.crown) _pitchConeAngleController.text = '90';
+            });
             _schedulePreview();
           },
         ),
@@ -544,7 +576,7 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
           ],
         ),
         const SizedBox(height: 16),
-        if (_mode == BevelMultiKind.gear) ..._buildBevelGearForm() else ..._buildBevelPairForm(),
+        if (_isSingleGear) ..._buildBevelGearForm() else ..._buildBevelPairForm(),
         const SizedBox(height: 12),
         DropdownButtonFormField<String>(
           decoration: InputDecoration(
@@ -619,20 +651,32 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
         onChanged: (_) => _schedulePreview(),
       ),
       const SizedBox(height: 12),
-      TextField(
-        controller: _pitchConeAngleController,
-        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-        decoration: InputDecoration(
-          labelText: 'Pitch cone angle',
-          suffix: const Text('°'),
-          suffixIcon: fieldHelpIcon(
-            'The angle between the pitch cone\'s own surface and the shaft axis. A standalone bevel gear has no '
-            'meshing partner to derive this from automatically - use Bevel Pair instead if you want it '
-            'auto-derived from both gears\' tooth counts.',
+      if (_mode == BevelMultiKind.crown)
+        InputDecorator(
+          decoration: InputDecoration(
+            labelText: 'Pitch cone angle',
+            suffixIcon: fieldHelpIcon(
+              'A crown gear\'s pitch cone is flat by definition, so this is fixed at 90° and can\'t be '
+              'edited here - switch to Bevel Gear above if you need a different angle.',
+            ),
           ),
+          child: const Text('90° (fixed)'),
+        )
+      else
+        TextField(
+          controller: _pitchConeAngleController,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          decoration: InputDecoration(
+            labelText: 'Pitch cone angle',
+            suffix: const Text('°'),
+            suffixIcon: fieldHelpIcon(
+              'The angle between the pitch cone\'s own surface and the shaft axis. A standalone bevel gear has no '
+              'meshing partner to derive this from automatically - use Bevel Pair instead if you want it '
+              'auto-derived from both gears\' tooth counts.',
+            ),
+          ),
+          onChanged: (_) => _schedulePreview(),
         ),
-        onChanged: (_) => _schedulePreview(),
-      ),
       const SizedBox(height: 12),
       TextField(
         controller: _profileShiftController,

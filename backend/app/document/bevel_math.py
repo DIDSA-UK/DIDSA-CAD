@@ -111,8 +111,14 @@ def base_cone_half_angle(pitch_cone_half_angle: float, pressure_angle: float) ->
     `base_radius = pitch_radius` at zero pressure angle); `gamma = 90deg`
     (a crown gear) gives `gamma_b = 90deg - alpha` exactly (`sin(gamma_b) =
     cos(alpha) = sin(90deg - alpha)`)."""
-    if not (0 < pitch_cone_half_angle < math.pi / 2):
-        raise GearGeometryError(f"pitch_cone_half_angle must be in (0, pi/2), got {pitch_cone_half_angle!r}")
+    # <= pi/2 (not < ): pi/2 exactly is a real, manufactured crown gear (this
+    # function's own docstring above already calls out "gamma = 90deg (a
+    # crown gear) gives gamma_b = 90deg - alpha exactly" as a reference
+    # case) - confirmed on-device this stays perfectly finite at the
+    # boundary, no asymptote (sin(gamma_b) = cos(alpha), never zero/undefined
+    # for a valid pressure_angle).
+    if not (0 < pitch_cone_half_angle <= math.pi / 2):
+        raise GearGeometryError(f"pitch_cone_half_angle must be in (0, pi/2], got {pitch_cone_half_angle!r}")
     if not (0 <= pressure_angle < math.pi / 2):
         raise GearGeometryError(f"pressure_angle must be in [0, pi/2), got {pressure_angle!r}")
     return math.asin(math.sin(pitch_cone_half_angle) * math.cos(pressure_angle))
@@ -375,9 +381,13 @@ def bevel_gear_geometry(
 
     pressure_angle = math.radians(pressure_angle_degrees)
     if pitch_cone_angle_degrees is not None:
-        if not (0 < pitch_cone_angle_degrees < 90):
+        # <= 90 (not < ): 90 exactly is a crown gear (flat pitch cone) - see
+        # `base_cone_half_angle`'s own identical boundary and docstring.
+        # `root_cone_angle <= 0`/`face_width >= cone_distance` below still
+        # catch any combination that's actually degenerate.
+        if not (0 < pitch_cone_angle_degrees <= 90):
             raise GearGeometryError(
-                f"pitch_cone_angle_degrees must be in (0, 90), got {pitch_cone_angle_degrees!r}"
+                f"pitch_cone_angle_degrees must be in (0, 90], got {pitch_cone_angle_degrees!r}"
             )
         pitch_cone_angle = math.radians(pitch_cone_angle_degrees)
     else:

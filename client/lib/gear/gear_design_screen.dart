@@ -479,26 +479,12 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(_isEditing ? 'Edit ${_kind == GearDesignKind.rack ? 'Rack' : 'Gear'}' : 'Gear Design'),
-        // Gear-tree UX: the "discover a different gear-family screen"
-        // actions only make sense from the free-create entry point - while
-        // editing an existing Feature there is nowhere else to go but back
-        // to this same one.
-        actions: _isEditing
-            ? null
-            : [
-                TextButton(
-                  onPressed: () => Navigator.of(context).push(
-                    MaterialPageRoute(builder: (_) => const GearChainDesignScreen()),
-                  ),
-                  child: const Text('Chain / Planetary'),
-                ),
-                TextButton(
-                  onPressed: () => Navigator.of(context).push(
-                    MaterialPageRoute(builder: (_) => const BevelDesignScreen()),
-                  ),
-                  child: const Text('Bevel'),
-                ),
-              ],
+        // On-device feedback (gear-type-list UI overhaul): the "discover a
+        // different gear-family screen" entries used to live up here as
+        // separate app bar actions, apart from the External/Internal/Rack
+        // kind selector below - moved down into `_buildTypeSelector` so
+        // every gear type (in-place or a dedicated screen) reads as one
+        // scrollable list instead of two disconnected controls.
       ),
       body: _loadingExisting
           ? const Center(child: CircularProgressIndicator())
@@ -532,29 +518,88 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
     );
   }
 
+  /// On-device feedback (gear-type-list UI overhaul): a single horizontally-
+  /// scrollable row covering every gear type this tool offers - the
+  /// in-place [GearDesignKind] chips (External/Internal/Rack, same
+  /// selection model the old `SegmentedButton` used - selecting one changes
+  /// [_kind] and updates this same form) alongside chips that instead
+  /// navigate to a dedicated screen for a genuinely different data/preview
+  /// shape (Bevel Gear, Crown Gear, Chain / Planetary - previously separate
+  /// app bar actions, now part of the same visual list). `ChoiceChip` for
+  /// the former (shows selected state), `ActionChip` for the latter (never
+  /// "selected" - tapping one leaves this screen entirely). Wrapped in a
+  /// horizontal `ListView` rather than a `Wrap`/`SegmentedButton` so it
+  /// scrolls instead of overflowing or shrinking chips illegibly once six
+  /// entries stop fitting a narrow/split-pane width (see `build`'s own
+  /// `constraints.maxWidth < 700` split).
+  Widget _buildTypeSelector() {
+    // Gear-tree UX: while editing, only offer the kinds the current Feature
+    // type could actually become - a RackFeature has no internal/external
+    // concept and a GearFeature can't turn into a standalone RackFeature via
+    // this same Update endpoint, so switching families mid-edit isn't
+    // offered (only External <-> Internal, both still real `is_internal`
+    // toggles on the same GearFeature) - same restriction the old
+    // `SegmentedButton` enforced. The "discover a different screen" chips
+    // are dropped entirely while editing (nothing to navigate to - editing
+    // one specific Feature, not creating a new one), matching the old app
+    // bar actions' own `_isEditing ? null : [...]` behavior.
+    final kinds = _isEditing
+        ? (_kind == GearDesignKind.rack
+            ? const [GearDesignKind.rack]
+            : const [GearDesignKind.external, GearDesignKind.internal])
+        : GearDesignKind.values;
+    return SizedBox(
+      height: 40,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        children: [
+          for (final kind in kinds)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: ChoiceChip(
+                label: Text(kind.label),
+                selected: _kind == kind,
+                onSelected: (_) => _onKindChanged(kind),
+              ),
+            ),
+          if (!_isEditing) ...[
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: ActionChip(
+                label: const Text('Bevel'),
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const BevelDesignScreen()),
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: ActionChip(
+                label: const Text('Crown Gear'),
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const BevelDesignScreen(initialMode: BevelMultiKind.crown),
+                  ),
+                ),
+              ),
+            ),
+            ActionChip(
+              label: const Text('Chain / Planetary'),
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const GearChainDesignScreen()),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   Widget _buildForm() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        SegmentedButton<GearDesignKind>(
-          // Gear-tree UX: while editing, only offer the kinds the current
-          // Feature type could actually become - a RackFeature has no
-          // internal/external concept and a GearFeature can't turn into a
-          // standalone RackFeature via this same Update endpoint, so
-          // switching families mid-edit isn't offered (only External <->
-          // Internal, both still real `is_internal` toggles on the same
-          // GearFeature).
-          segments: [
-            for (final kind in _isEditing
-                ? (_kind == GearDesignKind.rack
-                    ? const [GearDesignKind.rack]
-                    : const [GearDesignKind.external, GearDesignKind.internal])
-                : GearDesignKind.values)
-              ButtonSegment(value: kind, label: Text(kind.label)),
-          ],
-          selected: {_kind},
-          onSelectionChanged: (selection) => _onKindChanged(selection.first),
-        ),
+        _buildTypeSelector(),
         const SizedBox(height: 16),
         StandardValueField(
           label: 'Module',
