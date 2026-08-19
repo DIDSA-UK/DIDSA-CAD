@@ -95,6 +95,7 @@ from app.document.bevel_math import (
     bevel_gear_geometry,
     bevel_tooth_flank_pair,
     max_recommended_face_width,
+    thin_hub_warning,
 )
 from app.document.create_plane import resolve_plane_ref
 from app.document.extrude import basis_normal, compute_part_bodies
@@ -1043,6 +1044,9 @@ def resolve_bevel_gear_from_bodies(
         raise _invalid_bevel_parameters(f"face_width must be positive, got {feature.face_width!r}")
 
     warnings: list[str] = []
+    hub_warning = thin_hub_warning(feature.pitch_cone_angle_degrees)
+    if hub_warning:
+        warnings.append(hub_warning)
     max_face_width = max_recommended_face_width(geometry.cone_distance)
     if feature.face_width > max_face_width:
         warnings.append(

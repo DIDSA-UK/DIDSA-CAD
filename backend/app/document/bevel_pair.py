@@ -53,6 +53,7 @@ from app.document.bevel_math import (
     bevel_gear_geometry,
     max_recommended_face_width,
     pitch_cone_half_angles,
+    thin_hub_warning,
 )
 from app.document.create_plane import resolve_plane_ref
 from app.document.extrude import compute_part_bodies
@@ -160,6 +161,9 @@ def resolve_bevel_pair_from_bodies(
 
     warnings: list[str] = []
     for label, geometry in zip(_MEMBER_LABELS, (geometry_1, geometry_2)):
+        hub_warning = thin_hub_warning(math.degrees(geometry.pitch_cone_angle))
+        if hub_warning:
+            warnings.append(f"{label}: {hub_warning}")
         max_face_width = max_recommended_face_width(geometry.cone_distance)
         if feature.face_width > max_face_width:
             warnings.append(

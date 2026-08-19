@@ -464,6 +464,45 @@ def max_recommended_face_width(cone_distance: float) -> float:
     return cone_distance / 3
 
 
+# Rule-of-thumb pitch-cone-angle bounds beyond which this app's simple
+# solid-hub construction (`app.document.bevel._assemble_gear_solid` builds
+# right out from the shared apex, with no separate hub/web/bore modeling)
+# tends to leave too little material around a shaft bore to be structurally
+# sound - not invalid geometry (both a near-flat "crown gear" close to 90
+# degrees and a long slender pinion close to 0 degrees are real, manufactured
+# bevel gear forms - confirmed on-device that `bevel_gear_geometry`/
+# `bevel_tooth_flank_pair` stay perfectly well-behaved arbitrarily close to
+# 90 degrees, no asymptote), just a case where the user likely needs to add
+# their own backing material (a plate behind a crown-like gear, extra stock
+# around a needle-like pinion's bore) rather than relying on this app's
+# default hub. Same non-blocking-warning convention as `max_recommended_
+# face_width` above.
+CROWN_LIKE_PITCH_CONE_ANGLE_DEGREES = 75.0
+NEEDLE_LIKE_PITCH_CONE_ANGLE_DEGREES = 15.0
+
+
+def thin_hub_warning(pitch_cone_angle_degrees: float) -> str | None:
+    """`None` if `pitch_cone_angle_degrees` is comfortably within the
+    "normal" bevel gear range, otherwise a warning string explaining why
+    this gear's own hub/bore material may end up too thin - callers append
+    this to their own `warnings` list exactly like `max_recommended_face_
+    width`'s own comparison, non-blocking."""
+    if pitch_cone_angle_degrees >= CROWN_LIKE_PITCH_CONE_ANGLE_DEGREES:
+        return (
+            f"pitch cone angle ({pitch_cone_angle_degrees!r}°) is close to (or at) 90° - this gear is "
+            "wide and shallow like a flat 'crown' gear, so a shaft bore cut into it may leave too little "
+            "material around the bore to be structurally sound. You may need to add your own backing "
+            "material (e.g. a plate behind the gear) for a functioning part."
+        )
+    if pitch_cone_angle_degrees <= NEEDLE_LIKE_PITCH_CONE_ANGLE_DEGREES:
+        return (
+            f"pitch cone angle ({pitch_cone_angle_degrees!r}°) is close to 0° - this gear is long and "
+            "slender, which can leave too little material around a shaft bore near the small end. You may "
+            "need to add your own extra material there for a functioning part."
+        )
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Tooth flank point sampling (for OCCT construction to consume)
 # ---------------------------------------------------------------------------
