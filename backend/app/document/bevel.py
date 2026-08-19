@@ -1011,14 +1011,25 @@ def _assemble_gear_solid(
         # `BRepCheck_Analyzer` before either boolean even runs) can make
         # `BRepAlgoAPI_Fuse` silently return an empty/non-solid result.
         # Falling back to the un-flattened spherical cap - not re-raising,
-        # and not a user-facing warning either, mirroring `_assembly_
-        # sanity_warnings`'s own identical "best-effort, log only" handling
-        # of its mesh-volume cross-check failing outright: an unflattened
-        # (still fully valid, just visibly domed/dished) end-cap on an
-        # extreme-geometry gear is the same real-but-non-fatal degradation
-        # this whole module already tolerates elsewhere, not a reason to
-        # refuse the gear or surface a warning for a case this rare.
+        # since an unflattened (still fully valid, just visibly domed/
+        # dished) end-cap on an extreme-geometry gear is a real-but-non-
+        # fatal degradation, not a reason to refuse the gear outright.
+        #
+        # On-device feedback (bevel-pair meshing/build-quality investigation):
+        # this used to be silent (log-only, no user-facing warning) on the
+        # stated assumption this was "a case this rare" it wasn't - a
+        # default Bevel Pair's own two members (20/40 teeth, gamma ~63
+        # degrees for the 40-tooth member) hit it for one member and not
+        # the other, producing two visibly different-looking gear backs
+        # (one flat, one still domed/dished) with no indication why. Now a
+        # real non-blocking warning, same convention as every other
+        # `00-conventions.md` warning this module surfaces.
         logger.warning("Bevel gear end-cap flattening itself failed - falling back to the true spherical cap", exc_info=True)
+        warnings.append(
+            "This bevel gear's end-cap could not be flattened to a flat disc at the tooth root and is "
+            "still visibly domed/dished (a spherical cap) instead - the gear itself is still valid, just "
+            "not flat-backed. Try a smaller face_width or a less extreme pitch cone angle."
+        )
         flattened = solid
     warnings.extend(_assembly_sanity_warnings(flattened))
     return flattened, warnings

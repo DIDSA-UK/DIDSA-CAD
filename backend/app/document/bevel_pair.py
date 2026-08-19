@@ -39,6 +39,42 @@ pair.md`: with exactly two members that are always the intended meshing
 pair, there is no "non-adjacent stage" case for `GearChainFeature`'s own
 interference machinery to apply to.
 
+**Meshing phase alignment** (bug fix - on-device feedback: two bevel
+pairs' teeth visibly overlapping instead of interlocking in the 3D
+viewer). Root cause: `app.document.bevel._assemble_gear_solid` always
+centers "tooth 0" at local azimuth 0 (along `basis.x_axis`) for *both*
+members, but the true pitch-cone tangency line - where the two cones
+actually touch, the one physically meaningful reference direction for
+meshing - sits at local azimuth **+-90 degrees from `x_axis`** in each
+member's own frame, not 0. This falls straight out of `_tilted_basis`'s
+own construction: it rotates member 2's axis *about* `x_axis`, so both
+members' axes (and therefore the tangency line, which must be coplanar
+with both axes) live entirely in the plane perpendicular to `x_axis` -
+i.e. `x_axis` itself is the *normal* of that plane, so the tangency
+direction can have no `x_axis` component, azimuth 90 degrees from it,
+independent of shaft angle or tooth counts. Confirmed by direct
+calculation: in member 1's local frame the tangency direction is
+`(0, sin(gamma_1), cos(gamma_1))` (zero `x_axis`/local-x component, by
+construction); expressed in member 2's own local frame (dotting with its
+`y_axis`/`normal`, both already known in terms of `y_axis_1`/`normal_1`
+via `_tilted_basis`) it simplifies via the angle-difference trig identity
+to `(0, -sin(gamma_2), cos(gamma_2))` - again zero local-x component, i.e.
+azimuth -90 degrees. So with neither member's tooth pattern rotated to
+account for this, whichever tooth/gap happens to land near that line is
+essentially arbitrary (depends on tooth counts mod 4) - not reliably a
+tooth meeting a gap.
+
+Fix: rotate each member's *finished solid* about its own axis
+(`_rotated_about_axis`, applied in the same worker that builds it, before
+BREP serialization - `bevel.py`'s own construction code stays untouched,
+consistent with this module's "closest precedent" reuse above) so a tooth
+of member 1 and a gap of member 2 both land exactly on the shared
+tangency line: `+pi/2` for member 1 (any tooth can be defined to sit
+there, since a standalone gear's own rotational phase is arbitrary to
+begin with) and `-pi/2 + pi/tooth_count_2` for member 2 (offsets by half
+its own angular pitch from member 1's convention, landing a *gap*, not a
+tooth, at its own `-pi/2`).
+
 **Members build concurrently, in separate processes** (on-device feedback,
 bevel-pair timeout investigation - the default pair, 20/40 teeth, was
 timing out the 3-minute request budget even at the cheapest tooth-curve
@@ -68,7 +104,9 @@ from dataclasses import replace
 
 from fastapi import HTTPException
 from OCC.Core.BRep import BRep_Builder
+from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform
 from OCC.Core.BRepTools import breptools
+from OCC.Core.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf
 from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape
 
 from app.document.bevel import _assemble_gear_solid
@@ -157,6 +195,25 @@ def _tilted_basis(basis: ResolvedPlane, angle: float) -> ResolvedPlane:
     return replace(basis, y_axis=rotated_y_axis, normal=rotated_normal)
 
 
+def _rotated_about_axis(shape: TopoDS_Shape, basis: ResolvedPlane, angle: float) -> TopoDS_Shape:
+    """Rigidly rotates `shape` by `angle` radians (CCW/right-hand-rule)
+    about `basis`'s own axis (`origin`, `normal`) - the meshing-phase
+    alignment this module's own top-level docstring derives (`+pi/2` for
+    member 1, `-pi/2 + pi/tooth_count_2` for member 2). Applied to the
+    *finished* solid rather than threaded into `app.document.bevel._
+    assemble_gear_solid`'s own tooth-placement math - deliberately, so
+    `bevel.py`'s construction code stays untouched (this module's own
+    "closest precedent" reuse principle), and reuses the same `gp_Trsf`-
+    rotation + `BRepBuilderAPI_Transform` pattern `app.document.pattern.
+    _circular_instances` already established for rotating a solid about an
+    arbitrary axis."""
+    ox, oy, oz = basis.origin
+    nx, ny, nz = basis.normal
+    trsf = gp_Trsf()
+    trsf.SetRotation(gp_Ax1(gp_Pnt(ox, oy, oz), gp_Dir(nx, ny, nz)), angle)
+    return BRepBuilderAPI_Transform(shape, trsf, True).Shape()
+
+
 def _shape_to_brep_bytes(shape: TopoDS_Shape) -> bytes:
     """Round-trips `shape` through a real BREP file (`breptools.Write` has
     no in-memory/string overload confirmed available in this session - no
@@ -196,21 +253,24 @@ def _shape_from_brep_bytes(data: bytes) -> TopoDS_Shape:
 
 
 def _build_member_solid(
-    basis: ResolvedPlane, geometry: BevelGearGeometry, tooth_count: int, points_per_flank: int
+    basis: ResolvedPlane, geometry: BevelGearGeometry, tooth_count: int, points_per_flank: int, phase_offset: float
 ) -> tuple[bytes, list[str]]:
     """The `ProcessPoolExecutor` worker entry point - module-level (picklable
     by reference) and picklable-only inputs/outputs, per this module's own
     top-level "members build concurrently" docstring. Runs the exact same
     `app.document.bevel._assemble_gear_solid` the old sequential code called
-    directly; only the caller (`resolve_bevel_pair_from_bodies`) changed,
-    not the construction itself - still "without touching `bevel.py`'s own
-    construction code at all". Any `HTTPException` `_assemble_gear_solid`
-    itself raises (`_bevel_failed`, real but rare) is caught and re-raised
-    as `_MemberBuildFailed` - see that class's own docstring for why."""
+    directly, then applies the meshing-phase rotation (`_rotated_about_
+    axis`, `phase_offset` radians about this member's own axis - see this
+    module's own top-level "meshing phase alignment" docstring) before
+    serializing - so `bevel.py`'s construction code itself stays untouched.
+    Any `HTTPException` `_assemble_gear_solid` itself raises (`_bevel_
+    failed`, real but rare) is caught and re-raised as `_MemberBuildFailed`
+    - see that class's own docstring for why."""
     try:
         solid, warnings = _assemble_gear_solid(basis, geometry, tooth_count, points_per_flank)
     except HTTPException as exc:
         raise _MemberBuildFailed(str(exc.detail)) from None
+    solid = _rotated_about_axis(solid, basis, phase_offset)
     return _shape_to_brep_bytes(solid), warnings
 
 
@@ -282,13 +342,27 @@ def resolve_bevel_pair_from_bodies(
     # Two independent builds, genuinely run in parallel across 2 processes -
     # see this module's own top-level docstring for why a process pool
     # (not threads) and why a BREP round-trip. `max_workers=2`: exactly 2
-    # members, always - no reason to spin up more.
+    # members, always - no reason to spin up more. The trailing angle each
+    # call passes is the meshing-phase offset - see this module's own
+    # top-level "meshing phase alignment" docstring for the derivation:
+    # member 1 gets a tooth exactly on the shared tangency line, member 2
+    # gets a gap there instead, so the two interlock rather than collide.
     with ProcessPoolExecutor(max_workers=2) as executor:
         future_1 = executor.submit(
-            _build_member_solid, basis_1, geometry_1, feature.member_1.tooth_count, feature.points_per_flank
+            _build_member_solid,
+            basis_1,
+            geometry_1,
+            feature.member_1.tooth_count,
+            feature.points_per_flank,
+            math.pi / 2,
         )
         future_2 = executor.submit(
-            _build_member_solid, basis_2, geometry_2, feature.member_2.tooth_count, feature.points_per_flank
+            _build_member_solid,
+            basis_2,
+            geometry_2,
+            feature.member_2.tooth_count,
+            feature.points_per_flank,
+            -math.pi / 2 + math.pi / feature.member_2.tooth_count,
         )
         try:
             solid_1_brep, warnings_1 = future_1.result()
