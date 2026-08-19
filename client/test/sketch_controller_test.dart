@@ -7851,6 +7851,62 @@ void main() {
   });
 
   test(
+      'computeDeleteCascade for a directly-selected lineDistance dimension also pulls in its own '
+      'implied ParallelConstraint (on-device feedback: "confirm that the parallel constraint is '
+      'linked to the line distance dimension so that deleting the dimension also deletes the '
+      'parallel constraint. otherwise, an unwanted constraint could be left behind and '
+      'invisible") - that Parallel is never independently selectable (its badge is suppressed, '
+      'see isImplicitLineDistanceParallel), so nothing else could ever delete it on its own', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 5);
+    await controller.handleCanvasTap(10, 5);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1);
+    await controller.handleCanvasTap(8, 5.1);
+    await controller.confirmGhostValue('lineDistance', 7.0);
+    final lineDistance = controller.constraints.values.whereType<LineDistanceConstraintDto>().single;
+    final parallel = controller.constraints.values.whereType<ParallelConstraintDto>().single;
+
+    final cascade = controller
+        .computeDeleteCascade([SketchSelection(kind: SelectionKind.constraint, id: lineDistance.id)]);
+
+    expect(cascade.constraints, {lineDistance.id, parallel.id});
+  });
+
+  test(
+      'deleting a lineDistance dimension removes its implied ParallelConstraint too, and undo '
+      'restores both together as a single step', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    await controller.handleCanvasTap(0, 5);
+    await controller.handleCanvasTap(10, 5);
+    controller.finishChain();
+    controller.enterDimensionMode();
+    await controller.handleCanvasTap(8, 0.1);
+    await controller.handleCanvasTap(8, 5.1);
+    await controller.confirmGhostValue('lineDistance', 7.0);
+    final lineDistance = controller.constraints.values.whereType<LineDistanceConstraintDto>().single;
+    controller.exitToSelectMode();
+    controller.selectConstraint(lineDistance.id);
+
+    await controller.deleteSelected();
+
+    expect(controller.constraints.values.whereType<LineDistanceConstraintDto>(), isEmpty);
+    expect(controller.constraints.values.whereType<ParallelConstraintDto>(), isEmpty);
+
+    await controller.undo();
+
+    expect(controller.constraints.values.whereType<LineDistanceConstraintDto>(), hasLength(1));
+    expect(controller.constraints.values.whereType<ParallelConstraintDto>(), hasLength(1));
+  });
+
+  test(
       'confirming an existing lineDistance ghost a second time does not create a second '
       'ParallelConstraint - the implied parallelism only needs asserting once, on first creation',
       () async {

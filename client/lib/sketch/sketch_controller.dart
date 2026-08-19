@@ -6661,6 +6661,24 @@ class SketchController extends ChangeNotifier {
         constraintIds.add(entry.key);
       }
     }
+    // On-device feedback ("confirm that the parallel constraint is linked
+    // to the line distance dimension so that deleting the dimension also
+    // deletes the parallel constraint. otherwise, an unwanted constraint
+    // could be left behind and invisible"): a LineDistanceConstraint being
+    // deleted here - whether directly selected itself, or only pulled in
+    // above because one of its own Lines is being deleted - needs to pull
+    // in its own paired ParallelConstraint too (see [confirmGhostValue]'s
+    // `lineDistance` branch, which always creates one alongside on first
+    // creation). That Parallel's own badge is deliberately suppressed (see
+    // [isImplicitLineDistanceParallel]), so it's otherwise never
+    // independently selectable/deletable - left out of the cascade, it
+    // would survive deleting the dimension that implied it.
+    for (final constraintId in constraintIds.toList()) {
+      final constraint = constraints[constraintId];
+      if (constraint is! LineDistanceConstraintDto) continue;
+      final parallel = _findParallelConstraint(constraint.line1Id, constraint.line2Id);
+      if (parallel != null) constraintIds.add(parallel.id);
+    }
     return (
       points: pointIds,
       lines: lineIds,
@@ -10947,6 +10965,22 @@ class SketchController extends ChangeNotifier {
   LineDistanceConstraintDto? _findLineDistanceConstraint(String lineAId, String lineBId) {
     for (final constraint in constraints.values) {
       if (constraint is LineDistanceConstraintDto &&
+          ((constraint.line1Id == lineAId && constraint.line2Id == lineBId) ||
+              (constraint.line1Id == lineBId && constraint.line2Id == lineAId))) {
+        return constraint;
+      }
+    }
+    return null;
+  }
+
+  /// [_findLineDistanceConstraint]'s mirror image - the ParallelConstraint
+  /// (if any) between the same two Lines, used by [computeDeleteCascade] to
+  /// find the ParallelConstraint a LineDistanceConstraint being deleted
+  /// implies (see that branch's own doc comment for why one always exists
+  /// on first creation).
+  ParallelConstraintDto? _findParallelConstraint(String lineAId, String lineBId) {
+    for (final constraint in constraints.values) {
+      if (constraint is ParallelConstraintDto &&
           ((constraint.line1Id == lineAId && constraint.line2Id == lineBId) ||
               (constraint.line1Id == lineBId && constraint.line2Id == lineAId))) {
         return constraint;
