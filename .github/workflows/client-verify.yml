@@ -86,10 +86,11 @@ jobs:
       # release isn't cleaned up when its branch is later deleted/merged -
       # stale per-branch releases accumulate until manually removed.
       #
-      # Only runs for a real push (not a pull_request build, which may come
-      # from a fork without release-creation access here).
+      # Only runs for a real push or a manual workflow_dispatch (not a
+      # pull_request build, which may come from a fork without
+      # release-creation access here).
       - name: Publish debug APK as a GitHub Release asset
-        if: ${{ github.event_name == 'push' }}
+        if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
