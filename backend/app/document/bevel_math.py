@@ -474,21 +474,33 @@ def max_recommended_face_width(cone_distance: float) -> float:
     return cone_distance / 3
 
 
-# Rule-of-thumb pitch-cone-angle bounds beyond which this app's simple
+# Rule-of-thumb pitch-cone-angle bound beyond which this app's simple
 # solid-hub construction (`app.document.bevel._assemble_gear_solid` builds
 # right out from the shared apex, with no separate hub/web/bore modeling)
 # tends to leave too little material around a shaft bore to be structurally
-# sound - not invalid geometry (both a near-flat "crown gear" close to 90
-# degrees and a long slender pinion close to 0 degrees are real, manufactured
-# bevel gear forms - confirmed on-device that `bevel_gear_geometry`/
-# `bevel_tooth_flank_pair` stay perfectly well-behaved arbitrarily close to
-# 90 degrees, no asymptote), just a case where the user likely needs to add
-# their own backing material (a plate behind a crown-like gear, extra stock
-# around a needle-like pinion's bore) rather than relying on this app's
-# default hub. Same non-blocking-warning convention as `max_recommended_
-# face_width` above.
+# sound - not invalid geometry (a near-flat "crown gear" close to 90 degrees
+# is a real, manufactured bevel gear form - confirmed on-device that `bevel_
+# gear_geometry`/`bevel_tooth_flank_pair` stay perfectly well-behaved
+# arbitrarily close to 90 degrees, no asymptote), just a case where the user
+# likely needs to add their own backing material (e.g. a plate behind a
+# crown-like gear) rather than relying on this app's default hub. Same
+# non-blocking-warning convention as `max_recommended_face_width` above.
+#
+# On-device feedback (CI, real pythonocc-core): this constant used to also
+# have a `NEEDLE_LIKE_PITCH_CONE_ANGLE_DEGREES = 15.0` low-end counterpart,
+# warning near 0 degrees the same way - dropped entirely, not just retuned.
+# This project's own canonical bevel gear test fixtures
+# (`tests/test_bevel_gear_feature.py`'s `_PITCH_ANGLE_6_80` = 4.29 degrees,
+# `_PITCH_ANGLE_18_90` = 11.3 degrees - real 6-tooth/18-tooth pinions mating
+# with an 80-/90-tooth gear, high but entirely ordinary tooth-count ratios)
+# sit well inside what a 15-degree threshold flagged, and those tests assert
+# `warnings == []` deliberately - a small pinion's own pitch cone getting
+# acute as its mate's tooth count grows is normal geometry, not a thin-hub
+# risk the way a *wide, flat* crown gear genuinely is; the asymmetry (crown
+# risk real, needle risk not) makes sense in hindsight - a small gamma
+# still leaves the tooth's own full radial depth as hub material near the
+# apex, nothing like a flat disc's shallow axial profile.
 CROWN_LIKE_PITCH_CONE_ANGLE_DEGREES = 75.0
-NEEDLE_LIKE_PITCH_CONE_ANGLE_DEGREES = 15.0
 
 
 def thin_hub_warning(pitch_cone_angle_degrees: float) -> str | None:
@@ -503,12 +515,6 @@ def thin_hub_warning(pitch_cone_angle_degrees: float) -> str | None:
             "wide and shallow like a flat 'crown' gear, so a shaft bore cut into it may leave too little "
             "material around the bore to be structurally sound. You may need to add your own backing "
             "material (e.g. a plate behind the gear) for a functioning part."
-        )
-    if pitch_cone_angle_degrees <= NEEDLE_LIKE_PITCH_CONE_ANGLE_DEGREES:
-        return (
-            f"pitch cone angle ({pitch_cone_angle_degrees!r}°) is close to 0° - this gear is long and "
-            "slender, which can leave too little material around a shaft bore near the small end. You may "
-            "need to add your own extra material there for a functioning part."
         )
     return None
 

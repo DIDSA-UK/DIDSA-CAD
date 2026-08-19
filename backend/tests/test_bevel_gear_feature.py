@@ -188,7 +188,17 @@ def test_a_realistic_very_tight_cone_gear_has_no_fold_risk_warning():
     """The same 6T/80T pair at a realistic face_width (at the recommended
     maximum, ratio 1.0) - `10-bevel-gear.md`'s own §7 finding, re-verified
     against this session's real committed code: no fold at this ratio,
-    resolving the two spikes' own previously-conflicting numbers."""
+    resolving the two spikes' own previously-conflicting numbers.
+
+    On-device feedback (CI, real pythonocc-core): this used to assert zero
+    warnings outright, but this exact 6T/80T/4.29-degree geometry is also
+    the one on-device-confirmed case `bevel._flatten_end_caps` itself can't
+    handle (see `test_end_cap_flattening_fallback_surfaces_a_warning` -
+    `_assemble_gear_solid` falls back to the un-flattened spherical cap and
+    now surfaces that as a real warning, not silently). So this test now
+    only asserts what it's actually named for - no *fold-risk* warning -
+    same pattern as `test_a_very_tight_cone_with_extreme_face_width_
+    surfaces_a_fold_risk_warning`'s own positive-control check."""
     part = _create_part()
     response = _create_bevel(
         part["id"],
@@ -198,7 +208,8 @@ def test_a_realistic_very_tight_cone_gear_has_no_fold_risk_warning():
         pitch_cone_angle_degrees=_PITCH_ANGLE_6_80,
     )
     assert response.status_code == 201, response.json()
-    assert response.json()["warnings"] == []
+    warnings = response.json()["warnings"]
+    assert not any("fold back on itself" in w for w in warnings)
 
 
 # --- Invalid parameters (bevel_math validation surfacing through the router) --
@@ -493,19 +504,25 @@ def test_end_cap_flattening_never_touches_real_tooth_flank_material():
     assert max_excess < 0.05, f"a tooth-region vertex sits {max_excess}mm past the outer flat cap - real material was cut"
 
 
-def test_flattening_falls_back_silently_on_a_marginal_gear_it_cannot_flatten():
+def test_end_cap_flattening_fallback_surfaces_a_warning():
     """The one on-device-confirmed case `bevel._flatten_end_caps` itself
     cannot handle (module 2.5, 6 teeth, face_width 33.0 - already flagged
     by `BRepCheck_Analyzer` before either boolean even runs, deep in the
     fold-risk regime `test_a_realistic_very_tight_cone_gear_has_no_fold_
     risk_warning` also exercises): `_assemble_gear_solid` falls back to the
     un-flattened spherical cap rather than raising - same face count as
-    the un-flattened construction (`4*tooth_count + 2`), no warning
-    surfaced (`_assemble_gear_solid`'s own docstring - this mirrors `_
-    assembly_sanity_warnings`'s own identical silent-fallback precedent)."""
+    the un-flattened construction (`4*tooth_count + 2`).
+
+    On-device feedback (real bevel-pair testing): this used to fall back
+    silently (no warning), on the stated assumption this failure mode was
+    rare - it wasn't. A default Bevel Pair's own two members (20/40 teeth)
+    hit it for one member and not the other, producing two visibly
+    different-looking gear backs (one flat, one still domed/dished) with no
+    indication why. Now a real non-blocking warning, same convention as
+    every other warning this module surfaces."""
     geometry = bevel_gear_geometry(module=2.5, tooth_count=6, face_width=33.0, pitch_cone_angle_degrees=_PITCH_ANGLE_6_80)
     solid, warnings = bevel_module._assemble_gear_solid(_XY_BASIS, geometry, 6)
-    assert warnings == []
+    assert any("could not be flattened" in w for w in warnings), warnings
 
     face_count = 0
     explorer = TopExp_Explorer(solid, TopAbs_FACE)
