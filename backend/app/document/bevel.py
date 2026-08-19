@@ -99,6 +99,7 @@ from app.document.bevel_math import (
     bevel_tooth_flank_pair,
     max_recommended_face_width,
     thin_hub_warning,
+    tredgold_base_colatitude,
 )
 from app.document.create_plane import resolve_plane_ref
 from app.document.extrude import basis_normal, compute_part_bodies
@@ -945,7 +946,7 @@ def _assemble_gear_solid(
     right0, left0 = bevel_tooth_flank_pair(geometry, points_per_flank)
     right0_outer, right0_inner = right0
     left0_outer, left0_inner = left0
-    start_colatitude = max(geometry.root_cone_angle, geometry.base_cone_angle)
+    start_colatitude = max(geometry.root_cone_angle, tredgold_base_colatitude(geometry))
     face_colatitude = geometry.face_cone_angle
 
     faces: list[TopoDS_Face] = []

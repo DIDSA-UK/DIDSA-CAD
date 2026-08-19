@@ -44,7 +44,12 @@ formula and comparing it to itself.
 import math
 from dataclasses import dataclass
 
-from app.document.gear_math import GearGeometryError
+from app.document.gear_math import (
+    GearGeometryError,
+    involute_function,
+    involute_point,
+    involute_roll_angle_at_radius,
+)
 
 # ---------------------------------------------------------------------------
 # Pitch cone half-angles
@@ -551,6 +556,313 @@ def _spherical_flank_start_offset_angle(geometry: BevelGearGeometry) -> float:
     )
 
 
+TREDGOLD_MAX_PITCH_CONE_ANGLE_DEGREES = 89.5
+"""Tredgold's approximation genuinely degenerates as `pitch_cone_angle` ->
+90 degrees (a crown gear): the "back cone" (see `tredgold_bevel_point`'s
+own docstring) has half-angle `90deg - pitch_cone_angle`, so its own apex
+distance from the real apex (`cone_distance / cos(pitch_cone_angle)`) ->
+infinity there - not a numerical-precision artifact, the real geometric
+limit of a cone tangent to a sphere at its equator (a cylinder, apex at
+infinity). `bevel_gear_geometry` itself still allows exactly 90 degrees
+(a real, previously-supported crown gear case, `base_cone_half_angle`'s
+own docstring calls it out explicitly) - flat-crown-gear construction via
+Tredgold is real, known future work (a crown gear's own "back cone" is
+simply its own flat pitch plane - no unrolling needed at all, a genuinely
+different, simpler code path), not implemented here. This bound raises a
+clear, actionable error well before floating-point division blows up
+silently into `inf`/`nan`, rather than only failing exactly at 90."""
+
+
+def equivalent_tooth_count(tooth_count: float, pitch_cone_half_angle: float) -> float:
+    """Tredgold's approximation's own core substitution, `N_v = N /
+    cos(gamma)` - this bevel gear's real tooth flank (generated on its own
+    curved pitch cone) is approximated by the flank of an ordinary planar
+    involute spur gear with this many teeth (generally non-integer - a
+    continuous parameter feeding `tredgold_bevel_point`'s construction,
+    never a literal manufactured tooth count), obtained by unrolling the
+    gear's own "back cone" (see `tredgold_bevel_point`'s docstring) flat.
+    Not otherwise used by `bevel_tooth_flank_pair` below (which derives
+    the same virtual pitch radius directly, `cone_distance * tan(gamma)` -
+    simpler, since it already has `cone_distance` in hand and doesn't need
+    `module` separately) - kept as its own named, independently-testable
+    function since it's the single most direct, textbook-checkable
+    statement of what Tredgold's approximation does."""
+    if not (0 < pitch_cone_half_angle < math.pi / 2):
+        raise GearGeometryError(f"pitch_cone_half_angle must be in (0, pi/2), got {pitch_cone_half_angle!r}")
+    return tooth_count / math.cos(pitch_cone_half_angle)
+
+
+def tredgold_radius_at_colatitude(colatitude: float, pitch_cone_half_angle: float, cone_distance: float) -> float:
+    """Inverse of `tredgold_bevel_point`'s own (roll-angle-driven) radial
+    construction: the flat/virtual gear's own polar radius `r_v` (mm,
+    Tredgold's flat/unrolled domain) whose projected 3D point lands at
+    exactly `colatitude` on the sphere of radius `cone_distance` centred
+    at the real cone apex - closed-form, not a numerical search.
+
+    Derivation: `tredgold_bevel_point` maps `r_v` to `(radial, axial) =
+    (r_v cos(gamma), cone_distance/cos(gamma) - r_v sin(gamma))` in the
+    meridian (radial, axial) plane (`gamma` = `pitch_cone_half_angle`),
+    then reads `colatitude = atan2(radial, axial)`. Setting `tan(colatitude)
+    = radial / axial` and solving for `r_v`:
+
+    `tan(colatitude) * (cone_distance/cos(gamma) - r_v sin(gamma)) = r_v
+    cos(gamma)`, so `r_v = tan(colatitude) * cone_distance / (cos(gamma) *
+    (cos(gamma) + tan(colatitude) * sin(gamma)))`, which simplifies
+    (multiply through by `cos(colatitude)`, then use the angle-difference
+    identity `cos(gamma) cos(colatitude) + sin(gamma) sin(colatitude) =
+    cos(gamma - colatitude)`) to the closed form below. Checked directly:
+    plugging this `r_v` back into the forward `(radial, axial)` formula
+    and simplifying (`cos(gamma - colatitude) - sin(colatitude) sin(gamma)
+    = cos(gamma) cos(colatitude)`, the same identity again) gives back
+    `atan2(radial, axial) = colatitude` exactly, algebraically, not just
+    numerically - so a flank sampled between two colatitudes obtained this
+    way starts/ends at *exactly* those colatitudes on *exactly* the given
+    sphere, the same guarantee `sample_spherical_involute_flank` already
+    gives via its own direct colatitude parametrization. This is what lets
+    a Tredgold-built flank curve connect cleanly to `app.document.bevel`'s
+    existing root-land/tip-land faces (built independently from `geometry.
+    root_cone_angle`/`face_cone_angle`) without a gap or overlap."""
+    gamma = pitch_cone_half_angle
+    if not (0 < colatitude < math.pi / 2):
+        raise GearGeometryError(f"colatitude must be in (0, pi/2), got {colatitude!r}")
+    denom = math.cos(gamma) * math.cos(gamma - colatitude)
+    if denom <= 0:
+        raise GearGeometryError(
+            f"colatitude {colatitude!r} is not reachable by this bevel gear's back cone "
+            f"(pitch_cone_half_angle {gamma!r})"
+        )
+    return cone_distance * math.sin(colatitude) / denom
+
+
+def tredgold_colatitude_at_radius(r_v: float, pitch_cone_half_angle: float, cone_distance: float) -> float:
+    """Forward counterpart of `tredgold_radius_at_colatitude` above: the
+    colatitude a flat/virtual-domain radius `r_v` maps to, at the sphere of
+    radius `cone_distance` - `tredgold_bevel_point`'s own `(radial, axial)`
+    construction, minus the azimuth it doesn't need here. Used for finding
+    *where* a specific `r_v` (e.g. the flat involute's own base-circle
+    radius, `roll_angle = 0`) lands, the opposite direction from `tredgold_
+    radius_at_colatitude`'s "what `r_v` reaches a given target colatitude" -
+    `bevel_tooth_flank_pair` needs both: a target *colatitude* for the
+    flank's own start/end (to connect cleanly to `root_cone_angle`/`face_
+    cone_angle`), but only a target *radius* (the base circle) for its
+    `max(root_cone_angle, base_colatitude)` clamp, mirroring `sample_
+    spherical_involute_flank`'s own identical-shaped clamp against
+    `geometry.base_cone_angle` - except Tredgold's own base-circle
+    colatitude is generally a slightly different value from the true-
+    spherical `base_cone_angle` (two different approximations of the same
+    underlying "where does the involute construction start" question), so
+    it needs its own computation rather than reusing that field."""
+    gamma = pitch_cone_half_angle
+    cos_g, sin_g = math.cos(gamma), math.sin(gamma)
+    radial = r_v * cos_g
+    axial = cone_distance / cos_g - r_v * sin_g
+    return math.atan2(radial, axial)
+
+
+def tredgold_bevel_point(
+    base_radius_v: float, roll_angle: float, pitch_cone_half_angle: float, cone_distance: float
+) -> tuple[float, float, float]:
+    """One point on a straight bevel gear's tooth flank via Tredgold's
+    approximation - the standard, industry-accepted way real straight (and
+    spiral) bevel gears are actually cut, and this module's replacement for
+    the true-spherical-involute construction (`spherical_involute_point`)
+    above: on-device testing found two real, differently-sized mating bevel
+    gears built via the true spherical involute independently on their own
+    base cones do *not* reliably mesh without interference (confirmed via
+    direct `BRepAlgoAPI_Common` overlap measurement on a real `BevelPair
+    Feature`, comparable in size to a full tooth height) - the true-
+    spherical construction has no guaranteed conjugate-action relationship
+    between two *different* gears' independently-generated flanks the way
+    Tredgold's shared-back-cone-projection method does by construction
+    (any two gears of the same module/pressure angle, built this way, are
+    conjugate - the same guarantee ordinary planar involute spur gears
+    already rely on, now inherited via the flat/virtual-gear step below).
+
+    Generates the ordinary *planar* involute-of-a-circle
+    (`gear_math.involute_point`) on this gear's own "back cone" unrolled
+    flat - the cone tangent to the real pitch sphere at the pitch circle,
+    apex on the gear's own axis, half-angle `pi/2 - gamma` (`gamma` =
+    `pitch_cone_half_angle`) - a standard textbook fact: the back-cone
+    generatrix is perpendicular to the pitch cone's own slant line at the
+    pitch point (the defining construction of a "back cone" at all). Then
+    wraps that flat curve back onto the real 3D back cone.
+
+    Derivation: unrolling a cone of half-angle `delta` preserves distance-
+    from-apex exactly (a flat involute point's own polar radius `r_v`) but
+    scales azimuth by `sin(delta)` (arc length at radius `r_v` on the real
+    cone is `r_v * sin(delta) * real_azimuth`; unrolled flat, the same arc
+    length is `r_v * flat_azimuth` - equal arc lengths give `flat_azimuth =
+    real_azimuth * sin(delta)`). With `delta = pi/2 - gamma`, `sin(delta) =
+    cos(gamma)`, so `real_azimuth = flat_azimuth / cos(gamma)`.
+
+    The back cone's own apex sits on the gear's real axis, on the far side
+    of the pitch point from the real apex, at distance `cone_distance /
+    cos(gamma)` from the real apex (the real apex/pitch-point/back-cone-
+    apex triangle has a right angle at the pitch point - the back-cone
+    generatrix is perpendicular to the pitch cone's own slant there by
+    definition - hypotenuse `cone_distance / cos(gamma)`, `cone_distance`
+    the adjacent leg). A flat point at radius `r_v` therefore sits, in the
+    real gear's own local (radial, axial) meridian-plane coordinates, at
+    `radial = r_v * cos(gamma)`, `axial = cone_distance / cos(gamma) - r_v
+    * sin(gamma)` (moving from the back-cone apex toward the real apex, at
+    half-angle `delta` from the back cone's own axis).
+
+    This construction lands *exactly* on the real pitch point when `r_v` =
+    this gear's own virtual pitch radius, `cone_distance * tan(gamma)`
+    (checked directly: `radial = cone_distance*tan(gamma)*cos(gamma) =
+    cone_distance*sin(gamma)`, the real pitch radius by definition;
+    `axial = cone_distance/cos(gamma) - cone_distance*tan(gamma)*sin(gamma)
+    = cone_distance*(1-sin^2(gamma))/cos(gamma) = cone_distance*cos(gamma)`,
+    the real pitch point's own axial coordinate) - everywhere else it's
+    Tredgold's own well-known *approximation* (the back cone only touches
+    the true pitch sphere exactly at the pitch circle itself, diverging
+    slightly toward root/tip - the same approximation every real straight-
+    or spiral-bevel gear cut this way accepts).
+
+    The raw `(radial, axial)` point does not sit exactly on the sphere of
+    radius `cone_distance` away from the pitch circle - this function
+    re-projects it there anyway (reading off `colatitude = atan2(radial,
+    axial)`, keeping `real_azimuth` as computed, then rebuilding the point
+    at exactly `cone_distance` from the apex) so callers keep the same
+    always-on-the-given-sphere guarantee `spherical_involute_point` already
+    provides - the small extra correction this adds is itself part of
+    Tredgold's own accepted approximation (root/tip points deviate from
+    the true sphere only slightly to begin with); it's what lets `app.
+    document.bevel`'s existing fixed-sphere-radius root-land/tip-land/end-
+    cap machinery keep working unchanged."""
+    gamma = pitch_cone_half_angle
+    x_flat, y_flat = involute_point(base_radius_v, roll_angle)
+    r_v = math.hypot(x_flat, y_flat)
+    flat_azimuth = math.atan2(y_flat, x_flat)
+    real_azimuth = flat_azimuth / math.cos(gamma)
+    colatitude = tredgold_colatitude_at_radius(r_v, gamma, cone_distance)
+    sin_colat = math.sin(colatitude)
+    return (
+        cone_distance * sin_colat * math.cos(real_azimuth),
+        cone_distance * sin_colat * math.sin(real_azimuth),
+        cone_distance * math.cos(colatitude),
+    )
+
+
+def sample_tredgold_flank(
+    pitch_cone_half_angle: float,
+    pressure_angle: float,
+    start_colatitude: float,
+    end_colatitude: float,
+    sphere_radius: float,
+    point_count: int = 12,
+) -> list[tuple[float, float, float]]:
+    """Evenly-spaced-by-roll-angle sample of one Tredgold-approximated
+    bevel tooth flank between `start_colatitude` and `end_colatitude`,
+    every point (not just the two endpoints) lying exactly on the sphere
+    of radius `sphere_radius` - the direct drop-in replacement for
+    `sample_spherical_involute_flank`, same call shape (`bevel_tooth_
+    flank_pair` calls this once per `sphere_radius`, outer/inner).
+
+    `base_radius_v`/`start_r_v`/`end_r_v` are all derived fresh at *this*
+    `sphere_radius` (not reused from a different one and rescaled) -
+    `pitch_radius_v = sphere_radius * tan(gamma)` (the same formula
+    `tredgold_bevel_point`'s own docstring verifies at the pitch point,
+    here evaluated directly since `gamma`/`sphere_radius` are already
+    in hand) - which keeps `involute_roll_angle_at_radius`'s own `radius /
+    base_radius` ratio internally consistent (both in real mm at this
+    specific concentric sphere) without needing a separate unit-scale/
+    rescale step; colatitude and azimuth are direction-only and so need no
+    rescaling at all between outer/inner calls."""
+    if point_count < 2:
+        raise GearGeometryError(f"point_count must be >= 2, got {point_count}")
+    gamma = pitch_cone_half_angle
+    pitch_radius_v = sphere_radius * math.tan(gamma)
+    base_radius_v = pitch_radius_v * math.cos(pressure_angle)
+    # max(..., base_radius_v): when `start_colatitude` is exactly the base
+    # colatitude (`tredgold_base_colatitude`'s own return value, the
+    # `max(root_cone_angle, ...)` clamp in `bevel_tooth_flank_pair` picking
+    # the base-circle branch), the two independent closed-form routes to
+    # get there - `tredgold_radius_at_colatitude`'s trig here vs `tredgold_
+    # colatitude_at_radius`'s own trig computing that same base colatitude
+    # in the first place - can disagree by a a single ULP, occasionally
+    # landing `start_r_v` a hair *below* `base_radius_v` where it should be
+    # exactly equal; `involute_roll_angle_at_radius` rejects anything below
+    # the base circle outright (by construction, the involute isn't defined
+    # there). Clamping up is safe: real cases with `start_colatitude` above
+    # the base colatitude already return `start_r_v > base_radius_v` with
+    # room to spare, so this only ever engages exactly on that boundary.
+    start_r_v = max(tredgold_radius_at_colatitude(start_colatitude, gamma, sphere_radius), base_radius_v)
+    end_r_v = max(tredgold_radius_at_colatitude(end_colatitude, gamma, sphere_radius), base_radius_v)
+    t_start = involute_roll_angle_at_radius(base_radius_v, start_r_v)
+    t_end = involute_roll_angle_at_radius(base_radius_v, end_r_v)
+    return [
+        tredgold_bevel_point(
+            base_radius_v, t_start + (t_end - t_start) * i / (point_count - 1), gamma, sphere_radius
+        )
+        for i in range(point_count)
+    ]
+
+
+def _tredgold_flank_start_offset_angle(geometry: BevelGearGeometry) -> float:
+    """The azimuthal angle (radians, about the *real* axis) from a tooth's
+    own centerline to where that flank's Tredgold-approximated involute
+    construction "starts" (`roll_angle = 0`, on the back cone's own base
+    circle) - the Tredgold counterpart of `_spherical_flank_start_offset_
+    angle` above, same two-term structure but the second term now derived
+    in the flat/virtual domain and converted back to a real azimuthal
+    angle (divide by `cos(gamma)` - `tredgold_bevel_point`'s own `real_
+    azimuth = flat_azimuth / cos(gamma)` relation).
+
+    The first term (`_spherical_flank_half_thickness_angle`) needs no such
+    conversion despite its name: it's `tooth_thickness_at_pitch / (2 *
+    geometry.pitch_radius)`, already expressed directly in terms of the
+    *real* pitch radius/circle - a real azimuthal angle to begin with, not
+    something derived in the flat domain (Tredgold preserves arc length
+    exactly along the pitch circle by construction, so `tooth_thickness_
+    at_pitch` is the same physical arc length real or virtual; dividing by
+    the *virtual* pitch radius instead and then converting back via
+    `/cos(gamma)` gives the identical result - `cos(gamma) * (arc /
+    (2*real_pitch_radius)) / cos(gamma) = arc / (2*real_pitch_radius)` -
+    confirming this term is correctly left unconverted).
+
+    The second term, `gear_math.involute_function(pressure_angle)`, is
+    exactly the flat/virtual involute's own angular sweep from its base-
+    circle start to the point where its local pressure angle equals the
+    (shared, real) `pressure_angle` - which is the virtual pitch circle,
+    by the same definition-of-pressure-angle reasoning `gear_math.
+    _flank_start_offset_angle` already relies on for an ordinary spur
+    gear, just evaluated on the flat/virtual gear here instead."""
+    return _spherical_flank_half_thickness_angle(geometry) + involute_function(
+        geometry.pressure_angle
+    ) / math.cos(geometry.pitch_cone_angle)
+
+
+def tredgold_base_colatitude(geometry: BevelGearGeometry) -> float:
+    """Where Tredgold's flat/virtual involute construction "starts"
+    (`roll_angle = 0`, the flat gear's own base circle, `r_v = base_
+    radius_v`) actually lands, as a colatitude on the outer (`cone_
+    distance`) sphere - `tredgold_colatitude_at_radius` evaluated at that
+    specific `r_v`. Exposed as its own function (not inlined into `bevel_
+    tooth_flank_pair`) because `app.document.bevel._assemble_gear_solid`
+    needs the *identical* value for its own `start_colatitude = max(root_
+    cone_angle, tredgold_base_colatitude(geometry))` (root-land placement,
+    end-cap-flattening tool sizing, the spherical cap face) - it used to
+    reuse `geometry.base_cone_angle` (the true-spherical field) for this,
+    which is a *different* number under Tredgold and left the root-land
+    face's own boundary circle not passing through the flank curve's
+    actual start point (a real `BRepBuilderAPI_MakeEdge` failure caught
+    on-device switching this module over). Also where this module's own
+    `pitch_cone_angle -> 90 degrees` (crown gear) degeneracy guard lives
+    (`TREDGOLD_MAX_PITCH_CONE_ANGLE_DEGREES`) - the first point in the
+    pipeline that needs `cos(gamma)` in a denominator, so the natural place
+    to fail loudly rather than downstream as an opaque near-`inf` colatitude
+    or a confusing OCCT edge-construction error."""
+    gamma = geometry.pitch_cone_angle
+    if gamma > math.radians(TREDGOLD_MAX_PITCH_CONE_ANGLE_DEGREES):
+        raise GearGeometryError(
+            f"pitch_cone_angle_degrees ({math.degrees(gamma)!r}) is too close to a crown gear (90 degrees) "
+            f"for Tredgold's approximation - must be <= {TREDGOLD_MAX_PITCH_CONE_ANGLE_DEGREES} degrees"
+        )
+    base_radius_v = geometry.cone_distance * math.tan(gamma) * math.cos(geometry.pressure_angle)
+    return tredgold_colatitude_at_radius(base_radius_v, gamma, geometry.cone_distance)
+
+
 def _rotate_about_z(point: tuple[float, float, float], angle: float) -> tuple[float, float, float]:
     """Rotate `point` counter-clockwise by `angle` radians about the +Z
     axis (the gear's own axis in this module's local frame, apex at the
@@ -571,24 +883,35 @@ def bevel_tooth_flank_pair(
     the origin, gear axis = +Z), each as `(outer_points, inner_points)` -
     two genuine 3D space curves per flank, sampled at `sphere_radius =
     geometry.cone_distance` (outer/back cone) and `geometry.inner_cone_
-    distance` (`cone_distance - face_width`), exactly what
-    `docs/gear-design/10-bevel-gear.md`'s OCCT construction spike needs to
-    hand to `BRepOffsetAPI_ThruSections`/a ruled-surface builder - the
-    pure-Python half of that spike, kept OCCT-free per this module's own
-    split so it's unit-testable in this repo's dev sandbox.
+    distance` (`cone_distance - face_width`), exactly what `app.document.
+    bevel`'s OCCT construction hands to `BRepOffsetAPI_ThruSections`/a
+    ruled-surface builder - the pure-Python half of that construction, kept
+    OCCT-free per this module's own split so it's unit-testable in this
+    repo's dev sandbox.
 
-    Each flank runs from `max(root_cone_angle, base_cone_angle)` (mirrors
+    Built via Tredgold's approximation (`tredgold_bevel_point`'s own
+    docstring has the full derivation and the on-device finding that
+    motivated switching to it from the true spherical involute this
+    function used before) - each flank is the ordinary planar involute of
+    this gear's own "back cone," unrolled flat and wrapped back onto the
+    real cone, rather than a curve confined directly to the sphere.
+
+    Each flank runs from `max(root_cone_angle, base_colatitude)` (mirrors
     `gear_math.tooth_profile_points`'s own `max(dedendum_radius,
-    base_radius)` clamp - a root inside the base cone is common and fine,
-    the root-to-base segment isn't a pure spherical involute there, exactly
-    like the planar case) to `face_cone_angle` (addendum)."""
-    start_colatitude = max(geometry.root_cone_angle, geometry.base_cone_angle)
+    base_radius)` clamp - a root inside the base circle is common and fine,
+    the root-to-base segment isn't a pure involute there, exactly like the
+    planar case; `base_colatitude` is Tredgold's own version of that
+    boundary, generally not the same value as the true-spherical `geometry.
+    base_cone_angle` - see `tredgold_colatitude_at_radius`'s docstring) to
+    `face_cone_angle` (addendum)."""
+    gamma = geometry.pitch_cone_angle
+    start_colatitude = max(geometry.root_cone_angle, tredgold_base_colatitude(geometry))
     end_colatitude = geometry.face_cone_angle
-    offset = _spherical_flank_start_offset_angle(geometry)
+    offset = _tredgold_flank_start_offset_angle(geometry)
 
     def flank(sphere_radius: float, mirror: bool) -> list[tuple[float, float, float]]:
-        raw = sample_spherical_involute_flank(
-            geometry.base_cone_angle, start_colatitude, end_colatitude, sphere_radius, points_per_flank
+        raw = sample_tredgold_flank(
+            gamma, geometry.pressure_angle, start_colatitude, end_colatitude, sphere_radius, points_per_flank
         )
         angle = offset if mirror else -offset
         sign = -1.0 if mirror else 1.0
