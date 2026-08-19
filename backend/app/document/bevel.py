@@ -41,9 +41,13 @@ grid-injectivity/normal-flip fold check (`_flank_fold_warning`) runs once
 before assembly (all teeth are identical up to rotation - `10-bevel-
 gear.md`'s own §7 finding that ring assembly never shifts this risk
 relative to a single flank), surfaced as a non-blocking warning per
-`00-conventions.md`; `BOPAlgo_CheckerSI` plus an independent mesh-volume
-cross-check run once on the assembled solid afterward, as a final sanity
-pass rather than the primary defense.
+`00-conventions.md`; an independent mesh-volume cross-check runs once on
+the assembled solid afterward, as a final sanity pass rather than the
+primary defense (`_assembly_sanity_warnings`'s own docstring - bevel-pair
+timeout investigation - explains why the whole-solid `BOPAlgo_CheckerSI`
+self-intersection check this used to also run here was dropped entirely,
+not just made cheaper: expensive, redundant with the per-flank check
+above, and explicitly secondary already).
 
 **Verification status**: written directly against both spikes' own
 validated findings (not re-derived) and verified for real against genuine
@@ -59,7 +63,6 @@ import logging
 import math
 
 from fastapi import HTTPException
-from OCC.Core.BOPAlgo import BOPAlgo_CheckerSI
 from OCC.Core.BRep import BRep_Tool
 from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
 from OCC.Core.BRepBuilderAPI import (
@@ -819,8 +822,21 @@ def _mesh_volume(solid: TopoDS_Shape) -> float:
     own §5 finding that agreement between the two (not `BRepCheck_
     Analyzer`) is the real evidence a solid is correctly closed and
     oriented. Sums signed tetrahedron volumes from the world origin over
-    every mesh triangle of a real `BRepMesh_IncrementalMesh` tessellation."""
-    BRepMesh_IncrementalMesh(solid, 0.05, False, 0.5, True)
+    every mesh triangle of a real `BRepMesh_IncrementalMesh` tessellation.
+
+    On-device feedback (bevel-pair timeout investigation): deflection
+    raised from a fixed 0.05mm to a fixed 0.3mm - this mesh only feeds the
+    volume cross-check above (>2% disagreement warning), not any geometry
+    this Feature actually returns, so it doesn't need fine-print accuracy;
+    coarsening it cuts triangle count (and therefore tessellation cost) on
+    every curved B-spline flank substantially while staying far tighter
+    than the 2% comparison tolerance for any realistic gear size. Not
+    switched to `isRelative=True` (deflection-as-a-fraction-of-bounding-box)
+    despite that scaling more naturally across gear sizes - unverified
+    on-device in this session (no pythonocc-core available), so kept as the
+    same simple absolute-value knob the original code already used, just
+    larger; worth revisiting with real timing data."""
+    BRepMesh_IncrementalMesh(solid, 0.3, False, 0.5, True)
     total = 0.0
     explorer = TopExp_Explorer(solid, TopAbs_FACE)
     while explorer.More():
@@ -849,23 +865,28 @@ def _mesh_volume(solid: TopoDS_Shape) -> float:
 
 def _assembly_sanity_warnings(solid: TopoDS_Solid) -> list[str]:
     """The assembled-solid final sanity pass per `10-bevel-gear.md`'s own
-    §8: `BOPAlgo_CheckerSI` (self-intersection) plus an independent mesh-
-    volume cross-check against `BRepGProp`'s own analytic volume - run
-    once, after assembly, deliberately NOT gating on `BRepCheck_Analyzer.
-    IsValid()` (confirmed wrong for this construction's own end-caps, per
-    that doc's §5). Non-blocking, per `00-conventions.md` - a disagreement
-    here is a real, but not certainly-fatal, signal worth surfacing."""
-    warnings: list[str] = []
+    §8: an independent mesh-volume cross-check against `BRepGProp`'s own
+    analytic volume - run once, after assembly, deliberately NOT gating on
+    `BRepCheck_Analyzer.IsValid()` (confirmed wrong for this construction's
+    own end-caps, per that doc's §5). Non-blocking, per `00-conventions.md`
+    - a disagreement here is a real, but not certainly-fatal, signal worth
+    surfacing.
 
-    checker = BOPAlgo_CheckerSI()
-    checker.AddArgument(solid)
-    checker.Perform()
-    if checker.HasErrors():
-        warnings.append(
-            "This bevel gear's assembled solid failed a self-intersection check (BOPAlgo_CheckerSI) - "
-            "the geometry may not be physically valid. Try a smaller face_width or a less extreme "
-            "pitch cone angle."
-        )
+    On-device feedback (bevel-pair timeout investigation): this used to also
+    run `BOPAlgo_CheckerSI` (whole-solid self-intersection check) here -
+    dropped entirely, not just made cheaper. It was always the more
+    expensive of the two checks (cost scales with the assembled solid's
+    total face count, `4*tooth_count + 2` for a Bevel Pair's own worse
+    member) and this module's own top-level docstring already frames it as
+    "a final sanity pass rather than the primary defense" - `_flank_fold_
+    warning` (run once, before assembly, on a single flank) is the actual
+    primary defense against the real failure mode (a folded/self-
+    overlapping tooth flank from too-large face_width), and per `10-bevel-
+    gear.md`'s own §7 finding, ring assembly never introduces a fold risk
+    `_flank_fold_warning` didn't already catch on that one flank. So
+    dropping this redundant, expensive, genuinely-secondary check trades
+    away no real coverage."""
+    warnings: list[str] = []
 
     props = GProp_GProps()
     brepgprop.VolumeProperties(solid, props)

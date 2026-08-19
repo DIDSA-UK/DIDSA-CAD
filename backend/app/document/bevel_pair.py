@@ -37,13 +37,38 @@ rotates the normal itself out of the original plane.
 **No interference checking at all** - explicit simplification per `11-bevel-
 pair.md`: with exactly two members that are always the intended meshing
 pair, there is no "non-adjacent stage" case for `GearChainFeature`'s own
-interference machinery to apply to."""
+interference machinery to apply to.
+
+**Members build concurrently, in separate processes** (on-device feedback,
+bevel-pair timeout investigation - the default pair, 20/40 teeth, was
+timing out the 3-minute request budget even at the cheapest tooth-curve
+precision, since neither that slider nor the diagnostics trimmed in
+`app.document.bevel._assembly_sanity_warnings` touch the two dominant costs:
+building `4*tooth_count + 2` faces and the end-cap-flattening booleans -
+both scale with each member's own tooth count independently). `member_1`/
+`member_2` are fully independent builds (different geometry, different
+basis) with no shared mutable state, so `_build_member_solid` runs each in
+its own OS process via `ProcessPoolExecutor` for genuine multi-core
+parallelism - deliberately not a `ThreadPoolExecutor`: whether pythonocc-
+core's SWIG-wrapped OCCT calls release the GIL during heavy C++ work isn't
+something this session could verify (no on-device access), so a process
+pool is the only way to *guarantee* the two builds actually overlap on
+separate cores rather than time-slicing one. A `TopoDS_Shape` itself can't
+cross a process boundary (not picklable), so each worker round-trips its
+own finished solid through a real BREP file via `_shape_to_brep_bytes`/
+`_shape_from_brep_bytes` - `ResolvedPlane`/`BevelGearGeometry` (this
+function's own inputs) are already plain-dataclass/tuple-of-floats, no
+OCCT types, so they pickle across the process boundary for free."""
 
 import math
+import os
+import tempfile
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import replace
 
 from fastapi import HTTPException
 from OCC.Core.BRep import BRep_Builder
+from OCC.Core.BRepTools import breptools
 from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape
 
 from app.document.bevel import _assemble_gear_solid
@@ -67,6 +92,29 @@ def _invalid_bevel_pair_parameters(detail: str) -> HTTPException:
     itself) rejects - mirrors `app.document.bevel._invalid_bevel_parameters`'s
     own convention."""
     return HTTPException(status_code=422, detail={"type": "invalid_bevel_pair_parameters", "detail": detail})
+
+
+class _MemberBuildFailed(Exception):
+    """A plain, guaranteed-cleanly-picklable stand-in for the `HTTPException`
+    `_assemble_gear_solid` can raise (`_bevel_failed`, a real but rare OCCT
+    construction failure) - `_build_member_solid` catches that and raises
+    this instead before it can cross the `ProcessPoolExecutor` worker
+    boundary. Not just tidiness: Starlette's `HTTPException.__init__` sets
+    `self.args` from `detail` alone, not `status_code` too, so pickling it
+    for real cross-process transport (not verified on-device in this
+    session - no pythonocc-core available) risks losing `status_code` on
+    unpickling or failing outright, surfacing as an opaque broken-process-
+    pool error instead of the clean 422 `resolve_bevel_pair_from_bodies`'s
+    own callers expect. A single-string-argument exception like this one
+    round-trips through the default `Exception.__reduce__` correctly no
+    matter what pythonocc-core/Starlette version is running."""
+
+
+def _bevel_pair_failed(detail: str) -> HTTPException:
+    """Mirrors `app.document.bevel._bevel_failed`'s own convention - the
+    pair-level wrapper `resolve_bevel_pair_from_bodies` re-raises through
+    after catching a worker's own `_MemberBuildFailed`."""
+    return HTTPException(status_code=422, detail={"type": "bevel_failed", "detail": detail})
 
 
 def _tilted_basis(basis: ResolvedPlane, angle: float) -> ResolvedPlane:
@@ -107,6 +155,63 @@ def _tilted_basis(basis: ResolvedPlane, angle: float) -> ResolvedPlane:
     rotated_y_axis = (cos_a * yx - sin_a * nx, cos_a * yy - sin_a * ny, cos_a * yz - sin_a * nz)
     rotated_normal = (sin_a * yx + cos_a * nx, sin_a * yy + cos_a * ny, sin_a * yz + cos_a * nz)
     return replace(basis, y_axis=rotated_y_axis, normal=rotated_normal)
+
+
+def _shape_to_brep_bytes(shape: TopoDS_Shape) -> bytes:
+    """Round-trips `shape` through a real BREP file (`breptools.Write` has
+    no in-memory/string overload confirmed available in this session - no
+    on-device pythonocc-core to check against, so a real temp file is the
+    one guaranteed-available serialization path) - the only way to move a
+    `TopoDS_Shape` (a SWIG-wrapped C++ object, not picklable) across a
+    `ProcessPoolExecutor` worker boundary. A modest bevel gear solid's own
+    BREP text is small (tens to low hundreds of KB) and local disk I/O on
+    this app's own Pi 5 target hardware is far cheaper than the minutes-
+    scale OCCT construction this is unblocking, so the extra round-trip
+    cost here is not the bottleneck this workstream is chasing."""
+    fd, path = tempfile.mkstemp(suffix=".brep")
+    os.close(fd)
+    try:
+        breptools.Write(shape, path)
+        with open(path, "rb") as f:
+            return f.read()
+    finally:
+        os.unlink(path)
+
+
+def _shape_from_brep_bytes(data: bytes) -> TopoDS_Shape:
+    """Inverse of `_shape_to_brep_bytes` - the main process's own half of
+    the round-trip, reconstructing a real `TopoDS_Shape` from a worker
+    process's finished solid."""
+    fd, path = tempfile.mkstemp(suffix=".brep")
+    os.close(fd)
+    try:
+        with open(path, "wb") as f:
+            f.write(data)
+        shape = TopoDS_Shape()
+        builder = BRep_Builder()
+        breptools.Read(shape, path, builder)
+        return shape
+    finally:
+        os.unlink(path)
+
+
+def _build_member_solid(
+    basis: ResolvedPlane, geometry: BevelGearGeometry, tooth_count: int, points_per_flank: int
+) -> tuple[bytes, list[str]]:
+    """The `ProcessPoolExecutor` worker entry point - module-level (picklable
+    by reference) and picklable-only inputs/outputs, per this module's own
+    top-level "members build concurrently" docstring. Runs the exact same
+    `app.document.bevel._assemble_gear_solid` the old sequential code called
+    directly; only the caller (`resolve_bevel_pair_from_bodies`) changed,
+    not the construction itself - still "without touching `bevel.py`'s own
+    construction code at all". Any `HTTPException` `_assemble_gear_solid`
+    itself raises (`_bevel_failed`, real but rare) is caught and re-raised
+    as `_MemberBuildFailed` - see that class's own docstring for why."""
+    try:
+        solid, warnings = _assemble_gear_solid(basis, geometry, tooth_count, points_per_flank)
+    except HTTPException as exc:
+        raise _MemberBuildFailed(str(exc.detail)) from None
+    return _shape_to_brep_bytes(solid), warnings
 
 
 def _member_geometry(feature: BevelPairFeature, tooth_count: int, profile_shift: float, gamma: float) -> BevelGearGeometry:
@@ -174,12 +279,24 @@ def resolve_bevel_pair_from_bodies(
     basis_1 = resolve_plane_ref(part, bodies, feature.plane_ref, excluded_feature_ids)
     basis_2 = _tilted_basis(basis_1, math.radians(feature.shaft_angle_degrees))
 
-    solid_1, warnings_1 = _assemble_gear_solid(
-        basis_1, geometry_1, feature.member_1.tooth_count, feature.points_per_flank
-    )
-    solid_2, warnings_2 = _assemble_gear_solid(
-        basis_2, geometry_2, feature.member_2.tooth_count, feature.points_per_flank
-    )
+    # Two independent builds, genuinely run in parallel across 2 processes -
+    # see this module's own top-level docstring for why a process pool
+    # (not threads) and why a BREP round-trip. `max_workers=2`: exactly 2
+    # members, always - no reason to spin up more.
+    with ProcessPoolExecutor(max_workers=2) as executor:
+        future_1 = executor.submit(
+            _build_member_solid, basis_1, geometry_1, feature.member_1.tooth_count, feature.points_per_flank
+        )
+        future_2 = executor.submit(
+            _build_member_solid, basis_2, geometry_2, feature.member_2.tooth_count, feature.points_per_flank
+        )
+        try:
+            solid_1_brep, warnings_1 = future_1.result()
+            solid_2_brep, warnings_2 = future_2.result()
+        except _MemberBuildFailed as exc:
+            raise _bevel_pair_failed(str(exc)) from exc
+    solid_1 = _shape_from_brep_bytes(solid_1_brep)
+    solid_2 = _shape_from_brep_bytes(solid_2_brep)
     warnings.extend(f"member_1: {w}" for w in warnings_1)
     warnings.extend(f"member_2: {w}" for w in warnings_2)
 
