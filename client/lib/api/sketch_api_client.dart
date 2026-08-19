@@ -437,6 +437,57 @@ class EllipseDto {
       );
 }
 
+/// A partial ellipse - the elliptical analogue of [ArcDto], layered onto
+/// an ellipse's own shape the same way [EllipseDto] layers onto
+/// [CircleDto]. See the backend's `app.sketch.models.EllipseArc` docstring
+/// for why there's no `majorPointNegId`/`minorPointNegId` pair here
+/// (unlike [EllipseDto]) - a partial ellipse's natural drag handles are
+/// its own [startPointId]/[endPointId] instead.
+class EllipseArcDto {
+  final String id;
+  final String centerPointId;
+  final String majorPointId;
+  final String minorPointId;
+  final String startPointId;
+  final String endPointId;
+  final String majorAxisLineId;
+  final String minorAxisLineId;
+  final double majorRadius;
+  final double minorRadius;
+  final double rotation;
+  final bool construction;
+
+  EllipseArcDto({
+    required this.id,
+    required this.centerPointId,
+    required this.majorPointId,
+    required this.minorPointId,
+    required this.startPointId,
+    required this.endPointId,
+    required this.majorAxisLineId,
+    required this.minorAxisLineId,
+    required this.majorRadius,
+    required this.minorRadius,
+    required this.rotation,
+    this.construction = false,
+  });
+
+  factory EllipseArcDto.fromJson(Map<String, dynamic> json) => EllipseArcDto(
+        id: json['id'] as String,
+        centerPointId: json['center_point_id'] as String,
+        majorPointId: json['major_point_id'] as String,
+        minorPointId: json['minor_point_id'] as String,
+        startPointId: json['start_point_id'] as String,
+        endPointId: json['end_point_id'] as String,
+        majorAxisLineId: json['major_axis_line_id'] as String,
+        minorAxisLineId: json['minor_axis_line_id'] as String,
+        majorRadius: (json['major_radius'] as num).toDouble(),
+        minorRadius: (json['minor_radius'] as num).toDouble(),
+        rotation: (json['rotation'] as num).toDouble(),
+        construction: json['construction'] as bool? ?? false,
+      );
+}
+
 /// A regular N-gon - see the backend's `app.sketch.models.Polygon`
 /// docstring for how [vertexPointIds]/[lineIds] are ordered and what the
 /// solver constraint chain underneath them does. Bug fix (sketcher-roadmap
@@ -1651,6 +1702,13 @@ class SketchApiClient {
             .toList(),
       );
 
+  Future<List<EllipseArcDto>> listEllipseArcs(String sketchId) => _send(
+        () => _httpClient.get(_uri('/sketch/sketches/$sketchId/ellipse-arcs'), headers: _headers),
+        (body) => (body as List)
+            .map((e) => EllipseArcDto.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+
   Future<List<PolygonDto>> listPolygons(String sketchId) => _send(
         () => _httpClient.get(_uri('/sketch/sketches/$sketchId/polygons'), headers: _headers),
         (body) => (body as List)
@@ -1806,6 +1864,37 @@ class SketchApiClient {
               }),
             ),
         (body) => EllipseDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Always creates from an existing centre Point and an existing major-
+  /// axis Point (mirrors [createEllipse]'s own existing-point-only
+  /// creation path) - [startAngle]/[endAngle] are radians in the ellipse's
+  /// own parametric frame (see the backend's `app.sketch.models.
+  /// EllipseArc.local_angle` docstring), never stored server-side, only
+  /// used to place the new start/end Points exactly on the curve.
+  Future<EllipseArcDto> createEllipseArc(
+    String sketchId,
+    String centerPointId,
+    String majorPointId,
+    double minorRadius,
+    double startAngle,
+    double endAngle, {
+    bool construction = false,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/ellipse-arcs'),
+              headers: _headers,
+              body: jsonEncode({
+                'center_point_id': centerPointId,
+                'major_point_id': majorPointId,
+                'minor_radius': minorRadius,
+                'start_angle': startAngle,
+                'end_angle': endAngle,
+                'construction': construction,
+              }),
+            ),
+        (body) => EllipseArcDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Always creates from an existing center Point and an existing first-
@@ -1994,6 +2083,17 @@ class SketchApiClient {
               }),
             ),
         (body) => EllipseDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  Future<EllipseArcDto> updateEllipseArc(String sketchId, String ellipseArcId, {bool? construction}) => _send(
+        () => _httpClient.patch(
+              _uri('/sketch/sketches/$sketchId/ellipse-arcs/$ellipseArcId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (construction != null) 'construction': construction,
+              }),
+            ),
+        (body) => EllipseArcDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Toggles a Polygon's construction flag - mirrors [updateArc]. There is
@@ -2231,6 +2331,16 @@ class SketchApiClient {
   Future<List<String>> deleteEllipse(String sketchId, String ellipseId) => _send(
         () => _httpClient.delete(
               _uri('/sketch/sketches/$sketchId/ellipses/$ellipseId'),
+              headers: _headers,
+            ),
+        (body) => ((body as Map<String, dynamic>)['pruned_point_ids'] as List<dynamic>)
+            .map((e) => e as String)
+            .toList(),
+      );
+
+  Future<List<String>> deleteEllipseArc(String sketchId, String ellipseArcId) => _send(
+        () => _httpClient.delete(
+              _uri('/sketch/sketches/$sketchId/ellipse-arcs/$ellipseArcId'),
               headers: _headers,
             ),
         (body) => ((body as Map<String, dynamic>)['pruned_point_ids'] as List<dynamic>)

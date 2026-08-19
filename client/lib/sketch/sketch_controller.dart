@@ -291,6 +291,37 @@ class SketchEllipseView {
   });
 }
 
+/// A partial ellipse - the elliptical analogue of [SketchArcView], layered
+/// onto an ellipse's own shape the same way [SketchEllipseView] layers
+/// onto [SketchCircleView]. See the backend's `app.sketch.models.
+/// EllipseArc` docstring for why there's no majorPointNegId/
+/// minorPointNegId pair here (unlike [SketchEllipseView]).
+class SketchEllipseArcView {
+  final String id;
+  final String centerPointId;
+  final String majorPointId;
+  final String minorPointId;
+  final String startPointId;
+  final String endPointId;
+  final String majorAxisLineId;
+  final String minorAxisLineId;
+  final double minorRadius;
+  final bool construction;
+
+  const SketchEllipseArcView({
+    required this.id,
+    required this.centerPointId,
+    required this.majorPointId,
+    required this.minorPointId,
+    required this.startPointId,
+    required this.endPointId,
+    required this.majorAxisLineId,
+    required this.minorAxisLineId,
+    required this.minorRadius,
+    this.construction = false,
+  });
+}
+
 class SketchSplineView {
   final String id;
   final List<String> throughPointIds;
@@ -796,7 +827,7 @@ class SketchTextView {
 /// active. Selected via the FAB's "Sketch Entities" category. [point] is a
 /// standalone, self-terminating placement (no chaining, no construction
 /// method choice) - a single tap creates one Point and the tool is done.
-enum SketchTool { line, circle, point, rectangle, arc, polygon, slot, ellipse, spline, text }
+enum SketchTool { line, circle, point, rectangle, arc, polygon, slot, ellipse, ellipseArc, spline, text }
 
 /// How a tap-to-place Line is built while [SketchTool.line] is active -
 /// chosen from [SketchConstructionMethodBar]. [endToEnd] is the original
@@ -968,6 +999,30 @@ class EllipseGhost extends DrawGhost {
   });
 }
 
+/// Previews a partial ellipse - [EllipseGhost]'s shape fields
+/// (center/major/minorRadius) plus [startAngle]/[endAngle], the ellipse's
+/// own parametric angles (see [SketchController._ellipseParametricAngle])
+/// bounding the swept range, mirroring [ArcGhost]'s role for Arc.
+class EllipseArcGhost extends DrawGhost {
+  final double centerX;
+  final double centerY;
+  final double majorX;
+  final double majorY;
+  final double minorRadius;
+  final double startAngle;
+  final double endAngle;
+
+  const EllipseArcGhost({
+    required this.centerX,
+    required this.centerY,
+    required this.majorX,
+    required this.majorY,
+    required this.minorRadius,
+    required this.startAngle,
+    required this.endAngle,
+  });
+}
+
 /// Previews a Rectangle's 4 corners, in the same winding order
 /// [SketchController._buildRectangle] would use to create its 4 Lines.
 class RectGhost extends DrawGhost {
@@ -1079,6 +1134,26 @@ List<List<(double, double)>> ghostPolylines(DrawGhost ghost) {
           for (var i = 0; i <= circleSegments; i++)
             () {
               final t = 2 * math.pi * i / circleSegments;
+              final localX = majorRadius * math.cos(t);
+              final localY = g.minorRadius * math.sin(t);
+              return (
+                g.centerX + localX * cosR - localY * sinR,
+                g.centerY + localX * sinR + localY * cosR,
+              );
+            }(),
+        ],
+      ];
+    case EllipseArcGhost g:
+      final majorRadius = distance(g.centerX, g.centerY, g.majorX, g.majorY);
+      final rotation = math.atan2(g.majorY - g.centerY, g.majorX - g.centerX);
+      final cosR = math.cos(rotation);
+      final sinR = math.sin(rotation);
+      final sweep = normalizeSketchAngle(g.endAngle - g.startAngle);
+      return [
+        [
+          for (var i = 0; i <= arcSegments; i++)
+            () {
+              final t = g.startAngle + sweep * i / arcSegments;
               final localX = majorRadius * math.cos(t);
               final localY = g.minorRadius * math.sin(t);
               return (
@@ -1230,6 +1305,7 @@ enum SelectionKind {
   constraint,
   arc,
   ellipse,
+  ellipseArc,
   spline,
   text,
   // Sketcher-roadmap Phase 7 follow-up (on-device feedback: "the patterned
@@ -1521,6 +1597,7 @@ class SketchController extends ChangeNotifier {
   final Map<String, SketchCircleView> circles = {};
   final Map<String, SketchArcView> arcs = {};
   final Map<String, SketchEllipseView> ellipses = {};
+  final Map<String, SketchEllipseArcView> ellipseArcs = {};
   final Map<String, SketchPolygonView> polygons = {};
   final Map<String, SketchSlotView> slots = {};
   final Map<String, SketchRectangleView> rectangles = {};
@@ -1733,6 +1810,8 @@ class SketchController extends ChangeNotifier {
             return 'Draw: Slot';
           case SketchTool.ellipse:
             return 'Draw: Ellipse';
+          case SketchTool.ellipseArc:
+            return 'Draw: Ellipse Arc';
           case SketchTool.spline:
             return 'Draw: Spline';
           case SketchTool.text:
@@ -1919,6 +1998,11 @@ class SketchController extends ChangeNotifier {
     _slotCenter2PointId = null;
     _ellipseCenterPointId = null;
     _ellipseMajorPointId = null;
+    _ellipseArcCenterPointId = null;
+    _ellipseArcMajorPointId = null;
+    _ellipseArcMinorRadius = null;
+    _ellipseArcStartAngle = null;
+    _resetEllipseArcSweepTracking();
     _splineThroughPointIds.clear();
     _midpointAnchorX = null;
     _midpointAnchorY = null;
@@ -2086,6 +2170,60 @@ class SketchController extends ChangeNotifier {
   String? get ellipseCenterPointId => _ellipseCenterPointId;
   String? get ellipseMajorPointId => _ellipseMajorPointId;
   bool get ellipseInProgress => _ellipseCenterPointId != null;
+
+  String? _ellipseArcCenterPointId;
+  String? _ellipseArcMajorPointId;
+  double? _ellipseArcMinorRadius;
+  double? _ellipseArcStartAngle;
+
+  /// The centre/major-axis Points, minor radius, and start angle of a
+  /// partial ellipse placed but not yet completed - one tap stage further
+  /// than Ellipse's own 3-stage sequence (center, major-axis point, minor
+  /// radius), mirroring how Arc adds one stage on top of Circle:
+  /// [ellipseArcMajorPointId] null means only the centre is placed (ghost:
+  /// plain [CircleGhost], same as Ellipse's own first stage);
+  /// [ellipseArcMinorRadius] null means the shape isn't fixed yet (ghost:
+  /// plain [EllipseGhost], same as Ellipse's own second stage);
+  /// [ellipseArcStartAngle] null means the shape is fixed but the sweep
+  /// hasn't started yet (ghost: [EllipseArcGhost] with both angles at the
+  /// cursor's own current parametric angle - a zero-sweep preview) - see
+  /// [_ellipseArcDrawGhost].
+  String? get ellipseArcCenterPointId => _ellipseArcCenterPointId;
+  String? get ellipseArcMajorPointId => _ellipseArcMajorPointId;
+  double? get ellipseArcMinorRadius => _ellipseArcMinorRadius;
+  bool get ellipseArcInProgress => _ellipseArcCenterPointId != null;
+
+  /// The ellipse-arc analogue of [_arcSweepAccumulator]/[_arcSweepLastAngle]
+  /// - tracks the cumulative signed sweep in the ellipse's own *parametric*
+  /// angle (see [_ellipseParametricAngle]) since the start angle was fixed,
+  /// rather than a plain polar angle, so CW-vs-CCW cursor-sweep direction
+  /// still reads correctly on a squished/rotated ellipse where polar and
+  /// parametric angle diverge off the 4 axis points.
+  double _ellipseArcSweepAccumulator = 0;
+  double? _ellipseArcSweepLastAngle;
+
+  void _trackEllipseArcSweep() {
+    final centerId = _ellipseArcCenterPointId;
+    final majorId = _ellipseArcMajorPointId;
+    final minorRadius = _ellipseArcMinorRadius;
+    if (centerId == null || majorId == null || minorRadius == null || _ellipseArcStartAngle == null) return;
+    final center = points[centerId];
+    final major = points[majorId];
+    if (center == null || major == null) return;
+    final angle = _ellipseParametricAngle(center.x, center.y, major.x, major.y, minorRadius, cursorX, cursorY);
+    final lastAngle = _ellipseArcSweepLastAngle;
+    if (lastAngle != null) {
+      var delta = angle - lastAngle;
+      delta -= 2 * math.pi * (delta / (2 * math.pi)).roundToDouble();
+      _ellipseArcSweepAccumulator += delta;
+    }
+    _ellipseArcSweepLastAngle = angle;
+  }
+
+  void _resetEllipseArcSweepTracking() {
+    _ellipseArcSweepAccumulator = 0;
+    _ellipseArcSweepLastAngle = null;
+  }
 
   final List<String> _splineThroughPointIds = [];
 
@@ -2511,6 +2649,8 @@ class SketchController extends ChangeNotifier {
         return _slotDrawGhost();
       case SketchTool.ellipse:
         return _ellipseDrawGhost();
+      case SketchTool.ellipseArc:
+        return _ellipseArcDrawGhost();
       case SketchTool.spline:
         return _splineDrawGhost();
       case SketchTool.text:
@@ -2573,6 +2713,76 @@ class SketchController extends ChangeNotifier {
       majorX: major.x,
       majorY: major.y,
       minorRadius: math.min(rawMinorRadius, majorRadius),
+    );
+  }
+
+  /// Ellipse-arc's tap sequence is center, then major-axis point, then
+  /// minor radius, then start angle, then end angle - two stages further
+  /// than Ellipse's own 3-stage sequence, the same "+2 for start/end" shape
+  /// Arc adds on top of Circle's center-then-radius. The first two stages
+  /// preview identically to Ellipse's own (plain [CircleGhost], then plain
+  /// [EllipseGhost] once the shape is fixed); once the shape is fixed a
+  /// third time (minor radius also placed), the preview becomes an
+  /// [EllipseArcGhost] whose end angle tracks the cursor's own parametric
+  /// angle (see [_ellipseParametricAngle]) - swapped with the fixed start
+  /// angle on a net clockwise sweep, mirroring [_arcDrawGhost]'s identical
+  /// swap via [_arcSweepAccumulator].
+  DrawGhost? _ellipseArcDrawGhost() {
+    final centerId = _ellipseArcCenterPointId;
+    if (centerId == null) return null;
+    final center = points[centerId];
+    if (center == null) return null;
+
+    final majorId = _ellipseArcMajorPointId;
+    if (majorId == null) {
+      return CircleGhost(centerX: center.x, centerY: center.y, edgeX: cursorX, edgeY: cursorY);
+    }
+    final major = points[majorId];
+    if (major == null) return null;
+
+    final majorRadius = math.sqrt(math.pow(major.x - center.x, 2) + math.pow(major.y - center.y, 2));
+    if (majorRadius < 1e-9) return null;
+
+    final fixedMinorRadius = _ellipseArcMinorRadius;
+    if (fixedMinorRadius == null) {
+      final rawMinorRadius = _perpendicularDistanceToLine(cursorX, cursorY, center.x, center.y, major.x, major.y);
+      if (rawMinorRadius == null || rawMinorRadius < 1e-9) return null;
+      return EllipseGhost(
+        centerX: center.x,
+        centerY: center.y,
+        majorX: major.x,
+        majorY: major.y,
+        minorRadius: math.min(rawMinorRadius, majorRadius),
+      );
+    }
+
+    final cursorAngle =
+        _ellipseParametricAngle(center.x, center.y, major.x, major.y, fixedMinorRadius, cursorX, cursorY);
+    final fixedStartAngle = _ellipseArcStartAngle;
+    if (fixedStartAngle == null) {
+      // Shape fixed, sweep not yet started: a zero-sweep preview at the
+      // cursor's own current angle, mirroring how Arc's own first stage
+      // (only center placed) shows a plain radius-only preview.
+      return EllipseArcGhost(
+        centerX: center.x,
+        centerY: center.y,
+        majorX: major.x,
+        majorY: major.y,
+        minorRadius: fixedMinorRadius,
+        startAngle: cursorAngle,
+        endAngle: cursorAngle,
+      );
+    }
+
+    final sweptClockwise = _ellipseArcSweepAccumulator < 0;
+    return EllipseArcGhost(
+      centerX: center.x,
+      centerY: center.y,
+      majorX: major.x,
+      majorY: major.y,
+      minorRadius: fixedMinorRadius,
+      startAngle: sweptClockwise ? cursorAngle : fixedStartAngle,
+      endAngle: sweptClockwise ? fixedStartAngle : cursorAngle,
     );
   }
 
@@ -2781,6 +2991,31 @@ class SketchController extends ChangeNotifier {
     final cursorDistance = math.sqrt(dx * dx + dy * dy);
     if (cursorDistance < 1e-9) return null;
     return (centerX + radius * dx / cursorDistance, centerY + radius * dy / cursorDistance);
+  }
+
+  /// The ellipse's own parametric angle (radians, 0 at the major axis,
+  /// increasing counter-clockwise in the ellipse's own rotated frame -
+  /// matching the backend's `EllipseArc.local_angle`) that ([x], [y])
+  /// radially projects to - shared by the ellipse-arc draw tool's ghost
+  /// preview, its actual placement, and [_entityAt]'s own EllipseArc hit-
+  /// test block. Not a plain polar `atan2` - see that method's own
+  /// EllipseArc block for why the two differ off the 4 axis points.
+  double _ellipseParametricAngle(
+    double centerX,
+    double centerY,
+    double majorX,
+    double majorY,
+    double minorRadius,
+    double x,
+    double y,
+  ) {
+    final majorRadius = math.sqrt(math.pow(majorX - centerX, 2) + math.pow(majorY - centerY, 2));
+    final rotation = math.atan2(majorY - centerY, majorX - centerX);
+    final dx = x - centerX, dy = y - centerY;
+    final cosR = math.cos(-rotation), sinR = math.sin(-rotation);
+    final u = dx * cosR - dy * sinR;
+    final v = dx * sinR + dy * cosR;
+    return math.atan2(v / minorRadius, u / majorRadius);
   }
 
   DrawGhost? _lineDrawGhost() {
@@ -3059,6 +3294,34 @@ class SketchController extends ChangeNotifier {
       if (distanceToEllipse != null) {
         considerEdgeLike(SelectionKind.ellipse, ellipse.id, distanceToEllipse);
       }
+    }
+
+    for (final ellipseArc in ellipseArcs.values) {
+      final center = points[ellipseArc.centerPointId];
+      final major = points[ellipseArc.majorPointId];
+      final start = points[ellipseArc.startPointId];
+      final end = points[ellipseArc.endPointId];
+      if (center == null || major == null || start == null || end == null) continue;
+      final majorRadius = math.sqrt(math.pow(major.x - center.x, 2) + math.pow(major.y - center.y, 2));
+      final minorRadius = ellipseArc.minorRadius;
+      if (majorRadius < 1e-9 || minorRadius < 1e-9) continue;
+      final angle = _ellipseParametricAngle(center.x, center.y, major.x, major.y, minorRadius, x, y);
+      final startAngle =
+          _ellipseParametricAngle(center.x, center.y, major.x, major.y, minorRadius, start.x, start.y);
+      final endAngle = _ellipseParametricAngle(center.x, center.y, major.x, major.y, minorRadius, end.x, end.y);
+      final distanceToBoundary =
+          _approxDistanceToEllipseBoundary(x, y, center.x, center.y, major.x, major.y, minorRadius);
+      // Off the swept range, the nearest point on the arc is whichever
+      // endpoint is closer - mirrors the Arc branch above's identical
+      // reasoning (the ellipse's *other*, unswept arc must never win here).
+      final distanceToEllipseArc =
+          (distanceToBoundary != null && angleWithinArcSweep(angle, startAngle, endAngle))
+              ? distanceToBoundary
+              : math.min(
+                  math.sqrt(math.pow(x - start.x, 2) + math.pow(y - start.y, 2)),
+                  math.sqrt(math.pow(x - end.x, 2) + math.pow(y - end.y, 2)),
+                );
+      considerEdgeLike(SelectionKind.ellipseArc, ellipseArc.id, distanceToEllipseArc);
     }
 
     for (final spline in splines.values) {
@@ -3684,6 +3947,16 @@ class SketchController extends ChangeNotifier {
         final ellipse = ellipses[hit.id]!;
         final nearerId = _nearestOf(x, y, [ellipse.centerPointId, ellipse.majorPointId]);
         return _isPointDragLocked(nearerId) ? null : nearerId;
+      case SelectionKind.ellipseArc:
+        final ellipseArc = ellipseArcs[hit.id]!;
+        final nearerId = _nearestOf(x, y, [
+          ellipseArc.centerPointId,
+          ellipseArc.majorPointId,
+          ellipseArc.minorPointId,
+          ellipseArc.startPointId,
+          ellipseArc.endPointId,
+        ]);
+        return _isPointDragLocked(nearerId) ? null : nearerId;
       case SelectionKind.spline:
         final spline = splines[hit.id]!;
         final nearerId = _nearestOf(x, y, [...spline.throughPointIds, ...spline.controlPointIds]);
@@ -3764,6 +4037,18 @@ class SketchController extends ChangeNotifier {
       case SelectionKind.ellipse:
         final ellipse = ellipses[hit.id]!;
         final nearerId = _nearestOf(x, y, [ellipse.centerPointId, ellipse.majorPointId]);
+        return _isPointDragLocked(nearerId)
+            ? null
+            : SketchSelection(kind: SelectionKind.point, id: nearerId);
+      case SelectionKind.ellipseArc:
+        final ellipseArc = ellipseArcs[hit.id]!;
+        final nearerId = _nearestOf(x, y, [
+          ellipseArc.centerPointId,
+          ellipseArc.majorPointId,
+          ellipseArc.minorPointId,
+          ellipseArc.startPointId,
+          ellipseArc.endPointId,
+        ]);
         return _isPointDragLocked(nearerId)
             ? null
             : SketchSelection(kind: SelectionKind.point, id: nearerId);
@@ -6480,6 +6765,7 @@ class SketchController extends ChangeNotifier {
     Set<String> circles,
     Set<String> arcs,
     Set<String> ellipses,
+    Set<String> ellipseArcs,
     Set<String> polygons,
     Set<String> slots,
     Set<String> rectangles,
@@ -6495,6 +6781,7 @@ class SketchController extends ChangeNotifier {
     final circleIds = <String>{};
     final arcIds = <String>{};
     final ellipseIds = <String>{};
+    final ellipseArcIds = <String>{};
     final polygonIds = <String>{};
     final slotIds = <String>{};
     final rectangleIds = <String>{};
@@ -6530,6 +6817,8 @@ class SketchController extends ChangeNotifier {
           arcIds.add(s.id);
         case SelectionKind.ellipse:
           ellipseIds.add(s.id);
+        case SelectionKind.ellipseArc:
+          ellipseArcIds.add(s.id);
         case SelectionKind.spline:
           splineIds.add(s.id);
         case SelectionKind.text:
@@ -6592,6 +6881,31 @@ class SketchController extends ChangeNotifier {
       if (ellipse == null) continue;
       lineIds.remove(ellipse.majorAxisLineId);
       lineIds.remove(ellipse.minorAxisLineId);
+    }
+    for (final ellipseArc in ellipseArcs.values) {
+      // Same reasoning as the Ellipse block above, plus start/end - an
+      // EllipseArc's own axis Lines/major/minor Points are real,
+      // independently selectable/deletable geometry, and its start/end
+      // Points are real chain-connection Points too (see EllipseArc's own
+      // docstring), so cascade UP to the EllipseArc from any direction.
+      if (pointIds.contains(ellipseArc.centerPointId) ||
+          pointIds.contains(ellipseArc.majorPointId) ||
+          pointIds.contains(ellipseArc.minorPointId) ||
+          pointIds.contains(ellipseArc.startPointId) ||
+          pointIds.contains(ellipseArc.endPointId) ||
+          lineIds.contains(ellipseArc.majorAxisLineId) ||
+          lineIds.contains(ellipseArc.minorAxisLineId)) {
+        ellipseArcIds.add(ellipseArc.id);
+      }
+    }
+    // Mirrors the Ellipse block's own reasoning: the backend's Sketch.
+    // delete_ellipse_arc already deletes both axis Lines as part of
+    // deleting the EllipseArc itself.
+    for (final ellipseArcId in ellipseArcIds) {
+      final ellipseArc = ellipseArcs[ellipseArcId];
+      if (ellipseArc == null) continue;
+      lineIds.remove(ellipseArc.majorAxisLineId);
+      lineIds.remove(ellipseArc.minorAxisLineId);
     }
     for (final polygon in polygons.values) {
       // Same reasoning as the Ellipse block above - a Polygon's own edge
@@ -6731,6 +7045,7 @@ class SketchController extends ChangeNotifier {
       circles: circleIds,
       arcs: arcIds,
       ellipses: ellipseIds,
+      ellipseArcs: ellipseArcIds,
       polygons: polygonIds,
       slots: slotIds,
       rectangles: rectangleIds,
@@ -6912,6 +7227,8 @@ class SketchController extends ChangeNotifier {
         return 'Arc ${arcs.keys.toList().indexOf(selection.id) + 1}';
       case SelectionKind.ellipse:
         return 'Ellipse ${ellipses.keys.toList().indexOf(selection.id) + 1}';
+      case SelectionKind.ellipseArc:
+        return 'Ellipse Arc ${ellipseArcs.keys.toList().indexOf(selection.id) + 1}';
       case SelectionKind.spline:
         return 'Spline ${splines.keys.toList().indexOf(selection.id) + 1}';
       case SelectionKind.text:
@@ -6941,6 +7258,7 @@ class SketchController extends ChangeNotifier {
       ..addAll(circles.keys.map((id) => SketchSelection(kind: SelectionKind.circle, id: id)))
       ..addAll(arcs.keys.map((id) => SketchSelection(kind: SelectionKind.arc, id: id)))
       ..addAll(ellipses.keys.map((id) => SketchSelection(kind: SelectionKind.ellipse, id: id)))
+      ..addAll(ellipseArcs.keys.map((id) => SketchSelection(kind: SelectionKind.ellipseArc, id: id)))
       ..addAll(splines.keys.map((id) => SketchSelection(kind: SelectionKind.spline, id: id)))
       ..addAll(texts.keys.map((id) => SketchSelection(kind: SelectionKind.text, id: id)))
       // Stage 21 item 4: without this, deleteSelected()'s constraints-first
@@ -7045,6 +7363,19 @@ class SketchController extends ChangeNotifier {
         selected.add(SketchSelection(kind: SelectionKind.ellipse, id: ellipse.id));
       }
     }
+    for (final ellipseArc in ellipseArcs.values) {
+      final center = points[ellipseArc.centerPointId];
+      final major = points[ellipseArc.majorPointId];
+      if (center == null || major == null) continue;
+      // Conservative, same simplification as the Ellipse block above.
+      final majorRadius = math.sqrt(
+        math.pow(major.x - center.x, 2) + math.pow(major.y - center.y, 2),
+      );
+      if (insideRect(center.x - majorRadius, center.y - majorRadius) &&
+          insideRect(center.x + majorRadius, center.y + majorRadius)) {
+        selected.add(SketchSelection(kind: SelectionKind.ellipseArc, id: ellipseArc.id));
+      }
+    }
     for (final spline in splines.values) {
       // Exact, not conservative: a cubic Bezier never leaves its own
       // control polygon's convex hull, so "every defining Point is inside
@@ -7111,6 +7442,7 @@ class SketchController extends ChangeNotifier {
       for (final id in cascade.circles) SketchSelection(kind: SelectionKind.circle, id: id),
       for (final id in cascade.arcs) SketchSelection(kind: SelectionKind.arc, id: id),
       for (final id in cascade.ellipses) SketchSelection(kind: SelectionKind.ellipse, id: id),
+      for (final id in cascade.ellipseArcs) SketchSelection(kind: SelectionKind.ellipseArc, id: id),
       for (final id in cascade.splines) SketchSelection(kind: SelectionKind.spline, id: id),
       for (final id in cascade.texts) SketchSelection(kind: SelectionKind.text, id: id),
       for (final id in cascade.constraints) SketchSelection(kind: SelectionKind.constraint, id: id),
@@ -7144,6 +7476,7 @@ class SketchController extends ChangeNotifier {
     final capturedCircles = <SketchCircleView>[];
     final capturedArcs = <SketchArcView>[];
     final capturedEllipses = <SketchEllipseView>[];
+    final capturedEllipseArcs = <SketchEllipseArcView>[];
     final capturedSplines = <SketchSplineView>[];
     final capturedTexts = <SketchTextView>[];
     final capturedConstraints = <ConstraintDto>[];
@@ -7183,6 +7516,10 @@ class SketchController extends ChangeNotifier {
         case SelectionKind.ellipse:
           final ellipse = ellipses[current.id];
           if (ellipse != null) capturedEllipses.add(ellipse);
+          break;
+        case SelectionKind.ellipseArc:
+          final ellipseArc = ellipseArcs[current.id];
+          if (ellipseArc != null) capturedEllipseArcs.add(ellipseArc);
           break;
         case SelectionKind.spline:
           final spline = splines[current.id];
@@ -7227,6 +7564,7 @@ class SketchController extends ChangeNotifier {
             s.kind == SelectionKind.circle ||
             s.kind == SelectionKind.arc ||
             s.kind == SelectionKind.ellipse ||
+            s.kind == SelectionKind.ellipseArc ||
             s.kind == SelectionKind.spline ||
             s.kind == SelectionKind.text,
       );
@@ -7442,6 +7780,15 @@ class SketchController extends ChangeNotifier {
               lines.remove(ellipse.minorAxisLineId);
             }
             break;
+          case SelectionKind.ellipseArc:
+            final ellipseArc = ellipseArcs[current.id];
+            applyPrunedPoints(await _api.deleteEllipseArc(_sketchId!, current.id));
+            ellipseArcs.remove(current.id);
+            if (ellipseArc != null) {
+              lines.remove(ellipseArc.majorAxisLineId);
+              lines.remove(ellipseArc.minorAxisLineId);
+            }
+            break;
           case SelectionKind.spline:
             applyPrunedPoints(await _api.deleteSpline(_sketchId!, current.id));
             splines.remove(current.id);
@@ -7468,6 +7815,7 @@ class SketchController extends ChangeNotifier {
             capturedCircles,
             capturedArcs,
             capturedEllipses,
+            capturedEllipseArcs,
             capturedPolygons,
             capturedSlots,
             capturedRectangles,
@@ -7504,6 +7852,7 @@ class SketchController extends ChangeNotifier {
     List<SketchCircleView> capturedCircles,
     List<SketchArcView> capturedArcs,
     List<SketchEllipseView> capturedEllipses,
+    List<SketchEllipseArcView> capturedEllipseArcs,
     List<SketchPolygonView> capturedPolygons,
     List<(SketchSlotView, double)> capturedSlots,
     List<SketchRectangleView> capturedRectangles,
@@ -7610,6 +7959,78 @@ class SketchController extends ChangeNotifier {
       // yet - see the main Ellipse-tool creation flow's own comment for
       // why this needs an explicit fetch.
       for (final id in [created.minorPointId, created.majorPointNegId, created.minorPointNegId]) {
+        final point = await _api.getPoint(_sketchId!, id);
+        points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
+      }
+    }
+    // Start/end angle aren't stored on SketchEllipseArcView (see that
+    // class's own doc comment, mirroring the backend's EllipseArc) - re-
+    // derived here from each captured Point's own pre-delete (x, y), the
+    // same ellipse-parametric-angle formula as the backend's own
+    // EllipseArc.local_angle, so createEllipseArc below can place a new
+    // start/end Point back on the curve at (very close to, modulo floating-
+    // point round-trip through atan2/cos/sin - acceptable for an undo
+    // restore, same tolerance every other recomputed-not-replayed field
+    // here already accepts) the original position.
+    final capturedPointsById = {for (final p in capturedPoints) p.id: p};
+    double ellipseLocalAngle(
+      SketchPointView center,
+      SketchPointView major,
+      double minorRadius,
+      SketchPointView point,
+    ) {
+      final majorRadius = math.sqrt(math.pow(major.x - center.x, 2) + math.pow(major.y - center.y, 2));
+      final rotation = math.atan2(major.y - center.y, major.x - center.x);
+      final dx = point.x - center.x, dy = point.y - center.y;
+      final cosR = math.cos(-rotation), sinR = math.sin(-rotation);
+      final u = dx * cosR - dy * sinR;
+      final v = dx * sinR + dy * cosR;
+      return math.atan2(v / minorRadius, u / majorRadius);
+    }
+
+    for (final ellipseArc in capturedEllipseArcs) {
+      final center = capturedPointsById[ellipseArc.centerPointId];
+      final major = capturedPointsById[ellipseArc.majorPointId];
+      final start = capturedPointsById[ellipseArc.startPointId];
+      final end = capturedPointsById[ellipseArc.endPointId];
+      if (center == null || major == null || start == null || end == null) continue;
+      final created = await _api.createEllipseArc(
+        _sketchId!,
+        idMap[ellipseArc.centerPointId] ?? ellipseArc.centerPointId,
+        idMap[ellipseArc.majorPointId] ?? ellipseArc.majorPointId,
+        ellipseArc.minorRadius,
+        ellipseLocalAngle(center, major, ellipseArc.minorRadius, start),
+        ellipseLocalAngle(center, major, ellipseArc.minorRadius, end),
+        construction: ellipseArc.construction,
+      );
+      idMap[ellipseArc.id] = created.id;
+      ellipseArcs[created.id] = SketchEllipseArcView(
+        id: created.id,
+        centerPointId: created.centerPointId,
+        majorPointId: created.majorPointId,
+        minorPointId: created.minorPointId,
+        startPointId: created.startPointId,
+        endPointId: created.endPointId,
+        majorAxisLineId: created.majorAxisLineId,
+        minorAxisLineId: created.minorAxisLineId,
+        minorRadius: created.minorRadius,
+        construction: created.construction,
+      );
+      lines[created.majorAxisLineId] = SketchLineView(
+        id: created.majorAxisLineId,
+        startPointId: created.centerPointId,
+        endPointId: created.majorPointId,
+        construction: true,
+      );
+      lines[created.minorAxisLineId] = SketchLineView(
+        id: created.minorAxisLineId,
+        startPointId: created.centerPointId,
+        endPointId: created.minorPointId,
+        construction: true,
+      );
+      // The new minor/start/end Points aren't locally known yet - same
+      // reasoning as the Ellipse restore block above.
+      for (final id in [created.minorPointId, created.startPointId, created.endPointId]) {
         final point = await _api.getPoint(_sketchId!, id);
         points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
       }
@@ -8024,6 +8445,7 @@ class SketchController extends ChangeNotifier {
         SelectionKind.circle => circles[selection.id]?.construction,
         SelectionKind.arc => arcs[selection.id]?.construction,
         SelectionKind.ellipse => ellipses[selection.id]?.construction,
+        SelectionKind.ellipseArc => ellipseArcs[selection.id]?.construction,
         SelectionKind.spline => splines[selection.id]?.construction,
         SelectionKind.text => texts[selection.id]?.construction,
         SelectionKind.point ||
@@ -8077,6 +8499,20 @@ class SketchController extends ChangeNotifier {
           majorPointNegId: updated.majorPointNegId,
           minorPointId: updated.minorPointId,
           minorPointNegId: updated.minorPointNegId,
+          majorAxisLineId: updated.majorAxisLineId,
+          minorAxisLineId: updated.minorAxisLineId,
+          minorRadius: updated.minorRadius,
+          construction: updated.construction,
+        );
+      case SelectionKind.ellipseArc:
+        final updated = await _api.updateEllipseArc(_sketchId!, target.id, construction: construction);
+        ellipseArcs[target.id] = SketchEllipseArcView(
+          id: updated.id,
+          centerPointId: updated.centerPointId,
+          majorPointId: updated.majorPointId,
+          minorPointId: updated.minorPointId,
+          startPointId: updated.startPointId,
+          endPointId: updated.endPointId,
           majorAxisLineId: updated.majorAxisLineId,
           minorAxisLineId: updated.minorAxisLineId,
           minorRadius: updated.minorRadius,
@@ -8181,6 +8617,15 @@ class SketchController extends ChangeNotifier {
               ellipse.majorPointNegId,
               ellipse.minorPointId,
               ellipse.minorPointNegId,
+            ],
+          },
+        SelectionKind.ellipseArc => {
+            if (ellipseArcs[selection.id] case final ellipseArc?) ...[
+              ellipseArc.centerPointId,
+              ellipseArc.majorPointId,
+              ellipseArc.minorPointId,
+              ellipseArc.startPointId,
+              ellipseArc.endPointId,
             ],
           },
         SelectionKind.spline => {
@@ -10919,6 +11364,18 @@ class SketchController extends ChangeNotifier {
             ];
           }
           return;
+        case SelectionKind.ellipseArc:
+          // Same reasoning as the Ellipse case above.
+          final ellipseArc = ellipseArcs[sel.first.id];
+          if (ellipseArc == null) {
+            _ghosts = [];
+          } else {
+            _ghosts = [
+              ..._radiusGhosts(ellipseArc.centerPointId, ellipseArc.majorPointId, keyPrefix: 'major'),
+              ..._radiusGhosts(ellipseArc.centerPointId, ellipseArc.minorPointId, keyPrefix: 'minor'),
+            ];
+          }
+          return;
         case SelectionKind.spline:
           // A Spline has no single dimension of its own to build a ghost
           // for - its shape comes entirely from its through-point/
@@ -11606,6 +12063,20 @@ class SketchController extends ChangeNotifier {
         construction: ellipse.construction,
       );
     }
+    for (final ellipseArc in await _api.listEllipseArcs(sketchId)) {
+      ellipseArcs[ellipseArc.id] = SketchEllipseArcView(
+        id: ellipseArc.id,
+        centerPointId: ellipseArc.centerPointId,
+        majorPointId: ellipseArc.majorPointId,
+        minorPointId: ellipseArc.minorPointId,
+        startPointId: ellipseArc.startPointId,
+        endPointId: ellipseArc.endPointId,
+        majorAxisLineId: ellipseArc.majorAxisLineId,
+        minorAxisLineId: ellipseArc.minorAxisLineId,
+        minorRadius: ellipseArc.minorRadius,
+        construction: ellipseArc.construction,
+      );
+    }
     for (final polygon in await _api.listPolygons(sketchId)) {
       polygons[polygon.id] = SketchPolygonView(
         id: polygon.id,
@@ -11781,6 +12252,7 @@ class SketchController extends ChangeNotifier {
     cursorX += dxPixels * scale;
     cursorY -= dyPixels * scale; // screen y is down; sketch y is up.
     _trackArcSweep();
+    _trackEllipseArcSweep();
     _updateShapeCenterReveal();
     notifyListeners();
   }
@@ -11795,6 +12267,7 @@ class SketchController extends ChangeNotifier {
     cursorX = coord.x;
     cursorY = coord.y;
     _trackArcSweep();
+    _trackEllipseArcSweep();
     _updateShapeCenterReveal();
     notifyListeners();
   }
@@ -11810,6 +12283,7 @@ class SketchController extends ChangeNotifier {
     cursorX = sketchX;
     cursorY = sketchY;
     _trackArcSweep();
+    _trackEllipseArcSweep();
     _updateShapeCenterReveal();
     notifyListeners();
   }
@@ -11896,6 +12370,11 @@ class SketchController extends ChangeNotifier {
 
     if (_activeTool == SketchTool.ellipse) {
       await _clickEllipseTool();
+      return;
+    }
+
+    if (_activeTool == SketchTool.ellipseArc) {
+      await _clickEllipseArcTool();
       return;
     }
 
@@ -12572,6 +13051,153 @@ class SketchController extends ChangeNotifier {
 
       _ellipseCenterPointId = null;
       _ellipseMajorPointId = null;
+    });
+  }
+
+  /// Ellipse-arc tool's tap handling: center, then major-axis point (fixes
+  /// major radius + rotation, same as [_clickEllipseTool]'s own first two
+  /// stages), then minor radius (perpendicular-distance click, identical to
+  /// [_clickEllipseTool]'s own third stage), then start angle, then end
+  /// angle - the same "+2 for start/end" shape [_clickArcTool] adds on top
+  /// of Circle's center-then-radius. The last two stages read the cursor's
+  /// own parametric angle (see [_ellipseParametricAngle]) rather than a
+  /// placed Point - [Sketch.add_ellipse_arc] takes `start_angle`/
+  /// `end_angle` directly and places both curve Points server-side, unlike
+  /// Arc's own `end_point_id`-based creation (see the backend's
+  /// `EllipseArc` docstring for why: no stored angle, but the *creation*
+  /// call itself is angle-parametrized). Self-terminating, like every other
+  /// draw tool here.
+  Future<void> _clickEllipseArcTool() async {
+    if (_ellipseArcCenterPointId == null) {
+      _selectionSet.clear();
+      _ribbonVisible = false;
+      await _runGuarded(() async {
+        _ellipseArcCenterPointId = await _pointIdAtCursor();
+      });
+      return;
+    }
+
+    if (_ellipseArcMajorPointId == null) {
+      await _runGuarded(() async {
+        _ellipseArcMajorPointId = await _pointIdAtCursor(excludeId: _ellipseArcCenterPointId);
+      });
+      return;
+    }
+
+    if (_ellipseArcMinorRadius == null) {
+      await _runGuarded(() async {
+        final center = points[_ellipseArcCenterPointId!]!;
+        final major = points[_ellipseArcMajorPointId!]!;
+        final majorRadius = math.sqrt(math.pow(major.x - center.x, 2) + math.pow(major.y - center.y, 2));
+        final rawMinorRadius = _perpendicularDistanceToLine(cursorX, cursorY, center.x, center.y, major.x, major.y);
+        final minorRadius = rawMinorRadius == null ? null : math.min(rawMinorRadius, majorRadius);
+        if (minorRadius == null || minorRadius < 1e-9) {
+          errorMessage = 'Cannot place an ellipse arc with a zero-length major axis or zero minor radius';
+          _ellipseArcCenterPointId = null;
+          _ellipseArcMajorPointId = null;
+          return;
+        }
+        _ellipseArcMinorRadius = minorRadius;
+      });
+      return;
+    }
+
+    if (_ellipseArcStartAngle == null) {
+      await _runGuarded(() async {
+        final center = points[_ellipseArcCenterPointId!]!;
+        final major = points[_ellipseArcMajorPointId!]!;
+        _ellipseArcStartAngle = _ellipseParametricAngle(
+          center.x,
+          center.y,
+          major.x,
+          major.y,
+          _ellipseArcMinorRadius!,
+          cursorX,
+          cursorY,
+        );
+        // Re-anchors sweep tracking at the start angle itself, rather than
+        // wherever the cursor happened to be mid-placement - mirrors
+        // [_clickArcTool]'s identical re-anchoring of [_arcSweepLastAngle].
+        _ellipseArcSweepLastAngle = _ellipseArcStartAngle;
+        _ellipseArcSweepAccumulator = 0;
+      });
+      return;
+    }
+
+    final centerId = _ellipseArcCenterPointId!;
+    final majorId = _ellipseArcMajorPointId!;
+    final minorRadius = _ellipseArcMinorRadius!;
+    final startAngle = _ellipseArcStartAngle!;
+    await _runGuarded(() async {
+      final center = points[centerId]!;
+      final major = points[majorId]!;
+      final endAngle =
+          _ellipseParametricAngle(center.x, center.y, major.x, major.y, minorRadius, cursorX, cursorY);
+
+      // Same reasoning as [_clickArcTool]'s own sweptClockwise swap: the
+      // backend always sweeps counter-clockwise from its own start_angle to
+      // end_angle, so a net-clockwise cursor sweep since the start angle
+      // was fixed needs the two angles swapped here for the small
+      // clockwise-looking sweep the user actually traced, rather than its
+      // complementary near-360-degree counter-clockwise one.
+      final sweptClockwise = _ellipseArcSweepAccumulator < 0;
+      final createStartAngle = sweptClockwise ? endAngle : startAngle;
+      final createEndAngle = sweptClockwise ? startAngle : endAngle;
+
+      final ellipseArc = await _api.createEllipseArc(
+        _sketchId!,
+        centerId,
+        majorId,
+        minorRadius,
+        createStartAngle,
+        createEndAngle,
+      );
+      ellipseArcs[ellipseArc.id] = SketchEllipseArcView(
+        id: ellipseArc.id,
+        centerPointId: ellipseArc.centerPointId,
+        majorPointId: ellipseArc.majorPointId,
+        minorPointId: ellipseArc.minorPointId,
+        startPointId: ellipseArc.startPointId,
+        endPointId: ellipseArc.endPointId,
+        majorAxisLineId: ellipseArc.majorAxisLineId,
+        minorAxisLineId: ellipseArc.minorAxisLineId,
+        minorRadius: ellipseArc.minorRadius,
+        construction: ellipseArc.construction,
+      );
+      // The new minor/start/end Points aren't locally known yet - same
+      // reasoning as [_clickEllipseTool]'s own explicit fetch.
+      for (final id in [ellipseArc.minorPointId, ellipseArc.startPointId, ellipseArc.endPointId]) {
+        final point = await _api.getPoint(_sketchId!, id);
+        points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
+      }
+      lines[ellipseArc.majorAxisLineId] = SketchLineView(
+        id: ellipseArc.majorAxisLineId,
+        startPointId: ellipseArc.centerPointId,
+        endPointId: ellipseArc.majorPointId,
+        construction: true,
+      );
+      lines[ellipseArc.minorAxisLineId] = SketchLineView(
+        id: ellipseArc.minorAxisLineId,
+        startPointId: ellipseArc.centerPointId,
+        endPointId: ellipseArc.minorPointId,
+        construction: true,
+      );
+      _pushUndo(() async {
+        await _api.deleteEllipseArc(_sketchId!, ellipseArc.id);
+        ellipseArcs.remove(ellipseArc.id);
+        lines.remove(ellipseArc.majorAxisLineId);
+        lines.remove(ellipseArc.minorAxisLineId);
+      });
+
+      // Same rule as a completed Circle/Arc/Ellipse/Polygon/Slot: one
+      // finished entity = one solve call.
+      await _solveAndTrackDof();
+
+      _ellipseArcCenterPointId = null;
+      _ellipseArcMajorPointId = null;
+      _ellipseArcMinorRadius = null;
+      _ellipseArcStartAngle = null;
+      _resetEllipseArcSweepTracking();
     });
   }
 

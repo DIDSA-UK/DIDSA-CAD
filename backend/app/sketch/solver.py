@@ -35,7 +35,7 @@ from app.sketch.constraints import (
     TangentConstraint,
     VerticalConstraint,
 )
-from app.sketch.models import Ellipse, Point, Sketch
+from app.sketch.models import Ellipse, EllipseArc, Point, Sketch
 
 # Constraint types empirically confirmed to never need py-slvs's own
 # redundancy detection to distrust a converged solve - see `converged`'s
@@ -975,41 +975,46 @@ def _solve_sketch_once(sketch: Sketch, anchor_point_ids: frozenset[str]) -> Solv
         not converged
         and residual_result is None
         and result_code in (4, 5)
-        and any(isinstance(entity, Ellipse) for entity in sketch.entities.values())
+        and any(isinstance(entity, (Ellipse, EllipseArc)) for entity in sketch.entities.values())
         and all(
             isinstance(c, _REDUNDANCY_SAFE_CONSTRAINT_TYPES)
             or (isinstance(c, AtMidpointConstraint) and c.id in ellipse_owned_at_midpoint_ids)
             for c in sketch.constraints.values()
         )
     ):
-        # Fixing an Ellipse (any Point of it - drag, FixedConstraint/Fix,
-        # or the fixed-group `anchor_point_ids` drag-solve mechanism) is
-        # *always* reported redundant by this py-slvs build, regardless of
-        # exactly which/how many of the Ellipse's own Points end up fixed:
-        # `add_ellipse` always ties major_point/minor_point to centre via a
-        # DistanceConstraint (the radius) - once every Point a
-        # DistanceConstraint references is fixed/anchored, that
-        # constraint's row in the solver's Jacobian is identically zero
-        # (no remaining free unknown it has any derivative with respect
-        # to), which this build's rank-deficiency detection reports as
-        # `result_code` 4/5 even though the equation is, numerically,
-        # already exactly satisfied - confirmed empirically: this reproduces
-        # identically whether the centre/axis Points are pinned via
-        # `FixedConstraint`/`where_dragged` (a real, independent extra
-        # equation) or via `anchor_point_ids`' fixed-group placement (zero
-        # extra equations at all), so it is not an artifact of *how* the
-        # Points get fixed - it's inherent to fixing any DistanceConstraint-
-        # bearing entity at all. Circle has the exact same structure
-        # (cardinal Points each tied to centre via EqualRadius/Distance)
-        # and is already rescued by the override immediately above this one
-        # - Ellipse needs its own because it has no Tangent/EqualRadius of
-        # its own to trigger that one, and its two AtMidpointConstraints
-        # (for major_point_neg/minor_point_neg) are not members of
-        # `_REDUNDANCY_SAFE_CONSTRAINT_TYPES` at all - seeing `all(...)`
-        # explicitly matches those two specific, identified instances via
+        # Fixing an Ellipse or EllipseArc (any Point of it - drag,
+        # FixedConstraint/Fix, or the fixed-group `anchor_point_ids` drag-
+        # solve mechanism) is *always* reported redundant by this py-slvs
+        # build, regardless of exactly which/how many of the entity's own
+        # Points end up fixed: `add_ellipse`/`add_ellipse_arc` always tie
+        # major_point/minor_point to centre via a DistanceConstraint (the
+        # radius) - once every Point a DistanceConstraint references is
+        # fixed/anchored, that constraint's row in the solver's Jacobian is
+        # identically zero (no remaining free unknown it has any derivative
+        # with respect to), which this build's rank-deficiency detection
+        # reports as `result_code` 4/5 even though the equation is,
+        # numerically, already exactly satisfied - confirmed empirically:
+        # this reproduces identically whether the centre/axis Points are
+        # pinned via `FixedConstraint`/`where_dragged` (a real, independent
+        # extra equation) or via `anchor_point_ids`' fixed-group placement
+        # (zero extra equations at all), so it is not an artifact of *how*
+        # the Points get fixed - it's inherent to fixing any
+        # DistanceConstraint-bearing entity at all, and confirmed to
+        # reproduce identically for EllipseArc's own two internal
+        # PointOnEllipseConstraint instances (start/end pinned onto the
+        # curve) once centre/major/minor are also fixed. Circle has the
+        # exact same structure (cardinal Points each tied to centre via
+        # EqualRadius/Distance) and is already rescued by the override
+        # immediately above this one - Ellipse/EllipseArc need their own
+        # because neither has a Tangent/EqualRadius of its own to trigger
+        # that one. EllipseArc itself never creates an AtMidpointConstraint
+        # at all (see that class's own docstring for why - no negative/
+        # opposite axis tips), so `ellipse_owned_at_midpoint_ids` only ever
+        # matters for a *plain* Ellipse sharing this Sketch; seeing `all(...)`
+        # explicitly matches those specific, identified instances via
         # `_ellipse_owned_at_midpoint_constraint_ids` (see that function's
-        # own doc comment for why only *these* two are safe to trust,
-        # unlike an arbitrary user-created AtMidpointConstraint elsewhere).
+        # own doc comment for why only *these* are safe to trust, unlike an
+        # arbitrary user-created AtMidpointConstraint elsewhere).
         converged = True
 
     # On-device feedback: a freshly-drawn Slot (2 Arcs tied together via

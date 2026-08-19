@@ -442,12 +442,58 @@ class EllipseResponse(BaseModel):
     construction: bool = False
 
 
+class EllipseArcCreate(BaseModel):
+    """Create a partial ellipse from an existing centre Point and an
+    existing major-axis Point (together fixing the major radius and
+    rotation, same as ArcCreate's own existing start Point fixing a
+    circular Arc's radius), plus a minor radius and a start/end angle pair
+    (radians in the ellipse's own parametric frame - see the backend's
+    `app.sketch.models.EllipseArc.local_angle` docstring) used to place
+    new start/end Points exactly on that ellipse's curve. No existing-
+    point-sharing option for start/end, unlike Arc's own optional
+    `end_point_id` - both are always freshly placed, since a partial
+    ellipse's whole point is to trace a specific sweep between two angles
+    a caller chooses, not to reuse an already-existing curve Point."""
+
+    center_point_id: str
+    major_point_id: str
+    minor_radius: float
+    start_angle: float
+    end_angle: float
+    construction: bool = False
+
+
+class EllipseArcResponse(BaseModel):
+    type: Literal["ellipse_arc"] = "ellipse_arc"
+    id: str
+    center_point_id: str
+    major_point_id: str
+    minor_point_id: str
+    start_point_id: str
+    end_point_id: str
+    major_axis_line_id: str
+    minor_axis_line_id: str
+    major_radius: float
+    minor_radius: float
+    rotation: float
+    construction: bool = False
+
+
 class EllipseUpdate(BaseModel):
     """Update an ellipse's construction flag. There is no radius field
     here: like Circle/Arc, both of an Ellipse's radii are now driven by
     real DistanceConstraints (see the Ellipse class docstring) - PATCH
     `major_constraint_id`/`minor_constraint_id` via the ordinary
     `/constraints/{id}` endpoint instead."""
+
+    construction: bool | None = None
+
+
+class EllipseArcUpdate(BaseModel):
+    """Update an ellipse arc's construction flag - mirrors EllipseUpdate.
+    Neither radius here either, same reasoning; start/end angle aren't
+    stored at all (see EllipseArc's own docstring) - drag the start/end
+    Points directly to change the sweep."""
 
     construction: bool | None = None
 

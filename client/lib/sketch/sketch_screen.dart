@@ -1575,6 +1575,15 @@ class _SketchScreenState extends State<SketchScreen> {
         SelectionKind.circle => SelectionEntityKind.sketchCircle,
         SelectionKind.arc => SelectionEntityKind.sketchArc,
         SelectionKind.ellipse => SelectionEntityKind.sketchEllipse,
+        // Scoped out for now, same as [SelectionKind.constraint] below: the
+        // 3D-viewport cursor mode has no real hit-test/[SelectionEntityKind]
+        // of its own yet for a partial ellipse curve (would need its own
+        // [SelectionFilterState] flag plus new 3D raycast geometry in
+        // selection_hit_test.dart) - EllipseArc is drawable/editable in the
+        // 2D sketch canvas today, just not yet pickable from Orbit View,
+        // mirroring how Text itself wasn't until a later, dedicated round
+        // (see this method's own doc comment).
+        SelectionKind.ellipseArc => null,
         SelectionKind.spline => SelectionEntityKind.sketchSpline,
         SelectionKind.text => SelectionEntityKind.sketchText,
         SelectionKind.constraint => null,

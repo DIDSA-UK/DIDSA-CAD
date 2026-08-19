@@ -270,6 +270,13 @@ class SketchSpeedDial extends StatelessWidget {
             onPressed: () => controller.selectDrawTool(SketchTool.ellipse),
           ),
           _SpeedDialAction(
+            tool: SketchTool.ellipseArc,
+            svgAsset: 'assets/icons/sketch_tools/sketch_tool_ellipse_arc.svg',
+            label: 'Ellipse Arc',
+            selected: controller.mode == SketchMode.draw && controller.activeTool == SketchTool.ellipseArc,
+            onPressed: () => controller.selectDrawTool(SketchTool.ellipseArc),
+          ),
+          _SpeedDialAction(
             tool: SketchTool.spline,
             svgAsset: 'assets/icons/sketch_tools/sketch_tool_spline.svg',
             label: 'Spline',

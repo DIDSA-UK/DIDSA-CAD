@@ -92,6 +92,7 @@ from app.sketch.models import (
     Arc,
     Circle,
     Ellipse,
+    EllipseArc,
     ExternalVertexReference,
     Line,
     Plane,
@@ -214,6 +215,24 @@ def _entity_to_dict(entity: SketchEntity) -> dict:
             "minor_axis_line_id": entity.minor_axis_line_id,
             "perpendicular_constraint_id": entity.perpendicular_constraint_id,
         }
+    if isinstance(entity, EllipseArc):
+        return {
+            "type": "ellipse_arc",
+            "id": entity.id,
+            "construction": entity.construction,
+            "center_point_id": entity.center_point_id,
+            "major_point_id": entity.major_point_id,
+            "minor_point_id": entity.minor_point_id,
+            "start_point_id": entity.start_point_id,
+            "end_point_id": entity.end_point_id,
+            "major_constraint_id": entity.major_constraint_id,
+            "minor_constraint_id": entity.minor_constraint_id,
+            "major_axis_line_id": entity.major_axis_line_id,
+            "minor_axis_line_id": entity.minor_axis_line_id,
+            "perpendicular_constraint_id": entity.perpendicular_constraint_id,
+            "start_on_ellipse_constraint_id": entity.start_on_ellipse_constraint_id,
+            "end_on_ellipse_constraint_id": entity.end_on_ellipse_constraint_id,
+        }
     if isinstance(entity, Polygon):
         return {
             "type": "polygon",
@@ -334,6 +353,23 @@ def _entity_from_dict(data: dict) -> SketchEntity:
             major_axis_line_id=_require(data, "major_axis_line_id"),
             minor_axis_line_id=_require(data, "minor_axis_line_id"),
             perpendicular_constraint_id=_require(data, "perpendicular_constraint_id"),
+        )
+    if entity_type == "ellipse_arc":
+        return EllipseArc(
+            id=_require(data, "id"),
+            construction=data.get("construction", False),
+            center_point_id=_require(data, "center_point_id"),
+            major_point_id=_require(data, "major_point_id"),
+            minor_point_id=_require(data, "minor_point_id"),
+            start_point_id=_require(data, "start_point_id"),
+            end_point_id=_require(data, "end_point_id"),
+            major_constraint_id=_require(data, "major_constraint_id"),
+            minor_constraint_id=_require(data, "minor_constraint_id"),
+            major_axis_line_id=_require(data, "major_axis_line_id"),
+            minor_axis_line_id=_require(data, "minor_axis_line_id"),
+            perpendicular_constraint_id=_require(data, "perpendicular_constraint_id"),
+            start_on_ellipse_constraint_id=_require(data, "start_on_ellipse_constraint_id"),
+            end_on_ellipse_constraint_id=_require(data, "end_on_ellipse_constraint_id"),
         )
     if entity_type == "polygon":
         return Polygon(

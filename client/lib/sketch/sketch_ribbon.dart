@@ -74,6 +74,7 @@ class SketchRibbon extends StatelessWidget {
       SelectionKind.circle => 'Circle selected',
       SelectionKind.arc => 'Arc selected',
       SelectionKind.ellipse => 'Ellipse selected',
+      SelectionKind.ellipseArc => 'Ellipse Arc selected',
       SelectionKind.spline => 'Spline selected',
       SelectionKind.text => 'Text selected',
       SelectionKind.constraint => 'Constraint selected',

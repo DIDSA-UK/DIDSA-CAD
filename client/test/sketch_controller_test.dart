@@ -43,6 +43,7 @@ class _FakeBackend {
   final Map<String, Map<String, dynamic>> circles = {};
   final Map<String, Map<String, dynamic>> arcs = {};
   final Map<String, Map<String, dynamic>> ellipses = {};
+  final Map<String, Map<String, dynamic>> ellipseArcs = {};
   final Map<String, Map<String, dynamic>> polygons = {};
   final Map<String, Map<String, dynamic>> slots = {};
   final Map<String, Map<String, dynamic>> rectangles = {};
@@ -243,6 +244,28 @@ class _FakeBackend {
         ellipse['construction'] = body['construction'] as bool;
       }
       return _json(ellipse, 200);
+    }
+
+    final ellipseArcDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/ellipse-arcs/(.+)$').firstMatch(path);
+    if (ellipseArcDeleteMatch != null && request.method == 'DELETE') {
+      final ellipseArc = ellipseArcs.remove(ellipseArcDeleteMatch.group(1));
+      if (ellipseArc != null) {
+        // Mirrors the real backend's Sketch.delete_ellipse_arc, which also
+        // deletes both axis Lines as part of deleting the EllipseArc itself.
+        lines.remove(ellipseArc['major_axis_line_id']);
+        lines.remove(ellipseArc['minor_axis_line_id']);
+      }
+      return _json({'pruned_point_ids': _reportAndApplyPrunedPoints()}, 200);
+    }
+
+    final ellipseArcPatchMatch = RegExp(r'^/sketch/sketches/[^/]+/ellipse-arcs/(.+)$').firstMatch(path);
+    if (ellipseArcPatchMatch != null && request.method == 'PATCH') {
+      final ellipseArc = ellipseArcs[ellipseArcPatchMatch.group(1)];
+      if (ellipseArc == null) return http.Response('not found', 404);
+      if (body.containsKey('construction')) {
+        ellipseArc['construction'] = body['construction'] as bool;
+      }
+      return _json(ellipseArc, 200);
     }
 
     final polygonDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/polygons/(.+)$').firstMatch(path);
@@ -1242,6 +1265,130 @@ class _FakeBackend {
     }
     if (ellipsesCollectionMatch && request.method == 'GET') {
       return _jsonList(ellipses.values.toList(), 200);
+    }
+
+    final ellipseArcsCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/ellipse-arcs$').hasMatch(path);
+    if (ellipseArcsCollectionMatch && request.method == 'POST') {
+      final id = _newId('ellipseArc');
+      final centerPoint = points[body['center_point_id']]!;
+      final majorPoint = points[body['major_point_id']]!;
+      final cx = (centerPoint['x'] as num).toDouble();
+      final cy = (centerPoint['y'] as num).toDouble();
+      final majorRadius = math.sqrt(
+        math.pow((majorPoint['x'] as num) - cx, 2) + math.pow((majorPoint['y'] as num) - cy, 2),
+      );
+      final rotation = math.atan2((majorPoint['y'] as num) - cy, (majorPoint['x'] as num) - cx);
+      final minorRadius = (body['minor_radius'] as num).toDouble();
+      final startAngle = (body['start_angle'] as num).toDouble();
+      final endAngle = (body['end_angle'] as num).toDouble();
+
+      // Mirrors the real backend's Sketch.add_ellipse_arc: a new minor-axis
+      // Point placed exactly perpendicular to the major axis, plus two new
+      // Points placed exactly on the curve at start_angle/end_angle - see
+      // that method's own `_point_on_ellipse` closure.
+      final minorAngle = rotation + math.pi / 2;
+      final minorPointId = _newId('point');
+      points[minorPointId] = {
+        'id': minorPointId,
+        'x': cx + minorRadius * math.cos(minorAngle),
+        'y': cy + minorRadius * math.sin(minorAngle),
+      };
+      (double, double) pointOnEllipse(double localAngle) {
+        final u = majorRadius * math.cos(localAngle);
+        final v = minorRadius * math.sin(localAngle);
+        final cosR = math.cos(rotation), sinR = math.sin(rotation);
+        return (cx + u * cosR - v * sinR, cy + u * sinR + v * cosR);
+      }
+
+      final (startX, startY) = pointOnEllipse(startAngle);
+      final startPointId = _newId('point');
+      points[startPointId] = {'id': startPointId, 'x': startX, 'y': startY};
+      final (endX, endY) = pointOnEllipse(endAngle);
+      final endPointId = _newId('point');
+      points[endPointId] = {'id': endPointId, 'x': endX, 'y': endY};
+
+      final majorAxisLineId = _newId('line');
+      lines[majorAxisLineId] = {
+        'id': majorAxisLineId,
+        'start_point_id': body['center_point_id'],
+        'end_point_id': body['major_point_id'],
+        'length': majorRadius,
+        'construction': true,
+      };
+      final minorAxisLineId = _newId('line');
+      lines[minorAxisLineId] = {
+        'id': minorAxisLineId,
+        'start_point_id': body['center_point_id'],
+        'end_point_id': minorPointId,
+        'length': minorRadius,
+        'construction': true,
+      };
+      final ellipseArc = {
+        'id': id,
+        'center_point_id': body['center_point_id'],
+        'major_point_id': body['major_point_id'],
+        'minor_point_id': minorPointId,
+        'start_point_id': startPointId,
+        'end_point_id': endPointId,
+        'major_axis_line_id': majorAxisLineId,
+        'minor_axis_line_id': minorAxisLineId,
+        'major_radius': majorRadius,
+        'minor_radius': minorRadius,
+        'rotation': rotation,
+        'construction': body['construction'] as bool? ?? false,
+      };
+      ellipseArcs[id] = ellipseArc;
+      // Mirrors the real backend's Sketch.add_ellipse_arc, which auto-
+      // creates major/minor DistanceConstraints, a PerpendicularConstraint
+      // tying the two axis Lines together, and a PointOnEllipseConstraint
+      // per curve Point.
+      final majorConstraintId = _newId('constraint');
+      constraints[majorConstraintId] = {
+        'id': majorConstraintId,
+        'point_a_id': body['center_point_id'],
+        'point_b_id': body['major_point_id'],
+        'distance': majorRadius,
+        'provisional': true,
+      };
+      final minorConstraintId = _newId('constraint');
+      constraints[minorConstraintId] = {
+        'id': minorConstraintId,
+        'point_a_id': body['center_point_id'],
+        'point_b_id': minorPointId,
+        'distance': minorRadius,
+        'provisional': true,
+      };
+      final perpendicularConstraintId = _newId('constraint');
+      constraints[perpendicularConstraintId] = {
+        'id': perpendicularConstraintId,
+        'type': 'perpendicular',
+        'line1_id': majorAxisLineId,
+        'line2_id': minorAxisLineId,
+      };
+      final startOnEllipseConstraintId = _newId('constraint');
+      constraints[startOnEllipseConstraintId] = {
+        'id': startOnEllipseConstraintId,
+        'type': 'point_on_ellipse',
+        'point_id': startPointId,
+        'ellipse_id': id,
+        'center_point_id': body['center_point_id'],
+        'major_point_id': body['major_point_id'],
+        'minor_point_id': minorPointId,
+      };
+      final endOnEllipseConstraintId = _newId('constraint');
+      constraints[endOnEllipseConstraintId] = {
+        'id': endOnEllipseConstraintId,
+        'type': 'point_on_ellipse',
+        'point_id': endPointId,
+        'ellipse_id': id,
+        'center_point_id': body['center_point_id'],
+        'major_point_id': body['major_point_id'],
+        'minor_point_id': minorPointId,
+      };
+      return _json(ellipseArc, 201);
+    }
+    if (ellipseArcsCollectionMatch && request.method == 'GET') {
+      return _jsonList(ellipseArcs.values.toList(), 200);
     }
 
     final polygonsCollectionMatch = RegExp(r'^/sketch/sketches/[^/]+/polygons$').hasMatch(path);
@@ -5340,6 +5487,158 @@ void main() {
       expect(majorAfter.x, closeTo(majorBefore.x, 1e-9));
       expect(majorAfter.y, closeTo(majorBefore.y, 1e-9));
     });
+  });
+
+  // --- Partial-ellipse (EllipseArc) tool -------------------------------------
+
+  test('activeDrawGhost previews a plain circle while only the ellipse-arc center is placed', () async {
+    controller.selectDrawTool(SketchTool.ellipseArc);
+    await controller.handleCanvasTap(2, 2);
+    expect(controller.ellipseArcInProgress, isTrue);
+    final ghost = controller.activeDrawGhost;
+    expect(ghost, isA<CircleGhost>());
+  });
+
+  test(
+      'activeDrawGhost previews the ellipse outline (clamped minor radius) once center and major '
+      'point are placed, then the swept EllipseArcGhost once the minor radius is fixed too', () async {
+    controller.selectDrawTool(SketchTool.ellipseArc);
+    await controller.handleCanvasTap(0, 0); // center
+    await controller.handleCanvasTap(10, 0); // major point - major radius 10
+    controller.cursorX = 5;
+    controller.cursorY = 4;
+    final ellipseGhost = controller.activeDrawGhost;
+    expect(ellipseGhost, isA<EllipseGhost>());
+
+    await controller.handleCanvasTap(5, 4); // minor radius 4 (perpendicular distance)
+    expect(controller.ellipseArcMinorRadius, closeTo(4, 1e-9));
+    controller.cursorX = 0;
+    controller.cursorY = 4;
+    final arcGhost = controller.activeDrawGhost;
+    expect(arcGhost, isA<EllipseArcGhost>());
+  });
+
+  test(
+      'the ellipse-arc tool places center, major point, minor radius, start angle, then end angle '
+      'across five taps, creating one EllipseArc with real major/minor/start/end Points, '
+      'construction axis Lines, and the full Distance+Perpendicular+PointOnEllipse constraint set '
+      'app.sketch.models.add_ellipse_arc builds server-side', () async {
+    controller.selectDrawTool(SketchTool.ellipseArc);
+    await controller.handleCanvasTap(0, 0); // center
+    await controller.handleCanvasTap(10, 0); // major point - major radius 10, rotation 0
+    await controller.handleCanvasTap(5, 4); // minor radius 4 (perpendicular distance)
+    await controller.handleCanvasTap(0, 4); // start angle: local (0, 4) -> pi/2
+    await controller.handleCanvasTap(-10, 0); // end angle: local (-10, 0) -> pi
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.ellipseArcInProgress, isFalse);
+    expect(controller.ellipseArcs.length, 1);
+    final ellipseArc = controller.ellipseArcs.values.single;
+    expect(ellipseArc.minorRadius, closeTo(4, 1e-9));
+    expect(controller.points[ellipseArc.majorPointId]!.x, closeTo(10, 1e-9));
+    expect(controller.points[ellipseArc.majorPointId]!.y, closeTo(0, 1e-9));
+    expect(controller.points[ellipseArc.minorPointId]!.x, closeTo(0, 1e-9));
+    expect(controller.points[ellipseArc.minorPointId]!.y, closeTo(4, 1e-9));
+    // Start/end Points placed exactly on the curve at the tapped angles -
+    // pi/2 (major axis frame) is (0, minorRadius) = (0, 4); pi is
+    // (-majorRadius, 0) = (-10, 0), both already axis-aligned since rotation
+    // is 0 here.
+    expect(controller.points[ellipseArc.startPointId]!.x, closeTo(0, 1e-6));
+    expect(controller.points[ellipseArc.startPointId]!.y, closeTo(4, 1e-6));
+    expect(controller.points[ellipseArc.endPointId]!.x, closeTo(-10, 1e-6));
+    expect(controller.points[ellipseArc.endPointId]!.y, closeTo(0, 1e-6));
+    // No negative/opposite axis tips (unlike Ellipse) - center-to-tip spoke
+    // Lines only, see EllipseArc's own docstring.
+    final majorAxisLine = controller.lines[ellipseArc.majorAxisLineId]!;
+    final minorAxisLine = controller.lines[ellipseArc.minorAxisLineId]!;
+    expect(majorAxisLine.construction, isTrue);
+    expect(minorAxisLine.construction, isTrue);
+    expect({majorAxisLine.startPointId, majorAxisLine.endPointId},
+        {ellipseArc.centerPointId, ellipseArc.majorPointId});
+    expect({minorAxisLine.startPointId, minorAxisLine.endPointId},
+        {ellipseArc.centerPointId, ellipseArc.minorPointId});
+    // Major-axis DistanceConstraint, minor-axis DistanceConstraint, the
+    // PerpendicularConstraint, 2 PointOnEllipseConstraints (start/end), and
+    // the CoincidentConstraint tying the new centre Point to the origin
+    // (see SketchController._pointIdAt's own doc comment).
+    expect(controller.constraints.length, 6);
+  });
+
+  test('tapping an EllipseArc in select mode recognizes SelectionKind.ellipseArc', () async {
+    controller.selectDrawTool(SketchTool.ellipseArc);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    await controller.handleCanvasTap(5, 4);
+    await controller.handleCanvasTap(0, 4);
+    await controller.handleCanvasTap(-10, 0);
+    controller.exitToSelectMode();
+
+    // Exactly on the swept quarter-arc at local angle 3*pi/4 (midway between
+    // the pi/2 start and pi end): (10*cos(3pi/4), 4*sin(3pi/4)).
+    await controller.handleCanvasTap(-7.0710678, 2.8284271);
+
+    expect(controller.selectionSet.length, 1);
+    expect(controller.selectionSet.single.kind, SelectionKind.ellipseArc);
+  });
+
+  test(
+      'computeDeleteCascade cascades a directly-selected axis Line up to its owning EllipseArc, and '
+      'drops the Line from its own cascade set - mirrors the analogous Ellipse fix', () async {
+    controller.selectDrawTool(SketchTool.ellipseArc);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    await controller.handleCanvasTap(5, 4);
+    await controller.handleCanvasTap(0, 4);
+    await controller.handleCanvasTap(-10, 0);
+    final ellipseArc = controller.ellipseArcs.values.single;
+
+    final cascade = controller.computeDeleteCascade(
+      [SketchSelection(kind: SelectionKind.line, id: ellipseArc.majorAxisLineId)],
+    );
+
+    expect(cascade.ellipseArcs, {ellipseArc.id});
+    expect(cascade.lines, isNot(contains(ellipseArc.majorAxisLineId)));
+  });
+
+  test('deleting an EllipseArc removes its axis Lines, prunes orphaned Points, and undo restores it',
+      () async {
+    controller.selectDrawTool(SketchTool.ellipseArc);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    await controller.handleCanvasTap(5, 4);
+    await controller.handleCanvasTap(0, 4);
+    await controller.handleCanvasTap(-10, 0);
+    final ellipseArc = controller.ellipseArcs.values.single;
+
+    controller.exitToSelectMode();
+    controller.selectEntity(SketchSelection(kind: SelectionKind.ellipseArc, id: ellipseArc.id));
+    // Mirrors the real backend's delete_ellipse_arc: centre/major/minor/
+    // start/end are all pruned as part of deleting the EllipseArc itself
+    // (nothing else references them) - the tap at (0, 0) created a new
+    // Point coincident-constrained to the sketch's own origin (see
+    // SketchController._pointIdAt's own doc comment), not a literal reuse
+    // of the origin Point's own id, so centre is a real, prunable Point
+    // here too.
+    backend.prunedPointIdsOnNextDelete = [
+      ellipseArc.centerPointId,
+      ellipseArc.majorPointId,
+      ellipseArc.minorPointId,
+      ellipseArc.startPointId,
+      ellipseArc.endPointId,
+    ];
+
+    await controller.deleteSelected();
+
+    expect(controller.ellipseArcs, isEmpty);
+    expect(controller.lines, isEmpty);
+    expect(controller.points.length, 1);
+    expect(controller.points.keys.single, controller.originPointId);
+
+    await controller.undo();
+
+    expect(controller.ellipseArcs.length, 1);
+    final restored = controller.ellipseArcs.values.single;
+    expect(restored.minorRadius, closeTo(4, 1e-9));
   });
 
   // --- Phase 6.2.5: Spline tool ---------------------------------------------
