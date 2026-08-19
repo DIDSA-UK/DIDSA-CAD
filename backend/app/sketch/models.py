@@ -952,8 +952,9 @@ class SketchPatternDirection:
 @dataclass
 class SketchPatternInstance:
     """Sketcher-roadmap Phase 7 (§2.9 Option 2): a lightweight, non-solved
-    linear pattern of one or more of this same Sketch's own Line/Circle/Arc
-    entities - structurally identical in spirit to the 3D `PatternFeature`
+    linear pattern of one or more of this same Sketch's own Line/Circle/
+    Arc/Ellipse/EllipseArc entities - structurally identical in spirit to
+    the 3D `PatternFeature`
     (`app.document.models`), but pure 2D math with no OCCT/py-slvs
     involvement at all, and never materialized into `Sketch.points`/
     `Sketch.entities` - see `Sketch.expand_pattern_and_mirror_instances`,
@@ -996,7 +997,8 @@ class SketchPatternInstance:
 class SketchMirrorInstance:
     """Sketcher-roadmap Phase 7 (§2.9 Option 2): `SketchPatternInstance`'s
     mirror-shaped sibling - one reflected copy of one or more of this same
-    Sketch's own Line/Circle/Arc entities across an existing Line
+    Sketch's own Line/Circle/Arc/Ellipse/EllipseArc entities across an
+    existing Line
     (`mirror_line_id`, real or construction - "construction-geometry
     support already exists in the sketcher" per §2.9), reflected across the
     *infinite* line through that Line's two Points, not just its own
@@ -3293,25 +3295,31 @@ class Sketch:
             return None
         return min(candidates, key=lambda p: math.hypot(p[0] - corner_xy[0], p[1] - corner_xy[1]))
 
-    _PATTERNABLE_ENTITY_TYPES = (Line, Circle, Arc)
+    _PATTERNABLE_ENTITY_TYPES = (Line, Circle, Arc, Ellipse, EllipseArc)
 
-    def _patternable_entities(self, entity_ids: list[str]) -> list["Line | Circle | Arc"]:
+    def _patternable_entities(self, entity_ids: list[str]) -> list["Line | Circle | Arc | Ellipse | EllipseArc"]:
         """Validates `entity_ids` for both `add_pattern_instance` and
         `add_mirror_instance`: non-empty, every id resolves, and every one
-        is a Line/Circle/Arc - the exact same accepted-kinds boundary
-        `offset_line`/`offset_circle`/`offset_arc`/`offset_chain` already
-        established (Ellipse/Spline/Text/Polygon/Slot/Rectangle are all
-        deliberately out of v1 scope here too - see `SketchPatternInstance`'s
-        own docstring)."""
+        is a Line/Circle/Arc/Ellipse/EllipseArc (Spline/Text/Polygon/Slot/
+        Rectangle are still deliberately out of v1 scope here - see
+        `SketchPatternInstance`'s own docstring). Unlike
+        `offset_line`/`offset_circle`/`offset_arc`/`offset_chain`, which
+        this boundary used to match exactly, Ellipse/EllipseArc don't need
+        any offset-curve math to be patternable/mirrorable at all - a
+        translated or reflected copy of an ellipse is still an ellipse
+        (unlike its true offset curve, which generally isn't one) - see
+        `_place_transformed_entity`'s own Ellipse/EllipseArc branches."""
         if not entity_ids:
             raise ValueError("At least one source entity is required")
-        resolved: list[Line | Circle | Arc] = []
+        resolved: list[Line | Circle | Arc | Ellipse | EllipseArc] = []
         for entity_id in entity_ids:
             entity = self.entities.get(entity_id)
             if entity is None:
                 raise KeyError(entity_id)
             if not isinstance(entity, self._PATTERNABLE_ENTITY_TYPES):
-                raise ValueError(f"Pattern/Mirror only supports Lines, Circles and Arcs, got {entity_id!r}")
+                raise ValueError(
+                    f"Pattern/Mirror only supports Lines, Circles, Arcs, Ellipses and Ellipse Arcs, got {entity_id!r}"
+                )
             resolved.append(entity)
         return resolved
 
@@ -3665,7 +3673,7 @@ class Sketch:
 
     def _place_transformed_entity(
         self,
-        entity: "Line | Circle | Arc",
+        entity: "Line | Circle | Arc | Ellipse | EllipseArc",
         points: dict[str, Point],
         entities: dict[str, SketchEntity],
         *,
@@ -3744,6 +3752,62 @@ class Sketch:
                 end_point_id=transformed_point(end_point_id),
                 radius_constraint_id="",
                 end_radius_constraint_id="",
+                construction=entity.construction,
+            )
+        elif isinstance(entity, Ellipse):
+            # Every one of the 5 defining Points transformed independently
+            # (like Circle's own center/radius pair above), not derived
+            # from each other - `transform` is a pure geometric map
+            # (translation or reflection) well-defined for any (x, y)
+            # regardless of how that Point's original position came to be,
+            # and both kinds of transform this module ever applies
+            # (translation, reflection) preserve the AtMidpoint symmetry
+            # `major_point_neg_id`/`minor_point_neg_id` need automatically
+            # (an affine map always sends a midpoint to the midpoint of the
+            # transformed endpoints) - so no special-case re-derivation of
+            # the negative tips is needed here, unlike what a first glance
+            # might suggest.
+            entities[new_id] = Ellipse(
+                id=new_id,
+                center_point_id=transformed_point(entity.center_point_id),
+                major_point_id=transformed_point(entity.major_point_id),
+                major_point_neg_id=transformed_point(entity.major_point_neg_id),
+                major_constraint_id="",
+                major_midpoint_constraint_id="",
+                minor_point_id=transformed_point(entity.minor_point_id),
+                minor_point_neg_id=transformed_point(entity.minor_point_neg_id),
+                minor_constraint_id="",
+                minor_midpoint_constraint_id="",
+                major_axis_line_id="",
+                minor_axis_line_id="",
+                perpendicular_constraint_id="",
+                construction=entity.construction,
+            )
+        elif isinstance(entity, EllipseArc):
+            # Same swap_arc_endpoints reasoning as the Arc branch above - a
+            # reflection reverses orientation for *any* curve, ellipse or
+            # circle alike, so the same fix applies unchanged. Rotation
+            # needs no special handling either: EllipseArc.rotation() is
+            # always re-derived from center/major_point's own (now
+            # transformed) positions, exactly like Ellipse's above, so a
+            # reflected major_point already encodes the correctly-flipped
+            # axis direction with no extra intervention.
+            start_point_id = entity.end_point_id if swap_arc_endpoints else entity.start_point_id
+            end_point_id = entity.start_point_id if swap_arc_endpoints else entity.end_point_id
+            entities[new_id] = EllipseArc(
+                id=new_id,
+                center_point_id=transformed_point(entity.center_point_id),
+                major_point_id=transformed_point(entity.major_point_id),
+                minor_point_id=transformed_point(entity.minor_point_id),
+                start_point_id=transformed_point(start_point_id),
+                end_point_id=transformed_point(end_point_id),
+                major_constraint_id="",
+                minor_constraint_id="",
+                major_axis_line_id="",
+                minor_axis_line_id="",
+                perpendicular_constraint_id="",
+                start_on_ellipse_constraint_id="",
+                end_on_ellipse_constraint_id="",
                 construction=entity.construction,
             )
         # Every other SketchEntity subclass is already excluded by

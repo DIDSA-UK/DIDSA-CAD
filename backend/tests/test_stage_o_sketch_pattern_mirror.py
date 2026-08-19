@@ -55,14 +55,18 @@ def test_add_pattern_instance_rejects_empty_source():
         sketch.add_pattern_instance([], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count_1=3, spacing_1=1.0)
 
 
-def test_add_pattern_instance_rejects_non_line_circle_arc_source():
+def test_add_pattern_instance_rejects_unsupported_source_kind():
+    # Ellipse/EllipseArc are valid Pattern/Mirror sources (see the Section A.1
+    # tests below) - Spline is not, and stands in here for "any entity kind
+    # outside {Line, Circle, Arc, Ellipse, EllipseArc}".
     sketch, _ = _line_sketch()
-    center = sketch.add_point(5.0, 5.0)
-    major = sketch.add_point(10.0, 5.0)
-    ellipse = sketch.add_ellipse(center.id, major.id, minor_radius=2.0)
+    a = sketch.add_point(0.0, 5.0)
+    b = sketch.add_point(5.0, 8.0)
+    c = sketch.add_point(10.0, 5.0)
+    spline = sketch.add_spline([a.id, b.id, c.id])
     with pytest.raises(ValueError):
         sketch.add_pattern_instance(
-            [ellipse.id], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count_1=3, spacing_1=1.0
+            [spline.id], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count_1=3, spacing_1=1.0
         )
 
 
@@ -189,6 +193,53 @@ def test_pattern_of_circle_and_arc():
     new_arc = next(e for e in expanded.entities.values() if e.type == "arc" and e.id != arc.id)
     assert expanded.points[new_arc.center_point_id].x == pytest.approx(10.0)
     assert expanded.points[new_arc.center_point_id].y == pytest.approx(20.0)
+
+
+def test_pattern_of_ellipse_translates_every_defining_point():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    major = sketch.add_point(4.0, 0.0)
+    ellipse = sketch.add_ellipse(center.id, major.id, minor_radius=2.0)
+
+    sketch.add_pattern_instance(
+        [ellipse.id], SketchPatternDirection(fixed_axis=SketchFixedAxis.X), count_1=2, spacing_1=10.0
+    )
+    expanded = sketch.expand_pattern_and_mirror_instances()
+
+    new_ellipse = next(e for e in expanded.entities.values() if e.type == "ellipse" and e.id != ellipse.id)
+    assert expanded.points[new_ellipse.center_point_id].x == pytest.approx(10.0)
+    assert expanded.points[new_ellipse.center_point_id].y == pytest.approx(0.0)
+    assert new_ellipse.major_radius(expanded.points) == pytest.approx(4.0)
+    assert new_ellipse.minor_radius(expanded.points) == pytest.approx(2.0)
+    assert new_ellipse.rotation(expanded.points) == pytest.approx(0.0)
+    # The negative axis tips need no special re-derivation - translation is
+    # affine and preserves the AtMidpoint symmetry automatically (see
+    # `_place_transformed_entity`'s own Ellipse branch doc comment).
+    assert expanded.points[new_ellipse.major_point_neg_id].x == pytest.approx(6.0)
+    assert expanded.points[new_ellipse.minor_point_neg_id].y == pytest.approx(-2.0)
+
+
+def test_pattern_of_ellipse_arc_translates_every_defining_point():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    major = sketch.add_point(4.0, 0.0)
+    ellipse_arc = sketch.add_ellipse_arc(center.id, major.id, minor_radius=2.0, start_angle=0.0, end_angle=math.pi / 2)
+
+    sketch.add_pattern_instance(
+        [ellipse_arc.id], SketchPatternDirection(fixed_axis=SketchFixedAxis.Y), count_1=2, spacing_1=10.0
+    )
+    expanded = sketch.expand_pattern_and_mirror_instances()
+
+    new_arc = next(e for e in expanded.entities.values() if e.type == "ellipse_arc" and e.id != ellipse_arc.id)
+    assert expanded.points[new_arc.center_point_id].y == pytest.approx(10.0)
+    assert new_arc.major_radius(expanded.points) == pytest.approx(4.0)
+    assert new_arc.minor_radius(expanded.points) == pytest.approx(2.0)
+    original_start = sketch.points[ellipse_arc.start_point_id]
+    original_end = sketch.points[ellipse_arc.end_point_id]
+    new_start = expanded.points[new_arc.start_point_id]
+    new_end = expanded.points[new_arc.end_point_id]
+    assert (new_start.x, new_start.y) == pytest.approx((original_start.x, original_start.y + 10.0))
+    assert (new_end.x, new_end.y) == pytest.approx((original_end.x, original_end.y + 10.0))
 
 
 def test_pattern_two_directions_produces_a_row_major_grid():
@@ -469,6 +520,52 @@ def test_mirror_arc_swaps_endpoints_to_preserve_ccw_visual_arc():
     assert mirrored_start.y == pytest.approx(1.0)
     assert mirrored_end.x == pytest.approx(-1.0)
     assert mirrored_end.y == pytest.approx(0.0, abs=1e-9)
+
+
+def test_mirror_ellipse_reflects_every_defining_point_and_preserves_symmetry():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    mirror_a = sketch.add_point(0.0, -5.0)
+    mirror_b = sketch.add_point(0.0, 5.0)
+    mirror_line = sketch.add_line(mirror_a.id, mirror_b.id, construction=True)
+    center = sketch.add_point(2.0, 0.0)
+    major = sketch.add_point(6.0, 0.0)
+    ellipse = sketch.add_ellipse(center.id, major.id, minor_radius=2.0)
+
+    sketch.add_mirror_instance([ellipse.id], mirror_line.id)
+    expanded = sketch.expand_pattern_and_mirror_instances()
+    mirrored = next(e for e in expanded.entities.values() if e.type == "ellipse" and e.id != ellipse.id)
+
+    assert expanded.points[mirrored.center_point_id].x == pytest.approx(-2.0)
+    assert mirrored.major_radius(expanded.points) == pytest.approx(4.0)
+    assert mirrored.minor_radius(expanded.points) == pytest.approx(2.0)
+    # Reflection is affine too - the AtMidpoint symmetry between a positive
+    # tip and its negative counterpart survives without special-casing.
+    assert expanded.points[mirrored.major_point_id].x == pytest.approx(-6.0)
+    assert expanded.points[mirrored.major_point_neg_id].x == pytest.approx(2.0)
+
+
+def test_mirror_ellipse_arc_swaps_endpoints_to_preserve_ccw_visual_arc():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    mirror_a = sketch.add_point(0.0, -5.0)
+    mirror_b = sketch.add_point(0.0, 5.0)
+    mirror_line = sketch.add_line(mirror_a.id, mirror_b.id, construction=True)
+    center = sketch.add_point(0.0, 0.0)
+    major = sketch.add_point(2.0, 0.0)
+    ellipse_arc = sketch.add_ellipse_arc(center.id, major.id, minor_radius=1.0, start_angle=0.0, end_angle=math.pi / 2)
+
+    sketch.add_mirror_instance([ellipse_arc.id], mirror_line.id)
+    expanded = sketch.expand_pattern_and_mirror_instances()
+    mirrored = next(e for e in expanded.entities.values() if e.type == "ellipse_arc" and e.id != ellipse_arc.id)
+
+    original_start = sketch.points[ellipse_arc.start_point_id]
+    original_end = sketch.points[ellipse_arc.end_point_id]
+    mirrored_start = expanded.points[mirrored.start_point_id]
+    mirrored_end = expanded.points[mirrored.end_point_id]
+    # Same swap as the plain-Arc case above: the mirrored curve's own start
+    # must be the reflection of the *original end* for the CCW-from-start
+    # convention to still trace the visually-correct (non-reflex) sweep.
+    assert (mirrored_start.x, mirrored_start.y) == pytest.approx((-original_end.x, original_end.y))
+    assert (mirrored_end.x, mirrored_end.y) == pytest.approx((-original_start.x, original_start.y))
 
 
 def test_mirror_instance_across_zero_length_line_produces_nothing():

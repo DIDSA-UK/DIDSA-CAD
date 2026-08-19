@@ -571,6 +571,15 @@ bool sketchGeometry3DEquals(SketchGeometry3D a, SketchGeometry3D b) {
           radius: math.sqrt(dx * dx + dy * dy),
           construction: entity.construction,
         ));
+      case PatternMirrorEntityKind.ellipse:
+      case PatternMirrorEntityKind.ellipseArc:
+        // Ellipse/EllipseArc are valid Pattern/Mirror sources (client-side:
+        // `pattern_mirror_expansion.dart`), but this function's own source
+        // map above never feeds them in (no Ellipse/EllipseArc case there
+        // either) and its return type has no merged-ellipse slot yet - 3D-
+        // viewport (Orbit View) tessellation/selection for EllipseArc is
+        // separate, deliberately deferred follow-up work. Unreachable today.
+        break;
     }
   }
 

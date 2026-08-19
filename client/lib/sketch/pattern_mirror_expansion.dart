@@ -16,21 +16,35 @@ import 'dart:math' as math;
 /// and `part_screen.dart` (showing a Sketch's outline in the 3D viewport
 /// without editing it).
 
-enum PatternMirrorEntityKind { line, circle, arc }
+enum PatternMirrorEntityKind { line, circle, arc, ellipse, ellipseArc }
 
 class PatternMirrorSourceEntity {
   final String id;
   final PatternMirrorEntityKind kind;
   final bool construction;
 
-  /// Circle/Arc only - null for a Line.
+  /// Circle/Arc/Ellipse/EllipseArc only - null for a Line.
   final String? centerPointId;
 
-  /// Line: start point. Circle: radius (edge) point. Arc: start point.
+  /// Line: start point. Circle: radius (edge) point. Arc/EllipseArc: start
+  /// point. Unused (empty) for an Ellipse - see [majorPointId] instead.
   final String startPointId;
 
-  /// Line: end point. Arc: end point. Unused (empty) for a Circle.
+  /// Line: end point. Arc/EllipseArc: end point. Unused (empty) for a
+  /// Circle or Ellipse.
   final String endPointId;
+
+  /// Ellipse/EllipseArc only - the major-axis point.
+  final String? majorPointId;
+
+  /// Ellipse/EllipseArc only - the minor-axis point.
+  final String? minorPointId;
+
+  /// Ellipse only - the two negative/opposite axis-tip points (see the
+  /// backend's `Ellipse` docstring). Null for EllipseArc, which has no
+  /// negative tips of its own.
+  final String? majorPointNegId;
+  final String? minorPointNegId;
 
   const PatternMirrorSourceEntity({
     required this.id,
@@ -39,6 +53,10 @@ class PatternMirrorSourceEntity {
     this.centerPointId,
     required this.startPointId,
     this.endPointId = '',
+    this.majorPointId,
+    this.minorPointId,
+    this.majorPointNegId,
+    this.minorPointNegId,
   });
 }
 
@@ -108,6 +126,14 @@ class PatternMirrorExpandedEntity {
   final String startPointId;
   final String endPointId;
 
+  /// Ellipse/EllipseArc only - the transformed major/minor-axis points.
+  final String? majorPointId;
+  final String? minorPointId;
+
+  /// Ellipse only - the transformed negative/opposite axis-tip points.
+  final String? majorPointNegId;
+  final String? minorPointNegId;
+
   const PatternMirrorExpandedEntity({
     required this.id,
     required this.kind,
@@ -117,6 +143,10 @@ class PatternMirrorExpandedEntity {
     this.centerPointId,
     required this.startPointId,
     required this.endPointId,
+    this.majorPointId,
+    this.minorPointId,
+    this.majorPointNegId,
+    this.minorPointNegId,
   });
 }
 
@@ -250,6 +280,61 @@ PatternMirrorExpansion expandPatternAndMirrorInstances({
           centerPointId: center,
           startPointId: start,
           endPointId: end,
+        ));
+      case PatternMirrorEntityKind.ellipse:
+        // Every one of the 5 defining Points is transformed directly and
+        // independently - no offset-curve math needed (a translated or
+        // reflected ellipse is still an ellipse), and no special re-
+        // derivation of the negative axis tips either, since translation
+        // and reflection are both affine maps that preserve midpoint
+        // relationships, so the AtMidpoint symmetry between a positive tip
+        // and its negative counterpart survives automatically. Mirrors the
+        // backend's `_place_transformed_entity` Ellipse branch.
+        final center = transformedPoint(entity.centerPointId);
+        final major = transformedPoint(entity.majorPointId);
+        final majorNeg = transformedPoint(entity.majorPointNegId);
+        final minor = transformedPoint(entity.minorPointId);
+        final minorNeg = transformedPoint(entity.minorPointNegId);
+        if (center == null || major == null || majorNeg == null || minor == null || minorNeg == null) return;
+        resultEntities.add(PatternMirrorExpandedEntity(
+          id: newId,
+          kind: PatternMirrorEntityKind.ellipse,
+          construction: entity.construction,
+          ownerInstanceId: ownerInstanceId,
+          isMirror: isMirror,
+          centerPointId: center,
+          startPointId: '',
+          endPointId: '',
+          majorPointId: major,
+          minorPointId: minor,
+          majorPointNegId: majorNeg,
+          minorPointNegId: minorNeg,
+        ));
+      case PatternMirrorEntityKind.ellipseArc:
+        // Same swap_arc_endpoints reasoning as the Arc branch above -
+        // Mirror's reflection has negative determinant, reversing apparent
+        // winding for any directional curve, circle-arc or ellipse-arc
+        // alike - and `rotation()` is always recomputed from the current
+        // major point position, so transforming it directly is enough.
+        final startSourceId = swapArcEndpoints ? entity.endPointId : entity.startPointId;
+        final endSourceId = swapArcEndpoints ? entity.startPointId : entity.endPointId;
+        final center = transformedPoint(entity.centerPointId);
+        final major = transformedPoint(entity.majorPointId);
+        final minor = transformedPoint(entity.minorPointId);
+        final start = transformedPoint(startSourceId);
+        final end = transformedPoint(endSourceId);
+        if (center == null || major == null || minor == null || start == null || end == null) return;
+        resultEntities.add(PatternMirrorExpandedEntity(
+          id: newId,
+          kind: PatternMirrorEntityKind.ellipseArc,
+          construction: entity.construction,
+          ownerInstanceId: ownerInstanceId,
+          isMirror: isMirror,
+          centerPointId: center,
+          startPointId: start,
+          endPointId: end,
+          majorPointId: major,
+          minorPointId: minor,
         ));
     }
   }

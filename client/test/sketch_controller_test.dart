@@ -10762,6 +10762,155 @@ void main() {
       expect(freshController.selectionSet, isEmpty);
     });
 
+    /// Ellipse/EllipseArc became valid Pattern/Mirror sources alongside
+    /// Line/Circle/Arc - an Ellipse centred at the origin, plus a quarter
+    /// EllipseArc centred well away from it so the two shapes' own curves
+    /// never overlap in a hit-test.
+    Future<(SketchController, _FakeBackend)> adoptedControllerWithEllipseAndEllipseArc() async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-pattern-ellipse', 'origin-pattern-ellipse');
+      freshBackend.points['ec'] = {'id': 'ec', 'x': 0.0, 'y': 0.0};
+      freshBackend.points['emaj'] = {'id': 'emaj', 'x': 4.0, 'y': 0.0};
+      freshBackend.points['emajneg'] = {'id': 'emajneg', 'x': -4.0, 'y': 0.0};
+      freshBackend.points['emin'] = {'id': 'emin', 'x': 0.0, 'y': 2.0};
+      freshBackend.points['eminneg'] = {'id': 'eminneg', 'x': 0.0, 'y': -2.0};
+      freshBackend.ellipses['ellipse-a'] = {
+        'id': 'ellipse-a',
+        'center_point_id': 'ec',
+        'major_point_id': 'emaj',
+        'major_point_neg_id': 'emajneg',
+        'minor_point_id': 'emin',
+        'minor_point_neg_id': 'eminneg',
+        'major_axis_line_id': 'ellipse-a-major-line',
+        'minor_axis_line_id': 'ellipse-a-minor-line',
+        'major_radius': 4.0,
+        'minor_radius': 2.0,
+        'rotation': 0.0,
+        'construction': false,
+      };
+      freshBackend.lines['ellipse-a-major-line'] = {
+        'id': 'ellipse-a-major-line',
+        'start_point_id': 'emajneg',
+        'end_point_id': 'emaj',
+        'length': 8.0,
+        'construction': true,
+      };
+      freshBackend.lines['ellipse-a-minor-line'] = {
+        'id': 'ellipse-a-minor-line',
+        'start_point_id': 'eminneg',
+        'end_point_id': 'emin',
+        'length': 4.0,
+        'construction': true,
+      };
+
+      freshBackend.points['ac'] = {'id': 'ac', 'x': 0.0, 'y': 50.0};
+      freshBackend.points['amaj'] = {'id': 'amaj', 'x': 4.0, 'y': 50.0};
+      freshBackend.points['amin'] = {'id': 'amin', 'x': 0.0, 'y': 52.0};
+      freshBackend.points['astart'] = {'id': 'astart', 'x': 4.0, 'y': 50.0};
+      freshBackend.points['aend'] = {'id': 'aend', 'x': 0.0, 'y': 52.0};
+      freshBackend.ellipseArcs['ellipsearc-a'] = {
+        'id': 'ellipsearc-a',
+        'center_point_id': 'ac',
+        'major_point_id': 'amaj',
+        'minor_point_id': 'amin',
+        'start_point_id': 'astart',
+        'end_point_id': 'aend',
+        'major_axis_line_id': 'ellipsearc-a-major-line',
+        'minor_axis_line_id': 'ellipsearc-a-minor-line',
+        'major_radius': 4.0,
+        'minor_radius': 2.0,
+        'rotation': 0.0,
+        'construction': false,
+      };
+      freshBackend.lines['ellipsearc-a-major-line'] = {
+        'id': 'ellipsearc-a-major-line',
+        'start_point_id': 'ac',
+        'end_point_id': 'amaj',
+        'length': 4.0,
+        'construction': true,
+      };
+      freshBackend.lines['ellipsearc-a-minor-line'] = {
+        'id': 'ellipsearc-a-minor-line',
+        'start_point_id': 'ac',
+        'end_point_id': 'amin',
+        'length': 2.0,
+        'construction': true,
+      };
+
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-pattern-ellipse');
+      return (freshController, freshBackend);
+    }
+
+    test('tapping an Ellipse accumulates into selectionSet as a valid pattern/mirror source', () async {
+      final (freshController, _) = await adoptedControllerWithEllipseAndEllipseArc();
+      freshController.enterPatternMode();
+
+      // A point on the curve away from the axis Points/Lines, so the hit
+      // resolves to the Ellipse itself, not a Point or a construction Line.
+      await freshController.handleCanvasTap(4 * math.cos(math.pi / 4), 2 * math.sin(math.pi / 4));
+
+      expect(freshController.selectionSet, hasLength(1));
+      expect(freshController.selectionSet.single.kind, SelectionKind.ellipse);
+      expect(freshController.selectionSet.single.id, 'ellipse-a');
+    });
+
+    test('tapping an EllipseArc accumulates into selectionSet as a valid pattern/mirror source', () async {
+      final (freshController, _) = await adoptedControllerWithEllipseAndEllipseArc();
+      freshController.enterPatternMode();
+
+      await freshController.handleCanvasTap(4 * math.cos(math.pi / 4), 50 + 2 * math.sin(math.pi / 4));
+
+      expect(freshController.selectionSet, hasLength(1));
+      expect(freshController.selectionSet.single.kind, SelectionKind.ellipseArc);
+      expect(freshController.selectionSet.single.id, 'ellipsearc-a');
+    });
+
+    test('confirmPatternMirrorPreview for an Ellipse source produces a translated EllipseGhost', () async {
+      final (freshController, _) = await adoptedControllerWithEllipseAndEllipseArc();
+      freshController.enterPatternMode();
+      await freshController.handleCanvasTap(4 * math.cos(math.pi / 4), 2 * math.sin(math.pi / 4));
+      freshController.finishPatternPick();
+      freshController.setPatternDirectionFixedAxis('x');
+      freshController.setPatternSpacing1(10.0);
+      freshController.setPatternCount1(2);
+
+      await freshController.confirmPatternMirrorPreview();
+
+      final ellipseGhosts = freshController.patternMirrorGhosts.whereType<EllipseGhost>();
+      expect(ellipseGhosts, hasLength(1));
+      final ghost = ellipseGhosts.single;
+      expect(ghost.centerX, closeTo(10.0, 1e-9));
+      expect(ghost.centerY, closeTo(0.0, 1e-9));
+      expect(ghost.majorX, closeTo(14.0, 1e-9));
+      expect(ghost.minorRadius, closeTo(2.0, 1e-9));
+    });
+
+    test('confirmPatternMirrorPreview for an EllipseArc source produces a translated EllipseArcGhost', () async {
+      final (freshController, _) = await adoptedControllerWithEllipseAndEllipseArc();
+      freshController.enterPatternMode();
+      await freshController.handleCanvasTap(4 * math.cos(math.pi / 4), 50 + 2 * math.sin(math.pi / 4));
+      freshController.finishPatternPick();
+      freshController.setPatternDirectionFixedAxis('y');
+      freshController.setPatternSpacing1(10.0);
+      freshController.setPatternCount1(2);
+
+      await freshController.confirmPatternMirrorPreview();
+
+      final arcGhosts = freshController.patternMirrorGhosts.whereType<EllipseArcGhost>();
+      expect(arcGhosts, hasLength(1));
+      final ghost = arcGhosts.single;
+      expect(ghost.centerX, closeTo(0.0, 1e-9));
+      expect(ghost.centerY, closeTo(60.0, 1e-9));
+      expect(ghost.majorX, closeTo(4.0, 1e-9));
+      expect(ghost.majorY, closeTo(60.0, 1e-9));
+      expect(ghost.minorRadius, closeTo(2.0, 1e-9));
+      // The swept range (start->end, CCW) is unaffected by a pure
+      // translation - still the same quarter turn as the source.
+      expect(ghost.endAngle - ghost.startAngle, closeTo(math.pi / 2, 1e-6));
+    });
+
     test('finishPatternPick with nothing picked exits to select mode', () async {
       final (freshController, _) = await adoptedControllerWithLine();
       freshController.enterPatternMode();

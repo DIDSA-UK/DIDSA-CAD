@@ -9542,18 +9542,26 @@ class SketchController extends ChangeNotifier {
   /// [SketchMode.pattern]'s own tap handler - dispatches on whether picking
   /// is still in progress ([patternPreviewTargets] null) or the value bar is
   /// already open (configuring): a pick-phase tap accumulates a Line/Circle/
-  /// Arc into [selectionSet] (same toggle-on-second-tap shape [_handleOffsetTap]
-  /// already uses for its own chain picks); a configuring-phase tap on a
-  /// Line sets the pattern direction (Direction 1 or 2, per
-  /// [patternActiveDirectionSlot]) or the mirror line (dispatched on
-  /// [patternMirrorOperation]) - the bar stays non-modal the whole time, so
-  /// this reaches the canvas exactly like every other value-bar tool here.
+  /// Arc/Ellipse/EllipseArc into [selectionSet] (same toggle-on-second-tap
+  /// shape [_handleOffsetTap] already uses for its own chain picks); a
+  /// configuring-phase tap on a Line sets the pattern direction (Direction 1
+  /// or 2, per [patternActiveDirectionSlot]) or the mirror line (dispatched
+  /// on [patternMirrorOperation]) - the bar stays non-modal the whole time,
+  /// so this reaches the canvas exactly like every other value-bar tool
+  /// here.
   void _handlePatternTap(double hitRadius) {
     if (_busy || _sketchId == null) return;
     final hit = _entityAt(cursorX, cursorY, hitRadius);
     if (hit == null) return;
     if (_patternPreviewTargets == null) {
-      if (hit.kind != SelectionKind.line && hit.kind != SelectionKind.circle && hit.kind != SelectionKind.arc) {
+      const pickableKinds = {
+        SelectionKind.line,
+        SelectionKind.circle,
+        SelectionKind.arc,
+        SelectionKind.ellipse,
+        SelectionKind.ellipseArc,
+      };
+      if (!pickableKinds.contains(hit.kind)) {
         return;
       }
       final index = _selectionSet.indexWhere((s) => s.sameAs(hit));
@@ -9605,6 +9613,8 @@ class SketchController extends ChangeNotifier {
   SketchSelection _selectionForKnownEntityId(String id) {
     if (circles.containsKey(id)) return SketchSelection(kind: SelectionKind.circle, id: id);
     if (arcs.containsKey(id)) return SketchSelection(kind: SelectionKind.arc, id: id);
+    if (ellipses.containsKey(id)) return SketchSelection(kind: SelectionKind.ellipse, id: id);
+    if (ellipseArcs.containsKey(id)) return SketchSelection(kind: SelectionKind.ellipseArc, id: id);
     return SketchSelection(kind: SelectionKind.line, id: id);
   }
 
@@ -9896,6 +9906,29 @@ class SketchController extends ChangeNotifier {
           startPointId: arc.startPointId,
           endPointId: arc.endPointId,
         ),
+      for (final ellipse in ellipses.values)
+        ellipse.id: PatternMirrorSourceEntity(
+          id: ellipse.id,
+          kind: PatternMirrorEntityKind.ellipse,
+          construction: ellipse.construction,
+          centerPointId: ellipse.centerPointId,
+          startPointId: '',
+          majorPointId: ellipse.majorPointId,
+          minorPointId: ellipse.minorPointId,
+          majorPointNegId: ellipse.majorPointNegId,
+          minorPointNegId: ellipse.minorPointNegId,
+        ),
+      for (final ellipseArc in ellipseArcs.values)
+        ellipseArc.id: PatternMirrorSourceEntity(
+          id: ellipseArc.id,
+          kind: PatternMirrorEntityKind.ellipseArc,
+          construction: ellipseArc.construction,
+          centerPointId: ellipseArc.centerPointId,
+          startPointId: ellipseArc.startPointId,
+          endPointId: ellipseArc.endPointId,
+          majorPointId: ellipseArc.majorPointId,
+          minorPointId: ellipseArc.minorPointId,
+        ),
     };
     return (pointsMap, entitiesMap);
   }
@@ -9957,6 +9990,32 @@ class SketchController extends ChangeNotifier {
         final end = _resolvePatternMirrorPoint(expansion, entity.endPointId);
         if (center == null || start == null || end == null) return null;
         return ArcGhost(centerX: center.$1, centerY: center.$2, startX: start.$1, startY: start.$2, endX: end.$1, endY: end.$2);
+      case PatternMirrorEntityKind.ellipse:
+        final center = _resolvePatternMirrorPoint(expansion, entity.centerPointId!);
+        final major = _resolvePatternMirrorPoint(expansion, entity.majorPointId!);
+        final minor = _resolvePatternMirrorPoint(expansion, entity.minorPointId!);
+        if (center == null || major == null || minor == null) return null;
+        final minorRadius = math.sqrt(math.pow(minor.$1 - center.$1, 2) + math.pow(minor.$2 - center.$2, 2));
+        return EllipseGhost(centerX: center.$1, centerY: center.$2, majorX: major.$1, majorY: major.$2, minorRadius: minorRadius);
+      case PatternMirrorEntityKind.ellipseArc:
+        final center = _resolvePatternMirrorPoint(expansion, entity.centerPointId!);
+        final major = _resolvePatternMirrorPoint(expansion, entity.majorPointId!);
+        final minor = _resolvePatternMirrorPoint(expansion, entity.minorPointId!);
+        final start = _resolvePatternMirrorPoint(expansion, entity.startPointId);
+        final end = _resolvePatternMirrorPoint(expansion, entity.endPointId);
+        if (center == null || major == null || minor == null || start == null || end == null) return null;
+        final minorRadius = math.sqrt(math.pow(minor.$1 - center.$1, 2) + math.pow(minor.$2 - center.$2, 2));
+        final startAngle = _ellipseParametricAngle(center.$1, center.$2, major.$1, major.$2, minorRadius, start.$1, start.$2);
+        final endAngle = _ellipseParametricAngle(center.$1, center.$2, major.$1, major.$2, minorRadius, end.$1, end.$2);
+        return EllipseArcGhost(
+          centerX: center.$1,
+          centerY: center.$2,
+          majorX: major.$1,
+          majorY: major.$2,
+          minorRadius: minorRadius,
+          startAngle: startAngle,
+          endAngle: endAngle,
+        );
     }
   }
 
@@ -10073,6 +10132,18 @@ class SketchController extends ChangeNotifier {
       final end = _resolvePatternMirrorPoint(expansion, entity.endPointId);
       if (start == null || end == null) return null;
       return _distanceToSegment(x, y, start.$1, start.$2, end.$1, end.$2);
+    }
+    if (entity.kind == PatternMirrorEntityKind.ellipse || entity.kind == PatternMirrorEntityKind.ellipseArc) {
+      // Approximated by distance to the *full* ellipse boundary, same
+      // simplification the Circle/Arc branch below already makes for Arc -
+      // good enough for "which instance did I tap", not exact swept-range
+      // precision.
+      final center = _resolvePatternMirrorPoint(expansion, entity.centerPointId!);
+      final major = _resolvePatternMirrorPoint(expansion, entity.majorPointId!);
+      final minor = _resolvePatternMirrorPoint(expansion, entity.minorPointId!);
+      if (center == null || major == null || minor == null) return null;
+      final minorRadius = math.sqrt(math.pow(minor.$1 - center.$1, 2) + math.pow(minor.$2 - center.$2, 2));
+      return _approxDistanceToEllipseBoundary(x, y, center.$1, center.$2, major.$1, major.$2, minorRadius);
     }
     final center = _resolvePatternMirrorPoint(expansion, entity.centerPointId!);
     final radiusRef = _resolvePatternMirrorPoint(expansion, entity.startPointId);
@@ -13933,16 +14004,29 @@ class SketchController extends ChangeNotifier {
 
     // Ellipse-loop special case: a whole-Ellipse profile is packed as
     // exactly 2 Points (centre, major-axis) referencing the Ellipse's own
-    // single id - mirrors _addLoopBoundary's identical special case.
-    // (Ellipse is never a Pattern/Mirror source, so no fallback needed
-    // here - only its Points, already resolved via pointXY above.)
+    // single id - mirrors _addLoopBoundary's identical special case. Also
+    // matches a synthetic (Pattern/Mirror-derived) Ellipse copy's id, same
+    // as [syntheticArcs] below does for Arc - a patterned/mirrored Ellipse
+    // is now a valid whole-loop profile too, and without this fallback it
+    // would wrongly fall through to the "!hasArc && !hasSpline" 2-anchor
+    // branch further down, which assumes a plain Circle.
     final soleEntityId = loop.lineIds.length == 1 ? loop.lineIds[0] : null;
+    PatternMirrorExpandedEntity? syntheticEllipse;
+    if (soleEntityId != null) {
+      for (final e in expansion.entities) {
+        if (e.id == soleEntityId && e.kind == PatternMirrorEntityKind.ellipse) {
+          syntheticEllipse = e;
+          break;
+        }
+      }
+    }
     final ellipse = soleEntityId == null ? null : ellipses[soleEntityId];
-    if (ellipse != null && anchors.length == 2) {
+    if ((ellipse != null || syntheticEllipse != null) && anchors.length == 2) {
       final center = anchors[0];
       final major = anchors[1];
       final majorRadius = _distanceXY(center, major);
-      final minorPoint = pointXY(ellipse.minorPointId);
+      final minorPointId = ellipse?.minorPointId ?? syntheticEllipse?.minorPointId;
+      final minorPoint = minorPointId == null ? null : pointXY(minorPointId);
       if (minorPoint == null) return null;
       final minorRadius = _distanceXY(center, minorPoint);
       final rotation = math.atan2(major.$2 - center.$2, major.$1 - center.$1);
