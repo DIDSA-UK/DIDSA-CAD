@@ -6582,6 +6582,22 @@ class SketchController extends ChangeNotifier {
     return false;
   }
 
+  /// Whether [lineAId]/[lineBId] carry a `LineDistanceConstraint` between
+  /// them - the exact same reasoning [isImplicitPolygonEdgeTie]/
+  /// [isImplicitEllipseAxisPerpendicular] already established for other
+  /// backend-auto-created "plumbing" constraints: [confirmGhostValue]'s
+  /// `lineDistance` branch creates a `ParallelConstraint` alongside a
+  /// LineDistanceConstraint purely to make the already-implied parallelism
+  /// real (see that branch's own doc comment) - the on-device ask was for
+  /// this dimension to *feel* line-to-line without the parallelism ever
+  /// being shown explicitly, so this Parallel isn't a real user-facing
+  /// constraint to display or let the user delete on its own; the
+  /// LineDistance dimension itself already communicates the relationship.
+  /// Reuses [_findLineDistanceConstraint]'s existing order-independent
+  /// lookup rather than a second membership scan.
+  bool isImplicitLineDistanceParallel(String lineAId, String lineBId) =>
+      _findLineDistanceConstraint(lineAId, lineBId) != null;
+
   double _distanceToSegment(
     double px,
     double py,
@@ -7053,6 +7069,24 @@ class SketchController extends ChangeNotifier {
       if (refs.pointIds.any(pointIds.contains) || refs.lineIds.any(lineIds.contains)) {
         constraintIds.add(entry.key);
       }
+    }
+    // On-device feedback ("confirm that the parallel constraint is linked
+    // to the line distance dimension so that deleting the dimension also
+    // deletes the parallel constraint. otherwise, an unwanted constraint
+    // could be left behind and invisible"): a LineDistanceConstraint being
+    // deleted here - whether directly selected itself, or only pulled in
+    // above because one of its own Lines is being deleted - needs to pull
+    // in its own paired ParallelConstraint too (see [confirmGhostValue]'s
+    // `lineDistance` branch, which always creates one alongside on first
+    // creation). That Parallel's own badge is deliberately suppressed (see
+    // [isImplicitLineDistanceParallel]), so it's otherwise never
+    // independently selectable/deletable - left out of the cascade, it
+    // would survive deleting the dimension that implied it.
+    for (final constraintId in constraintIds.toList()) {
+      final constraint = constraints[constraintId];
+      if (constraint is! LineDistanceConstraintDto) continue;
+      final parallel = _findParallelConstraint(constraint.line1Id, constraint.line2Id);
+      if (parallel != null) constraintIds.add(parallel.id);
     }
     return (
       points: pointIds,
@@ -11858,6 +11892,22 @@ class SketchController extends ChangeNotifier {
     return null;
   }
 
+  /// [_findLineDistanceConstraint]'s mirror image - the ParallelConstraint
+  /// (if any) between the same two Lines, used by [computeDeleteCascade] to
+  /// find the ParallelConstraint a LineDistanceConstraint being deleted
+  /// implies (see that branch's own doc comment for why one always exists
+  /// on first creation).
+  ParallelConstraintDto? _findParallelConstraint(String lineAId, String lineBId) {
+    for (final constraint in constraints.values) {
+      if (constraint is ParallelConstraintDto &&
+          ((constraint.line1Id == lineAId && constraint.line2Id == lineBId) ||
+              (constraint.line1Id == lineBId && constraint.line2Id == lineAId))) {
+        return constraint;
+      }
+    }
+    return null;
+  }
+
   /// Confirms [key]'s ghost with [value] (Stage 13 item 5): creates a new
   /// `DistanceConstraint` between the ghost's two Points if none exists yet,
   /// or PATCHes the existing one's value otherwise. A diameter ghost is
@@ -11919,32 +11969,39 @@ class SketchController extends ChangeNotifier {
           );
           _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
 
-          // On-device feedback ("a dimension between two parallel lines
-          // should be line to line, not point to point - their
-          // parallelism should be part of the dimension" / follow-up:
-          // "adding this dimension to a rectangle's own already-H/V-locked
-          // opposite sides makes it over constrained"): a
-          // LineDistanceConstraint alone only pins Line 2's start Point's
-          // distance from Line 1, leaving Line 2 free to rotate about that
-          // Point - genuinely locking the Lines parallel needs a real
-          // ParallelConstraint alongside it. But the two Lines might
-          // already be forced parallel some other way (opposite sides of
-          // a rectangle, both Horizontal/Vertical; a Slot's own
-          // Tangent+EqualRadius chain; an explicit user-added Parallel/
-          // Collinear; ...) - blindly adding a second, now-redundant
-          // Parallel on top of an already-fully-determined pair produces
-          // exactly the kind of stacked redundancy py-slvs's own
+          // On-device feedback ("the user should get the feeling that the
+          // dimension is line to line, not point to point, and their
+          // parallelism should be included in this dimension but not
+          // explicitly shown to the user" / follow-up: "adding this
+          // dimension to a rectangle's own already-H/V-locked opposite
+          // sides makes it over constrained"): `LineDistanceConstraint`
+          // alone (py-slvs `addPointLineDistance`) only pins one line's own
+          // perpendicular distance to the other - it doesn't constrain
+          // rotation, so the two lines could otherwise rotate out of
+          // parallel while staying numerically valid, and genuinely locking
+          // them parallel needs a real `ParallelConstraint` alongside it.
+          // But the two Lines might already be forced parallel some other
+          // way (opposite sides of a rectangle, both Horizontal/Vertical; a
+          // Slot's own Tangent+EqualRadius chain; an explicit user-added
+          // Parallel/Collinear; ...) - blindly adding a second, now-
+          // redundant Parallel on top of an already-fully-determined pair
+          // produces exactly the kind of stacked redundancy py-slvs's own
           // rank-deficiency handling can't always certify (a rectangle's
           // own diagonal-tying AtMidpoint constraint in particular blocks
           // both of solve_sketch's own redundancy-rescue overrides - see
           // that function's own doc comments). Rather than trying to
           // enumerate every possible already-parallel pattern, this tries
-          // adding the Parallel constraint and asks the solver directly:
-          // if the resulting solve doesn't converge, the Lines were
-          // already locked parallel some other way and the addition was
-          // redundant - drop it and fall back to the distance alone,
-          // still fully correct since the parallelism is still enforced
-          // by whatever already enforced it.
+          // adding the Parallel constraint and asks the solver directly: if
+          // the resulting solve doesn't converge, the Lines were already
+          // locked parallel some other way and the addition was redundant -
+          // drop it and fall back to the distance alone, still fully
+          // correct since the parallelism is still enforced by whatever
+          // already enforced it. When it IS kept, its own separate
+          // [_pushUndo] entry mirrors this codebase's established pattern
+          // for a single user action that creates more than one backend
+          // object (e.g. materializing a midpoint Point then a constraint
+          // on it, elsewhere in this file) - two backend objects, two
+          // separate undo-stack pushes, popped one undo-press at a time.
           final parallel = await _api.createParallelConstraint(_sketchId!, target.lineAId!, target.lineBId!);
           await _solveAndTrackDof();
           if (_lastSolveConverged) {
@@ -14474,6 +14531,7 @@ class SketchController extends ChangeNotifier {
           final labelItem = _pairMidpointLabel(c.pointAId, c.pointBId, 'Coinc.', entry.key, isSelected, labelOffset);
           if (labelItem != null) items.add(labelItem);
         case ParallelConstraintDto c:
+          if (isImplicitLineDistanceParallel(c.line1Id, c.line2Id)) break;
           final labelItem =
               _lineMidpointPairLabel(c.line1Id, c.line2Id, '∥', entry.key, isSelected, labelOffset);
           if (labelItem != null) items.add(labelItem);

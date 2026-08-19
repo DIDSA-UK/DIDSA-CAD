@@ -2,9 +2,52 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter_scene/scene.dart';
+// See [AlwaysOnTopMaterial]'s own doc comment for why this internal shim
+// path, not `package:flutter_gpu/gpu.dart` (a different, incompatible type
+// under static analysis) or `package:flutter_scene/gpu.dart` (the
+// package's curated public surface, which doesn't expose RenderPass/
+// HostBuffer/CullMode at all).
+// ignore: implementation_imports
+import 'package:flutter_scene/src/gpu/gpu.dart' as gpu;
 import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart';
+
+/// [UnlitMaterial] that always wins the depth test, regardless of what's
+/// already in the depth buffer or which GPU is rendering - see
+/// `sketch_geometry_3d.dart`'s `materialFor` (inside `buildSketchGeometryNode`)
+/// for the original story of why this exists: sketch entities, their hover/
+/// selection highlights, and draw-time indicators for the actively-edited
+/// Sketch must stay visible even when a Body is drawn in front of them,
+/// since the user is editing that Sketch and it shouldn't be obscured by
+/// geometry that's merely visible-but-secondary during the edit. Shared here
+/// (rather than duplicated per call site) so [buildMeshEdgesNode]/
+/// [buildVertexMarkersNode] (Body *and* Sketch highlight rendering) and
+/// `buildDrawIndicatorsNode`/`buildSketchGeometryNode` (`sketch_geometry_3d.dart`,
+/// committed Sketch geometry and its indicators) all draw with the exact
+/// same override.
+///
+///  * The depth *test* [Material.bind] would otherwise leave in place
+///    (`gpu.CompareFunction.always` instead) - guarantees every primitive
+///    using this material draws regardless of what's already in the depth
+///    buffer, with no dependency on any particular GPU's depth-test behavior
+///    for translucent draws.
+///  * The cull-mode decision (`!doubleSided || !isOpaque()` - double-sided
+///    is only ever honored while [AlphaMode.opaque], never for
+///    [AlphaMode.blend]) back open (`gpu.CullMode.none` instead) - a Point/
+///    vertex marker's own round-cap disk otherwise gets silently culled
+///    again under [AlphaMode.blend].
+///
+/// Both are safe to force per-primitive like this: [Material.bind] runs
+/// immediately before every primitive's own draw call.
+class AlwaysOnTopMaterial extends UnlitMaterial {
+  @override
+  void bind(gpu.RenderPass pass, gpu.HostBuffer transientsBuffer, Lighting lighting) {
+    super.bind(pass, transientsBuffer, lighting);
+    pass.setDepthCompareOperation(gpu.CompareFunction.always);
+    pass.setCullMode(gpu.CullMode.none);
+  }
+}
 
 /// **Currently unused by the Part Modeller** (`part_viewport.dart` no longer
 /// calls this - see its `_syncMeshNode`/edge-sync doc comments) - on-device
@@ -503,6 +546,7 @@ Node buildMeshEdgesNode(
   required vm.Vector4 color,
   double width = kEdgeStrokeWidth,
   PolylineCap cap = PolylineCap.butt,
+  bool alwaysOnTop = false,
 }) {
   // On-device feedback ("points are not visible"): a round cap's own
   // triangle-fan disk (see [vertexMarkerSegments]'s doc comment) reads as
@@ -511,10 +555,22 @@ Node buildMeshEdgesNode(
   // regardless of width - see [buildSketchGeometryNode]'s own doc comment
   // for the full story. `doubleSided` is only honored for opaque
   // materials (also that doc comment), which this already is.
-  final material = UnlitMaterial()
-    ..alphaMode = AlphaMode.opaque
-    ..baseColorFactor = color
-    ..doubleSided = true;
+  //
+  // [alwaysOnTop] opts into [AlwaysOnTopMaterial] instead - used for the
+  // actively-edited Sketch's own hover/selection highlights, which must
+  // stay visible over a Body the same way its committed geometry already
+  // does (see that class's own doc comment). Left false by default so Body
+  // highlights keep the normal depth-tested behavior documented above (a
+  // highlighted Body edge behind another Body face should stay hidden).
+  final material = alwaysOnTop
+      ? (AlwaysOnTopMaterial()
+        ..alphaMode = AlphaMode.opaque
+        ..baseColorFactor = color
+        ..doubleSided = true)
+      : (UnlitMaterial()
+        ..alphaMode = AlphaMode.opaque
+        ..baseColorFactor = color
+        ..doubleSided = true);
 
   final primitives = <MeshPrimitive>[
     for (final segment in segments)
@@ -566,12 +622,14 @@ Node buildVertexMarkersNode(
   List<vm.Vector3> positions, {
   required vm.Vector4 color,
   double width = kVertexMarkerWidth,
+  bool alwaysOnTop = false,
 }) =>
     buildMeshEdgesNode(
       vertexMarkerSegments(positions),
       color: color,
       width: width,
       cap: PolylineCap.round,
+      alwaysOnTop: alwaysOnTop,
     );
 
 /// Pure vertex/index buffer builder for an ad-hoc triangle list (not a full

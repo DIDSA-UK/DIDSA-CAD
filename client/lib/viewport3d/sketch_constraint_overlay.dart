@@ -503,8 +503,46 @@ class _ConstraintOverlayPainter extends CustomPainter {
       ..strokeWidth = _dimensionStrokeWidth;
     final p1 = midA + offset;
     final p2 = midB + offset;
-    _drawExtensionLine(canvas, midA, p1, dimPaint);
-    _drawExtensionLine(canvas, midB, p2, dimPaint);
+    // On-device feedback ("the leader lines should originate from the ends
+    // of the lines, not the mid point... to give the feeling the dimension
+    // is line to line, not point to point"): the previous attempt here drew
+    // *two* extension lines per line (from both real endpoints, each offset
+    // by the same along-the-line vector) - since it's one absolute vector
+    // added to both ends, whichever end is farther from the connector ends
+    // up drawing a line that retraces the *entire* line's own length before
+    // reaching [p1]/[p2] (on-device feedback: "the extension lines cover
+    // the sketch lines" / "originate from the wrong end" / "extend too far
+    // beyond the dimension arrows"). Instead, draw exactly one extension
+    // line per line, from whichever real endpoint is nearest to that line's
+    // own connector point - always a real endpoint (per the original ask),
+    // never overshoots past the arrows (it terminates exactly at [p1]/[p2],
+    // the same point the arrows already anchor to), and always retraces the
+    // *least* possible amount of the line's own length.
+    //
+    // On-device feedback, round 2 ("when the dimension is inside the lines,
+    // an extension line is not required as the dimension arrows terminate
+    // on the actual lines"): [p1]/[p2] always sit exactly on line1's/line2's
+    // own infinite extension (they're each line's own midpoint plus a
+    // vector parallel to that line - see [offset] above), so whenever the
+    // connector point falls *within* that line's own drawn segment (not
+    // past either end), the arrow already terminates right on the sketch
+    // line itself - no witness line needed at all, only once the connector
+    // has been dragged past one of the line's own real ends.
+    final s1 = (p1 - line1Start).dx * alongA.dx + (p1 - line1Start).dy * alongA.dy;
+    if (s1 < 0 || s1 > lengthA) {
+      final e1 = s1 < 0 ? line1Start : line1End;
+      _drawExtensionLine(canvas, e1, p1, dimPaint);
+    }
+    final dirB = line2End - line2Start;
+    final lengthB = dirB.distance;
+    if (lengthB > 1e-6) {
+      final alongB = dirB / lengthB;
+      final s2 = (p2 - line2Start).dx * alongB.dx + (p2 - line2Start).dy * alongB.dy;
+      if (s2 < 0 || s2 > lengthB) {
+        final e2 = s2 < 0 ? line2Start : line2End;
+        _drawExtensionLine(canvas, e2, p2, dimPaint);
+      }
+    }
     canvas.drawLine(p1, p2, dimPaint);
     _drawDimensionArrows(canvas, p1, p2, color);
     // Bug fix (on-device feedback: "the dimension...moves left right, it
@@ -860,6 +898,36 @@ Offset canonicalPerpendicular(Offset delta) {
     normal = -normal;
   }
   return normal;
+}
+
+/// On-device feedback ("dragging left moves the dimension left, dragging
+/// right moves the dimension left" / "dragging up moves the dimension down,
+/// dragging down moves the dimension up") - the same bug class
+/// [canonicalPerpendicular] already fixed for the perpendicular *offset*,
+/// but for an axis-locked linear dimension's *along-the-line* drag instead
+/// (`part_viewport.dart`'s `_handleDrawCursorMove`, the `orientation ==
+/// 'vertical' || 'horizontal'` branch).
+///
+/// That branch measures the cursor's raw signed distance from the midpoint
+/// of [pointA]/[pointB]'s own along-axis coordinate - positive whenever the
+/// cursor sits on the numerically-larger-coordinate side, regardless of
+/// which of the two points the solver happened to store as A vs B. But the
+/// consumer, [_dimensionLabelPlacementAlong], places the label at `anchor +
+/// tangent * along` where `tangent = (p2 - p1) / length` and `p1`/`p2`
+/// correspond to [pointA]/[pointB] respectively (`_axisLockedDimensionEndpoints`
+/// builds them directly from each point's own along-axis coordinate) - so
+/// the label only moves in the cursor's actual direction when [pointA]'s
+/// coordinate happens to be the smaller of the two; the other half of the
+/// time [tangent] points the opposite way and the raw signed distance drives
+/// the label backwards. Multiplying the raw delta by this function's return
+/// value cancels that mismatch, mirroring how the *unlocked*/diagonal
+/// dimension branch just below already gets this right "for free" by
+/// dotting the cursor delta directly against `(bScreen - aScreen) /
+/// screenLength` instead of a raw coordinate difference.
+double canonicalAlongSign((double, double) pointA, (double, double) pointB, bool vertical) {
+  final a = vertical ? pointA.$2 : pointA.$1;
+  final b = vertical ? pointB.$2 : pointB.$1;
+  return a <= b ? 1.0 : -1.0;
 }
 
 /// On-device feedback ("dimensions should be movable anywhere, leaders and

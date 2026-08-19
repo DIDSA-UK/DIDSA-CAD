@@ -2536,13 +2536,6 @@ class _SketchPainter extends CustomPainter {
     canvas.drawLine(from + direction * _extensionLineGap, to + direction * _extensionLineOvershoot, paint);
   }
 
-  /// [_paintLineDistanceDimension]'s own "leader lines should originate
-  /// from the ends of the lines, not the point" fix: whichever of a Line's
-  /// two screen-space endpoints sits closer to [target] (the dimension
-  /// segment's own end on that Line's side).
-  Offset _nearerEndpoint(Offset a, Offset b, Offset target) =>
-      (a - target).distanceSquared <= (b - target).distanceSquared ? a : b;
-
   /// ISO 129/ASME Y14.5-style dimension-line arrowhead: a small filled
   /// triangle with its tip at [tip], pointing along [direction] (a unit
   /// vector pointing outward, away from the dimension line's other end) -
@@ -2846,10 +2839,11 @@ class _SketchPainter extends CustomPainter {
   }
 
   /// Line-to-line distance dimension (Stage 16 item 9's `LineDistanceConstraint`):
-  /// same two-extension-line-plus-offset-segment layout as
-  /// [_paintDistanceDimension], but anchored at each Line's current midpoint
-  /// rather than two Points, since a `LineDistanceConstraint` references
-  /// Lines directly and creates no Points of its own.
+  /// same offset-segment layout as [_paintDistanceDimension], but with
+  /// witness/extension lines running from each Line's own real endpoints
+  /// (see the on-device feedback note below) rather than from two Points,
+  /// since a `LineDistanceConstraint` references Lines directly and creates
+  /// no Points of its own.
   ///
   /// Bug fix (on-device feedback: "this looks like the linear distance
   /// between midpoints" for what's supposed to be a perpendicular-distance
@@ -2911,10 +2905,47 @@ class _SketchPainter extends CustomPainter {
       ..strokeWidth = _dimensionStrokeWidth;
     final p1 = midA + offset;
     final p2 = midB + offset;
-    final leaderStartA = _nearerEndpoint(endpointsA.$1, endpointsA.$2, p1);
-    final leaderStartB = _nearerEndpoint(endpointsB.$1, endpointsB.$2, p2);
-    _drawExtensionLine(canvas, leaderStartA, p1, dimPaint);
-    _drawExtensionLine(canvas, leaderStartB, p2, dimPaint);
+    // On-device feedback ("the leader lines should originate from the ends
+    // of the lines, not the mid point... to give the feeling the dimension
+    // is line to line, not point to point"): the previous attempt here drew
+    // *two* extension lines per Line (from both real endpoints, each offset
+    // by the same along-the-Line vector) - since it's one absolute vector
+    // added to both ends, whichever end is farther from the connector ends
+    // up drawing a line that retraces the *entire* Line's own length before
+    // reaching [p1]/[p2] (on-device feedback: "the extension lines cover
+    // the sketch lines" / "originate from the wrong end" / "extend too far
+    // beyond the dimension arrows"). Instead, draw exactly one extension
+    // line per Line, from whichever real endpoint is nearest to that Line's
+    // own connector point - always a real endpoint (per the original ask),
+    // never overshoots past the arrows (it terminates exactly at [p1]/[p2],
+    // the same point the arrows already anchor to), and always retraces the
+    // *least* possible amount of the Line's own length. Mirrors the
+    // 3D-embedded sketcher's own copy of this same painter/bug
+    // (`sketch_constraint_overlay.dart`'s `_paintLineDistanceDimension`).
+    //
+    // On-device feedback, round 2 ("when the dimension is inside the lines,
+    // an extension line is not required as the dimension arrows terminate
+    // on the actual lines"): [p1]/[p2] always sit exactly on Line 1's/
+    // Line 2's own infinite extension (each is that Line's own midpoint plus
+    // a vector parallel to that Line - see [offset] above), so whenever the
+    // connector point falls *within* that Line's own drawn segment (not past
+    // either end), the arrow already terminates right on the sketch Line
+    // itself - no witness line needed at all, only once the connector has
+    // been dragged past one of the Line's own real ends. Mirrors the
+    // 3D-embedded sketcher's own copy of this same painter/bug.
+    final s1 = (p1 - endpointsA.$1).dx * alongA.dx + (p1 - endpointsA.$1).dy * alongA.dy;
+    if (s1 < 0 || s1 > lengthA) {
+      _drawExtensionLine(canvas, s1 < 0 ? endpointsA.$1 : endpointsA.$2, p1, dimPaint);
+    }
+    final dirB = endpointsB.$2 - endpointsB.$1;
+    final lengthB = dirB.distance;
+    if (lengthB > 1e-6) {
+      final alongB = dirB / lengthB;
+      final s2 = (p2 - endpointsB.$1).dx * alongB.dx + (p2 - endpointsB.$1).dy * alongB.dy;
+      if (s2 < 0 || s2 > lengthB) {
+        _drawExtensionLine(canvas, s2 < 0 ? endpointsB.$1 : endpointsB.$2, p2, dimPaint);
+      }
+    }
     canvas.drawLine(p1, p2, dimPaint);
     _drawDimensionArrows(canvas, p1, p2, color);
 

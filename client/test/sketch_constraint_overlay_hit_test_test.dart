@@ -399,4 +399,48 @@ void main() {
 
     expect(constraintOverlayItemAt(camera, viewportSize, basis, [far, near], nearCenter), 'near');
   });
+
+  group('canonicalPerpendicular', () {
+    test('is unaffected by swapping which end of delta is "first" (pointA/pointB order)', () {
+      const delta = Offset(3.0, 4.0);
+      expect(canonicalPerpendicular(delta), canonicalPerpendicular(-delta));
+    });
+
+    test('returns a unit vector', () {
+      expect(canonicalPerpendicular(const Offset(3.0, 4.0)).distance, closeTo(1.0, 1e-9));
+    });
+  });
+
+  group('canonicalAlongSign', () {
+    // On-device feedback ("dragging left moves the dimension left, dragging
+    // right moves the dimension left" / up-down likewise inverted): the sign
+    // must depend only on which of pointA/pointB has the larger along-axis
+    // coordinate, never on which one is passed first - see the function's
+    // own doc comment for why (it must match _dimensionLabelPlacementAlong's
+    // `tangent = (p2 - p1) / length`, where p1/p2 correspond to pointA/pointB
+    // respectively).
+    test('vertical: +1 when pointA has the smaller Y (tangent already points increasing-Y)', () {
+      expect(canonicalAlongSign((0.0, 0.0), (0.0, 5.0), true), 1.0);
+    });
+
+    test('vertical: -1 when pointA has the larger Y (tangent points decreasing-Y)', () {
+      expect(canonicalAlongSign((0.0, 5.0), (0.0, 0.0), true), -1.0);
+    });
+
+    test('horizontal: +1 when pointA has the smaller X', () {
+      expect(canonicalAlongSign((0.0, 0.0), (5.0, 0.0), false), 1.0);
+    });
+
+    test('horizontal: -1 when pointA has the larger X', () {
+      expect(canonicalAlongSign((5.0, 0.0), (0.0, 0.0), false), -1.0);
+    });
+
+    test('vertical ignores the X coordinate entirely', () {
+      expect(canonicalAlongSign((100.0, 0.0), (-100.0, 5.0), true), 1.0);
+    });
+
+    test('horizontal ignores the Y coordinate entirely', () {
+      expect(canonicalAlongSign((0.0, 100.0), (5.0, -100.0), false), 1.0);
+    });
+  });
 }
