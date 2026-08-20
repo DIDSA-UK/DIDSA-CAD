@@ -55,6 +55,15 @@ dependencies:
   # falls back to the picked file's raw bytes there rather than crashing.
   flutter_image_compress: ^2.3.0
 
+  # AI Modelling workstream 11 (voice input, `docs/ai-modelling/11-voice-
+  # input.md`): on-device speech-to-text for the mic button beside Send.
+  # Android/iOS confirmed supported (per the package's own platform-support
+  # table); Windows supported but upstream-beta ("not yet ready for
+  # production use" per that table's own release notes); Linux has no
+  # implementation at all - see that doc's own "Spike" section.
+  # `ai_modelling_screen.dart` never attempts to initialize it on Linux.
+  speech_to_text: ^7.0.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

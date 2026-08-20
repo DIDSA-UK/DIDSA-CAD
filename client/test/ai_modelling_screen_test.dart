@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -277,6 +278,24 @@ Here's the plan:
 
       expect(find.byKey(const Key('aiModellingAttachImage')), findsNothing);
       expect(find.textContaining('Image upload needs a vision-capable provider'), findsOneWidget);
+    });
+  });
+
+  group('voice input gating (workstream 11)', () {
+    testWidgets('mic button is hidden on Linux - the only platform this CI test suite itself runs on, and the one '
+        'speech_to_text has no implementation for at all', (tester) async {
+      final provider = FakeAiProvider((transcript, systemPrompt) async => const AiTurnResult(assistantText: 'ok'));
+
+      await tester.pumpWidget(MaterialApp(home: AiModellingScreen(provider: provider)));
+      await tester.pumpAndSettle();
+
+      // Sanity-check the assumption this test (and `flutter test` on this
+      // project's own CI, `runs-on: ubuntu-latest`) relies on - if this
+      // ever fails, it's running somewhere other than Linux and the
+      // `findsNothing` expectation below no longer means what this test
+      // says it means.
+      expect(Platform.isLinux, isTrue);
+      expect(find.byKey(const Key('aiModellingMic')), findsNothing);
     });
   });
 

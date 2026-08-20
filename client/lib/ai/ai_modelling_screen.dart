@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
+import 'package:speech_to_text/speech_to_text.dart';
 
 import '../api/document_api_client.dart';
 import '../api/sketch_api_client.dart' show ApiException, SketchApiClient;
@@ -118,6 +119,29 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   bool _preparingImage = false;
   String? _imageError;
 
+  // Workstream 11 (voice input, `11-voice-input.md`): fully decoupled from
+  // the image-upload state above and from the network/provider layer
+  // entirely - on-device transcription only, never sends audio anywhere.
+  // `_speechToText` is created once and reused; `initialize()` is only ever
+  // called lazily, on the first mic tap (see `_toggleListening`), never
+  // eagerly in `initState` - `07-09`'s convention of doing real work only
+  // when a user action asks for it, and this specifically avoids ever
+  // touching the plugin's platform channel on a platform this screen has
+  // already ruled out (see `_voiceInputPlatformSupported`).
+  final SpeechToText _speechToText = SpeechToText();
+  bool _listening = false;
+  // Null until the first mic tap's `initialize()` call resolves - `true`/
+  // `false` from then on, so a later tap skips re-initializing.
+  bool? _speechAvailable;
+  bool _initializingSpeech = false;
+  String? _speechError;
+  // Accumulated by `_speechToText.listen`'s own `onResult` callback while
+  // `_listening` - only committed to `_inputController.text` once the
+  // plugin itself reports listening has stopped (`_onSpeechStatus`, covers
+  // both a user-initiated stop and the plugin's own silence-timeout
+  // auto-stop with the same code path) - never auto-sent.
+  String _lastRecognizedWords = '';
+
   AiGenerationPlan? _proposedPlan;
 
   bool _generating = false;
@@ -184,6 +208,16 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   // does via `widget.provider ?? AiProviderPreferences.active`.
   bool get _providerUnconfigured => widget.provider == null && !AiProviderPreferences.isActiveProviderConfigured;
 
+  // Workstream 11 (voice input): `speech_to_text` has no Linux implementation
+  // at all (confirmed via its own platform-support table - see `11-voice-
+  // input.md`'s own "Spike" section) - checked statically, with no plugin
+  // call at all, so the mic button is hidden outright rather than shown and
+  // failing on tap. This app has no macOS/web targets, so "not Linux" here
+  // means Android/iOS/Windows - all three genuinely build and ship speech
+  // support per that same table (Windows flagged upstream-beta, still shown
+  // rather than hidden - see the mic button's own tooltip).
+  bool get _voiceInputPlatformSupported => !Platform.isLinux;
+
   @override
   void initState() {
     super.initState();
@@ -232,6 +266,12 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
 
   @override
   void dispose() {
+    // Only ever true once a real `listen()` call has succeeded, which
+    // itself only ever happens after a successful `initialize()` - so this
+    // never reaches the plugin's platform channel on a platform
+    // `_voiceInputPlatformSupported` already ruled out (there is no
+    // Linux implementation to call into at all).
+    if (_listening) _speechToText.cancel();
     _inputController.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -401,6 +441,86 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       _pendingImageFileName = null;
       _imageError = null;
     });
+  }
+
+  /// Workstream 11 (`11-voice-input.md`): lazily initializes
+  /// `speech_to_text` on the first mic tap - never in `initState`, so a
+  /// platform/device with no real speech-recognition service installed
+  /// never pays this cost (or shows any prompt) until the user actually
+  /// asks for it. `initialize()` itself is what triggers the OS's native
+  /// microphone/speech permission prompt (confirmed during this
+  /// workstream's own spike - no separate `permission_handler` dependency
+  /// needed), so no bespoke pre-permission dialog is built here.
+  Future<bool> _initSpeech() async {
+    setState(() {
+      _initializingSpeech = true;
+      _speechError = null;
+    });
+    var available = false;
+    try {
+      available = await _speechToText.initialize(
+        onStatus: _onSpeechStatus,
+        onError: (error) {
+          if (!mounted) return;
+          setState(() {
+            _listening = false;
+            _speechError = 'Speech recognition error: ${error.errorMsg}';
+          });
+        },
+      );
+    } catch (_) {
+      // No platform implementation at all (shouldn't be reachable given
+      // `_voiceInputPlatformSupported`'s own gating, but caught rather than
+      // assumed - "disabled gracefully, not crashing" per this workstream's
+      // own requirement) or a genuine device-level failure either way.
+      available = false;
+    }
+    if (!mounted) return available;
+    setState(() {
+      _speechAvailable = available;
+      _initializingSpeech = false;
+      if (!available) _speechError = "Speech recognition isn't available on this device.";
+    });
+    return available;
+  }
+
+  /// Fires on every status change `speech_to_text` itself reports -
+  /// covers both a user-initiated stop (`_toggleListening`'s own
+  /// `_speechToText.stop()` call) and the plugin's own silence-timeout
+  /// auto-stop, which `_toggleListening` never sees directly. One place to
+  /// commit `_lastRecognizedWords` into the real input field, rather than
+  /// duplicating that in both stop paths.
+  void _onSpeechStatus(String status) {
+    if (!mounted) return;
+    if (status == 'notListening' || status == 'done') {
+      if (_lastRecognizedWords.isNotEmpty) {
+        _inputController.text = _lastRecognizedWords;
+        _inputController.selection = TextSelection.collapsed(offset: _inputController.text.length);
+      }
+      setState(() => _listening = false);
+    }
+  }
+
+  Future<void> _toggleListening() async {
+    if (_listening) {
+      await _speechToText.stop();
+      return; // `_onSpeechStatus` commits the recognized text and flips `_listening` off once the plugin confirms the stop.
+    }
+    if (_speechAvailable == null) {
+      final available = await _initSpeech();
+      if (!available || !mounted) return;
+    } else if (_speechAvailable == false) {
+      return;
+    }
+    _lastRecognizedWords = '';
+    try {
+      await _speechToText.listen(onResult: (result) => _lastRecognizedWords = result.recognizedWords);
+      if (!mounted) return;
+      setState(() => _listening = true);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _speechError = 'Could not start listening: $e');
+    }
   }
 
   void _adjust() {
@@ -719,6 +839,11 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
             child: Text(_imageError!, style: const TextStyle(color: Colors.redAccent)),
           ),
+        if (_speechError != null)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            child: Text(_speechError!, style: const TextStyle(color: Colors.redAccent)),
+          ),
         Padding(
           padding: const EdgeInsets.all(12),
           child: Row(
@@ -749,6 +874,26 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
                   onSubmitted: (_) => _send(),
                 ),
               ),
+              // Workstream 11 (`11-voice-input.md`): hidden entirely on a
+              // platform with no `speech_to_text` implementation at all
+              // (Linux - see `_voiceInputPlatformSupported`'s own doc
+              // comment), same "hidden, not shown-and-failing" gating
+              // pattern the attach-image button above already established.
+              // Shown (not hidden) on Windows despite that platform's own
+              // upstream-beta status - its own tooltip says so instead.
+              if (_voiceInputPlatformSupported)
+                IconButton(
+                  key: const Key('aiModellingMic'),
+                  tooltip: _listening
+                      ? 'Stop listening'
+                      : (Platform.isWindows ? 'Voice input (Windows support is beta upstream)' : 'Voice input'),
+                  onPressed: (_sending || _initializingSpeech || (_speechAvailable == false))
+                      ? null
+                      : _toggleListening,
+                  icon: _initializingSpeech
+                      ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                      : Icon(_listening ? Icons.mic : Icons.mic_none, color: _listening ? Colors.redAccent : null),
+                ),
               const SizedBox(width: 8),
               IconButton.filled(
                 key: const Key('aiModellingSend'),

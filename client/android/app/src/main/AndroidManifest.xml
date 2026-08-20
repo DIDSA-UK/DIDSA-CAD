@@ -7,6 +7,13 @@
          never had network access at all - a real, pre-existing gap surfaced
          by the first real release-build on-device test. -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- AI Modelling workstream 11 (voice input, `docs/ai-modelling/11-
+         voice-input.md`): required for `speech_to_text`'s on-device
+         recognition. The runtime grant prompt itself is triggered by the
+         plugin's own `initialize()` call, not by this declaration alone -
+         no separate `permission_handler` dependency needed (confirmed
+         during that workstream's own spike). -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <!-- Server Management screen (see client/lib/server_management/): lets
          this app dispatch RUN_COMMAND intents to Termux's RunCommandService
          to control an on-device standalone backend (pull/start/stop) - see
@@ -80,5 +87,13 @@
              this, the RUN_COMMAND intent to Termux silently fails to
              resolve - see server_management_screen.dart. -->
         <package android:name="com.termux"/>
+        <!-- AI Modelling workstream 11 (voice input): same package-
+             visibility requirement as above, for `speech_to_text`'s own
+             on-device recognition service lookup - without this, Android
+             11+/targetSdkVersion 30+ silently fails to find any speech
+             recognizer even when one is genuinely installed. -->
+        <intent>
+            <action android:name="android.speech.RecognitionService"/>
+        </intent>
     </queries>
 </manifest>
