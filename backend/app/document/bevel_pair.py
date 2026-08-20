@@ -34,10 +34,15 @@ basis`/`app.document.gear_chain._positioned_basis`, both of which only ever
 rotate `x_axis`/`y_axis` *within* the same plane (about the normal); this
 rotates the normal itself out of the original plane.
 
-**No interference checking at all** - explicit simplification per `11-bevel-
-pair.md`: with exactly two members that are always the intended meshing
-pair, there is no "non-adjacent stage" case for `GearChainFeature`'s own
-interference machinery to apply to.
+**No `GearChainFeature`-style non-adjacent-stage interference checking** -
+explicit simplification per `11-bevel-pair.md`: with exactly two members
+that are always the intended meshing pair, there is no "non-adjacent
+stage" case for `GearChainFeature`'s own bent-path interference machinery
+to apply to. This does **not** mean no interference checking at all -
+`resolve_member_profile_shifts` below and `bevel_math.bevel_pair_mesh_
+interference_warning` handle real, measurable tooth-tip interference
+between the two members that *do* mesh, a different (and real) problem
+`GearChainFeature`'s own machinery was never meant to catch either.
 
 **Meshing phase alignment** (bug fix - on-device feedback: two bevel
 pairs' teeth visibly overlapping instead of interlocking in the 3D

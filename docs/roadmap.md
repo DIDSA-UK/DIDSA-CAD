@@ -31,11 +31,12 @@ Feature, mirroring Pattern/Mirror's existing "one Feature, many realized
 Bodies" pattern, not a one-shot generator. Compound-gear geometry and
 straight bevel gears were both pulled into v1 scope deliberately (the two
 highest-risk items in the whole project) rather than deferred, and both
-are now live; spiral/Zerol bevel is now scoped (`docs/gear-design/
-12-spiral-bevel-gear.md` - feasibility/pre-spike only, not started) and
-hypoid bevel remains the one thing still fully unscoped. DXF import/export
-was originally scoped here too but has since moved to its own doc set
-(`docs/dxf-io/`) - see the entry below.
+are now live; spiral/Zerol bevel (gear and pair) is now scoped
+(`docs/gear-design/12-spiral-bevel-gear.md`/`13-spiral-bevel-pair.md` -
+feasibility/pre-spike only, neither started) and hypoid bevel remains the
+one thing still fully unscoped. DXF import/export was originally scoped
+here too but has since moved to its own doc set (`docs/dxf-io/`) - see
+the entry below.
 
 ## AI Modelling
 

@@ -61,11 +61,13 @@ never needed most of it).
 | 10 | `10-bevel-gear.md` | 1 | Highest in project - **done, incl. client UI** (`BevelGearFeature` - straight bevel, arbitrary shaft angle via a direct `pitch_cone_angle_degrees` field; `BevelDesignScreen`'s "Bevel Gear" mode covers entry + the axial-cross-section schematic preview) |
 | 11 | `11-bevel-pair.md` | 10 | High - **done, incl. client UI** (`BevelPairFeature` - apex-aligned dual-axis positioning, arbitrary shaft angle, auto-derived pitch cone angles; `BevelDesignScreen`'s "Bevel Pair" mode covers entry + dual-axis preview; DXF flat-pattern export still deferred to Workstream 6) |
 | 12 | `12-spiral-bevel-gear.md` | 10 | Highest in project (harder than 10) - **scoped, not started** (feasibility/pre-spike doc only; proposes a layered-spiral-offset extension of `bevel_math.py`'s current Tredgold construction, with real conjugate-action mesh correctness as the first thing to spike, ahead of OCCT surface-quality questions) |
+| 13 | `13-spiral-bevel-pair.md` | 12 | High, contingent on 12's own Spike A result - **scoped, not started** (`BevelPairFeature`'s spiral variant; folds in real lessons from `11-bevel-pair.md`'s own build-and-ship history - a shipped regression before a shipped fix - rather than assuming pairing is simple wiring once 12 lands) |
 
-Spiral/Zerol bevel is now scoped in `12-spiral-bevel-gear.md` (still not
-started — that doc's own spike hasn't run yet). Hypoid bevel remains
-unscoped, a separate, even-further-later phase (offset, non-intersecting
-axes — a bigger leap again than spiral/Zerol).
+Spiral/Zerol bevel (gear and pair both) is now scoped in
+`12-spiral-bevel-gear.md`/`13-spiral-bevel-pair.md` (neither started —
+12's own spike hasn't run yet, and 13 depends on it). Hypoid bevel
+remains unscoped, a separate, even-further-later phase (offset,
+non-intersecting axes — a bigger leap again than spiral/Zerol).
 
 ## Delivery order
 
@@ -92,9 +94,12 @@ axes — a bigger leap again than spiral/Zerol).
 9. **Workstream 11** once 10 is live.
 10. **Workstream 9 (presets)** — the one piece left in this doc set,
     no ordering pressure, can happen any time.
-11. **Workstream 12 (spiral/Zerol bevel)** — separate phase, after the
+11. **Workstream 12 (spiral/Zerol bevel gear)** — separate phase, after the
     above; scoped in `12-spiral-bevel-gear.md`, spike not yet run.
-12. **Hypoid bevel** — still unscoped, later again than Workstream 12.
+12. **Workstream 13 (spiral/Zerol bevel pair)** once 12's own spike lands
+    — scoped in `13-spiral-bevel-pair.md`, mirrors how Workstream 11
+    depended on Workstream 10.
+13. **Hypoid bevel** — still unscoped, later again than Workstream 13.
 
 DXF import/export (formerly Workstreams 6-7 here) now has its own
 delivery order in `docs/dxf-io/README.md`, independent of this doc set

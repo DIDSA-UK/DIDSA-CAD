@@ -266,74 +266,24 @@ Estimate: at least 1–2 weeks of dedicated spike time before a go/no-go call
 on the construction approach — comparable to or larger than the original
 bevel spike.
 
-## Bearing on BevelPairFeature
+## Bearing on BevelPairFeature — see Workstream 13
 
-There is now a real, substantial mesh-margin/interference system, mostly
-living in `bevel_math.py` (header comment: "pure-math proxy for a real
-`BRepAlgoAPI_Common` overlap check"):
-
-- `bevel_pair_mesh_margin_degrees(intruder_face_cone_angle,
-  receiver_base_colatitude, shaft_angle_degrees)` = `shaft_angle_degrees -
-  (degrees(intruder_face_cone_angle) + degrees(receiver_base_colatitude))`
-  — uses `tredgold_base_colatitude`, not `root_cone_angle` (an on-device
-  finding: doubling `dedendum_coefficient` changed measured overlap volume
-  by only 0.002%, confirming `root_cone_angle` was the wrong quantity).
-- `worst_bevel_pair_mesh_margin_degrees`, `minimum_intruder_profile_
-  shift_for_mesh_clearance`, `maximum_receiver_profile_shift_for_mesh_
-  clearance`, `bevel_pair_mesh_interference_warning` — bisection-based,
-  calibrated against real on-device `BRepAlgoAPI_Common` measurements
-  (`MESH_MARGIN_SAFETY_BUFFER_DEGREES = 0.5`).
-- `bevel_pair.resolve_member_profile_shifts` — the real auto-balancing
-  implementation: `None` = Auto, explicit float = Manual ("explicit always
-  wins"), a single-sided fix on the intruder if the receiver is pinned, a
-  backlash-neutral complementary fix on both if both are Auto (exploiting
-  `tooth_thickness_at_pitch`'s shared `module`/`circular_pitch` to land the
-  receiver's new tooth thickness exactly on the intruder's new gap), capped
-  to avoid over-correcting into a reverse-direction interference (a real
-  flip was found and documented at this app's default 14.5°
-  pressure-angle pair).
-
-Its bearing on spiral bevel: `bevel_pair_mesh_margin_degrees` reasons
-purely about colatitude/radial extents (`face_cone_angle`,
-`tredgold_base_colatitude`), and a pure `_rotate_about_z` azimuthal offset
-never changes colatitude or `z`. So this radial-margin math *plausibly
-survives unchanged* for a spiral-bevel pair — stated as plausible, flagged
-for spike confirmation, not asserted as certain (the same "plausible by
-analogy, not yet measured" caveat as the layered-offset construction
-itself).
-
-What does **not** carry over, or is genuinely new:
-
-- **Hand-of-spiral compatibility** between mating members — a purely
-  tangential/azimuthal meshing concern with no counterpart in the existing
-  radial-only margin system. Real new work, not an extension of anything
-  present today.
-- The existing system checks radial/colatitude overlap; it was never
-  designed to catch a *tangential* (along-the-tooth) meshing failure of
-  the kind the Tredgold rewrite fixed. Spike A above is exactly the check
-  needed to close that gap for the layered-offset construction, and
-  nothing in `bevel_pair.py` does it today.
-
-What carries over unchanged: `_tilted_basis` (apex-aligned dual-axis
-positioning) and `pitch_cone_half_angles`-based auto-derivation of
-`gamma_1`/`gamma_2` — both pure pitch-cone geometry, independent of
-lengthwise tooth shape, and both still valid for intersecting-axis spiral
-bevel (not hypoid).
-
-One documentation-accuracy note, unrelated to spiral bevel but worth
-flagging while in this code: `bevel_pair.py` still carries a stale
-docstring sentence — "No interference checking at all... per
-`11-bevel-pair.md`" — left over from before the mesh-margin system existed.
-It refers only to `GearChainFeature`-style non-adjacent-stage interference,
-not the pairwise tooth-tip interference the code plainly checks today.
-Flagged as an inconsistency, not a functional gap; not proposed to fix
-here.
+Spiral bevel *pairing* is no longer just a deferred footnote here — it's
+scoped in its own doc, `13-spiral-bevel-pair.md`, which folds in the real
+lessons `11-bevel-pair.md`'s own build-and-ship history surfaced (a real
+mesh-margin/profile-shift-auto-balancing system exists today, and it
+shipped a real regression before it shipped a real fix — worth reading in
+detail before assuming pairing is simple wiring once this doc's own
+single-gear spike lands). Depends on this doc's own Spike A landing
+first, same as everything else pair-shaped in this project has depended
+on its own single-gear workstream landing first.
 
 ## Proposed v1 scope
 
-**In scope**: spiral bevel gear only (pair deferred to its own later
-workstream, mirroring how `11-bevel-pair.md` depended on `10-bevel-gear.
-md`'s spike landing first); the layered-constant-spiral-angle approximation
+**In scope**: spiral bevel gear only (pair scoped separately in `13-
+spiral-bevel-pair.md`, which depends on this workstream's own spike
+landing first, mirroring how `11-bevel-pair.md` depended on `10-bevel-
+gear.md`'s spike landing first); the layered-constant-spiral-angle approximation
 as the *only* lengthwise-curve family offered — no user choice between
 circular-arc/involute/epicycloid systems, the spiral-bevel equivalent of
 straight bevel's own "standard equal-addendum, no Gleason long-and-short-
@@ -344,13 +294,13 @@ separate scope line; inherits the existing Tredgold crown-gear-angle cap
 (`TREDGOLD_MAX_PITCH_CONE_ANGLE_DEGREES = 89.5`) and disc-like thin-hub
 warning unchanged.
 
-**Explicitly deferred**: spiral bevel pairing as its own later workstream
-(depends on this one landing, and specifically on Spike A's
+**Explicitly deferred**: spiral bevel pairing to `13-spiral-bevel-pair.md`
+(depends on this workstream landing, and specifically on Spike A's
 meshing-correctness result); true Gleason-conjugate envelope surfaces; root
 fillet (already unsupported for straight bevel, not a new gap); hypoid
 bevel gears (offset, non-intersecting axes — a separate, even-further-later
 phase, not bundled with spiral/Zerol); hand-of-spiral pair-compatibility
-validation (flagged above for the pair workstream); DXF flat-pattern/
+validation (scoped in `13-spiral-bevel-pair.md`); DXF flat-pattern/
 flank-development export (already deferred even for straight bevel per
 `11-bevel-pair.md`; a spiral trace compounds the "unroll a cone flat"
 problem further).
@@ -404,8 +354,8 @@ than building new preview machinery this v1 scope doesn't need.
 
 **Out of scope for this UX proposal**: any `BevelPairFeature`/
 `BevelDesignScreen` pair-mode UI (Auto/Manual profile-shift equivalents,
-hand-of-spiral compatibility surfacing) — the pair workstream itself is
-deferred above, so its UI is future work for that later doc.
+hand-of-spiral compatibility surfacing) — scoped in `13-spiral-bevel-
+pair.md` instead, which depends on this workstream landing first.
 
 ## Open questions
 
@@ -417,15 +367,14 @@ deferred above, so its UI is future work for that later doc.
 - Whether `N`-section `ThruSections` or a genuine sweep wins on flank
   surface quality, and whether `CheckCompatibility(False)` resolves the
   large-twist correspondence risk here the way it did for helical gears.
-- Hand-of-spiral pair-compatibility validation — real new work, not
-  designed here, deferred to the pair workstream.
-- Whether `bevel_pair_mesh_margin_degrees`'s radial-only reasoning really
-  does carry over unchanged for spiral bevel, or whether a tangential
-  companion check is needed even for the *pair* workstream's own v1.
 - `geometry.base_cone_angle`'s now-vestigial status is worth a cleanup
   note for whoever next touches `bevel_math.py`, independent of spiral
   bevel.
-- `10-bevel-gear.md`/`11-bevel-pair.md`'s staleness relative to current
-  code (Tredgold, mesh-margin system, Crown Gear, disc-like warning, none
-  mentioned in either doc) is a separate follow-up candidate worth raising
-  with whoever owns this doc set — not addressed in this session.
+
+Pairing-specific open questions (hand-of-spiral validation, whether
+`bevel_pair_mesh_margin_degrees`'s radial-only reasoning carries over
+unchanged) have moved to `13-spiral-bevel-pair.md`, along with the
+lessons `11-bevel-pair.md`'s own real build-and-ship history surfaced for
+applying here. `10-bevel-gear.md`/`11-bevel-pair.md`'s own staleness
+relative to current code, flagged as an open item when this doc was
+first written, has since been addressed directly in both docs.
