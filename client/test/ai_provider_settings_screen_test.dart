@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:didsa_cad_client/ai/ai_provider_preferences.dart';
 import 'package:didsa_cad_client/ai/ai_provider_settings_screen.dart';
+import 'package:didsa_cad_client/ai/ai_system_prompt_settings_screen.dart';
 
 /// AI Modelling workstream 1: widget-level coverage for
 /// [AiProviderSettingsScreen] - provider switching, the Ollama
@@ -156,6 +157,16 @@ void main() {
     expect(find.byType(AiProviderSettingsScreen), findsOneWidget);
     await AiProviderPreferences.load();
     expect(AiProviderPreferences.openAiApiKey, isEmpty);
+  });
+
+  testWidgets('AI System Prompt entry navigates to AiSystemPromptSettingsScreen', (tester) async {
+    await tester.pumpWidget(const MaterialApp(home: AiProviderSettingsScreen()));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('aiSystemPromptSettingsEntry')));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(AiSystemPromptSettingsScreen), findsOneWidget);
   });
 
   testWidgets('Test Connection & Save persists preferences and pops on success', (tester) async {

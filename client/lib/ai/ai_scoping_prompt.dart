@@ -11,9 +11,21 @@
 /// `ai_plan.dart`) - not derived from either at build time. If a future
 /// session adds a field or `kind` to that schema, this prompt needs a
 /// matching manual update or the LLM won't know it exists.
+///
+/// **Locked vs. editable** (AI System Prompt Settings, see
+/// `ai_system_prompt_settings_screen.dart`): [_vocabularyReference],
+/// [_unitsConvention], [_fewShotExamples], and [_planTerminationFooter] are
+/// the LLM's only source of schema truth and its only structural contract
+/// with [detectPlanInAssistantText] (`ai_plan_detection.dart`) - never
+/// user-editable. [_defaultAssistantInstructions] (role/premise plus
+/// conversational-style guidance, no schema or format content) is the one
+/// component a user can override via `AiSystemPromptPreferences.override`,
+/// with add-on blocks (`ai_prompt_addons.dart`) appended after it.
 library;
 
-const String _rolePremise = '''
+import 'ai_prompt_addons.dart';
+
+const String _defaultAssistantInstructions = '''
 You are a CAD modelling assistant for DIDSA-CAD, a parametric 3D CAD tool.
 Your job is to have a short conversation with the user to fully specify a
 mechanical part, then respond with exactly one JSON plan matching the
@@ -21,7 +33,18 @@ schema below - nothing else in that final message.
 
 This conversation always builds a brand-new Part. You never modify a Part
 that already exists - there is no "current part" for you to reason about,
-and no way to reference one; every plan starts from nothing.''';
+and no way to reference one; every plan starts from nothing.
+
+Ask clarifying questions before generating a plan whenever a dimension,
+feature, tolerance, or scope (which edges/faces a Fillet or Chamfer applies
+to, whether a hole goes all the way through) is missing or has more than
+one reasonable interpretation - do not guess a number, and do not silently
+pick a scope/selector interpretation the user did not give you. This
+mirrors how this very kind of scoping conversation is expected to work:
+keep asking until you are confident, then commit.
+
+Prefer a single gear_request step over a generic sketch/feature sequence
+whenever the request is gear- or rack-shaped.''';
 
 const String _vocabularyReference = '''
 ## Plan shape
@@ -220,19 +243,12 @@ Assistant (final message, nothing else in it):
 }
 ```''';
 
-const String _conversationRules = '''
-## Conversation rules
-
-Ask clarifying questions before generating a plan whenever a dimension,
-feature, tolerance, or scope (which edges/faces a Fillet or Chamfer
-applies to, whether a hole goes all the way through) is missing or has
-more than one reasonable interpretation - do not guess a number, and do
-not silently pick a scope/selector interpretation, the user did not give
-you. This mirrors how this very kind of scoping conversation is expected
-to work: keep asking until you are confident, then commit.
-
-Prefer a single gear_request step over a generic sketch/feature sequence
-whenever the request is gear- or rack-shaped.
+/// Locked: `ai_plan_detection.dart`'s `detectPlanInAssistantText` depends
+/// structurally on the model actually honouring this instruction - never
+/// part of the user-editable override, regardless of what the user writes
+/// there.
+const String _planTerminationFooter = '''
+## Final reply format
 
 Once you have everything you need, your FINAL reply's plan must be a
 single fenced JSON code block ({"version": 1, "steps": [...]}) - optionally
@@ -241,11 +257,41 @@ made instead of asking (e.g. "Assumptions: hole goes all the way through;
 chamfer applies to every edge of the top face."), but no other prose in
 that message. Every prior message may be ordinary conversation.''';
 
-/// Builds the full five-component system prompt
-/// (`02-scoping-conversation.md`'s own list: role/premise, vocabulary
-/// reference, units convention, worked few-shot examples, conversation
-/// rules) as one string, passed to `AiProvider.sendScopingTurn`'s
-/// `systemPrompt` parameter.
-String buildAiScopingSystemPrompt() {
-  return [_rolePremise, _vocabularyReference, _unitsConvention, _fewShotExamples, _conversationRules].join('\n\n');
+/// Builds the full system prompt, passed to `AiProvider.sendScopingTurn`'s
+/// `systemPrompt` parameter. Assembly order: the user-editable assistant
+/// instructions first (falls back to [_defaultAssistantInstructions] when
+/// [assistantInstructionsOverride] is null or blank -
+/// `AiSystemPromptPreferences.override`'s own null-means-default
+/// convention), then the locked vocabulary/units/examples, then any enabled
+/// add-on blocks (`ai_prompt_addons.dart`, unknown ids silently skipped),
+/// then the locked plan-termination footer last - always present,
+/// regardless of what the user's override says, so a user override can
+/// change tone/process but never the model's structural contract with
+/// [detectPlanInAssistantText].
+String buildAiScopingSystemPrompt({String? assistantInstructionsOverride, Set<String> enabledAddOns = const {}}) {
+  final assistantInstructions =
+      (assistantInstructionsOverride == null || assistantInstructionsOverride.trim().isEmpty)
+          ? _defaultAssistantInstructions
+          : assistantInstructionsOverride;
+  final addOnBlocks = [for (final id in enabledAddOns) if (aiPromptAddOns.containsKey(id)) aiPromptAddOns[id]!.text];
+  return [
+    assistantInstructions,
+    _vocabularyReference,
+    _unitsConvention,
+    _fewShotExamples,
+    ...addOnBlocks,
+    _planTerminationFooter,
+  ].join('\n\n');
 }
+
+/// Public read access to the default editable block, for
+/// `ai_system_prompt_settings_screen.dart` to pre-fill/compare against
+/// (`AiSystemPromptPreferences.override`'s own "null/matches-default means
+/// no override" convention).
+String get defaultAssistantInstructions => _defaultAssistantInstructions;
+
+/// Public read access to the always-locked prompt content, shown read-only
+/// in AI System Prompt Settings so a user can see the LLM's schema contract
+/// without being able to edit it.
+String get lockedSystemPromptContent =>
+    [_vocabularyReference, _unitsConvention, _fewShotExamples, _planTerminationFooter].join('\n\n');

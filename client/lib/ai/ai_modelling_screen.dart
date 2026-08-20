@@ -12,6 +12,7 @@ import 'ai_provider.dart';
 import 'ai_provider_preferences.dart';
 import 'ai_provider_settings_screen.dart';
 import 'ai_scoping_prompt.dart';
+import 'ai_system_prompt_preferences.dart';
 
 /// `GearPresetStore`'s discriminator for a saved AI Modelling plan -
 /// `02-scoping-conversation.md`'s "Bolt-on: save plan as preset" section.
@@ -189,7 +190,11 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     _scrollToBottom();
 
     try {
-      final result = await provider.sendScopingTurn(_transcript, systemPrompt: buildAiScopingSystemPrompt());
+      final systemPrompt = buildAiScopingSystemPrompt(
+        assistantInstructionsOverride: AiSystemPromptPreferences.override,
+        enabledAddOns: AiSystemPromptPreferences.enabledAddOns,
+      );
+      final result = await provider.sendScopingTurn(_transcript, systemPrompt: systemPrompt);
       final assistantMessage = AiChatMessage(role: AiMessageRole.assistant, text: result.assistantText);
       final detectedPlan = detectPlanInAssistantText(result.assistantText);
       if (!mounted) return;

@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 
 import 'ai_provider.dart';
 import 'ai_provider_preferences.dart';
+import 'ai_system_prompt_settings_screen.dart';
 import 'anthropic_provider.dart';
 import 'openai_compatible_provider.dart';
 
@@ -256,6 +257,18 @@ class _AiProviderSettingsScreenState extends State<AiProviderSettingsScreen> {
                 if (_activeProvider == 'openai') ..._buildOpenAiFields(context),
                 if (_activeProvider == 'anthropic') ..._buildAnthropicFields(context),
                 const SizedBox(height: 24),
+                ListTile(
+                  key: const Key('aiSystemPromptSettingsEntry'),
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.chat_bubble_outline),
+                  title: const Text('AI System Prompt'),
+                  subtitle: const Text('Edit the assistant instructions and manufacturing-process add-ons'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const AiSystemPromptSettingsScreen()),
+                  ),
+                ),
+                const SizedBox(height: 12),
                 if (_testError != null) ...[
                   Text(_testError!, style: const TextStyle(color: Colors.redAccent)),
                   const SizedBox(height: 12),

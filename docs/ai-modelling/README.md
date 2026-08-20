@@ -43,6 +43,7 @@ a session implementing one workstream never needed most of it).
 | 4 | `04-translator-and-execution.md` | 1, 2, 3, 5 | Client-side `PlanTranslator` driving the real `DocumentApiClient`/`SketchApiClient`, failure handling, no auto-rollback |
 | 5 | `05-backend-plan-validation.md` | 3 | The one backend addition: a stateless dry-run plan-validation endpoint |
 | 6 | `06-image-input-deferred.md` | 1, 2, 3 | Explicitly **not v1** — image upload, vision strategy, scope cut lines, recorded for when this becomes the active workstream |
+| 7 | `07-editable-system-prompt.md` | 1, 2 | **Built.** User-editable assistant instructions + resettable override, plus togglable manufacturing-context add-ons (Structural/Plastic/Casting/Weldments/3D Print/Sheet Metal/Machining), reached from a new AI System Prompt Settings screen |
 
 ## Spikes (do these first, before committing to the real build)
 
