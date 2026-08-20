@@ -160,6 +160,22 @@ void main() {
   });
 
   testWidgets('local supportsVision checkbox defaults off and persists once toggled and saved', (tester) async {
+    // The screen's content (explanatory paragraphs, preset buttons, the
+    // vision checkbox, Save) is taller than the default test viewport, and
+    // scrollUntilVisible proved unreliable here once the Ollama-model-fetch
+    // debounce (below) can reflow layout mid-test - scrollUntilVisible
+    // itself found the target widget, but a follow-up tap() sometimes
+    // landed on a still-mid-scroll-physics frame and hit a different
+    // RenderObject instead ("would not hit test on the specified widget").
+    // A tall enough surface sidesteps scrolling entirely, same fix already
+    // proven for ai_system_prompt_settings_screen_test.dart's add-on test.
+    tester.view.physicalSize = const Size(800, 3000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
     final client = MockClient((request) async {
       if (request.url.path.endsWith('/api/tags')) return http.Response('n/a', 404);
       return jsonResponse({
@@ -174,11 +190,6 @@ void main() {
     await tester.pumpWidget(MaterialApp(home: AiProviderSettingsScreen(httpClient: client)));
     await tester.pumpAndSettle();
 
-    await tester.scrollUntilVisible(
-      find.byKey(const Key('aiLocalSupportsVision')),
-      300,
-      scrollable: find.byType(Scrollable).first,
-    );
     expect(
       tester.widget<CheckboxListTile>(find.byKey(const Key('aiLocalSupportsVision'))).value,
       isFalse,
@@ -190,11 +201,6 @@ void main() {
     await tester.tap(find.byKey(const Key('aiLocalSupportsVision')));
     await tester.pumpAndSettle();
 
-    await tester.scrollUntilVisible(
-      find.text('Test Connection & Save'),
-      300,
-      scrollable: find.byType(Scrollable).first,
-    );
     await tester.tap(find.text('Test Connection & Save'));
     await tester.pumpAndSettle();
 
@@ -203,22 +209,19 @@ void main() {
   });
 
   testWidgets('AI System Prompt entry navigates to AiSystemPromptSettingsScreen', (tester) async {
+    // Same reasoning as the vision-checkbox test above: a tall viewport
+    // instead of scrollUntilVisible, now that this screen's content has
+    // grown enough for scroll-timing to become genuinely flaky.
+    tester.view.physicalSize = const Size(800, 3000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
     await tester.pumpWidget(const MaterialApp(home: AiProviderSettingsScreen()));
     await tester.pumpAndSettle();
 
-    // The default (Local) provider section is long enough that this entry
-    // sits beyond ListView's built extent - scrollUntilVisible (not
-    // ensureVisible, which requires the target to already be mounted)
-    // scrolls incrementally until it is. `scrollable` must be given
-    // explicitly: the default `find.byType(Scrollable)` also matches the
-    // local "Base URL" TextField's own internal Scrollable, and
-    // scrollUntilVisible needs exactly one - `.first` is the outer
-    // ListView's, found first in the depth-first Element walk.
-    await tester.scrollUntilVisible(
-      find.byKey(const Key('aiSystemPromptSettingsEntry')),
-      300,
-      scrollable: find.byType(Scrollable).first,
-    );
     await tester.tap(find.byKey(const Key('aiSystemPromptSettingsEntry')));
     await tester.pumpAndSettle();
 
