@@ -1640,10 +1640,28 @@ class BevelPairMemberSpec:
     angle, shaft angle, backlash, face width) is shared pair-level, flat on
     `BevelPairFeature` itself, not here - both gears physically share one
     axial band/mesh, so those can't legitimately differ between the two
-    members (see that dataclass's own docstring)."""
+    members (see that dataclass's own docstring).
+
+    `profile_shift` is `float | None`, `None` (the default) meaning "auto" -
+    same sentinel convention `RackFeature.backing_height` already
+    established (`app.document.rack.rack_outline_points`'s own `backing_
+    height if backing_height is not None else default_rack_backing_height
+    (module)`), extended here to a genuinely pair-level auto-value instead
+    of a per-feature one: `app.document.bevel_pair.resolve_bevel_pair_
+    from_bodies` resolves `None` to whichever value (0.0, or a computed
+    negative shift) keeps this member's own tooth tip clear of the *other*
+    member's material - see `app.document.bevel_math.bevel_pair_mesh_
+    interference_warning`'s own docstring for the on-device-verified
+    finding this is built on (a real bevel pair's default settings can
+    have genuine, measurable tooth interference that raising `pressure_
+    angle_degrees` isn't the only fix for - a negative `profile_shift` on
+    whichever member's tooth tip is the intruder works too, without
+    touching pressure angle at all). An explicit (non-`None`) value always
+    wins over the auto computation, same override-sticks convention
+    `backing_height` already uses."""
 
     tooth_count: int
-    profile_shift: float = 0.0
+    profile_shift: float | None = None
 
 
 @dataclass

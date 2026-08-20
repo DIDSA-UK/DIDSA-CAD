@@ -118,15 +118,21 @@ def test_bevel_pair_produces_two_bodies_with_real_mesh_geometry():
         assert len(entry["mesh"]["vertices"]) > 0
 
 
-def test_bevel_pair_default_pressure_angle_warns_of_predicted_mesh_interference():
-    """Real, on-device-confirmed regression: the default 20T/40T pair at the
-    default 20-degree pressure angle was found to have genuine tooth
-    interference (`BRepAlgoAPI_Common` overlap ~60mm^3 on a real solid pair,
-    ~0.1% of the smaller member's own volume but concentrated at the mesh
-    line, comparable in spatial extent to a full tooth height - not a
-    numerical touching-tolerance artifact). `bevel_pair_mesh_interference_
-    warning` predicts this from pure math (no OCCT) - this test locks in
-    that the real end-to-end pipeline actually surfaces it as a warning, and
+def test_bevel_pair_pinned_zero_profile_shift_warns_of_predicted_mesh_interference():
+    """Real, on-device-confirmed regression: a 20T/40T pair with *both*
+    members' `profile_shift` explicitly pinned to 0.0 (`_member`'s own
+    default - not the same as omitting the field, which now auto-resolves
+    it instead, see `test_bevel_pair_default_profile_shift_auto_avoids_
+    predicted_mesh_interference` below), at the default 20-degree pressure
+    angle, was found to have genuine tooth interference (`BRepAlgoAPI_
+    Common` overlap ~60mm^3 on a real solid pair, ~0.1% of the smaller
+    member's own volume but concentrated at the mesh line, comparable in
+    spatial extent to a full tooth height - not a numerical touching-
+    tolerance artifact). `bevel_pair_mesh_interference_warning` predicts
+    this from pure math (no OCCT) - this test locks in that the real end-
+    to-end pipeline actually surfaces it as a warning when both members'
+    shifts are explicitly pinned (an explicit value always wins over auto-
+    resolution, `BevelPairMemberSpec.profile_shift`'s own docstring), and
     that raising pressure_angle_degrees (28, comfortably past the ~26.7
     degrees the warning itself calculates as sufficient) makes it go
     away - confirmed separately, directly against the real solids, not just
@@ -141,6 +147,41 @@ def test_bevel_pair_default_pressure_angle_warns_of_predicted_mesh_interference(
     response_2 = _create_pair(part_2["id"], pressure_angle_degrees=28.0)
     assert response_2.status_code == 201, response_2.json()
     assert response_2.json()["warnings"] == []
+
+
+def test_bevel_pair_default_profile_shift_auto_avoids_predicted_mesh_interference():
+    """`profile_shift` genuinely omitted (not the `_member`-helper's own
+    explicit-0.0 default `test_bevel_pair_pinned_zero_profile_shift_warns_
+    of_predicted_mesh_interference` above exercises) resolves to `None` on
+    both members (`BevelPairMemberSpecSchema.profile_shift`'s own default)
+    - `app.document.bevel_pair.resolve_member_profile_shifts` auto-fills
+    whichever member is the predicted intruder (member_2, the 40-tooth
+    gear, for this tooth-count pair) with a computed negative shift instead
+    of leaving it at 0.0, so the *same* 20T/40T pair at the *same* default
+    20-degree pressure angle that warns when explicitly pinned to 0.0 does
+    not warn at all here - real, on-device-confirmed via direct
+    `BRepAlgoAPI_Common` overlap measurement dropping from ~60mm^3 to
+    exactly 0.0mm^3 with no pressure_angle_degrees change at all."""
+    part = _create_part()
+    response = client.post(
+        f"/document/parts/{part['id']}/bevel-pair-features",
+        json={
+            "module": 4.0,
+            "member_1": {"tooth_count": 20},
+            "member_2": {"tooth_count": 40},
+            "face_width": 15.0,
+        },
+    )
+    assert response.status_code == 201, response.json()
+    body = response.json()
+    assert body["warnings"] == []
+    # The stored value stays None (auto) - same "echo the raw/possibly-
+    # None value back, not the resolved one" convention `RackFeatureResponse.
+    # backing_height` already uses - the computed shift only exists inside
+    # the real solid construction, not as a value written back onto the
+    # Feature itself.
+    assert body["member_1"]["profile_shift"] is None
+    assert body["member_2"]["profile_shift"] is None
 
 
 def test_bevel_pair_defaults_to_the_xy_plane_when_plane_ref_omitted():

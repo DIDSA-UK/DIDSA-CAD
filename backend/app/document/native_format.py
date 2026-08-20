@@ -705,7 +705,10 @@ def _bevel_pair_member_to_dict(member: BevelPairMemberSpec) -> dict:
 def _bevel_pair_member_from_dict(data: dict) -> BevelPairMemberSpec:
     return BevelPairMemberSpec(
         tooth_count=_require(data, "tooth_count"),
-        profile_shift=data.get("profile_shift", 0.0),
+        # No second arg (defaults to None, not 0.0) - same "missing/null
+        # means auto" convention `backing_height`'s own native-format
+        # round-trip already uses (data.get("backing_height") above).
+        profile_shift=data.get("profile_shift"),
     )
 
 

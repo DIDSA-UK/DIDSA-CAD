@@ -11,7 +11,7 @@ from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 from app.document.ai_plan import validate_ai_plan as validate_ai_plan_steps
 from app.document.ai_plan_schemas import PlanValidateRequest, PlanValidateResponse
 from app.document.bevel import resolve_bevel_gear
-from app.document.bevel_pair import resolve_bevel_pair
+from app.document.bevel_pair import resolve_bevel_pair, resolve_member_profile_shifts
 from app.document.chamfer import resolve_chamfer
 from app.document.create_plane import (
     basis_for_sketch,
@@ -3963,10 +3963,29 @@ def _gear_preview_bevel_pair_response(payload: GearPreviewBevelPairRequest) -> t
     angles` + `bevel_gear_geometry`'s `pitch_cone_angle_degrees` direct-
     field path in the exact same order `app.document.bevel_pair.resolve_
     bevel_pair_from_bodies` itself calls them, so preview and Create derive
-    identical cone angles for identical inputs."""
+    identical cone angles for identical inputs. `profile_shift` resolution
+    (`None` -> auto) goes through `bevel_pair.resolve_member_profile_
+    shifts` too, for the same reason - a preview with an unresolved `None`
+    passed straight into `bevel_gear_geometry` would crash (that function's
+    own `profile_shift: float` has no `None` handling), and resolving it
+    differently from Create would make the preview lie about what Create
+    would actually build."""
     try:
         gamma_1, gamma_2 = pitch_cone_half_angles(
             payload.member_1.tooth_count, payload.member_2.tooth_count, payload.shaft_angle_degrees
+        )
+        profile_shift_1, profile_shift_2 = resolve_member_profile_shifts(
+            module=payload.module,
+            tooth_count_1=payload.member_1.tooth_count,
+            tooth_count_2=payload.member_2.tooth_count,
+            face_width=payload.face_width,
+            pressure_angle_degrees=payload.pressure_angle_degrees,
+            shaft_angle_degrees=payload.shaft_angle_degrees,
+            backlash=payload.backlash,
+            profile_shift_1=payload.member_1.profile_shift,
+            profile_shift_2=payload.member_2.profile_shift,
+            gamma_1=gamma_1,
+            gamma_2=gamma_2,
         )
         geometry_1 = bevel_gear_geometry(
             module=payload.module,
@@ -3974,7 +3993,7 @@ def _gear_preview_bevel_pair_response(payload: GearPreviewBevelPairRequest) -> t
             face_width=payload.face_width,
             pressure_angle_degrees=payload.pressure_angle_degrees,
             backlash=payload.backlash,
-            profile_shift=payload.member_1.profile_shift,
+            profile_shift=profile_shift_1,
             pitch_cone_angle_degrees=math.degrees(gamma_1),
         )
         geometry_2 = bevel_gear_geometry(
@@ -3983,7 +4002,7 @@ def _gear_preview_bevel_pair_response(payload: GearPreviewBevelPairRequest) -> t
             face_width=payload.face_width,
             pressure_angle_degrees=payload.pressure_angle_degrees,
             backlash=payload.backlash,
-            profile_shift=payload.member_2.profile_shift,
+            profile_shift=profile_shift_2,
             pitch_cone_angle_degrees=math.degrees(gamma_2),
         )
     except GearGeometryError as exc:

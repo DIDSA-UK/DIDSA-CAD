@@ -1007,10 +1007,15 @@ class BevelPairMemberSpecSchema(BaseModel):
     """The wire counterpart to `app.document.models.BevelPairMemberSpec` -
     the legitimately-differing per-member fields only (see that
     dataclass's own docstring for why every other bevel pair dimension is
-    flat on `BevelPairFeatureCreate` instead)."""
+    flat on `BevelPairFeatureCreate` instead). `profile_shift` is optional -
+    omitting it (`None`, the default) resolves at build time to whichever
+    value (`0.0`, or a computed negative shift) keeps this member's own
+    tooth clear of the other member's material (`app.document.bevel_pair.
+    resolve_member_profile_shifts`) - same auto-or-override convention as
+    `RackFeatureCreate.backing_height`."""
 
     tooth_count: int
-    profile_shift: float = 0.0
+    profile_shift: float | None = None
 
 
 class BevelPairFeatureCreate(BaseModel):
@@ -1402,10 +1407,12 @@ class GearPreviewBevelGearRequest(BaseModel):
 class GearPreviewBevelPairMemberRequest(BaseModel):
     """The wire counterpart to `app.document.models.BevelPairMemberSpec` -
     see `BevelPairMemberSpecSchema`'s own docstring for why only these two
-    fields legitimately differ per member."""
+    fields legitimately differ per member, and for the `profile_shift`
+    auto-or-override convention (mirrored here so a preview matches what
+    Create would actually produce)."""
 
     tooth_count: int
-    profile_shift: float = 0.0
+    profile_shift: float | None = None
 
 
 class GearPreviewBevelPairRequest(BaseModel):

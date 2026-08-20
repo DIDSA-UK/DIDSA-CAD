@@ -985,14 +985,19 @@ def bevel_pair_mesh_margin_degrees(
     return shaft_angle_degrees - (math.degrees(intruder_face_cone_angle) + math.degrees(receiver_base_colatitude))
 
 
-def _worst_bevel_pair_mesh_margin_degrees(
+def worst_bevel_pair_mesh_margin_degrees(
     geometry_1: BevelGearGeometry, geometry_2: BevelGearGeometry, shaft_angle_degrees: float
 ) -> tuple[float, bool]:
     """The smaller (worse) of the two directional margins - member 2's tip
     against member 1's base colatitude, and vice versa - plus which
-    direction it came from (`True` if member 2 is the intruder). Shared by
-    `bevel_pair_mesh_interference_warning` and the pressure-angle search
-    below so both agree on which direction is binding."""
+    direction it came from (`True` if member 2 is the intruder). Not
+    underscore-prefixed (unlike this module's other Tredgold-internal
+    helpers) because `app.document.bevel_pair`'s own `profile_shift`
+    auto-resolution needs it too, to find which member is the intruder
+    *before* deciding which one's own `None` (auto) field to fill in -
+    both that caller and `bevel_pair_mesh_interference_warning`/the
+    pressure-angle search below need to agree on which direction is
+    binding, so this is the one shared source of truth for that."""
     margin_2_into_1 = bevel_pair_mesh_margin_degrees(
         geometry_2.face_cone_angle, tredgold_base_colatitude(geometry_1), shaft_angle_degrees
     )
@@ -1027,12 +1032,90 @@ def _minimum_pressure_angle_for_mesh_clearance(
 
     def worst_margin_at(pressure_angle_degrees: float) -> float:
         pa = math.radians(pressure_angle_degrees)
-        margin, _ = _worst_bevel_pair_mesh_margin_degrees(
+        margin, _ = worst_bevel_pair_mesh_margin_degrees(
             replace(geometry_1, pressure_angle=pa), replace(geometry_2, pressure_angle=pa), shaft_angle_degrees
         )
         return margin
 
     lo, hi = math.degrees(geometry_1.pressure_angle), 40.0
+    if worst_margin_at(hi) < MESH_MARGIN_SAFETY_BUFFER_DEGREES:
+        return None
+    for _ in range(40):
+        mid = (lo + hi) / 2
+        if worst_margin_at(mid) >= MESH_MARGIN_SAFETY_BUFFER_DEGREES:
+            hi = mid
+        else:
+            lo = mid
+    return hi
+
+
+def minimum_intruder_profile_shift_for_mesh_clearance(
+    intruder_geometry: BevelGearGeometry, receiver_geometry: BevelGearGeometry, shaft_angle_degrees: float
+) -> float | None:
+    """The intruding member's own smallest-magnitude `profile_shift`
+    reduction (holding pressure angle and everything else fixed) that
+    clears `MESH_MARGIN_SAFETY_BUFFER_DEGREES`, found by bisection - the
+    alternative remedy to `_minimum_pressure_angle_for_mesh_clearance`
+    when the user wants to keep pressure angle low (on-device confirmed:
+    reducing the intruding member's own `profile_shift` - a real,
+    already-editable `BevelPairMemberSpec` field, unlike `addendum_
+    coefficient` - shrinks *just that member's own* addendum/tooth-tip
+    reach without touching pressure angle at all, eliminating measured
+    overlap at both the default 20-degree pressure angle *and* a much
+    lower 14.5-degree one).
+
+    Only the *intruding* member's own profile shift needs to move - the
+    receiver's own `base_colatitude` doesn't depend on either member's
+    profile shift at all (`tredgold_base_colatitude` only reads pitch
+    cone angle, pressure angle, and cone distance), so shifting the
+    receiver's own tooth would do nothing for this specific margin.
+
+    Recomputes only `addendum`/`addendum_angle`/`face_cone_angle` at a
+    trial shift (`addendum = intruder_geometry.addendum + module * (trial
+    - intruder_geometry.profile_shift)` - the same delta approach `bevel_
+    gear_geometry` itself would produce, without needing to separately
+    recover `addendum_coefficient`, which isn't stored on `BevelGear
+    Geometry` directly) rather than a full `dataclasses.replace` (unlike
+    the pressure-angle search above, `profile_shift` also changes
+    `dedendum`/`root_cone_angle` - irrelevant to *this* margin, which only
+    reads the intruder's `face_cone_angle` and the receiver's own,
+    unaffected `base_colatitude` - so only bothering with the addendum
+    side keeps this cheap and avoids re-deriving fields the margin doesn't
+    use). A non-positive resulting addendum is degenerate (a real tooth
+    can't have negative height) and treated as "doesn't clear," bounding
+    the search from below.
+
+    Returns `None` if even a trial shift at 99% of the way to that
+    degenerate boundary doesn't clear it - a real (if extreme) profile
+    shift, not an arbitrary round number, so the search bound is never
+    tighter than the actual constraint that matters."""
+
+    def worst_margin_at(trial_shift: float) -> float:
+        delta = trial_shift - intruder_geometry.profile_shift
+        new_addendum = intruder_geometry.addendum + intruder_geometry.module * delta
+        if new_addendum <= 0:
+            return -999.0
+        new_face_cone_angle = intruder_geometry.pitch_cone_angle + math.atan(
+            new_addendum / intruder_geometry.cone_distance
+        )
+        return bevel_pair_mesh_margin_degrees(
+            new_face_cone_angle, tredgold_base_colatitude(receiver_geometry), shaft_angle_degrees
+        )
+
+    # `intruder_geometry.addendum / intruder_geometry.module` is exactly
+    # `addendum_coefficient + intruder_geometry.profile_shift` (from
+    # `addendum = module * (addendum_coefficient + profile_shift)`), so
+    # `intruder_geometry.profile_shift - that` is precisely the trial shift
+    # where addendum hits zero (fully degenerate) - a *fixed* bound like
+    # "-2.0" can sit past that point for a small module/large shift
+    # combination (confirmed on-device: at module=4/addendum=4, "-2.0"
+    # zeroes addendum out at -1.0 already, so worst_margin_at(-2.0) always
+    # short-circuited to the degenerate -999.0 sentinel before the real
+    # search ever ran, silently returning None for every real case).
+    # 0.99x keeps the search inside genuinely valid (positive-addendum)
+    # geometry with a small safety margin, not touching the boundary itself.
+    lo = intruder_geometry.profile_shift
+    hi = intruder_geometry.profile_shift - 0.99 * (intruder_geometry.addendum / intruder_geometry.module)
     if worst_margin_at(hi) < MESH_MARGIN_SAFETY_BUFFER_DEGREES:
         return None
     for _ in range(40):
@@ -1078,7 +1161,7 @@ def bevel_pair_mesh_interference_warning(
     material depends on the specific pitch-cone-angle split (a function of
     both tooth counts and shaft angle together), not a simple "smaller
     tooth count" rule."""
-    worst_margin, member_2_is_intruder = _worst_bevel_pair_mesh_margin_degrees(
+    worst_margin, member_2_is_intruder = worst_bevel_pair_mesh_margin_degrees(
         geometry_1, geometry_2, shaft_angle_degrees
     )
     if worst_margin >= MESH_MARGIN_SAFETY_BUFFER_DEGREES:

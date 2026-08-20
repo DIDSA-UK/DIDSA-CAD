@@ -112,13 +112,16 @@ from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape
 
 from app.document.bevel import _assemble_gear_solid
 from app.document.bevel_math import (
+    MESH_MARGIN_SAFETY_BUFFER_DEGREES,
     BevelGearGeometry,
     GearGeometryError,
     bevel_gear_geometry,
     bevel_pair_mesh_interference_warning,
     max_recommended_face_width,
+    minimum_intruder_profile_shift_for_mesh_clearance,
     pitch_cone_half_angles,
     thin_hub_warning,
+    worst_bevel_pair_mesh_margin_degrees,
 )
 from app.document.create_plane import resolve_plane_ref
 from app.document.extrude import compute_part_bodies
@@ -276,16 +279,103 @@ def _build_member_solid(
     return _shape_to_brep_bytes(solid), warnings
 
 
-def _member_geometry(feature: BevelPairFeature, tooth_count: int, profile_shift: float, gamma: float) -> BevelGearGeometry:
+def _member_geometry(
+    *,
+    module: float,
+    tooth_count: int,
+    face_width: float,
+    pressure_angle_degrees: float,
+    backlash: float,
+    profile_shift: float,
+    gamma: float,
+) -> BevelGearGeometry:
     return bevel_gear_geometry(
-        module=feature.module,
+        module=module,
         tooth_count=tooth_count,
-        face_width=feature.face_width,
-        pressure_angle_degrees=feature.pressure_angle_degrees,
-        backlash=feature.backlash,
+        face_width=face_width,
+        pressure_angle_degrees=pressure_angle_degrees,
+        backlash=backlash,
         profile_shift=profile_shift,
         pitch_cone_angle_degrees=math.degrees(gamma),
     )
+
+
+def resolve_member_profile_shifts(
+    *,
+    module: float,
+    tooth_count_1: int,
+    tooth_count_2: int,
+    face_width: float,
+    pressure_angle_degrees: float,
+    shaft_angle_degrees: float,
+    backlash: float,
+    profile_shift_1: float | None,
+    profile_shift_2: float | None,
+    gamma_1: float,
+    gamma_2: float,
+) -> tuple[float, float]:
+    """Resolves both members' own `profile_shift` (each `float | None` -
+    `None` meaning "auto", `BevelPairMemberSpec`'s own docstring) to
+    concrete floats. Takes plain params rather than a whole `BevelPair
+    Feature` (mirrors `app.document.rack.rack_outline_points`'s own
+    "promote to an explicit-params helper once a second caller needs it"
+    refactor - `app.document.router._gear_preview_bevel_pair_response`'s
+    preview payload has no `BevelPairFeature` of its own to pass, just the
+    same values by different field paths) - `resolve_bevel_pair_from_
+    bodies` below and that preview endpoint both call this so they derive
+    identical geometry for identical inputs, the same guarantee this
+    module's own top-level docstring already establishes for cone angles.
+
+    Two-pass: first builds baseline geometry with any `None` field treated
+    as `0.0` (no shift) to find which member's tooth tip is the worse-
+    margin "intruder" (`bevel_math.worst_bevel_pair_mesh_margin_degrees`) -
+    only *that* member's own `None` gets auto-filled, via `bevel_math.
+    minimum_intruder_profile_shift_for_mesh_clearance`, with the smallest
+    shift that clears the margin (the *other* member's own base colatitude
+    doesn't depend on either member's profile shift at all, so shifting it
+    wouldn't help - see that function's own docstring); the non-intruder's
+    own `None` simply resolves to `0.0`, same as today's plain default,
+    and if the baseline (0.0/0.0) already clears the margin, neither field
+    is touched at all. An explicit (non-`None`) value on either member
+    always wins - never auto-adjusted, even if it happens to be the
+    intruder and the value isn't enough (`bevel_pair_mesh_interference_
+    warning` still fires in that case, correctly - auto-resolution is a
+    convenience default, not a silent override of a user's own choice)."""
+    baseline_shift_1 = profile_shift_1 if profile_shift_1 is not None else 0.0
+    baseline_shift_2 = profile_shift_2 if profile_shift_2 is not None else 0.0
+    geometry_kwargs = {
+        "module": module,
+        "face_width": face_width,
+        "pressure_angle_degrees": pressure_angle_degrees,
+        "backlash": backlash,
+    }
+    baseline_geometry_1 = _member_geometry(
+        tooth_count=tooth_count_1, profile_shift=baseline_shift_1, gamma=gamma_1, **geometry_kwargs
+    )
+    baseline_geometry_2 = _member_geometry(
+        tooth_count=tooth_count_2, profile_shift=baseline_shift_2, gamma=gamma_2, **geometry_kwargs
+    )
+
+    worst_margin, member_2_is_intruder = worst_bevel_pair_mesh_margin_degrees(
+        baseline_geometry_1, baseline_geometry_2, shaft_angle_degrees
+    )
+    if worst_margin >= MESH_MARGIN_SAFETY_BUFFER_DEGREES:
+        return baseline_shift_1, baseline_shift_2
+
+    if member_2_is_intruder and profile_shift_2 is None:
+        auto_shift = minimum_intruder_profile_shift_for_mesh_clearance(
+            baseline_geometry_2, baseline_geometry_1, shaft_angle_degrees
+        )
+        if auto_shift is not None:
+            return baseline_shift_1, auto_shift
+    elif not member_2_is_intruder and profile_shift_1 is None:
+        auto_shift = minimum_intruder_profile_shift_for_mesh_clearance(
+            baseline_geometry_1, baseline_geometry_2, shaft_angle_degrees
+        )
+        if auto_shift is not None:
+            return auto_shift, baseline_shift_2
+
+    return baseline_shift_1, baseline_shift_2
 
 
 def resolve_bevel_pair_from_bodies(
@@ -321,8 +411,37 @@ def resolve_bevel_pair_from_bodies(
         raise _invalid_bevel_pair_parameters(f"face_width must be positive, got {feature.face_width!r}")
 
     try:
-        geometry_1 = _member_geometry(feature, feature.member_1.tooth_count, feature.member_1.profile_shift, gamma_1)
-        geometry_2 = _member_geometry(feature, feature.member_2.tooth_count, feature.member_2.profile_shift, gamma_2)
+        profile_shift_1, profile_shift_2 = resolve_member_profile_shifts(
+            module=feature.module,
+            tooth_count_1=feature.member_1.tooth_count,
+            tooth_count_2=feature.member_2.tooth_count,
+            face_width=feature.face_width,
+            pressure_angle_degrees=feature.pressure_angle_degrees,
+            shaft_angle_degrees=feature.shaft_angle_degrees,
+            backlash=feature.backlash,
+            profile_shift_1=feature.member_1.profile_shift,
+            profile_shift_2=feature.member_2.profile_shift,
+            gamma_1=gamma_1,
+            gamma_2=gamma_2,
+        )
+        geometry_1 = _member_geometry(
+            module=feature.module,
+            tooth_count=feature.member_1.tooth_count,
+            face_width=feature.face_width,
+            pressure_angle_degrees=feature.pressure_angle_degrees,
+            backlash=feature.backlash,
+            profile_shift=profile_shift_1,
+            gamma=gamma_1,
+        )
+        geometry_2 = _member_geometry(
+            module=feature.module,
+            tooth_count=feature.member_2.tooth_count,
+            face_width=feature.face_width,
+            pressure_angle_degrees=feature.pressure_angle_degrees,
+            backlash=feature.backlash,
+            profile_shift=profile_shift_2,
+            gamma=gamma_2,
+        )
     except GearGeometryError as exc:
         raise _invalid_bevel_pair_parameters(str(exc)) from exc
 
