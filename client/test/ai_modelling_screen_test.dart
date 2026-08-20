@@ -719,7 +719,11 @@ Here's the plan:
     // next ordinary chat message, per `_appendStoppedRunToTranscript`'s own
     // mechanism.
     await sendMessage(tester, 'ok, retry');
-    expect(capturedRetrySystemPrompt, contains('Editing an existing Part'));
+    // The bare phrase "Editing an existing Part" also appears inside the
+    // always-present "## What you cannot generate" cross-reference ('...see
+    // "Editing an existing Part" below if one has been provided...'), so
+    // assert on the actual section heading, not the phrase alone.
+    expect(capturedRetrySystemPrompt, contains('## Editing an existing Part'));
     expect(capturedRetrySystemPrompt, contains('existing:feat-sk1'));
 
     await tester.tap(find.text('Generate'));
@@ -739,7 +743,7 @@ Here's the plan:
     await tester.tap(find.text('Adjust'));
     await tester.pumpAndSettle();
     await sendMessage(tester, 'Actually, build something completely different');
-    expect(capturedThirdSystemPrompt, isNot(contains('Editing an existing Part')));
+    expect(capturedThirdSystemPrompt, isNot(contains('## Editing an existing Part')));
   });
 
   testWidgets('Generate on a gear_request-only plan stops before executing and never fakes a success', (tester) async {
@@ -749,6 +753,12 @@ Here's the plan:
         requestedPaths.add(request.url.path);
         if (request.url.path == '/document/parts') {
           return jsonResponse({'id': 'part-1', 'name': 'AI Modelling Part', 'feature_ids': []});
+        }
+        if (request.method == 'GET' && request.url.path == '/document/parts/part-1/features') {
+          // A stopped run (gearRequestEncountered included) now refreshes
+          // the existing-Part context for a same-Part retry - nothing was
+          // ever built here, so the real Part has no Features yet either.
+          return jsonResponse([]);
         }
         return jsonResponse({
           'results': [
@@ -766,9 +776,15 @@ Here's the plan:
 
     expect(find.text('Proposed plan'), findsNothing);
     expect(find.textContaining("AI Modelling can't create one automatically yet"), findsOneWidget);
-    // Nothing beyond create-Part + validate - a gear_request step is never
-    // itself executed against the real backend.
-    expect(requestedPaths, ['/document/new', '/document/parts', '/document/parts/part-1/ai-plan/validate']);
+    // create-Part + validate, plus the same-Part-retry context refresh a
+    // gearRequestEncountered stop now also triggers - a gear_request step
+    // is still never itself executed against the real backend.
+    expect(requestedPaths, [
+      '/document/new',
+      '/document/parts',
+      '/document/parts/part-1/ai-plan/validate',
+      '/document/parts/part-1/features',
+    ]);
     // No Features were ever created, so no Undo is offered.
     expect(find.text('Undo this generation'), findsNothing);
   });
