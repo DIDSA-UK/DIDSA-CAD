@@ -82,11 +82,34 @@ Each needs "sketch_feature_id" naming an earlier "sketch" step.
   center1_point_id, center2_point_id, radius, construction?}
 - sketch_rectangle: {local_id, kind:"sketch_rectangle", sketch_feature_id,
   corner_point_ids: [exactly 4 sketch_point local_ids, in order around the
-  rectangle], axis_aligned?, construction?}
-  IMPORTANT: there is no corner+width+height shorthand at this tool's real
-  API layer. A rectangle always references 4 already-emitted sketch_point
-  steps by local_id - emit the 4 corner points first, then the
-  sketch_rectangle step naming them.
+  rectangle], axis_aligned?, construction?, width?, height?}
+  IMPORTANT: there is no corner+width+height shorthand for the geometry
+  itself at this tool's real API layer. A rectangle always references 4
+  already-emitted sketch_point steps by local_id - emit the 4 corner points
+  first, then the sketch_rectangle step naming them. `width`/`height` are a
+  separate, optional pair of fields on top of that: when you give them,
+  they become a real, user-editable dimension on the rectangle's own
+  corner0->corner1 (width) and corner1->corner2 (height) edges - always
+  give the same numbers your corner point coordinates already imply, never
+  a different, aspirational value the points don't actually match.
+
+## Literal numeric values become real, editable dimensions
+
+Every sketch_circle/sketch_arc/sketch_ellipse/sketch_polygon/sketch_slot
+you create gets a real, user-editable radius dimension in this tool's own
+dimension bar - whether you gave a literal radius/major_radius/minor_radius
+number, or an existing point instead (radius_point_id/major_point_id/
+end_point_id/first_vertex_point_id/etc.), since either way the resulting
+size is a real, known number once the entity exists. So place points as
+precisely as you mean the final size to be: whichever way you expressed it,
+the user will see and can drag/retype that exact value afterward - never
+just an initial, disposable coordinate. sketch_line's length and
+sketch_rectangle's width/height work the same way, but only when you
+actually give them: an end_point_id-only sketch_line, or a sketch_rectangle
+with no width/height, stays an ordinary undimensioned edge (matching a
+human-drawn shape with no dimension added yet) - so give length/width/
+height whenever the user stated or implied a real size, not just when it's
+convenient.
 
 ## Features
 

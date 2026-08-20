@@ -44,6 +44,7 @@ a session implementing one workstream never needed most of it).
 | 5 | `05-backend-plan-validation.md` | 3 | The one backend addition: a stateless dry-run plan-validation endpoint |
 | 6 | `06-image-input-deferred.md` | 1, 2, 3 | Explicitly **not v1** — image upload, vision strategy, scope cut lines, recorded for when this becomes the active workstream |
 | 7 | `07-editable-system-prompt.md` | 1, 2 | **Built.** User-editable assistant instructions + resettable override, plus togglable manufacturing-context add-ons (Structural/Plastic/Casting/Weldments/3D Print/Sheet Metal/Machining), reached from a new AI System Prompt Settings screen |
+| 8 | `08-dimension-driven-sketches.md` | 3, 4 | **Built.** The translator (and the dry-run validator, mirroring it) now attach real, non-provisional `DistanceConstraint`s wherever a plan carries a literal size - Circle/Arc/Ellipse/Polygon/Slot radius (confirming the auto-created provisional constraint), Line length, and new `sketch_rectangle` `width`/`height` fields - so AI-generated geometry has real, user-editable dimensions instead of just raw coordinates |
 
 ## Spikes (do these first, before committing to the real build)
 

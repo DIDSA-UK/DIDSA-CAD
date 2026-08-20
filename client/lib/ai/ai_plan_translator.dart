@@ -290,6 +290,25 @@ class PlanTranslator {
     }
   }
 
+  /// AI Modelling's dimension-driven-sketches workstream (`docs/ai-
+  /// modelling/08-dimension-driven-sketches.md`): Circle/Arc/Ellipse/
+  /// Polygon/Slot creation already auto-creates their own size-defining
+  /// `DistanceConstraint` *provisional* (skipped entirely by the solver
+  /// until a real value is confirmed - see the backend `DistanceConstraint.
+  /// provisional`'s own doc comment), exactly like a human's freshly-drawn,
+  /// not-yet-dimensioned shape. This confirms it with the entity's own
+  /// just-created radius via the same PATCH endpoint the dimension bar
+  /// itself calls (`SketchApiClient.updateConstraintValue`) - turning "no
+  /// real dimension at all" into a real, editable one at the AI's own
+  /// intended size, in one call. [constraintId] is nullable only for the
+  /// same test/back-compat reason the DTOs themselves keep it nullable
+  /// (see e.g. [CircleDto.radiusConstraintId]'s own doc comment) - always
+  /// present on a real backend response.
+  Future<void> _confirmRadius(String sketchId, String? constraintId, double value) async {
+    if (constraintId == null) return;
+    await sketchApi.updateConstraintValue(sketchId, constraintId, value);
+  }
+
   Future<String> _executeStep(
     AiPlanStep step, {
     required AiGenerationPlan plan,
@@ -329,6 +348,22 @@ class PlanTranslator {
           endId = end.id;
         }
         final line = await sketchApi.createLine(sketchId, startId, endId, construction: step.construction);
+        // 08's own "Line length": unlike Circle/Arc/Ellipse/Polygon/Slot, a
+        // Line has no automatic size-defining constraint at all - only add
+        // one when the plan itself named a literal length. `angle`-only
+        // dimensioning is a real, deliberate v1-of-this-workstream gap (no
+        // second reference line exists yet to constrain an angle against) -
+        // see that doc's own note.
+        if (step.length != null) {
+          await sketchApi.createDistanceConstraint(
+            sketchId,
+            line.startPointId,
+            line.endPointId,
+            step.length!,
+            orientation: 'linear',
+            provisional: false,
+          );
+        }
         return line.id;
 
       case AiSketchCircleStep():
@@ -349,6 +384,7 @@ class PlanTranslator {
           radiusPointId = radiusPoint.id;
         }
         final circle = await sketchApi.createCircle(sketchId, centerId, radiusPointId, construction: step.construction);
+        await _confirmRadius(sketchId, circle.radiusConstraintId, circle.radius);
         return circle.id;
 
       case AiSketchArcStep():
@@ -371,6 +407,7 @@ class PlanTranslator {
           endId = end.id;
         }
         final arc = await sketchApi.createArc(sketchId, centerId, startId, endId, construction: step.construction);
+        await _confirmRadius(sketchId, arc.radiusConstraintId, arc.radius);
         return arc.id;
 
       case AiSketchEllipseStep():
@@ -396,36 +433,69 @@ class PlanTranslator {
           step.minorRadius,
           construction: step.construction,
         );
+        await _confirmRadius(sketchId, ellipse.majorConstraintId, ellipse.majorRadius);
+        await _confirmRadius(sketchId, ellipse.minorConstraintId, ellipse.minorRadius);
         return ellipse.id;
 
       case AiSketchPolygonStep():
+        final polygonSketchId = sketchIds[step.sketchFeatureId]!;
         final polygon = await sketchApi.createPolygon(
-          sketchIds[step.sketchFeatureId]!,
+          polygonSketchId,
           ids[step.centerPointId]!,
           ids[step.firstVertexPointId]!,
           step.sides,
           construction: step.construction,
           referenceCircles: step.referenceCircles,
         );
+        await _confirmRadius(polygonSketchId, polygon.radiusConstraintId, polygon.radius);
         return polygon.id;
 
       case AiSketchSlotStep():
+        final slotSketchId = sketchIds[step.sketchFeatureId]!;
         final slot = await sketchApi.createSlot(
-          sketchIds[step.sketchFeatureId]!,
+          slotSketchId,
           ids[step.center1PointId]!,
           ids[step.center2PointId]!,
           step.radius,
           construction: step.construction,
         );
+        await _confirmRadius(slotSketchId, slot.radiusConstraintId, slot.radius);
         return slot.id;
 
       case AiSketchRectangleStep():
+        final rectangleSketchId = sketchIds[step.sketchFeatureId]!;
+        final cornerIds = [for (final p in step.cornerPointIds) ids[p]!];
         final rectangle = await sketchApi.createRectangle(
-          sketchIds[step.sketchFeatureId]!,
-          [for (final p in step.cornerPointIds) ids[p]!],
+          rectangleSketchId,
+          cornerIds,
           axisAligned: step.axisAligned,
           construction: step.construction,
         );
+        // 08's own "Rectangle width/height": corner0->corner1 is width,
+        // corner1->corner2 is height - the same two edges `axisAligned`
+        // already pins Horizontal/Vertical, so a "horizontal"/"vertical"-
+        // orientation dimension here is an orthogonal DOF, never redundant
+        // with those direction constraints. A non-axis-aligned rectangle
+        // has no global horizontal/vertical to pin, so a plain "linear"
+        // distance is used instead - still that edge's own real length.
+        if (step.width != null) {
+          await sketchApi.createDistanceConstraint(
+            rectangleSketchId,
+            cornerIds[0],
+            cornerIds[1],
+            step.width!,
+            orientation: step.axisAligned ? 'horizontal' : 'linear',
+          );
+        }
+        if (step.height != null) {
+          await sketchApi.createDistanceConstraint(
+            rectangleSketchId,
+            cornerIds[1],
+            cornerIds[2],
+            step.height!,
+            orientation: step.axisAligned ? 'vertical' : 'linear',
+          );
+        }
         return rectangle.id;
 
       case AiExtrudeStep():

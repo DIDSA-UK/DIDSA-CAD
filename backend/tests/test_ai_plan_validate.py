@@ -15,9 +15,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.document.ai_plan import _PlanValidator
-from app.document.ai_plan_schemas import SketchLineStep, SketchPointStep, SketchStep
+from app.document.ai_plan_schemas import SketchCircleStep, SketchLineStep, SketchPointStep, SketchRectangleStep, SketchStep
 from app.document.models import Part
 from app.main import app
+from app.sketch.constraints import DistanceConstraint
+from app.sketch.solver import solve_sketch
 from app.sketch.store import delete_sketch, get_sketch_or_404
 from tests.conftest import TEST_API_KEY
 
@@ -500,3 +502,170 @@ def test_face_at_position_selector_requires_a_direction() -> None:
 
     assert results["c1"]["ok"] is False
     assert results["c1"]["error"]["type"] == "edge_selector_missing_direction"
+
+
+def test_sketch_line_length_creates_a_real_non_provisional_distance_constraint() -> None:
+    """AI Modelling "dimension-driven sketches" workstream (docs/ai-
+    modelling/08-dimension-driven-sketches.md): a literal `length` on a
+    sketch_line step must produce a real, non-provisional
+    DistanceConstraint - the dry run's own mirror of what the real client-
+    side translator does (`ai_plan_translator.dart`'s own
+    `createDistanceConstraint` call), per 00-conventions.md's "dry-run
+    matches real execution" invariant. Uses `_PlanValidator` directly (not
+    the HTTP endpoint) for the same "inspect the scratch Sketch before its
+    own cleanup runs" reason `test_sketch_line_angle_is_degrees_not_radians`
+    above does - `PlanValidateResponse` never reports constraint state."""
+    part = Part(id="scratch-part", name="scratch", features=[])
+    validator = _PlanValidator(part)
+    steps = [
+        SketchStep(local_id="sk1", plane="XY"),
+        SketchPointStep(local_id="p1", sketch_feature_id="sk1", x=0.0, y=0.0),
+        SketchLineStep(local_id="l1", sketch_feature_id="sk1", start_point_id="p1", length=25.0, angle=0.0),
+    ]
+    try:
+        results = [validator._run_step(step) for step in steps]
+        assert all(r.ok for r in results), results
+
+        sketch = get_sketch_or_404(validator.resolved["sk1"].sketch_id)
+        line = sketch.lines()[0]
+        distance_constraints = [c for c in sketch.constraints.values() if isinstance(c, DistanceConstraint)]
+        assert len(distance_constraints) == 1
+        constraint = distance_constraints[0]
+        assert constraint.provisional is False
+        assert constraint.distance == pytest.approx(25.0)
+        assert constraint.orientation == "linear"
+        assert {constraint.point_a_id, constraint.point_b_id} == {line.start_point_id, line.end_point_id}
+    finally:
+        for sketch_id in validator._scratch_sketch_ids:
+            delete_sketch(sketch_id)
+
+
+def test_sketch_line_without_length_creates_no_constraint() -> None:
+    """The explicit-`end_point_id` path with no `length` stays exactly as
+    unconstrained as it already was before this workstream - a real,
+    deliberate scope limit (08's own "Line length" section: only a literal
+    length becomes a real dimension), not an oversight."""
+    part = Part(id="scratch-part", name="scratch", features=[])
+    validator = _PlanValidator(part)
+    steps = [
+        SketchStep(local_id="sk1", plane="XY"),
+        SketchPointStep(local_id="p1", sketch_feature_id="sk1", x=0.0, y=0.0),
+        SketchPointStep(local_id="p2", sketch_feature_id="sk1", x=10.0, y=0.0),
+        SketchLineStep(local_id="l1", sketch_feature_id="sk1", start_point_id="p1", end_point_id="p2"),
+    ]
+    try:
+        results = [validator._run_step(step) for step in steps]
+        assert all(r.ok for r in results), results
+        sketch = get_sketch_or_404(validator.resolved["sk1"].sketch_id)
+        assert not any(isinstance(c, DistanceConstraint) for c in sketch.constraints.values())
+    finally:
+        for sketch_id in validator._scratch_sketch_ids:
+            delete_sketch(sketch_id)
+
+
+def test_sketch_rectangle_width_height_create_real_axis_aligned_constraints() -> None:
+    """A literal `width`/`height` on a sketch_rectangle step must produce
+    two real, non-provisional DistanceConstraints - horizontal on
+    corner0->corner1 (`width`), vertical on corner1->corner2 (`height`) -
+    alongside (not instead of) the Horizontal/Vertical *direction*
+    constraints `add_rectangle(axis_aligned=True)` already creates for
+    those same two edges. Confirms these are genuinely orthogonal DOF (no
+    over-constraint) via a real solve, in this session's own bootstrapped
+    real py-slvs environment - 03's own "verify against real geometry, not
+    guesswork" spike discipline."""
+    part = Part(id="scratch-part", name="scratch", features=[])
+    validator = _PlanValidator(part)
+    steps = [
+        SketchStep(local_id="sk1", plane="XY"),
+        SketchPointStep(local_id="p1", sketch_feature_id="sk1", x=0.0, y=0.0),
+        SketchPointStep(local_id="p2", sketch_feature_id="sk1", x=60.0, y=0.0),
+        SketchPointStep(local_id="p3", sketch_feature_id="sk1", x=60.0, y=40.0),
+        SketchPointStep(local_id="p4", sketch_feature_id="sk1", x=0.0, y=40.0),
+        SketchRectangleStep(
+            local_id="r1",
+            sketch_feature_id="sk1",
+            corner_point_ids=["p1", "p2", "p3", "p4"],
+            width=60.0,
+            height=40.0,
+        ),
+    ]
+    try:
+        results = [validator._run_step(step) for step in steps]
+        assert all(r.ok for r in results), results
+
+        sketch = get_sketch_or_404(validator.resolved["sk1"].sketch_id)
+        distance_constraints = [c for c in sketch.constraints.values() if isinstance(c, DistanceConstraint)]
+        assert len(distance_constraints) == 2
+        by_orientation = {c.orientation: c for c in distance_constraints}
+        assert set(by_orientation) == {"horizontal", "vertical"}
+        assert by_orientation["horizontal"].distance == pytest.approx(60.0)
+        assert by_orientation["horizontal"].provisional is False
+        assert by_orientation["vertical"].distance == pytest.approx(40.0)
+        assert by_orientation["vertical"].provisional is False
+
+        # Real solve: confirms no over-constraint alongside the existing
+        # Horizontal/Vertical direction constraints (an orthogonal concern -
+        # those pin edge *direction*, these pin edge *length*).
+        result = solve_sketch(sketch)
+        assert result.converged, result
+    finally:
+        for sketch_id in validator._scratch_sketch_ids:
+            delete_sketch(sketch_id)
+
+
+def test_sketch_rectangle_without_width_height_creates_no_distance_constraint() -> None:
+    """Omitting `width`/`height` (the pre-existing default) must not create
+    any DistanceConstraint - only the Horizontal/Vertical direction
+    constraints `add_rectangle` always creates."""
+    part = Part(id="scratch-part", name="scratch", features=[])
+    validator = _PlanValidator(part)
+    steps = [
+        SketchStep(local_id="sk1", plane="XY"),
+        SketchPointStep(local_id="p1", sketch_feature_id="sk1", x=0.0, y=0.0),
+        SketchPointStep(local_id="p2", sketch_feature_id="sk1", x=60.0, y=0.0),
+        SketchPointStep(local_id="p3", sketch_feature_id="sk1", x=60.0, y=40.0),
+        SketchPointStep(local_id="p4", sketch_feature_id="sk1", x=0.0, y=40.0),
+        SketchRectangleStep(local_id="r1", sketch_feature_id="sk1", corner_point_ids=["p1", "p2", "p3", "p4"]),
+    ]
+    try:
+        results = [validator._run_step(step) for step in steps]
+        assert all(r.ok for r in results), results
+        sketch = get_sketch_or_404(validator.resolved["sk1"].sketch_id)
+        assert not any(isinstance(c, DistanceConstraint) for c in sketch.constraints.values())
+    finally:
+        for sketch_id in validator._scratch_sketch_ids:
+            delete_sketch(sketch_id)
+
+
+def test_sketch_circle_radius_point_confirms_a_real_non_provisional_radius_constraint() -> None:
+    """Circle/Arc/Ellipse/Polygon/Slot creation always confirms its own
+    auto-created *provisional* radius DistanceConstraint (`Sketch.
+    add_circle`'s own doc comment) with the entity's own real, resulting
+    radius - regardless of whether the plan step named a literal `radius`
+    field or an explicit `radius_point_id` instead, since both already fix
+    a real number via the plan's own literal Point coordinates. Without
+    this, an AI-generated Circle has zero solver-enforced radius at all
+    (`DistanceConstraint.provisional`'s own doc comment: skipped entirely
+    by the solver until confirmed) - a real correctness gap this
+    workstream closes, not just an editability nicety."""
+    part = Part(id="scratch-part", name="scratch", features=[])
+    validator = _PlanValidator(part)
+    steps = [
+        SketchStep(local_id="sk1", plane="XY"),
+        SketchPointStep(local_id="p1", sketch_feature_id="sk1", x=10.0, y=10.0),
+        SketchPointStep(local_id="p2", sketch_feature_id="sk1", x=15.0, y=10.0),
+        SketchCircleStep(local_id="c1", sketch_feature_id="sk1", center_point_id="p1", radius_point_id="p2"),
+    ]
+    try:
+        results = [validator._run_step(step) for step in steps]
+        assert all(r.ok for r in results), results
+
+        sketch = get_sketch_or_404(validator.resolved["sk1"].sketch_id)
+        circle = sketch.circles()[0]
+        constraint = sketch.constraints[circle.radius_constraint_id]
+        assert isinstance(constraint, DistanceConstraint)
+        assert constraint.provisional is False
+        assert constraint.distance == pytest.approx(5.0)
+    finally:
+        for sketch_id in validator._scratch_sketch_ids:
+            delete_sketch(sketch_id)

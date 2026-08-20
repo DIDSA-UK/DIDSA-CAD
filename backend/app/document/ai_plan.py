@@ -97,6 +97,9 @@ from app.document.revolve import resolve_revolve
 from app.document.sweep import resolve_sweep
 from app.sketch.models import SketchEntityRef, SketchEntityType
 from app.sketch.profile import ProfileStatus, detect_profile
+from app.sketch.router import create_constraint as _create_sketch_constraint
+from app.sketch.router import update_constraint_value as _update_sketch_constraint_value
+from app.sketch.schemas import ConstraintValueUpdate, DistanceConstraintCreate
 from app.sketch.store import create_sketch, delete_sketch, get_sketch_or_404
 from OCC.Core.TopoDS import TopoDS_Shape
 
@@ -225,6 +228,42 @@ def validate_ai_plan(part: Part, steps: list[PlanStep]) -> list[StepResult]:
     return _PlanValidator(part).run(steps)
 
 
+# --- Dimension-driven sketches (docs/ai-modelling/08-dimension-driven-
+# sketches.md) --------------------------------------------------------------
+#
+# Every Circle/Arc/Ellipse/Polygon/Slot shape call below already auto-
+# creates its own size-defining DistanceConstraint(s) *provisional*
+# (`Sketch.add_circle`/`add_arc`/`add_ellipse`/`add_polygon`/`add_slot`'s own
+# doc comments) - skipped entirely by the solver until a real value is
+# confirmed (`DistanceConstraint.provisional`'s own doc comment), exactly
+# like a human's freshly-drawn, not-yet-dimensioned shape. `_confirm_radius`
+# below reuses the exact router endpoint a human's own dimension-bar PATCH
+# already calls (`app.sketch.router.update_constraint_value`) to flip that
+# same flag - the dry-run's own mirror of what the real client-side
+# translator does via `SketchApiClient.updateConstraintValue` right after
+# creating the entity. Always called with the entity's own just-computed
+# radius (never a hand-derived value) so this works uniformly whether the
+# plan step named an explicit numeric field (`SketchCircleStep.radius`,
+# `SketchSlotStep.radius`, ...) or an explicit second Point instead (e.g.
+# `radius_point_id`) - either way the plan's own literal Point coordinates
+# already fully determine a real number, and confirming it turns "no real
+# dimension at all" into "a real, editable one at the AI's own intended
+# size", the dimension-driven-sketches workstream's whole point. Line/
+# Rectangle have no such auto-created constraint at all (`_create_distance`
+# below makes a brand-new, already-non-provisional one instead).
+def _confirm_radius(sketch_id: str, constraint_id: str, value: float) -> None:
+    _update_sketch_constraint_value(sketch_id, constraint_id, ConstraintValueUpdate(value=value))
+
+
+def _create_distance(
+    sketch_id: str, point_a_id: str, point_b_id: str, value: float, orientation: str = "linear"
+) -> None:
+    _create_sketch_constraint(
+        sketch_id,
+        DistanceConstraintCreate(point_a_id=point_a_id, point_b_id=point_b_id, distance=value, orientation=orientation),
+    )
+
+
 # --- Sketch anchoring ------------------------------------------------------
 
 
@@ -263,6 +302,14 @@ def _handle_sketch_line(v: _PlanValidator, step: SketchLineStep) -> None:
         line = sketch.add_line(start.point_id, end_point_id, length=step.length, angle=angle_radians, construction=step.construction)
     except (KeyError, ValueError, TypeError) as exc:
         raise _StepError({"type": "invalid_geometry", "message": str(exc)}) from exc
+    # Unlike Circle/Arc/Ellipse/Polygon/Slot, a Line has no automatic
+    # size-defining constraint at all - only create one when the plan
+    # itself named a literal length (08's own "Line length" section: an
+    # explicit `end_point_id` with no `length` stays exactly as unconstrained
+    # as it already was, matching a human drawing two-point line with no
+    # dimension added).
+    if step.length is not None:
+        _create_distance(sk.sketch_id, line.start_point_id, line.end_point_id, step.length, orientation="linear")
     v.resolved[step.local_id] = _Resolved(
         kind="sketch_line", entity_id=line.id, owning_sketch_id=sk.sketch_id
     )
@@ -282,6 +329,7 @@ def _handle_sketch_circle(v: _PlanValidator, step: SketchCircleStep) -> None:
         )
     except (KeyError, ValueError, TypeError) as exc:
         raise _StepError({"type": "invalid_geometry", "message": str(exc)}) from exc
+    _confirm_radius(sk.sketch_id, circle.radius_constraint_id, circle.radius(sketch.points))
     v.resolved[step.local_id] = _Resolved(kind="sketch_circle", entity_id=circle.id, owning_sketch_id=sk.sketch_id)
 
 
@@ -300,6 +348,7 @@ def _handle_sketch_arc(v: _PlanValidator, step: SketchArcStep) -> None:
         )
     except (KeyError, ValueError, TypeError) as exc:
         raise _StepError({"type": "invalid_geometry", "message": str(exc)}) from exc
+    _confirm_radius(sk.sketch_id, arc.radius_constraint_id, arc.radius(sketch.points))
     v.resolved[step.local_id] = _Resolved(kind="sketch_arc", entity_id=arc.id, owning_sketch_id=sk.sketch_id)
 
 
@@ -322,6 +371,8 @@ def _handle_sketch_ellipse(v: _PlanValidator, step: SketchEllipseStep) -> None:
         )
     except (KeyError, ValueError, TypeError) as exc:
         raise _StepError({"type": "invalid_geometry", "message": str(exc)}) from exc
+    _confirm_radius(sk.sketch_id, ellipse.major_constraint_id, ellipse.major_radius(sketch.points))
+    _confirm_radius(sk.sketch_id, ellipse.minor_constraint_id, ellipse.minor_radius(sketch.points))
     v.resolved[step.local_id] = _Resolved(kind="sketch_ellipse", entity_id=ellipse.id, owning_sketch_id=sk.sketch_id)
 
 
@@ -340,6 +391,7 @@ def _handle_sketch_polygon(v: _PlanValidator, step: SketchPolygonStep) -> None:
         )
     except (KeyError, ValueError, TypeError) as exc:
         raise _StepError({"type": "invalid_geometry", "message": str(exc)}) from exc
+    _confirm_radius(sk.sketch_id, polygon.radius_constraint_id, polygon.radius(sketch.points))
     v.resolved[step.local_id] = _Resolved(kind="sketch_polygon", entity_id=polygon.id, owning_sketch_id=sk.sketch_id)
 
 
@@ -352,6 +404,7 @@ def _handle_sketch_slot(v: _PlanValidator, step: SketchSlotStep) -> None:
         slot = sketch.add_slot(center1.point_id, center2.point_id, step.radius, construction=step.construction)
     except (KeyError, ValueError, TypeError) as exc:
         raise _StepError({"type": "invalid_geometry", "message": str(exc)}) from exc
+    _confirm_radius(sk.sketch_id, slot.radius_constraint_id, slot.radius(sketch.points))
     v.resolved[step.local_id] = _Resolved(kind="sketch_slot", entity_id=slot.id, owning_sketch_id=sk.sketch_id)
 
 
@@ -368,6 +421,23 @@ def _handle_sketch_rectangle(v: _PlanValidator, step: SketchRectangleStep) -> No
         rectangle = sketch.add_rectangle(corner_ids, axis_aligned=step.axis_aligned, construction=step.construction)
     except (KeyError, ValueError, TypeError) as exc:
         raise _StepError({"type": "invalid_geometry", "message": str(exc)}) from exc
+    # `width`/`height` (08's own "Rectangle width/height" section): corner0
+    # -> corner1 is `width`, corner1 -> corner2 is `height` - the same two
+    # edges `axis_aligned` already pins Horizontal/Vertical respectively
+    # (`Sketch.add_rectangle`'s own doc comment), so a "horizontal"/
+    # "vertical"-orientation DistanceConstraint here only adds a length to
+    # an edge whose *direction* is already fixed - an orthogonal DOF, never
+    # a redundant/conflicting constraint with those direction constraints.
+    # For a non-axis-aligned (rotated) rectangle there is no global
+    # horizontal/vertical to pin, so a plain "linear" distance between the
+    # same two corner pairs is used instead - still exactly that edge's own
+    # real length, whatever direction it happens to run in.
+    orientation_width = "horizontal" if step.axis_aligned else "linear"
+    orientation_height = "vertical" if step.axis_aligned else "linear"
+    if step.width is not None:
+        _create_distance(sk.sketch_id, corner_ids[0], corner_ids[1], step.width, orientation=orientation_width)
+    if step.height is not None:
+        _create_distance(sk.sketch_id, corner_ids[1], corner_ids[2], step.height, orientation=orientation_height)
     v.resolved[step.local_id] = _Resolved(kind="sketch_rectangle", entity_id=rectangle.id, owning_sketch_id=sk.sketch_id)
 
 

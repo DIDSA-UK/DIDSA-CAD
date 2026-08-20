@@ -440,6 +440,16 @@ class EllipseResponse(BaseModel):
     minor_radius: float
     rotation: float
     construction: bool = False
+    # `major_radius`/`minor_radius`'s own backing DistanceConstraint ids
+    # (`Sketch.add_ellipse`'s own doc comment) - CircleResponse.
+    # radius_constraint_id's Ellipse-shaped sibling, added alongside AI
+    # Modelling's dimension-driven-sketches workstream so a caller (the AI
+    # plan translator, or any future caller) can confirm either provisional
+    # size constraint via the existing PATCH .../constraints/{id} endpoint,
+    # the same "any explicit value PATCH clears provisional" mechanism
+    # Circle/Arc/Polygon/Slot's own radius_constraint_id already exposes.
+    major_constraint_id: str
+    minor_constraint_id: str
 
 
 class EllipseArcCreate(BaseModel):
@@ -556,6 +566,12 @@ class PolygonResponse(BaseModel):
     construction: bool = False
     circumscribed_circle_id: str | None = None
     inscribed_circle_id: str | None = None
+    # `radius`'s own backing DistanceConstraint id (`Sketch.add_polygon`'s
+    # own doc comment) - CircleResponse.radius_constraint_id's Polygon-
+    # shaped sibling, added alongside AI Modelling's dimension-driven-
+    # sketches workstream. Same "confirm via PATCH .../constraints/{id}"
+    # mechanism.
+    radius_constraint_id: str
 
 
 class PolygonUpdate(BaseModel):
@@ -597,6 +613,13 @@ class SlotResponse(BaseModel):
     d_point_id: str
     radius: float
     construction: bool = False
+    # `radius`'s own backing DistanceConstraint id - reuses arc1's own
+    # `radius_constraint_id` (`Sketch.add_slot`'s own doc comment: the
+    # slot's one real, independently-editable radius dimension, every other
+    # radius tied to it via `equal_radius_constraint_ids`). CircleResponse.
+    # radius_constraint_id's Slot-shaped sibling, added alongside AI
+    # Modelling's dimension-driven-sketches workstream.
+    radius_constraint_id: str
 
 
 class SlotUpdate(BaseModel):

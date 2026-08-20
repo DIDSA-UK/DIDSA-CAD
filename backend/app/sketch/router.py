@@ -306,6 +306,8 @@ def _ellipse_response(sketch: Sketch, ellipse: Ellipse) -> EllipseResponse:
         minor_radius=ellipse.minor_radius(sketch.points),
         rotation=ellipse.rotation(sketch.points),
         construction=ellipse.construction,
+        major_constraint_id=ellipse.major_constraint_id,
+        minor_constraint_id=ellipse.minor_constraint_id,
     )
 
 
@@ -338,6 +340,7 @@ def _polygon_response(sketch: Sketch, polygon: Polygon) -> PolygonResponse:
         construction=polygon.construction,
         circumscribed_circle_id=polygon.circumscribed_circle_id,
         inscribed_circle_id=polygon.inscribed_circle_id,
+        radius_constraint_id=polygon.radius_constraint_id,
     )
 
 
@@ -357,6 +360,7 @@ def _slot_response(sketch: Sketch, slot: Slot) -> SlotResponse:
         d_point_id=slot.d_point_id,
         radius=slot.radius(sketch.points),
         construction=slot.construction,
+        radius_constraint_id=slot.radius_constraint_id,
     )
 
 
