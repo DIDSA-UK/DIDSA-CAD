@@ -64,17 +64,23 @@ void main() {
   });
 
   testWidgets('toggling an add-on persists it as enabled', (tester) async {
+    // Unlike the Save-button test above (which shrinks the instructions
+    // TextField via enterText before scrolling), this test keeps the full,
+    // long default text the whole time, and 'sheet_metal' is the 6th of 7
+    // add-on switches - scrollUntilVisible's default budget (300px/scroll,
+    // 50 scrolls) wasn't reliably reaching it. Simplest robust fix: give
+    // this test a tall enough surface that every add-on switch is already
+    // built and on-screen, no scrolling needed at all.
+    tester.view.physicalSize = const Size(800, 3000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
     await tester.pumpWidget(const MaterialApp(home: AiSystemPromptSettingsScreen()));
     await tester.pumpAndSettle();
 
-    // Same reasoning as the Save-button fix above: the default instructions
-    // text pushes the add-on switches beyond ListView's built extent, and
-    // `scrollable` must be given explicitly for the same reason.
-    await tester.scrollUntilVisible(
-      find.byKey(const Key('aiPromptAddOn_sheet_metal')),
-      300,
-      scrollable: find.byType(Scrollable).first,
-    );
     await tester.tap(find.byKey(const Key('aiPromptAddOn_sheet_metal')));
     await tester.pumpAndSettle();
 
