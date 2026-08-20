@@ -1086,7 +1086,28 @@ class GearFeature(Feature):
     just on a genuinely curved/twisted lateral edge rather than a straight
     vertical one. Same best-effort convention either way: a non-converging
     fillet at a given radius falls back to an unfilleted gear with a
-    warning rather than failing the whole Feature."""
+    warning rather than failing the whole Feature.
+
+    `profile_shift` is `float | None` - `None` (the default) means "auto",
+    same sentinel convention `RackFeature.backing_height`/`BevelPairMember
+    Spec.profile_shift` already use; an explicit value always wins.
+    `gear_math.minimum_tooth_count_without_undercut`'s own predictive check
+    decides whether this gear's `tooth_count` would be undercut at `0.0`
+    shift; if so, `app.document.gear.resolve_gear_profile_shift` applies
+    `gear_math.minimum_profile_shift_to_avoid_undercut`'s closed-form value
+    instead (verified against a real `spur_gear_geometry` call first,
+    falling back to `0.0` if that shift would itself yield invalid
+    geometry) - so a low-tooth-count external gear no longer silently
+    undercuts by default the way it did before this field could auto-
+    resolve. Internal gears are exempt (their tooth points inward, not
+    outward - the cutter-undercut formula doesn't apply), same as the
+    `is_internal` exemption `/gear/preview`'s own undercut warning already
+    carries; auto always resolves to `0.0` for one. Same "can't null a real
+    value back out via Update" limitation every other Optional field here
+    already has (`RackFeatureUpdate.backing_height`) - `GearFeatureUpdate`
+    is a flat field, not a nested replaceable object the way `BevelPair
+    MemberSpecSchema.profile_shift` is, so there is no way to distinguish
+    an omitted Update field from an explicit `null` one."""
 
     id: str
     plane_ref: PlaneRef
@@ -1096,7 +1117,7 @@ class GearFeature(Feature):
     tooth_count: int
     face_width: float
     pressure_angle_degrees: float = 20.0
-    profile_shift: float = 0.0
+    profile_shift: float | None = None
     backlash: float = 0.0
     root_fillet_radius: float = 0.0
     outer_diameter: float | None = None
@@ -1611,6 +1632,12 @@ class BevelGearFeature(Feature):
     backlash: float = 0.0
     profile_shift: float = 0.0
     target_body_ids: list[str] = field(default_factory=list)
+    # Mirrors `GearFeature.points_per_flank` - a bevel tooth's spherical-
+    # involute flank is at least as expensive to build as a helical one
+    # (`app.document.bevel._assemble_gear_solid`'s own `4*tooth_count + 2`
+    # face sew/solid/flatten pipeline), so the same accuracy/build-cost
+    # tradeoff control applies here.
+    points_per_flank: int = 12
 
     @property
     def type(self) -> str:
@@ -1634,10 +1661,28 @@ class BevelPairMemberSpec:
     angle, shaft angle, backlash, face width) is shared pair-level, flat on
     `BevelPairFeature` itself, not here - both gears physically share one
     axial band/mesh, so those can't legitimately differ between the two
-    members (see that dataclass's own docstring)."""
+    members (see that dataclass's own docstring).
+
+    `profile_shift` is `float | None`, `None` (the default) meaning "auto" -
+    same sentinel convention `RackFeature.backing_height` already
+    established (`app.document.rack.rack_outline_points`'s own `backing_
+    height if backing_height is not None else default_rack_backing_height
+    (module)`), extended here to a genuinely pair-level auto-value instead
+    of a per-feature one: `app.document.bevel_pair.resolve_bevel_pair_
+    from_bodies` resolves `None` to whichever value (0.0, or a computed
+    negative shift) keeps this member's own tooth tip clear of the *other*
+    member's material - see `app.document.bevel_math.bevel_pair_mesh_
+    interference_warning`'s own docstring for the on-device-verified
+    finding this is built on (a real bevel pair's default settings can
+    have genuine, measurable tooth interference that raising `pressure_
+    angle_degrees` isn't the only fix for - a negative `profile_shift` on
+    whichever member's tooth tip is the intruder works too, without
+    touching pressure angle at all). An explicit (non-`None`) value always
+    wins over the auto computation, same override-sticks convention
+    `backing_height` already uses."""
 
     tooth_count: int
-    profile_shift: float = 0.0
+    profile_shift: float | None = None
 
 
 @dataclass
@@ -1706,6 +1751,11 @@ class BevelPairFeature(Feature):
     pressure_angle_degrees: float = 20.0
     shaft_angle_degrees: float = 90.0
     backlash: float = 0.0
+    # Mirrors `BevelGearFeature.points_per_flank` - applies to both
+    # members' own tooth flanks (`app.document.bevel_pair.resolve_bevel_
+    # pair_from_bodies` builds two full bevel solids per recompute, so this
+    # matters even more here than for a standalone bevel gear).
+    points_per_flank: int = 12
 
     @property
     def type(self) -> str:

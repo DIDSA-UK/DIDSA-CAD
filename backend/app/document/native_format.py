@@ -743,7 +743,10 @@ def _bevel_pair_member_to_dict(member: BevelPairMemberSpec) -> dict:
 def _bevel_pair_member_from_dict(data: dict) -> BevelPairMemberSpec:
     return BevelPairMemberSpec(
         tooth_count=_require(data, "tooth_count"),
-        profile_shift=data.get("profile_shift", 0.0),
+        # No second arg (defaults to None, not 0.0) - same "missing/null
+        # means auto" convention `backing_height`'s own native-format
+        # round-trip already uses (data.get("backing_height") above).
+        profile_shift=data.get("profile_shift"),
     )
 
 
@@ -1020,6 +1023,7 @@ def _feature_to_dict(feature: Feature) -> dict:
             "backlash": feature.backlash,
             "profile_shift": feature.profile_shift,
             "target_body_ids": list(feature.target_body_ids),
+            "points_per_flank": feature.points_per_flank,
         }
     if isinstance(feature, BevelPairFeature):
         return {
@@ -1033,6 +1037,7 @@ def _feature_to_dict(feature: Feature) -> dict:
             "pressure_angle_degrees": feature.pressure_angle_degrees,
             "shaft_angle_degrees": feature.shaft_angle_degrees,
             "backlash": feature.backlash,
+            "points_per_flank": feature.points_per_flank,
         }
     if isinstance(feature, LoftFeature):
         return {
@@ -1241,6 +1246,7 @@ def _feature_from_dict(data: dict) -> Feature:
             backlash=data.get("backlash", 0.0),
             profile_shift=data.get("profile_shift", 0.0),
             target_body_ids=list(data.get("target_body_ids", [])),
+            points_per_flank=data.get("points_per_flank", 12),
         )
     if feature_type == "bevel_pair":
         return BevelPairFeature(
@@ -1253,6 +1259,7 @@ def _feature_from_dict(data: dict) -> Feature:
             pressure_angle_degrees=data.get("pressure_angle_degrees", 20.0),
             shaft_angle_degrees=data.get("shaft_angle_degrees", 90.0),
             backlash=data.get("backlash", 0.0),
+            points_per_flank=data.get("points_per_flank", 12),
         )
     if feature_type == "loft":
         return LoftFeature(

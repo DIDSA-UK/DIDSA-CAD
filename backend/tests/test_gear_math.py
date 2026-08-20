@@ -19,6 +19,7 @@ from app.document.gear_math import (
     helical_twist_angle,
     involute_point,
     involute_roll_angle_at_radius,
+    minimum_profile_shift_to_avoid_undercut,
     minimum_tooth_count_without_undercut,
     planetary_planet_tooth_count,
     rack_length,
@@ -27,6 +28,7 @@ from app.document.gear_math import (
     sample_involute_flank,
     spur_gear_geometry,
     tooth_profile_points,
+    undercut_warning,
     validate_planetary_assembly,
 )
 
@@ -149,6 +151,38 @@ def test_profile_shift_lowers_the_undercut_threshold():
     plain = minimum_tooth_count_without_undercut(pressure_angle_degrees=20.0)
     shifted = minimum_tooth_count_without_undercut(pressure_angle_degrees=20.0, profile_shift=0.3)
     assert shifted < plain
+
+
+def test_minimum_profile_shift_to_avoid_undercut_is_the_exact_algebraic_inverse():
+    # Plugging the closed-form x_min back into minimum_tooth_count_without_
+    # undercut must land exactly back on the tooth count it was solved for -
+    # that's the whole point of an algebraic inverse rather than a search.
+    for tooth_count in (6, 10, 14, 17):
+        x_min = minimum_profile_shift_to_avoid_undercut(tooth_count, pressure_angle_degrees=20.0)
+        z_min = minimum_tooth_count_without_undercut(pressure_angle_degrees=20.0, profile_shift=x_min)
+        assert z_min == pytest.approx(tooth_count, abs=1e-9)
+
+
+def test_minimum_profile_shift_to_avoid_undercut_is_zero_or_negative_above_the_threshold():
+    # A tooth count already comfortably above the (unshifted) undercut-free
+    # minimum (~17.1 at 20 degrees) needs no positive shift at all.
+    x_min = minimum_profile_shift_to_avoid_undercut(40, pressure_angle_degrees=20.0)
+    assert x_min < 0.0
+
+
+def test_undercut_warning_is_none_when_tooth_count_clears_the_minimum():
+    assert undercut_warning(20, 20.0, 0.0) is None
+
+
+def test_undercut_warning_names_the_minimum_when_tooth_count_falls_short():
+    warning = undercut_warning(6, 20.0, 0.0)
+    assert warning is not None
+    assert "undercut" in warning.lower()
+
+
+def test_undercut_warning_is_none_once_profile_shift_clears_it():
+    x_min = minimum_profile_shift_to_avoid_undercut(6, pressure_angle_degrees=20.0)
+    assert undercut_warning(6, 20.0, x_min) is None
 
 
 # ---------------------------------------------------------------------------

@@ -41,9 +41,13 @@ grid-injectivity/normal-flip fold check (`_flank_fold_warning`) runs once
 before assembly (all teeth are identical up to rotation - `10-bevel-
 gear.md`'s own §7 finding that ring assembly never shifts this risk
 relative to a single flank), surfaced as a non-blocking warning per
-`00-conventions.md`; `BOPAlgo_CheckerSI` plus an independent mesh-volume
-cross-check run once on the assembled solid afterward, as a final sanity
-pass rather than the primary defense.
+`00-conventions.md`; an independent mesh-volume cross-check runs once on
+the assembled solid afterward, as a final sanity pass rather than the
+primary defense (`_assembly_sanity_warnings`'s own docstring - bevel-pair
+timeout investigation - explains why the whole-solid `BOPAlgo_CheckerSI`
+self-intersection check this used to also run here was dropped entirely,
+not just made cheaper: expensive, redundant with the per-flank check
+above, and explicitly secondary already).
 
 **Verification status**: written directly against both spikes' own
 validated findings (not re-derived) and verified for real against genuine
@@ -59,7 +63,6 @@ import logging
 import math
 
 from fastapi import HTTPException
-from OCC.Core.BOPAlgo import BOPAlgo_CheckerSI
 from OCC.Core.BRep import BRep_Tool
 from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
 from OCC.Core.BRepBuilderAPI import (
@@ -95,6 +98,8 @@ from app.document.bevel_math import (
     bevel_gear_geometry,
     bevel_tooth_flank_pair,
     max_recommended_face_width,
+    thin_hub_warning,
+    tredgold_base_colatitude,
 )
 from app.document.create_plane import resolve_plane_ref
 from app.document.extrude import basis_normal, compute_part_bodies
@@ -566,6 +571,29 @@ def _inner_cap_flattening_tool(basis: ResolvedPlane, sphere_radius: float, start
     OCCT's own latitude convention measures from the equator (`+-pi/2` at
     the poles), so `angle1 = pi/2 - start_colatitude` (colatitude is
     measured from the OTHER pole) and `angle2 = pi/2` (the pole itself).
+    The X direction is `basis.x_axis`, given explicitly - on-device feedback
+    (bevel-pair end-cap investigation) found this matters for real, not
+    just tidiness: the 2-argument `gp_Ax2(point, direction)` form (no X
+    given) lets OCCT auto-pick an arbitrary X perpendicular to the main
+    direction, which this sphere's own Fuse target - `_spherical_cap_face`'s
+    identical sphere, always built via `_sphere_axis`'s explicit-X `gp_Ax3`
+    - has no reason to share. When the two happen to agree (as they always
+    did for every basis this module was tested against before - the fixed
+    XY plane, `normal = (0, 0, 1)`, apparently lands on the same auto-picked
+    X OCCT would choose anyway) the Fuse cleanly recognizes the tool's
+    sphere and the solid's own inner-cap sphere as the same surface and
+    flattens correctly; for *any* other basis (confirmed on a plain 90-
+    degree tilt, a generic 37-degree tilt, and a tilt about a different
+    axis entirely - i.e. every `BevelPairFeature` member 2, which is never
+    built on the untouched plane_ref) the mismatched parametrization
+    silently breaks the Fuse - `IsDone()` still reports success, but the
+    inner cap comes back still domed, not flattened, with no warning
+    (`_single_solid_face_count`'s own post-boolean check only counts total
+    faces, not planarity, so it doesn't catch this). Giving both spheres
+    the exact same explicit X direction removes the mismatch entirely -
+    verified on-device: the tilted-basis case that used to come back with
+    only 1 planar face (should be 2) now matches the untilted case exactly,
+    same face count, same planar count.
 
     Built at the exact `sphere_radius`/`start_colatitude` - NOT shrunk -
     unlike `_outer_cap_flattening_tool`'s own cylinder (which very
@@ -579,7 +607,11 @@ def _inner_cap_flattening_tool(basis: ResolvedPlane, sphere_radius: float, start
     edge case instead, and `_flatten_end_caps`'s own post-boolean face-count
     check (`_single_solid_face_count`) is the backstop for the cases even
     that doesn't resolve - see both of those for the full picture."""
-    axis = gp_Ax2(_basis_point3_to_world(basis, 0.0, 0.0, 0.0), basis_normal(basis))
+    ox, oy, oz = basis.origin
+    nx, ny, nz = basis.normal
+    xx, xy, xz = basis.x_axis
+    apex = _basis_point3_to_world(basis, 0.0, 0.0, 0.0)
+    axis = gp_Ax2(apex, gp_Dir(nx, ny, nz), gp_Dir(xx, xy, xz))
     angle1 = math.pi / 2 - start_colatitude
     angle2 = math.pi / 2
     return BRepPrimAPI_MakeSphere(axis, sphere_radius, angle1, angle2).Shape()
@@ -818,8 +850,21 @@ def _mesh_volume(solid: TopoDS_Shape) -> float:
     own §5 finding that agreement between the two (not `BRepCheck_
     Analyzer`) is the real evidence a solid is correctly closed and
     oriented. Sums signed tetrahedron volumes from the world origin over
-    every mesh triangle of a real `BRepMesh_IncrementalMesh` tessellation."""
-    BRepMesh_IncrementalMesh(solid, 0.05, False, 0.5, True)
+    every mesh triangle of a real `BRepMesh_IncrementalMesh` tessellation.
+
+    On-device feedback (bevel-pair timeout investigation): deflection
+    raised from a fixed 0.05mm to a fixed 0.3mm - this mesh only feeds the
+    volume cross-check above (>2% disagreement warning), not any geometry
+    this Feature actually returns, so it doesn't need fine-print accuracy;
+    coarsening it cuts triangle count (and therefore tessellation cost) on
+    every curved B-spline flank substantially while staying far tighter
+    than the 2% comparison tolerance for any realistic gear size. Not
+    switched to `isRelative=True` (deflection-as-a-fraction-of-bounding-box)
+    despite that scaling more naturally across gear sizes - unverified
+    on-device in this session (no pythonocc-core available), so kept as the
+    same simple absolute-value knob the original code already used, just
+    larger; worth revisiting with real timing data."""
+    BRepMesh_IncrementalMesh(solid, 0.3, False, 0.5, True)
     total = 0.0
     explorer = TopExp_Explorer(solid, TopAbs_FACE)
     while explorer.More():
@@ -848,23 +893,28 @@ def _mesh_volume(solid: TopoDS_Shape) -> float:
 
 def _assembly_sanity_warnings(solid: TopoDS_Solid) -> list[str]:
     """The assembled-solid final sanity pass per `10-bevel-gear.md`'s own
-    §8: `BOPAlgo_CheckerSI` (self-intersection) plus an independent mesh-
-    volume cross-check against `BRepGProp`'s own analytic volume - run
-    once, after assembly, deliberately NOT gating on `BRepCheck_Analyzer.
-    IsValid()` (confirmed wrong for this construction's own end-caps, per
-    that doc's §5). Non-blocking, per `00-conventions.md` - a disagreement
-    here is a real, but not certainly-fatal, signal worth surfacing."""
-    warnings: list[str] = []
+    §8: an independent mesh-volume cross-check against `BRepGProp`'s own
+    analytic volume - run once, after assembly, deliberately NOT gating on
+    `BRepCheck_Analyzer.IsValid()` (confirmed wrong for this construction's
+    own end-caps, per that doc's §5). Non-blocking, per `00-conventions.md`
+    - a disagreement here is a real, but not certainly-fatal, signal worth
+    surfacing.
 
-    checker = BOPAlgo_CheckerSI()
-    checker.AddArgument(solid)
-    checker.Perform()
-    if checker.HasErrors():
-        warnings.append(
-            "This bevel gear's assembled solid failed a self-intersection check (BOPAlgo_CheckerSI) - "
-            "the geometry may not be physically valid. Try a smaller face_width or a less extreme "
-            "pitch cone angle."
-        )
+    On-device feedback (bevel-pair timeout investigation): this used to also
+    run `BOPAlgo_CheckerSI` (whole-solid self-intersection check) here -
+    dropped entirely, not just made cheaper. It was always the more
+    expensive of the two checks (cost scales with the assembled solid's
+    total face count, `4*tooth_count + 2` for a Bevel Pair's own worse
+    member) and this module's own top-level docstring already frames it as
+    "a final sanity pass rather than the primary defense" - `_flank_fold_
+    warning` (run once, before assembly, on a single flank) is the actual
+    primary defense against the real failure mode (a folded/self-
+    overlapping tooth flank from too-large face_width), and per `10-bevel-
+    gear.md`'s own §7 finding, ring assembly never introduces a fold risk
+    `_flank_fold_warning` didn't already catch on that one flank. So
+    dropping this redundant, expensive, genuinely-secondary check trades
+    away no real coverage."""
+    warnings: list[str] = []
 
     props = GProp_GProps()
     brepgprop.VolumeProperties(solid, props)
@@ -896,7 +946,7 @@ def _assemble_gear_solid(
     right0, left0 = bevel_tooth_flank_pair(geometry, points_per_flank)
     right0_outer, right0_inner = right0
     left0_outer, left0_inner = left0
-    start_colatitude = max(geometry.root_cone_angle, geometry.base_cone_angle)
+    start_colatitude = max(geometry.root_cone_angle, tredgold_base_colatitude(geometry))
     face_colatitude = geometry.face_cone_angle
 
     faces: list[TopoDS_Face] = []
@@ -989,14 +1039,25 @@ def _assemble_gear_solid(
         # `BRepCheck_Analyzer` before either boolean even runs) can make
         # `BRepAlgoAPI_Fuse` silently return an empty/non-solid result.
         # Falling back to the un-flattened spherical cap - not re-raising,
-        # and not a user-facing warning either, mirroring `_assembly_
-        # sanity_warnings`'s own identical "best-effort, log only" handling
-        # of its mesh-volume cross-check failing outright: an unflattened
-        # (still fully valid, just visibly domed/dished) end-cap on an
-        # extreme-geometry gear is the same real-but-non-fatal degradation
-        # this whole module already tolerates elsewhere, not a reason to
-        # refuse the gear or surface a warning for a case this rare.
+        # since an unflattened (still fully valid, just visibly domed/
+        # dished) end-cap on an extreme-geometry gear is a real-but-non-
+        # fatal degradation, not a reason to refuse the gear outright.
+        #
+        # On-device feedback (bevel-pair meshing/build-quality investigation):
+        # this used to be silent (log-only, no user-facing warning) on the
+        # stated assumption this was "a case this rare" it wasn't - a
+        # default Bevel Pair's own two members (20/40 teeth, gamma ~63
+        # degrees for the 40-tooth member) hit it for one member and not
+        # the other, producing two visibly different-looking gear backs
+        # (one flat, one still domed/dished) with no indication why. Now a
+        # real non-blocking warning, same convention as every other
+        # `00-conventions.md` warning this module surfaces.
         logger.warning("Bevel gear end-cap flattening itself failed - falling back to the true spherical cap", exc_info=True)
+        warnings.append(
+            "This bevel gear's end-cap could not be flattened to a flat disc at the tooth root and is "
+            "still visibly domed/dished (a spherical cap) instead - the gear itself is still valid, just "
+            "not flat-backed. Try a smaller face_width or a less extreme pitch cone angle."
+        )
         flattened = solid
     warnings.extend(_assembly_sanity_warnings(flattened))
     return flattened, warnings
@@ -1018,6 +1079,14 @@ def resolve_bevel_gear_from_bodies(
     bodies`'s overall shape (raises a structured `HTTPException` rather
     than returning `None`: no backing Sketch, so no "temporarily has
     nothing to build" state to tolerate)."""
+    if feature.points_per_flank < 2:
+        # Mirrors `app.document.gear.resolve_gear_from_bodies`'s own
+        # `points_per_flank must be >= 2` floor (`gear.py:536-543`) - same
+        # `sample_spherical_involute_flank`/`sample_involute_flank` `point_
+        # count must be >= 2` requirement underneath, checked here so a bad
+        # value fails closed with a clean 422 instead of an uncaught
+        # GearGeometryError surfacing as a 500 partway through flank sampling.
+        raise _invalid_bevel_parameters(f"points_per_flank must be >= 2, got {feature.points_per_flank!r}")
     try:
         geometry = bevel_gear_geometry(
             module=feature.module,
@@ -1035,6 +1104,9 @@ def resolve_bevel_gear_from_bodies(
         raise _invalid_bevel_parameters(f"face_width must be positive, got {feature.face_width!r}")
 
     warnings: list[str] = []
+    hub_warning = thin_hub_warning(feature.pitch_cone_angle_degrees)
+    if hub_warning:
+        warnings.append(hub_warning)
     max_face_width = max_recommended_face_width(geometry.cone_distance)
     if feature.face_width > max_face_width:
         warnings.append(
@@ -1043,7 +1115,7 @@ def resolve_bevel_gear_from_bodies(
         )
 
     basis = resolve_plane_ref(part, bodies, feature.plane_ref, excluded_feature_ids)
-    solid, assembly_warnings = _assemble_gear_solid(basis, geometry, feature.tooth_count)
+    solid, assembly_warnings = _assemble_gear_solid(basis, geometry, feature.tooth_count, feature.points_per_flank)
     warnings.extend(assembly_warnings)
     return solid, warnings
 

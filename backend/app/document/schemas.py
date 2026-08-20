@@ -808,7 +808,14 @@ class GearFeatureCreate(BaseModel):
     `points_per_flank` (default `12`) follows `GearFeature.points_per_
     flank`'s own identical field - a lower value trades tooth-flank
     smoothness for a cheaper OCCT build, most useful for a helical/
-    herringbone gear on modest hardware."""
+    herringbone gear on modest hardware.
+
+    `profile_shift` is optional - omitting it (`None`, the default)
+    resolves at build time to whichever value (`0.0`, or a computed
+    positive shift) keeps `tooth_count` clear of undercut
+    (`app.document.gear.resolve_gear_profile_shift`) - same auto-or-
+    override convention as `RackFeatureCreate.backing_height`/
+    `BevelPairMemberSpecSchema.profile_shift`."""
 
     plane_ref: PlaneRefSchema | None = None
     gear_type: GearType
@@ -817,7 +824,7 @@ class GearFeatureCreate(BaseModel):
     tooth_count: int
     face_width: float
     pressure_angle_degrees: float = 20.0
-    profile_shift: float = 0.0
+    profile_shift: float | None = None
     backlash: float = 0.0
     root_fillet_radius: float = 0.0
     outer_diameter: float | None = None
@@ -829,7 +836,11 @@ class GearFeatureCreate(BaseModel):
 
 class GearFeatureUpdate(BaseModel):
     """Partial update, same omitted-vs-current-value convention as
-    `ExtrudeFeatureUpdate`/`MirrorFeatureUpdate`."""
+    `ExtrudeFeatureUpdate`/`MirrorFeatureUpdate` - including for
+    `profile_shift`: omitting it (`None`) keeps the Feature's current value
+    (which may itself be `None`, i.e. auto), the same "can't null a real
+    value back out via Update" limitation every other Optional field here
+    already has (e.g. `RackFeatureUpdate.backing_height`)."""
 
     plane_ref: PlaneRefSchema | None = None
     gear_type: GearType | None = None
@@ -858,7 +869,7 @@ class GearFeatureResponse(BaseModel):
     tooth_count: int
     face_width: float
     pressure_angle_degrees: float
-    profile_shift: float
+    profile_shift: float | None = None
     backlash: float
     root_fillet_radius: float
     outer_diameter: float | None = None
@@ -866,15 +877,24 @@ class GearFeatureResponse(BaseModel):
     helix_angle_degrees: float = 0.0
     herringbone: bool = False
     points_per_flank: int = 12
+    # The *resolved* profile_shift (app.document.gear.resolve_gear_profile_
+    # shift) - identical to profile_shift above when it's an explicit
+    # value, but the actual computed number (not None) whenever that field
+    # is left auto. Cheap (pure gear_math, no OCCT) to compute alongside
+    # the response - lets the Gear Design screen show "Auto (0.65)" instead
+    # of just "Auto". Mirrors BevelPairFeatureResponse.effective_profile_
+    # shift_1/_2's own identical convention.
+    effective_profile_shift: float
     locked: bool
     # B1: see SketchFeatureResponse.produces above - always BODY for a
     # GearFeature.
     produces: Produces
     # Non-blocking - a requested root_fillet_radius that was silently
     # honoured-in-name-only (didn't converge, or unsupported on a
-    # helical/herringbone tooth) - see app.document.gear.resolve_gear_
-    # from_bodies. Same convention as LoftFeatureResponse.warnings/
-    # GearChainFeatureResponse.warnings below.
+    # helical/herringbone tooth), or a resolved profile_shift that still
+    # leaves tooth_count undercut (gear_math.undercut_warning) - see
+    # app.document.gear.resolve_gear_from_bodies. Same convention as
+    # LoftFeatureResponse.warnings/GearChainFeatureResponse.warnings below.
     warnings: list[str] = []
 
 
@@ -955,6 +975,10 @@ class BevelGearFeatureCreate(BaseModel):
     backlash: float = 0.0
     profile_shift: float = 0.0
     target_body_ids: list[str] = []
+    # See `GearFeatureCreate.points_per_flank`'s own docstring - identical
+    # accuracy/build-cost tradeoff, applied to a bevel tooth's spherical-
+    # involute flank instead of a planar involute one.
+    points_per_flank: int = 12
 
 
 class BevelGearFeatureUpdate(BaseModel):
@@ -971,6 +995,7 @@ class BevelGearFeatureUpdate(BaseModel):
     backlash: float | None = None
     profile_shift: float | None = None
     target_body_ids: list[str] | None = None
+    points_per_flank: int | None = None
 
 
 class BevelGearFeatureResponse(BaseModel):
@@ -986,6 +1011,7 @@ class BevelGearFeatureResponse(BaseModel):
     backlash: float
     profile_shift: float
     target_body_ids: list[str] = []
+    points_per_flank: int = 12
     locked: bool
     # B1: see SketchFeatureResponse.produces above - always BODY for a
     # BevelGearFeature.
@@ -1001,10 +1027,15 @@ class BevelPairMemberSpecSchema(BaseModel):
     """The wire counterpart to `app.document.models.BevelPairMemberSpec` -
     the legitimately-differing per-member fields only (see that
     dataclass's own docstring for why every other bevel pair dimension is
-    flat on `BevelPairFeatureCreate` instead)."""
+    flat on `BevelPairFeatureCreate` instead). `profile_shift` is optional -
+    omitting it (`None`, the default) resolves at build time to whichever
+    value (`0.0`, or a computed negative shift) keeps this member's own
+    tooth clear of the other member's material (`app.document.bevel_pair.
+    resolve_member_profile_shifts`) - same auto-or-override convention as
+    `RackFeatureCreate.backing_height`."""
 
     tooth_count: int
-    profile_shift: float = 0.0
+    profile_shift: float | None = None
 
 
 class BevelPairFeatureCreate(BaseModel):
@@ -1029,6 +1060,9 @@ class BevelPairFeatureCreate(BaseModel):
     pressure_angle_degrees: float = 20.0
     shaft_angle_degrees: float = 90.0
     backlash: float = 0.0
+    # See `BevelGearFeatureCreate.points_per_flank`'s own docstring -
+    # applies to both members' own tooth flanks.
+    points_per_flank: int = 12
 
 
 class BevelPairFeatureUpdate(BaseModel):
@@ -1043,6 +1077,7 @@ class BevelPairFeatureUpdate(BaseModel):
     pressure_angle_degrees: float | None = None
     shaft_angle_degrees: float | None = None
     backlash: float | None = None
+    points_per_flank: int | None = None
 
 
 class BevelPairFeatureResponse(BaseModel):
@@ -1056,6 +1091,15 @@ class BevelPairFeatureResponse(BaseModel):
     pressure_angle_degrees: float
     shaft_angle_degrees: float
     backlash: float
+    points_per_flank: int = 12
+    # The *resolved* profile_shift for each member (app.document.bevel_
+    # pair.resolve_member_profile_shifts) - identical to member_1/member_2's
+    # own profile_shift when it's an explicit value, but the actual
+    # computed number (not None) whenever that field is left auto. Cheap
+    # (pure math, no OCCT) to compute alongside the response - lets the
+    # Gear Design screen show "Auto (-0.52)" instead of just "Auto".
+    effective_profile_shift_1: float
+    effective_profile_shift_2: float
     locked: bool
     # B1: see SketchFeatureResponse.produces above - always BODY for a
     # BevelPairFeature.
@@ -1391,10 +1435,12 @@ class GearPreviewBevelGearRequest(BaseModel):
 class GearPreviewBevelPairMemberRequest(BaseModel):
     """The wire counterpart to `app.document.models.BevelPairMemberSpec` -
     see `BevelPairMemberSpecSchema`'s own docstring for why only these two
-    fields legitimately differ per member."""
+    fields legitimately differ per member, and for the `profile_shift`
+    auto-or-override convention (mirrored here so a preview matches what
+    Create would actually produce)."""
 
     tooth_count: int
-    profile_shift: float = 0.0
+    profile_shift: float | None = None
 
 
 class GearPreviewBevelPairRequest(BaseModel):
@@ -1444,11 +1490,37 @@ class GearPreviewBevelMember(BaseModel):
     inner_cone_distance: float
     pitch_radius: float
     face_width: float
+    # The actual profile_shift this schematic was built with - for a
+    # standalone bevel gear, identical to the request's own plain float;
+    # for a bevel pair member, the *resolved* value (`app.document.bevel_
+    # pair.resolve_member_profile_shifts`'s own output) whenever the
+    # request left it `None` (auto) - lets the Gear Design screen show the
+    # live-computed number next to "Auto" instead of just the word alone.
+    effective_profile_shift: float
+
+
+class BevelPairMeshPreviewResult(BaseModel):
+    """`bevel_math.BevelPairMeshPreview`'s wire counterpart - a handful of
+    consecutive teeth from each member, meshing as Tredgold's virtual flat
+    spur gears predict, for a "picture in picture" close-up inset next to
+    the existing axial-cross-section schematic (`GearPreviewBevelMember`,
+    which draws each member's drafting-style envelope only, never a real
+    tooth). Both `*_teeth` lists are already positioned/rotated into one
+    shared local 2D frame (`center_1`/`center_2` on the x-axis, tangent at
+    the origin) - a client draws them directly, no gear math of its own."""
+
+    member_1_teeth: list[list[tuple[float, float]]]
+    member_2_teeth: list[list[tuple[float, float]]]
+    center_1: tuple[float, float]
+    center_2: tuple[float, float]
+    pitch_radius_1: float
+    pitch_radius_2: float
 
 
 class GearPreviewBevelPairResult(BaseModel):
     members: list[GearPreviewBevelMember]
     shaft_angle_degrees: float
+    mesh_preview: BevelPairMeshPreviewResult
 
 
 class GearPreviewRequest(BaseModel):
@@ -1482,7 +1554,11 @@ class GearPreviewRequest(BaseModel):
     module: float | None = None
     tooth_count: int | None = None
     pressure_angle_degrees: float = 20.0
-    profile_shift: float = 0.0
+    # Only for "external"/"internal" (meaningless/ignored otherwise, same
+    # as module/tooth_count above) - None (the default) means "auto", same
+    # `GearFeatureCreate.profile_shift` convention, so a live preview
+    # matches what Create would actually produce.
+    profile_shift: float | None = None
     backlash: float = 0.0
     # Required when gear_kind == "internal" (the ring's own rim diameter),
     # meaningless otherwise - same rule as `GearFeatureCreate.outer_diameter`.
@@ -1538,6 +1614,13 @@ class GearPreviewResponse(BaseModel):
     addendum_line_y: float | None = None
     dedendum_line_y: float | None = None
     rack_length: float | None = None
+    # Populated only for "external"/"internal" - the *resolved*
+    # profile_shift (app.document.gear.resolve_gear_profile_shift), same
+    # "identical to the request's own explicit value, or the live-computed
+    # auto one" convention as GearPreviewBevelMember.effective_profile_
+    # shift. Null for every other gear_kind, mirroring pitch_radius/etc.'s
+    # own kind-conditional nullability above.
+    effective_profile_shift: float | None = None
     warnings: list[str] = []
     chain: GearPreviewChainResult | None = None
     planetary: GearPreviewPlanetaryResult | None = None

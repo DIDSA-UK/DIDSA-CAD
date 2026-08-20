@@ -42,9 +42,16 @@ formula and comparing it to itself.
 """
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
-from app.document.gear_math import GearGeometryError
+from app.document.gear_math import (
+    GearGeometryError,
+    SpurGearGeometry,
+    involute_function,
+    involute_point,
+    involute_roll_angle_at_radius,
+    tooth_profile_points,
+)
 
 # ---------------------------------------------------------------------------
 # Pitch cone half-angles
@@ -111,8 +118,14 @@ def base_cone_half_angle(pitch_cone_half_angle: float, pressure_angle: float) ->
     `base_radius = pitch_radius` at zero pressure angle); `gamma = 90deg`
     (a crown gear) gives `gamma_b = 90deg - alpha` exactly (`sin(gamma_b) =
     cos(alpha) = sin(90deg - alpha)`)."""
-    if not (0 < pitch_cone_half_angle < math.pi / 2):
-        raise GearGeometryError(f"pitch_cone_half_angle must be in (0, pi/2), got {pitch_cone_half_angle!r}")
+    # <= pi/2 (not < ): pi/2 exactly is a real, manufactured crown gear (this
+    # function's own docstring above already calls out "gamma = 90deg (a
+    # crown gear) gives gamma_b = 90deg - alpha exactly" as a reference
+    # case) - confirmed on-device this stays perfectly finite at the
+    # boundary, no asymptote (sin(gamma_b) = cos(alpha), never zero/undefined
+    # for a valid pressure_angle).
+    if not (0 < pitch_cone_half_angle <= math.pi / 2):
+        raise GearGeometryError(f"pitch_cone_half_angle must be in (0, pi/2], got {pitch_cone_half_angle!r}")
     if not (0 <= pressure_angle < math.pi / 2):
         raise GearGeometryError(f"pressure_angle must be in [0, pi/2), got {pressure_angle!r}")
     return math.asin(math.sin(pitch_cone_half_angle) * math.cos(pressure_angle))
@@ -375,9 +388,13 @@ def bevel_gear_geometry(
 
     pressure_angle = math.radians(pressure_angle_degrees)
     if pitch_cone_angle_degrees is not None:
-        if not (0 < pitch_cone_angle_degrees < 90):
+        # <= 90 (not < ): 90 exactly is a crown gear (flat pitch cone) - see
+        # `base_cone_half_angle`'s own identical boundary and docstring.
+        # `root_cone_angle <= 0`/`face_width >= cone_distance` below still
+        # catch any combination that's actually degenerate.
+        if not (0 < pitch_cone_angle_degrees <= 90):
             raise GearGeometryError(
-                f"pitch_cone_angle_degrees must be in (0, 90), got {pitch_cone_angle_degrees!r}"
+                f"pitch_cone_angle_degrees must be in (0, 90], got {pitch_cone_angle_degrees!r}"
             )
         pitch_cone_angle = math.radians(pitch_cone_angle_degrees)
     else:
@@ -464,6 +481,51 @@ def max_recommended_face_width(cone_distance: float) -> float:
     return cone_distance / 3
 
 
+# Rule-of-thumb pitch-cone-angle bound beyond which this app's simple
+# solid-hub construction (`app.document.bevel._assemble_gear_solid` builds
+# right out from the shared apex, with no separate hub/web/bore modeling)
+# tends to leave too little material around a shaft bore to be structurally
+# sound - not invalid geometry (a near-flat "crown gear" close to 90 degrees
+# is a real, manufactured bevel gear form - confirmed on-device that `bevel_
+# gear_geometry`/`bevel_tooth_flank_pair` stay perfectly well-behaved
+# arbitrarily close to 90 degrees, no asymptote), just a case where the user
+# likely needs to add their own backing material (e.g. a plate behind a
+# crown-like gear) rather than relying on this app's default hub. Same
+# non-blocking-warning convention as `max_recommended_face_width` above.
+#
+# On-device feedback (CI, real pythonocc-core): this constant used to also
+# have a `NEEDLE_LIKE_PITCH_CONE_ANGLE_DEGREES = 15.0` low-end counterpart,
+# warning near 0 degrees the same way - dropped entirely, not just retuned.
+# This project's own canonical bevel gear test fixtures
+# (`tests/test_bevel_gear_feature.py`'s `_PITCH_ANGLE_6_80` = 4.29 degrees,
+# `_PITCH_ANGLE_18_90` = 11.3 degrees - real 6-tooth/18-tooth pinions mating
+# with an 80-/90-tooth gear, high but entirely ordinary tooth-count ratios)
+# sit well inside what a 15-degree threshold flagged, and those tests assert
+# `warnings == []` deliberately - a small pinion's own pitch cone getting
+# acute as its mate's tooth count grows is normal geometry, not a thin-hub
+# risk the way a *wide, flat* crown gear genuinely is; the asymmetry (crown
+# risk real, needle risk not) makes sense in hindsight - a small gamma
+# still leaves the tooth's own full radial depth as hub material near the
+# apex, nothing like a flat disc's shallow axial profile.
+CROWN_LIKE_PITCH_CONE_ANGLE_DEGREES = 75.0
+
+
+def thin_hub_warning(pitch_cone_angle_degrees: float) -> str | None:
+    """`None` if `pitch_cone_angle_degrees` is comfortably within the
+    "normal" bevel gear range, otherwise a warning string explaining why
+    this gear's own hub/bore material may end up too thin - callers append
+    this to their own `warnings` list exactly like `max_recommended_face_
+    width`'s own comparison, non-blocking."""
+    if pitch_cone_angle_degrees >= CROWN_LIKE_PITCH_CONE_ANGLE_DEGREES:
+        return (
+            f"pitch cone angle ({pitch_cone_angle_degrees!r}°) is close to (or at) 90° - this gear is "
+            "wide and shallow like a flat 'crown' gear, so a shaft bore cut into it may leave too little "
+            "material around the bore to be structurally sound. You may need to add your own backing "
+            "material (e.g. a plate behind the gear) for a functioning part."
+        )
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Tooth flank point sampling (for OCCT construction to consume)
 # ---------------------------------------------------------------------------
@@ -496,6 +558,313 @@ def _spherical_flank_start_offset_angle(geometry: BevelGearGeometry) -> float:
     )
 
 
+TREDGOLD_MAX_PITCH_CONE_ANGLE_DEGREES = 89.5
+"""Tredgold's approximation genuinely degenerates as `pitch_cone_angle` ->
+90 degrees (a crown gear): the "back cone" (see `tredgold_bevel_point`'s
+own docstring) has half-angle `90deg - pitch_cone_angle`, so its own apex
+distance from the real apex (`cone_distance / cos(pitch_cone_angle)`) ->
+infinity there - not a numerical-precision artifact, the real geometric
+limit of a cone tangent to a sphere at its equator (a cylinder, apex at
+infinity). `bevel_gear_geometry` itself still allows exactly 90 degrees
+(a real, previously-supported crown gear case, `base_cone_half_angle`'s
+own docstring calls it out explicitly) - flat-crown-gear construction via
+Tredgold is real, known future work (a crown gear's own "back cone" is
+simply its own flat pitch plane - no unrolling needed at all, a genuinely
+different, simpler code path), not implemented here. This bound raises a
+clear, actionable error well before floating-point division blows up
+silently into `inf`/`nan`, rather than only failing exactly at 90."""
+
+
+def equivalent_tooth_count(tooth_count: float, pitch_cone_half_angle: float) -> float:
+    """Tredgold's approximation's own core substitution, `N_v = N /
+    cos(gamma)` - this bevel gear's real tooth flank (generated on its own
+    curved pitch cone) is approximated by the flank of an ordinary planar
+    involute spur gear with this many teeth (generally non-integer - a
+    continuous parameter feeding `tredgold_bevel_point`'s construction,
+    never a literal manufactured tooth count), obtained by unrolling the
+    gear's own "back cone" (see `tredgold_bevel_point`'s docstring) flat.
+    Not otherwise used by `bevel_tooth_flank_pair` below (which derives
+    the same virtual pitch radius directly, `cone_distance * tan(gamma)` -
+    simpler, since it already has `cone_distance` in hand and doesn't need
+    `module` separately) - kept as its own named, independently-testable
+    function since it's the single most direct, textbook-checkable
+    statement of what Tredgold's approximation does."""
+    if not (0 < pitch_cone_half_angle < math.pi / 2):
+        raise GearGeometryError(f"pitch_cone_half_angle must be in (0, pi/2), got {pitch_cone_half_angle!r}")
+    return tooth_count / math.cos(pitch_cone_half_angle)
+
+
+def tredgold_radius_at_colatitude(colatitude: float, pitch_cone_half_angle: float, cone_distance: float) -> float:
+    """Inverse of `tredgold_bevel_point`'s own (roll-angle-driven) radial
+    construction: the flat/virtual gear's own polar radius `r_v` (mm,
+    Tredgold's flat/unrolled domain) whose projected 3D point lands at
+    exactly `colatitude` on the sphere of radius `cone_distance` centred
+    at the real cone apex - closed-form, not a numerical search.
+
+    Derivation: `tredgold_bevel_point` maps `r_v` to `(radial, axial) =
+    (r_v cos(gamma), cone_distance/cos(gamma) - r_v sin(gamma))` in the
+    meridian (radial, axial) plane (`gamma` = `pitch_cone_half_angle`),
+    then reads `colatitude = atan2(radial, axial)`. Setting `tan(colatitude)
+    = radial / axial` and solving for `r_v`:
+
+    `tan(colatitude) * (cone_distance/cos(gamma) - r_v sin(gamma)) = r_v
+    cos(gamma)`, so `r_v = tan(colatitude) * cone_distance / (cos(gamma) *
+    (cos(gamma) + tan(colatitude) * sin(gamma)))`, which simplifies
+    (multiply through by `cos(colatitude)`, then use the angle-difference
+    identity `cos(gamma) cos(colatitude) + sin(gamma) sin(colatitude) =
+    cos(gamma - colatitude)`) to the closed form below. Checked directly:
+    plugging this `r_v` back into the forward `(radial, axial)` formula
+    and simplifying (`cos(gamma - colatitude) - sin(colatitude) sin(gamma)
+    = cos(gamma) cos(colatitude)`, the same identity again) gives back
+    `atan2(radial, axial) = colatitude` exactly, algebraically, not just
+    numerically - so a flank sampled between two colatitudes obtained this
+    way starts/ends at *exactly* those colatitudes on *exactly* the given
+    sphere, the same guarantee `sample_spherical_involute_flank` already
+    gives via its own direct colatitude parametrization. This is what lets
+    a Tredgold-built flank curve connect cleanly to `app.document.bevel`'s
+    existing root-land/tip-land faces (built independently from `geometry.
+    root_cone_angle`/`face_cone_angle`) without a gap or overlap."""
+    gamma = pitch_cone_half_angle
+    if not (0 < colatitude < math.pi / 2):
+        raise GearGeometryError(f"colatitude must be in (0, pi/2), got {colatitude!r}")
+    denom = math.cos(gamma) * math.cos(gamma - colatitude)
+    if denom <= 0:
+        raise GearGeometryError(
+            f"colatitude {colatitude!r} is not reachable by this bevel gear's back cone "
+            f"(pitch_cone_half_angle {gamma!r})"
+        )
+    return cone_distance * math.sin(colatitude) / denom
+
+
+def tredgold_colatitude_at_radius(r_v: float, pitch_cone_half_angle: float, cone_distance: float) -> float:
+    """Forward counterpart of `tredgold_radius_at_colatitude` above: the
+    colatitude a flat/virtual-domain radius `r_v` maps to, at the sphere of
+    radius `cone_distance` - `tredgold_bevel_point`'s own `(radial, axial)`
+    construction, minus the azimuth it doesn't need here. Used for finding
+    *where* a specific `r_v` (e.g. the flat involute's own base-circle
+    radius, `roll_angle = 0`) lands, the opposite direction from `tredgold_
+    radius_at_colatitude`'s "what `r_v` reaches a given target colatitude" -
+    `bevel_tooth_flank_pair` needs both: a target *colatitude* for the
+    flank's own start/end (to connect cleanly to `root_cone_angle`/`face_
+    cone_angle`), but only a target *radius* (the base circle) for its
+    `max(root_cone_angle, base_colatitude)` clamp, mirroring `sample_
+    spherical_involute_flank`'s own identical-shaped clamp against
+    `geometry.base_cone_angle` - except Tredgold's own base-circle
+    colatitude is generally a slightly different value from the true-
+    spherical `base_cone_angle` (two different approximations of the same
+    underlying "where does the involute construction start" question), so
+    it needs its own computation rather than reusing that field."""
+    gamma = pitch_cone_half_angle
+    cos_g, sin_g = math.cos(gamma), math.sin(gamma)
+    radial = r_v * cos_g
+    axial = cone_distance / cos_g - r_v * sin_g
+    return math.atan2(radial, axial)
+
+
+def tredgold_bevel_point(
+    base_radius_v: float, roll_angle: float, pitch_cone_half_angle: float, cone_distance: float
+) -> tuple[float, float, float]:
+    """One point on a straight bevel gear's tooth flank via Tredgold's
+    approximation - the standard, industry-accepted way real straight (and
+    spiral) bevel gears are actually cut, and this module's replacement for
+    the true-spherical-involute construction (`spherical_involute_point`)
+    above: on-device testing found two real, differently-sized mating bevel
+    gears built via the true spherical involute independently on their own
+    base cones do *not* reliably mesh without interference (confirmed via
+    direct `BRepAlgoAPI_Common` overlap measurement on a real `BevelPair
+    Feature`, comparable in size to a full tooth height) - the true-
+    spherical construction has no guaranteed conjugate-action relationship
+    between two *different* gears' independently-generated flanks the way
+    Tredgold's shared-back-cone-projection method does by construction
+    (any two gears of the same module/pressure angle, built this way, are
+    conjugate - the same guarantee ordinary planar involute spur gears
+    already rely on, now inherited via the flat/virtual-gear step below).
+
+    Generates the ordinary *planar* involute-of-a-circle
+    (`gear_math.involute_point`) on this gear's own "back cone" unrolled
+    flat - the cone tangent to the real pitch sphere at the pitch circle,
+    apex on the gear's own axis, half-angle `pi/2 - gamma` (`gamma` =
+    `pitch_cone_half_angle`) - a standard textbook fact: the back-cone
+    generatrix is perpendicular to the pitch cone's own slant line at the
+    pitch point (the defining construction of a "back cone" at all). Then
+    wraps that flat curve back onto the real 3D back cone.
+
+    Derivation: unrolling a cone of half-angle `delta` preserves distance-
+    from-apex exactly (a flat involute point's own polar radius `r_v`) but
+    scales azimuth by `sin(delta)` (arc length at radius `r_v` on the real
+    cone is `r_v * sin(delta) * real_azimuth`; unrolled flat, the same arc
+    length is `r_v * flat_azimuth` - equal arc lengths give `flat_azimuth =
+    real_azimuth * sin(delta)`). With `delta = pi/2 - gamma`, `sin(delta) =
+    cos(gamma)`, so `real_azimuth = flat_azimuth / cos(gamma)`.
+
+    The back cone's own apex sits on the gear's real axis, on the far side
+    of the pitch point from the real apex, at distance `cone_distance /
+    cos(gamma)` from the real apex (the real apex/pitch-point/back-cone-
+    apex triangle has a right angle at the pitch point - the back-cone
+    generatrix is perpendicular to the pitch cone's own slant there by
+    definition - hypotenuse `cone_distance / cos(gamma)`, `cone_distance`
+    the adjacent leg). A flat point at radius `r_v` therefore sits, in the
+    real gear's own local (radial, axial) meridian-plane coordinates, at
+    `radial = r_v * cos(gamma)`, `axial = cone_distance / cos(gamma) - r_v
+    * sin(gamma)` (moving from the back-cone apex toward the real apex, at
+    half-angle `delta` from the back cone's own axis).
+
+    This construction lands *exactly* on the real pitch point when `r_v` =
+    this gear's own virtual pitch radius, `cone_distance * tan(gamma)`
+    (checked directly: `radial = cone_distance*tan(gamma)*cos(gamma) =
+    cone_distance*sin(gamma)`, the real pitch radius by definition;
+    `axial = cone_distance/cos(gamma) - cone_distance*tan(gamma)*sin(gamma)
+    = cone_distance*(1-sin^2(gamma))/cos(gamma) = cone_distance*cos(gamma)`,
+    the real pitch point's own axial coordinate) - everywhere else it's
+    Tredgold's own well-known *approximation* (the back cone only touches
+    the true pitch sphere exactly at the pitch circle itself, diverging
+    slightly toward root/tip - the same approximation every real straight-
+    or spiral-bevel gear cut this way accepts).
+
+    The raw `(radial, axial)` point does not sit exactly on the sphere of
+    radius `cone_distance` away from the pitch circle - this function
+    re-projects it there anyway (reading off `colatitude = atan2(radial,
+    axial)`, keeping `real_azimuth` as computed, then rebuilding the point
+    at exactly `cone_distance` from the apex) so callers keep the same
+    always-on-the-given-sphere guarantee `spherical_involute_point` already
+    provides - the small extra correction this adds is itself part of
+    Tredgold's own accepted approximation (root/tip points deviate from
+    the true sphere only slightly to begin with); it's what lets `app.
+    document.bevel`'s existing fixed-sphere-radius root-land/tip-land/end-
+    cap machinery keep working unchanged."""
+    gamma = pitch_cone_half_angle
+    x_flat, y_flat = involute_point(base_radius_v, roll_angle)
+    r_v = math.hypot(x_flat, y_flat)
+    flat_azimuth = math.atan2(y_flat, x_flat)
+    real_azimuth = flat_azimuth / math.cos(gamma)
+    colatitude = tredgold_colatitude_at_radius(r_v, gamma, cone_distance)
+    sin_colat = math.sin(colatitude)
+    return (
+        cone_distance * sin_colat * math.cos(real_azimuth),
+        cone_distance * sin_colat * math.sin(real_azimuth),
+        cone_distance * math.cos(colatitude),
+    )
+
+
+def sample_tredgold_flank(
+    pitch_cone_half_angle: float,
+    pressure_angle: float,
+    start_colatitude: float,
+    end_colatitude: float,
+    sphere_radius: float,
+    point_count: int = 12,
+) -> list[tuple[float, float, float]]:
+    """Evenly-spaced-by-roll-angle sample of one Tredgold-approximated
+    bevel tooth flank between `start_colatitude` and `end_colatitude`,
+    every point (not just the two endpoints) lying exactly on the sphere
+    of radius `sphere_radius` - the direct drop-in replacement for
+    `sample_spherical_involute_flank`, same call shape (`bevel_tooth_
+    flank_pair` calls this once per `sphere_radius`, outer/inner).
+
+    `base_radius_v`/`start_r_v`/`end_r_v` are all derived fresh at *this*
+    `sphere_radius` (not reused from a different one and rescaled) -
+    `pitch_radius_v = sphere_radius * tan(gamma)` (the same formula
+    `tredgold_bevel_point`'s own docstring verifies at the pitch point,
+    here evaluated directly since `gamma`/`sphere_radius` are already
+    in hand) - which keeps `involute_roll_angle_at_radius`'s own `radius /
+    base_radius` ratio internally consistent (both in real mm at this
+    specific concentric sphere) without needing a separate unit-scale/
+    rescale step; colatitude and azimuth are direction-only and so need no
+    rescaling at all between outer/inner calls."""
+    if point_count < 2:
+        raise GearGeometryError(f"point_count must be >= 2, got {point_count}")
+    gamma = pitch_cone_half_angle
+    pitch_radius_v = sphere_radius * math.tan(gamma)
+    base_radius_v = pitch_radius_v * math.cos(pressure_angle)
+    # max(..., base_radius_v): when `start_colatitude` is exactly the base
+    # colatitude (`tredgold_base_colatitude`'s own return value, the
+    # `max(root_cone_angle, ...)` clamp in `bevel_tooth_flank_pair` picking
+    # the base-circle branch), the two independent closed-form routes to
+    # get there - `tredgold_radius_at_colatitude`'s trig here vs `tredgold_
+    # colatitude_at_radius`'s own trig computing that same base colatitude
+    # in the first place - can disagree by a a single ULP, occasionally
+    # landing `start_r_v` a hair *below* `base_radius_v` where it should be
+    # exactly equal; `involute_roll_angle_at_radius` rejects anything below
+    # the base circle outright (by construction, the involute isn't defined
+    # there). Clamping up is safe: real cases with `start_colatitude` above
+    # the base colatitude already return `start_r_v > base_radius_v` with
+    # room to spare, so this only ever engages exactly on that boundary.
+    start_r_v = max(tredgold_radius_at_colatitude(start_colatitude, gamma, sphere_radius), base_radius_v)
+    end_r_v = max(tredgold_radius_at_colatitude(end_colatitude, gamma, sphere_radius), base_radius_v)
+    t_start = involute_roll_angle_at_radius(base_radius_v, start_r_v)
+    t_end = involute_roll_angle_at_radius(base_radius_v, end_r_v)
+    return [
+        tredgold_bevel_point(
+            base_radius_v, t_start + (t_end - t_start) * i / (point_count - 1), gamma, sphere_radius
+        )
+        for i in range(point_count)
+    ]
+
+
+def _tredgold_flank_start_offset_angle(geometry: BevelGearGeometry) -> float:
+    """The azimuthal angle (radians, about the *real* axis) from a tooth's
+    own centerline to where that flank's Tredgold-approximated involute
+    construction "starts" (`roll_angle = 0`, on the back cone's own base
+    circle) - the Tredgold counterpart of `_spherical_flank_start_offset_
+    angle` above, same two-term structure but the second term now derived
+    in the flat/virtual domain and converted back to a real azimuthal
+    angle (divide by `cos(gamma)` - `tredgold_bevel_point`'s own `real_
+    azimuth = flat_azimuth / cos(gamma)` relation).
+
+    The first term (`_spherical_flank_half_thickness_angle`) needs no such
+    conversion despite its name: it's `tooth_thickness_at_pitch / (2 *
+    geometry.pitch_radius)`, already expressed directly in terms of the
+    *real* pitch radius/circle - a real azimuthal angle to begin with, not
+    something derived in the flat domain (Tredgold preserves arc length
+    exactly along the pitch circle by construction, so `tooth_thickness_
+    at_pitch` is the same physical arc length real or virtual; dividing by
+    the *virtual* pitch radius instead and then converting back via
+    `/cos(gamma)` gives the identical result - `cos(gamma) * (arc /
+    (2*real_pitch_radius)) / cos(gamma) = arc / (2*real_pitch_radius)` -
+    confirming this term is correctly left unconverted).
+
+    The second term, `gear_math.involute_function(pressure_angle)`, is
+    exactly the flat/virtual involute's own angular sweep from its base-
+    circle start to the point where its local pressure angle equals the
+    (shared, real) `pressure_angle` - which is the virtual pitch circle,
+    by the same definition-of-pressure-angle reasoning `gear_math.
+    _flank_start_offset_angle` already relies on for an ordinary spur
+    gear, just evaluated on the flat/virtual gear here instead."""
+    return _spherical_flank_half_thickness_angle(geometry) + involute_function(
+        geometry.pressure_angle
+    ) / math.cos(geometry.pitch_cone_angle)
+
+
+def tredgold_base_colatitude(geometry: BevelGearGeometry) -> float:
+    """Where Tredgold's flat/virtual involute construction "starts"
+    (`roll_angle = 0`, the flat gear's own base circle, `r_v = base_
+    radius_v`) actually lands, as a colatitude on the outer (`cone_
+    distance`) sphere - `tredgold_colatitude_at_radius` evaluated at that
+    specific `r_v`. Exposed as its own function (not inlined into `bevel_
+    tooth_flank_pair`) because `app.document.bevel._assemble_gear_solid`
+    needs the *identical* value for its own `start_colatitude = max(root_
+    cone_angle, tredgold_base_colatitude(geometry))` (root-land placement,
+    end-cap-flattening tool sizing, the spherical cap face) - it used to
+    reuse `geometry.base_cone_angle` (the true-spherical field) for this,
+    which is a *different* number under Tredgold and left the root-land
+    face's own boundary circle not passing through the flank curve's
+    actual start point (a real `BRepBuilderAPI_MakeEdge` failure caught
+    on-device switching this module over). Also where this module's own
+    `pitch_cone_angle -> 90 degrees` (crown gear) degeneracy guard lives
+    (`TREDGOLD_MAX_PITCH_CONE_ANGLE_DEGREES`) - the first point in the
+    pipeline that needs `cos(gamma)` in a denominator, so the natural place
+    to fail loudly rather than downstream as an opaque near-`inf` colatitude
+    or a confusing OCCT edge-construction error."""
+    gamma = geometry.pitch_cone_angle
+    if gamma > math.radians(TREDGOLD_MAX_PITCH_CONE_ANGLE_DEGREES):
+        raise GearGeometryError(
+            f"pitch_cone_angle_degrees ({math.degrees(gamma)!r}) is too close to a crown gear (90 degrees) "
+            f"for Tredgold's approximation - must be <= {TREDGOLD_MAX_PITCH_CONE_ANGLE_DEGREES} degrees"
+        )
+    base_radius_v = geometry.cone_distance * math.tan(gamma) * math.cos(geometry.pressure_angle)
+    return tredgold_colatitude_at_radius(base_radius_v, gamma, geometry.cone_distance)
+
+
 def _rotate_about_z(point: tuple[float, float, float], angle: float) -> tuple[float, float, float]:
     """Rotate `point` counter-clockwise by `angle` radians about the +Z
     axis (the gear's own axis in this module's local frame, apex at the
@@ -516,24 +885,35 @@ def bevel_tooth_flank_pair(
     the origin, gear axis = +Z), each as `(outer_points, inner_points)` -
     two genuine 3D space curves per flank, sampled at `sphere_radius =
     geometry.cone_distance` (outer/back cone) and `geometry.inner_cone_
-    distance` (`cone_distance - face_width`), exactly what
-    `docs/gear-design/10-bevel-gear.md`'s OCCT construction spike needs to
-    hand to `BRepOffsetAPI_ThruSections`/a ruled-surface builder - the
-    pure-Python half of that spike, kept OCCT-free per this module's own
-    split so it's unit-testable in this repo's dev sandbox.
+    distance` (`cone_distance - face_width`), exactly what `app.document.
+    bevel`'s OCCT construction hands to `BRepOffsetAPI_ThruSections`/a
+    ruled-surface builder - the pure-Python half of that construction, kept
+    OCCT-free per this module's own split so it's unit-testable in this
+    repo's dev sandbox.
 
-    Each flank runs from `max(root_cone_angle, base_cone_angle)` (mirrors
+    Built via Tredgold's approximation (`tredgold_bevel_point`'s own
+    docstring has the full derivation and the on-device finding that
+    motivated switching to it from the true spherical involute this
+    function used before) - each flank is the ordinary planar involute of
+    this gear's own "back cone," unrolled flat and wrapped back onto the
+    real cone, rather than a curve confined directly to the sphere.
+
+    Each flank runs from `max(root_cone_angle, base_colatitude)` (mirrors
     `gear_math.tooth_profile_points`'s own `max(dedendum_radius,
-    base_radius)` clamp - a root inside the base cone is common and fine,
-    the root-to-base segment isn't a pure spherical involute there, exactly
-    like the planar case) to `face_cone_angle` (addendum)."""
-    start_colatitude = max(geometry.root_cone_angle, geometry.base_cone_angle)
+    base_radius)` clamp - a root inside the base circle is common and fine,
+    the root-to-base segment isn't a pure involute there, exactly like the
+    planar case; `base_colatitude` is Tredgold's own version of that
+    boundary, generally not the same value as the true-spherical `geometry.
+    base_cone_angle` - see `tredgold_colatitude_at_radius`'s docstring) to
+    `face_cone_angle` (addendum)."""
+    gamma = geometry.pitch_cone_angle
+    start_colatitude = max(geometry.root_cone_angle, tredgold_base_colatitude(geometry))
     end_colatitude = geometry.face_cone_angle
-    offset = _spherical_flank_start_offset_angle(geometry)
+    offset = _tredgold_flank_start_offset_angle(geometry)
 
     def flank(sphere_radius: float, mirror: bool) -> list[tuple[float, float, float]]:
-        raw = sample_spherical_involute_flank(
-            geometry.base_cone_angle, start_colatitude, end_colatitude, sphere_radius, points_per_flank
+        raw = sample_tredgold_flank(
+            gamma, geometry.pressure_angle, start_colatitude, end_colatitude, sphere_radius, points_per_flank
         )
         angle = offset if mirror else -offset
         sign = -1.0 if mirror else 1.0
@@ -542,3 +922,517 @@ def bevel_tooth_flank_pair(
     right = (flank(geometry.cone_distance, mirror=False), flank(geometry.inner_cone_distance, mirror=False))
     left = (flank(geometry.cone_distance, mirror=True), flank(geometry.inner_cone_distance, mirror=True))
     return right, left
+
+
+# ---------------------------------------------------------------------------
+# Bevel pair mesh-interference prediction (pure-math proxy for a real
+# BRepAlgoAPI_Common overlap check - see docstrings below for the on-device
+# findings this is built on)
+# ---------------------------------------------------------------------------
+
+
+MESH_MARGIN_SAFETY_BUFFER_DEGREES = 0.5
+"""Empirically-calibrated safety cushion for `bevel_pair_mesh_margin_
+degrees`'s own zero-crossing: on-device `BRepAlgoAPI_Common` overlap
+measurements on real bevel pairs (20T/40T and a symmetric 20T/20T, module
+4, face_width 15, shaft_angle 90) sweeping `pressure_angle_degrees` from
+14.5 to 30 found the *measured* overlap volume reaches exactly zero at a
+pressure angle whose *predicted* margin (`bevel_pair_mesh_margin_degrees`)
+is only slightly positive (about +0.12 degrees for the 20T/40T case),
+while a margin around -0.4 degrees still left a small (~4 mm^3) measured
+residual - i.e. this margin tracks the real (nonlinear, only measurable
+via an actual Boolean intersection) interference closely, but its own
+zero isn't pixel-perfectly aligned with the true zero. This buffer keeps
+the warning from under-firing right at that boundary."""
+
+
+def bevel_pair_mesh_margin_degrees(
+    intruder_face_cone_angle: float, receiver_base_colatitude: float, shaft_angle_degrees: float
+) -> float:
+    """How much angular clearance (degrees) exists between one bevel pair
+    member's own tooth *tip* reach (`intruder_face_cone_angle`, radians -
+    the colatitude its addendum extends out to, on the shared `cone_
+    distance` sphere both members share by construction) and the *other*
+    member's own involute-flank floor (`receiver_base_colatitude`, radians
+    - `tredgold_base_colatitude`'s own return value for that member).
+    Positive means clear; negative means the intruder's tip reaches past
+    where the receiver's own flank/root-land material still exists - real
+    geometric interference.
+
+    On-device finding this is built on: two mating bevel gears' pitch
+    cones are tangent by construction (`pitch_cone_half_angles`'s own
+    `gamma_1 + gamma_2 = shaft_angle`) - the textbook condition for two
+    cones with axes `shaft_angle` apart to just touch along a shared line
+    without overlapping. The *same* angle-sum-vs-axis-angle relationship,
+    applied to one member's *face* cone (its tooth tip reach) against the
+    *other* member's *base-circle* colatitude instead of its pitch cone,
+    tracks real, measured overlap volume closely across a real pressure-
+    angle sweep - strongly positive `shaft_angle - sum` (this function's
+    own return value) at low pressure angles where measured overlap volume
+    was largest, shrinking together as pressure angle rises, both reaching
+    (near-)zero within a fraction of a degree of each other.
+
+    `root_cone_angle` (the *nominal*, dedendum-derived root) does *not*
+    work in `receiver_base_colatitude`'s place here - on-device testing
+    found the smaller/pinion member's own root-land face actually sits at
+    its `base_colatitude` whenever `base_cone_angle` exceeds `root_cone_
+    angle` for it (the involute simply can't extend down to the dedendum-
+    implied root there - `bevel_tooth_flank_pair`'s own `max(root_cone_
+    angle, tredgold_base_colatitude(...))` clamp), so its own dedendum has
+    *zero* measured effect on real interference in that (common - a small
+    pinion meshing a much larger gear) regime: doubling `dedendum_
+    coefficient` on a real, otherwise-identical bevel pair changed measured
+    overlap volume by 0.002%, confirming `root_cone_angle` is the wrong
+    quantity to check against there and `base_colatitude` is the real one."""
+    return shaft_angle_degrees - (math.degrees(intruder_face_cone_angle) + math.degrees(receiver_base_colatitude))
+
+
+def worst_bevel_pair_mesh_margin_degrees(
+    geometry_1: BevelGearGeometry, geometry_2: BevelGearGeometry, shaft_angle_degrees: float
+) -> tuple[float, bool]:
+    """The smaller (worse) of the two directional margins - member 2's tip
+    against member 1's base colatitude, and vice versa - plus which
+    direction it came from (`True` if member 2 is the intruder). Not
+    underscore-prefixed (unlike this module's other Tredgold-internal
+    helpers) because `app.document.bevel_pair`'s own `profile_shift`
+    auto-resolution needs it too, to find which member is the intruder
+    *before* deciding which one's own `None` (auto) field to fill in -
+    both that caller and `bevel_pair_mesh_interference_warning`/the
+    pressure-angle search below need to agree on which direction is
+    binding, so this is the one shared source of truth for that."""
+    margin_2_into_1 = bevel_pair_mesh_margin_degrees(
+        geometry_2.face_cone_angle, tredgold_base_colatitude(geometry_1), shaft_angle_degrees
+    )
+    margin_1_into_2 = bevel_pair_mesh_margin_degrees(
+        geometry_1.face_cone_angle, tredgold_base_colatitude(geometry_2), shaft_angle_degrees
+    )
+    if margin_2_into_1 <= margin_1_into_2:
+        return margin_2_into_1, True
+    return margin_1_into_2, False
+
+
+def _minimum_pressure_angle_for_mesh_clearance(
+    geometry_1: BevelGearGeometry, geometry_2: BevelGearGeometry, shaft_angle_degrees: float
+) -> float | None:
+    """Smallest shared `pressure_angle_degrees` (holding module, tooth
+    counts, face width, shaft angle, and addendum/dedendum coefficients
+    fixed) that clears `MESH_MARGIN_SAFETY_BUFFER_DEGREES`, found by
+    bisection - on-device sweeps found the margin rises monotonically with
+    pressure angle across the whole practical range, so bisection is valid
+    (not just "found a value that works"). `dataclasses.replace(...,
+    pressure_angle=...)` is enough to re-evaluate at a trial angle without
+    rebuilding the whole `BevelGearGeometry` from scratch: `face_cone_
+    angle` doesn't depend on `pressure_angle` at all (`addendum_angle =
+    atan(addendum / cone_distance)`, no pressure angle in it), and `cone_
+    distance` doesn't either - only `tredgold_base_colatitude` actually
+    reads `pressure_angle`, so this is a cheap, pure-math search (no OCCT,
+    no full geometry re-derivation) despite searching a real geometric
+    property. Returns `None` if even a generously high trial angle (40
+    degrees - well above any practical bevel gear pressure angle) doesn't
+    clear it, rather than suggesting a number so extreme it's not a real
+    recommendation."""
+
+    def worst_margin_at(pressure_angle_degrees: float) -> float:
+        pa = math.radians(pressure_angle_degrees)
+        margin, _ = worst_bevel_pair_mesh_margin_degrees(
+            replace(geometry_1, pressure_angle=pa), replace(geometry_2, pressure_angle=pa), shaft_angle_degrees
+        )
+        return margin
+
+    lo, hi = math.degrees(geometry_1.pressure_angle), 40.0
+    if worst_margin_at(hi) < MESH_MARGIN_SAFETY_BUFFER_DEGREES:
+        return None
+    for _ in range(40):
+        mid = (lo + hi) / 2
+        if worst_margin_at(mid) >= MESH_MARGIN_SAFETY_BUFFER_DEGREES:
+            hi = mid
+        else:
+            lo = mid
+    return hi
+
+
+def minimum_intruder_profile_shift_for_mesh_clearance(
+    intruder_geometry: BevelGearGeometry, receiver_geometry: BevelGearGeometry, shaft_angle_degrees: float
+) -> float | None:
+    """The intruding member's own smallest-magnitude `profile_shift`
+    reduction (holding pressure angle and everything else fixed) that
+    clears `MESH_MARGIN_SAFETY_BUFFER_DEGREES`, found by bisection - the
+    alternative remedy to `_minimum_pressure_angle_for_mesh_clearance`
+    when the user wants to keep pressure angle low (on-device confirmed:
+    reducing the intruding member's own `profile_shift` - a real,
+    already-editable `BevelPairMemberSpec` field, unlike `addendum_
+    coefficient` - shrinks *just that member's own* addendum/tooth-tip
+    reach without touching pressure angle at all, eliminating measured
+    overlap at both the default 20-degree pressure angle *and* a much
+    lower 14.5-degree one).
+
+    Only the *intruding* member's own profile shift needs to move - the
+    receiver's own `base_colatitude` doesn't depend on either member's
+    profile shift at all (`tredgold_base_colatitude` only reads pitch
+    cone angle, pressure angle, and cone distance), so shifting the
+    receiver's own tooth would do nothing for this specific margin.
+
+    Recomputes only `addendum`/`addendum_angle`/`face_cone_angle` at a
+    trial shift (`addendum = intruder_geometry.addendum + module * (trial
+    - intruder_geometry.profile_shift)` - the same delta approach `bevel_
+    gear_geometry` itself would produce, without needing to separately
+    recover `addendum_coefficient`, which isn't stored on `BevelGear
+    Geometry` directly) rather than a full `dataclasses.replace` (unlike
+    the pressure-angle search above, `profile_shift` also changes
+    `dedendum`/`root_cone_angle` - irrelevant to *this* margin, which only
+    reads the intruder's `face_cone_angle` and the receiver's own,
+    unaffected `base_colatitude` - so only bothering with the addendum
+    side keeps this cheap and avoids re-deriving fields the margin doesn't
+    use). A non-positive resulting addendum is degenerate (a real tooth
+    can't have negative height) and treated as "doesn't clear," bounding
+    the search from below.
+
+    Returns `None` if even a trial shift at 99% of the way to that
+    degenerate boundary doesn't clear it - a real (if extreme) profile
+    shift, not an arbitrary round number, so the search bound is never
+    tighter than the actual constraint that matters."""
+
+    def worst_margin_at(trial_shift: float) -> float:
+        delta = trial_shift - intruder_geometry.profile_shift
+        new_addendum = intruder_geometry.addendum + intruder_geometry.module * delta
+        if new_addendum <= 0:
+            return -999.0
+        new_face_cone_angle = intruder_geometry.pitch_cone_angle + math.atan(
+            new_addendum / intruder_geometry.cone_distance
+        )
+        return bevel_pair_mesh_margin_degrees(
+            new_face_cone_angle, tredgold_base_colatitude(receiver_geometry), shaft_angle_degrees
+        )
+
+    # `intruder_geometry.addendum / intruder_geometry.module` is exactly
+    # `addendum_coefficient + intruder_geometry.profile_shift` (from
+    # `addendum = module * (addendum_coefficient + profile_shift)`), so
+    # `intruder_geometry.profile_shift - that` is precisely the trial shift
+    # where addendum hits zero (fully degenerate) - a *fixed* bound like
+    # "-2.0" can sit past that point for a small module/large shift
+    # combination (confirmed on-device: at module=4/addendum=4, "-2.0"
+    # zeroes addendum out at -1.0 already, so worst_margin_at(-2.0) always
+    # short-circuited to the degenerate -999.0 sentinel before the real
+    # search ever ran, silently returning None for every real case).
+    # 0.99x keeps the search inside genuinely valid (positive-addendum)
+    # geometry with a small safety margin, not touching the boundary itself.
+    lo = intruder_geometry.profile_shift
+    hi = intruder_geometry.profile_shift - 0.99 * (intruder_geometry.addendum / intruder_geometry.module)
+    if worst_margin_at(hi) < MESH_MARGIN_SAFETY_BUFFER_DEGREES:
+        return None
+    for _ in range(40):
+        mid = (lo + hi) / 2
+        if worst_margin_at(mid) >= MESH_MARGIN_SAFETY_BUFFER_DEGREES:
+            hi = mid
+        else:
+            lo = mid
+    return hi
+
+
+def maximum_receiver_profile_shift_for_mesh_clearance(
+    receiver_geometry: BevelGearGeometry,
+    intruder_geometry: BevelGearGeometry,
+    shaft_angle_degrees: float,
+    target_shift: float,
+) -> float:
+    """The receiver member's own largest step *toward* `target_shift`
+    (`app.document.bevel_pair.resolve_member_profile_shifts`'s own
+    balanced-shift candidate - the intruder's own `-X` complemented by a
+    receiver `+X`) that still clears `MESH_MARGIN_SAFETY_BUFFER_DEGREES`
+    in the *reverse* direction: the receiver's own tooth tip against the
+    intruder's own base colatitude.
+
+    On-device finding this fixes: applying the full balanced delta
+    unconditionally can over-correct at a low shared pressure angle -
+    growing the receiver's own addendum enough that *it* becomes the new
+    intruder in the opposite direction. Confirmed on this project's own
+    default 20T/40T pair: at 20 degrees pressure angle the full balanced
+    shift is safe (reverse margin only drops from +4.3 to +3.0 degrees),
+    but at 14.5 degrees the same unconditional delta flips the pair from
+    "member_2 intrudes into member_1" (the direction the shift is meant to
+    fix) to "member_1 intrudes into member_2" (reverse margin -1.06
+    degrees - worse than doing nothing). The receiver's own addendum
+    growing with a more positive `profile_shift` (`bevel_gear_geometry`'s
+    `addendum = module * (addendum_coefficient + profile_shift)`) is what
+    drives this - `reverse_margin_at` below tracks exactly that, the same
+    delta-to-addendum approach `minimum_intruder_profile_shift_for_mesh_
+    clearance` already uses, just reading the *receiver's* own addendum
+    instead of the intruder's.
+
+    Bisects from a known-safe start (`receiver_geometry.profile_shift`,
+    its own current, presumably-still-valid shift - reverse margin can
+    only need checking once shift is intentionally pushed toward growing
+    the receiver's own addendum) toward the possibly-unsafe `target_shift`
+    - the mirror-image search direction from `minimum_intruder_profile_
+    shift_for_mesh_clearance` (which searches from unsafe toward safe).
+    `bevel_pair_mesh_margin_degrees` is monotonic in the receiver's own
+    addendum (`face_cone_angle = pitch_cone_angle + atan(addendum /
+    cone_distance)`, `atan` strictly increasing), so a straight bisection
+    between the two is valid, not just "found a value that works".
+
+    Returns `receiver_geometry.profile_shift` unchanged (a no-op step) if
+    even that starting point doesn't already clear the buffer - a
+    pre-existing reverse-direction margin problem this function isn't
+    responsible for fixing, only for not making worse. Returns
+    `target_shift` unchanged if it's already safe, skipping the search
+    entirely."""
+
+    def reverse_margin_at(trial_shift: float) -> float:
+        delta = trial_shift - receiver_geometry.profile_shift
+        new_addendum = receiver_geometry.addendum + receiver_geometry.module * delta
+        if new_addendum <= 0:
+            return -999.0
+        new_face_cone_angle = receiver_geometry.pitch_cone_angle + math.atan(
+            new_addendum / receiver_geometry.cone_distance
+        )
+        return bevel_pair_mesh_margin_degrees(
+            new_face_cone_angle, tredgold_base_colatitude(intruder_geometry), shaft_angle_degrees
+        )
+
+    lo = receiver_geometry.profile_shift
+    if reverse_margin_at(lo) < MESH_MARGIN_SAFETY_BUFFER_DEGREES:
+        return lo
+    hi = target_shift
+    if reverse_margin_at(hi) >= MESH_MARGIN_SAFETY_BUFFER_DEGREES:
+        return hi
+    for _ in range(40):
+        mid = (lo + hi) / 2
+        if reverse_margin_at(mid) >= MESH_MARGIN_SAFETY_BUFFER_DEGREES:
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
+def bevel_pair_mesh_interference_warning(
+    geometry_1: BevelGearGeometry, geometry_2: BevelGearGeometry, shaft_angle_degrees: float
+) -> str | None:
+    """`None` if both directions of `bevel_pair_mesh_margin_degrees` clear
+    `MESH_MARGIN_SAFETY_BUFFER_DEGREES`, otherwise a warning naming which
+    member's tooth tip is predicted to intrude into the other's material
+    and two concrete, on-device-verified remedies: a higher shared
+    `pressure_angle_degrees` (`_minimum_pressure_angle_for_mesh_clearance`
+    searches for and reports the smallest one that would clear it, rather
+    than leaving the user to guess-and-check) - the only lever actually
+    offered here, since it's the only one of the remedies this module's own
+    on-device testing found effective that's *also* a real, user-settable
+    field on `BevelPairFeature` today. A smaller `addendum_coefficient`
+    (shorter/"stub" teeth) was independently confirmed on-device to widen
+    this same margin too - the standard real-world alternative to a higher
+    pressure angle for exactly this kind of interference - but `bevel_gear_
+    geometry`'s `addendum_coefficient` parameter has no corresponding field
+    on `BevelPairFeature`/`BevelPairMemberSpec` (always its hardcoded 1.0
+    default), so suggesting it here would tell a user to change something
+    the app doesn't yet let them touch; exposing it is real, separate future
+    work, not something to gesture at in a warning string. `module`
+    deliberately isn't offered as a suggestion either - confirmed on-device
+    to have *no* effect on this margin at all (every term in `bevel_pair_
+    mesh_margin_degrees` is a pure angle, and module is a scale factor that
+    cancels out of every one of them), unlike the intuitive guess that a
+    smaller module might reduce interference the way it reduces overall
+    gear size.
+
+    Both directions are checked independently (`member_1`'s tip against
+    `member_2`'s base colatitude, and vice versa) since the relationship
+    isn't symmetric - which member's tip actually reaches into the other's
+    material depends on the specific pitch-cone-angle split (a function of
+    both tooth counts and shaft angle together), not a simple "smaller
+    tooth count" rule."""
+    worst_margin, member_2_is_intruder = worst_bevel_pair_mesh_margin_degrees(
+        geometry_1, geometry_2, shaft_angle_degrees
+    )
+    if worst_margin >= MESH_MARGIN_SAFETY_BUFFER_DEGREES:
+        return None
+
+    intruder_label = "member_2" if member_2_is_intruder else "member_1"
+    receiver_label = "member_1" if member_2_is_intruder else "member_2"
+    current_pressure_angle_degrees = math.degrees(geometry_1.pressure_angle)
+    suggested_pressure_angle = _minimum_pressure_angle_for_mesh_clearance(geometry_1, geometry_2, shaft_angle_degrees)
+    pressure_angle_suggestion = (
+        f"raising pressure_angle_degrees to at least {suggested_pressure_angle:.1f}° (currently "
+        f"{current_pressure_angle_degrees!r}°)"
+        if suggested_pressure_angle is not None
+        else f"raising pressure_angle_degrees well above its current {current_pressure_angle_degrees!r}°"
+    )
+    if worst_margin < 0:
+        situation = (
+            f"{intruder_label}'s tooth tip is predicted to intrude into {receiver_label}'s tooth material "
+            f"where they mesh (about {-worst_margin:.2f}° short of clearing) - the two gears will likely not "
+            "mesh cleanly at these settings."
+        )
+    else:
+        # 0 <= worst_margin < MESH_MARGIN_SAFETY_BUFFER_DEGREES: this margin's own
+        # zero-crossing isn't pixel-perfectly aligned with a real measured
+        # overlap's own zero (see MESH_MARGIN_SAFETY_BUFFER_DEGREES's own
+        # docstring) - technically predicted clear, but close enough to that
+        # boundary that small real-world/floating-point variation could tip
+        # it either way, so still worth flagging rather than staying silent.
+        situation = (
+            f"{intruder_label}'s tooth tip is predicted to pass very close to {receiver_label}'s tooth "
+            f"material where they mesh (only {worst_margin:.2f}° of margin) - close enough to the edge of "
+            "interfering that small geometry changes could tip it either way."
+        )
+    return f"{situation} Try {pressure_angle_suggestion} - changing module alone will not help."
+
+
+# ---------------------------------------------------------------------------
+# Tooth-mesh close-up preview (Tredgold's virtual spur gears, flat domain)
+# ---------------------------------------------------------------------------
+
+
+def virtual_spur_gear_geometry(geometry: BevelGearGeometry) -> SpurGearGeometry:
+    """The flat, planar "virtual" spur gear Tredgold's approximation
+    substitutes for this bevel member's own tooth flank - the same
+    substitution `equivalent_tooth_count`/`tredgold_bevel_point` already
+    use to build the real 3D spherical-ish flank, kept in the flat 2D
+    domain (before wrapping onto the back-cone sphere) instead. Two of
+    these, from a mating pair's two members, mesh exactly like an ordinary
+    external spur gear pair tangent at their own pitch circles - Tredgold's
+    whole point - so `gear_math.tooth_profile_points` (already tested
+    against real spur/internal gears) draws an accurate close-up tooth
+    shape for `bevel_pair_mesh_preview` below without a second,
+    bevel-specific tooth-outline implementation.
+
+    `tooth_count` here is `equivalent_tooth_count`'s own (generally
+    non-integer) virtual value, rounded only because `SpurGearGeometry.
+    tooth_count` is typed `int` - safe because `tooth_profile_points`
+    (and everything it calls) never actually reads `tooth_count` to build
+    a *single* tooth's outline, only `pitch_radius`/`base_radius`/
+    `addendum_radius`/`dedendum_radius`/`tooth_thickness_at_pitch`/
+    `pressure_angle` - `bevel_pair_mesh_preview` does its own spacing with
+    the unrounded float value for exactly this reason.
+
+    `pitch_radius = cone_distance * tan(gamma)` matches `bevel_tooth_
+    flank_pair`'s own virtual-radius formula (simpler than re-deriving it
+    from `module`/`equivalent_tooth_count`, though the two agree exactly:
+    `cone_distance * tan(gamma) = pitch_radius / cos(gamma) = module *
+    (tooth_count / cos(gamma)) / 2 = module * equivalent_tooth_count /
+    2` - the ordinary planar `pitch_radius = module * tooth_count / 2`
+    relation, holding for the virtual gear too). `base_radius`/`addendum_
+    radius`/`dedendum_radius` follow the same ordinary planar relations
+    `gear_math.spur_gear_geometry` itself uses, since that's exactly what
+    "flat/virtual spur gear" means."""
+    gamma = geometry.pitch_cone_angle
+    virtual_tooth_count = equivalent_tooth_count(geometry.tooth_count, gamma)
+    virtual_pitch_radius = geometry.cone_distance * math.tan(gamma)
+    virtual_base_radius = virtual_pitch_radius * math.cos(geometry.pressure_angle)
+    return SpurGearGeometry(
+        module=geometry.module,
+        tooth_count=max(round(virtual_tooth_count), 1),
+        pressure_angle=geometry.pressure_angle,
+        profile_shift=geometry.profile_shift,
+        backlash=geometry.backlash,
+        is_internal=False,
+        pitch_radius=virtual_pitch_radius,
+        base_radius=virtual_base_radius,
+        addendum_radius=virtual_pitch_radius + geometry.addendum,
+        dedendum_radius=virtual_pitch_radius - geometry.dedendum,
+        tooth_thickness_at_pitch=geometry.tooth_thickness_at_pitch,
+        root_fillet_radius=0.0,
+    )
+
+
+def _rotate_translate(
+    points: list[tuple[float, float]], angle: float, offset: tuple[float, float]
+) -> list[tuple[float, float]]:
+    """Rotate `points` CCW by `angle` about the origin, then translate by
+    `offset` - same CCW-positive convention as `gear_math._rotate`, kept as
+    its own local copy rather than importing that module's private helper
+    (this module already keeps its own `_rotate_about_z` for the same
+    reason, one axis up)."""
+    cos_a, sin_a = math.cos(angle), math.sin(angle)
+    ox, oy = offset
+    return [(x * cos_a - y * sin_a + ox, x * sin_a + y * cos_a + oy) for x, y in points]
+
+
+@dataclass
+class BevelPairMeshPreview:
+    """A handful of consecutive teeth from each of a bevel pair's two
+    members, meshing exactly as Tredgold's approximation predicts they
+    will along the real 3D flank - a 2D close-up so a user can actually
+    *see* tooth shape and backlash at the pitch line, which the existing
+    axial-cross-section schematic (`GearPreviewBevelMember`, drafting-style
+    envelope only) never shows a single tooth of at all.
+
+    Shared 2D frame: both virtual gears' centres sit on the x-axis, tangent
+    at the origin (`member_1`'s centre at `(-pitch_radius_1, 0)`,
+    `member_2`'s at `(+pitch_radius_2, 0)`) - the standard way to draw two
+    externally meshing spur gears. Each `*_teeth` list holds one closed
+    polygon (`tooth_profile_points`'s own root-to-tip-to-root outline) per
+    displayed tooth, already rotated/translated into this shared frame -
+    a client can draw them directly with no further gear math."""
+
+    member_1_teeth: list[list[tuple[float, float]]]
+    member_2_teeth: list[list[tuple[float, float]]]
+    center_1: tuple[float, float]
+    center_2: tuple[float, float]
+    pitch_radius_1: float
+    pitch_radius_2: float
+
+
+def bevel_pair_mesh_preview(
+    geometry_1: BevelGearGeometry,
+    geometry_2: BevelGearGeometry,
+    *,
+    displayed_tooth_count: int = 4,
+    points_per_flank: int = 12,
+) -> BevelPairMeshPreview:
+    """Build `BevelPairMeshPreview` for a mating pair, via `virtual_spur_
+    gear_geometry`'s flat Tredgold substitution for each member.
+
+    Phasing: `member_1` gets a tooth centred at angle 0 (pointing at
+    `member_2`, along the positive x-axis from `center_1`). For the two
+    gears to mesh rather than collide, `member_2` needs a *gap* - not a
+    tooth - centred at the point where it faces `member_1` (local angle
+    `pi`, since `member_2`'s own frame isn't rotated, only translated).
+    Gear teeth are always evenly spaced around the gear (`2*pi /
+    virtual_tooth_count` apart) regardless of tooth thickness/profile
+    shift/backlash - those only reshape each tooth's own flanks, not the
+    centre-to-centre spacing between teeth - so the gap directly between
+    two adjacent teeth is always exactly half that spacing away from
+    either one, independent of tooth shape. Placing `member_2`'s teeth at
+    `pi + pitch/2 + k*pitch` (`pitch = 2*pi/virtual_tooth_count_2`) puts
+    exactly that gap at `pi`, for every `k`.
+
+    Because tooth centres are evenly spaced regardless of thickness, this
+    phasing is exact - but each tooth's own *width* is not: a narrower
+    tooth (larger `backlash`, or a `profile_shift` that thins it) leaves a
+    real, visible gap to its meshing partner's flank at the pitch line
+    without the two polygons overlapping, and a `profile_shift`-thickened
+    tooth visibly fills more of the opposing gap - exactly the "can the
+    user see backlash" ask this preview exists for, with no separate
+    backlash-drawing logic needed: the effect just falls out of drawing
+    each tooth's own real, already-`backlash`/`profile_shift`-aware
+    outline at its correctly-phased position."""
+    virtual_1 = virtual_spur_gear_geometry(geometry_1)
+    virtual_2 = virtual_spur_gear_geometry(geometry_2)
+    virtual_tooth_count_1 = equivalent_tooth_count(geometry_1.tooth_count, geometry_1.pitch_cone_angle)
+    virtual_tooth_count_2 = equivalent_tooth_count(geometry_2.tooth_count, geometry_2.pitch_cone_angle)
+
+    center_1 = (-virtual_1.pitch_radius, 0.0)
+    center_2 = (virtual_2.pitch_radius, 0.0)
+
+    base_tooth_1 = tooth_profile_points(virtual_1, points_per_flank)
+    base_tooth_2 = tooth_profile_points(virtual_2, points_per_flank)
+
+    displayed_tooth_count = max(displayed_tooth_count, 1)
+    half_span = displayed_tooth_count // 2
+    offsets = list(range(-half_span, displayed_tooth_count - half_span))
+
+    angular_pitch_1 = 2 * math.pi / virtual_tooth_count_1
+    member_1_teeth = [_rotate_translate(base_tooth_1, k * angular_pitch_1, center_1) for k in offsets]
+
+    angular_pitch_2 = 2 * math.pi / virtual_tooth_count_2
+    phase_2 = math.pi + angular_pitch_2 / 2
+    member_2_teeth = [
+        _rotate_translate(base_tooth_2, phase_2 + k * angular_pitch_2, center_2) for k in offsets
+    ]
+
+    return BevelPairMeshPreview(
+        member_1_teeth=member_1_teeth,
+        member_2_teeth=member_2_teeth,
+        center_1=center_1,
+        center_2=center_2,
+        pitch_radius_1=virtual_1.pitch_radius,
+        pitch_radius_2=virtual_2.pitch_radius,
+    )

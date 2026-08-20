@@ -316,6 +316,109 @@ def test_get_features_re_resolves_the_root_fillet_fallback_warning():
     assert "did not converge" in gear_features[0]["warnings"][0]
 
 
+# --- Undercut-avoiding auto profile shift (gear_math.resolve_gear_
+# profile_shift's own porting of the bevel pair's auto-profile-shift
+# pattern to ordinary undercut avoidance) -----------------------------------
+
+
+def test_low_tooth_count_gear_defaults_to_auto_and_clears_the_undercut_warning():
+    """`profile_shift` omitted (auto, the default) on a low-tooth-count gear
+    that would otherwise undercut - `resolve_gear_from_bodies` auto-resolves
+    a positive shift that clears gear_math.undercut_warning, so unlike
+    before this could auto-resolve, creating this gear now produces no
+    warning by default."""
+    part = _create_part()
+    response = _create_gear(part["id"], tooth_count=6)
+    assert response.status_code == 201, response.json()
+    body = response.json()
+    assert body["warnings"] == []
+    assert body["profile_shift"] is None
+    assert body["effective_profile_shift"] > 0.0
+
+    # The auto-resolved shift is real, not just reported - it actually
+    # changed the built geometry relative to an explicit 0.0 shift (which
+    # still undercuts, see the next test).
+    auto_vertices = _mesh(part["id"])[0]["mesh"]["vertices"]
+    part_explicit_zero = _create_part("ExplicitZero")
+    zero_response = _create_gear(part_explicit_zero["id"], tooth_count=6, profile_shift=0.0)
+    assert zero_response.status_code == 201, zero_response.json()
+    zero_vertices = _mesh(part_explicit_zero["id"])[0]["mesh"]["vertices"]
+    assert auto_vertices != zero_vertices
+
+
+def test_explicit_zero_profile_shift_on_a_low_tooth_count_gear_still_warns():
+    """"Explicit always wins" - pinning profile_shift to 0.0 explicitly
+    on a gear that would otherwise auto-resolve a positive shift keeps the
+    undercut warning, since auto is never applied over an explicit value."""
+    part = _create_part()
+    response = _create_gear(part["id"], tooth_count=6, profile_shift=0.0)
+    assert response.status_code == 201, response.json()
+    body = response.json()
+    assert len(body["warnings"]) == 1
+    assert "undercut" in body["warnings"][0].lower()
+    assert body["profile_shift"] == 0.0
+    assert body["effective_profile_shift"] == 0.0
+
+
+def test_high_tooth_count_gear_auto_resolves_to_zero_shift_unchanged():
+    """A gear whose tooth_count already clears the undercut-free minimum at
+    0.0 shift keeps 0.0 under auto too - byte-identical to every GearFeature
+    persisted before profile_shift could auto-resolve."""
+    part = _create_part()
+    response = _create_gear(part["id"], tooth_count=20)
+    assert response.status_code == 201, response.json()
+    body = response.json()
+    assert body["warnings"] == []
+    assert body["profile_shift"] is None
+    assert body["effective_profile_shift"] == 0.0
+
+
+def test_internal_gear_low_tooth_count_never_auto_shifts():
+    """Internal gears are exempt from the cutter-undercut check entirely
+    (mirrors /gear/preview's own is_internal exemption) - auto always
+    resolves to 0.0 for one, regardless of tooth_count."""
+    part = _create_part()
+    response = _create_gear(part["id"], is_internal=True, tooth_count=12, outer_diameter=40.0)
+    assert response.status_code == 201, response.json()
+    body = response.json()
+    assert body["warnings"] == []
+    assert body["effective_profile_shift"] == 0.0
+
+
+def test_update_gear_feature_re_resolves_auto_profile_shift_when_tooth_count_changes():
+    part = _create_part()
+    create_response = _create_gear(part["id"], tooth_count=20)
+    assert create_response.status_code == 201, create_response.json()
+    assert create_response.json()["effective_profile_shift"] == 0.0
+    feature_id = create_response.json()["id"]
+
+    patch_response = client.patch(
+        f"/document/parts/{part['id']}/gear-features/{feature_id}", json={"tooth_count": 6}
+    )
+    assert patch_response.status_code == 200, patch_response.json()
+    body = patch_response.json()
+    assert body["warnings"] == []
+    assert body["profile_shift"] is None
+    assert body["effective_profile_shift"] > 0.0
+
+
+def test_get_features_shows_the_undercut_warning_and_effective_profile_shift():
+    """Mirrors test_get_features_re_resolves_the_root_fillet_fallback_
+    warning above - a plain GET .../features re-read must show the same
+    undercut warning and resolved profile_shift the create response did."""
+    part = _create_part()
+    create_response = _create_gear(part["id"], tooth_count=6, profile_shift=0.0)
+    assert create_response.status_code == 201, create_response.json()
+
+    get_response = client.get(f"/document/parts/{part['id']}/features")
+    assert get_response.status_code == 200, get_response.json()
+    gear_features = [f for f in get_response.json() if f["type"] == "gear"]
+    assert len(gear_features) == 1
+    assert len(gear_features[0]["warnings"]) == 1
+    assert "undercut" in gear_features[0]["warnings"][0].lower()
+    assert gear_features[0]["effective_profile_shift"] == 0.0
+
+
 def test_update_gear_feature_changes_tooth_count_and_the_mesh_reflects_it():
     part = _create_part()
     create_response = _create_gear(part["id"], tooth_count=20)

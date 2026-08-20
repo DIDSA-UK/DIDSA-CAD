@@ -11,7 +11,7 @@ from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 from app.document.ai_plan import validate_ai_plan as validate_ai_plan_steps
 from app.document.ai_plan_schemas import PlanValidateRequest, PlanValidateResponse
 from app.document.bevel import resolve_bevel_gear
-from app.document.bevel_pair import resolve_bevel_pair
+from app.document.bevel_pair import resolve_bevel_pair, resolve_member_profile_shifts
 from app.document.chamfer import resolve_chamfer
 from app.document.create_plane import (
     basis_for_sketch,
@@ -27,17 +27,17 @@ from app.document.extrude import (
     select_profiles,
 )
 from app.document.fillet import resolve_fillet
-from app.document.gear import resolve_gear
+from app.document.gear import resolve_gear, resolve_gear_profile_shift
 from app.document.gear_math import (
     GearGeometryError,
     default_rack_backing_height,
     full_gear_profile_points,
     full_rack_profile_points,
-    minimum_tooth_count_without_undercut,
     planetary_planet_tooth_count,
     rack_length as gear_math_rack_length,
     rack_tooth_geometry,
     spur_gear_geometry,
+    undercut_warning,
     validate_planetary_assembly,
 )
 from app.document.gear_chain_math import (
@@ -50,7 +50,13 @@ from app.document.gear_chain_math import (
     mesh_link_ratio,
     resolve_chain as resolve_chain_positions_and_interference,
 )
-from app.document.bevel_math import BevelGearGeometry, bevel_gear_geometry, max_recommended_face_width, pitch_cone_half_angles
+from app.document.bevel_math import (
+    BevelGearGeometry,
+    bevel_gear_geometry,
+    bevel_pair_mesh_preview,
+    max_recommended_face_width,
+    pitch_cone_half_angles,
+)
 from app.document.rack import resolve_rack
 from app.document.loft import resolve_loft
 from app.document.gear_chain import resolve_gear_chain
@@ -125,6 +131,7 @@ from app.document.schemas import (
     BevelPairFeatureResponse,
     BevelPairFeatureUpdate,
     BevelPairMemberSpecSchema,
+    BevelPairMeshPreviewResult,
     BodyMeshResponse,
     CascadeDeletePreviewResponse,
     CascadeDeleteResponse,
@@ -682,6 +689,19 @@ def _gear_feature_response(
         except HTTPException:
             logger.warning("GearFeature %s could not be resolved for its response", feature.id)
             warnings = []
+    # Cheap (pure gear_math, no OCCT) to recompute alongside the response -
+    # never raises (falls back to 0.0 internally), so unlike `resolve_gear`
+    # above this needs no try/except of its own. Mirrors `_bevel_pair_
+    # feature_response`'s own `effective_profile_shift_1`/`_2` - lets the
+    # Gear Design screen show "Auto (0.65)" instead of just "Auto".
+    effective_profile_shift = resolve_gear_profile_shift(
+        module=feature.module,
+        tooth_count=feature.tooth_count,
+        pressure_angle_degrees=feature.pressure_angle_degrees,
+        backlash=feature.backlash,
+        profile_shift=feature.profile_shift,
+        is_internal=feature.is_internal,
+    )
     return GearFeatureResponse(
         id=feature.id,
         plane_ref=_plane_ref_to_schema(feature.plane_ref),
@@ -692,6 +712,7 @@ def _gear_feature_response(
         face_width=feature.face_width,
         pressure_angle_degrees=feature.pressure_angle_degrees,
         profile_shift=feature.profile_shift,
+        effective_profile_shift=effective_profile_shift,
         backlash=feature.backlash,
         root_fillet_radius=feature.root_fillet_radius,
         outer_diameter=feature.outer_diameter,
@@ -736,6 +757,7 @@ def _bevel_gear_feature_response(
         backlash=feature.backlash,
         profile_shift=feature.profile_shift,
         target_body_ids=feature.target_body_ids,
+        points_per_flank=feature.points_per_flank,
         locked=part.is_locked(feature.id),
         produces=feature.produces,
         warnings=warnings,
@@ -760,6 +782,31 @@ def _bevel_pair_feature_response(
         except HTTPException:
             logger.warning("BevelPairFeature %s could not be resolved for its response", feature.id)
             warnings = []
+    # Cheap (pure math, no OCCT) - computed fresh here regardless of
+    # whether `warnings` was already known, rather than threading it
+    # through every caller: `resolve_bevel_pair_from_bodies` doesn't return
+    # the resolved profile shifts today, and duplicating this tiny
+    # computation is far simpler than widening that return value.
+    try:
+        gamma_1, gamma_2 = pitch_cone_half_angles(
+            feature.member_1.tooth_count, feature.member_2.tooth_count, feature.shaft_angle_degrees
+        )
+        effective_profile_shift_1, effective_profile_shift_2 = resolve_member_profile_shifts(
+            module=feature.module,
+            tooth_count_1=feature.member_1.tooth_count,
+            tooth_count_2=feature.member_2.tooth_count,
+            face_width=feature.face_width,
+            pressure_angle_degrees=feature.pressure_angle_degrees,
+            shaft_angle_degrees=feature.shaft_angle_degrees,
+            backlash=feature.backlash,
+            profile_shift_1=feature.member_1.profile_shift,
+            profile_shift_2=feature.member_2.profile_shift,
+            gamma_1=gamma_1,
+            gamma_2=gamma_2,
+        )
+    except GearGeometryError:
+        effective_profile_shift_1 = feature.member_1.profile_shift or 0.0
+        effective_profile_shift_2 = feature.member_2.profile_shift or 0.0
     return BevelPairFeatureResponse(
         id=feature.id,
         plane_ref=_plane_ref_to_schema(feature.plane_ref),
@@ -770,6 +817,9 @@ def _bevel_pair_feature_response(
         pressure_angle_degrees=feature.pressure_angle_degrees,
         shaft_angle_degrees=feature.shaft_angle_degrees,
         backlash=feature.backlash,
+        points_per_flank=feature.points_per_flank,
+        effective_profile_shift_1=effective_profile_shift_1,
+        effective_profile_shift_2=effective_profile_shift_2,
         locked=part.is_locked(feature.id),
         produces=feature.produces,
         warnings=warnings,
@@ -3162,6 +3212,7 @@ def create_bevel_gear_feature(part_id: str, payload: BevelGearFeatureCreate) -> 
         backlash=payload.backlash,
         profile_shift=payload.profile_shift,
         target_body_ids=list(payload.target_body_ids),
+        points_per_flank=payload.points_per_flank,
     )
     _, warnings = resolve_bevel_gear(part, feature)  # raises on an unresolvable/invalid bevel gear
     part.add_feature(feature)
@@ -3202,6 +3253,9 @@ def update_bevel_gear_feature(part_id: str, feature_id: str, payload: BevelGearF
     new_target_body_ids = (
         list(payload.target_body_ids) if payload.target_body_ids is not None else feature.target_body_ids
     )
+    new_points_per_flank = (
+        payload.points_per_flank if payload.points_per_flank is not None else feature.points_per_flank
+    )
 
     _validate_plane_ref(part, new_plane_ref)
     _validate_target_body_ids(part, new_bevel_type == BevelGearType.CUT, new_target_body_ids)
@@ -3218,6 +3272,7 @@ def update_bevel_gear_feature(part_id: str, feature_id: str, payload: BevelGearF
         backlash=new_backlash,
         profile_shift=new_profile_shift,
         target_body_ids=new_target_body_ids,
+        points_per_flank=new_points_per_flank,
     )
     _, warnings = resolve_bevel_gear(part, candidate)  # raises on an unresolvable/invalid bevel gear
 
@@ -3231,6 +3286,7 @@ def update_bevel_gear_feature(part_id: str, feature_id: str, payload: BevelGearF
     feature.backlash = candidate.backlash
     feature.profile_shift = candidate.profile_shift
     feature.target_body_ids = candidate.target_body_ids
+    feature.points_per_flank = candidate.points_per_flank
     return _bevel_gear_feature_response(part, feature, warnings)
 
 
@@ -3433,6 +3489,7 @@ def create_bevel_pair_feature(part_id: str, payload: BevelPairFeatureCreate) -> 
         pressure_angle_degrees=payload.pressure_angle_degrees,
         shaft_angle_degrees=payload.shaft_angle_degrees,
         backlash=payload.backlash,
+        points_per_flank=payload.points_per_flank,
     )
     _, warnings = resolve_bevel_pair(part, feature)  # raises on an unresolvable/invalid bevel pair
     part.add_feature(feature)
@@ -3472,6 +3529,9 @@ def update_bevel_pair_feature(part_id: str, feature_id: str, payload: BevelPairF
         payload.shaft_angle_degrees if payload.shaft_angle_degrees is not None else feature.shaft_angle_degrees
     )
     new_backlash = payload.backlash if payload.backlash is not None else feature.backlash
+    new_points_per_flank = (
+        payload.points_per_flank if payload.points_per_flank is not None else feature.points_per_flank
+    )
 
     _validate_plane_ref(part, new_plane_ref)
 
@@ -3485,6 +3545,7 @@ def update_bevel_pair_feature(part_id: str, feature_id: str, payload: BevelPairF
         pressure_angle_degrees=new_pressure_angle_degrees,
         shaft_angle_degrees=new_shaft_angle_degrees,
         backlash=new_backlash,
+        points_per_flank=new_points_per_flank,
     )
     _, warnings = resolve_bevel_pair(part, candidate)  # raises on an unresolvable/invalid bevel pair
 
@@ -3496,6 +3557,7 @@ def update_bevel_pair_feature(part_id: str, feature_id: str, payload: BevelPairF
     feature.pressure_angle_degrees = candidate.pressure_angle_degrees
     feature.shaft_angle_degrees = candidate.shaft_angle_degrees
     feature.backlash = candidate.backlash
+    feature.points_per_flank = candidate.points_per_flank
     return _bevel_pair_feature_response(part, feature, warnings)
 
 
@@ -3899,6 +3961,7 @@ def _bevel_member_schematic(label: str, axis_angle_degrees: float, geometry: Bev
         inner_cone_distance=inner,
         pitch_radius=geometry.pitch_radius,
         face_width=geometry.face_width,
+        effective_profile_shift=geometry.profile_shift,
     )
 
 
@@ -3949,10 +4012,29 @@ def _gear_preview_bevel_pair_response(payload: GearPreviewBevelPairRequest) -> t
     angles` + `bevel_gear_geometry`'s `pitch_cone_angle_degrees` direct-
     field path in the exact same order `app.document.bevel_pair.resolve_
     bevel_pair_from_bodies` itself calls them, so preview and Create derive
-    identical cone angles for identical inputs."""
+    identical cone angles for identical inputs. `profile_shift` resolution
+    (`None` -> auto) goes through `bevel_pair.resolve_member_profile_
+    shifts` too, for the same reason - a preview with an unresolved `None`
+    passed straight into `bevel_gear_geometry` would crash (that function's
+    own `profile_shift: float` has no `None` handling), and resolving it
+    differently from Create would make the preview lie about what Create
+    would actually build."""
     try:
         gamma_1, gamma_2 = pitch_cone_half_angles(
             payload.member_1.tooth_count, payload.member_2.tooth_count, payload.shaft_angle_degrees
+        )
+        profile_shift_1, profile_shift_2 = resolve_member_profile_shifts(
+            module=payload.module,
+            tooth_count_1=payload.member_1.tooth_count,
+            tooth_count_2=payload.member_2.tooth_count,
+            face_width=payload.face_width,
+            pressure_angle_degrees=payload.pressure_angle_degrees,
+            shaft_angle_degrees=payload.shaft_angle_degrees,
+            backlash=payload.backlash,
+            profile_shift_1=payload.member_1.profile_shift,
+            profile_shift_2=payload.member_2.profile_shift,
+            gamma_1=gamma_1,
+            gamma_2=gamma_2,
         )
         geometry_1 = bevel_gear_geometry(
             module=payload.module,
@@ -3960,7 +4042,7 @@ def _gear_preview_bevel_pair_response(payload: GearPreviewBevelPairRequest) -> t
             face_width=payload.face_width,
             pressure_angle_degrees=payload.pressure_angle_degrees,
             backlash=payload.backlash,
-            profile_shift=payload.member_1.profile_shift,
+            profile_shift=profile_shift_1,
             pitch_cone_angle_degrees=math.degrees(gamma_1),
         )
         geometry_2 = bevel_gear_geometry(
@@ -3969,7 +4051,7 @@ def _gear_preview_bevel_pair_response(payload: GearPreviewBevelPairRequest) -> t
             face_width=payload.face_width,
             pressure_angle_degrees=payload.pressure_angle_degrees,
             backlash=payload.backlash,
-            profile_shift=payload.member_2.profile_shift,
+            profile_shift=profile_shift_2,
             pitch_cone_angle_degrees=math.degrees(gamma_2),
         )
     except GearGeometryError as exc:
@@ -3987,7 +4069,22 @@ def _gear_preview_bevel_pair_response(payload: GearPreviewBevelPairRequest) -> t
         _bevel_member_schematic("member_1", 0.0, geometry_1),
         _bevel_member_schematic("member_2", payload.shaft_angle_degrees, geometry_2),
     ]
-    return GearPreviewBevelPairResult(members=members, shaft_angle_degrees=payload.shaft_angle_degrees), warnings
+    mesh_preview = bevel_pair_mesh_preview(geometry_1, geometry_2)
+    return (
+        GearPreviewBevelPairResult(
+            members=members,
+            shaft_angle_degrees=payload.shaft_angle_degrees,
+            mesh_preview=BevelPairMeshPreviewResult(
+                member_1_teeth=mesh_preview.member_1_teeth,
+                member_2_teeth=mesh_preview.member_2_teeth,
+                center_1=mesh_preview.center_1,
+                center_2=mesh_preview.center_2,
+                pitch_radius_1=mesh_preview.pitch_radius_1,
+                pitch_radius_2=mesh_preview.pitch_radius_2,
+            ),
+        ),
+        warnings,
+    )
 
 
 def _gear_preview_response(payload: GearPreviewRequest) -> GearPreviewResponse:
@@ -4059,12 +4156,20 @@ def _gear_preview_response(payload: GearPreviewRequest) -> GearPreviewResponse:
     if is_internal and payload.outer_diameter is None:
         raise _invalid_gear_preview_parameters("outer_diameter is required when gear_kind is internal")
 
+    resolved_profile_shift = resolve_gear_profile_shift(
+        module=payload.module,
+        tooth_count=payload.tooth_count,
+        pressure_angle_degrees=payload.pressure_angle_degrees,
+        backlash=payload.backlash,
+        profile_shift=payload.profile_shift,
+        is_internal=is_internal,
+    )
     try:
         geometry = spur_gear_geometry(
             module=payload.module,
             tooth_count=payload.tooth_count,
             pressure_angle_degrees=payload.pressure_angle_degrees,
-            profile_shift=payload.profile_shift,
+            profile_shift=resolved_profile_shift,
             backlash=payload.backlash,
             is_internal=is_internal,
         )
@@ -4074,14 +4179,9 @@ def _gear_preview_response(payload: GearPreviewRequest) -> GearPreviewResponse:
 
     warnings: list[str] = []
     if not is_internal:
-        min_tooth_count = minimum_tooth_count_without_undercut(
-            payload.pressure_angle_degrees, payload.profile_shift
-        )
-        if payload.tooth_count < min_tooth_count:
-            warnings.append(
-                f"Tooth count {payload.tooth_count} is below the undercut-free minimum "
-                f"({min_tooth_count:.1f}) for this pressure angle/profile shift - the root will be undercut."
-            )
+        warning = undercut_warning(payload.tooth_count, payload.pressure_angle_degrees, resolved_profile_shift)
+        if warning is not None:
+            warnings.append(warning)
 
     return GearPreviewResponse(
         gear_kind=payload.gear_kind,
@@ -4091,6 +4191,7 @@ def _gear_preview_response(payload: GearPreviewRequest) -> GearPreviewResponse:
         addendum_radius=geometry.addendum_radius,
         dedendum_radius=geometry.dedendum_radius,
         outer_radius=(payload.outer_diameter / 2) if is_internal and payload.outer_diameter else None,
+        effective_profile_shift=resolved_profile_shift,
         warnings=warnings,
     )
 
@@ -4110,7 +4211,7 @@ def preview_gear_via_query(
     module: float = Query(...),
     tooth_count: int = Query(...),
     pressure_angle_degrees: float = Query(20.0),
-    profile_shift: float = Query(0.0),
+    profile_shift: float | None = Query(None),
     backlash: float = Query(0.0),
     outer_diameter: float | None = Query(None),
     backing_height: float | None = Query(None),

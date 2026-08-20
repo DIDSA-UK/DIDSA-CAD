@@ -23,7 +23,9 @@ from app.document.bevel_math import (
     BevelGearGeometry,
     base_cone_half_angle,
     bevel_gear_geometry,
+    bevel_pair_mesh_preview,
     bevel_tooth_flank_pair,
+    equivalent_tooth_count,
     max_recommended_face_width,
     pitch_cone_half_angles,
     sample_spherical_involute_flank,
@@ -31,6 +33,7 @@ from app.document.bevel_math import (
     spherical_involute_colatitude,
     spherical_involute_point,
     spherical_involute_roll_angle_at_colatitude,
+    virtual_spur_gear_geometry,
 )
 from app.document.gear_math import GearGeometryError, involute_point, spur_gear_geometry
 
@@ -498,3 +501,104 @@ def test_bevel_tooth_flank_pair_points_move_away_from_axis_from_root_to_tip(smal
 def test_bevel_tooth_flank_pair_respects_points_per_flank(small_bevel_geometry):
     (right_outer, right_inner), (left_outer, left_inner) = bevel_tooth_flank_pair(small_bevel_geometry, points_per_flank=20)
     assert len(right_outer) == len(right_inner) == len(left_outer) == len(left_inner) == 20
+
+
+# ---------------------------------------------------------------------------
+# Tooth-mesh close-up preview (Tredgold's virtual spur gears)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def bevel_pair_geometries() -> tuple[BevelGearGeometry, BevelGearGeometry]:
+    gamma_1, gamma_2 = pitch_cone_half_angles(20, 40, 90.0)
+    geometry_1 = bevel_gear_geometry(
+        module=4.0, tooth_count=20, face_width=10.0, pitch_cone_angle_degrees=math.degrees(gamma_1)
+    )
+    geometry_2 = bevel_gear_geometry(
+        module=4.0, tooth_count=40, face_width=10.0, pitch_cone_angle_degrees=math.degrees(gamma_2)
+    )
+    return geometry_1, geometry_2
+
+
+def test_virtual_spur_gear_geometry_pitch_radius_matches_the_equivalent_tooth_count_relation(bevel_pair_geometries):
+    # `pitch_radius_v = module * equivalent_tooth_count / 2`, the ordinary
+    # planar relation - `virtual_spur_gear_geometry` derives it via
+    # `cone_distance * tan(gamma)` instead (simpler, reuses fields already
+    # on `BevelGearGeometry`), so this checks the two agree, not just that
+    # the function runs.
+    geometry_1, _geometry_2 = bevel_pair_geometries
+    virtual = virtual_spur_gear_geometry(geometry_1)
+    expected = geometry_1.module * equivalent_tooth_count(geometry_1.tooth_count, geometry_1.pitch_cone_angle) / 2
+    assert virtual.pitch_radius == pytest.approx(expected)
+
+
+def test_virtual_spur_gear_geometry_base_radius_matches_the_planar_relation(bevel_pair_geometries):
+    geometry_1, _geometry_2 = bevel_pair_geometries
+    virtual = virtual_spur_gear_geometry(geometry_1)
+    assert virtual.base_radius == pytest.approx(virtual.pitch_radius * math.cos(geometry_1.pressure_angle))
+
+
+def test_bevel_pair_mesh_preview_centers_are_tangent_at_the_pitch_radii_apart(bevel_pair_geometries):
+    geometry_1, geometry_2 = bevel_pair_geometries
+    preview = bevel_pair_mesh_preview(geometry_1, geometry_2)
+    (x1, y1), (x2, y2) = preview.center_1, preview.center_2
+    assert y1 == pytest.approx(0.0)
+    assert y2 == pytest.approx(0.0)
+    assert x2 - x1 == pytest.approx(preview.pitch_radius_1 + preview.pitch_radius_2)
+
+
+def test_bevel_pair_mesh_preview_defaults_to_four_teeth_per_member(bevel_pair_geometries):
+    geometry_1, geometry_2 = bevel_pair_geometries
+    preview = bevel_pair_mesh_preview(geometry_1, geometry_2)
+    assert len(preview.member_1_teeth) == 4
+    assert len(preview.member_2_teeth) == 4
+
+
+def test_bevel_pair_mesh_preview_respects_displayed_tooth_count_and_points_per_flank(bevel_pair_geometries):
+    geometry_1, geometry_2 = bevel_pair_geometries
+    preview = bevel_pair_mesh_preview(geometry_1, geometry_2, displayed_tooth_count=6, points_per_flank=8)
+    assert len(preview.member_1_teeth) == 6
+    assert len(preview.member_2_teeth) == 6
+    assert all(len(tooth) == 16 for tooth in preview.member_1_teeth)  # right + left flank, 8 points each
+
+
+def test_bevel_pair_mesh_preview_a_narrower_intruder_tooth_leaves_a_visible_gap_at_the_pitch_line():
+    # Reproduces the on-device finding a single-sided auto profile-shift
+    # fix left the intruding member's tooth visibly thin: a member whose
+    # `profile_shift` is pushed negative (net thinner tooth at the pitch
+    # line - `tooth_thickness_at_pitch`'s own `2 * profile_shift * module *
+    # tan(pressure_angle)` term) should sit further from its mate's flank
+    # at the shared pitch point than an unshifted pair does - the same
+    # "gap you can see" the user reported, now checkable directly off the
+    # preview's own geometry rather than eyeballing a screenshot.
+    gamma_1, gamma_2 = pitch_cone_half_angles(20, 40, 90.0)
+
+    def min_gap_at_pitch_point(profile_shift_1: float, profile_shift_2: float) -> float:
+        geometry_1 = bevel_gear_geometry(
+            module=4.0,
+            tooth_count=20,
+            face_width=10.0,
+            pitch_cone_angle_degrees=math.degrees(gamma_1),
+            profile_shift=profile_shift_1,
+        )
+        geometry_2 = bevel_gear_geometry(
+            module=4.0,
+            tooth_count=40,
+            face_width=10.0,
+            pitch_cone_angle_degrees=math.degrees(gamma_2),
+            profile_shift=profile_shift_2,
+        )
+        preview = bevel_pair_mesh_preview(geometry_1, geometry_2, displayed_tooth_count=2)
+        # The flank point nearest the shared pitch point (the origin) on
+        # each side, from the two teeth straddling the mesh - a cheap proxy
+        # for "how close do the two flanks actually get here" without a
+        # full polygon-distance computation.
+        member_1_points = [p for tooth in preview.member_1_teeth for p in tooth]
+        member_2_points = [p for tooth in preview.member_2_teeth for p in tooth]
+        nearest_1 = min(member_1_points, key=lambda p: p[0] ** 2 + p[1] ** 2)
+        nearest_2 = min(member_2_points, key=lambda p: p[0] ** 2 + p[1] ** 2)
+        return math.hypot(nearest_1[0] - nearest_2[0], nearest_1[1] - nearest_2[1])
+
+    balanced_gap = min_gap_at_pitch_point(0.0, 0.0)
+    unbalanced_gap = min_gap_at_pitch_point(0.0, -0.6)
+    assert unbalanced_gap > balanced_gap

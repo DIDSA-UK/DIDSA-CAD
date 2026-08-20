@@ -47,7 +47,9 @@ from app.document.gear_math import (
     SpurGearGeometry,
     full_gear_profile_by_tooth,
     helical_twist_angle,
+    minimum_profile_shift_to_avoid_undercut,
     spur_gear_geometry,
+    undercut_warning,
 )
 from app.document.models import GearFeature, Part, ResolvedPlane
 
@@ -496,6 +498,69 @@ def _helical_or_herringbone_solid(
     return BRepAlgoAPI_Cut(outer_solid, tooth_solid).Shape(), warnings
 
 
+def resolve_gear_profile_shift(
+    *,
+    module: float,
+    tooth_count: int,
+    pressure_angle_degrees: float,
+    backlash: float,
+    profile_shift: float | None,
+    is_internal: bool,
+) -> float:
+    """Resolves `GearFeature.profile_shift` (`float | None` - `None` meaning
+    "auto") to a concrete float - the undercut-avoidance counterpart to
+    `app.document.bevel_pair.resolve_member_profile_shifts`. An explicit
+    value always wins (returned unchanged), same "explicit always wins"
+    rule that module's own docstring establishes.
+
+    Unlike that bevel pair resolver's own bisected two-pass search (each
+    member's own margin depends on the *other* member's geometry, with no
+    algebraic inverse), undercut avoidance for a single ordinary gear is
+    invertible in closed form directly from `gear_math.minimum_tooth_
+    count_without_undercut`'s own formula - `gear_math.minimum_profile_
+    shift_to_avoid_undercut` gives the exact smallest shift that clears
+    undercut at `tooth_count`, no search needed.
+
+    Auto only ever *raises* `profile_shift` off its naive `0.0` default,
+    never lowers it below - a gear whose `tooth_count` already clears the
+    undercut-free minimum at `0.0` shift keeps `0.0` exactly (`min_shift <=
+    0.0` short-circuits before any geometry is built), leaving every
+    GearFeature persisted before this could auto-resolve byte-identical.
+    Internal gears never undercut this way (the tooth points inward, not
+    outward - `01-gear-math-core.md`'s formula is derived for an external
+    cutter path), same `is_internal` exemption `/gear/preview`'s own
+    undercut warning already carries - auto always resolves to `0.0` for
+    one.
+
+    The closed-form `min_shift` can itself yield invalid gear geometry at
+    the extreme end (a very low `tooth_count`/`pressure_angle_degrees`
+    combination can push it past what `spur_gear_geometry` still accepts -
+    see that formula's own docstring) - verified with a real `spur_gear_
+    geometry` call before ever being applied automatically; a `Gear
+    GeometryError` there falls back to the naive `0.0` default rather than
+    proposing a shift that would make `resolve_gear_from_bodies`'s own
+    subsequent real geometry call fail outright."""
+    if profile_shift is not None:
+        return profile_shift
+    if is_internal:
+        return 0.0
+    min_shift = minimum_profile_shift_to_avoid_undercut(tooth_count, pressure_angle_degrees)
+    if min_shift <= 0.0:
+        return 0.0
+    try:
+        spur_gear_geometry(
+            module=module,
+            tooth_count=tooth_count,
+            pressure_angle_degrees=pressure_angle_degrees,
+            profile_shift=min_shift,
+            backlash=backlash,
+            is_internal=False,
+        )
+    except GearGeometryError:
+        return 0.0
+    return min_shift
+
+
 def resolve_gear_from_bodies(
     feature: GearFeature,
     part: Part,
@@ -523,6 +588,13 @@ def resolve_gear_from_bodies(
     entries for both fixes). Mirrors `app.document.loft.
     resolve_loft_from_bodies`'s own `(shape, warnings)` shape exactly.
 
+    Also covers `gear_math.undercut_warning` for an external gear whose
+    resolved `profile_shift` (`resolve_gear_profile_shift` - only reached
+    when the feature's own field is an explicit value, since auto is
+    resolved specifically to clear this) still leaves `tooth_count` below
+    the undercut-free minimum - previously only surfaced by the `/gear/
+    preview` endpoint, never by the real Feature itself.
+
     `feature.helix_angle_degrees == 0.0` (the default) takes the exact
     original straight-tooth `BRepPrimAPI_MakePrism` path unchanged - see
     `GearFeature`'s own docstring for why this keeps every gear persisted
@@ -541,12 +613,20 @@ def resolve_gear_from_bodies(
         # an uncaught GearGeometryError surfacing as a 500 from partway
         # through wire construction.
         raise _invalid_gear_parameters(f"points_per_flank must be >= 2, got {feature.points_per_flank!r}")
+    resolved_profile_shift = resolve_gear_profile_shift(
+        module=feature.module,
+        tooth_count=feature.tooth_count,
+        pressure_angle_degrees=feature.pressure_angle_degrees,
+        backlash=feature.backlash,
+        profile_shift=feature.profile_shift,
+        is_internal=feature.is_internal,
+    )
     try:
         geometry = spur_gear_geometry(
             module=feature.module,
             tooth_count=feature.tooth_count,
             pressure_angle_degrees=feature.pressure_angle_degrees,
-            profile_shift=feature.profile_shift,
+            profile_shift=resolved_profile_shift,
             backlash=feature.backlash,
             root_fillet_radius=feature.root_fillet_radius,
             is_internal=feature.is_internal,
@@ -559,10 +639,23 @@ def resolve_gear_from_bodies(
     if feature.face_width <= 0:
         raise _invalid_gear_parameters(f"face_width must be positive, got {feature.face_width!r}")
 
+    # Non-blocking - only meaningful for an external gear (mirrors
+    # resolve_gear_profile_shift's own is_internal exemption above); an
+    # explicit profile_shift that still undercuts surfaces here too
+    # ("explicit always wins" means auto never overrides it - the warning
+    # is how that gets surfaced instead, same as bevel_pair's own
+    # unfixable-explicit-intruder-shift case).
+    warnings: list[str] = []
+    if not feature.is_internal:
+        warning = undercut_warning(feature.tooth_count, feature.pressure_angle_degrees, resolved_profile_shift)
+        if warning is not None:
+            warnings.append(warning)
+
     basis = resolve_plane_ref(part, bodies, feature.plane_ref, excluded_feature_ids)
 
     if feature.helix_angle_degrees != 0.0 or feature.herringbone:
-        return _helical_or_herringbone_solid(basis, feature, geometry, feature.points_per_flank)
+        solid, build_warnings = _helical_or_herringbone_solid(basis, feature, geometry, feature.points_per_flank)
+        return solid, warnings + build_warnings
 
     wire, root_corner_vertices = _gear_outline_wire(basis, geometry, feature.points_per_flank)
     face = _gear_face(basis, feature.is_internal, feature.outer_diameter, geometry, wire)
@@ -572,7 +665,6 @@ def resolve_gear_from_bodies(
     prism_maker = BRepPrimAPI_MakePrism(face, prism_vector)
     solid = prism_maker.Shape()
 
-    warnings = []
     if feature.root_fillet_radius > 0:
         solid, fillet_warning = _apply_root_fillet(
             prism_maker, solid, root_corner_vertices, feature.root_fillet_radius

@@ -1074,6 +1074,14 @@ class GearPreviewBevelMemberDto {
   final double pitchRadius;
   final double faceWidth;
 
+  /// The actual profile_shift this schematic was built with - for a
+  /// standalone bevel gear, identical to what was sent; for a bevel pair
+  /// member, the *resolved* value whenever the request left it null
+  /// ("auto") - see the backend's `GearPreviewBevelMember.effective_
+  /// profile_shift` docstring. Lets the Bevel Pair form show the live-
+  /// computed number next to "Auto" instead of just the word alone.
+  final double effectiveProfileShift;
+
   GearPreviewBevelMemberDto({
     required this.label,
     required this.axisAngleDegrees,
@@ -1084,6 +1092,7 @@ class GearPreviewBevelMemberDto {
     required this.innerConeDistance,
     required this.pitchRadius,
     required this.faceWidth,
+    required this.effectiveProfileShift,
   });
 
   factory GearPreviewBevelMemberDto.fromJson(Map<String, dynamic> json) => GearPreviewBevelMemberDto(
@@ -1100,6 +1109,46 @@ class GearPreviewBevelMemberDto {
         innerConeDistance: (json['inner_cone_distance'] as num).toDouble(),
         pitchRadius: (json['pitch_radius'] as num).toDouble(),
         faceWidth: (json['face_width'] as num).toDouble(),
+        effectiveProfileShift: (json['effective_profile_shift'] as num).toDouble(),
+      );
+}
+
+/// The wire counterpart to the backend's `BevelPairMeshPreviewResult` - a
+/// handful of consecutive teeth from each member, meshing as Tredgold's
+/// virtual flat spur gears predict, for a "picture in picture" close-up
+/// inset next to [GearPreviewBevelMemberDto]'s own axial cross-section
+/// schematic (which never draws a real tooth). Both `*Teeth` lists are
+/// already positioned into one shared local 2D frame ([center1]/[center2]
+/// on the x-axis, tangent at the origin) - no gear math needed client-side,
+/// just drawing the polygons.
+class BevelPairMeshPreviewDto {
+  final List<List<List<double>>> member1Teeth;
+  final List<List<List<double>>> member2Teeth;
+  final List<double> center1;
+  final List<double> center2;
+  final double pitchRadius1;
+  final double pitchRadius2;
+
+  BevelPairMeshPreviewDto({
+    required this.member1Teeth,
+    required this.member2Teeth,
+    required this.center1,
+    required this.center2,
+    required this.pitchRadius1,
+    required this.pitchRadius2,
+  });
+
+  factory BevelPairMeshPreviewDto.fromJson(Map<String, dynamic> json) => BevelPairMeshPreviewDto(
+        member1Teeth: (json['member_1_teeth'] as List)
+            .map((tooth) => (tooth as List).map((p) => (p as List).map((v) => (v as num).toDouble()).toList()).toList())
+            .toList(),
+        member2Teeth: (json['member_2_teeth'] as List)
+            .map((tooth) => (tooth as List).map((p) => (p as List).map((v) => (v as num).toDouble()).toList()).toList())
+            .toList(),
+        center1: (json['center_1'] as List).map((v) => (v as num).toDouble()).toList(),
+        center2: (json['center_2'] as List).map((v) => (v as num).toDouble()).toList(),
+        pitchRadius1: (json['pitch_radius_1'] as num).toDouble(),
+        pitchRadius2: (json['pitch_radius_2'] as num).toDouble(),
       );
 }
 
@@ -1109,14 +1158,20 @@ class GearPreviewBevelMemberDto {
 class GearPreviewBevelPairResultDto {
   final List<GearPreviewBevelMemberDto> members;
   final double shaftAngleDegrees;
+  final BevelPairMeshPreviewDto meshPreview;
 
-  GearPreviewBevelPairResultDto({required this.members, required this.shaftAngleDegrees});
+  GearPreviewBevelPairResultDto({
+    required this.members,
+    required this.shaftAngleDegrees,
+    required this.meshPreview,
+  });
 
   factory GearPreviewBevelPairResultDto.fromJson(Map<String, dynamic> json) => GearPreviewBevelPairResultDto(
         members: (json['members'] as List)
             .map((m) => GearPreviewBevelMemberDto.fromJson(m as Map<String, dynamic>))
             .toList(),
         shaftAngleDegrees: (json['shaft_angle_degrees'] as num).toDouble(),
+        meshPreview: BevelPairMeshPreviewDto.fromJson(json['mesh_preview'] as Map<String, dynamic>),
       );
 }
 
@@ -1132,6 +1187,13 @@ class GearPreviewDto {
   final double? addendumLineY;
   final double? dedendumLineY;
   final double? rackLength;
+
+  /// Populated only for `gearKind` `'external'`/`'internal'` - the
+  /// *resolved* profile_shift (`app.document.gear.resolve_gear_profile_
+  /// shift`), identical to what was sent when it was an explicit value, or
+  /// the live-computed auto one when it was left null - same convention as
+  /// [GearPreviewBevelMemberDto.effectiveProfileShift].
+  final double? effectiveProfileShift;
   final List<String> warnings;
   final GearPreviewChainResultDto? chain;
   final GearPreviewPlanetaryResultDto? planetary;
@@ -1150,6 +1212,7 @@ class GearPreviewDto {
     this.addendumLineY,
     this.dedendumLineY,
     this.rackLength,
+    this.effectiveProfileShift,
     this.warnings = const [],
     this.chain,
     this.planetary,
@@ -1171,6 +1234,7 @@ class GearPreviewDto {
         addendumLineY: (json['addendum_line_y'] as num?)?.toDouble(),
         dedendumLineY: (json['dedendum_line_y'] as num?)?.toDouble(),
         rackLength: (json['rack_length'] as num?)?.toDouble(),
+        effectiveProfileShift: (json['effective_profile_shift'] as num?)?.toDouble(),
         warnings: (json['warnings'] as List?)?.cast<String>() ?? const [],
         chain: json['chain'] == null ? null : GearPreviewChainResultDto.fromJson(json['chain'] as Map<String, dynamic>),
         planetary: json['planetary'] == null
@@ -2142,12 +2206,17 @@ class DocumentApiClient {
   /// [outerDiameter] is required for `'internal'`, [backingHeight] optional
   /// for `'rack'` (omitted resolves to the backend's own default) - same
   /// rules [createGearFeature]/[createRackFeature] themselves enforce.
+  /// [profileShift] (`'external'`/`'internal'` only) is optional too - null
+  /// (the default) means "auto", matching `GearFeatureCreate.profile_
+  /// shift`'s own convention, so a live preview matches what Create would
+  /// actually produce - see [GearPreviewDto.effectiveProfileShift] for the
+  /// live-computed value while auto.
   Future<GearPreviewDto> previewGear({
     required String gearKind,
     required double module,
     required int toothCount,
     double pressureAngleDegrees = 20.0,
-    double profileShift = 0.0,
+    double? profileShift,
     double backlash = 0.0,
     double? outerDiameter,
     double? backingHeight,
@@ -2161,7 +2230,7 @@ class DocumentApiClient {
                 'module': module,
                 'tooth_count': toothCount,
                 'pressure_angle_degrees': pressureAngleDegrees,
-                'profile_shift': profileShift,
+                if (profileShift != null) 'profile_shift': profileShift,
                 'backlash': backlash,
                 if (outerDiameter != null) 'outer_diameter': outerDiameter,
                 if (backingHeight != null) 'backing_height': backingHeight,
@@ -2192,6 +2261,10 @@ class DocumentApiClient {
   /// draft-precision slider lowers it for a helical/herringbone gear, whose
   /// two twisted `ThruSections` lofts are the most expensive OCCT build
   /// this app can trigger from a single request.
+  ///
+  /// [profileShift] is optional - null (the default) means "auto", same
+  /// `GearFeatureCreate.profile_shift` convention as [previewGear]'s own
+  /// identical parameter.
   Future<FeatureDto> createGearFeature(
     String partId, {
     required String gearType,
@@ -2200,7 +2273,7 @@ class DocumentApiClient {
     required int toothCount,
     required double faceWidth,
     double pressureAngleDegrees = 20.0,
-    double profileShift = 0.0,
+    double? profileShift,
     double backlash = 0.0,
     double rootFilletRadius = 0.0,
     double? outerDiameter,
@@ -2222,7 +2295,7 @@ class DocumentApiClient {
                 'tooth_count': toothCount,
                 'face_width': faceWidth,
                 'pressure_angle_degrees': pressureAngleDegrees,
-                'profile_shift': profileShift,
+                if (profileShift != null) 'profile_shift': profileShift,
                 'backlash': backlash,
                 'root_fillet_radius': rootFilletRadius,
                 if (outerDiameter != null) 'outer_diameter': outerDiameter,
@@ -2576,9 +2649,15 @@ class DocumentApiClient {
   Future<GearPreviewDto> previewGearBevelPair({
     required double module,
     required int toothCount1,
-    double profileShift1 = 0.0,
+    // null (the default) means "auto" - matches the backend's own
+    // BevelPairMemberSpecSchema.profile_shift default, resolved server-
+    // side (app.document.bevel_pair.resolve_member_profile_shifts) to
+    // whichever value keeps this member's own tooth tip clear of the
+    // other member's material, and surfaced back on the response's own
+    // GearPreviewBevelMemberDto.effectiveProfileShift.
+    double? profileShift1,
     required int toothCount2,
-    double profileShift2 = 0.0,
+    double? profileShift2,
     required double faceWidth,
     double pressureAngleDegrees = 20.0,
     double shaftAngleDegrees = 90.0,
@@ -2618,6 +2697,7 @@ class DocumentApiClient {
     double profileShift = 0.0,
     PlaneRefDto? planeRef,
     List<String> targetBodyIds = const [],
+    int pointsPerFlank = 12,
   }) =>
       _send(
         () => _httpClient.post(
@@ -2634,6 +2714,7 @@ class DocumentApiClient {
                 'backlash': backlash,
                 'profile_shift': profileShift,
                 'target_body_ids': targetBodyIds,
+                'points_per_flank': pointsPerFlank,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -2654,6 +2735,7 @@ class DocumentApiClient {
     double? backlash,
     double? profileShift,
     List<String>? targetBodyIds,
+    int? pointsPerFlank,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -2670,6 +2752,7 @@ class DocumentApiClient {
                 if (backlash != null) 'backlash': backlash,
                 if (profileShift != null) 'profile_shift': profileShift,
                 if (targetBodyIds != null) 'target_body_ids': targetBodyIds,
+                if (pointsPerFlank != null) 'points_per_flank': pointsPerFlank,
               }),
             ),
         (body) => body as Map<String, dynamic>,
@@ -2681,14 +2764,17 @@ class DocumentApiClient {
     String partId, {
     required double module,
     required int toothCount1,
-    double profileShift1 = 0.0,
+    // null (the default) means "auto" - see [previewGearBevelPair]'s own
+    // doc comment.
+    double? profileShift1,
     required int toothCount2,
-    double profileShift2 = 0.0,
+    double? profileShift2,
     required double faceWidth,
     double pressureAngleDegrees = 20.0,
     double shaftAngleDegrees = 90.0,
     double backlash = 0.0,
     PlaneRefDto? planeRef,
+    int pointsPerFlank = 12,
   }) =>
       _send(
         () => _httpClient.post(
@@ -2703,6 +2789,7 @@ class DocumentApiClient {
                 'pressure_angle_degrees': pressureAngleDegrees,
                 'shaft_angle_degrees': shaftAngleDegrees,
                 'backlash': backlash,
+                'points_per_flank': pointsPerFlank,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -2723,13 +2810,20 @@ class DocumentApiClient {
     PlaneRefDto? planeRef,
     double? module,
     int? toothCount1,
-    double profileShift1 = 0.0,
+    // null (the default) means "auto" - see [previewGearBevelPair]'s own
+    // doc comment. Note this is genuinely different from *omitting*
+    // [toothCount1] (which leaves member_1 untouched entirely, profile
+    // shift included) - passing [toothCount1] with this left null sends
+    // member_1 with an explicit `"profile_shift": null`, resetting an
+    // existing explicit override back to auto.
+    double? profileShift1,
     int? toothCount2,
-    double profileShift2 = 0.0,
+    double? profileShift2,
     double? faceWidth,
     double? pressureAngleDegrees,
     double? shaftAngleDegrees,
     double? backlash,
+    int? pointsPerFlank,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -2746,6 +2840,7 @@ class DocumentApiClient {
                 if (pressureAngleDegrees != null) 'pressure_angle_degrees': pressureAngleDegrees,
                 if (shaftAngleDegrees != null) 'shaft_angle_degrees': shaftAngleDegrees,
                 if (backlash != null) 'backlash': backlash,
+                if (pointsPerFlank != null) 'points_per_flank': pointsPerFlank,
               }),
             ),
         (body) => body as Map<String, dynamic>,

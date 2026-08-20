@@ -1,5 +1,12 @@
 import 'package:flutter/material.dart';
 
+/// Shown while a create/save call is in flight for a shape that can
+/// genuinely take a while to build server-side (helical/herringbone gears,
+/// bevel gears/pairs) - deliberately generic (no gear-type-specific
+/// wording) so the same string covers every screen with a slow-build case,
+/// present or future, instead of each screen inventing its own phrasing.
+const String kComplexShapeBuildHint = 'This is a complex shape - it can take longer to generate...';
+
 /// A tappable "?" - every numeric field in [GearDesignScreen]'s form gets
 /// one as its `InputDecoration.suffixIcon`, explaining what the field
 /// means.

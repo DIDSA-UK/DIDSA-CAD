@@ -246,6 +246,63 @@ def minimum_tooth_count_without_undercut(
     return 2 * (addendum_coefficient - profile_shift) / (math.sin(pressure_angle) ** 2)
 
 
+def minimum_profile_shift_to_avoid_undercut(
+    tooth_count: int,
+    pressure_angle_degrees: float = 20.0,
+    addendum_coefficient: float = 1.0,
+) -> float:
+    """Inverse of `minimum_tooth_count_without_undercut`'s own `z_min = 2 *
+    (h_a* - x) / sin^2(a)`, solved for `x` at a *given* `tooth_count`
+    instead of solving for `z` at a given `x`: `x_min = h_a* - tooth_count *
+    sin^2(a) / 2`. Closed-form - unlike `bevel_math.minimum_intruder_
+    profile_shift_for_mesh_clearance`'s own bisection search (each bevel
+    pair member's own margin depends on the *other* member's geometry, with
+    no algebraic inverse), "the smallest profile shift that clears undercut
+    at a given tooth count" has an exact answer here: this formula is
+    linear in `x`, so there's nothing to search for.
+
+    May return a value that yields *invalid* gear geometry at the extreme
+    end (a very low `tooth_count`/`pressure_angle_degrees` combination can
+    push `x_min` past what `spur_gear_geometry` itself still accepts, e.g.
+    a non-positive dedendum or a tooth thicker than its own angular pitch)
+    - callers (`app.document.gear.resolve_gear_profile_shift`) verify with
+    a real `spur_gear_geometry` call before ever applying this
+    automatically, falling back to the naive `0.0` default rather than
+    proposing an actually-invalid shift."""
+    pressure_angle = math.radians(pressure_angle_degrees)
+    return addendum_coefficient - tooth_count * (math.sin(pressure_angle) ** 2) / 2
+
+
+def undercut_warning(
+    tooth_count: int, pressure_angle_degrees: float, profile_shift: float
+) -> str | None:
+    """`None` if `tooth_count` already clears `minimum_tooth_count_without_
+    undercut` at `profile_shift`, otherwise the non-blocking warning string
+    (`00-conventions.md`'s validation-banner convention: undercut weakens
+    the tooth root but still meshes, so this never blocks). Shared by
+    `app.document.router`'s `/gear/preview` endpoint and `app.document.
+    gear.resolve_gear_from_bodies` so a real `GearFeature` and its own live
+    preview report identically for identical inputs - the same guarantee
+    `bevel_math.bevel_pair_mesh_interference_warning`'s own callers get.
+
+    Compares with a tiny (`1e-9`) tolerance rather than a bare `>=` -
+    `resolve_gear_profile_shift`'s own auto-resolved shift is `minimum_
+    profile_shift_to_avoid_undercut`'s closed-form algebraic inverse of
+    this exact threshold, so plugging it back in here should land exactly
+    on `tooth_count`; without the tolerance, float round-trip error alone
+    (e.g. `6.000000000000001` computed back from a `tooth_count` of `6`)
+    would spuriously re-trigger the very warning auto-resolution just
+    cleared, defeating the whole point of "auto makes the warning go away
+    by default"."""
+    min_tooth_count = minimum_tooth_count_without_undercut(pressure_angle_degrees, profile_shift)
+    if tooth_count >= min_tooth_count - 1e-9:
+        return None
+    return (
+        f"Tooth count {tooth_count} is below the undercut-free minimum "
+        f"({min_tooth_count:.1f}) for this pressure angle/profile shift - the root will be undercut."
+    )
+
+
 def _flank_start_offset_angle(geometry: SpurGearGeometry) -> float:
     """The angle (radians) from a tooth's own centerline to the point on
     the base circle where that flank's involute construction "starts"
