@@ -1,14 +1,14 @@
 # AI Modelling
 
 An AI-assisted modelling entry point for DIDSA-CAD's Flutter client: a user
-describes a part in plain English (v1) or — a later, explicitly deferred
-workstream — uploads a photo of a sketch/drawing, an LLM asks clarifying
-questions to scope the request, then a deterministic translator turns the
-resulting structured plan into a real Feature-tree part built through this
-app's own Sketch/Feature API — as editable afterward as anything built by
-hand. The user picks their AI provider (local or cloud) from a new settings
-panel alongside the existing `SketcherSettingsScreen`/`MeshViewerSettingsScreen`
-precedent.
+describes a part in plain English, uploads a photo of a hand sketch/
+engineering drawing, or speaks the description aloud, an LLM asks
+clarifying questions to scope the request, then a deterministic translator
+turns the resulting structured plan into a real Feature-tree part built
+through this app's own Sketch/Feature API — as editable afterward as
+anything built by hand. The user picks their AI provider (local or cloud)
+from a new settings panel alongside the existing
+`SketcherSettingsScreen`/`MeshViewerSettingsScreen` precedent.
 
 **Status**: workstreams 1-5 are all built and tested — real, committed
 code, not just this doc set's own original scoping/brainstorm output.
@@ -16,9 +16,11 @@ This is the **first end-to-end usable version**: a plain-English request
 goes from the "AI Modelling" tile to a real Feature-tree Part, for every
 step kind except `gear_request` (detected and surfaced, not
 auto-executed — see `04-translator-and-execution.md`'s "Real scope of
-`gear_request` handling"). Only the `gear_request` full hand-off and
-workstream 6 (image input, explicitly deferred) remain — see the
-delivery-order table below.
+`gear_request` handling"). Workstreams 7-11 (all five planned post-v1
+extensions — editable system prompt, dimension-driven sketches,
+existing-Part editing, image input, voice input) are now all built too.
+Only the `gear_request` full hand-off remains — see the delivery-order
+table below.
 
 ## How to use these docs in a fresh implementation session
 
@@ -42,10 +44,12 @@ a session implementing one workstream never needed most of it).
 | 3 | `03-structured-plan-schema.md` | — | The JSON plan schema itself, which Sketch entity/Feature types v1 can generate, gear-request routing. Edge selection for Fillet/Chamfer is **resolved** — see its own "Spike 2 findings" section for the four confirmed selector definitions |
 | 4 | `04-translator-and-execution.md` | 1, 2, 3, 5 | Client-side `PlanTranslator` driving the real `DocumentApiClient`/`SketchApiClient`, failure handling, no auto-rollback |
 | 5 | `05-backend-plan-validation.md` | 3 | The one backend addition: a stateless dry-run plan-validation endpoint |
-| 6 | `06-image-input-deferred.md` | 1, 2, 3 | Explicitly **not v1** — image upload, vision strategy, scope cut lines, recorded for when this becomes the active workstream |
+| 6 | `06-image-input-deferred.md` | 1, 2, 3 | Recorded decisions from the original deferral pass — superseded by workstream 10's real build, which diverges from one of this file's own recorded decisions (see `10-image-input.md`'s own "A disclosed divergence" section) |
 | 7 | `07-editable-system-prompt.md` | 1, 2 | **Built.** User-editable assistant instructions + resettable override, plus togglable manufacturing-context add-ons (Structural/Plastic/Casting/Weldments/3D Print/Sheet Metal/Machining), reached from a new AI System Prompt Settings screen |
 | 8 | `08-dimension-driven-sketches.md` | 3, 4 | **Built.** The translator (and the dry-run validator, mirroring it) now attach real, non-provisional `DistanceConstraint`s wherever a plan carries a literal size - Circle/Arc/Ellipse/Polygon/Slot radius (confirming the auto-created provisional constraint), Line length, and new `sketch_rectangle` `width`/`height` fields - so AI-generated geometry has real, user-editable dimensions instead of just raw coordinates |
 | 9 | `09-existing-part-editing.md` | 3, 4, 5 | **Built.** "Continue with AI" (`PartScreen`'s own new app-bar action) lets the AI edit a Part that already exists, via a new `existing:<id>` local_id convention (scoped to Body/Plane Features and whole-Sketch anchoring) - `ToolChooserScreen`'s "AI Modelling" tile is untouched and still always starts fresh |
+| 10 | `10-image-input.md` | 1, 2, 3, 6 | **Built.** Attach-image button (gated on `AiProviderCapabilities.supportsVision`) lets a hand sketch/engineering drawing seed the scoping conversation - a one-shot extraction call against the active provider's own vision capability, a disclosed divergence from `06`'s "dedicated OCR/CV" lean. The image itself stays pinned/visible in the chat for the whole conversation |
+| 11 | `11-voice-input.md` | 2 | **Built.** Mic button beside Send transcribes speech into the existing input field via on-device `speech_to_text` - never auto-sends, fully decoupled from workstream 10 and from the provider/network layer. Spiked platform support first: Android/iOS confirmed, Windows supported-but-beta, Linux has no implementation at all (gated out via a static platform check) |
 
 ## Spikes (do these first, before committing to the real build)
 
@@ -151,8 +155,8 @@ per-session granularity (see `docs/status.md`'s history):
 | 3 | Workstream 3 (lock schema using the spike's findings, incl. resolved edge-selectors) + Workstream 5 (backend dry-run endpoint) | Natural pairing — 5 is small and depends directly on 3's step shapes |
 | 4 | Workstream 2 (chat screen + system prompt, incl. the save-plan-as-preset bolt-on) | Can hold a full scoping conversation and see a plan proposed, even before generation works |
 | 5 | Workstream 4 (translator + execution, incl. the "Undo this generation" bolt-on) — **done** | **First end-to-end usable version** — AI Modelling tile to real Feature-tree part, for every step kind except `gear_request` (detected and surfaced, not auto-executed — see `04-translator-and-execution.md`'s "Real scope of `gear_request` handling") |
-| 6+ | On-device feedback round(s) | This project's typical pattern after any client-heavy build — real bugs from a real device/model combo, not assumed working from sandbox-only verification |
-| Later, separate arc | Workstream 6 (image input) | Its own multi-session R&D once text mode is proven — don't pull this forward |
+| 6+ | On-device feedback round(s) | This project's typical pattern after any client-heavy build — real bugs from a real device/model combo, not assumed working from sandbox-only verification. **Still outstanding for workstreams 7-11 as a whole** — every one of them was written and reviewed, never run, in a sandbox with no Flutter SDK (see each workstream's own "Tests"/"What could and couldn't be verified" section) |
+| 7-11 | Workstreams 7, 8, 9, 10, 11 (editable system prompt, dimension-driven sketches, existing-Part editing, image input, voice input) — **all done** | Every extension originally planned on top of the v1 feature is now built. Workstream 10 diverges from `06`'s own recorded lean (see `10-image-input.md`) |
 | Later, separate arc | `gear_request` full hand-off | `GearDesignScreen`/`GearChainDesignScreen`/`BevelDesignScreen` reworked to accept an existing Part id, so a plan's gear step can land in the same Part the rest of it built — real, separate scope, not pulled into workstream 4 |
 
 ## Bolt-ons folded into v1
@@ -226,6 +230,11 @@ settled unless new information genuinely changes the tradeoff:
   already-created Features in place and hands the real error back to the
   LLM as a chat turn; the user's ordinary Undo/delete-Feature tools are
   how manual cleanup happens if needed.
-- **Image input is real scope, deliberately not v1.** Text-only ships
-  first, proven end-to-end, before image upload becomes the active
-  workstream — see `06-image-input-deferred.md`.
+- **Image input was real scope, deliberately not v1 — now built as
+  workstream 10.** Text-only shipped first, proven end-to-end, before image
+  upload became the active workstream. `06-image-input-deferred.md` still
+  holds the original scoping session's recorded decisions (single-view
+  only, no photos of real physical objects, capability-gated); workstream
+  10's own build diverges from one of them (a provider-native vision call
+  instead of dedicated OCR/CV) — see `10-image-input.md`'s "A disclosed
+  divergence" section.
