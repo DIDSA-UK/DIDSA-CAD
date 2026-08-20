@@ -83,7 +83,7 @@ structural bore-clearance concern, unrelated to lengthwise tooth shape);
 `_assemble_gear_solid`'s overall assembly skeleton (sew → `ShapeFix_Shell`
 → `MakeSolid` → `OrientClosedSolid`, independent volume/self-intersection
 cross-checks in place of `BRepCheck_Analyzer`); basis/positioning math for
-intersecting-axis gears (`_local_to_world`, `_sphere_axis`) — valid for
+intersecting-axis gears (`_basis_point3_to_world`, `_sphere_axis`) — valid for
 spiral bevel, explicitly not for hypoid (offset axes, no shared apex);
 `_inner_cap_flattening_tool`'s explicit-shared-X-direction fix, which
 matters even more once a basis is genuinely tilted (any `BevelPairFeature`
