@@ -16,7 +16,17 @@ import '../api/document_api_client.dart';
 class BevelPreviewCanvas extends StatefulWidget {
   final List<GearPreviewBevelMemberDto> members;
 
-  const BevelPreviewCanvas({super.key, required this.members});
+  /// A Bevel Pair's own tooth-mesh close-up (`null` for a standalone Bevel
+  /// Gear, which has no mate to mesh against) - drawn as a small "picture
+  /// in picture" inset over the main axial-cross-section view, since the
+  /// envelope drawn above never shows a single real tooth (`10-bevel-gear.
+  /// md`'s own "a bevel tooth has no flat 2D cut profile" point - see
+  /// `BevelPairMeshPreviewDto`'s own doc comment for why the mesh preview
+  /// needs an entirely separate close-up rather than reusing this same
+  /// outline).
+  final BevelPairMeshPreviewDto? meshPreview;
+
+  const BevelPreviewCanvas({super.key, required this.members, this.meshPreview});
 
   @override
   State<BevelPreviewCanvas> createState() => _BevelPreviewCanvasState();
@@ -65,10 +75,128 @@ class _BevelPreviewCanvasState extends State<BevelPreviewCanvas> {
               ),
             ),
           ),
+          if (widget.meshPreview != null)
+            Positioned(
+              right: 8,
+              bottom: 8,
+              child: _MeshPreviewInset(meshPreview: widget.meshPreview!),
+            ),
         ],
       ),
     );
   }
+}
+
+/// The "picture in picture" tooth-mesh close-up - a fixed-size bordered box
+/// in the main preview's corner, independent of the main view's own
+/// pan/zoom (deliberately: this close-up's whole point is to always show
+/// tooth shape/backlash at a glance, not to require the user to zoom the
+/// main envelope view in to a scale where it would even be visible).
+class _MeshPreviewInset extends StatelessWidget {
+  final BevelPairMeshPreviewDto meshPreview;
+
+  const _MeshPreviewInset({required this.meshPreview});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 168,
+      height: 168,
+      decoration: BoxDecoration(
+        color: const Color(0xFF1A1A26),
+        border: Border.all(color: Colors.white24),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Stack(
+        children: [
+          Positioned.fill(child: CustomPaint(painter: _MeshPreviewPainter(meshPreview: meshPreview))),
+          const Positioned(
+            left: 4,
+            top: 2,
+            child: Text(
+              'Tooth mesh',
+              style: TextStyle(color: Colors.white54, fontSize: 10),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MeshPreviewPainter extends CustomPainter {
+  final BevelPairMeshPreviewDto meshPreview;
+
+  _MeshPreviewPainter({required this.meshPreview});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final allTeeth = [...meshPreview.member1Teeth, ...meshPreview.member2Teeth];
+    if (allTeeth.isEmpty) return;
+
+    // Fit every displayed tooth's own bounding box, not a hardcoded
+    // absolute-mm radius - module (and therefore real tooth size) is a
+    // free user parameter, so a fixed radius would over- or under-fill
+    // this inset depending on what module the user picked. Mirrors
+    // `_BevelPreviewPainter`'s own "measure the real geometry, then
+    // scale to fit" approach above, just over points instead of
+    // `coneDistance`.
+    double minX = double.infinity, maxX = double.negativeInfinity;
+    double minY = double.infinity, maxY = double.negativeInfinity;
+    for (final tooth in allTeeth) {
+      for (final point in tooth) {
+        minX = math.min(minX, point[0]);
+        maxX = math.max(maxX, point[0]);
+        minY = math.min(minY, point[1]);
+        maxY = math.max(maxY, point[1]);
+      }
+    }
+    final extentX = math.max(maxX - minX, 1e-6);
+    final extentY = math.max(maxY - minY, 1e-6);
+    const padding = 10.0;
+    final scale = math.min(
+      (size.width - 2 * padding) / extentX,
+      (size.height - 2 * padding) / extentY,
+    );
+    final boundsCenter = Offset((minX + maxX) / 2, (minY + maxY) / 2);
+    final canvasCenter = Offset(size.width / 2, size.height / 2 + 6);
+    // Flip y: gear_math's +y is "up", Canvas's +y is "down".
+    Offset toCanvas(double x, double y) =>
+        canvasCenter + Offset((x - boundsCenter.dx) * scale, -(y - boundsCenter.dy) * scale);
+
+    void drawTeeth(List<List<List<double>>> teeth, Color color) {
+      final paint = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.2
+        ..color = color;
+      final fillPaint = Paint()
+        ..style = PaintingStyle.fill
+        ..color = color.withValues(alpha: 0.18);
+      for (final tooth in teeth) {
+        if (tooth.isEmpty) continue;
+        final path = Path();
+        final first = toCanvas(tooth.first[0], tooth.first[1]);
+        path.moveTo(first.dx, first.dy);
+        for (final point in tooth.skip(1)) {
+          final canvasPoint = toCanvas(point[0], point[1]);
+          path.lineTo(canvasPoint.dx, canvasPoint.dy);
+        }
+        path.close();
+        canvas.drawPath(path, fillPaint);
+        canvas.drawPath(path, paint);
+      }
+    }
+
+    drawTeeth(meshPreview.member1Teeth, _roleColors['member_1']!);
+    drawTeeth(meshPreview.member2Teeth, _roleColors['member_2']!);
+
+    // The shared pitch point (origin) - the reference the close-up is
+    // framed around.
+    canvas.drawCircle(toCanvas(0, 0), 1.5, Paint()..color = Colors.white54);
+  }
+
+  @override
+  bool shouldRepaint(covariant _MeshPreviewPainter oldDelegate) => oldDelegate.meshPreview != meshPreview;
 }
 
 const double _outlineStrokeWidth = 1.1;

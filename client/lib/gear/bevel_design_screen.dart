@@ -503,7 +503,10 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
           final List<GearPreviewBevelMemberDto> members = _isSingleGear
               ? (_preview?.bevelGear != null ? [_preview!.bevelGear!] : const <GearPreviewBevelMemberDto>[])
               : (_preview?.bevelPair?.members ?? const <GearPreviewBevelMemberDto>[]);
-          final canvas = BevelPreviewCanvas(members: members);
+          final canvas = BevelPreviewCanvas(
+            members: members,
+            meshPreview: _isSingleGear ? null : _preview?.bevelPair?.meshPreview,
+          );
           final form = SingleChildScrollView(padding: const EdgeInsets.all(16), child: _buildForm());
           if (constraints.maxWidth < 700) {
             return Column(

@@ -1113,20 +1113,65 @@ class GearPreviewBevelMemberDto {
       );
 }
 
+/// The wire counterpart to the backend's `BevelPairMeshPreviewResult` - a
+/// handful of consecutive teeth from each member, meshing as Tredgold's
+/// virtual flat spur gears predict, for a "picture in picture" close-up
+/// inset next to [GearPreviewBevelMemberDto]'s own axial cross-section
+/// schematic (which never draws a real tooth). Both `*Teeth` lists are
+/// already positioned into one shared local 2D frame ([center1]/[center2]
+/// on the x-axis, tangent at the origin) - no gear math needed client-side,
+/// just drawing the polygons.
+class BevelPairMeshPreviewDto {
+  final List<List<List<double>>> member1Teeth;
+  final List<List<List<double>>> member2Teeth;
+  final List<double> center1;
+  final List<double> center2;
+  final double pitchRadius1;
+  final double pitchRadius2;
+
+  BevelPairMeshPreviewDto({
+    required this.member1Teeth,
+    required this.member2Teeth,
+    required this.center1,
+    required this.center2,
+    required this.pitchRadius1,
+    required this.pitchRadius2,
+  });
+
+  factory BevelPairMeshPreviewDto.fromJson(Map<String, dynamic> json) => BevelPairMeshPreviewDto(
+        member1Teeth: (json['member_1_teeth'] as List)
+            .map((tooth) => (tooth as List).map((p) => (p as List).map((v) => (v as num).toDouble()).toList()).toList())
+            .toList(),
+        member2Teeth: (json['member_2_teeth'] as List)
+            .map((tooth) => (tooth as List).map((p) => (p as List).map((v) => (v as num).toDouble()).toList()).toList())
+            .toList(),
+        center1: (json['center_1'] as List).map((v) => (v as num).toDouble()).toList(),
+        center2: (json['center_2'] as List).map((v) => (v as num).toDouble()).toList(),
+        pitchRadius1: (json['pitch_radius_1'] as num).toDouble(),
+        pitchRadius2: (json['pitch_radius_2'] as num).toDouble(),
+      );
+}
+
 /// The wire counterpart to the backend's `GearPreviewBevelPairResult` -
 /// [GearPreviewDto.bevelPair]'s own payload when `gearKind == 'bevel_pair'`
 /// - `11-bevel-pair.md`'s dual-axis apex-aligned pair, projected into 2D.
 class GearPreviewBevelPairResultDto {
   final List<GearPreviewBevelMemberDto> members;
   final double shaftAngleDegrees;
+  final BevelPairMeshPreviewDto meshPreview;
 
-  GearPreviewBevelPairResultDto({required this.members, required this.shaftAngleDegrees});
+  GearPreviewBevelPairResultDto({
+    required this.members,
+    required this.shaftAngleDegrees,
+    required this.meshPreview,
+  });
 
   factory GearPreviewBevelPairResultDto.fromJson(Map<String, dynamic> json) => GearPreviewBevelPairResultDto(
         members: (json['members'] as List)
             .map((m) => GearPreviewBevelMemberDto.fromJson(m as Map<String, dynamic>))
             .toList(),
         shaftAngleDegrees: (json['shaft_angle_degrees'] as num).toDouble(),
+        meshPreview: BevelPairMeshPreviewDto.fromJson(json['mesh_preview'] as Map<String, dynamic>),
       );
 }
 

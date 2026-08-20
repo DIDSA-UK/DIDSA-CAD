@@ -61,6 +61,29 @@ void main() {
         'bevel_gear': bevelMember(label: 'single'),
       };
 
+  Map<String, dynamic> bevelMeshPreview() => {
+        'member_1_teeth': [
+          [
+            [40.0, 2.0],
+            [44.0, 3.0],
+            [44.0, -3.0],
+            [40.0, -2.0],
+          ],
+        ],
+        'member_2_teeth': [
+          [
+            [-4.0, 2.5],
+            [-8.0, 3.5],
+            [-8.0, -3.5],
+            [-4.0, -2.5],
+          ],
+        ],
+        'center_1': [0.0, 0.0],
+        'center_2': [80.0, 0.0],
+        'pitch_radius_1': 40.0,
+        'pitch_radius_2': 40.0,
+      };
+
   Map<String, dynamic> bevelPairPreviewResponse() => {
         'gear_kind': 'bevel_pair',
         'outline_points': [],
@@ -71,6 +94,7 @@ void main() {
             bevelMember(label: 'member_2', axisAngleDegrees: 90.0),
           ],
           'shaft_angle_degrees': 90.0,
+          'mesh_preview': bevelMeshPreview(),
         },
       };
 
@@ -268,6 +292,7 @@ void main() {
                   bevelMember(label: 'member_2', axisAngleDegrees: 90.0, effectiveProfileShift: -0.52),
                 ],
                 'shaft_angle_degrees': 90.0,
+                'mesh_preview': bevelMeshPreview(),
               },
             });
           }

@@ -50,7 +50,13 @@ from app.document.gear_chain_math import (
     mesh_link_ratio,
     resolve_chain as resolve_chain_positions_and_interference,
 )
-from app.document.bevel_math import BevelGearGeometry, bevel_gear_geometry, max_recommended_face_width, pitch_cone_half_angles
+from app.document.bevel_math import (
+    BevelGearGeometry,
+    bevel_gear_geometry,
+    bevel_pair_mesh_preview,
+    max_recommended_face_width,
+    pitch_cone_half_angles,
+)
 from app.document.rack import resolve_rack
 from app.document.loft import resolve_loft
 from app.document.gear_chain import resolve_gear_chain
@@ -125,6 +131,7 @@ from app.document.schemas import (
     BevelPairFeatureResponse,
     BevelPairFeatureUpdate,
     BevelPairMemberSpecSchema,
+    BevelPairMeshPreviewResult,
     BodyMeshResponse,
     CascadeDeletePreviewResponse,
     CascadeDeleteResponse,
@@ -4048,7 +4055,22 @@ def _gear_preview_bevel_pair_response(payload: GearPreviewBevelPairRequest) -> t
         _bevel_member_schematic("member_1", 0.0, geometry_1),
         _bevel_member_schematic("member_2", payload.shaft_angle_degrees, geometry_2),
     ]
-    return GearPreviewBevelPairResult(members=members, shaft_angle_degrees=payload.shaft_angle_degrees), warnings
+    mesh_preview = bevel_pair_mesh_preview(geometry_1, geometry_2)
+    return (
+        GearPreviewBevelPairResult(
+            members=members,
+            shaft_angle_degrees=payload.shaft_angle_degrees,
+            mesh_preview=BevelPairMeshPreviewResult(
+                member_1_teeth=mesh_preview.member_1_teeth,
+                member_2_teeth=mesh_preview.member_2_teeth,
+                center_1=mesh_preview.center_1,
+                center_2=mesh_preview.center_2,
+                pitch_radius_1=mesh_preview.pitch_radius_1,
+                pitch_radius_2=mesh_preview.pitch_radius_2,
+            ),
+        ),
+        warnings,
+    )
 
 
 def _gear_preview_response(payload: GearPreviewRequest) -> GearPreviewResponse:

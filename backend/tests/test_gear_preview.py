@@ -416,6 +416,12 @@ def test_bevel_pair_preview_auto_derives_cone_angles_and_dual_axis():
     assert member_1["cone_distance"] == pytest.approx(member_2["cone_distance"], abs=1e-6)
     assert member_1["pitch_radius"] == 40.0  # module(4) * tooth_count(20) / 2
     assert member_2["pitch_radius"] == 80.0
+    mesh_preview = pair["mesh_preview"]
+    assert len(mesh_preview["member_1_teeth"]) == 4
+    assert len(mesh_preview["member_2_teeth"]) == 4
+    x1, _y1 = mesh_preview["center_1"]
+    x2, _y2 = mesh_preview["center_2"]
+    assert x2 - x1 == pytest.approx(mesh_preview["pitch_radius_1"] + mesh_preview["pitch_radius_2"])
 
 
 def test_bevel_pair_preview_rejects_tooth_counts_below_four():

@@ -1479,9 +1479,28 @@ class GearPreviewBevelMember(BaseModel):
     effective_profile_shift: float
 
 
+class BevelPairMeshPreviewResult(BaseModel):
+    """`bevel_math.BevelPairMeshPreview`'s wire counterpart - a handful of
+    consecutive teeth from each member, meshing as Tredgold's virtual flat
+    spur gears predict, for a "picture in picture" close-up inset next to
+    the existing axial-cross-section schematic (`GearPreviewBevelMember`,
+    which draws each member's drafting-style envelope only, never a real
+    tooth). Both `*_teeth` lists are already positioned/rotated into one
+    shared local 2D frame (`center_1`/`center_2` on the x-axis, tangent at
+    the origin) - a client draws them directly, no gear math of its own."""
+
+    member_1_teeth: list[list[tuple[float, float]]]
+    member_2_teeth: list[list[tuple[float, float]]]
+    center_1: tuple[float, float]
+    center_2: tuple[float, float]
+    pitch_radius_1: float
+    pitch_radius_2: float
+
+
 class GearPreviewBevelPairResult(BaseModel):
     members: list[GearPreviewBevelMember]
     shaft_angle_degrees: float
+    mesh_preview: BevelPairMeshPreviewResult
 
 
 class GearPreviewRequest(BaseModel):

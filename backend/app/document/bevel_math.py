@@ -46,9 +46,11 @@ from dataclasses import dataclass, replace
 
 from app.document.gear_math import (
     GearGeometryError,
+    SpurGearGeometry,
     involute_function,
     involute_point,
     involute_roll_angle_at_radius,
+    tooth_profile_points,
 )
 
 # ---------------------------------------------------------------------------
@@ -1196,3 +1198,166 @@ def bevel_pair_mesh_interference_warning(
             "interfering that small geometry changes could tip it either way."
         )
     return f"{situation} Try {pressure_angle_suggestion} - changing module alone will not help."
+
+
+# ---------------------------------------------------------------------------
+# Tooth-mesh close-up preview (Tredgold's virtual spur gears, flat domain)
+# ---------------------------------------------------------------------------
+
+
+def virtual_spur_gear_geometry(geometry: BevelGearGeometry) -> SpurGearGeometry:
+    """The flat, planar "virtual" spur gear Tredgold's approximation
+    substitutes for this bevel member's own tooth flank - the same
+    substitution `equivalent_tooth_count`/`tredgold_bevel_point` already
+    use to build the real 3D spherical-ish flank, kept in the flat 2D
+    domain (before wrapping onto the back-cone sphere) instead. Two of
+    these, from a mating pair's two members, mesh exactly like an ordinary
+    external spur gear pair tangent at their own pitch circles - Tredgold's
+    whole point - so `gear_math.tooth_profile_points` (already tested
+    against real spur/internal gears) draws an accurate close-up tooth
+    shape for `bevel_pair_mesh_preview` below without a second,
+    bevel-specific tooth-outline implementation.
+
+    `tooth_count` here is `equivalent_tooth_count`'s own (generally
+    non-integer) virtual value, rounded only because `SpurGearGeometry.
+    tooth_count` is typed `int` - safe because `tooth_profile_points`
+    (and everything it calls) never actually reads `tooth_count` to build
+    a *single* tooth's outline, only `pitch_radius`/`base_radius`/
+    `addendum_radius`/`dedendum_radius`/`tooth_thickness_at_pitch`/
+    `pressure_angle` - `bevel_pair_mesh_preview` does its own spacing with
+    the unrounded float value for exactly this reason.
+
+    `pitch_radius = cone_distance * tan(gamma)` matches `bevel_tooth_
+    flank_pair`'s own virtual-radius formula (simpler than re-deriving it
+    from `module`/`equivalent_tooth_count`, though the two agree exactly:
+    `cone_distance * tan(gamma) = pitch_radius / cos(gamma) = module *
+    (tooth_count / cos(gamma)) / 2 = module * equivalent_tooth_count /
+    2` - the ordinary planar `pitch_radius = module * tooth_count / 2`
+    relation, holding for the virtual gear too). `base_radius`/`addendum_
+    radius`/`dedendum_radius` follow the same ordinary planar relations
+    `gear_math.spur_gear_geometry` itself uses, since that's exactly what
+    "flat/virtual spur gear" means."""
+    gamma = geometry.pitch_cone_angle
+    virtual_tooth_count = equivalent_tooth_count(geometry.tooth_count, gamma)
+    virtual_pitch_radius = geometry.cone_distance * math.tan(gamma)
+    virtual_base_radius = virtual_pitch_radius * math.cos(geometry.pressure_angle)
+    return SpurGearGeometry(
+        module=geometry.module,
+        tooth_count=max(round(virtual_tooth_count), 1),
+        pressure_angle=geometry.pressure_angle,
+        profile_shift=geometry.profile_shift,
+        backlash=geometry.backlash,
+        is_internal=False,
+        pitch_radius=virtual_pitch_radius,
+        base_radius=virtual_base_radius,
+        addendum_radius=virtual_pitch_radius + geometry.addendum,
+        dedendum_radius=virtual_pitch_radius - geometry.dedendum,
+        tooth_thickness_at_pitch=geometry.tooth_thickness_at_pitch,
+        root_fillet_radius=0.0,
+    )
+
+
+def _rotate_translate(
+    points: list[tuple[float, float]], angle: float, offset: tuple[float, float]
+) -> list[tuple[float, float]]:
+    """Rotate `points` CCW by `angle` about the origin, then translate by
+    `offset` - same CCW-positive convention as `gear_math._rotate`, kept as
+    its own local copy rather than importing that module's private helper
+    (this module already keeps its own `_rotate_about_z` for the same
+    reason, one axis up)."""
+    cos_a, sin_a = math.cos(angle), math.sin(angle)
+    ox, oy = offset
+    return [(x * cos_a - y * sin_a + ox, x * sin_a + y * cos_a + oy) for x, y in points]
+
+
+@dataclass
+class BevelPairMeshPreview:
+    """A handful of consecutive teeth from each of a bevel pair's two
+    members, meshing exactly as Tredgold's approximation predicts they
+    will along the real 3D flank - a 2D close-up so a user can actually
+    *see* tooth shape and backlash at the pitch line, which the existing
+    axial-cross-section schematic (`GearPreviewBevelMember`, drafting-style
+    envelope only) never shows a single tooth of at all.
+
+    Shared 2D frame: both virtual gears' centres sit on the x-axis, tangent
+    at the origin (`member_1`'s centre at `(-pitch_radius_1, 0)`,
+    `member_2`'s at `(+pitch_radius_2, 0)`) - the standard way to draw two
+    externally meshing spur gears. Each `*_teeth` list holds one closed
+    polygon (`tooth_profile_points`'s own root-to-tip-to-root outline) per
+    displayed tooth, already rotated/translated into this shared frame -
+    a client can draw them directly with no further gear math."""
+
+    member_1_teeth: list[list[tuple[float, float]]]
+    member_2_teeth: list[list[tuple[float, float]]]
+    center_1: tuple[float, float]
+    center_2: tuple[float, float]
+    pitch_radius_1: float
+    pitch_radius_2: float
+
+
+def bevel_pair_mesh_preview(
+    geometry_1: BevelGearGeometry,
+    geometry_2: BevelGearGeometry,
+    *,
+    displayed_tooth_count: int = 4,
+    points_per_flank: int = 12,
+) -> BevelPairMeshPreview:
+    """Build `BevelPairMeshPreview` for a mating pair, via `virtual_spur_
+    gear_geometry`'s flat Tredgold substitution for each member.
+
+    Phasing: `member_1` gets a tooth centred at angle 0 (pointing at
+    `member_2`, along the positive x-axis from `center_1`). For the two
+    gears to mesh rather than collide, `member_2` needs a *gap* - not a
+    tooth - centred at the point where it faces `member_1` (local angle
+    `pi`, since `member_2`'s own frame isn't rotated, only translated).
+    Gear teeth are always evenly spaced around the gear (`2*pi /
+    virtual_tooth_count` apart) regardless of tooth thickness/profile
+    shift/backlash - those only reshape each tooth's own flanks, not the
+    centre-to-centre spacing between teeth - so the gap directly between
+    two adjacent teeth is always exactly half that spacing away from
+    either one, independent of tooth shape. Placing `member_2`'s teeth at
+    `pi + pitch/2 + k*pitch` (`pitch = 2*pi/virtual_tooth_count_2`) puts
+    exactly that gap at `pi`, for every `k`.
+
+    Because tooth centres are evenly spaced regardless of thickness, this
+    phasing is exact - but each tooth's own *width* is not: a narrower
+    tooth (larger `backlash`, or a `profile_shift` that thins it) leaves a
+    real, visible gap to its meshing partner's flank at the pitch line
+    without the two polygons overlapping, and a `profile_shift`-thickened
+    tooth visibly fills more of the opposing gap - exactly the "can the
+    user see backlash" ask this preview exists for, with no separate
+    backlash-drawing logic needed: the effect just falls out of drawing
+    each tooth's own real, already-`backlash`/`profile_shift`-aware
+    outline at its correctly-phased position."""
+    virtual_1 = virtual_spur_gear_geometry(geometry_1)
+    virtual_2 = virtual_spur_gear_geometry(geometry_2)
+    virtual_tooth_count_1 = equivalent_tooth_count(geometry_1.tooth_count, geometry_1.pitch_cone_angle)
+    virtual_tooth_count_2 = equivalent_tooth_count(geometry_2.tooth_count, geometry_2.pitch_cone_angle)
+
+    center_1 = (-virtual_1.pitch_radius, 0.0)
+    center_2 = (virtual_2.pitch_radius, 0.0)
+
+    base_tooth_1 = tooth_profile_points(virtual_1, points_per_flank)
+    base_tooth_2 = tooth_profile_points(virtual_2, points_per_flank)
+
+    displayed_tooth_count = max(displayed_tooth_count, 1)
+    half_span = displayed_tooth_count // 2
+    offsets = list(range(-half_span, displayed_tooth_count - half_span))
+
+    angular_pitch_1 = 2 * math.pi / virtual_tooth_count_1
+    member_1_teeth = [_rotate_translate(base_tooth_1, k * angular_pitch_1, center_1) for k in offsets]
+
+    angular_pitch_2 = 2 * math.pi / virtual_tooth_count_2
+    phase_2 = math.pi + angular_pitch_2 / 2
+    member_2_teeth = [
+        _rotate_translate(base_tooth_2, phase_2 + k * angular_pitch_2, center_2) for k in offsets
+    ]
+
+    return BevelPairMeshPreview(
+        member_1_teeth=member_1_teeth,
+        member_2_teeth=member_2_teeth,
+        center_1=center_1,
+        center_2=center_2,
+        pitch_radius_1=virtual_1.pitch_radius,
+        pitch_radius_2=virtual_2.pitch_radius,
+    )
