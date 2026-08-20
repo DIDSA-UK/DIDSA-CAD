@@ -782,7 +782,10 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(isAuto ? 'Auto' : 'Manual', style: Theme.of(context).textTheme.labelSmall),
-            Switch(value: !isAuto, onChanged: (manual) => onAutoChanged(!manual)),
+            // On (true) = Auto, off = Manual - lit/right means "let the
+            // backend decide," matching the switch's own default state
+            // (Auto) starting lit.
+            Switch(value: isAuto, onChanged: onAutoChanged),
           ],
         ),
       ],

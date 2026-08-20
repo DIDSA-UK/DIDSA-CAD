@@ -329,18 +329,35 @@ def resolve_member_profile_shifts(
     Two-pass: first builds baseline geometry with any `None` field treated
     as `0.0` (no shift) to find which member's tooth tip is the worse-
     margin "intruder" (`bevel_math.worst_bevel_pair_mesh_margin_degrees`) -
-    only *that* member's own `None` gets auto-filled, via `bevel_math.
-    minimum_intruder_profile_shift_for_mesh_clearance`, with the smallest
-    shift that clears the margin (the *other* member's own base colatitude
-    doesn't depend on either member's profile shift at all, so shifting it
-    wouldn't help - see that function's own docstring); the non-intruder's
-    own `None` simply resolves to `0.0`, same as today's plain default,
-    and if the baseline (0.0/0.0) already clears the margin, neither field
-    is touched at all. An explicit (non-`None`) value on either member
-    always wins - never auto-adjusted, even if it happens to be the
-    intruder and the value isn't enough (`bevel_pair_mesh_interference_
-    warning` still fires in that case, correctly - auto-resolution is a
-    convenience default, not a silent override of a user's own choice)."""
+    if that's already clear, neither field is touched. Otherwise, *if* the
+    intruder's own `profile_shift` is still `None`, `bevel_math.minimum_
+    intruder_profile_shift_for_mesh_clearance` finds the smallest negative
+    shift `-X` that clears the margin, and (on-device feedback: a single-
+    sided shift alone visibly "looks like a lot of backlash" - the
+    intruder's tooth genuinely is that much thinner, with nothing filling
+    the gap it leaves) the *receiver* gets the exact complementary `+X`
+    too, *if its own `profile_shift` is also still `None`* (an explicit
+    receiver value is never auto-adjusted, same "explicit always wins"
+    rule as the intruder's own field).
+
+    This complementary shift is not just a cosmetic compromise - it's
+    provably backlash-neutral at the pitch line, for any `X`: tooth_
+    thickness_at_pitch is `circular_pitch/2 + 2*profile_shift*module*tan
+    (pressure_angle) - backlash` (`bevel_gear_geometry`), so shifting the
+    intruder by `-X` and the receiver by `+X` changes each one's own
+    thickness by the *same* `2*X*module*tan(pressure_angle)` in opposite
+    directions. Since `circular_pitch` (hence "gap = circular_pitch - own
+    tooth_thickness") is shared (`module` is a pair-level field, identical
+    for both members), the receiver's new tooth_thickness lands exactly on
+    the intruder's new gap width - the same identity that already holds at
+    `X = 0` (unshifted, tooth width equals mating gap width by definition
+    of a zero-backlash design) - not an approximation that degrades as `X`
+    grows. `minimum_intruder_profile_shift_for_mesh_clearance`'s own search
+    already keeps the intruder's own addendum positive; the receiver's
+    complementary `+X` is checked the same way (a real `GearGeometryError`
+    - e.g. `dedendum <= 0` at extreme `X` - falls back to the single-sided
+    shift rather than propagating, since a real (if more backlash-visible)
+    fix beats none)."""
     baseline_shift_1 = profile_shift_1 if profile_shift_1 is not None else 0.0
     baseline_shift_2 = profile_shift_2 if profile_shift_2 is not None else 0.0
     geometry_kwargs = {
@@ -362,20 +379,43 @@ def resolve_member_profile_shifts(
     if worst_margin >= MESH_MARGIN_SAFETY_BUFFER_DEGREES:
         return baseline_shift_1, baseline_shift_2
 
-    if member_2_is_intruder and profile_shift_2 is None:
-        auto_shift = minimum_intruder_profile_shift_for_mesh_clearance(
-            baseline_geometry_2, baseline_geometry_1, shaft_angle_degrees
-        )
-        if auto_shift is not None:
-            return baseline_shift_1, auto_shift
-    elif not member_2_is_intruder and profile_shift_1 is None:
-        auto_shift = minimum_intruder_profile_shift_for_mesh_clearance(
-            baseline_geometry_1, baseline_geometry_2, shaft_angle_degrees
-        )
-        if auto_shift is not None:
-            return auto_shift, baseline_shift_2
+    if member_2_is_intruder:
+        intruder_shift_input, receiver_shift_input = profile_shift_2, profile_shift_1
+        receiver_tooth_count, receiver_gamma = tooth_count_1, gamma_1
+        intruder_geometry, receiver_geometry = baseline_geometry_2, baseline_geometry_1
+    else:
+        intruder_shift_input, receiver_shift_input = profile_shift_1, profile_shift_2
+        receiver_tooth_count, receiver_gamma = tooth_count_2, gamma_2
+        intruder_geometry, receiver_geometry = baseline_geometry_1, baseline_geometry_2
 
-    return baseline_shift_1, baseline_shift_2
+    if intruder_shift_input is not None:
+        # User pinned the intruder's own shift explicitly - can't auto-fix
+        # (the warning surfaces this instead).
+        return baseline_shift_1, baseline_shift_2
+
+    auto_intruder_shift = minimum_intruder_profile_shift_for_mesh_clearance(
+        intruder_geometry, receiver_geometry, shaft_angle_degrees
+    )
+    if auto_intruder_shift is None:
+        return baseline_shift_1, baseline_shift_2
+
+    auto_receiver_shift = receiver_geometry.profile_shift
+    if receiver_shift_input is None:
+        delta = auto_intruder_shift - intruder_geometry.profile_shift
+        candidate_receiver_shift = receiver_geometry.profile_shift - delta
+        try:
+            _member_geometry(
+                tooth_count=receiver_tooth_count, profile_shift=candidate_receiver_shift, gamma=receiver_gamma,
+                **geometry_kwargs,
+            )
+        except GearGeometryError:
+            pass  # keep the receiver at its own baseline - single-sided, but still a real fix
+        else:
+            auto_receiver_shift = candidate_receiver_shift
+
+    if member_2_is_intruder:
+        return auto_receiver_shift, auto_intruder_shift
+    return auto_intruder_shift, auto_receiver_shift
 
 
 def resolve_bevel_pair_from_bodies(
