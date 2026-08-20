@@ -145,8 +145,8 @@ class ApiConfig {
   /// can trigger a full-Part OCCT recompute server-side (`compute_part_
   /// bodies` replays the whole Feature history from scratch, uncached), and
   /// a complex helical/herringbone `GearFeature` - or worse, a `BevelGear`/
-  /// `BevelPairFeature` (spherical-involute flanks sewn into a solid,
-  /// doubled for a pair's two members - the single most expensive build in
+  /// `BevelPairFeature` (Tredgold-built flanks sewn into a solid, doubled
+  /// for a pair's two members - the single most expensive build in
   /// this codebase) - alone can take well past [requestTimeout] on the Pi 5
   /// target hardware - see `docs/gear-design/` for the shape of that cost.
   /// [SketchApiClient]'s own calls (2D constraint solving via py-slvs) stay

@@ -3,13 +3,19 @@
 `app.document.bevel_math`'s pure math, implementing directly against both
 of that doc's own spikes (2026-08-04: spherical-involute math + single-
 flank `ThruSections` GO; 2026-08-05: full shell/solid assembly GO) rather
-than re-deriving either. Mirrors `app.document.gear`/`app.document.rack`'s
-overall shape (a real OCCT solid straight from parameters, no backing
-Sketch - `00-conventions.md`'s "gear teeth are not Sketch entities"
-decision), but the construction itself has no precedent anywhere else in
-this codebase - every technique below is the one the two spikes above
-found and validated, not an adaptation of an existing planar/prism/loft
-Feature.
+than re-deriving either. The spike's own flank *curve* (spherical
+involute) was later replaced by `bevel_math.tredgold_bevel_point`'s
+Tredgold approximation (real mating pairs built via true spherical
+involute don't reliably mesh - see that function's own docstring); this
+module's own surface/solid *assembly* technique below - everything from
+"Face inventory" on - is unaffected, since it just samples whichever
+curve `bevel_tooth_flank_pair` hands it the same way either curve was
+sampled. Mirrors `app.document.gear`/`app.document.rack`'s overall shape
+(a real OCCT solid straight from parameters, no backing Sketch - `00-
+conventions.md`'s "gear teeth are not Sketch entities" decision), but the
+construction itself has no precedent anywhere else in this codebase -
+every technique below is the one the two spikes above found and
+validated, not an adaptation of an existing planar/prism/loft Feature.
 
 **Face inventory** (`4N + 2` faces for `N` teeth, per the 2026-08-05
 spike's own §2): per tooth, 2 flank faces (right, left - the 2026-08-04
@@ -1082,10 +1088,10 @@ def resolve_bevel_gear_from_bodies(
     if feature.points_per_flank < 2:
         # Mirrors `app.document.gear.resolve_gear_from_bodies`'s own
         # `points_per_flank must be >= 2` floor (`gear.py:536-543`) - same
-        # `sample_spherical_involute_flank`/`sample_involute_flank` `point_
-        # count must be >= 2` requirement underneath, checked here so a bad
-        # value fails closed with a clean 422 instead of an uncaught
-        # GearGeometryError surfacing as a 500 partway through flank sampling.
+        # `sample_tredgold_flank`/`sample_involute_flank` `point_count must
+        # be >= 2` requirement underneath, checked here so a bad value fails
+        # closed with a clean 422 instead of an uncaught GearGeometryError
+        # surfacing as a 500 partway through flank sampling.
         raise _invalid_bevel_parameters(f"points_per_flank must be >= 2, got {feature.points_per_flank!r}")
     try:
         geometry = bevel_gear_geometry(
