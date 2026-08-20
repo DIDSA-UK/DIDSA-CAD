@@ -349,3 +349,54 @@ sketch count, but scales linearly with how many Sketches the Part has.
 profile's real width/height reaching the summary, a circle's real radius
 and center, construction-only geometry being excluded, and an empty Sketch
 reading as `empty (no real geometry yet)` rather than blank.
+
+## Addendum: fixing the stopped-run retry's own broken promise, in plain fresh-Part mode too
+
+**Bug found while designing the sketch-geometry addendum above**: a real
+step failure's own chat message (`_appendStoppedRunToTranscript`) has
+always told the LLM "every step before this one was created successfully
+and is still in the Part... propose a revised plan for the remaining
+steps." True in existing-Part mode (Generate always targets
+`existingPartId`) - **false** in the ordinary fresh-Part flow, where the
+*next* Generate press still unconditionally called
+`startNewDocument`/`createPart` again, wiping the in-progress Part and
+starting a genuinely empty one. The "revised plan" the LLM had just been
+told to write - which necessarily references local_ids that only existed
+in the *previous* turn's own plan - was then essentially guaranteed to fail
+outright, since a plan's local_ids never carry across turns.
+
+Fixed by reusing this workstream's own `existing:<id>` machinery for a
+second purpose it wasn't originally built for: a plain fresh-Part
+conversation's own mid-conversation retry, not just "Continue with AI."
+
+- New field `_pendingRetryPartId` (`ai_modelling_screen.dart`): set to the
+  in-progress Part's real id whenever a Generate attempt stops
+  (`stepFailed`/`gearRequestEncountered`), cleared on "Undo this
+  generation" or once a retry finally succeeds - never read at all once
+  `widget.existingPartId` is set.
+- New getter `_activePartId => widget.existingPartId ?? _pendingRetryPartId`
+  - `_generate()` now targets this instead of `widget.existingPartId`
+  directly, so the exact same "never call startNewDocument/createPart"
+  guard now also protects a fresh-Part conversation's own retry.
+- New shared `_refreshExistingPartContext(partId)` (replacing the old one-
+  shot `_loadExistingFeatures`, folded into it): fetches and re-summarizes
+  a Part's current Features - called from `initState` (Continue with AI,
+  as before), after any stopped run (so the *next* prompt's "Editing an
+  existing Part" block reflects what was actually built), and after a
+  successful Continue-with-AI Generate (a real, related gap this also
+  closed - `_existingFeatures` used to only ever reflect the screen's
+  original `initState` snapshot, even after further successful edits in
+  the same conversation).
+- On a fresh-Part retry that finally succeeds, `_existingFeatures`/
+  `_existingPartSummary` are cleared back to `null` rather than kept - once
+  the cycle this promise was about is done, `00-conventions.md`'s "always
+  fresh Part" rule should resume governing any further, unrelated request
+  in the same chat, not silently keep treating it as an existing-Part
+  conversation forever.
+
+`client/test/ai_modelling_screen_test.dart` gained one new widget test
+covering the whole cycle: a stopped run, a retry that reuses the same real
+Part (never `POST /document/new`/`POST /document/parts` again) with the
+system prompt correctly carrying `existing:<id>` context, the retry
+succeeding, and a further unrelated message afterward correctly *not*
+carrying existing-Part context anymore.

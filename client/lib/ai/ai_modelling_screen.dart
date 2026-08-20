@@ -76,6 +76,20 @@ const int aiImageMaxEdgePx = 1568;
 /// would wipe or orphan the user's real Document/Part; see [_generate]'s
 /// own doc comment for why this is the one thing this mode has to get
 /// exactly right).
+///
+/// **Bug fix - stopped-run retry in plain fresh-Part mode**: a real step
+/// failure's own chat message has always told the LLM its earlier steps
+/// "are still in the Part... propose a revised plan for the remaining
+/// steps" - but until this fix, the *next* Generate press still always
+/// wiped the Document and started a genuinely empty Part, so that "revised
+/// plan" (which necessarily references local_ids that only existed in the
+/// *previous* turn's own plan) was essentially guaranteed to fail. Fixed by
+/// reusing the exact same `existing:<id>` machinery existing-Part editing
+/// already built: [_pendingRetryPartId] tracks the in-progress Part across
+/// a stop, [_activePartId] is `existingPartId ?? _pendingRetryPartId`, and
+/// [_generate] targets it exactly like [existingPartId] itself - see that
+/// field's own doc comment for the full lifecycle (set on a stop, cleared
+/// on Undo or once a retry finally succeeds).
 class AiModellingScreen extends StatefulWidget {
   /// Overridable for tests, so a real call never hits the network.
   final AiProvider? provider;
@@ -187,17 +201,79 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   // silent failure later.
   bool _providerConfigDialogDismissed = false;
 
-  // Existing-Part editing: fetched once in `initState` when
-  // `widget.existingPartId` is set - `null` for the ordinary fresh-Part
-  // flow. Reused for both the prompt-facing summary
+  // Existing-Part context currently in effect for this conversation's next
+  // scoping turn and next Generate press - populated by
+  // `_refreshExistingPartContext`, either once in `initState` (when
+  // `widget.existingPartId` is set - "Continue with AI") or after any
+  // Generate attempt that touches `_activePartId` below (so a later message
+  // in the same conversation sees what was actually built, not a stale
+  // pre-Generate snapshot). `null` for the ordinary fresh-Part flow before
+  // its first stop. Reused for both the prompt-facing summary
   // (`_existingPartSummary`, threaded into every `_send()` turn) and
   // `PlanTranslator.execute`'s own `existingFeatures` pre-seeding on
-  // Generate, so a single fetch serves both - nothing else modifies this
-  // Part between opening this screen and pressing Generate, so re-fetching
-  // for the second use would only be redundant, never more correct.
+  // Generate.
   List<FeatureDto>? _existingFeatures;
   String? _existingPartSummary;
   String? _existingFeaturesError;
+
+  // Bug fix: a stopped run's own chat message (`_appendStoppedRunToTranscript`)
+  // has always told the LLM "every step before this one was created
+  // successfully and is still in the Part... propose a revised plan for the
+  // remaining steps" - but `_generate()` used to always call
+  // `startNewDocument`/`createPart` again on the very next press in
+  // fresh-Part mode, wiping that Part and starting a genuinely empty one.
+  // The "revised plan" the LLM had just been told to write - which
+  // necessarily references earlier local_ids that only existed in the
+  // *previous* turn's plan, not this new one - would then fail outright.
+  // Set to the in-progress Part's real id on a stop (`_generate`'s own
+  // stopped-run branch), so the *next* Generate press continues into the
+  // same Part instead - the same `existing:<id>` machinery
+  // `09-existing-part-editing.md` already built for "Continue with AI",
+  // just also driving a plain fresh-Part conversation's own mid-conversation
+  // retry. Cleared on "Undo this generation" (the partial build is gone, so
+  // a genuinely fresh Part is correct again) or once a retry finally
+  // succeeds (`00-conventions.md`'s "always fresh Part" rule should resume
+  // governing any further, unrelated request in the same chat once this
+  // cycle is done) - never read at all once `widget.existingPartId` is set,
+  // since `_activePartId` prefers that unconditionally.
+  String? _pendingRetryPartId;
+
+  // Whichever real Part id this conversation's next Generate press should
+  // target instead of creating a brand-new one - `widget.existingPartId`
+  // ("Continue with AI", set once, for this screen's whole lifetime) takes
+  // priority over `_pendingRetryPartId` (a plain fresh-Part conversation's
+  // own mid-conversation retry state, which only exists at all because
+  // `widget.existingPartId` was null to begin with, so the two can never
+  // meaningfully conflict).
+  String? get _activePartId => widget.existingPartId ?? _pendingRetryPartId;
+
+  // Shared by `initState` (Continue with AI's own one-time fetch), a
+  // stopped run (so the *next* prompt/Generate see what was actually
+  // built), and a successful Continue-with-AI Generate (so a further
+  // message in the same conversation isn't still working from the
+  // pre-Generate snapshot) - one fetch-and-summarize path for every case
+  // that needs `_existingFeatures`/`_existingPartSummary` to reflect
+  // [partId]'s real, current state.
+  Future<void> _refreshExistingPartContext(String partId) async {
+    try {
+      final features = await _documentApi.listFeatures(partId);
+      final summary = await summarizeExistingPartForPrompt(_sketchApi, features);
+      if (!mounted) return;
+      setState(() {
+        _existingFeatures = features;
+        _existingPartSummary = summary;
+        // Clears a previous call's failure - this is called repeatedly over
+        // one conversation's lifetime now (every stop, every Continue-with-
+        // AI success), not just once in `initState`, so a stale error from
+        // an earlier transient failure must not keep showing once a later
+        // call actually succeeds.
+        _existingFeaturesError = null;
+      });
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() => _existingFeaturesError = e.message);
+    }
+  }
 
   DocumentApiClient get _documentApi => widget.documentApi ?? DocumentApiClient();
   SketchApiClient get _sketchApi => widget.sketchApi ?? SketchApiClient();
@@ -222,26 +298,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) => _checkProviderConfigured());
-    if (widget.existingPartId != null) _loadExistingFeatures();
-  }
-
-  Future<void> _loadExistingFeatures() async {
-    try {
-      final features = await _documentApi.listFeatures(widget.existingPartId!);
-      // Fetches every real Sketch entity behind each Sketch Feature (on-
-      // device feedback: the LLM previously saw only "a sketch has been
-      // extruded," never the sketch's actual shape/size) - see
-      // ai_existing_part_summary.dart's own doc comment.
-      final summary = await summarizeExistingPartForPrompt(_sketchApi, features);
-      if (!mounted) return;
-      setState(() {
-        _existingFeatures = features;
-        _existingPartSummary = summary;
-      });
-    } on ApiException catch (e) {
-      if (!mounted) return;
-      setState(() => _existingFeaturesError = e.message);
-    }
+    if (widget.existingPartId != null) _refreshExistingPartContext(widget.existingPartId!);
   }
 
   Future<void> _checkProviderConfigured() async {
@@ -553,24 +610,28 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       _stepStatuses = List.filled(plan.steps.length, TranslationStepStatus.pending);
     });
     try {
-      // Existing-Part editing: reuse `widget.existingPartId` directly -
-      // CRITICAL that this branch never calls `startNewDocument`/
-      // `createPart` (see this method's own doc comment on the class):
-      // `startNewDocument` would reset the session's entire Document,
-      // wiping the real Part this conversation is meant to be editing, and
-      // `createPart` would silently generate for an orphaned, unrelated
-      // Part instead of the user's real one.
+      // Existing-Part editing / mid-conversation retry: reuse
+      // `_activePartId` directly - CRITICAL that this branch never calls
+      // `startNewDocument`/`createPart` (see this method's own doc comment
+      // on the class): `startNewDocument` would reset the session's entire
+      // Document, wiping the real Part this conversation is meant to be
+      // continuing, and `createPart` would silently generate for an
+      // orphaned, unrelated Part instead. Covers two cases identically:
+      // `widget.existingPartId` ("Continue with AI") and `_pendingRetryPartId`
+      // (a plain fresh-Part conversation retrying after a stopped run - see
+      // that field's own doc comment for why this is a bug fix, not new
+      // scope).
       final String partId;
-      if (widget.existingPartId != null) {
-        partId = widget.existingPartId!;
+      if (_activePartId != null) {
+        partId = _activePartId!;
       } else {
         // Bug fix (on-device feedback): AI Modelling always starts a
         // brand-new Part (see this screen's own class doc comment) -
         // without resetting the session's Document first, this Part would
         // just pile onto whatever Document a previous tool-chooser entry
         // already created this session (see `DocumentApiClient.
-        // startNewDocument`'s own doc comment). Skipped entirely in
-        // existing-Part mode, above.
+        // startNewDocument`'s own doc comment). Skipped entirely whenever
+        // `_activePartId` is set, above.
         await _documentApi.startNewDocument();
         final part = await _documentApi.createPart('AI Modelling Part');
         partId = part.id;
@@ -586,6 +647,8 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         },
       );
       if (!mounted) return;
+      final isStopped = result.outcome == PlanTranslationOutcome.stepFailed ||
+          result.outcome == PlanTranslationOutcome.gearRequestEncountered;
       setState(() {
         _generating = false;
         _finishedOutcome = result.outcome;
@@ -595,10 +658,36 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
           _lastRunPartId = partId;
           _lastRunCreatedFeatureIds = result.createdFeatureIds;
         }
+        if (isStopped) {
+          _pendingRetryPartId = partId;
+        } else if (result.outcome == PlanTranslationOutcome.success && widget.existingPartId == null) {
+          // A fresh-Part retry that finally succeeded - see
+          // `_pendingRetryPartId`'s own doc comment for why this resets
+          // rather than keeps targeting the same Part indefinitely.
+          _pendingRetryPartId = null;
+        }
       });
-      if (result.outcome == PlanTranslationOutcome.stepFailed ||
-          result.outcome == PlanTranslationOutcome.gearRequestEncountered) {
+      if (isStopped) {
+        // So the *next* prompt/Generate see what was actually built before
+        // this stop, not a stale snapshot - `_appendStoppedRunToTranscript`
+        // itself doesn't need to be async, so this runs first.
+        await _refreshExistingPartContext(partId);
         _appendStoppedRunToTranscript(plan, result);
+      } else if (result.outcome == PlanTranslationOutcome.success) {
+        if (widget.existingPartId != null) {
+          // Continue with AI: refresh so a further message in this same
+          // conversation sees what was just built, not the initState
+          // snapshot from before this Generate.
+          await _refreshExistingPartContext(partId);
+        } else {
+          // A fresh-Part retry that finally succeeded (or a plain first-
+          // time success, where these were already null) - back to true
+          // fresh-Part context for any further, unrelated request.
+          setState(() {
+            _existingFeatures = null;
+            _existingPartSummary = null;
+          });
+        }
       }
     } on ApiException catch (e) {
       if (!mounted) return;
@@ -620,6 +709,13 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   /// this is real information being fed *to* the LLM, not something it
   /// said - an `assistant`-role bubble here would misleadingly read as the
   /// model reporting on its own execution.
+  ///
+  /// This message's own "propose a revised plan for the remaining steps"
+  /// promise only became true with the [_pendingRetryPartId] fix (see the
+  /// class's own doc comment) - the caller (`_generate`) sets it and
+  /// refreshes [_existingPartSummary] *before* calling this, so the next
+  /// `_send()` call already carries the "Editing an existing Part" block
+  /// naming this same in-progress Part's real current Features.
   void _appendStoppedRunToTranscript(AiGenerationPlan plan, PlanTranslationResult result) {
     final summary = summarizeAiPlan(plan);
     final nonPointSteps = plan.steps.where((s) => s is! AiSketchPointStep).toList();
@@ -664,7 +760,23 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         _undoing = false;
         _lastRunPartId = null;
         _lastRunCreatedFeatureIds = null;
+        // The partial build this retry state pointed at is gone - a
+        // genuinely fresh Part is correct again on the next Generate press
+        // (see `_pendingRetryPartId`'s own doc comment). Never touched in
+        // Continue-with-AI mode, where `_activePartId` always prefers
+        // `widget.existingPartId` regardless.
+        if (widget.existingPartId == null) _pendingRetryPartId = null;
       });
+      if (widget.existingPartId != null) {
+        // Continue with AI: the real Part still exists, just with fewer
+        // Features now - refresh rather than clear.
+        await _refreshExistingPartContext(widget.existingPartId!);
+      } else {
+        setState(() {
+          _existingFeatures = null;
+          _existingPartSummary = null;
+        });
+      }
     } on ApiException catch (e) {
       if (!mounted) return;
       setState(() {
@@ -806,7 +918,11 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
               textAlign: TextAlign.center,
             ),
           ),
-        if (widget.existingPartId != null && _existingFeaturesError != null)
+        // Not gated on `widget.existingPartId` - `_refreshExistingPartContext`
+        // can also fail during a plain fresh-Part conversation's own
+        // mid-conversation retry (`_pendingRetryPartId`), and that failure
+        // deserves the same visible banner.
+        if (_existingFeaturesError != null)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
             child: Text(

@@ -663,6 +663,85 @@ Here's the plan:
     expect(find.text('Undo this generation'), findsOneWidget);
   });
 
+  testWidgets(
+      'Bug fix: retrying after a stopped run in fresh-Part mode continues into the same Part, never a new one',
+      (tester) async {
+    // The stopped run's own chat message has always promised "propose a
+    // revised plan for the remaining steps" - this test is what makes that
+    // promise actually true. The extrude step fails only on its first
+    // attempt (stepFailed), succeeds on the retry - lets this one test also
+    // cover the "clears back to true fresh-Part once the retry succeeds"
+    // half of the fix (a third, unrelated message afterward must not still
+    // carry existing-Part context).
+    final requestedPaths = <String>[];
+    var extrudeAttempts = 0;
+    var sendCallCount = 0;
+    String? capturedRetrySystemPrompt;
+    String? capturedThirdSystemPrompt;
+    final mock = MockClient((request) async {
+      requestedPaths.add('${request.method} ${request.url.path}');
+      final path = request.url.path;
+      if (path == '/document/parts/part-1/extrude-features') {
+        extrudeAttempts++;
+        if (extrudeAttempts == 1) {
+          return http.Response(jsonEncode({'detail': {'type': 'geometry_failed'}}), 422);
+        }
+      }
+      if (request.method == 'GET' && path == '/document/parts/part-1/features') {
+        return jsonResponse([
+          {'type': 'sketch', 'id': 'feat-sk1', 'locked': false, 'sketch_id': 'sketch-1', 'produces': 'sketch'},
+        ]);
+      }
+      if (request.method == 'GET' && path.startsWith('/sketch/sketches/sketch-1/')) {
+        return jsonResponse(<Object>[]);
+      }
+      return realPlanHandler()(request);
+    });
+    final client = DocumentApiClient(httpClient: mock);
+    final sketchClient = SketchApiClient(httpClient: mock);
+    final provider = FakeAiProvider((transcript, systemPrompt) async {
+      sendCallCount++;
+      if (sendCallCount == 2) capturedRetrySystemPrompt = systemPrompt;
+      if (sendCallCount == 3) capturedThirdSystemPrompt = systemPrompt;
+      return const AiTurnResult(assistantText: realPlanText);
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(home: AiModellingScreen(provider: provider, documentApi: client, sketchApi: sketchClient)),
+    );
+    await sendMessage(tester, 'A 60x40x10mm block');
+    await tester.tap(find.text('Generate'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Execution stopped'), findsOneWidget);
+
+    requestedPaths.clear();
+    // The LLM's own "revised plan for the remaining steps" - sent as the
+    // next ordinary chat message, per `_appendStoppedRunToTranscript`'s own
+    // mechanism.
+    await sendMessage(tester, 'ok, retry');
+    expect(capturedRetrySystemPrompt, contains('Editing an existing Part'));
+    expect(capturedRetrySystemPrompt, contains('existing:feat-sk1'));
+
+    await tester.tap(find.text('Generate'));
+    await tester.pumpAndSettle();
+
+    // The critical assertion: retry never wipes the Document or creates a
+    // second Part - it continues into the same real part-1.
+    expect(requestedPaths, isNot(contains('POST /document/new')));
+    expect(requestedPaths, isNot(contains('POST /document/parts')));
+    expect(requestedPaths, contains('POST /document/parts/part-1/ai-plan/validate'));
+    expect(find.textContaining('Generated - every step created successfully'), findsOneWidget);
+
+    // A further, unrelated message after the retry succeeded must not
+    // still carry existing-Part context - 00-conventions.md's "always
+    // fresh Part" rule resumes governing this chat once the retry cycle
+    // that promise was about is actually done.
+    await tester.tap(find.text('Adjust'));
+    await tester.pumpAndSettle();
+    await sendMessage(tester, 'Actually, build something completely different');
+    expect(capturedThirdSystemPrompt, isNot(contains('Editing an existing Part')));
+  });
+
   testWidgets('Generate on a gear_request-only plan stops before executing and never fakes a success', (tester) async {
     final requestedPaths = <String>[];
     final client = DocumentApiClient(
