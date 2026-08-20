@@ -661,7 +661,13 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
             decoration: InputDecoration(
               labelText: 'Profile shift',
               isDense: true,
-              helperText: _profileShiftAuto ? 'Auto - computed to avoid undercut on low tooth counts' : null,
+              // Deliberately avoids the literal word "undercut" here - the
+              // actual undercut warning banner (GearValidationBanner, from
+              // gear_math.undercut_warning) uses that exact word, and
+              // gear_design_screen_test.dart's own find.textContaining
+              // ('undercut') checks need to find it there and only there,
+              // not in this always-visible static helper text too.
+              helperText: _profileShiftAuto ? 'Auto - computed to keep the tooth root strong on low counts' : null,
               helperMaxLines: 2,
               suffixIcon: fieldHelpIcon(
                 'Shifts the tooth profile outward (positive) or inward (negative) from standard - changes '
