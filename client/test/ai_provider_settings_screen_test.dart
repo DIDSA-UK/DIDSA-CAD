@@ -72,6 +72,16 @@ void main() {
 
   testWidgets('Gemini preset button fills the local baseUrl, a default model, and checks vision support',
       (tester) async {
+    // The vision checkbox sits below this ListView's default build extent
+    // (same lazy-mounting gap documented on the dedicated vision-checkbox
+    // test below) - a tall viewport avoids needing to scroll to reach it.
+    tester.view.physicalSize = const Size(800, 3000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
     final client = MockClient((request) async => http.Response('not ollama', 404));
     await tester.pumpWidget(MaterialApp(home: AiProviderSettingsScreen(httpClient: client)));
     await tester.pumpAndSettle();
@@ -166,6 +176,16 @@ void main() {
   testWidgets(
       'first launch pre-fills the local fields to the free Gemini preset, so only an API key is needed',
       (tester) async {
+    // Same reasoning as the Gemini-preset test above: a tall viewport
+    // avoids the vision checkbox's lazy-mounting gap below this ListView's
+    // default build extent.
+    tester.view.physicalSize = const Size(800, 3000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
     final client = MockClient((request) async => http.Response('not ollama', 404));
     await tester.pumpWidget(MaterialApp(home: AiProviderSettingsScreen(httpClient: client)));
     await tester.pumpAndSettle();
