@@ -163,6 +163,11 @@ void main() {
     await tester.pumpWidget(const MaterialApp(home: AiProviderSettingsScreen()));
     await tester.pumpAndSettle();
 
+    // The default (Local) provider section is long enough that this entry
+    // sits beyond ListView's built extent - scrollUntilVisible (not
+    // ensureVisible, which requires the target to already be mounted)
+    // scrolls incrementally until it is.
+    await tester.scrollUntilVisible(find.byKey(const Key('aiSystemPromptSettingsEntry')), 300);
     await tester.tap(find.byKey(const Key('aiSystemPromptSettingsEntry')));
     await tester.pumpAndSettle();
 

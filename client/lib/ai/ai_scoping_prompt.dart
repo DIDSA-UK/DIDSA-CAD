@@ -386,7 +386,7 @@ String buildAiScopingSystemPrompt({
     _unitsConvention,
     _fewShotExamples,
     ...addOnBlocks,
-    if (hasExistingPart) _existingPartEditingBlock(existingPartSummary!),
+    if (hasExistingPart) _existingPartEditingBlock(existingPartSummary),
     _planTerminationFooter,
   ].join('\n\n');
 }

@@ -27,6 +27,11 @@ void main() {
     await tester.pumpAndSettle();
 
     await tester.enterText(find.byKey(const Key('aiSystemPromptInstructions')), 'Only ever speak in haiku.');
+    // The default instructions text is long enough that Save sits beyond
+    // ListView's built extent at the default text size - scrollUntilVisible
+    // (not ensureVisible, which requires the target to already be mounted)
+    // scrolls incrementally until it is.
+    await tester.scrollUntilVisible(find.byKey(const Key('aiSystemPromptSave')), 300);
     await tester.tap(find.byKey(const Key('aiSystemPromptSave')));
     await tester.pumpAndSettle();
 
@@ -53,6 +58,9 @@ void main() {
     await tester.pumpWidget(const MaterialApp(home: AiSystemPromptSettingsScreen()));
     await tester.pumpAndSettle();
 
+    // Same reasoning as the Save-button fix above: the default instructions
+    // text pushes the add-on switches beyond ListView's built extent.
+    await tester.scrollUntilVisible(find.byKey(const Key('aiPromptAddOn_sheet_metal')), 300);
     await tester.tap(find.byKey(const Key('aiPromptAddOn_sheet_metal')));
     await tester.pumpAndSettle();
 

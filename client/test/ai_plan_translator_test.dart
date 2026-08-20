@@ -318,6 +318,21 @@ void main() {
             'construction': false,
           });
         }
+        // Workstream 8 (dimension-driven sketches): a literal `length` on
+        // this plan's sketch_line step now also creates a real
+        // DistanceConstraint right after the line itself.
+        if (request.url.path == '/sketch/sketches/sketch-1/constraints') {
+          final body = decodeBody(request);
+          return jsonResponse({
+            'type': 'distance',
+            'id': 'dist-1',
+            'point_a_id': body['point_a_id'],
+            'point_b_id': body['point_b_id'],
+            'distance': body['distance'],
+            'orientation': body['orientation'],
+            'provisional': body['provisional'],
+          });
+        }
         return http.Response('not found', 404);
       });
 
@@ -630,11 +645,14 @@ void main() {
       final byOrientation = {for (final c in constraintCalls) c['orientation'] as String: c};
       expect(byOrientation.keys, containsAll(['horizontal', 'vertical']));
       expect(byOrientation['horizontal']!['distance'], 60.0);
-      expect(byOrientation['horizontal']!['point_a_id'], 'point-0-0');
-      expect(byOrientation['horizontal']!['point_b_id'], 'point-60-0');
+      // Ids come from this test's own point-creation mock, which formats
+      // them as 'point-$x-$y' using the request body's real (double, not
+      // int) x/y - matches every other point-id literal in this file.
+      expect(byOrientation['horizontal']!['point_a_id'], 'point-0.0-0.0');
+      expect(byOrientation['horizontal']!['point_b_id'], 'point-60.0-0.0');
       expect(byOrientation['vertical']!['distance'], 40.0);
-      expect(byOrientation['vertical']!['point_a_id'], 'point-60-0');
-      expect(byOrientation['vertical']!['point_b_id'], 'point-60-40');
+      expect(byOrientation['vertical']!['point_a_id'], 'point-60.0-0.0');
+      expect(byOrientation['vertical']!['point_b_id'], 'point-60.0-40.0');
     });
 
     test('sketch_circle confirms its own provisional radius constraint via updateConstraintValue', () async {
