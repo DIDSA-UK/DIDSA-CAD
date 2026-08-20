@@ -166,8 +166,16 @@ void main() {
     // The default (Local) provider section is long enough that this entry
     // sits beyond ListView's built extent - scrollUntilVisible (not
     // ensureVisible, which requires the target to already be mounted)
-    // scrolls incrementally until it is.
-    await tester.scrollUntilVisible(find.byKey(const Key('aiSystemPromptSettingsEntry')), 300);
+    // scrolls incrementally until it is. `scrollable` must be given
+    // explicitly: the default `find.byType(Scrollable)` also matches the
+    // local "Base URL" TextField's own internal Scrollable, and
+    // scrollUntilVisible needs exactly one - `.first` is the outer
+    // ListView's, found first in the depth-first Element walk.
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('aiSystemPromptSettingsEntry')),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
     await tester.tap(find.byKey(const Key('aiSystemPromptSettingsEntry')));
     await tester.pumpAndSettle();
 

@@ -30,8 +30,17 @@ void main() {
     // The default instructions text is long enough that Save sits beyond
     // ListView's built extent at the default text size - scrollUntilVisible
     // (not ensureVisible, which requires the target to already be mounted)
-    // scrolls incrementally until it is.
-    await tester.scrollUntilVisible(find.byKey(const Key('aiSystemPromptSave')), 300);
+    // scrolls incrementally until it is. `scrollable` must be given
+    // explicitly: the default `find.byType(Scrollable)` matches both the
+    // outer ListView's own Scrollable and the multi-line TextField's
+    // internal one (EditableText wraps its own Scrollable for text
+    // overflow), and scrollUntilVisible needs exactly one - `.first` is the
+    // outer ListView's, found first in the depth-first Element walk.
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('aiSystemPromptSave')),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
     await tester.tap(find.byKey(const Key('aiSystemPromptSave')));
     await tester.pumpAndSettle();
 
@@ -59,8 +68,13 @@ void main() {
     await tester.pumpAndSettle();
 
     // Same reasoning as the Save-button fix above: the default instructions
-    // text pushes the add-on switches beyond ListView's built extent.
-    await tester.scrollUntilVisible(find.byKey(const Key('aiPromptAddOn_sheet_metal')), 300);
+    // text pushes the add-on switches beyond ListView's built extent, and
+    // `scrollable` must be given explicitly for the same reason.
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('aiPromptAddOn_sheet_metal')),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
     await tester.tap(find.byKey(const Key('aiPromptAddOn_sheet_metal')));
     await tester.pumpAndSettle();
 
