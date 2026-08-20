@@ -761,6 +761,31 @@ def _bevel_pair_feature_response(
         except HTTPException:
             logger.warning("BevelPairFeature %s could not be resolved for its response", feature.id)
             warnings = []
+    # Cheap (pure math, no OCCT) - computed fresh here regardless of
+    # whether `warnings` was already known, rather than threading it
+    # through every caller: `resolve_bevel_pair_from_bodies` doesn't return
+    # the resolved profile shifts today, and duplicating this tiny
+    # computation is far simpler than widening that return value.
+    try:
+        gamma_1, gamma_2 = pitch_cone_half_angles(
+            feature.member_1.tooth_count, feature.member_2.tooth_count, feature.shaft_angle_degrees
+        )
+        effective_profile_shift_1, effective_profile_shift_2 = resolve_member_profile_shifts(
+            module=feature.module,
+            tooth_count_1=feature.member_1.tooth_count,
+            tooth_count_2=feature.member_2.tooth_count,
+            face_width=feature.face_width,
+            pressure_angle_degrees=feature.pressure_angle_degrees,
+            shaft_angle_degrees=feature.shaft_angle_degrees,
+            backlash=feature.backlash,
+            profile_shift_1=feature.member_1.profile_shift,
+            profile_shift_2=feature.member_2.profile_shift,
+            gamma_1=gamma_1,
+            gamma_2=gamma_2,
+        )
+    except GearGeometryError:
+        effective_profile_shift_1 = feature.member_1.profile_shift or 0.0
+        effective_profile_shift_2 = feature.member_2.profile_shift or 0.0
     return BevelPairFeatureResponse(
         id=feature.id,
         plane_ref=_plane_ref_to_schema(feature.plane_ref),
@@ -772,6 +797,8 @@ def _bevel_pair_feature_response(
         shaft_angle_degrees=feature.shaft_angle_degrees,
         backlash=feature.backlash,
         points_per_flank=feature.points_per_flank,
+        effective_profile_shift_1=effective_profile_shift_1,
+        effective_profile_shift_2=effective_profile_shift_2,
         locked=part.is_locked(feature.id),
         produces=feature.produces,
         warnings=warnings,
@@ -3913,6 +3940,7 @@ def _bevel_member_schematic(label: str, axis_angle_degrees: float, geometry: Bev
         inner_cone_distance=inner,
         pitch_radius=geometry.pitch_radius,
         face_width=geometry.face_width,
+        effective_profile_shift=geometry.profile_shift,
     )
 
 

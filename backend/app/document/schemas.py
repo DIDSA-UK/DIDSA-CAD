@@ -1072,6 +1072,14 @@ class BevelPairFeatureResponse(BaseModel):
     shaft_angle_degrees: float
     backlash: float
     points_per_flank: int = 12
+    # The *resolved* profile_shift for each member (app.document.bevel_
+    # pair.resolve_member_profile_shifts) - identical to member_1/member_2's
+    # own profile_shift when it's an explicit value, but the actual
+    # computed number (not None) whenever that field is left auto. Cheap
+    # (pure math, no OCCT) to compute alongside the response - lets the
+    # Gear Design screen show "Auto (-0.52)" instead of just "Auto".
+    effective_profile_shift_1: float
+    effective_profile_shift_2: float
     locked: bool
     # B1: see SketchFeatureResponse.produces above - always BODY for a
     # BevelPairFeature.
@@ -1462,6 +1470,13 @@ class GearPreviewBevelMember(BaseModel):
     inner_cone_distance: float
     pitch_radius: float
     face_width: float
+    # The actual profile_shift this schematic was built with - for a
+    # standalone bevel gear, identical to the request's own plain float;
+    # for a bevel pair member, the *resolved* value (`app.document.bevel_
+    # pair.resolve_member_profile_shifts`'s own output) whenever the
+    # request left it `None` (auto) - lets the Gear Design screen show the
+    # live-computed number next to "Auto" instead of just the word alone.
+    effective_profile_shift: float
 
 
 class GearPreviewBevelPairResult(BaseModel):

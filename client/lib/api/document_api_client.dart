@@ -1074,6 +1074,14 @@ class GearPreviewBevelMemberDto {
   final double pitchRadius;
   final double faceWidth;
 
+  /// The actual profile_shift this schematic was built with - for a
+  /// standalone bevel gear, identical to what was sent; for a bevel pair
+  /// member, the *resolved* value whenever the request left it null
+  /// ("auto") - see the backend's `GearPreviewBevelMember.effective_
+  /// profile_shift` docstring. Lets the Bevel Pair form show the live-
+  /// computed number next to "Auto" instead of just the word alone.
+  final double effectiveProfileShift;
+
   GearPreviewBevelMemberDto({
     required this.label,
     required this.axisAngleDegrees,
@@ -1084,6 +1092,7 @@ class GearPreviewBevelMemberDto {
     required this.innerConeDistance,
     required this.pitchRadius,
     required this.faceWidth,
+    required this.effectiveProfileShift,
   });
 
   factory GearPreviewBevelMemberDto.fromJson(Map<String, dynamic> json) => GearPreviewBevelMemberDto(
@@ -1100,6 +1109,7 @@ class GearPreviewBevelMemberDto {
         innerConeDistance: (json['inner_cone_distance'] as num).toDouble(),
         pitchRadius: (json['pitch_radius'] as num).toDouble(),
         faceWidth: (json['face_width'] as num).toDouble(),
+        effectiveProfileShift: (json['effective_profile_shift'] as num).toDouble(),
       );
 }
 
@@ -2576,9 +2586,15 @@ class DocumentApiClient {
   Future<GearPreviewDto> previewGearBevelPair({
     required double module,
     required int toothCount1,
-    double profileShift1 = 0.0,
+    // null (the default) means "auto" - matches the backend's own
+    // BevelPairMemberSpecSchema.profile_shift default, resolved server-
+    // side (app.document.bevel_pair.resolve_member_profile_shifts) to
+    // whichever value keeps this member's own tooth tip clear of the
+    // other member's material, and surfaced back on the response's own
+    // GearPreviewBevelMemberDto.effectiveProfileShift.
+    double? profileShift1,
     required int toothCount2,
-    double profileShift2 = 0.0,
+    double? profileShift2,
     required double faceWidth,
     double pressureAngleDegrees = 20.0,
     double shaftAngleDegrees = 90.0,
@@ -2685,9 +2701,11 @@ class DocumentApiClient {
     String partId, {
     required double module,
     required int toothCount1,
-    double profileShift1 = 0.0,
+    // null (the default) means "auto" - see [previewGearBevelPair]'s own
+    // doc comment.
+    double? profileShift1,
     required int toothCount2,
-    double profileShift2 = 0.0,
+    double? profileShift2,
     required double faceWidth,
     double pressureAngleDegrees = 20.0,
     double shaftAngleDegrees = 90.0,
@@ -2729,9 +2747,15 @@ class DocumentApiClient {
     PlaneRefDto? planeRef,
     double? module,
     int? toothCount1,
-    double profileShift1 = 0.0,
+    // null (the default) means "auto" - see [previewGearBevelPair]'s own
+    // doc comment. Note this is genuinely different from *omitting*
+    // [toothCount1] (which leaves member_1 untouched entirely, profile
+    // shift included) - passing [toothCount1] with this left null sends
+    // member_1 with an explicit `"profile_shift": null`, resetting an
+    // existing explicit override back to auto.
+    double? profileShift1,
     int? toothCount2,
-    double profileShift2 = 0.0,
+    double? profileShift2,
     double? faceWidth,
     double? pressureAngleDegrees,
     double? shaftAngleDegrees,

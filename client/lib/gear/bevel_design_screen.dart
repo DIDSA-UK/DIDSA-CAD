@@ -94,6 +94,22 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
   final _shaftAngleController = TextEditingController(text: '90');
   final _pairBacklashController = TextEditingController(text: '0');
 
+  /// Auto-or-override for each member's own profile shift (`app.document.
+  /// bevel_pair.resolve_member_profile_shifts` on the backend) - `true`
+  /// (the default, matching `BevelPairMemberSpecSchema.profile_shift`'s
+  /// own `None`-means-auto convention) sends no `profile_shift` override
+  /// at all, letting the backend compute whichever value (0.0, or a
+  /// negative shift) keeps this member's own tooth tip clear of the other
+  /// member's material; flipping to `false` sends `_profileShift1Controller`/
+  /// `_profileShift2Controller`'s own current text as an explicit value
+  /// instead. While auto, the matching controller's text is driven by the
+  /// live preview response's own `effectiveProfileShift` (read-only
+  /// display, not user-edited) - flipping to manual keeps whatever number
+  /// is showing as a sensible starting point to then adjust, rather than
+  /// resetting to a bare `0`.
+  bool _profileShift1Auto = true;
+  bool _profileShift2Auto = true;
+
   Timer? _previewDebounce;
   bool _previewLoading = false;
   GearPreviewDto? _preview;
@@ -201,11 +217,21 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
       final member2 = json['member_2'] as Map<String, dynamic>?;
       if (member1 != null) {
         _toothCount1Controller.text = (member1['tooth_count'] as num).toInt().toString();
-        _profileShift1Controller.text = (member1['profile_shift'] as num).toString();
+        final rawShift1 = member1['profile_shift'] as num?;
+        _profileShift1Auto = rawShift1 == null;
+        // effective_profile_shift_1 is always present once resolved
+        // (BevelPairFeatureResponse's own required field) - falls back to
+        // the raw value (never null when not auto) or 0 only for a
+        // malformed/older response.
+        final effective1 = (json['effective_profile_shift_1'] as num?)?.toDouble();
+        _profileShift1Controller.text = (rawShift1?.toDouble() ?? effective1 ?? 0.0).toString();
       }
       if (member2 != null) {
         _toothCount2Controller.text = (member2['tooth_count'] as num).toInt().toString();
-        _profileShift2Controller.text = (member2['profile_shift'] as num).toString();
+        final rawShift2 = member2['profile_shift'] as num?;
+        _profileShift2Auto = rawShift2 == null;
+        final effective2 = (json['effective_profile_shift_2'] as num?)?.toDouble();
+        _profileShift2Controller.text = (rawShift2?.toDouble() ?? effective2 ?? 0.0).toString();
       }
       final faceWidth = json['face_width'] as num?;
       if (faceWidth != null) _pairFaceWidthController.text = faceWidth.toString();
@@ -282,16 +308,16 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
         );
       } else {
         final toothCount1 = int.tryParse(_toothCount1Controller.text);
-        final profileShift1 = double.tryParse(_profileShift1Controller.text);
+        final profileShift1 = _profileShift1Auto ? null : double.tryParse(_profileShift1Controller.text);
         final toothCount2 = int.tryParse(_toothCount2Controller.text);
-        final profileShift2 = double.tryParse(_profileShift2Controller.text);
+        final profileShift2 = _profileShift2Auto ? null : double.tryParse(_profileShift2Controller.text);
         final faceWidth = double.tryParse(_pairFaceWidthController.text);
         final shaftAngle = double.tryParse(_shaftAngleController.text);
         final backlash = double.tryParse(_pairBacklashController.text);
         if (toothCount1 == null ||
-            profileShift1 == null ||
+            (!_profileShift1Auto && profileShift1 == null) ||
             toothCount2 == null ||
-            profileShift2 == null ||
+            (!_profileShift2Auto && profileShift2 == null) ||
             faceWidth == null ||
             shaftAngle == null ||
             backlash == null) {
@@ -322,6 +348,21 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
         _warnings = result.warnings;
         _blockingError = null;
         _previewLoading = false;
+        // While a member's own profile shift is "auto," its controller is
+        // a read-only display of the live-computed value - drive it from
+        // this fresh preview response rather than leave it stale
+        // (`_buildBevelPairForm`'s own field is `enabled: false` in this
+        // state, so the user was never editing it directly anyway).
+        final members = result.bevelPair?.members;
+        if (members != null) {
+          for (final member in members) {
+            if (member.label == 'member_1' && _profileShift1Auto) {
+              _profileShift1Controller.text = member.effectiveProfileShift.toString();
+            } else if (member.label == 'member_2' && _profileShift2Auto) {
+              _profileShift2Controller.text = member.effectiveProfileShift.toString();
+            }
+          }
+        }
       });
     } on ApiException catch (e) {
       if (!mounted) return;
@@ -370,9 +411,9 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
             widget.editingFeatureId!,
             module: _module,
             toothCount1: int.parse(_toothCount1Controller.text),
-            profileShift1: double.parse(_profileShift1Controller.text),
+            profileShift1: _profileShift1Auto ? null : double.parse(_profileShift1Controller.text),
             toothCount2: int.parse(_toothCount2Controller.text),
-            profileShift2: double.parse(_profileShift2Controller.text),
+            profileShift2: _profileShift2Auto ? null : double.parse(_profileShift2Controller.text),
             faceWidth: double.parse(_pairFaceWidthController.text),
             pressureAngleDegrees: _pressureAngleDegrees,
             shaftAngleDegrees: double.parse(_shaftAngleController.text),
@@ -417,9 +458,9 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
           part.id,
           module: _module,
           toothCount1: int.parse(_toothCount1Controller.text),
-          profileShift1: double.parse(_profileShift1Controller.text),
+          profileShift1: _profileShift1Auto ? null : double.parse(_profileShift1Controller.text),
           toothCount2: int.parse(_toothCount2Controller.text),
-          profileShift2: double.parse(_profileShift2Controller.text),
+          profileShift2: _profileShift2Auto ? null : double.parse(_profileShift2Controller.text),
           faceWidth: double.parse(_pairFaceWidthController.text),
           pressureAngleDegrees: _pressureAngleDegrees,
           shaftAngleDegrees: double.parse(_shaftAngleController.text),
@@ -694,54 +735,96 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
     ];
   }
 
+  /// One bevel pair member's own "Profile shift" field: an auto-computed
+  /// value by default (`app.document.bevel_pair.resolve_member_profile_
+  /// shifts` - the smallest shift that keeps this member's own tooth tip
+  /// clear of the other member's material, live-updated from the preview
+  /// response's own `effectiveProfileShift` while [isAuto]), with a
+  /// switch to override it with a manually-typed value instead. Unlike
+  /// the standalone Bevel Gear screen's own plain `_profileShiftController`
+  /// field (no meshing partner, so "auto" has no meaning there), a pair
+  /// member's own default is genuinely computed against live-changing
+  /// sibling-member state, so showing *both* the word "Auto" and the
+  /// actual number - not just a static default - is what tells the user
+  /// what's really going on, per the same on-device feedback that led to
+  /// this field auto-resolving on the backend at all.
+  Widget _buildProfileShiftField({
+    required TextEditingController controller,
+    required bool isAuto,
+    required ValueChanged<bool> onAutoChanged,
+  }) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Expanded(
+          child: TextField(
+            controller: controller,
+            enabled: !isAuto,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
+            decoration: InputDecoration(
+              labelText: 'Profile shift',
+              isDense: true,
+              helperText: isAuto ? 'Auto - computed to avoid predicted mesh interference' : null,
+              helperMaxLines: 2,
+              suffixIcon: fieldHelpIcon(
+                'Shifts this member\'s own tooth profile outward (positive) or inward (negative) from the '
+                'pitch line - used to balance strength between a small pinion and a large gear, and to keep '
+                'this member\'s own tooth tip clear of the other member\'s material. "Auto" computes the '
+                'smallest shift that avoids predicted interference (0 if none is predicted); switch off to '
+                'set your own value instead.',
+              ),
+            ),
+            onChanged: (_) => _schedulePreview(),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(isAuto ? 'Auto' : 'Manual', style: Theme.of(context).textTheme.labelSmall),
+            Switch(value: !isAuto, onChanged: (manual) => onAutoChanged(!manual)),
+          ],
+        ),
+      ],
+    );
+  }
+
   List<Widget> _buildBevelPairForm() {
     return [
       const Text('Member 1 (pinion)', style: TextStyle(fontWeight: FontWeight.bold)),
       const SizedBox(height: 8),
-      Row(
-        children: [
-          Expanded(
-            child: TextField(
-              controller: _toothCount1Controller,
-              keyboardType: const TextInputType.numberWithOptions(signed: false),
-              decoration: const InputDecoration(labelText: 'Tooth count', isDense: true),
-              onChanged: (_) => _schedulePreview(),
-            ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: TextField(
-              controller: _profileShift1Controller,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
-              decoration: const InputDecoration(labelText: 'Profile shift', isDense: true),
-              onChanged: (_) => _schedulePreview(),
-            ),
-          ),
-        ],
+      TextField(
+        controller: _toothCount1Controller,
+        keyboardType: const TextInputType.numberWithOptions(signed: false),
+        decoration: const InputDecoration(labelText: 'Tooth count', isDense: true),
+        onChanged: (_) => _schedulePreview(),
+      ),
+      const SizedBox(height: 8),
+      _buildProfileShiftField(
+        controller: _profileShift1Controller,
+        isAuto: _profileShift1Auto,
+        onAutoChanged: (auto) {
+          setState(() => _profileShift1Auto = auto);
+          _schedulePreview();
+        },
       ),
       const SizedBox(height: 16),
       const Text('Member 2 (gear)', style: TextStyle(fontWeight: FontWeight.bold)),
       const SizedBox(height: 8),
-      Row(
-        children: [
-          Expanded(
-            child: TextField(
-              controller: _toothCount2Controller,
-              keyboardType: const TextInputType.numberWithOptions(signed: false),
-              decoration: const InputDecoration(labelText: 'Tooth count', isDense: true),
-              onChanged: (_) => _schedulePreview(),
-            ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: TextField(
-              controller: _profileShift2Controller,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
-              decoration: const InputDecoration(labelText: 'Profile shift', isDense: true),
-              onChanged: (_) => _schedulePreview(),
-            ),
-          ),
-        ],
+      TextField(
+        controller: _toothCount2Controller,
+        keyboardType: const TextInputType.numberWithOptions(signed: false),
+        decoration: const InputDecoration(labelText: 'Tooth count', isDense: true),
+        onChanged: (_) => _schedulePreview(),
+      ),
+      const SizedBox(height: 8),
+      _buildProfileShiftField(
+        controller: _profileShift2Controller,
+        isAuto: _profileShift2Auto,
+        onAutoChanged: (auto) {
+          setState(() => _profileShift2Auto = auto);
+          _schedulePreview();
+        },
       ),
       const SizedBox(height: 16),
       TextField(
@@ -793,8 +876,10 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
         'profileShift': _profileShiftController.text,
         'toothCount1': _toothCount1Controller.text,
         'profileShift1': _profileShift1Controller.text,
+        'profileShift1Auto': _profileShift1Auto,
         'toothCount2': _toothCount2Controller.text,
         'profileShift2': _profileShift2Controller.text,
+        'profileShift2Auto': _profileShift2Auto,
         'pairFaceWidth': _pairFaceWidthController.text,
         'shaftAngle': _shaftAngleController.text,
         'pairBacklash': _pairBacklashController.text,
@@ -817,8 +902,14 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
       if (fields['profileShift'] is String) _profileShiftController.text = fields['profileShift'] as String;
       if (fields['toothCount1'] is String) _toothCount1Controller.text = fields['toothCount1'] as String;
       if (fields['profileShift1'] is String) _profileShift1Controller.text = fields['profileShift1'] as String;
+      // Older presets (saved before profile shift could auto-resolve) have
+      // no 'profileShift1Auto'/'profileShift2Auto' key at all - default to
+      // manual (false) so they keep using their own saved explicit value
+      // unchanged rather than silently switching to auto on load.
+      _profileShift1Auto = fields['profileShift1Auto'] as bool? ?? false;
       if (fields['toothCount2'] is String) _toothCount2Controller.text = fields['toothCount2'] as String;
       if (fields['profileShift2'] is String) _profileShift2Controller.text = fields['profileShift2'] as String;
+      _profileShift2Auto = fields['profileShift2Auto'] as bool? ?? false;
       if (fields['pairFaceWidth'] is String) _pairFaceWidthController.text = fields['pairFaceWidth'] as String;
       if (fields['shaftAngle'] is String) _shaftAngleController.text = fields['shaftAngle'] as String;
       if (fields['pairBacklash'] is String) _pairBacklashController.text = fields['pairBacklash'] as String;

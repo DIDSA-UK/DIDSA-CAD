@@ -24,7 +24,12 @@ void main() {
   http.Response jsonResponse(Object body, {int status = 200}) =>
       http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});
 
-  Map<String, dynamic> bevelMember({required String label, double axisAngleDegrees = 0.0}) => {
+  Map<String, dynamic> bevelMember({
+    required String label,
+    double axisAngleDegrees = 0.0,
+    double effectiveProfileShift = 0.0,
+  }) =>
+      {
         'label': label,
         'axis_angle_degrees': axisAngleDegrees,
         'outline_points': [
@@ -46,6 +51,7 @@ void main() {
         'inner_cone_distance': 74.543,
         'pitch_radius': 40.0,
         'face_width': 14.9,
+        'effective_profile_shift': effectiveProfileShift,
       };
 
   Map<String, dynamic> bevelGearPreviewResponse({List<String> warnings = const []}) => {
@@ -243,5 +249,131 @@ void main() {
     expect(pairBody?['shaft_angle_degrees'], 90.0);
     expect((pairBody?['member_1'] as Map)['tooth_count'], 20);
     expect((pairBody?['member_2'] as Map)['tooth_count'], 40);
+  });
+
+  testWidgets(
+    'Bevel Pair profile shift defaults to Auto, showing the live-computed value and sending null',
+    (tester) async {
+      Map<String, dynamic>? pairBody;
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          if (request.url.path == '/document/gear/preview') {
+            return jsonResponse({
+              'gear_kind': 'bevel_pair',
+              'outline_points': [],
+              'warnings': [],
+              'bevel_pair': {
+                'members': [
+                  bevelMember(label: 'member_1', effectiveProfileShift: 0.0),
+                  bevelMember(label: 'member_2', axisAngleDegrees: 90.0, effectiveProfileShift: -0.52),
+                ],
+                'shaft_angle_degrees': 90.0,
+              },
+            });
+          }
+          if (request.url.path == '/document/parts') {
+            return jsonResponse({'id': 'part-1', 'name': 'Bevel Pair Part', 'feature_ids': []}, status: 201);
+          }
+          if (request.url.path == '/document/parts/part-1/bevel-pair-features') {
+            pairBody = jsonDecode(request.body) as Map<String, dynamic>;
+            return jsonResponse({
+              'type': 'bevel_pair',
+              'id': 'pair-1',
+              'locked': false,
+              'produces': 'body',
+              'module': 4.0,
+              'member_1': {'tooth_count': 20, 'profile_shift': null},
+              'member_2': {'tooth_count': 40, 'profile_shift': null},
+              'face_width': 15.0,
+              'pressure_angle_degrees': 20.0,
+              'shaft_angle_degrees': 90.0,
+              'backlash': 0.0,
+              'effective_profile_shift_1': 0.0,
+              'effective_profile_shift_2': -0.52,
+            }, status: 201);
+          }
+          return jsonResponse({'id': 'part-1', 'name': 'Bevel Pair Part', 'feature_ids': []});
+        }),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(home: BevelDesignScreen(documentApi: client, initialMode: BevelMultiKind.pair)),
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pumpAndSettle();
+
+      // Both start Auto, and member_2's field shows the live-computed
+      // negative shift from the preview response, not a static 0.
+      expect(find.text('Auto'), findsNWidgets(2));
+      expect(find.widgetWithText(TextField, 'Profile shift'), findsNWidgets(2));
+      final shift2Field = tester.widget<TextField>(find.widgetWithText(TextField, 'Profile shift').at(1));
+      expect(shift2Field.enabled, isFalse);
+      expect(shift2Field.controller?.text, '-0.52');
+
+      await tester.ensureVisible(find.byType(FilledButton));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(FilledButton));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect((pairBody?['member_1'] as Map)['profile_shift'], isNull);
+      expect((pairBody?['member_2'] as Map)['profile_shift'], isNull);
+    },
+  );
+
+  testWidgets('Toggling Bevel Pair profile shift to Manual sends the typed override', (tester) async {
+    Map<String, dynamic>? pairBody;
+    final client = DocumentApiClient(
+      httpClient: MockClient((request) async {
+        if (request.url.path == '/document/gear/preview') {
+          return jsonResponse(bevelPairPreviewResponse());
+        }
+        if (request.url.path == '/document/parts') {
+          return jsonResponse({'id': 'part-1', 'name': 'Bevel Pair Part', 'feature_ids': []}, status: 201);
+        }
+        if (request.url.path == '/document/parts/part-1/bevel-pair-features') {
+          pairBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'bevel_pair',
+            'id': 'pair-1',
+            'locked': false,
+            'produces': 'body',
+            'module': 4.0,
+            'member_1': {'tooth_count': 20, 'profile_shift': 0.0},
+            'member_2': {'tooth_count': 40, 'profile_shift': -0.3},
+            'face_width': 15.0,
+            'pressure_angle_degrees': 20.0,
+            'shaft_angle_degrees': 90.0,
+            'backlash': 0.0,
+            'effective_profile_shift_1': 0.0,
+            'effective_profile_shift_2': -0.3,
+          }, status: 201);
+        }
+        return jsonResponse({'id': 'part-1', 'name': 'Bevel Pair Part', 'feature_ids': []});
+      }),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(home: BevelDesignScreen(documentApi: client, initialMode: BevelMultiKind.pair)),
+    );
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pumpAndSettle();
+
+    // Flip member_2's switch to Manual, then type an override.
+    await tester.tap(find.byType(Switch).at(1));
+    await tester.pumpAndSettle();
+    expect(find.text('Manual'), findsOneWidget);
+    await tester.enterText(find.widgetWithText(TextField, 'Profile shift').at(1), '-0.3');
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.byType(FilledButton));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(FilledButton));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect((pairBody?['member_1'] as Map)['profile_shift'], isNull);
+    expect((pairBody?['member_2'] as Map)['profile_shift'], -0.3);
   });
 }
