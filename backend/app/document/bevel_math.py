@@ -1129,6 +1129,81 @@ def minimum_intruder_profile_shift_for_mesh_clearance(
     return hi
 
 
+def maximum_receiver_profile_shift_for_mesh_clearance(
+    receiver_geometry: BevelGearGeometry,
+    intruder_geometry: BevelGearGeometry,
+    shaft_angle_degrees: float,
+    target_shift: float,
+) -> float:
+    """The receiver member's own largest step *toward* `target_shift`
+    (`app.document.bevel_pair.resolve_member_profile_shifts`'s own
+    balanced-shift candidate - the intruder's own `-X` complemented by a
+    receiver `+X`) that still clears `MESH_MARGIN_SAFETY_BUFFER_DEGREES`
+    in the *reverse* direction: the receiver's own tooth tip against the
+    intruder's own base colatitude.
+
+    On-device finding this fixes: applying the full balanced delta
+    unconditionally can over-correct at a low shared pressure angle -
+    growing the receiver's own addendum enough that *it* becomes the new
+    intruder in the opposite direction. Confirmed on this project's own
+    default 20T/40T pair: at 20 degrees pressure angle the full balanced
+    shift is safe (reverse margin only drops from +4.3 to +3.0 degrees),
+    but at 14.5 degrees the same unconditional delta flips the pair from
+    "member_2 intrudes into member_1" (the direction the shift is meant to
+    fix) to "member_1 intrudes into member_2" (reverse margin -1.06
+    degrees - worse than doing nothing). The receiver's own addendum
+    growing with a more positive `profile_shift` (`bevel_gear_geometry`'s
+    `addendum = module * (addendum_coefficient + profile_shift)`) is what
+    drives this - `reverse_margin_at` below tracks exactly that, the same
+    delta-to-addendum approach `minimum_intruder_profile_shift_for_mesh_
+    clearance` already uses, just reading the *receiver's* own addendum
+    instead of the intruder's.
+
+    Bisects from a known-safe start (`receiver_geometry.profile_shift`,
+    its own current, presumably-still-valid shift - reverse margin can
+    only need checking once shift is intentionally pushed toward growing
+    the receiver's own addendum) toward the possibly-unsafe `target_shift`
+    - the mirror-image search direction from `minimum_intruder_profile_
+    shift_for_mesh_clearance` (which searches from unsafe toward safe).
+    `bevel_pair_mesh_margin_degrees` is monotonic in the receiver's own
+    addendum (`face_cone_angle = pitch_cone_angle + atan(addendum /
+    cone_distance)`, `atan` strictly increasing), so a straight bisection
+    between the two is valid, not just "found a value that works".
+
+    Returns `receiver_geometry.profile_shift` unchanged (a no-op step) if
+    even that starting point doesn't already clear the buffer - a
+    pre-existing reverse-direction margin problem this function isn't
+    responsible for fixing, only for not making worse. Returns
+    `target_shift` unchanged if it's already safe, skipping the search
+    entirely."""
+
+    def reverse_margin_at(trial_shift: float) -> float:
+        delta = trial_shift - receiver_geometry.profile_shift
+        new_addendum = receiver_geometry.addendum + receiver_geometry.module * delta
+        if new_addendum <= 0:
+            return -999.0
+        new_face_cone_angle = receiver_geometry.pitch_cone_angle + math.atan(
+            new_addendum / receiver_geometry.cone_distance
+        )
+        return bevel_pair_mesh_margin_degrees(
+            new_face_cone_angle, tredgold_base_colatitude(intruder_geometry), shaft_angle_degrees
+        )
+
+    lo = receiver_geometry.profile_shift
+    if reverse_margin_at(lo) < MESH_MARGIN_SAFETY_BUFFER_DEGREES:
+        return lo
+    hi = target_shift
+    if reverse_margin_at(hi) >= MESH_MARGIN_SAFETY_BUFFER_DEGREES:
+        return hi
+    for _ in range(40):
+        mid = (lo + hi) / 2
+        if reverse_margin_at(mid) >= MESH_MARGIN_SAFETY_BUFFER_DEGREES:
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
 def bevel_pair_mesh_interference_warning(
     geometry_1: BevelGearGeometry, geometry_2: BevelGearGeometry, shaft_angle_degrees: float
 ) -> str | None:

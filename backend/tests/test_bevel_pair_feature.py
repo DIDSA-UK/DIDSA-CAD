@@ -184,6 +184,35 @@ def test_bevel_pair_default_profile_shift_auto_avoids_predicted_mesh_interferenc
     assert body["member_2"]["profile_shift"] is None
 
 
+def test_bevel_pair_auto_profile_shift_still_avoids_interference_at_a_low_pressure_angle():
+    """Real regression found on-device: at the default 20T/40T pair's
+    default 20-degree pressure angle, the balanced-shift auto-resolution
+    (`resolve_member_profile_shifts`) applies its full complementary `+X`
+    to the receiver safely - but at a lower shared pressure angle (14.5
+    degrees), applying that *same* full delta unconditionally grows the
+    receiver's own addendum enough to flip *it* into the new intruder in
+    the opposite direction (confirmed directly against `bevel_math`:
+    reverse margin goes from +1.08 degrees at baseline to -1.06 degrees
+    under the naive full balanced shift - worse than not shifting the
+    receiver at all). `maximum_receiver_profile_shift_for_mesh_clearance`
+    caps the receiver's own step at whatever the reverse margin actually
+    tolerates - this pins that fix at the real HTTP router level, not just
+    directly against `bevel_math`."""
+    part = _create_part()
+    response = client.post(
+        f"/document/parts/{part['id']}/bevel-pair-features",
+        json={
+            "module": 4.0,
+            "member_1": {"tooth_count": 20},
+            "member_2": {"tooth_count": 40},
+            "face_width": 15.0,
+            "pressure_angle_degrees": 14.5,
+        },
+    )
+    assert response.status_code == 201, response.json()
+    assert response.json()["warnings"] == []
+
+
 def test_bevel_pair_defaults_to_the_xy_plane_when_plane_ref_omitted():
     part = _create_part()
     response = _create_pair(part["id"])

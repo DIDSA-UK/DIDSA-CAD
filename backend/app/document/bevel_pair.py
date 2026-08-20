@@ -118,6 +118,7 @@ from app.document.bevel_math import (
     bevel_gear_geometry,
     bevel_pair_mesh_interference_warning,
     max_recommended_face_width,
+    maximum_receiver_profile_shift_for_mesh_clearance,
     minimum_intruder_profile_shift_for_mesh_clearance,
     pitch_cone_half_angles,
     thin_hub_warning,
@@ -354,10 +355,15 @@ def resolve_member_profile_shifts(
     of a zero-backlash design) - not an approximation that degrades as `X`
     grows. `minimum_intruder_profile_shift_for_mesh_clearance`'s own search
     already keeps the intruder's own addendum positive; the receiver's
-    complementary `+X` is checked the same way (a real `GearGeometryError`
-    - e.g. `dedendum <= 0` at extreme `X` - falls back to the single-sided
-    shift rather than propagating, since a real (if more backlash-visible)
-    fix beats none)."""
+    complementary `+X` is checked two ways before being applied in full: a
+    real `GearGeometryError` (e.g. `dedendum <= 0` at extreme `X`) falls
+    back to the single-sided shift entirely, and even short of that,
+    `maximum_receiver_profile_shift_for_mesh_clearance` caps how much of
+    `+X` the receiver actually gets - growing the receiver's own addendum
+    can itself flip it into the new intruder in the *opposite* direction
+    at a low shared pressure angle (on-device: this project's own default
+    pair at 14.5 degrees), so the receiver only gets as much of the
+    balancing shift as it can absorb without creating that new problem."""
     baseline_shift_1 = profile_shift_1 if profile_shift_1 is not None else 0.0
     baseline_shift_2 = profile_shift_2 if profile_shift_2 is not None else 0.0
     geometry_kwargs = {
@@ -411,7 +417,15 @@ def resolve_member_profile_shifts(
         except GearGeometryError:
             pass  # keep the receiver at its own baseline - single-sided, but still a real fix
         else:
-            auto_receiver_shift = candidate_receiver_shift
+            # The full balanced delta can over-correct at a low shared
+            # pressure angle, growing the receiver's own addendum enough
+            # to flip *it* into the new intruder in the opposite direction
+            # (on-device: the default pair at 14.5deg pressure angle) -
+            # cap the receiver's own step at whatever the reverse margin
+            # actually tolerates, rather than applying it unconditionally.
+            auto_receiver_shift = maximum_receiver_profile_shift_for_mesh_clearance(
+                receiver_geometry, intruder_geometry, shaft_angle_degrees, candidate_receiver_shift
+            )
 
     if member_2_is_intruder:
         return auto_receiver_shift, auto_intruder_shift
