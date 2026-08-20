@@ -134,15 +134,17 @@ once `run()` returns.
 ## Client changes
 
 - **New** `client/lib/ai/ai_existing_part_summary.dart` -
-  `summarizeExistingPartForPrompt(List<FeatureDto>)`: one line per Feature
-  in creation order, each printing the literal `existing:<id>` token the
-  LLM must echo back verbatim, plus a short human-ish description (extrude
-  distances, fillet radius, etc. - literal values, same "surface real
-  numbers" discipline `03`'s own spike findings established for the
-  Review & Generate summary) and a referenceability annotation derived
-  from `FeatureDto.produces` (`produces == 'body'` for Body targets,
-  matching the task's own "use `produces`, don't re-derive it from type
-  names" guidance).
+  `summarizeExistingPartForPrompt(SketchApiClient, List<FeatureDto>)`: one
+  line per Feature in creation order, each printing the literal
+  `existing:<id>` token the LLM must echo back verbatim, plus a short
+  human-ish description (extrude distances, fillet radius, etc. - literal
+  values, same "surface real numbers" discipline `03`'s own spike findings
+  established for the Review & Generate summary) and a referenceability
+  annotation derived from `FeatureDto.produces` (`produces == 'body'` for
+  Body targets, matching the task's own "use `produces`, don't re-derive it
+  from type names" guidance). **Addendum (on-device feedback, see below)**:
+  now also `async` and takes a `SketchApiClient`, since it fetches each
+  Sketch Feature's own real entities.
 - `ai_scoping_prompt.dart` - `buildAiScopingSystemPrompt` gains a new
   `String? existingPartSummary` parameter, alongside (not replacing)
   workstream 7's `assistantInstructionsOverride`/`enabledAddOns`. When
@@ -309,3 +311,41 @@ computed Body shape, and the client translator would post the real
 resolved edge refs (with the real Feature id substituted for the `existing:`
 wrapper) straight to `POST /document/parts/{id}/fillet-features` - adding
 to the *same* Part, never creating a second one.
+
+## Addendum: real Sketch geometry in the existing-Part summary
+
+**On-device feedback**, after this workstream first shipped: the LLM
+reported it could see that a Feature-tree entry like `extrude 0->10mm
+(boss)` existed, but nothing about the Sketch profile behind it - no shape,
+no size, only "a sketch has been extruded." The original
+`summarizeExistingPartForPrompt` was Feature-tree-only (`FeatureDto`'s own
+fields), and a `sketch` Feature's line never said anything about what was
+actually drawn in it.
+
+Fixed by fetching every real (non-construction) entity in each Sketch
+Feature via `SketchApiClient`'s own per-type `list*` calls (`listPoints`/
+`listLines`/`listCircles`/`listArcs`/`listEllipses`/`listPolygons`/
+`listSlots`/`listRectangles` - the same calls `sketch_controller.dart`
+itself makes when loading a Sketch for editing; there is no single bulk
+"get everything" endpoint) and rendering a compact geometric description
+per entity - a real dimension (radius/length directly off the DTO;
+Rectangle's width/height computed from its own corner Points via the same
+corner0->corner1/corner1->corner2 convention `08`'s dimension-driven-
+sketches translator code already uses), never raw point/line ids, which
+the model could never reference directly anyway (`existing:` scope stays
+exactly as narrow as originally designed - individual Sketch entities are
+still never directly referenceable, only the whole Sketch as an anchor).
+Every extrude/revolve/sweep Feature's own description now also names the
+Sketch it came from (`, from existing:<sketch Feature id>`), so the model
+can connect a Body's own boss/cut numbers to the real profile that
+produced them without guessing.
+
+This is a real cost increase worth being explicit about: up to 8 extra GET
+calls per Sketch Feature in the Part, all made once in `initState` before
+the conversation starts (not per turn) - negligible for a normal Part's
+sketch count, but scales linearly with how many Sketches the Part has.
+
+`client/test/ai_existing_part_summary_test.dart` (new) covers: a rectangle
+profile's real width/height reaching the summary, a circle's real radius
+and center, construction-only geometry being excluded, and an empty Sketch
+reading as `empty (no real geometry yet)` rather than blank.

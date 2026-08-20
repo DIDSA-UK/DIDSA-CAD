@@ -228,10 +228,15 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   Future<void> _loadExistingFeatures() async {
     try {
       final features = await _documentApi.listFeatures(widget.existingPartId!);
+      // Fetches every real Sketch entity behind each Sketch Feature (on-
+      // device feedback: the LLM previously saw only "a sketch has been
+      // extruded," never the sketch's actual shape/size) - see
+      // ai_existing_part_summary.dart's own doc comment.
+      final summary = await summarizeExistingPartForPrompt(_sketchApi, features);
       if (!mounted) return;
       setState(() {
         _existingFeatures = features;
-        _existingPartSummary = summarizeExistingPartForPrompt(features);
+        _existingPartSummary = summary;
       });
     } on ApiException catch (e) {
       if (!mounted) return;

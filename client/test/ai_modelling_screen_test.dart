@@ -388,25 +388,36 @@ Here's the plan:
 
   testWidgets('Existing-Part editing: the system prompt carries the real Feature summary, echoable via existing:<id>',
       (tester) async {
-    final client = DocumentApiClient(
-      httpClient: MockClient((request) async {
-        if (request.method == 'GET' && request.url.path == '/document/parts/part-9/features') {
-          return jsonResponse([
-            {'type': 'sketch', 'id': 'feat-sk9', 'locked': false, 'sketch_id': 'sketch-9', 'produces': 'sketch'},
-            {
-              'type': 'extrude',
-              'id': 'feat-ex9',
-              'locked': false,
-              'extrude_type': 'boss',
-              'start_distance': 0.0,
-              'end_distance': 10.0,
-              'produces': 'body',
-            },
-          ]);
-        }
-        return http.Response('not found', 404);
-      }),
-    );
+    final mock = MockClient((request) async {
+      if (request.method == 'GET' && request.url.path == '/document/parts/part-9/features') {
+        return jsonResponse([
+          {'type': 'sketch', 'id': 'feat-sk9', 'locked': false, 'sketch_id': 'sketch-9', 'produces': 'sketch'},
+          {
+            'type': 'extrude',
+            'id': 'feat-ex9',
+            'locked': false,
+            'sketch_feature_id': 'feat-sk9',
+            'extrude_type': 'boss',
+            'start_distance': 0.0,
+            'end_distance': 10.0,
+            'produces': 'body',
+          },
+        ]);
+      }
+      // On-device feedback fix (ai_existing_part_summary.dart): the system
+      // prompt now also fetches sketch-9's own real entities - a plain
+      // empty list from every list* endpoint here since this test only
+      // cares about the Feature-tree ids, not the geometry summary itself
+      // (covered separately in ai_existing_part_summary_test.dart).
+      if (request.method == 'GET' &&
+          request.url.path.startsWith('/sketch/sketches/sketch-9/') &&
+          !request.url.path.contains('constraints')) {
+        return jsonResponse([]);
+      }
+      return http.Response('not found', 404);
+    });
+    final client = DocumentApiClient(httpClient: mock);
+    final sketchClient = SketchApiClient(httpClient: mock);
     String? capturedSystemPrompt;
     final provider = FakeAiProvider((transcript, systemPrompt) async {
       capturedSystemPrompt = systemPrompt;
@@ -414,7 +425,14 @@ Here's the plan:
     });
 
     await tester.pumpWidget(
-      MaterialApp(home: AiModellingScreen(provider: provider, documentApi: client, existingPartId: 'part-9')),
+      MaterialApp(
+        home: AiModellingScreen(
+          provider: provider,
+          documentApi: client,
+          sketchApi: sketchClient,
+          existingPartId: 'part-9',
+        ),
+      ),
     );
     await tester.pumpAndSettle();
     await sendMessage(tester, 'Add a fillet');
@@ -422,6 +440,7 @@ Here's the plan:
     expect(capturedSystemPrompt, contains('Editing an existing Part'));
     expect(capturedSystemPrompt, contains('existing:feat-sk9'));
     expect(capturedSystemPrompt, contains('existing:feat-ex9'));
+    expect(capturedSystemPrompt, contains('from existing:feat-sk9'));
   });
 
   testWidgets(
