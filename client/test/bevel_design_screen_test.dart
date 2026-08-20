@@ -359,11 +359,20 @@ void main() {
     await tester.pump(const Duration(milliseconds: 600));
     await tester.pumpAndSettle();
 
-    // Flip member_2's switch to Manual, then type an override.
-    await tester.tap(find.byType(Switch).at(1));
+    // Flip member_2's switch to Manual, then type an override. Both the
+    // switch and the field sit below the fold in the test's default
+    // viewport (800x600) - ensureVisible first, same as the Create button
+    // elsewhere in this file, or tap()/enterText() silently miss.
+    final member2Switch = find.byType(Switch).at(1);
+    await tester.ensureVisible(member2Switch);
+    await tester.pumpAndSettle();
+    await tester.tap(member2Switch);
     await tester.pumpAndSettle();
     expect(find.text('Manual'), findsOneWidget);
-    await tester.enterText(find.widgetWithText(TextField, 'Profile shift').at(1), '-0.3');
+    final member2ShiftField = find.widgetWithText(TextField, 'Profile shift').at(1);
+    await tester.ensureVisible(member2ShiftField);
+    await tester.pumpAndSettle();
+    await tester.enterText(member2ShiftField, '-0.3');
     await tester.pump(const Duration(milliseconds: 600));
     await tester.pumpAndSettle();
 
