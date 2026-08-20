@@ -93,3 +93,52 @@ string constants with no user-facing surface at all. This splits it into:
   edit/save/reset/toggle round-trips.
 - `client/test/ai_provider_settings_screen_test.dart` - one new test
   confirming the new list entry navigates correctly.
+
+## Addendum: prompt-content overhaul (2026-08-20, second session)
+
+The locked/editable *split* this workstream built was sound, but the
+prompt *content* itself stayed thin as later workstreams landed on top of
+it - two worked examples total (a plain extrude+fillet block, and a gear
+route), neither ever updated to demonstrate revolve, dimension-driven
+fields, or the `existing:<id>` convention, despite all three landing in
+the schema/vocabulary since. On-device feedback flagged this directly: a
+real conversation's model reported it couldn't reason about a Sketch's own
+shape from the Feature tree alone (a *different*, since-fixed gap - see
+`09-existing-part-editing.md`'s own addendum) and the prompt gave it
+nothing to anchor an `existing:<id>` reply against beyond prose rules.
+
+Four additions, split correctly across the locked/editable boundary this
+workstream established:
+
+- **Locked** (`_fewShotExamples`): a new worked revolve example (a
+  bushing, axis_ref pointing at a dedicated `construction: true`
+  sketch_line, profile offset from the axis so the revolve doesn't
+  self-intersect) - the first example touching anything beyond
+  extrude/gear_request. The original block+fillet example now also gives
+  its rectangle real `width`/`height` fields instead of bare corner
+  points, so dimension-driven-sketches (workstream 8) gets a concrete
+  example too, not just prose.
+- **Locked** (`_unitsConvention`): a new sentence requiring the model to
+  convert non-mm/degree input (inches, radians, etc.) itself and name the
+  conversion in its own "Assumptions:" line, rather than leaving unit
+  handling unspecified.
+- **Locked** (`_existingPartEditingBlock`, conditional): a worked
+  `existing:<id>` example (a fillet naming a real Feature id from the
+  summary above it) - this block is schema-usage content exactly like the
+  vocabulary reference, so it belongs locked even though it's inside the
+  conditionally-appended block, not `_fewShotExamples` itself; keeping it
+  there (rather than in the always-present `_fewShotExamples`) avoids
+  paying its token cost on every ordinary fresh-Part conversation, where
+  it would never apply.
+- **Editable** (`_assistantInstructionsRest`): a self-consistency-check
+  paragraph - directly targets `03-structured-plan-schema.md`'s own
+  documented Gemini failure (a hallucinated thickness that passed
+  structural validation), asking the model to re-verify its own numbers
+  against what the user actually stated before finalizing, since a plan
+  can be structurally valid and still dimensionally wrong.
+
+`client/test/ai_scoping_prompt_test.dart` gained five new cases covering
+all four additions plus the conditional (present only with an
+`existingPartSummary`) worked example - each asserting on wrap-safe
+substrings rather than exact multi-line text, so a future prose rewrap
+doesn't spuriously break the test.

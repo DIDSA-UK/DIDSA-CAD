@@ -86,6 +86,37 @@ void main() {
     expect(prompt, contains('## Final reply format'));
   });
 
+  test('the locked vocabulary reference tells the model to convert non-mm/degree units itself', () {
+    final prompt = buildAiScopingSystemPrompt();
+    expect(prompt, contains('convert it to mm/degrees yourself'));
+    expect(prompt, contains('never mix units'));
+  });
+
+  test('the editable default instructions include a self-consistency check before finalizing', () {
+    final prompt = buildAiScopingSystemPrompt();
+    expect(prompt, contains('Before finalizing your plan, double-check'));
+    expect(prompt, contains('dimensionally wrong'));
+  });
+
+  test('the worked examples cover a revolve (axis_ref + a construction line), not just extrude/gear', () {
+    final prompt = buildAiScopingSystemPrompt();
+    expect(prompt, contains('"kind": "revolve"'));
+    expect(prompt, contains('"axis_ref": "axis"'));
+    expect(prompt, contains('"construction": true'));
+  });
+
+  test('an existingPartSummary appends a worked existing:<id> example, not just the prose rules', () {
+    final prompt = buildAiScopingSystemPrompt(existingPartSummary: '1. existing:feat-1 - sketch [Sketch - ...]');
+    expect(prompt, contains('Worked example'));
+    expect(prompt, contains('"of": "existing:feat-abc123"'));
+  });
+
+  test('the existing:<id> worked example is absent without an existingPartSummary (locked block is conditional)',
+      () {
+    final prompt = buildAiScopingSystemPrompt();
+    expect(prompt, isNot(contains('"of": "existing:feat-abc123"')));
+  });
+
   test('detectPlanInAssistantText still finds a plan in a reply produced under a custom override', () {
     // The system prompt itself is never sent to `detectPlanInAssistantText`
     // (only the assistant's own reply is) - this test exists to document

@@ -64,7 +64,16 @@ mirrors how this very kind of scoping conversation is expected to work:
 keep asking until you are confident, then commit.
 
 Prefer a single gear_request step over a generic sketch/feature sequence
-whenever the request is gear- or rack-shaped.''';
+whenever the request is gear- or rack-shaped.
+
+Before finalizing your plan, double-check that every coordinate, length,
+radius, and angle you wrote is actually consistent with what the user
+stated or with values you deliberately derived from them - a plan can pass
+this tool's own structural validation and still be dimensionally wrong if
+a number silently drifted while you were writing it out (e.g. a point
+placed 45mm from another when the user's stated size implies 40mm).
+Re-derive any value you're unsure of from the user's own numbers rather
+than trusting whatever you first wrote down.''';
 
 const String _defaultAssistantInstructions =
     '$_assistantInstructionsIntro\n\n$_freshPartNote\n\n$_assistantInstructionsRest';
@@ -250,7 +259,14 @@ const String _unitsConvention = '''
 Every length/distance/radius/spacing/offset field is in millimetres (mm).
 Every angle field is in degrees. There is no unit suffix or marker in the
 JSON itself - every numeric field is implicitly in these units, the same
-way the underlying Feature API has no unit field of its own.''';
+way the underlying Feature API has no unit field of its own.
+
+If the user states a size in a different unit (inches, cm, a fraction of a
+turn, radians, etc.), convert it to mm/degrees yourself before writing any
+plan field - never emit a raw unconverted number, and never mix units
+within one field. Name the conversion in your final "Assumptions:" line
+(e.g. "Assumptions: 2in converted to 50.8mm.") so the user can see and
+correct it if the rounding matters to them.''';
 
 const String _fewShotExamples = '''
 ## Worked examples
@@ -271,7 +287,7 @@ Assistant (final message, nothing else in it):
     { "local_id": "p3", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 60, "y": 40 },
     { "local_id": "p4", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 0, "y": 40 },
     { "local_id": "r1", "kind": "sketch_rectangle", "sketch_feature_id": "sk1",
-      "corner_point_ids": ["p1", "p2", "p3", "p4"] },
+      "corner_point_ids": ["p1", "p2", "p3", "p4"], "width": 60, "height": 40 },
     { "local_id": "f1", "kind": "extrude", "sketch_feature_id": "sk1",
       "extrude_type": "boss", "start_distance": 0, "end_distance": 10 },
     { "local_id": "f2", "kind": "fillet",
@@ -279,8 +295,45 @@ Assistant (final message, nothing else in it):
   ]
 }
 ```
+(the rectangle's own "width"/"height" match its corner points exactly -
+60/40mm either way, per the "Literal numeric values become real, editable
+dimensions" section above; never given as a substitute for the corner
+points themselves)
 
-Example 2 - gear-shaped request, routed rather than built from scratch:
+Example 2 - a revolved part, using a construction line as the axis:
+
+User: "A 15mm-long bushing, 20mm outer diameter, 12mm inner diameter."
+
+Assistant (final message, nothing else in it):
+```json
+{
+  "version": 1,
+  "steps": [
+    { "local_id": "sk1", "kind": "sketch", "plane": "XY" },
+    { "local_id": "a1", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 0, "y": 0 },
+    { "local_id": "a2", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 15, "y": 0 },
+    { "local_id": "axis", "kind": "sketch_line", "sketch_feature_id": "sk1",
+      "start_point_id": "a1", "end_point_id": "a2", "construction": true },
+    { "local_id": "p1", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 0, "y": 6 },
+    { "local_id": "p2", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 15, "y": 6 },
+    { "local_id": "p3", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 15, "y": 10 },
+    { "local_id": "p4", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 0, "y": 10 },
+    { "local_id": "r1", "kind": "sketch_rectangle", "sketch_feature_id": "sk1",
+      "corner_point_ids": ["p1", "p2", "p3", "p4"] },
+    { "local_id": "f1", "kind": "revolve", "sketch_feature_id": "sk1",
+      "axis_ref": "axis", "angle": 360, "mode": "boss" }
+  ]
+}
+```
+(the axis is its own sketch_line, marked "construction" since it is not
+part of the built profile - it exists purely to be named by axis_ref. The
+cross-section rectangle sits entirely on one side of it, from y=6 to y=10
+(radius 6-10mm - never crossing or straddling the axis line, which would
+make the revolve invalid) - "6mm to 10mm from the axis" is what produces a
+12mm inner diameter / 20mm outer diameter hollow tube once revolved a full
+360 degrees.)
+
+Example 3 - gear-shaped request, routed rather than built from scratch:
 
 User: "External spur gear, module 2, 20 teeth, 10mm face width, 20 degree
 pressure angle."
@@ -352,6 +405,24 @@ entities.
 A local_id you invent for a brand-new step in this plan must never itself
 start with "existing:" - that prefix is reserved for referencing the
 Part's current Features as described above.
+
+Worked example: given a Feature list below containing
+"1. existing:feat-abc123 - extrude 0->10mm (boss), from existing:feat-xyz789"
+and the user asks "Add a 5mm fillet to the top edges," the correct final
+reply is:
+```json
+{
+  "version": 1,
+  "steps": [
+    { "local_id": "f1", "kind": "fillet",
+      "edges": { "selector": "top_face_edges", "of": "existing:feat-abc123" },
+      "radius": 5 }
+  ]
+}
+```
+(note "existing:feat-abc123" - the real id copied verbatim from the list
+below, never invented or guessed, and never the plan's own "f1" local_id
+used for the "of" field instead)
 
 Existing Part Features (in creation order):
 $existingPartSummary''';
