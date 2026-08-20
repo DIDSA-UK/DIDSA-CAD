@@ -1086,7 +1086,28 @@ class GearFeature(Feature):
     just on a genuinely curved/twisted lateral edge rather than a straight
     vertical one. Same best-effort convention either way: a non-converging
     fillet at a given radius falls back to an unfilleted gear with a
-    warning rather than failing the whole Feature."""
+    warning rather than failing the whole Feature.
+
+    `profile_shift` is `float | None` - `None` (the default) means "auto",
+    same sentinel convention `RackFeature.backing_height`/`BevelPairMember
+    Spec.profile_shift` already use; an explicit value always wins.
+    `gear_math.minimum_tooth_count_without_undercut`'s own predictive check
+    decides whether this gear's `tooth_count` would be undercut at `0.0`
+    shift; if so, `app.document.gear.resolve_gear_profile_shift` applies
+    `gear_math.minimum_profile_shift_to_avoid_undercut`'s closed-form value
+    instead (verified against a real `spur_gear_geometry` call first,
+    falling back to `0.0` if that shift would itself yield invalid
+    geometry) - so a low-tooth-count external gear no longer silently
+    undercuts by default the way it did before this field could auto-
+    resolve. Internal gears are exempt (their tooth points inward, not
+    outward - the cutter-undercut formula doesn't apply), same as the
+    `is_internal` exemption `/gear/preview`'s own undercut warning already
+    carries; auto always resolves to `0.0` for one. Same "can't null a real
+    value back out via Update" limitation every other Optional field here
+    already has (`RackFeatureUpdate.backing_height`) - `GearFeatureUpdate`
+    is a flat field, not a nested replaceable object the way `BevelPair
+    MemberSpecSchema.profile_shift` is, so there is no way to distinguish
+    an omitted Update field from an explicit `null` one."""
 
     id: str
     plane_ref: PlaneRef
@@ -1096,7 +1117,7 @@ class GearFeature(Feature):
     tooth_count: int
     face_width: float
     pressure_angle_degrees: float = 20.0
-    profile_shift: float = 0.0
+    profile_shift: float | None = None
     backlash: float = 0.0
     root_fillet_radius: float = 0.0
     outer_diameter: float | None = None

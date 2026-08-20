@@ -11,6 +11,7 @@ import math
 import pytest
 from fastapi.testclient import TestClient
 
+from app.document.gear_math import minimum_profile_shift_to_avoid_undercut
 from app.main import app
 from tests.conftest import TEST_API_KEY
 
@@ -40,6 +41,12 @@ def test_external_gear_preview_returns_known_reference_circles():
     assert body["outer_radius"] is None
     assert body["pitch_line_y"] is None
     assert body["warnings"] == []
+    # Auto (the default, profile_shift omitted) resolves to 0.0 here - a
+    # 20-tooth gear already clears the undercut-free minimum (~17.1) at
+    # 0.0 shift, so auto never raises it - same "byte-identical to before
+    # this could auto-resolve" guarantee resolve_gear_profile_shift's own
+    # docstring makes.
+    assert body["effective_profile_shift"] == 0.0
     assert len(body["outline_points"]) > 0
     # Every outline point should sit within a small tolerance of the
     # addendum/dedendum band - a sanity bound on the returned polyline, not
@@ -48,15 +55,39 @@ def test_external_gear_preview_returns_known_reference_circles():
     assert max_radius <= 22.5
 
 
-def test_external_gear_preview_warns_on_undercut_risk_without_blocking():
+def test_external_gear_preview_warns_on_undercut_risk_with_explicit_zero_shift():
     # A 6-tooth module-2/20-degree gear is well below the undercut-free
     # minimum (~17.1 teeth) - non-blocking per 00-conventions.md, so this
-    # must still return 200 with a warning, not a 422.
-    response = _preview(tooth_count=6)
+    # must still return 200 with a warning, not a 422. profile_shift=0.0 is
+    # explicit here (an "explicit value always wins" override) - without it,
+    # auto-resolution below removes this exact warning by default.
+    response = _preview(tooth_count=6, profile_shift=0.0)
     assert response.status_code == 200, response.json()
     warnings = response.json()["warnings"]
     assert len(warnings) == 1
     assert "undercut" in warnings[0].lower()
+    assert response.json()["effective_profile_shift"] == 0.0
+
+
+def test_external_gear_preview_auto_resolves_profile_shift_to_clear_undercut_by_default():
+    # Same 6-tooth gear as above, but profile_shift omitted (auto, the
+    # default) - resolve_gear_profile_shift picks the closed-form minimum
+    # shift that clears undercut at tooth_count=6, so the warning that
+    # fires at an explicit 0.0 shift above is gone here.
+    response = _preview(tooth_count=6)
+    assert response.status_code == 200, response.json()
+    body = response.json()
+    assert body["warnings"] == []
+    assert body["effective_profile_shift"] == pytest.approx(
+        minimum_profile_shift_to_avoid_undercut(6, pressure_angle_degrees=20.0)
+    )
+    assert body["effective_profile_shift"] > 0.0
+
+
+def test_external_gear_preview_explicit_profile_shift_is_returned_as_is():
+    response = _preview(tooth_count=20, profile_shift=0.5)
+    assert response.status_code == 200, response.json()
+    assert response.json()["effective_profile_shift"] == 0.5
 
 
 def test_external_gear_preview_rejects_invalid_parameters_as_422():
@@ -90,8 +121,10 @@ def test_internal_gear_preview_returns_outer_radius():
     body = response.json()
     assert body["pitch_radius"] == 40.0
     assert body["outer_radius"] == 50.0
-    # Internal gears aren't checked for the same cutter-undercut risk.
+    # Internal gears aren't checked for the same cutter-undercut risk, so
+    # auto always resolves to 0.0 for one too, regardless of tooth_count.
     assert body["warnings"] == []
+    assert body["effective_profile_shift"] == 0.0
 
 
 # --- Rack ---------------------------------------------------------------------

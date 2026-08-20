@@ -27,17 +27,17 @@ from app.document.extrude import (
     select_profiles,
 )
 from app.document.fillet import resolve_fillet
-from app.document.gear import resolve_gear
+from app.document.gear import resolve_gear, resolve_gear_profile_shift
 from app.document.gear_math import (
     GearGeometryError,
     default_rack_backing_height,
     full_gear_profile_points,
     full_rack_profile_points,
-    minimum_tooth_count_without_undercut,
     planetary_planet_tooth_count,
     rack_length as gear_math_rack_length,
     rack_tooth_geometry,
     spur_gear_geometry,
+    undercut_warning,
     validate_planetary_assembly,
 )
 from app.document.gear_chain_math import (
@@ -689,6 +689,19 @@ def _gear_feature_response(
         except HTTPException:
             logger.warning("GearFeature %s could not be resolved for its response", feature.id)
             warnings = []
+    # Cheap (pure gear_math, no OCCT) to recompute alongside the response -
+    # never raises (falls back to 0.0 internally), so unlike `resolve_gear`
+    # above this needs no try/except of its own. Mirrors `_bevel_pair_
+    # feature_response`'s own `effective_profile_shift_1`/`_2` - lets the
+    # Gear Design screen show "Auto (0.65)" instead of just "Auto".
+    effective_profile_shift = resolve_gear_profile_shift(
+        module=feature.module,
+        tooth_count=feature.tooth_count,
+        pressure_angle_degrees=feature.pressure_angle_degrees,
+        backlash=feature.backlash,
+        profile_shift=feature.profile_shift,
+        is_internal=feature.is_internal,
+    )
     return GearFeatureResponse(
         id=feature.id,
         plane_ref=_plane_ref_to_schema(feature.plane_ref),
@@ -699,6 +712,7 @@ def _gear_feature_response(
         face_width=feature.face_width,
         pressure_angle_degrees=feature.pressure_angle_degrees,
         profile_shift=feature.profile_shift,
+        effective_profile_shift=effective_profile_shift,
         backlash=feature.backlash,
         root_fillet_radius=feature.root_fillet_radius,
         outer_diameter=feature.outer_diameter,
@@ -4142,12 +4156,20 @@ def _gear_preview_response(payload: GearPreviewRequest) -> GearPreviewResponse:
     if is_internal and payload.outer_diameter is None:
         raise _invalid_gear_preview_parameters("outer_diameter is required when gear_kind is internal")
 
+    resolved_profile_shift = resolve_gear_profile_shift(
+        module=payload.module,
+        tooth_count=payload.tooth_count,
+        pressure_angle_degrees=payload.pressure_angle_degrees,
+        backlash=payload.backlash,
+        profile_shift=payload.profile_shift,
+        is_internal=is_internal,
+    )
     try:
         geometry = spur_gear_geometry(
             module=payload.module,
             tooth_count=payload.tooth_count,
             pressure_angle_degrees=payload.pressure_angle_degrees,
-            profile_shift=payload.profile_shift,
+            profile_shift=resolved_profile_shift,
             backlash=payload.backlash,
             is_internal=is_internal,
         )
@@ -4157,14 +4179,9 @@ def _gear_preview_response(payload: GearPreviewRequest) -> GearPreviewResponse:
 
     warnings: list[str] = []
     if not is_internal:
-        min_tooth_count = minimum_tooth_count_without_undercut(
-            payload.pressure_angle_degrees, payload.profile_shift
-        )
-        if payload.tooth_count < min_tooth_count:
-            warnings.append(
-                f"Tooth count {payload.tooth_count} is below the undercut-free minimum "
-                f"({min_tooth_count:.1f}) for this pressure angle/profile shift - the root will be undercut."
-            )
+        warning = undercut_warning(payload.tooth_count, payload.pressure_angle_degrees, resolved_profile_shift)
+        if warning is not None:
+            warnings.append(warning)
 
     return GearPreviewResponse(
         gear_kind=payload.gear_kind,
@@ -4174,6 +4191,7 @@ def _gear_preview_response(payload: GearPreviewRequest) -> GearPreviewResponse:
         addendum_radius=geometry.addendum_radius,
         dedendum_radius=geometry.dedendum_radius,
         outer_radius=(payload.outer_diameter / 2) if is_internal and payload.outer_diameter else None,
+        effective_profile_shift=resolved_profile_shift,
         warnings=warnings,
     )
 
@@ -4193,7 +4211,7 @@ def preview_gear_via_query(
     module: float = Query(...),
     tooth_count: int = Query(...),
     pressure_angle_degrees: float = Query(20.0),
-    profile_shift: float = Query(0.0),
+    profile_shift: float | None = Query(None),
     backlash: float = Query(0.0),
     outer_diameter: float | None = Query(None),
     backing_height: float | None = Query(None),
