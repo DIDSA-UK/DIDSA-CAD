@@ -28,6 +28,17 @@ class AiProviderSettingsScreen extends StatefulWidget {
 }
 
 class _AiProviderSettingsScreenState extends State<AiProviderSettingsScreen> {
+  /// Google's free-tier Gemini (AI Studio), reached through its
+  /// OpenAI-compatible endpoint. Recommended default for this tool's
+  /// current feature set (image upload, engineering-drawing
+  /// interpretation, structured CAD plan output): genuinely free, natively
+  /// multimodal, and the model this app's own prompt engineering has been
+  /// validated against (see `docs/ai-modelling/03-structured-plan-schema.md`'s
+  /// documented Gemini failure case, since fixed). Pre-filled below so a
+  /// first-time user only has to paste in their own API key.
+  static const String _geminiPresetBaseUrl = 'https://generativelanguage.googleapis.com/v1beta/openai';
+  static const String _geminiDefaultModel = 'gemini-2.5-flash';
+
   String _activeProvider = AiProviderPreferences.defaultActiveProvider;
 
   final _localBaseUrlController = TextEditingController();
@@ -72,6 +83,22 @@ class _AiProviderSettingsScreenState extends State<AiProviderSettingsScreen> {
       _openAiModelController.text = AiProviderPreferences.openAiModel;
       _anthropicApiKeyController.text = AiProviderPreferences.anthropicApiKey;
       _anthropicModelController.text = AiProviderPreferences.anthropicModel;
+      // A genuinely fresh install (nothing ever saved for the local slot) -
+      // default it to the Gemini preset rather than leaving it blank, so
+      // the only thing standing between a new user and a working setup is
+      // pasting in their own API key. Never overwrites a real saved value:
+      // this only fires when `localBaseUrl` loaded as its own empty default.
+      // Bypasses the baseUrl listener deliberately - unlike a real preset
+      // tap or a restored saved baseUrl, this synthetic pre-fill shouldn't
+      // trigger an Ollama-style `/api/tags` probe against Gemini's endpoint
+      // before the user has even pasted in an API key.
+      if (_localBaseUrlController.text.isEmpty) {
+        _localBaseUrlController.removeListener(_onLocalBaseUrlChanged);
+        _localBaseUrlController.text = _geminiPresetBaseUrl;
+        _localBaseUrlController.addListener(_onLocalBaseUrlChanged);
+        _localModelController.text = _geminiDefaultModel;
+        _localSupportsVision = true;
+      }
       _loaded = true;
     });
     // No separate fetch call here: assigning a non-empty stored baseUrl to
@@ -218,7 +245,9 @@ class _AiProviderSettingsScreenState extends State<AiProviderSettingsScreen> {
 
   void _applyGeminiPreset() {
     setState(() {
-      _localBaseUrlController.text = 'https://generativelanguage.googleapis.com/v1beta/openai';
+      _localBaseUrlController.text = _geminiPresetBaseUrl;
+      _localModelController.text = _geminiDefaultModel;
+      _localSupportsVision = true;
     });
   }
 

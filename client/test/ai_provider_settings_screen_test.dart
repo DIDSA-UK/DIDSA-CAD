@@ -70,7 +70,8 @@ void main() {
     expect(baseUrlField.controller?.text, 'https://ollama.com/v1');
   });
 
-  testWidgets('Gemini preset button fills the local baseUrl field', (tester) async {
+  testWidgets('Gemini preset button fills the local baseUrl, a default model, and checks vision support',
+      (tester) async {
     final client = MockClient((request) async => http.Response('not ollama', 404));
     await tester.pumpWidget(MaterialApp(home: AiProviderSettingsScreen(httpClient: client)));
     await tester.pumpAndSettle();
@@ -81,6 +82,9 @@ void main() {
 
     final baseUrlField = tester.widget<TextField>(find.widgetWithText(TextField, 'Base URL'));
     expect(baseUrlField.controller?.text, 'https://generativelanguage.googleapis.com/v1beta/openai');
+    final modelField = tester.widget<TextField>(find.widgetWithText(TextField, 'Model'));
+    expect(modelField.controller?.text, 'gemini-2.5-flash');
+    expect(tester.widget<CheckboxListTile>(find.byKey(const Key('aiLocalSupportsVision'))).value, isTrue);
   });
 
   testWidgets('Groq preset button fills the local baseUrl field', (tester) async {
@@ -159,7 +163,28 @@ void main() {
     expect(AiProviderPreferences.openAiApiKey, isEmpty);
   });
 
-  testWidgets('local supportsVision checkbox defaults off and persists once toggled and saved', (tester) async {
+  testWidgets(
+      'first launch pre-fills the local fields to the free Gemini preset, so only an API key is needed',
+      (tester) async {
+    final client = MockClient((request) async => http.Response('not ollama', 404));
+    await tester.pumpWidget(MaterialApp(home: AiProviderSettingsScreen(httpClient: client)));
+    await tester.pumpAndSettle();
+    // This synthetic pre-fill deliberately bypasses the baseUrl listener
+    // (see `_load()`'s own comment), so no Ollama-model-fetch debounce is
+    // in flight here - no extra pump needed before reading the fields back.
+
+    final baseUrlField = tester.widget<TextField>(find.widgetWithText(TextField, 'Base URL'));
+    expect(baseUrlField.controller?.text, 'https://generativelanguage.googleapis.com/v1beta/openai');
+    final modelField = tester.widget<TextField>(find.widgetWithText(TextField, 'Model'));
+    expect(modelField.controller?.text, 'gemini-2.5-flash');
+    expect(tester.widget<CheckboxListTile>(find.byKey(const Key('aiLocalSupportsVision'))).value, isTrue);
+    // The one thing left for the user - never pre-filled.
+    final apiKeyField = tester.widget<TextField>(find.widgetWithText(TextField, 'API Key (optional)'));
+    expect(apiKeyField.controller?.text, isEmpty);
+  });
+
+  testWidgets('local supportsVision checkbox defaults on (Gemini preset) and persists once toggled off and saved',
+      (tester) async {
     // The screen's content (explanatory paragraphs, preset buttons, the
     // vision checkbox, Save) is taller than the default test viewport, and
     // scrollUntilVisible proved unreliable here once the Ollama-model-fetch
@@ -189,15 +214,19 @@ void main() {
 
     await tester.pumpWidget(MaterialApp(home: AiProviderSettingsScreen(httpClient: client)));
     await tester.pumpAndSettle();
+    // (The Gemini pre-fill on load bypasses the baseUrl listener - see
+    // `_load()`'s own comment - so no debounced fetch is in flight yet.)
 
     expect(
       tester.widget<CheckboxListTile>(find.byKey(const Key('aiLocalSupportsVision'))).value,
-      isFalse,
+      isTrue,
     );
 
+    // Switching to a plain local endpoint that is NOT vision-capable - the
+    // user turns the checkbox back off, and that choice must persist too.
     await tester.enterText(find.widgetWithText(TextField, 'Base URL'), 'http://localhost:11434/v1');
     await tester.pump(const Duration(milliseconds: 600));
-    await tester.enterText(find.widgetWithText(TextField, 'Model'), 'llava');
+    await tester.enterText(find.widgetWithText(TextField, 'Model'), 'llama3');
     await tester.tap(find.byKey(const Key('aiLocalSupportsVision')));
     await tester.pumpAndSettle();
 
@@ -205,7 +234,7 @@ void main() {
     await tester.pumpAndSettle();
 
     await AiProviderPreferences.load();
-    expect(AiProviderPreferences.localSupportsVision, isTrue);
+    expect(AiProviderPreferences.localSupportsVision, isFalse);
   });
 
   testWidgets('AI System Prompt entry navigates to AiSystemPromptSettingsScreen', (tester) async {
