@@ -33,6 +33,7 @@ class _AiProviderSettingsScreenState extends State<AiProviderSettingsScreen> {
   final _localBaseUrlController = TextEditingController();
   final _localApiKeyController = TextEditingController();
   final _localModelController = TextEditingController();
+  bool _localSupportsVision = false;
 
   final _openAiApiKeyController = TextEditingController();
   final _openAiModelController = TextEditingController();
@@ -66,6 +67,7 @@ class _AiProviderSettingsScreenState extends State<AiProviderSettingsScreen> {
       _localBaseUrlController.text = AiProviderPreferences.localBaseUrl;
       _localApiKeyController.text = AiProviderPreferences.localApiKey ?? '';
       _localModelController.text = AiProviderPreferences.localModel;
+      _localSupportsVision = AiProviderPreferences.localSupportsVision;
       _openAiApiKeyController.text = AiProviderPreferences.openAiApiKey;
       _openAiModelController.text = AiProviderPreferences.openAiModel;
       _anthropicApiKeyController.text = AiProviderPreferences.anthropicApiKey;
@@ -190,6 +192,7 @@ class _AiProviderSettingsScreenState extends State<AiProviderSettingsScreen> {
             baseUrl: _localBaseUrlController.text.trim(),
             apiKey: apiKey.isEmpty ? null : apiKey,
             model: _localModelController.text.trim(),
+            supportsVision: _localSupportsVision,
           );
       }
       await AiProviderPreferences.setActiveProvider(_activeProvider);
@@ -331,6 +334,23 @@ class _AiProviderSettingsScreenState extends State<AiProviderSettingsScreen> {
           style: Theme.of(context).textTheme.bodySmall,
         ),
       ],
+      const SizedBox(height: 8),
+      CheckboxListTile(
+        key: const Key('aiLocalSupportsVision'),
+        contentPadding: EdgeInsets.zero,
+        controlAffinity: ListTileControlAffinity.leading,
+        value: _localSupportsVision,
+        onChanged: (value) => setState(() => _localSupportsVision = value ?? false),
+        title: const Text('This model supports vision (image understanding)'),
+        subtitle: Text(
+          "Only enable this if the configured model genuinely accepts images (e.g. a Qwen-VL "
+          "or llava variant, or Gemini via the preset above) - this gates AI Modelling's image-"
+          "upload button entirely. Real local/open vision models are expected to lag well behind "
+          "top cloud models specifically at reading hand sketches and technical drawings - expect "
+          "noticeably worse results here than with OpenAI or Anthropic.",
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+      ),
     ];
   }
 

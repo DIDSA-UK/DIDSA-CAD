@@ -1,4 +1,9 @@
+import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_image_compress/flutter_image_compress.dart';
 
 import '../api/document_api_client.dart';
 import '../api/sketch_api_client.dart' show ApiException, SketchApiClient;
@@ -18,6 +23,13 @@ import 'ai_system_prompt_preferences.dart';
 /// `GearPresetStore`'s discriminator for a saved AI Modelling plan -
 /// `02-scoping-conversation.md`'s "Bolt-on: save plan as preset" section.
 const String aiModellingPlanPresetKind = 'ai_modelling_plan';
+
+/// Workstream 10 (`10-image-input.md`): bounds an attached image's longest
+/// edge before it's base64-encoded and sent to a provider - large enough to
+/// keep real dimension callouts/small text legible, small enough to keep the
+/// upload/resend cost (the image rides along on every future turn too, per
+/// `AiChatMessage`'s own doc comment) reasonable.
+const int aiImageMaxEdgePx = 1568;
 
 /// AI Modelling workstream 2: the scoping-conversation chat screen
 /// (`docs/ai-modelling/02-scoping-conversation.md`). Reached from
@@ -94,6 +106,17 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   List<AiChatMessage> _transcript = [];
   bool _sending = false;
   String? _sendError;
+
+  // Workstream 10 (image input): the picked-but-not-yet-sent image, shown as
+  // a small preview above the input row. Cleared as soon as `_send()` folds
+  // it into a real `AiChatMessage` (success or failure) - re-attaching is
+  // how a user retries, matching `_sendError`'s own "surfaced, not silently
+  // retried" posture.
+  Uint8List? _pendingImageBytes;
+  String? _pendingImageMimeType;
+  String? _pendingImageFileName;
+  bool _preparingImage = false;
+  String? _imageError;
 
   AiGenerationPlan? _proposedPlan;
 
@@ -227,19 +250,55 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
 
   Future<void> _send() async {
     final text = _inputController.text.trim();
-    if (text.isEmpty || _sending || (_providerConfigDialogDismissed && _providerUnconfigured)) return;
+    final hasImage = _pendingImageBytes != null;
+    if ((text.isEmpty && !hasImage) || _sending || (_providerConfigDialogDismissed && _providerUnconfigured)) return;
 
     final provider = widget.provider ?? AiProviderPreferences.active;
-    final userMessage = AiChatMessage(role: AiMessageRole.user, text: text);
+    final imageBytes = _pendingImageBytes;
+    final imageMimeType = _pendingImageMimeType;
+    final userMessage = AiChatMessage(
+      role: AiMessageRole.user,
+      text: text.isEmpty ? '(see attached image)' : text,
+      imageBytes: imageBytes,
+      imageMimeType: imageMimeType,
+    );
     setState(() {
       _transcript = [..._transcript, userMessage];
       _sending = true;
       _sendError = null;
+      // Cleared now, not only on success - re-attaching is how a user
+      // retries after a failed send, see this field's own doc comment.
+      _pendingImageBytes = null;
+      _pendingImageMimeType = null;
+      _pendingImageFileName = null;
     });
     _inputController.clear();
     _scrollToBottom();
 
     try {
+      if (imageBytes != null && imageMimeType != null) {
+        // Divergence from `06-image-input-deferred.md`'s "dedicated OCR/CV
+        // extraction step" lean - see `10-image-input.md`'s own "Design
+        // choices" section: a narrowly-scoped, one-shot call against the
+        // active provider's own vision capability, its own fixed prompt,
+        // kept out of the main scoping transcript as a call (never sent as
+        // a turn of its own). Only its text *output* is appended, as a new
+        // `user`-role turn - same "real information fed to the LLM, not
+        // something it said" reasoning `_appendStoppedRunToTranscript`
+        // already established for a stopped-run error below. The raw image
+        // itself still rides along on `userMessage` above, so it stays
+        // visible to the provider on every later turn too (the "pinned for
+        // the whole conversation" requirement `06`'s own UX carryover
+        // named), not just this one-shot extraction call.
+        final extraction = await provider.extractImageDescription(imageBytes, imageMimeType);
+        final extractionMessage = AiChatMessage(
+          role: AiMessageRole.user,
+          text: '[Automated analysis of the attached image]\n$extraction',
+        );
+        if (!mounted) return;
+        setState(() => _transcript = [..._transcript, extractionMessage]);
+      }
+
       final systemPrompt = buildAiScopingSystemPrompt(
         assistantInstructionsOverride: AiSystemPromptPreferences.override,
         enabledAddOns: AiSystemPromptPreferences.enabledAddOns,
@@ -262,6 +321,86 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         _sendError = e.message;
       });
     }
+  }
+
+  /// Workstream 10 (`10-image-input.md`): picks an image via `file_picker`
+  /// (same `FileType`-driven, path-based pattern `mesh_viewer_screen.dart`'s
+  /// own `_pickAndLoad` already established), downscales/compresses it to
+  /// roughly [aiImageMaxEdgePx] on its longest edge via
+  /// `flutter_image_compress`, and stores the result as the pending
+  /// attachment shown above the input row.
+  ///
+  /// `flutter_image_compress` has no Linux/Windows desktop implementation
+  /// (Android/iOS/macOS/Web only, per its own platform support table) - on
+  /// those two platforms this falls back to the picked file's raw bytes,
+  /// unresized, read directly via `dart:io` from `file.path` rather than
+  /// through `file_picker`'s own bytes channel (the same large-file-safety
+  /// discipline `mesh_viewer_screen.dart`'s own `_pickAndLoad` doc comment
+  /// established, for the same MethodChannel-heap reason), rather than
+  /// crashing the attach flow outright.
+  Future<void> _attachImage() async {
+    final result = await FilePicker.platform.pickFiles(type: FileType.image);
+    if (result == null) return;
+    final file = result.files.single;
+    final path = file.path;
+    if (path == null) {
+      setState(() => _imageError = 'Could not access "${file.name}" - no local file path was returned.');
+      return;
+    }
+
+    setState(() {
+      _preparingImage = true;
+      _imageError = null;
+    });
+    try {
+      Uint8List bytes;
+      String mimeType;
+      try {
+        final compressed = await FlutterImageCompress.compressWithFile(
+          path,
+          minWidth: aiImageMaxEdgePx,
+          minHeight: aiImageMaxEdgePx,
+          quality: 85,
+          format: CompressFormat.jpeg,
+        );
+        if (compressed == null) throw StateError('compressWithFile returned null');
+        bytes = compressed;
+        mimeType = 'image/jpeg';
+      } catch (_) {
+        bytes = await File(path).readAsBytes();
+        mimeType = _mimeTypeForExtension(file.extension ?? '');
+      }
+      if (!mounted) return;
+      setState(() {
+        _pendingImageBytes = bytes;
+        _pendingImageMimeType = mimeType;
+        _pendingImageFileName = file.name;
+        _preparingImage = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _preparingImage = false;
+        _imageError = 'Could not process "${file.name}": $e';
+      });
+    }
+  }
+
+  static String _mimeTypeForExtension(String extension) => switch (extension.toLowerCase()) {
+        'png' => 'image/png',
+        'webp' => 'image/webp',
+        'heic' => 'image/heic',
+        'heif' => 'image/heif',
+        _ => 'image/jpeg',
+      };
+
+  void _removePendingImage() {
+    setState(() {
+      _pendingImageBytes = null;
+      _pendingImageMimeType = null;
+      _pendingImageFileName = null;
+      _imageError = null;
+    });
   }
 
   void _adjust() {
@@ -525,6 +664,8 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   }
 
   Widget _buildChat(BuildContext context) {
+    final provider = widget.provider ?? AiProviderPreferences.active;
+    final visionSupported = provider.capabilities.supportsVision;
     return Column(
       children: [
         if (_transcript.isEmpty)
@@ -572,10 +713,31 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
               style: TextStyle(color: Colors.white54),
             ),
           ),
+        if (_pendingImageBytes != null) _buildPendingImagePreview(),
+        if (_imageError != null)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            child: Text(_imageError!, style: const TextStyle(color: Colors.redAccent)),
+          ),
         Padding(
           padding: const EdgeInsets.all(12),
           child: Row(
             children: [
+              // Workstream 10 (`10-image-input.md`): gated entirely on
+              // `AiProviderCapabilities.supportsVision`, per
+              // `06-image-input-deferred.md`'s own recorded decision - hidden
+              // rather than shown-and-failing when the active provider isn't
+              // vision-capable (the note below explains why, rather than the
+              // button just silently not being there).
+              if (visionSupported)
+                IconButton(
+                  key: const Key('aiModellingAttachImage'),
+                  tooltip: 'Attach a hand sketch or engineering drawing',
+                  onPressed: (_sending || _preparingImage) ? null : _attachImage,
+                  icon: _preparingImage
+                      ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.image_outlined),
+                ),
               Expanded(
                 child: TextField(
                   key: const Key('aiModellingInput'),
@@ -596,7 +758,45 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
             ],
           ),
         ),
+        if (!visionSupported)
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            child: Text(
+              'Image upload needs a vision-capable provider - not available for the active provider. '
+              'Enable it in AI Provider Settings (OpenAI/Anthropic, or the "This model supports vision" '
+              'checkbox for Local).',
+              style: TextStyle(color: Colors.white54, fontSize: 12),
+            ),
+          ),
       ],
+    );
+  }
+
+  Widget _buildPendingImagePreview() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      child: Row(
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: Image.memory(_pendingImageBytes!, width: 44, height: 44, fit: BoxFit.cover),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              _pendingImageFileName ?? 'image',
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: Colors.white54),
+            ),
+          ),
+          IconButton(
+            key: const Key('aiModellingRemoveImage'),
+            tooltip: 'Remove attached image',
+            icon: const Icon(Icons.close, size: 18),
+            onPressed: _removePendingImage,
+          ),
+        ],
+      ),
     );
   }
 
@@ -816,6 +1016,7 @@ class _ChatBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isUser = message.role == AiMessageRole.user;
+    final imageBytes = message.imageBytes;
     return Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
@@ -826,7 +1027,26 @@ class _ChatBubble extends StatelessWidget {
           color: isUser ? Theme.of(context).colorScheme.primaryContainer : Theme.of(context).colorScheme.surfaceContainerHighest,
           borderRadius: BorderRadius.circular(12),
         ),
-        child: Text(message.text),
+        // Workstream 10 (`10-image-input.md`): an image-aware variant - a
+        // thumbnail above the text when this turn carries one. Rendered
+        // here (not only on the turn it was attached on), so the image
+        // stays visibly "pinned" in the scroll history for the rest of the
+        // conversation, matching `06-image-input-deferred.md`'s "not
+        // consumed after one turn" UX carryover.
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (imageBytes != null) ...[
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Image.memory(imageBytes, fit: BoxFit.cover, height: 160),
+              ),
+              const SizedBox(height: 6),
+            ],
+            Text(message.text),
+          ],
+        ),
       ),
     );
   }

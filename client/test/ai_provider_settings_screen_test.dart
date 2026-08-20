@@ -159,6 +159,49 @@ void main() {
     expect(AiProviderPreferences.openAiApiKey, isEmpty);
   });
 
+  testWidgets('local supportsVision checkbox defaults off and persists once toggled and saved', (tester) async {
+    final client = MockClient((request) async {
+      if (request.url.path.endsWith('/api/tags')) return http.Response('n/a', 404);
+      return jsonResponse({
+        'choices': [
+          {
+            'message': {'content': 'ok'},
+          },
+        ],
+      });
+    });
+
+    await tester.pumpWidget(MaterialApp(home: AiProviderSettingsScreen(httpClient: client)));
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('aiLocalSupportsVision')),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(
+      tester.widget<CheckboxListTile>(find.byKey(const Key('aiLocalSupportsVision'))).value,
+      isFalse,
+    );
+
+    await tester.enterText(find.widgetWithText(TextField, 'Base URL'), 'http://localhost:11434/v1');
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.enterText(find.widgetWithText(TextField, 'Model'), 'llava');
+    await tester.tap(find.byKey(const Key('aiLocalSupportsVision')));
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('Test Connection & Save'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('Test Connection & Save'));
+    await tester.pumpAndSettle();
+
+    await AiProviderPreferences.load();
+    expect(AiProviderPreferences.localSupportsVision, isTrue);
+  });
+
   testWidgets('AI System Prompt entry navigates to AiSystemPromptSettingsScreen', (tester) async {
     await tester.pumpWidget(const MaterialApp(home: AiProviderSettingsScreen()));
     await tester.pumpAndSettle();

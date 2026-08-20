@@ -47,6 +47,14 @@ dependencies:
   share_plus: ^10.1.2
   flutter_svg: ^2.0.17
 
+  # AI Modelling workstream 10 (image input, `docs/ai-modelling/10-image-
+  # input.md`): downscales/compresses a picked hand-sketch/drawing photo to
+  # roughly 1568px on its longest edge before base64-encoding it for a
+  # vision-capable provider. Android/iOS/macOS/Web only (no Linux/Windows
+  # desktop implementation) - `ai_modelling_screen.dart`'s own attach flow
+  # falls back to the picked file's raw bytes there rather than crashing.
+  flutter_image_compress: ^2.3.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

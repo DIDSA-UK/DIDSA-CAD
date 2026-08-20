@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -24,15 +25,36 @@ import 'package:didsa_cad_client/viewport3d/part_screen.dart';
 class FakeAiProvider implements AiProvider {
   final Future<AiTurnResult> Function(List<AiChatMessage> transcript, String? systemPrompt) handler;
 
-  FakeAiProvider(this.handler);
+  /// Workstream 10 (image input): configurable per test, so the same fake
+  /// covers both the vision-capable-provider and text-only-provider gating
+  /// cases `ai_modelling_screen.dart`'s own attach-button visibility relies
+  /// on.
+  final bool supportsVision;
+
+  /// Workstream 10: only exercised by a test that also sets [supportsVision]
+  /// - `extractImageDescription` itself already throws before reaching a
+  /// real provider when vision isn't supported, so no fake handler is
+  /// needed for that case.
+  final Future<String> Function(Uint8List imageBytes, String mimeType)? imageExtractionHandler;
+
+  FakeAiProvider(this.handler, {this.supportsVision = false, this.imageExtractionHandler});
 
   @override
   AiProviderCapabilities get capabilities =>
-      const AiProviderCapabilities(supportsStructuredOutput: true, supportsVision: false);
+      AiProviderCapabilities(supportsStructuredOutput: true, supportsVision: supportsVision);
 
   @override
   Future<AiTurnResult> sendScopingTurn(List<AiChatMessage> transcript, {String? systemPrompt}) =>
       handler(transcript, systemPrompt);
+
+  @override
+  Future<String> extractImageDescription(Uint8List imageBytes, String mimeType) {
+    final extractionHandler = imageExtractionHandler;
+    if (extractionHandler == null) {
+      throw StateError('FakeAiProvider.extractImageDescription called with no imageExtractionHandler stubbed');
+    }
+    return extractionHandler(imageBytes, mimeType);
+  }
 }
 
 void main() {
@@ -228,6 +250,34 @@ Here's the plan:
 
     expect(find.text('Design me a bracket'), findsOneWidget);
     expect(find.text('What thickness would you like?'), findsOneWidget);
+  });
+
+  group('image upload gating (workstream 10)', () {
+    testWidgets('attach-image button is shown when the active provider supports vision', (tester) async {
+      final provider = FakeAiProvider(
+        (transcript, systemPrompt) async => const AiTurnResult(assistantText: 'ok'),
+        supportsVision: true,
+      );
+
+      await tester.pumpWidget(MaterialApp(home: AiModellingScreen(provider: provider)));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('aiModellingAttachImage')), findsOneWidget);
+      expect(find.textContaining('Image upload needs a vision-capable provider'), findsNothing);
+    });
+
+    testWidgets('attach-image button is hidden with an explanatory note when vision is unsupported', (tester) async {
+      final provider = FakeAiProvider(
+        (transcript, systemPrompt) async => const AiTurnResult(assistantText: 'ok'),
+        supportsVision: false,
+      );
+
+      await tester.pumpWidget(MaterialApp(home: AiModellingScreen(provider: provider)));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('aiModellingAttachImage')), findsNothing);
+      expect(find.textContaining('Image upload needs a vision-capable provider'), findsOneWidget);
+    });
   });
 
   testWidgets('a detected plan in the assistant reply switches to Review & Generate with a literal-value summary', (

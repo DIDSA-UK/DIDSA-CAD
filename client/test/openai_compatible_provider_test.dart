@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -176,5 +177,134 @@ void main() {
 
     expect(openAi.capabilities.supportsStructuredOutput, isTrue);
     expect(local.capabilities.supportsStructuredOutput, isFalse);
+  });
+
+  test('capabilities.supportsVision reflects the constructor flag', () {
+    final vision = OpenAiCompatibleProvider(baseUrl: 'https://api.openai.com/v1', model: 'gpt-5', supportsVision: true);
+    final noVision = OpenAiCompatibleProvider(baseUrl: 'http://localhost:11434/v1', model: 'llama3');
+
+    expect(vision.capabilities.supportsVision, isTrue);
+    expect(noVision.capabilities.supportsVision, isFalse);
+  });
+
+  group('image support (workstream 10)', () {
+    final fakeImageBytes = Uint8List.fromList([1, 2, 3, 4]);
+
+    test('sendScopingTurn encodes an imaged turn as text + image_url content blocks', () async {
+      Map<String, dynamic> capturedBody = {};
+      final provider = OpenAiCompatibleProvider(
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-5',
+        supportsVision: true,
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'choices': [
+              {
+                'message': {'content': 'ok'},
+              },
+            ],
+          });
+        }),
+      );
+
+      await provider.sendScopingTurn([
+        AiChatMessage(
+          role: AiMessageRole.user,
+          text: 'What is this?',
+          imageBytes: fakeImageBytes,
+          imageMimeType: 'image/jpeg',
+        ),
+      ]);
+
+      final messages = capturedBody['messages'] as List<dynamic>;
+      final message = messages.single as Map<String, dynamic>;
+      expect(message['role'], 'user');
+      final content = message['content'] as List<dynamic>;
+      expect(content[0], {'type': 'text', 'text': 'What is this?'});
+      expect(content[1], {
+        'type': 'image_url',
+        'image_url': {'url': 'data:image/jpeg;base64,${base64Encode(fakeImageBytes)}'},
+      });
+    });
+
+    test('sendScopingTurn keeps content a plain string for a text-only turn even when other turns carry images', () async {
+      Map<String, dynamic> capturedBody = {};
+      final provider = OpenAiCompatibleProvider(
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-5',
+        supportsVision: true,
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'choices': [
+              {
+                'message': {'content': 'ok'},
+              },
+            ],
+          });
+        }),
+      );
+
+      await provider.sendScopingTurn([
+        AiChatMessage(role: AiMessageRole.user, text: 'Look at this', imageBytes: fakeImageBytes, imageMimeType: 'image/jpeg'),
+        const AiChatMessage(role: AiMessageRole.assistant, text: 'What am I looking at?'),
+        const AiChatMessage(role: AiMessageRole.user, text: 'A bracket'),
+      ]);
+
+      final messages = capturedBody['messages'] as List<dynamic>;
+      expect((messages[1] as Map<String, dynamic>)['content'], 'What am I looking at?');
+      expect((messages[2] as Map<String, dynamic>)['content'], 'A bracket');
+    });
+
+    test('extractImageDescription posts a one-shot call with the fixed extraction prompt and returns the reply text', () async {
+      Map<String, dynamic> capturedBody = {};
+      final provider = OpenAiCompatibleProvider(
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-5',
+        supportsVision: true,
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'choices': [
+              {
+                'message': {'content': 'A bracket with two mounting holes, 60mm x 40mm.'},
+              },
+            ],
+          });
+        }),
+      );
+
+      final description = await provider.extractImageDescription(fakeImageBytes, 'image/png');
+
+      expect(description, 'A bracket with two mounting holes, 60mm x 40mm.');
+      final messages = capturedBody['messages'] as List<dynamic>;
+      expect(messages.length, 1);
+      final content = (messages.single as Map<String, dynamic>)['content'] as List<dynamic>;
+      expect((content[0] as Map<String, dynamic>)['type'], 'text');
+      expect((content[0] as Map<String, dynamic>)['text'], contains('hand sketch or engineering drawing'));
+      expect(content[1], {
+        'type': 'image_url',
+        'image_url': {'url': 'data:image/png;base64,${base64Encode(fakeImageBytes)}'},
+      });
+    });
+
+    test('extractImageDescription throws without hitting the network when supportsVision is false', () async {
+      var called = false;
+      final provider = OpenAiCompatibleProvider(
+        baseUrl: 'http://localhost:11434/v1',
+        model: 'llama3',
+        httpClient: MockClient((request) async {
+          called = true;
+          return jsonResponse({});
+        }),
+      );
+
+      await expectLater(
+        provider.extractImageDescription(fakeImageBytes, 'image/jpeg'),
+        throwsA(isA<AiProviderException>()),
+      );
+      expect(called, isFalse);
+    });
   });
 }
