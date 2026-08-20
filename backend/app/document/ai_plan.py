@@ -32,6 +32,21 @@ directly - the real `select_profiles` only accepts an anchor entity of
 that narrower set), a `fillet.edges.of`/`target_body_ids`/
 `source_body_ids` entry must resolve to a Body-producing step kind (never
 a `sketch`, `create_plane`, `fillet`, or `chamfer` step).
+
+Existing-Part editing (docs/ai-modelling/09-existing-part-editing.md): any
+field above that resolves a plan-local `local_id` may *also* hold a string
+of the form `existing:<real_id>`, naming a real Feature already in `part`
+instead of a step earlier in this same plan - resolved by `_lookup_existing`
+below rather than `self.resolved`. No schema/field-shape change anywhere -
+every such field was already a plain `str`/`str | None`, so only this
+module's own resolution logic changes. Scope is deliberately narrower than
+a plan-local reference: only a Body-producing Feature, a Plane-producing
+one, or a whole Sketch (as a `sketch_feature_id` anchor for brand-new
+sketch-entity steps) may be named this way - an existing Sketch's own
+individual Points/Lines/Circles/etc. are never directly referenceable (see
+`_lookup_existing`'s own doc comment for the full rule). A step's own
+`local_id` may never itself start with `existing:` - that prefix is
+reserved (`reserved_local_id_prefix`, checked in `_run_step`).
 """
 
 import math
@@ -77,6 +92,7 @@ from app.document.models import (
     CreatePlaneFeature,
     ExtrudeFeature,
     ExtrudeType,
+    Feature,
     FilletFeature,
     MirrorFeature,
     Part,
@@ -86,12 +102,14 @@ from app.document.models import (
     PlaneRef,
     PlaneType,
     PointRef,
+    Produces,
     RevolveFeature,
     RevolveMode,
     SketchFeature,
     SweepFeature,
     SweepMode,
 )
+from app.document.native_format import sketch_from_dict, sketch_to_dict
 from app.document.pattern import resolve_pattern
 from app.document.revolve import resolve_revolve
 from app.document.sweep import resolve_sweep
@@ -100,8 +118,14 @@ from app.sketch.profile import ProfileStatus, detect_profile
 from app.sketch.router import create_constraint as _create_sketch_constraint
 from app.sketch.router import update_constraint_value as _update_sketch_constraint_value
 from app.sketch.schemas import ConstraintValueUpdate, DistanceConstraintCreate
-from app.sketch.store import create_sketch, delete_sketch, get_sketch_or_404
+from app.sketch.store import add_sketch, create_sketch, delete_sketch, get_sketch_or_404
 from OCC.Core.TopoDS import TopoDS_Shape
+
+# Existing-Part editing (docs/ai-modelling/09-existing-part-editing.md): the
+# reserved local_id prefix a plan step's own field may use *instead of* a
+# plan-local id, to name a real Feature already in the Part being edited -
+# see `_PlanValidator._lookup_existing` below for the full resolution rule.
+_EXISTING_ID_PREFIX = "existing:"
 
 # Every step kind whose Feature actually produces a Body - the only kinds
 # a `target_body_ids`/`source_body_ids`/`edges.of`/`tool_feature_id`
@@ -164,6 +188,35 @@ class _PlanValidator:
         self.resolved: dict[str, _Resolved] = {}
         self.failed: set[str] = set()
         self._scratch_sketch_ids: list[str] = []
+        # Existing-Part editing: every real Feature already in the Part
+        # being edited, by id - built once here rather than re-scanning
+        # `self.part.features` on every `existing:` lookup. `part.features`
+        # (not `self.part.features`) is used deliberately - same objects
+        # either way (the scratch Part above is a shallow copy), but this
+        # makes the intent ("the Part's real, pre-existing Features") clear
+        # regardless of which list a future edit reads from.
+        self._existing_by_id: dict[str, Feature] = {f.id: f for f in part.features}
+        # A pristine snapshot of every existing SketchFeature's real Sketch,
+        # captured *before* any dry-run step can touch it - restored in
+        # `run`'s own `finally` below. Needed because a new sketch_point/
+        # sketch_line/etc. step anchored to an existing Sketch (via
+        # `existing:<sketch_feature_id>` as its own `sketch_feature_id`)
+        # runs through the ordinary, unmodified `_handle_sketch_point`/etc.
+        # path - which calls `get_sketch_or_404` and mutates whatever real
+        # Sketch object that resolves to, for real, exactly like it would
+        # for a brand-new scratch Sketch. A brand-new scratch Sketch is safe
+        # to mutate freely (deleted whole at the end, `_scratch_sketch_ids`
+        # above) - an *existing* Sketch is real, persisted state this
+        # module's own docstring promises never to touch, so its pristine
+        # content is snapshotted here and restored afterward instead, via
+        # the exact same `sketch_to_dict`/`sketch_from_dict` round-trip
+        # native-file save/load already uses (never a hand-rolled
+        # snapshot/restore of Sketch internals to keep in sync by hand).
+        self._existing_sketch_snapshots: dict[str, dict] = {
+            f.sketch_id: sketch_to_dict(get_sketch_or_404(f.sketch_id))
+            for f in part.features
+            if f.produces == Produces.SKETCH
+        }
 
     def run(self, steps: list[PlanStep]) -> list[StepResult]:
         try:
@@ -171,9 +224,17 @@ class _PlanValidator:
         finally:
             for sketch_id in self._scratch_sketch_ids:
                 delete_sketch(sketch_id)
+            for sketch_id, snapshot in self._existing_sketch_snapshots.items():
+                add_sketch(sketch_from_dict(snapshot))
 
     def _run_step(self, step: PlanStep) -> StepResult:
         try:
+            if step.local_id.startswith(_EXISTING_ID_PREFIX):
+                # The prefix is reserved for referencing the Part's real,
+                # pre-existing Features (`_lookup_existing` below) - a plan
+                # step can never invent a brand-new local_id that collides
+                # with it.
+                raise _StepError({"type": "reserved_local_id_prefix", "local_id": step.local_id})
             _HANDLERS[step.kind](self, step)
         except (HTTPException, _StepError) as exc:
             self.failed.add(step.local_id)
@@ -187,6 +248,8 @@ class _PlanValidator:
         return StepResult(local_id=step.local_id, ok=True, resolved_edges=resolved_edges, hole_count=hole_count)
 
     def _lookup(self, local_id: str, expected_kinds: frozenset[str], field: str) -> _Resolved:
+        if local_id.startswith(_EXISTING_ID_PREFIX):
+            return self._lookup_existing(local_id, expected_kinds, field)
         if local_id in self.failed:
             raise _StepError({"type": "depends_on_failed_step", "field": field, "local_id": local_id})
         resolved = self.resolved.get(local_id)
@@ -203,6 +266,59 @@ class _PlanValidator:
                 }
             )
         return resolved
+
+    def _lookup_existing(self, local_id: str, expected_kinds: frozenset[str], field: str) -> _Resolved:
+        """Existing-Part editing (docs/ai-modelling/09-existing-part-
+        editing.md): resolves `local_id` (already confirmed to start with
+        `existing:`) against `self._existing_by_id` instead of this run's
+        own `self.resolved` - a real Feature the Part already had before
+        this plan started, rather than something an earlier step in *this*
+        plan just created.
+
+        Deliberately narrower than a plan-local reference: only a Body-
+        producing Feature (`target_body_ids`/`source_body_ids`/
+        `tool_feature_id`/`edges.of` fields, i.e. `expected_kinds ==
+        _BODY_PRODUCING_KINDS`), a Plane-producing one (`plane_feature_id`
+        fields, `expected_kinds == {"create_plane"}`), or a whole Sketch
+        (`sketch_feature_id` fields, `expected_kinds == {"sketch"}`) may be
+        named this way - never an individual existing Point/Line/Circle/etc.
+        (every other `expected_kinds` value used elsewhere in this module),
+        matching the scope `client/lib/ai/ai_existing_part_summary.dart`'s
+        own prompt-facing summary already advertises to the LLM. Uses the
+        real Feature's own `.produces` (`app.document.models.Produces`,
+        the same tag the client's `FeatureDto.produces` mirrors) to decide
+        which of those three buckets a given existing Feature falls into,
+        rather than re-deriving it from the Feature's own Python type.
+        """
+        feature = self._existing_by_id.get(local_id[len(_EXISTING_ID_PREFIX) :])
+        if feature is None:
+            raise _StepError({"type": "unknown_existing_id", "field": field, "local_id": local_id})
+        if expected_kinds == frozenset({"sketch"}) and feature.produces == Produces.SKETCH:
+            return _Resolved(kind="sketch", feature_id=feature.id, sketch_id=feature.sketch_id)
+        if expected_kinds == frozenset({"create_plane"}) and feature.produces == Produces.PLANE:
+            return _Resolved(kind="create_plane", feature_id=feature.id)
+        if expected_kinds == _BODY_PRODUCING_KINDS and feature.produces == Produces.BODY:
+            # Sentinel kind, not a claim this existing Feature is literally
+            # an Extrude - only used so `_lookup_body`'s own `kind ==
+            # "gear_request"` check (the *plan-local* "not yet resolvable"
+            # case) never fires for an existing Feature, which always has
+            # real, already-computed geometry regardless of its own type
+            # (including an existing Fillet/Chamfer/GearFeature - each a
+            # real Body once built, even though a *plan-local* fillet/
+            # chamfer step is deliberately excluded from
+            # `_BODY_PRODUCING_KINDS` for schema-ordering reasons that don't
+            # apply here - see `03-structured-plan-schema.md`'s own
+            # reference kind-checking rules).
+            return _Resolved(kind="extrude", feature_id=feature.id)
+        raise _StepError(
+            {
+                "type": "existing_id_not_allowed_here",
+                "field": field,
+                "local_id": local_id,
+                "expected_kinds": sorted(expected_kinds),
+                "actual_produces": feature.produces.value,
+            }
+        )
 
     def _lookup_body(self, local_id: str, field: str) -> _Resolved:
         resolved = self._lookup(local_id, _BODY_PRODUCING_KINDS, field)

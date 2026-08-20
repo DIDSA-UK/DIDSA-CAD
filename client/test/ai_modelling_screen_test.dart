@@ -275,6 +275,87 @@ Here's the plan:
   });
 
   testWidgets(
+      'Existing-Part editing: Generate never calls startNewDocument/createPart when existingPartId is set '
+      '(docs/ai-modelling/09-existing-part-editing.md - the single easiest thing to get wrong here)', (tester) async {
+    final requestedPaths = <String>[];
+    final mock = MockClient((request) async {
+      requestedPaths.add('${request.method} ${request.url.path}');
+      if (request.method == 'GET' && request.url.path == '/document/parts/part-1/features') {
+        return jsonResponse([]);
+      }
+      return realPlanHandler()(request);
+    });
+    final client = DocumentApiClient(httpClient: mock);
+    final sketchClient = SketchApiClient(httpClient: mock);
+    final provider = FakeAiProvider((transcript, systemPrompt) async => const AiTurnResult(assistantText: realPlanText));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AiModellingScreen(
+          provider: provider,
+          documentApi: client,
+          sketchApi: sketchClient,
+          existingPartId: 'part-1',
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await sendMessage(tester, 'Add a rectangular boss to this part');
+
+    await tester.tap(find.text('Generate'));
+    await tester.pumpAndSettle();
+
+    // The one invariant that matters most here: reusing the real, already-
+    // open Part - never wiping the session's Document, never creating a
+    // second, unrelated Part.
+    expect(requestedPaths, isNot(contains('POST /document/new')));
+    expect(requestedPaths, isNot(contains('POST /document/parts')));
+    expect(requestedPaths, contains('GET /document/parts/part-1/features'));
+    expect(requestedPaths, contains('POST /document/parts/part-1/ai-plan/validate'));
+    expect(requestedPaths, contains('POST /document/parts/part-1/features/sketch'));
+    expect(requestedPaths, contains('POST /document/parts/part-1/extrude-features'));
+    expect(find.textContaining('Generated - every step created successfully'), findsOneWidget);
+  });
+
+  testWidgets('Existing-Part editing: the system prompt carries the real Feature summary, echoable via existing:<id>',
+      (tester) async {
+    final client = DocumentApiClient(
+      httpClient: MockClient((request) async {
+        if (request.method == 'GET' && request.url.path == '/document/parts/part-9/features') {
+          return jsonResponse([
+            {'type': 'sketch', 'id': 'feat-sk9', 'locked': false, 'sketch_id': 'sketch-9', 'produces': 'sketch'},
+            {
+              'type': 'extrude',
+              'id': 'feat-ex9',
+              'locked': false,
+              'extrude_type': 'boss',
+              'start_distance': 0.0,
+              'end_distance': 10.0,
+              'produces': 'body',
+            },
+          ]);
+        }
+        return http.Response('not found', 404);
+      }),
+    );
+    String? capturedSystemPrompt;
+    final provider = FakeAiProvider((transcript, systemPrompt) async {
+      capturedSystemPrompt = systemPrompt;
+      return const AiTurnResult(assistantText: 'What change would you like?');
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(home: AiModellingScreen(provider: provider, documentApi: client, existingPartId: 'part-9')),
+    );
+    await tester.pumpAndSettle();
+    await sendMessage(tester, 'Add a fillet');
+
+    expect(capturedSystemPrompt, contains('Editing an existing Part'));
+    expect(capturedSystemPrompt, contains('existing:feat-sk9'));
+    expect(capturedSystemPrompt, contains('existing:feat-ex9'));
+  });
+
+  testWidgets(
       'Fix 5: a successful Generate offers "View Part", which pushes (not replaces) PartScreen with the real Part id',
       (tester) async {
     final mock = MockClient((request) async => realPlanHandler()(request));

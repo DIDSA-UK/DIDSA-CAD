@@ -25,16 +25,36 @@ library;
 
 import 'ai_prompt_addons.dart';
 
-const String _defaultAssistantInstructions = '''
+const String _assistantInstructionsIntro = '''
 You are a CAD modelling assistant for DIDSA-CAD, a parametric 3D CAD tool.
 Your job is to have a short conversation with the user to fully specify a
 mechanical part, then respond with exactly one JSON plan matching the
-schema below - nothing else in that final message.
+schema below - nothing else in that final message.''';
 
+/// The default (fresh-Part) wording - unchanged from before existing-Part
+/// editing existed. Kept as its own const (rather than folded directly into
+/// [_defaultAssistantInstructionsFor]) since [defaultAssistantInstructions]
+/// below - the settings screen's own reset/compare baseline - deliberately
+/// keeps returning this fresh-Part variant regardless of any particular
+/// conversation's existing-Part context.
+const String _freshPartNote = '''
 This conversation always builds a brand-new Part. You never modify a Part
 that already exists - there is no "current part" for you to reason about,
-and no way to reference one; every plan starts from nothing.
+and no way to reference one; every plan starts from nothing.''';
 
+/// Existing-Part editing (docs/ai-modelling/09-existing-part-editing.md):
+/// swapped in for [_freshPartNote] whenever [buildAiScopingSystemPrompt] is
+/// given a non-empty `existingPartSummary` - the locked
+/// [_existingPartEditingBlock] below carries the actual `existing:<id>`
+/// convention/rules; this just flips the one sentence in the (editable,
+/// default) assistant instructions that would otherwise flatly contradict
+/// it.
+const String _existingPartNote = '''
+This conversation is editing a Part that already exists, not building a new
+one from scratch - see "Editing an existing Part" below for the
+existing:<id> convention you must use to reference its current Features.''';
+
+const String _assistantInstructionsRest = '''
 Ask clarifying questions before generating a plan whenever a dimension,
 feature, tolerance, or scope (which edges/faces a Fillet or Chamfer applies
 to, whether a hole goes all the way through) is missing or has more than
@@ -45,6 +65,15 @@ keep asking until you are confident, then commit.
 
 Prefer a single gear_request step over a generic sketch/feature sequence
 whenever the request is gear- or rack-shaped.''';
+
+const String _defaultAssistantInstructions =
+    '$_assistantInstructionsIntro\n\n$_freshPartNote\n\n$_assistantInstructionsRest';
+
+String _defaultAssistantInstructionsFor(bool hasExistingPart) => [
+      _assistantInstructionsIntro,
+      hasExistingPart ? _existingPartNote : _freshPartNote,
+      _assistantInstructionsRest,
+    ].join('\n\n');
 
 const String _vocabularyReference = '''
 ## Plan shape
@@ -205,9 +234,10 @@ not just any earlier local_id.
 ## What you cannot generate
 
 Only the kinds listed above exist. In particular, this tool has no Spline,
-no Text, no Loft, and no multi-Part assembly - there is no "existing part"
-for you to reference at all, since every conversation builds exactly one
-new Part. If a request genuinely needs one of these (a hand-drawn freeform
+no Text, no Loft, and no multi-Part assembly - you are only ever working
+within a single Part at a time (see "Editing an existing Part" below if one
+has been provided for this conversation). If a request genuinely needs one
+of these (a hand-drawn freeform
 curve, a lettered label, a lofted transition between very different
 profiles, an assembly of several parts), say so plainly and propose the
 closest approximation this tool can actually build (e.g. "I can
@@ -280,21 +310,74 @@ made instead of asking (e.g. "Assumptions: hole goes all the way through;
 chamfer applies to every edge of the top face."), but no other prose in
 that message. Every prior message may be ordinary conversation.''';
 
+/// Existing-Part editing (docs/ai-modelling/09-existing-part-editing.md):
+/// locked, unconditionally appended whenever [buildAiScopingSystemPrompt]
+/// is given a non-empty `existingPartSummary` - the same "structural
+/// contract, never user-editable" reasoning [_planTerminationFooter]
+/// already carries, since a user override that accidentally dropped or
+/// contradicted the `existing:<id>` convention would silently corrupt
+/// every plan this conversation produces (referencing a real Feature that
+/// doesn't exist, or - worse - the translator misreading a plan-local id
+/// as a real one). [existingPartSummary] is [summarizeExistingPartForPrompt]
+/// (`ai_existing_part_summary.dart`)'s own output, embedded verbatim.
+String _existingPartEditingBlock(String existingPartSummary) => '''
+## Editing an existing Part
+
+This conversation is editing a Part that already exists in this tool - you
+are not building a new one from scratch. Its Features (already real,
+already built, listed below in creation order) may be referenced directly
+in your plan by writing the literal token "existing:<id>" (the exact id
+shown below, verbatim) in place of a local_id, in the exact same field
+where a local_id you defined earlier in this plan would otherwise go - e.g.
+{"target_body_ids": ["existing:<id>"]} or
+{"edges": {"selector": "top_face_edges", "of": "existing:<id>"}}.
+
+Only three things about the existing Part are directly referenceable this
+way - nothing else:
+- A Feature that produces a solid Body - as target_body_ids/
+  source_body_ids/tool_feature_id, or as the "of" in a fillet/chamfer edges
+  selector, exactly like a Body-producing step you define fresh in this
+  same plan.
+- A Feature that produces a construction Plane - as a plane_feature_id,
+  exactly like a create_plane step you define fresh in this same plan.
+- A whole existing Sketch - as the sketch_feature_id anchor for brand-new
+  sketch_point/sketch_line/sketch_circle/etc. steps you define in this
+  plan (i.e. adding new geometry into that already-existing Sketch).
+You can NEVER reference one of an existing Sketch's individual Points/
+Lines/Circles/etc. directly - if new geometry needs to connect to or build
+on what is already there, express it as new sketch_point/sketch_line/etc.
+steps anchored to that existing Sketch, never by naming one of its current
+entities.
+
+A local_id you invent for a brand-new step in this plan must never itself
+start with "existing:" - that prefix is reserved for referencing the
+Part's current Features as described above.
+
+Existing Part Features (in creation order):
+$existingPartSummary''';
+
 /// Builds the full system prompt, passed to `AiProvider.sendScopingTurn`'s
 /// `systemPrompt` parameter. Assembly order: the user-editable assistant
-/// instructions first (falls back to [_defaultAssistantInstructions] when
-/// [assistantInstructionsOverride] is null or blank -
-/// `AiSystemPromptPreferences.override`'s own null-means-default
-/// convention), then the locked vocabulary/units/examples, then any enabled
-/// add-on blocks (`ai_prompt_addons.dart`, unknown ids silently skipped),
-/// then the locked plan-termination footer last - always present,
-/// regardless of what the user's override says, so a user override can
-/// change tone/process but never the model's structural contract with
-/// [detectPlanInAssistantText].
-String buildAiScopingSystemPrompt({String? assistantInstructionsOverride, Set<String> enabledAddOns = const {}}) {
+/// instructions first (falls back to [_defaultAssistantInstructions] -
+/// [_defaultAssistantInstructionsFor]'s existing-Part variant when
+/// [existingPartSummary] is given - when [assistantInstructionsOverride] is
+/// null or blank, `AiSystemPromptPreferences.override`'s own null-means-
+/// default convention), then the locked vocabulary/units/examples, then any
+/// enabled add-on blocks (`ai_prompt_addons.dart`, unknown ids silently
+/// skipped), then the locked existing-Part-editing block (only when
+/// [existingPartSummary] is given), then the locked plan-termination
+/// footer last - always present, regardless of what the user's override
+/// says, so a user override can change tone/process but never the model's
+/// structural contract with [detectPlanInAssistantText].
+String buildAiScopingSystemPrompt({
+  String? assistantInstructionsOverride,
+  Set<String> enabledAddOns = const {},
+  String? existingPartSummary,
+}) {
+  final hasExistingPart = existingPartSummary != null && existingPartSummary.trim().isNotEmpty;
   final assistantInstructions =
       (assistantInstructionsOverride == null || assistantInstructionsOverride.trim().isEmpty)
-          ? _defaultAssistantInstructions
+          ? _defaultAssistantInstructionsFor(hasExistingPart)
           : assistantInstructionsOverride;
   final addOnBlocks = [for (final id in enabledAddOns) if (aiPromptAddOns.containsKey(id)) aiPromptAddOns[id]!.text];
   return [
@@ -303,6 +386,7 @@ String buildAiScopingSystemPrompt({String? assistantInstructionsOverride, Set<St
     _unitsConvention,
     _fewShotExamples,
     ...addOnBlocks,
+    if (hasExistingPart) _existingPartEditingBlock(existingPartSummary!),
     _planTerminationFooter,
   ].join('\n\n');
 }

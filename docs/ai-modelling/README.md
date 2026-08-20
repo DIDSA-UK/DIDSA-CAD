@@ -45,6 +45,7 @@ a session implementing one workstream never needed most of it).
 | 6 | `06-image-input-deferred.md` | 1, 2, 3 | Explicitly **not v1** — image upload, vision strategy, scope cut lines, recorded for when this becomes the active workstream |
 | 7 | `07-editable-system-prompt.md` | 1, 2 | **Built.** User-editable assistant instructions + resettable override, plus togglable manufacturing-context add-ons (Structural/Plastic/Casting/Weldments/3D Print/Sheet Metal/Machining), reached from a new AI System Prompt Settings screen |
 | 8 | `08-dimension-driven-sketches.md` | 3, 4 | **Built.** The translator (and the dry-run validator, mirroring it) now attach real, non-provisional `DistanceConstraint`s wherever a plan carries a literal size - Circle/Arc/Ellipse/Polygon/Slot radius (confirming the auto-created provisional constraint), Line length, and new `sketch_rectangle` `width`/`height` fields - so AI-generated geometry has real, user-editable dimensions instead of just raw coordinates |
+| 9 | `09-existing-part-editing.md` | 3, 4, 5 | **Built.** "Continue with AI" (`PartScreen`'s own new app-bar action) lets the AI edit a Part that already exists, via a new `existing:<id>` local_id convention (scoped to Body/Plane Features and whole-Sketch anchoring) - `ToolChooserScreen`'s "AI Modelling" tile is untouched and still always starts fresh |
 
 ## Spikes (do these first, before committing to the real build)
 

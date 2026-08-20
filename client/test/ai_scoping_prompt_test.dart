@@ -48,6 +48,44 @@ void main() {
     }
   });
 
+  test('an existingPartSummary appends the locked "Editing an existing Part" block, echoing the summary verbatim',
+      () {
+    final prompt = buildAiScopingSystemPrompt(existingPartSummary: '1. existing:feat-1 - sketch [Sketch - ...]');
+
+    expect(prompt, contains('## Editing an existing Part'));
+    expect(prompt, contains('existing:feat-1'));
+    // Locked - appended after everything else but still before the
+    // plan-termination footer, same placement `07`'s own locked add-ons use.
+    expect(
+      prompt.indexOf('## Editing an existing Part'),
+      lessThan(prompt.indexOf('## Final reply format')),
+    );
+    // The default assistant instructions' fresh-Part sentence must not
+    // contradict this mode.
+    expect(prompt, isNot(contains('there is no "current part" for you to reason about')));
+  });
+
+  test('no existingPartSummary means no existing-Part block and the fresh-Part sentence stays', () {
+    final prompt = buildAiScopingSystemPrompt();
+    expect(prompt, isNot(contains('## Editing an existing Part')));
+    expect(prompt, contains('there is no "current part" for you to reason about'));
+  });
+
+  test('a blank existingPartSummary is treated the same as none', () {
+    final prompt = buildAiScopingSystemPrompt(existingPartSummary: '   ');
+    expect(prompt, isNot(contains('## Editing an existing Part')));
+  });
+
+  test('an existingPartSummary still appends the block even under a custom assistant-instructions override', () {
+    final prompt = buildAiScopingSystemPrompt(
+      assistantInstructionsOverride: 'Only ever speak in haiku.',
+      existingPartSummary: '1. existing:feat-1 - sketch [...]',
+    );
+    expect(prompt, contains('Only ever speak in haiku.'));
+    expect(prompt, contains('## Editing an existing Part'));
+    expect(prompt, contains('## Final reply format'));
+  });
+
   test('detectPlanInAssistantText still finds a plan in a reply produced under a custom override', () {
     // The system prompt itself is never sent to `detectPlanInAssistantText`
     // (only the assistant's own reply is) - this test exists to document

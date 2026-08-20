@@ -162,6 +162,132 @@ void main() {
     });
   });
 
+  group('PlanTranslator.execute - existing-Part editing (existing:<id> references)', () {
+    test('a fillet targeting an existing Body (no new Feature-producing steps at all) resolves and posts the real id',
+        () async {
+      final paths = <String>[];
+      final mock = MockClient((request) async {
+        paths.add('${request.method} ${request.url.path} ${decodeBody(request)}');
+        if (request.url.path == '/document/parts/part-1/ai-plan/validate') {
+          return jsonResponse({
+            'results': [
+              {
+                'local_id': 'c1',
+                'ok': true,
+                'warnings': [],
+                'error': null,
+                // Mirrors the real backend's own `_resolve_edges`: keyed by
+                // the plan's own `edges.of` value verbatim - here that
+                // value already carries the `existing:` prefix, since the
+                // plan never named a plan-local Body step at all.
+                'resolved_edges': [
+                  {'body_id': 'existing:feat-extrude-existing', 'shape_type': 'edge', 'index': 0},
+                  {'body_id': 'existing:feat-extrude-existing', 'shape_type': 'edge', 'index': 1},
+                ],
+              },
+            ],
+          });
+        }
+        if (request.url.path == '/document/parts/part-1/fillet-features') {
+          return jsonResponse({
+            'type': 'fillet',
+            'id': 'feat-fillet1',
+            'locked': false,
+            'edge_refs': decodeBody(request)['edge_refs'],
+            'radius': 2.0,
+          });
+        }
+        return http.Response('not found', 404);
+      });
+
+      final plan = AiGenerationPlan.fromJson({
+        'version': 1,
+        'steps': [
+          {
+            'local_id': 'c1',
+            'kind': 'fillet',
+            'edges': {'selector': 'top_face_edges', 'of': 'existing:feat-extrude-existing'},
+            'radius': 2,
+          },
+        ],
+      });
+
+      final translator = PlanTranslator(
+        documentApi: DocumentApiClient(httpClient: mock),
+        sketchApi: SketchApiClient(httpClient: mock),
+      );
+      final result = await translator.execute(plan: plan, partId: 'part-1');
+
+      expect(result.outcome, PlanTranslationOutcome.success);
+      expect(result.createdFeatureIds, ['feat-fillet1']);
+      final filletCallBody =
+          paths.firstWhere((p) => p.startsWith('POST /document/parts/part-1/fillet-features'));
+      // The real Feature id, never the "existing:" wrapper - the wrapper is
+      // a plan-authoring convention only, resolved away before anything is
+      // sent over the wire.
+      expect(filletCallBody, contains('feat-extrude-existing'));
+      expect(filletCallBody, isNot(contains('existing:')));
+    });
+
+    test('a new sketch_point step anchored to an existing Sketch (via existingFeatures pre-seeding) posts to the '
+        'real Sketch id, without ever creating a new SketchFeature', () async {
+      final paths = <String>[];
+      final mock = MockClient((request) async {
+        paths.add('${request.method} ${request.url.path}');
+        if (request.url.path == '/document/parts/part-1/ai-plan/validate') {
+          return jsonResponse({
+            'results': [
+              {'local_id': 'p1', 'ok': true, 'warnings': [], 'error': null},
+            ],
+          });
+        }
+        if (request.url.path == '/sketch/sketches/sketch-existing/points') {
+          final body = decodeBody(request);
+          return jsonResponse({'id': 'point-1', 'x': body['x'], 'y': body['y']});
+        }
+        return http.Response('not found', 404);
+      });
+
+      final plan = AiGenerationPlan.fromJson({
+        'version': 1,
+        'steps': [
+          {
+            'local_id': 'p1',
+            'kind': 'sketch_point',
+            'sketch_feature_id': 'existing:feat-sketch-existing',
+            'x': 5,
+            'y': 5,
+          },
+        ],
+      });
+
+      final translator = PlanTranslator(
+        documentApi: DocumentApiClient(httpClient: mock),
+        sketchApi: SketchApiClient(httpClient: mock),
+      );
+      final result = await translator.execute(
+        plan: plan,
+        partId: 'part-1',
+        existingFeatures: [
+          FeatureDto(
+            type: 'sketch',
+            id: 'feat-sketch-existing',
+            locked: false,
+            sketchId: 'sketch-existing',
+            produces: 'sketch',
+          ),
+        ],
+      );
+
+      expect(result.outcome, PlanTranslationOutcome.success);
+      expect(result.localIdToRealId, {'p1': 'point-1'});
+      // No new SketchFeature was ever created - the plan referenced the
+      // real, already-existing one throughout.
+      expect(paths.any((p) => p.startsWith('POST /document/parts/part-1/features/sketch')), isFalse);
+      expect(paths, contains('POST /sketch/sketches/sketch-existing/points'));
+    });
+  });
+
   group('PlanTranslator.execute - computed sketch-entity points (degrees, not radians)', () {
     test('sketch_line with length+angle computes the end point via a real createPoint call', () async {
       final createPointBodies = <Map<String, dynamic>>[];

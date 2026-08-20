@@ -4,6 +4,7 @@ import '../api/document_api_client.dart';
 import '../api/sketch_api_client.dart' show ApiException, SketchApiClient;
 import '../gear/gear_preset_store.dart';
 import '../viewport3d/part_screen.dart';
+import 'ai_existing_part_summary.dart';
 import 'ai_plan.dart';
 import 'ai_plan_detection.dart';
 import 'ai_plan_summary.dart';
@@ -47,6 +48,21 @@ const String aiModellingPlanPresetKind = 'ai_modelling_plan';
 /// this one Part id for both, rather than creating a second, orphaned one
 /// - the exact gap this doc comment used to describe before workstream 4
 /// was built.
+///
+/// **Existing-Part editing** (`docs/ai-modelling/09-existing-part-
+/// editing.md`, the deferred follow-up `00-conventions.md`'s "v1 always
+/// starts a fresh Part" section named): when [existingPartId] is given (the
+/// "Continue with AI" entry point on `PartScreen`, as opposed to
+/// `ToolChooserScreen`'s "AI Modelling" tile, which never sets it), this
+/// screen fetches that Part's current Features once in [initState] and
+/// threads a prompt-facing summary of them
+/// (`ai_existing_part_summary.dart`) into every scoping turn, so the LLM
+/// can reference them via the `existing:<id>` convention. **Generate** in
+/// this mode reuses [existingPartId] directly for both the dry-run and real
+/// execution - it must never call `startNewDocument`/`createPart` (that
+/// would wipe or orphan the user's real Document/Part; see [_generate]'s
+/// own doc comment for why this is the one thing this mode has to get
+/// exactly right).
 class AiModellingScreen extends StatefulWidget {
   /// Overridable for tests, so a real call never hits the network.
   final AiProvider? provider;
@@ -58,7 +74,14 @@ class AiModellingScreen extends StatefulWidget {
   /// never talk to the real backend either.
   final SketchApiClient? sketchApi;
 
-  const AiModellingScreen({super.key, this.provider, this.documentApi, this.sketchApi});
+  /// Existing-Part editing: when set, this conversation edits the real Part
+  /// with this id instead of starting a brand-new one - see this class's
+  /// own doc comment. Null (the default) is the original "start fresh"
+  /// behaviour, unchanged - `ToolChooserScreen`'s "AI Modelling" tile never
+  /// sets this.
+  final String? existingPartId;
+
+  const AiModellingScreen({super.key, this.provider, this.documentApi, this.sketchApi, this.existingPartId});
 
   @override
   State<AiModellingScreen> createState() => _AiModellingScreenState();
@@ -117,6 +140,18 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   // silent failure later.
   bool _providerConfigDialogDismissed = false;
 
+  // Existing-Part editing: fetched once in `initState` when
+  // `widget.existingPartId` is set - `null` for the ordinary fresh-Part
+  // flow. Reused for both the prompt-facing summary
+  // (`_existingPartSummary`, threaded into every `_send()` turn) and
+  // `PlanTranslator.execute`'s own `existingFeatures` pre-seeding on
+  // Generate, so a single fetch serves both - nothing else modifies this
+  // Part between opening this screen and pressing Generate, so re-fetching
+  // for the second use would only be redundant, never more correct.
+  List<FeatureDto>? _existingFeatures;
+  String? _existingPartSummary;
+  String? _existingFeaturesError;
+
   DocumentApiClient get _documentApi => widget.documentApi ?? DocumentApiClient();
   SketchApiClient get _sketchApi => widget.sketchApi ?? SketchApiClient();
 
@@ -130,6 +165,21 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) => _checkProviderConfigured());
+    if (widget.existingPartId != null) _loadExistingFeatures();
+  }
+
+  Future<void> _loadExistingFeatures() async {
+    try {
+      final features = await _documentApi.listFeatures(widget.existingPartId!);
+      if (!mounted) return;
+      setState(() {
+        _existingFeatures = features;
+        _existingPartSummary = summarizeExistingPartForPrompt(features);
+      });
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() => _existingFeaturesError = e.message);
+    }
   }
 
   Future<void> _checkProviderConfigured() async {
@@ -193,6 +243,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       final systemPrompt = buildAiScopingSystemPrompt(
         assistantInstructionsOverride: AiSystemPromptPreferences.override,
         enabledAddOns: AiSystemPromptPreferences.enabledAddOns,
+        existingPartSummary: _existingPartSummary,
       );
       final result = await provider.sendScopingTurn(_transcript, systemPrompt: systemPrompt);
       final assistantMessage = AiChatMessage(role: AiMessageRole.assistant, text: result.assistantText);
@@ -238,18 +289,33 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       _stepStatuses = List.filled(plan.steps.length, TranslationStepStatus.pending);
     });
     try {
-      // Bug fix (on-device feedback): AI Modelling always starts a
-      // brand-new Part (see this screen's own class doc comment) - without
-      // resetting the session's Document first, this Part would just pile
-      // onto whatever Document a previous tool-chooser entry already
-      // created this session (see `DocumentApiClient.startNewDocument`'s
-      // own doc comment).
-      await _documentApi.startNewDocument();
-      final part = await _documentApi.createPart('AI Modelling Part');
+      // Existing-Part editing: reuse `widget.existingPartId` directly -
+      // CRITICAL that this branch never calls `startNewDocument`/
+      // `createPart` (see this method's own doc comment on the class):
+      // `startNewDocument` would reset the session's entire Document,
+      // wiping the real Part this conversation is meant to be editing, and
+      // `createPart` would silently generate for an orphaned, unrelated
+      // Part instead of the user's real one.
+      final String partId;
+      if (widget.existingPartId != null) {
+        partId = widget.existingPartId!;
+      } else {
+        // Bug fix (on-device feedback): AI Modelling always starts a
+        // brand-new Part (see this screen's own class doc comment) -
+        // without resetting the session's Document first, this Part would
+        // just pile onto whatever Document a previous tool-chooser entry
+        // already created this session (see `DocumentApiClient.
+        // startNewDocument`'s own doc comment). Skipped entirely in
+        // existing-Part mode, above.
+        await _documentApi.startNewDocument();
+        final part = await _documentApi.createPart('AI Modelling Part');
+        partId = part.id;
+      }
       final translator = PlanTranslator(documentApi: _documentApi, sketchApi: _sketchApi);
       final result = await translator.execute(
         plan: plan,
-        partId: part.id,
+        partId: partId,
+        existingFeatures: _existingFeatures ?? const [],
         onStepStatusChanged: (index, status) {
           if (!mounted) return;
           setState(() => _stepStatuses![index] = status);
@@ -260,9 +326,9 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         _generating = false;
         _finishedOutcome = result.outcome;
         _preflightResults = result.preflightResults;
-        if (result.outcome == PlanTranslationOutcome.success) _generatedPartId = part.id;
+        if (result.outcome == PlanTranslationOutcome.success) _generatedPartId = partId;
         if (result.createdFeatureIds.isNotEmpty) {
-          _lastRunPartId = part.id;
+          _lastRunPartId = partId;
           _lastRunCreatedFeatureIds = result.createdFeatureIds;
         }
       });
@@ -446,7 +512,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     final isFreshConversation = _transcript.isEmpty && _proposedPlan == null;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('AI Modelling'),
+        title: Text(widget.existingPartId != null ? 'Continue with AI' : 'AI Modelling'),
         actions: [
           if (isFreshConversation)
             IconButton(icon: const Icon(Icons.folder_open_outlined), tooltip: 'Load preset', onPressed: _loadPreset),
@@ -462,12 +528,24 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     return Column(
       children: [
         if (_transcript.isEmpty)
-          const Padding(
-            padding: EdgeInsets.all(16),
+          Padding(
+            padding: const EdgeInsets.all(16),
             child: Text(
-              'Describe the part you want to build. This always starts a brand-new '
-              'Part - it never modifies one that already exists.',
-              style: TextStyle(color: Colors.white54),
+              widget.existingPartId != null
+                  ? 'Describe the change you want made to this Part. The AI can see its current '
+                      'Features and can build on top of them - it never starts a new Part in this mode.'
+                  : 'Describe the part you want to build. This always starts a brand-new '
+                      'Part - it never modifies one that already exists.',
+              style: const TextStyle(color: Colors.white54),
+              textAlign: TextAlign.center,
+            ),
+          ),
+        if (widget.existingPartId != null && _existingFeaturesError != null)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            child: Text(
+              'Could not load this Part\'s current Features: $_existingFeaturesError',
+              style: const TextStyle(color: Colors.redAccent),
               textAlign: TextAlign.center,
             ),
           ),
