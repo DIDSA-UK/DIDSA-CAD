@@ -106,7 +106,6 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
   GearDesignKind _kind = GearDesignKind.external;
   double _module = 2.0;
   double _pressureAngleDegrees = 20.0;
-  double _profileShift = 0.0;
   double _backlash = 0.0;
   double _rootFilletRadius = 0.0;
   double _helixAngleDegrees = 0.0;
@@ -128,6 +127,20 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
   final _faceWidthController = TextEditingController(text: '5');
   final _outerDiameterController = TextEditingController();
   final _backingHeightController = TextEditingController();
+  final _profileShiftController = TextEditingController(text: '0');
+
+  /// Auto-or-override for `profile_shift` (`app.document.gear.resolve_gear_
+  /// profile_shift` on the backend) - `true` (the default, matching
+  /// `GearFeatureCreate.profile_shift`'s own `None`-means-auto convention)
+  /// sends no `profile_shift` override at all, letting the backend compute
+  /// whichever value (`0.0`, or a positive shift) keeps `tooth_count` clear
+  /// of undercut; flipping to `false` sends `_profileShiftController`'s own
+  /// current text as an explicit value instead. Mirrors `BevelDesignScreen.
+  /// _profileShift1Auto`/`_profileShift2Auto` exactly - see that screen's
+  /// own doc comment for the full reasoning, including why the controller's
+  /// text is live-driven from the preview response while auto rather than
+  /// user-edited.
+  bool _profileShiftAuto = true;
 
   Timer? _previewDebounce;
   bool _previewLoading = false;
@@ -218,7 +231,14 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
     } else {
       _mode = json['gear_type'] as String? ?? _mode;
       _kind = (json['is_internal'] as bool? ?? false) ? GearDesignKind.internal : GearDesignKind.external;
-      _profileShift = (json['profile_shift'] as num?)?.toDouble() ?? _profileShift;
+      final rawProfileShift = json['profile_shift'] as num?;
+      _profileShiftAuto = rawProfileShift == null;
+      // effective_profile_shift is always present once resolved
+      // (GearFeatureResponse's own required field) - falls back to the raw
+      // value (never null when not auto) or 0 only for a malformed/older
+      // response, mirrors BevelDesignScreen's identical fallback chain.
+      final effectiveProfileShift = (json['effective_profile_shift'] as num?)?.toDouble();
+      _profileShiftController.text = (rawProfileShift?.toDouble() ?? effectiveProfileShift ?? 0.0).toString();
       _rootFilletRadius = (json['root_fillet_radius'] as num?)?.toDouble() ?? _rootFilletRadius;
       _helixAngleDegrees = (json['helix_angle_degrees'] as num?)?.toDouble() ?? _helixAngleDegrees;
       _herringbone = json['herringbone'] as bool? ?? _herringbone;
@@ -247,6 +267,7 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
     _faceWidthController.dispose();
     _outerDiameterController.dispose();
     _backingHeightController.dispose();
+    _profileShiftController.dispose();
     if (widget.documentApi == null) _api.close();
     super.dispose();
   }
@@ -285,6 +306,20 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
     final backingHeight =
         _kind == GearDesignKind.rack ? double.tryParse(_backingHeightController.text) : null;
 
+    double? profileShift;
+    if (_kind != GearDesignKind.rack && !_profileShiftAuto) {
+      profileShift = double.tryParse(_profileShiftController.text);
+      if (profileShift == null) {
+        if (!mounted) return;
+        setState(() {
+          _preview = null;
+          _warnings = const [];
+          _blockingError = 'Enter a valid profile shift';
+        });
+        return;
+      }
+    }
+
     setState(() => _previewLoading = true);
     try {
       final result = await _api.previewGear(
@@ -292,7 +327,7 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
         module: _module,
         toothCount: toothCount,
         pressureAngleDegrees: _pressureAngleDegrees,
-        profileShift: _kind == GearDesignKind.rack ? 0.0 : _profileShift,
+        profileShift: profileShift,
         backlash: _backlash,
         outerDiameter: outerDiameter,
         backingHeight: backingHeight,
@@ -303,6 +338,14 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
         _warnings = result.warnings;
         _blockingError = null;
         _previewLoading = false;
+        // While profile shift is "auto," its controller is a read-only
+        // display of the live-computed value - drive it from this fresh
+        // preview response rather than leave it stale (`_buildProfileShift
+        // Field`'s own field is `enabled: false` in this state, so the
+        // user was never editing it directly anyway).
+        if (_profileShiftAuto && result.effectiveProfileShift != null) {
+          _profileShiftController.text = result.effectiveProfileShift.toString();
+        }
       });
     } on ApiException catch (e) {
       if (!mounted) return;
@@ -402,7 +445,7 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
             toothCount: toothCount,
             faceWidth: faceWidth,
             pressureAngleDegrees: _pressureAngleDegrees,
-            profileShift: _profileShift,
+            profileShift: _profileShiftAuto ? null : double.parse(_profileShiftController.text),
             backlash: _backlash,
             rootFilletRadius: _rootFilletRadius,
             outerDiameter: _kind == GearDesignKind.internal ? double.tryParse(_outerDiameterController.text) : null,
@@ -450,7 +493,7 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
           toothCount: toothCount,
           faceWidth: faceWidth,
           pressureAngleDegrees: _pressureAngleDegrees,
-          profileShift: _profileShift,
+          profileShift: _profileShiftAuto ? null : double.parse(_profileShiftController.text),
           backlash: _backlash,
           rootFilletRadius: _rootFilletRadius,
           outerDiameter: _kind == GearDesignKind.internal ? double.tryParse(_outerDiameterController.text) : null,
@@ -595,6 +638,62 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
     );
   }
 
+  /// The "Profile shift" field for an external/internal gear: an
+  /// auto-computed value by default (`app.document.gear.resolve_gear_
+  /// profile_shift` - the smallest positive shift that clears undercut at
+  /// the current tooth count, `0.0` if none is needed - live-updated from
+  /// the preview response's own `effectiveProfileShift` while
+  /// [_profileShiftAuto]), with a switch to override it with a manually-
+  /// typed value instead. Mirrors `BevelDesignScreen._buildProfileShiftField`
+  /// exactly (see that method's own doc comment for the full reasoning) -
+  /// duplicated here rather than shared since each screen's own private
+  /// widget methods already follow that per-screen convention throughout
+  /// this codebase.
+  Widget _buildProfileShiftField() {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Expanded(
+          child: TextField(
+            controller: _profileShiftController,
+            enabled: !_profileShiftAuto,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
+            decoration: InputDecoration(
+              labelText: 'Profile shift',
+              isDense: true,
+              helperText: _profileShiftAuto ? 'Auto - computed to avoid undercut on low tooth counts' : null,
+              helperMaxLines: 2,
+              suffixIcon: fieldHelpIcon(
+                'Shifts the tooth profile outward (positive) or inward (negative) from standard - changes '
+                'tooth thickness and avoids undercut on low tooth counts. "Auto" computes the smallest shift '
+                'that avoids predicted undercut (0 if none is predicted); switch off to set your own value '
+                'instead.',
+              ),
+            ),
+            onChanged: (_) => _schedulePreview(),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(_profileShiftAuto ? 'Auto' : 'Manual', style: Theme.of(context).textTheme.labelSmall),
+            // On (true) = Auto, off = Manual - lit/right means "let the
+            // backend decide," matching the switch's own default state
+            // (Auto) starting lit.
+            Switch(
+              value: _profileShiftAuto,
+              onChanged: (auto) {
+                setState(() => _profileShiftAuto = auto);
+                _schedulePreview();
+              },
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
   Widget _buildForm() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -647,23 +746,7 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
         ),
         if (_kind != GearDesignKind.rack) ...[
           const SizedBox(height: 12),
-          TextField(
-            keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
-            decoration: InputDecoration(
-              labelText: 'Profile shift',
-              suffixIcon: fieldHelpIcon(
-                'Shifts the tooth profile outward (positive) or inward (negative) from standard - '
-                'changes tooth thickness and can help avoid undercut on low tooth counts.',
-              ),
-            ),
-            onChanged: (text) {
-              final value = double.tryParse(text);
-              if (value != null) {
-                setState(() => _profileShift = value);
-                _schedulePreview();
-              }
-            },
-          ),
+          _buildProfileShiftField(),
           const SizedBox(height: 12),
           TextField(
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
@@ -890,7 +973,8 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
         'pressureAngleDegrees': _pressureAngleDegrees,
         'toothCount': _toothCountController.text,
         'faceWidth': _faceWidthController.text,
-        'profileShift': _profileShift,
+        'profileShift': _profileShiftController.text,
+        'profileShiftAuto': _profileShiftAuto,
         'backlash': _backlash,
         'rootFilletRadius': _rootFilletRadius,
         'helixAngleDegrees': _helixAngleDegrees,
@@ -916,7 +1000,21 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
       _pressureAngleDegrees = (fields['pressureAngleDegrees'] as num?)?.toDouble() ?? _pressureAngleDegrees;
       if (fields['toothCount'] is String) _toothCountController.text = fields['toothCount'] as String;
       if (fields['faceWidth'] is String) _faceWidthController.text = fields['faceWidth'] as String;
-      _profileShift = (fields['profileShift'] as num?)?.toDouble() ?? _profileShift;
+      // Older presets (saved before profile shift became a controller-
+      // backed Auto/Manual field) stored 'profileShift' as a plain num -
+      // still honoured here so those presets keep loading their own saved
+      // explicit value correctly, not just newer String-backed ones.
+      final rawProfileShift = fields['profileShift'];
+      if (rawProfileShift is String) {
+        _profileShiftController.text = rawProfileShift;
+      } else if (rawProfileShift is num) {
+        _profileShiftController.text = _formatDouble(rawProfileShift.toDouble());
+      }
+      // Older presets (saved before profile shift could auto-resolve) have
+      // no 'profileShiftAuto' key at all - default to manual (false) so
+      // they keep using their own saved explicit value unchanged rather
+      // than silently switching to auto on load.
+      _profileShiftAuto = fields['profileShiftAuto'] as bool? ?? false;
       _backlash = (fields['backlash'] as num?)?.toDouble() ?? _backlash;
       _rootFilletRadius = (fields['rootFilletRadius'] as num?)?.toDouble() ?? _rootFilletRadius;
       _helixAngleDegrees = (fields['helixAngleDegrees'] as num?)?.toDouble() ?? _helixAngleDegrees;

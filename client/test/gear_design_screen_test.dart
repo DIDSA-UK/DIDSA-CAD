@@ -30,7 +30,11 @@ void main() {
   http.Response jsonResponse(Object body, {int status = 200}) =>
       http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});
 
-  Map<String, dynamic> defaultPreviewResponse({List<String> warnings = const []}) => {
+  Map<String, dynamic> defaultPreviewResponse({
+    List<String> warnings = const [],
+    double effectiveProfileShift = 0.0,
+  }) =>
+      {
         'gear_kind': 'external',
         'outline_points': [
           [1.0, 0.0],
@@ -40,6 +44,7 @@ void main() {
         'base_radius': 18.79,
         'addendum_radius': 22.0,
         'dedendum_radius': 17.5,
+        'effective_profile_shift': effectiveProfileShift,
         'warnings': warnings,
       };
 
@@ -77,6 +82,139 @@ void main() {
     expect(find.textContaining('undercut'), findsOneWidget);
     final createButton = tester.widget<FilledButton>(find.byType(FilledButton));
     expect(createButton.onPressed, isNotNull);
+  });
+
+  testWidgets(
+    'Profile shift defaults to Auto, showing the live-computed value and sending no override',
+    (tester) async {
+      Map<String, dynamic>? gearFeatureBody;
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          if (request.url.path == '/document/gear/preview') {
+            // A 6-tooth gear would otherwise undercut, but auto-resolution
+            // (app.document.gear.resolve_gear_profile_shift) picks a
+            // positive shift that clears it - no warning here, unlike the
+            // explicit-zero-shift test above.
+            return jsonResponse(defaultPreviewResponse(effectiveProfileShift: 0.65));
+          }
+          if (request.url.path == '/document/parts') {
+            return jsonResponse({'id': 'part-1', 'name': 'Gear Part', 'feature_ids': []}, status: 201);
+          }
+          if (request.url.path == '/document/parts/part-1/gear-features') {
+            gearFeatureBody = jsonDecode(request.body) as Map<String, dynamic>;
+            return jsonResponse({
+              'type': 'gear',
+              'id': 'gear-1',
+              'locked': false,
+              'produces': 'body',
+              'gear_type': 'boss',
+              'is_internal': false,
+              'module': 2.0,
+              'tooth_count': 6,
+              'face_width': 5.0,
+              'pressure_angle_degrees': 20.0,
+              'profile_shift': null,
+              'backlash': 0.0,
+              'root_fillet_radius': 0.0,
+              'effective_profile_shift': 0.65,
+            }, status: 201);
+          }
+          return jsonResponse({'id': 'part-1', 'name': 'Gear Part', 'feature_ids': []});
+        }),
+      );
+
+      await tester.pumpWidget(MaterialApp(home: GearDesignScreen(documentApi: client)));
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.widgetWithText(TextField, 'Tooth count'), '6');
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pumpAndSettle();
+
+      // Starts Auto, and the field shows the live-computed positive shift
+      // from the preview response, not a static 0 - and no warning, since
+      // auto-resolution already cleared the undercut this exact tooth
+      // count triggers at an explicit 0.0 shift (the test above).
+      expect(find.text('Auto'), findsOneWidget);
+      expect(find.textContaining('undercut'), findsNothing);
+      final shiftField = tester.widget<TextField>(find.widgetWithText(TextField, 'Profile shift'));
+      expect(shiftField.enabled, isFalse);
+      expect(shiftField.controller?.text, '0.65');
+
+      await tester.ensureVisible(find.byType(FilledButton));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(FilledButton));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(gearFeatureBody?.containsKey('profile_shift'), isFalse);
+    },
+  );
+
+  testWidgets('Toggling profile shift to Manual sends the typed override', (tester) async {
+    Map<String, dynamic>? gearFeatureBody;
+    final client = DocumentApiClient(
+      httpClient: MockClient((request) async {
+        if (request.url.path == '/document/gear/preview') {
+          return jsonResponse(defaultPreviewResponse(effectiveProfileShift: 0.65));
+        }
+        if (request.url.path == '/document/parts') {
+          return jsonResponse({'id': 'part-1', 'name': 'Gear Part', 'feature_ids': []}, status: 201);
+        }
+        if (request.url.path == '/document/parts/part-1/gear-features') {
+          gearFeatureBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'gear',
+            'id': 'gear-1',
+            'locked': false,
+            'produces': 'body',
+            'gear_type': 'boss',
+            'is_internal': false,
+            'module': 2.0,
+            'tooth_count': 6,
+            'face_width': 5.0,
+            'pressure_angle_degrees': 20.0,
+            'profile_shift': 0.5,
+            'backlash': 0.0,
+            'root_fillet_radius': 0.0,
+            'effective_profile_shift': 0.5,
+          }, status: 201);
+        }
+        return jsonResponse({'id': 'part-1', 'name': 'Gear Part', 'feature_ids': []});
+      }),
+    );
+
+    await tester.pumpWidget(MaterialApp(home: GearDesignScreen(documentApi: client)));
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.widgetWithText(TextField, 'Tooth count'), '6');
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pumpAndSettle();
+
+    // GearDesignScreen has more than one Switch on this form (the "Show
+    // reference circles" SwitchListTile renders one internally too) - the
+    // profile shift field's own Switch is the first one in the tree, since
+    // it appears above "Show reference circles" in _buildForm's order.
+    final profileShiftSwitch = find.byType(Switch).first;
+    await tester.ensureVisible(profileShiftSwitch);
+    await tester.pumpAndSettle();
+    await tester.tap(profileShiftSwitch);
+    await tester.pumpAndSettle();
+    expect(find.text('Manual'), findsOneWidget);
+
+    final shiftField = find.widgetWithText(TextField, 'Profile shift');
+    await tester.ensureVisible(shiftField);
+    await tester.pumpAndSettle();
+    await tester.enterText(shiftField, '0.5');
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.byType(FilledButton));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(FilledButton));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(gearFeatureBody?['profile_shift'], 0.5);
   });
 
   testWidgets('a blocking 422 disables Create and shows the error, not a warning banner', (tester) async {
