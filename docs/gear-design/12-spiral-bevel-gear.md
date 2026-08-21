@@ -959,8 +959,10 @@ Both of Spike A's own uncharacterized breakdowns are now root-caused:
   spiral-construction one, and not blocking on Spike B/fold-risk work at
   all.
 - **No genuine flank self-fold was found anywhere in this session's own
-  testing** (25° through 75° spiral angle, 8T/16T and 6T/24T tooth-count
-  ratios, both hands) - the "Spike B (fold-risk/surface-quality)" framing
+  testing** (25° through 75° spiral angle; 10T/10T, 20T/20T, 8T/16T, and
+  6T/24T tooth-count ratios; opposite-hand throughout, matching Spike A's
+  own primary sweep - same-hand wasn't re-tested here, already covered by
+  Spike A's own §3) - the "Spike B (fold-risk/surface-quality)" framing
   in this doc's own "Complexity/risk" section and `13-spiral-bevel-pair.md`'s
   own §5 go/no-go turns out to have been aimed at the wrong mechanism;
   `_flank_fold_warning` is confirmed clean across every case this session
