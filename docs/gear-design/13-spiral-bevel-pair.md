@@ -400,3 +400,15 @@ states, just for a dimension neither this doc nor `11-bevel-pair.md`'s own
 real history anticipated: *solid validity* itself, not interference).
 Independent of, and does not block, this workstream's own spiral-specific
 go/no-go above.
+
+**Fixed.** `bevel_math.bevel_tooth_tip_thickness` (Tredgold's own virtual-
+spur-gear substitution plus a new `gear_math.tooth_thickness_at_radius`,
+the standard involute tooth-thickness-at-any-radius relation generalizing
+`tooth_thickness_at_pitch`) detects exactly this - a self-crossing,
+negative-thickness tip - and `MINIMUM_TIP_THICKNESS_COEFFICIENT` (0.05x
+module, calibrated against real `_assemble_gear_solid` builds across
+three tooth counts) is now wired into `maximum_receiver_profile_shift_for_
+mesh_clearance`'s own bisection alongside the existing reverse-margin
+check: a trial shift must clear both to be accepted. Verified on-device
+that the 6T/24T case now builds with no volume-disagreement warning and
+the default/14.5-degree cases are unchanged.
