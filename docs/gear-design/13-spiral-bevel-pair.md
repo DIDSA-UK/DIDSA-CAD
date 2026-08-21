@@ -251,3 +251,115 @@ complexity assessment made exactly that kind of assumption (calling
 interference checking a non-issue) and turned out wrong once real
 on-device testing happened; this doc's own "Lessons" section exists
 specifically so that mistake isn't repeated here.
+
+## Spike findings (2026-08-21) — Spike A's result, and what it means for pairing
+
+Spike A landed — see `12-spiral-bevel-gear.md`'s own matching dated
+entry for the full method/measurements. Short version: **NO-GO on
+"conjugate by construction."** The layered-offset construction, corrected
+to actually produce a spiral trace (12's own §2), reduces exactly to
+Tredgold at β=0 but leaves a real, small-but-nonzero residual interference
+(~7-9% of a tooth's own volume at moderate spiral angles, for the one
+representative geometry tested — 10T/10T, module 4, pressure angle 20°,
+shaft 90°) that meshing-phase adjustment alone cannot remove, plus a sharp
+breakdown at high spiral angle (≥~35° in that same geometry) and at
+extreme tooth-count-ratio splits. This is the **pessimistic branch** this
+doc's own "What's new" section named in advance ("if Spike A finds the
+guarantee is approximate or parameter-dependent, this workstream needs its
+own tangential margin proxy"), not the optimistic "inherits the guarantee
+for free, only needs hand-of-spiral input validation" branch. Both open
+questions this doc's own "What's new" section posed are now answered:
+
+### 1. Hand-of-spiral compatibility — confirmed real and physically necessary, not just a labeling convention
+
+Directly measured (12's own §3 "Same hand vs. opposite hand" table,
+β=10°/20°/30°, same 10T/10T pair): same-hand overlap is worse than
+opposite-hand at every β tested (105.8 vs. 82.4 mm³ at 10°; 137.3 vs. 77.9
+at 20°; 168.1 vs. 71.9 at 30°), and the *gap* between them widens with β
+(23 mm³ → 96 mm³) rather than staying a fixed offset. This confirms the
+physical necessity this doc's own "What's new" section asked Spike A to
+settle before committing to blocking behaviour.
+
+**On the hard-422-vs-warning-banner question this doc posed**: the
+measured magnitudes here (11-18% of a tooth's own volume even at the
+moderate β tested, growing with spiral angle, on a construction that
+*already* has its own real residual in the correctly-paired opposite-hand
+case) argue for leaning toward the warning-banner convention this doc
+already favoured, at least for now — a same-hand pair's interference isn't
+categorically different in *kind* from the opposite-hand residual
+already measured, just reliably worse in *degree*, and doesn't (in the
+cases tested here) make `BRepAlgoAPI_Common` itself fail the way the
+broken v1 construction's same-hand cases did (`12-spiral-bevel-gear.md`'s
+own §1: `IsDone()` returning `False` outright). That said, this was
+checked only up to β=30° on one tooth-count ratio; the widening-gap trend
+means a hard reject may become the safer default once larger spiral
+angles are actually offered as a real user-facing range — re-check this
+call once `BevelGearFeature`'s own spiral-angle field has real bounds.
+
+### 2. Radial mesh-margin math — confirmed to survive unchanged, and now for a provable reason, not just "plausibly"
+
+`12-spiral-bevel-gear.md`'s own §4: `offset(R)`/`curve(R)` are pure
+rotations about the gear axis and change nothing else, so
+`bevel_pair_mesh_margin_degrees`/`tredgold_base_colatitude` (both
+colatitude-only) are provably untouched by the spiral extension — not an
+empirical hope, a direct consequence of which coordinate the new math
+touches. The pressure-angle sweep (128.3→77.9→28.3 mm³ across
+14.5°/20°/25°) independently confirms this holds in practice, tracking the
+same direction/shape as the existing straight-bevel calibration
+(`MESH_MARGIN_SAFETY_BUFFER_DEGREES`'s own docstring). **This doc's own
+lesson 2 ("the 'obvious' quantity to check can be wrong — verify against
+real geometry") is satisfied in the *reassuring* direction this time**:
+the existing radial system needs no changes and no re-calibration.
+
+### 3. What this means for "Proposed auto-resolution field(s)"
+
+Given §2's confirmation, the first candidate this doc proposed
+("`profile_shift` again, unchanged" for the radial dimension) is settled:
+**yes, reuse it unchanged** — `resolve_member_profile_shifts` and its
+whole existing bisection-search apparatus need no modification for the
+radial component of a spiral pair.
+
+The second candidate ("a new field for tangential/phase alignment") is now
+**required, not speculative** — §1's confirmed pessimistic branch means a
+spiral pair genuinely needs a new mechanism for the residual
+`12-spiral-bevel-gear.md`'s §3 characterized. Concrete shape, building
+directly on what this session measured: a new margin proxy calibrated
+against real `BRepAlgoAPI_Common` sweeps the same way
+`MESH_MARGIN_SAFETY_BUFFER_DEGREES` was (lesson 3), most likely keyed off
+the meshing-phase offset (12's own §3 phase-sweep found a real, narrow
+local optimum near but not exactly at the existing straight-bevel
+convention — a per-pair search over a small phase window, capped the same
+defensive way `maximum_receiver_profile_shift_for_mesh_clearance` caps its
+own step per lesson 1, is a more promising starting shape than a
+closed-form formula given how sharply the phase sweep's minimum sits next
+to a 100× collision wall). This is real, unbudgeted new math — budget it
+as such, not as wiring on top of the existing radial system.
+
+### 4. Lesson 5 applied directly — the parameter sweep this doc asked for, done
+
+Per this doc's own lesson 5 ("test across the parameter space before
+calling a fix done"), `12-spiral-bevel-gear.md`'s own §3 already swept
+multiple spiral angle magnitudes, both hands, multiple pressure angles,
+multiple tooth-count ratios, and multiple shaft angles — not just the one
+canonical case — specifically to avoid repeating the straight-bevel
+over-correction gap this doc's own lesson 5 describes. The tooth-count-
+ratio sweep is the one that surfaced a real, unanticipated failure mode
+(8T/16T and 6T/24T breaking down catastrophically, correlated with a
+steep pitch-cone-angle split) that a single-canonical-pair check would
+have missed entirely — direct vindication of testing the sweep up front
+rather than waiting for an on-device report.
+
+### 5. Go/no-go for this workstream
+
+Per this doc's own "Complexity/risk" framing ("if Spike A finds the
+guarantee is only approximate, this workstream needs a genuinely new
+tangential margin proxy calibrated from scratch... real, unbudgeted new
+math, not just wiring"): that is exactly where this lands. Positioning
+(`_tilted_basis`/`pitch_cone_half_angles`-derived cone angles) and the
+radial profile-shift system carry over unchanged and need no new
+work — genuinely lower-risk than they might have been. But this
+workstream cannot proceed to a real `BevelPairFeature` spiral variant
+without first landing the new tangential margin proxy §3 calls for, and
+without `12-spiral-bevel-gear.md`'s own Spike B (fold-risk at high spiral
+angle / extreme tooth-count ratios) landing first — both are real,
+separate pieces of work this spike surfaced but did not itself complete.
