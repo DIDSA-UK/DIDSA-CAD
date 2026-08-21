@@ -378,3 +378,306 @@ lessons `11-bevel-pair.md`'s own real build-and-ship history surfaced for
 applying here. `10-bevel-gear.md`/`11-bevel-pair.md`'s own staleness
 relative to current code, flagged as an open item when this doc was
 first written, has since been addressed directly in both docs.
+
+## Spike findings (2026-08-21) — Spike A: does the layered-offset construction preserve conjugate action?
+
+Real investigate/prototype pass answering this doc's own single biggest
+open question, per this doc's own "Riskiest unknown to spike first"
+framing. Bootstrapped a real conda-forge `pythonocc-core` 7.9.3 env
+(micromamba from GitHub Releases, `backend/environment.yml` - this
+project's own established recipe). Scratch-only harness (not committed,
+per this project's own spike convention), built by reusing `app.document.
+bevel`'s real, already-validated internals directly (`_bspline_wire`,
+`_tip_land_face`, `_root_land_face`, `_spherical_cap_face`,
+`_flank_fold_warning`, `_flatten_end_caps`, the sewing/`ShapeFix_Shell`/
+`MakeSolid`/`OrientClosedSolid` sequence) and `app.document.bevel_pair`'s
+real `_tilted_basis`/`_rotated_about_axis` positioning unchanged - only
+the flank curve/surface generation itself (the thing actually under test)
+is new spike code. Interference measured via real `BRepAlgoAPI_Common` on
+the assembled two-member pair, exactly as this doc's own "Spike A" item
+and `13-spiral-bevel-pair.md`'s "Verification plan" specify. Small tooth
+counts (mostly 10T/10T, module 4, face_width 8, 90° shaft) throughout to
+keep per-case build time manageable across a real parameter sweep -
+absolute overlap numbers below are from that one representative geometry,
+not universal constants, but the *qualitative* findings (which
+constructions produce a real spiral trace, which parameter regions break
+down, the direction every sweep moves) were checked across the sweep
+described below and are the load-bearing result.
+
+### 1. A real dead end in this doc's own formula, worth naming so nobody re-implements it: the literal "Concrete integration point" does not produce a spiral trace at all
+
+This doc's own "Candidate approaches" section says to "replace the single
+`offset` applied identically to both `flank(geometry.cone_distance, ...)`
+and `flank(geometry.inner_cone_distance, ...)` calls with `offset(R)`
+evaluated at each call's own `sphere_radius`" - i.e. plug `offset(R)`
+directly into `bevel_tooth_flank_pair`'s existing `angle = offset if
+mirror else -offset` structure, unchanged in shape. Implementing exactly
+that (spike script `spiral_spike.py`, "v1" below) and measuring it
+directly found this is a real, previously-unnoticed bug in this doc's own
+derivation, not an implementation slip - proven two ways:
+
+- **Algebraically**: `bevel_tooth_flank_pair`'s right/left flanks are
+  built from a single raw curve, mirrored (`sign = -1 if mirror else 1`)
+  and rotated by `angle = offset if mirror else -offset`. For any `R`, the
+  tooth's own centerline (the midpoint between a matched right/left point
+  pair) is `[(raw(t) - offset(R)) + (-raw(t) + offset(R))] / 2 = 0`
+  identically, **for every value `offset(R)` takes** - the ± mirror
+  structure algebraically cancels the R-dependent term at the centerline
+  no matter what function of R it is. Only the tooth's own angular
+  *width* (`2 * offset(R)`) becomes R-dependent this way, not its trace.
+- **On-device, directly**: sampling `_layered_flank_sections` at 5 radii
+  (10T/10T, module 4, β=20°) and reading the actual azimuth of a matched
+  right/left point pair at each radius:
+
+  | section (outer→inner) | right az (deg) | left az (deg) | centerline (deg) | width (deg) |
+  |---|---|---|---|---|
+  | 0 (outer) | -7.747 | 7.747 | **0.000** | 15.495 |
+  | 1 | -5.584 | 5.584 | **0.000** | 11.169 |
+  | 2 (mean) | -3.250 | 3.250 | **0.000** | 6.501 |
+  | 3 | -0.716 | 0.716 | **0.000** | 1.431 |
+  | 4 (inner) | 2.058 | -2.058 | **0.000** | -4.115 |
+
+  The centerline is exactly 0.000° at every radius - not approximately,
+  exactly, matching the algebra above bit-for-bit. The tooth's own width
+  shrinks from 15.5° at the outer end through zero and past it to a
+  *negative* 4.1° at the inner end for this β - the flanks literally cross
+  over and swap sides before reaching the inner cone distance. This is not
+  a spiral tooth by any definition; it's a tooth that pinches shut and
+  reopens backwards along its own face width, while its centerline stays
+  the same straight ray from the apex a straight-bevel tooth already has.
+
+This fully explains why measuring this construction (v1) gives wild,
+non-monotonic interference as β varies (opposite-hand, same 10T/10T pair,
+`BRepAlgoAPI_Common` overlap in mm³ against a ~930 mm³ per-tooth reference
+volume - full assembled 10-tooth gear volume 9301 mm³ / 10):
+
+| β | 5° | 10° | 15° | 20° | 25° | 30° | 35° |
+|---|---|---|---|---|---|---|---|
+| overlap (mm³) | 84.7 | 83.0 | **6011.4** | **5473.6** | 274.5 | 14.8 | 2.9 |
+
+No trend - it rises and falls chaotically, because what's being measured
+isn't a spiral-meshing question at all, it's an artifact of exactly how
+much a malformed, self-crossing tooth happens to clash with its
+(equally-malformed) mate at each specific β. Same-hand cases at β=20°/30°
+made `BRepAlgoAPI_Common.IsDone()` fail outright (`overlap=None`) rather
+than returning a large-but-finite number - the geometry is bad enough that
+the boolean can't even complete. **Named dead end**: never plug `offset(R)`
+into the existing ±offset/mirror structure directly - the mirror symmetry
+that made a *constant* offset correct for straight-bevel Tredgold actively
+defeats an R-varying one.
+
+### 2. The corrected construction - and it does reduce to Tredgold at β=0
+
+What this doc's own prose actually intends ("the conic analogue of
+`gear.py`'s own linear-twist helical technique") is `_twisted_basis`'s
+real behaviour: rotate the *whole* tooth profile rigidly per cross-section,
+not offset one flank relative to the other. Fix: keep the existing,
+R-independent `offset_mean` (`_tredgold_flank_start_offset_angle`) as the
+± term that sets tooth *width* exactly as today, and add a **new** term,
+`curve(R) = [tan(β)/sin(γ)] · ln(R/R_mean)`, with the **same sign** to
+both flanks (`angle = ±offset_mean + curve(R)`) - a rigid per-radius
+rotation on top of the existing width term, not a replacement for it.
+Confirmed this actually curves the centerline while holding width
+constant (same 10T/10T, β=20° case, spike script `spiral_spike_v2.py`):
+
+| section (outer→inner) | right az (deg) | left az (deg) | centerline (deg) | width (deg) |
+|---|---|---|---|---|
+| 0 (outer) | 1.246 | 7.747 | 4.497 | 6.501 |
+| 1 | -0.916 | 5.584 | 2.334 | 6.501 |
+| 2 (mean) | -3.250 | 3.250 | **0.000** | 6.501 |
+| 3 | -5.785 | 0.716 | -2.535 | 6.501 |
+| 4 (inner) | -8.558 | -2.058 | -5.308 | 6.501 |
+
+Width is exactly constant (6.501° at every section, to full float
+precision); the centerline genuinely sweeps through azimuth, curving away
+from 0 on both sides of the mean radius - a real spiral trace. At β=0°
+this construction's assembled pair reproduces the existing Tredgold
+straight-bevel pair's own near-zero overlap exactly (1.7×10⁻⁷ mm³,
+matching a real unmodified `bevel._assemble_gear_solid` pair bit-for-bit) -
+the sanity check this doc's own §"Sanity check" text calls for, confirmed
+on-device, not just algebraically.
+
+### 3. Real measurement on the corrected construction: close to conjugate, but not exact - a real, phase-uncorrectable residual remains
+
+All results below use the corrected (§2) construction. Same 10T/10T,
+module 4, face_width 8, pressure_angle 20°, shaft 90° baseline unless
+noted; per-tooth reference volume ~930 mm³ (9301 mm³ full gear / 10 teeth).
+
+**Spiral angle sweep, opposite hand** (the doc's own primary "does it
+mesh" question):
+
+| β | 5° | 10° | 15° | 20° | 25° | 30° | 35° |
+|---|---|---|---|---|---|---|---|
+| overlap (mm³) | 84.3 | 82.4 | 79.7 | 77.9 | 75.0 | 71.9 | **4790.4** |
+| % of per-tooth volume | 9.1% | 8.9% | 8.6% | 8.4% | 8.1% | 7.7% | **515%** |
+
+5°-30° stays flat, even *slightly decreasing*, in the 72-95 mm³/8-9%
+range - a real, small, non-zero residual, not growing with β the way a
+naive "more curvature = more mismatch" guess would predict. At 35° it
+jumps 60× to over 5× a full tooth's own volume - a distinct, sharp
+breakdown, not a continuation of the same trend. This lands squarely in
+the "Fold-risk detection... a curved multi-section loft is a strictly
+higher self-intersection risk" open question this doc's own "OCCT
+construction — open questions" section already named - **not root-caused
+this session** (this spike's own scope was Spike A/mesh-correctness, not
+Spike B/surface quality); flagged here as a concrete, characterized
+threshold (β≥35° breaks down for this specific geometry) for whoever runs
+Spike B next, with a working grid-injectivity fold detector
+(`bevel._flank_fold_warning`) already available to point at it directly.
+
+**Is the ~72-95 mm³ residual just a bad meshing-phase choice?** Swept the
+existing `_rotated_about_axis` phase offset (calibrated for straight
+bevel, where a *fixed* rotation is exact for every R since a straight
+tooth's centerline never moves) in fine steps around its default value,
+same β=20° case:
+
+| phase Δ | -6° | -3° | -1° | -0.5° | -0.2° | 0° (default) | +0.2° | +0.5° |
+|---|---|---|---|---|---|---|---|---|
+| overlap (mm³) | 88.1 | 74.9 | 66.0 | 64.4 | **63.4** | 77.9 | **7785.6** | 7777.5 |
+
+A small negative correction helps modestly (77.9→63.4 mm³, ~19%), then
+overlap rises again moving further negative (88 mm³ at -6°, 265.7 mm³ at
+-18° - checked the full half-pitch range), confirming −0.2° to −1° is a
+genuine local minimum, not an unbounded improvement. Crossing *past* zero
+in the positive direction jumps 100× (7770+ mm³) - a real tooth-into-tooth
+collision boundary, not a fine-tuning region. **Conclusion: phase
+adjustment recovers at most ~20% of the residual and cannot zero it out -
+the ~63 mm³ floor is a real property of the flank geometry itself, not a
+positioning artifact.** Unlike straight-bevel Tredgold (whose β=0 residual
+*is* exactly zero, to the 1.7×10⁻⁷ mm³ noise floor), this construction is
+close to conjugate but not exact.
+
+**Same hand vs. opposite hand** (validates the hand-of-spiral
+compatibility requirement `13-spiral-bevel-pair.md` names as an open
+question):
+
+| β | 10° | 20° | 30° |
+|---|---|---|---|
+| opposite-hand overlap (mm³) | 82.4 | 77.9 | 71.9 |
+| same-hand overlap (mm³) | 105.8 | 137.3 | 168.1 |
+
+Same-hand is worse at every β tested, and the gap widens with β (23 mm³ at
+10° → 96 mm³ at 30°) - real, physical confirmation that opposite-hand
+pairing is genuinely required for this construction, not just a labeling
+convention, and that the penalty for getting it wrong grows with spiral
+angle rather than being a fixed cost.
+
+**Pressure angle sweep** (tests this doc's own "plausibly survives
+unchanged" claim about the radial mesh-margin math - see §4 below for the
+full answer):
+
+| pressure angle | 14.5° | 20° | 25° |
+|---|---|---|---|
+| overlap (mm³) | 128.3 | 77.9 | 28.3 |
+
+Same direction real straight-bevel pairs show (`bevel_math.
+MESH_MARGIN_SAFETY_BUFFER_DEGREES`'s own calibration docstring: overlap
+"largest [at low pressure angle]... shrinking... as pressure angle
+rises") - consistent with the radial component of this residual behaving
+exactly like the existing, already-calibrated straight-bevel radial
+margin.
+
+**Tooth-count ratio sweep** (β=20°, opposite hand):
+
+| pair | 10T/10T | 10T/20T | 8T/16T | 6T/24T |
+|---|---|---|---|---|
+| overlap (mm³) | 77.9 | 42.3 | **25270.5** | **78199.2** |
+
+10T/10T and 10T/20T stay in the same well-behaved range as the main
+sweep; 8T/16T and 6T/24T break down catastrophically - both are cases
+where `pitch_cone_half_angles` produces a steep split (6T/24T: γ≈14°/76°,
+the larger member already past this codebase's own `CROWN_LIKE_PITCH_
+CONE_ANGLE_DEGREES=75°` thin-hub threshold). Consistent with, and likely
+the same underlying mechanism as, the β=35° breakdown above - a steep
+pitch cone combined with the curved multi-section loft, not a new,
+separate failure mode. Not root-caused this session; same Spike B
+follow-up applies.
+
+**Shaft angle sweep** (β=20°, opposite hand) - mild, no dramatic effect:
+
+| shaft angle | 60° | 90° | 120° |
+|---|---|---|---|
+| overlap (mm³) | 82.1 | 77.9 | 65.6 |
+
+**Section-count convergence** (β=20°, opposite hand) - answers this doc's
+own "OCCT construction — open questions" flag that 2-section `ThruSections`
+"stops being sufficient once the offset varies continuously":
+
+| sections | 2 | 3 | 5 | 9 | 15 |
+|---|---|---|---|---|---|
+| overlap (mm³) | 94.2 | 77.9 | 77.9 | 77.9 | 77.9 |
+
+Confirmed: the legacy 2-section loft measurably under-counts the real
+mismatch (94.2 vs. the converged 77.9 mm³, ~17% off) - this doc's own
+flagged concern is real, not theoretical. Good news: convergence is fast,
+not expensive - 3 sections already matches 15 sections to full float
+precision for this case. `ruled=False` + `CheckCompatibility(False)`
+(gear.py's own helical-twist fix) both carried over without needing
+further tuning.
+
+### 4. Does the existing radial mesh-margin math survive unchanged? Yes - by construction, not just "plausibly"
+
+`offset(R)`/`curve(R)` are pure rotations about the gear axis
+(`_rotate_about_z`) - they change a point's azimuth and *nothing else*.
+`bevel_pair_mesh_margin_degrees` and `tredgold_base_colatitude` (the two
+functions the existing straight-bevel mesh-margin system is built from)
+read only colatitude/cone-distance quantities, never azimuth. So the
+spiral extension provably cannot change what they compute - not an
+empirical finding, a direct consequence of which coordinate the new math
+touches. The pressure-angle sweep in §3 (128.3→77.9→28.3 mm³, same
+direction and rough shape as existing straight-bevel calibration) is the
+on-device confirmation that this holds in practice too, not just on
+paper. **This doc's own "plausibly survives unchanged" hedge is
+confirmed - upgrade to "survives unchanged," full stop.**
+
+That said, the *residual* this session measured (§3's ~72-95 mm³/8-9%
+baseline, phase-uncorrectable) is not radial - it's the exact tangential
+effect `13-spiral-bevel-pair.md`'s own "What's new" section named as the
+alternative to "inherits the guarantee for free." See that doc's own
+matching spike-findings entry for what this means for pairing.
+
+### 5. Go/no-go
+
+**NO-GO on "conjugate by construction"** - the property this doc's own
+"Open question" text asked Spike A to check, and the property Tredgold
+gives straight bevel for free. Two separate results support this call:
+
+- The literal construction this doc's own "Concrete integration point"
+  text specifies (§1) is not just imperfect, it's a **named dead end** -
+  provably not a spiral trace at all, and empirically chaotic/large
+  interference as a direct consequence. Do not implement it as written.
+- The corrected construction (§2, the one this doc's prose actually
+  intended) is much closer - β=0° reduces exactly to Tredgold, moderate β
+  gives a small, bounded, mostly-flat residual (~7-9% of a tooth's own
+  volume for this test geometry) - but that residual is real,
+  **not phase-correctable to zero** (§3's phase sweep), and there is a
+  sharp, uncharacterized breakdown regime at high β (≥~35° here) and at
+  extreme tooth-count ratios (§3). This is the "approximate,
+  parameter-dependent" outcome `13-spiral-bevel-pair.md`'s own "What's
+  new" section flagged as the pessimistic branch, not the "inherits the
+  guarantee for free" optimistic one.
+
+**What a revised approach needs**, for whoever picks this up next:
+
+1. Use the corrected (§2) rigid-per-radius-rotation construction, never
+   the literal formula-into-existing-mirror-structure reading (§1) - this
+   is now a settled, proven point, not an open question.
+2. Build a real, calibrated tangential margin proxy for the residual in
+   §3 - the same treatment `MESH_MARGIN_SAFETY_BUFFER_DEGREES` got for
+   straight bevel (calibrate against real `BRepAlgoAPI_Common` sweeps,
+   size a safety buffer off the actual observed gap), not a new
+   closed-form guess. `13-spiral-bevel-pair.md`'s own "Proposed
+   auto-resolution" section's second candidate (a new field, not reusing
+   `profile_shift` unchanged) is the right shape.
+3. Run a dedicated Spike B (fold-risk/surface-quality, already scoped in
+   this doc's own "Complexity/risk" section) before allowing spiral angles
+   past roughly 30° or steep tooth-count-ratio splits (γ approaching
+   `CROWN_LIKE_PITCH_CONE_ANGLE_DEGREES`) - both break down sharply, and
+   this session did not root-cause either. `bevel._flank_fold_warning`'s
+   existing grid-injectivity detector is the right starting tool, per
+   this doc's own "OCCT construction — open questions" section.
+4. The meshing-phase-alignment convention (`_rotated_about_axis`'s fixed
+   `±π/2` rotation, calibrated for a straight tooth whose centerline never
+   moves) should be re-derived for a genuinely curved centerline rather
+   than reused as-is - §3's phase sweep found it's already close to the
+   real local optimum (within ~20%) but not exactly at it.
