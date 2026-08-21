@@ -1581,6 +1581,27 @@ class BevelGearType(str, Enum):
     CUT = "cut"
 
 
+class SpiralBevelHand(str, Enum):
+    """`docs/gear-design/12-spiral-bevel-gear.md`: `BevelGearFeature.
+    spiral_hand`'s own type - which way a spiral bevel tooth's trace leans
+    as radius decreases from the outer (back) cone toward the inner cone.
+    Same two values as `app.document.bevel_math.SpiralHand` (the math
+    module's own formula-level enum, `spiral_curve_offset_angle`'s `hand`
+    parameter) but kept as its own separate definition here rather than an
+    import - matching `BevelGearType`'s own identical-values-but-separate-
+    definition precedent just above ("each Feature type owns its own enum",
+    `00-conventions.md`) and keeping `models.py` free of any dependency on
+    another `app.document` module, same as every other Feature dataclass
+    here. `app.document.bevel` (which already imports both modules for
+    other reasons) converts between the two explicitly at its own
+    boundary. Meaningless unless `spiral_angle_degrees != 0.0`, mirroring
+    `GearFeature.herringbone`'s own "meaningless unless helix_angle_degrees
+    != 0.0" convention."""
+
+    LEFT = "left"
+    RIGHT = "right"
+
+
 @dataclass
 class BevelGearFeature(Feature):
     """`docs/gear-design/10-bevel-gear.md`: a standalone straight bevel
@@ -1619,7 +1640,26 @@ class BevelGearFeature(Feature):
     fillet is not supported (no `BRepPrimAPI_MakePrism.Generated()`-
     equivalent vertex-tracking exists for a `ThruSections`/`Sewing`-built
     solid, the same reason `GearFeature`'s own helical/herringbone teeth
-    don't support one either - see that dataclass's own docstring)."""
+    don't support one either - see that dataclass's own docstring).
+
+    `docs/gear-design/12-spiral-bevel-gear.md`: `spiral_angle_degrees`
+    (default `0.0`, mirroring `GearFeature.helix_angle_degrees`'s own
+    default) turns on the layered-constant-spiral-angle construction
+    (`app.document.bevel_math.bevel_tooth_flank_sections`) once non-zero -
+    `0.0` is a **literal no-op**, producing the exact same straight-bevel
+    Tredgold construction this Feature always has (`app.document.bevel.
+    _assemble_gear_solid`'s own `spiral_angle_degrees == 0.0` branch, byte-
+    for-byte the pre-spiral code path). `spiral_hand` (default `RIGHT`,
+    meaningless unless `spiral_angle_degrees != 0.0` - same "meaningless
+    unless" convention as `herringbone`) picks which way the tooth trace
+    leans - see `SpiralBevelHand`'s own docstring. Zerol bevel (curved
+    trace, zero *net* spiral) falls out of this same family for free at
+    `spiral_angle_degrees != 0.0` evaluated only at the mean radius -
+    no separate field or scope line, per that doc's own "Proposed v1
+    scope". Spiral bevel *pairing* is out of scope for this Feature type
+    entirely (Workstream 13, `BevelPairFeature`'s own separate, later
+    concern) - a standalone `BevelGearFeature` never runs the meshing-phase
+    search that workstream will need."""
 
     id: str
     plane_ref: PlaneRef
@@ -1638,6 +1678,8 @@ class BevelGearFeature(Feature):
     # face sew/solid/flatten pipeline), so the same accuracy/build-cost
     # tradeoff control applies here.
     points_per_flank: int = 12
+    spiral_angle_degrees: float = 0.0
+    spiral_hand: SpiralBevelHand = SpiralBevelHand.RIGHT
 
     @property
     def type(self) -> str:

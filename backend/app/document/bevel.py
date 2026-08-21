@@ -99,17 +99,31 @@ from OCC.Core.TopLoc import TopLoc_Location
 from OCC.Core.TopoDS import TopoDS_Face, TopoDS_Shape, TopoDS_Shell, TopoDS_Solid, TopoDS_Wire, topods
 
 from app.document.bevel_math import (
+    DEFAULT_SPIRAL_SECTION_COUNT,
     BevelGearGeometry,
     GearGeometryError,
+    SpiralHand,
     bevel_gear_geometry,
     bevel_tooth_flank_pair,
+    bevel_tooth_flank_sections,
     max_recommended_face_width,
+    spiral_build_cost_warning,
     thin_hub_warning,
     tredgold_base_colatitude,
 )
 from app.document.create_plane import resolve_plane_ref
 from app.document.extrude import basis_normal, compute_part_bodies
-from app.document.models import BevelGearFeature, Part, ResolvedPlane
+from app.document.models import BevelGearFeature, Part, ResolvedPlane, SpiralBevelHand
+
+
+def _spiral_hand_from_feature(spiral_hand: SpiralBevelHand) -> SpiralHand:
+    """Converts `models.SpiralBevelHand` (the Feature's own wire-facing
+    enum, kept as a separate definition per that enum's own docstring) to
+    `bevel_math.SpiralHand` (the math-layer enum `bevel_tooth_flank_
+    sections`/`spiral_curve_offset_angle` actually take) - the one place
+    this module needs to bridge the two, since both share the same
+    `LEFT`/`RIGHT` member names by design."""
+    return SpiralHand[spiral_hand.name]
 
 logger = logging.getLogger(__name__)
 
@@ -296,6 +310,47 @@ def _flank_face(
     """One tooth flank's surface (right or left) - unchanged from the
     2026-08-04 spike's own confirmed technique."""
     return _thru_sections_face(_bspline_wire(basis, outer_points), _bspline_wire(basis, inner_points))
+
+
+def _thru_sections_face_n(wires: list[TopoDS_Wire]) -> TopoDS_Face:
+    """`docs/gear-design/12-spiral-bevel-gear.md`: N-section (`N >= 2`)
+    generalization of `_thru_sections_face`, for a spiral bevel tooth's
+    flank/tip-land/root-land surfaces - the azimuthal offset varies
+    continuously along the face width once spiral is active, so a single
+    2-wire ruled loft under-counts the real geometry (that doc's own Spike
+    A §3 "Section-count convergence" finding, ~17% off at 2 sections for a
+    real mesh-overlap measurement; re-confirmed purely mathematically in
+    `test_bevel_math.py`).
+
+    `ruled=False` + `CheckCompatibility(False)` - NOT `_thru_sections_face`'s
+    own `ruled=True`/default-`CheckCompatibility` combination - reusing
+    `app.document.gear._twisted_tooth_loft`'s own established fix for the
+    structurally identical "loft between N wires with an already-known-
+    correct point correspondence" problem (`gear.py`'s own docstring: large
+    twist can otherwise make `ThruSections`' own vertex-correspondence
+    search snap a tip vertex to a *different* tooth's root vertex, still
+    `IsDone()`-valid but silently wrong) - carried over unchanged per that
+    doc's own Spike A/C findings ("carried over without needing further
+    tuning")."""
+    loft_maker = BRepOffsetAPI_ThruSections(False, False)
+    for wire in wires:
+        loft_maker.AddWire(wire)
+    loft_maker.CheckCompatibility(False)
+    loft_maker.Build()
+    if not loft_maker.IsDone():
+        raise _bevel_failed("could not loft a spiral tooth flank/land surface across its cross-sections")
+    faces = _explode_faces(loft_maker.Shape())
+    if len(faces) != 1:
+        raise _bevel_failed(f"expected exactly one face from an N-section ThruSections loft, got {len(faces)}")
+    return faces[0]
+
+
+def _flank_face_n(basis: ResolvedPlane, sections: list[list[tuple[float, float, float]]]) -> TopoDS_Face:
+    """One spiral tooth flank's surface (right or left), N cross-sections
+    (outer to inner) instead of `_flank_face`'s fixed 2 - each section is
+    fit as its own real `Geom_BSplineCurve` wire (`_bspline_wire`,
+    unchanged), then lofted together via `_thru_sections_face_n`."""
+    return _thru_sections_face_n([_bspline_wire(basis, section) for section in sections])
 
 
 def _tip_land_face(
@@ -938,22 +993,22 @@ def _assembly_sanity_warnings(solid: TopoDS_Solid) -> list[str]:
     return warnings
 
 
-def _assemble_gear_solid(
-    basis: ResolvedPlane, geometry: BevelGearGeometry, tooth_count: int, points_per_flank: int = _POINTS_PER_FLANK
-) -> tuple[TopoDS_Shape, list[str]]:
-    """The full bevel gear solid - `10-bevel-gear.md`'s own §8
-    implementation sketch, in order: collect the `4*tooth_count` side
-    faces tooth by tooth, append the 2 end-cap faces, `Sewing` ->
-    `ShapeFix_Shell` -> `MakeSolid` -> `OrientClosedSolid` (§4's exact
-    sequence - `MakeSolid` alone on the raw sewn shell is not sufficient).
-    Root fillet is not supported - see `BevelGearFeature`'s own
-    docstring for why (no `BRepPrimAPI_MakePrism.Generated()`-equivalent
-    vertex-tracking for a `ThruSections`/`Sewing`-built solid)."""
-    right0, left0 = bevel_tooth_flank_pair(geometry, points_per_flank)
+def _tooth_side_faces_straight(
+    basis: ResolvedPlane,
+    geometry: BevelGearGeometry,
+    tooth_count: int,
+    right0: tuple[list[tuple[float, float, float]], list[tuple[float, float, float]]],
+    left0: tuple[list[tuple[float, float, float]], list[tuple[float, float, float]]],
+    start_colatitude: float,
+) -> tuple[list[TopoDS_Face], str | None]:
+    """The `4*tooth_count` flank/tip-land/root-land faces for a straight
+    (non-spiral) bevel gear - `10-bevel-gear.md`'s own §8 implementation
+    sketch, unchanged, extracted out of `_assemble_gear_solid` verbatim so
+    that function can branch to `_tooth_side_faces_spiral` below when
+    spiral is active (`docs/gear-design/12-spiral-bevel-gear.md`) without
+    duplicating the shared sewing/solid-assembly tail."""
     right0_outer, right0_inner = right0
     left0_outer, left0_inner = left0
-    start_colatitude = max(geometry.root_cone_angle, tredgold_base_colatitude(geometry))
-    face_colatitude = geometry.face_cone_angle
 
     faces: list[TopoDS_Face] = []
     fold_warning: str | None = None
@@ -1000,10 +1055,149 @@ def _assemble_gear_solid(
                 next_right_inner_root_world,
             )
         )
+    return faces, fold_warning
 
+
+def _section_sphere_radius(point: tuple[float, float, float]) -> float:
+    """The exact sphere radius a local-frame point lies on - every point
+    `bevel_tooth_flank_sections` produces lies exactly on the sphere of its
+    own section's `sphere_radius` by construction (a pure rotation about
+    the gear axis of a `sample_tredgold_flank` point, itself always
+    re-projected onto that exact sphere - `tredgold_bevel_point`'s own
+    docstring), so recovering it via the point's own norm needs no extra
+    bookkeeping of which section index maps to which radius."""
+    x, y, z = point
+    return math.sqrt(x * x + y * y + z * z)
+
+
+def _tooth_side_faces_spiral(
+    basis: ResolvedPlane,
+    geometry: BevelGearGeometry,
+    tooth_count: int,
+    right0_sections: list[list[tuple[float, float, float]]],
+    left0_sections: list[list[tuple[float, float, float]]],
+    start_colatitude: float,
+) -> tuple[list[TopoDS_Face], str | None]:
+    """`docs/gear-design/12-spiral-bevel-gear.md`: the spiral-aware
+    counterpart of `_tooth_side_faces_straight` above - N cross-sections
+    (`bevel_tooth_flank_sections`) instead of a fixed 2. The end-cap faces
+    still only need the outermost/innermost sections (`right0_sections[0]`/
+    `[-1]`, same role `right0_outer`/`right0_inner` play for the straight
+    case) - `_assemble_gear_solid`'s own caller passes those separately, no
+    change needed to `_spherical_cap_face` itself (per that doc's own
+    "End-cap faces: conceptually unchanged" finding).
+
+    Tip-land/root-land: that doc's own "OCCT construction — open
+    questions" section names this the one place needing new work -
+    `_cone_arc_wire`'s exact-ray-through-the-apex shortcut only holds for a
+    straight tooth. The fix used here needs no new curve type though (per
+    that same section's own "one 2-parameter family, not a new curve
+    type" observation): each cross-section's own tip/root points are
+    already exactly where the flank curve's own endpoints sit at that
+    section's radius, so tip-land/root-land become N `_cone_arc_wire` arcs
+    (one per section, at that section's own `sphere_radius`) lofted via
+    `_thru_sections_face_n` - the same idiom the flank itself uses, just
+    with arc wires instead of BSpline wires."""
+    n_sections = len(right0_sections)
+    faces: list[TopoDS_Face] = []
+    fold_warning: str | None = None
+    for i in range(tooth_count):
+        angle = 2 * math.pi * i / tooth_count
+        right_sections = [[_rotate_about_z(p, angle) for p in section] for section in right0_sections]
+        left_sections = [[_rotate_about_z(p, angle) for p in section] for section in left0_sections]
+
+        right_flank_face = _flank_face_n(basis, right_sections)
+        left_flank_face = _flank_face_n(basis, left_sections)
+        if i == 0:
+            # Same "all teeth identical up to rotation" reasoning as the
+            # straight case - checking tooth 0's own flank once is the
+            # load-bearing check.
+            fold_warning = _flank_fold_warning(right_flank_face)
+        faces.append(right_flank_face)
+        faces.append(left_flank_face)
+
+        tip_wires = [
+            _cone_arc_wire(
+                basis,
+                _section_sphere_radius(right_sections[k][-1]),
+                geometry.face_cone_angle,
+                _basis_point3_to_world(basis, *right_sections[k][-1]),
+                _basis_point3_to_world(basis, *left_sections[k][-1]),
+            )
+            for k in range(n_sections)
+        ]
+        faces.append(_thru_sections_face_n(tip_wires))
+
+        next_angle = 2 * math.pi * ((i + 1) % tooth_count) / tooth_count
+        next_right_sections = [[_rotate_about_z(p, next_angle) for p in section] for section in right0_sections]
+        root_wires = [
+            _cone_arc_wire(
+                basis,
+                _section_sphere_radius(left_sections[k][0]),
+                start_colatitude,
+                _basis_point3_to_world(basis, *left_sections[k][0]),
+                _basis_point3_to_world(basis, *next_right_sections[k][0]),
+            )
+            for k in range(n_sections)
+        ]
+        faces.append(_thru_sections_face_n(root_wires))
+    return faces, fold_warning
+
+
+def _assemble_gear_solid(
+    basis: ResolvedPlane,
+    geometry: BevelGearGeometry,
+    tooth_count: int,
+    points_per_flank: int = _POINTS_PER_FLANK,
+    spiral_angle_degrees: float = 0.0,
+    spiral_hand: SpiralHand = SpiralHand.RIGHT,
+    spiral_section_count: int = DEFAULT_SPIRAL_SECTION_COUNT,
+) -> tuple[TopoDS_Shape, list[str]]:
+    """The full bevel gear solid - `10-bevel-gear.md`'s own §8
+    implementation sketch, in order: collect the `4*tooth_count` (straight)
+    or `4*tooth_count` (spiral, same face count - N sections just means
+    more wires per `ThruSections` call, not more faces) side faces tooth by
+    tooth, append the 2 end-cap faces, `Sewing` -> `ShapeFix_Shell` ->
+    `MakeSolid` -> `OrientClosedSolid` (§4's exact sequence - `MakeSolid`
+    alone on the raw sewn shell is not sufficient). Root fillet is not
+    supported - see `BevelGearFeature`'s own docstring for why (no
+    `BRepPrimAPI_MakePrism.Generated()`-equivalent vertex-tracking for a
+    `ThruSections`/`Sewing`-built solid).
+
+    `spiral_angle_degrees == 0.0` (the default) is a **literal no-op**:
+    takes the exact same `bevel_tooth_flank_pair`/`_tooth_side_faces_
+    straight` path this function always has, byte-for-byte unchanged
+    (`docs/gear-design/12-spiral-bevel-gear.md`'s own task instructions -
+    verified directly in `test_bevel_gear_feature.py`, not just assumed
+    from `bevel_tooth_flank_sections`'s own bit-for-bit math reduction).
+    Only `spiral_angle_degrees != 0.0` takes the new `bevel_tooth_flank_
+    sections`/`_tooth_side_faces_spiral` path, at `spiral_section_count`
+    cross-sections (`DEFAULT_SPIRAL_SECTION_COUNT = 3`, per that doc's own
+    Spike A §3 convergence finding, re-validated in `test_bevel_math.py`)."""
+    start_colatitude = max(geometry.root_cone_angle, tredgold_base_colatitude(geometry))
+    face_colatitude = geometry.face_cone_angle
+
+    if spiral_angle_degrees == 0.0:
+        right0, left0 = bevel_tooth_flank_pair(geometry, points_per_flank)
+        right0_outer, right0_inner = right0
+        left0_outer, left0_inner = left0
+        side_faces, fold_warning = _tooth_side_faces_straight(basis, geometry, tooth_count, right0, left0, start_colatitude)
+        outer_right, inner_right = right0_outer, right0_inner
+        outer_left, inner_left = left0_outer, left0_inner
+    else:
+        right0_sections, left0_sections = bevel_tooth_flank_sections(
+            geometry, spiral_angle_degrees, spiral_hand, points_per_flank, spiral_section_count
+        )
+        side_faces, fold_warning = _tooth_side_faces_spiral(
+            basis, geometry, tooth_count, right0_sections, left0_sections, start_colatitude
+        )
+        outer_right, inner_right = right0_sections[0], right0_sections[-1]
+        outer_left, inner_left = left0_sections[0], left0_sections[-1]
+
+    faces: list[TopoDS_Face] = list(side_faces)
     faces.append(
         _spherical_cap_face(
-            basis, geometry.cone_distance, start_colatitude, face_colatitude, tooth_count, right0_outer, left0_outer
+            basis, geometry.cone_distance, start_colatitude, face_colatitude, tooth_count, outer_right, outer_left
         )
     )
     faces.append(
@@ -1013,8 +1207,8 @@ def _assemble_gear_solid(
             start_colatitude,
             face_colatitude,
             tooth_count,
-            right0_inner,
-            left0_inner,
+            inner_right,
+            inner_left,
         )
     )
 
@@ -1119,9 +1313,22 @@ def resolve_bevel_gear_from_bodies(
             f"face_width ({feature.face_width!r}) exceeds the recommended maximum "
             f"({max_face_width!r} = cone_distance / 3) - the tooth thins toward degeneracy near the apex."
         )
+    # docs/gear-design/12-spiral-bevel-gear.md's own Spike C §4 cost finding
+    # - a real, decided non-blocking warning (item 6 of this workstream's
+    # own task scope), not silently unaddressed.
+    cost_warning = spiral_build_cost_warning(feature.spiral_angle_degrees)
+    if cost_warning:
+        warnings.append(cost_warning)
 
     basis = resolve_plane_ref(part, bodies, feature.plane_ref, excluded_feature_ids)
-    solid, assembly_warnings = _assemble_gear_solid(basis, geometry, feature.tooth_count, feature.points_per_flank)
+    solid, assembly_warnings = _assemble_gear_solid(
+        basis,
+        geometry,
+        feature.tooth_count,
+        feature.points_per_flank,
+        spiral_angle_degrees=feature.spiral_angle_degrees,
+        spiral_hand=_spiral_hand_from_feature(feature.spiral_hand),
+    )
     warnings.extend(assembly_warnings)
     return solid, warnings
 
