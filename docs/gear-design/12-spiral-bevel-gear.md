@@ -886,13 +886,13 @@ Swept `phase_delta` at fine (0.1°) resolution to locate the true local
 optimum, same profile-shift-corrected 10T/10T baseline, at β where the
 default phase is still in the well-behaved region:
 
-| β | 10° | 20° |
-|---|---|---|
-| optimal phase Δ | -3.1° | -3.2° |
-| min overlap (mm³) | 36.0 | 32.3 |
+| β | 10° | 20° | 30° |
+|---|---|---|---|
+| optimal phase Δ | -3.1° | -3.2° | -3.5° |
+| min overlap (mm³) | 36.0 | 32.3 | 10.6 |
 
-Stable, small, and consistent across this range - a real, non-zero, but
-essentially β-independent correction in the low/moderate regime (this
+Stable, small, and only slightly drifting across this range - a real,
+non-zero, near-constant correction in the low/moderate regime (this
 session's own baseline differs from Spike A's own β=20° finding of a
 "~-0.2 to -1°" optimum - see §5 below for why the two aren't directly
 comparable - but both agree the optimum is small, negative, and non-zero
