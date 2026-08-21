@@ -43,6 +43,7 @@ formula and comparing it to itself.
 
 import math
 from dataclasses import dataclass, replace
+from enum import Enum
 
 from app.document.gear_math import (
     GearGeometryError,
@@ -923,6 +924,221 @@ def bevel_tooth_flank_pair(
     right = (flank(geometry.cone_distance, mirror=False), flank(geometry.inner_cone_distance, mirror=False))
     left = (flank(geometry.cone_distance, mirror=True), flank(geometry.inner_cone_distance, mirror=True))
     return right, left
+
+
+# ---------------------------------------------------------------------------
+# Spiral bevel: N-cross-section flank/tip-land/root-land sampling
+# (`docs/gear-design/12-spiral-bevel-gear.md`) - single-gear construction
+# only. The pairwise meshing-phase search
+# (`app.document.bevel_pair._rotated_about_axis`'s own future spiral-aware
+# search, per that doc's own Spike C) is a pairing-only concern with no
+# counterpart for a standalone gear and is NOT implemented here.
+# ---------------------------------------------------------------------------
+
+
+class SpiralHand(str, Enum):
+    """Which way a spiral bevel tooth's trace leans as radius decreases
+    from the outer (back) cone toward the inner cone - `RIGHT`/`LEFT` is an
+    arbitrary-but-fixed sign convention (`spiral_curve_offset_angle`'s own
+    `+1`/`-1`), not derived from any external standard. What matters is
+    that two gears built with *opposite* `SpiralHand` values curve their
+    teeth in mirrored directions - the real, on-device-confirmed
+    requirement for a mating spiral bevel pair
+    (`12-spiral-bevel-gear.md`'s own Spike A §3 "same-hand pairing is
+    worse... genuinely required, not just a labeling convention" finding) -
+    though pairing itself is out of this module's own scope (Workstream 13,
+    a separate, later session)."""
+
+    LEFT = "left"
+    RIGHT = "right"
+
+
+DEFAULT_SPIRAL_SECTION_COUNT = 3
+"""`docs/gear-design/12-spiral-bevel-gear.md`'s own Spike A §3 "Section-
+count convergence" finding, re-validated for the real committed
+implementation rather than assumed: the legacy 2-section loft under-counts
+real tooth-flank geometry once the spiral offset varies continuously along
+the face width (measurably, ~17% off in that spike's own mesh-overlap
+measurement), but convergence is fast - 3 sections already matched 15
+sections to full float precision there. `test_bevel_math.py`'s own
+`test_bevel_tooth_flank_sections_linear_interpolation_error_shrinks_with_
+more_sections` re-confirms the same shape purely mathematically (no OCCT
+needed): a piecewise-linear interpolant through 3 evenly-spaced-by-radius
+samples of `spiral_curve_offset_angle`'s own smooth log-curve already cuts
+worst-case interpolation error by well over an order of magnitude versus 2
+samples, consistent with why a 2-section `ThruSections` loft (a single
+linear interpolant, in effect) under-represents the true curve while 3 is
+enough. Not exposed as a user-facing control
+(`12-spiral-bevel-gear.md`'s own "Entry-screen / UX proposal": "derive that
+section count internally... rather than exposing another user-facing
+control")."""
+
+
+def spiral_curve_offset_angle(
+    spiral_angle: float,
+    pitch_cone_half_angle: float,
+    sphere_radius: float,
+    mean_sphere_radius: float,
+    hand: SpiralHand,
+) -> float:
+    """The azimuthal rotation (radians, about the gear axis) a spiral
+    bevel tooth's *whole* cross-section profile picks up at `sphere_radius`
+    relative to the mean cone distance - `docs/gear-design/12-spiral-bevel-
+    gear.md`'s own Spike A §2 "corrected construction":
+
+    `curve(R) = [tan(beta) / sin(gamma)] * ln(R / R_mean)`
+
+    (`beta` = `spiral_angle`, `gamma` = `pitch_cone_half_angle`, `R` =
+    `sphere_radius`, `R_mean` = `mean_sphere_radius`) - the conic analogue
+    of `app.document.gear`'s own linear-twist helical technique
+    (`helical_twist_angle`), derived in that doc's own "Candidate
+    approaches" section by developing (unrolling) the cone flat, holding a
+    constant angle to the radius vector in that flattened polar view
+    (a logarithmic/equiangular spiral, `theta'(R) = theta'_mean +
+    tan(beta)*ln(R/R_mean)`), then undoing the flattening's own `sin(gamma)`
+    azimuth compression.
+
+    **This is a RIGID per-radius rotation of the entire cross-section, not
+    a per-flank offset** - `bevel_tooth_flank_sections` below adds the
+    *same* `curve(R)` value to both the right and left flank's own angle at
+    a given radius (unlike `_tredgold_flank_start_offset_angle`'s width
+    term, which uses opposite signs). This distinction is load-bearing, not
+    a style choice: `12-spiral-bevel-gear.md`'s own Spike A §1 found that
+    plugging an R-varying value directly into the existing `±offset`/mirror
+    structure (opposite signs) is a **named dead end** - the mirror
+    symmetry algebraically cancels any R-dependent term at the tooth's own
+    centerline for every value that term takes, so the tooth's centerline
+    never actually curves, only its *width* does (shrinking to zero and
+    then reversing sign along the face width - a self-crossing, invalid
+    tooth, not a spiral one). The same-sign construction here is what Spike
+    A §2 confirmed actually curves the centerline while holding width
+    exactly constant, checked bit-for-bit against `10-bevel-gear.md`'s own
+    established validation culture and re-confirmed in `test_bevel_math.py`.
+
+    Returns exactly `0.0` (not merely a near-zero float) when `spiral_angle
+    == 0.0` or `sphere_radius == mean_sphere_radius` - `tan(0) = 0`/
+    `ln(1) = 0` algebraically, but checked explicitly here (rather than
+    relying on floating-point arithmetic to land on exactly `0.0` through
+    `tan`/`log`) so `bevel_tooth_flank_sections`'s own `spiral_angle_
+    degrees=0.0` reduction to `bevel_tooth_flank_pair`'s existing output is
+    genuinely bit-for-bit, the real regression-safety property `12-spiral-
+    bevel-gear.md`'s own "Sanity check" section calls for."""
+    if spiral_angle == 0.0 or sphere_radius == mean_sphere_radius:
+        return 0.0
+    sign = 1.0 if hand == SpiralHand.RIGHT else -1.0
+    return sign * (math.tan(spiral_angle) / math.sin(pitch_cone_half_angle)) * math.log(sphere_radius / mean_sphere_radius)
+
+
+def _spiral_section_radii(cone_distance: float, inner_cone_distance: float, section_count: int) -> list[float]:
+    """`section_count` sphere radii, evenly spaced from `cone_distance`
+    (outer/back cone, index 0) to `inner_cone_distance` (inner cone, last
+    index) - the face-width cross-sections `bevel_tooth_flank_sections`
+    samples a full flank curve at. `section_count=2` gives exactly
+    `[cone_distance, inner_cone_distance]`, matching `bevel_tooth_flank_
+    pair`'s own two `sphere_radius` calls exactly - the property the
+    `spiral_angle_degrees=0.0`/`section_count=2` bit-for-bit regression
+    test relies on."""
+    if section_count < 2:
+        raise GearGeometryError(f"section_count must be >= 2, got {section_count!r}")
+    span = inner_cone_distance - cone_distance
+    return [cone_distance + span * i / (section_count - 1) for i in range(section_count)]
+
+
+def bevel_tooth_flank_sections(
+    geometry: BevelGearGeometry,
+    spiral_angle_degrees: float = 0.0,
+    spiral_hand: SpiralHand = SpiralHand.RIGHT,
+    points_per_flank: int = 12,
+    section_count: int = DEFAULT_SPIRAL_SECTION_COUNT,
+) -> tuple[list[list[tuple[float, float, float]]], list[list[tuple[float, float, float]]]]:
+    """`section_count`-cross-section generalization of `bevel_tooth_flank_
+    pair` above, for a spiral (or Zerol, `spiral_angle_degrees=0` at the
+    mean radius only - see below) bevel tooth: `(right, left)`, each a list
+    of `section_count` point lists (outer to inner, per `_spiral_section_
+    radii`'s own ordering), every point list itself shaped exactly like one
+    of `bevel_tooth_flank_pair`'s own `outer_points`/`inner_points` (a full
+    root-to-tip Tredgold flank curve, `points_per_flank` points long) -
+    what `app.document.bevel`'s N-section `ThruSections` loft needs in
+    place of that function's own fixed 2-section pair.
+
+    Each cross-section is built from the *identical* `sample_tredgold_
+    flank` call `bevel_tooth_flank_pair` already makes at that section's
+    own `sphere_radius` (same `start_colatitude`/`end_colatitude`/
+    `pressure_angle`, so an individual cross-section's own root-to-tip
+    shape is unaffected by spiral - only its overall azimuthal placement
+    is), then rotated by `(±offset_mean) + curve(sphere_radius)`
+    (`spiral_curve_offset_angle`) instead of `bevel_tooth_flank_pair`'s
+    plain `±offset_mean` - see that function's own docstring for why the
+    `curve(R)` term must be added with the SAME sign to both flanks, not
+    folded into the existing opposite-sign width term.
+
+    **Bit-for-bit reduction to `bevel_tooth_flank_pair`**: at `spiral_
+    angle_degrees=0.0` (any `spiral_hand` - irrelevant there, exactly
+    mirroring `GearFeature.herringbone`'s own "meaningless unless helix_
+    angle_degrees != 0.0" convention) and `section_count=2`, `_spiral_
+    section_radii` returns exactly `[geometry.cone_distance, geometry.
+    inner_cone_distance]` and `spiral_curve_offset_angle` returns exactly
+    `0.0` at every section - so `right[0]`/`right[1]`/`left[0]`/`left[1]`
+    here are computed by the identical sequence of floating-point
+    operations `bevel_tooth_flank_pair`'s own `right`/`left` are, and
+    compare exactly equal, not merely `pytest.approx`-close
+    (`test_bevel_math.py`'s own `test_bevel_tooth_flank_sections_reduces_
+    exactly_to_bevel_tooth_flank_pair_at_zero_spiral_angle`)."""
+    gamma = geometry.pitch_cone_angle
+    start_colatitude = max(geometry.root_cone_angle, tredgold_base_colatitude(geometry))
+    end_colatitude = geometry.face_cone_angle
+    offset_mean = _tredgold_flank_start_offset_angle(geometry)
+    spiral_angle = math.radians(spiral_angle_degrees)
+    sphere_radii = _spiral_section_radii(geometry.cone_distance, geometry.inner_cone_distance, section_count)
+    mean_radius = (geometry.cone_distance + geometry.inner_cone_distance) / 2.0
+
+    def flank_section(sphere_radius: float, mirror: bool) -> list[tuple[float, float, float]]:
+        raw = sample_tredgold_flank(
+            gamma, geometry.pressure_angle, start_colatitude, end_colatitude, sphere_radius, points_per_flank
+        )
+        curve = spiral_curve_offset_angle(spiral_angle, gamma, sphere_radius, mean_radius, spiral_hand)
+        angle = (offset_mean if mirror else -offset_mean) + curve
+        sign = -1.0 if mirror else 1.0
+        return [_rotate_about_z((x, sign * y, z), angle) for x, y, z in raw]
+
+    right = [flank_section(r, mirror=False) for r in sphere_radii]
+    left = [flank_section(r, mirror=True) for r in sphere_radii]
+    return right, left
+
+
+SPIRAL_BUILD_COST_WARNING_THRESHOLD_DEGREES = 45.0
+"""`docs/gear-design/12-spiral-bevel-gear.md`'s own Spike C §4 "Cost" finding
+(§5 go/no-go: "a real, unbudgeted cost risk... near/past the notch"): a
+single-member N-section spiral solid build gets measurably more expensive
+at high spiral angle - Spike C's own reference numbers, a 20T/20T module-4
+member, ~6-10s in the well-behaved low/moderate-`beta` regime vs. up to
+~22s once past a notch-adjacent `beta` (that same spike's own 68-72deg
+range) - independent of the pairwise meshing-phase search this module does
+NOT implement (that search's own per-trial cost is the pair-only
+concern this constant is deliberately not sized around). `45deg` sits
+below every notch-adjacent range either Spike A/B/C measured for any tested
+tooth-count ratio (the lowest was Spike C's own 51-52deg for a 10T/10T
+baseline) while still being comfortably past the "ordinary" spiral angle
+range (Spike A's own 5-30deg main sweep) - a real, decided, and documented
+choice (per this workstream's own task instructions), not a silently-
+skipped question: a single standalone gear build has no meshing-phase
+search to fall over, but the underlying N-section solid assembly itself
+(more `ThruSections`/`Sewing`/`ShapeFix_Shell` work than the 2-section
+straight-bevel case) is real, separate cost that grows with spiral angle
+regardless."""
+
+
+def spiral_build_cost_warning(spiral_angle_degrees: float) -> str | None:
+    """`None` if `spiral_angle_degrees` is comfortably below `SPIRAL_BUILD_
+    COST_WARNING_THRESHOLD_DEGREES`, otherwise a warning string - same
+    non-blocking-warning convention as `thin_hub_warning`/`max_recommended_
+    face_width` (`00-conventions.md`)."""
+    if abs(spiral_angle_degrees) >= SPIRAL_BUILD_COST_WARNING_THRESHOLD_DEGREES:
+        return (
+            f"spiral_angle_degrees ({spiral_angle_degrees!r}) is a high spiral angle - this gear's solid "
+            "may take significantly longer to build than a straight or moderate-spiral bevel gear."
+        )
+    return None
 
 
 # ---------------------------------------------------------------------------

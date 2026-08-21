@@ -11,16 +11,19 @@ for the fold-risk boundary specifically.
 
 import math
 
+import pytest
 from fastapi.testclient import TestClient
 
 import app.document.bevel as bevel_module
-from app.document.bevel_math import bevel_gear_geometry
+from app.document.bevel_math import SpiralHand, bevel_gear_geometry
 from app.document.models import ResolvedPlane
 from app.main import app
 from OCC.Core.BRep import BRep_Tool
+from OCC.Core.BRepGProp import brepgprop
 from OCC.Core.BRepMesh import BRepMesh_IncrementalMesh
 from OCC.Core.GeomAbs import GeomAbs_Plane
 from OCC.Core.GeomAdaptor import GeomAdaptor_Surface
+from OCC.Core.GProp import GProp_GProps
 from OCC.Core.TopAbs import TopAbs_FACE
 from OCC.Core.TopExp import TopExp_Explorer
 from OCC.Core.TopLoc import TopLoc_Location
@@ -594,3 +597,215 @@ def test_end_cap_flattening_fallback_surfaces_a_warning():
         face_count += 1
         explorer.Next()
     assert face_count == 4 * 6 + 2
+
+
+# --- Spiral bevel (docs/gear-design/12-spiral-bevel-gear.md), Workstream 12 -
+# single-gear construction only; BevelPairFeature's own spiral variant is a
+# separate, later workstream (13).
+
+
+def _solid_volume(solid) -> float:
+    props = GProp_GProps()
+    brepgprop.VolumeProperties(solid, props)
+    return abs(props.Mass())
+
+
+def test_spiral_angle_zero_direct_assembly_matches_the_legacy_path_exactly():
+    """The real "literal no-op" contract `BevelGearFeature.spiral_angle_
+    degrees`'s own docstring makes: passing `spiral_angle_degrees=0.0`
+    explicitly must take the exact same code branch as omitting it
+    entirely (`_assemble_gear_solid`'s own `if spiral_angle_degrees ==
+    0.0:` branch) - checked here against genuine OCCT construction, not
+    just `bevel_tooth_flank_sections`'s own bit-for-bit math-layer
+    regression test."""
+    geometry = bevel_gear_geometry(
+        module=4.0, tooth_count=20, face_width=15.0, pitch_cone_angle_degrees=_PITCH_ANGLE_20_40
+    )
+    legacy_solid, legacy_warnings = bevel_module._assemble_gear_solid(_XY_BASIS, geometry, 20)
+    explicit_zero_solid, explicit_zero_warnings = bevel_module._assemble_gear_solid(
+        _XY_BASIS, geometry, 20, spiral_angle_degrees=0.0, spiral_hand=SpiralHand.LEFT
+    )
+    assert explicit_zero_warnings == legacy_warnings
+    assert _solid_volume(explicit_zero_solid) == _solid_volume(legacy_solid)
+
+
+def test_spiral_bevel_direct_assembly_parameter_sweep_stays_valid_and_volume_is_sane():
+    """`docs/gear-design/12-spiral-bevel-gear.md`'s own task instructions:
+    "build real spiral gears across a real parameter sweep (multiple β,
+    both hands, multiple tooth counts)" - not just one canonical case,
+    mirroring `10-bevel-gear.md`'s own established "test across the
+    parameter space" convention. Real, on-device-measured on this exact
+    committed code: spiral is a pure rotation about the gear axis
+    (`bevel_math.spiral_curve_offset_angle`'s own docstring), so it should
+    change enclosed volume only slightly (the small residual from the
+    per-section Tredgold flank curve's own natural shape varying a little
+    with radius) - compared here directly against the β=0 straight-bevel
+    volume as the sanity anchor `12-spiral-bevel-gear.md`'s own task
+    instructions call for."""
+    cases = [
+        (20, 4.0, 15.0, _PITCH_ANGLE_20_40),  # moderate 20T/40T, module 4
+        (18, 2.5, 19.1, _PITCH_ANGLE_18_90),  # tight 18T/90T, module 2.5
+    ]
+    for tooth_count, module, face_width, pitch_angle in cases:
+        geometry = bevel_gear_geometry(
+            module=module, tooth_count=tooth_count, face_width=face_width, pitch_cone_angle_degrees=pitch_angle
+        )
+        anchor_solid, anchor_warnings = bevel_module._assemble_gear_solid(_XY_BASIS, geometry, tooth_count)
+        assert anchor_warnings == []
+        anchor_volume = _solid_volume(anchor_solid)
+        for spiral_angle_degrees in (10.0, 20.0, 30.0):
+            for spiral_hand in (SpiralHand.RIGHT, SpiralHand.LEFT):
+                solid, warnings = bevel_module._assemble_gear_solid(
+                    _XY_BASIS,
+                    geometry,
+                    tooth_count,
+                    spiral_angle_degrees=spiral_angle_degrees,
+                    spiral_hand=spiral_hand,
+                )
+                assert warnings == [], (
+                    f"tooth_count={tooth_count} beta={spiral_angle_degrees} hand={spiral_hand}: {warnings}"
+                )
+                volume = _solid_volume(solid)
+                ratio = volume / anchor_volume
+                assert 0.95 <= ratio <= 1.05, (
+                    f"tooth_count={tooth_count} beta={spiral_angle_degrees} hand={spiral_hand}: "
+                    f"volume ratio {ratio} strayed too far from the beta=0 anchor"
+                )
+
+
+def test_spiral_bevel_opposite_hands_give_mirror_symmetric_volume():
+    """A real geometric invariant, not just a math-layer claim: two spiral
+    gears built with opposite `SpiralHand` (otherwise identical parameters)
+    are mirror images of each other across the gear's own meridian plane,
+    so their enclosed volumes must match exactly - unlike
+    `test_spiral_bevel_direct_assembly_parameter_sweep_stays_valid_and_
+    volume_is_sane`'s own loose sanity bound, this is an exact equality."""
+    geometry = bevel_gear_geometry(
+        module=4.0, tooth_count=20, face_width=15.0, pitch_cone_angle_degrees=_PITCH_ANGLE_20_40
+    )
+    right_solid, right_warnings = bevel_module._assemble_gear_solid(
+        _XY_BASIS, geometry, 20, spiral_angle_degrees=25.0, spiral_hand=SpiralHand.RIGHT
+    )
+    left_solid, left_warnings = bevel_module._assemble_gear_solid(
+        _XY_BASIS, geometry, 20, spiral_angle_degrees=25.0, spiral_hand=SpiralHand.LEFT
+    )
+    assert right_warnings == [] and left_warnings == []
+    # rel=1e-6 (not an exact equality): two independently-built solids going
+    # through different intermediate OCCT boolean/ThruSections operand
+    # orderings can differ at the floating-point noise floor even for
+    # genuinely mirror-symmetric geometry - measured on-device at ~3e-8
+    # relative for this exact case, so 1e-6 stays a real, tight check
+    # (100x the observed noise) without being flaky.
+    assert _solid_volume(right_solid) == pytest.approx(_solid_volume(left_solid), rel=1e-6)
+
+
+def test_spiral_bevel_gear_via_router_produces_a_valid_body_with_spiral_fields_in_the_response():
+    part = _create_part()
+    response = _create_bevel(part["id"], spiral_angle_degrees=20.0, spiral_hand="left")
+    assert response.status_code == 201, response.json()
+    body = response.json()
+    assert body["spiral_angle_degrees"] == 20.0
+    assert body["spiral_hand"] == "left"
+    assert body["warnings"] == []
+
+    mesh = _mesh(part["id"])
+    assert len(mesh) == 1
+    vertices = mesh[0]["mesh"]["vertices"]
+    assert len(vertices) > 0
+
+
+def test_spiral_bevel_gear_apex_radii_match_the_straight_bevel_case():
+    """Spiral is a pure rotation about the gear axis, so it must not
+    change how far any point sits from the apex - the exact same `_apex_
+    radii` bound `test_bevel_gear_produces_one_body_with_real_mesh_
+    geometry`'s own straight-bevel case checks, unaffected by
+    `spiral_angle_degrees`."""
+    part = _create_part()
+    response = _create_bevel(part["id"], spiral_angle_degrees=25.0, spiral_hand="right")
+    assert response.status_code == 201, response.json()
+    vertices = _mesh(part["id"])[0]["mesh"]["vertices"]
+    min_radius, max_radius = _apex_radii(vertices)
+    assert 74.4427 - 0.5 <= min_radius <= 74.4427 + 0.5
+    assert 89.4427 - 0.5 <= max_radius <= 89.4427 + 0.5
+
+
+def test_spiral_build_cost_warning_surfaces_through_the_router_at_high_spiral_angle():
+    part = _create_part()
+    response = _create_bevel(part["id"], spiral_angle_degrees=50.0)
+    assert response.status_code == 201, response.json()
+    warnings = response.json()["warnings"]
+    assert any("may take significantly longer" in w for w in warnings)
+
+
+def test_spiral_build_cost_warning_does_not_fire_below_the_threshold():
+    part = _create_part()
+    response = _create_bevel(part["id"], spiral_angle_degrees=20.0)
+    assert response.status_code == 201, response.json()
+    warnings = response.json()["warnings"]
+    assert not any("may take significantly longer" in w for w in warnings)
+
+
+def test_update_bevel_gear_feature_can_toggle_spiral_fields():
+    part = _create_part()
+    create_response = _create_bevel(part["id"])
+    feature_id = create_response.json()["id"]
+
+    update_response = client.patch(
+        f"/document/parts/{part['id']}/bevel-gear-features/{feature_id}",
+        json={"spiral_angle_degrees": 15.0, "spiral_hand": "left"},
+    )
+    assert update_response.status_code == 200, update_response.json()
+    body = update_response.json()
+    assert body["spiral_angle_degrees"] == 15.0
+    assert body["spiral_hand"] == "left"
+
+    # Turning it back off (0.0) is a real, literal no-op per that field's
+    # own docstring - the mesh should match a plain straight-bevel gear's.
+    back_off_response = client.patch(
+        f"/document/parts/{part['id']}/bevel-gear-features/{feature_id}",
+        json={"spiral_angle_degrees": 0.0},
+    )
+    assert back_off_response.status_code == 200, back_off_response.json()
+    min_radius, max_radius = _apex_radii(_mesh(part["id"])[0]["mesh"]["vertices"])
+    assert 74.4427 - 0.5 <= min_radius <= 74.4427 + 0.5
+    assert 89.4427 - 0.5 <= max_radius <= 89.4427 + 0.5
+
+
+def test_native_export_import_round_trips_spiral_bevel_fields():
+    """The spiral-specific extension of `test_native_export_import_
+    round_trips_a_bevel_gear_feature` above - guards the same class of
+    `native_format.py` omission bug specifically for `spiral_angle_
+    degrees`/`spiral_hand`, which that pre-existing test's own default-
+    valued (0.0/right) bevel gear would not catch."""
+    from app.document.store import get_document, replace_document
+    from app.sketch.store import all_sketches, replace_all_sketches
+
+    saved_document = get_document()
+    saved_sketches = dict(all_sketches())
+    try:
+        part = _create_part("Native Spiral Bevel Gear Test")
+        bevel_response = _create_bevel(part["id"], spiral_angle_degrees=18.0, spiral_hand="left")
+        assert bevel_response.status_code == 201, bevel_response.json()
+        feature_id = bevel_response.json()["id"]
+        vertices_before = _mesh(part["id"])[0]["mesh"]["vertices"]
+
+        export_response = client.get("/document/export/native")
+        assert export_response.status_code == 200
+        exported = export_response.json()
+        bevel_dicts = [
+            f for p in exported["document"]["parts"] for f in p["features"] if f["type"] == "bevel_gear"
+        ]
+        exported_feature = next(f for f in bevel_dicts if f["id"] == feature_id)
+        assert exported_feature["spiral_angle_degrees"] == 18.0
+        assert exported_feature["spiral_hand"] == "left"
+
+        import_response = client.post("/document/import/native", json=exported)
+        assert import_response.status_code == 200, import_response.json()
+
+        refetch_response = client.get(f"/document/parts/{part['id']}")
+        assert refetch_response.status_code == 200
+        vertices_after = _mesh(part["id"])[0]["mesh"]["vertices"]
+        assert vertices_after == vertices_before
+    finally:
+        replace_document(saved_document)
+        replace_all_sketches(saved_sketches)

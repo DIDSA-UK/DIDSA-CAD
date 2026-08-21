@@ -16,6 +16,7 @@ from app.document.models import (
     Produces,
     RackType,
     RevolveMode,
+    SpiralBevelHand,
     SubShapeType,
     SweepMode,
 )
@@ -979,6 +980,10 @@ class BevelGearFeatureCreate(BaseModel):
     # accuracy/build-cost tradeoff, applied to a bevel tooth's spherical-
     # involute flank instead of a planar involute one.
     points_per_flank: int = 12
+    # docs/gear-design/12-spiral-bevel-gear.md - see BevelGearFeature's own
+    # docstring for the "0.0 is a literal no-op" contract.
+    spiral_angle_degrees: float = 0.0
+    spiral_hand: SpiralBevelHand = SpiralBevelHand.RIGHT
 
 
 class BevelGearFeatureUpdate(BaseModel):
@@ -996,6 +1001,8 @@ class BevelGearFeatureUpdate(BaseModel):
     profile_shift: float | None = None
     target_body_ids: list[str] | None = None
     points_per_flank: int | None = None
+    spiral_angle_degrees: float | None = None
+    spiral_hand: SpiralBevelHand | None = None
 
 
 class BevelGearFeatureResponse(BaseModel):
@@ -1012,6 +1019,8 @@ class BevelGearFeatureResponse(BaseModel):
     profile_shift: float
     target_body_ids: list[str] = []
     points_per_flank: int = 12
+    spiral_angle_degrees: float = 0.0
+    spiral_hand: SpiralBevelHand = SpiralBevelHand.RIGHT
     locked: bool
     # B1: see SketchFeatureResponse.produces above - always BODY for a
     # BevelGearFeature.

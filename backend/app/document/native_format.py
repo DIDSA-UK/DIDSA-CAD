@@ -61,6 +61,7 @@ from app.document.models import (
     RevolveFeature,
     RevolveMode,
     SketchFeature,
+    SpiralBevelHand,
     SubShapeRef,
     SubShapeType,
     SweepFeature,
@@ -1024,6 +1025,8 @@ def _feature_to_dict(feature: Feature) -> dict:
             "profile_shift": feature.profile_shift,
             "target_body_ids": list(feature.target_body_ids),
             "points_per_flank": feature.points_per_flank,
+            "spiral_angle_degrees": feature.spiral_angle_degrees,
+            "spiral_hand": feature.spiral_hand.value,
         }
     if isinstance(feature, BevelPairFeature):
         return {
@@ -1247,6 +1250,8 @@ def _feature_from_dict(data: dict) -> Feature:
             profile_shift=data.get("profile_shift", 0.0),
             target_body_ids=list(data.get("target_body_ids", [])),
             points_per_flank=data.get("points_per_flank", 12),
+            spiral_angle_degrees=data.get("spiral_angle_degrees", 0.0),
+            spiral_hand=SpiralBevelHand(data.get("spiral_hand", "right")),
         )
     if feature_type == "bevel_pair":
         return BevelPairFeature(

@@ -225,6 +225,114 @@ void main() {
     expect(requestedPaths, contains('POST /document/parts/part-1/bevel-gear-features'));
   });
 
+  testWidgets('Spiral off by default sends spiral_angle_degrees: 0.0', (tester) async {
+    Map<String, dynamic>? gearBody;
+    final client = DocumentApiClient(
+      httpClient: MockClient((request) async {
+        if (request.url.path == '/document/gear/preview') {
+          return jsonResponse(bevelGearPreviewResponse());
+        }
+        if (request.url.path == '/document/parts') {
+          return jsonResponse({'id': 'part-1', 'name': 'Bevel Gear Part', 'feature_ids': []}, status: 201);
+        }
+        if (request.url.path == '/document/parts/part-1/bevel-gear-features') {
+          gearBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'bevel_gear',
+            'id': 'bevel-1',
+            'locked': false,
+            'produces': 'body',
+            'bevel_type': 'boss',
+            'module': 4.0,
+            'tooth_count': 20,
+            'face_width': 15.0,
+            'pitch_cone_angle_degrees': 30.0,
+            'pressure_angle_degrees': 20.0,
+            'backlash': 0.0,
+            'profile_shift': 0.0,
+          }, status: 201);
+        }
+        return jsonResponse({'id': 'part-1', 'name': 'Bevel Gear Part', 'feature_ids': []});
+      }),
+    );
+
+    await tester.pumpWidget(MaterialApp(home: BevelDesignScreen(documentApi: client)));
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pumpAndSettle();
+
+    // The Spiral toggle is off by default, so its own fields never appear.
+    expect(find.text('Spiral angle'), findsNothing);
+    expect(find.text('Hand of spiral'), findsNothing);
+
+    await tester.ensureVisible(find.byType(FilledButton));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(FilledButton));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(gearBody?['spiral_angle_degrees'], 0.0);
+    expect(gearBody?['spiral_hand'], 'right');
+  });
+
+  testWidgets('Turning Spiral on reveals the angle/hand fields and sends them on Create', (tester) async {
+    Map<String, dynamic>? gearBody;
+    final client = DocumentApiClient(
+      httpClient: MockClient((request) async {
+        if (request.url.path == '/document/gear/preview') {
+          return jsonResponse(bevelGearPreviewResponse());
+        }
+        if (request.url.path == '/document/parts') {
+          return jsonResponse({'id': 'part-1', 'name': 'Bevel Gear Part', 'feature_ids': []}, status: 201);
+        }
+        if (request.url.path == '/document/parts/part-1/bevel-gear-features') {
+          gearBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'bevel_gear',
+            'id': 'bevel-1',
+            'locked': false,
+            'produces': 'body',
+            'bevel_type': 'boss',
+            'module': 4.0,
+            'tooth_count': 20,
+            'face_width': 15.0,
+            'pitch_cone_angle_degrees': 30.0,
+            'pressure_angle_degrees': 20.0,
+            'backlash': 0.0,
+            'profile_shift': 0.0,
+            'spiral_angle_degrees': 25.0,
+            'spiral_hand': 'left',
+          }, status: 201);
+        }
+        return jsonResponse({'id': 'part-1', 'name': 'Bevel Gear Part', 'feature_ids': []});
+      }),
+    );
+
+    await tester.pumpWidget(MaterialApp(home: BevelDesignScreen(documentApi: client)));
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.text('Spiral'));
+    await tester.tap(find.text('Spiral'));
+    await tester.pumpAndSettle();
+
+    // Turning it on reveals both new fields, defaulting to 20deg/Right.
+    expect(find.text('Spiral angle'), findsOneWidget);
+    expect(find.text('Hand of spiral'), findsOneWidget);
+
+    await tester.enterText(find.widgetWithText(TextField, 'Spiral angle'), '25');
+    await tester.tap(find.text('Left'));
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.byType(FilledButton));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(FilledButton));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(gearBody?['spiral_angle_degrees'], 25.0);
+    expect(gearBody?['spiral_hand'], 'left');
+  });
+
   testWidgets('Create in Bevel Pair mode posts via createBevelPairFeature', (tester) async {
     final requestedPaths = <String>[];
     Map<String, dynamic>? pairBody;

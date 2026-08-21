@@ -758,6 +758,8 @@ def _bevel_gear_feature_response(
         profile_shift=feature.profile_shift,
         target_body_ids=feature.target_body_ids,
         points_per_flank=feature.points_per_flank,
+        spiral_angle_degrees=feature.spiral_angle_degrees,
+        spiral_hand=feature.spiral_hand,
         locked=part.is_locked(feature.id),
         produces=feature.produces,
         warnings=warnings,
@@ -3213,6 +3215,8 @@ def create_bevel_gear_feature(part_id: str, payload: BevelGearFeatureCreate) -> 
         profile_shift=payload.profile_shift,
         target_body_ids=list(payload.target_body_ids),
         points_per_flank=payload.points_per_flank,
+        spiral_angle_degrees=payload.spiral_angle_degrees,
+        spiral_hand=payload.spiral_hand,
     )
     _, warnings = resolve_bevel_gear(part, feature)  # raises on an unresolvable/invalid bevel gear
     part.add_feature(feature)
@@ -3256,6 +3260,10 @@ def update_bevel_gear_feature(part_id: str, feature_id: str, payload: BevelGearF
     new_points_per_flank = (
         payload.points_per_flank if payload.points_per_flank is not None else feature.points_per_flank
     )
+    new_spiral_angle_degrees = (
+        payload.spiral_angle_degrees if payload.spiral_angle_degrees is not None else feature.spiral_angle_degrees
+    )
+    new_spiral_hand = payload.spiral_hand if payload.spiral_hand is not None else feature.spiral_hand
 
     _validate_plane_ref(part, new_plane_ref)
     _validate_target_body_ids(part, new_bevel_type == BevelGearType.CUT, new_target_body_ids)
@@ -3273,6 +3281,8 @@ def update_bevel_gear_feature(part_id: str, feature_id: str, payload: BevelGearF
         profile_shift=new_profile_shift,
         target_body_ids=new_target_body_ids,
         points_per_flank=new_points_per_flank,
+        spiral_angle_degrees=new_spiral_angle_degrees,
+        spiral_hand=new_spiral_hand,
     )
     _, warnings = resolve_bevel_gear(part, candidate)  # raises on an unresolvable/invalid bevel gear
 
@@ -3287,6 +3297,8 @@ def update_bevel_gear_feature(part_id: str, feature_id: str, payload: BevelGearF
     feature.profile_shift = candidate.profile_shift
     feature.target_body_ids = candidate.target_body_ids
     feature.points_per_flank = candidate.points_per_flank
+    feature.spiral_angle_degrees = candidate.spiral_angle_degrees
+    feature.spiral_hand = candidate.spiral_hand
     return _bevel_gear_feature_response(part, feature, warnings)
 
 

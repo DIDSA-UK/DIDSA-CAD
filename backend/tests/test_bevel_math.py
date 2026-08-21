@@ -20,12 +20,16 @@ import math
 import pytest
 
 from app.document.bevel_math import (
+    DEFAULT_SPIRAL_SECTION_COUNT,
     MINIMUM_TIP_THICKNESS_COEFFICIENT,
+    SPIRAL_BUILD_COST_WARNING_THRESHOLD_DEGREES,
     BevelGearGeometry,
+    SpiralHand,
     base_cone_half_angle,
     bevel_gear_geometry,
     bevel_pair_mesh_preview,
     bevel_tooth_flank_pair,
+    bevel_tooth_flank_sections,
     bevel_tooth_tip_thickness,
     equivalent_tooth_count,
     maximum_receiver_profile_shift_for_mesh_clearance,
@@ -36,6 +40,8 @@ from app.document.bevel_math import (
     spherical_involute_colatitude,
     spherical_involute_point,
     spherical_involute_roll_angle_at_colatitude,
+    spiral_build_cost_warning,
+    spiral_curve_offset_angle,
     virtual_spur_gear_geometry,
 )
 from app.document.gear_math import GearGeometryError, involute_point, spur_gear_geometry
@@ -668,3 +674,278 @@ def test_maximum_receiver_profile_shift_for_mesh_clearance_caps_against_a_pointe
         profile_shift=accepted, pitch_cone_angle_degrees=math.degrees(gamma_1),
     )
     assert bevel_tooth_tip_thickness(accepted_geometry) >= MINIMUM_TIP_THICKNESS_COEFFICIENT * module - 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Spiral bevel: N-cross-section flank sampling
+# (docs/gear-design/12-spiral-bevel-gear.md) - single-gear construction only
+# ---------------------------------------------------------------------------
+
+
+def test_spiral_curve_offset_angle_is_exactly_zero_at_zero_spiral_angle():
+    # Checked at several distinct sphere_radius/mean_sphere_radius ratios -
+    # exact zero (not merely close), the property bevel_tooth_flank_
+    # sections's own bit-for-bit reduction test below depends on.
+    for ratio in (0.5, 0.9, 1.0, 1.5, 3.0):
+        assert spiral_curve_offset_angle(0.0, math.radians(30.0), 100.0 * ratio, 100.0, SpiralHand.RIGHT) == 0.0
+        assert spiral_curve_offset_angle(0.0, math.radians(30.0), 100.0 * ratio, 100.0, SpiralHand.LEFT) == 0.0
+
+
+def test_spiral_curve_offset_angle_is_exactly_zero_at_the_mean_radius_for_any_spiral_angle():
+    # ln(R/R_mean) = ln(1) = 0 at R == R_mean, for any nonzero beta - the
+    # "Zerol bevel falls out of this same family for free... at the mean
+    # point" property 12-spiral-bevel-gear.md's own "Candidate approaches"
+    # section names.
+    assert spiral_curve_offset_angle(math.radians(25.0), math.radians(30.0), 100.0, 100.0, SpiralHand.RIGHT) == 0.0
+
+
+def test_spiral_curve_offset_angle_matches_the_closed_form_directly():
+    beta = math.radians(20.0)
+    gamma = math.radians(26.565)
+    r, r_mean = 89.44, 82.0
+    expected = (math.tan(beta) / math.sin(gamma)) * math.log(r / r_mean)
+    assert spiral_curve_offset_angle(beta, gamma, r, r_mean, SpiralHand.RIGHT) == pytest.approx(expected)
+
+
+def test_spiral_curve_offset_angle_flips_sign_with_hand():
+    beta = math.radians(20.0)
+    gamma = math.radians(26.565)
+    right = spiral_curve_offset_angle(beta, gamma, 89.44, 82.0, SpiralHand.RIGHT)
+    left = spiral_curve_offset_angle(beta, gamma, 89.44, 82.0, SpiralHand.LEFT)
+    assert right == pytest.approx(-left)
+    assert right != 0.0
+
+
+def test_spiral_curve_offset_angle_grows_away_from_the_mean_radius_in_opposite_directions():
+    # R > R_mean and R < R_mean give opposite-signed curve() for the same
+    # hand - 12-spiral-bevel-gear.md's own Spike A §2 table shows exactly
+    # this shape (outer sections curve one way, inner sections the other).
+    beta = math.radians(20.0)
+    gamma = math.radians(26.565)
+    outer = spiral_curve_offset_angle(beta, gamma, 89.44, 82.0, SpiralHand.RIGHT)
+    inner = spiral_curve_offset_angle(beta, gamma, 74.44, 82.0, SpiralHand.RIGHT)
+    assert outer > 0.0
+    assert inner < 0.0
+
+
+@pytest.fixture
+def spiral_bevel_geometry() -> BevelGearGeometry:
+    # Same 20T/40T/module-4 baseline test_bevel_math.py's own module_4_20_40
+    # reference-value test already uses.
+    gamma_1, _gamma_2 = pitch_cone_half_angles(20, 40, 90.0)
+    return bevel_gear_geometry(module=4.0, tooth_count=20, face_width=15.0, pitch_cone_angle_degrees=math.degrees(gamma_1))
+
+
+def test_bevel_tooth_flank_sections_reduces_exactly_to_bevel_tooth_flank_pair_at_zero_spiral_angle(
+    spiral_bevel_geometry,
+):
+    # The real regression-safety property 12-spiral-bevel-gear.md's own
+    # "Sanity check" section calls for, made permanent per this workstream's
+    # own task instructions - bit-for-bit, not pytest.approx.
+    (pair_right_outer, pair_right_inner), (pair_left_outer, pair_left_inner) = bevel_tooth_flank_pair(
+        spiral_bevel_geometry
+    )
+    right_sections, left_sections = bevel_tooth_flank_sections(
+        spiral_bevel_geometry, spiral_angle_degrees=0.0, section_count=2
+    )
+    assert right_sections[0] == pair_right_outer
+    assert right_sections[1] == pair_right_inner
+    assert left_sections[0] == pair_left_outer
+    assert left_sections[1] == pair_left_inner
+
+
+def test_bevel_tooth_flank_sections_reduces_exactly_regardless_of_spiral_hand_at_zero_spiral_angle(
+    spiral_bevel_geometry,
+):
+    # spiral_hand is meaningless when spiral_angle_degrees == 0.0, mirroring
+    # GearFeature.herringbone's own "meaningless unless helix_angle_degrees
+    # != 0.0" convention - confirmed directly, not just documented.
+    right_left, left_left = bevel_tooth_flank_sections(
+        spiral_bevel_geometry, spiral_angle_degrees=0.0, spiral_hand=SpiralHand.LEFT, section_count=2
+    )
+    right_right, left_right = bevel_tooth_flank_sections(
+        spiral_bevel_geometry, spiral_angle_degrees=0.0, spiral_hand=SpiralHand.RIGHT, section_count=2
+    )
+    assert right_left == right_right
+    assert left_left == left_right
+
+
+def test_bevel_tooth_flank_sections_respects_section_count_and_points_per_flank(spiral_bevel_geometry):
+    right_sections, left_sections = bevel_tooth_flank_sections(
+        spiral_bevel_geometry, spiral_angle_degrees=20.0, points_per_flank=8, section_count=5
+    )
+    assert len(right_sections) == len(left_sections) == 5
+    for section in right_sections + left_sections:
+        assert len(section) == 8
+
+
+def test_bevel_tooth_flank_sections_all_points_lie_on_their_own_sections_sphere(spiral_bevel_geometry):
+    # Same "always on the given sphere" guarantee sample_tredgold_flank/
+    # bevel_tooth_flank_pair already provide - the spiral rotation is a
+    # pure rotation about the gear axis, so it must not perturb this.
+    right_sections, left_sections = bevel_tooth_flank_sections(
+        spiral_bevel_geometry, spiral_angle_degrees=25.0, section_count=4
+    )
+    radii = _spiral_section_radii_for_test(spiral_bevel_geometry, 4)
+    for section, radius in zip(right_sections, radii):
+        for x, y, z in section:
+            assert math.sqrt(x * x + y * y + z * z) == pytest.approx(radius)
+    for section, radius in zip(left_sections, radii):
+        for x, y, z in section:
+            assert math.sqrt(x * x + y * y + z * z) == pytest.approx(radius)
+
+
+def _spiral_section_radii_for_test(geometry: BevelGearGeometry, section_count: int) -> list[float]:
+    span = geometry.inner_cone_distance - geometry.cone_distance
+    return [geometry.cone_distance + span * i / (section_count - 1) for i in range(section_count)]
+
+
+def test_bevel_tooth_flank_sections_tooth_width_stays_constant_along_the_face_width(spiral_bevel_geometry):
+    # 12-spiral-bevel-gear.md's own Spike A §2 finding: the corrected
+    # construction holds the tooth's own angular width - the azimuthal gap
+    # between a section's own right/left flank curves, at a FIXED point
+    # along each curve's own root-to-tip parametrization - exactly constant
+    # from section to section (outer to inner); only the underlying
+    # Tredgold flank curve's own natural per-radius shape (root-to-tip
+    # within one section) varies, which is expected and unrelated to
+    # spiral (`test_bevel_tooth_flank_pair_points_move_away_from_axis_
+    # from_root_to_tip`'s own straight-bevel precedent already shows this).
+    # Mirrors Spike A's own table, which reports one width figure per
+    # section (not per root-to-tip point).
+    right_sections, left_sections = bevel_tooth_flank_sections(
+        spiral_bevel_geometry, spiral_angle_degrees=20.0, points_per_flank=12, section_count=5
+    )
+    for point_index in (0, 6, 11):
+        widths = []
+        for right, left in zip(right_sections, left_sections):
+            rx, ry, _rz = right[point_index]
+            lx, ly, _lz = left[point_index]
+            widths.append(math.atan2(ly, lx) - math.atan2(ry, rx))
+        for width in widths:
+            assert width == pytest.approx(widths[0])
+        assert widths[0] != pytest.approx(0.0)
+
+
+def test_bevel_tooth_flank_sections_centerline_actually_curves_along_the_face_width(spiral_bevel_geometry):
+    # The direct opposite of 12-spiral-bevel-gear.md's own Spike A §1 "named
+    # dead end" (a construction whose centerline stays a straight ray from
+    # the apex, exactly 0.000 at every radius, while only its width
+    # changes - not a spiral tooth by any definition). This implementation
+    # must NOT reproduce that bug: the centerline (the azimuth midpoint of
+    # a matched right/left point pair) must genuinely differ between the
+    # outer and inner sections.
+    right_sections, left_sections = bevel_tooth_flank_sections(
+        spiral_bevel_geometry, spiral_angle_degrees=20.0, points_per_flank=12, section_count=5
+    )
+
+    def centerline_azimuth(section_index: int, point_index: int) -> float:
+        rx, ry, _rz = right_sections[section_index][point_index]
+        lx, ly, _lz = left_sections[section_index][point_index]
+        return (math.atan2(ry, rx) + math.atan2(ly, lx)) / 2.0
+
+    outer_centerline = centerline_azimuth(0, 0)
+    mean_centerline = centerline_azimuth(2, 0)
+    inner_centerline = centerline_azimuth(4, 0)
+    # The mean section (index 2 of 5, i.e. exactly R_mean) has curve(R) == 0
+    # by construction - its own centerline should sit at the plain Tredgold
+    # centerline, effectively 0 (no spiral term contributes there).
+    assert mean_centerline == pytest.approx(0.0, abs=1e-9)
+    # Outer and inner sections must have genuinely swept away from that,
+    # and in opposite directions (matching spiral_curve_offset_angle's own
+    # "opposite directions on either side of the mean radius" behaviour).
+    assert abs(outer_centerline) > 1e-3
+    assert abs(inner_centerline) > 1e-3
+    assert outer_centerline * inner_centerline < 0.0
+
+
+def test_bevel_tooth_flank_sections_opposite_hands_curve_in_opposite_directions(spiral_bevel_geometry):
+    right_left_hand, _left_left_hand = bevel_tooth_flank_sections(
+        spiral_bevel_geometry, spiral_angle_degrees=20.0, spiral_hand=SpiralHand.LEFT, section_count=3
+    )
+    right_right_hand, _left_right_hand = bevel_tooth_flank_sections(
+        spiral_bevel_geometry, spiral_angle_degrees=20.0, spiral_hand=SpiralHand.RIGHT, section_count=3
+    )
+    outer_x_left, outer_y_left, _ = right_left_hand[0][0]
+    outer_x_right, outer_y_right, _ = right_right_hand[0][0]
+    azimuth_left_hand = math.atan2(outer_y_left, outer_x_left)
+    azimuth_right_hand = math.atan2(outer_y_right, outer_x_right)
+    # Both hands share the same mean-section (index 1 of 3) behaviour but
+    # diverge at the outer section, in opposite directions.
+    assert azimuth_left_hand != pytest.approx(azimuth_right_hand)
+
+
+def test_bevel_tooth_flank_sections_rejects_section_count_below_two(spiral_bevel_geometry):
+    with pytest.raises(GearGeometryError):
+        bevel_tooth_flank_sections(spiral_bevel_geometry, spiral_angle_degrees=10.0, section_count=1)
+
+
+def test_default_spiral_section_count_is_at_least_three():
+    # 12-spiral-bevel-gear.md's own Spike A §3 finding: 2 sections measurably
+    # under-count the real geometry once the offset varies continuously; 3
+    # is the validated minimum.
+    assert DEFAULT_SPIRAL_SECTION_COUNT >= 3
+
+
+def test_bevel_tooth_flank_sections_linear_interpolation_error_shrinks_with_more_sections(spiral_bevel_geometry):
+    # Pure-math re-validation of 12-spiral-bevel-gear.md's own Spike A §3
+    # "Section-count convergence" finding (which was originally validated
+    # via a real BRepAlgoAPI_Common mesh-overlap measurement, out of reach
+    # in this OCCT-free test module) - re-derived here as a direct numerical
+    # statement about spiral_curve_offset_angle's own smoothness: a
+    # piecewise-linear interpolant through N evenly-spaced-by-radius samples
+    # of curve(R) should approximate the true (smooth, log-shaped) curve(R)
+    # much more closely as N grows from the legacy 2-section case - the
+    # exact reason a 2-section ThruSections loft (in effect, one linear
+    # interpolant end to end) under-represents the true geometry while more
+    # sections converge quickly.
+    gamma = spiral_bevel_geometry.pitch_cone_angle
+    cone_distance = spiral_bevel_geometry.cone_distance
+    inner_cone_distance = spiral_bevel_geometry.inner_cone_distance
+    mean_radius = (cone_distance + inner_cone_distance) / 2.0
+    beta = math.radians(30.0)
+
+    def curve(r: float) -> float:
+        return spiral_curve_offset_angle(beta, gamma, r, mean_radius, SpiralHand.RIGHT)
+
+    def max_interpolation_error(section_count: int) -> float:
+        radii = _spiral_section_radii_for_test(spiral_bevel_geometry, section_count)
+        values = [curve(r) for r in radii]
+        probe_count = 200
+        worst = 0.0
+        for k in range(probe_count + 1):
+            r = cone_distance + (inner_cone_distance - cone_distance) * k / probe_count
+            # Find the bracketing pair of sections and linearly interpolate,
+            # matching what a ruled loft would do between adjacent sections.
+            for idx in range(section_count - 1):
+                r0, r1 = radii[idx], radii[idx + 1]
+                if (r0 - r) * (r1 - r) <= 0.0:
+                    t = 0.0 if r1 == r0 else (r - r0) / (r1 - r0)
+                    interpolated = values[idx] + t * (values[idx + 1] - values[idx])
+                    worst = max(worst, abs(interpolated - curve(r)))
+                    break
+        return worst
+
+    error_2 = max_interpolation_error(2)
+    error_3 = max_interpolation_error(DEFAULT_SPIRAL_SECTION_COUNT)
+    error_5 = max_interpolation_error(5)
+    error_9 = max_interpolation_error(9)
+    assert error_2 > 0.0
+    # Strictly, substantially decreasing as section_count grows (quadratic-
+    # in-interval-count convergence for a piecewise-linear interpolant of a
+    # smooth curve - real numbers measured on-device: 2->3 already cuts
+    # error by ~3.7x, 2->5 by ~14x, matching "convergence is fast" without
+    # over-claiming an arbitrary exact factor).
+    assert error_2 / 3 > error_3 > error_5 > error_9 > 0.0
+    assert error_5 < error_2 / 10.0
+
+
+def test_spiral_build_cost_warning_is_none_below_the_threshold():
+    assert spiral_build_cost_warning(0.0) is None
+    assert spiral_build_cost_warning(30.0) is None
+    assert spiral_build_cost_warning(SPIRAL_BUILD_COST_WARNING_THRESHOLD_DEGREES - 1.0) is None
+
+
+def test_spiral_build_cost_warning_fires_at_and_above_the_threshold():
+    assert spiral_build_cost_warning(SPIRAL_BUILD_COST_WARNING_THRESHOLD_DEGREES) is not None
+    assert spiral_build_cost_warning(60.0) is not None
+    assert spiral_build_cost_warning(-60.0) is not None
