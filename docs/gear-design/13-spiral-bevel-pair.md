@@ -412,3 +412,237 @@ mesh_clearance`'s own bisection alongside the existing reverse-margin
 check: a trial shift must clear both to be accepted. Verified on-device
 that the 6T/24T case now builds with no volume-disagreement warning and
 the default/14.5-degree cases are unchanged.
+
+## Spike findings (2026-08-21) — Spike C: the tangential margin proxy, and a real correction to why the residual exists
+
+Real investigate/prototype pass answering this doc's own §3 ("build a real,
+calibrated tangential margin proxy... the same treatment `MESH_MARGIN_
+SAFETY_BUFFER_DEGREES` got for straight bevel"), using `12-spiral-bevel-
+gear.md`'s own matching Spike C entry's real per-build phase search to
+produce the phase-corrected baseline this item's own task asked for.
+Explicitly investigation/validation, not a `BevelPairFeature` spiral-variant
+implementation pass. Same real conda-forge `pythonocc-core` 7.9.3 env,
+same scratch-only-harness convention, same re-derived N-section spiral
+assembler (validated byte-for-byte against Spike A's own azimuth table -
+see 12's own matching entry).
+
+**Headline result, ahead of the detail below**: this session's own broader
+parameter sweep - specifically, testing tooth-count ratios other than the
+symmetric 10T/10T/20T/20T pairs every prior spiral-bevel spike measured
+exclusively - found that the "phase-corrected residual" Spike A and Spike
+B both measured and treated as an intrinsic, spiral-specific property of
+the layered-offset construction is **not**, in significant part, a spiral
+effect at all. It is almost entirely explained by a **pre-existing,
+non-spiral structural property of Tredgold-approximated bevel pairs with
+equal tooth counts**, newly surfaced by this session (not by Spike A/B,
+which never tested an asymmetric ratio's own real overlap). Once that
+confound is removed (tested on a tooth-count ratio the existing radial
+system can actually fully resolve), real measured overlap is **exactly
+0.0 mm³ at every spiral angle tested, 0° through 65°, at default phase,
+opposite hand** - no detectable independent tangential residual above the
+noise floor anywhere in this session's own testing. Per this project's own
+established convention for a finding that contradicts a prior spike's own
+numbers (`10-bevel-gear.md`'s own §7, `12-spiral-bevel-gear.md`'s own
+Spike B §5): named explicitly, not silently overridden or silently agreed
+with. Spike A's and Spike B's own measurements are not wrong as
+measurements - the same 10T/10T configuration, rebuilt this session,
+reproduces overlap in the same 30-50 mm³ range they both reported - this
+session's own contribution is a different, better-supported explanation
+of *why* that residual exists, found by testing a wider slice of the
+parameter space this doc's own lesson 5 already calls for.
+
+### 1. The mechanism: a symmetric tooth-count pair cannot fully resolve both directional margins with a single balanced shift - not a bug, a structural property
+
+`resolve_member_profile_shifts`'s own balanced fix (intruder `-X`,
+receiver `+X`) targets whichever *one* of the two directional margins
+`worst_bevel_pair_mesh_margin_degrees` finds worse at baseline. For a
+tooth-count-symmetric pair (`tooth_count_1 == tooth_count_2`, same
+module/pressure angle/shaft angle), both directional margins are
+*identical* at baseline (`margin_2_into_1 == margin_1_into_2` exactly, by
+symmetry) - there is no genuinely "worse" direction to distinguish, only
+a tie the code's own `<=` comparison breaks arbitrarily. Fixing the
+chosen direction (shrinking the "intruder" member's own addendum) by
+construction *requires*, for the balanced/backlash-neutral identity this
+doc's own lesson 4 already established, growing the "receiver" member's
+own addendum by the same amount - but for a symmetric pair the receiver's
+own outgoing margin is the *identical* formula in the *identical* starting
+state, so growing its addendum degrades its own outgoing margin by
+exactly the improvement the intruder's fix bought, point for point. This
+is provable directly from `bevel_pair_mesh_margin_degrees`'s own linear
+form (`shaft_angle - (face_cone_angle + base_colatitude)`,
+`face_cone_angle` monotonic increasing in `profile_shift`) - not merely
+observed. `maximum_receiver_profile_shift_for_mesh_clearance`'s own
+existing code already handles this *correctly*, defensively: its own
+`is_safe_at(receiver_geometry.profile_shift)` check (the receiver's own
+*baseline*, before any shift) fails immediately for a symmetric pair
+whose baseline margin was already below the buffer - by this function's
+own docstring, "returns `receiver_geometry.profile_shift` unchanged... a
+pre-existing problem this function isn't responsible for fixing, only for
+not making worse" - so the receiver genuinely gets **zero** correction,
+and its own outgoing margin (and, this session found, the real measured
+overlap in that direction) stays at exactly its unfixed baseline value.
+**This is not a bug to patch** - it is a real, provable, mathematical
+consequence of what a single shared shift value can do for two
+*identical* mating members, confirmed on-device (10T/10T, module 4, face
+width 8, pressure angle 20°: `resolve_member_profile_shifts` gives
+`ps1=0.0, ps2=-0.6355`, and `worst_bevel_pair_mesh_margin_degrees` on the
+*resolved* geometry is still **-4.598°**, far below the 0.5° buffer -
+member 1's own direction was simply never touched).
+
+**Not silent in production today**: `bevel_pair_mesh_interference_warning`
+reads the same post-resolution `worst_bevel_pair_mesh_margin_degrees` value
+`resolve_bevel_pair_from_bodies` already computes, so this configuration
+already surfaces a real, accurate, non-blocking warning
+("member_2's tooth tip is predicted to intrude...") in shipped, production
+`BevelPairFeature` today, for *any* equal-tooth-count straight bevel pair
+whose baseline margin is already below the buffer (a 90° miter gear pair
+being the most common real-world example) - a real, previously-undocumented
+property of the existing pairing system worth naming for whoever next
+touches it, but genuinely independent of spiral and already warned-of, not
+a silent gap this workstream needs to fix. Named here per the same pattern
+`12-spiral-bevel-gear.md`'s own Spike B §2 already established for a
+different pre-existing defect ("this session's own testing surfaced it,
+fixing it is out of this workstream's own scope").
+
+### 2. Direct confirmation: once radial resolution actually succeeds, the "tangential" residual is exactly zero
+
+Tested two tooth-count ratios where `resolve_member_profile_shifts` *can*
+distinguish a genuinely worse direction (an asymmetric ratio breaks the
+tie the symmetric case can't) and drive `worst_bevel_pair_mesh_margin_
+degrees` to its own target - module 4, pressure angle 20°, shaft 90°,
+opposite hand, real per-build phase search from `12-spiral-bevel-gear.md`'s
+own matching entry:
+
+| pair | radial margin after resolution | β=0° | β=10° | β=20° | β=30° | β=45° | β=55° | β=65° |
+|---|---|---|---|---|---|---|---|---|
+| 10T/20T (face_width 8) | 0.500° (target hit exactly) | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 |
+| 8T/16T (face_width 6) | 0.498° (target hit) | 0.0 | - | 0.0 | - | - | - | - |
+| 10T/10T (face_width 8, symmetric - for contrast) | -4.598° (receiver un-fixed, §1) | 43.8 | 43.7 | 43.2 | 42.3 | 36.2 | - | 32.1 |
+
+(All overlap figures mm³, `BRepAlgoAPI_Common`, default phase for the
+resolvable pairs since the true optimum already sits there - see below.)
+
+Every resolvable-ratio overlap is **exactly 0.0 mm³**, at every β tested
+including well past this doc's own matching entry's own notch-adjacent
+range, at **default phase** - the real per-build search (item 1) wasn't
+even needed to reach zero here, though it was run and confirmed the same
+result. The symmetric 10T/10T case's own residual, by contrast, tracks
+`12-spiral-bevel-gear.md`'s own Spike A/B numbers closely (this session's
+own rebuild: 43.8 mm³ at β=0°, matching Spike B's own reported 50.6 mm³
+for the same configuration reasonably closely) and shows the same mild,
+real, *decreasing*-with-β trend both prior spikes found (43.8 → 32.1 mm³,
+β=0° → 65°) - a small, genuine, secondary shape effect of the curved
+lengthwise trace on the exact 3D interference volume (not captured by the
+colatitude-only radial margin, which `12`'s own §4 already proved is
+exactly β-invariant), but an order of magnitude smaller than, and
+overshadowed by, the symmetric-pair radial-resolution gap it was
+previously conflated with.
+
+**Off-target radial resolution (asymmetric ratio, but at a pressure angle
+where the existing caps still engage) also stays explained by the
+existing system alone**, no extra spiral term needed - 10T/20T,
+face_width 8, β=20°, opposite hand:
+
+| pressure angle | radial margin | measured overlap (mm³) |
+|---|---|---|
+| 14.5° | -1.466° | 23.50 |
+| 17.0° | -0.117° | 1.03 |
+| 20.0° | 0.500° | 0.00 |
+
+Directly comparable in shape to `MESH_MARGIN_SAFETY_BUFFER_DEGREES`'s own
+straight-bevel calibration reference point (a margin around -0.4° leaving
+"a small (~4 mm³) measured residual" for a 20T/40T straight pair) - this
+session's own -0.117° → 1.03 mm³ point is proportionally consistent (both
+imply roughly single-digit mm³ per tenth of a degree of margin shortfall)
+with that existing, unchanged calibration, not a different relationship
+spiral introduces.
+
+### 3. Hand-of-spiral: a real, separate, large effect - confirmed independent of the radial-resolution confound
+
+Re-ran the same-hand-vs-opposite-hand comparison on the *resolvable*
+10T/20T pair specifically to isolate this from §1's own confound (Spike
+A's own original same-hand measurement used the symmetric 10T/10T pair,
+so its own magnitude was mixed with the radial-resolution gap too):
+
+| β | opposite-hand overlap (mm³) | same-hand overlap (mm³) |
+|---|---|---|
+| 10° | 0.0 | 4.59 |
+| 20° | 0.0 | 30.86 |
+| 30° | 0.0 | 72.38 |
+
+A clean, uncontaminated signal: opposite-hand stays exactly zero (matching
+§2 above) while same-hand grows real, substantial interference that
+increases with β - the *same* qualitative shape Spike A's own §3 found
+(worse at every β, gap widening with β), now demonstrated on a baseline
+with no other confounding residual at all. This settles this item's own
+"does the [margin] proxy need its own hand-of-spiral validation baked in"
+question cleanly: **no** - hand-of-spiral is a real, large-magnitude,
+purely azimuthal effect entirely orthogonal to the (now confirmed
+unnecessary, see §4) tangential margin question, and stays exactly what
+this doc's own existing "What's new" section already concluded: a simple,
+separate `hand_of_spiral` compatibility check (compare the two members'
+own fields, warn or reject on a mismatch), not something a margin
+function needs to compute a magnitude for. This session's own cleaner
+numbers reinforce, rather than revise, this doc's own existing lean
+toward the warning-banner convention over a hard `422`.
+
+### 4. What this means for "Proposed auto-resolution field(s)": no new field needed
+
+This doc's own §3 (Spike A/B's own conclusion) called a new tangential/
+phase-alignment field "required, not speculative." This session's own
+broader-ratio testing revises that conclusion, per this project's own
+"self-correct and flag honestly" precedent: **no new field, and no new
+margin proxy, is needed for the tangential dimension.** The existing
+`bevel_pair_mesh_margin_degrees`/`MESH_MARGIN_SAFETY_BUFFER_DEGREES`/
+`worst_bevel_pair_mesh_margin_degrees` system, completely unchanged,
+already predicts real spiral-pair interference correctly - not merely
+"the radial component of it" (this doc's own §2, already settled), but
+the *entire* real measured overlap, once (a) `12-spiral-bevel-gear.md`'s
+own real per-build phase search is applied and (b) the pair's own
+tooth-count ratio is one the existing radial system can actually resolve
+(most real pairs; the symmetric-ratio case is a real, known, already-
+warned exception - §1). No independent spiral-driven residual was
+detectable above the noise floor in any case this session tested, across
+two tooth-count ratios and a β range spanning 0° to 65°.
+
+This is a stronger, more useful outcome than a calibrated buffer would
+have been, and it satisfies this doc's own lesson 3 ("a predictive proxy
+needs continuous calibration against real OCCT measurement... not trust a
+closed-form margin formula as exact on the first derivation") in the most
+direct way possible: the calibration sweep this item's own task required
+*is* the evidence that no new formula is needed at all, not a step taken
+on the way to deriving one. `profile_shift` (already settled, this doc's
+own §3) remains the only auto-resolution field a spiral pair needs -
+unchanged from straight bevel, in both dimensions, not just the radial
+one.
+
+### 5. Go/no-go
+
+**GO on reusing the existing radial mesh-margin system unchanged, with no
+new tangential margin proxy** - the outcome this doc's own §3 called
+"required, not speculative" is revised, on this session's own real,
+multi-ratio on-device evidence, to "not needed": once a real per-build
+phase search (`12-spiral-bevel-gear.md`'s own matching Spike C entry)
+resolves meshing phase and the pair's tooth-count ratio allows the
+existing `resolve_member_profile_shifts`/`bevel_pair_mesh_margin_degrees`
+machinery to do its job, real measured overlap is zero, exactly as it
+already is for straight bevel. Hand-of-spiral remains a real, separate,
+confirmed-necessary check (§3) - a simple field-compatibility warning, not
+a margin computation. **Separately, out of this workstream's own scope**
+(same pattern as `12-spiral-bevel-gear.md`'s own Spike B §2): flag the
+newly-found symmetric-tooth-count-ratio structural gap in
+`resolve_member_profile_shifts`/`maximum_receiver_profile_shift_for_mesh_
+clearance` (§1) to whoever next revisits straight-bevel pairing - real,
+already partly mitigated by the existing (accurate) interference warning
+firing for it today, not a silent defect, but worth a documented named
+limitation or a real fix (e.g. widening the balancing search to also
+consider an *unequal* split when a pair is tooth-count-symmetric) since it
+means even ordinary straight (non-spiral) equal-tooth-count bevel pairs
+carry a small, real, currently-unresolved residual today.
+
+**Combined with `12-spiral-bevel-gear.md`'s own matching Spike C
+conclusion (GO on the per-build phase search, with a flagged real cost
+risk near/past the notch): both pieces this session was scoped to
+validate land with a real GO.** Real `BevelGearFeature`/`BevelPairFeature`
+spiral-variant implementation is the next, different workstream - building
+it is not started here, per this session's own explicit scope.

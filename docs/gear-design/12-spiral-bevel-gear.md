@@ -983,3 +983,268 @@ residual numbers (§1's 4-5% baseline, not Spike A's own possibly-
 uncorrected 8-9%); (3) separately, flag the profile-shift/solid-
 malformation defect (§2) to whoever next touches `resolve_member_profile_
 shifts` - real, but independent of this workstream's own go/no-go.
+
+## Spike findings (2026-08-21) — Spike C: per-build meshing-phase search
+
+Real investigate/prototype pass answering Spike B's own item (1) above -
+designing and validating the "small local search/probe at build time"
+Spike B named as the concrete fix for the high-β phase-alignment notch,
+not yet designed or validated there. Explicitly investigation/validation,
+not a `BevelGearFeature`/`BevelPairFeature` implementation pass, per this
+session's own task scope. Same real conda-forge `pythonocc-core` 7.9.3 env
+(micromamba from GitHub Releases, `backend/environment.yml`), same
+scratch-only-harness convention (nothing below is committed). Spike B's
+own uncommitted `assemble_spiral_gear_solid` no longer exists (scratch, by
+that spike's own convention), so this session re-derived an equivalent
+N-section spiral member-solid assembler from this doc's own §2 formula and
+`app.document.bevel`'s real, unchanged internals (`_bspline_wire`,
+`_cone_arc_wire`, `_spherical_cap_face`, `_flank_fold_warning`,
+`_flatten_end_caps`, `_assembly_sanity_warnings`, the `ThruSections`/
+sewing/`ShapeFix_Shell`/`MakeSolid`/`OrientClosedSolid` sequence) -
+verified byte-for-byte against Spike A's own reported per-radius
+azimuth table (§2, β=20°, 10T/10T: right/left azimuth and centerline at
+all 5 sections reproduced to 3 decimal places) before trusting it further.
+
+**A real construction mistake caught early, worth naming so nobody
+repeats it**: an early version of this session's own re-derived assembler
+skipped `bevel._flatten_end_caps` (an optional, already-non-fatal step
+per that function's own docstring) to save build cost. This was wrong,
+not just a missed optimization - an un-flattened spherical end-cap is a
+full dome/dish that isn't confined to its own member's own tooth region
+the way a flattened one is, so two members' un-flattened caps can overlap
+each other by thousands of mm³ *independent of meshing phase*, completely
+swamping the real tangential signal this spike exists to measure
+(confirmed on-device: the same 10T/10T/module-4/β=0 configuration gave an
+~8267 mm³ near-phase-independent background overlap without flattening,
+vs. 43.8 mm³ - reasonably close to this doc's own Spike B §1 reference of
+50.6 mm³ for the same configuration - with it). Fixed by calling
+`_flatten_end_caps` unchanged (purely colatitude/geometry-based, no
+dependency on straight vs. curved tooth trace, so it needed no
+modification at all) with the same fallback-to-unflattened-plus-warning
+behaviour `_assemble_gear_solid` already uses.
+
+### 1. Search algorithm: coarse grid pre-scan + local golden-section refine, not a single global search
+
+A plain single golden-section (or ternary) search over a wide window,
+assuming the whole window is unimodal, is **not sound** here - this doc's
+own Spike B §4 already found the full phase-vs-overlap landscape is not
+globally unimodal past the notch (a narrow bad spike sitting inside a
+wide good band, not a single valley), and this session's own wide-window
+sweeps (§3 below) directly reproduce that shape. A search that assumes
+global unimodality can converge to - or bracket around - the wrong
+feature entirely once one of these spikes is inside its starting window.
+What *is* true, and load-bearing for the fix: Spike B's own §4 low-β
+stable-optimum finding (-2.9° to -3.6°, smoothly present across β=10-45°)
+shows the landscape *is* smooth/unimodal **within** one such band. The
+algorithm this session designed and validated exploits exactly that
+split:
+
+1. **Coarse grid scan** across a window centred on the existing fixed
+   convention (`_rotated_about_axis`'s own `±π/2`/`-π/2 + π/N` default),
+   evaluating real `BRepAlgoAPI_Common` overlap at each grid point. This
+   is the step that makes the search robust to the non-unimodal case - it
+   can't be fooled by a single bad spike the way a naive wide-window
+   golden-section could, since it samples broadly rather than trusting
+   derivative-free bracketing logic across the whole window.
+2. **Local golden-section refine** within `±`one grid step of the best
+   grid point found. Sound specifically because the *interval* being
+   refined over is narrow enough to sit inside one smooth band, not
+   because the *whole search* is unimodal.
+
+This two-stage shape - not a single technique - is the answer to this
+item's own "state why, don't just pick one arbitrarily" instruction:
+grid alone would need a very fine resolution to match golden-section's
+own precision (wasteful); golden-section alone is provably unsound given
+Spike B's own non-unimodality finding; the combination gets both
+properties cheaply, because (per §4 below) each trial is a rotate + a
+boolean against two already-built solids, not a geometry rebuild - the
+coarse scan's own cost is not the bottleneck the precision-vs-cost
+tradeoff would otherwise create.
+
+**A real robustness bug this session's own first implementation had, caught
+and fixed before trusting any result below**: `BRepAlgoAPI_Common`'s own
+`GProp_GProps.Mass()` can come back **negative** - not a near-zero
+numerical-noise negative, but large-magnitude negative (confirmed
+on-device: -9.5 to -149.8 mm³ across several cases) - and this is not a
+valid "even better than zero overlap" reading, it's numerical garbage
+from a geometrically marginal input solid (every negative value this
+session measured traced directly to a member whose own `_flatten_end_caps`
+had already failed, i.e. `_assemble_gear_solid`/this session's own spiral
+assembler had already raised its own non-blocking warning for that
+solid). A naive minimizer that let a negative number "win" would
+systematically walk the search toward whichever trial happens to be
+*most* geometrically broken, exactly backwards - this fooled this
+session's own first search run into reporting a "phase correction" that
+was actually pure garbage for two of the four cases nearest the
+fold-risk-adjacent β range. Fixed by treating both `None` (boolean itself
+fails) and negative results identically as "no usable signal, worse than
+any real reading" - never a candidate to select as best. **Whoever
+implements this for real must carry this guard forward explicitly** - it
+is exactly the kind of `IsDone()`-but-wrong gotcha this project's own
+history (`10-bevel-gear.md`'s own `BRepCheck_Analyzer` findings) already
+warns about, just for `GProp_GProps.Mass()` instead.
+
+### 2. Validation: reliably recovers a good alignment across both tooth-count ratios, both hands, and well past this session's own notch
+
+Swept β, tooth-count ratio, and hand, on the same real, phase-corrected
+profile-shift baseline `resolve_member_profile_shifts` produces (matching
+Spike B's own §1 methodology, not Spike A's own possibly-uncorrected
+one), n_sections=3 (Spike A's own §3 convergence finding: matches
+n_sections=15 to full float precision), points_per_flank=12 (the
+production default in `app.document.bevel._POINTS_PER_FLANK` -
+see the flattening finding above for why this matters, not just cost).
+
+| pair | β (deg) | hand | default-phase overlap (mm³) | search result (mm³, at Δ deg) | evals | warnings |
+|---|---|---|---|---|---|---|
+| 10T/10T | 10 | opposite | 43.7 | 43.68 (Δ=-2.65) | 51 | none |
+| 10T/10T | 20 | opposite | 43.2 | 43.21 (Δ=-1.15) | 51 | none |
+| 10T/10T | 30 | opposite | 42.3 | 42.30 (Δ=-1.80) | 51 | none |
+| 10T/10T | 45 | opposite | 39.3 | 39.29 (Δ=-0.90) | 51 | none |
+| 10T/10T | 65 | opposite | 32.2 | 32.00 (Δ=+2.70) | 51 | none |
+| 10T/10T | 70 | opposite | 20.6 | **0.82 (Δ=-4.57)** | 32 | end-cap flattening failed (both members) |
+| 10T/10T | 20 | same | 57.9 | 57.44 (Δ=-1.04) | 51 | none |
+| 10T/10T | 65 | same | 90.3 | 85.44 (Δ=-9.11) | 51 | none |
+| 20T/20T | 20 | opposite | 18.5 | 18.54 (Δ=-0.33) | 46 | none |
+| 20T/20T | 40 | opposite | 10.7 | 10.47 (Δ=-0.57) | 46 | none |
+| 20T/20T | 60 | opposite | 12.4 | 9.80 (Δ=-0.58) | 46 | none |
+| 20T/20T | 68 | opposite | 5.6 | 5.57 (Δ=0.00) | 31 | end-cap flattening failed (both members) |
+| 20T/20T | 70 | opposite | 5.8 | 5.77 (Δ=-0.17) | 31 | end-cap flattening failed (both members) |
+| 20T/20T | 72 | opposite | 5.6 | 3.09 (Δ=-0.90) | 31 | end-cap flattening failed (both members) |
+
+In the smooth low/moderate-β regime the search finds essentially the same
+result the default already gave (a few tenths to a couple mm³ better) -
+consistent with Spike B's own §4 finding that the default convention is
+already close to the true optimum there. At 10T/10T β=70 - the one case
+in this session's own sweep that lands in a genuinely bad default
+alignment (see §3's honest discrepancy below for why this is a different
+β from Spike B's own reported 52° notch) - the search recovers a **96%
+reduction** (20.6 → 0.82 mm³), the direct, on-device confirmation this
+item's own task asked for: the search recovers a good alignment, not just
+in the smooth regime it was easy to validate in.
+
+**Same-hand still shows a real, uncorrectable-by-phase floor** (10T/10T,
+β=20°: 57.9 → 57.44; β=65°: 90.3 → 85.44) - matching Spike A's own §3
+finding that same-hand pairing is worse in *degree*, not something a
+phase search can fix, reinforcing (not revising) `13-spiral-bevel-pair.md`'s
+own conclusion that hand-of-spiral needs its own separate check, not
+coverage by whatever auto-resolution phase search provides.
+
+### 3. Search window: half the angular tooth pitch, not a fixed narrow band - and an honest discrepancy on where this session's own notch sits
+
+This item's own task asked whether Spike B's own low-β "~1° band"
+optimum window stays sufficient once past a notch, or whether the "wide
+good band" Spike B found there needs a wider window. Direct on-device
+answer: **wider, and it should scale with the tooth's own angular pitch,
+not stay a fixed degree count.** A full wide-window scan at 10T/10T,
+β=70° (the notch-adjacent case in this session's own harness) found the
+true optimum at Δ≈-4.6° but a genuinely catastrophic wall (8000-18000 mm³,
+essentially a full tooth's own volume) at Δ≈-12° to -16° - **within** a
+±18° (half the 36° angular tooth pitch for N=10) window, comfortably
+outside a ±1-3° one. The search's own coarse-grid stage correctly found
+the good region and never walked toward that wall (the wall's own grid
+points were sampled, scored badly, and discarded, exactly the coarse
+scan's own job) - direct, positive confirmation the two-stage algorithm
+is robust to a bad spike sitting inside its own search window, not merely
+untested against one. `half_pitch_degrees = 180 / tooth_count` is this
+session's own recommended window size: principled (guarantees covering
+one full period of whatever aliasing structure produces these walls,
+rather than a guessed absolute degree count) and confirmed sufficient in
+every case this session tested, including the two ratios (10T/10T,
+20T/20T) this doc's own Spike A/B already found don't share a simple
+formula for *where* the notch sits.
+
+**Honest discrepancy, named per this project's own established
+convention** (`10-bevel-gear.md`'s own §7, Spike B's own §5): this
+session's own re-derived harness, despite matching Spike A's own §2
+azimuth table bit-for-bit, does **not** reproduce Spike B's own reported
+β≈52° notch for 10T/10T - this session's own default-phase overlap stays
+smooth and well-behaved (default ≈ search result, both in the
+20-44 mm³ range) all the way through β=65°, with the first genuinely bad
+default alignment appearing at β=70° instead, and 20T/20T shows no
+comparably sharp default-phase failure anywhere in the 20-72° range
+tested (only a modest rise from ~10 to ~18 mm³, nothing like Spike B's
+own reported ~1000%-of-a-tooth jump at 68-69°). Both harnesses agree on
+every *qualitative* finding that matters (a real notch/wall exists, it is
+a meshing-phase-alignment artifact fixable by direct recovery, it is not
+a flank fold, no clean formula predicts exactly where it sits) - only the
+specific β this session's own construction happens to land a bad default
+alignment at differs, most likely from implementation-detail sensitivity
+this doc's own Spike B §3 already flagged as a real property of this
+construction (an azimuthal-aliasing coincidence, not a smooth geometric
+limit) - candidates include `n_sections` (3 here vs. Spike B's own likely
+5) and `points_per_flank` (12 here, matching production, vs. Spike B's
+own likely 8), either of which plausibly shifts exactly where a
+discrete tooth-vs-tooth alignment coincidence falls without changing the
+underlying mechanism at all. Not reconciled this session, flagged rather
+than silently resolved either way, per this project's own precedent.
+**Practical upshot, independent of the exact β**: a search window sized
+off the angular tooth pitch is the robust choice precisely *because* the
+notch location is this sensitive - a fixed absolute window tuned to one
+harness's own measured notch would not have been trustworthy for another.
+
+### 4. Cost: cheap in the smooth regime, a real and significant unbudgeted cost risk near/past the notch
+
+Each phase trial is a rigid rotation (`_rotated_about_axis`, already the
+production technique) plus one `BRepAlgoAPI_Common` against two solids
+built once per case, never rebuilt per trial - the search's own
+incremental cost is real but small next to a full N-section build:
+
+- **Smooth regime** (every case in §2's own table without a warning):
+  each build (both members' full N-tooth spiral solids) took 3-22s
+  (10T/10T: 3-5s; 20T/20T: 6-10s - the larger, more expensive case, as
+  expected). Each phase-trial eval took roughly 1-3s. This session's own
+  diagnostic-grade 46-51-point exhaustive grid (used throughout §2's table
+  to characterize the *whole* landscape, not what a production
+  implementation should run) took 50-160s; a production-appropriate
+  leaner grid (this session also validated a coarser ~30-point grid for
+  the rerun cases below) would cost meaningfully less - call it 20-40
+  evals, perhaps 30-90s total for a 10-20 tooth pair, on top of the
+  builds. Genuinely cheap relative to `11-bevel-pair.md`'s own documented
+  multi-minute-scale full-pair build cost.
+- **Near/past the notch** (every warned row in §2's own table - exactly
+  where `_flatten_end_caps` starts failing and the search is *most*
+  needed): eval cost rose sharply, up to **~16s per trial** (20T/20T,
+  β=68-72°: 365-505s for 31 evals), because `BRepAlgoAPI_Common` on a
+  marginal/unflattened-dome input solid is itself a much more expensive,
+  poorly-conditioned boolean, independent of the search algorithm around
+  it. Combined with builds also growing more expensive in this regime
+  (20T/20T, β=72°: 22s to build), a single pair's phase search alone can
+  cost several **minutes**, not tens of seconds.
+
+**This is a real, unbudgeted risk for the eventual implementation, not
+something to silently absorb**: the search's own worst-case cost is
+concentrated exactly in the parameter region (high β, tooth-count ratios
+approaching the crown-like threshold) where it is doing the most load-
+bearing work, on top of `11-bevel-pair.md`'s own already-documented
+concern that a full bevel pair build is already this codebase's single
+most expensive construction. A real implementation should budget for
+this explicitly (e.g. a generous request timeout specifically for the
+phase-search step, matching this doc's own precedent of `10-bevel-gear.md`'s
+raised 180s client timeout for bevel builds generally) rather than assume
+the search stays as cheap as its own smooth-regime numbers above suggest.
+Whoever implements this should also gate the search itself on the
+underlying per-member solid's own validity (`_assembly_sanity_warnings`-
+equivalent) *before* trusting a search result at all, not just guard
+against the negative-value symptom (§1) - a marginal solid's own boolean
+readings are not trustworthy regardless of sign.
+
+### 5. Go/no-go
+
+**GO on a per-build coarse-grid-plus-golden-section-refine phase search**,
+window sized to half the angular tooth pitch of the member being
+searched over (`180 / tooth_count`), gated by a negative/`None`-overlap
+validity guard (§1) and ideally also by the underlying solid's own
+`_assembly_sanity_warnings`-equivalent validity (§4). Validated across
+both tooth-count ratios this doc's own Spike A/B already found don't
+share a simple notch-location formula, both hands, and a β range spanning
+smooth through this session's own notch-adjacent regime - reliably
+recovers a good alignment everywhere tested, including a 96% overlap
+reduction at the one genuinely bad-default case found. **Real, flagged
+cost risk**: cheap in the well-behaved regime, materially more expensive
+- potentially minutes, not seconds - near/past the notch, exactly where
+it matters most; budget for this explicitly in the real implementation,
+per §4. This item's own remaining open item for a real implementation:
+decide the production grid resolution/window precisely (this session's
+own diagnostic grids were intentionally over-sampled for characterization,
+not tuned for minimum cost) - a short follow-up tuning pass, not a new
+spike.
