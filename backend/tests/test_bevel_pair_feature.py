@@ -213,6 +213,42 @@ def test_bevel_pair_auto_profile_shift_still_avoids_interference_at_a_low_pressu
     assert response.json()["warnings"] == []
 
 
+def test_bevel_pair_auto_profile_shift_does_not_produce_a_malformed_solid_at_a_steep_tooth_ratio():
+    """Real regression found on-device (spiral-bevel spike work
+    investigating an unrelated tooth-count-ratio breakdown): a steep
+    tooth-count-ratio pair (6T/24T) auto-resolves the 6-tooth member's own
+    `profile_shift` to +0.9215 to clear real tooth-tip interference -
+    `maximum_receiver_profile_shift_for_mesh_clearance`'s existing
+    reverse-margin cap correctly allows this (it doesn't re-introduce
+    interference), but at that magnitude the tooth's own tip thickness
+    goes negative (a self-crossing, degenerate tip) and `_assemble_gear_
+    solid` cannot build it correctly - confirmed directly against real
+    OCCT: `_assembly_sanity_warnings`'s own analytic-vs-mesh-volume check
+    disagreed by ~4x. `bevel_tooth_tip_thickness`/`MINIMUM_TIP_THICKNESS_
+    COEFFICIENT` cap the receiver's own step against this too, not just
+    against re-introduced interference - this pins that fix at the real
+    HTTP router level, with a real assembled solid, not just directly
+    against `bevel_math`."""
+    part = _create_part()
+    response = client.post(
+        f"/document/parts/{part['id']}/bevel-pair-features",
+        json={
+            "module": 4.0,
+            "member_1": {"tooth_count": 6},
+            "member_2": {"tooth_count": 24},
+            "face_width": 8.0,
+        },
+    )
+    assert response.status_code == 201, response.json()
+    warnings = response.json()["warnings"]
+    # member_2's own steep pitch cone angle (~76 degrees, near-crown) still
+    # legitimately triggers the unrelated thin_hub_warning - real, expected,
+    # and not what this test is about. Only the malformed-solid symptom
+    # (_assembly_sanity_warnings' own analytic-vs-mesh-volume disagreement)
+    # is what the fix under test actually prevents.
+    assert not any("analytic volume disagrees" in w for w in warnings), warnings
+
+
 def test_bevel_pair_defaults_to_the_xy_plane_when_plane_ref_omitted():
     part = _create_part()
     response = _create_pair(part["id"])

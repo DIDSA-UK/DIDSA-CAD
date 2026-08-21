@@ -303,6 +303,43 @@ def undercut_warning(
     )
 
 
+def tooth_thickness_at_radius(geometry: SpurGearGeometry, radius: float) -> float:
+    """Tooth thickness (arc length, mm) at an arbitrary radius outside the
+    base circle - the same standard involute-tooth-thickness relation
+    `geometry.tooth_thickness_at_pitch` already gives at the pitch radius
+    specifically, generalized to any radius: as a point on an involute
+    flank moves from the pitch radius out to `radius`, the tooth's own
+    half-angular-thickness shrinks by exactly `inv(pressure_angle_at(
+    radius)) - inv(pressure_angle)` per flank (hence the `2*`, for both
+    flanks together) - the textbook "constant base pitch" derivation,
+    the same one `sample_involute_flank`'s own roll-angle parametrization
+    is built from.
+
+    Used to detect a pointed/degenerate tooth tip (evaluate at `geometry.
+    addendum_radius`) - see `bevel_math.bevel_tooth_tip_thickness`'s own
+    docstring for the on-device finding that motivated adding this: an
+    auto-resolved `profile_shift` that clears real tooth-tip *interference*
+    can still grow a tooth's own addendum enough to make its own tip
+    thickness negative (the flank has already crossed itself before
+    reaching the nominal tip radius) - a different failure mode nothing
+    else in this module checks for.
+
+    `radius` must be at or outside the base circle (same requirement
+    `involute_roll_angle_at_radius` already enforces) - raises
+    `GearGeometryError` otherwise, since no point inside the base circle
+    is on the involute flank at all."""
+    if radius < geometry.base_radius:
+        raise GearGeometryError(
+            f"radius {radius!r} is inside the base circle (radius {geometry.base_radius!r}) - "
+            "not reachable by the involute"
+        )
+    pressure_angle_at_radius = math.acos(geometry.base_radius / radius)
+    return radius * (
+        geometry.tooth_thickness_at_pitch / geometry.pitch_radius
+        + 2 * (involute_function(geometry.pressure_angle) - involute_function(pressure_angle_at_radius))
+    )
+
+
 def _flank_start_offset_angle(geometry: SpurGearGeometry) -> float:
     """The angle (radians) from a tooth's own centerline to the point on
     the base circle where that flank's involute construction "starts"

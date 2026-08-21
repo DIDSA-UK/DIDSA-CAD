@@ -28,6 +28,7 @@ from app.document.gear_math import (
     sample_involute_flank,
     spur_gear_geometry,
     tooth_profile_points,
+    tooth_thickness_at_radius,
     undercut_warning,
     validate_planetary_assembly,
 )
@@ -183,6 +184,38 @@ def test_undercut_warning_names_the_minimum_when_tooth_count_falls_short():
 def test_undercut_warning_is_none_once_profile_shift_clears_it():
     x_min = minimum_profile_shift_to_avoid_undercut(6, pressure_angle_degrees=20.0)
     assert undercut_warning(6, 20.0, x_min) is None
+
+
+# ---------------------------------------------------------------------------
+# Tooth thickness at an arbitrary radius
+# ---------------------------------------------------------------------------
+
+
+def test_tooth_thickness_at_pitch_radius_matches_the_field_it_generalizes():
+    # At radius == pitch_radius, the general formula's own two involute_
+    # function terms cancel identically (same pressure angle both sides),
+    # leaving exactly geometry.tooth_thickness_at_pitch - the boundary
+    # case confirming this is a genuine generalization, not a coincidence.
+    geometry = spur_gear_geometry(module=2.0, tooth_count=20, profile_shift=0.3)
+    assert tooth_thickness_at_radius(geometry, geometry.pitch_radius) == pytest.approx(
+        geometry.tooth_thickness_at_pitch
+    )
+
+
+def test_tooth_thickness_at_radius_shrinks_monotonically_outward():
+    # A real involute tooth narrows toward its own tip - standard gear
+    # geometry, and the basis for bevel_math.bevel_tooth_tip_thickness's
+    # own pointed-tip check.
+    geometry = spur_gear_geometry(module=2.0, tooth_count=20)
+    radii = [geometry.pitch_radius + i for i in range(0, int(geometry.addendum_radius - geometry.pitch_radius) + 1)]
+    thicknesses = [tooth_thickness_at_radius(geometry, r) for r in radii]
+    assert thicknesses == sorted(thicknesses, reverse=True)
+
+
+def test_tooth_thickness_at_radius_rejects_a_radius_inside_the_base_circle():
+    geometry = spur_gear_geometry(module=2.0, tooth_count=20)
+    with pytest.raises(GearGeometryError):
+        tooth_thickness_at_radius(geometry, geometry.base_radius - 1.0)
 
 
 # ---------------------------------------------------------------------------
