@@ -2685,6 +2685,11 @@ class DocumentApiClient {
 
   /// `docs/gear-design/10-bevel-gear.md`: creates the real `BevelGearFeature`
   /// once the user hits "Create" on [BevelDesignScreen] in single-gear mode.
+  ///
+  /// `docs/gear-design/12-spiral-bevel-gear.md`: [spiralAngleDegrees]
+  /// (default `0.0`, a literal no-op producing the plain straight-bevel
+  /// construction) and [spiralHand] (`'left'`/`'right'`, meaningless unless
+  /// `spiralAngleDegrees != 0.0`) turn on the spiral variant.
   Future<FeatureDto> createBevelGearFeature(
     String partId, {
     required String bevelType,
@@ -2698,6 +2703,8 @@ class DocumentApiClient {
     PlaneRefDto? planeRef,
     List<String> targetBodyIds = const [],
     int pointsPerFlank = 12,
+    double spiralAngleDegrees = 0.0,
+    String spiralHand = 'right',
   }) =>
       _send(
         () => _httpClient.post(
@@ -2715,6 +2722,8 @@ class DocumentApiClient {
                 'profile_shift': profileShift,
                 'target_body_ids': targetBodyIds,
                 'points_per_flank': pointsPerFlank,
+                'spiral_angle_degrees': spiralAngleDegrees,
+                'spiral_hand': spiralHand,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -2736,6 +2745,8 @@ class DocumentApiClient {
     double? profileShift,
     List<String>? targetBodyIds,
     int? pointsPerFlank,
+    double? spiralAngleDegrees,
+    String? spiralHand,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -2753,6 +2764,8 @@ class DocumentApiClient {
                 if (profileShift != null) 'profile_shift': profileShift,
                 if (targetBodyIds != null) 'target_body_ids': targetBodyIds,
                 if (pointsPerFlank != null) 'points_per_flank': pointsPerFlank,
+                if (spiralAngleDegrees != null) 'spiral_angle_degrees': spiralAngleDegrees,
+                if (spiralHand != null) 'spiral_hand': spiralHand,
               }),
             ),
         (body) => body as Map<String, dynamic>,

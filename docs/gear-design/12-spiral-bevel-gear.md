@@ -1,4 +1,93 @@
-# Workstream 12 — Spiral bevel gear feasibility/scoping (pre-spike)
+# Workstream 12 — Spiral bevel gear (single-gear variant: done)
+
+Read `00-conventions.md` first. This doc started as a feasibility/scoping
+doc (pre-spike), then accumulated three real spikes (Spike A/B/C, all
+2026-08-21). **The single-gear variant (`BevelGearFeature.spiral_angle_
+degrees`/`spiral_hand`) is now real, committed, implemented code** - see
+the status note immediately below for what shipped and what's still out of
+scope. The original scoping prose and all three "Spike findings" sections
+further down are kept as historical record (the real implementation is
+built directly against their own validated findings, not a re-derivation),
+but read the status note first.
+
+## Status: single-gear variant done; pairing (Workstream 13) not started
+
+`BevelGearFeature` now has a real spiral variant, backend and client, built
+directly against Spike A/B/C's own findings below - not a re-derivation.
+
+- **Math** (`app.document.bevel_math`): `bevel_tooth_flank_sections`
+  implements Spike A's own §2 "corrected construction" (`curve(R) =
+  [tan(β)/sin(γ)] · ln(R/R_mean)`, same sign on both flanks, layered on top
+  of the existing `_tredgold_flank_start_offset_angle` width term) at
+  `DEFAULT_SPIRAL_SECTION_COUNT = 3` cross-sections (Spike A's own §3
+  convergence finding, re-validated here with a pure-math piecewise-linear-
+  interpolation-error test rather than assumed). Reduces bit-for-bit to
+  `bevel_tooth_flank_pair`'s existing output at `spiral_angle_degrees=0.0`/
+  `section_count=2` - a real, permanent regression test, not just checked
+  once. `SpiralHand` (`LEFT`/`RIGHT`) flips `curve(R)`'s sign.
+  `spiral_build_cost_warning` fires at/above `SPIRAL_BUILD_COST_WARNING_
+  THRESHOLD_DEGREES = 45°`, the non-blocking-warning decision item 6 of
+  this workstream's own task scope called for (Spike C's own §4 cost
+  finding, real but not previously surfaced anywhere).
+- **OCCT construction** (`app.document.bevel`): `_assemble_gear_solid` now
+  takes `spiral_angle_degrees`/`spiral_hand`/`spiral_section_count`
+  parameters. `spiral_angle_degrees == 0.0` (the default) is a **literal
+  no-op** - the exact unmodified 2-section straight-bevel code path,
+  verified byte-for-byte on real OCCT (`test_spiral_angle_zero_direct_
+  assembly_matches_the_legacy_path_exactly`), not just assumed from the
+  math layer's own bit-for-bit reduction. A non-zero spiral angle builds
+  N-section flank/tip-land/root-land faces via the new `_thru_sections_
+  face_n`/`_flank_face_n` (`ruled=False` + `CheckCompatibility(False)`,
+  `gear.py`'s own established large-twist fix, carried over unchanged per
+  Spike A/C's own findings) - reusing `_bspline_wire`/`_cone_arc_wire`/
+  `_spherical_cap_face`/the sewing-`ShapeFix_Shell`-`MakeSolid`-
+  `OrientClosedSolid` sequence/`_flank_fold_warning` entirely unchanged,
+  per this doc's own "End-cap faces: conceptually unchanged"/"one
+  2-parameter family, not a new curve type" findings. Real on-device
+  parameter sweep (multiple spiral angles, both hands, two tooth-count/
+  module cases - the moderate 20T/40T and tight 18T/90T canonical gears
+  `10-bevel-gear.md` already established) stays clean (no fold/assembly-
+  sanity warnings) with assembled volume within 5% of the `β=0`
+  straight-bevel anchor at every point tested, and opposite hands give
+  mirror-symmetric volume.
+- **The meshing-phase search (Spike C) is explicitly NOT part of this
+  workstream** - `_rotated_about_axis`/the coarse-grid-plus-golden-section
+  phase search live in `bevel_pair.py`, a pairing-only concern with no
+  counterpart for a standalone gear. A single `BevelGearFeature` has no
+  second member to align phase against, so nothing here needed it.
+- **`BevelGearFeature`** (`models.py`/`schemas.py`/`router.py`): two new
+  fields, threaded through create/update/response/native-export-import
+  exactly like every other field - `spiral_angle_degrees: float = 0.0` and
+  `spiral_hand: SpiralBevelHand = SpiralBevelHand.RIGHT` (its own separate
+  enum from `bevel_math.SpiralHand`, matching `BevelGearType`'s own
+  "each Feature type owns its own enum" precedent, converted at `app.
+  document.bevel`'s own module boundary).
+- **Client** (`BevelDesignScreen`): a "Spiral" `SwitchListTile` on the
+  existing single-gear form (next to Pitch cone angle), mirroring
+  `herringbone`'s own boolean-toggle precedent - reveals a plain numeric
+  Spiral angle field (no standard-values chip row, per this doc's own UX
+  proposal) and a Left/Right `SegmentedButton` for hand of spiral when on.
+  Toggling off always sends `spiral_angle_degrees: 0.0` regardless of the
+  field's own (possibly stale) text - the real "literal no-op" contract,
+  not just a UI convenience. No section-count control exposed (derived
+  internally, per this doc's own UX proposal).
+- **Preview is genuinely unchanged** - `/gear/preview`'s `bevel_gear` kind
+  still takes no spiral fields at all; `BevelPreviewCanvas`'s envelope-only
+  schematic can't show spiral curvature either way (an out-of-plane,
+  azimuthal property), exactly as this doc's own UX proposal anticipated.
+
+**Explicitly out of scope here, unchanged from the "Proposed v1 scope"
+section below**: `BevelPairFeature`'s own spiral variant (Workstream 13,
+`13-spiral-bevel-pair.md` - depends on this landing, now that it has);
+Gleason long-and-short-addendum/true envelope surfaces; root fillet;
+hypoid; DXF flat-pattern export.
+
+---
+
+*Everything below this point is the original feasibility/scoping doc plus
+the three 2026-08-21 spike-findings sections, kept as historical record -
+the real implementation above is built directly against these findings,
+not a re-derivation of them.*
 
 Read `00-conventions.md` first. This is a feasibility/scoping doc, not an
 implementation doc — one step *before* `10-bevel-gear.md`'s own "budget

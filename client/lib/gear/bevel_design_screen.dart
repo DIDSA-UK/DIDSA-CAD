@@ -86,6 +86,17 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
   final _backlashController = TextEditingController(text: '0');
   final _profileShiftController = TextEditingController(text: '0');
 
+  /// `docs/gear-design/12-spiral-bevel-gear.md`'s own "Entry-screen / UX
+  /// proposal": a "Spiral" toggle, mirroring `BevelMultiKind.crown`'s own
+  /// UI-level-variant precedent - not a new `BevelMultiKind`, just a field
+  /// reveal on this same single-gear form. `false` (the default) always
+  /// sends `spiral_angle_degrees: 0.0` regardless of `_spiralAngleController`'s
+  /// own text - the real "literal no-op" contract `BevelGearFeature.
+  /// spiral_angle_degrees`'s own docstring makes, not just a UI convenience.
+  bool _spiralEnabled = false;
+  final _spiralAngleController = TextEditingController(text: '20');
+  String _spiralHand = 'right';
+
   // Bevel pair mode.
   final _toothCount1Controller = TextEditingController(text: '20');
   final _profileShift1Controller = TextEditingController(text: '0');
@@ -208,6 +219,17 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
       if (backlash != null) _backlashController.text = backlash.toString();
       final profileShift = json['profile_shift'] as num?;
       if (profileShift != null) _profileShiftController.text = profileShift.toString();
+      final spiralAngle = (json['spiral_angle_degrees'] as num?)?.toDouble();
+      _spiralEnabled = spiralAngle != null && spiralAngle != 0.0;
+      // Keep the field's own last non-zero value when the loaded feature
+      // has spiral off (0.0) - same "flipping to manual keeps whatever
+      // number is showing" reasoning `_buildProfileShiftField`'s own doc
+      // comment gives, so re-enabling the toggle doesn't reset to a bare
+      // default.
+      if (spiralAngle != null && spiralAngle != 0.0) {
+        _spiralAngleController.text = spiralAngle.toString();
+      }
+      _spiralHand = json['spiral_hand'] as String? ?? _spiralHand;
       // A crown gear isn't its own Feature type on the wire - derive it
       // from the loaded pitch cone angle being (essentially) 90, same
       // "fixed by definition" threshold `_buildBevelGearForm` uses to
@@ -258,6 +280,7 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
     _pitchConeAngleController.dispose();
     _backlashController.dispose();
     _profileShiftController.dispose();
+    _spiralAngleController.dispose();
     _toothCount1Controller.dispose();
     _profileShift1Controller.dispose();
     _toothCount2Controller.dispose();
@@ -376,7 +399,22 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
     }
   }
 
-  bool get _canCreate => _blockingError == null && _preview != null && !_creating && !_loadingExisting;
+  /// `0.0` whenever [_spiralEnabled] is off - the real "literal no-op"
+  /// contract, sent unconditionally regardless of `_spiralAngleController`'s
+  /// own (possibly stale/edited-while-off) text.
+  double get _effectiveSpiralAngleDegrees =>
+      _spiralEnabled ? (double.tryParse(_spiralAngleController.text) ?? 0.0) : 0.0;
+
+  /// Preview stays unchanged for spiral (`12-spiral-bevel-gear.md`'s own
+  /// "Preview stays unchanged in v1" - the envelope-only schematic can't
+  /// show spiral curvature either way), so `_blockingError`/`_preview`
+  /// never see the spiral angle field - validated separately here so a bad
+  /// value while [_spiralEnabled] blocks Create the same way a bad preview
+  /// field does.
+  bool get _spiralAngleFieldValid => !_spiralEnabled || double.tryParse(_spiralAngleController.text) != null;
+
+  bool get _canCreate =>
+      _blockingError == null && _preview != null && !_creating && !_loadingExisting && _spiralAngleFieldValid;
 
   Future<void> _create() async {
     if (!_canCreate) return;
@@ -405,6 +443,8 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
             planeRef: planeRef,
             targetBodyIds: _targetBodyIds,
             pointsPerFlank: _pointsPerFlank,
+            spiralAngleDegrees: _effectiveSpiralAngleDegrees,
+            spiralHand: _spiralHand,
           );
         } else {
           await _api.updateBevelPairFeature(
@@ -452,6 +492,8 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
           profileShift: double.parse(_profileShiftController.text),
           planeRef: planeRef,
           pointsPerFlank: _pointsPerFlank,
+          spiralAngleDegrees: _effectiveSpiralAngleDegrees,
+          spiralHand: _spiralHand,
         );
         warnings = feature.warnings;
       } else {
@@ -722,6 +764,60 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
           ),
           onChanged: (_) => _schedulePreview(),
         ),
+      const SizedBox(height: 4),
+      // `docs/gear-design/12-spiral-bevel-gear.md`'s own "Entry-screen / UX
+      // proposal" - a UI-level field reveal on this same single-gear form,
+      // mirroring `crown`'s own precedent (not a new BevelMultiKind, not a
+      // new screen). Doesn't call `_schedulePreview()` - the preview
+      // envelope can't show spiral curvature either way (an azimuthal
+      // property, out of the axial cross-section plane it draws), so it
+      // stays unchanged for spiral per that doc's own explicit v1 scope-down.
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        title: const Text('Spiral'),
+        subtitle: const Text(
+          'Curves the tooth lengthwise along the face width, for quieter, smoother meshing - the bevel '
+          'analogue of a helical (vs. spur) planar gear.',
+        ),
+        value: _spiralEnabled,
+        onChanged: (value) => setState(() => _spiralEnabled = value),
+      ),
+      if (_spiralEnabled) ...[
+        TextField(
+          controller: _spiralAngleController,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
+          decoration: InputDecoration(
+            labelText: 'Spiral angle',
+            suffix: const Text('°'),
+            suffixIcon: fieldHelpIcon(
+              'The angle the tooth trace holds relative to the cone\'s own generator line, at the mean '
+              'cone distance. 0° is a curved (Zerol) trace with no net spiral; larger angles curve the '
+              'tooth more. Not shown in the preview above - visible after Create.',
+            ),
+          ),
+          onChanged: (_) => setState(() {}),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            const Expanded(child: Text('Hand of spiral')),
+            fieldHelpIcon(
+              'Which way the tooth curves, looking at the gear\'s own outer (back) face. Only matters once '
+              'this gear is paired with a mating spiral bevel gear (a future, separate workflow) - a mating '
+              'pair needs opposite hands.',
+            ),
+            const SizedBox(width: 8),
+            SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(value: 'left', label: Text('Left')),
+                ButtonSegment(value: 'right', label: Text('Right')),
+              ],
+              selected: {_spiralHand},
+              onSelectionChanged: (selection) => setState(() => _spiralHand = selection.first),
+            ),
+          ],
+        ),
+      ],
       const SizedBox(height: 12),
       TextField(
         controller: _profileShiftController,
@@ -881,6 +977,9 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
         'pitchConeAngle': _pitchConeAngleController.text,
         'backlash': _backlashController.text,
         'profileShift': _profileShiftController.text,
+        'spiralEnabled': _spiralEnabled,
+        'spiralAngle': _spiralAngleController.text,
+        'spiralHand': _spiralHand,
         'toothCount1': _toothCount1Controller.text,
         'profileShift1': _profileShift1Controller.text,
         'profileShift1Auto': _profileShift1Auto,
@@ -907,6 +1006,13 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
       if (fields['pitchConeAngle'] is String) _pitchConeAngleController.text = fields['pitchConeAngle'] as String;
       if (fields['backlash'] is String) _backlashController.text = fields['backlash'] as String;
       if (fields['profileShift'] is String) _profileShiftController.text = fields['profileShift'] as String;
+      // Older presets (saved before spiral existed) have no 'spiralEnabled'
+      // key at all - default to off, same "don't silently switch on a new
+      // behaviour for an old preset" reasoning as profileShift1Auto/
+      // profileShift2Auto below.
+      _spiralEnabled = fields['spiralEnabled'] as bool? ?? false;
+      if (fields['spiralAngle'] is String) _spiralAngleController.text = fields['spiralAngle'] as String;
+      _spiralHand = fields['spiralHand'] as String? ?? _spiralHand;
       if (fields['toothCount1'] is String) _toothCount1Controller.text = fields['toothCount1'] as String;
       if (fields['profileShift1'] is String) _profileShift1Controller.text = fields['profileShift1'] as String;
       // Older presets (saved before profile shift could auto-resolve) have
