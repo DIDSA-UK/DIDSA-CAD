@@ -363,3 +363,40 @@ without first landing the new tangential margin proxy §3 calls for, and
 without `12-spiral-bevel-gear.md`'s own Spike B (fold-risk at high spiral
 angle / extreme tooth-count ratios) landing first — both are real,
 separate pieces of work this spike surfaced but did not itself complete.
+
+### 6. Spike B landed (`12-spiral-bevel-gear.md`'s own matching entry) — one finding is this doc's own concern, not the single-gear workstream's
+
+Spike B root-caused both of Spike A's own uncharacterized breakdowns.
+Neither is the flank self-fold the "fold-risk" framing above anticipated
+— `_flank_fold_warning` never fired in any case tested. The high-β
+breakdown is a meshing-*phase*-convention artifact (directly fixable, see
+12's own item 4); real, but a single-gear/pairing-positioning concern, not
+specific to this doc.
+
+**The tooth-count-ratio breakdown is different — it's a real, pre-
+existing, non-spiral bug in `resolve_member_profile_shifts` itself**,
+squarely this doc's own scope, not spiral bevel's at all. For a steep
+tooth-count-ratio pair (6T/24T tested: γ≈14°/76°), the auto-balancing
+logic computes a receiver correction approaching a full module
+(`ps1=+0.9215` for that pair) — `maximum_receiver_profile_shift_for_mesh_
+clearance` correctly caps this against *re-introducing interference*
+(lesson 1's own concern), but nothing caps it against producing a
+**geometrically malformed solid**: rebuilding that same member via the
+real, unmodified, non-spiral `bevel._assemble_gear_solid` reproduces a
+~4x analytic-vs-mesh volume disagreement (already correctly flagged by
+`_assembly_sanity_warnings`'s own existing 2%-threshold check, just never
+surfaced as a warning to the caller). `profile_shift=0` on the same
+member agrees to <0.5% — the defect tracks the profile-shift magnitude,
+not anything spiral-related.
+
+This is a real defect in shipped, production `BevelPairFeature` today —
+any straight (non-spiral) pair with a steep enough tooth-count-ratio split
+would hit this via ordinary auto-resolution, not just as a spiral-bevel
+edge case. It needs its own fix (cap `maximum_receiver_profile_shift_for_
+mesh_clearance`'s own search against geometric malformation, not only
+against re-introduced interference — the same "check every direction a
+candidate fix could break, not just the one it targets" lesson 1 already
+states, just for a dimension neither this doc nor `11-bevel-pair.md`'s own
+real history anticipated: *solid validity* itself, not interference).
+Independent of, and does not block, this workstream's own spiral-specific
+go/no-go above.
