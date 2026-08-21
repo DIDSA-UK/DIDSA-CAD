@@ -51,6 +51,7 @@ from app.document.gear_math import (
     involute_point,
     involute_roll_angle_at_radius,
     tooth_profile_points,
+    tooth_thickness_at_radius,
 )
 
 # ---------------------------------------------------------------------------
@@ -1159,23 +1160,37 @@ def maximum_receiver_profile_shift_for_mesh_clearance(
     clearance` already uses, just reading the *receiver's* own addendum
     instead of the intruder's.
 
+    A second, independent way growing the receiver's own addendum can go
+    wrong, checked alongside the reverse margin above (both must clear
+    for a trial shift to count as safe): tip-thickness degeneracy. A
+    steep tooth-count-ratio pair (6T/24T, on-device) can auto-resolve a
+    shift large enough to clear real interference while still producing
+    a self-crossing, negative-thickness tooth tip `_assemble_gear_solid`
+    cannot build correctly - not an interference problem at all, so the
+    reverse-margin check alone never catches it. `MINIMUM_TIP_THICKNESS_
+    COEFFICIENT`'s own docstring has the full on-device finding and
+    calibration.
+
     Bisects from a known-safe start (`receiver_geometry.profile_shift`,
-    its own current, presumably-still-valid shift - reverse margin can
-    only need checking once shift is intentionally pushed toward growing
-    the receiver's own addendum) toward the possibly-unsafe `target_shift`
-    - the mirror-image search direction from `minimum_intruder_profile_
+    its own current, presumably-still-valid shift - both checks can only
+    need verifying once shift is intentionally pushed toward growing the
+    receiver's own addendum) toward the possibly-unsafe `target_shift` -
+    the mirror-image search direction from `minimum_intruder_profile_
     shift_for_mesh_clearance` (which searches from unsafe toward safe).
     `bevel_pair_mesh_margin_degrees` is monotonic in the receiver's own
     addendum (`face_cone_angle = pitch_cone_angle + atan(addendum /
-    cone_distance)`, `atan` strictly increasing), so a straight bisection
-    between the two is valid, not just "found a value that works".
+    cone_distance)`, `atan` strictly increasing) and tip thickness shrinks
+    monotonically as addendum grows (a larger tip radius on the same
+    involute flank always has a thinner tip, `gear_math.tooth_thickness_
+    at_radius`'s own derivation), so a straight bisection between the two
+    is valid for both checks together, not just "found a value that
+    works".
 
     Returns `receiver_geometry.profile_shift` unchanged (a no-op step) if
-    even that starting point doesn't already clear the buffer - a
-    pre-existing reverse-direction margin problem this function isn't
-    responsible for fixing, only for not making worse. Returns
-    `target_shift` unchanged if it's already safe, skipping the search
-    entirely."""
+    even that starting point doesn't already clear both checks - a
+    pre-existing problem this function isn't responsible for fixing, only
+    for not making worse. Returns `target_shift` unchanged if it's already
+    safe on both counts, skipping the search entirely."""
 
     def reverse_margin_at(trial_shift: float) -> float:
         delta = trial_shift - receiver_geometry.profile_shift
@@ -1189,15 +1204,38 @@ def maximum_receiver_profile_shift_for_mesh_clearance(
             new_face_cone_angle, tredgold_base_colatitude(intruder_geometry), shaft_angle_degrees
         )
 
+    def tip_thickness_at(trial_shift: float) -> float:
+        try:
+            trial_geometry = bevel_gear_geometry(
+                module=receiver_geometry.module,
+                tooth_count=receiver_geometry.tooth_count,
+                face_width=receiver_geometry.face_width,
+                pressure_angle_degrees=math.degrees(receiver_geometry.pressure_angle),
+                backlash=receiver_geometry.backlash,
+                profile_shift=trial_shift,
+                pitch_cone_angle_degrees=math.degrees(receiver_geometry.pitch_cone_angle),
+            )
+        except GearGeometryError:
+            return -999.0
+        return bevel_tooth_tip_thickness(trial_geometry)
+
+    minimum_tip_thickness = MINIMUM_TIP_THICKNESS_COEFFICIENT * receiver_geometry.module
+
+    def is_safe_at(trial_shift: float) -> bool:
+        return (
+            reverse_margin_at(trial_shift) >= MESH_MARGIN_SAFETY_BUFFER_DEGREES
+            and tip_thickness_at(trial_shift) >= minimum_tip_thickness
+        )
+
     lo = receiver_geometry.profile_shift
-    if reverse_margin_at(lo) < MESH_MARGIN_SAFETY_BUFFER_DEGREES:
+    if not is_safe_at(lo):
         return lo
     hi = target_shift
-    if reverse_margin_at(hi) >= MESH_MARGIN_SAFETY_BUFFER_DEGREES:
+    if is_safe_at(hi):
         return hi
     for _ in range(40):
         mid = (lo + hi) / 2
-        if reverse_margin_at(mid) >= MESH_MARGIN_SAFETY_BUFFER_DEGREES:
+        if is_safe_at(mid):
             lo = mid
         else:
             hi = mid
@@ -1330,6 +1368,53 @@ def virtual_spur_gear_geometry(geometry: BevelGearGeometry) -> SpurGearGeometry:
         tooth_thickness_at_pitch=geometry.tooth_thickness_at_pitch,
         root_fillet_radius=0.0,
     )
+
+
+MINIMUM_TIP_THICKNESS_COEFFICIENT = 0.05
+"""Empirically-calibrated safety floor for `bevel_tooth_tip_thickness`,
+expressed as a fraction of `module` (so it scales correctly across gear
+sizes, matching `addendum_coefficient`/`dedendum_coefficient`'s own
+convention) - real tooth tip thickness must stay at or above `0.05 *
+module` for `maximum_receiver_profile_shift_for_mesh_clearance`'s own
+search to accept a trial shift.
+
+On-device finding this exists to fix: a bevel pair with a steep tooth-
+count-ratio split (6T/24T tested, module 4, pressure angle 20 degrees)
+auto-resolves the 6-tooth member's own `profile_shift` to +0.9215 -
+`maximum_receiver_profile_shift_for_mesh_clearance`'s existing reverse-
+margin cap correctly prevents this from *re-introducing tooth-tip
+interference*, but does nothing about a *different* failure mode: at that
+shift, tip thickness is -3.42mm (a self-crossing, degenerate tooth tip) -
+`_assemble_gear_solid` cannot build this correctly (confirmed via a real
+`BRepAlgoAPI_Common`/mesh-volume build: `_assembly_sanity_warnings`'s own
+analytic-vs-mesh-volume check disagrees by ~4x, or an outright
+`_flatten_end_caps` failure at more extreme shifts).
+
+Calibrated directly against real `_assemble_gear_solid` builds across
+three tooth counts (6/8/10, spanning the pitch-cone-angle range a steep
+pairing ratio produces): real breakage consistently begins once tip
+thickness drops to roughly `-0.02 * module` to `-0.03 * module` (a mildly
+negative tip thickness, down to about `-0.007 * module`, was still found
+to build correctly in every case tested - the flank's own self-crossing
+point doesn't coincide exactly with the nominal tip radius). `0.05 *
+module` sits comfortably above that observed breakage threshold with real
+margin, the same "don't trust a zero-crossing to be pixel-perfect"
+reasoning `MESH_MARGIN_SAFETY_BUFFER_DEGREES` is built on - not `0.0`
+(too close to the measured breakage band on the tightest tooth count
+tested) and not a larger, more conservative value (would give up real,
+confirmed-safe profile-shift range for no measured benefit)."""
+
+
+def bevel_tooth_tip_thickness(geometry: BevelGearGeometry) -> float:
+    """This member's own tooth tip (topland) thickness (mm, arc length at
+    the addendum radius), via Tredgold's own flat/virtual-spur-gear
+    substitution (`virtual_spur_gear_geometry`) plus `gear_math.tooth_
+    thickness_at_radius` evaluated at that virtual gear's own `addendum_
+    radius` - see `MINIMUM_TIP_THICKNESS_COEFFICIENT`'s own docstring for
+    the on-device defect this exists to catch and the calibration it's
+    checked against."""
+    virtual = virtual_spur_gear_geometry(geometry)
+    return tooth_thickness_at_radius(virtual, virtual.addendum_radius)
 
 
 def _rotate_translate(

@@ -31,9 +31,46 @@ Feature, mirroring Pattern/Mirror's existing "one Feature, many realized
 Bodies" pattern, not a one-shot generator. Compound-gear geometry and
 straight bevel gears were both pulled into v1 scope deliberately (the two
 highest-risk items in the whole project) rather than deferred, and both
-are now live; spiral/Zerol/hypoid bevel variants remain the one thing
-still deferred. DXF import/export was originally scoped here too but has
-since moved to its own doc set (`docs/dxf-io/`) - see the entry below.
+are now live; spiral/Zerol bevel (gear and pair) is scoped
+(`docs/gear-design/12-spiral-bevel-gear.md`/`13-spiral-bevel-pair.md`) and
+has now had three spikes run (2026-08-21, Spike A, then Spike B, then
+Spike C). Spike A: NO-GO on the originally proposed construction being
+conjugate "by construction" the way Tredgold is for straight bevel - a
+corrected construction exists and is close, but leaves a real residual.
+Spike B root-caused the two breakdowns Spike A left uncharacterized, and
+found **neither is the flank-fold/surface-quality risk both docs
+originally worried about** - `_flank_fold_warning` never fires in either
+case, at any angle tested. The high-spiral-angle breakdown is a fixed
+meshing-phase-convention artifact (the same `±π/2` positioning constant
+calibrated for straight bevel, now proven - not just suspected - to drift
+into a wrong-tooth alignment past a geometry-dependent spiral angle;
+directly fixable by a small phase correction, confirmed by direct
+recovery). The extreme-tooth-count-ratio breakdown turned out to be an
+unrelated, pre-existing defect in the existing straight-bevel
+profile-shift/solid-assembly pipeline, not caused by or specific to
+spiral bevel at all - a straight-bevel pairing-system bug this session
+surfaced and has since fixed. Spike C designed and validated the two
+concrete pieces Spike B left open: (1) a real per-build coarse-grid-plus-
+golden-section-refine phase search, reliably recovering a good alignment
+across both tooth-count ratios/both hands/a beta range spanning smooth
+through notch-adjacent (a 96% overlap reduction at the one genuinely bad
+case found) - **GO**, with a real, flagged cost risk (up to several
+minutes per pair) concentrated exactly near the notch, where it matters
+most; and (2) the calibrated tangential margin proxy Spike A/B's own
+numbers seemed to require - which broader tooth-count-ratio testing found
+**isn't actually needed**: the residual both prior spikes measured turns
+out to be mostly a pre-existing, non-spiral structural property of
+equal-tooth-count Tredgold pairs (a single balanced profile-shift
+correction can't resolve both mating directions when the two members are
+identical), not a genuine spiral effect - once tested on a resolvable
+tooth-count ratio, real measured overlap is exactly zero across the whole
+spiral-angle range tested, and the existing radial mesh-margin system,
+unchanged, already predicts it correctly. Both pieces Workstream 12/13
+needed now have a real GO; real `BevelGearFeature`/`BevelPairFeature`
+spiral-variant implementation is the next, different, not-yet-started
+workstream. Hypoid bevel remains the one thing still fully unscoped. DXF
+import/export was originally scoped here too but has since moved to its
+own doc set (`docs/dxf-io/`) - see the entry below.
 
 ## AI Modelling
 

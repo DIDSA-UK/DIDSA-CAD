@@ -60,10 +60,23 @@ never needed most of it).
 | 9 | `09-presets.md` | 8 | Low - **done** (`GearPresetStore`, client-local `shared_preferences`-backed named presets; `GearPresetControls` "Save as preset"/"Load preset" on all three Gear Design screens - no backend involvement, per this doc's own scope) |
 | 10 | `10-bevel-gear.md` | 1 | Highest in project - **done, incl. client UI** (`BevelGearFeature` - straight bevel, arbitrary shaft angle via a direct `pitch_cone_angle_degrees` field; `BevelDesignScreen`'s "Bevel Gear" mode covers entry + the axial-cross-section schematic preview) |
 | 11 | `11-bevel-pair.md` | 10 | High - **done, incl. client UI** (`BevelPairFeature` - apex-aligned dual-axis positioning, arbitrary shaft angle, auto-derived pitch cone angles; `BevelDesignScreen`'s "Bevel Pair" mode covers entry + dual-axis preview; DXF flat-pattern export still deferred to Workstream 6) |
+| 12 | `12-spiral-bevel-gear.md` | 10 | Highest in project (harder than 10) - **three spikes run, both real pieces land GO** (2026-08-21, Spike A then B then C). Spike A: NO-GO on "conjugate by construction" for the originally-proposed formula (a named dead end); a *corrected* construction is close but not exact. Spike B: root-caused both of Spike A's own uncharacterized breakdowns - **neither is a flank self-fold** - the high-spiral-angle one is a fixed meshing-*phase*-convention artifact, the tooth-ratio one was an unrelated, pre-existing, non-spiral `resolve_member_profile_shifts` defect (since fixed, see Workstream 13's own entry). Spike C: designed and validated a real per-build coarse-grid-plus-golden-section-refine phase search fixing the phase artifact - **GO**, with a real, flagged cost risk (up to several minutes/pair) concentrated near the notch. Real `BevelGearFeature`/`BevelPairFeature` spiral-variant implementation is the next, not-yet-started workstream - see the doc's own three 2026-08-21 "Spike findings" entries |
+| 13 | `13-spiral-bevel-pair.md` | 12 | High - **Spike A/B/C's results applied, real GO**: hand-of-spiral compatibility confirmed physically necessary (a simple field-compatibility warning, not a margin computation); radial mesh-margin math confirmed to survive unchanged (provably); the tangential margin proxy Spike A/B thought was *required* was revised by Spike C's own broader tooth-count-ratio testing to **not needed at all** - the residual both prior spikes measured turned out to be mostly a pre-existing, non-spiral limitation of equal-tooth-count pairs (real, already accurately warned-of in shipped `BevelPairFeature` today, flagged for a future fix but out of this workstream's own scope), not a genuine spiral effect; once tested on a resolvable tooth-count ratio, real measured overlap is exactly zero at every spiral angle tested. Spike B's own separate, silent solid-malformation defect (a different, steep-tooth-ratio case) has been fixed - see the doc's own three 2026-08-21 "Spike findings" entries |
 
-Spiral/Zerol/hypoid bevel variants are the one thing still deliberately
-deferred past this whole project — a further-later phase after 10/11's
-straight-bevel foundation is live.
+Spiral/Zerol bevel (gear and pair both) is scoped in `12-spiral-bevel-
+gear.md`/`13-spiral-bevel-pair.md`. Both of that doc's own spikes have now
+run (2026-08-21, Spike A then Spike B) - real implementation hasn't
+started, and still can't: still NO-GO on the current fixed-phase
+construction as-is (a real, catastrophic-overlap notch exists at a
+geometry-dependent spiral angle with no warning today), but Spike B
+root-caused both of Spike A's own previously-uncharacterized breakdowns
+and found neither is a flank fold - the "Spike B (fold-risk)" framing
+`12-spiral-bevel-gear.md` itself set up turned out to be aimed at the
+wrong mechanism. What's left is concrete: replace the fixed meshing-phase
+convention with a per-build search/probe, and build the calibrated
+tangential margin proxy - not open-ended surface-quality risk anymore.
+Hypoid bevel remains unscoped, a separate, even-further-later phase
+(offset, non-intersecting axes — a bigger leap again than spiral/Zerol).
 
 ## Delivery order
 
@@ -90,7 +103,30 @@ straight-bevel foundation is live.
 9. **Workstream 11** once 10 is live.
 10. **Workstream 9 (presets)** — the one piece left in this doc set,
     no ordering pressure, can happen any time.
-11. **Spiral/Zerol/hypoid bevel** — separate phase, after the above.
+11. **Workstream 12 (spiral/Zerol bevel gear)** — separate phase, after the
+    above; scoped in `12-spiral-bevel-gear.md`. Three spikes run
+    (2026-08-21, Spike A then Spike B then Spike C). Spike A: NO-GO on
+    "conjugate by construction" for the originally-proposed formula; a
+    corrected construction exists, close but not exact. Spike B:
+    root-caused Spike A's own two uncharacterized breakdowns - neither is
+    a flank fold; the high-spiral-angle one is a fixed meshing-phase-
+    convention artifact, the tooth-ratio one is an unrelated, pre-existing,
+    non-spiral `resolve_member_profile_shifts` defect (since fixed). Spike
+    C: designed and validated a real per-build phase search fixing the
+    phase artifact (GO, with a flagged cost risk near the notch), and
+    found the tangential margin proxy Spike A/B thought was required
+    isn't - the residual they measured turned out to be mostly a
+    pre-existing, non-spiral property of equal-tooth-count pairs, not a
+    genuine spiral effect. Both pieces this doc's own spike work needed
+    now have a real GO - real `BevelGearFeature`/`BevelPairFeature`
+    spiral-variant implementation is the next, different, not-yet-started
+    workstream.
+12. **Workstream 13 (spiral/Zerol bevel pair)** once 12's own remaining
+    spike work lands — scoped in `13-spiral-bevel-pair.md`, mirrors how
+    Workstream 11 depended on Workstream 10; its own share of Spike A
+    (hand-of-spiral, radial-margin carryover) and Spike C (tangential
+    margin proxy - resolved as "not needed") are already done.
+13. **Hypoid bevel** — still unscoped, later again than Workstream 13.
 
 DXF import/export (formerly Workstreams 6-7 here) now has its own
 delivery order in `docs/dxf-io/README.md`, independent of this doc set

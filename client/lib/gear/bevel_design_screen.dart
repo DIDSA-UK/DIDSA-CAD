@@ -27,7 +27,8 @@ import 'standard_value_field.dart';
 /// [crown] is not its own backend Feature type - a crown gear is exactly a
 /// `BevelGearFeature` with `pitch_cone_angle_degrees` fixed at 90 (the
 /// pitch cone flattens into a disc - confirmed on-device that `bevel_math`'s
-/// spherical-involute formulas stay perfectly finite there, no asymptote).
+/// Tredgold-based flank construction (`bevel_tooth_flank_pair`) stays
+/// perfectly finite there, no asymptote).
 /// So [crown] shares every code path [gear] does (same `createBevelGearFeature`/
 /// `updateBevelGearFeature` calls) - it only changes the Pitch cone angle
 /// field (fixed, hidden) and a few display strings. See `_isSingleGear`.
@@ -69,7 +70,7 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
   String _plane = 'XY';
 
   // On-device feedback (bevel timeout investigation): mirrors
-  // `GearDesignScreen._pointsPerFlank` - a bevel tooth's spherical-involute
+  // `GearDesignScreen._pointsPerFlank` - a bevel tooth's Tredgold-built
   // flank is at least as expensive to build as a helical one (`app.
   // document.bevel._assemble_gear_solid`'s own `4*tooth_count + 2` face
   // sew/solid/flatten pipeline, doubled for a pair's two members), so the
@@ -657,8 +658,8 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
               : Text(_isEditing ? 'Save' : 'Create'),
         ),
         // On-device feedback (bevel timeout investigation): a bevel gear/pair
-        // is a real, known-upfront-slow OCCT build (spherical-involute
-        // flanks sewn into a solid, doubled for a pair's two members) -
+        // is a real, known-upfront-slow OCCT build (Tredgold-built flanks
+        // sewn into a solid, doubled for a pair's two members) -
         // shown unconditionally while `_creating`, mirroring
         // `GearDesignScreen`'s identical helical/herringbone hint.
         if (_creating)

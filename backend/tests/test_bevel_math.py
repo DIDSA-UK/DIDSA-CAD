@@ -20,12 +20,15 @@ import math
 import pytest
 
 from app.document.bevel_math import (
+    MINIMUM_TIP_THICKNESS_COEFFICIENT,
     BevelGearGeometry,
     base_cone_half_angle,
     bevel_gear_geometry,
     bevel_pair_mesh_preview,
     bevel_tooth_flank_pair,
+    bevel_tooth_tip_thickness,
     equivalent_tooth_count,
+    maximum_receiver_profile_shift_for_mesh_clearance,
     max_recommended_face_width,
     pitch_cone_half_angles,
     sample_spherical_involute_flank,
@@ -602,3 +605,66 @@ def test_bevel_pair_mesh_preview_a_narrower_intruder_tooth_leaves_a_visible_gap_
     balanced_gap = min_gap_at_pitch_point(0.0, 0.0)
     unbalanced_gap = min_gap_at_pitch_point(0.0, -0.6)
     assert unbalanced_gap > balanced_gap
+
+
+# ---------------------------------------------------------------------------
+# Tooth tip thickness - and the receiver-shift cap it feeds
+# ---------------------------------------------------------------------------
+
+
+def test_bevel_tooth_tip_thickness_shrinks_as_profile_shift_grows(bevel_pair_geometries):
+    geometry_1, _geometry_2 = bevel_pair_geometries
+    baseline = bevel_tooth_tip_thickness(geometry_1)
+    shifted_geometry = bevel_gear_geometry(
+        module=geometry_1.module,
+        tooth_count=geometry_1.tooth_count,
+        face_width=geometry_1.face_width,
+        pressure_angle_degrees=math.degrees(geometry_1.pressure_angle),
+        profile_shift=geometry_1.profile_shift + 0.3,
+        pitch_cone_angle_degrees=math.degrees(geometry_1.pitch_cone_angle),
+    )
+    assert bevel_tooth_tip_thickness(shifted_geometry) < baseline
+
+
+def test_bevel_tooth_tip_thickness_goes_negative_for_the_reproduced_defect_case():
+    # Real regression: a steep tooth-count-ratio pair (6T/24T) auto-
+    # resolved the 6-tooth member's own profile_shift to +0.9215 before
+    # this cap existed - confirmed on-device to produce a self-crossing,
+    # negative-thickness tooth tip that _assemble_gear_solid could not
+    # build correctly (~4x analytic-vs-mesh volume disagreement). Locks in
+    # that this function actually detects that specific case as unsafe.
+    gamma_1, _gamma_2 = pitch_cone_half_angles(6, 24, 90.0)
+    geometry = bevel_gear_geometry(
+        module=4.0, tooth_count=6, face_width=8.0, pressure_angle_degrees=20.0,
+        profile_shift=0.921465455243788, pitch_cone_angle_degrees=math.degrees(gamma_1),
+    )
+    assert bevel_tooth_tip_thickness(geometry) < 0.0
+
+
+def test_maximum_receiver_profile_shift_for_mesh_clearance_caps_against_a_pointed_tip():
+    # The real 6T/24T case end to end: without this cap, the receiver
+    # (6-tooth member) would be pushed all the way to the balanced target
+    # (+0.9215, a self-crossing tip) - with it, the search stops once tip
+    # thickness would drop below MINIMUM_TIP_THICKNESS_COEFFICIENT*module,
+    # landing well short of the target, and the accepted shift's own tip
+    # thickness clears that floor (with the bisection's own tolerance).
+    module = 4.0
+    gamma_1, gamma_2 = pitch_cone_half_angles(6, 24, 90.0)
+    receiver_geometry = bevel_gear_geometry(
+        module=module, tooth_count=6, face_width=8.0, pressure_angle_degrees=20.0,
+        profile_shift=0.0, pitch_cone_angle_degrees=math.degrees(gamma_1),
+    )
+    intruder_geometry = bevel_gear_geometry(
+        module=module, tooth_count=24, face_width=8.0, pressure_angle_degrees=20.0,
+        profile_shift=-0.921465455243788, pitch_cone_angle_degrees=math.degrees(gamma_2),
+    )
+    target_shift = 0.921465455243788
+    accepted = maximum_receiver_profile_shift_for_mesh_clearance(
+        receiver_geometry, intruder_geometry, 90.0, target_shift
+    )
+    assert accepted < target_shift
+    accepted_geometry = bevel_gear_geometry(
+        module=module, tooth_count=6, face_width=8.0, pressure_angle_degrees=20.0,
+        profile_shift=accepted, pitch_cone_angle_degrees=math.degrees(gamma_1),
+    )
+    assert bevel_tooth_tip_thickness(accepted_geometry) >= MINIMUM_TIP_THICKNESS_COEFFICIENT * module - 1e-6
