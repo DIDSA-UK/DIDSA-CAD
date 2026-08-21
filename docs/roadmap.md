@@ -33,14 +33,30 @@ straight bevel gears were both pulled into v1 scope deliberately (the two
 highest-risk items in the whole project) rather than deferred, and both
 are now live; spiral/Zerol bevel (gear and pair) is scoped
 (`docs/gear-design/12-spiral-bevel-gear.md`/`13-spiral-bevel-pair.md`) and
-has had its riskiest question spiked (2026-08-21): NO-GO on the originally
-proposed construction being conjugate "by construction" the way Tredgold
-is for straight bevel - a corrected construction exists and is close, but
-leaves a real residual needing its own calibrated tangential margin
-system, plus a still-unrun Spike B on fold risk, before real
-implementation can start. Hypoid bevel remains the one thing still fully
-unscoped. DXF import/export was originally scoped here too but has since
-moved to its own doc set (`docs/dxf-io/`) - see the entry below.
+has now had both of its spikes run (2026-08-21, Spike A then Spike B).
+Spike A: NO-GO on the originally proposed construction being conjugate "by
+construction" the way Tredgold is for straight bevel - a corrected
+construction exists and is close, but leaves a real residual needing its
+own calibrated tangential margin system. Spike B root-caused the two
+breakdowns Spike A left uncharacterized, and found **neither is the
+flank-fold/surface-quality risk both docs originally worried about** -
+`_flank_fold_warning` never fires in either case, at any angle tested. The
+high-spiral-angle breakdown is a fixed meshing-phase-convention artifact
+(the same `±π/2` positioning constant calibrated for straight bevel, now
+proven - not just suspected - to drift into a wrong-tooth alignment past a
+geometry-dependent spiral angle; directly fixable by a small phase
+correction, confirmed by direct recovery). The extreme-tooth-count-ratio
+breakdown turned out to be an unrelated, pre-existing defect in the
+existing straight-bevel profile-shift/solid-assembly pipeline, not caused
+by or specific to spiral bevel at all - a straight-bevel pairing-system bug
+this session surfaced but doesn't fix here. Still NO-GO on shipping the
+current construction as-is (the phase-alignment notch is real and
+unwarned-of today), but the remaining work is now concrete rather than
+open-ended: a per-build phase search/probe replacing the fixed convention,
+plus the calibrated tangential margin proxy. Hypoid bevel remains the one
+thing still fully unscoped. DXF import/export was originally scoped here
+too but has since moved to its own doc set (`docs/dxf-io/`) - see the
+entry below.
 
 ## AI Modelling
 

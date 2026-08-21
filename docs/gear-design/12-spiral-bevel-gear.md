@@ -681,3 +681,299 @@ gives straight bevel for free. Two separate results support this call:
    moves) should be re-derived for a genuinely curved centerline rather
    than reused as-is - §3's phase sweep found it's already close to the
    real local optimum (within ~20%) but not exactly at it.
+
+## Spike findings (2026-08-21) — Spike B: root-causing the two breakdown regimes
+
+Real investigate/prototype pass answering this doc's own "What a revised
+approach needs" item 3 above (Spike A's own high-β and extreme-tooth-
+ratio breakdowns, explicitly not root-caused there). Same real
+conda-forge `pythonocc-core` 7.9.3 env (micromamba from GitHub Releases,
+`backend/environment.yml`), same scratch-only-harness convention (nothing
+below is committed), reusing `app.document.bevel`/`app.document.bevel_pair`'s
+real internals unchanged - `_bspline_wire`, `_tip_land_face`,
+`_root_land_face`, `_spherical_cap_face`, `_flank_fold_warning`, `_tilted_
+basis`, `_rotated_about_axis`, `resolve_member_profile_shifts`, the sewing/
+`ShapeFix_Shell`/`MakeSolid`/`OrientClosedSolid` sequence - and, new for
+this session, a full N-section spiral member-solid assembler
+(`assemble_spiral_gear_solid`, mirroring `bevel._assemble_gear_solid`'s
+exact face inventory/sewing order but sampling flank/tip-land/root-land
+points from the corrected §2 construction instead of the 2-section
+straight one) so real full-gear pairs, not just isolated flanks, could be
+measured directly via `BRepAlgoAPI_Common` the same way Spike A's own
+numbers were produced.
+
+**Headline result, ahead of the detail below**: neither breakdown is a
+flank self-fold. The grid-injectivity/normal-flip detector Spike A's own
+task explicitly pointed at (`_flank_fold_warning`) never fires, on either
+breakdown, at any β or tooth-count ratio tested - including well past
+where the breakdown actually happens. Both breakdowns are real, but
+**different from each other and from what Spike A's own doc hypothesized**:
+the high-β one is a meshing-*phase* artifact (fixable by re-deriving phase,
+item 4 above - not a hard geometric limit), and the tooth-ratio one is a
+**pre-existing, non-spiral defect** in the existing straight-bevel
+profile-shift/solid-assembly pipeline that this session's own extreme-ratio
+testing happened to surface, not "the same underlying mechanism" as the
+high-β case the way this doc's own §3 speculated.
+
+### 1. High-β breakdown: not a fold - a meshing-phase artifact, proven by direct recovery
+
+Built the corrected (§2) construction as real N-section (`n_sections=5`,
+past §3's own convergence point) flank/tip-land/root-land faces, assembled
+into full 10-tooth solids via the new `assemble_spiral_gear_solid`, and ran
+`_flank_fold_warning`'s exact grid-injectivity/normal-flip logic (25x25
+grid, both signals) against tooth 0's own right flank at the task's own
+requested β = 25/28/30/32/35, on the same 10T/10T module-4 baseline Spike A
+used - **no fold at any of them**, and pushing further (40 through 65°, in
+1° steps near the actual breakdown) still finds none. Also checked, and
+also clean throughout: same-tooth (right vs. left flank of tooth 0) minimum
+distance, and same-gear cross-tooth (tooth 0 vs. tooth 1) minimum distance
+- both stay in the multi-mm range with no sudden drop anywhere in
+25-65°. The flank surfaces themselves are geometrically well-formed
+(`BRepCheck_Analyzer`-valid, smoothly-growing area, no coincident points,
+no normal flips) across the entire range where Spike A's own doc reported
+a "distinct, sharp breakdown."
+
+**What actually breaks, and where**: building real full-pair solids (member
+2 opposite-hand, both members' geometry given the *same* auto-resolved
+`profile_shift` a real `BevelPairFeature` would compute via
+`resolve_member_profile_shifts` - `ps1=0.0`, `ps2=-0.6355` for this
+10T/10T/module-4/face-width-8/pressure-20°/shaft-90° baseline, so this
+isolates the spiral-specific residual from the already-solved radial
+dimension exactly as `13-spiral-bevel-pair.md`'s own §4 argues it should)
+and measuring `BRepAlgoAPI_Common` overlap directly:
+
+| β | 0° | 20° | 30° | 35° | 40° | 45° | 50° | 51° | **52°** | 55° | 60° | 65° |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| overlap (mm³) | 50.6 | 48.3 | 44.8 | 42.2 | 38.5 | 33.6 | 20.0 | 18.9 | **9119.2** | 9073.3 | 8968.9 | 8821.9 |
+| % of per-tooth vol | 5.4% | 5.2% | 4.8% | 4.6% | 4.2% | 3.7% | 2.2% | 2.1% | **999.6%** | 999.2% | 998.5% | 999.5% |
+
+Smoothly *decreasing* residual from β=0 through 51° (the opposite of "more
+curvature = more mismatch," same qualitative direction Spike A's own §3
+found at lower β), then a sharp jump to a ~999%-of-one-tooth plateau
+starting exactly at 52° - not a growing trend, a step. This precise
+threshold (51°→52° for this specific geometry) is new; Spike A's own doc
+only bounded it as "somewhere between 30° and 35°" for a differently-built
+(not profile-shift-corrected) baseline - see the honest discrepancy noted
+in §5 below.
+
+**Direct proof it's a phase artifact, not a fold**: swept
+`_rotated_about_axis`'s own phase angle (member 2's `-π/2 + π/tooth_count_2`
+convention, `phase_delta` added on top) at the broken β=55° case:
+
+| phase Δ | -10° | -8° | -6° | -5° | -4° | -3° | -2° | -1° | 0° (default) | +1° | +2° | +3° | +8° | +10° | +15° |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| overlap (mm³) | 8864 | 106.8 | 34.2 | 37.1 | 25.6 | 22.2 | 9063 | 9069 | **9073.3** | 9074 | 14.3 | 11.6 | 72.0 | 108.5 | 9057 |
+
+A ±2-3° phase correction (an order of magnitude smaller than the ~52°
+spiral angle itself) drops overlap from 9073 mm³ back to the same 10-40 mm³
+range the low-β residual already lives in - **the flank geometry at β=55°
+is not fundamentally different from β=35°'s; the fixed `±π/2` convention
+(calibrated for a straight tooth whose centerline never moves, per this
+doc's own §"What a revised approach needs" item 4) has simply drifted into
+picking the wrong relative alignment between the two members' teeth.** The
+same test at the *earlier*, un-profile-shift-corrected 10T/10T sweep's own
+break point (β=15°, `phase Δ=0` gives 9094 mm³) confirms the identical
+mechanism at a much lower β: `Δ=-1°` gives 67.0 mm³, `Δ=+1°` gives
+80.5 mm³ - both back in the normal residual range. **Both breakdowns -
+Spike A's own reported one and this session's more-precisely-located
+one - are the same phenomenon**, just triggered at a different β because
+how close the fixed default phase sits to a "bad" alignment is itself
+geometry/baseline-dependent (see §3).
+
+### 2. Tooth-count-ratio breakdown: refuted as "the same mechanism" - a real, but pre-existing and non-spiral, defect
+
+Rebuilt Spike A's own 8T/16T and 6T/24T cases with the corrected
+construction, real auto-resolved profile shifts, and a real β sweep
+(0/5/10/15/20°, opposite hand) - the direct test the task asked for
+("does the fold detector fire on these cases even at moderate β,
+independent of the high-β threshold").
+
+**8T/16T does not reproduce at all.** `overlap = 0.0 mm³` at every β from
+0° through 20°, no fold on either member's flank. This flatly contradicts
+Spike A's own reported 25270.5 mm³ at β=20° for this ratio - see §5's
+honest-discrepancy note.
+
+**6T/24T does reproduce a real breakdown, but it is not spiral-related.**
+`resolve_member_profile_shifts` gives this pair `ps1=+0.9215`,
+`ps2=-0.9215` (both members needing a large, nearly-a-full-module
+correction - the steep γ≈14°/76° split leaves little margin for the
+existing radial-balancing system to work with). Overlap: 147.9 mm³ (43.9%
+of a tooth) already at **β=0°** - i.e. before any spiral is applied at
+all - then 70117 mm³ (5543%) at β=5°, 70118 mm³ (2493%) at β=10°, settling
+back to 180.1/151.3 mm³ (6.5%/5.5%) at β=15°/20°. No fold detected on
+either member's flank at any of these β. Directly checked whether this is
+even *about* the spiral construction: built member 1 (the 6-tooth,
+`profile_shift=+0.9215` member) via the **real, unmodified**
+`app.document.bevel._assemble_gear_solid` - the exact shipped straight-bevel
+code, zero spike code, `β` not a parameter at all - and got the same class
+of failure: analytic volume 18348 mm³ vs. an independent mesh-based volume
+of 4638 mm³ (a ~4x disagreement), which that module's own existing
+`_assembly_sanity_warnings` correctly flags ("analytic volume disagrees
+with an independent mesh-based volume check by more than 2%"). Rebuilding
+the same member with `profile_shift=0` instead gives analytic/mesh
+agreement to <0.5% - **the defect tracks the large profile-shift value,
+not the spiral offset**: `resolve_member_profile_shifts`' existing
+"receiver gets the exact complementary +X" balancing logic
+(`13-spiral-bevel-pair.md`'s own lesson 1, `bevel_pair.
+maximum_receiver_profile_shift_for_mesh_clearance`) caps the receiver's
+shift against *re-introducing interference*, but nothing caps it against
+producing a **geometrically malformed solid** once the correction
+approaches a full module - a real, latent bug in the existing, shipped
+`BevelPairFeature`/straight-bevel pipeline for extreme tooth-count-ratio
+pairs, surfaced by this session's own extreme-ratio testing, not caused or
+fixed by anything spiral-specific.
+
+This directly **refutes** this doc's own §3 hypothesis ("consistent with,
+and likely the same underlying mechanism as, the β=35° breakdown ...
+a steep pitch cone combined with the curved multi-section loft"): it is
+neither the same mechanism (§1's is a phase-positioning artifact; this one
+reproduces at β=0 with zero spike code involved) nor caused by the curved
+loft (it reproduces identically with the real 2-section `ruled=True`
+straight-bevel construction). Fixing it is a straight-bevel/`13-spiral-
+bevel-pair.md` pairing-system concern (capping `resolve_member_profile_
+shifts`' own receiver correction against solid-malformation, not just
+against re-introduced interference), out of this workstream's own scope.
+
+### 3. The real safe boundary: no clean formula found - and that itself is the actionable finding
+
+Derived a closed-form candidate threshold from the construction's own
+`curve(R) = [tan(β)/sin(γ)] · ln(R/R_mean)` formula directly: the
+per-tooth azimuthal excursion from outer to inner cone distance is `span =
+[tan(β)/sin(γ)] · ln(cone_distance/inner_cone_distance)`; hypothesized the
+break happens once `span` reaches a full angular tooth pitch (`2π /
+tooth_count`). Algebraically, `(2π/N)·sin(γ) = π·module/cone_distance`
+(since `cone_distance·sin(γ) = pitch_radius = module·N/2`) - i.e. the
+predicted threshold **does not depend on tooth count at all**, only on
+`module`/`cone_distance`/the face-width-driven `ln` ratio. For the 10T/10T
+baseline this predicts `β_max ≈ 53.2°`, close to the measured 51°→52°
+break - a good fit.
+
+**It does not generalize.** Built a second case (20T/20T, module 4,
+face_width 16 - face_width/cone_distance ratio held identical to the
+10T/10T baseline deliberately, so the formula predicts the *same* `β_max ≈
+33.75°`). Measured: smooth, small, still-*decreasing* overlap through
+56° (0.10-1.32% of a tooth, no jump at all near the predicted 33.75°), then
+a genuinely irregular pattern from 65-75° - clean at 65° (0.22%), a sharp
+jump at 68-69° (~1910%), clean again at 70-71° (1.2%/0.78%), broken again
+at 72° and 75° (3799%/2609%). The first real break is roughly **double**
+the naive formula's prediction, and the pattern past it is not a simple
+"stays broken past threshold" step the way 10T/10T's own 52-65° range
+was (continuously broken in every β tested there) - it is geometry-
+dependent whether the fixed phase convention finds occasional "lucky"
+alignments on the other side of an early notch. The naive span-vs-pitch
+hypothesis is a real, named dead end for predicting *when*, even though
+it correctly identifies *what kind of thing* is happening (an azimuthal
+alignment/aliasing effect between the two members' fixed-phase-positioned
+teeth) - matching this project's own established convention
+(`10-bevel-gear.md`'s own §1 wrong-signed-curve story, §7's honest
+discrepancy) of naming a plausible-but-wrong hypothesis explicitly so
+nobody re-derives it and trusts it further than this session did.
+
+**The actionable conclusion**: don't look for a safe-β rule of thumb for
+the *existing fixed-phase* construction - none was found, and the search
+above suggests one may not exist in a form simple enough to be worth
+documenting (the failure is a positioning coincidence, not a monotonic
+geometric limit). The real fix is item 4 below: re-derive/search the
+meshing phase per build rather than trust a single calibrated-at-β=0
+constant, and gate real construction on a direct check (a small local
+`BRepAlgoAPI_Common`/overlap probe at build time, alongside the existing
+per-flank fold check) rather than a static β or tooth-ratio ceiling in
+documentation or client-side validation.
+
+### 4. Secondary: optimal phase vs. β - stable at low/moderate β, not smoothly defined once the notch regime starts
+
+Swept `phase_delta` at fine (0.1°) resolution to locate the true local
+optimum, same profile-shift-corrected 10T/10T baseline, at β where the
+default phase is still in the well-behaved region:
+
+| β | 10° | 20° |
+|---|---|---|
+| optimal phase Δ | -3.1° | -3.2° |
+| min overlap (mm³) | 36.0 | 32.3 |
+
+Stable, small, and consistent across this range - a real, non-zero, but
+essentially β-independent correction in the low/moderate regime (this
+session's own baseline differs from Spike A's own β=20° finding of a
+"~-0.2 to -1°" optimum - see §5 below for why the two aren't directly
+comparable - but both agree the optimum is small, negative, and non-zero
+here). **Past the notch regime (§1/§3), "the optimal phase as a function
+of β" stops being a well-posed question in the smooth-function sense**:
+§1's own β=55° sweep found the optimum jumps to a *positive* ~+2-3°
+(sign-flipped from the low-β ~-3°), separated from the default by a narrow
+"bad" band on one side and a wider "good" band on the other, not a
+continuous drift from the low-β value. A revised phase-alignment
+convention (item 4, `12-spiral-bevel-gear.md`'s own "What a revised
+approach needs") should therefore be built as a small local search/probe
+at construction time for any β past the well-behaved low/moderate range,
+not a closed-form `phase(β)` correction - the same conclusion §3 reaches
+for the β-threshold question, for the same underlying reason.
+
+### 5. Honest discrepancy with Spike A's own reported numbers
+
+Flagged plainly, per this project's own established convention
+(`10-bevel-gear.md`'s own §7): this session's numbers do **not** match
+Spike A's own reported ones, even qualitatively in one place. Spike A's
+own β-sweep table (5°→30°: 84.3→71.9 mm³, then 4790.4 mm³ at 35°) is
+closer in *magnitude* to this session's own **zero-profile-shift**
+reproduction (β=0-10°: 74-76 mm³) than to the profile-shift-corrected one
+used for §1-§4 above (β=0-30°: 44-51 mm³) - suggesting Spike A's own
+harness did not apply `resolve_member_profile_shifts`, consistent with
+`13-spiral-bevel-pair.md`'s own §4 treating the radial dimension as
+already-solved and out of scope for that measurement. But reproducing
+that same zero-profile-shift setup here finds the break at **β=10°→15°**
+(74.8 → 9094.4 mm³), not 30°→35° - a full session's own attempt at faithful
+reproduction (same real internals, same phase convention read directly
+from `bevel_pair.py`'s own source rather than from memory, same basis/
+positioning) still lands roughly **20° earlier** than Spike A's own
+number. The zero-profile-shift break is the *same phase-artifact
+mechanism* (directly confirmed via the same phase-recovery test, §1) just
+triggered earlier because the un-corrected radial baseline leaves less
+margin before a modest spiral shift crosses into a bad alignment - so the
+mechanism finding is not in doubt, but the precise number in Spike A's own
+doc could not be reconciled this session, the same honest-disagreement
+situation `10-bevel-gear.md`'s own §7 already established a precedent for
+handling: name it, don't silently override it or silently agree with it.
+Given this session's own harness is built directly against this project's
+committed, real internals (not a re-description of them) and both the
+mechanism (phase artifact, confirmed by direct recovery) and the general
+shape (break exists, is sharp, moves earlier with a worse baseline) are
+independently well-supported, this session's own numbers - not Spike A's -
+should be treated as the more load-bearing reference going forward, with
+Spike A's own absolute figures kept in its doc entry as historical record
+rather than corrected in place.
+
+### 6. Go/no-go, updated
+
+Both of Spike A's own uncharacterized breakdowns are now root-caused:
+
+- **High-β breakdown (§1)**: a meshing-phase-alignment artifact, not a
+  fold or a construction defect. Directly fixable (proven by direct
+  recovery, not just hypothesized) via a corrected/searched phase offset -
+  this is now `12-spiral-bevel-gear.md`'s own "What a revised approach
+  needs" item 4, promoted from "worth re-deriving" to "the actual fix for
+  a real, otherwise-catastrophic failure," not a polish item.
+- **Tooth-count-ratio breakdown (§2)**: refuted as sharing item 1's
+  mechanism. A real, pre-existing, non-spiral defect in the shipped
+  straight-bevel profile-shift/solid-assembly pipeline for extreme ratios
+  - a `13-spiral-bevel-pair.md`/straight-bevel-pairing concern, not a
+  spiral-construction one, and not blocking on Spike B/fold-risk work at
+  all.
+- **No genuine flank self-fold was found anywhere in this session's own
+  testing** (25° through 75° spiral angle, 8T/16T and 6T/24T tooth-count
+  ratios, both hands) - the "Spike B (fold-risk/surface-quality)" framing
+  in this doc's own "Complexity/risk" section and `13-spiral-bevel-pair.md`'s
+  own §5 go/no-go turns out to have been aimed at the wrong mechanism;
+  `_flank_fold_warning` is confirmed clean across every case this session
+  tried, not merely "not yet checked."
+
+**Still NO-GO on shipping the current fixed-phase construction as-is** -
+the β≈52° (this geometry) catastrophic notch is real and would produce a
+badly broken part with no warning today - but the path to GO is now
+concrete and scoped, not open-ended: (1) replace the fixed `±π/2`/`-π/2 +
+π/N` phase convention with a small local search/probe at build time
+(§3-§4 above); (2) build the tangential margin proxy `13-spiral-bevel-
+pair.md`'s own §3 already calls for, now informed by real phase-corrected
+residual numbers (§1's 4-5% baseline, not Spike A's own possibly-
+uncorrected 8-9%); (3) separately, flag the profile-shift/solid-
+malformation defect (§2) to whoever next touches `resolve_member_profile_
+shifts` - real, but independent of this workstream's own go/no-go.
