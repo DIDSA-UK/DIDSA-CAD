@@ -104,16 +104,28 @@ Hypoid bevel remains unscoped, a separate, even-further-later phase
 10. **Workstream 9 (presets)** — the one piece left in this doc set,
     no ordering pressure, can happen any time.
 11. **Workstream 12 (spiral/Zerol bevel gear)** — separate phase, after the
-    above; scoped in `12-spiral-bevel-gear.md`. Spike A run (2026-08-21,
-    NO-GO on "conjugate by construction" for the originally-proposed
-    formula; a corrected construction exists but needs a calibrated
-    tangential margin proxy) - a still-unrun Spike B (fold-risk at high
-    spiral angle/extreme tooth-count ratios) is next, before real
-    implementation.
+    above; scoped in `12-spiral-bevel-gear.md`. Three spikes run
+    (2026-08-21, Spike A then Spike B then Spike C). Spike A: NO-GO on
+    "conjugate by construction" for the originally-proposed formula; a
+    corrected construction exists, close but not exact. Spike B:
+    root-caused Spike A's own two uncharacterized breakdowns - neither is
+    a flank fold; the high-spiral-angle one is a fixed meshing-phase-
+    convention artifact, the tooth-ratio one is an unrelated, pre-existing,
+    non-spiral `resolve_member_profile_shifts` defect (since fixed). Spike
+    C: designed and validated a real per-build phase search fixing the
+    phase artifact (GO, with a flagged cost risk near the notch), and
+    found the tangential margin proxy Spike A/B thought was required
+    isn't - the residual they measured turned out to be mostly a
+    pre-existing, non-spiral property of equal-tooth-count pairs, not a
+    genuine spiral effect. Both pieces this doc's own spike work needed
+    now have a real GO - real `BevelGearFeature`/`BevelPairFeature`
+    spiral-variant implementation is the next, different, not-yet-started
+    workstream.
 12. **Workstream 13 (spiral/Zerol bevel pair)** once 12's own remaining
     spike work lands — scoped in `13-spiral-bevel-pair.md`, mirrors how
     Workstream 11 depended on Workstream 10; its own share of Spike A
-    (hand-of-spiral, radial-margin carryover) is already done.
+    (hand-of-spiral, radial-margin carryover) and Spike C (tangential
+    margin proxy - resolved as "not needed") are already done.
 13. **Hypoid bevel** — still unscoped, later again than Workstream 13.
 
 DXF import/export (formerly Workstreams 6-7 here) now has its own
