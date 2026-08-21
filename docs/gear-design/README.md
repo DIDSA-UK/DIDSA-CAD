@@ -60,13 +60,17 @@ never needed most of it).
 | 9 | `09-presets.md` | 8 | Low - **done** (`GearPresetStore`, client-local `shared_preferences`-backed named presets; `GearPresetControls` "Save as preset"/"Load preset" on all three Gear Design screens - no backend involvement, per this doc's own scope) |
 | 10 | `10-bevel-gear.md` | 1 | Highest in project - **done, incl. client UI** (`BevelGearFeature` - straight bevel, arbitrary shaft angle via a direct `pitch_cone_angle_degrees` field; `BevelDesignScreen`'s "Bevel Gear" mode covers entry + the axial-cross-section schematic preview) |
 | 11 | `11-bevel-pair.md` | 10 | High - **done, incl. client UI** (`BevelPairFeature` - apex-aligned dual-axis positioning, arbitrary shaft angle, auto-derived pitch cone angles; `BevelDesignScreen`'s "Bevel Pair" mode covers entry + dual-axis preview; DXF flat-pattern export still deferred to Workstream 6) |
-| 12 | `12-spiral-bevel-gear.md` | 10 | Highest in project (harder than 10) - **scoped, not started** (feasibility/pre-spike doc only; proposes a layered-spiral-offset extension of `bevel_math.py`'s current Tredgold construction, with real conjugate-action mesh correctness as the first thing to spike, ahead of OCCT surface-quality questions) |
-| 13 | `13-spiral-bevel-pair.md` | 12 | High, contingent on 12's own Spike A result - **scoped, not started** (`BevelPairFeature`'s spiral variant; folds in real lessons from `11-bevel-pair.md`'s own build-and-ship history - a shipped regression before a shipped fix - rather than assuming pairing is simple wiring once 12 lands) |
+| 12 | `12-spiral-bevel-gear.md` | 10 | Highest in project (harder than 10) - **Spike A run, NO-GO on "conjugate by construction"** (the doc's own originally-proposed formula is a named dead end - real spike measurement found a *corrected* construction that reduces exactly to Tredgold at β=0 but leaves a real, phase-uncorrectable tangential residual and a sharp breakdown at high spiral angle/extreme tooth-count ratios; needs a calibrated tangential margin proxy plus a Spike B on fold-risk before real implementation - see the doc's own 2026-08-21 "Spike findings") |
+| 13 | `13-spiral-bevel-pair.md` | 12 | High - **Spike A's result applied**: hand-of-spiral compatibility confirmed physically necessary, radial mesh-margin math confirmed to survive unchanged (now provably, not just plausibly), a new tangential margin proxy confirmed *required* (not speculative) - see the doc's own 2026-08-21 "Spike findings" |
 
-Spiral/Zerol bevel (gear and pair both) is now scoped in
-`12-spiral-bevel-gear.md`/`13-spiral-bevel-pair.md` (neither started —
-12's own spike hasn't run yet, and 13 depends on it). Hypoid bevel
-remains unscoped, a separate, even-further-later phase (offset,
+Spiral/Zerol bevel (gear and pair both) is scoped in `12-spiral-bevel-
+gear.md`/`13-spiral-bevel-pair.md`, and Spike A has run for both (2026-
+08-21) - real implementation hasn't started, and per Spike A's own
+NO-GO result, can't start yet: a calibrated tangential margin proxy and
+a Spike B (fold-risk at high spiral angle/extreme tooth-count ratios)
+are real, unbudgeted prerequisites, not just wiring on top of what
+exists. Hypoid bevel remains unscoped, a separate, even-further-later
+phase (offset,
 non-intersecting axes — a bigger leap again than spiral/Zerol).
 
 ## Delivery order
@@ -95,10 +99,16 @@ non-intersecting axes — a bigger leap again than spiral/Zerol).
 10. **Workstream 9 (presets)** — the one piece left in this doc set,
     no ordering pressure, can happen any time.
 11. **Workstream 12 (spiral/Zerol bevel gear)** — separate phase, after the
-    above; scoped in `12-spiral-bevel-gear.md`, spike not yet run.
-12. **Workstream 13 (spiral/Zerol bevel pair)** once 12's own spike lands
-    — scoped in `13-spiral-bevel-pair.md`, mirrors how Workstream 11
-    depended on Workstream 10.
+    above; scoped in `12-spiral-bevel-gear.md`. Spike A run (2026-08-21,
+    NO-GO on "conjugate by construction" for the originally-proposed
+    formula; a corrected construction exists but needs a calibrated
+    tangential margin proxy) - a still-unrun Spike B (fold-risk at high
+    spiral angle/extreme tooth-count ratios) is next, before real
+    implementation.
+12. **Workstream 13 (spiral/Zerol bevel pair)** once 12's own remaining
+    spike work lands — scoped in `13-spiral-bevel-pair.md`, mirrors how
+    Workstream 11 depended on Workstream 10; its own share of Spike A
+    (hand-of-spiral, radial-margin carryover) is already done.
 13. **Hypoid bevel** — still unscoped, later again than Workstream 13.
 
 DXF import/export (formerly Workstreams 6-7 here) now has its own
