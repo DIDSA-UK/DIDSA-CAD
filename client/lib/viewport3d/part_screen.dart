@@ -8,6 +8,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
+import '../ai/ai_modelling_screen.dart';
 import '../api/document_api_client.dart';
 import '../api/sketch_api_client.dart'
     show
@@ -9038,6 +9039,24 @@ class _PartScreenState extends State<PartScreen> {
         leadingWidth: 100,
         centerTitle: false,
         title: Text(_displayPartName, textAlign: TextAlign.right),
+        actions: [
+          // AI Modelling existing-Part editing (docs/ai-modelling/09-
+          // existing-part-editing.md): the "Continue with AI" entry point -
+          // distinct from `ToolChooserScreen`'s "AI Modelling" tile, which
+          // always starts a brand-new Part and stays untouched by this
+          // workstream. Disabled until `_part` has actually loaded.
+          IconButton(
+            icon: const Icon(Icons.auto_awesome),
+            tooltip: 'Continue with AI',
+            onPressed: _part == null
+                ? null
+                : () => Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => AiModellingScreen(existingPartId: _part!.id, documentApi: widget.documentApi),
+                      ),
+                    ),
+          ),
+        ],
       ),
       body: Column(
         children: [

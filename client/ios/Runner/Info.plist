@@ -51,5 +51,15 @@
 	     equivalent EnableFlutterGPU meta-data for why this fails silently). -->
 	<key>FLTEnableFlutterGPU</key>
 	<true/>
+	<!-- AI Modelling workstream 11 (voice input, `docs/ai-modelling/11-
+	     voice-input.md`): both keys are required by `speech_to_text` -
+	     without them the app crashes outright the first time initialize()
+	     requests either permission, rather than failing gracefully. The
+	     runtime permission prompts themselves are triggered by that
+	     initialize() call, not by these declarations alone. -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Used to transcribe your spoken description into text in AI Modelling's voice input.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Used to transcribe your spoken description into text in AI Modelling's voice input.</string>
 </dict>
 </plist>

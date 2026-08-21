@@ -162,6 +162,132 @@ void main() {
     });
   });
 
+  group('PlanTranslator.execute - existing-Part editing (existing:<id> references)', () {
+    test('a fillet targeting an existing Body (no new Feature-producing steps at all) resolves and posts the real id',
+        () async {
+      final paths = <String>[];
+      final mock = MockClient((request) async {
+        paths.add('${request.method} ${request.url.path} ${decodeBody(request)}');
+        if (request.url.path == '/document/parts/part-1/ai-plan/validate') {
+          return jsonResponse({
+            'results': [
+              {
+                'local_id': 'c1',
+                'ok': true,
+                'warnings': [],
+                'error': null,
+                // Mirrors the real backend's own `_resolve_edges`: keyed by
+                // the plan's own `edges.of` value verbatim - here that
+                // value already carries the `existing:` prefix, since the
+                // plan never named a plan-local Body step at all.
+                'resolved_edges': [
+                  {'body_id': 'existing:feat-extrude-existing', 'shape_type': 'edge', 'index': 0},
+                  {'body_id': 'existing:feat-extrude-existing', 'shape_type': 'edge', 'index': 1},
+                ],
+              },
+            ],
+          });
+        }
+        if (request.url.path == '/document/parts/part-1/fillet-features') {
+          return jsonResponse({
+            'type': 'fillet',
+            'id': 'feat-fillet1',
+            'locked': false,
+            'edge_refs': decodeBody(request)['edge_refs'],
+            'radius': 2.0,
+          });
+        }
+        return http.Response('not found', 404);
+      });
+
+      final plan = AiGenerationPlan.fromJson({
+        'version': 1,
+        'steps': [
+          {
+            'local_id': 'c1',
+            'kind': 'fillet',
+            'edges': {'selector': 'top_face_edges', 'of': 'existing:feat-extrude-existing'},
+            'radius': 2,
+          },
+        ],
+      });
+
+      final translator = PlanTranslator(
+        documentApi: DocumentApiClient(httpClient: mock),
+        sketchApi: SketchApiClient(httpClient: mock),
+      );
+      final result = await translator.execute(plan: plan, partId: 'part-1');
+
+      expect(result.outcome, PlanTranslationOutcome.success);
+      expect(result.createdFeatureIds, ['feat-fillet1']);
+      final filletCallBody =
+          paths.firstWhere((p) => p.startsWith('POST /document/parts/part-1/fillet-features'));
+      // The real Feature id, never the "existing:" wrapper - the wrapper is
+      // a plan-authoring convention only, resolved away before anything is
+      // sent over the wire.
+      expect(filletCallBody, contains('feat-extrude-existing'));
+      expect(filletCallBody, isNot(contains('existing:')));
+    });
+
+    test('a new sketch_point step anchored to an existing Sketch (via existingFeatures pre-seeding) posts to the '
+        'real Sketch id, without ever creating a new SketchFeature', () async {
+      final paths = <String>[];
+      final mock = MockClient((request) async {
+        paths.add('${request.method} ${request.url.path}');
+        if (request.url.path == '/document/parts/part-1/ai-plan/validate') {
+          return jsonResponse({
+            'results': [
+              {'local_id': 'p1', 'ok': true, 'warnings': [], 'error': null},
+            ],
+          });
+        }
+        if (request.url.path == '/sketch/sketches/sketch-existing/points') {
+          final body = decodeBody(request);
+          return jsonResponse({'id': 'point-1', 'x': body['x'], 'y': body['y']});
+        }
+        return http.Response('not found', 404);
+      });
+
+      final plan = AiGenerationPlan.fromJson({
+        'version': 1,
+        'steps': [
+          {
+            'local_id': 'p1',
+            'kind': 'sketch_point',
+            'sketch_feature_id': 'existing:feat-sketch-existing',
+            'x': 5,
+            'y': 5,
+          },
+        ],
+      });
+
+      final translator = PlanTranslator(
+        documentApi: DocumentApiClient(httpClient: mock),
+        sketchApi: SketchApiClient(httpClient: mock),
+      );
+      final result = await translator.execute(
+        plan: plan,
+        partId: 'part-1',
+        existingFeatures: [
+          FeatureDto(
+            type: 'sketch',
+            id: 'feat-sketch-existing',
+            locked: false,
+            sketchId: 'sketch-existing',
+            produces: 'sketch',
+          ),
+        ],
+      );
+
+      expect(result.outcome, PlanTranslationOutcome.success);
+      expect(result.localIdToRealId, {'p1': 'point-1'});
+      // No new SketchFeature was ever created - the plan referenced the
+      // real, already-existing one throughout.
+      expect(paths.any((p) => p.startsWith('POST /document/parts/part-1/features/sketch')), isFalse);
+      expect(paths, contains('POST /sketch/sketches/sketch-existing/points'));
+    });
+  });
+
   group('PlanTranslator.execute - computed sketch-entity points (degrees, not radians)', () {
     test('sketch_line with length+angle computes the end point via a real createPoint call', () async {
       final createPointBodies = <Map<String, dynamic>>[];
@@ -190,6 +316,21 @@ void main() {
             'end_point_id': decodeBody(request)['end_point_id'],
             'length': 10.0,
             'construction': false,
+          });
+        }
+        // Workstream 8 (dimension-driven sketches): a literal `length` on
+        // this plan's sketch_line step now also creates a real
+        // DistanceConstraint right after the line itself.
+        if (request.url.path == '/sketch/sketches/sketch-1/constraints') {
+          final body = decodeBody(request);
+          return jsonResponse({
+            'type': 'distance',
+            'id': 'dist-1',
+            'point_a_id': body['point_a_id'],
+            'point_b_id': body['point_b_id'],
+            'distance': body['distance'],
+            'orientation': body['orientation'],
+            'provisional': body['provisional'],
           });
         }
         return http.Response('not found', 404);
@@ -287,6 +428,294 @@ void main() {
       final computed = createPointBodies[1];
       expect((computed['x'] as num).toDouble(), closeTo(15.0, 1e-6));
       expect((computed['y'] as num).toDouble(), closeTo(10.0, 1e-6));
+    });
+  });
+
+  group('PlanTranslator.execute - dimension-driven sketches (real constraints, not raw coordinates)', () {
+    test('sketch_line with a literal length creates a real, non-provisional DistanceConstraint', () async {
+      final constraintCalls = <Map<String, dynamic>>[];
+      final mock = MockClient((request) async {
+        if (request.url.path.endsWith('/ai-plan/validate')) {
+          return jsonResponse({
+            'results': [
+              {'local_id': 'sk1', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'p1', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'p2', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'l1', 'ok': true, 'warnings': [], 'error': null},
+            ],
+          });
+        }
+        if (request.url.path == '/document/parts/part-1/features/sketch') {
+          return jsonResponse({'type': 'sketch', 'id': 'feat-sk1', 'locked': false, 'sketch_id': 'sketch-1'});
+        }
+        if (request.url.path == '/sketch/sketches/sketch-1/points') {
+          final body = decodeBody(request);
+          return jsonResponse({'id': 'point-${body['x']}-${body['y']}', 'x': body['x'], 'y': body['y']});
+        }
+        if (request.url.path == '/sketch/sketches/sketch-1/lines') {
+          return jsonResponse({
+            'id': 'line-1',
+            'start_point_id': decodeBody(request)['start_point_id'],
+            'end_point_id': decodeBody(request)['end_point_id'],
+            'length': 25.0,
+            'construction': false,
+          });
+        }
+        if (request.method == 'POST' && request.url.path == '/sketch/sketches/sketch-1/constraints') {
+          final body = decodeBody(request);
+          constraintCalls.add(body);
+          return jsonResponse({
+            'type': 'distance',
+            'id': 'dist-1',
+            'point_a_id': body['point_a_id'],
+            'point_b_id': body['point_b_id'],
+            'distance': body['distance'],
+            'orientation': body['orientation'],
+            'provisional': body['provisional'],
+          });
+        }
+        return http.Response('not found', 404);
+      });
+
+      final plan = AiGenerationPlan.fromJson({
+        'version': 1,
+        'steps': [
+          {'local_id': 'sk1', 'kind': 'sketch', 'plane': 'XY'},
+          {'local_id': 'p1', 'kind': 'sketch_point', 'sketch_feature_id': 'sk1', 'x': 0, 'y': 0},
+          {'local_id': 'p2', 'kind': 'sketch_point', 'sketch_feature_id': 'sk1', 'x': 25, 'y': 0},
+          {
+            'local_id': 'l1',
+            'kind': 'sketch_line',
+            'sketch_feature_id': 'sk1',
+            'start_point_id': 'p1',
+            'end_point_id': 'p2',
+            'length': 25,
+          },
+        ],
+      });
+
+      final translator = PlanTranslator(
+        documentApi: DocumentApiClient(httpClient: mock),
+        sketchApi: SketchApiClient(httpClient: mock),
+      );
+      final result = await translator.execute(plan: plan, partId: 'part-1');
+
+      expect(result.outcome, PlanTranslationOutcome.success);
+      expect(constraintCalls, hasLength(1));
+      expect(constraintCalls.single['distance'], 25.0);
+      expect(constraintCalls.single['orientation'], 'linear');
+      expect(constraintCalls.single['provisional'], isFalse);
+    });
+
+    test('sketch_line with no literal length creates no constraint at all', () async {
+      final constraintCalls = <Map<String, dynamic>>[];
+      final mock = MockClient((request) async {
+        if (request.url.path.endsWith('/ai-plan/validate')) {
+          return jsonResponse({
+            'results': [
+              {'local_id': 'sk1', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'p1', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'p2', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'l1', 'ok': true, 'warnings': [], 'error': null},
+            ],
+          });
+        }
+        if (request.url.path == '/document/parts/part-1/features/sketch') {
+          return jsonResponse({'type': 'sketch', 'id': 'feat-sk1', 'locked': false, 'sketch_id': 'sketch-1'});
+        }
+        if (request.url.path == '/sketch/sketches/sketch-1/points') {
+          final body = decodeBody(request);
+          return jsonResponse({'id': 'point-${body['x']}-${body['y']}', 'x': body['x'], 'y': body['y']});
+        }
+        if (request.url.path == '/sketch/sketches/sketch-1/lines') {
+          return jsonResponse({
+            'id': 'line-1',
+            'start_point_id': decodeBody(request)['start_point_id'],
+            'end_point_id': decodeBody(request)['end_point_id'],
+            'length': 25.0,
+            'construction': false,
+          });
+        }
+        if (request.method == 'POST' && request.url.path == '/sketch/sketches/sketch-1/constraints') {
+          constraintCalls.add(decodeBody(request));
+          fail('no length was given - no constraint should ever be created');
+        }
+        return http.Response('not found', 404);
+      });
+
+      final plan = AiGenerationPlan.fromJson({
+        'version': 1,
+        'steps': [
+          {'local_id': 'sk1', 'kind': 'sketch', 'plane': 'XY'},
+          {'local_id': 'p1', 'kind': 'sketch_point', 'sketch_feature_id': 'sk1', 'x': 0, 'y': 0},
+          {'local_id': 'p2', 'kind': 'sketch_point', 'sketch_feature_id': 'sk1', 'x': 25, 'y': 0},
+          {
+            'local_id': 'l1',
+            'kind': 'sketch_line',
+            'sketch_feature_id': 'sk1',
+            'start_point_id': 'p1',
+            'end_point_id': 'p2',
+          },
+        ],
+      });
+
+      final translator = PlanTranslator(
+        documentApi: DocumentApiClient(httpClient: mock),
+        sketchApi: SketchApiClient(httpClient: mock),
+      );
+      final result = await translator.execute(plan: plan, partId: 'part-1');
+
+      expect(result.outcome, PlanTranslationOutcome.success);
+      expect(constraintCalls, isEmpty);
+    });
+
+    test('sketch_rectangle with width/height creates horizontal+vertical DistanceConstraints', () async {
+      final constraintCalls = <Map<String, dynamic>>[];
+      final mock = MockClient((request) async {
+        if (request.url.path.endsWith('/ai-plan/validate')) {
+          return jsonResponse({
+            'results': [
+              {'local_id': 'sk1', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'p1', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'p2', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'p3', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'p4', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'r1', 'ok': true, 'warnings': [], 'error': null},
+            ],
+          });
+        }
+        if (request.url.path == '/document/parts/part-1/features/sketch') {
+          return jsonResponse({'type': 'sketch', 'id': 'feat-sk1', 'locked': false, 'sketch_id': 'sketch-1'});
+        }
+        if (request.url.path == '/sketch/sketches/sketch-1/points') {
+          final body = decodeBody(request);
+          return jsonResponse({'id': 'point-${body['x']}-${body['y']}', 'x': body['x'], 'y': body['y']});
+        }
+        if (request.url.path == '/sketch/sketches/sketch-1/rectangles') {
+          return jsonResponse({
+            'id': 'rect-1',
+            'corner_point_ids': decodeBody(request)['corner_point_ids'],
+            'line_ids': ['line-1', 'line-2', 'line-3', 'line-4'],
+            'axis_aligned': true,
+          });
+        }
+        if (request.method == 'POST' && request.url.path == '/sketch/sketches/sketch-1/constraints') {
+          final body = decodeBody(request);
+          constraintCalls.add(body);
+          return jsonResponse({
+            'type': 'distance',
+            'id': 'dist-${constraintCalls.length}',
+            'point_a_id': body['point_a_id'],
+            'point_b_id': body['point_b_id'],
+            'distance': body['distance'],
+            'orientation': body['orientation'],
+            'provisional': body['provisional'],
+          });
+        }
+        return http.Response('not found', 404);
+      });
+
+      final plan = AiGenerationPlan.fromJson({
+        'version': 1,
+        'steps': [
+          {'local_id': 'sk1', 'kind': 'sketch', 'plane': 'XY'},
+          {'local_id': 'p1', 'kind': 'sketch_point', 'sketch_feature_id': 'sk1', 'x': 0, 'y': 0},
+          {'local_id': 'p2', 'kind': 'sketch_point', 'sketch_feature_id': 'sk1', 'x': 60, 'y': 0},
+          {'local_id': 'p3', 'kind': 'sketch_point', 'sketch_feature_id': 'sk1', 'x': 60, 'y': 40},
+          {'local_id': 'p4', 'kind': 'sketch_point', 'sketch_feature_id': 'sk1', 'x': 0, 'y': 40},
+          {
+            'local_id': 'r1',
+            'kind': 'sketch_rectangle',
+            'sketch_feature_id': 'sk1',
+            'corner_point_ids': ['p1', 'p2', 'p3', 'p4'],
+            'width': 60,
+            'height': 40,
+          },
+        ],
+      });
+
+      final translator = PlanTranslator(
+        documentApi: DocumentApiClient(httpClient: mock),
+        sketchApi: SketchApiClient(httpClient: mock),
+      );
+      final result = await translator.execute(plan: plan, partId: 'part-1');
+
+      expect(result.outcome, PlanTranslationOutcome.success);
+      expect(constraintCalls, hasLength(2));
+      final byOrientation = {for (final c in constraintCalls) c['orientation'] as String: c};
+      expect(byOrientation.keys, containsAll(['horizontal', 'vertical']));
+      expect(byOrientation['horizontal']!['distance'], 60.0);
+      // Ids come from this test's own point-creation mock, which formats
+      // them as 'point-$x-$y' using the request body's real (double, not
+      // int) x/y - matches every other point-id literal in this file.
+      expect(byOrientation['horizontal']!['point_a_id'], 'point-0.0-0.0');
+      expect(byOrientation['horizontal']!['point_b_id'], 'point-60.0-0.0');
+      expect(byOrientation['vertical']!['distance'], 40.0);
+      expect(byOrientation['vertical']!['point_a_id'], 'point-60.0-0.0');
+      expect(byOrientation['vertical']!['point_b_id'], 'point-60.0-40.0');
+    });
+
+    test('sketch_circle confirms its own provisional radius constraint via updateConstraintValue', () async {
+      final patchCalls = <String>[];
+      final mock = MockClient((request) async {
+        if (request.url.path.endsWith('/ai-plan/validate')) {
+          return jsonResponse({
+            'results': [
+              {'local_id': 'sk1', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'p1', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'p2', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'circ1', 'ok': true, 'warnings': [], 'error': null},
+            ],
+          });
+        }
+        if (request.url.path == '/document/parts/part-1/features/sketch') {
+          return jsonResponse({'type': 'sketch', 'id': 'feat-sk1', 'locked': false, 'sketch_id': 'sketch-1'});
+        }
+        if (request.url.path == '/sketch/sketches/sketch-1/points') {
+          final body = decodeBody(request);
+          return jsonResponse({'id': 'point-${body['x']}-${body['y']}', 'x': body['x'], 'y': body['y']});
+        }
+        if (request.url.path == '/sketch/sketches/sketch-1/circles') {
+          return jsonResponse({
+            'id': 'circle-1',
+            'center_point_id': decodeBody(request)['center_point_id'],
+            'radius_point_id': decodeBody(request)['radius_point_id'],
+            'radius': 5.0,
+            'construction': false,
+            'radius_constraint_id': 'radius-constraint-1',
+          });
+        }
+        if (request.method == 'PATCH' && request.url.path == '/sketch/sketches/sketch-1/constraints/radius-constraint-1') {
+          patchCalls.add(decodeBody(request)['value'].toString());
+          return jsonResponse({'converged': true, 'dof': 0, 'detail': 'ok'});
+        }
+        return http.Response('not found', 404);
+      });
+
+      final plan = AiGenerationPlan.fromJson({
+        'version': 1,
+        'steps': [
+          {'local_id': 'sk1', 'kind': 'sketch', 'plane': 'XY'},
+          {'local_id': 'p1', 'kind': 'sketch_point', 'sketch_feature_id': 'sk1', 'x': 10, 'y': 10},
+          {'local_id': 'p2', 'kind': 'sketch_point', 'sketch_feature_id': 'sk1', 'x': 15, 'y': 10},
+          {
+            'local_id': 'circ1',
+            'kind': 'sketch_circle',
+            'sketch_feature_id': 'sk1',
+            'center_point_id': 'p1',
+            'radius_point_id': 'p2',
+          },
+        ],
+      });
+
+      final translator = PlanTranslator(
+        documentApi: DocumentApiClient(httpClient: mock),
+        sketchApi: SketchApiClient(httpClient: mock),
+      );
+      final result = await translator.execute(plan: plan, partId: 'part-1');
+
+      expect(result.outcome, PlanTranslationOutcome.success);
+      expect(patchCalls, ['5.0']);
     });
   });
 

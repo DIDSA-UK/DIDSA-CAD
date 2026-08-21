@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 
 import 'ai_provider.dart';
 import 'ai_provider_preferences.dart';
+import 'ai_system_prompt_settings_screen.dart';
 import 'anthropic_provider.dart';
 import 'openai_compatible_provider.dart';
 
@@ -27,11 +28,23 @@ class AiProviderSettingsScreen extends StatefulWidget {
 }
 
 class _AiProviderSettingsScreenState extends State<AiProviderSettingsScreen> {
+  /// Google's free-tier Gemini (AI Studio), reached through its
+  /// OpenAI-compatible endpoint. Recommended default for this tool's
+  /// current feature set (image upload, engineering-drawing
+  /// interpretation, structured CAD plan output): genuinely free, natively
+  /// multimodal, and the model this app's own prompt engineering has been
+  /// validated against (see `docs/ai-modelling/03-structured-plan-schema.md`'s
+  /// documented Gemini failure case, since fixed). Pre-filled below so a
+  /// first-time user only has to paste in their own API key.
+  static const String _geminiPresetBaseUrl = 'https://generativelanguage.googleapis.com/v1beta/openai';
+  static const String _geminiDefaultModel = 'gemini-2.5-flash';
+
   String _activeProvider = AiProviderPreferences.defaultActiveProvider;
 
   final _localBaseUrlController = TextEditingController();
   final _localApiKeyController = TextEditingController();
   final _localModelController = TextEditingController();
+  bool _localSupportsVision = false;
 
   final _openAiApiKeyController = TextEditingController();
   final _openAiModelController = TextEditingController();
@@ -65,10 +78,27 @@ class _AiProviderSettingsScreenState extends State<AiProviderSettingsScreen> {
       _localBaseUrlController.text = AiProviderPreferences.localBaseUrl;
       _localApiKeyController.text = AiProviderPreferences.localApiKey ?? '';
       _localModelController.text = AiProviderPreferences.localModel;
+      _localSupportsVision = AiProviderPreferences.localSupportsVision;
       _openAiApiKeyController.text = AiProviderPreferences.openAiApiKey;
       _openAiModelController.text = AiProviderPreferences.openAiModel;
       _anthropicApiKeyController.text = AiProviderPreferences.anthropicApiKey;
       _anthropicModelController.text = AiProviderPreferences.anthropicModel;
+      // A genuinely fresh install (nothing ever saved for the local slot) -
+      // default it to the Gemini preset rather than leaving it blank, so
+      // the only thing standing between a new user and a working setup is
+      // pasting in their own API key. Never overwrites a real saved value:
+      // this only fires when `localBaseUrl` loaded as its own empty default.
+      // Bypasses the baseUrl listener deliberately - unlike a real preset
+      // tap or a restored saved baseUrl, this synthetic pre-fill shouldn't
+      // trigger an Ollama-style `/api/tags` probe against Gemini's endpoint
+      // before the user has even pasted in an API key.
+      if (_localBaseUrlController.text.isEmpty) {
+        _localBaseUrlController.removeListener(_onLocalBaseUrlChanged);
+        _localBaseUrlController.text = _geminiPresetBaseUrl;
+        _localBaseUrlController.addListener(_onLocalBaseUrlChanged);
+        _localModelController.text = _geminiDefaultModel;
+        _localSupportsVision = true;
+      }
       _loaded = true;
     });
     // No separate fetch call here: assigning a non-empty stored baseUrl to
@@ -189,6 +219,7 @@ class _AiProviderSettingsScreenState extends State<AiProviderSettingsScreen> {
             baseUrl: _localBaseUrlController.text.trim(),
             apiKey: apiKey.isEmpty ? null : apiKey,
             model: _localModelController.text.trim(),
+            supportsVision: _localSupportsVision,
           );
       }
       await AiProviderPreferences.setActiveProvider(_activeProvider);
@@ -214,7 +245,9 @@ class _AiProviderSettingsScreenState extends State<AiProviderSettingsScreen> {
 
   void _applyGeminiPreset() {
     setState(() {
-      _localBaseUrlController.text = 'https://generativelanguage.googleapis.com/v1beta/openai';
+      _localBaseUrlController.text = _geminiPresetBaseUrl;
+      _localModelController.text = _geminiDefaultModel;
+      _localSupportsVision = true;
     });
   }
 
@@ -256,6 +289,18 @@ class _AiProviderSettingsScreenState extends State<AiProviderSettingsScreen> {
                 if (_activeProvider == 'openai') ..._buildOpenAiFields(context),
                 if (_activeProvider == 'anthropic') ..._buildAnthropicFields(context),
                 const SizedBox(height: 24),
+                ListTile(
+                  key: const Key('aiSystemPromptSettingsEntry'),
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.chat_bubble_outline),
+                  title: const Text('AI System Prompt'),
+                  subtitle: const Text('Edit the assistant instructions and manufacturing-process add-ons'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const AiSystemPromptSettingsScreen()),
+                  ),
+                ),
+                const SizedBox(height: 12),
                 if (_testError != null) ...[
                   Text(_testError!, style: const TextStyle(color: Colors.redAccent)),
                   const SizedBox(height: 12),
@@ -318,6 +363,23 @@ class _AiProviderSettingsScreenState extends State<AiProviderSettingsScreen> {
           style: Theme.of(context).textTheme.bodySmall,
         ),
       ],
+      const SizedBox(height: 8),
+      CheckboxListTile(
+        key: const Key('aiLocalSupportsVision'),
+        contentPadding: EdgeInsets.zero,
+        controlAffinity: ListTileControlAffinity.leading,
+        value: _localSupportsVision,
+        onChanged: (value) => setState(() => _localSupportsVision = value ?? false),
+        title: const Text('This model supports vision (image understanding)'),
+        subtitle: Text(
+          "Only enable this if the configured model genuinely accepts images (e.g. a Qwen-VL "
+          "or llava variant, or Gemini via the preset above) - this gates AI Modelling's image-"
+          "upload button entirely. Real local/open vision models are expected to lag well behind "
+          "top cloud models specifically at reading hand sketches and technical drawings - expect "
+          "noticeably worse results here than with OpenAI or Anthropic.",
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+      ),
     ];
   }
 

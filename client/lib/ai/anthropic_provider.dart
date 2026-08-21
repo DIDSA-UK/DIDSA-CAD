@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
@@ -33,8 +34,56 @@ class AnthropicProvider implements AiProvider {
   @override
   AiProviderCapabilities get capabilities => const AiProviderCapabilities(
         supportsStructuredOutput: true, // Anthropic's own structured-output support
-        supportsVision: false, // workstream 6
+        supportsVision: true, // every current Claude model (3+) is multimodal
       );
+
+  /// The wire `content` value for one transcript turn - a plain string for
+  /// an ordinary text-only turn (unchanged shape, so every pre-existing
+  /// caller/test keeps working byte-for-byte), or Anthropic's own native
+  /// content-block list (an `image` block ahead of the `text` block, the
+  /// order Anthropic's own docs recommend) when [AiChatMessage.imageBytes]
+  /// is set.
+  static Object _contentFor(AiChatMessage turn) {
+    final imageBytes = turn.imageBytes;
+    if (imageBytes == null) return turn.text;
+    return [
+      {
+        'type': 'image',
+        'source': {'type': 'base64', 'media_type': turn.imageMimeType, 'data': base64Encode(imageBytes)},
+      },
+      {'type': 'text', 'text': turn.text},
+    ];
+  }
+
+  Future<http.Response> _postMessages(http.Client client, Map<String, dynamic> body) => client
+      .post(
+        Uri.parse('$baseUrl/v1/messages'),
+        headers: {'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': _anthropicVersion},
+        body: jsonEncode(body),
+      )
+      .timeout(aiProviderRequestTimeout);
+
+  static void _ensureSuccess(http.Response response) {
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw AiProviderException(
+        'Request failed (${response.statusCode}): ${response.body}',
+        statusCode: response.statusCode,
+      );
+    }
+  }
+
+  static String _assistantTextFrom(http.Response response) {
+    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    final content = decoded['content'] as List<dynamic>?;
+    if (content == null) {
+      throw AiProviderException('Provider response had no content');
+    }
+    final textBlock = content.cast<Map<String, dynamic>>().firstWhere(
+          (block) => block['type'] == 'text',
+          orElse: () => const {},
+        );
+    return textBlock['text'] as String? ?? '';
+  }
 
   @override
   Future<AiTurnResult> sendScopingTurn(List<AiChatMessage> transcript, {String? systemPrompt}) async {
@@ -42,44 +91,67 @@ class AnthropicProvider implements AiProvider {
     try {
       final messages = [
         for (final turn in transcript)
-          {'role': turn.role == AiMessageRole.user ? 'user' : 'assistant', 'content': turn.text},
+          {'role': turn.role == AiMessageRole.user ? 'user' : 'assistant', 'content': _contentFor(turn)},
       ];
 
-      final response = await client
-          .post(
-            Uri.parse('$baseUrl/v1/messages'),
-            headers: {
-              'Content-Type': 'application/json',
-              'x-api-key': apiKey,
-              'anthropic-version': _anthropicVersion,
-            },
-            body: jsonEncode({
-              'model': model,
-              'max_tokens': _maxResponseTokens,
-              if (systemPrompt != null && systemPrompt.isNotEmpty) 'system': systemPrompt,
-              'messages': messages,
-            }),
-          )
-          .timeout(aiProviderRequestTimeout);
+      final response = await _postMessages(client, {
+        'model': model,
+        'max_tokens': _maxResponseTokens,
+        if (systemPrompt != null && systemPrompt.isNotEmpty) 'system': systemPrompt,
+        'messages': messages,
+      });
+      _ensureSuccess(response);
+      return AiTurnResult(assistantText: _assistantTextFrom(response));
+    } on AiProviderException {
+      rethrow;
+    } catch (e) {
+      throw AiProviderException('Could not reach provider: $e');
+    } finally {
+      if (httpClient == null) client.close();
+    }
+  }
 
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw AiProviderException(
-          'Request failed (${response.statusCode}): ${response.body}',
-          statusCode: response.statusCode,
-        );
-      }
+  /// Fixed extraction prompt (workstream 10) - deliberately asks only for a
+  /// literal description, never for CAD steps/JSON, so this stays a clean
+  /// text seed for the ordinary scoping conversation rather than a second,
+  /// competing plan-generation path. Kept identical in wording to
+  /// `OpenAiCompatibleProvider`'s own copy - the prompt is provider-agnostic,
+  /// only the wire encoding differs between the two implementations.
+  static const String _imageExtractionPrompt =
+      'You are looking at a hand sketch or engineering drawing of a mechanical/CAD part. '
+      'Describe it in careful technical detail for someone who will use your description to '
+      'plan a 3D CAD model: overall shape and proportions, distinct features (holes, fillets, '
+      'chamfers, ribs, bosses, slots, etc.), any dimension callouts or measurements you can '
+      'read (quote them exactly as written, including units), and anything ambiguous or '
+      'illegible. Do not propose CAD modelling steps or JSON - only describe what you see.';
 
-      final decoded = jsonDecode(response.body) as Map<String, dynamic>;
-      final content = decoded['content'] as List<dynamic>?;
-      if (content == null) {
-        throw AiProviderException('Provider response had no content');
-      }
-      final textBlock = content.cast<Map<String, dynamic>>().firstWhere(
-            (block) => block['type'] == 'text',
-            orElse: () => const {},
-          );
-      final text = textBlock['text'] as String? ?? '';
-      return AiTurnResult(assistantText: text);
+  @override
+  Future<String> extractImageDescription(Uint8List imageBytes, String mimeType) async {
+    if (!capabilities.supportsVision) {
+      throw AiProviderException(
+        'The active provider is not configured for vision - enable it in AI Provider Settings before attaching an image.',
+      );
+    }
+    final client = httpClient ?? http.Client();
+    try {
+      final response = await _postMessages(client, {
+        'model': model,
+        'max_tokens': _maxResponseTokens,
+        'messages': [
+          {
+            'role': 'user',
+            'content': [
+              {
+                'type': 'image',
+                'source': {'type': 'base64', 'media_type': mimeType, 'data': base64Encode(imageBytes)},
+              },
+              {'type': 'text', 'text': _imageExtractionPrompt},
+            ],
+          },
+        ],
+      });
+      _ensureSuccess(response);
+      return _assistantTextFrom(response);
     } on AiProviderException {
       rethrow;
     } catch (e) {

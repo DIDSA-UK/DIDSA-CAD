@@ -15,9 +15,19 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.document.ai_plan import _PlanValidator
-from app.document.ai_plan_schemas import SketchLineStep, SketchPointStep, SketchStep
-from app.document.models import Part
+from app.document.ai_plan_schemas import (
+    ExtrudeStep,
+    SketchCircleStep,
+    SketchLineStep,
+    SketchPointStep,
+    SketchRectangleStep,
+    SketchStep,
+)
+from app.document.models import ExtrudeType, Part
+from app.document.store import get_part_or_404
 from app.main import app
+from app.sketch.constraints import DistanceConstraint
+from app.sketch.solver import solve_sketch
 from app.sketch.store import delete_sketch, get_sketch_or_404
 from tests.conftest import TEST_API_KEY
 
@@ -500,3 +510,407 @@ def test_face_at_position_selector_requires_a_direction() -> None:
 
     assert results["c1"]["ok"] is False
     assert results["c1"]["error"]["type"] == "edge_selector_missing_direction"
+
+
+def test_sketch_line_length_creates_a_real_non_provisional_distance_constraint() -> None:
+    """AI Modelling "dimension-driven sketches" workstream (docs/ai-
+    modelling/08-dimension-driven-sketches.md): a literal `length` on a
+    sketch_line step must produce a real, non-provisional
+    DistanceConstraint - the dry run's own mirror of what the real client-
+    side translator does (`ai_plan_translator.dart`'s own
+    `createDistanceConstraint` call), per 00-conventions.md's "dry-run
+    matches real execution" invariant. Uses `_PlanValidator` directly (not
+    the HTTP endpoint) for the same "inspect the scratch Sketch before its
+    own cleanup runs" reason `test_sketch_line_angle_is_degrees_not_radians`
+    above does - `PlanValidateResponse` never reports constraint state."""
+    part = Part(id="scratch-part", name="scratch", features=[])
+    validator = _PlanValidator(part)
+    steps = [
+        SketchStep(local_id="sk1", plane="XY"),
+        SketchPointStep(local_id="p1", sketch_feature_id="sk1", x=0.0, y=0.0),
+        SketchLineStep(local_id="l1", sketch_feature_id="sk1", start_point_id="p1", length=25.0, angle=0.0),
+    ]
+    try:
+        results = [validator._run_step(step) for step in steps]
+        assert all(r.ok for r in results), results
+
+        sketch = get_sketch_or_404(validator.resolved["sk1"].sketch_id)
+        line = sketch.lines()[0]
+        distance_constraints = [c for c in sketch.constraints.values() if isinstance(c, DistanceConstraint)]
+        assert len(distance_constraints) == 1
+        constraint = distance_constraints[0]
+        assert constraint.provisional is False
+        assert constraint.distance == pytest.approx(25.0)
+        assert constraint.orientation == "linear"
+        assert {constraint.point_a_id, constraint.point_b_id} == {line.start_point_id, line.end_point_id}
+    finally:
+        for sketch_id in validator._scratch_sketch_ids:
+            delete_sketch(sketch_id)
+
+
+def test_sketch_line_without_length_creates_no_constraint() -> None:
+    """The explicit-`end_point_id` path with no `length` stays exactly as
+    unconstrained as it already was before this workstream - a real,
+    deliberate scope limit (08's own "Line length" section: only a literal
+    length becomes a real dimension), not an oversight."""
+    part = Part(id="scratch-part", name="scratch", features=[])
+    validator = _PlanValidator(part)
+    steps = [
+        SketchStep(local_id="sk1", plane="XY"),
+        SketchPointStep(local_id="p1", sketch_feature_id="sk1", x=0.0, y=0.0),
+        SketchPointStep(local_id="p2", sketch_feature_id="sk1", x=10.0, y=0.0),
+        SketchLineStep(local_id="l1", sketch_feature_id="sk1", start_point_id="p1", end_point_id="p2"),
+    ]
+    try:
+        results = [validator._run_step(step) for step in steps]
+        assert all(r.ok for r in results), results
+        sketch = get_sketch_or_404(validator.resolved["sk1"].sketch_id)
+        assert not any(isinstance(c, DistanceConstraint) for c in sketch.constraints.values())
+    finally:
+        for sketch_id in validator._scratch_sketch_ids:
+            delete_sketch(sketch_id)
+
+
+def test_sketch_rectangle_width_height_create_real_axis_aligned_constraints() -> None:
+    """A literal `width`/`height` on a sketch_rectangle step must produce
+    two real, non-provisional DistanceConstraints - horizontal on
+    corner0->corner1 (`width`), vertical on corner1->corner2 (`height`) -
+    alongside (not instead of) the Horizontal/Vertical *direction*
+    constraints `add_rectangle(axis_aligned=True)` already creates for
+    those same two edges. Confirms these are genuinely orthogonal DOF (no
+    over-constraint) via a real solve, in this session's own bootstrapped
+    real py-slvs environment - 03's own "verify against real geometry, not
+    guesswork" spike discipline."""
+    part = Part(id="scratch-part", name="scratch", features=[])
+    validator = _PlanValidator(part)
+    steps = [
+        SketchStep(local_id="sk1", plane="XY"),
+        SketchPointStep(local_id="p1", sketch_feature_id="sk1", x=0.0, y=0.0),
+        SketchPointStep(local_id="p2", sketch_feature_id="sk1", x=60.0, y=0.0),
+        SketchPointStep(local_id="p3", sketch_feature_id="sk1", x=60.0, y=40.0),
+        SketchPointStep(local_id="p4", sketch_feature_id="sk1", x=0.0, y=40.0),
+        SketchRectangleStep(
+            local_id="r1",
+            sketch_feature_id="sk1",
+            corner_point_ids=["p1", "p2", "p3", "p4"],
+            width=60.0,
+            height=40.0,
+        ),
+    ]
+    try:
+        results = [validator._run_step(step) for step in steps]
+        assert all(r.ok for r in results), results
+
+        sketch = get_sketch_or_404(validator.resolved["sk1"].sketch_id)
+        distance_constraints = [c for c in sketch.constraints.values() if isinstance(c, DistanceConstraint)]
+        assert len(distance_constraints) == 2
+        by_orientation = {c.orientation: c for c in distance_constraints}
+        assert set(by_orientation) == {"horizontal", "vertical"}
+        assert by_orientation["horizontal"].distance == pytest.approx(60.0)
+        assert by_orientation["horizontal"].provisional is False
+        assert by_orientation["vertical"].distance == pytest.approx(40.0)
+        assert by_orientation["vertical"].provisional is False
+
+        # Real solve: confirms no over-constraint alongside the existing
+        # Horizontal/Vertical direction constraints (an orthogonal concern -
+        # those pin edge *direction*, these pin edge *length*).
+        result = solve_sketch(sketch)
+        assert result.converged, result
+    finally:
+        for sketch_id in validator._scratch_sketch_ids:
+            delete_sketch(sketch_id)
+
+
+def test_sketch_rectangle_without_width_height_creates_no_distance_constraint() -> None:
+    """Omitting `width`/`height` (the pre-existing default) must not create
+    any DistanceConstraint - only the Horizontal/Vertical direction
+    constraints `add_rectangle` always creates."""
+    part = Part(id="scratch-part", name="scratch", features=[])
+    validator = _PlanValidator(part)
+    steps = [
+        SketchStep(local_id="sk1", plane="XY"),
+        SketchPointStep(local_id="p1", sketch_feature_id="sk1", x=0.0, y=0.0),
+        SketchPointStep(local_id="p2", sketch_feature_id="sk1", x=60.0, y=0.0),
+        SketchPointStep(local_id="p3", sketch_feature_id="sk1", x=60.0, y=40.0),
+        SketchPointStep(local_id="p4", sketch_feature_id="sk1", x=0.0, y=40.0),
+        SketchRectangleStep(local_id="r1", sketch_feature_id="sk1", corner_point_ids=["p1", "p2", "p3", "p4"]),
+    ]
+    try:
+        results = [validator._run_step(step) for step in steps]
+        assert all(r.ok for r in results), results
+        sketch = get_sketch_or_404(validator.resolved["sk1"].sketch_id)
+        assert not any(isinstance(c, DistanceConstraint) for c in sketch.constraints.values())
+    finally:
+        for sketch_id in validator._scratch_sketch_ids:
+            delete_sketch(sketch_id)
+
+
+def test_sketch_circle_radius_point_confirms_a_real_non_provisional_radius_constraint() -> None:
+    """Circle/Arc/Ellipse/Polygon/Slot creation always confirms its own
+    auto-created *provisional* radius DistanceConstraint (`Sketch.
+    add_circle`'s own doc comment) with the entity's own real, resulting
+    radius - regardless of whether the plan step named a literal `radius`
+    field or an explicit `radius_point_id` instead, since both already fix
+    a real number via the plan's own literal Point coordinates. Without
+    this, an AI-generated Circle has zero solver-enforced radius at all
+    (`DistanceConstraint.provisional`'s own doc comment: skipped entirely
+    by the solver until confirmed) - a real correctness gap this
+    workstream closes, not just an editability nicety."""
+    part = Part(id="scratch-part", name="scratch", features=[])
+    validator = _PlanValidator(part)
+    steps = [
+        SketchStep(local_id="sk1", plane="XY"),
+        SketchPointStep(local_id="p1", sketch_feature_id="sk1", x=10.0, y=10.0),
+        SketchPointStep(local_id="p2", sketch_feature_id="sk1", x=15.0, y=10.0),
+        SketchCircleStep(local_id="c1", sketch_feature_id="sk1", center_point_id="p1", radius_point_id="p2"),
+    ]
+    try:
+        results = [validator._run_step(step) for step in steps]
+        assert all(r.ok for r in results), results
+
+        sketch = get_sketch_or_404(validator.resolved["sk1"].sketch_id)
+        circle = sketch.circles()[0]
+        constraint = sketch.constraints[circle.radius_constraint_id]
+        assert isinstance(constraint, DistanceConstraint)
+        assert constraint.provisional is False
+        assert constraint.distance == pytest.approx(5.0)
+    finally:
+        for sketch_id in validator._scratch_sketch_ids:
+            delete_sketch(sketch_id)
+
+
+# --- Existing-Part editing (docs/ai-modelling/09-existing-part-editing.md) --
+
+
+def _create_sketch_feature(part_id: str, plane: str = "XY") -> dict:
+    response = client.post(f"/document/parts/{part_id}/features/sketch", json={"plane": plane})
+    assert response.status_code == 201
+    return response.json()
+
+
+def _add_square(sketch_id: str, x0: float, y0: float, size: float) -> None:
+    """Draws a closed `size` x `size` square, bottom-left at (x0, y0), into
+    an existing (empty) real Sketch via the real /sketch API - mirrors
+    `test_stage9_extrude.py`'s own identically-named helper."""
+    corners = [
+        client.post(f"/sketch/sketches/{sketch_id}/points", json={"x": x, "y": y}).json()
+        for x, y in [(x0, y0), (x0 + size, y0), (x0 + size, y0 + size), (x0, y0 + size)]
+    ]
+    for a, b in zip(corners, corners[1:] + corners[:1]):
+        response = client.post(
+            f"/sketch/sketches/{sketch_id}/lines",
+            json={"start_point_id": a["id"], "end_point_id": b["id"]},
+        )
+        assert response.status_code == 201
+
+
+def _create_extrude_feature(part_id: str, sketch_feature_id: str, **overrides) -> dict:
+    payload = {
+        "sketch_feature_id": sketch_feature_id,
+        "extrude_type": "boss",
+        "start_distance": 0,
+        "end_distance": 10,
+        "target_body_ids": [],
+        **overrides,
+    }
+    response = client.post(f"/document/parts/{part_id}/extrude-features", json=payload)
+    assert response.status_code == 201, response.json()
+    return response.json()
+
+
+def test_existing_body_feature_referenced_as_fillet_target() -> None:
+    """A real, already-built Extrude Feature (created via the ordinary real
+    endpoint, not this plan's own steps) is a valid `edges.of` target when
+    named `existing:<real_id>` - the plan itself contains nothing but the
+    fillet step."""
+    part = _create_part()
+    sketch = _create_sketch_feature(part["id"])
+    _add_square(sketch["sketch_id"], 0.0, 0.0, 60.0)
+    extrude = _create_extrude_feature(part["id"], sketch["id"], end_distance=10.0)
+
+    response = _validate(
+        part["id"],
+        [
+            {
+                "local_id": "f1",
+                "kind": "fillet",
+                "edges": {"selector": "top_face_edges", "of": f"existing:{extrude['id']}"},
+                "radius": 2,
+            },
+        ],
+    )
+    results = _results_by_local_id(response)
+
+    assert results["f1"]["ok"] is True, results["f1"]
+    resolved_edges = results["f1"]["resolved_edges"]
+    assert resolved_edges is not None and len(resolved_edges) == 4
+    for edge in resolved_edges:
+        assert edge["body_id"].startswith(f"existing:{extrude['id']}")
+
+
+def test_existing_body_feature_mixed_with_new_local_ids_as_cut_target() -> None:
+    """A plan mixing `existing:` references with brand-new plan-local steps
+    in the same plan: a fresh Sketch/Rectangle/Extrude(cut) targets the real
+    pre-existing Body via `target_body_ids: ["existing:<real_id>"]` -
+    confirms the cut is actually resolved against the real geometry (not
+    just structurally accepted) by giving it a smaller profile fully inside
+    the existing body's own footprint, which only extrude-resolves cleanly
+    if the real body is genuinely there to cut into."""
+    part = _create_part()
+    sketch = _create_sketch_feature(part["id"])
+    _add_square(sketch["sketch_id"], 0.0, 0.0, 60.0)
+    extrude = _create_extrude_feature(part["id"], sketch["id"], end_distance=10.0)
+
+    steps = _rectangle_sketch_steps("sk2") + [
+        {
+            "local_id": "f2",
+            "kind": "extrude",
+            "sketch_feature_id": "sk2",
+            "extrude_type": "cut",
+            "start_distance": 0,
+            "end_distance": 10,
+            "target_body_ids": [f"existing:{extrude['id']}"],
+        },
+    ]
+    # `_rectangle_sketch_steps` always builds a 0,0 -> 60,40 rectangle -
+    # already fully inside the existing 60x60 square above, so the cut
+    # resolves without needing a second, differently-sized helper.
+    response = _validate(part["id"], steps)
+    results = _results_by_local_id(response)
+
+    assert results["f2"]["ok"] is True, results["f2"]
+
+
+def test_existing_sketch_feature_anchors_new_sketch_entity_steps() -> None:
+    """A whole existing Sketch, named `existing:<real_sketch_feature_id>` as
+    a `sketch_feature_id`, anchors brand-new sketch_point/sketch_rectangle/
+    extrude steps - new geometry added into an already-existing Sketch,
+    exactly like `03`'s own scope note describes. Runs `_PlanValidator`
+    directly (not the HTTP endpoint) so the real Sketch's own state is
+    inspectable both before and after - confirming the dry run's mutation
+    of it is fully undone afterward (this module's own "never mutates real
+    stored state" invariant), not just that the plan validated ok."""
+    part_dict = _create_part()
+    sketch = _create_sketch_feature(part_dict["id"])
+    sketch_id = sketch["sketch_id"]
+
+    before_point_count = len(get_sketch_or_404(sketch_id).points)
+
+    real_part = get_part_or_404(part_dict["id"])
+    existing_sketch_ref = f"existing:{sketch['id']}"
+    steps = [
+        SketchPointStep(local_id="p1", sketch_feature_id=existing_sketch_ref, x=0.0, y=0.0),
+        SketchPointStep(local_id="p2", sketch_feature_id=existing_sketch_ref, x=60.0, y=0.0),
+        SketchPointStep(local_id="p3", sketch_feature_id=existing_sketch_ref, x=60.0, y=40.0),
+        SketchPointStep(local_id="p4", sketch_feature_id=existing_sketch_ref, x=0.0, y=40.0),
+        SketchRectangleStep(
+            local_id="r1", sketch_feature_id=existing_sketch_ref, corner_point_ids=["p1", "p2", "p3", "p4"]
+        ),
+        ExtrudeStep(
+            local_id="f1",
+            sketch_feature_id=existing_sketch_ref,
+            extrude_type=ExtrudeType.BOSS,
+            start_distance=0,
+            end_distance=10,
+        ),
+    ]
+    results = _PlanValidator(real_part).run(steps)
+
+    assert all(r.ok for r in results), results
+    # The real Sketch is restored to exactly its pre-dry-run state - the
+    # new scratch points/rectangle must not have leaked into real storage.
+    after_point_count = len(get_sketch_or_404(sketch_id).points)
+    assert after_point_count == before_point_count
+
+
+def test_existing_id_on_a_wrong_kind_field_is_rejected() -> None:
+    """An existing SketchFeature (produces `sketch`, not `body`) is not a
+    valid `target_body_ids` entry - the same "right kind, not just any
+    reference" discipline `wrong_kind_reference` already enforces for
+    plan-local references, reported under its own `existing_id_not_
+    allowed_here` type since there's no plan-local `_Resolved.kind` to name
+    an "actual_kind" from."""
+    part = _create_part()
+    sketch = _create_sketch_feature(part["id"])
+
+    response = _validate(
+        part["id"],
+        _rectangle_sketch_steps("sk2")
+        + [
+            {
+                "local_id": "f1",
+                "kind": "extrude",
+                "sketch_feature_id": "sk2",
+                "extrude_type": "cut",
+                "start_distance": 0,
+                "end_distance": 10,
+                "target_body_ids": [f"existing:{sketch['id']}"],
+            },
+        ],
+    )
+    results = _results_by_local_id(response)
+
+    assert results["f1"]["ok"] is False
+    assert results["f1"]["error"]["type"] == "existing_id_not_allowed_here"
+    assert results["f1"]["error"]["field"] == "target_body_ids"
+    assert results["f1"]["error"]["actual_produces"] == "sketch"
+
+
+def test_existing_id_wrong_kind_reported_directly() -> None:
+    part = _create_part()
+    sketch = _create_sketch_feature(part["id"])
+    _add_square(sketch["sketch_id"], 0.0, 0.0, 60.0)
+    extrude = _create_extrude_feature(part["id"], sketch["id"], end_distance=10.0)
+
+    response = _validate(
+        part["id"],
+        [
+            {
+                "local_id": "f1",
+                "kind": "fillet",
+                "edges": {"selector": "top_face_edges", "of": f"existing:{sketch['id']}"},
+                "radius": 2,
+            },
+        ],
+    )
+    results = _results_by_local_id(response)
+
+    assert results["f1"]["ok"] is False
+    assert results["f1"]["error"]["type"] == "existing_id_not_allowed_here"
+    assert results["f1"]["error"]["actual_produces"] == "sketch"
+    # Confirms the real extrude Feature above was never itself the problem -
+    # it's specifically the sketch that's the wrong produces-kind here.
+    assert extrude["produces"] == "body"
+
+
+def test_unknown_existing_id_is_rejected() -> None:
+    part = _create_part()
+
+    response = _validate(
+        part["id"],
+        [
+            {
+                "local_id": "f1",
+                "kind": "fillet",
+                "edges": {"selector": "top_face_edges", "of": "existing:not-a-real-feature-id"},
+                "radius": 2,
+            },
+        ],
+    )
+    results = _results_by_local_id(response)
+
+    assert results["f1"]["ok"] is False
+    assert results["f1"]["error"]["type"] == "unknown_existing_id"
+
+
+def test_step_local_id_cannot_itself_use_the_existing_prefix() -> None:
+    part = _create_part()
+
+    response = _validate(
+        part["id"],
+        [{"local_id": "existing:sneaky", "kind": "sketch", "plane": "XY"}],
+    )
+    results = _results_by_local_id(response)
+
+    assert results["existing:sneaky"]["ok"] is False
+    assert results["existing:sneaky"]["error"]["type"] == "reserved_local_id_prefix"

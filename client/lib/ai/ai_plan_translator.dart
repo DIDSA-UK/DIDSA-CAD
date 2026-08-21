@@ -197,6 +197,24 @@ const Map<Type, String> _entityTypeForStepType = {
 
 double _degToRad(double degrees) => degrees * math.pi / 180.0;
 
+/// Existing-Part editing (docs/ai-modelling/09-existing-part-editing.md):
+/// the `existing:<id>` convention's client-side resolution. A local_id
+/// naming a real, already-built Feature (rather than an earlier step in
+/// *this* plan) carries its real Feature id verbatim after the prefix -
+/// `existing:<id>` always means Feature id `<id>`, exactly the same real
+/// id [DocumentApiClient.listFeatures] already returned it under - so no
+/// lookup is needed for `ids` (the plan-local-id -> real-Feature/entity-id
+/// map), just a strip. Every `ids[localId]!` call site in [_executeStep]
+/// (and its own helpers) goes through this instead - see `sketchIds`'s own
+/// pre-seeding in [PlanTranslator.execute] for why `sketchIds[localId]!`
+/// call sites need no equivalent change: `existing:<sketch_feature_id>`
+/// resolves to a real *Sketch* id, not a Feature id, so stripping the
+/// prefix would give the wrong value there - pre-seeding the map under
+/// that exact key instead keeps every existing `sketchIds[...]!` call site
+/// correct unmodified.
+String _resolveId(String localId, Map<String, String> ids) =>
+    localId.startsWith('existing:') ? localId.substring('existing:'.length) : ids[localId]!;
+
 class PlanTranslator {
   final DocumentApiClient documentApi;
   final SketchApiClient sketchApi;
@@ -213,6 +231,7 @@ class PlanTranslator {
   Future<PlanTranslationResult> execute({
     required AiGenerationPlan plan,
     required String partId,
+    List<FeatureDto> existingFeatures = const [],
     void Function(int index, TranslationStepStatus status)? onStepStatusChanged,
   }) async {
     final validation = await documentApi.validateAiPlan(partId, plan.toJson());
@@ -225,7 +244,18 @@ class PlanTranslator {
     };
 
     final localIdToRealId = <String, String>{};
-    final sketchIdByLocalId = <String, String>{};
+    // Existing-Part editing: an `existing:<feature_id>` naming a real
+    // SketchFeature must resolve to that Sketch's own real id wherever a
+    // step reads `sketchIds[...]` (every sketch-entity step's own
+    // `sketch_feature_id`) - pre-seeded here under the exact
+    // `existing:<feature_id>` key so those call sites work completely
+    // unmodified, the same way `sketchIdByLocalId` is otherwise only ever
+    // populated as a brand-new `AiSketchStep` executes. Harmless (never
+    // read) for a fresh-Part generation, where [existingFeatures] is empty.
+    final sketchIdByLocalId = <String, String>{
+      for (final f in existingFeatures)
+        if (f.produces == 'sketch' && f.sketchId != null) 'existing:${f.id}': f.sketchId!,
+    };
     final createdFeatureIds = <String>[];
 
     for (var i = 0; i < plan.steps.length; i++) {
@@ -290,6 +320,25 @@ class PlanTranslator {
     }
   }
 
+  /// AI Modelling's dimension-driven-sketches workstream (`docs/ai-
+  /// modelling/08-dimension-driven-sketches.md`): Circle/Arc/Ellipse/
+  /// Polygon/Slot creation already auto-creates their own size-defining
+  /// `DistanceConstraint` *provisional* (skipped entirely by the solver
+  /// until a real value is confirmed - see the backend `DistanceConstraint.
+  /// provisional`'s own doc comment), exactly like a human's freshly-drawn,
+  /// not-yet-dimensioned shape. This confirms it with the entity's own
+  /// just-created radius via the same PATCH endpoint the dimension bar
+  /// itself calls (`SketchApiClient.updateConstraintValue`) - turning "no
+  /// real dimension at all" into a real, editable one at the AI's own
+  /// intended size, in one call. [constraintId] is nullable only for the
+  /// same test/back-compat reason the DTOs themselves keep it nullable
+  /// (see e.g. [CircleDto.radiusConstraintId]'s own doc comment) - always
+  /// present on a real backend response.
+  Future<void> _confirmRadius(String sketchId, String? constraintId, double value) async {
+    if (constraintId == null) return;
+    await sketchApi.updateConstraintValue(sketchId, constraintId, value);
+  }
+
   Future<String> _executeStep(
     AiPlanStep step, {
     required AiGenerationPlan plan,
@@ -303,7 +352,7 @@ class PlanTranslator {
         final feature = await documentApi.createSketchFeature(
           partId,
           plane: step.plane?.wireValue,
-          planeFeatureId: step.planeFeatureId == null ? null : ids[step.planeFeatureId!],
+          planeFeatureId: step.planeFeatureId == null ? null : _resolveId(step.planeFeatureId!, ids),
         );
         sketchIds[step.localId] = feature.sketchId!;
         return feature.id;
@@ -314,10 +363,10 @@ class PlanTranslator {
 
       case AiSketchLineStep():
         final sketchId = sketchIds[step.sketchFeatureId]!;
-        final startId = ids[step.startPointId]!;
+        final startId = _resolveId(step.startPointId, ids);
         String endId;
         if (step.endPointId != null) {
-          endId = ids[step.endPointId!]!;
+          endId = _resolveId(step.endPointId!, ids);
         } else {
           final start = _pointXY(plan, step.startPointId);
           final rad = _degToRad(step.angle!);
@@ -329,14 +378,30 @@ class PlanTranslator {
           endId = end.id;
         }
         final line = await sketchApi.createLine(sketchId, startId, endId, construction: step.construction);
+        // 08's own "Line length": unlike Circle/Arc/Ellipse/Polygon/Slot, a
+        // Line has no automatic size-defining constraint at all - only add
+        // one when the plan itself named a literal length. `angle`-only
+        // dimensioning is a real, deliberate v1-of-this-workstream gap (no
+        // second reference line exists yet to constrain an angle against) -
+        // see that doc's own note.
+        if (step.length != null) {
+          await sketchApi.createDistanceConstraint(
+            sketchId,
+            line.startPointId,
+            line.endPointId,
+            step.length!,
+            orientation: 'linear',
+            provisional: false,
+          );
+        }
         return line.id;
 
       case AiSketchCircleStep():
         final sketchId = sketchIds[step.sketchFeatureId]!;
-        final centerId = ids[step.centerPointId]!;
+        final centerId = _resolveId(step.centerPointId, ids);
         String radiusPointId;
         if (step.radiusPointId != null) {
-          radiusPointId = ids[step.radiusPointId!]!;
+          radiusPointId = _resolveId(step.radiusPointId!, ids);
         } else {
           final center = _pointXY(plan, step.centerPointId);
           final radiusPoint = step.angle == null
@@ -349,15 +414,16 @@ class PlanTranslator {
           radiusPointId = radiusPoint.id;
         }
         final circle = await sketchApi.createCircle(sketchId, centerId, radiusPointId, construction: step.construction);
+        await _confirmRadius(sketchId, circle.radiusConstraintId, circle.radius);
         return circle.id;
 
       case AiSketchArcStep():
         final sketchId = sketchIds[step.sketchFeatureId]!;
-        final centerId = ids[step.centerPointId]!;
-        final startId = ids[step.startPointId]!;
+        final centerId = _resolveId(step.centerPointId, ids);
+        final startId = _resolveId(step.startPointId, ids);
         String endId;
         if (step.endPointId != null) {
-          endId = ids[step.endPointId!]!;
+          endId = _resolveId(step.endPointId!, ids);
         } else {
           final center = _pointXY(plan, step.centerPointId);
           final start = _pointXY(plan, step.startPointId);
@@ -371,14 +437,15 @@ class PlanTranslator {
           endId = end.id;
         }
         final arc = await sketchApi.createArc(sketchId, centerId, startId, endId, construction: step.construction);
+        await _confirmRadius(sketchId, arc.radiusConstraintId, arc.radius);
         return arc.id;
 
       case AiSketchEllipseStep():
         final sketchId = sketchIds[step.sketchFeatureId]!;
-        final centerId = ids[step.centerPointId]!;
+        final centerId = _resolveId(step.centerPointId, ids);
         String majorPointId;
         if (step.majorPointId != null) {
-          majorPointId = ids[step.majorPointId!]!;
+          majorPointId = _resolveId(step.majorPointId!, ids);
         } else {
           final center = _pointXY(plan, step.centerPointId);
           final rad = _degToRad(step.angle!);
@@ -396,46 +463,79 @@ class PlanTranslator {
           step.minorRadius,
           construction: step.construction,
         );
+        await _confirmRadius(sketchId, ellipse.majorConstraintId, ellipse.majorRadius);
+        await _confirmRadius(sketchId, ellipse.minorConstraintId, ellipse.minorRadius);
         return ellipse.id;
 
       case AiSketchPolygonStep():
+        final polygonSketchId = sketchIds[step.sketchFeatureId]!;
         final polygon = await sketchApi.createPolygon(
-          sketchIds[step.sketchFeatureId]!,
-          ids[step.centerPointId]!,
-          ids[step.firstVertexPointId]!,
+          polygonSketchId,
+          _resolveId(step.centerPointId, ids),
+          _resolveId(step.firstVertexPointId, ids),
           step.sides,
           construction: step.construction,
           referenceCircles: step.referenceCircles,
         );
+        await _confirmRadius(polygonSketchId, polygon.radiusConstraintId, polygon.radius);
         return polygon.id;
 
       case AiSketchSlotStep():
+        final slotSketchId = sketchIds[step.sketchFeatureId]!;
         final slot = await sketchApi.createSlot(
-          sketchIds[step.sketchFeatureId]!,
-          ids[step.center1PointId]!,
-          ids[step.center2PointId]!,
+          slotSketchId,
+          _resolveId(step.center1PointId, ids),
+          _resolveId(step.center2PointId, ids),
           step.radius,
           construction: step.construction,
         );
+        await _confirmRadius(slotSketchId, slot.radiusConstraintId, slot.radius);
         return slot.id;
 
       case AiSketchRectangleStep():
+        final rectangleSketchId = sketchIds[step.sketchFeatureId]!;
+        final cornerIds = [for (final p in step.cornerPointIds) _resolveId(p, ids)];
         final rectangle = await sketchApi.createRectangle(
-          sketchIds[step.sketchFeatureId]!,
-          [for (final p in step.cornerPointIds) ids[p]!],
+          rectangleSketchId,
+          cornerIds,
           axisAligned: step.axisAligned,
           construction: step.construction,
         );
+        // 08's own "Rectangle width/height": corner0->corner1 is width,
+        // corner1->corner2 is height - the same two edges `axisAligned`
+        // already pins Horizontal/Vertical, so a "horizontal"/"vertical"-
+        // orientation dimension here is an orthogonal DOF, never redundant
+        // with those direction constraints. A non-axis-aligned rectangle
+        // has no global horizontal/vertical to pin, so a plain "linear"
+        // distance is used instead - still that edge's own real length.
+        if (step.width != null) {
+          await sketchApi.createDistanceConstraint(
+            rectangleSketchId,
+            cornerIds[0],
+            cornerIds[1],
+            step.width!,
+            orientation: step.axisAligned ? 'horizontal' : 'linear',
+          );
+        }
+        if (step.height != null) {
+          await sketchApi.createDistanceConstraint(
+            rectangleSketchId,
+            cornerIds[1],
+            cornerIds[2],
+            step.height!,
+            orientation: step.axisAligned ? 'vertical' : 'linear',
+          );
+        }
         return rectangle.id;
 
       case AiExtrudeStep():
         final feature = await documentApi.createExtrudeFeature(
           partId,
-          sketchFeatureId: ids[step.sketchFeatureId]!,
+          sketchFeatureId: _resolveId(step.sketchFeatureId, ids),
           extrudeType: step.extrudeType.wireValue,
           startDistance: step.startDistance,
           endDistance: step.endDistance,
-          targetBodyIds: [for (final t in step.targetBodyIds) ids[t]!],
+          targetBodyIds: [for (final t in step.targetBodyIds) _resolveId(t, ids)],
           profileRefs: _entityRefs(plan, ids, sketchIds, step.profileRefs),
         );
         return feature.id;
@@ -443,11 +543,11 @@ class PlanTranslator {
       case AiRevolveStep():
         final feature = await documentApi.createRevolveFeature(
           partId,
-          sketchFeatureId: ids[step.sketchFeatureId]!,
+          sketchFeatureId: _resolveId(step.sketchFeatureId, ids),
           axisRef: _entityRef(plan, ids, sketchIds, step.axisRef),
           angle: step.angle,
           mode: step.mode.wireValue,
-          targetBodyIds: [for (final t in step.targetBodyIds) ids[t]!],
+          targetBodyIds: [for (final t in step.targetBodyIds) _resolveId(t, ids)],
           profileRefs: _entityRefs(plan, ids, sketchIds, step.profileRefs),
         );
         return feature.id;
@@ -455,10 +555,10 @@ class PlanTranslator {
       case AiSweepStep():
         final feature = await documentApi.createSweepFeature(
           partId,
-          sketchFeatureId: ids[step.sketchFeatureId]!,
+          sketchFeatureId: _resolveId(step.sketchFeatureId, ids),
           pathRefs: _entityRefs(plan, ids, sketchIds, step.pathRefs),
           mode: step.mode.wireValue,
-          targetBodyIds: [for (final t in step.targetBodyIds) ids[t]!],
+          targetBodyIds: [for (final t in step.targetBodyIds) _resolveId(t, ids)],
           profileRefs: _entityRefs(plan, ids, sketchIds, step.profileRefs),
         );
         return feature.id;
@@ -484,7 +584,7 @@ class PlanTranslator {
       case AiPatternStep():
         final feature = await documentApi.createPatternFeature(
           partId,
-          sourceBodyIds: [for (final s in step.sourceBodyIds) ids[s]!],
+          sourceBodyIds: [for (final s in step.sourceBodyIds) _resolveId(s, ids)],
           patternType: step.patternType.wireValue,
           direction1: _patternDirectionRef(plan, ids, sketchIds, step.direction1),
           count1: step.count1,
@@ -500,20 +600,21 @@ class PlanTranslator {
           reverseAngular: step.reverseAngular,
           skipIndices: step.skipIndices,
           merge: step.merge == AiMergeMode.fuseIntoOne ? MergeMode.fuseIntoOne : MergeMode.keepSeparate,
-          toolFeatureId: step.toolFeatureId == null ? null : ids[step.toolFeatureId!],
+          toolFeatureId: step.toolFeatureId == null ? null : _resolveId(step.toolFeatureId!, ids),
         );
         return feature.id;
 
       case AiMirrorStep():
         final feature = await documentApi.createMirrorFeature(
           partId,
-          sourceBodyIds: [for (final s in step.sourceBodyIds) ids[s]!],
+          sourceBodyIds: [for (final s in step.sourceBodyIds) _resolveId(s, ids)],
           mirrorPlane: PlaneRefDto(
             fixedPlane: step.mirrorPlane.fixedPlane?.wireValue,
-            planeFeatureId: step.mirrorPlane.planeFeatureId == null ? null : ids[step.mirrorPlane.planeFeatureId!],
+            planeFeatureId:
+                step.mirrorPlane.planeFeatureId == null ? null : _resolveId(step.mirrorPlane.planeFeatureId!, ids),
           ),
           merge: step.merge == AiMergeMode.fuseIntoOne ? MergeMode.fuseIntoOne : MergeMode.keepSeparate,
-          toolFeatureId: step.toolFeatureId == null ? null : ids[step.toolFeatureId!],
+          toolFeatureId: step.toolFeatureId == null ? null : _resolveId(step.toolFeatureId!, ids),
         );
         return feature.id;
 
@@ -555,7 +656,7 @@ class PlanTranslator {
     return SketchEntityRefDto(
       sketchId: sketchIds[sketchFeatureLocalId]!,
       entityType: entityType,
-      entityId: ids[localId]!,
+      entityId: _resolveId(localId, ids),
     );
   }
 
@@ -625,5 +726,5 @@ _Point _pointXY(AiGenerationPlan plan, String localId) {
 /// verbatim.
 SubShapeRefDto _realSubShapeRef(String of, SubShapeRefDto planEdge, Map<String, String> ids) {
   final suffix = planEdge.bodyId.substring(of.length);
-  return SubShapeRefDto(bodyId: '${ids[of]!}$suffix', shapeType: planEdge.shapeType, index: planEdge.index);
+  return SubShapeRefDto(bodyId: '${_resolveId(of, ids)}$suffix', shapeType: planEdge.shapeType, index: planEdge.index);
 }

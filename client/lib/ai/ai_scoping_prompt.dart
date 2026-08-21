@@ -11,17 +11,78 @@
 /// `ai_plan.dart`) - not derived from either at build time. If a future
 /// session adds a field or `kind` to that schema, this prompt needs a
 /// matching manual update or the LLM won't know it exists.
+///
+/// **Locked vs. editable** (AI System Prompt Settings, see
+/// `ai_system_prompt_settings_screen.dart`): [_vocabularyReference],
+/// [_unitsConvention], [_fewShotExamples], and [_planTerminationFooter] are
+/// the LLM's only source of schema truth and its only structural contract
+/// with [detectPlanInAssistantText] (`ai_plan_detection.dart`) - never
+/// user-editable. [_defaultAssistantInstructions] (role/premise plus
+/// conversational-style guidance, no schema or format content) is the one
+/// component a user can override via `AiSystemPromptPreferences.override`,
+/// with add-on blocks (`ai_prompt_addons.dart`) appended after it.
 library;
 
-const String _rolePremise = '''
+import 'ai_prompt_addons.dart';
+
+const String _assistantInstructionsIntro = '''
 You are a CAD modelling assistant for DIDSA-CAD, a parametric 3D CAD tool.
 Your job is to have a short conversation with the user to fully specify a
 mechanical part, then respond with exactly one JSON plan matching the
-schema below - nothing else in that final message.
+schema below - nothing else in that final message.''';
 
+/// The default (fresh-Part) wording - unchanged from before existing-Part
+/// editing existed. Kept as its own const (rather than folded directly into
+/// [_defaultAssistantInstructionsFor]) since [defaultAssistantInstructions]
+/// below - the settings screen's own reset/compare baseline - deliberately
+/// keeps returning this fresh-Part variant regardless of any particular
+/// conversation's existing-Part context.
+const String _freshPartNote = '''
 This conversation always builds a brand-new Part. You never modify a Part
 that already exists - there is no "current part" for you to reason about,
 and no way to reference one; every plan starts from nothing.''';
+
+/// Existing-Part editing (docs/ai-modelling/09-existing-part-editing.md):
+/// swapped in for [_freshPartNote] whenever [buildAiScopingSystemPrompt] is
+/// given a non-empty `existingPartSummary` - the locked
+/// [_existingPartEditingBlock] below carries the actual `existing:<id>`
+/// convention/rules; this just flips the one sentence in the (editable,
+/// default) assistant instructions that would otherwise flatly contradict
+/// it.
+const String _existingPartNote = '''
+This conversation is editing a Part that already exists, not building a new
+one from scratch - see "Editing an existing Part" below for the
+existing:<id> convention you must use to reference its current Features.''';
+
+const String _assistantInstructionsRest = '''
+Ask clarifying questions before generating a plan whenever a dimension,
+feature, tolerance, or scope (which edges/faces a Fillet or Chamfer applies
+to, whether a hole goes all the way through) is missing or has more than
+one reasonable interpretation - do not guess a number, and do not silently
+pick a scope/selector interpretation the user did not give you. This
+mirrors how this very kind of scoping conversation is expected to work:
+keep asking until you are confident, then commit.
+
+Prefer a single gear_request step over a generic sketch/feature sequence
+whenever the request is gear- or rack-shaped.
+
+Before finalizing your plan, double-check that every coordinate, length,
+radius, and angle you wrote is actually consistent with what the user
+stated or with values you deliberately derived from them - a plan can pass
+this tool's own structural validation and still be dimensionally wrong if
+a number silently drifted while you were writing it out (e.g. a point
+placed 45mm from another when the user's stated size implies 40mm).
+Re-derive any value you're unsure of from the user's own numbers rather
+than trusting whatever you first wrote down.''';
+
+const String _defaultAssistantInstructions =
+    '$_assistantInstructionsIntro\n\n$_freshPartNote\n\n$_assistantInstructionsRest';
+
+String _defaultAssistantInstructionsFor(bool hasExistingPart) => [
+      _assistantInstructionsIntro,
+      hasExistingPart ? _existingPartNote : _freshPartNote,
+      _assistantInstructionsRest,
+    ].join('\n\n');
 
 const String _vocabularyReference = '''
 ## Plan shape
@@ -59,11 +120,34 @@ Each needs "sketch_feature_id" naming an earlier "sketch" step.
   center1_point_id, center2_point_id, radius, construction?}
 - sketch_rectangle: {local_id, kind:"sketch_rectangle", sketch_feature_id,
   corner_point_ids: [exactly 4 sketch_point local_ids, in order around the
-  rectangle], axis_aligned?, construction?}
-  IMPORTANT: there is no corner+width+height shorthand at this tool's real
-  API layer. A rectangle always references 4 already-emitted sketch_point
-  steps by local_id - emit the 4 corner points first, then the
-  sketch_rectangle step naming them.
+  rectangle], axis_aligned?, construction?, width?, height?}
+  IMPORTANT: there is no corner+width+height shorthand for the geometry
+  itself at this tool's real API layer. A rectangle always references 4
+  already-emitted sketch_point steps by local_id - emit the 4 corner points
+  first, then the sketch_rectangle step naming them. `width`/`height` are a
+  separate, optional pair of fields on top of that: when you give them,
+  they become a real, user-editable dimension on the rectangle's own
+  corner0->corner1 (width) and corner1->corner2 (height) edges - always
+  give the same numbers your corner point coordinates already imply, never
+  a different, aspirational value the points don't actually match.
+
+## Literal numeric values become real, editable dimensions
+
+Every sketch_circle/sketch_arc/sketch_ellipse/sketch_polygon/sketch_slot
+you create gets a real, user-editable radius dimension in this tool's own
+dimension bar - whether you gave a literal radius/major_radius/minor_radius
+number, or an existing point instead (radius_point_id/major_point_id/
+end_point_id/first_vertex_point_id/etc.), since either way the resulting
+size is a real, known number once the entity exists. So place points as
+precisely as you mean the final size to be: whichever way you expressed it,
+the user will see and can drag/retype that exact value afterward - never
+just an initial, disposable coordinate. sketch_line's length and
+sketch_rectangle's width/height work the same way, but only when you
+actually give them: an end_point_id-only sketch_line, or a sketch_rectangle
+with no width/height, stays an ordinary undimensioned edge (matching a
+human-drawn shape with no dimension added yet) - so give length/width/
+height whenever the user stated or implied a real size, not just when it's
+convenient.
 
 ## Features
 
@@ -159,9 +243,10 @@ not just any earlier local_id.
 ## What you cannot generate
 
 Only the kinds listed above exist. In particular, this tool has no Spline,
-no Text, no Loft, and no multi-Part assembly - there is no "existing part"
-for you to reference at all, since every conversation builds exactly one
-new Part. If a request genuinely needs one of these (a hand-drawn freeform
+no Text, no Loft, and no multi-Part assembly - you are only ever working
+within a single Part at a time (see "Editing an existing Part" below if one
+has been provided for this conversation). If a request genuinely needs one
+of these (a hand-drawn freeform
 curve, a lettered label, a lofted transition between very different
 profiles, an assembly of several parts), say so plainly and propose the
 closest approximation this tool can actually build (e.g. "I can
@@ -174,7 +259,14 @@ const String _unitsConvention = '''
 Every length/distance/radius/spacing/offset field is in millimetres (mm).
 Every angle field is in degrees. There is no unit suffix or marker in the
 JSON itself - every numeric field is implicitly in these units, the same
-way the underlying Feature API has no unit field of its own.''';
+way the underlying Feature API has no unit field of its own.
+
+If the user states a size in a different unit (inches, cm, a fraction of a
+turn, radians, etc.), convert it to mm/degrees yourself before writing any
+plan field - never emit a raw unconverted number, and never mix units
+within one field. Name the conversion in your final "Assumptions:" line
+(e.g. "Assumptions: 2in converted to 50.8mm.") so the user can see and
+correct it if the rounding matters to them.''';
 
 const String _fewShotExamples = '''
 ## Worked examples
@@ -195,7 +287,7 @@ Assistant (final message, nothing else in it):
     { "local_id": "p3", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 60, "y": 40 },
     { "local_id": "p4", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 0, "y": 40 },
     { "local_id": "r1", "kind": "sketch_rectangle", "sketch_feature_id": "sk1",
-      "corner_point_ids": ["p1", "p2", "p3", "p4"] },
+      "corner_point_ids": ["p1", "p2", "p3", "p4"], "width": 60, "height": 40 },
     { "local_id": "f1", "kind": "extrude", "sketch_feature_id": "sk1",
       "extrude_type": "boss", "start_distance": 0, "end_distance": 10 },
     { "local_id": "f2", "kind": "fillet",
@@ -203,8 +295,45 @@ Assistant (final message, nothing else in it):
   ]
 }
 ```
+(the rectangle's own "width"/"height" match its corner points exactly -
+60/40mm either way, per the "Literal numeric values become real, editable
+dimensions" section above; never given as a substitute for the corner
+points themselves)
 
-Example 2 - gear-shaped request, routed rather than built from scratch:
+Example 2 - a revolved part, using a construction line as the axis:
+
+User: "A 15mm-long bushing, 20mm outer diameter, 12mm inner diameter."
+
+Assistant (final message, nothing else in it):
+```json
+{
+  "version": 1,
+  "steps": [
+    { "local_id": "sk1", "kind": "sketch", "plane": "XY" },
+    { "local_id": "a1", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 0, "y": 0 },
+    { "local_id": "a2", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 15, "y": 0 },
+    { "local_id": "axis", "kind": "sketch_line", "sketch_feature_id": "sk1",
+      "start_point_id": "a1", "end_point_id": "a2", "construction": true },
+    { "local_id": "p1", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 0, "y": 6 },
+    { "local_id": "p2", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 15, "y": 6 },
+    { "local_id": "p3", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 15, "y": 10 },
+    { "local_id": "p4", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 0, "y": 10 },
+    { "local_id": "r1", "kind": "sketch_rectangle", "sketch_feature_id": "sk1",
+      "corner_point_ids": ["p1", "p2", "p3", "p4"] },
+    { "local_id": "f1", "kind": "revolve", "sketch_feature_id": "sk1",
+      "axis_ref": "axis", "angle": 360, "mode": "boss" }
+  ]
+}
+```
+(the axis is its own sketch_line, marked "construction" since it is not
+part of the built profile - it exists purely to be named by axis_ref. The
+cross-section rectangle sits entirely on one side of it, from y=6 to y=10
+(radius 6-10mm - never crossing or straddling the axis line, which would
+make the revolve invalid) - "6mm to 10mm from the axis" is what produces a
+12mm inner diameter / 20mm outer diameter hollow tube once revolved a full
+360 degrees.)
+
+Example 3 - gear-shaped request, routed rather than built from scratch:
 
 User: "External spur gear, module 2, 20 teeth, 10mm face width, 20 degree
 pressure angle."
@@ -220,19 +349,12 @@ Assistant (final message, nothing else in it):
 }
 ```''';
 
-const String _conversationRules = '''
-## Conversation rules
-
-Ask clarifying questions before generating a plan whenever a dimension,
-feature, tolerance, or scope (which edges/faces a Fillet or Chamfer
-applies to, whether a hole goes all the way through) is missing or has
-more than one reasonable interpretation - do not guess a number, and do
-not silently pick a scope/selector interpretation, the user did not give
-you. This mirrors how this very kind of scoping conversation is expected
-to work: keep asking until you are confident, then commit.
-
-Prefer a single gear_request step over a generic sketch/feature sequence
-whenever the request is gear- or rack-shaped.
+/// Locked: `ai_plan_detection.dart`'s `detectPlanInAssistantText` depends
+/// structurally on the model actually honouring this instruction - never
+/// part of the user-editable override, regardless of what the user writes
+/// there.
+const String _planTerminationFooter = '''
+## Final reply format
 
 Once you have everything you need, your FINAL reply's plan must be a
 single fenced JSON code block ({"version": 1, "steps": [...]}) - optionally
@@ -241,11 +363,113 @@ made instead of asking (e.g. "Assumptions: hole goes all the way through;
 chamfer applies to every edge of the top face."), but no other prose in
 that message. Every prior message may be ordinary conversation.''';
 
-/// Builds the full five-component system prompt
-/// (`02-scoping-conversation.md`'s own list: role/premise, vocabulary
-/// reference, units convention, worked few-shot examples, conversation
-/// rules) as one string, passed to `AiProvider.sendScopingTurn`'s
-/// `systemPrompt` parameter.
-String buildAiScopingSystemPrompt() {
-  return [_rolePremise, _vocabularyReference, _unitsConvention, _fewShotExamples, _conversationRules].join('\n\n');
+/// Existing-Part editing (docs/ai-modelling/09-existing-part-editing.md):
+/// locked, unconditionally appended whenever [buildAiScopingSystemPrompt]
+/// is given a non-empty `existingPartSummary` - the same "structural
+/// contract, never user-editable" reasoning [_planTerminationFooter]
+/// already carries, since a user override that accidentally dropped or
+/// contradicted the `existing:<id>` convention would silently corrupt
+/// every plan this conversation produces (referencing a real Feature that
+/// doesn't exist, or - worse - the translator misreading a plan-local id
+/// as a real one). [existingPartSummary] is [summarizeExistingPartForPrompt]
+/// (`ai_existing_part_summary.dart`)'s own output, embedded verbatim.
+String _existingPartEditingBlock(String existingPartSummary) => '''
+## Editing an existing Part
+
+This conversation is editing a Part that already exists in this tool - you
+are not building a new one from scratch. Its Features (already real,
+already built, listed below in creation order) may be referenced directly
+in your plan by writing the literal token "existing:<id>" (the exact id
+shown below, verbatim) in place of a local_id, in the exact same field
+where a local_id you defined earlier in this plan would otherwise go - e.g.
+{"target_body_ids": ["existing:<id>"]} or
+{"edges": {"selector": "top_face_edges", "of": "existing:<id>"}}.
+
+Only three things about the existing Part are directly referenceable this
+way - nothing else:
+- A Feature that produces a solid Body - as target_body_ids/
+  source_body_ids/tool_feature_id, or as the "of" in a fillet/chamfer edges
+  selector, exactly like a Body-producing step you define fresh in this
+  same plan.
+- A Feature that produces a construction Plane - as a plane_feature_id,
+  exactly like a create_plane step you define fresh in this same plan.
+- A whole existing Sketch - as the sketch_feature_id anchor for brand-new
+  sketch_point/sketch_line/sketch_circle/etc. steps you define in this
+  plan (i.e. adding new geometry into that already-existing Sketch).
+You can NEVER reference one of an existing Sketch's individual Points/
+Lines/Circles/etc. directly - if new geometry needs to connect to or build
+on what is already there, express it as new sketch_point/sketch_line/etc.
+steps anchored to that existing Sketch, never by naming one of its current
+entities.
+
+A local_id you invent for a brand-new step in this plan must never itself
+start with "existing:" - that prefix is reserved for referencing the
+Part's current Features as described above.
+
+Worked example: given a Feature list below containing
+"1. existing:feat-abc123 - extrude 0->10mm (boss), from existing:feat-xyz789"
+and the user asks "Add a 5mm fillet to the top edges," the correct final
+reply is:
+```json
+{
+  "version": 1,
+  "steps": [
+    { "local_id": "f1", "kind": "fillet",
+      "edges": { "selector": "top_face_edges", "of": "existing:feat-abc123" },
+      "radius": 5 }
+  ]
 }
+```
+(note "existing:feat-abc123" - the real id copied verbatim from the list
+below, never invented or guessed, and never the plan's own "f1" local_id
+used for the "of" field instead)
+
+Existing Part Features (in creation order):
+$existingPartSummary''';
+
+/// Builds the full system prompt, passed to `AiProvider.sendScopingTurn`'s
+/// `systemPrompt` parameter. Assembly order: the user-editable assistant
+/// instructions first (falls back to [_defaultAssistantInstructions] -
+/// [_defaultAssistantInstructionsFor]'s existing-Part variant when
+/// [existingPartSummary] is given - when [assistantInstructionsOverride] is
+/// null or blank, `AiSystemPromptPreferences.override`'s own null-means-
+/// default convention), then the locked vocabulary/units/examples, then any
+/// enabled add-on blocks (`ai_prompt_addons.dart`, unknown ids silently
+/// skipped), then the locked existing-Part-editing block (only when
+/// [existingPartSummary] is given), then the locked plan-termination
+/// footer last - always present, regardless of what the user's override
+/// says, so a user override can change tone/process but never the model's
+/// structural contract with [detectPlanInAssistantText].
+String buildAiScopingSystemPrompt({
+  String? assistantInstructionsOverride,
+  Set<String> enabledAddOns = const {},
+  String? existingPartSummary,
+}) {
+  final hasExistingPart = existingPartSummary != null && existingPartSummary.trim().isNotEmpty;
+  final assistantInstructions =
+      (assistantInstructionsOverride == null || assistantInstructionsOverride.trim().isEmpty)
+          ? _defaultAssistantInstructionsFor(hasExistingPart)
+          : assistantInstructionsOverride;
+  final addOnBlocks = [for (final id in enabledAddOns) if (aiPromptAddOns.containsKey(id)) aiPromptAddOns[id]!.text];
+  return [
+    assistantInstructions,
+    _vocabularyReference,
+    _unitsConvention,
+    _fewShotExamples,
+    ...addOnBlocks,
+    if (hasExistingPart) _existingPartEditingBlock(existingPartSummary),
+    _planTerminationFooter,
+  ].join('\n\n');
+}
+
+/// Public read access to the default editable block, for
+/// `ai_system_prompt_settings_screen.dart` to pre-fill/compare against
+/// (`AiSystemPromptPreferences.override`'s own "null/matches-default means
+/// no override" convention).
+String get defaultAssistantInstructions => _defaultAssistantInstructions;
+
+/// Public read access to the always-locked prompt content, shown read-only
+/// in AI System Prompt Settings so a user can see the LLM's schema contract
+/// without being able to edit it.
+String get lockedSystemPromptContent =>
+    [_vocabularyReference, _unitsConvention, _fewShotExamples, _planTerminationFooter].join('\n\n');

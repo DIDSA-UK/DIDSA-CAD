@@ -187,3 +187,51 @@ that doesn't expose this. Deliberately outside the OpenAI-compatible
 unification `OpenAiCompatibleProvider` itself relies on — this fetch is a
 settings-screen-only nicety, never part of the actual chat-completion
 call path.
+
+## Addendum: default to the free Gemini preset (2026-08-20, second session)
+
+Asked directly: given this tool's current feature set (image upload,
+engineering-drawing interpretation, structured CAD plan output), which
+free model should drive it by default? **Google Gemini** (`gemini-2.5-flash`,
+via its OpenAI-compatible endpoint, the same preset workstream 1 already
+shipped) — genuinely free through Google AI Studio, natively multimodal
+(handles a photographed/hand-drawn sketch directly, not through a separate
+OCR step), and the model this app's own prompt engineering has already
+been dogfooded and tuned against (`03`'s documented hallucinated-thickness
+failure, since fixed by `07`'s addendum). Groq's free tier is faster but
+its open-weight vision models lag well behind Gemini specifically at
+reading dimensioned technical drawings; Ollama Cloud has no free tier at
+all.
+
+Previously a first-time user had to click the "Gemini" preset button,
+*then* separately fill in a model name and tick the vision checkbox by
+hand, before pasting their key — three extra steps a fresh install
+shouldn't need. Now:
+
+- On a genuinely fresh local slot (nothing ever saved —
+  `AiProviderPreferences.localBaseUrl` still its own empty default),
+  `AiProviderSettingsScreen._load()` pre-fills the baseUrl, model
+  (`gemini-2.5-flash`), and vision checkbox to the same values the Gemini
+  preset button produces. A real saved value (any provider, any prior
+  local baseUrl) is never touched — this only fires on the true first-run
+  empty case.
+- The Gemini preset button itself now also fills the model field and
+  checks vision (previously baseUrl-only), so re-applying it later (e.g.
+  after trying a different local endpoint) is a single click again, not
+  three fields.
+- The synthetic first-run pre-fill deliberately bypasses the baseUrl
+  listener that normally schedules the Ollama `/api/tags` model-list
+  probe (`_onLocalBaseUrlChanged`) — Gemini isn't an Ollama server, and
+  probing it before the user has pasted an API key would just be silent
+  noise. A real preset-button tap, or a saved baseUrl restored from
+  `shared_preferences`, still goes through the listener as before.
+- The end-to-end first-run flow is now: open AI Provider Settings → paste
+  a Gemini API key → "Test Connection & Save". Nothing else to fill in.
+
+`client/test/ai_provider_settings_screen_test.dart` gained a new test
+covering the fresh-install pre-fill (baseUrl/model/vision set, API key
+field still empty) and an updated assertion on the Gemini preset button
+(model + vision, not just baseUrl); the existing vision-checkbox test was
+renamed and rewritten around the new default-on state (was "defaults off
+and persists once toggled [on]", now "defaults on (Gemini preset) and
+persists once toggled off").

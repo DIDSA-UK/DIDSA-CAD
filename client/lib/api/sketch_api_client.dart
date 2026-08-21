@@ -426,6 +426,13 @@ class EllipseDto {
   final double rotation;
   final bool construction;
 
+  /// [CircleDto.radiusConstraintId]'s Ellipse-shaped siblings -
+  /// `majorRadius`/`minorRadius`'s own backing `DistanceConstraint` ids
+  /// (`Sketch.add_ellipse`'s own doc comment). Nullable for the same
+  /// existing-call-site-compatibility reason as [CircleDto.radiusConstraintId].
+  final String? majorConstraintId;
+  final String? minorConstraintId;
+
   EllipseDto({
     required this.id,
     required this.centerPointId,
@@ -439,6 +446,8 @@ class EllipseDto {
     required this.minorRadius,
     required this.rotation,
     this.construction = false,
+    this.majorConstraintId,
+    this.minorConstraintId,
   });
 
   factory EllipseDto.fromJson(Map<String, dynamic> json) => EllipseDto(
@@ -454,6 +463,8 @@ class EllipseDto {
         minorRadius: (json['minor_radius'] as num).toDouble(),
         rotation: (json['rotation'] as num).toDouble(),
         construction: json['construction'] as bool? ?? false,
+        majorConstraintId: json['major_constraint_id'] as String?,
+        minorConstraintId: json['minor_constraint_id'] as String?,
       );
 }
 
@@ -540,6 +551,11 @@ class PolygonDto {
   final String? circumscribedCircleId;
   final String? inscribedCircleId;
 
+  /// [CircleDto.radiusConstraintId]'s Polygon-shaped sibling - `radius`'s
+  /// own backing `DistanceConstraint` id (`Sketch.add_polygon`'s own doc
+  /// comment). Same nullable-for-compatibility reasoning as that field.
+  final String? radiusConstraintId;
+
   PolygonDto({
     required this.id,
     required this.centerPointId,
@@ -551,6 +567,7 @@ class PolygonDto {
     this.construction = false,
     this.circumscribedCircleId,
     this.inscribedCircleId,
+    this.radiusConstraintId,
   });
 
   factory PolygonDto.fromJson(Map<String, dynamic> json) => PolygonDto(
@@ -564,6 +581,7 @@ class PolygonDto {
         construction: json['construction'] as bool? ?? false,
         circumscribedCircleId: json['circumscribed_circle_id'] as String?,
         inscribedCircleId: json['inscribed_circle_id'] as String?,
+        radiusConstraintId: json['radius_constraint_id'] as String?,
       );
 }
 
@@ -583,6 +601,12 @@ class SlotDto {
   final double radius;
   final bool construction;
 
+  /// [CircleDto.radiusConstraintId]'s Slot-shaped sibling - `radius`'s own
+  /// backing `DistanceConstraint` id (arc1's own, reused - see
+  /// `Sketch.add_slot`'s own doc comment). Same nullable-for-compatibility
+  /// reasoning as that field.
+  final String? radiusConstraintId;
+
   SlotDto({
     required this.id,
     required this.center1PointId,
@@ -598,6 +622,7 @@ class SlotDto {
     required this.dPointId,
     required this.radius,
     this.construction = false,
+    this.radiusConstraintId,
   });
 
   factory SlotDto.fromJson(Map<String, dynamic> json) => SlotDto(
@@ -615,6 +640,7 @@ class SlotDto {
         dPointId: json['d_point_id'] as String,
         radius: (json['radius'] as num).toDouble(),
         construction: json['construction'] as bool? ?? false,
+        radiusConstraintId: json['radius_constraint_id'] as String?,
       );
 }
 

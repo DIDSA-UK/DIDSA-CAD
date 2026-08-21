@@ -32,6 +32,21 @@ directly - the real `select_profiles` only accepts an anchor entity of
 that narrower set), a `fillet.edges.of`/`target_body_ids`/
 `source_body_ids` entry must resolve to a Body-producing step kind (never
 a `sketch`, `create_plane`, `fillet`, or `chamfer` step).
+
+Existing-Part editing (docs/ai-modelling/09-existing-part-editing.md): any
+field above that resolves a plan-local `local_id` may *also* hold a string
+of the form `existing:<real_id>`, naming a real Feature already in `part`
+instead of a step earlier in this same plan - resolved by `_lookup_existing`
+below rather than `self.resolved`. No schema/field-shape change anywhere -
+every such field was already a plain `str`/`str | None`, so only this
+module's own resolution logic changes. Scope is deliberately narrower than
+a plan-local reference: only a Body-producing Feature, a Plane-producing
+one, or a whole Sketch (as a `sketch_feature_id` anchor for brand-new
+sketch-entity steps) may be named this way - an existing Sketch's own
+individual Points/Lines/Circles/etc. are never directly referenceable (see
+`_lookup_existing`'s own doc comment for the full rule). A step's own
+`local_id` may never itself start with `existing:` - that prefix is
+reserved (`reserved_local_id_prefix`, checked in `_run_step`).
 """
 
 import math
@@ -77,6 +92,7 @@ from app.document.models import (
     CreatePlaneFeature,
     ExtrudeFeature,
     ExtrudeType,
+    Feature,
     FilletFeature,
     MirrorFeature,
     Part,
@@ -86,19 +102,30 @@ from app.document.models import (
     PlaneRef,
     PlaneType,
     PointRef,
+    Produces,
     RevolveFeature,
     RevolveMode,
     SketchFeature,
     SweepFeature,
     SweepMode,
 )
+from app.document.native_format import sketch_from_dict, sketch_to_dict
 from app.document.pattern import resolve_pattern
 from app.document.revolve import resolve_revolve
 from app.document.sweep import resolve_sweep
 from app.sketch.models import SketchEntityRef, SketchEntityType
 from app.sketch.profile import ProfileStatus, detect_profile
-from app.sketch.store import create_sketch, delete_sketch, get_sketch_or_404
+from app.sketch.router import create_constraint as _create_sketch_constraint
+from app.sketch.router import update_constraint_value as _update_sketch_constraint_value
+from app.sketch.schemas import ConstraintValueUpdate, DistanceConstraintCreate
+from app.sketch.store import add_sketch, create_sketch, delete_sketch, get_sketch_or_404
 from OCC.Core.TopoDS import TopoDS_Shape
+
+# Existing-Part editing (docs/ai-modelling/09-existing-part-editing.md): the
+# reserved local_id prefix a plan step's own field may use *instead of* a
+# plan-local id, to name a real Feature already in the Part being edited -
+# see `_PlanValidator._lookup_existing` below for the full resolution rule.
+_EXISTING_ID_PREFIX = "existing:"
 
 # Every step kind whose Feature actually produces a Body - the only kinds
 # a `target_body_ids`/`source_body_ids`/`edges.of`/`tool_feature_id`
@@ -161,6 +188,35 @@ class _PlanValidator:
         self.resolved: dict[str, _Resolved] = {}
         self.failed: set[str] = set()
         self._scratch_sketch_ids: list[str] = []
+        # Existing-Part editing: every real Feature already in the Part
+        # being edited, by id - built once here rather than re-scanning
+        # `self.part.features` on every `existing:` lookup. `part.features`
+        # (not `self.part.features`) is used deliberately - same objects
+        # either way (the scratch Part above is a shallow copy), but this
+        # makes the intent ("the Part's real, pre-existing Features") clear
+        # regardless of which list a future edit reads from.
+        self._existing_by_id: dict[str, Feature] = {f.id: f for f in part.features}
+        # A pristine snapshot of every existing SketchFeature's real Sketch,
+        # captured *before* any dry-run step can touch it - restored in
+        # `run`'s own `finally` below. Needed because a new sketch_point/
+        # sketch_line/etc. step anchored to an existing Sketch (via
+        # `existing:<sketch_feature_id>` as its own `sketch_feature_id`)
+        # runs through the ordinary, unmodified `_handle_sketch_point`/etc.
+        # path - which calls `get_sketch_or_404` and mutates whatever real
+        # Sketch object that resolves to, for real, exactly like it would
+        # for a brand-new scratch Sketch. A brand-new scratch Sketch is safe
+        # to mutate freely (deleted whole at the end, `_scratch_sketch_ids`
+        # above) - an *existing* Sketch is real, persisted state this
+        # module's own docstring promises never to touch, so its pristine
+        # content is snapshotted here and restored afterward instead, via
+        # the exact same `sketch_to_dict`/`sketch_from_dict` round-trip
+        # native-file save/load already uses (never a hand-rolled
+        # snapshot/restore of Sketch internals to keep in sync by hand).
+        self._existing_sketch_snapshots: dict[str, dict] = {
+            f.sketch_id: sketch_to_dict(get_sketch_or_404(f.sketch_id))
+            for f in part.features
+            if f.produces == Produces.SKETCH
+        }
 
     def run(self, steps: list[PlanStep]) -> list[StepResult]:
         try:
@@ -168,9 +224,17 @@ class _PlanValidator:
         finally:
             for sketch_id in self._scratch_sketch_ids:
                 delete_sketch(sketch_id)
+            for sketch_id, snapshot in self._existing_sketch_snapshots.items():
+                add_sketch(sketch_from_dict(snapshot))
 
     def _run_step(self, step: PlanStep) -> StepResult:
         try:
+            if step.local_id.startswith(_EXISTING_ID_PREFIX):
+                # The prefix is reserved for referencing the Part's real,
+                # pre-existing Features (`_lookup_existing` below) - a plan
+                # step can never invent a brand-new local_id that collides
+                # with it.
+                raise _StepError({"type": "reserved_local_id_prefix", "local_id": step.local_id})
             _HANDLERS[step.kind](self, step)
         except (HTTPException, _StepError) as exc:
             self.failed.add(step.local_id)
@@ -184,6 +248,8 @@ class _PlanValidator:
         return StepResult(local_id=step.local_id, ok=True, resolved_edges=resolved_edges, hole_count=hole_count)
 
     def _lookup(self, local_id: str, expected_kinds: frozenset[str], field: str) -> _Resolved:
+        if local_id.startswith(_EXISTING_ID_PREFIX):
+            return self._lookup_existing(local_id, expected_kinds, field)
         if local_id in self.failed:
             raise _StepError({"type": "depends_on_failed_step", "field": field, "local_id": local_id})
         resolved = self.resolved.get(local_id)
@@ -200,6 +266,59 @@ class _PlanValidator:
                 }
             )
         return resolved
+
+    def _lookup_existing(self, local_id: str, expected_kinds: frozenset[str], field: str) -> _Resolved:
+        """Existing-Part editing (docs/ai-modelling/09-existing-part-
+        editing.md): resolves `local_id` (already confirmed to start with
+        `existing:`) against `self._existing_by_id` instead of this run's
+        own `self.resolved` - a real Feature the Part already had before
+        this plan started, rather than something an earlier step in *this*
+        plan just created.
+
+        Deliberately narrower than a plan-local reference: only a Body-
+        producing Feature (`target_body_ids`/`source_body_ids`/
+        `tool_feature_id`/`edges.of` fields, i.e. `expected_kinds ==
+        _BODY_PRODUCING_KINDS`), a Plane-producing one (`plane_feature_id`
+        fields, `expected_kinds == {"create_plane"}`), or a whole Sketch
+        (`sketch_feature_id` fields, `expected_kinds == {"sketch"}`) may be
+        named this way - never an individual existing Point/Line/Circle/etc.
+        (every other `expected_kinds` value used elsewhere in this module),
+        matching the scope `client/lib/ai/ai_existing_part_summary.dart`'s
+        own prompt-facing summary already advertises to the LLM. Uses the
+        real Feature's own `.produces` (`app.document.models.Produces`,
+        the same tag the client's `FeatureDto.produces` mirrors) to decide
+        which of those three buckets a given existing Feature falls into,
+        rather than re-deriving it from the Feature's own Python type.
+        """
+        feature = self._existing_by_id.get(local_id[len(_EXISTING_ID_PREFIX) :])
+        if feature is None:
+            raise _StepError({"type": "unknown_existing_id", "field": field, "local_id": local_id})
+        if expected_kinds == frozenset({"sketch"}) and feature.produces == Produces.SKETCH:
+            return _Resolved(kind="sketch", feature_id=feature.id, sketch_id=feature.sketch_id)
+        if expected_kinds == frozenset({"create_plane"}) and feature.produces == Produces.PLANE:
+            return _Resolved(kind="create_plane", feature_id=feature.id)
+        if expected_kinds == _BODY_PRODUCING_KINDS and feature.produces == Produces.BODY:
+            # Sentinel kind, not a claim this existing Feature is literally
+            # an Extrude - only used so `_lookup_body`'s own `kind ==
+            # "gear_request"` check (the *plan-local* "not yet resolvable"
+            # case) never fires for an existing Feature, which always has
+            # real, already-computed geometry regardless of its own type
+            # (including an existing Fillet/Chamfer/GearFeature - each a
+            # real Body once built, even though a *plan-local* fillet/
+            # chamfer step is deliberately excluded from
+            # `_BODY_PRODUCING_KINDS` for schema-ordering reasons that don't
+            # apply here - see `03-structured-plan-schema.md`'s own
+            # reference kind-checking rules).
+            return _Resolved(kind="extrude", feature_id=feature.id)
+        raise _StepError(
+            {
+                "type": "existing_id_not_allowed_here",
+                "field": field,
+                "local_id": local_id,
+                "expected_kinds": sorted(expected_kinds),
+                "actual_produces": feature.produces.value,
+            }
+        )
 
     def _lookup_body(self, local_id: str, field: str) -> _Resolved:
         resolved = self._lookup(local_id, _BODY_PRODUCING_KINDS, field)
@@ -223,6 +342,42 @@ class _PlanValidator:
 
 def validate_ai_plan(part: Part, steps: list[PlanStep]) -> list[StepResult]:
     return _PlanValidator(part).run(steps)
+
+
+# --- Dimension-driven sketches (docs/ai-modelling/08-dimension-driven-
+# sketches.md) --------------------------------------------------------------
+#
+# Every Circle/Arc/Ellipse/Polygon/Slot shape call below already auto-
+# creates its own size-defining DistanceConstraint(s) *provisional*
+# (`Sketch.add_circle`/`add_arc`/`add_ellipse`/`add_polygon`/`add_slot`'s own
+# doc comments) - skipped entirely by the solver until a real value is
+# confirmed (`DistanceConstraint.provisional`'s own doc comment), exactly
+# like a human's freshly-drawn, not-yet-dimensioned shape. `_confirm_radius`
+# below reuses the exact router endpoint a human's own dimension-bar PATCH
+# already calls (`app.sketch.router.update_constraint_value`) to flip that
+# same flag - the dry-run's own mirror of what the real client-side
+# translator does via `SketchApiClient.updateConstraintValue` right after
+# creating the entity. Always called with the entity's own just-computed
+# radius (never a hand-derived value) so this works uniformly whether the
+# plan step named an explicit numeric field (`SketchCircleStep.radius`,
+# `SketchSlotStep.radius`, ...) or an explicit second Point instead (e.g.
+# `radius_point_id`) - either way the plan's own literal Point coordinates
+# already fully determine a real number, and confirming it turns "no real
+# dimension at all" into "a real, editable one at the AI's own intended
+# size", the dimension-driven-sketches workstream's whole point. Line/
+# Rectangle have no such auto-created constraint at all (`_create_distance`
+# below makes a brand-new, already-non-provisional one instead).
+def _confirm_radius(sketch_id: str, constraint_id: str, value: float) -> None:
+    _update_sketch_constraint_value(sketch_id, constraint_id, ConstraintValueUpdate(value=value))
+
+
+def _create_distance(
+    sketch_id: str, point_a_id: str, point_b_id: str, value: float, orientation: str = "linear"
+) -> None:
+    _create_sketch_constraint(
+        sketch_id,
+        DistanceConstraintCreate(point_a_id=point_a_id, point_b_id=point_b_id, distance=value, orientation=orientation),
+    )
 
 
 # --- Sketch anchoring ------------------------------------------------------
@@ -263,6 +418,14 @@ def _handle_sketch_line(v: _PlanValidator, step: SketchLineStep) -> None:
         line = sketch.add_line(start.point_id, end_point_id, length=step.length, angle=angle_radians, construction=step.construction)
     except (KeyError, ValueError, TypeError) as exc:
         raise _StepError({"type": "invalid_geometry", "message": str(exc)}) from exc
+    # Unlike Circle/Arc/Ellipse/Polygon/Slot, a Line has no automatic
+    # size-defining constraint at all - only create one when the plan
+    # itself named a literal length (08's own "Line length" section: an
+    # explicit `end_point_id` with no `length` stays exactly as unconstrained
+    # as it already was, matching a human drawing two-point line with no
+    # dimension added).
+    if step.length is not None:
+        _create_distance(sk.sketch_id, line.start_point_id, line.end_point_id, step.length, orientation="linear")
     v.resolved[step.local_id] = _Resolved(
         kind="sketch_line", entity_id=line.id, owning_sketch_id=sk.sketch_id
     )
@@ -282,6 +445,7 @@ def _handle_sketch_circle(v: _PlanValidator, step: SketchCircleStep) -> None:
         )
     except (KeyError, ValueError, TypeError) as exc:
         raise _StepError({"type": "invalid_geometry", "message": str(exc)}) from exc
+    _confirm_radius(sk.sketch_id, circle.radius_constraint_id, circle.radius(sketch.points))
     v.resolved[step.local_id] = _Resolved(kind="sketch_circle", entity_id=circle.id, owning_sketch_id=sk.sketch_id)
 
 
@@ -300,6 +464,7 @@ def _handle_sketch_arc(v: _PlanValidator, step: SketchArcStep) -> None:
         )
     except (KeyError, ValueError, TypeError) as exc:
         raise _StepError({"type": "invalid_geometry", "message": str(exc)}) from exc
+    _confirm_radius(sk.sketch_id, arc.radius_constraint_id, arc.radius(sketch.points))
     v.resolved[step.local_id] = _Resolved(kind="sketch_arc", entity_id=arc.id, owning_sketch_id=sk.sketch_id)
 
 
@@ -322,6 +487,8 @@ def _handle_sketch_ellipse(v: _PlanValidator, step: SketchEllipseStep) -> None:
         )
     except (KeyError, ValueError, TypeError) as exc:
         raise _StepError({"type": "invalid_geometry", "message": str(exc)}) from exc
+    _confirm_radius(sk.sketch_id, ellipse.major_constraint_id, ellipse.major_radius(sketch.points))
+    _confirm_radius(sk.sketch_id, ellipse.minor_constraint_id, ellipse.minor_radius(sketch.points))
     v.resolved[step.local_id] = _Resolved(kind="sketch_ellipse", entity_id=ellipse.id, owning_sketch_id=sk.sketch_id)
 
 
@@ -340,6 +507,7 @@ def _handle_sketch_polygon(v: _PlanValidator, step: SketchPolygonStep) -> None:
         )
     except (KeyError, ValueError, TypeError) as exc:
         raise _StepError({"type": "invalid_geometry", "message": str(exc)}) from exc
+    _confirm_radius(sk.sketch_id, polygon.radius_constraint_id, polygon.radius(sketch.points))
     v.resolved[step.local_id] = _Resolved(kind="sketch_polygon", entity_id=polygon.id, owning_sketch_id=sk.sketch_id)
 
 
@@ -352,6 +520,7 @@ def _handle_sketch_slot(v: _PlanValidator, step: SketchSlotStep) -> None:
         slot = sketch.add_slot(center1.point_id, center2.point_id, step.radius, construction=step.construction)
     except (KeyError, ValueError, TypeError) as exc:
         raise _StepError({"type": "invalid_geometry", "message": str(exc)}) from exc
+    _confirm_radius(sk.sketch_id, slot.radius_constraint_id, slot.radius(sketch.points))
     v.resolved[step.local_id] = _Resolved(kind="sketch_slot", entity_id=slot.id, owning_sketch_id=sk.sketch_id)
 
 
@@ -368,6 +537,23 @@ def _handle_sketch_rectangle(v: _PlanValidator, step: SketchRectangleStep) -> No
         rectangle = sketch.add_rectangle(corner_ids, axis_aligned=step.axis_aligned, construction=step.construction)
     except (KeyError, ValueError, TypeError) as exc:
         raise _StepError({"type": "invalid_geometry", "message": str(exc)}) from exc
+    # `width`/`height` (08's own "Rectangle width/height" section): corner0
+    # -> corner1 is `width`, corner1 -> corner2 is `height` - the same two
+    # edges `axis_aligned` already pins Horizontal/Vertical respectively
+    # (`Sketch.add_rectangle`'s own doc comment), so a "horizontal"/
+    # "vertical"-orientation DistanceConstraint here only adds a length to
+    # an edge whose *direction* is already fixed - an orthogonal DOF, never
+    # a redundant/conflicting constraint with those direction constraints.
+    # For a non-axis-aligned (rotated) rectangle there is no global
+    # horizontal/vertical to pin, so a plain "linear" distance between the
+    # same two corner pairs is used instead - still exactly that edge's own
+    # real length, whatever direction it happens to run in.
+    orientation_width = "horizontal" if step.axis_aligned else "linear"
+    orientation_height = "vertical" if step.axis_aligned else "linear"
+    if step.width is not None:
+        _create_distance(sk.sketch_id, corner_ids[0], corner_ids[1], step.width, orientation=orientation_width)
+    if step.height is not None:
+        _create_distance(sk.sketch_id, corner_ids[1], corner_ids[2], step.height, orientation=orientation_height)
     v.resolved[step.local_id] = _Resolved(kind="sketch_rectangle", entity_id=rectangle.id, owning_sketch_id=sk.sketch_id)
 
 

@@ -47,6 +47,23 @@ dependencies:
   share_plus: ^10.1.2
   flutter_svg: ^2.0.17
 
+  # AI Modelling workstream 10 (image input, `docs/ai-modelling/10-image-
+  # input.md`): downscales/compresses a picked hand-sketch/drawing photo to
+  # roughly 1568px on its longest edge before base64-encoding it for a
+  # vision-capable provider. Android/iOS/macOS/Web only (no Linux/Windows
+  # desktop implementation) - `ai_modelling_screen.dart`'s own attach flow
+  # falls back to the picked file's raw bytes there rather than crashing.
+  flutter_image_compress: ^2.3.0
+
+  # AI Modelling workstream 11 (voice input, `docs/ai-modelling/11-voice-
+  # input.md`): on-device speech-to-text for the mic button beside Send.
+  # Android/iOS confirmed supported (per the package's own platform-support
+  # table); Windows supported but upstream-beta ("not yet ready for
+  # production use" per that table's own release notes); Linux has no
+  # implementation at all - see that doc's own "Spike" section.
+  # `ai_modelling_screen.dart` never attempts to initialize it on Linux.
+  speech_to_text: ^7.0.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

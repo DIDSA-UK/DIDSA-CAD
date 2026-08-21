@@ -15,6 +15,12 @@ class AiProviderPreferences {
   static const String localBaseUrlPrefKey = 'ai_local_base_url';
   static const String localApiKeyPrefKey = 'ai_local_api_key';
   static const String localModelPrefKey = 'ai_local_model';
+  // Workstream 10 (`10-image-input.md`): opt-in only - unlike
+  // `supportsStructuredOutput`, this class has no way to verify an
+  // arbitrary OpenAI-compatible local/free-tier endpoint's model actually
+  // accepts images, so it stays `false` until the user explicitly confirms
+  // it via the settings screen's own checkbox.
+  static const String localSupportsVisionPrefKey = 'ai_local_supports_vision';
   static const String openAiApiKeyPrefKey = 'ai_openai_api_key';
   static const String openAiModelPrefKey = 'ai_openai_model';
   static const String anthropicApiKeyPrefKey = 'ai_anthropic_api_key';
@@ -29,6 +35,7 @@ class AiProviderPreferences {
   static String _localBaseUrl = '';
   static String? _localApiKey;
   static String _localModel = '';
+  static bool _localSupportsVision = false;
   static String _openAiApiKey = '';
   static String _openAiModel = '';
   static String _anthropicApiKey = '';
@@ -38,6 +45,7 @@ class AiProviderPreferences {
   static String get localBaseUrl => _localBaseUrl;
   static String? get localApiKey => _localApiKey;
   static String get localModel => _localModel;
+  static bool get localSupportsVision => _localSupportsVision;
   static String get openAiApiKey => _openAiApiKey;
   static String get openAiModel => _openAiModel;
   static String get anthropicApiKey => _anthropicApiKey;
@@ -49,6 +57,7 @@ class AiProviderPreferences {
     _localBaseUrl = prefs.getString(localBaseUrlPrefKey) ?? '';
     _localApiKey = prefs.getString(localApiKeyPrefKey);
     _localModel = prefs.getString(localModelPrefKey) ?? '';
+    _localSupportsVision = prefs.getBool(localSupportsVisionPrefKey) ?? false;
     _openAiApiKey = prefs.getString(openAiApiKeyPrefKey) ?? '';
     _openAiModel = prefs.getString(openAiModelPrefKey) ?? '';
     _anthropicApiKey = prefs.getString(anthropicApiKeyPrefKey) ?? '';
@@ -62,8 +71,15 @@ class AiProviderPreferences {
   }
 
   /// [apiKey] is nullable - local typically has none (a bare, unauthenticated
-  /// endpoint), unlike the cloud slots below.
-  static Future<void> saveLocal({required String baseUrl, String? apiKey, required String model}) async {
+  /// endpoint), unlike the cloud slots below. [supportsVision] defaults to
+  /// `false` (workstream 10's opt-in-only stance - see
+  /// [localSupportsVisionPrefKey]'s own doc comment).
+  static Future<void> saveLocal({
+    required String baseUrl,
+    String? apiKey,
+    required String model,
+    bool supportsVision = false,
+  }) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(localBaseUrlPrefKey, baseUrl);
     if (apiKey == null || apiKey.isEmpty) {
@@ -72,9 +88,11 @@ class AiProviderPreferences {
       await prefs.setString(localApiKeyPrefKey, apiKey);
     }
     await prefs.setString(localModelPrefKey, model);
+    await prefs.setBool(localSupportsVisionPrefKey, supportsVision);
     _localBaseUrl = baseUrl;
     _localApiKey = (apiKey == null || apiKey.isEmpty) ? null : apiKey;
     _localModel = model;
+    _localSupportsVision = supportsVision;
   }
 
   static Future<void> saveOpenAi({required String apiKey, required String model}) async {
@@ -120,12 +138,18 @@ class AiProviderPreferences {
           apiKey: _openAiApiKey,
           model: _openAiModel,
           supportsStructuredOutput: true,
+          supportsVision: true, // OpenAI cloud's own current models are multimodal
         );
       case 'anthropic':
         return AnthropicProvider(apiKey: _anthropicApiKey, model: _anthropicModel);
       case 'local':
       default:
-        return OpenAiCompatibleProvider(baseUrl: _localBaseUrl, apiKey: _localApiKey, model: _localModel);
+        return OpenAiCompatibleProvider(
+          baseUrl: _localBaseUrl,
+          apiKey: _localApiKey,
+          model: _localModel,
+          supportsVision: _localSupportsVision,
+        );
     }
   }
 }

@@ -140,6 +140,21 @@ class SketchRectangleStep(BaseModel):
     corner_point_ids: list[str]
     axis_aligned: bool = True
     construction: bool = False
+    # Workstream "dimension-driven sketches"
+    # (docs/ai-modelling/08-dimension-driven-sketches.md): purely advisory
+    # - never consumed by `sketch.add_rectangle` itself (the 4 corner Points
+    # already fully determine the geometry, same as before this field
+    # existed). When given, the translator/dry-run validator turns it into
+    # a real, non-provisional DistanceConstraint between corner0/corner1
+    # (width) and corner1/corner2 (height) - the same edges `axis_aligned`
+    # already pins Horizontal/Vertical, so this only adds a length to an
+    # edge whose *direction* was already fixed, never a redundant/
+    # conflicting constraint. `width` is corner0->corner1's own length;
+    # `height` is corner1->corner2's. Left `None` (the default) leaves the
+    # rectangle exactly as before - implicitly sized by its corner Points'
+    # own coordinates only, no real dimension.
+    width: float | None = None
+    height: float | None = None
 
 
 class ExtrudeStep(BaseModel):

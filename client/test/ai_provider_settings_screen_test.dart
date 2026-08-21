@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:didsa_cad_client/ai/ai_provider_preferences.dart';
 import 'package:didsa_cad_client/ai/ai_provider_settings_screen.dart';
+import 'package:didsa_cad_client/ai/ai_system_prompt_settings_screen.dart';
 
 /// AI Modelling workstream 1: widget-level coverage for
 /// [AiProviderSettingsScreen] - provider switching, the Ollama
@@ -69,7 +70,18 @@ void main() {
     expect(baseUrlField.controller?.text, 'https://ollama.com/v1');
   });
 
-  testWidgets('Gemini preset button fills the local baseUrl field', (tester) async {
+  testWidgets('Gemini preset button fills the local baseUrl, a default model, and checks vision support',
+      (tester) async {
+    // The vision checkbox sits below this ListView's default build extent
+    // (same lazy-mounting gap documented on the dedicated vision-checkbox
+    // test below) - a tall viewport avoids needing to scroll to reach it.
+    tester.view.physicalSize = const Size(800, 3000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
     final client = MockClient((request) async => http.Response('not ollama', 404));
     await tester.pumpWidget(MaterialApp(home: AiProviderSettingsScreen(httpClient: client)));
     await tester.pumpAndSettle();
@@ -80,6 +92,9 @@ void main() {
 
     final baseUrlField = tester.widget<TextField>(find.widgetWithText(TextField, 'Base URL'));
     expect(baseUrlField.controller?.text, 'https://generativelanguage.googleapis.com/v1beta/openai');
+    final modelField = tester.widget<TextField>(find.widgetWithText(TextField, 'Model'));
+    expect(modelField.controller?.text, 'gemini-2.5-flash');
+    expect(tester.widget<CheckboxListTile>(find.byKey(const Key('aiLocalSupportsVision'))).value, isTrue);
   });
 
   testWidgets('Groq preset button fills the local baseUrl field', (tester) async {
@@ -156,6 +171,110 @@ void main() {
     expect(find.byType(AiProviderSettingsScreen), findsOneWidget);
     await AiProviderPreferences.load();
     expect(AiProviderPreferences.openAiApiKey, isEmpty);
+  });
+
+  testWidgets(
+      'first launch pre-fills the local fields to the free Gemini preset, so only an API key is needed',
+      (tester) async {
+    // Same reasoning as the Gemini-preset test above: a tall viewport
+    // avoids the vision checkbox's lazy-mounting gap below this ListView's
+    // default build extent.
+    tester.view.physicalSize = const Size(800, 3000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    final client = MockClient((request) async => http.Response('not ollama', 404));
+    await tester.pumpWidget(MaterialApp(home: AiProviderSettingsScreen(httpClient: client)));
+    await tester.pumpAndSettle();
+    // This synthetic pre-fill deliberately bypasses the baseUrl listener
+    // (see `_load()`'s own comment), so no Ollama-model-fetch debounce is
+    // in flight here - no extra pump needed before reading the fields back.
+
+    final baseUrlField = tester.widget<TextField>(find.widgetWithText(TextField, 'Base URL'));
+    expect(baseUrlField.controller?.text, 'https://generativelanguage.googleapis.com/v1beta/openai');
+    final modelField = tester.widget<TextField>(find.widgetWithText(TextField, 'Model'));
+    expect(modelField.controller?.text, 'gemini-2.5-flash');
+    expect(tester.widget<CheckboxListTile>(find.byKey(const Key('aiLocalSupportsVision'))).value, isTrue);
+    // The one thing left for the user - never pre-filled.
+    final apiKeyField = tester.widget<TextField>(find.widgetWithText(TextField, 'API Key (optional)'));
+    expect(apiKeyField.controller?.text, isEmpty);
+  });
+
+  testWidgets('local supportsVision checkbox defaults on (Gemini preset) and persists once toggled off and saved',
+      (tester) async {
+    // The screen's content (explanatory paragraphs, preset buttons, the
+    // vision checkbox, Save) is taller than the default test viewport, and
+    // scrollUntilVisible proved unreliable here once the Ollama-model-fetch
+    // debounce (below) can reflow layout mid-test - scrollUntilVisible
+    // itself found the target widget, but a follow-up tap() sometimes
+    // landed on a still-mid-scroll-physics frame and hit a different
+    // RenderObject instead ("would not hit test on the specified widget").
+    // A tall enough surface sidesteps scrolling entirely, same fix already
+    // proven for ai_system_prompt_settings_screen_test.dart's add-on test.
+    tester.view.physicalSize = const Size(800, 3000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    final client = MockClient((request) async {
+      if (request.url.path.endsWith('/api/tags')) return http.Response('n/a', 404);
+      return jsonResponse({
+        'choices': [
+          {
+            'message': {'content': 'ok'},
+          },
+        ],
+      });
+    });
+
+    await tester.pumpWidget(MaterialApp(home: AiProviderSettingsScreen(httpClient: client)));
+    await tester.pumpAndSettle();
+    // (The Gemini pre-fill on load bypasses the baseUrl listener - see
+    // `_load()`'s own comment - so no debounced fetch is in flight yet.)
+
+    expect(
+      tester.widget<CheckboxListTile>(find.byKey(const Key('aiLocalSupportsVision'))).value,
+      isTrue,
+    );
+
+    // Switching to a plain local endpoint that is NOT vision-capable - the
+    // user turns the checkbox back off, and that choice must persist too.
+    await tester.enterText(find.widgetWithText(TextField, 'Base URL'), 'http://localhost:11434/v1');
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.enterText(find.widgetWithText(TextField, 'Model'), 'llama3');
+    await tester.tap(find.byKey(const Key('aiLocalSupportsVision')));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Test Connection & Save'));
+    await tester.pumpAndSettle();
+
+    await AiProviderPreferences.load();
+    expect(AiProviderPreferences.localSupportsVision, isFalse);
+  });
+
+  testWidgets('AI System Prompt entry navigates to AiSystemPromptSettingsScreen', (tester) async {
+    // Same reasoning as the vision-checkbox test above: a tall viewport
+    // instead of scrollUntilVisible, now that this screen's content has
+    // grown enough for scroll-timing to become genuinely flaky.
+    tester.view.physicalSize = const Size(800, 3000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    await tester.pumpWidget(const MaterialApp(home: AiProviderSettingsScreen()));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('aiSystemPromptSettingsEntry')));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(AiSystemPromptSettingsScreen), findsOneWidget);
   });
 
   testWidgets('Test Connection & Save persists preferences and pops on success', (tester) async {

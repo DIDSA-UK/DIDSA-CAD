@@ -604,12 +604,23 @@ class AiSketchRectangleStep extends AiPlanStep {
   final bool axisAligned;
   final bool construction;
 
+  /// `SketchRectangleStep.width`/`.height` (`ai_plan_schemas.py`) - purely
+  /// advisory, never consumed by rectangle creation itself (the 4 corner
+  /// Points already fully determine the geometry). When given, the
+  /// translator turns it into a real, non-provisional `DistanceConstraint`
+  /// between corner0/corner1 ([width]) and corner1/corner2 ([height]) - see
+  /// `docs/ai-modelling/08-dimension-driven-sketches.md`.
+  final double? width;
+  final double? height;
+
   const AiSketchRectangleStep({
     required super.localId,
     required this.sketchFeatureId,
     required this.cornerPointIds,
     this.axisAligned = true,
     this.construction = false,
+    this.width,
+    this.height,
   }) : super(kind: 'sketch_rectangle');
 
   factory AiSketchRectangleStep.fromJson(Map<String, dynamic> json) => AiSketchRectangleStep(
@@ -618,6 +629,8 @@ class AiSketchRectangleStep extends AiPlanStep {
         cornerPointIds: _asStringList(json['corner_point_ids']),
         axisAligned: json['axis_aligned'] as bool? ?? true,
         construction: json['construction'] as bool? ?? false,
+        width: _asDoubleOrNull(json['width']),
+        height: _asDoubleOrNull(json['height']),
       );
 
   @override
@@ -628,6 +641,8 @@ class AiSketchRectangleStep extends AiPlanStep {
         'corner_point_ids': cornerPointIds,
         'axis_aligned': axisAligned,
         'construction': construction,
+        if (width != null) 'width': width,
+        if (height != null) 'height': height,
       };
 }
 

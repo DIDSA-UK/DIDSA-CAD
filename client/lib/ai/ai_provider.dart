@@ -4,18 +4,36 @@
 /// abstraction.md`. Selected at runtime by `AiProviderPreferences`.
 library;
 
-/// Who authored a given turn in the scoping conversation. Workstream 6 adds
-/// an optional image payload to [AiChatMessage] alongside this - no new role
-/// is needed for that (an image rides along with a `user` turn).
+import 'dart:typed_data';
+
+/// Who authored a given turn in the scoping conversation. Workstream 10
+/// (image input) adds an optional image payload to [AiChatMessage] alongside
+/// this - no new role is needed for that (an image rides along with a `user`
+/// turn).
 enum AiMessageRole { user, assistant }
 
 /// One turn of the scoping conversation, in the provider-agnostic shape
 /// every [AiProvider] implementation translates its own wire format to/from.
+///
+/// [imageBytes]/[imageMimeType] (workstream 10,
+/// `docs/ai-modelling/10-image-input.md`) let a `user` turn carry an
+/// attached hand sketch/engineering-drawing image - already downscaled/
+/// compressed client-side (`AiModellingScreen`'s own attach flow) before
+/// reaching here. Both are null for every ordinary text-only turn. When set,
+/// each concrete [AiProvider] encodes them as that provider's own native
+/// multimodal wire shape in [AiProvider.sendScopingTurn] - the image is
+/// resent on every future turn for as long as this message stays in the
+/// transcript (the app always resends the full transcript - see
+/// [AiProvider.sendScopingTurn]'s own doc comment), which is what keeps it
+/// "pinned"/visible to the model for the rest of the conversation, not just
+/// the turn it was attached on.
 class AiChatMessage {
   final AiMessageRole role;
   final String text;
+  final Uint8List? imageBytes;
+  final String? imageMimeType;
 
-  const AiChatMessage({required this.role, required this.text});
+  const AiChatMessage({required this.role, required this.text, this.imageBytes, this.imageMimeType});
 }
 
 /// The result of one `sendScopingTurn` call. [plan] is non-null only once
@@ -32,7 +50,7 @@ class AiTurnResult {
 
 /// What a configured provider can be relied on for - drives UI gating
 /// (workstream 2's "is this provider ready to receive a plan request" and
-/// workstream 6's future image-upload gating).
+/// workstream 10's image-upload gating, `10-image-input.md`).
 class AiProviderCapabilities {
   final bool supportsStructuredOutput;
   final bool supportsVision;
@@ -83,6 +101,18 @@ abstract class AiProvider {
   /// top-level `system` field) without workstream 2 having to know the
   /// difference.
   Future<AiTurnResult> sendScopingTurn(List<AiChatMessage> transcript, {String? systemPrompt});
+
+  /// Workstream 10 (`docs/ai-modelling/10-image-input.md`): a one-shot call
+  /// against this provider's own vision capability, with its own fixed
+  /// extraction prompt - deliberately **not** folded into the main scoping
+  /// transcript [sendScopingTurn] drives. Returns a plain-text description
+  /// of [imageBytes] (already downscaled/compressed by the caller) that the
+  /// caller then seeds into the ordinary text-only conversation as context
+  /// (a new transcript turn), rather than this call itself becoming part of
+  /// that conversation's history.
+  ///
+  /// Throws [AiProviderException] if `!capabilities.supportsVision`.
+  Future<String> extractImageDescription(Uint8List imageBytes, String mimeType);
 
   AiProviderCapabilities get capabilities;
 }

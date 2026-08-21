@@ -155,6 +155,43 @@ void main() {
     expect(AiProviderPreferences.isActiveProviderConfigured, isTrue);
   });
 
+  test('saveLocal supportsVision defaults to false and round-trips true after a fresh load()', () async {
+    await AiProviderPreferences.load();
+    expect(AiProviderPreferences.localSupportsVision, isFalse);
+
+    await AiProviderPreferences.saveLocal(baseUrl: 'http://localhost:11434/v1', model: 'llava', supportsVision: true);
+    expect(AiProviderPreferences.localSupportsVision, isTrue);
+
+    await AiProviderPreferences.load();
+    expect(AiProviderPreferences.localSupportsVision, isTrue);
+  });
+
+  test('active builds a local OpenAiCompatibleProvider with supportsVision false by default, true once saved', () async {
+    await AiProviderPreferences.load();
+    await AiProviderPreferences.saveLocal(baseUrl: 'http://localhost:11434/v1', model: 'llama3');
+    await AiProviderPreferences.setActiveProvider('local');
+    expect((AiProviderPreferences.active as OpenAiCompatibleProvider).capabilities.supportsVision, isFalse);
+
+    await AiProviderPreferences.saveLocal(baseUrl: 'http://localhost:11434/v1', model: 'llava', supportsVision: true);
+    expect((AiProviderPreferences.active as OpenAiCompatibleProvider).capabilities.supportsVision, isTrue);
+  });
+
+  test('active builds an OpenAiCompatibleProvider with supportsVision true for openai', () async {
+    await AiProviderPreferences.load();
+    await AiProviderPreferences.saveOpenAi(apiKey: 'sk-openai', model: 'gpt-5');
+    await AiProviderPreferences.setActiveProvider('openai');
+
+    expect((AiProviderPreferences.active as OpenAiCompatibleProvider).capabilities.supportsVision, isTrue);
+  });
+
+  test('active builds an AnthropicProvider with supportsVision true', () async {
+    await AiProviderPreferences.load();
+    await AiProviderPreferences.saveAnthropic(apiKey: 'sk-ant', model: 'claude-opus-5');
+    await AiProviderPreferences.setActiveProvider('anthropic');
+
+    expect((AiProviderPreferences.active as AnthropicProvider).capabilities.supportsVision, isTrue);
+  });
+
   test('active defaults to local when the stored active-provider value is unrecognized', () async {
     SharedPreferences.setMockInitialValues({'ai_active_provider': 'something-unexpected'});
     await AiProviderPreferences.load();

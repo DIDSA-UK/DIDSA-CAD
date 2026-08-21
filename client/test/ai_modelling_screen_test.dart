@@ -1,4 +1,6 @@
 import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -24,15 +26,36 @@ import 'package:didsa_cad_client/viewport3d/part_screen.dart';
 class FakeAiProvider implements AiProvider {
   final Future<AiTurnResult> Function(List<AiChatMessage> transcript, String? systemPrompt) handler;
 
-  FakeAiProvider(this.handler);
+  /// Workstream 10 (image input): configurable per test, so the same fake
+  /// covers both the vision-capable-provider and text-only-provider gating
+  /// cases `ai_modelling_screen.dart`'s own attach-button visibility relies
+  /// on.
+  final bool supportsVision;
+
+  /// Workstream 10: only exercised by a test that also sets [supportsVision]
+  /// - `extractImageDescription` itself already throws before reaching a
+  /// real provider when vision isn't supported, so no fake handler is
+  /// needed for that case.
+  final Future<String> Function(Uint8List imageBytes, String mimeType)? imageExtractionHandler;
+
+  FakeAiProvider(this.handler, {this.supportsVision = false, this.imageExtractionHandler});
 
   @override
   AiProviderCapabilities get capabilities =>
-      const AiProviderCapabilities(supportsStructuredOutput: true, supportsVision: false);
+      AiProviderCapabilities(supportsStructuredOutput: true, supportsVision: supportsVision);
 
   @override
   Future<AiTurnResult> sendScopingTurn(List<AiChatMessage> transcript, {String? systemPrompt}) =>
       handler(transcript, systemPrompt);
+
+  @override
+  Future<String> extractImageDescription(Uint8List imageBytes, String mimeType) {
+    final extractionHandler = imageExtractionHandler;
+    if (extractionHandler == null) {
+      throw StateError('FakeAiProvider.extractImageDescription called with no imageExtractionHandler stubbed');
+    }
+    return extractionHandler(imageBytes, mimeType);
+  }
 }
 
 void main() {
@@ -230,6 +253,52 @@ Here's the plan:
     expect(find.text('What thickness would you like?'), findsOneWidget);
   });
 
+  group('image upload gating (workstream 10)', () {
+    testWidgets('attach-image button is shown when the active provider supports vision', (tester) async {
+      final provider = FakeAiProvider(
+        (transcript, systemPrompt) async => const AiTurnResult(assistantText: 'ok'),
+        supportsVision: true,
+      );
+
+      await tester.pumpWidget(MaterialApp(home: AiModellingScreen(provider: provider)));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('aiModellingAttachImage')), findsOneWidget);
+      expect(find.textContaining('Image upload needs a vision-capable provider'), findsNothing);
+    });
+
+    testWidgets('attach-image button is hidden with an explanatory note when vision is unsupported', (tester) async {
+      final provider = FakeAiProvider(
+        (transcript, systemPrompt) async => const AiTurnResult(assistantText: 'ok'),
+        supportsVision: false,
+      );
+
+      await tester.pumpWidget(MaterialApp(home: AiModellingScreen(provider: provider)));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('aiModellingAttachImage')), findsNothing);
+      expect(find.textContaining('Image upload needs a vision-capable provider'), findsOneWidget);
+    });
+  });
+
+  group('voice input gating (workstream 11)', () {
+    testWidgets('mic button is hidden on Linux - the only platform this CI test suite itself runs on, and the one '
+        'speech_to_text has no implementation for at all', (tester) async {
+      final provider = FakeAiProvider((transcript, systemPrompt) async => const AiTurnResult(assistantText: 'ok'));
+
+      await tester.pumpWidget(MaterialApp(home: AiModellingScreen(provider: provider)));
+      await tester.pumpAndSettle();
+
+      // Sanity-check the assumption this test (and `flutter test` on this
+      // project's own CI, `runs-on: ubuntu-latest`) relies on - if this
+      // ever fails, it's running somewhere other than Linux and the
+      // `findsNothing` expectation below no longer means what this test
+      // says it means.
+      expect(Platform.isLinux, isTrue);
+      expect(find.byKey(const Key('aiModellingMic')), findsNothing);
+    });
+  });
+
   testWidgets('a detected plan in the assistant reply switches to Review & Generate with a literal-value summary', (
     tester,
   ) async {
@@ -272,6 +341,106 @@ Here's the plan:
     expect(requestedPaths.where((p) => p == '/document/parts').length, 1);
     expect(find.textContaining('Generated - every step created successfully'), findsOneWidget);
     expect(find.text('Undo this generation'), findsOneWidget);
+  });
+
+  testWidgets(
+      'Existing-Part editing: Generate never calls startNewDocument/createPart when existingPartId is set '
+      '(docs/ai-modelling/09-existing-part-editing.md - the single easiest thing to get wrong here)', (tester) async {
+    final requestedPaths = <String>[];
+    final mock = MockClient((request) async {
+      requestedPaths.add('${request.method} ${request.url.path}');
+      if (request.method == 'GET' && request.url.path == '/document/parts/part-1/features') {
+        return jsonResponse([]);
+      }
+      return realPlanHandler()(request);
+    });
+    final client = DocumentApiClient(httpClient: mock);
+    final sketchClient = SketchApiClient(httpClient: mock);
+    final provider = FakeAiProvider((transcript, systemPrompt) async => const AiTurnResult(assistantText: realPlanText));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AiModellingScreen(
+          provider: provider,
+          documentApi: client,
+          sketchApi: sketchClient,
+          existingPartId: 'part-1',
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await sendMessage(tester, 'Add a rectangular boss to this part');
+
+    await tester.tap(find.text('Generate'));
+    await tester.pumpAndSettle();
+
+    // The one invariant that matters most here: reusing the real, already-
+    // open Part - never wiping the session's Document, never creating a
+    // second, unrelated Part.
+    expect(requestedPaths, isNot(contains('POST /document/new')));
+    expect(requestedPaths, isNot(contains('POST /document/parts')));
+    expect(requestedPaths, contains('GET /document/parts/part-1/features'));
+    expect(requestedPaths, contains('POST /document/parts/part-1/ai-plan/validate'));
+    expect(requestedPaths, contains('POST /document/parts/part-1/features/sketch'));
+    expect(requestedPaths, contains('POST /document/parts/part-1/extrude-features'));
+    expect(find.textContaining('Generated - every step created successfully'), findsOneWidget);
+  });
+
+  testWidgets('Existing-Part editing: the system prompt carries the real Feature summary, echoable via existing:<id>',
+      (tester) async {
+    final mock = MockClient((request) async {
+      if (request.method == 'GET' && request.url.path == '/document/parts/part-9/features') {
+        return jsonResponse([
+          {'type': 'sketch', 'id': 'feat-sk9', 'locked': false, 'sketch_id': 'sketch-9', 'produces': 'sketch'},
+          {
+            'type': 'extrude',
+            'id': 'feat-ex9',
+            'locked': false,
+            'sketch_feature_id': 'feat-sk9',
+            'extrude_type': 'boss',
+            'start_distance': 0.0,
+            'end_distance': 10.0,
+            'produces': 'body',
+          },
+        ]);
+      }
+      // On-device feedback fix (ai_existing_part_summary.dart): the system
+      // prompt now also fetches sketch-9's own real entities - a plain
+      // empty list from every list* endpoint here since this test only
+      // cares about the Feature-tree ids, not the geometry summary itself
+      // (covered separately in ai_existing_part_summary_test.dart).
+      if (request.method == 'GET' &&
+          request.url.path.startsWith('/sketch/sketches/sketch-9/') &&
+          !request.url.path.contains('constraints')) {
+        return jsonResponse([]);
+      }
+      return http.Response('not found', 404);
+    });
+    final client = DocumentApiClient(httpClient: mock);
+    final sketchClient = SketchApiClient(httpClient: mock);
+    String? capturedSystemPrompt;
+    final provider = FakeAiProvider((transcript, systemPrompt) async {
+      capturedSystemPrompt = systemPrompt;
+      return const AiTurnResult(assistantText: 'What change would you like?');
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AiModellingScreen(
+          provider: provider,
+          documentApi: client,
+          sketchApi: sketchClient,
+          existingPartId: 'part-9',
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await sendMessage(tester, 'Add a fillet');
+
+    expect(capturedSystemPrompt, contains('Editing an existing Part'));
+    expect(capturedSystemPrompt, contains('existing:feat-sk9'));
+    expect(capturedSystemPrompt, contains('existing:feat-ex9'));
+    expect(capturedSystemPrompt, contains('from existing:feat-sk9'));
   });
 
   testWidgets(
@@ -494,6 +663,89 @@ Here's the plan:
     expect(find.text('Undo this generation'), findsOneWidget);
   });
 
+  testWidgets(
+      'Bug fix: retrying after a stopped run in fresh-Part mode continues into the same Part, never a new one',
+      (tester) async {
+    // The stopped run's own chat message has always promised "propose a
+    // revised plan for the remaining steps" - this test is what makes that
+    // promise actually true. The extrude step fails only on its first
+    // attempt (stepFailed), succeeds on the retry - lets this one test also
+    // cover the "clears back to true fresh-Part once the retry succeeds"
+    // half of the fix (a third, unrelated message afterward must not still
+    // carry existing-Part context).
+    final requestedPaths = <String>[];
+    var extrudeAttempts = 0;
+    var sendCallCount = 0;
+    String? capturedRetrySystemPrompt;
+    String? capturedThirdSystemPrompt;
+    final mock = MockClient((request) async {
+      requestedPaths.add('${request.method} ${request.url.path}');
+      final path = request.url.path;
+      if (path == '/document/parts/part-1/extrude-features') {
+        extrudeAttempts++;
+        if (extrudeAttempts == 1) {
+          return http.Response(jsonEncode({'detail': {'type': 'geometry_failed'}}), 422);
+        }
+      }
+      if (request.method == 'GET' && path == '/document/parts/part-1/features') {
+        return jsonResponse([
+          {'type': 'sketch', 'id': 'feat-sk1', 'locked': false, 'sketch_id': 'sketch-1', 'produces': 'sketch'},
+        ]);
+      }
+      if (request.method == 'GET' && path.startsWith('/sketch/sketches/sketch-1/')) {
+        return jsonResponse(<Object>[]);
+      }
+      return realPlanHandler()(request);
+    });
+    final client = DocumentApiClient(httpClient: mock);
+    final sketchClient = SketchApiClient(httpClient: mock);
+    final provider = FakeAiProvider((transcript, systemPrompt) async {
+      sendCallCount++;
+      if (sendCallCount == 2) capturedRetrySystemPrompt = systemPrompt;
+      if (sendCallCount == 3) capturedThirdSystemPrompt = systemPrompt;
+      return const AiTurnResult(assistantText: realPlanText);
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(home: AiModellingScreen(provider: provider, documentApi: client, sketchApi: sketchClient)),
+    );
+    await sendMessage(tester, 'A 60x40x10mm block');
+    await tester.tap(find.text('Generate'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Execution stopped'), findsOneWidget);
+
+    requestedPaths.clear();
+    // The LLM's own "revised plan for the remaining steps" - sent as the
+    // next ordinary chat message, per `_appendStoppedRunToTranscript`'s own
+    // mechanism.
+    await sendMessage(tester, 'ok, retry');
+    // The bare phrase "Editing an existing Part" also appears inside the
+    // always-present "## What you cannot generate" cross-reference ('...see
+    // "Editing an existing Part" below if one has been provided...'), so
+    // assert on the actual section heading, not the phrase alone.
+    expect(capturedRetrySystemPrompt, contains('## Editing an existing Part'));
+    expect(capturedRetrySystemPrompt, contains('existing:feat-sk1'));
+
+    await tester.tap(find.text('Generate'));
+    await tester.pumpAndSettle();
+
+    // The critical assertion: retry never wipes the Document or creates a
+    // second Part - it continues into the same real part-1.
+    expect(requestedPaths, isNot(contains('POST /document/new')));
+    expect(requestedPaths, isNot(contains('POST /document/parts')));
+    expect(requestedPaths, contains('POST /document/parts/part-1/ai-plan/validate'));
+    expect(find.textContaining('Generated - every step created successfully'), findsOneWidget);
+
+    // A further, unrelated message after the retry succeeded must not
+    // still carry existing-Part context - 00-conventions.md's "always
+    // fresh Part" rule resumes governing this chat once the retry cycle
+    // that promise was about is actually done.
+    await tester.tap(find.text('Adjust'));
+    await tester.pumpAndSettle();
+    await sendMessage(tester, 'Actually, build something completely different');
+    expect(capturedThirdSystemPrompt, isNot(contains('## Editing an existing Part')));
+  });
+
   testWidgets('Generate on a gear_request-only plan stops before executing and never fakes a success', (tester) async {
     final requestedPaths = <String>[];
     final client = DocumentApiClient(
@@ -501,6 +753,12 @@ Here's the plan:
         requestedPaths.add(request.url.path);
         if (request.url.path == '/document/parts') {
           return jsonResponse({'id': 'part-1', 'name': 'AI Modelling Part', 'feature_ids': []});
+        }
+        if (request.method == 'GET' && request.url.path == '/document/parts/part-1/features') {
+          // A stopped run (gearRequestEncountered included) now refreshes
+          // the existing-Part context for a same-Part retry - nothing was
+          // ever built here, so the real Part has no Features yet either.
+          return jsonResponse([]);
         }
         return jsonResponse({
           'results': [
@@ -518,9 +776,15 @@ Here's the plan:
 
     expect(find.text('Proposed plan'), findsNothing);
     expect(find.textContaining("AI Modelling can't create one automatically yet"), findsOneWidget);
-    // Nothing beyond create-Part + validate - a gear_request step is never
-    // itself executed against the real backend.
-    expect(requestedPaths, ['/document/new', '/document/parts', '/document/parts/part-1/ai-plan/validate']);
+    // create-Part + validate, plus the same-Part-retry context refresh a
+    // gearRequestEncountered stop now also triggers - a gear_request step
+    // is still never itself executed against the real backend.
+    expect(requestedPaths, [
+      '/document/new',
+      '/document/parts',
+      '/document/parts/part-1/ai-plan/validate',
+      '/document/parts/part-1/features',
+    ]);
     // No Features were ever created, so no Undo is offered.
     expect(find.text('Undo this generation'), findsNothing);
   });
