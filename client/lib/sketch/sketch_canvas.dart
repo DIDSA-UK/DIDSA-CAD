@@ -1940,6 +1940,13 @@ Offset? _constraintLabelCenter(
       if (c.pointIds.isEmpty) return null;
       final base = _pointPairMidpointScreen(controller, transform, c.pointIds.first, c.pointIds.first);
       return base == null ? null : base + labelOffset;
+    case ConcentricConstraintDto c:
+      final base = _pointPairMidpointScreen(controller, transform, c.center1PointId, c.center2PointId);
+      return base == null ? null : base + labelOffset;
+    case EqualRadiusConstraintDto c:
+      if (controller.isImplicitEqualRadiusTie(c)) return null;
+      final base = _pointPairMidpointScreen(controller, transform, c.center1PointId, c.center2PointId);
+      return base == null ? null : base + labelOffset;
     default:
       return null;
   }
@@ -2489,6 +2496,11 @@ class _SketchPainter extends CustomPainter {
         // (AtMidpointConstraintDto stays excluded - see _constraintLabelCenter).
         case CoincidentConstraintDto c:
           _paintAxisIndicator(canvas, c.pointAId, c.pointBId, 'Coinc.', badgeColor, labelOffset);
+        case ConcentricConstraintDto c:
+          _paintAxisIndicator(canvas, c.center1PointId, c.center2PointId, 'Conc.', badgeColor, labelOffset);
+        case EqualRadiusConstraintDto c:
+          if (controller.isImplicitEqualRadiusTie(c)) break;
+          _paintAxisIndicator(canvas, c.center1PointId, c.center2PointId, '=R', badgeColor, labelOffset);
         case ParallelConstraintDto c:
           _paintTwoLineGlyph(canvas, c.line1Id, c.line2Id, '∥', badgeColor, labelOffset);
         case PerpendicularConstraintDto c:

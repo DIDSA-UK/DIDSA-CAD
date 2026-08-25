@@ -6589,6 +6589,32 @@ class SketchController extends ChangeNotifier {
     return false;
   }
 
+  /// Whether [c] is an `EqualRadiusConstraint` a shape tool auto-created
+  /// internally, never one the user created via the "Equal radius" flyout
+  /// button - the same "hide implicit structure" reasoning
+  /// [isImplicitPolygonEdgeTie]/[isImplicitEllipseAxisPerpendicular] already
+  /// established. Three internal shapes: an Arc's own end Point tied back
+  /// to its start Point's radius (`add_arc`'s `end_radius_constraint_id`), a
+  /// Polygon's own per-vertex tie back to its first vertex (`add_polygon`'s
+  /// `equal_radius_constraint_ids`) - both always reuse the exact same
+  /// centre Point on *both* sides, something no genuine two-different-
+  /// entity tie the user creates ever does (each Circle/Arc has its own
+  /// independent centre Point) - and a Slot's own arc1<->arc2 tie (`add_
+  /// slot`'s own `equal_radius_constraint_ids`), identified by its two
+  /// centre Points matching a single Slot's own `center1PointId`/
+  /// `center2PointId` pair, the same "identify by Point/Line membership,
+  /// not a stored id" convention those two other checks already use.
+  bool isImplicitEqualRadiusTie(EqualRadiusConstraintDto c) {
+    if (c.center1PointId == c.center2PointId) return true;
+    for (final slot in slots.values) {
+      final centerIds = {slot.center1PointId, slot.center2PointId};
+      if (centerIds.contains(c.center1PointId) && centerIds.contains(c.center2PointId)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /// Whether [lineAId]/[lineBId] carry a `LineDistanceConstraint` between
   /// them - the exact same reasoning [isImplicitPolygonEdgeTie]/
   /// [isImplicitEllipseAxisPerpendicular] already established for other
@@ -8836,6 +8862,20 @@ class SketchController extends ChangeNotifier {
       ];
     }
 
+    // Bug fix (on-device feedback: Concentric/Equal radius only offered for
+    // exactly 2 Circles selected, rejecting any Arc): both back onto
+    // `_center_radius_point_ids` server-side, which already resolves either
+    // a Circle or an Arc, so any mix of the two works - same generalization
+    // to 3+ entities as Equal/Collinear above, chained pairwise against the
+    // first selected entity (see [_createSelectionSetConstraint]'s own doc
+    // comment).
+    if (sel.length > 2 && sel.every((s) => s.kind == SelectionKind.circle || s.kind == SelectionKind.arc)) {
+      return const [
+        ConstraintOption(type: ConstraintOptionType.concentric, label: 'Concentric', wired: true),
+        ConstraintOption(type: ConstraintOptionType.equalRadius, label: 'Equal radius', wired: true),
+      ];
+    }
+
     if (sel.length != 2) return const [];
 
     final kinds = sel.map((s) => s.kind).toSet();
@@ -8853,7 +8893,10 @@ class SketchController extends ChangeNotifier {
       ];
     }
 
-    if (kinds.length == 1 && kinds.single == SelectionKind.circle) {
+    // Same bug fix as the 3+ branch above, for the exactly-2 case: any mix
+    // of Circle/Arc (both Circles, both Arcs, or one of each), not just two
+    // Circles.
+    if (kinds.every((k) => k == SelectionKind.circle || k == SelectionKind.arc)) {
       return const [
         ConstraintOption(type: ConstraintOptionType.concentric, label: 'Concentric', wired: true),
         ConstraintOption(type: ConstraintOptionType.equalRadius, label: 'Equal radius', wired: true),
@@ -14562,6 +14605,15 @@ class SketchController extends ChangeNotifier {
           ));
         case CoincidentConstraintDto c:
           final labelItem = _pairMidpointLabel(c.pointAId, c.pointBId, 'Coinc.', entry.key, isSelected, labelOffset);
+          if (labelItem != null) items.add(labelItem);
+        case ConcentricConstraintDto c:
+          final labelItem =
+              _pairMidpointLabel(c.center1PointId, c.center2PointId, 'Conc.', entry.key, isSelected, labelOffset);
+          if (labelItem != null) items.add(labelItem);
+        case EqualRadiusConstraintDto c:
+          if (isImplicitEqualRadiusTie(c)) break;
+          final labelItem =
+              _pairMidpointLabel(c.center1PointId, c.center2PointId, '=R', entry.key, isSelected, labelOffset);
           if (labelItem != null) items.add(labelItem);
         case ParallelConstraintDto c:
           if (isImplicitLineDistanceParallel(c.line1Id, c.line2Id)) break;

@@ -9439,6 +9439,162 @@ void main() {
     expect(controller.selectionSet, isEmpty);
   });
 
+  // Bug fix (on-device feedback: Concentric/Equal radius only offered for
+  // exactly 2 Circles selected - rejected any Arc, and any selection of 3+
+  // entities). Both back onto the backend's own _center_radius_point_ids,
+  // which already resolves either a Circle or an Arc, so any mix works -
+  // covers 2 Arcs, a Circle+Arc mix, and 3+ selected entities (mirroring
+  // Equal length's own N-ary generalization tested above).
+  test('canApplyConstraint(concentric)/(equalRadius) are true for two selected Arcs', () async {
+    controller.selectDrawTool(SketchTool.arc);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+    await controller.handleCanvasTap(0, 5);
+    await controller.handleCanvasTap(20, 0);
+    await controller.handleCanvasTap(23, 0);
+    await controller.handleCanvasTap(20, 3);
+    controller.exitToSelectMode();
+
+    final onRim1 = 5 * math.sqrt(0.5);
+    await controller.handleCanvasTap(onRim1, onRim1); // first arc's rim, at 45 degrees
+    final onRim2 = 3 * math.sqrt(0.5);
+    await controller.handleCanvasTap(20 + onRim2, onRim2); // second arc's rim, at 45 degrees
+
+    expect(controller.selectionSet.length, 2);
+    expect(controller.selectionSet.every((s) => s.kind == SelectionKind.arc), isTrue);
+    expect(controller.canApplyConstraint(ConstraintOptionType.concentric), isTrue);
+    expect(controller.canApplyConstraint(ConstraintOptionType.equalRadius), isTrue);
+  });
+
+  test('canApplyConstraint(concentric)/(equalRadius) are true for a Circle and an Arc selected together',
+      () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+    controller.selectDrawTool(SketchTool.arc);
+    await controller.handleCanvasTap(20, 0);
+    await controller.handleCanvasTap(23, 0);
+    await controller.handleCanvasTap(20, 3);
+    controller.exitToSelectMode();
+
+    await controller.handleCanvasTap(5 * math.cos(math.pi / 4), 5 * math.sin(math.pi / 4)); // circle's edge
+    final onRim = 3 * math.sqrt(0.5);
+    await controller.handleCanvasTap(20 + onRim, onRim); // arc's rim, at 45 degrees
+
+    expect(controller.selectionSet.length, 2);
+    expect(controller.selectionSet.map((s) => s.kind).toSet(), {SelectionKind.circle, SelectionKind.arc});
+    expect(controller.canApplyConstraint(ConstraintOptionType.concentric), isTrue);
+    expect(controller.canApplyConstraint(ConstraintOptionType.equalRadius), isTrue);
+  });
+
+  test('addConcentricConstraint/addEqualRadiusConstraint chain N-1 constraints against the first '
+      'selected entity when 3 Circles are selected', () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+    await controller.handleCanvasTap(20, 0);
+    await controller.handleCanvasTap(23, 0);
+    await controller.handleCanvasTap(40, 0);
+    await controller.handleCanvasTap(44, 0);
+    controller.exitToSelectMode();
+    await controller.handleCanvasTap(5 * math.cos(math.pi / 4), 5 * math.sin(math.pi / 4));
+    final firstCircleId = controller.selectionSet.single.id;
+    await controller.handleCanvasTap(20 + 3 * math.cos(math.pi / 4), 3 * math.sin(math.pi / 4));
+    await controller.handleCanvasTap(40 + 4 * math.cos(math.pi / 4), 4 * math.sin(math.pi / 4));
+
+    final types = controller.availableConstraintOptions.map((o) => o.type).toSet();
+    expect(types, {ConstraintOptionType.concentric, ConstraintOptionType.equalRadius});
+
+    await controller.addConcentricConstraint();
+
+    final created = controller.constraints.values.whereType<ConcentricConstraintDto>().toList();
+    expect(created.length, 2);
+    final firstCenterId = controller.circles[firstCircleId]!.centerPointId;
+    for (final constraint in created) {
+      expect({constraint.center1PointId, constraint.center2PointId}, contains(firstCenterId));
+    }
+  });
+
+  // Bug fix (on-device feedback: "equal radius"/"concentric" should have a
+  // glyph, like "equal length" does, so the user can see and select them):
+  // both now render via SketchController.constraintOverlayItems - but an
+  // EqualRadiusConstraint a shape tool auto-created internally (an Arc's
+  // own end-Point tie, here) must stay hidden, the same "implicit
+  // structure" rule EqualLength's own Polygon-edge tie already follows -
+  // see isImplicitEqualRadiusTie's own doc comment.
+  test('isImplicitEqualRadiusTie is true for an Arc\'s own internal end-radius tie, false for a '
+      'user-created one between two Circles', () async {
+    controller.selectDrawTool(SketchTool.arc);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+    await controller.handleCanvasTap(0, 5);
+    final arcInternalTie = controller.constraints.values.whereType<EqualRadiusConstraintDto>().single;
+    expect(controller.isImplicitEqualRadiusTie(arcInternalTie), isTrue);
+    expect(
+      controller
+          .constraintOverlayItems()
+          .whereType<ConstraintLabelItem>()
+          .any((i) => i.constraintId == arcInternalTie.id),
+      isFalse,
+    );
+
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(20, 0);
+    await controller.handleCanvasTap(25, 0);
+    await controller.handleCanvasTap(40, 0);
+    await controller.handleCanvasTap(43, 0);
+    controller.exitToSelectMode();
+    await controller.handleCanvasTap(20 + 5 * math.cos(math.pi / 4), 5 * math.sin(math.pi / 4));
+    await controller.handleCanvasTap(40 + 3 * math.cos(math.pi / 4), 3 * math.sin(math.pi / 4));
+    await controller.addEqualRadiusConstraint();
+    final userCreated = controller.constraints.values
+        .whereType<EqualRadiusConstraintDto>()
+        .firstWhere((c) => c.id != arcInternalTie.id);
+
+    expect(controller.isImplicitEqualRadiusTie(userCreated), isFalse);
+    final overlayItem = controller.constraintOverlayItems().whereType<ConstraintLabelItem>().firstWhere(
+          (i) => i.constraintId == userCreated.id,
+        );
+    expect(overlayItem.text, '=R');
+  });
+
+  // A Slot's own 2 "tie arc2's rim Points back to arc1" ties (see the Slot
+  // tool's own creation test above - 4 EqualRadiusConstraintDto total, 2 of
+  // this cross-centre shape) have genuinely *different* centre Points on
+  // each side (arc1's own centre, arc2's own centre) - the same-centre
+  // check above can't catch these, so isImplicitEqualRadiusTie also matches
+  // by the two centres being exactly one Slot's own center1PointId/
+  // center2PointId pair, tested directly here since building a real Slot
+  // only exercises the *other* (same-centre) branch, both of a Slot's own
+  // Arcs having their own internal end-radius tie too.
+  test('isImplicitEqualRadiusTie is true for a Slot\'s own arc1<->arc2 cross-centre tie', () {
+    controller.points['sc1'] = const SketchPointView(id: 'sc1', x: 0, y: 0);
+    controller.points['sc2'] = const SketchPointView(id: 'sc2', x: 20, y: 0);
+    controller.slots['s0'] = const SketchSlotView(
+      id: 's0',
+      center1PointId: 'sc1',
+      center2PointId: 'sc2',
+      centerlineId: 'cl',
+      arc1Id: 'a1',
+      arc2Id: 'a2',
+      line1Id: 'l1',
+      line2Id: 'l2',
+      aPointId: 'a',
+      bPointId: 'b',
+      cPointId: 'c',
+      dPointId: 'd',
+    );
+    const crossTie = EqualRadiusConstraintDto(
+      id: 'cross',
+      center1PointId: 'sc1',
+      radius1PointId: 'rp1',
+      center2PointId: 'sc2',
+      radius2PointId: 'rp2',
+    );
+
+    expect(controller.isImplicitEqualRadiusTie(crossTie), isTrue);
+  });
+
   test('canApplyConstraint is false for every wired type when a Circle and a Line are selected '
       '(Tangent is offered but not wired)', () async {
     controller.selectDrawTool(SketchTool.circle);
@@ -9611,6 +9767,65 @@ void main() {
     // moves the badge to (474, 206), off the Point marker itself.
     expect(dimensionLabelAt(controller, transform, const Offset(460, 220), 5), isNull);
     expect(dimensionLabelAt(controller, transform, const Offset(474, 206), 5), 'c0');
+  });
+
+  test('dimensionLabelAt finds a ConcentricConstraint\'s own label at the midpoint between the two '
+      'centre Points', () {
+    controller.points['p1'] = const SketchPointView(id: 'p1', x: 0, y: 0);
+    controller.points['p2'] = const SketchPointView(id: 'p2', x: 6, y: 0);
+    controller.constraints['c0'] = const ConcentricConstraintDto(
+      id: 'c0',
+      entity1Id: 'e1',
+      entity2Id: 'e2',
+      center1PointId: 'p1',
+      center2PointId: 'p2',
+    );
+
+    const transform = ViewTransform(pixelsPerUnit: 20, originScreen: Offset(400, 300));
+    // Midpoint (3, 0) projects to screen (400 + 60, 300) = (460, 300).
+    expect(dimensionLabelAt(controller, transform, const Offset(460, 300), 5), 'c0');
+  });
+
+  // Bug fix (on-device feedback: "equal radius"/"concentric" should have a
+  // glyph, like "equal length" does, so the user can see and select it to
+  // see its affected entities and delete it) - covers the actual
+  // canvas-level hit-test (dimensionLabelAt), not just
+  // constraintOverlayItems (the 3D-embedded sketcher's own separate glyph
+  // list, covered by the isImplicitEqualRadiusTie test above). An implicit
+  // (same-centre-Point-on-both-sides) EqualRadiusConstraint - the shape an
+  // Arc's own internal end-radius tie always has - must stay unhittable,
+  // same as it stays unpainted (see isImplicitEqualRadiusTie's own doc
+  // comment).
+  test('dimensionLabelAt finds a user-created EqualRadiusConstraint\'s own label, but not an '
+      'implicit same-centre one (an Arc\'s own internal end-radius tie)', () {
+    controller.points['p1'] = const SketchPointView(id: 'p1', x: 0, y: 0);
+    controller.points['r1'] = const SketchPointView(id: 'r1', x: 5, y: 0);
+    controller.points['r2'] = const SketchPointView(id: 'r2', x: 0, y: 5);
+    controller.constraints['implicit'] = const EqualRadiusConstraintDto(
+      id: 'implicit',
+      center1PointId: 'p1',
+      radius1PointId: 'r1',
+      center2PointId: 'p1', // same centre Point on both sides - Arc's own internal tie shape
+      radius2PointId: 'r2',
+    );
+    controller.points['q1'] = const SketchPointView(id: 'q1', x: 20, y: 0);
+    controller.points['q2'] = const SketchPointView(id: 'q2', x: 26, y: 0);
+    controller.constraints['user'] = const EqualRadiusConstraintDto(
+      id: 'user',
+      center1PointId: 'p1',
+      radius1PointId: 'r1',
+      center2PointId: 'q1',
+      radius2PointId: 'q2',
+    );
+
+    const transform = ViewTransform(pixelsPerUnit: 20, originScreen: Offset(400, 300));
+    // The implicit tie's own midpoint (both centres at (0,0)) projects to
+    // screen (400, 300) - unhittable there even though a genuine
+    // user-created tie at that exact position would be.
+    expect(dimensionLabelAt(controller, transform, const Offset(400, 300), 5), isNull);
+    // The user tie's own midpoint ((0+20)/2, 0) = (10, 0) projects to
+    // screen (400 + 200, 300) = (600, 300).
+    expect(dimensionLabelAt(controller, transform, const Offset(600, 300), 5), 'user');
   });
 
   test('the origin is selectable so a Point can be constrained Coincident to it', () async {
