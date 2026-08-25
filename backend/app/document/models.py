@@ -751,6 +751,61 @@ class MergeFeature(Feature):
         return Produces.BODY
 
 
+class BooleanOperation(str, Enum):
+    """Boolean family, second/third entries: SUBTRACT removes every Body
+    named by `tool_body_ids` from every Body named by `target_body_ids`
+    (`BRepAlgoAPI_Cut`); COMMON keeps only their shared volume
+    (`BRepAlgoAPI_Common`) - both are the same `BooleanFeature` shape (see
+    below), differing only in this field, mirroring `ExtrudeType`'s own
+    Boss/Cut str-Enum pattern."""
+
+    SUBTRACT = "subtract"
+    COMMON = "common"
+
+
+@dataclass
+class BooleanFeature(Feature):
+    """The second/third entries of the Boolean family (Merge above was the
+    first; Split follows in later work): unlike `MergeFeature`'s symmetric
+    fuse-everything-together, this has a real target/tool distinction -
+    `target_body_ids` (1+ required) are the Bodies operated *on*,
+    `tool_body_ids` (1+ required, disjoint from `target_body_ids` - see
+    `app.document.router._validate_boolean_body_ids`) are the Bodies
+    operated *with*. For each target Body, every tool Body's current shape
+    is folded in via repeated `BRepAlgoAPI_Cut` (SUBTRACT) or
+    `BRepAlgoAPI_Common` (COMMON) - see `app.document.boolean`.
+
+    Both sides are already-existing, already-registered Bodies - unlike
+    `ExtrudeFeature`/`RevolveFeature`/etc.'s own Boss/Cut, which combines a
+    freshly-computed transient solid into/from `target_body_ids`, this
+    combines two sets of Bodies that both already have their own identity
+    and history. That's what makes `consume_tool_bodies` a real, novel
+    choice here (default `True`, matching `GearFeature.is_internal`'s
+    plain-bool convention rather than a new enum): today's Cut always
+    implicitly discards its transient solid (it was never a registered Body
+    to begin with), but a Subtract/Common's tool Bodies are real Bodies a
+    user might still want to keep around afterward - `False` leaves every
+    `tool_body_ids` entry registered and untouched."""
+
+    id: str
+    operation: BooleanOperation
+    target_body_ids: list[str]
+    tool_body_ids: list[str]
+    consume_tool_bodies: bool = True
+
+    @property
+    def type(self) -> str:
+        return "boolean"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
 class FixedAxis(str, Enum):
     """Pattern/Mirror scoping's Phase 2 (`docs/pattern-mirror-scope.md`
     §2.2/§2.5): a world-space X/Y/Z direction, for `PatternDirectionRef`'s

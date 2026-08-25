@@ -19,6 +19,9 @@ enum FeaturePickerAction {
   pattern,
   // Boolean family, first entry.
   merge,
+  // Boolean family, Subtract/Common.
+  subtract,
+  common,
 }
 
 /// Shows the fly-up bottom sheet listing every feature type the "Add" FAB's
@@ -35,9 +38,9 @@ enum FeaturePickerAction {
 /// alongside a pure reference Plane), Modify (Fillet/Chamfer), and Repeat
 /// (Mirror/Pattern - not titled "Pattern" itself, since that collided with
 /// the "Pattern" entry it contains - see that section's own doc comment). A
-/// Combine section (Merge/Subtract/Common/Split) holds one real entry
-/// (Merge) plus three still-disabled placeholders left for their own
-/// follow-up sessions to populate - see [_CombineSection].
+/// Combine section (Merge/Subtract/Common/Split) holds three real entries
+/// (Merge, Subtract, Common) plus one still-disabled placeholder (Split)
+/// left for its own follow-up session to populate - see [_CombineSection].
 ///
 /// On-device feedback: every section now starts collapsed (`initiallyExpanded:
 /// false`, previously only Combine did) - with six sections, opening the
@@ -250,11 +253,13 @@ class _FeatureEntry extends StatelessWidget {
 
 /// The Combine section (Merge/Subtract/Common/Split) - Boolean family, first
 /// entry: [FeaturePickerAction.merge] is now a real, enabled entry (mirrors
-/// every other [_FeatureEntry] row); Subtract/Common/Split stay disabled
-/// placeholders for their own follow-up sessions to wire up, same reasoning
-/// this section always had. A bespoke widget (not a plain [_FeatureSection])
-/// since it mixes one real [_FeatureEntry] with three still-disabled rows,
-/// which [_FeatureSection] itself has no concept of.
+/// every other [_FeatureEntry] row). Boolean family, Subtract/Common:
+/// [FeaturePickerAction.subtract]/[FeaturePickerAction.common] are now real,
+/// enabled entries too, replacing their own former disabled placeholders;
+/// Split stays a disabled placeholder for its own follow-up session to wire
+/// up. A bespoke widget (not a plain [_FeatureSection]) since it mixes three
+/// real [_FeatureEntry] rows with one still-disabled row, which
+/// [_FeatureSection] itself has no concept of.
 class _CombineSection extends StatelessWidget {
   const _CombineSection();
 
@@ -276,8 +281,16 @@ class _CombineSection extends StatelessWidget {
           label: 'Merge',
           action: FeaturePickerAction.merge,
         ),
-        ListTile(enabled: false, title: Text('Subtract'), subtitle: Text('Coming soon')),
-        ListTile(enabled: false, title: Text('Common'), subtitle: Text('Coming soon')),
+        _FeatureEntry(
+          icon: 'assets/icons/feature/feature_merge.svg',
+          label: 'Subtract',
+          action: FeaturePickerAction.subtract,
+        ),
+        _FeatureEntry(
+          icon: 'assets/icons/feature/feature_merge.svg',
+          label: 'Common',
+          action: FeaturePickerAction.common,
+        ),
         ListTile(enabled: false, title: Text('Split'), subtitle: Text('Coming soon')),
       ],
     );

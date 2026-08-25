@@ -1103,6 +1103,134 @@ void main() {
     });
   });
 
+  group('Boolean family, Subtract/Common: FeatureDto.fromJson for a boolean Feature', () {
+    test('parses operation/target_body_ids/tool_body_ids/consume_tool_bodies', () {
+      final dto = FeatureDto.fromJson({
+        'type': 'boolean',
+        'id': 'bool-1',
+        'locked': false,
+        'produces': 'body',
+        'operation': 'subtract',
+        'target_body_ids': ['body-1'],
+        'tool_body_ids': ['body-2'],
+        'consume_tool_bodies': false,
+      });
+
+      expect(dto.type, 'boolean');
+      expect(dto.operation, 'subtract');
+      expect(dto.targetBodyIds, ['body-1']);
+      expect(dto.toolBodyIds, ['body-2']);
+      expect(dto.consumeToolBodies, false);
+    });
+
+    test('defaults consumeToolBodies to true and toolBodyIds to empty when omitted', () {
+      final dto = FeatureDto.fromJson({
+        'type': 'extrude',
+        'id': 'ef-1',
+        'locked': false,
+        'produces': 'body',
+        'sketch_feature_id': 'sf-1',
+        'extrude_type': 'boss',
+        'start_distance': 0.0,
+        'end_distance': 10.0,
+      });
+
+      expect(dto.operation, isNull);
+      expect(dto.toolBodyIds, isEmpty);
+      expect(dto.consumeToolBodies, true);
+    });
+  });
+
+  group('Boolean family, Subtract/Common: DocumentApiClient createBooleanFeature/updateBooleanFeature',
+      () {
+    http.Response jsonResponse(Object body, {int status = 201}) =>
+        http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});
+
+    test('createBooleanFeature sends operation/target_body_ids/tool_body_ids/consume_tool_bodies', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'boolean',
+            'id': 'bool-1',
+            'locked': false,
+            'produces': 'body',
+            'operation': 'common',
+            'target_body_ids': ['body-1'],
+            'tool_body_ids': ['body-2'],
+            'consume_tool_bodies': true,
+          });
+        }),
+      );
+
+      final feature = await client.createBooleanFeature(
+        'part-1',
+        operation: BooleanOperation.common,
+        targetBodyIds: const ['body-1'],
+        toolBodyIds: const ['body-2'],
+      );
+
+      expect(capturedBody, {
+        'operation': 'common',
+        'target_body_ids': ['body-1'],
+        'tool_body_ids': ['body-2'],
+        'consume_tool_bodies': true,
+      });
+      expect(feature.operation, 'common');
+      expect(feature.targetBodyIds, ['body-1']);
+      expect(feature.toolBodyIds, ['body-2']);
+    });
+
+    test('updateBooleanFeature only sends supplied fields', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'boolean',
+            'id': 'bool-1',
+            'locked': false,
+            'produces': 'body',
+            'operation': 'subtract',
+            'target_body_ids': ['body-1'],
+            'tool_body_ids': ['body-3'],
+            'consume_tool_bodies': false,
+          }, status: 200);
+        }),
+      );
+
+      await client.updateBooleanFeature('part-1', 'bool-1', toolBodyIds: const ['body-3']);
+
+      expect(capturedBody, {
+        'tool_body_ids': ['body-3'],
+      });
+    });
+
+    test('updateBooleanFeature sends an empty body when nothing supplied', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'boolean',
+            'id': 'bool-1',
+            'locked': false,
+            'produces': 'body',
+            'operation': 'subtract',
+            'target_body_ids': ['body-1'],
+            'tool_body_ids': ['body-2'],
+            'consume_tool_bodies': true,
+          }, status: 200);
+        }),
+      );
+
+      await client.updateBooleanFeature('part-1', 'bool-1');
+
+      expect(capturedBody, <String, dynamic>{});
+    });
+  });
+
   group('DocumentApiClient createCreatePlaneFeature/updateCreatePlaneFeature', () {
     http.Response jsonResponse(Object body, {int status = 201}) =>
         http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});

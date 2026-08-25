@@ -261,6 +261,23 @@ enum MergeMode {
       MergeMode.values.firstWhere((m) => m.apiValue == value, orElse: () => MergeMode.keepSeparate);
 }
 
+/// Boolean family, Subtract/Common: which OCCT boolean call a
+/// `"boolean"` Feature uses (the backend's `BooleanOperation`) - mirrors
+/// [MergeMode]/[PatternMode]'s own `apiValue`/`fromApiValue` str-enum
+/// convention, matching the backend's string values exactly.
+enum BooleanOperation {
+  subtract,
+  common;
+
+  String get apiValue => switch (this) {
+        BooleanOperation.subtract => 'subtract',
+        BooleanOperation.common => 'common',
+      };
+
+  static BooleanOperation fromApiValue(String value) =>
+      BooleanOperation.values.firstWhere((o) => o.apiValue == value, orElse: () => BooleanOperation.subtract);
+}
+
 /// Pattern/Mirror scoping's Phase 9 (`docs/pattern-mirror-scope.md` §2.12/§4):
 /// which of a Feature's own two mutually-exclusive seed fields a long-press
 /// "Pattern"/"Mirror" entry currently seeds through - [body] sends the
@@ -534,6 +551,27 @@ class FeatureDto {
   /// consumed into the result.
   final List<String> bodyIds;
 
+  /// Boolean family, Subtract/Common - only present on a `"boolean"`
+  /// Feature: `"subtract"`/`"common"` (the backend's `BooleanOperation`),
+  /// same raw-string convention [mode]/[patternType] already use - see
+  /// [BooleanOperation] for the parsed Dart enum the panels themselves use.
+  final String? operation;
+
+  /// Boolean family, Subtract/Common - only present on a `"boolean"`
+  /// Feature: which Bodies (1+ ids, the backend's `BooleanFeature.tool_
+  /// body_ids`) are folded into/against [targetBodyIds] (also 1+ entries
+  /// on this Feature type, disjoint from these) via [operation]. Unlike
+  /// [bodyIds]'s symmetric Merge, this Feature has a real target/tool
+  /// distinction.
+  final List<String> toolBodyIds;
+
+  /// Boolean family, Subtract/Common - only present on a `"boolean"`
+  /// Feature: whether [toolBodyIds] are deleted after the operation
+  /// (`true`, the default - matches the backend's own `BooleanFeature.
+  /// consume_tool_bodies` default) or left registered and untouched
+  /// (`false`).
+  final bool consumeToolBodies;
+
   FeatureDto({
     required this.type,
     required this.id,
@@ -593,6 +631,9 @@ class FeatureDto {
     this.warnings = const [],
     this.directionRef,
     this.bodyIds = const [],
+    this.operation,
+    this.toolBodyIds = const [],
+    this.consumeToolBodies = true,
   });
 
   factory FeatureDto.fromJson(Map<String, dynamic> json) => FeatureDto(
@@ -695,6 +736,9 @@ class FeatureDto {
             ? null
             : PatternDirectionRefDto.fromJson(json['direction_ref'] as Map<String, dynamic>),
         bodyIds: (json['body_ids'] as List?)?.cast<String>() ?? const [],
+        operation: json['operation'] as String?,
+        toolBodyIds: (json['tool_body_ids'] as List?)?.cast<String>() ?? const [],
+        consumeToolBodies: json['consume_tool_bodies'] as bool? ?? true,
       );
 }
 
@@ -1783,6 +1827,61 @@ class DocumentApiClient {
               headers: _headers,
               body: jsonEncode({
                 if (bodyIds != null) 'body_ids': bodyIds,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Boolean family, Subtract/Common: creates a BooleanFeature folding every
+  /// Body named in [toolBodyIds] (1+ required) into/against every Body
+  /// named in [targetBodyIds] (1+ required, disjoint from [toolBodyIds] -
+  /// see the backend's `_validate_boolean_body_ids`) via [operation].
+  /// [consumeToolBodies] (default `true`, matching the backend's own
+  /// `BooleanFeature.consume_tool_bodies` default) mirrors
+  /// [createMergeFeature]'s own shape, minus every Merge-specific symmetric-
+  /// fuse assumption this Feature doesn't share.
+  Future<FeatureDto> createBooleanFeature(
+    String partId, {
+    required BooleanOperation operation,
+    required List<String> targetBodyIds,
+    required List<String> toolBodyIds,
+    bool consumeToolBodies = true,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/boolean-features'),
+              headers: _headers,
+              body: jsonEncode({
+                'operation': operation.apiValue,
+                'target_body_ids': targetBodyIds,
+                'tool_body_ids': toolBodyIds,
+                'consume_tool_bodies': consumeToolBodies,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing BooleanFeature - any of [operation]/
+  /// [targetBodyIds]/[toolBodyIds]/[consumeToolBodies] may be supplied;
+  /// omitted fields keep their current value. Used for the live-preview
+  /// debounced re-solve, same pattern as [updateMergeFeature].
+  Future<FeatureDto> updateBooleanFeature(
+    String partId,
+    String featureId, {
+    BooleanOperation? operation,
+    List<String>? targetBodyIds,
+    List<String>? toolBodyIds,
+    bool? consumeToolBodies,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/boolean-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (operation != null) 'operation': operation.apiValue,
+                if (targetBodyIds != null) 'target_body_ids': targetBodyIds,
+                if (toolBodyIds != null) 'tool_body_ids': toolBodyIds,
+                if (consumeToolBodies != null) 'consume_tool_bodies': consumeToolBodies,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

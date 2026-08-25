@@ -111,11 +111,19 @@ List<SelectionContextAction> contextActionsFor(
       // rather than replacing the existing one, since a single Body has
       // nothing to merge with (Mirror/Pattern stay offered for exactly one,
       // unchanged from before this addition).
+      // Boolean family, Subtract/Common: the same 2+ Bodies selection also
+      // offers Subtract/Common alongside Merge - an ambient selection can't
+      // disambiguate which Bodies should be a target vs. a tool the way the
+      // guided flow's own two-stage picker does, so both buttons pre-seed
+      // the *entire* current selection as targets and jump straight to
+      // tool-picking (see `PartScreen._onBooleanTapped`'s own doc comment).
       if (bodies.length >= 2) {
         return const [
           SelectionContextAction('Mirror', enabled: true),
           SelectionContextAction('Pattern', enabled: true),
           SelectionContextAction('Merge', enabled: true),
+          SelectionContextAction('Subtract', enabled: true),
+          SelectionContextAction('Common', enabled: true),
         ];
       }
       return const [

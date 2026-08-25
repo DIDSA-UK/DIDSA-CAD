@@ -25,7 +25,11 @@ import 'svg_icon.dart';
 /// [showPattern]'s own doc comment for the widened gate this implies.
 /// Boolean family, first entry (Merge): [merge] mirrors [pattern]/[mirror]'s
 /// own "seed from this Feature" entry exactly - shown for any Feature that
-/// mints a Body of its own (see [showMerge]'s own doc comment).
+/// mints a Body of its own (see [showMerge]'s own doc comment). Boolean
+/// family, Subtract/Common: [subtract]/[common] mirror [merge] the same way,
+/// each seeding the long-pressed Feature's own Body/Bodies as the *targets*
+/// of a new guided Subtract/Common session (see [showSubtract]/[showCommon]'s
+/// own doc comment).
 ///
 /// Bug fix: [surface] gives Extrude Surface the same long-press-on-Sketch
 /// route Extrude/Revolve/Sweep already have - previously the only way to
@@ -40,6 +44,8 @@ enum FeatureContextMenuAction {
   pattern,
   mirror,
   merge,
+  subtract,
+  common,
   toggleVisibility,
   delete,
 }
@@ -107,6 +113,9 @@ enum FeatureContextMenuAction {
 /// mints a Body of its own - `PartScreen._bodyProducingFeatureTypes`), no
 /// `tool_feature_id`-style widening (Merge has no such mode). Always
 /// enabled when shown, same reasoning as [showPattern]/[showMirror].
+/// Boolean family, Subtract/Common: [showSubtract]/[showCommon] mirror
+/// [showMerge]'s own gate exactly - same reasoning, same always-enabled-
+/// when-shown shape.
 Future<FeatureContextMenuAction?> showFeatureContextMenu(
   BuildContext context, {
   required bool isHidden,
@@ -124,6 +133,8 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
   bool showPattern = false,
   bool showMirror = false,
   bool showMerge = false,
+  bool showSubtract = false,
+  bool showCommon = false,
 }) {
   return showModalBottomSheet<FeatureContextMenuAction>(
     context: context,
@@ -194,6 +205,18 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
                 leading: const SvgIcon('assets/icons/feature/feature_merge.svg'),
                 title: const Text('Merge'),
                 onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.merge),
+              ),
+            if (showSubtract)
+              ListTile(
+                leading: const SvgIcon('assets/icons/feature/feature_merge.svg'),
+                title: const Text('Subtract'),
+                onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.subtract),
+              ),
+            if (showCommon)
+              ListTile(
+                leading: const SvgIcon('assets/icons/feature/feature_merge.svg'),
+                title: const Text('Common'),
+                onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.common),
               ),
             ListTile(
               leading: Icon(isHidden ? Icons.visibility : Icons.visibility_off),

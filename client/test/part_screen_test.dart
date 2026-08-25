@@ -936,6 +936,53 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets(
+      'Boolean family, Subtract/Common: tapping a Subtract row in the Feature tree opens it for editing',
+      (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        {
+          'type': 'boolean',
+          'id': 'feature-2',
+          'operation': 'subtract',
+          'target_body_ids': ['body-1'],
+          'tool_body_ids': ['body-2'],
+          'consume_tool_bodies': true,
+          'locked': false,
+        },
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    // No dedicated Booleans section - the Subtract row lives only in the
+    // ordinary, always-expanded Features section, same as Merge's own row.
+    expect(find.text('Subtract 1'), findsOneWidget);
+
+    await tester.tap(find.text('Subtract 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(find.text('Edit Subtract'), findsOneWidget);
+    expect(find.text('Subtracting 1 tool body from 1 target body'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('Bug fix: tapping a Surface row in the Feature tree opens it for editing', (tester) async {
     final backend = _FakeDocumentBackend(
       seedFeatures: [

@@ -287,7 +287,8 @@ void main() {
     test(
         'Phase 6: two Bodies together now offer both Mirror and Pattern enabled '
         '(Pattern widened from exactly-one-Body to 1+, mirroring Mirror), plus '
-        'Boolean family, first entry: Merge alongside them', () {
+        'Boolean family, first entry: Merge alongside them, plus Boolean family, '
+        'Subtract/Common: Subtract and Common alongside all of them', () {
       const bodyA = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b1');
       const bodyB = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b2');
       final actions = contextActionsFor({bodyA, bodyB});
@@ -295,6 +296,8 @@ void main() {
         const SelectionContextAction('Mirror', enabled: true),
         const SelectionContextAction('Pattern', enabled: true),
         const SelectionContextAction('Merge', enabled: true),
+        const SelectionContextAction('Subtract', enabled: true),
+        const SelectionContextAction('Common', enabled: true),
       ]);
     });
 
@@ -321,7 +324,26 @@ void main() {
         const SelectionContextAction('Mirror', enabled: true),
         const SelectionContextAction('Pattern', enabled: true),
         const SelectionContextAction('Merge', enabled: true),
+        const SelectionContextAction('Subtract', enabled: true),
+        const SelectionContextAction('Common', enabled: true),
       ]);
+    });
+  });
+
+  group('Boolean family, Subtract/Common: contextActionsFor Subtract/Common', () {
+    test('a lone Body does not offer Subtract/Common - nothing to operate against', () {
+      const body = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b1');
+      final actions = contextActionsFor({body});
+      expect(actions, isNot(contains(const SelectionContextAction('Subtract', enabled: true))));
+      expect(actions, isNot(contains(const SelectionContextAction('Common', enabled: true))));
+    });
+
+    test('two Bodies together offer both Subtract and Common alongside Merge/Mirror/Pattern', () {
+      const bodyA = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b1');
+      const bodyB = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b2');
+      final actions = contextActionsFor({bodyA, bodyB});
+      expect(actions, contains(const SelectionContextAction('Subtract', enabled: true)));
+      expect(actions, contains(const SelectionContextAction('Common', enabled: true)));
     });
   });
 
