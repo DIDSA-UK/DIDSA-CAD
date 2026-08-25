@@ -28,13 +28,27 @@ enum FeaturePickerAction {
 /// Grouped into collapsible sections (mirrors [FeatureTreePanel]'s own
 /// Bodies/Planes `ExpansionTile` grouping - `_buildGroupedTree` - rather
 /// than a flat list, now that this sheet has grown past a handful of rows):
-/// Sketch-based (Extrude/Revolve/Sweep/Loft), Reference (Plane/Surface),
-/// Modify (Fillet/Chamfer), and Repeat (Mirror/Pattern - not titled
-/// "Pattern" itself, since that collided with the "Pattern" entry it
-/// contains - see that section's own doc comment). A Combine section
-/// (Merge/Subtract/Common/Split) holds one real entry (Merge) plus three
-/// still-disabled placeholders left for their own follow-up sessions to
-/// populate - see [_CombineSection].
+/// Sketch-based (Extrude/Revolve/Sweep/Loft), Reference (Plane), Surfacing
+/// (Extrude Surface - its own section, split out from Reference, since it's
+/// also reachable via a long-press-on-Sketch entry of the same name - see
+/// `feature_context_menu.dart`'s `showSurface` - and reads oddly grouped
+/// alongside a pure reference Plane), Modify (Fillet/Chamfer), and Repeat
+/// (Mirror/Pattern - not titled "Pattern" itself, since that collided with
+/// the "Pattern" entry it contains - see that section's own doc comment). A
+/// Combine section (Merge/Subtract/Common/Split) holds one real entry
+/// (Merge) plus three still-disabled placeholders left for their own
+/// follow-up sessions to populate - see [_CombineSection].
+///
+/// On-device feedback: every section now starts collapsed (`initiallyExpanded:
+/// false`, previously only Combine did) - with six sections, opening the
+/// sheet already fully expanded showed more rows than fit most viewports at
+/// once. Bug fix: laid out as two independently-scrolling columns (a `Row`
+/// of two `Expanded` `SingleChildScrollView`s, left: Sketch-based/Reference/
+/// Surfacing, right: Modify/Repeat/Combine) rather than one long vertical
+/// list - expanding a section in one column no longer pushes the other
+/// column's rows off-screen or resets its scroll position. The two-column
+/// area gets a bounded height (a fraction of the screen) so each column's
+/// own [SingleChildScrollView] has something concrete to scroll within.
 Future<FeaturePickerAction?> showFeaturePickerSheet(BuildContext context) {
   return showModalBottomSheet<FeaturePickerAction>(
     context: context,
@@ -48,101 +62,134 @@ Future<FeaturePickerAction?> showFeaturePickerSheet(BuildContext context) {
       borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
     ),
     builder: (context) {
+      final columnAreaHeight = MediaQuery.sizeOf(context).height * 0.6;
       return SafeArea(
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Padding(
-                padding: EdgeInsets.only(top: 8),
-                child: _DragHandle(),
-              ),
-              _FeatureSection(
-                title: 'Sketch-based',
-                initiallyExpanded: true,
-                entries: [
-                  _FeatureEntry(
-                    icon: 'assets/icons/feature/feature_extrude.svg',
-                    label: 'Extrude',
-                    action: FeaturePickerAction.extrude,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.only(top: 8),
+              child: _DragHandle(),
+            ),
+            SizedBox(
+              height: columnAreaHeight,
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: SingleChildScrollView(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _FeatureSection(
+                            title: 'Sketch-based',
+                            initiallyExpanded: false,
+                            entries: [
+                              _FeatureEntry(
+                                icon: 'assets/icons/feature/feature_extrude.svg',
+                                label: 'Extrude',
+                                action: FeaturePickerAction.extrude,
+                              ),
+                              _FeatureEntry(
+                                icon: 'assets/icons/feature/feature_revolve.svg',
+                                label: 'Revolve',
+                                action: FeaturePickerAction.revolve,
+                              ),
+                              _FeatureEntry(
+                                icon: 'assets/icons/feature/feature_sweep.svg',
+                                label: 'Sweep',
+                                action: FeaturePickerAction.sweep,
+                              ),
+                              _FeatureEntry(
+                                icon: 'assets/icons/feature/feature_loft.svg',
+                                label: 'Loft',
+                                action: FeaturePickerAction.loft,
+                              ),
+                            ],
+                          ),
+                          _FeatureSection(
+                            title: 'Reference',
+                            initiallyExpanded: false,
+                            entries: [
+                              _FeatureEntry(
+                                icon: 'assets/icons/feature/feature_plane.svg',
+                                label: 'Plane',
+                                action: FeaturePickerAction.plane,
+                              ),
+                            ],
+                          ),
+                          _FeatureSection(
+                            title: 'Surfacing',
+                            initiallyExpanded: false,
+                            entries: [
+                              _FeatureEntry(
+                                icon: 'assets/icons/feature/feature_surface.svg',
+                                label: 'Extrude Surface',
+                                action: FeaturePickerAction.surface,
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                        ],
+                      ),
+                    ),
                   ),
-                  _FeatureEntry(
-                    icon: 'assets/icons/feature/feature_revolve.svg',
-                    label: 'Revolve',
-                    action: FeaturePickerAction.revolve,
-                  ),
-                  _FeatureEntry(
-                    icon: 'assets/icons/feature/feature_sweep.svg',
-                    label: 'Sweep',
-                    action: FeaturePickerAction.sweep,
-                  ),
-                  _FeatureEntry(
-                    icon: 'assets/icons/feature/feature_loft.svg',
-                    label: 'Loft',
-                    action: FeaturePickerAction.loft,
+                  Expanded(
+                    child: SingleChildScrollView(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _FeatureSection(
+                            title: 'Modify',
+                            initiallyExpanded: false,
+                            entries: [
+                              _FeatureEntry(
+                                icon: 'assets/icons/feature/feature_fillet.svg',
+                                label: 'Fillet',
+                                action: FeaturePickerAction.fillet,
+                              ),
+                              _FeatureEntry(
+                                icon: 'assets/icons/feature/feature_chamfer.svg',
+                                label: 'Chamfer',
+                                action: FeaturePickerAction.chamfer,
+                              ),
+                            ],
+                          ),
+                          _FeatureSection(
+                            // Bug fix (real CI failure - widget tests): naming
+                            // this section "Pattern" collided with the
+                            // "Pattern" entry it contains - `find.text('Pattern')`/
+                            // a plain tap-by-label could no longer tell the
+                            // section header from the row inside it (both
+                            // matched, ambiguously). "Repeat" groups Mirror/
+                            // Pattern under the same "duplicate existing
+                            // geometry" umbrella without repeating either
+                            // entry's own label.
+                            title: 'Repeat',
+                            initiallyExpanded: false,
+                            entries: [
+                              _FeatureEntry(
+                                icon: 'assets/icons/feature/feature_mirror.svg',
+                                label: 'Mirror',
+                                action: FeaturePickerAction.mirror,
+                              ),
+                              _FeatureEntry(
+                                icon: 'assets/icons/feature/feature_pattern.svg',
+                                label: 'Pattern',
+                                action: FeaturePickerAction.pattern,
+                              ),
+                            ],
+                          ),
+                          const _CombineSection(),
+                          const SizedBox(height: 8),
+                        ],
+                      ),
+                    ),
                   ),
                 ],
               ),
-              _FeatureSection(
-                title: 'Reference',
-                initiallyExpanded: true,
-                entries: [
-                  _FeatureEntry(
-                    icon: 'assets/icons/feature/feature_plane.svg',
-                    label: 'Plane',
-                    action: FeaturePickerAction.plane,
-                  ),
-                  _FeatureEntry(
-                    icon: 'assets/icons/feature/feature_surface.svg',
-                    label: 'Surface',
-                    action: FeaturePickerAction.surface,
-                  ),
-                ],
-              ),
-              _FeatureSection(
-                title: 'Modify',
-                initiallyExpanded: true,
-                entries: [
-                  _FeatureEntry(
-                    icon: 'assets/icons/feature/feature_fillet.svg',
-                    label: 'Fillet',
-                    action: FeaturePickerAction.fillet,
-                  ),
-                  _FeatureEntry(
-                    icon: 'assets/icons/feature/feature_chamfer.svg',
-                    label: 'Chamfer',
-                    action: FeaturePickerAction.chamfer,
-                  ),
-                ],
-              ),
-              _FeatureSection(
-                // Bug fix (real CI failure - widget tests): naming this
-                // section "Pattern" collided with the "Pattern" entry it
-                // contains - `find.text('Pattern')`/a plain tap-by-label
-                // could no longer tell the section header from the row
-                // inside it (both matched, ambiguously). "Repeat" groups
-                // Mirror/Pattern under the same "duplicate existing
-                // geometry" umbrella without repeating either entry's own
-                // label.
-                title: 'Repeat',
-                initiallyExpanded: true,
-                entries: [
-                  _FeatureEntry(
-                    icon: 'assets/icons/feature/feature_mirror.svg',
-                    label: 'Mirror',
-                    action: FeaturePickerAction.mirror,
-                  ),
-                  _FeatureEntry(
-                    icon: 'assets/icons/feature/feature_pattern.svg',
-                    label: 'Pattern',
-                    action: FeaturePickerAction.pattern,
-                  ),
-                ],
-              ),
-              const _CombineSection(),
-              const SizedBox(height: 8),
-            ],
-          ),
+            ),
+          ],
         ),
       );
     },

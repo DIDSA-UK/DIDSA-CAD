@@ -12,9 +12,9 @@ import 'resizable_tool_panel.dart';
 /// row plus Cancel/Confirm, mirroring [MirrorPanel]'s Confirm/Cancel
 /// session shape without any of its plane-picking/merge-mode machinery.
 class MergePanel extends StatelessWidget {
-  /// 'Merge' - purely a label, matching every other panel's `title` param
-  /// (no edit mode exists for Merge - see `PartScreen`'s own Merge section
-  /// header comment).
+  /// 'Merge', or 'Edit Merge' while editing an already-existing
+  /// MergeFeature - matches every other panel's `title` param (see
+  /// `PartScreen._openMergePanelForEdit`).
   final String title;
 
   final String? tooltip;
