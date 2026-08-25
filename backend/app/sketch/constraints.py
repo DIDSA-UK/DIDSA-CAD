@@ -606,6 +606,39 @@ class EqualRadiusConstraint(Constraint):
 
 
 @dataclass
+class ConcentricConstraint(Constraint):
+    """Forces two Circles'/Arcs' centres to occupy the same position - the
+    curved-entity counterpart of CoincidentConstraint.
+
+    References both entities' ids for display purposes; each one's centre
+    Point id is captured at creation time (see Sketch.add_concentric_
+    constraint), same rationale as EqualRadiusConstraint above. Expressed
+    via SolverBuilder.coincident directly on the two centre Points - no
+    virtual construction needed, unlike EqualRadius/Tangent's centre-to-rim
+    trick, since "same centre" is exactly what the native coincident
+    primitive already asserts.
+    """
+
+    id: str
+    entity1_id: str
+    entity2_id: str
+    center1_point_id: str
+    center2_point_id: str
+
+    @property
+    def type(self) -> str:
+        return "concentric"
+
+    def point_ids(self) -> tuple[str, str]:
+        return (self.center1_point_id, self.center2_point_id)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        center1 = builder.point2d(self.center1_point_id)
+        center2 = builder.point2d(self.center2_point_id)
+        return builder.coincident(center1, center2)
+
+
+@dataclass
 class LineDistanceConstraint(Constraint):
     """Pins the perpendicular distance between two Lines to a fixed value,
     via SolverBuilder.point_line_distance (py-slvs's SLVS_C_PT_LINE_DISTANCE

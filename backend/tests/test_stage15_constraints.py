@@ -311,6 +311,54 @@ def test_add_equal_radius_constraint_from_points_between_two_raw_point_pairs():
     assert constraint.point_ids() == (center.id, vertex1.id, center.id, vertex2.id)
 
 
+def test_add_concentric_constraint_between_two_circles():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center1 = sketch.add_point(0.0, 0.0)
+    circle1 = sketch.add_circle(center1.id, radius=5.0, angle=0.0)
+    center2 = sketch.add_point(20.0, 0.0)
+    circle2 = sketch.add_circle(center2.id, radius=8.0, angle=0.0)
+
+    constraint = sketch.add_concentric_constraint(circle1.id, circle2.id)
+
+    assert constraint.id in sketch.constraints
+    assert constraint.point_ids() == (circle1.center_point_id, circle2.center_point_id)
+
+
+def test_concentric_constraint_rejects_same_entity_twice():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    circle = sketch.add_circle(center.id, radius=5.0, angle=0.0)
+    with pytest.raises(ValueError):
+        sketch.add_concentric_constraint(circle.id, circle.id)
+
+
+def test_concentric_constraint_forces_same_centre_after_solve():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center1 = sketch.add_point(0.0, 0.0)
+    circle1 = sketch.add_circle(center1.id, radius=5.0, angle=0.0)
+    center2 = sketch.add_point(20.0, 8.0)
+    circle2 = sketch.add_circle(center2.id, radius=8.0, angle=0.0)
+    # Each Circle's own radius DistanceConstraint starts provisional (see
+    # that field's own doc comment) and is skipped entirely by the solver -
+    # confirmed here (same pattern test_stage5_circle.py uses) so the radius
+    # assertions below actually pin something, rather than asserting on a
+    # value the solver was always free to change.
+    sketch.constraints[circle1.radius_constraint_id].provisional = False
+    sketch.constraints[circle2.radius_constraint_id].provisional = False
+    sketch.add_concentric_constraint(circle1.id, circle2.id)
+
+    result = solve_sketch(sketch)
+
+    assert result.converged
+    assert dist_between(sketch, circle1.center_point_id, circle2.center_point_id) == pytest.approx(0.0, abs=1e-6)
+    # Each Circle's own radius is untouched - Concentric only ties centres,
+    # unlike EqualRadius above.
+    radius1 = dist_between(sketch, circle1.center_point_id, circle1.radius_point_id)
+    radius2 = dist_between(sketch, circle2.center_point_id, circle2.radius_point_id)
+    assert radius1 == pytest.approx(5.0, abs=1e-6)
+    assert radius2 == pytest.approx(8.0, abs=1e-6)
+
+
 def test_equal_radius_constraint_from_points_rejects_an_unknown_point():
     sketch = Sketch(id="s", plane=Plane.XY)
     center = sketch.add_point(0.0, 0.0)

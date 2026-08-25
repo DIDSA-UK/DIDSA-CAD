@@ -775,6 +775,8 @@ abstract class ConstraintDto {
         return AngleConstraintDto.fromJson(json);
       case 'coincident':
         return CoincidentConstraintDto.fromJson(json);
+      case 'concentric':
+        return ConcentricConstraintDto.fromJson(json);
       case 'parallel':
         return ParallelConstraintDto.fromJson(json);
       case 'perpendicular':
@@ -919,6 +921,32 @@ class CoincidentConstraintDto extends ConstraintDto {
         id: json['id'] as String,
         pointAId: json['point_a_id'] as String,
         pointBId: json['point_b_id'] as String,
+      );
+}
+
+/// Ties two Circles'/Arcs' centres together - the curved-entity counterpart
+/// of [CoincidentConstraintDto]. See backend `ConcentricConstraint`'s doc
+/// comment.
+class ConcentricConstraintDto extends ConstraintDto {
+  final String entity1Id;
+  final String entity2Id;
+  final String center1PointId;
+  final String center2PointId;
+
+  const ConcentricConstraintDto({
+    required super.id,
+    required this.entity1Id,
+    required this.entity2Id,
+    required this.center1PointId,
+    required this.center2PointId,
+  });
+
+  factory ConcentricConstraintDto.fromJson(Map<String, dynamic> json) => ConcentricConstraintDto(
+        id: json['id'] as String,
+        entity1Id: json['entity1_id'] as String,
+        entity2Id: json['entity2_id'] as String,
+        center1PointId: json['center1_point_id'] as String,
+        center2PointId: json['center2_point_id'] as String,
       );
 }
 
@@ -2638,6 +2666,26 @@ class SketchApiClient {
                 'type': 'coincident',
                 'point_a_id': pointAId,
                 'point_b_id': pointBId,
+              }),
+            ),
+        (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Ties two Circles'/Arcs' centres together - see [ConcentricConstraintDto]'s
+  /// doc comment.
+  Future<ConstraintDto> createConcentricConstraint(
+    String sketchId,
+    String entity1Id,
+    String entity2Id,
+  ) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/constraints'),
+              headers: _headers,
+              body: jsonEncode({
+                'type': 'concentric',
+                'entity1_id': entity1Id,
+                'entity2_id': entity2Id,
               }),
             ),
         (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),

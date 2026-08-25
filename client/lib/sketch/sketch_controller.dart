@@ -6747,6 +6747,10 @@ class SketchController extends ChangeNotifier {
       HorizontalConstraintDto d => (pointIds: {d.pointAId, d.pointBId}, lineIds: {d.lineId}),
       AngleConstraintDto d => (pointIds: <String>{}, lineIds: {d.line1Id, d.line2Id}),
       CoincidentConstraintDto d => (pointIds: {d.pointAId, d.pointBId}, lineIds: <String>{}),
+      // Same rationale as EqualRadiusConstraintDto below - a Concentric tie
+      // isn't owned by either Circle/Arc it references, so deleting either
+      // one's centre Point needs this pulled into the cascade too.
+      ConcentricConstraintDto d => (pointIds: {d.center1PointId, d.center2PointId}, lineIds: <String>{}),
       ParallelConstraintDto d => (pointIds: <String>{}, lineIds: {d.line1Id, d.line2Id}),
       PerpendicularConstraintDto d => (pointIds: <String>{}, lineIds: {d.line1Id, d.line2Id}),
       EqualLengthConstraintDto d => (pointIds: <String>{}, lineIds: {d.line1Id, d.line2Id}),
@@ -8782,9 +8786,11 @@ class SketchController extends ChangeNotifier {
   /// prompt's selection-set table. Coincident/Parallel/Perpendicular/
   /// EqualLength/Collinear are wired here (Stage 16 item 7 moved them out of
   /// the dimension tool's now-removed button row - see
-  /// [SketchDimensionBar]); Concentric/EqualRadius/Tangent remain
-  /// `wired: false` since there's no backend Concentric/EqualRadius/Tangent
-  /// constraint support yet.
+  /// [SketchDimensionBar]); Concentric/EqualRadius both gained real backend
+  /// support (`ConcentricConstraint`/`EqualRadiusConstraint`) and are wired
+  /// too now - Tangent remains `wired: false` since a Circle/Arc + Line
+  /// selection has no dedicated flyout row of its own yet (Slot's own
+  /// tangent ties are created internally, not via this flyout).
   List<ConstraintOption> get availableConstraintOptions {
     final sel = _selectionSet;
 
@@ -8849,8 +8855,8 @@ class SketchController extends ChangeNotifier {
 
     if (kinds.length == 1 && kinds.single == SelectionKind.circle) {
       return const [
-        ConstraintOption(type: ConstraintOptionType.concentric, label: 'Concentric', wired: false),
-        ConstraintOption(type: ConstraintOptionType.equalRadius, label: 'Equal radius', wired: false),
+        ConstraintOption(type: ConstraintOptionType.concentric, label: 'Concentric', wired: true),
+        ConstraintOption(type: ConstraintOptionType.equalRadius, label: 'Equal radius', wired: true),
       ];
     }
 
@@ -8893,7 +8899,7 @@ class SketchController extends ChangeNotifier {
 
   /// Applies a wired [ConstraintOption] from the flyout - a no-op (besides
   /// being unreachable from the UI, since unwired options render
-  /// non-tappable) for Concentric/EqualRadius/Tangent.
+  /// non-tappable) for Tangent, the one remaining unwired type.
   Future<void> applyConstraintOption(ConstraintOptionType type) async {
     switch (type) {
       case ConstraintOptionType.vertical:
@@ -8904,6 +8910,12 @@ class SketchController extends ChangeNotifier {
         break;
       case ConstraintOptionType.coincident:
         await addCoincidentConstraint();
+        break;
+      case ConstraintOptionType.concentric:
+        await addConcentricConstraint();
+        break;
+      case ConstraintOptionType.equalRadius:
+        await addEqualRadiusConstraint();
         break;
       case ConstraintOptionType.parallel:
         await addParallelConstraint();
@@ -12161,6 +12173,20 @@ class SketchController extends ChangeNotifier {
   Future<void> addCoincidentConstraint() async {
     if (!canApplyConstraint(ConstraintOptionType.coincident)) return;
     await _createSelectionSetConstraint(_api.createCoincidentConstraint);
+  }
+
+  /// Ties two selected Circles' centres together - see
+  /// [SketchApiClient.createConcentricConstraint].
+  Future<void> addConcentricConstraint() async {
+    if (!canApplyConstraint(ConstraintOptionType.concentric)) return;
+    await _createSelectionSetConstraint(_api.createConcentricConstraint);
+  }
+
+  /// Ties two selected Circles' radii together - see
+  /// [SketchApiClient.createEqualRadiusConstraint].
+  Future<void> addEqualRadiusConstraint() async {
+    if (!canApplyConstraint(ConstraintOptionType.equalRadius)) return;
+    await _createSelectionSetConstraint(_api.createEqualRadiusConstraint);
   }
 
   /// Like [_createSelectionSetConstraint], but for a constraint type whose

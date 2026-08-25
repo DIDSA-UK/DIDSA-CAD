@@ -233,6 +233,9 @@ int _addToSolver(ConstraintDto c, SolverBuilder b, LineEndpoints lineEndpoints) 
   if (c is CoincidentConstraintDto) {
     return b.coincident(b.point2d(c.pointAId), b.point2d(c.pointBId));
   }
+  if (c is ConcentricConstraintDto) {
+    return b.coincident(b.point2d(c.center1PointId), b.point2d(c.center2PointId));
+  }
   if (c is ParallelConstraintDto) {
     final (s1, e1) = lineEndpoints(c.line1Id);
     final (s2, e2) = lineEndpoints(c.line2Id);

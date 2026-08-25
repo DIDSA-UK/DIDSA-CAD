@@ -1966,6 +1966,16 @@ class _FakeBackend {
             'point_b_id': body['point_b_id'],
           };
           break;
+        case 'concentric':
+          constraint = {
+            'id': id,
+            'type': 'concentric',
+            'entity1_id': body['entity1_id'],
+            'entity2_id': body['entity2_id'],
+            'center1_point_id': _centerRadiusPointIds(body['entity1_id'] as String).$1,
+            'center2_point_id': _centerRadiusPointIds(body['entity2_id'] as String).$1,
+          };
+          break;
         case 'parallel':
           constraint = {
             'id': id,
@@ -9364,8 +9374,8 @@ void main() {
     expect(controller.canApplyConstraint(ConstraintOptionType.collinear), isFalse);
   });
 
-  test('canApplyConstraint is false for every wired type when two Circles are selected '
-      '(Concentric/EqualRadius are offered but not wired)', () async {
+  test('canApplyConstraint(concentric)/(equalRadius) are true for two selected Circles, '
+      'false for every other type', () async {
     controller.selectDrawTool(SketchTool.circle);
     await controller.handleCanvasTap(0, 0);
     await controller.handleCanvasTap(5, 0);
@@ -9380,9 +9390,53 @@ void main() {
     await controller.handleCanvasTap(20 + 3 * math.cos(math.pi / 4), 3 * math.sin(math.pi / 4)); // second circle's edge
 
     expect(controller.selectionSet.length, 2);
+    expect(controller.canApplyConstraint(ConstraintOptionType.concentric), isTrue);
+    expect(controller.canApplyConstraint(ConstraintOptionType.equalRadius), isTrue);
     for (final type in ConstraintOptionType.values) {
+      if (type == ConstraintOptionType.concentric || type == ConstraintOptionType.equalRadius) continue;
       expect(controller.canApplyConstraint(type), isFalse, reason: '$type');
     }
+  });
+
+  test('addConcentricConstraint ties two selected Circles\' centres together', () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+    await controller.handleCanvasTap(20, 0);
+    await controller.handleCanvasTap(23, 0);
+    controller.exitToSelectMode();
+
+    await controller.handleCanvasTap(5 * math.cos(math.pi / 4), 5 * math.sin(math.pi / 4)); // first circle's edge
+    await controller.handleCanvasTap(20 + 3 * math.cos(math.pi / 4), 3 * math.sin(math.pi / 4)); // second circle's edge
+    expect(controller.selectionSet.length, 2);
+
+    await controller.addConcentricConstraint();
+
+    final created = controller.constraints.values.whereType<ConcentricConstraintDto>();
+    expect(created, hasLength(1));
+    final circles = controller.circles.values.toList();
+    expect(created.first.center1PointId, circles[0].centerPointId);
+    expect(created.first.center2PointId, circles[1].centerPointId);
+    expect(controller.selectionSet, isEmpty);
+  });
+
+  test('addEqualRadiusConstraint ties two selected Circles\' radii together', () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+    await controller.handleCanvasTap(20, 0);
+    await controller.handleCanvasTap(23, 0);
+    controller.exitToSelectMode();
+
+    await controller.handleCanvasTap(5 * math.cos(math.pi / 4), 5 * math.sin(math.pi / 4)); // first circle's edge
+    await controller.handleCanvasTap(20 + 3 * math.cos(math.pi / 4), 3 * math.sin(math.pi / 4)); // second circle's edge
+    expect(controller.selectionSet.length, 2);
+
+    await controller.addEqualRadiusConstraint();
+
+    final created = controller.constraints.values.whereType<EqualRadiusConstraintDto>();
+    expect(created, hasLength(1));
+    expect(controller.selectionSet, isEmpty);
   });
 
   test('canApplyConstraint is false for every wired type when a Circle and a Line are selected '
