@@ -1236,6 +1236,16 @@ class _PartScreenState extends State<PartScreen> {
   /// own convention exactly.
   String? _surfaceFixedAxis;
 
+  /// B4: non-null while [SurfacePanel] is editing an *already-existing*
+  /// SurfaceFeature - mirrors [_editingExtrudeFeatureId].
+  String? _editingSurfaceFeatureId;
+
+  /// B4: the edited Feature's own stored values from just before editing
+  /// started - [_cancelSurface] PATCHes these back verbatim when
+  /// [_editingSurfaceFeatureId] is set, same reason [_extrudeEditSnapshot]
+  /// exists.
+  ({double startDistance, double endDistance, String? fixedAxis})? _surfaceEditSnapshot;
+
   /// Debounces the panel's live-preview PATCH/POST + mesh refresh, same
   /// 500ms convention as [_extrudeDebounce].
   Timer? _surfaceDebounce;
@@ -1584,6 +1594,16 @@ class _PartScreenState extends State<PartScreen> {
   /// simple pattern, just created eagerly rather than lazily on a debounce
   /// timer since there is no further field to wait on.
   String? _previewMergeFeatureId;
+
+  /// B4: non-null while [MergePanel] is editing an *already-existing*
+  /// MergeFeature - mirrors [_editingMirrorFeatureId].
+  String? _editingMergeFeatureId;
+
+  /// B4: the edited Feature's own stored `body_ids` from just before editing
+  /// started - [_cancelMerge] PATCHes these back verbatim when
+  /// [_editingMergeFeatureId] is set, same reason [_mirrorEditSnapshot]
+  /// exists.
+  ({List<String> bodyIds})? _mergeEditSnapshot;
 
   /// [_selectedEntities]' value from just before the panel opened - restored
   /// by both [_confirmMerge] and [_cancelMerge], mirrors
@@ -5215,6 +5235,34 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
+  /// B4: opens [SurfacePanel] to edit an *already-existing* SurfaceFeature -
+  /// mirrors [_openRevolvePanelForEdit]'s shape, minus every field a Surface
+  /// has no concept of at all (axis, target Bodies - see this section's own
+  /// header comment). Returns false (doing nothing else) if [feature]'s own
+  /// Sketch can't be resolved (defensive only - a real SurfaceFeature always
+  /// has one) - the caller ends true-rollback immediately in that case, same
+  /// as [_openRevolvePanelForEdit].
+  bool _openSurfacePanelForEdit(FeatureDto feature) {
+    final sketchFeatureId = feature.sketchFeatureId;
+    final sketchFeature = sketchFeatureId == null ? null : _featureById(sketchFeatureId);
+    if (sketchFeature == null) return false;
+
+    final start = feature.startDistance ?? 0.0;
+    final end = feature.endDistance ?? 10.0;
+    final fixedAxis = feature.directionRef?.fixedAxis;
+    setState(() {
+      _surfaceSketchFeature = sketchFeature;
+      _editingSurfaceFeatureId = feature.id;
+      _previewSurfaceFeatureId = feature.id;
+      _surfaceEditSnapshot = (startDistance: start, endDistance: end, fixedAxis: fixedAxis);
+      _meshBeforeSurface = _bodies;
+      _surfaceStartDistance = start;
+      _surfaceEndDistance = end;
+      _surfaceFixedAxis = fixedAxis;
+    });
+    return true;
+  }
+
   /// Creates the preview SurfaceFeature on the first call, or PATCHes the
   /// one already created by an earlier call, then refetches the mesh -
   /// mirrors [_ensureExtrudeFeatureExists] exactly, minus `target_body_ids`.
@@ -5271,13 +5319,15 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
-  /// Mirrors [_confirmExtrude] exactly, minus the B4 edit-session branch
-  /// (Surface editing isn't wired up yet - v1, create-only, matching this
-  /// Feature's own minimal initial scope) and the target-body-selection
-  /// restore (a Surface never touches [_selectedEntities] at all).
+  /// Mirrors [_confirmExtrude] exactly, minus the target-body-selection
+  /// restore (a Surface never touches [_selectedEntities] at all). B4: when
+  /// [_editingSurfaceFeatureId] is set, the auto-hide-the-Sketch behaviour
+  /// below is skipped, same reasoning as [_confirmExtrude]'s own
+  /// [wasEditing] check.
   Future<void> _confirmSurface() async {
     _surfaceDebounce?.cancel();
     final sketchFeature = _surfaceSketchFeature;
+    final wasEditing = _editingSurfaceFeatureId != null;
     await _runGuarded(() async {
       await _ensureSurfaceFeatureExists(
         _surfaceStartDistance,
@@ -5290,7 +5340,7 @@ class _PartScreenState extends State<PartScreen> {
     if (!mounted) return;
     setState(() {
       _featureTreeVisible = false;
-      if (sketchFeature != null) {
+      if (sketchFeature != null && !wasEditing) {
         _hiddenFeatureIds.add(sketchFeature.id);
         _autoHiddenSketchFeatureIds.add(sketchFeature.id);
       }
@@ -5298,6 +5348,8 @@ class _PartScreenState extends State<PartScreen> {
       _surfaceSketchFeature = null;
       _previewSurfaceFeatureId = null;
       _meshBeforeSurface = null;
+      _editingSurfaceFeatureId = null;
+      _surfaceEditSnapshot = null;
       if (sketchFeature != null && _selectedFeatureId == sketchFeature.id) {
         _selectedFeatureId = null;
       }
@@ -5305,35 +5357,57 @@ class _PartScreenState extends State<PartScreen> {
     await _endRollback();
   }
 
-  /// Deletes the preview SurfaceFeature (if one was ever created) and
-  /// restores the mesh to its pre-surface state, closing the panel either
-  /// way - mirrors [_cancelExtrude]'s "create new" branch (there is no edit
-  /// branch here - see [_confirmSurface]'s own doc comment).
+  /// Deletes the preview SurfaceFeature (new-Surface flow, if one was ever
+  /// created) and restores the mesh to its pre-surface state, closing the
+  /// panel either way - mirrors [_cancelExtrude]'s structure exactly,
+  /// including its B4 edit-session branch: when [_editingSurfaceFeatureId]
+  /// is set, [previewId] refers to a Feature that already existed *before*
+  /// this edit session, so this PATCHes [_surfaceEditSnapshot]'s stashed
+  /// original values back instead of deleting it.
   Future<void> _cancelSurface() async {
     _surfaceDebounce?.cancel();
     final part = _part;
     final sketchFeature = _surfaceSketchFeature;
     final previewId = _previewSurfaceFeatureId;
     final meshBefore = _meshBeforeSurface;
+    final wasEditing = _editingSurfaceFeatureId != null;
+    final editSnapshot = _surfaceEditSnapshot;
     setState(() {
       _featureTreeVisible = false;
       _surfaceSketchFeature = null;
       _previewSurfaceFeatureId = null;
       _meshBeforeSurface = null;
+      _editingSurfaceFeatureId = null;
+      _surfaceEditSnapshot = null;
       if (sketchFeature != null && _selectedFeatureId == sketchFeature.id) {
         _selectedFeatureId = null;
       }
     });
     if (part != null && previewId != null) {
-      await _runGuarded(() async {
-        await _api.deleteFeature(part.id, previewId);
-        if (meshBefore != null) {
-          _bodies = meshBefore;
-        } else {
-          await _refreshMesh();
-        }
-        await _refreshFeatures();
-      });
+      if (wasEditing && editSnapshot != null) {
+        await _runGuarded(() async {
+          await _api.updateSurfaceFeature(
+            part.id,
+            previewId,
+            startDistance: editSnapshot.startDistance,
+            endDistance: editSnapshot.endDistance,
+            directionRef: editSnapshot.fixedAxis == null
+                ? null
+                : PatternDirectionRefDto(fixedAxis: editSnapshot.fixedAxis),
+          );
+          await _refreshFeatures();
+        });
+      } else {
+        await _runGuarded(() async {
+          await _api.deleteFeature(part.id, previewId);
+          if (meshBefore != null) {
+            _bodies = meshBefore;
+          } else {
+            await _refreshMesh();
+          }
+          await _refreshFeatures();
+        });
+      }
     }
     await _endRollback();
   }
@@ -5517,6 +5591,19 @@ class _PartScreenState extends State<PartScreen> {
       // _confirmPattern/_cancelPattern instead - mirrors the mirror branch
       // above exactly.
       final opened = _openPatternPanelForEdit(feature);
+      if (!opened) await _endRollback();
+    } else if (feature.type == 'merge') {
+      // Bug fix: a Merge row tap used to fall through to the defensive
+      // `else` below and silently do nothing - rollback is ended by
+      // _confirmMerge/_cancelMerge instead, mirroring the mirror/pattern
+      // branches above exactly.
+      final opened = _openMergePanelForEdit(feature);
+      if (!opened) await _endRollback();
+    } else if (feature.type == 'surface') {
+      // Bug fix: mirrors the merge branch just above exactly - a Surface row
+      // tap used to fall through to the defensive `else` below too. Rollback
+      // is ended by _confirmSurface/_cancelSurface instead.
+      final opened = _openSurfacePanelForEdit(feature);
       if (!opened) await _endRollback();
     } else if (_gearFamilyFeatureTypes.contains(feature.type)) {
       // Gear-tree UX: GearFeature/RackFeature/BevelGearFeature/
@@ -5771,6 +5858,7 @@ class _PartScreenState extends State<PartScreen> {
       canSweep: canSweep,
       sweepDisabledReason: extrudeDisabledReason,
       showRedefineOrientation: isSketchFeature,
+      showSurface: isSketchFeature,
       showPattern: showPatternOrMirror,
       showMirror: showPatternOrMirror,
       // Boolean family, first entry: mirrors [showPattern]/[showMirror]'s
@@ -5789,6 +5877,8 @@ class _PartScreenState extends State<PartScreen> {
         await _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.sweep);
       case FeatureContextMenuAction.redefineOrientation:
         await _redefineSketchOrientation(feature);
+      case FeatureContextMenuAction.surface:
+        _openSurfacePanel(feature);
       case FeatureContextMenuAction.pattern:
         _openPatternPanelFromFeature(feature);
       case FeatureContextMenuAction.mirror:
@@ -5810,12 +5900,7 @@ class _PartScreenState extends State<PartScreen> {
   Future<String?> _checkExtrudeEligibility(FeatureDto feature) async {
     try {
       final profile = await _sketchApi.getProfile(feature.sketchId!);
-      // Bug fix: used to always show the same generic reason regardless of
-      // *why* - the backend's own `detail` (e.g. "N point(s) are used by
-      // more than two entities" for a branch/T-junction) is what actually
-      // tells the user what to go fix, so surface it instead of discarding
-      // it - see ProfileDetectionDto.detail's own doc comment.
-      return profile.isExtrudable ? null : 'Sketch does not contain a closed profile: ${profile.detail}';
+      return profile.isExtrudable ? null : 'Sketch does not contain a closed profile';
     } catch (_) {
       return 'Sketch does not contain a closed profile';
     }
@@ -7801,7 +7886,10 @@ class _PartScreenState extends State<PartScreen> {
   /// `confirming`, and immediately creates the preview MergeFeature (unlike
   /// [_confirmMirrorBodySelection], which only advances the step - Merge has
   /// no further parameter for a later debounce to wait on, so the moment 2+
-  /// Bodies are confirmed already fully defines this Feature).
+  /// Bodies are confirmed already fully defines this Feature). Never reached
+  /// from [_openMergePanelForEdit] - B4 editing enters straight at
+  /// `confirming` instead, since re-picking Bodies for an already-existing
+  /// MergeFeature isn't offered - so this only ever creates, never PATCHes.
   void _confirmMergeBodySelection() {
     final bodyIds =
         _selectedEntities.where((e) => e.kind == SelectionEntityKind.body).map((e) => e.bodyId).toList();
@@ -7879,11 +7967,37 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
-  /// Keeps the just-created MergeFeature, restores whatever was selected
-  /// before the panel opened - mirrors [_confirmMirror] exactly, minus the B4
-  /// rollback teardown (Merge has no edit mode - see this file's own Merge
-  /// section header comment) and the debounce cancel (Merge never schedules
-  /// one).
+  /// B4: opens [MergePanel] to edit an *already-existing* MergeFeature -
+  /// mirrors [_openMirrorPanelForEdit]'s shape (a defensive `bool` return,
+  /// since a real MergeFeature always has 2+ `body_ids`, but this stays
+  /// defensive rather than assuming). Enters directly at `confirming` -
+  /// unlike the guided "Add" FAB entry, there's no `pickingBodies` step to
+  /// go through, since [feature] already names every input Body; [MergePanel]
+  /// shows the same summary/Confirm/Cancel it always does, just against an
+  /// already-existing Feature id ([_previewMergeFeatureId] is seeded with
+  /// [feature.id] itself so [_confirmMerge]/[_cancelMerge] never mistake
+  /// this for a fresh creation to delete on Cancel).
+  bool _openMergePanelForEdit(FeatureDto feature) {
+    final bodyIds = feature.bodyIds;
+    if (bodyIds.length < 2) return false;
+    setState(() {
+      _mergeStep = _MergeStep.confirming;
+      _editingMergeFeatureId = feature.id;
+      _previewMergeFeatureId = feature.id;
+      _mergeBodyIds = bodyIds;
+      _mergeEditSnapshot = (bodyIds: bodyIds);
+      _meshBeforeMerge = _bodies;
+      _entitiesBeforeMerge = _selectedEntities;
+      _selectionMode = true;
+      _selectionFilterOverrides.push(_mergeBodyPickerSelectionFilter);
+    });
+    return true;
+  }
+
+  /// Keeps the just-created/edited MergeFeature, restores whatever was
+  /// selected before the panel opened, and rolls B4 rollback forward -
+  /// mirrors [_confirmMirror]'s shape, minus the debounce cancel (Merge
+  /// never schedules one).
   Future<void> _confirmMerge() async {
     await _runGuarded(_refreshFeatures);
     if (!mounted) return;
@@ -7894,19 +8008,25 @@ class _PartScreenState extends State<PartScreen> {
       _selectedEntities = _entitiesBeforeMerge ?? {};
       _entitiesBeforeMerge = null;
       _previewMergeFeatureId = null;
+      _editingMergeFeatureId = null;
+      _mergeEditSnapshot = null;
       _meshBeforeMerge = null;
       _selectionFilterOverrides.pop();
     });
+    await _endRollback();
   }
 
-  /// Deletes the just-created preview MergeFeature (if any - a Cancel tapped
-  /// straight from the `pickingBodies` ribbon, before 2+ Bodies were ever
-  /// confirmed, has nothing to delete yet) - mirrors [_cancelMirror]'s
-  /// structure, minus the edit-mode branch it has no equivalent of.
+  /// Deletes the just-created preview MergeFeature (new-Merge flow, if any -
+  /// a Cancel tapped straight from the `pickingBodies` ribbon, before 2+
+  /// Bodies were ever confirmed, has nothing to delete yet) or PATCHes
+  /// [_mergeEditSnapshot]'s stashed original `body_ids` back (edit flow) -
+  /// mirrors [_cancelMirror]'s structure exactly.
   Future<void> _cancelMerge() async {
     final part = _part;
     final previewId = _previewMergeFeatureId;
     final meshBefore = _meshBeforeMerge;
+    final wasEditing = _editingMergeFeatureId != null;
+    final editSnapshot = _mergeEditSnapshot;
     setState(() {
       _featureTreeVisible = false;
       _mergeStep = null;
@@ -7914,23 +8034,33 @@ class _PartScreenState extends State<PartScreen> {
       _selectedEntities = _entitiesBeforeMerge ?? {};
       _entitiesBeforeMerge = null;
       _previewMergeFeatureId = null;
+      _editingMergeFeatureId = null;
+      _mergeEditSnapshot = null;
       _meshBeforeMerge = null;
       _selectionFilterOverrides.pop();
     });
     if (part != null && previewId != null) {
-      await _runGuarded(() async {
-        await _api.deleteFeature(part.id, previewId);
-        // Mirrors [_cancelMirror]'s own optimization: restore the pre-Merge
-        // mesh directly (no network round-trip) when a snapshot was
-        // captured on open.
-        if (meshBefore != null) {
-          _bodies = meshBefore;
-        } else {
-          await _refreshMesh();
-        }
-        await _refreshFeatures();
-      });
+      if (wasEditing && editSnapshot != null) {
+        await _runGuarded(() async {
+          await _api.updateMergeFeature(part.id, previewId, bodyIds: editSnapshot.bodyIds);
+          await _refreshFeatures();
+        });
+      } else {
+        await _runGuarded(() async {
+          await _api.deleteFeature(part.id, previewId);
+          // Mirrors [_cancelMirror]'s own optimization: restore the pre-Merge
+          // mesh directly (no network round-trip) when a snapshot was
+          // captured on open.
+          if (meshBefore != null) {
+            _bodies = meshBefore;
+          } else {
+            await _refreshMesh();
+          }
+          await _refreshFeatures();
+        });
+      }
     }
+    await _endRollback();
   }
 
   // --- Pattern/Mirror scoping Phase 2: Pattern -------------------------------
@@ -9994,7 +10124,8 @@ class _PartScreenState extends State<PartScreen> {
                     // key reasoning exactly, above.
                     key: const ValueKey('surface-panel-slot'),
                     child: SurfacePanel(
-                      key: ValueKey(_surfaceSketchFeature!.id),
+                      key: ValueKey(_editingSurfaceFeatureId ?? _surfaceSketchFeature!.id),
+                      title: _editingSurfaceFeatureId != null ? 'Edit Surface' : 'Surface',
                       initialStartDistance: _surfaceStartDistance,
                       initialEndDistance: _surfaceEndDistance,
                       initialFixedAxis: _surfaceFixedAxis,
@@ -10085,7 +10216,8 @@ class _PartScreenState extends State<PartScreen> {
                     // key reasoning exactly, above.
                     key: const ValueKey('merge-panel-slot'),
                     child: MergePanel(
-                      key: ValueKey(_mergeBodyIds?.join(',')),
+                      key: ValueKey(_editingMergeFeatureId ?? _mergeBodyIds?.join(',')),
+                      title: _editingMergeFeatureId != null ? 'Edit Merge' : 'Merge',
                       bodyCount: _mergeBodyIds?.length ?? 0,
                       onConfirm: _confirmMerge,
                       onCancel: _cancelMerge,

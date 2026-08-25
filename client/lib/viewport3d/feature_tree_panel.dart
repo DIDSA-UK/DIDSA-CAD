@@ -93,11 +93,6 @@ String _featureTypeAsset(String type) => switch (type) {
       _ => 'assets/icons/feature/feature_new_sketch.svg',
     };
 
-/// Boolean family, first entry: every Feature `type` string the "Booleans"
-/// tree section (`_buildBooleansSection`) groups together - `merge` today;
-/// Subtract/Common/Split extend this set in their own follow-up work.
-const _booleanFeatureTypes = {'merge'};
-
 /// The "Build Tree": a Part's currently-computed Bodies (top, collapsible)
 /// followed by its user-authored Features (Sketch/Extrude/etc, also
 /// collapsible), in creation order. B3 revision, off on-device feedback:
@@ -395,7 +390,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
                           ],
                         ),
                       ),
-                      Positioned(top: 0, bottom: 0, right: -7, child: _buildDragHandle(totalWidth)),
+                      Positioned(top: 0, bottom: 0, right: -12, child: _buildDragHandle(totalWidth)),
                     ],
                   ),
                 ),
@@ -407,12 +402,16 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
     );
   }
 
-  /// The trailing-edge resize grip - a 14px-wide invisible hit target
-  /// (comfortable for touch even though the visible grip inside it is
-  /// slimmer) that adjusts [_widthFraction] by the same fraction of
-  /// [totalWidth] the user's finger/pointer actually moved, clamped to
-  /// [_minWidthFraction]/[_maxWidthFraction] so the panel can never be
-  /// dragged down to unreadable or out past covering the whole viewport.
+  /// The trailing-edge resize grip - a 24px-wide invisible hit target
+  /// (on-device feedback: the original 14px target and its 4x56 visible grip
+  /// were both too small to find/grab reliably) that adjusts [_widthFraction]
+  /// by the same fraction of [totalWidth] the user's finger/pointer actually
+  /// moved, clamped to [_minWidthFraction]/[_maxWidthFraction] so the panel
+  /// can never be dragged down to unreadable or out past covering the whole
+  /// viewport. The visible grip itself is now 6x64 - thicker and taller, so
+  /// it reads clearly as a draggable affordance rather than a thin divider
+  /// line. [build]'s own `Positioned` offsets this by half its new width
+  /// (`right: -12`) to keep it centered straddling the panel's edge.
   Widget _buildDragHandle(double totalWidth) {
     return MouseRegion(
       cursor: SystemMouseCursors.resizeLeftRight,
@@ -428,14 +427,14 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
           });
         },
         child: SizedBox(
-          width: 14,
+          width: 24,
           child: Center(
             child: Container(
-              width: 4,
-              height: 56,
+              width: 6,
+              height: 64,
               decoration: BoxDecoration(
                 color: Theme.of(context).colorScheme.outlineVariant,
-                borderRadius: BorderRadius.circular(2),
+                borderRadius: BorderRadius.circular(3),
               ),
             ),
           ),
@@ -458,7 +457,6 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
         if (widget.bodyIds.isNotEmpty) _buildBodiesSection(context),
         if (widget.features.any((f) => f.type == 'create_plane')) _buildPlanesSection(context),
         if (widget.features.any((f) => f.type == 'surface')) _buildSurfacesSection(context),
-        if (widget.features.any((f) => _booleanFeatureTypes.contains(f.type))) _buildBooleansSection(context),
         _buildFeaturesSection(context),
       ],
     );
@@ -589,49 +587,6 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
                 dense: true,
                 visualDensity: VisualDensity.compact,
                 leading: const SvgIcon('assets/icons/feature/feature_surface.svg', size: 24),
-                title: Text(
-                  featureDisplayName(widget.features, widget.features.indexOf(feature)),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: _rowTitleStyle,
-                ),
-                trailing: hidden ? const Icon(Icons.visibility_off, size: 18) : null,
-                onTap: () => widget.onFeatureTap(feature),
-                onLongPress: () => widget.onFeatureLongPress(feature),
-              ),
-            );
-          }),
-      ],
-    );
-  }
-
-  /// The Booleans section - real produced Body objects from the Boolean
-  /// family (Merge today; Subtract/Common/Split extend this filter in their
-  /// own follow-up work - see [_booleanFeatureTypes]). Mirrors
-  /// [_buildSurfacesSection] exactly - omitted entirely when there are none
-  /// yet (same "no empty section" rule), tapping a row reuses
-  /// [FeatureTreePanel.onFeatureTap], starts collapsed. Unlike Planes/
-  /// Surfaces, a Boolean row's own leading glyph is per-Feature-type (via
-  /// [_featureTypeAsset]), not one fixed icon for the whole section - the
-  /// family covers more than one visually distinct operation.
-  Widget _buildBooleansSection(BuildContext context) {
-    final booleanFeatures = widget.features.where((f) => _booleanFeatureTypes.contains(f.type)).toList();
-    return ExpansionTile(
-      initiallyExpanded: false,
-      dense: true,
-      visualDensity: VisualDensity.compact,
-      leading: const SvgIcon('assets/icons/feature/feature_merge.svg', size: 26),
-      title: const Text('Booleans', maxLines: 1, overflow: TextOverflow.ellipsis, style: _sectionTitleStyle),
-      children: [
-        for (final feature in booleanFeatures)
-          Builder(builder: (context) {
-            final hidden = widget.hiddenFeatureIds.contains(feature.id);
-            return Opacity(
-              opacity: hidden ? 0.5 : 1.0,
-              child: ListTile(
-                dense: true,
-                visualDensity: VisualDensity.compact,
-                leading: SvgIcon(_featureTypeAsset(feature.type), size: 24),
                 title: Text(
                   featureDisplayName(widget.features, widget.features.indexOf(feature)),
                   maxLines: 1,

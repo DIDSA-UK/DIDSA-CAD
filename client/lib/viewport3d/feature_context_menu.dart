@@ -26,10 +26,16 @@ import 'svg_icon.dart';
 /// Boolean family, first entry (Merge): [merge] mirrors [pattern]/[mirror]'s
 /// own "seed from this Feature" entry exactly - shown for any Feature that
 /// mints a Body of its own (see [showMerge]'s own doc comment).
+///
+/// Bug fix: [surface] gives Extrude Surface the same long-press-on-Sketch
+/// route Extrude/Revolve/Sweep already have - previously the only way to
+/// create one was Add > Feature > Surfacing, with no shortcut from the tree
+/// itself (see [showSurface]'s own doc comment).
 enum FeatureContextMenuAction {
   extrude,
   revolve,
   sweep,
+  surface,
   redefineOrientation,
   pattern,
   mirror,
@@ -69,6 +75,14 @@ enum FeatureContextMenuAction {
 /// against, so it's gone; this reuses the same 3D-viewport orientation
 /// confirm step a brand new Sketch already shows.
 ///
+/// Bug fix: [showSurface] gates the "Extrude Surface" entry - only a
+/// SketchFeature offers it (same "only a SketchFeature" gate as Extrude/
+/// Revolve/Sweep), but unlike those three it's always enabled when shown -
+/// a Surface has no closed-profile eligibility restriction at all (it
+/// accepts even a single open wire, see the backend `SurfaceFeature`'s own
+/// docstring), so this mirrors [showPattern]/[showMirror]'s simpler
+/// always-enabled shape, not [showExtrude]'s canX/disabledReason one.
+///
 /// Pattern/Mirror scoping's Phase 6: [showPattern] gates the "Pattern"
 /// entry - shown for any Feature that mints a Body of its own (Extrude/
 /// Revolve/Sweep/Import/Mirror/Pattern, mirrors `PartScreen`'s own
@@ -106,6 +120,7 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
   bool canSweep = false,
   String? sweepDisabledReason,
   bool showRedefineOrientation = false,
+  bool showSurface = false,
   bool showPattern = false,
   bool showMirror = false,
   bool showMerge = false,
@@ -155,6 +170,12 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
                 leading: const Icon(Icons.rotate_90_degrees_ccw),
                 title: const Text('Sketch Orientation'),
                 onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.redefineOrientation),
+              ),
+            if (showSurface)
+              ListTile(
+                leading: const SvgIcon('assets/icons/feature/feature_surface.svg'),
+                title: const Text('Extrude Surface'),
+                onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.surface),
               ),
             if (showPattern)
               ListTile(

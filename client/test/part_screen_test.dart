@@ -753,6 +753,10 @@ void main() {
     await tester.longPress(find.text('Sketch 1'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
+    // Bug fix: a Sketch row's context menu now also offers "Extrude
+    // Surface", pushing Delete further down - off the fixed 800x600 test
+    // viewport - than it sat before.
+    await tester.ensureVisible(find.text('Delete'));
     await tester.tap(find.text('Delete'));
     await tester.pump();
     // The cascade-delete preview is an awaited network round trip before the
@@ -806,6 +810,10 @@ void main() {
     await tester.longPress(find.text('Sketch 1'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
+    // Bug fix: a Sketch row's context menu now also offers "Extrude
+    // Surface", pushing Delete further down - off the fixed 800x600 test
+    // viewport - than it sat before.
+    await tester.ensureVisible(find.text('Delete'));
     await tester.tap(find.text('Delete'));
     await tester.pump();
     // The cascade-delete preview is an awaited network round trip before the
@@ -883,6 +891,167 @@ void main() {
     // live-preview PATCH - pump past it so no Timer is left pending when
     // this test tears down.
     await tester.pump(const Duration(milliseconds: 600));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Bug fix: tapping a Merge row in the Feature tree opens it for editing', (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        {
+          'type': 'merge',
+          'id': 'feature-2',
+          'body_ids': ['body-1', 'body-2'],
+          'locked': false,
+        },
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    // No "Booleans" section anymore - the Merge row lives only in the
+    // ordinary, always-expanded Features section.
+    expect(find.text('Merge 1'), findsOneWidget);
+
+    await tester.tap(find.text('Merge 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(find.text('Edit Merge'), findsOneWidget);
+    expect(find.text('Merging 2 bodies'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Bug fix: tapping a Surface row in the Feature tree opens it for editing', (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        {
+          'type': 'surface',
+          'id': 'feature-2',
+          'sketch_feature_id': 'feature-1',
+          'start_distance': 0.0,
+          'end_distance': 5.0,
+          'locked': false,
+        },
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(find.text('Surface 1'), findsOneWidget);
+
+    await tester.tap(find.text('Surface 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(find.text('Edit Surface'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'Bug fix: long-pressing a SketchFeature shows "Extrude Surface", always enabled '
+    'even when the Sketch has no closed profile (a Surface accepts open wires too)',
+    (tester) async {
+      final backend = _FakeDocumentBackend(
+        seedFeatures: [
+          {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': false},
+        ],
+      );
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend(profileStatus: 'no_loop');
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      await tester.tap(find.byTooltip('Feature tree'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      await tester.longPress(find.text('Sketch 1'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      final surfaceTile = find.widgetWithText(ListTile, 'Extrude Surface');
+      expect(surfaceTile, findsOneWidget);
+      expect(tester.widget<ListTile>(surfaceTile).enabled, isTrue);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('Bug fix: long-pressing a non-Sketch Feature row does not show "Extrude Surface"', (
+    tester,
+  ) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {
+          'type': 'extrude',
+          'id': 'feature-1',
+          'sketch_feature_id': 'sketch-feature-0',
+          'extrude_type': 'boss',
+          'start_distance': 0.0,
+          'end_distance': 10.0,
+          'locked': false,
+        },
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    await tester.longPress(find.text('Extrude 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(find.text('Extrude Surface'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -1587,13 +1756,19 @@ void main() {
     await tester.tap(find.text('Feature'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
-    // Bug fix (real CI failure): the picker sheet's Repeat section (Mirror/
-    // Pattern) now sits below Sketch-based/Reference/Modify, off the fixed
-    // 800x600 test viewport - ensureVisible scrolls the sheet's own
-    // SingleChildScrollView to bring it into range before tapping (the
-    // widget is already mounted, just out of view - see bevel_design_
-    // screen_test.dart's identical use of ensureVisible for the same
-    // "long form, small test viewport" reason).
+    // Bug fix: every picker-sheet section now starts collapsed (previously
+    // only Combine did) - expand Repeat before its Pattern entry is
+    // reachable. ensureVisible before each tap: the sheet's two
+    // independently-scrolling columns mean a section header or its entries
+    // can still sit outside the fixed 800x600 test viewport even once
+    // expanded (the same class of failure earlier CI runs against this
+    // sheet already hit twice - see bevel_design_screen_test.dart's
+    // identical use of ensureVisible for the same "long form, small test
+    // viewport" reason).
+    await tester.ensureVisible(find.text('Repeat'));
+    await tester.tap(find.text('Repeat'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
     await tester.ensureVisible(find.text('Pattern'));
     await tester.tap(find.text('Pattern'));
     await tester.pump();
@@ -2391,11 +2566,8 @@ void main() {
       expect(tester.widget<ListTile>(extrudeTile).enabled, isFalse);
       // Revolve/Sweep share Extrude's own eligibility check (see
       // _onFeatureLongPress) and so show the identical disabled-reason
-      // subtitle alongside it - three, not one. textContaining, not an
-      // exact match: _checkExtrudeEligibility appends the backend's own
-      // `profile.detail` after a colon, which this fake's exact wording
-      // isn't asserted against here.
-      expect(find.textContaining('Sketch does not contain a closed profile'), findsNWidgets(3));
+      // subtitle alongside it - three, not one.
+      expect(find.text('Sketch does not contain a closed profile'), findsNWidgets(3));
       expect(tester.takeException(), isNull);
     },
   );
@@ -2462,6 +2634,14 @@ void main() {
       await tester.tap(find.text('Feature'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
+      // Bug fix: every picker-sheet section now starts collapsed (previously
+      // only Combine did) - expand Sketch-based before its Extrude entry is
+      // reachable.
+      await tester.ensureVisible(find.text('Sketch-based'));
+      await tester.tap(find.text('Sketch-based'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.ensureVisible(find.text('Extrude'));
       await tester.tap(find.text('Extrude'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
