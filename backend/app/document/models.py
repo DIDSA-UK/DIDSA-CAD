@@ -716,6 +716,41 @@ class MirrorFeature(Feature):
         return Produces.BODY
 
 
+@dataclass
+class MergeFeature(Feature):
+    """The first of the Boolean family (Subtract/Common/Split follow in
+    later work): fuses every Body named in `body_ids` (2+ required - see
+    `app.document.router._validate_merge_body_ids`) into a single Body via
+    repeated `BRepAlgoAPI_Fuse` - symmetric, no target/tool distinction, no
+    options. Every input Body is always consumed into the result, unlike
+    `MirrorFeature`/`PatternFeature`'s optional `MergeMode.FUSE_INTO_ONE` -
+    Merge only ever fuses, so it needs none of that enum.
+
+    Reuses `app.document.extrude._fuse_realized_instances` verbatim (an
+    empty `realized_shapes` list, `body_ids` as `base_ids`) rather than
+    reimplementing the fuse/survivor-tie-break/`_register_solids` logic a
+    second time - see that function's own docstring. The surviving Body id
+    is whichever `body_ids` entry's owning Feature sorts lowest in
+    `feature_index` (`base_feature_id`-resolved, so a `#N`-suffixed id still
+    resolves to its real owning Feature), matching `_apply_boss_or_cut`'s/
+    `_fuse_realized_instances`'s own tie-break exactly."""
+
+    id: str
+    body_ids: list[str]
+
+    @property
+    def type(self) -> str:
+        return "merge"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
 class FixedAxis(str, Enum):
     """Pattern/Mirror scoping's Phase 2 (`docs/pattern-mirror-scope.md`
     §2.2/§2.5): a world-space X/Y/Z direction, for `PatternDirectionRef`'s

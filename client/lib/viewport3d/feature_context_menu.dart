@@ -23,6 +23,9 @@ import 'svg_icon.dart';
 /// exclusive seed fields to use surfaced as a toggle *inside* the opened
 /// panel instead (`PatternPanel.seedKind`/`MirrorPanel.seedKind`) - see
 /// [showPattern]'s own doc comment for the widened gate this implies.
+/// Boolean family, first entry (Merge): [merge] mirrors [pattern]/[mirror]'s
+/// own "seed from this Feature" entry exactly - shown for any Feature that
+/// mints a Body of its own (see [showMerge]'s own doc comment).
 enum FeatureContextMenuAction {
   extrude,
   revolve,
@@ -30,6 +33,7 @@ enum FeatureContextMenuAction {
   redefineOrientation,
   pattern,
   mirror,
+  merge,
   toggleVisibility,
   delete,
 }
@@ -84,6 +88,11 @@ enum FeatureContextMenuAction {
 /// [showPattern] exactly - the entry-point asymmetry this phase fixes (see
 /// [FeatureContextMenuAction.mirror]'s own doc comment). Both stay always-
 /// enabled-when-shown, same reasoning as before.
+/// Boolean family, first entry: [showMerge] gates the "Merge" entry -
+/// mirrors [showPattern]/[showMirror]'s own gate exactly (any Feature that
+/// mints a Body of its own - `PartScreen._bodyProducingFeatureTypes`), no
+/// `tool_feature_id`-style widening (Merge has no such mode). Always
+/// enabled when shown, same reasoning as [showPattern]/[showMirror].
 Future<FeatureContextMenuAction?> showFeatureContextMenu(
   BuildContext context, {
   required bool isHidden,
@@ -99,6 +108,7 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
   bool showRedefineOrientation = false,
   bool showPattern = false,
   bool showMirror = false,
+  bool showMerge = false,
 }) {
   return showModalBottomSheet<FeatureContextMenuAction>(
     context: context,
@@ -157,6 +167,12 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
                 leading: const SvgIcon('assets/icons/feature/feature_mirror.svg'),
                 title: const Text('Mirror'),
                 onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.mirror),
+              ),
+            if (showMerge)
+              ListTile(
+                leading: const SvgIcon('assets/icons/feature/feature_merge.svg'),
+                title: const Text('Merge'),
+                onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.merge),
               ),
             ListTile(
               leading: Icon(isHidden ? Icons.visibility : Icons.visibility_off),

@@ -102,6 +102,7 @@ from app.document.models import (
     LoftFeature,
     LoftMode,
     LoftSection,
+    MergeFeature,
     MergeMode,
     MirrorFeature,
     Part,
@@ -113,6 +114,7 @@ from app.document.models import (
     PlaneRef,
     PlaneType,
     PointRef,
+    Produces,
     RackFeature,
     RackType,
     RevolveFeature,
@@ -185,6 +187,9 @@ from app.document.schemas import (
     LoftFeatureResponse,
     LoftFeatureUpdate,
     LoftSectionSchema,
+    MergeFeatureCreate,
+    MergeFeatureResponse,
+    MergeFeatureUpdate,
     MeshVertexData,
     MirrorFeatureCreate,
     MirrorFeatureResponse,
@@ -615,6 +620,13 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
+    if isinstance(feature, MergeFeature):
+        return MergeFeatureResponse(
+            id=feature.id,
+            body_ids=feature.body_ids,
+            locked=part.is_locked(feature.id),
+            produces=feature.produces,
+        )
     if isinstance(feature, PatternFeature):
         return PatternFeatureResponse(
             id=feature.id,
@@ -987,6 +999,33 @@ def _validate_target_body_ids(part: Part, is_cut: bool, target_body_ids: list[st
                 detail=f"target_body_ids entry {target_id!r} does not refer to an ExtrudeFeature, "
                 "RevolveFeature, SweepFeature, ImportFeature, GearFeature, RackFeature, LoftFeature, "
                 "GearChainFeature, PlanetaryGearFeature, BevelGearFeature, or BevelPairFeature in this Part",
+            )
+
+
+def _validate_merge_body_ids(part: Part, body_ids: list[str]) -> None:
+    """`MergeFeature` requires at least 2 `body_ids` entries - there is
+    nothing to combine with only zero or one (422, same structured-
+    validation-error shape `_validate_target_body_ids`'s Cut-empty-list
+    case uses). Each entry must resolve (via `base_feature_id`, so a
+    `#N`-suffixed id round-tripped from a prior `/mesh` response validates
+    the same way a plain one does) to a Feature that currently produces a
+    Body in this Part - checked via `produces == Produces.BODY` rather than
+    an explicit isinstance tuple (unlike `_validate_target_body_ids`'s
+    Boss/Cut-specific producer-type set) since Merge has no Boss/Cut
+    concept of its own to narrow the accepted set for - any Body-producing
+    Feature is a valid merge input."""
+    if len(body_ids) < 2:
+        raise HTTPException(
+            status_code=422,
+            detail="MergeFeature requires at least 2 body_ids entries - there is nothing to merge "
+            "with fewer than two",
+        )
+    for body_id in body_ids:
+        source_feature = part.get_feature(base_feature_id(body_id))
+        if source_feature is None or source_feature.produces != Produces.BODY:
+            raise HTTPException(
+                status_code=400,
+                detail=f"body_ids entry {body_id!r} does not refer to a Body-producing Feature in this Part",
             )
 
 
@@ -3083,6 +3122,45 @@ def update_mirror_feature(
     feature.source_feature_ids = candidate.source_feature_ids
     feature.merge = candidate.merge
     feature.tool_feature_id = candidate.tool_feature_id
+    return _feature_response(part, feature)
+
+
+@router.post("/parts/{part_id}/merge-features", response_model=MergeFeatureResponse, status_code=201)
+def create_merge_feature(part_id: str, payload: MergeFeatureCreate) -> MergeFeatureResponse:
+    """The first of the Boolean family (Subtract/Common/Split follow in
+    later work): mirrors `create_surface_feature`'s shape (fails closed on
+    payload-shape validation alone, no eager OCCT resolve - `MergeFeature`
+    has no per-instance geometry of its own to fail the way a Mirror/
+    Pattern's realized copies can, just a plain repeated fuse over Bodies
+    already known to exist)."""
+    part = get_part_or_404(part_id)
+    body_ids = list(payload.body_ids)
+    _validate_merge_body_ids(part, body_ids)
+    feature = MergeFeature(id=str(uuid.uuid4()), body_ids=body_ids)
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_merge_feature_or_404(part: Part, feature_id: str) -> MergeFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, MergeFeature):
+        raise HTTPException(status_code=404, detail="Merge feature not found")
+    return feature
+
+
+@router.patch("/parts/{part_id}/merge-features/{feature_id}", response_model=MergeFeatureResponse)
+def update_merge_feature(
+    part_id: str, feature_id: str, payload: MergeFeatureUpdate
+) -> MergeFeatureResponse:
+    """Mirrors `update_surface_feature`'s exact shape - same validate-
+    before-mutate discipline, omitted fields keep their current value."""
+    part = get_part_or_404(part_id)
+    feature = _get_merge_feature_or_404(part, feature_id)
+
+    new_body_ids = list(payload.body_ids) if payload.body_ids is not None else feature.body_ids
+    _validate_merge_body_ids(part, new_body_ids)
+
+    feature.body_ids = new_body_ids
     return _feature_response(part, feature)
 
 

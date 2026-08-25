@@ -106,6 +106,18 @@ List<SelectionContextAction> contextActionsFor(
   final bodies = selection.where((s) => s.kind == SelectionEntityKind.body).toList();
   if (bodies.isNotEmpty) {
     if (bodies.length == selection.length) {
+      // Boolean family, first entry: 2+ Bodies, nothing else selected, also
+      // offers Merge alongside Mirror/Pattern - a new precedence branch
+      // rather than replacing the existing one, since a single Body has
+      // nothing to merge with (Mirror/Pattern stay offered for exactly one,
+      // unchanged from before this addition).
+      if (bodies.length >= 2) {
+        return const [
+          SelectionContextAction('Mirror', enabled: true),
+          SelectionContextAction('Pattern', enabled: true),
+          SelectionContextAction('Merge', enabled: true),
+        ];
+      }
       return const [
         SelectionContextAction('Mirror', enabled: true),
         SelectionContextAction('Pattern', enabled: true),

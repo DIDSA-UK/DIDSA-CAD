@@ -76,6 +76,18 @@ void main() {
       expect(await pendingResult, FeaturePickerAction.surface);
     });
 
+    testWidgets('Boolean family, first entry: tapping Merge resolves FeaturePickerAction.merge',
+        (tester) async {
+      await openSheet(tester);
+      // Combine starts collapsed (unlike the other sections), so it needs an
+      // extra tap to expand before its Merge entry is reachable.
+      await tester.tap(find.text('Combine'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Merge'));
+      await tester.pumpAndSettle();
+      expect(await pendingResult, FeaturePickerAction.merge);
+    });
+
     testWidgets('the picker sheet groups entries into collapsible sections', (tester) async {
       await openSheet(tester);
       expect(find.text('Sketch-based'), findsOneWidget);

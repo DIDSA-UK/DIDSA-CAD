@@ -527,6 +527,13 @@ class FeatureDto {
   /// Feature's own implicit direction.
   final PatternDirectionRefDto? directionRef;
 
+  /// Boolean family, first entry - only present on a `"merge"` Feature:
+  /// which Bodies (2+ ids, the backend's `MergeFeature.body_ids`) are fused
+  /// together into a single Body. Symmetric, no target/tool distinction -
+  /// unlike [sourceBodyIds]/[targetBodyIds], every entry here is always
+  /// consumed into the result.
+  final List<String> bodyIds;
+
   FeatureDto({
     required this.type,
     required this.id,
@@ -585,6 +592,7 @@ class FeatureDto {
     this.toolFeatureId,
     this.warnings = const [],
     this.directionRef,
+    this.bodyIds = const [],
   });
 
   factory FeatureDto.fromJson(Map<String, dynamic> json) => FeatureDto(
@@ -686,6 +694,7 @@ class FeatureDto {
         directionRef: json['direction_ref'] == null
             ? null
             : PatternDirectionRefDto.fromJson(json['direction_ref'] as Map<String, dynamic>),
+        bodyIds: (json['body_ids'] as List?)?.cast<String>() ?? const [],
       );
 }
 
@@ -1736,6 +1745,44 @@ class DocumentApiClient {
                 if (sourceFeatureIds != null) 'source_feature_ids': sourceFeatureIds,
                 if (merge != null) 'merge': merge.apiValue,
                 if (toolFeatureId != null) 'tool_feature_id': toolFeatureId,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Boolean family, first entry: creates a MergeFeature fusing every Body
+  /// named in [bodyIds] (2+ required - see the backend's
+  /// `_validate_merge_body_ids`) into a single Body. Symmetric, no target/
+  /// tool distinction, no options - mirrors [createMirrorFeature]'s own
+  /// shape, minus every Mirror-specific field this Feature has no concept
+  /// of at all.
+  Future<FeatureDto> createMergeFeature(
+    String partId, {
+    required List<String> bodyIds,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/merge-features'),
+              headers: _headers,
+              body: jsonEncode({'body_ids': bodyIds}),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing MergeFeature - [bodyIds] may be
+  /// supplied; omitted keeps its current value. Used for the live-preview
+  /// debounced re-solve, same pattern as [updateFilletFeature].
+  Future<FeatureDto> updateMergeFeature(
+    String partId,
+    String featureId, {
+    List<String>? bodyIds,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/merge-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (bodyIds != null) 'body_ids': bodyIds,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

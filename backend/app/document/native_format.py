@@ -45,6 +45,7 @@ from app.document.models import (
     LoftFeature,
     LoftMode,
     LoftSection,
+    MergeFeature,
     MergeMode,
     MirrorFeature,
     Part,
@@ -959,6 +960,12 @@ def _feature_to_dict(feature: Feature) -> dict:
             # ordinary source_body_ids/source_feature_ids path.
             "tool_feature_id": feature.tool_feature_id,
         }
+    if isinstance(feature, MergeFeature):
+        return {
+            "type": "merge",
+            "id": feature.id,
+            "body_ids": list(feature.body_ids),
+        }
     if isinstance(feature, PatternFeature):
         return {
             "type": "pattern",
@@ -1192,6 +1199,11 @@ def _feature_from_dict(data: dict) -> Feature:
             # `tool_feature_id` (Phase 8) defaults to None for any Mirror
             # persisted before this field existed.
             tool_feature_id=data.get("tool_feature_id"),
+        )
+    if feature_type == "merge":
+        return MergeFeature(
+            id=feature_id,
+            body_ids=list(data.get("body_ids", [])),
         )
     if feature_type == "pattern":
         return PatternFeature(

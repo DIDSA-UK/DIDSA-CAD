@@ -42,6 +42,7 @@ import 'export_format_dialog.dart';
 import 'fillet_panel.dart';
 import 'import_format_dialog.dart';
 import 'loft_panel.dart';
+import 'merge_panel.dart';
 import 'mesh_geometry.dart';
 import 'mirror_panel.dart';
 import 'override_stack.dart';
@@ -79,7 +80,20 @@ enum _ProfilePickerTarget { extrude, revolve, sweep }
 /// `showPattern` gate (on-device feedback: "user should now be able to
 /// start pattern from long press a feature in the tree"), so the two never
 /// drift out of sync about which Feature types can seed a Mirror/Pattern.
-const _bodyProducingFeatureTypes = {'extrude', 'revolve', 'sweep', 'loft', 'import', 'mirror', 'pattern'};
+const _bodyProducingFeatureTypes = {
+  'extrude',
+  'revolve',
+  'sweep',
+  'loft',
+  'import',
+  'mirror',
+  'pattern',
+  // Boolean family, first entry: a MergeFeature mints a Body of its own too
+  // (its survivor input's own id, re-registered - see the backend's own
+  // docstring), so it's an eligible Mirror/Pattern/Merge source the same
+  // way every other type in this set already is.
+  'merge',
+};
 
 /// Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
 /// §2.11/§4): whether [feature] is an eligible `tool_feature_id` target -
@@ -112,6 +126,19 @@ bool _isEligibleToolFeature(FeatureDto feature) {
 /// section header comment for why body-picking and plane-picking can never
 /// be simultaneous.
 enum _MirrorStep { pickingBodies, pickingPlane }
+
+/// Boolean family, first entry: which half of the two-step guided Merge flow
+/// is currently live - mirrors [_MirrorStep]'s own shape, minus the second
+/// step's picking concern entirely (Merge has nothing further to pick once
+/// its Bodies are chosen - no plane, no options at all, see the backend
+/// `MergeFeature`'s own docstring). `pickingBodies` accumulates 2+ Body taps
+/// (mirrors [_MirrorStep.pickingBodies]'s own multi-select-then-confirm
+/// shape exactly - see `_confirmMergeBodySelection`); `confirming` just
+/// shows [MergePanel]'s summary/Cancel/Confirm over the already-created
+/// preview MergeFeature (see `_confirmMergeBodySelection`'s own doc comment
+/// for why the Feature is created at that transition rather than deferred to
+/// [MergePanel]'s own Confirm).
+enum _MergeStep { pickingBodies, confirming }
 
 /// Pattern/Mirror scoping's Phase 2/6 (`docs/pattern-mirror-scope.md`
 /// §2.2/§2.8/§4): which half of the guided Pattern flow is currently live -
@@ -584,6 +611,7 @@ class _PartScreenState extends State<PartScreen> {
       !_loftActive &&
       !_mirrorActive &&
       !_patternActive &&
+      !_mergeActive &&
       !_profilePickerActive &&
       !_pathPickerActive;
 
@@ -605,6 +633,7 @@ class _PartScreenState extends State<PartScreen> {
           !_loftActive &&
           !_mirrorActive &&
           !_patternActive &&
+          !_mergeActive &&
           !_profilePickerActive &&
           !_pathPickerActive) ||
       // Pattern/Mirror scoping's Phase 6: the Build Tree multi-select
@@ -653,6 +682,7 @@ class _PartScreenState extends State<PartScreen> {
       _loftActive ||
       _mirrorActive ||
       _patternActive ||
+      _mergeActive ||
       _profilePickerActive ||
       _pathPickerActive ||
       _planeSelectionMode;
@@ -1521,6 +1551,69 @@ class _PartScreenState extends State<PartScreen> {
     sketchEllipse: false,
     sketchSpline: false,
     plane: true,
+  );
+
+  // --- Boolean family, first entry: Merge -------------------------------------
+  // Much simpler than Mirror/Pattern above: no plane, no direction, no merge
+  // mode, no tool_feature_id - just 2+ Bodies (see the backend `MergeFeature`'s
+  // own docstring). `pickingBodies` accumulates Body taps the identical way
+  // [_MirrorStep.pickingBodies] does, via the generic accumulate-toggle - no
+  // Merge-specific special-casing needed in `_toggleSelectedEntity` either,
+  // same reasoning that branch's own Pattern/Mirror comment already gives.
+  // Once confirmed (2+ picked), `_confirmMergeBodySelection` both captures
+  // [_mergeBodyIds] *and* creates the preview MergeFeature immediately (unlike
+  // Mirror, which only creates once a plane is picked) - there is no further
+  // parameter for [MergePanel] to debounce-update, so the moment 2+ Bodies are
+  // confirmed is already this Feature's whole definition.
+
+  /// Which half of the two-step Merge flow is currently live, or null when
+  /// Merge isn't active at all - mirrors [_mirrorStep] exactly.
+  _MergeStep? _mergeStep;
+
+  bool get _mergeActive => _mergeStep != null;
+
+  /// The Bodies being merged, captured once the `pickingBodies` step is
+  /// confirmed (either from the guided "Add" FAB entry's own picker, or - for
+  /// the ambient [SelectionContextPanel] entry - straight from the
+  /// pre-existing selection) - mirrors [_mirrorSourceBodyIds] exactly. Null
+  /// until the `pickingBodies` step completes.
+  List<String>? _mergeBodyIds;
+
+  /// The MergeFeature created as soon as `pickingBodies` is confirmed (see
+  /// this section's own header comment) - mirrors [_previewMirrorFeatureId]'s
+  /// simple pattern, just created eagerly rather than lazily on a debounce
+  /// timer since there is no further field to wait on.
+  String? _previewMergeFeatureId;
+
+  /// [_selectedEntities]' value from just before the panel opened - restored
+  /// by both [_confirmMerge] and [_cancelMerge], mirrors
+  /// [_entitiesBeforeMirror].
+  Set<SelectionEntityRef>? _entitiesBeforeMerge;
+
+  /// The pre-Merge mesh [_cancelMerge] restores to on Cancel - mirrors
+  /// [_meshBeforeMirror].
+  List<BodyMeshDto>? _meshBeforeMerge;
+
+  /// Locks [_selectionFilterOverrides] to Bodies only for the whole Merge
+  /// session (`pickingBodies` through `confirming`) - mirrors
+  /// [_mirrorBodyPickerSelectionFilter], kept live for the panel's whole
+  /// lifetime rather than swapped out for a second filter the way Mirror's
+  /// own plane-picking step needs, since Merge has nothing further to pick at
+  /// all (a stray Body tap during `confirming` is harmless - [MergePanel]
+  /// only ever reads the already-captured [_mergeBodyIds], never
+  /// [_selectedEntities], once `confirming` is reached).
+  static const _mergeBodyPickerSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: false,
+    body: true,
+    sketchPoint: false,
+    sketchLine: false,
+    sketchCircle: false,
+    sketchArc: false,
+    sketchEllipse: false,
+    sketchSpline: false,
+    plane: false,
   );
 
   // --- Pattern/Mirror scoping Phase 2/6: Pattern ------------------------------
@@ -4930,6 +5023,8 @@ class _PartScreenState extends State<PartScreen> {
         _startMirrorPicker();
       case FeaturePickerAction.pattern:
         _startPatternPicker();
+      case FeaturePickerAction.merge:
+        _startMergePicker();
     }
   }
 
@@ -5678,6 +5773,10 @@ class _PartScreenState extends State<PartScreen> {
       showRedefineOrientation: isSketchFeature,
       showPattern: showPatternOrMirror,
       showMirror: showPatternOrMirror,
+      // Boolean family, first entry: mirrors [showPattern]/[showMirror]'s
+      // own gate exactly, minus the `_isEligibleToolFeature` widening -
+      // Merge has no `tool_feature_id`-style mode of its own.
+      showMerge: _bodyProducingFeatureTypes.contains(feature.type),
     );
     if (!mounted || action == null) return;
 
@@ -5694,6 +5793,8 @@ class _PartScreenState extends State<PartScreen> {
         _openPatternPanelFromFeature(feature);
       case FeatureContextMenuAction.mirror:
         _openMirrorPanelFromFeature(feature);
+      case FeatureContextMenuAction.merge:
+        _openMergePanelFromFeature(feature);
       case FeatureContextMenuAction.toggleVisibility:
         await _toggleFeatureVisibility(feature);
       case FeatureContextMenuAction.delete:
@@ -7665,6 +7766,173 @@ class _PartScreenState extends State<PartScreen> {
     await _endRollback();
   }
 
+  // --- Boolean family, first entry: Merge -------------------------------------
+  // See this file's own "Boolean family, first entry: Merge" state-field
+  // section above for the full reasoning behind Merge's own picking shape.
+
+  /// [FeaturePickerAction.merge]'s guided "Add" FAB entry - starts the
+  /// `pickingBodies` step with an empty selection and a Body-only filter;
+  /// [_confirmMergeBodySelection] advances to `confirming` once 2+ Bodies are
+  /// picked. Mirrors [_startMirrorPicker]'s own shape exactly, minus every
+  /// Mirror-specific field reset this Feature has no concept of at all.
+  void _startMergePicker() {
+    setState(() {
+      _mergeStep = _MergeStep.pickingBodies;
+      _mergeBodyIds = null;
+      _previewMergeFeatureId = null;
+      _meshBeforeMerge = _bodies;
+      _entitiesBeforeMerge = _selectedEntities;
+      _selectedEntities = {};
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _selectionFilterOverrides.push(_mergeBodyPickerSelectionFilter);
+    });
+  }
+
+  /// The number of Bodies picked so far during the `pickingBodies` step -
+  /// drives the step-1 ribbon text and gates its confirm button. Mirrors
+  /// [_mirrorPickedBodyCount] exactly.
+  int _mergePickedBodyCount() =>
+      _selectedEntities.where((e) => e.kind == SelectionEntityKind.body).length;
+
+  /// Confirms the `pickingBodies` step (the ribbon's checkmark) - captures
+  /// every currently-selected Body into [_mergeBodyIds], advances to
+  /// `confirming`, and immediately creates the preview MergeFeature (unlike
+  /// [_confirmMirrorBodySelection], which only advances the step - Merge has
+  /// no further parameter for a later debounce to wait on, so the moment 2+
+  /// Bodies are confirmed already fully defines this Feature).
+  void _confirmMergeBodySelection() {
+    final bodyIds =
+        _selectedEntities.where((e) => e.kind == SelectionEntityKind.body).map((e) => e.bodyId).toList();
+    if (bodyIds.length < 2) return; // Defensive - the confirm button is disabled until then.
+    final part = _part;
+    if (part == null) return;
+    setState(() {
+      _mergeBodyIds = bodyIds;
+      _mergeStep = _MergeStep.confirming;
+    });
+    _runGuarded(() async {
+      final created = await _api.createMergeFeature(part.id, bodyIds: bodyIds);
+      _previewMergeFeatureId = created.id;
+      await _refreshMesh();
+    });
+  }
+
+  /// [SelectionContextPanel.onMerge]'s callback - `contextActionsFor` enables
+  /// this button for 2+ Bodies, nothing else, selected (see that function's
+  /// own Merge branch). Those Bodies are already exactly what the user wants
+  /// merged, so this skips `pickingBodies` entirely and jumps straight to
+  /// `confirming` with them pre-captured - mirrors [_onMirrorTapped]'s own
+  /// ambient-entry shape, plus the preview-feature creation
+  /// [_confirmMergeBodySelection] also does (Mirror only creates once its own
+  /// second step's plane is picked; Merge's Bodies already are its whole
+  /// definition).
+  void _onMergeTapped() {
+    final bodyIds =
+        _selectedEntities.where((e) => e.kind == SelectionEntityKind.body).map((e) => e.bodyId).toList();
+    if (bodyIds.length < 2) return; // Defensive - contextActionsFor already guarantees this.
+    final part = _part;
+    if (part == null) return;
+    setState(() {
+      _meshBeforeMerge = _bodies;
+      _entitiesBeforeMerge = _selectedEntities;
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _selectionFilterOverrides.push(_mergeBodyPickerSelectionFilter);
+      _mergeBodyIds = bodyIds;
+      _mergeStep = _MergeStep.confirming;
+      _previewMergeFeatureId = null;
+    });
+    _runGuarded(() async {
+      final created = await _api.createMergeFeature(part.id, bodyIds: bodyIds);
+      _previewMergeFeatureId = created.id;
+      await _refreshMesh();
+    });
+  }
+
+  /// On-device feedback shape mirrored from [_openMirrorPanelFromFeature]:
+  /// long-press "Merge" on a single body-producing Feature row pre-seeds that
+  /// Feature's own current Body/Bodies into `pickingBodies` (Merge needs 2+,
+  /// so a single Feature alone is never enough to skip straight to
+  /// `confirming` the way the ambient [_onMergeTapped] entry can) - the user
+  /// picks at least one more Body before confirming. [_onFeatureLongPress] is
+  /// the only caller.
+  void _openMergePanelFromFeature(FeatureDto feature) {
+    final seedBodyIds =
+        _bodies.map((b) => b.bodyId).where((bid) => baseFeatureId(bid) == feature.id).toList();
+    setState(() {
+      _mergeStep = _MergeStep.pickingBodies;
+      _mergeBodyIds = null;
+      _previewMergeFeatureId = null;
+      _meshBeforeMerge = _bodies;
+      _entitiesBeforeMerge = _selectedEntities;
+      _selectedEntities = {
+        for (final bodyId in seedBodyIds)
+          SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: bodyId),
+      };
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _selectionFilterOverrides.push(_mergeBodyPickerSelectionFilter);
+    });
+  }
+
+  /// Keeps the just-created MergeFeature, restores whatever was selected
+  /// before the panel opened - mirrors [_confirmMirror] exactly, minus the B4
+  /// rollback teardown (Merge has no edit mode - see this file's own Merge
+  /// section header comment) and the debounce cancel (Merge never schedules
+  /// one).
+  Future<void> _confirmMerge() async {
+    await _runGuarded(_refreshFeatures);
+    if (!mounted) return;
+    setState(() {
+      _featureTreeVisible = false;
+      _mergeStep = null;
+      _mergeBodyIds = null;
+      _selectedEntities = _entitiesBeforeMerge ?? {};
+      _entitiesBeforeMerge = null;
+      _previewMergeFeatureId = null;
+      _meshBeforeMerge = null;
+      _selectionFilterOverrides.pop();
+    });
+  }
+
+  /// Deletes the just-created preview MergeFeature (if any - a Cancel tapped
+  /// straight from the `pickingBodies` ribbon, before 2+ Bodies were ever
+  /// confirmed, has nothing to delete yet) - mirrors [_cancelMirror]'s
+  /// structure, minus the edit-mode branch it has no equivalent of.
+  Future<void> _cancelMerge() async {
+    final part = _part;
+    final previewId = _previewMergeFeatureId;
+    final meshBefore = _meshBeforeMerge;
+    setState(() {
+      _featureTreeVisible = false;
+      _mergeStep = null;
+      _mergeBodyIds = null;
+      _selectedEntities = _entitiesBeforeMerge ?? {};
+      _entitiesBeforeMerge = null;
+      _previewMergeFeatureId = null;
+      _meshBeforeMerge = null;
+      _selectionFilterOverrides.pop();
+    });
+    if (part != null && previewId != null) {
+      await _runGuarded(() async {
+        await _api.deleteFeature(part.id, previewId);
+        // Mirrors [_cancelMirror]'s own optimization: restore the pre-Merge
+        // mesh directly (no network round-trip) when a snapshot was
+        // captured on open.
+        if (meshBefore != null) {
+          _bodies = meshBefore;
+        } else {
+          await _refreshMesh();
+        }
+        await _refreshFeatures();
+      });
+    }
+  }
+
   // --- Pattern/Mirror scoping Phase 2: Pattern -------------------------------
   // See docs/pattern-mirror-scope.md §2.2/§4 and this file's own "Pattern/
   // Mirror scoping Phase 2: Pattern" state-field section above for the full
@@ -9390,7 +9658,8 @@ class _PartScreenState extends State<PartScreen> {
                       _revolveSketchFeature != null ||
                       _sweepSketchFeature != null ||
                       _mirrorActive ||
-                      _patternActive,
+                      _patternActive ||
+                      _mergeActive,
                   // Prompt E: only one of _filletActive/_chamferActive is
                   // ever true at a time (see the Chamfer state section's own
                   // header comment), so a simple ternary - not a list -
@@ -9548,6 +9817,7 @@ class _PartScreenState extends State<PartScreen> {
                     !_loftActive &&
                     !_mirrorActive &&
                     !_patternActive &&
+                    !_mergeActive &&
                     !_profilePickerActive &&
                     !_pathPickerActive)
                   Positioned.fill(
@@ -9565,6 +9835,7 @@ class _PartScreenState extends State<PartScreen> {
                         onNewSketch: _onNewSketchTapped,
                         onMirror: _onMirrorTapped,
                         onPattern: _onPatternTapped,
+                        onMerge: _onMergeTapped,
                       ),
                       bodyNames: _bodyNames,
                     ),
@@ -9803,6 +10074,21 @@ class _PartScreenState extends State<PartScreen> {
                       onSeedKindChanged: _setMirrorSeedKind,
                       onConfirm: _confirmMirror,
                       onCancel: _cancelMirror,
+                    ),
+                  ),
+                // [MergePanel] itself only ever handles the `confirming` step
+                // - `pickingBodies` has its own [PickerRibbon] instead (see
+                // above), mirroring [MirrorPanel]'s own shape.
+                if (_mergeStep == _MergeStep.confirming)
+                  Positioned.fill(
+                    // Bug fix: mirrors the Extrude panel slot's own stable-
+                    // key reasoning exactly, above.
+                    key: const ValueKey('merge-panel-slot'),
+                    child: MergePanel(
+                      key: ValueKey(_mergeBodyIds?.join(',')),
+                      bodyCount: _mergeBodyIds?.length ?? 0,
+                      onConfirm: _confirmMerge,
+                      onCancel: _cancelMerge,
                     ),
                   ),
                 // [PatternPanel] itself only ever handles the `configuring`
@@ -10198,6 +10484,24 @@ class _PartScreenState extends State<PartScreen> {
                       onConfirm: _busy || _mirrorPickedBodyCount() == 0 ? null : _confirmMirrorBodySelection,
                     ),
                   ),
+                // Boolean family, first entry guided "Add" FAB entry
+                // (`_startMergePicker`): shown for the whole `pickingBodies`
+                // step, mirroring [_MirrorStep.pickingBodies]'s own identical
+                // [PickerRibbon] just above - Merge needs 2+ Bodies, not 1+,
+                // so the confirm button (and tooltip) stay gated on that
+                // instead.
+                if (_mergeStep == _MergeStep.pickingBodies)
+                  Positioned.fill(
+                    child: PickerRibbon(
+                      title: 'Merge',
+                      tooltip: _mergePickedBodyCount() < 2
+                          ? 'Select bodies to merge (2 needed)'
+                          : '${_mergePickedBodyCount()} bodies selected - tap checkmark to confirm',
+                      onCancel: _cancelMerge,
+                      showConfirm: true,
+                      onConfirm: _busy || _mergePickedBodyCount() < 2 ? null : _confirmMergeBodySelection,
+                    ),
+                  ),
                 // Pattern/Mirror scoping's Phase 2/6 guided "Add" FAB entry
                 // (`_startPatternPicker`): shown for the whole `pickingBodies`
                 // step, mirroring [_MirrorStep.pickingBodies]'s own identical
@@ -10270,7 +10574,8 @@ class _PartScreenState extends State<PartScreen> {
                         _sweepActive ||
                         _loftActive ||
                         _mirrorActive ||
-                        _patternActive)
+                        _patternActive ||
+                        _mergeActive)
                     ? 180
                     : 0,
               ),
@@ -10287,6 +10592,7 @@ class _PartScreenState extends State<PartScreen> {
                       !_loftActive &&
                       !_mirrorActive &&
                       !_patternActive &&
+                      !_mergeActive &&
                       !_profilePickerActive &&
                       !_pathPickerActive &&
                       // On-device feedback ("the tooltip at the top of the

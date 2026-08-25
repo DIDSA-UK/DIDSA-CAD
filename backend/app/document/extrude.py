@@ -54,6 +54,7 @@ from app.document.models import (
     ImportFeature,
     LoftFeature,
     LoftMode,
+    MergeFeature,
     MergeMode,
     MirrorFeature,
     Part,
@@ -993,7 +994,14 @@ def _apply_feature_to_bodies(
     path/disconnected path/sweep geometry failure is skipped with a
     warning rather than raising - the router's own create/update endpoints
     validate a Sweep eagerly instead, see `app.document.sweep.
-    resolve_sweep`)."""
+    resolve_sweep`).
+
+    Boolean family, first entry: `MergeFeature` fuses every Body named in
+    `body_ids` together via the shared `_fuse_realized_instances` helper
+    (an empty `realized_shapes` list - see that branch's own inline
+    comment). Symmetric, no target/tool distinction, no options - every
+    input Body is always consumed into the result, unlike Mirror/Pattern's
+    optional `MergeMode.FUSE_INTO_ONE`."""
     from app.document.chamfer import resolve_chamfer_from_bodies
     from app.document.fillet import resolve_fillet_from_bodies
     from app.document.import_geometry import resolve_import
@@ -1143,6 +1151,32 @@ def _apply_feature_to_bodies(
         else:
             for i, shape in enumerate(mirrored_shapes):
                 _register_solids(bodies, f"{feature.id}#{i}", shape)
+        return
+
+    if isinstance(feature, MergeFeature):
+        # Boolean family, first entry: fuses every named Body together via
+        # the shared `_fuse_realized_instances` helper above, with an empty
+        # `realized_shapes` list - unlike Mirror/Pattern's own FUSE_INTO_ONE
+        # call (fusing newly-realized shapes into pre-existing base Bodies),
+        # Merge has no newly-realized shapes of its own at all, only
+        # `body_ids` naming N pre-existing Bodies uniformly - passing an
+        # empty list there degrades that helper's own two-phase fuse loop
+        # into "fuse every base_id together", exactly what a symmetric,
+        # options-free Merge needs, with no signature change required.
+        # `body_ids` entries not currently present in `bodies` (hidden via
+        # `excluded_feature_ids`, or genuinely deleted) are skipped with a
+        # warning rather than raising - the router's own create/update
+        # endpoints validate eagerly instead (`_validate_merge_body_ids`),
+        # so this fallback only ever matters for topology drift after the
+        # fact, same resilience convention as Fillet/Chamfer/Revolve/Sweep
+        # above.
+        present_body_ids = [bid for bid in feature.body_ids if bid in bodies]
+        if len(present_body_ids) < 2:
+            logger.warning(
+                "Skipping MergeFeature %s: fewer than 2 of its body_ids currently exist", feature.id
+            )
+            return
+        _fuse_realized_instances(bodies, feature_index, present_body_ids, [])
         return
 
     if isinstance(feature, PatternFeature):

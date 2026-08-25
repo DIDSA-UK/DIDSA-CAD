@@ -17,6 +17,8 @@ enum FeaturePickerAction {
   chamfer,
   mirror,
   pattern,
+  // Boolean family, first entry.
+  merge,
 }
 
 /// Shows the fly-up bottom sheet listing every feature type the "Add" FAB's
@@ -30,8 +32,9 @@ enum FeaturePickerAction {
 /// Modify (Fillet/Chamfer), and Repeat (Mirror/Pattern - not titled
 /// "Pattern" itself, since that collided with the "Pattern" entry it
 /// contains - see that section's own doc comment). A Combine section
-/// (Merge/Subtract/Common/Split) is left for follow-up work to populate -
-/// see [_CombineSection].
+/// (Merge/Subtract/Common/Split) holds one real entry (Merge) plus three
+/// still-disabled placeholders left for their own follow-up sessions to
+/// populate - see [_CombineSection].
 Future<FeaturePickerAction?> showFeaturePickerSheet(BuildContext context) {
   return showModalBottomSheet<FeaturePickerAction>(
     context: context,
@@ -198,10 +201,13 @@ class _FeatureEntry extends StatelessWidget {
   }
 }
 
-/// A placeholder Combine section (Merge/Subtract/Common/Split) - not yet
-/// wired to a real [FeaturePickerAction] (that's follow-up work), kept
-/// visible-but-disabled so its place in the picker's own grouping is
-/// already established rather than invented fresh once that work lands.
+/// The Combine section (Merge/Subtract/Common/Split) - Boolean family, first
+/// entry: [FeaturePickerAction.merge] is now a real, enabled entry (mirrors
+/// every other [_FeatureEntry] row); Subtract/Common/Split stay disabled
+/// placeholders for their own follow-up sessions to wire up, same reasoning
+/// this section always had. A bespoke widget (not a plain [_FeatureSection])
+/// since it mixes one real [_FeatureEntry] with three still-disabled rows,
+/// which [_FeatureSection] itself has no concept of.
 class _CombineSection extends StatelessWidget {
   const _CombineSection();
 
@@ -211,18 +217,18 @@ class _CombineSection extends StatelessWidget {
       initiallyExpanded: false,
       dense: true,
       visualDensity: VisualDensity.compact,
-      title: Text(
+      title: const Text(
         'Combine',
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
-        style: TextStyle(
-          fontSize: 14,
-          fontWeight: FontWeight.w600,
-          color: Theme.of(context).colorScheme.onSurfaceVariant,
-        ),
+        style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
       ),
       children: const [
-        ListTile(enabled: false, title: Text('Merge'), subtitle: Text('Coming soon')),
+        _FeatureEntry(
+          icon: 'assets/icons/feature/feature_merge.svg',
+          label: 'Merge',
+          action: FeaturePickerAction.merge,
+        ),
         ListTile(enabled: false, title: Text('Subtract'), subtitle: Text('Coming soon')),
         ListTile(enabled: false, title: Text('Common'), subtitle: Text('Coming soon')),
         ListTile(enabled: false, title: Text('Split'), subtitle: Text('Coming soon')),
