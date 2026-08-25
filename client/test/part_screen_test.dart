@@ -1154,6 +1154,12 @@ void main() {
     await tester.longPress(find.text('Pattern 1'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
+    // Boolean family, Subtract/Common: the context menu now offers two more
+    // entries (Subtract/Common, alongside Merge) for any body-producing
+    // Feature row - Delete sits low enough in the taller sheet to land
+    // outside the fixed 800x600 test viewport, same class of failure this
+    // branch's own earlier "scroll before tapping" fixes already hit.
+    await tester.ensureVisible(find.text('Delete'));
     await tester.tap(find.text('Delete'));
     await tester.pump();
     await _pumpUntil(tester, () => find.text('Delete all').evaluate().isNotEmpty);
@@ -2964,6 +2970,13 @@ void main() {
         await tester.longPress(find.text('Extrude 1'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
+        // Boolean family, Subtract/Common: the context menu now offers two
+        // more entries (Subtract/Common, alongside Merge) for any body-
+        // producing Feature row - Delete sits low enough in the taller sheet
+        // to land outside the fixed 800x600 test viewport, same class of
+        // failure this branch's own earlier "scroll before tapping" fixes
+        // already hit.
+        await tester.ensureVisible(find.text('Delete'));
         await tester.tap(find.text('Delete'));
         await tester.pump();
         // The cascade-delete preview is an awaited network round trip before
@@ -3031,6 +3044,10 @@ void main() {
         await tester.longPress(find.text('Extrude 1'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
+        // Boolean family, Subtract/Common: mirrors the identical fix in the
+        // test just above - Delete now sits outside the fixed 800x600 test
+        // viewport once Subtract/Common join the context menu.
+        await tester.ensureVisible(find.text('Delete'));
         await tester.tap(find.text('Delete'));
         await tester.pump();
         // The cascade-delete preview is an awaited network round trip before
