@@ -740,7 +740,7 @@ class PatternDirectionRef:
     reuse.
 
     Resolved to a plain world-space direction (`app.document.pattern.
-    _direction_vector`), not a full axis with an origin point - a
+    direction_vector`), not a full axis with an origin point - a
     Rectangular Pattern only ever translates along a direction, it never
     needs a pivot the way `PatternAxisRef` (Phase 4, Circular Pattern's own
     axis reference) does."""
@@ -748,6 +748,58 @@ class PatternDirectionRef:
     edge_ref: SubShapeRef | None = None
     sketch_line_ref: SketchEntityRef | None = None
     fixed_axis: FixedAxis | None = None
+
+
+@dataclass
+class SurfaceFeature(Feature):
+    """Extrudes the Sketch wire referenced by `sketch_feature_id` - open or
+    closed - into a non-solid `TopoDS_Shell` via OCCT `BRepPrimAPI_
+    MakePrism` applied directly to the wire rather than to a face (see
+    `app.document.surface.resolve_surface_from_bodies`) - "Extrude but a
+    shell instead of a solid": no Boss/Cut, no `target_body_ids`, this
+    Feature only ever mints a brand-new, standalone Surface of its own. A
+    Split feature (separate, upcoming work) is the reason this exists as a
+    real, reusable Feature rather than a throwaway internal helper.
+
+    `start_distance`/`end_distance` share `ExtrudeFeature`'s own signed-
+    distance-from-the-sketch-plane convention exactly (see that class's own
+    docstring) - the surface spans from `start_distance` to `end_distance`
+    along `direction_ref`.
+
+    `direction_ref` reuses `PatternDirectionRef` verbatim (an edge, a
+    Sketch Line, or a fixed world axis - see that type's own docstring)
+    rather than inventing a new reference type; `None` (the default)
+    extrudes normal to the backing Sketch's own host plane, matching
+    `ExtrudeFeature`'s implicit direction.
+
+    `profile_refs` mirrors `ExtrudeFeature.profile_refs` exactly - narrows
+    a MultiProfile Sketch down to specific outer profile(s) via
+    `app.document.extrude.select_profiles`; empty (the default) uses every
+    detected outer profile. Only meaningful when the backing Sketch's
+    detected geometry is a closed profile (or MultiProfile) - a single open
+    chain has no profile-selection concept of its own (mirrors
+    `app.document.loft`'s identical, more conservative open-chain scoping),
+    so this field is simply inert whenever the Sketch resolves to an open
+    wire instead."""
+
+    id: str
+    sketch_feature_id: str
+    start_distance: float
+    end_distance: float
+    direction_ref: PatternDirectionRef | None = None
+    profile_refs: list[SketchEntityRef] = field(default_factory=list)
+
+    @property
+    def type(self) -> str:
+        return "surface"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return False
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.SURFACE
 
 
 class PatternType(str, Enum):

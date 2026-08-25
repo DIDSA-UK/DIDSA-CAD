@@ -120,6 +120,7 @@ from app.document.models import (
     SketchFeature,
     SubShapeRef,
     SubShapeType,
+    SurfaceFeature,
     SweepFeature,
     SweepMode,
 )
@@ -211,6 +212,9 @@ from app.document.schemas import (
     SketchFeatureCreate,
     SketchFeatureResponse,
     SubShapeRefSchema,
+    SurfaceFeatureCreate,
+    SurfaceFeatureResponse,
+    SurfaceFeatureUpdate,
     SweepFeatureCreate,
     SweepFeatureResponse,
     SweepFeatureUpdate,
@@ -544,6 +548,19 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             locked=part.is_locked(feature.id),
             target_body_ids=feature.target_body_ids,
             profile_refs=[_sketch_entity_ref_to_schema(ref) for ref in feature.profile_refs],
+            produces=feature.produces,
+        )
+    if isinstance(feature, SurfaceFeature):
+        return SurfaceFeatureResponse(
+            id=feature.id,
+            sketch_feature_id=feature.sketch_feature_id,
+            start_distance=feature.start_distance,
+            end_distance=feature.end_distance,
+            direction_ref=_pattern_direction_ref_to_schema(feature.direction_ref)
+            if feature.direction_ref
+            else None,
+            profile_refs=[_sketch_entity_ref_to_schema(ref) for ref in feature.profile_refs],
+            locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
     if isinstance(feature, CreatePlaneFeature):
@@ -1374,6 +1391,30 @@ def _validate_profile_refs(sketch_feature: SketchFeature, profile_refs: list[Ske
     result = detect_profile(sketch)
     candidates = [result.profile] if result.status == ProfileStatus.CLOSED_LOOP else result.loops
     select_profiles(candidates, profile_refs)
+
+
+def _validate_surface_payload(
+    part: Part, sketch_feature_id: str, direction_ref: PatternDirectionRef | None
+) -> None:
+    """Validates a `SurfaceFeature`'s own two structural preconditions -
+    `sketch_feature_id` resolves to a SketchFeature in this Part (unlike
+    `_require_closed_sketch_feature`, this does NOT require a currently
+    extrudable closed profile: a Surface also accepts a single open wire -
+    see `app.document.surface.resolve_surface_from_bodies` - so a stale/
+    edited-away wire is instead tolerated lazily, the same "skip, don't
+    fail the whole /mesh request" resilience `compute_part_bodies` already
+    gives Extrude/Revolve/Sweep), and `direction_ref` (if set) is
+    structurally well-formed via the identical `_validate_pattern_
+    direction_ref` check `PatternFeature.direction_1`/`direction_2` already
+    use for the same `PatternDirectionRef` type."""
+    sketch_feature = part.get_feature(sketch_feature_id)
+    if not isinstance(sketch_feature, SketchFeature):
+        raise HTTPException(
+            status_code=400,
+            detail="SurfaceFeature sketch_feature_id does not refer to a SketchFeature in this Part",
+        )
+    if direction_ref is not None:
+        _validate_pattern_direction_ref(direction_ref, "direction_ref")
 
 
 _SWEEP_PATH_ENTITY_TYPES = frozenset(
@@ -2341,6 +2382,78 @@ def update_extrude_feature(
     feature.start_distance = new_start
     feature.end_distance = new_end
     feature.target_body_ids = list(new_target_body_ids)
+    feature.profile_refs = new_profile_refs
+    return _feature_response(part, feature)
+
+
+@router.post("/parts/{part_id}/surface-features", response_model=SurfaceFeatureResponse, status_code=201)
+def create_surface_feature(part_id: str, payload: SurfaceFeatureCreate) -> SurfaceFeatureResponse:
+    """Mirrors `create_extrude_feature`'s shape closely - "Extrude but a
+    shell instead of a solid" (see `SurfaceFeature`'s own docstring): fails
+    closed on payload shape (`_validate_surface_payload`, `_validate_
+    extrude_distances`) before ever persisting a SurfaceFeature. Unlike
+    Extrude, the backing Sketch is not required to already have a closed
+    profile at create time - a Surface also accepts a single open wire,
+    resolved lazily by `app.document.surface.resolve_surface_from_bodies`,
+    the same "skip, don't fail the whole /mesh request" resilience every
+    other Sketch-profile-backed Feature already gets for topology drift."""
+    part = get_part_or_404(part_id)
+    direction_ref = (
+        _pattern_direction_ref_to_domain(payload.direction_ref) if payload.direction_ref else None
+    )
+    _validate_surface_payload(part, payload.sketch_feature_id, direction_ref)
+    _validate_extrude_distances(payload.start_distance, payload.end_distance)
+    profile_refs = [_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs]
+    feature = SurfaceFeature(
+        id=str(uuid.uuid4()),
+        sketch_feature_id=payload.sketch_feature_id,
+        start_distance=payload.start_distance,
+        end_distance=payload.end_distance,
+        direction_ref=direction_ref,
+        profile_refs=profile_refs,
+    )
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_surface_feature_or_404(part: Part, feature_id: str) -> SurfaceFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, SurfaceFeature):
+        raise HTTPException(status_code=404, detail="Surface feature not found")
+    return feature
+
+
+@router.patch("/parts/{part_id}/surface-features/{feature_id}", response_model=SurfaceFeatureResponse)
+def update_surface_feature(
+    part_id: str, feature_id: str, payload: SurfaceFeatureUpdate
+) -> SurfaceFeatureResponse:
+    """Mirrors `update_extrude_feature`'s exact shape - same validate-
+    before-mutate discipline, omitted fields keep their current value."""
+    part = get_part_or_404(part_id)
+    feature = _get_surface_feature_or_404(part, feature_id)
+
+    new_sketch_feature_id = (
+        payload.sketch_feature_id if payload.sketch_feature_id is not None else feature.sketch_feature_id
+    )
+    new_start = payload.start_distance if payload.start_distance is not None else feature.start_distance
+    new_end = payload.end_distance if payload.end_distance is not None else feature.end_distance
+    new_direction_ref = (
+        _pattern_direction_ref_to_domain(payload.direction_ref)
+        if payload.direction_ref is not None
+        else feature.direction_ref
+    )
+    new_profile_refs = (
+        [_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs]
+        if payload.profile_refs is not None
+        else feature.profile_refs
+    )
+    _validate_surface_payload(part, new_sketch_feature_id, new_direction_ref)
+    _validate_extrude_distances(new_start, new_end)
+
+    feature.sketch_feature_id = new_sketch_feature_id
+    feature.start_distance = new_start
+    feature.end_distance = new_end
+    feature.direction_ref = new_direction_ref
     feature.profile_refs = new_profile_refs
     return _feature_response(part, feature)
 

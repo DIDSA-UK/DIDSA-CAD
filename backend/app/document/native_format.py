@@ -64,6 +64,7 @@ from app.document.models import (
     SpiralBevelHand,
     SubShapeRef,
     SubShapeType,
+    SurfaceFeature,
     SweepFeature,
     SweepMode,
 )
@@ -875,6 +876,18 @@ def _feature_to_dict(feature: Feature) -> dict:
             "target_body_ids": list(feature.target_body_ids),
             "profile_refs": [_sketch_entity_ref_to_dict(r) for r in feature.profile_refs],
         }
+    if isinstance(feature, SurfaceFeature):
+        return {
+            "type": "surface",
+            "id": feature.id,
+            "sketch_feature_id": feature.sketch_feature_id,
+            "start_distance": feature.start_distance,
+            "end_distance": feature.end_distance,
+            "direction_ref": _pattern_direction_ref_to_dict(feature.direction_ref)
+            if feature.direction_ref
+            else None,
+            "profile_refs": [_sketch_entity_ref_to_dict(r) for r in feature.profile_refs],
+        }
     if isinstance(feature, CreatePlaneFeature):
         return {
             "type": "create_plane",
@@ -1101,6 +1114,17 @@ def _feature_from_dict(data: dict) -> Feature:
             start_distance=_require(data, "start_distance"),
             end_distance=_require(data, "end_distance"),
             target_body_ids=list(data.get("target_body_ids", [])),
+            profile_refs=[_sketch_entity_ref_from_dict(r) for r in data.get("profile_refs", [])],
+        )
+    if feature_type == "surface":
+        return SurfaceFeature(
+            id=feature_id,
+            sketch_feature_id=_require(data, "sketch_feature_id"),
+            start_distance=_require(data, "start_distance"),
+            end_distance=_require(data, "end_distance"),
+            direction_ref=_pattern_direction_ref_from_dict(data["direction_ref"])
+            if data.get("direction_ref")
+            else None,
             profile_refs=[_sketch_entity_ref_from_dict(r) for r in data.get("profile_refs", [])],
         )
     if feature_type == "create_plane":
