@@ -519,6 +519,14 @@ class FeatureDto {
   /// Feature persisted before its own type gained a `warnings` field.
   final List<String> warnings;
 
+  /// Only present on a `"surface"` Feature - which direction it extrudes
+  /// [sketchFeatureId]'s wire along (a Body edge, a Sketch Line, or a fixed
+  /// world axis - reuses [PatternDirectionRefDto] verbatim, same type
+  /// [direction1]/[direction2] already use). Null (the default) extrudes
+  /// normal to the backing Sketch's own host plane, matching an `"extrude"`
+  /// Feature's own implicit direction.
+  final PatternDirectionRefDto? directionRef;
+
   FeatureDto({
     required this.type,
     required this.id,
@@ -576,6 +584,7 @@ class FeatureDto {
     this.merge = 'keep_separate',
     this.toolFeatureId,
     this.warnings = const [],
+    this.directionRef,
   });
 
   factory FeatureDto.fromJson(Map<String, dynamic> json) => FeatureDto(
@@ -674,6 +683,9 @@ class FeatureDto {
         merge: json['merge'] as String? ?? 'keep_separate',
         toolFeatureId: json['tool_feature_id'] as String?,
         warnings: (json['warnings'] as List?)?.cast<String>() ?? const [],
+        directionRef: json['direction_ref'] == null
+            ? null
+            : PatternDirectionRefDto.fromJson(json['direction_ref'] as Map<String, dynamic>),
       );
 }
 
@@ -1511,6 +1523,69 @@ class DocumentApiClient {
                 if (startDistance != null) 'start_distance': startDistance,
                 if (endDistance != null) 'end_distance': endDistance,
                 if (targetBodyIds != null) 'target_body_ids': targetBodyIds,
+                if (profileRefs != null)
+                  'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Creates a SurfaceFeature - "Extrude but a shell instead of a solid"
+  /// (see the backend `SurfaceFeature`'s own docstring): extrudes
+  /// [sketchFeatureId]'s wire (open or closed) into a non-solid Surface, no
+  /// [targetBodyIds] concept at all (unlike [createExtrudeFeature]). Same
+  /// [startDistance]/[endDistance] signed-distance convention as Extrude.
+  /// [directionRef] null (the default) extrudes normal to the backing
+  /// Sketch's own host plane; [profileRefs] mirrors [createExtrudeFeature]'s
+  /// own field exactly, and is only meaningful when the backing Sketch
+  /// resolves to a closed (or MultiProfile) profile rather than a single
+  /// open chain.
+  Future<FeatureDto> createSurfaceFeature(
+    String partId, {
+    required String sketchFeatureId,
+    required double startDistance,
+    required double endDistance,
+    PatternDirectionRefDto? directionRef,
+    List<SketchEntityRefDto> profileRefs = const [],
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/surface-features'),
+              headers: _headers,
+              body: jsonEncode({
+                'sketch_feature_id': sketchFeatureId,
+                'start_distance': startDistance,
+                'end_distance': endDistance,
+                if (directionRef != null) 'direction_ref': directionRef.toJson(),
+                'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing SurfaceFeature - any subset of
+  /// [sketchFeatureId]/[startDistance]/[endDistance]/[directionRef]/
+  /// [profileRefs] may be supplied, mirroring [updateExtrudeFeature]'s
+  /// omitted-fields-keep-current-value convention. Used for the
+  /// live-preview debounced re-solve.
+  Future<FeatureDto> updateSurfaceFeature(
+    String partId,
+    String featureId, {
+    String? sketchFeatureId,
+    double? startDistance,
+    double? endDistance,
+    PatternDirectionRefDto? directionRef,
+    List<SketchEntityRefDto>? profileRefs,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/surface-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (sketchFeatureId != null) 'sketch_feature_id': sketchFeatureId,
+                if (startDistance != null) 'start_distance': startDistance,
+                if (endDistance != null) 'end_distance': endDistance,
+                if (directionRef != null) 'direction_ref': directionRef.toJson(),
                 if (profileRefs != null)
                   'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
               }),
