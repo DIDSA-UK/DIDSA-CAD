@@ -186,3 +186,88 @@ def test_native_export_import_round_trips_a_planetary_gear_feature():
     finally:
         replace_document(saved_document)
         replace_all_sketches(saved_sketches)
+
+
+# --- Meshing-phase alignment ------------------------------------------------
+#
+# `app.document.bevel_pair`'s own "Meshing phase alignment" fix, generalized
+# to sun/ring/N-planets in `app.document.planetary_gear.resolve_planetary_
+# from_bodies` (sun anchors the zero-reference; each planet's rotation is
+# fully determined by its own sun mesh; the ring's rotation is solved once
+# from planet 0 and, per `validate_planetary_assembly`'s already-enforced
+# assembly condition, that same rotation also meshes every other planet).
+# Tooth counts here (sun 40T, planet 40T, ring 120T) are deliberately clear
+# of the low-tooth-count real involute tip interference `app.document.
+# gear_chain_math`'s own module note documents - a genuine, pre-existing,
+# separate geometric limitation a phase fix cannot itself resolve (confirmed
+# separately: the same construction at sun/planet 30T, right at that
+# module's own undercut threshold, measures nonzero overlap *identically*
+# across every planet regardless of its own orbital position - the
+# signature of a real geometric limitation, not an uncorrected phase term,
+# which would instead vary planet to planet) - so any measured overlap here
+# is unambiguously a phase bug, not that unrelated confound.
+
+from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Common  # noqa: E402
+from OCC.Core.BRepGProp import brepgprop  # noqa: E402
+from OCC.Core.GProp import GProp_GProps  # noqa: E402
+
+from app.document.extrude import _explode_solids  # noqa: E402
+from app.document.models import PlaneRef, PlanetaryGearFeature  # noqa: E402
+from app.document.planetary_gear import resolve_planetary_from_bodies  # noqa: E402
+from app.sketch.models import Plane  # noqa: E402
+
+
+def _total_pairwise_overlap(shapes: list) -> float:
+    total = 0.0
+    for i in range(len(shapes)):
+        for j in range(i + 1, len(shapes)):
+            common = BRepAlgoAPI_Common(shapes[i], shapes[j])
+            common.Build()
+            assert common.IsDone()
+            props = GProp_GProps()
+            brepgprop.VolumeProperties(common.Shape(), props)
+            total += abs(props.Mass())
+    return total
+
+
+def _build_planetary_overlap(
+    *, sun_tooth_count: int, ring_tooth_count: int, planet_count: int, module: float = 3.0
+) -> float:
+    feature = PlanetaryGearFeature(
+        id="planetary-test",
+        plane_ref=PlaneRef(fixed_plane=Plane.XY),
+        module=module,
+        sun_tooth_count=sun_tooth_count,
+        ring_tooth_count=ring_tooth_count,
+        planet_count=planet_count,
+        pressure_angle_degrees=20.0,
+        face_width=10.0,
+        ring_outer_diameter=module * (ring_tooth_count + 10),
+    )
+    compound = resolve_planetary_from_bodies(feature, None, {}, frozenset())
+    shapes = _explode_solids(compound)
+    return _total_pairwise_overlap(shapes)
+
+
+def test_sun_ring_and_four_planets_mesh_without_overlap():
+    """Reproduces the originally-reported bug (sun, ring, and every planet
+    sharing the same unrotated tooth-0-at-azimuth-0 orientation, guaranteed
+    to interfere) at tooth counts clear of the unrelated low-tooth-count
+    confound - before this fix, sun/planet overlap at these counts would
+    have been in the hundreds of mm^3, identically for every planet."""
+    overlap = _build_planetary_overlap(sun_tooth_count=40, ring_tooth_count=120, planet_count=4)
+    assert overlap < 1.0
+
+
+def test_sun_ring_and_five_planets_mesh_without_overlap():
+    """A different planet count (still satisfying `validate_planetary_
+    assembly`'s own assembly condition) - checks the ring's own rotation,
+    solved once from planet 0, also correctly meshes every other planet for
+    a case where "every other planet" is a different set."""
+    overlap = _build_planetary_overlap(sun_tooth_count=40, ring_tooth_count=120, planet_count=5)
+    assert overlap < 1.0
+
+
+def test_six_planets_at_a_different_tooth_ratio_mesh_without_overlap():
+    overlap = _build_planetary_overlap(sun_tooth_count=60, ring_tooth_count=156, planet_count=6)
+    assert overlap < 1.0

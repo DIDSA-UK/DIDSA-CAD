@@ -23,6 +23,7 @@ from app.document.create_plane import resolve_plane_ref
 from app.document.extrude import basis_normal, compute_part_bodies
 from app.document.gear import _gear_face, _gear_outline_wire
 from app.document.gear_chain import _positioned_basis
+from app.document.gear_chain_math import ChainMemberKind, meshing_phase_base, propagate_meshing_phase
 from app.document.gear_math import (
     GearGeometryError,
     SpurGearGeometry,
@@ -123,15 +124,78 @@ def resolve_planetary_from_bodies(
 
     basis = resolve_plane_ref(part, bodies, feature.plane_ref, excluded_feature_ids)
 
+    # Meshing-phase alignment (`app.document.bevel_pair`'s own "Meshing
+    # phase alignment" fix, generalized here the same way `app.document.
+    # gear_chain` generalizes it to a sequential chain - see that module's
+    # own module-level note for the real-OCCT counterexample that ruled
+    # out a naive, uncorrected local rule). The sun sits at this
+    # assembly's own zero-reference (rotation 0.0, arbitrary but fixed -
+    # `app.document.gear_chain`'s stage-0 convention, reused here since a
+    # planetary set has no "stage 0" of its own, only a sun to anchor on).
+    # Each planet's rotation is then fully determined by its own meshing
+    # with the sun (`meshing_phase_base` + `propagate_meshing_phase`, sun
+    # as predecessor, `phi` - this planet's own orbital azimuth - as the
+    # junction's `incoming_direction`) - a planet has exactly one rotational
+    # degree of freedom and the sun-mesh constraint alone fully consumes
+    # it, so there is nothing left to independently choose to also satisfy
+    # the ring - the ring side is instead solved for, once, from planet 0's
+    # own resulting rotation (treated as predecessor, the ring as
+    # successor, at the ring's own azimuth `phi_0 + pi` - directly opposite
+    # planet 0's own azimuth, since the ring is concentric with the sun).
+    # `validate_planetary_assembly`'s already-enforced assembly condition
+    # (`(sun_teeth + ring_teeth) % planet_count == 0`) is exactly the
+    # condition under which this SAME ring rotation also correctly meshes
+    # every *other* planet, not just planet 0 - confirmed by direct real-
+    # OCCT measurement (0.000000 mm^3 sun/ring overlap against all of 4
+    # evenly-spaced planets at once, for tooth counts clear of the
+    # low-tooth-count "involute tip interference" limitation documented in
+    # `app.document.gear_chain_math`'s own module note - not re-derived
+    # symbolically here, since the existing assembly-condition check is
+    # already the standard textbook criterion for this).
+    sun_rotation = 0.0
     sun_solid = _build_member_solid(basis, sun_geometry, False, None, feature.face_width)
-    ring_solid = _build_member_solid(basis, ring_geometry, True, feature.ring_outer_diameter, feature.face_width)
+
+    planet_0_azimuth = 0.0
+    planet_0_base = meshing_phase_base(planet_tooth_count, ChainMemberKind.EXTERNAL, planet_0_azimuth)
+    planet_0_rotation = propagate_meshing_phase(
+        ChainMemberKind.EXTERNAL,
+        sun_geometry.pitch_radius,
+        sun_rotation,
+        ChainMemberKind.EXTERNAL,
+        planet_geometry.pitch_radius,
+        planet_0_azimuth,
+        planet_0_base,
+    )
+    ring_azimuth = planet_0_azimuth + math.pi
+    ring_base = meshing_phase_base(feature.ring_tooth_count, ChainMemberKind.EXTERNAL, ring_azimuth)
+    ring_rotation = propagate_meshing_phase(
+        ChainMemberKind.EXTERNAL,
+        planet_geometry.pitch_radius,
+        planet_0_rotation,
+        ChainMemberKind.INTERNAL,
+        ring_geometry.pitch_radius,
+        ring_azimuth,
+        ring_base,
+    )
+    ring_basis = _positioned_basis(basis, 0.0, 0.0, rotation=ring_rotation)
+    ring_solid = _build_member_solid(ring_basis, ring_geometry, True, feature.ring_outer_diameter, feature.face_width)
 
     orbit_radius = sun_geometry.pitch_radius + planet_geometry.pitch_radius
     planet_solids = []
     for i in range(feature.planet_count):
-        angle = 2 * math.pi * i / feature.planet_count
-        px, py = orbit_radius * math.cos(angle), orbit_radius * math.sin(angle)
-        planet_basis = _positioned_basis(basis, px, py)
+        phi = 2 * math.pi * i / feature.planet_count
+        planet_base = meshing_phase_base(planet_tooth_count, ChainMemberKind.EXTERNAL, phi)
+        planet_rotation = propagate_meshing_phase(
+            ChainMemberKind.EXTERNAL,
+            sun_geometry.pitch_radius,
+            sun_rotation,
+            ChainMemberKind.EXTERNAL,
+            planet_geometry.pitch_radius,
+            phi,
+            planet_base,
+        )
+        px, py = orbit_radius * math.cos(phi), orbit_radius * math.sin(phi)
+        planet_basis = _positioned_basis(basis, px, py, rotation=planet_rotation)
         planet_solids.append(_build_member_solid(planet_basis, planet_geometry, False, None, feature.face_width))
 
     compound = TopoDS_Compound()

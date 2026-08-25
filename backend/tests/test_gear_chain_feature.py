@@ -404,3 +404,186 @@ def test_native_export_import_round_trips_a_gear_chain_feature():
     finally:
         replace_document(saved_document)
         replace_all_sketches(saved_sketches)
+
+
+# --- Meshing-phase alignment ------------------------------------------------
+#
+# `app.document.bevel_pair`'s own "Meshing phase alignment" fix, generalized
+# to an arbitrary chain in `app.document.gear_chain_math.meshing_phase_base`/
+# `propagate_meshing_phase` - see that module's own extensive notes for the
+# derivation and the real-OCCT counterexamples that ruled out two
+# successively-simpler (and wrong) versions of this fix. Tooth counts here
+# are deliberately >= 36 (or, for same-size external-external pairs, >= 34) -
+# comfortably clear of the low-tooth-count real involute tip interference
+# `gear_chain_math`'s own module note documents (a genuine, pre-existing,
+# separate geometric limitation that a phase fix cannot itself resolve, and
+# which this test suite is not trying to verify) - so any measured overlap
+# here is unambiguously a phase bug, not that unrelated confound.
+
+from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Common  # noqa: E402
+from OCC.Core.BRepGProp import brepgprop  # noqa: E402
+from OCC.Core.GProp import GProp_GProps  # noqa: E402
+
+from app.document.extrude import _explode_solids  # noqa: E402
+from app.document.gear_chain import resolve_gear_chain_from_bodies  # noqa: E402
+from app.document.models import (  # noqa: E402
+    GearChainFeature,
+    GearChainMemberSpec,
+    GearChainMemberType,
+    GearChainStage,
+    GearGroup,
+    MergeMode,
+    PlaneRef,
+)
+from app.sketch.models import Plane  # noqa: E402
+
+
+def _total_pairwise_overlap(shapes: list) -> float:
+    total = 0.0
+    for i in range(len(shapes)):
+        for j in range(i + 1, len(shapes)):
+            common = BRepAlgoAPI_Common(shapes[i], shapes[j])
+            common.Build()
+            assert common.IsDone()
+            props = GProp_GProps()
+            brepgprop.VolumeProperties(common.Shape(), props)
+            total += abs(props.Mass())
+    return total
+
+
+def _chain_member(
+    tooth_count: int, member_type: GearChainMemberType = GearChainMemberType.EXTERNAL, outer_diameter=None
+) -> GearChainMemberSpec:
+    return GearChainMemberSpec(
+        group_id="g1", member_type=member_type, tooth_count=tooth_count, face_width=10.0, outer_diameter=outer_diameter
+    )
+
+
+def _build_chain_overlap(stages: list[GearChainStage], *, module: float = 3.0, start_direction_degrees: float = 0.0) -> float:
+    group = GearGroup(id="g1", module=module, pressure_angle_degrees=20.0)
+    feature = GearChainFeature(
+        id="chain-test",
+        plane_ref=PlaneRef(fixed_plane=Plane.XY),
+        groups=[group],
+        stages=stages,
+        start_direction_degrees=start_direction_degrees,
+        print_clearance_margin=0.5,
+    )
+    compound, warnings = resolve_gear_chain_from_bodies(feature, None, {}, frozenset())
+    shapes = _explode_solids(compound)
+    assert warnings == [], f"unexpected warnings: {warnings}"
+    return _total_pairwise_overlap(shapes)
+
+
+def test_two_stage_chain_meshes_without_overlap():
+    """Reproduces the originally-reported bug's own simplest case (a plain
+    2-stage external/external chain) - before this fix, every tooth-count
+    combination tried (at unsafe, low tooth counts) measured real,
+    substantial overlap; this combination (36T/50T) is deliberately clear
+    of that separate confound, so 0 overlap here isolates the phase fix
+    itself."""
+    stages = [GearChainStage(member=_chain_member(36)), GearChainStage(member=_chain_member(50))]
+    assert _build_chain_overlap(stages) < 1.0
+
+
+def test_three_stage_chain_meshes_without_overlap_including_the_second_junction():
+    """The specific real-OCCT counterexample that drove this fix's own
+    final revision: a purely local, predecessor-rotation-blind rule passes
+    for the first junction but leaves ~566mm^3 of real overlap at the
+    *second* junction, because the first junction's own correction leaves
+    stage 1 at a non-trivial rotation that the second junction's phase
+    must account for, not ignore."""
+    stages = [
+        GearChainStage(member=_chain_member(36)),
+        GearChainStage(member=_chain_member(40)),
+        GearChainStage(member=_chain_member(48)),
+    ]
+    assert _build_chain_overlap(stages) < 1.0
+
+
+def test_three_stage_chain_with_a_turn_meshes_without_overlap():
+    """The second real-OCCT counterexample: even a per-junction-correct
+    rotation (mod that junction's own tooth pitch) still leaves real
+    overlap at a *bent* junction unless the correction also accounts for
+    the difference between the predecessor's own rotation and *this*
+    junction's own contact direction - a term that's exactly zero (and so
+    silently unverified) on a straight chain, which is why a -60 degree
+    turn is used here rather than 0/45/90 (all, by coincidence, aligned
+    with this chain's own tooth pitch)."""
+    stages = [
+        GearChainStage(member=_chain_member(36)),
+        GearChainStage(member=_chain_member(40), turn_angle_degrees=-60.0),
+        GearChainStage(member=_chain_member(48)),
+    ]
+    assert _build_chain_overlap(stages) < 1.0
+
+
+def test_chain_with_start_direction_offset_meshes_without_overlap():
+    stages = [GearChainStage(member=_chain_member(36)), GearChainStage(member=_chain_member(50))]
+    assert _build_chain_overlap(stages, start_direction_degrees=30.0) < 1.0
+
+
+def test_external_into_internal_ring_chain_meshes_without_overlap():
+    """The internal-tangency case - `meshing_phase_base`'s own docstring
+    derivation for why the contact azimuth flips (unflipped, not `+ pi`)
+    when the *predecessor* is INTERNAL."""
+    stages = [
+        GearChainStage(member=_chain_member(36)),
+        GearChainStage(member=_chain_member(90, GearChainMemberType.INTERNAL, outer_diameter=300.0)),
+        GearChainStage(member=_chain_member(35)),
+    ]
+    assert _build_chain_overlap(stages) < 1.0
+
+
+def test_ring_first_stage_chain_meshes_without_overlap():
+    """The mirror case: an INTERNAL member as the chain's own first stage
+    (predecessor for every downstream junction, never itself corrected -
+    stage 0 always stays at this module's zero-reference)."""
+    stages = [
+        GearChainStage(member=_chain_member(90, GearChainMemberType.INTERNAL, outer_diameter=300.0)),
+        GearChainStage(member=_chain_member(36)),
+    ]
+    assert _build_chain_overlap(stages) < 1.0
+
+
+def test_compound_stage_meshes_without_overlap():
+    group_a = GearGroup(id="g1", module=3.0, pressure_angle_degrees=20.0)
+    group_b = GearGroup(id="g2", module=3.0, pressure_angle_degrees=20.0)
+    compound_stage = GearChainStage(
+        compound_member_a=GearChainMemberSpec(
+            group_id="g1", member_type=GearChainMemberType.EXTERNAL, tooth_count=40, face_width=10.0
+        ),
+        compound_member_b=GearChainMemberSpec(
+            group_id="g2", member_type=GearChainMemberType.EXTERNAL, tooth_count=44, face_width=10.0
+        ),
+        compound_axial_offset=15.0,
+        compound_merge=MergeMode.KEEP_SEPARATE,
+    )
+    stages = [
+        GearChainStage(member=GearChainMemberSpec(group_id="g1", member_type=GearChainMemberType.EXTERNAL, tooth_count=36, face_width=10.0)),
+        compound_stage,
+        GearChainStage(member=GearChainMemberSpec(group_id="g2", member_type=GearChainMemberType.EXTERNAL, tooth_count=50, face_width=10.0)),
+    ]
+    feature = GearChainFeature(
+        id="chain-compound-test",
+        plane_ref=PlaneRef(fixed_plane=Plane.XY),
+        groups=[group_a, group_b],
+        stages=stages,
+        start_direction_degrees=0.0,
+        print_clearance_margin=0.5,
+    )
+    compound, warnings = resolve_gear_chain_from_bodies(feature, None, {}, frozenset())
+    shapes = _explode_solids(compound)
+    assert warnings == [], f"unexpected warnings: {warnings}"
+    assert _total_pairwise_overlap(shapes) < 1.0
+
+
+def test_gear_into_rack_meshes_without_overlap_on_a_bent_junction():
+    """The RACK-as-successor case - `propagate_meshing_phase`'s own arc-
+    length correction applied without the division-by-radius a round
+    successor needs."""
+    stages = [
+        GearChainStage(member=_chain_member(36), turn_angle_degrees=25.0),
+        GearChainStage(member=_chain_member(15, GearChainMemberType.RACK)),
+    ]
+    assert _build_chain_overlap(stages) < 1.0

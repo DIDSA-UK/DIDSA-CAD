@@ -168,7 +168,7 @@ class ResolvedGearChain:
 # ---------------------------------------------------------------------------
 
 
-def _pitch_radius(member: ChainMemberSpec) -> float:
+def pitch_radius(member: ChainMemberSpec) -> float:
     """`module * tooth_count / 2` - the same formula regardless of
     external/internal (only the addendum/dedendum sign flips between the
     two, per `gear_math.spur_gear_geometry`'s own docstring; pitch radius
@@ -183,9 +183,9 @@ def _segment_distance(outgoing: ChainMemberSpec, incoming: ChainMemberSpec) -> f
     if outgoing.kind == ChainMemberKind.RACK and incoming.kind == ChainMemberKind.RACK:
         raise GearGeometryError("two consecutive rack members have no defined centre distance")
     if outgoing.kind == ChainMemberKind.RACK:
-        return _pitch_radius(incoming)
+        return pitch_radius(incoming)
     if incoming.kind == ChainMemberKind.RACK:
-        return _pitch_radius(outgoing)
+        return pitch_radius(outgoing)
     if outgoing.kind == ChainMemberKind.INTERNAL and incoming.kind == ChainMemberKind.INTERNAL:
         raise GearGeometryError("two internal (ring) members cannot mesh directly with each other")
     if abs(outgoing.module - incoming.module) > 1e-9:
@@ -318,6 +318,177 @@ def resolve_chain_positions(
             )
         )
     return resolved
+
+
+# ---------------------------------------------------------------------------
+# Part 1b: meshing-phase alignment (this workstream's own generalization of
+# `bevel_pair.py`'s "Meshing phase alignment" fix - see that module's
+# docstring for the two-member original this section ports to an
+# arbitrary chain)
+#
+# A first cut at this section tried a *purely local* rule ("place a gap at
+# the contact point, independent of the predecessor's own rotation") on
+# the theory that a gap always offers maximum clearance regardless of what
+# the predecessor shows there. Real-OCCT verification disproved it: a
+# 3-stage chain (each junction individually "correctly phased" by that
+# local rule) still measured hundreds of mm^3 of real overlap at the
+# *second* junction whenever the first junction's own correction had left
+# the predecessor sitting at a non-trivial rotation. Concretely, stage 1
+# (40T) ended up with a *gap* facing stage 2 purely as a side effect of
+# its own upstream correction (not because anything downstream asked for
+# that) - and "gap facing gap" turned out to be worse than "tooth facing
+# gap", not safer: the two gears' *flanking* teeth (nearest the contact
+# point on either side, from both gears at once) reach into the shared
+# mesh zone without a matching, correctly-shaped counterpart there,
+# because true involute meshing is a *kinematic* (rolling-without-slip)
+# relationship between the two full tooth patterns, not a property of one
+# isolated reference point. So the predecessor's actual rotation *does*
+# matter, and has to be propagated, not ignored.
+
+def meshing_phase_base(successor_tooth_count: int, predecessor_kind: ChainMemberKind, incoming_direction: float) -> float:
+    """The rotation (radians) a round (EXTERNAL/INTERNAL) successor would
+    need so one of its own tooth *gaps* sits exactly at the contact point,
+    *assuming its immediate predecessor sits at its own native reference
+    (tooth 0 at local azimuth 0, unrotated)*. Real-valid only in that one
+    case on its own (see `propagate_meshing_phase` for the general,
+    predecessor-rotation-aware correction this feeds into) - kept apart
+    from that correction because it's also the exact formula needed for
+    stage 0's own successor (stage 0 never gets a correction term, having
+    no predecessor of its own, and stays at this module's zero-reference
+    by convention - see `app.document.gear_chain`'s stage loop).
+
+    `incoming_direction` (`ResolvedChainStage.incoming_direction`) is the
+    chain-segment direction pointing from the predecessor's centre to this
+    member's own centre. For ordinary external tangency (predecessor
+    EXTERNAL or RACK), the contact point sits on the segment directly
+    between the two centres, so its azimuth *relative to this member's own
+    centre* is `incoming_direction + pi` (back toward the predecessor).
+    For internal tangency (predecessor INTERNAL - a ring), worked out from
+    `_segment_distance`'s own placement (the external member's centre sits
+    `external.module * (internal.tooth_count - external.tooth_count) / 2`
+    - i.e. exactly `R_ring - r_external` - from the ring's centre, the
+    standard internal-tangency centre-distance): for this ordering
+    (predecessor ring, successor external, the only one that reaches this
+    branch - INTERNAL-INTERNAL never reaches here, `_segment_distance`
+    already rejects it), the contact point comes out on the far side of
+    the successor from the *ring's* centre, i.e. further along the same
+    `incoming_direction` ray past the successor's own centre - so its
+    azimuth relative to the successor's own centre is `incoming_direction`
+    itself, unflipped (worked example: ring centre 3 units east of a
+    radius-7 pinion's centre, for a radius-10 ring - `|O_ring - O_pinion|
+    = 3 = 10 - 7` matches the standard formula - the internal tangency
+    point comes out at the pinion's *east* edge, `(7, 0)` in pinion-
+    centred coordinates: `incoming_direction` unflipped, not `+ pi`)."""
+    angular_pitch = 2 * math.pi / successor_tooth_count
+    azimuth = incoming_direction if predecessor_kind == ChainMemberKind.INTERNAL else incoming_direction + math.pi
+    return azimuth - angular_pitch / 2
+
+
+def rack_meshing_phase_base(tooth_count: int, tooth_pitch: float) -> float:
+    """The translation (mm, along the rack's own tooth-row axis) a rack
+    successor would need so a tooth *gap* sits at its own reference point
+    (which `_segment_distance`'s rack case already places exactly at the
+    meshing contact point), *assuming its immediate predecessor sits at
+    its own native reference* - the rack's own analogue of `meshing_phase_
+    base`, feeding the same `propagate_meshing_phase` correction for the
+    general case. No internal-tangency flip case to consider here (unlike
+    `meshing_phase_base`): a rack's flat tooth row meets any predecessor
+    at ordinary external-style tangency directly at its own reference
+    point.
+
+    `full_rack_profile_points` centres a *tooth* at local x=0 when
+    `tooth_count` is odd, a *gap* when even (its own `start_offset =
+    -tooth_count * tooth_pitch / 2 + tooth_pitch / 2` construction, worked
+    through mod `tooth_pitch`) - so the fix is `0.0` when even (already
+    correct) and half a pitch when odd (the nearest gap, either
+    direction, is exactly `tooth_pitch / 2` away)."""
+    return (tooth_pitch / 2) if (tooth_count % 2 == 1) else 0.0
+
+
+def propagate_meshing_phase(
+    predecessor_kind: ChainMemberKind,
+    predecessor_pitch_radius: float | None,
+    predecessor_phase: float,
+    successor_kind: ChainMemberKind,
+    successor_pitch_radius: float | None,
+    incoming_direction: float,
+    base_value: float,
+) -> float:
+    """Corrects `meshing_phase_base`/`rack_meshing_phase_base`'s own
+    "predecessor unrotated" assumption for the general case, where the
+    predecessor may itself carry a nonzero phase from *its own* upstream
+    correction (see this section's own module-level note for the real-
+    OCCT counterexample that made this necessary - a purely local, one-
+    sided rule is not sufficient).
+
+    A first cut at this function (still wrong, but closer) used `arc_length
+    = predecessor_phase * predecessor_pitch_radius` directly - correct for
+    a *straight* chain (every junction sharing the same direction), but
+    real-OCCT verification found it *still* leaves real overlap on a
+    *bent* one: a round predecessor's own phase is measured from its
+    native "tooth 0 at local azimuth 0" reference, a fixed direction
+    completely unrelated to `incoming_direction` - so what that
+    predecessor actually presents *at the current contact azimuth* isn't
+    `predecessor_phase` itself, it's `predecessor_phase - incoming_
+    direction` (how far the predecessor's own pattern sits from lining up
+    with *this* junction's own contact point, not from world azimuth 0).
+    Confirmed by direct derivation (rigid-rotate a known-valid `d=0`
+    configuration by an arbitrary angle `phi`, which is trivially still
+    valid and gives a second known point at `d=phi`; combined with the
+    standard fixed-centres rolling-without-slip relationship, the two
+    together pin down this exact correction) and cross-checked against
+    real OCCT: for a 40T predecessor sitting at 175.5 degrees (itself
+    already correct for its own, different, incoming junction) meshing a
+    48T successor with this junction's own `incoming_direction` at -60
+    degrees, the straight-chain-only formula above (not subtracting
+    `incoming_direction`) measured ~420 mm^3 of real overlap; subtracting
+    it, as this function now does, measured 0.
+
+    Two meshing pitch surfaces roll against each other without slipping,
+    so the *arc length* swept (relative to this junction's own contact
+    point) must match on both sides - this is the one relationship that
+    unifies a round member (arc length = `pitch_radius * (phase_radians -
+    incoming_direction)`) and a rack (arc length = `phase_mm` directly,
+    `pitch_radius=None` marking that case - a rack's own phase is already
+    measured directly along its tooth row from its own reference point,
+    which `app.document.gear_chain._segment_distance`'s rack placement
+    already puts exactly at the contact point, so it needs no equivalent
+    correction the way a round member's azimuth-independent rotation
+    does). Convert the predecessor's own phase to the arc length it
+    sweeps at the contact point, then convert that arc length back into
+    whatever unit the successor's own phase is measured in.
+
+    `sign` mirrors `05-gear-chain-and-planetary.md`'s own already-shipped
+    rotation-direction convention (`mesh_link_ratio`'s `reverses`): two
+    non-INTERNAL members (EXTERNAL-EXTERNAL, or either paired with RACK)
+    counter-rotate/counter-translate at their shared contact point
+    (ordinary external tangency), so the correction subtracts; pairing
+    with an INTERNAL (ring) member reverses that (internal tangency, both
+    sides advance the same way), so it adds instead.
+
+    Known limitation: when the *predecessor* is a RACK
+    (`predecessor_pitch_radius is None`), this still uses the uncorrected,
+    straight-chain-only `predecessor_phase` verbatim - `app.document.
+    gear_chain._rack_rotation`'s own orientation formula was separately
+    found, while verifying this function, to already face a RACK
+    predecessor's teeth the wrong way whenever it falls back to
+    `outgoing_direction` (its `incoming_direction` branch, the only one a
+    RACK *successor* ever uses, is unaffected and correctly verified) -
+    a real, pre-existing, `incoming_direction`-vs-`outgoing_direction`
+    orientation bug independent of this whole meshing-phase workstream.
+    Deriving this correction's rack-predecessor case is moot until that
+    orientation bug is fixed first, so it's left as a documented gap
+    rather than a guessed, unverifiable formula - see this workstream's
+    own notes for the reproduction (a 2-stage RACK-then-EXTERNAL chain)."""
+    reverses = predecessor_kind != ChainMemberKind.INTERNAL and successor_kind != ChainMemberKind.INTERNAL
+    sign = -1.0 if reverses else 1.0
+    if predecessor_pitch_radius is None:
+        arc_length = predecessor_phase
+    else:
+        arc_length = (predecessor_phase - incoming_direction) * predecessor_pitch_radius
+    if successor_pitch_radius is None:
+        return base_value + sign * arc_length
+    return base_value + sign * arc_length / successor_pitch_radius
 
 
 # ---------------------------------------------------------------------------

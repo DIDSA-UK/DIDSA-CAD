@@ -22,6 +22,10 @@ from app.document.gear_chain_math import (
     compound_axial_overlap,
     compound_transition_ratio,
     mesh_link_ratio,
+    meshing_phase_base,
+    pitch_radius,
+    propagate_meshing_phase,
+    rack_meshing_phase_base,
     rect_rect_gap,
     resolve_chain,
     resolve_chain_positions,
@@ -269,3 +273,69 @@ def test_chain_overall_ratio_telescopes_across_pure_gear_links():
 def test_chain_overall_ratio_none_when_any_link_is_a_rack_link():
     links = [mesh_link_ratio(_external(2, 20), _external(2, 40)), mesh_link_ratio(_external(2, 40), _rack(2, 10))]
     assert chain_overall_ratio(links) is None
+
+
+# --- Meshing-phase alignment ------------------------------------------------
+# Reference values from this workstream's own real-OCCT derivation (see
+# `propagate_meshing_phase`'s own docstring): a 40T predecessor sitting at
+# 175.5 degrees (correct for its own, different, incoming junction) meshing
+# a 48T successor whose own junction has `incoming_direction = -60 degrees`.
+
+
+def test_meshing_phase_base_matches_the_textbook_symmetric_case_at_zero_direction():
+    # angular_pitch(48T) = 7.5deg; azimuth = 0 + 180 = 180deg; base = 180 - 3.75 = 176.25deg
+    base = meshing_phase_base(48, ChainMemberKind.EXTERNAL, 0.0)
+    assert math.degrees(base) == pytest.approx(176.25)
+
+
+def test_meshing_phase_base_flips_azimuth_for_an_internal_predecessor():
+    # No `+ pi`: internal tangency puts the contact point on the same side
+    # as `incoming_direction`, not the opposite side - see the function's
+    # own worked numeric example.
+    base_external_pred = meshing_phase_base(48, ChainMemberKind.EXTERNAL, math.radians(30.0))
+    base_internal_pred = meshing_phase_base(48, ChainMemberKind.INTERNAL, math.radians(30.0))
+    assert math.degrees(base_internal_pred) == pytest.approx(math.degrees(base_external_pred) - 180.0)
+
+
+def test_rack_meshing_phase_base_is_zero_for_even_tooth_count_and_half_pitch_for_odd():
+    tooth_pitch = 12.0
+    assert rack_meshing_phase_base(14, tooth_pitch) == pytest.approx(0.0)
+    assert rack_meshing_phase_base(15, tooth_pitch) == pytest.approx(6.0)
+
+
+def test_propagate_meshing_phase_is_a_no_op_when_predecessor_sits_at_its_own_native_reference():
+    # predecessor_phase == 0 and incoming_direction == 0 together mean "no
+    # correction needed" - propagate_meshing_phase should hand back
+    # base_value unchanged.
+    base = meshing_phase_base(48, ChainMemberKind.EXTERNAL, 0.0)
+    result = propagate_meshing_phase(ChainMemberKind.EXTERNAL, 60.0, 0.0, ChainMemberKind.EXTERNAL, 72.0, 0.0, base)
+    assert result == pytest.approx(base)
+
+
+def test_propagate_meshing_phase_matches_the_real_occt_verified_bent_junction_example():
+    """The exact reproduction from this fix's own real-OCCT verification: a
+    40T predecessor already at 175.5 degrees (correct for its own upstream
+    junction), meshing a 48T successor whose own junction sits at -60
+    degrees - `propagate_meshing_phase`'s corrected result (2.5 degrees mod
+    the 48T member's own 7.5 degree pitch) measured exactly 0mm^3 overlap
+    via a fine-grained real-OCCT sweep across the full pitch; the naive
+    (uncorrected-for-direction) 116.25 degrees measured ~420mm^3."""
+    module = 3.0
+    r40 = pitch_radius(_external(module, 40))
+    r48 = pitch_radius(_external(module, 48))
+    d = math.radians(-60.0)
+    theta_predecessor = math.radians(175.5)
+    base = meshing_phase_base(48, ChainMemberKind.EXTERNAL, d)
+    result = propagate_meshing_phase(ChainMemberKind.EXTERNAL, r40, theta_predecessor, ChainMemberKind.EXTERNAL, r48, d, base)
+    assert math.degrees(result) % 7.5 == pytest.approx(2.5, abs=1e-6)
+
+
+def test_propagate_meshing_phase_reverses_for_two_non_internal_members_but_not_when_one_is_internal():
+    d = math.radians(10.0)
+    base = 1.0  # arbitrary base_value, isolating the correction term's own sign
+    ext_ext = propagate_meshing_phase(ChainMemberKind.EXTERNAL, 40.0, 2.0, ChainMemberKind.EXTERNAL, 60.0, d, base)
+    ext_int = propagate_meshing_phase(ChainMemberKind.EXTERNAL, 40.0, 2.0, ChainMemberKind.INTERNAL, 60.0, d, base)
+    # The correction term's own sign flips between the two (reverses vs not) -
+    # so the two results move in opposite directions away from `base`, and by
+    # the same magnitude (only `sign` differs between the two calls).
+    assert (ext_ext - base) == pytest.approx(-(ext_int - base))
