@@ -1587,6 +1587,14 @@ void main() {
     await tester.tap(find.text('Feature'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
+    // Bug fix (real CI failure): the picker sheet's Repeat section (Mirror/
+    // Pattern) now sits below Sketch-based/Reference/Modify, off the fixed
+    // 800x600 test viewport - ensureVisible scrolls the sheet's own
+    // SingleChildScrollView to bring it into range before tapping (the
+    // widget is already mounted, just out of view - see bevel_design_
+    // screen_test.dart's identical use of ensureVisible for the same
+    // "long form, small test viewport" reason).
+    await tester.ensureVisible(find.text('Pattern'));
     await tester.tap(find.text('Pattern'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
