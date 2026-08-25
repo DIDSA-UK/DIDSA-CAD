@@ -60,6 +60,7 @@ import 'selection_hit_test.dart' show SelectionEntityKind, SelectionEntityRef;
 import 'selection_list_drawer.dart';
 import 'sketch_geometry_3d.dart';
 import 'sketch_orientation_indicator.dart';
+import 'surface_panel.dart';
 import 'sweep_panel.dart';
 import 'svg_icon.dart';
 import 'scene_preferences.dart';
@@ -574,6 +575,7 @@ class _PartScreenState extends State<PartScreen> {
       !_planeSelectionMode &&
       !_confirmingSketchOrientation &&
       !_extrudeActive &&
+      !_surfaceActive &&
       !_createPlaneActive &&
       !_filletActive &&
       !_chamferActive &&
@@ -594,6 +596,7 @@ class _PartScreenState extends State<PartScreen> {
   bool get _featureTreePanelVisible =>
       (_featureTreeVisible &&
           !_extrudeActive &&
+          !_surfaceActive &&
           !_createPlaneActive &&
           !_filletActive &&
           !_chamferActive &&
@@ -641,6 +644,7 @@ class _PartScreenState extends State<PartScreen> {
   /// established `*Active`/mode condition rather than re-deriving a new one.
   bool get _anyToolPanelOpen =>
       _extrudeActive ||
+      _surfaceActive ||
       _createPlaneActive ||
       _filletActive ||
       _chamferActive ||
@@ -1163,6 +1167,54 @@ class _PartScreenState extends State<PartScreen> {
   /// on top of it; restores on Confirm/Cancel since those null out
   /// [_extrudeSketchFeature] without otherwise touching [_featureTreeVisible].
   bool get _extrudeActive => _extrudeSketchFeature != null;
+
+  // --- Surface ---------------------------------------------------------------
+  // "Extrude but a shell instead of a solid" (see the backend
+  // `SurfaceFeature`'s own docstring) - mirrors the Extrude section above,
+  // minus Boss/Cut and target-body picking (a Surface has neither concept
+  // at all - see that class's own docstring), and minus the closed-profile
+  // eligibility gate ([_checkExtrudeEligibility]'s equivalent): a Surface
+  // also accepts a single open wire, so every Sketch Feature is a valid
+  // pick, not just ones with a closed profile.
+
+  /// True while the Feature tree is acting as a Sketch picker for a pending
+  /// Surface - mirrors [_sketchPickerActive] exactly.
+  bool _surfaceSketchPickerActive = false;
+
+  /// While [_surfaceSketchPickerActive], every current Sketch Feature's id -
+  /// unlike [_pickableSketchIds], this needs no async eligibility check
+  /// (every Sketch is pickable for a Surface), so it's simply recomputed
+  /// synchronously whenever picker mode starts.
+  Set<String> _pickableSurfaceSketchIds = {};
+
+  /// The SketchFeature currently being extruded via [SurfacePanel], or null
+  /// when the panel is closed - mirrors [_extrudeSketchFeature].
+  FeatureDto? _surfaceSketchFeature;
+
+  /// The SurfaceFeature created by the panel's first live-preview update -
+  /// mirrors [_previewExtrudeFeatureId].
+  String? _previewSurfaceFeatureId;
+
+  /// [_bodies]' value from just before the panel opened, restored by
+  /// Cancel - mirrors [_meshBeforeExtrude].
+  List<BodyMeshDto>? _meshBeforeSurface;
+
+  double _surfaceStartDistance = 0.0;
+  double _surfaceEndDistance = 10.0;
+
+  /// `null`/`'x'`/`'y'`/`'z'` - mirrors [SurfacePanel.initialFixedAxis]'s
+  /// own convention exactly.
+  String? _surfaceFixedAxis;
+
+  /// Debounces the panel's live-preview PATCH/POST + mesh refresh, same
+  /// 500ms convention as [_extrudeDebounce].
+  Timer? _surfaceDebounce;
+
+  /// True while [SurfacePanel] is open - mirrors [_extrudeActive] exactly,
+  /// including every downstream visibility rule ([_viewportFabColumnsVisible]/
+  /// [_featureTreePanelVisible]/[_anyToolPanelOpen]/the "Add" FAB column's own
+  /// inline conditions) that already special-cases [_extrudeActive].
+  bool get _surfaceActive => _surfaceSketchFeature != null;
 
   // --- C2: Create Plane -----------------------------------------------------
 
@@ -4165,6 +4217,7 @@ class _PartScreenState extends State<PartScreen> {
   @override
   void dispose() {
     _extrudeDebounce?.cancel();
+    _surfaceDebounce?.cancel();
     _busyOverlayTimer?.cancel();
     if (widget.documentApi == null) {
       _api.close();
@@ -4859,6 +4912,8 @@ class _PartScreenState extends State<PartScreen> {
     switch (action) {
       case FeaturePickerAction.extrude:
         await _extrudeSelectedFeature();
+      case FeaturePickerAction.surface:
+        _surfaceSelectedFeature();
       case FeaturePickerAction.plane:
         _startPlanePicker();
       case FeaturePickerAction.fillet:
@@ -4989,6 +5044,203 @@ class _PartScreenState extends State<PartScreen> {
       _featureTreeVisible = false;
       _pickableSketchIds = {};
     });
+  }
+
+  // --- Surface ---------------------------------------------------------------
+
+  /// The "Add" FAB's Feature picker's "Surface" entry - mirrors
+  /// [_extrudeSelectedFeature]'s shape, minus the closed-profile
+  /// eligibility check: a `SurfaceFeature` also accepts a single open wire
+  /// (see that backend class's own docstring), so every Sketch Feature is a
+  /// valid pick, not just ones with a closed profile - no async check
+  /// needed before proceeding.
+  void _surfaceSelectedFeature() {
+    final featureId = _selectedFeatureId;
+    final feature = featureId == null ? null : _featureById(featureId);
+    if (feature != null && feature.type == 'sketch') {
+      _openSurfacePanel(feature);
+      return;
+    }
+    _startSurfaceSketchPicker();
+  }
+
+  /// Opens the Feature tree in Sketch-picker mode for a pending Surface -
+  /// mirrors [_startSketchPicker], minus the background eligibility refresh
+  /// ([_refreshPickableSketchIds]'s equivalent): every Sketch Feature is
+  /// immediately pickable for a Surface, so [_pickableSurfaceSketchIds] is
+  /// just every current Sketch Feature's id, computed synchronously.
+  void _startSurfaceSketchPicker() {
+    setState(() {
+      _surfaceSketchPickerActive = true;
+      _featureTreeVisible = true;
+      _toolbarOpen = false;
+      _planeSelectionModeStack.pop();
+      _pickableSurfaceSketchIds = {
+        for (final f in _features)
+          if (f.type == 'sketch') f.id,
+      };
+    });
+  }
+
+  /// [FeatureTreePanel.onSketchPicked] while [_surfaceSketchPickerActive] -
+  /// mirrors [_onSketchPicked], minus the re-validate-on-pick step (nothing
+  /// to validate - every Sketch Feature is eligible).
+  void _onSurfaceSketchPicked(FeatureDto feature) {
+    setState(() {
+      _surfaceSketchPickerActive = false;
+      _featureTreeVisible = false;
+      _selectedFeatureId = feature.id;
+      _pickableSurfaceSketchIds = {};
+    });
+    _openSurfacePanel(feature);
+  }
+
+  /// Exits picker mode without creating a Surface - mirrors
+  /// [_cancelSketchPicker].
+  void _cancelSurfaceSketchPicker() {
+    setState(() {
+      _surfaceSketchPickerActive = false;
+      _featureTreeVisible = false;
+      _pickableSurfaceSketchIds = {};
+    });
+  }
+
+  /// Opens [SurfacePanel] for a brand-new SurfaceFeature extruding
+  /// [sketchFeature]'s wire - mirrors [_openExtrudePanel], minus the
+  /// target-body selection-filter override (a Surface has no Boss/Cut
+  /// target-body concept at all).
+  void _openSurfacePanel(FeatureDto sketchFeature) {
+    setState(() {
+      _surfaceSketchFeature = sketchFeature;
+      _previewSurfaceFeatureId = null;
+      _meshBeforeSurface = _bodies;
+      _surfaceStartDistance = 0.0;
+      _surfaceEndDistance = 10.0;
+      _surfaceFixedAxis = null;
+    });
+  }
+
+  /// Creates the preview SurfaceFeature on the first call, or PATCHes the
+  /// one already created by an earlier call, then refetches the mesh -
+  /// mirrors [_ensureExtrudeFeatureExists] exactly, minus `target_body_ids`.
+  Future<void> _ensureSurfaceFeatureExists(
+    double start,
+    double end,
+    String? fixedAxis,
+  ) async {
+    final part = _part;
+    final sketchFeature = _surfaceSketchFeature;
+    if (part == null || sketchFeature == null) return;
+
+    final directionRef =
+        fixedAxis == null ? null : PatternDirectionRefDto(fixedAxis: fixedAxis);
+    final existingId = _previewSurfaceFeatureId;
+    if (existingId == null) {
+      final created = await _api.createSurfaceFeature(
+        part.id,
+        sketchFeatureId: sketchFeature.id,
+        startDistance: start,
+        endDistance: end,
+        directionRef: directionRef,
+      );
+      _previewSurfaceFeatureId = created.id;
+    } else {
+      await _api.updateSurfaceFeature(
+        part.id,
+        existingId,
+        startDistance: start,
+        endDistance: end,
+        directionRef: directionRef,
+      );
+    }
+    await _refreshMesh();
+  }
+
+  /// [SurfacePanel.onChanged] - mirrors [_onExtrudeValuesChanged].
+  void _onSurfaceValuesChanged(double start, double end, String? fixedAxis) {
+    _surfaceStartDistance = start;
+    _surfaceEndDistance = end;
+    _surfaceFixedAxis = fixedAxis;
+    _scheduleSurfacePreview();
+  }
+
+  /// Mirrors [_scheduleExtrudePreview].
+  void _scheduleSurfacePreview() {
+    _surfaceDebounce?.cancel();
+    _surfaceDebounce = Timer(const Duration(milliseconds: 500), () {
+      _runGuarded(() => _ensureSurfaceFeatureExists(
+            _surfaceStartDistance,
+            _surfaceEndDistance,
+            _surfaceFixedAxis,
+          ));
+    });
+  }
+
+  /// Mirrors [_confirmExtrude] exactly, minus the B4 edit-session branch
+  /// (Surface editing isn't wired up yet - v1, create-only, matching this
+  /// Feature's own minimal initial scope) and the target-body-selection
+  /// restore (a Surface never touches [_selectedEntities] at all).
+  Future<void> _confirmSurface() async {
+    _surfaceDebounce?.cancel();
+    final sketchFeature = _surfaceSketchFeature;
+    await _runGuarded(() async {
+      await _ensureSurfaceFeatureExists(
+        _surfaceStartDistance,
+        _surfaceEndDistance,
+        _surfaceFixedAxis,
+      );
+      await _refreshFeatures();
+      await _refreshSketchGeometries();
+    });
+    if (!mounted) return;
+    setState(() {
+      _featureTreeVisible = false;
+      if (sketchFeature != null) {
+        _hiddenFeatureIds.add(sketchFeature.id);
+        _autoHiddenSketchFeatureIds.add(sketchFeature.id);
+      }
+      _recomputeVisibleSketchGeometries();
+      _surfaceSketchFeature = null;
+      _previewSurfaceFeatureId = null;
+      _meshBeforeSurface = null;
+      if (sketchFeature != null && _selectedFeatureId == sketchFeature.id) {
+        _selectedFeatureId = null;
+      }
+    });
+    await _endRollback();
+  }
+
+  /// Deletes the preview SurfaceFeature (if one was ever created) and
+  /// restores the mesh to its pre-surface state, closing the panel either
+  /// way - mirrors [_cancelExtrude]'s "create new" branch (there is no edit
+  /// branch here - see [_confirmSurface]'s own doc comment).
+  Future<void> _cancelSurface() async {
+    _surfaceDebounce?.cancel();
+    final part = _part;
+    final sketchFeature = _surfaceSketchFeature;
+    final previewId = _previewSurfaceFeatureId;
+    final meshBefore = _meshBeforeSurface;
+    setState(() {
+      _featureTreeVisible = false;
+      _surfaceSketchFeature = null;
+      _previewSurfaceFeatureId = null;
+      _meshBeforeSurface = null;
+      if (sketchFeature != null && _selectedFeatureId == sketchFeature.id) {
+        _selectedFeatureId = null;
+      }
+    });
+    if (part != null && previewId != null) {
+      await _runGuarded(() async {
+        await _api.deleteFeature(part.id, previewId);
+        if (meshBefore != null) {
+          _bodies = meshBefore;
+        } else {
+          await _refreshMesh();
+        }
+        await _refreshFeatures();
+      });
+    }
+    await _endRollback();
   }
 
   /// Prompt F: mirrors [_extrudeSelectedFeature] exactly, substituting
@@ -9287,6 +9539,7 @@ class _PartScreenState extends State<PartScreen> {
                 // stays explicit rather than relying on that as an implicit
                 // side effect).
                 if (!_extrudeActive &&
+                    !_surfaceActive &&
                     !_createPlaneActive &&
                     !_filletActive &&
                     !_chamferActive &&
@@ -9327,6 +9580,8 @@ class _PartScreenState extends State<PartScreen> {
                     onClose: () {
                       if (_sketchPickerActive) {
                         _cancelSketchPicker();
+                      } else if (_surfaceSketchPickerActive) {
+                        _cancelSurfaceSketchPicker();
                       } else if (_revolveSketchPickerActive) {
                         _cancelRevolveSketchPicker();
                       } else if (_sweepSketchPickerActive) {
@@ -9340,25 +9595,32 @@ class _PartScreenState extends State<PartScreen> {
                       }
                     },
                     // Prompt F: only one of _sketchPickerActive/
-                    // _revolveSketchPickerActive/_sweepSketchPickerActive is
-                    // ever true at a time (same "one panel/picker active"
-                    // invariant every other flow in this file relies on), so a
-                    // chain of ternaries picks whichever is live - mirrors the
-                    // previewOverlayBodyId/previewOverlayMesh ternary above.
-                    // Loft's own picker uses isFeaturePickerMode instead (see
-                    // that block's own top comment for why), not this one.
-                    isSketchPickerMode:
-                        _sketchPickerActive || _revolveSketchPickerActive || _sweepSketchPickerActive,
+                    // _surfaceSketchPickerActive/_revolveSketchPickerActive/
+                    // _sweepSketchPickerActive is ever true at a time (same
+                    // "one panel/picker active" invariant every other flow in
+                    // this file relies on), so a chain of ternaries picks
+                    // whichever is live - mirrors the previewOverlayBodyId/
+                    // previewOverlayMesh ternary above. Loft's own picker uses
+                    // isFeaturePickerMode instead (see that block's own top
+                    // comment for why), not this one.
+                    isSketchPickerMode: _sketchPickerActive ||
+                        _surfaceSketchPickerActive ||
+                        _revolveSketchPickerActive ||
+                        _sweepSketchPickerActive,
                     pickableSketchIds: _sketchPickerActive
                         ? _pickableSketchIds
-                        : _revolveSketchPickerActive
-                            ? _pickableRevolveSketchIds
-                            : _pickableSweepSketchIds,
+                        : _surfaceSketchPickerActive
+                            ? _pickableSurfaceSketchIds
+                            : _revolveSketchPickerActive
+                                ? _pickableRevolveSketchIds
+                                : _pickableSweepSketchIds,
                     onSketchPicked: _sketchPickerActive
                         ? _onSketchPicked
-                        : _revolveSketchPickerActive
-                            ? _onRevolveSketchPicked
-                            : _onSweepSketchPicked,
+                        : _surfaceSketchPickerActive
+                            ? _onSurfaceSketchPicked
+                            : _revolveSketchPickerActive
+                                ? _onRevolveSketchPicked
+                                : _onSweepSketchPicked,
                     // Loft's own multi-select section picker shares this
                     // exact mode with the Pattern/Mirror source-feature
                     // picker (only one of the two is ever active at a time,
@@ -9453,6 +9715,21 @@ class _PartScreenState extends State<PartScreen> {
                       onChanged: _onExtrudeValuesChanged,
                       onConfirm: _confirmExtrude,
                       onCancel: _cancelExtrude,
+                    ),
+                  ),
+                if (_surfaceSketchFeature != null)
+                  Positioned.fill(
+                    // Bug fix: mirrors the Extrude panel slot's own stable-
+                    // key reasoning exactly, above.
+                    key: const ValueKey('surface-panel-slot'),
+                    child: SurfacePanel(
+                      key: ValueKey(_surfaceSketchFeature!.id),
+                      initialStartDistance: _surfaceStartDistance,
+                      initialEndDistance: _surfaceEndDistance,
+                      initialFixedAxis: _surfaceFixedAxis,
+                      onChanged: _onSurfaceValuesChanged,
+                      onConfirm: _confirmSurface,
+                      onCancel: _cancelSurface,
                     ),
                   ),
                 if (_createPlaneMode != null)
@@ -9985,6 +10262,7 @@ class _PartScreenState extends State<PartScreen> {
           : Padding(
               padding: EdgeInsets.only(
                 bottom: (_extrudeActive ||
+                        _surfaceActive ||
                         _createPlaneActive ||
                         _filletActive ||
                         _chamferActive ||
@@ -10000,6 +10278,7 @@ class _PartScreenState extends State<PartScreen> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   if (!_extrudeActive &&
+                      !_surfaceActive &&
                       !_createPlaneActive &&
                       !_filletActive &&
                       !_chamferActive &&

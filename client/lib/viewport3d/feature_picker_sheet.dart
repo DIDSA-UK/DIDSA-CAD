@@ -6,11 +6,32 @@ import 'svg_icon.dart';
 /// [extrude], (C3) [plane], (on-device feedback) [fillet], (Prompt E)
 /// [chamfer], (Prompt F) [revolve], and [sweep] are all wired to a real
 /// flow.
-enum FeaturePickerAction { extrude, plane, fillet, chamfer, revolve, sweep, loft, mirror, pattern }
+enum FeaturePickerAction {
+  extrude,
+  revolve,
+  sweep,
+  loft,
+  plane,
+  surface,
+  fillet,
+  chamfer,
+  mirror,
+  pattern,
+}
 
 /// Shows the fly-up bottom sheet listing every feature type the "Add" FAB's
 /// Feature entry offers - same drag-handle/rounded-top-corner shape as
 /// [showPlaneContextSheet], so both Stage 19b fly-ups feel consistent.
+///
+/// Grouped into collapsible sections (mirrors [FeatureTreePanel]'s own
+/// Bodies/Planes `ExpansionTile` grouping - `_buildGroupedTree` - rather
+/// than a flat list, now that this sheet has grown past a handful of rows):
+/// Sketch-based (Extrude/Revolve/Sweep/Loft), Reference (Plane/Surface),
+/// Modify (Fillet/Chamfer), and Repeat (Mirror/Pattern - not titled
+/// "Pattern" itself, since that collided with the "Pattern" entry it
+/// contains - see that section's own doc comment). A Combine section
+/// (Merge/Subtract/Common/Split) is left for follow-up work to populate -
+/// see [_CombineSection].
 Future<FeaturePickerAction?> showFeaturePickerSheet(BuildContext context) {
   return showModalBottomSheet<FeaturePickerAction>(
     context: context,
@@ -33,60 +54,89 @@ Future<FeaturePickerAction?> showFeaturePickerSheet(BuildContext context) {
                 padding: EdgeInsets.only(top: 8),
                 child: _DragHandle(),
               ),
-              ListTile(
-                leading: const SvgIcon('assets/icons/feature/feature_extrude.svg'),
-                title: const Text('Extrude'),
-                onTap: () =>
-                    Navigator.of(context).pop(FeaturePickerAction.extrude),
+              _FeatureSection(
+                title: 'Sketch-based',
+                initiallyExpanded: true,
+                entries: [
+                  _FeatureEntry(
+                    icon: 'assets/icons/feature/feature_extrude.svg',
+                    label: 'Extrude',
+                    action: FeaturePickerAction.extrude,
+                  ),
+                  _FeatureEntry(
+                    icon: 'assets/icons/feature/feature_revolve.svg',
+                    label: 'Revolve',
+                    action: FeaturePickerAction.revolve,
+                  ),
+                  _FeatureEntry(
+                    icon: 'assets/icons/feature/feature_sweep.svg',
+                    label: 'Sweep',
+                    action: FeaturePickerAction.sweep,
+                  ),
+                  _FeatureEntry(
+                    icon: 'assets/icons/feature/feature_loft.svg',
+                    label: 'Loft',
+                    action: FeaturePickerAction.loft,
+                  ),
+                ],
               ),
-              ListTile(
-                leading: const SvgIcon('assets/icons/feature/feature_plane.svg'),
-                title: const Text('Plane'),
-                onTap: () =>
-                    Navigator.of(context).pop(FeaturePickerAction.plane),
+              _FeatureSection(
+                title: 'Reference',
+                initiallyExpanded: true,
+                entries: [
+                  _FeatureEntry(
+                    icon: 'assets/icons/feature/feature_plane.svg',
+                    label: 'Plane',
+                    action: FeaturePickerAction.plane,
+                  ),
+                  _FeatureEntry(
+                    icon: 'assets/icons/feature/feature_surface.svg',
+                    label: 'Surface',
+                    action: FeaturePickerAction.surface,
+                  ),
+                ],
               ),
-              ListTile(
-                leading: const SvgIcon('assets/icons/feature/feature_revolve.svg'),
-                title: const Text('Revolve'),
-                onTap: () =>
-                    Navigator.of(context).pop(FeaturePickerAction.revolve),
+              _FeatureSection(
+                title: 'Modify',
+                initiallyExpanded: true,
+                entries: [
+                  _FeatureEntry(
+                    icon: 'assets/icons/feature/feature_fillet.svg',
+                    label: 'Fillet',
+                    action: FeaturePickerAction.fillet,
+                  ),
+                  _FeatureEntry(
+                    icon: 'assets/icons/feature/feature_chamfer.svg',
+                    label: 'Chamfer',
+                    action: FeaturePickerAction.chamfer,
+                  ),
+                ],
               ),
-              ListTile(
-                leading: const SvgIcon('assets/icons/feature/feature_sweep.svg'),
-                title: const Text('Sweep'),
-                onTap: () =>
-                    Navigator.of(context).pop(FeaturePickerAction.sweep),
+              _FeatureSection(
+                // Bug fix (real CI failure - widget tests): naming this
+                // section "Pattern" collided with the "Pattern" entry it
+                // contains - `find.text('Pattern')`/a plain tap-by-label
+                // could no longer tell the section header from the row
+                // inside it (both matched, ambiguously). "Repeat" groups
+                // Mirror/Pattern under the same "duplicate existing
+                // geometry" umbrella without repeating either entry's own
+                // label.
+                title: 'Repeat',
+                initiallyExpanded: true,
+                entries: [
+                  _FeatureEntry(
+                    icon: 'assets/icons/feature/feature_mirror.svg',
+                    label: 'Mirror',
+                    action: FeaturePickerAction.mirror,
+                  ),
+                  _FeatureEntry(
+                    icon: 'assets/icons/feature/feature_pattern.svg',
+                    label: 'Pattern',
+                    action: FeaturePickerAction.pattern,
+                  ),
+                ],
               ),
-              ListTile(
-                leading: const SvgIcon('assets/icons/feature/feature_loft.svg'),
-                title: const Text('Loft'),
-                onTap: () =>
-                    Navigator.of(context).pop(FeaturePickerAction.loft),
-              ),
-              ListTile(
-                leading: const SvgIcon('assets/icons/feature/feature_fillet.svg'),
-                title: const Text('Fillet'),
-                onTap: () =>
-                    Navigator.of(context).pop(FeaturePickerAction.fillet),
-              ),
-              ListTile(
-                leading: const SvgIcon('assets/icons/feature/feature_chamfer.svg'),
-                title: const Text('Chamfer'),
-                onTap: () =>
-                    Navigator.of(context).pop(FeaturePickerAction.chamfer),
-              ),
-              ListTile(
-                leading: const SvgIcon('assets/icons/feature/feature_mirror.svg'),
-                title: const Text('Mirror'),
-                onTap: () =>
-                    Navigator.of(context).pop(FeaturePickerAction.mirror),
-              ),
-              ListTile(
-                leading: const SvgIcon('assets/icons/feature/feature_pattern.svg'),
-                title: const Text('Pattern'),
-                onTap: () =>
-                    Navigator.of(context).pop(FeaturePickerAction.pattern),
-              ),
+              const _CombineSection(),
               const SizedBox(height: 8),
             ],
           ),
@@ -94,6 +144,91 @@ Future<FeaturePickerAction?> showFeaturePickerSheet(BuildContext context) {
       );
     },
   );
+}
+
+/// One collapsible group of Feature entries - mirrors [FeatureTreePanel]'s
+/// own Bodies/Planes `ExpansionTile` convention (dense, compact visual
+/// density, a section-weight title) rather than inventing a new grouping
+/// widget.
+class _FeatureSection extends StatelessWidget {
+  final String title;
+  final bool initiallyExpanded;
+  final List<_FeatureEntry> entries;
+
+  const _FeatureSection({
+    required this.title,
+    required this.initiallyExpanded,
+    required this.entries,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ExpansionTile(
+      initiallyExpanded: initiallyExpanded,
+      dense: true,
+      visualDensity: VisualDensity.compact,
+      title: Text(
+        title,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+      ),
+      children: [for (final entry in entries) entry],
+    );
+  }
+}
+
+/// One tappable row inside a [_FeatureSection] - pops [action] off the
+/// sheet's own `Navigator`, same as every entry did before the ExpansionTile
+/// regrouping.
+class _FeatureEntry extends StatelessWidget {
+  final String icon;
+  final String label;
+  final FeaturePickerAction action;
+
+  const _FeatureEntry({required this.icon, required this.label, required this.action});
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      leading: SvgIcon(icon),
+      title: Text(label),
+      onTap: () => Navigator.of(context).pop(action),
+    );
+  }
+}
+
+/// A placeholder Combine section (Merge/Subtract/Common/Split) - not yet
+/// wired to a real [FeaturePickerAction] (that's follow-up work), kept
+/// visible-but-disabled so its place in the picker's own grouping is
+/// already established rather than invented fresh once that work lands.
+class _CombineSection extends StatelessWidget {
+  const _CombineSection();
+
+  @override
+  Widget build(BuildContext context) {
+    return ExpansionTile(
+      initiallyExpanded: false,
+      dense: true,
+      visualDensity: VisualDensity.compact,
+      title: Text(
+        'Combine',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          fontSize: 14,
+          fontWeight: FontWeight.w600,
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
+      ),
+      children: const [
+        ListTile(enabled: false, title: Text('Merge'), subtitle: Text('Coming soon')),
+        ListTile(enabled: false, title: Text('Subtract'), subtitle: Text('Coming soon')),
+        ListTile(enabled: false, title: Text('Common'), subtitle: Text('Coming soon')),
+        ListTile(enabled: false, title: Text('Split'), subtitle: Text('Coming soon')),
+      ],
+    );
+  }
 }
 
 class _DragHandle extends StatelessWidget {

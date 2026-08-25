@@ -13,6 +13,7 @@ String featureDisplayName(List<FeatureDto> features, int index) {
   final feature = features[index];
   final label = switch (feature.type) {
     'extrude' => 'Extrude',
+    'surface' => 'Surface',
     'create_plane' => 'Plane',
     'fillet' => 'Fillet',
     'chamfer' => 'Chamfer',
@@ -61,6 +62,7 @@ bool _hasEditPanel(String type) => type != 'import';
 String _featureTypeAsset(String type) => switch (type) {
       'sketch' => 'assets/icons/feature/feature_new_sketch.svg',
       'extrude' => 'assets/icons/feature/feature_extrude.svg',
+      'surface' => 'assets/icons/feature/feature_surface.svg',
       'create_plane' => 'assets/icons/feature/feature_plane.svg',
       'fillet' => 'assets/icons/feature/feature_fillet.svg',
       'chamfer' => 'assets/icons/feature/feature_chamfer.svg',
@@ -445,6 +447,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
       children: [
         if (widget.bodyIds.isNotEmpty) _buildBodiesSection(context),
         if (widget.features.any((f) => f.type == 'create_plane')) _buildPlanesSection(context),
+        if (widget.features.any((f) => f.type == 'surface')) _buildSurfacesSection(context),
         _buildFeaturesSection(context),
       ],
     );
@@ -540,6 +543,49 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
                 // FeatureContextMenuAction) was only reachable via that
                 // other row, not from here, despite this looking like an
                 // equally normal place to long-press for it.
+                onLongPress: () => widget.onFeatureLongPress(feature),
+              ),
+            );
+          }),
+      ],
+    );
+  }
+
+  /// The Surfaces section - real produced non-solid Surface objects, one row
+  /// per SurfaceFeature (always 1:1, unlike Bodies' potential Feature-to-
+  /// multiple-Bodies split - see the backend `SurfaceFeature`'s own
+  /// docstring, no Boss/Cut merging concept at all, so no separate id/name
+  /// map is needed the way [_buildBodiesSection] needs one). Mirrors
+  /// [_buildPlanesSection]
+  /// exactly - omitted entirely when there are none yet (same "no empty
+  /// section" rule), tapping a row reuses [FeatureTreePanel.onFeatureTap],
+  /// starts collapsed.
+  Widget _buildSurfacesSection(BuildContext context) {
+    final surfaceFeatures = widget.features.where((f) => f.type == 'surface').toList();
+    return ExpansionTile(
+      initiallyExpanded: false,
+      dense: true,
+      visualDensity: VisualDensity.compact,
+      leading: const SvgIcon('assets/icons/feature/feature_surface.svg', size: 26),
+      title: const Text('Surfaces', maxLines: 1, overflow: TextOverflow.ellipsis, style: _sectionTitleStyle),
+      children: [
+        for (final feature in surfaceFeatures)
+          Builder(builder: (context) {
+            final hidden = widget.hiddenFeatureIds.contains(feature.id);
+            return Opacity(
+              opacity: hidden ? 0.5 : 1.0,
+              child: ListTile(
+                dense: true,
+                visualDensity: VisualDensity.compact,
+                leading: const SvgIcon('assets/icons/feature/feature_surface.svg', size: 24),
+                title: Text(
+                  featureDisplayName(widget.features, widget.features.indexOf(feature)),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: _rowTitleStyle,
+                ),
+                trailing: hidden ? const Icon(Icons.visibility_off, size: 18) : null,
+                onTap: () => widget.onFeatureTap(feature),
                 onLongPress: () => widget.onFeatureLongPress(feature),
               ),
             );

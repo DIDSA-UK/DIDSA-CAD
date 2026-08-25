@@ -57,6 +57,7 @@ from app.document.models import (
     RevolveFeature,
     RevolveMode,
     SketchFeature,
+    SurfaceFeature,
     SweepFeature,
     SweepMode,
 )
@@ -434,6 +435,8 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
             depends_on = _revolve_dependencies(part, feature)
         elif isinstance(feature, SweepFeature):
             depends_on = _sweep_dependencies(part, feature)
+        elif isinstance(feature, SurfaceFeature):
+            depends_on = _surface_dependencies(part, feature)
         elif isinstance(feature, MirrorFeature):
             depends_on = _mirror_dependencies(feature)
         elif isinstance(feature, PatternFeature):
@@ -487,6 +490,24 @@ def _sweep_dependencies(part: Part, feature: SweepFeature) -> tuple[str, ...]:
         if path_sketch_feature_id is not None:
             deps.add(path_sketch_feature_id)
     deps.update(base_feature_id(tid) for tid in feature.target_body_ids)
+    return tuple(deps)
+
+
+def _surface_dependencies(part: Part, feature: SurfaceFeature) -> tuple[str, ...]:
+    """`build_feature_graph`'s `SurfaceFeature` dependency-edge logic -
+    depends on `sketch_feature_id` (the same single-Sketch dependency
+    `ExtrudeFeature` has, no `target_body_ids` since a Surface never has
+    one - see its own docstring) plus whatever `direction_ref` itself
+    depends on, via the same `_pattern_direction_dependency` helper
+    `PatternFeature.direction_1`/`direction_2` already use for the
+    identical `PatternDirectionRef` type. Deleting the Sketch a Surface
+    extrudes, or the Feature its `direction_ref` names, must cascade-delete
+    the Surface too - identical reasoning to every other reference kind in
+    this function."""
+    deps: set[str] = {feature.sketch_feature_id}
+    direction_dep = _pattern_direction_dependency(part, feature.direction_ref)
+    if direction_dep is not None:
+        deps.add(direction_dep)
     return tuple(deps)
 
 

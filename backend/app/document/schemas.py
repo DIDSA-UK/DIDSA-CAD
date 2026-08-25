@@ -642,6 +642,58 @@ class PatternAxisRefSchema(BaseModel):
     sketch_line_ref: SketchEntityRefSchema | None = None
 
 
+class SurfaceFeatureCreate(BaseModel):
+    """Creates a `SurfaceFeature` extruding an existing SketchFeature's wire
+    - open or closed - into a non-solid Surface (see `app.document.models.
+    SurfaceFeature`'s own docstring). The API layer validates `sketch_
+    feature_id` resolves to a SketchFeature in this Part, and `direction_ref`
+    (if set) is structurally valid, before construction (see `app.document.
+    router._validate_surface_payload`).
+
+    `start_distance`/`end_distance` share `ExtrudeFeatureCreate`'s own
+    signed-distance convention exactly. `direction_ref` reuses
+    `PatternDirectionRefSchema` verbatim - omitted (the default) extrudes
+    normal to the backing Sketch's own host plane. `profile_refs` mirrors
+    `ExtrudeFeatureCreate.profile_refs` exactly - see that field's own
+    docstring."""
+
+    sketch_feature_id: str
+    start_distance: float
+    end_distance: float
+    direction_ref: PatternDirectionRefSchema | None = None
+    profile_refs: list[SketchEntityRefSchema] = []
+
+
+class SurfaceFeatureUpdate(BaseModel):
+    """Partial update for live-preview re-solves - any subset of fields may
+    be supplied; omitted fields keep their current value. `direction_ref`
+    follows the same omitted-vs-current-value convention as `mirror_plane`/
+    `direction_1` on `MirrorFeatureUpdate`/`PatternFeatureUpdate` - `None`
+    (omitted) keeps whatever this Surface already has; there is no
+    supported way to clear a real `direction_ref` back to "normal to the
+    sketch plane" via update (delete+recreate, same as those two)."""
+
+    sketch_feature_id: str | None = None
+    start_distance: float | None = None
+    end_distance: float | None = None
+    direction_ref: PatternDirectionRefSchema | None = None
+    profile_refs: list[SketchEntityRefSchema] | None = None
+
+
+class SurfaceFeatureResponse(BaseModel):
+    type: Literal["surface"] = "surface"
+    id: str
+    sketch_feature_id: str
+    start_distance: float
+    end_distance: float
+    direction_ref: PatternDirectionRefSchema | None = None
+    profile_refs: list[SketchEntityRefSchema] = []
+    locked: bool
+    # B1: see SketchFeatureResponse.produces above - always SURFACE for a
+    # SurfaceFeature.
+    produces: Produces
+
+
 class PatternFeatureCreate(BaseModel):
     """Pattern/Mirror scoping's Phase 2/4 (`docs/pattern-mirror-scope.md`
     §2.2/§2.3/§4): creates a `PatternFeature` repeating the single Body
@@ -1667,6 +1719,7 @@ FeatureResponse = Union[
     ChamferFeatureResponse,
     RevolveFeatureResponse,
     SweepFeatureResponse,
+    SurfaceFeatureResponse,
     MirrorFeatureResponse,
     PatternFeatureResponse,
     ImportFeatureResponse,

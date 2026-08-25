@@ -263,7 +263,7 @@ def _axis_from_ref(
     raise _invalid_axis_ref()
 
 
-def _direction_vector(
+def direction_vector(
     part: Part,
     bodies: dict[str, TopoDS_Shape],
     ref: PatternDirectionRef,
@@ -273,6 +273,11 @@ def _direction_vector(
     `edge_ref`/`sketch_line_ref`/`fixed_axis` is set (enforced by
     `app.document.router._validate_pattern_direction_ref` before this is
     ever called).
+
+    Public (no leading underscore) since `app.document.surface` also needs
+    it, to resolve a `SurfaceFeature.direction_ref` - mirrors `wire_for_
+    profile`'s own "public once a second module needs it" precedent (see
+    that function's own doc comment in `app.document.extrude`).
 
     `edge_ref` reuses `app.document.create_plane`'s exact straight-edge-check
     idiom (`BRepAdaptor_Curve(edge).GetType() == GeomAbs_Line`) - a curved
@@ -344,12 +349,12 @@ def _rectangular_instances(
     own doc comment. `skip_indices` (Phase 3) is filtered out the same
     way - a skipped instance's `BRepBuilderAPI_Transform` is never even
     briefly built, cheaper than generate-then-discard."""
-    dir_1 = _direction_vector(part, bodies, feature.direction_1, excluded_feature_ids)
+    dir_1 = direction_vector(part, bodies, feature.direction_1, excluded_feature_ids)
     if feature.reverse_1:
         dir_1 = dir_1.Reversed()
     dir_2 = None
     if feature.count_2 > 1 and feature.direction_2 is not None:
-        dir_2 = _direction_vector(part, bodies, feature.direction_2, excluded_feature_ids)
+        dir_2 = direction_vector(part, bodies, feature.direction_2, excluded_feature_ids)
         if feature.reverse_2:
             dir_2 = dir_2.Reversed()
 
@@ -431,7 +436,7 @@ def resolve_pattern_from_bodies(
     `direction_1`/`direction_2`/`axis`, `count_1`/`count_2`/`count_
     angular`, `spacing_1`/`spacing_2`, `reverse_1`/`reverse_2`/`reverse_
     angular`, `skip_indices` all apply the same way to every source), so
-    `_direction_vector`/`_axis_from_ref` are (harmlessly) re-resolved once
+    `direction_vector`/`_axis_from_ref` are (harmlessly) re-resolved once
     per source rather than hoisted out - simpler than threading a resolved
     direction/axis through, and every one of their own inputs is otherwise
     identical across sources anyway.

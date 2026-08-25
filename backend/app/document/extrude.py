@@ -67,6 +67,7 @@ from app.document.models import (
     SketchFeature,
     SubShapeRef,
     SubShapeType,
+    SurfaceFeature,
     SweepFeature,
     SweepMode,
 )
@@ -1055,6 +1056,37 @@ def _apply_feature_to_bodies(
         # bare face for a mesh format) - never split even if a STEP
         # import happens to contain multiple disjoint solids.
         bodies[feature.id] = solid
+        return
+
+    if isinstance(feature, SurfaceFeature):
+        # "Extrude but a shell instead of a solid" (see SurfaceFeature's
+        # own docstring) - no Boss/Cut, no target_body_ids, so this always
+        # mints a brand-new Surface under its own Feature id. Function-local
+        # import mirrors this function's own Mirror/Pattern/Chamfer/Fillet/
+        # import_geometry imports just below/above - avoids a circular
+        # import (app.document.surface imports several names from this
+        # module - wire_for_profile, select_profiles, EXTRUDABLE_STATUSES,
+        # basis_normal - at its own module level).
+        from app.document.surface import resolve_surface_from_bodies
+
+        sketch_feature = part.get_feature(feature.sketch_feature_id)
+        if not isinstance(sketch_feature, SketchFeature):
+            logger.warning(
+                "Skipping SurfaceFeature %s: referenced sketch feature %s not found",
+                feature.id,
+                feature.sketch_feature_id,
+            )
+            return
+        shape = resolve_surface_from_bodies(feature, sketch_feature, part, bodies, excluded_feature_ids)
+        if shape is None:
+            return
+        # Mirrors ImportFeature's own registration just above: a Shell (or
+        # a Compound of Shells) has no TopAbs_SOLID for _register_solids'
+        # own TopExp_Explorer walk to find, so this registers the raw
+        # shape directly rather than going through that split-by-solid
+        # path - the same "not every registered body is a TopoDS_Solid"
+        # precedent.
+        bodies[feature.id] = shape
         return
 
     if isinstance(feature, MirrorFeature):

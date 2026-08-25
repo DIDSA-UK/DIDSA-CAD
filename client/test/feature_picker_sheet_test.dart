@@ -68,5 +68,29 @@ void main() {
       await tester.pumpAndSettle();
       expect(await pendingResult, FeaturePickerAction.sweep);
     });
+
+    testWidgets('Surface resolves FeaturePickerAction.surface', (tester) async {
+      await openSheet(tester);
+      await tester.tap(find.text('Surface'));
+      await tester.pumpAndSettle();
+      expect(await pendingResult, FeaturePickerAction.surface);
+    });
+
+    testWidgets('the picker sheet groups entries into collapsible sections', (tester) async {
+      await openSheet(tester);
+      expect(find.text('Sketch-based'), findsOneWidget);
+      expect(find.text('Reference'), findsOneWidget);
+      expect(find.text('Modify'), findsOneWidget);
+      expect(find.text('Repeat'), findsOneWidget);
+      expect(find.text('Combine'), findsOneWidget);
+      // Reference groups Plane and Surface together.
+      expect(find.text('Plane'), findsOneWidget);
+      expect(find.text('Surface'), findsOneWidget);
+      // Repeat groups Mirror and Pattern together - each entry's own label
+      // still resolves unambiguously now that the section itself isn't
+      // also named "Pattern".
+      expect(find.text('Mirror'), findsOneWidget);
+      expect(find.text('Pattern'), findsOneWidget);
+    });
   });
 }
