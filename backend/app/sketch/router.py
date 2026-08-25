@@ -8,6 +8,7 @@ from app.sketch.constraints import (
     AtMidpointConstraint,
     CoincidentConstraint,
     CollinearConstraint,
+    ConcentricConstraint,
     Constraint,
     DistanceConstraint,
     EqualLengthConstraint,
@@ -65,6 +66,8 @@ from app.sketch.schemas import (
     CoincidentConstraintResponse,
     CollinearConstraintCreate,
     CollinearConstraintResponse,
+    ConcentricConstraintCreate,
+    ConcentricConstraintResponse,
     ConstraintCreate,
     ConstraintResponse,
     ConstraintValueUpdate,
@@ -443,6 +446,14 @@ def _constraint_response(constraint: Constraint) -> ConstraintResponse:
             id=constraint.id,
             point_a_id=constraint.point_a_id,
             point_b_id=constraint.point_b_id,
+        )
+    if isinstance(constraint, ConcentricConstraint):
+        return ConcentricConstraintResponse(
+            id=constraint.id,
+            entity1_id=constraint.entity1_id,
+            entity2_id=constraint.entity2_id,
+            center1_point_id=constraint.center1_point_id,
+            center2_point_id=constraint.center2_point_id,
         )
     if isinstance(constraint, ParallelConstraint):
         return ParallelConstraintResponse(
@@ -1489,6 +1500,8 @@ def create_constraint(sketch_id: str, payload: ConstraintCreate) -> ConstraintRe
             )
         elif isinstance(payload, CoincidentConstraintCreate):
             constraint = sketch.add_coincident_constraint(payload.point_a_id, payload.point_b_id)
+        elif isinstance(payload, ConcentricConstraintCreate):
+            constraint = sketch.add_concentric_constraint(payload.entity1_id, payload.entity2_id)
         elif isinstance(payload, ParallelConstraintCreate):
             constraint = sketch.add_parallel_constraint(payload.line1_id, payload.line2_id)
         elif isinstance(payload, PerpendicularConstraintCreate):

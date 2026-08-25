@@ -103,6 +103,9 @@ const Map<String, int> dofCostByConstraintType = {
   'horizontal': 1, // ya = yb
   'angle': 1, // angle(L1, L2) = value
   'coincident': 2, // xa = xb AND ya = yb
+  'concentric': 2, // same coincident call as above, just applied to two
+  // Circles'/Arcs' centre Points instead of two free Points - same cost by
+  // construction (see backend ConcentricConstraint.add_to_solver).
   'parallel': 1, // cross(dir(L1), dir(L2)) = 0
   'perpendicular': 1, // dot(dir(L1), dir(L2)) = 0
   'equal_length': 1, // |L1| = |L2|
@@ -208,6 +211,9 @@ const Map<String, int> dofCostByConstraintType = {
   }
   if (constraint is CoincidentConstraintDto) {
     return (type: 'coincident', pointIds: [constraint.pointAId, constraint.pointBId]);
+  }
+  if (constraint is ConcentricConstraintDto) {
+    return (type: 'concentric', pointIds: [constraint.center1PointId, constraint.center2PointId]);
   }
   if (constraint is AngleConstraintDto) {
     return (type: 'angle', pointIds: ofLines(constraint.line1Id, constraint.line2Id));

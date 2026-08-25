@@ -925,6 +925,12 @@ class TangentConstraintCreate(BaseModel):
     line_id: str
 
 
+class ConcentricConstraintCreate(BaseModel):
+    type: Literal["concentric"]
+    entity1_id: str
+    entity2_id: str
+
+
 class EqualRadiusConstraintCreate(BaseModel):
     type: Literal["equal_radius"]
     entity1_id: str
@@ -989,6 +995,7 @@ ConstraintCreate = Union[
     HorizontalConstraintCreate,
     AngleConstraintCreate,
     CoincidentConstraintCreate,
+    ConcentricConstraintCreate,
     ParallelConstraintCreate,
     PerpendicularConstraintCreate,
     EqualLengthConstraintCreate,
@@ -1120,6 +1127,15 @@ class TangentConstraintResponse(BaseModel):
     line_id: str
 
 
+class ConcentricConstraintResponse(BaseModel):
+    type: Literal["concentric"] = "concentric"
+    id: str
+    entity1_id: str
+    entity2_id: str
+    center1_point_id: str
+    center2_point_id: str
+
+
 class EqualRadiusConstraintResponse(BaseModel):
     type: Literal["equal_radius"] = "equal_radius"
     id: str
@@ -1181,6 +1197,7 @@ ConstraintResponse = Union[
     HorizontalConstraintResponse,
     AngleConstraintResponse,
     CoincidentConstraintResponse,
+    ConcentricConstraintResponse,
     ParallelConstraintResponse,
     PerpendicularConstraintResponse,
     EqualLengthConstraintResponse,

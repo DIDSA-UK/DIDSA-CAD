@@ -11,6 +11,7 @@ from app.sketch.constraints import (
     AtMidpointConstraint,
     CoincidentConstraint,
     CollinearConstraint,
+    ConcentricConstraint,
     Constraint,
     DistanceConstraint,
     EqualLengthConstraint,
@@ -4479,6 +4480,28 @@ class Sketch:
             radius1_point_id=radius1_point_id,
             center2_point_id=center2_point_id,
             radius2_point_id=radius2_point_id,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
+
+    def add_concentric_constraint(self, entity1_id: str, entity2_id: str) -> ConcentricConstraint:
+        """Ties entity2's centre to entity1's - the curved-entity
+        counterpart of add_coincident_constraint. Reuses
+        _center_radius_point_ids to resolve each entity's centre Point,
+        same as add_equal_radius_constraint above; the radius-defining rim
+        Point each entity also resolves to is irrelevant here and
+        discarded."""
+        if entity1_id == entity2_id:
+            raise ValueError("A constraint cannot reference the same Circle/Arc twice")
+        center1_point_id, _ = self._center_radius_point_ids(entity1_id)
+        center2_point_id, _ = self._center_radius_point_ids(entity2_id)
+
+        constraint = ConcentricConstraint(
+            id=str(uuid.uuid4()),
+            entity1_id=entity1_id,
+            entity2_id=entity2_id,
+            center1_point_id=center1_point_id,
+            center2_point_id=center2_point_id,
         )
         self.constraints[constraint.id] = constraint
         return constraint
