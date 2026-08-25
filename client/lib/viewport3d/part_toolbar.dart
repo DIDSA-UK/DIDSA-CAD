@@ -101,6 +101,12 @@ class PartToolbar extends StatelessWidget {
   final void Function(String hex)? onBodyColourChanged;
   final void Function(double opacity)? onBodyOpacityChanged;
 
+  /// Polygon Resolution slider (curved-surface tessellation density) - same
+  /// [ViewPreferences]-backed load/persist pattern as [bodyOpacity] etc.
+  /// just above, opened via [_pickMeshQuality] below.
+  final double meshQuality;
+  final void Function(double quality)? onMeshQualityChanged;
+
   /// The `PhysicallyBasedMaterial`/lighting upgrade's own controls (see
   /// [ScenePreferences]) - nested under View as its own "Scene" sub-menu
   /// (see [_buildViewMenu]), rather than flat entries alongside Body
@@ -156,6 +162,8 @@ class PartToolbar extends StatelessWidget {
     this.onBgColourChanged,
     this.onBodyColourChanged,
     this.onBodyOpacityChanged,
+    this.meshQuality = ViewPreferences.defaultMeshQuality,
+    this.onMeshQualityChanged,
     this.sceneRoughness = ScenePreferences.defaultRoughness,
     this.sceneLightIntensity = ScenePreferences.defaultLightIntensity,
     this.sceneEmissiveIntensity = ScenePreferences.defaultEmissiveIntensity,
@@ -357,6 +365,11 @@ class PartToolbar extends StatelessWidget {
           title: const Text('Body Transparency'),
           onTap: onBodyOpacityChanged == null ? null : () => _pickBodyOpacity(context),
         ),
+        ListTile(
+          leading: const Icon(Icons.change_history),
+          title: const Text('Polygon Resolution'),
+          onTap: onMeshQualityChanged == null ? null : () => _pickMeshQuality(context),
+        ),
         const Divider(height: 1),
         ExpansionTile(
           leading: const SvgIcon('assets/icons/feature/parttoolbar_scene.svg'),
@@ -472,5 +485,10 @@ class PartToolbar extends StatelessWidget {
   Future<void> _pickBodyOpacity(BuildContext context) async {
     final opacity = await showBodyOpacitySheet(context, initialOpacity: bodyOpacity);
     if (opacity != null) onBodyOpacityChanged!(opacity);
+  }
+
+  Future<void> _pickMeshQuality(BuildContext context) async {
+    final quality = await showPolygonResolutionSheet(context, initialQuality: meshQuality);
+    if (quality != null) onMeshQualityChanged!(quality);
   }
 }

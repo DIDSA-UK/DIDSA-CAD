@@ -805,6 +805,18 @@ class ProfileResponse(BaseModel):
     # ProfileResponse. Empty for a simple profile with no holes; only ever
     # one level deep (see ProfileStatus.INVALID_NESTING).
     inner_loops: list["ProfileResponse"] = []
+    # Bug fix: a Text-contour loop (`app.sketch.profile._text_profile`) has
+    # no real Points to read `point_ids` from - its own tessellated (x, y)
+    # polygon (`Profile.text_vertices`, already placed in sketch-local space)
+    # was never round-tripped to the client at all, so the client's own
+    # profile-detection/fill logic had no way to tell a Text loop apart from
+    # a genuinely degenerate one (both showed up as `point_ids: []`) and
+    # silently dropped every Text loop from the "ready to extrude" fill
+    # overlay - see `sketch_canvas.dart`'s `_paintClosedProfileFill`/
+    # `_addLoopBoundary`. `None` for every non-Text profile, same
+    # None-means-"not a Text loop" convention `Profile.text_vertices` itself
+    # already uses.
+    text_vertices: list[tuple[float, float]] | None = None
 
 
 class ProfileDetectionResponse(BaseModel):

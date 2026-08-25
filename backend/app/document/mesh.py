@@ -17,6 +17,7 @@ from app.document.mesh_data import (
     MeshData,
     MeshQuality,
     Triangle,
+    mesh_quality_from_slider,
     synthesize_wireframe_edges_from_triangles,
 )
 
@@ -25,6 +26,7 @@ __all__ = [
     "MeshData",
     "MeshQuality",
     "Triangle",
+    "mesh_quality_from_slider",
     "tessellate_shape",
 ]
 

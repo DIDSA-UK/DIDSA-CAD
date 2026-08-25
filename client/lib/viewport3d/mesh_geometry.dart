@@ -120,10 +120,27 @@ MeshDto renderMirrorCorrectedMesh(MeshDto mesh) {
 /// real GPU/Impeller context (see [geometryFromMesh] for why the rest can't
 /// be).
 ///
-/// Indices are always 16-bit: this stage's mesh is a small placeholder solid
-/// (and flutter_scene 0.18.1 doesn't expose its `IndexType` enum publicly to
-/// select 32-bit indices anyway) - revisit if a later stage's tessellation
-/// can exceed 65535 vertices.
+/// Bug fix (on-device feedback: a complex curved Body - e.g. several
+/// concentric swept/revolved bands plus internal ribs - rendered as a
+/// garbled, self-intersecting mess in the 3D viewport, while the exact same
+/// tessellation exported to glTF and opened in an external mesh viewer
+/// looked correct): indices used to always be 16-bit (`Uint16List`,
+/// wrapping mod 65536 past that many vertices - trivially reachable for a
+/// flat-shaded triangle-soup mesh, where every triangle owns 3 fresh,
+/// unshared vertices, so as few as ~21,845 triangles is enough, and
+/// [meshBuffersFromMesh]'s own `doubleSidedWinding` halves that budget
+/// again for any translucent Body), silently corrupting exactly this kind
+/// of dense mesh's geometry client-side while the backend's own mesh data
+/// (and so every export format, which reuses it unmodified - see
+/// `backend/app/document/mesh_export.py`) stayed fully correct throughout.
+/// The old doc comment here reasoned this couldn't be fixed - "flutter_scene
+/// 0.18.1 doesn't expose its `IndexType` enum publicly to select 32-bit
+/// indices anyway" - true only of the package's curated public surface
+/// (`package:flutter_scene/gpu.dart`); the internal shim this file already
+/// imports for [AlwaysOnTopMaterial] (`package:flutter_scene/src/gpu/gpu.dart`,
+/// re-exporting `package:flutter_gpu` verbatim on native) does define
+/// `gpu.IndexType.int32`, so [indexData] is now built as a `Uint32List`
+/// and passed through with that index type (see [geometryFromMesh]) instead.
 class MeshBuffers {
   final Float32List vertexData;
   final int vertexCount;
@@ -161,9 +178,9 @@ class MeshBuffers {
 /// Set true to emit a second, reverse-wound copy of every triangle (with
 /// flipped normals, so lighting/shading still reads correctly from either
 /// side) - the same fix, applied to real mesh geometry instead of a simple
-/// quad or ad-hoc triangle list. Doubles [MeshBuffers.vertexCount], so it
-/// halves this file's existing 65535-vertex 16-bit-index ceiling (see
-/// [MeshBuffers]'s own doc comment) for any mesh rendered translucent.
+/// quad or ad-hoc triangle list. Doubles [MeshBuffers.vertexCount] - no
+/// longer a 65535-vertex 16-bit-index concern now that indices are 32-bit
+/// (see [MeshBuffers]'s own doc comment), just twice the GPU buffer size.
 MeshBuffers meshBuffersFromMesh(MeshDto mesh, {bool doubleSidedWinding = false}) {
   final vertexCount = mesh.vertices.length;
   final copies = doubleSidedWinding ? 2 : 1;
@@ -195,7 +212,7 @@ MeshBuffers meshBuffersFromMesh(MeshDto mesh, {bool doubleSidedWinding = false})
 
   final triangleCount = mesh.triangleIndices.length;
   final indexCount = triangleCount * 3 * copies;
-  final indices = Uint16List(indexCount);
+  final indices = Uint32List(indexCount);
   var i = 0;
   for (final triangle in mesh.triangleIndices) {
     indices[i++] = triangle[0];
@@ -232,6 +249,7 @@ UnskinnedGeometry geometryFromMesh(MeshDto mesh, {bool doubleSidedWinding = fals
     ByteData.sublistView(buffers.vertexData),
     buffers.vertexCount,
     buffers.indexData,
+    indexType: gpu.IndexType.int32,
   );
   return geometry;
 }
@@ -678,7 +696,11 @@ MeshBuffers triangleHighlightBuffers(List<(vm.Vector3, vm.Vector3, vm.Vector3)> 
     writeTriangle(t + triangles.length, a, c, b);   // back face (reversed winding)
   }
 
-  final indices = Uint16List(vertexCount);
+  // Uint32 for the same reason [meshBuffersFromMesh]'s own indices are (see
+  // [MeshBuffers]'s doc comment) - a highlight covering enough triangles
+  // (e.g. every face of a dense Body selected at once, doubled here for
+  // front+back) can exceed a 16-bit index's range too.
+  final indices = Uint32List(vertexCount);
   for (var i = 0; i < vertexCount; i++) {
     indices[i] = i;
   }
@@ -728,6 +750,7 @@ Node buildHighlightFacesNode(
     ByteData.sublistView(buffers.vertexData),
     buffers.vertexCount,
     buffers.indexData,
+    indexType: gpu.IndexType.int32,
   );
   final material = UnlitMaterial()
     ..alphaMode = AlphaMode.opaque

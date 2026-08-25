@@ -2115,20 +2115,30 @@ class DocumentApiClient {
   ///
   /// Prompt A3: parses the array-of-Bodies response Prompt A1 introduced -
   /// the top-level JSON is now a `List`, not a single object.
+  ///
+  /// [meshQuality]: the Polygon Resolution slider's current value (see
+  /// [ViewPreferences.meshQuality]) - `null` (the default) omits the
+  /// `quality` query param entirely, so the backend falls back to its own
+  /// unparameterized `DEFAULT_MESH_QUALITY`, byte-for-byte the same
+  /// tessellation every caller got before this param existed.
   Future<List<BodyMeshDto>> getPartMesh(
     String partId, {
     List<String> hiddenFeatureIds = const [],
     List<String> rollbackExcludedFeatureIds = const [],
+    double? meshQuality,
   }) =>
       _send(
         () => _httpClient.get(
               _uri('/document/parts/$partId/mesh').replace(
-                queryParameters: hiddenFeatureIds.isEmpty && rollbackExcludedFeatureIds.isEmpty
+                queryParameters: hiddenFeatureIds.isEmpty &&
+                        rollbackExcludedFeatureIds.isEmpty &&
+                        meshQuality == null
                     ? null
                     : {
                         if (hiddenFeatureIds.isNotEmpty) 'hidden_feature_ids': hiddenFeatureIds,
                         if (rollbackExcludedFeatureIds.isNotEmpty)
                           'rollback_excluded_feature_ids': rollbackExcludedFeatureIds,
+                        if (meshQuality != null) 'quality': meshQuality.toString(),
                       },
               ),
               headers: _headers,
