@@ -700,6 +700,7 @@ def _bevel_pair_member_to_dict(member: BevelPairMemberSpec) -> dict:
     return {
         "tooth_count": member.tooth_count,
         "profile_shift": member.profile_shift,
+        "spiral_hand": member.spiral_hand.value,
     }
 
 
@@ -710,6 +711,7 @@ def _bevel_pair_member_from_dict(data: dict) -> BevelPairMemberSpec:
         # means auto" convention `backing_height`'s own native-format
         # round-trip already uses (data.get("backing_height") above).
         profile_shift=data.get("profile_shift"),
+        spiral_hand=SpiralBevelHand(data.get("spiral_hand", "right")),
     )
 
 
@@ -1003,6 +1005,7 @@ def _feature_to_dict(feature: Feature) -> dict:
             "shaft_angle_degrees": feature.shaft_angle_degrees,
             "backlash": feature.backlash,
             "points_per_flank": feature.points_per_flank,
+            "spiral_angle_degrees": feature.spiral_angle_degrees,
         }
     if isinstance(feature, LoftFeature):
         return {
@@ -1227,6 +1230,7 @@ def _feature_from_dict(data: dict) -> Feature:
             shaft_angle_degrees=data.get("shaft_angle_degrees", 90.0),
             backlash=data.get("backlash", 0.0),
             points_per_flank=data.get("points_per_flank", 12),
+            spiral_angle_degrees=data.get("spiral_angle_degrees", 0.0),
         )
     if feature_type == "loft":
         return LoftFeature(

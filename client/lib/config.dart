@@ -162,4 +162,23 @@ class ApiConfig {
   /// alongside the `points_per_flank` control on both gear screens that
   /// lets a user dial the cost down directly.
   static const Duration documentRequestTimeout = Duration(seconds: 180);
+
+  /// `docs/gear-design/13-spiral-bevel-pair.md`'s own real cost decision:
+  /// a spiral `BevelPairFeature` create/update runs a real per-build
+  /// meshing-phase search (`12-spiral-bevel-gear.md`'s own Spike C) on top
+  /// of both members' own already-expensive build - that spike's own
+  /// on-device numbers put a single search trial at 1-3s in the
+  /// well-behaved regime but up to ~16s near/past a notch, times this
+  /// app's own bounded ~33-trial eval budget (`app.document.bevel_pair`'s
+  /// own `_PHASE_SEARCH_GRID_POINTS`/`_PHASE_SEARCH_REFINE_ITERATIONS`) -
+  /// up to roughly 9 minutes for the search alone in the worst case, on
+  /// top of both members' own build cost (which itself grows near a notch).
+  /// [documentRequestTimeout]'s own 180s (already raised once for a plain,
+  /// non-spiral Bevel Pair) is nowhere near enough headroom for this - a
+  /// SECOND, dedicated raise, used only for a spiral Bevel Pair's own
+  /// create/update call (`DocumentApiClient.createBevelPairFeature`/
+  /// `updateBevelPairFeature`, gated on `spiralAngleDegrees != 0.0`) rather
+  /// than raising every `/document` call's own timeout for a cost that's
+  /// concentrated in exactly one Feature type's own worst case.
+  static const Duration spiralBevelPairRequestTimeout = Duration(seconds: 720);
 }

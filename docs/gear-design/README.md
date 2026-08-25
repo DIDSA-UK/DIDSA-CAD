@@ -31,12 +31,14 @@ shared `GearPresetControls` widget ("Save as preset"/"Load preset") on all
 three Gear Design screens. See `docs/status.md`'s dated entries for the
 full rollout history.
 
-**Spiral bevel (Workstream 12/13) is a separate, later phase, single-gear
-half now also done**: `BevelGearFeature`'s own spiral variant
-(`spiral_angle_degrees`/`spiral_hand`, `BevelDesignScreen`'s "Spiral"
-toggle) is real, shipped code, built directly against three real spikes'
-own findings - see `12-spiral-bevel-gear.md`'s own status note.
-`BevelPairFeature`'s spiral variant (Workstream 13) has not started.
+**Spiral bevel (Workstream 12/13) is a separate, later phase - both halves
+now done**: `BevelGearFeature`'s own spiral variant (`spiral_angle_degrees`/
+`spiral_hand`, `BevelDesignScreen`'s "Spiral" toggle) and `BevelPairFeature`'s
+own spiral variant (`spiral_angle_degrees` shared pair-level,
+`BevelPairMemberSpec.spiral_hand` per-member, a real per-build meshing-phase
+search) are both real, shipped code, built directly against real spikes' own
+findings - see `12-spiral-bevel-gear.md`'s and `13-spiral-bevel-pair.md`'s
+own status notes.
 
 ## How to use these docs in a fresh implementation session
 
@@ -68,25 +70,29 @@ never needed most of it).
 | 9 | `09-presets.md` | 8 | Low - **done** (`GearPresetStore`, client-local `shared_preferences`-backed named presets; `GearPresetControls` "Save as preset"/"Load preset" on all three Gear Design screens - no backend involvement, per this doc's own scope) |
 | 10 | `10-bevel-gear.md` | 1 | Highest in project - **done, incl. client UI** (`BevelGearFeature` - straight bevel, arbitrary shaft angle via a direct `pitch_cone_angle_degrees` field; `BevelDesignScreen`'s "Bevel Gear" mode covers entry + the axial-cross-section schematic preview) |
 | 11 | `11-bevel-pair.md` | 10 | High - **done, incl. client UI** (`BevelPairFeature` - apex-aligned dual-axis positioning, arbitrary shaft angle, auto-derived pitch cone angles; `BevelDesignScreen`'s "Bevel Pair" mode covers entry + dual-axis preview; DXF flat-pattern export still deferred to Workstream 6) |
-| 12 | `12-spiral-bevel-gear.md` | 10 | Highest in project (harder than 10) - **single-gear variant done, incl. client UI**. Three spikes ran first (2026-08-21, Spike A then B then C - see the doc's own "Spike findings" entries for the full mesh-correctness/fold-risk/meshing-phase investigation), then real implementation landed on top of their findings: `BevelGearFeature.spiral_angle_degrees`/`spiral_hand` (`app.document.bevel_math.bevel_tooth_flank_sections` - N-section, default 3, layered-offset construction; `app.document.bevel._assemble_gear_solid` extended with a real N-section OCCT path, `0.0` a verified literal no-op reproducing the exact straight-bevel construction); `BevelDesignScreen`'s "Spiral" toggle (mirrors `crown`'s own UI-variant precedent). The meshing-phase search Spike C designed is deliberately NOT part of this workstream - it's pairing-only, no counterpart for a standalone gear. `BevelPairFeature`'s own spiral variant remains the next, not-yet-started workstream - see Workstream 13's own entry |
-| 13 | `13-spiral-bevel-pair.md` | 12 | High - **Spike A/B/C's results applied, real GO**: hand-of-spiral compatibility confirmed physically necessary (a simple field-compatibility warning, not a margin computation); radial mesh-margin math confirmed to survive unchanged (provably); the tangential margin proxy Spike A/B thought was *required* was revised by Spike C's own broader tooth-count-ratio testing to **not needed at all** - the residual both prior spikes measured turned out to be mostly a pre-existing, non-spiral limitation of equal-tooth-count pairs (real, already accurately warned-of in shipped `BevelPairFeature` today, flagged for a future fix but out of this workstream's own scope), not a genuine spiral effect; once tested on a resolvable tooth-count ratio, real measured overlap is exactly zero at every spiral angle tested. Spike B's own separate, silent solid-malformation defect (a different, steep-tooth-ratio case) has been fixed - see the doc's own three 2026-08-21 "Spike findings" entries |
+| 12 | `12-spiral-bevel-gear.md` | 10 | Highest in project (harder than 10) - **single-gear variant done, incl. client UI**. Three spikes ran first (2026-08-21, Spike A then B then C - see the doc's own "Spike findings" entries for the full mesh-correctness/fold-risk/meshing-phase investigation), then real implementation landed on top of their findings: `BevelGearFeature.spiral_angle_degrees`/`spiral_hand` (`app.document.bevel_math.bevel_tooth_flank_sections` - N-section, default 3, layered-offset construction; `app.document.bevel._assemble_gear_solid` extended with a real N-section OCCT path, `0.0` a verified literal no-op reproducing the exact straight-bevel construction); `BevelDesignScreen`'s "Spiral" toggle (mirrors `crown`'s own UI-variant precedent). The meshing-phase search Spike C designed was deliberately NOT part of this workstream - it's pairing-only, no counterpart for a standalone gear - and landed instead in Workstream 13, now also done |
+| 13 | `13-spiral-bevel-pair.md` | 12 | High - **done, incl. client UI**. Spike A/B/C's results applied, real GO, then real implementation landed on top: `BevelPairFeature.spiral_angle_degrees` (pair-level shared) + `BevelPairMemberSpec.spiral_hand` (per-member, so a real mismatch is representable); a real per-build coarse-grid-plus-golden-section meshing-phase search (`app.document.bevel_pair._search_meshing_phase`, Spike C's own design, gated by a negative/`None`-overlap guard and a marginal-solid pre-check); the existing radial mesh-margin system reused completely unchanged (no new tangential margin proxy needed, per Spike C's own revised conclusion); a dedicated, raised client request timeout for a spiral pair's own real per-build search cost; `BevelDesignScreen`'s Bevel Pair mode now has a shared "Spiral" toggle plus a per-member "Hand of spiral" picker. Real `BRepAlgoAPI_Common` verification across both resolvable tooth-count ratios (10T/20T, 8T/16T), multiple spiral angles, and both hands confirms the near-zero overlap baseline and the real same-hand penalty directly against the shipped code |
 
 Spiral/Zerol bevel gear/pair are scoped in `12-spiral-bevel-gear.md`/
-`13-spiral-bevel-pair.md`. The single-gear half is now real, shipped code -
-`BevelGearFeature.spiral_angle_degrees`/`spiral_hand`, built directly on
-top of three real spikes (2026-08-21, Spike A then B then C): Spike A's
-own "corrected construction" (a rigid per-radius azimuthal rotation layered
-on the existing straight-bevel Tredgold flank, same sign on both flanks);
-Spike B's finding that neither of Spike A's two uncharacterized breakdowns
-is a flank fold (both are pairing-only concerns - a fixed meshing-phase
-artifact and an unrelated, since-fixed straight-bevel profile-shift
-defect); Spike C's per-build phase-search design (also pairing-only, so
-deliberately not built here) and its "3 sections is sufficient" convergence
-finding (re-validated for the real implementation, not just assumed). The
-pairing half (`BevelPairFeature`'s own spiral variant, needing Spike C's
-meshing-phase search) has not started. Hypoid bevel remains unscoped, a
-separate, even-further-later phase (offset, non-intersecting axes — a
-bigger leap again than spiral/Zerol).
+`13-spiral-bevel-pair.md`. Both halves are now real, shipped code, built
+directly on top of three real spikes each (2026-08-21, Spike A then B then
+C in both docs): Workstream 12's own Spike A "corrected construction" (a
+rigid per-radius azimuthal rotation layered on the existing straight-bevel
+Tredgold flank, same sign on both flanks); Spike B's finding that neither
+of Spike A's two uncharacterized breakdowns is a flank fold (a fixed
+meshing-phase artifact, and an unrelated, since-fixed straight-bevel
+profile-shift defect); Spike C's per-build phase-search design and its "3
+sections is sufficient" convergence finding. `BevelGearFeature.spiral_angle_
+degrees`/`spiral_hand` shipped first (Workstream 12, no meshing-phase search
+needed - a standalone gear has no partner to align phase against);
+`BevelPairFeature.spiral_angle_degrees` (pair-level shared) + `BevelPair
+MemberSpec.spiral_hand` (per-member) shipped next (Workstream 13), wiring
+Spike C's own meshing-phase search (`app.document.bevel_pair._search_
+meshing_phase`) into real pair construction and reusing the existing radial
+mesh-margin system unchanged (Workstream 13's own Spike C found no new
+tangential margin proxy is needed once a resolvable tooth-count ratio is
+used). Hypoid bevel remains unscoped, a separate, even-further-later phase
+(offset, non-intersecting axes — a bigger leap again than spiral/Zerol).
 
 ## Delivery order
 
@@ -133,14 +139,17 @@ bigger leap again than spiral/Zerol).
     `spiral_hand` end to end, `BevelDesignScreen`'s "Spiral" toggle. The
     meshing-phase search (Spike C) is deliberately NOT part of this
     workstream - pairing-only, no counterpart for a standalone gear.
-12. **Workstream 13 (spiral/Zerol bevel pair)** now that 12's single-gear
-    variant has landed — scoped in `13-spiral-bevel-pair.md`, mirrors how
-    Workstream 11 depended on Workstream 10's own real implementation, not
-    just its spike. Its own share of Spike A (hand-of-spiral, radial-margin
-    carryover) and Spike C (tangential margin proxy - resolved as "not
-    needed"; the meshing-phase search itself - real, designed, validated,
-    but not yet wired into a real `BevelPairFeature` build) are already
-    done at the spike level; not yet started as real implementation.
+12. **Workstream 13 (spiral/Zerol bevel pair) — done, incl. client UI.**
+    Scoped in `13-spiral-bevel-pair.md`. Its own share of Spike A
+    (hand-of-spiral, radial-margin carryover) and Spike C (tangential
+    margin proxy - resolved as "not needed") were already done at the
+    spike level; real implementation then wired Spike C's own designed,
+    validated meshing-phase search (`app.document.bevel_pair._search_
+    meshing_phase`) into a real `BevelPairFeature` build, added
+    `BevelPairFeature.spiral_angle_degrees` (pair-level shared) +
+    `BevelPairMemberSpec.spiral_hand` (per-member), a dedicated raised
+    client timeout for the search's own real cost, and `BevelDesignScreen`'s
+    Bevel Pair "Spiral" toggle + per-member hand picker.
 13. **Hypoid bevel** — still unscoped, later again than Workstream 13.
 
 DXF import/export (formerly Workstreams 6-7 here) now has its own

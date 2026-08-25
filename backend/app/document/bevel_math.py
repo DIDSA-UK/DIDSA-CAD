@@ -1128,6 +1128,41 @@ straight-bevel case) is real, separate cost that grows with spiral angle
 regardless."""
 
 
+def spiral_hand_mismatch_warning(
+    spiral_angle_degrees: float, hand_1: SpiralHand, hand_2: SpiralHand
+) -> str | None:
+    """`docs/gear-design/13-spiral-bevel-pair.md`'s own Spike C §3: hand-of-
+    spiral compatibility between a `BevelPairFeature`'s two members is a
+    real, physically-necessary, purely azimuthal effect - `None` if
+    `spiral_angle_degrees == 0.0` (meaningless for a straight/Zerol-at-the-
+    mean tooth, same "meaningless unless" convention `SpiralBevelHand`'s
+    own docstring already uses) or the two hands already differ (the
+    required, correctly-meshing configuration). Otherwise a non-blocking
+    warning, not a hard rejection - that doc's own §3/§5 go/no-go call,
+    made explicitly rather than left ambiguous: same-hand overlap is real
+    and substantial (11-18% of a tooth's own volume even at a moderate
+    spiral angle in that spike's own on-device measurement, isolated from
+    every other confound) and grows with spiral angle rather than staying a
+    fixed cost, but it does not itself make the underlying `BRepAlgoAPI_
+    Common` boolean fail the way an earlier, since-abandoned construction's
+    same-hand cases did (`12-spiral-bevel-gear.md`'s own Spike A §1) - a
+    real interference defect in *degree*, not a different *kind* of failure
+    from the small residual an opposite-hand pair can already carry, so it
+    stays a warning banner rather than a `422` per `00-conventions.md`'s
+    general "warn, don't block" convention. That doc's own §3 flags this
+    call as worth revisiting once real spiral-angle bounds/UI exist and the
+    widening-gap trend can be weighed against a concrete range, not
+    revisited here."""
+    if spiral_angle_degrees == 0.0 or hand_1 != hand_2:
+        return None
+    return (
+        f"both members of this bevel pair share the same hand of spiral ({hand_1.value}) - a spiral bevel "
+        "pair needs opposite hands (one left, one right) to mesh correctly. Same-hand pairing causes real, "
+        "substantial tooth interference that grows with spiral angle and cannot be corrected by adjusting "
+        "meshing phase alone."
+    )
+
+
 def spiral_build_cost_warning(spiral_angle_degrees: float) -> str | None:
     """`None` if `spiral_angle_degrees` is comfortably below `SPIRAL_BUILD_
     COST_WARNING_THRESHOLD_DEGREES`, otherwise a warning string - same

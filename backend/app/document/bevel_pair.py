@@ -99,7 +99,40 @@ cross a process boundary (not picklable), so each worker round-trips its
 own finished solid through a real BREP file via `_shape_to_brep_bytes`/
 `_shape_from_brep_bytes` - `ResolvedPlane`/`BevelGearGeometry` (this
 function's own inputs) are already plain-dataclass/tuple-of-floats, no
-OCCT types, so they pickle across the process boundary for free."""
+OCCT types, so they pickle across the process boundary for free.
+
+**Spiral bevel pairing** (`docs/gear-design/12-spiral-bevel-gear.md`'s own
+Spike C, `13-spiral-bevel-pair.md`'s own go/no-go) - `BevelPairFeature.
+spiral_angle_degrees` (pair-level shared - both members physically mesh at
+one spiral trace, see that dataclass's own docstring for the field-
+placement decision) turns on two things once non-zero: `_build_member_
+solid` builds each member's own N-section spiral flank
+(`app.document.bevel._assemble_gear_solid`'s own spiral parameters,
+unchanged construction code), and `resolve_bevel_pair_from_bodies` runs a
+real per-build meshing-phase search (`_search_meshing_phase`, below) in
+place of trusting the fixed `+-pi/2`/`-pi/2 + pi/tooth_count_2` convention
+outright - that convention is exactly correct for a straight-bevel pair
+(Tredgold's own conjugate-action guarantee, `11-bevel-pair.md`'s own
+"meshing phase alignment" docstring) but only approximately so once a
+curved lengthwise trace is involved. `spiral_angle_degrees == 0.0` skips
+the search entirely - the existing straight-bevel code path is untouched,
+byte-for-byte.
+
+**Cost/timeout, a real decision, not a silently-absorbed risk**: Spike C's
+own on-device numbers (§4) put a single phase-search trial at 1-3s in the
+well-behaved regime but up to ~16s near/past a notch, times this module's
+own bounded eval budget (`_PHASE_SEARCH_GRID_POINTS` coarse-grid points
+plus `_PHASE_SEARCH_REFINE_ITERATIONS` golden-section steps, ~33 trials
+worst case) - up to roughly 9 minutes for the search alone in the worst
+case, on top of both members' own build cost (which itself grows near a
+notch, per `bevel_math.spiral_build_cost_warning`). The client
+(`DocumentApiClient`) raises its own request timeout specifically for a
+spiral `BevelPairFeature` create/update call (`ApiConfig.
+spiralBevelPairRequestTimeout`, not the blanket `documentRequestTimeout`
+used everywhere else) rather than raising every `/document` call's own
+timeout for a cost that's concentrated in exactly one Feature type's own
+worst case - see that constant's own doc comment for the exact budget this
+is sized against."""
 
 import math
 import multiprocessing
@@ -110,22 +143,28 @@ from dataclasses import replace
 
 from fastapi import HTTPException
 from OCC.Core.BRep import BRep_Builder
+from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Common
 from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform
+from OCC.Core.BRepGProp import brepgprop
 from OCC.Core.BRepTools import breptools
+from OCC.Core.GProp import GProp_GProps
 from OCC.Core.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf
 from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape
 
-from app.document.bevel import _assemble_gear_solid
+from app.document.bevel import _assemble_gear_solid, _spiral_hand_from_feature
 from app.document.bevel_math import (
     MESH_MARGIN_SAFETY_BUFFER_DEGREES,
     BevelGearGeometry,
     GearGeometryError,
+    SpiralHand,
     bevel_gear_geometry,
     bevel_pair_mesh_interference_warning,
     max_recommended_face_width,
     maximum_receiver_profile_shift_for_mesh_clearance,
     minimum_intruder_profile_shift_for_mesh_clearance,
     pitch_cone_half_angles,
+    spiral_build_cost_warning,
+    spiral_hand_mismatch_warning,
     thin_hub_warning,
     worst_bevel_pair_mesh_margin_degrees,
 )
@@ -225,6 +264,157 @@ def _rotated_about_axis(shape: TopoDS_Shape, basis: ResolvedPlane, angle: float)
     return BRepBuilderAPI_Transform(shape, trsf, True).Shape()
 
 
+# ---------------------------------------------------------------------------
+# Spiral meshing-phase search (`docs/gear-design/12-spiral-bevel-gear.md`'s
+# own Spike C, extended here into a real `BevelPairFeature` implementation
+# per `13-spiral-bevel-pair.md`) - replaces the fixed `+-pi/2`/`-pi/2 +
+# pi/tooth_count_2` phase convention above with a small per-build search
+# ONLY once `BevelPairFeature.spiral_angle_degrees != 0.0`; a straight
+# (non-spiral) pair is unaffected, byte-for-byte, since Tredgold's own
+# construction already makes the fixed convention exactly correct there
+# (11-bevel-pair.md's own "meshing phase alignment" docstring) - there is
+# nothing for a search to improve on.
+#
+# Algorithm (Spike C §1/§3, validated against a real parameter sweep
+# there): a coarse grid pre-scan across a window sized to HALF the angular
+# tooth pitch of the member being searched over (`180 / tooth_count_2`
+# degrees - Spike C's own §3 finding that the phase-vs-overlap landscape is
+# not globally unimodal past a notch, so a plain wide-window golden-section
+# alone is NOT sound), followed by a local golden-section refine within one
+# grid step of the best grid point (sound there specifically because Spike
+# B's own low-beta stable-optimum finding shows the landscape IS smooth
+# within one such narrow band). Each trial is one rigid rotation
+# (`_rotated_about_axis`, already-built solids, no rebuild) plus one real
+# `BRepAlgoAPI_Common` - "cheap" in the well-behaved regime (Spike C's own
+# 1-3s/trial) but genuinely expensive near/past a notch (up to ~16s/trial
+# there) - see `resolve_bevel_pair_from_bodies`'s own docstring for how the
+# eval budget below and the client's own request timeout were sized against
+# that real cost.
+_PHASE_SEARCH_GRID_POINTS = 21
+_PHASE_SEARCH_REFINE_ITERATIONS = 10
+_GOLDEN_RATIO = (math.sqrt(5) - 1) / 2
+
+
+def _common_overlap_volume(shape_1: TopoDS_Shape, shape_2: TopoDS_Shape) -> float | None:
+    """Real `BRepAlgoAPI_Common` overlap volume between two solids, or
+    `None` if the boolean itself fails OR (Spike C's own §1 robustness
+    finding) `GProp_GProps.Mass()` comes back negative - not numerical
+    noise near zero, a real, large-magnitude "no usable signal" reading
+    from a geometrically marginal input solid. Both cases are treated
+    identically by every caller below: worse than any real reading, never
+    a candidate a minimizer can select - the exact guard Spike C's own
+    first search implementation lacked, which let a genuinely broken trial
+    "win" by looking like negative (better-than-zero) overlap."""
+    try:
+        common = BRepAlgoAPI_Common(shape_1, shape_2)
+        common.Build()
+    except Exception:  # noqa: BLE001 - a marginal boolean can raise outright, not just fail IsDone()
+        return None
+    if not common.IsDone():
+        return None
+    props = GProp_GProps()
+    brepgprop.VolumeProperties(common.Shape(), props)
+    mass = props.Mass()
+    if mass < 0:
+        return None
+    return mass
+
+
+def _golden_section_minimize(f, lo: float, hi: float, iterations: int) -> tuple[float, float]:
+    """Minimizes `f` (returning `math.inf` for an invalid/unusable trial,
+    per `_common_overlap_volume`'s own guard) over `[lo, hi]` - sound only
+    because the caller (`_search_meshing_phase`) already narrowed `[lo,
+    hi]` to one coarse-grid step around that scan's own best point, not
+    because the search AS A WHOLE is unimodal (`12-spiral-bevel-gear.md`'s
+    own Spike C §1: it provably isn't, past a notch)."""
+    gr = _GOLDEN_RATIO
+    c = hi - gr * (hi - lo)
+    d = lo + gr * (hi - lo)
+    fc, fd = f(c), f(d)
+    for _ in range(iterations):
+        if fc < fd:
+            hi, d, fd = d, c, fc
+            c = hi - gr * (hi - lo)
+            fc = f(c)
+        else:
+            lo, c, fc = c, d, fd
+            d = lo + gr * (hi - lo)
+            fd = f(d)
+    return (c, fc) if fc < fd else (d, fd)
+
+
+_MARGINAL_SOLID_WARNING_MARKERS = ("fold back on itself", "could not be flattened", "analytic volume disagrees")
+
+
+def _member_solid_is_marginal(warnings: list[str]) -> bool:
+    """Whether `warnings` (one member's own `app.document.bevel._assemble_
+    gear_solid` return value, at the DEFAULT fixed phase, before any search
+    delta is applied) already flags genuinely marginal geometry - Spike
+    C's own §4: "gate the search itself on the underlying per-member
+    solid's own validity... before trusting a search result at all, not
+    just guard against the negative-value symptom" - a `BRepAlgoAPI_Common`
+    reading against an already-marginal solid isn't trustworthy regardless
+    of its own sign, so `_search_meshing_phase` is skipped entirely (not
+    just guarded per-trial) whenever either member's own baseline solid
+    already carries one of these findings."""
+    return any(any(marker in w for marker in _MARGINAL_SOLID_WARNING_MARKERS) for w in warnings)
+
+
+def _search_meshing_phase(
+    solid_1: TopoDS_Shape, solid_2_base: TopoDS_Shape, basis_2: ResolvedPlane, tooth_count_2: int
+) -> tuple[float, float | None]:
+    """Coarse-grid-plus-golden-section-refine search for the extra phase
+    delta (radians, applied on top of `solid_2_base`'s own already-baked-in
+    fixed-convention rotation) that minimizes real measured overlap between
+    `solid_1` and a rotated `solid_2_base` - `docs/gear-design/12-spiral-
+    bevel-gear.md`'s own Spike C, go/no-go: GO.
+
+    Window: `+-(180 / tooth_count_2)` degrees - half the angular tooth
+    pitch of member 2 (the member being rotated) - Spike C's own §3 finding
+    that this scales correctly with tooth count and is confirmed sufficient
+    to bracket the true optimum even in a genuinely bad-default-alignment
+    case, unlike a fixed absolute window. The grid always includes the
+    existing fixed convention itself (delta=0, `_PHASE_SEARCH_GRID_POINTS`
+    is odd) as one of its own candidates, so this search can never do worse
+    than not searching at all.
+
+    Returns `(best_delta_radians, best_overlap_mm3)`. `best_overlap_mm3` is
+    `None` if not even one grid point produced a usable (non-`None`,
+    non-negative) `BRepAlgoAPI_Common` reading anywhere in the window - the
+    "no usable signal ANYWHERE," not just per-trial, case - in which case
+    `best_delta_radians` is `0.0` (the unchanged fixed convention) and the
+    caller should surface this as a real, non-blocking warning rather than
+    silently trusting an unsearched default."""
+    half_pitch = math.radians(180.0 / tooth_count_2)
+
+    def overlap_at(delta: float) -> float | None:
+        rotated = _rotated_about_axis(solid_2_base, basis_2, delta)
+        return _common_overlap_volume(solid_1, rotated)
+
+    grid_deltas = [
+        -half_pitch + 2 * half_pitch * i / (_PHASE_SEARCH_GRID_POINTS - 1)
+        for i in range(_PHASE_SEARCH_GRID_POINTS)
+    ]
+    scored = [(overlap_at(delta), delta) for delta in grid_deltas]
+    usable = [(overlap, delta) for overlap, delta in scored if overlap is not None]
+    if not usable:
+        return 0.0, None
+    best_overlap, best_delta = min(usable, key=lambda pair: pair[0])
+
+    step = 2 * half_pitch / (_PHASE_SEARCH_GRID_POINTS - 1)
+
+    def f(delta: float) -> float:
+        overlap = overlap_at(delta)
+        return overlap if overlap is not None else math.inf
+
+    refined_delta, refined_overlap = _golden_section_minimize(
+        f, best_delta - step, best_delta + step, _PHASE_SEARCH_REFINE_ITERATIONS
+    )
+    if refined_overlap < best_overlap:
+        return refined_delta, refined_overlap
+    return best_delta, best_overlap
+
+
 def _shape_to_brep_bytes(shape: TopoDS_Shape) -> bytes:
     """Round-trips `shape` through a real BREP file (`breptools.Write` has
     no in-memory/string overload confirmed available in this session - no
@@ -264,21 +454,43 @@ def _shape_from_brep_bytes(data: bytes) -> TopoDS_Shape:
 
 
 def _build_member_solid(
-    basis: ResolvedPlane, geometry: BevelGearGeometry, tooth_count: int, points_per_flank: int, phase_offset: float
+    basis: ResolvedPlane,
+    geometry: BevelGearGeometry,
+    tooth_count: int,
+    points_per_flank: int,
+    phase_offset: float,
+    spiral_angle_degrees: float = 0.0,
+    spiral_hand: SpiralHand = SpiralHand.RIGHT,
 ) -> tuple[bytes, list[str]]:
     """The `ProcessPoolExecutor` worker entry point - module-level (picklable
     by reference) and picklable-only inputs/outputs, per this module's own
     top-level "members build concurrently" docstring. Runs the exact same
     `app.document.bevel._assemble_gear_solid` the old sequential code called
-    directly, then applies the meshing-phase rotation (`_rotated_about_
-    axis`, `phase_offset` radians about this member's own axis - see this
-    module's own top-level "meshing phase alignment" docstring) before
-    serializing - so `bevel.py`'s construction code itself stays untouched.
-    Any `HTTPException` `_assemble_gear_solid` itself raises (`_bevel_
-    failed`, real but rare) is caught and re-raised as `_MemberBuildFailed`
-    - see that class's own docstring for why."""
+    directly - now spiral-aware (`spiral_angle_degrees`/`spiral_hand`,
+    `docs/gear-design/13-spiral-bevel-pair.md`; `0.0` stays the exact
+    unmodified straight-bevel path, per that function's own no-op
+    guarantee) - then applies the FIXED meshing-phase rotation
+    (`_rotated_about_axis`, `phase_offset` radians about this member's own
+    axis - see this module's own top-level "meshing phase alignment"
+    docstring) before serializing - so `bevel.py`'s construction code
+    itself stays untouched. For a spiral pair, this fixed rotation is only
+    the SEARCH'S OWN starting point, not the final phase -
+    `resolve_bevel_pair_from_bodies` applies `_search_meshing_phase`'s own
+    additional delta on top, in the main process, once both members'
+    solids are back (a rotation-only refinement needs both solids
+    together, which a single worker never has). Any `HTTPException`
+    `_assemble_gear_solid` itself raises (`_bevel_failed`, real but rare)
+    is caught and re-raised as `_MemberBuildFailed` - see that class's own
+    docstring for why."""
     try:
-        solid, warnings = _assemble_gear_solid(basis, geometry, tooth_count, points_per_flank)
+        solid, warnings = _assemble_gear_solid(
+            basis,
+            geometry,
+            tooth_count,
+            points_per_flank,
+            spiral_angle_degrees=spiral_angle_degrees,
+            spiral_hand=spiral_hand,
+        )
     except HTTPException as exc:
         raise _MemberBuildFailed(str(exc.detail)) from None
     solid = _rotated_about_axis(solid, basis, phase_offset)
@@ -520,10 +732,34 @@ def resolve_bevel_pair_from_bodies(
     # *against each other*, not either one in isolation, so it lives outside
     # the per-member loop above. See `bevel_pair_mesh_interference_warning`'s
     # own docstring for the on-device measurements this predictive check is
-    # calibrated against.
+    # calibrated against. `docs/gear-design/13-spiral-bevel-pair.md`'s own
+    # Spike C §2/§4: this radial-only system is provably unaffected by
+    # spiral (a pure azimuthal rotation) and, once the phase search below
+    # resolves meshing phase for a resolvable tooth-count ratio, is the
+    # ENTIRE real interference story - no separate tangential margin proxy
+    # is needed (that doc's own §5 go/no-go, revising Spike A/B's earlier
+    # "required" conclusion).
     mesh_warning = bevel_pair_mesh_interference_warning(geometry_1, geometry_2, feature.shaft_angle_degrees)
     if mesh_warning:
         warnings.append(mesh_warning)
+
+    spiral_hand_1 = _spiral_hand_from_feature(feature.member_1.spiral_hand)
+    spiral_hand_2 = _spiral_hand_from_feature(feature.member_2.spiral_hand)
+    hand_warning = spiral_hand_mismatch_warning(feature.spiral_angle_degrees, spiral_hand_1, spiral_hand_2)
+    if hand_warning:
+        warnings.append(hand_warning)
+    # `docs/gear-design/12-spiral-bevel-gear.md`'s own Spike C §4 cost
+    # finding, extended to the pair: real, decided, non-blocking (item 6 of
+    # this workstream's own task scope), not silently absorbed - see this
+    # module's own top-level docstring / `resolve_bevel_pair`'s own client-
+    # timeout note for the numbers this is based on.
+    cost_warning = spiral_build_cost_warning(feature.spiral_angle_degrees)
+    if cost_warning:
+        warnings.append(
+            cost_warning + " Building a spiral Bevel Pair also runs a real per-build meshing-phase "
+            "search on top of each member's own build cost, which can itself take several minutes near "
+            "a high spiral angle - budget extra time for Create/Save at a high spiral angle."
+        )
 
     basis_1 = resolve_plane_ref(part, bodies, feature.plane_ref, excluded_feature_ids)
     basis_2 = _tilted_basis(basis_1, math.radians(feature.shaft_angle_degrees))
@@ -566,6 +802,8 @@ def resolve_bevel_pair_from_bodies(
             feature.member_1.tooth_count,
             feature.points_per_flank,
             math.pi / 2,
+            feature.spiral_angle_degrees,
+            spiral_hand_1,
         )
         future_2 = executor.submit(
             _build_member_solid,
@@ -574,6 +812,8 @@ def resolve_bevel_pair_from_bodies(
             feature.member_2.tooth_count,
             feature.points_per_flank,
             -math.pi / 2 + math.pi / feature.member_2.tooth_count,
+            feature.spiral_angle_degrees,
+            spiral_hand_2,
         )
         try:
             solid_1_brep, warnings_1 = future_1.result()
@@ -584,6 +824,37 @@ def resolve_bevel_pair_from_bodies(
     solid_2 = _shape_from_brep_bytes(solid_2_brep)
     warnings.extend(f"member_1: {w}" for w in warnings_1)
     warnings.extend(f"member_2: {w}" for w in warnings_2)
+
+    # `docs/gear-design/12-spiral-bevel-gear.md`'s own Spike C, wired into
+    # real construction here per `13-spiral-bevel-pair.md`'s own go/no-go:
+    # the fixed phase convention baked into `solid_1`/`solid_2` above
+    # (`_build_member_solid`'s own `phase_offset`) is exactly correct for a
+    # straight-bevel pair (Tredgold's own conjugate-action guarantee), but
+    # only close-to-correct for a spiral one - a real per-build search over
+    # a small additional rotation of `solid_2` finds the true local optimum
+    # instead of trusting a convention calibrated for a tooth whose
+    # centerline never moves. Skipped entirely (not just at spiral_angle_
+    # degrees == 0.0) when either member's own baseline solid is already
+    # flagged marginal - a BRepAlgoAPI_Common reading against a marginal
+    # solid isn't trustworthy regardless of its own sign (Spike C §4).
+    if feature.spiral_angle_degrees != 0.0:
+        if _member_solid_is_marginal(warnings_1) or _member_solid_is_marginal(warnings_2):
+            warnings.append(
+                "the meshing-phase search for this spiral bevel pair was skipped because a member's own "
+                "solid is already flagged as geometrically marginal - using the default phase alignment "
+                "instead, which may not mesh cleanly."
+            )
+        else:
+            phase_delta, best_overlap = _search_meshing_phase(
+                solid_1, solid_2, basis_2, feature.member_2.tooth_count
+            )
+            if best_overlap is None:
+                warnings.append(
+                    "could not find any valid meshing-phase alignment for this spiral bevel pair within "
+                    "the search window - using the default phase alignment, which may not mesh cleanly."
+                )
+            elif phase_delta != 0.0:
+                solid_2 = _rotated_about_axis(solid_2, basis_2, phase_delta)
 
     compound = TopoDS_Compound()
     builder = BRep_Builder()

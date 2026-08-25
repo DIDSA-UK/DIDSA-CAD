@@ -1725,6 +1725,24 @@ class BevelPairMemberSpec:
 
     tooth_count: int
     profile_shift: float | None = None
+    # `docs/gear-design/13-spiral-bevel-pair.md`: per-member, unlike `Bevel
+    # PairFeature.spiral_angle_degrees` (shared - both members physically
+    # mesh at one spiral angle magnitude, the same "arguably must share it"
+    # reasoning `module`/`pressure_angle_degrees` already get). Hand is kept
+    # per-member specifically so a real hand-of-spiral *mismatch* is
+    # representable at all - the design call that doc's own "Proposed
+    # auto-resolution field(s)" section left open: if hand were instead
+    # derived/auto-opposite, there would be nothing left to mismatch, and
+    # `bevel_math.spiral_hand_mismatch_warning`'s own compatibility check
+    # would have no real input to compare. Defaults to `RIGHT` on this
+    # dataclass (mirroring `BevelGearFeature.spiral_hand`'s own default) -
+    # the router/client default member_1 to `RIGHT` and member_2 to `LEFT`
+    # so a freshly-created pair meshes correctly out of the box, but
+    # nothing stops a user from setting both the same to see (and be
+    # warned about) a mismatch. Meaningless unless `BevelPairFeature.
+    # spiral_angle_degrees != 0.0`, same "meaningless unless" convention
+    # `SpiralBevelHand`'s own docstring already uses.
+    spiral_hand: SpiralBevelHand = SpiralBevelHand.RIGHT
 
 
 @dataclass
@@ -1782,7 +1800,28 @@ class BevelPairFeature(Feature):
 
     DXF flat-pattern export (a bevel gear's cone "unrolled" flat) is
     explicitly out of scope here - `11-bevel-pair.md` flags it as new
-    geometry work belonging to `06-dxf-export.md`, not this Feature."""
+    geometry work belonging to `06-dxf-export.md`, not this Feature.
+
+    `docs/gear-design/13-spiral-bevel-pair.md`: `spiral_angle_degrees`
+    (default `0.0`, a literal no-op producing the exact same straight-bevel
+    pair this Feature always has - `app.document.bevel_pair.resolve_bevel_
+    pair_from_bodies` passes it straight through to `app.document.bevel.
+    _assemble_gear_solid`'s own already-verified no-op branch, unchanged)
+    is **pair-level shared**, not per-member - the design call that doc's
+    own "Proposed fields" section left open, made explicitly here: both
+    members physically mesh along one shared spiral trace, so this is the
+    same "arguably must share it" reasoning already applied to `module`/
+    `pressure_angle_degrees`/`shaft_angle_degrees`/`backlash`/`face_width`
+    above, not a new precedent. Hand of spiral, by contrast, is per-member
+    (`BevelPairMemberSpec.spiral_hand` - see that dataclass's own docstring
+    for why) - a real hand-of-spiral *mismatch* has to be representable for
+    `bevel_math.spiral_hand_mismatch_warning` to have anything to compare.
+    A non-zero `spiral_angle_degrees` also turns on a real per-build
+    meshing-phase search (`app.document.bevel_pair._search_meshing_phase`,
+    `docs/gear-design/12-spiral-bevel-gear.md`'s own Spike C) in place of
+    the fixed `+-pi/2`/`-pi/2 + pi/tooth_count_2` phase convention - see
+    that module's own top-level docstring for the full algorithm and cost
+    reasoning."""
 
     id: str
     plane_ref: PlaneRef
@@ -1798,6 +1837,7 @@ class BevelPairFeature(Feature):
     # pair_from_bodies` builds two full bevel solids per recompute, so this
     # matters even more here than for a standalone bevel gear).
     points_per_flank: int = 12
+    spiral_angle_degrees: float = 0.0
 
     @property
     def type(self) -> str:

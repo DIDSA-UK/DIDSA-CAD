@@ -1334,16 +1334,21 @@ class DocumentApiClient {
 
   Future<T> _send<T>(
     Future<http.Response> Function() request,
-    T Function(dynamic decodedBody) onSuccess,
-  ) async {
+    T Function(dynamic decodedBody) onSuccess, {
+    Duration? timeout,
+  }) async {
     http.Response response;
     try {
       // See ApiConfig.documentRequestTimeout's own doc comment: every
       // /document call gets the long timeout, not just the ones that are
       // obviously heavy - a Part's cost is data-dependent (a complex Gear
       // Feature makes every later call against that same Part expensive
-      // too, not just the call that created it).
-      response = await request().timeout(ApiConfig.documentRequestTimeout);
+      // too, not just the call that created it). [timeout], when given,
+      // overrides this for one specific call whose own worst-case cost is
+      // categorically higher than the blanket default budgets for - see
+      // ApiConfig.spiralBevelPairRequestTimeout's own doc comment for the
+      // one caller that currently uses this.
+      response = await request().timeout(timeout ?? ApiConfig.documentRequestTimeout);
     } on Exception catch (e) {
       throw ApiException('Could not reach the server: $e');
     }
@@ -2646,6 +2651,13 @@ class DocumentApiClient {
   /// `docs/gear-design/11-bevel-pair.md`: `/gear/preview` with `gear_kind:
   /// 'bevel_pair'` - mirrors `BevelPairFeatureCreate`'s own shape minus
   /// `plane_ref`. Cone angles are auto-derived server-side, not sent here.
+  ///
+  /// `docs/gear-design/13-spiral-bevel-pair.md`: [spiralAngleDegrees]/
+  /// [spiralHand1]/[spiralHand2] are included purely so the live preview
+  /// can surface a hand-of-spiral mismatch warning before Create - cheap,
+  /// pure math server-side (no OCCT solid is built for a preview at all),
+  /// unlike the real per-build phase search `createBevelPairFeature`'s own
+  /// call runs.
   Future<GearPreviewDto> previewGearBevelPair({
     required double module,
     required int toothCount1,
@@ -2662,6 +2674,9 @@ class DocumentApiClient {
     double pressureAngleDegrees = 20.0,
     double shaftAngleDegrees = 90.0,
     double backlash = 0.0,
+    double spiralAngleDegrees = 0.0,
+    String spiralHand1 = 'right',
+    String spiralHand2 = 'left',
   }) =>
       _send(
         () => _httpClient.post(
@@ -2671,12 +2686,21 @@ class DocumentApiClient {
                 'gear_kind': 'bevel_pair',
                 'bevel_pair': {
                   'module': module,
-                  'member_1': {'tooth_count': toothCount1, 'profile_shift': profileShift1},
-                  'member_2': {'tooth_count': toothCount2, 'profile_shift': profileShift2},
+                  'member_1': {
+                    'tooth_count': toothCount1,
+                    'profile_shift': profileShift1,
+                    'spiral_hand': spiralHand1,
+                  },
+                  'member_2': {
+                    'tooth_count': toothCount2,
+                    'profile_shift': profileShift2,
+                    'spiral_hand': spiralHand2,
+                  },
                   'face_width': faceWidth,
                   'pressure_angle_degrees': pressureAngleDegrees,
                   'shaft_angle_degrees': shaftAngleDegrees,
                   'backlash': backlash,
+                  'spiral_angle_degrees': spiralAngleDegrees,
                 },
               }),
             ),
@@ -2773,6 +2797,19 @@ class DocumentApiClient {
 
   /// `docs/gear-design/11-bevel-pair.md`: creates the real `BevelPairFeature`
   /// once the user hits "Create" on [BevelDesignScreen] in pair mode.
+  ///
+  /// `docs/gear-design/13-spiral-bevel-pair.md`: [spiralAngleDegrees]
+  /// (default `0.0`, a literal no-op) is pair-level shared - both members
+  /// physically mesh at one spiral trace, the same reasoning already
+  /// applied to `module`/`pressureAngleDegrees`. [spiralHand1]/[spiralHand2]
+  /// are per-member so a real hand-of-spiral *mismatch* is representable
+  /// (`bevel_math.spiral_hand_mismatch_warning`) - defaulted here to
+  /// opposite hands (`'right'`/`'left'`) so a freshly-created pair meshes
+  /// correctly out of the box. Uses [ApiConfig.spiralBevelPairRequestTimeout]
+  /// instead of the blanket [ApiConfig.documentRequestTimeout] whenever
+  /// [spiralAngleDegrees] is non-zero - see that constant's own doc comment
+  /// for why a spiral pair's own real per-build meshing-phase search needs
+  /// categorically more headroom than every other `/document` call.
   Future<FeatureDto> createBevelPairFeature(
     String partId, {
     required double module,
@@ -2788,6 +2825,9 @@ class DocumentApiClient {
     double backlash = 0.0,
     PlaneRefDto? planeRef,
     int pointsPerFlank = 12,
+    double spiralAngleDegrees = 0.0,
+    String spiralHand1 = 'right',
+    String spiralHand2 = 'left',
   }) =>
       _send(
         () => _httpClient.post(
@@ -2796,27 +2836,41 @@ class DocumentApiClient {
               body: jsonEncode({
                 if (planeRef != null) 'plane_ref': planeRef.toJson(),
                 'module': module,
-                'member_1': {'tooth_count': toothCount1, 'profile_shift': profileShift1},
-                'member_2': {'tooth_count': toothCount2, 'profile_shift': profileShift2},
+                'member_1': {
+                  'tooth_count': toothCount1,
+                  'profile_shift': profileShift1,
+                  'spiral_hand': spiralHand1,
+                },
+                'member_2': {
+                  'tooth_count': toothCount2,
+                  'profile_shift': profileShift2,
+                  'spiral_hand': spiralHand2,
+                },
                 'face_width': faceWidth,
                 'pressure_angle_degrees': pressureAngleDegrees,
                 'shaft_angle_degrees': shaftAngleDegrees,
                 'backlash': backlash,
                 'points_per_flank': pointsPerFlank,
+                'spiral_angle_degrees': spiralAngleDegrees,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+        timeout: spiralAngleDegrees != 0.0 ? ApiConfig.spiralBevelPairRequestTimeout : null,
       );
 
   /// Gear-tree UX: partial update for an existing BevelPairFeature - mirrors
   /// [updateGearFeature]'s shape/no-op-PATCH usage. `member_1`/`member_2`
   /// are only ever sent as a whole pair (matching the backend's
   /// `BevelPairMemberSpecSchema` - there's no way to update just one
-  /// member's tooth count while leaving its profile shift alone at the wire
-  /// level), so [toothCount1]/[toothCount2] gate whether each member is
-  /// sent at all - a caller updating a pair always has its own full current
-  /// form state for both fields anyway, the same way [createBevelPairFeature]
-  /// is always called with every field populated.
+  /// member's tooth count while leaving its profile shift or spiral hand
+  /// alone at the wire level), so [toothCount1]/[toothCount2] gate whether
+  /// each member is sent at all - a caller updating a pair always has its
+  /// own full current form state for both fields anyway, the same way
+  /// [createBevelPairFeature] is always called with every field populated.
+  /// [spiralHand1]/[spiralHand2] ride along with [toothCount1]/[toothCount2]
+  /// for the same reason [profileShift1]/[profileShift2] already do -
+  /// omitting them while sending a tooth-count change would silently reset
+  /// that member's own hand back to the schema's own `'right'` default.
   Future<Map<String, dynamic>> updateBevelPairFeature(
     String partId,
     String featureId, {
@@ -2830,13 +2884,16 @@ class DocumentApiClient {
     // member_1 with an explicit `"profile_shift": null`, resetting an
     // existing explicit override back to auto.
     double? profileShift1,
+    String spiralHand1 = 'right',
     int? toothCount2,
     double? profileShift2,
+    String spiralHand2 = 'left',
     double? faceWidth,
     double? pressureAngleDegrees,
     double? shaftAngleDegrees,
     double? backlash,
     int? pointsPerFlank,
+    double? spiralAngleDegrees,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -2846,17 +2903,27 @@ class DocumentApiClient {
                 if (planeRef != null) 'plane_ref': planeRef.toJson(),
                 if (module != null) 'module': module,
                 if (toothCount1 != null)
-                  'member_1': {'tooth_count': toothCount1, 'profile_shift': profileShift1},
+                  'member_1': {
+                    'tooth_count': toothCount1,
+                    'profile_shift': profileShift1,
+                    'spiral_hand': spiralHand1,
+                  },
                 if (toothCount2 != null)
-                  'member_2': {'tooth_count': toothCount2, 'profile_shift': profileShift2},
+                  'member_2': {
+                    'tooth_count': toothCount2,
+                    'profile_shift': profileShift2,
+                    'spiral_hand': spiralHand2,
+                  },
                 if (faceWidth != null) 'face_width': faceWidth,
                 if (pressureAngleDegrees != null) 'pressure_angle_degrees': pressureAngleDegrees,
                 if (shaftAngleDegrees != null) 'shaft_angle_degrees': shaftAngleDegrees,
                 if (backlash != null) 'backlash': backlash,
                 if (pointsPerFlank != null) 'points_per_flank': pointsPerFlank,
+                if (spiralAngleDegrees != null) 'spiral_angle_degrees': spiralAngleDegrees,
               }),
             ),
         (body) => body as Map<String, dynamic>,
+        timeout: (spiralAngleDegrees ?? 0.0) != 0.0 ? ApiConfig.spiralBevelPairRequestTimeout : null,
       );
 
   void close() => _httpClient.close();

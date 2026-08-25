@@ -1,5 +1,95 @@
 # Workstream 13 — Spiral bevel gear pair (`BevelPairFeature`, spiral variant)
 
+## Status: done, backend and client — built directly on this doc's own Spike C
+
+`BevelPairFeature` now has a real spiral variant, built directly against
+this doc's own three 2026-08-21 spikes (and `12-spiral-bevel-gear.md`'s own
+matching Spike A/B/C entries) - not a re-derivation. Everything below this
+note (the original feasibility/scoping prose, the lessons section, and all
+three "Spike findings" entries) is kept as historical record; read it for
+the reasoning, but this note is what actually shipped.
+
+- **Fields** (`app.document.models`): `BevelPairFeature.spiral_angle_
+  degrees: float = 0.0` is **pair-level shared**, not per-member - the
+  design call this doc's own "Proposed fields" section left open, made
+  explicitly: both members physically mesh along one spiral trace, the
+  same "arguably must share it" reasoning already applied to `module`/
+  `pressure_angle_degrees`/`shaft_angle_degrees`/`backlash`/`face_width`.
+  `BevelPairMemberSpec.spiral_hand: SpiralBevelHand = SpiralBevelHand.
+  RIGHT` is **per-member** - the other half of that same design call: hand
+  has to be representable per-member for a real hand-of-spiral *mismatch*
+  to exist at all for `bevel_math.spiral_hand_mismatch_warning` to check.
+  Both fields are `0.0`/meaningless-until-non-zero, mirroring `BevelGear
+  Feature`'s own single-gear precedent exactly.
+- **Construction** (`app.document.bevel_pair`): `_build_member_solid` now
+  passes `spiral_angle_degrees`/`spiral_hand` straight through to `app.
+  document.bevel._assemble_gear_solid`'s own already-shipped N-section
+  spiral path (Workstream 12) - no new OCCT construction technique needed,
+  exactly as this doc's own Spike C anticipated. The real new piece is
+  `_search_meshing_phase`: `12-spiral-bevel-gear.md`'s own Spike C
+  algorithm (coarse-grid pre-scan across a window of `+-(180 /
+  tooth_count_2)` degrees, then a local golden-section refine within one
+  grid step of the best point), implemented for real and wired into
+  `resolve_bevel_pair_from_bodies` - runs only when `spiral_angle_degrees
+  != 0.0` (a straight pair is untouched, byte-for-byte), gated by both the
+  negative/`None`-overlap guard Spike C's own §1 found necessary
+  (`GProp_GProps.Mass()` can return large-magnitude negative "no usable
+  signal" readings on marginal geometry) and a coarser pre-check that skips
+  the search entirely (falling back to the existing fixed-phase convention,
+  with a warning) whenever either member's own baseline solid is already
+  flagged marginal by `_assemble_gear_solid`'s own warnings.
+- **Real OCCT verification** (`backend/tests/test_bevel_pair_feature.py`):
+  a real parameter sweep, following the exact `BRepAlgoAPI_Common`
+  methodology every spike in this thread has used - multiple spiral angles
+  (0°/25°/45° on a 10T/20T pair, module 4, face_width 8), both resolvable
+  tooth-count ratios this doc's own Spike C validated (10T/20T; 8T/16T,
+  module 4, face_width 6), and a direct same-hand-vs-opposite-hand
+  comparison isolated from the tooth-count-symmetric confound Spike C's own
+  §1 identified. Confirms this doc's own Spike C conclusion directly
+  against the real, committed implementation (not just a scratch harness) -
+  real measured overlap is **exactly 0.0000 mm³** for 10T/20T at every
+  tested angle (0°/25°/45°) and for 8T/16T at 20°, while a same-hand 10T/20T
+  pair at 20° measures **30.49 mm³** of real interference against the
+  opposite-hand pair's own 0.0 - a real, substantial, directly-measured
+  degradation, not just the pure-math warning's own prediction. (The 8T/16T
+  case also surfaces `bevel_pair_mesh_interference_warning` at exactly its
+  own 0.5° safety-buffer boundary - a real, pre-existing radial-margin
+  edge case for this specific tooth-count/face-width combination, unrelated
+  to spiral and unchanged by it, per the provable-invariance argument
+  below.) No new tangential margin proxy exists - the existing radial
+  `bevel_pair_mesh_margin_degrees`/`MESH_MARGIN_SAFETY_BUFFER_DEGREES`
+  system is reused completely unchanged, per this doc's own Spike C §4/§5
+  revised conclusion.
+- **Cost/timeout** (`client/lib/config.dart`): a spiral `BevelPairFeature`
+  create/update call now gets its own, separately-raised request timeout
+  (`ApiConfig.spiralBevelPairRequestTimeout`, 720s) instead of the blanket
+  `documentRequestTimeout` (180s, already raised once for a plain Bevel
+  Pair) - real headroom sized against Spike C's own on-device per-trial
+  cost numbers (1-3s well-behaved, up to ~16s near/past a notch) times this
+  implementation's own bounded ~33-trial eval budget
+  (`app.document.bevel_pair._PHASE_SEARCH_GRID_POINTS`/`_PHASE_SEARCH_
+  REFINE_ITERATIONS`), not a silently-absorbed risk.
+- **Client** (`BevelDesignScreen`'s Bevel Pair mode): a pair-level "Spiral"
+  `SwitchListTile` + numeric angle field (mirroring the single-gear
+  toggle's own shape, `12-spiral-bevel-gear.md`'s shipped UX), plus a
+  per-member "Hand of spiral" `SegmentedButton` inside each member's own
+  section (defaulted to opposite hands, right/left, so a freshly-created
+  pair meshes correctly out of the box) - the real UX work this doc's own
+  "Out of scope for this UX proposal" note (in `12`'s doc) deferred to this
+  workstream, now built.
+
+**Explicitly still deferred, unchanged**: DXF flat-pattern export, true
+Gleason envelope surfaces, hypoid, root fillet, and any UX beyond a basic
+hand-of-spiral compatibility warning (e.g. a visual indicator of hand
+mismatch in the preview).
+
+---
+
+*Everything below this point is the original feasibility/scoping doc plus
+this workstream's own three 2026-08-21 spike-findings sections, kept as
+historical record - the real implementation above is built directly
+against these findings, not a re-derivation of them.*
+
 Read `00-conventions.md` first, then `12-spiral-bevel-gear.md` (the
 single-gear feasibility/scoping doc this one depends on), then
 `11-bevel-pair.md` (straight bevel pairing — real, shipped, and the

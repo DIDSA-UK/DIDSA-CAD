@@ -106,6 +106,24 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
   final _shaftAngleController = TextEditingController(text: '90');
   final _pairBacklashController = TextEditingController(text: '0');
 
+  /// `docs/gear-design/13-spiral-bevel-pair.md`'s own real implementation:
+  /// same "Spiral" toggle shape as the single-gear form's own [_spiralEnabled]
+  /// (`12-spiral-bevel-gear.md`'s shipped precedent), adapted for a pair -
+  /// the spiral angle itself is pair-level shared (both members physically
+  /// mesh at one spiral trace, `BevelPairFeature.spiral_angle_degrees`'s own
+  /// docstring), so there is exactly one angle field here, not two. Hand of
+  /// spiral stays per-member (`_pairSpiralHand1`/`_pairSpiralHand2`) so a
+  /// real hand-of-spiral *mismatch* is representable and can be warned
+  /// about - defaulted to opposite hands (right/left) so a freshly-created
+  /// pair meshes correctly out of the box. `false` always sends
+  /// `spiral_angle_degrees: 0.0` regardless of the angle field's own
+  /// (possibly stale) text, the same real "literal no-op" contract the
+  /// single-gear toggle already makes.
+  bool _pairSpiralEnabled = false;
+  final _pairSpiralAngleController = TextEditingController(text: '20');
+  String _pairSpiralHand1 = 'right';
+  String _pairSpiralHand2 = 'left';
+
   /// Auto-or-override for each member's own profile shift (`app.document.
   /// bevel_pair.resolve_member_profile_shifts` on the backend) - `true`
   /// (the default, matching `BevelPairMemberSpecSchema.profile_shift`'s
@@ -248,6 +266,7 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
         // malformed/older response.
         final effective1 = (json['effective_profile_shift_1'] as num?)?.toDouble();
         _profileShift1Controller.text = (rawShift1?.toDouble() ?? effective1 ?? 0.0).toString();
+        _pairSpiralHand1 = member1['spiral_hand'] as String? ?? _pairSpiralHand1;
       }
       if (member2 != null) {
         _toothCount2Controller.text = (member2['tooth_count'] as num).toInt().toString();
@@ -255,6 +274,7 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
         _profileShift2Auto = rawShift2 == null;
         final effective2 = (json['effective_profile_shift_2'] as num?)?.toDouble();
         _profileShift2Controller.text = (rawShift2?.toDouble() ?? effective2 ?? 0.0).toString();
+        _pairSpiralHand2 = member2['spiral_hand'] as String? ?? _pairSpiralHand2;
       }
       final faceWidth = json['face_width'] as num?;
       if (faceWidth != null) _pairFaceWidthController.text = faceWidth.toString();
@@ -262,6 +282,11 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
       if (shaftAngle != null) _shaftAngleController.text = shaftAngle.toString();
       final backlash = json['backlash'] as num?;
       if (backlash != null) _pairBacklashController.text = backlash.toString();
+      final pairSpiralAngle = (json['spiral_angle_degrees'] as num?)?.toDouble();
+      _pairSpiralEnabled = pairSpiralAngle != null && pairSpiralAngle != 0.0;
+      if (pairSpiralAngle != null && pairSpiralAngle != 0.0) {
+        _pairSpiralAngleController.text = pairSpiralAngle.toString();
+      }
     }
   }
 
@@ -288,6 +313,7 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
     _pairFaceWidthController.dispose();
     _shaftAngleController.dispose();
     _pairBacklashController.dispose();
+    _pairSpiralAngleController.dispose();
     if (widget.documentApi == null) _api.close();
     super.dispose();
   }
@@ -364,6 +390,9 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
           pressureAngleDegrees: _pressureAngleDegrees,
           shaftAngleDegrees: shaftAngle,
           backlash: backlash,
+          spiralAngleDegrees: _effectivePairSpiralAngleDegrees,
+          spiralHand1: _pairSpiralHand1,
+          spiralHand2: _pairSpiralHand2,
         );
       }
       if (!mounted) return;
@@ -413,8 +442,27 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
   /// field does.
   bool get _spiralAngleFieldValid => !_spiralEnabled || double.tryParse(_spiralAngleController.text) != null;
 
+  /// `0.0` whenever [_pairSpiralEnabled] is off - the pair-mode counterpart
+  /// of [_effectiveSpiralAngleDegrees], same real "literal no-op" contract.
+  double get _effectivePairSpiralAngleDegrees =>
+      _pairSpiralEnabled ? (double.tryParse(_pairSpiralAngleController.text) ?? 0.0) : 0.0;
+
+  /// The pair-mode counterpart of [_spiralAngleFieldValid] - the mesh-
+  /// preview inset (unlike the single-gear envelope) is itself unaffected
+  /// by spiral either (`bevel_pair.bevel_pair_mesh_preview` reuses
+  /// Tredgold's own flat virtual-spur-gear substitution, which has no
+  /// spiral term at all), so this stays a separate Create-gating check
+  /// rather than something `_blockingError` itself needs to see.
+  bool get _pairSpiralAngleFieldValid =>
+      !_pairSpiralEnabled || double.tryParse(_pairSpiralAngleController.text) != null;
+
   bool get _canCreate =>
-      _blockingError == null && _preview != null && !_creating && !_loadingExisting && _spiralAngleFieldValid;
+      _blockingError == null &&
+      _preview != null &&
+      !_creating &&
+      !_loadingExisting &&
+      _spiralAngleFieldValid &&
+      _pairSpiralAngleFieldValid;
 
   Future<void> _create() async {
     if (!_canCreate) return;
@@ -453,14 +501,17 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
             module: _module,
             toothCount1: int.parse(_toothCount1Controller.text),
             profileShift1: _profileShift1Auto ? null : double.parse(_profileShift1Controller.text),
+            spiralHand1: _pairSpiralHand1,
             toothCount2: int.parse(_toothCount2Controller.text),
             profileShift2: _profileShift2Auto ? null : double.parse(_profileShift2Controller.text),
+            spiralHand2: _pairSpiralHand2,
             faceWidth: double.parse(_pairFaceWidthController.text),
             pressureAngleDegrees: _pressureAngleDegrees,
             shaftAngleDegrees: double.parse(_shaftAngleController.text),
             backlash: double.parse(_pairBacklashController.text),
             planeRef: planeRef,
             pointsPerFlank: _pointsPerFlank,
+            spiralAngleDegrees: _effectivePairSpiralAngleDegrees,
           );
         }
         if (!mounted) return;
@@ -502,14 +553,17 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
           module: _module,
           toothCount1: int.parse(_toothCount1Controller.text),
           profileShift1: _profileShift1Auto ? null : double.parse(_profileShift1Controller.text),
+          spiralHand1: _pairSpiralHand1,
           toothCount2: int.parse(_toothCount2Controller.text),
           profileShift2: _profileShift2Auto ? null : double.parse(_profileShift2Controller.text),
+          spiralHand2: _pairSpiralHand2,
           faceWidth: double.parse(_pairFaceWidthController.text),
           pressureAngleDegrees: _pressureAngleDegrees,
           shaftAngleDegrees: double.parse(_shaftAngleController.text),
           backlash: double.parse(_pairBacklashController.text),
           planeRef: planeRef,
           pointsPerFlank: _pointsPerFlank,
+          spiralAngleDegrees: _effectivePairSpiralAngleDegrees,
         );
         warnings = feature.warnings;
       }
@@ -911,6 +965,13 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
           _schedulePreview();
         },
       ),
+      if (_pairSpiralEnabled) ...[
+        const SizedBox(height: 8),
+        _buildHandOfSpiralField(
+          hand: _pairSpiralHand1,
+          onChanged: (hand) => setState(() => _pairSpiralHand1 = hand),
+        ),
+      ],
       const SizedBox(height: 16),
       const Text('Member 2 (gear)', style: TextStyle(fontWeight: FontWeight.bold)),
       const SizedBox(height: 8),
@@ -929,6 +990,13 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
           _schedulePreview();
         },
       ),
+      if (_pairSpiralEnabled) ...[
+        const SizedBox(height: 8),
+        _buildHandOfSpiralField(
+          hand: _pairSpiralHand2,
+          onChanged: (hand) => setState(() => _pairSpiralHand2 = hand),
+        ),
+      ],
       const SizedBox(height: 16),
       TextField(
         controller: _pairFaceWidthController,
@@ -953,7 +1021,48 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
         ),
         onChanged: (_) => _schedulePreview(),
       ),
-      const SizedBox(height: 12),
+      const SizedBox(height: 4),
+      // `docs/gear-design/13-spiral-bevel-pair.md`'s own real implementation
+      // - the pair-mode counterpart of the single-gear form's own "Spiral"
+      // toggle (`_buildBevelGearForm`). Pair-level shared (see
+      // `_pairSpiralAngleController`'s own doc comment) - the per-member
+      // hand pickers live with each member's own fields above instead.
+      // Doesn't call `_schedulePreview()` for the same reason the single-
+      // gear toggle doesn't - the mesh-preview inset can't show spiral
+      // curvature either (Tredgold's own flat virtual-spur-gear
+      // substitution has no spiral term), only the hand-mismatch warning
+      // depends on these fields, and `setState` alone re-renders the
+      // per-member hand pickers' own visibility.
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        title: const Text('Spiral'),
+        subtitle: const Text(
+          'Curves both members\' teeth lengthwise along the face width, for quieter, smoother meshing.',
+        ),
+        value: _pairSpiralEnabled,
+        onChanged: (value) => setState(() => _pairSpiralEnabled = value),
+      ),
+      if (_pairSpiralEnabled) ...[
+        TextField(
+          controller: _pairSpiralAngleController,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
+          decoration: InputDecoration(
+            labelText: 'Spiral angle',
+            suffix: const Text('°'),
+            suffixIcon: fieldHelpIcon(
+              'Shared by both members - they physically mesh along one spiral trace, so this can\'t '
+              'legitimately differ between them (unlike hand of spiral, set separately for each member '
+              'above). 0° is a curved (Zerol) trace with no net spiral; larger angles curve the tooth '
+              'more. Not shown in the preview above - visible after Create. A high spiral angle makes '
+              'Create/Save noticeably slower, since a real per-build meshing-phase search runs on top of '
+              'each member\'s own build.',
+            ),
+          ),
+          onChanged: (_) => setState(() {}),
+        ),
+        const SizedBox(height: 8),
+      ],
+      const SizedBox(height: 8),
       TextField(
         controller: _pairBacklashController,
         keyboardType: const TextInputType.numberWithOptions(decimal: true),
@@ -961,6 +1070,34 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
         onChanged: (_) => _schedulePreview(),
       ),
     ];
+  }
+
+  /// One bevel pair member's own "Hand of spiral" field - a two-way Left/
+  /// Right toggle, the same UI shape the single-gear form's own hand-of-
+  /// spiral `SegmentedButton` already uses (`_buildBevelGearForm`), just
+  /// factored out here since a pair needs one per member. Meaningless
+  /// unless [_pairSpiralEnabled] - only ever built while it's on (see
+  /// `_buildBevelPairForm`'s own `if (_pairSpiralEnabled)` guards).
+  Widget _buildHandOfSpiralField({required String hand, required ValueChanged<String> onChanged}) {
+    return Row(
+      children: [
+        const Expanded(child: Text('Hand of spiral')),
+        fieldHelpIcon(
+          'Which way this member\'s own tooth curves, looking at its outer (back) face. The two members '
+          'need opposite hands to mesh correctly - matching hands are still buildable but will warn about '
+          'real, substantial tooth interference.',
+        ),
+        const SizedBox(width: 8),
+        SegmentedButton<String>(
+          segments: const [
+            ButtonSegment(value: 'left', label: Text('Left')),
+            ButtonSegment(value: 'right', label: Text('Right')),
+          ],
+          selected: {hand},
+          onSelectionChanged: (selection) => onChanged(selection.first),
+        ),
+      ],
+    );
   }
 
   /// `docs/gear-design/09-presets.md`: both modes' fields captured
@@ -986,8 +1123,12 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
         'toothCount2': _toothCount2Controller.text,
         'profileShift2': _profileShift2Controller.text,
         'profileShift2Auto': _profileShift2Auto,
+        'spiralHand1': _pairSpiralHand1,
         'pairFaceWidth': _pairFaceWidthController.text,
         'shaftAngle': _shaftAngleController.text,
+        'spiralHand2': _pairSpiralHand2,
+        'pairSpiralEnabled': _pairSpiralEnabled,
+        'pairSpiralAngle': _pairSpiralAngleController.text,
         'pairBacklash': _pairBacklashController.text,
       };
 
@@ -1026,6 +1167,15 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
       if (fields['pairFaceWidth'] is String) _pairFaceWidthController.text = fields['pairFaceWidth'] as String;
       if (fields['shaftAngle'] is String) _shaftAngleController.text = fields['shaftAngle'] as String;
       if (fields['pairBacklash'] is String) _pairBacklashController.text = fields['pairBacklash'] as String;
+      // Older presets (saved before spiral bevel pairing existed) have no
+      // 'pairSpiralEnabled' key at all - same "default to off" reasoning
+      // as the single-gear 'spiralEnabled' key above.
+      _pairSpiralEnabled = fields['pairSpiralEnabled'] as bool? ?? false;
+      if (fields['pairSpiralAngle'] is String) {
+        _pairSpiralAngleController.text = fields['pairSpiralAngle'] as String;
+      }
+      _pairSpiralHand1 = fields['spiralHand1'] as String? ?? _pairSpiralHand1;
+      _pairSpiralHand2 = fields['spiralHand2'] as String? ?? _pairSpiralHand2;
     });
     _schedulePreview();
   }

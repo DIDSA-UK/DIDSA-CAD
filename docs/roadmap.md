@@ -79,13 +79,26 @@ corrected, reduces bit-for-bit to the existing straight-bevel case at
 tip-land/root-land/end-cap/sewing/validation helper unchanged, `ruled=False`
 + `CheckCompatibility(False)` per `gear.py`'s own established large-twist
 fix), and `BevelDesignScreen`'s "Spiral" toggle on the client. Spike C's
-own meshing-phase search is deliberately **not** part of this - it's a
-pairing-only concern with no counterpart for a standalone gear. Real
-`BevelPairFeature` spiral-variant implementation (needing that phase
-search) is the next, different, not-yet-started workstream. Hypoid bevel
-remains the one thing still fully unscoped. DXF import/export was
-originally scoped here too but has since moved to its own doc set
-(`docs/dxf-io/`) - see the entry below.
+own meshing-phase search was deliberately **not** part of this - it's a
+pairing-only concern with no counterpart for a standalone gear.
+
+**Real `BevelPairFeature` spiral-variant implementation has since landed
+too** (the workstream that needed Spike C's own phase search): `BevelPair
+Feature.spiral_angle_degrees` (pair-level shared - both members physically
+mesh at one spiral trace) and `BevelPairMemberSpec.spiral_hand` (per-member,
+so a real hand-of-spiral mismatch is representable and warned about); a real
+`app.document.bevel_pair._search_meshing_phase` implementing Spike C's own
+coarse-grid-plus-golden-section design, gated by the negative/`None`-overlap
+guard and a marginal-solid pre-check that same spike called for; the
+existing radial mesh-margin system reused completely unchanged, confirming
+Spike C's own "no new tangential margin proxy needed" conclusion against
+the real, committed code, not just a scratch harness; a dedicated, raised
+client request timeout (`ApiConfig.spiralBevelPairRequestTimeout`) sized
+against Spike C's own real per-trial cost numbers; and `BevelDesignScreen`'s
+Bevel Pair mode gaining a shared "Spiral" toggle plus a per-member "Hand of
+spiral" picker. Hypoid bevel remains the one thing still fully unscoped.
+DXF import/export was originally scoped here too but has since moved to its
+own doc set (`docs/dxf-io/`) - see the entry below.
 
 ## AI Modelling
 
