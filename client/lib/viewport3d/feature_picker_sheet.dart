@@ -27,7 +27,9 @@ enum FeaturePickerAction {
 /// Bodies/Planes `ExpansionTile` grouping - `_buildGroupedTree` - rather
 /// than a flat list, now that this sheet has grown past a handful of rows):
 /// Sketch-based (Extrude/Revolve/Sweep/Loft), Reference (Plane/Surface),
-/// Modify (Fillet/Chamfer), and Pattern (Mirror/Pattern). A Combine section
+/// Modify (Fillet/Chamfer), and Repeat (Mirror/Pattern - not titled
+/// "Pattern" itself, since that collided with the "Pattern" entry it
+/// contains - see that section's own doc comment). A Combine section
 /// (Merge/Subtract/Common/Split) is left for follow-up work to populate -
 /// see [_CombineSection].
 Future<FeaturePickerAction?> showFeaturePickerSheet(BuildContext context) {
@@ -111,7 +113,15 @@ Future<FeaturePickerAction?> showFeaturePickerSheet(BuildContext context) {
                 ],
               ),
               _FeatureSection(
-                title: 'Pattern',
+                // Bug fix (real CI failure - widget tests): naming this
+                // section "Pattern" collided with the "Pattern" entry it
+                // contains - `find.text('Pattern')`/a plain tap-by-label
+                // could no longer tell the section header from the row
+                // inside it (both matched, ambiguously). "Repeat" groups
+                // Mirror/Pattern under the same "duplicate existing
+                // geometry" umbrella without repeating either entry's own
+                // label.
+                title: 'Repeat',
                 initiallyExpanded: true,
                 entries: [
                   _FeatureEntry(

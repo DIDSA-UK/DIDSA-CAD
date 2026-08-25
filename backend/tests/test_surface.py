@@ -194,7 +194,9 @@ def test_create_surface_feature_with_end_distance_not_greater_than_start_distanc
 
     response = _create_surface_feature(part["id"], surface_sketch["id"], start_distance=5.0, end_distance=5.0)
 
-    assert response.status_code == 422
+    # _validate_extrude_distances (reused as-is for Surface) raises 400, not
+    # 422 - matches ExtrudeFeature's own identical validation.
+    assert response.status_code == 400
 
 
 def test_create_surface_feature_with_malformed_direction_ref_is_rejected():
@@ -295,31 +297,56 @@ def test_surface_direction_ref_overrides_the_sketch_plane_normal():
 
 
 def test_surface_feature_round_trips_through_native_export_import():
-    part = _create_part()
-    body_sketch = _create_square_sketch_feature(part["id"], x0=0.0, y0=0.0)
-    _create_extrude_feature(part["id"], body_sketch["id"])
-    surface_sketch = _create_square_sketch_feature(part["id"], x0=100.0, y0=0.0)
-    surface = _create_surface_feature(
-        part["id"],
-        surface_sketch["id"],
-        start_distance=-1.0,
-        end_distance=5.0,
-        direction_ref={"fixed_axis": "x"},
-    ).json()
+    """Mirrors test_bevel_gear_feature.py's own native round-trip precedent:
+    `/document/export/native` exports the *whole* Document (every Part any
+    test in this session has created, not just this test's own - see
+    `export_native_document`'s own docstring), and `/document/import/native`
+    is a full replace, not a merge. So this must (a) save/restore the
+    Document/Sketch store around the whole test, since importing the export
+    right back in would otherwise be a no-op for *this* test but would
+    permanently clobber whatever other state existed only by coincidence,
+    and (b) look the re-imported Part back up by `part["id"]` directly
+    (export/import preserves ids verbatim) rather than assuming `imported.
+    json()["part_ids"][0]` is this test's own Part - it's simply the first
+    Part in the whole Document, which depends on what other tests already
+    ran in this same worker."""
+    from app.document.store import get_document, replace_document
+    from app.sketch.store import all_sketches, replace_all_sketches
 
-    exported = client.get("/document/export/native")
-    assert exported.status_code == 200
+    saved_document = get_document()
+    saved_sketches = dict(all_sketches())
+    try:
+        part = _create_part()
+        body_sketch = _create_square_sketch_feature(part["id"], x0=0.0, y0=0.0)
+        _create_extrude_feature(part["id"], body_sketch["id"])
+        surface_sketch = _create_square_sketch_feature(part["id"], x0=100.0, y0=0.0)
+        surface = _create_surface_feature(
+            part["id"],
+            surface_sketch["id"],
+            start_distance=-1.0,
+            end_distance=5.0,
+            direction_ref={"fixed_axis": "x"},
+        ).json()
 
-    imported = client.post("/document/import/native", json=exported.json())
-    assert imported.status_code == 200
-    part_id = imported.json()["part_ids"][0]
+        exported = client.get("/document/export/native")
+        assert exported.status_code == 200
 
-    features = client.get(f"/document/parts/{part_id}/features").json()
-    round_tripped = next(f for f in features if f["type"] == "surface")
-    assert round_tripped["sketch_feature_id"] == surface["sketch_feature_id"]
-    assert round_tripped["start_distance"] == -1.0
-    assert round_tripped["end_distance"] == 5.0
-    assert round_tripped["direction_ref"] == {"edge_ref": None, "sketch_line_ref": None, "fixed_axis": "x"}
+        imported = client.post("/document/import/native", json=exported.json())
+        assert imported.status_code == 200
+
+        features = client.get(f"/document/parts/{part['id']}/features").json()
+        round_tripped = next(f for f in features if f["type"] == "surface")
+        assert round_tripped["sketch_feature_id"] == surface["sketch_feature_id"]
+        assert round_tripped["start_distance"] == -1.0
+        assert round_tripped["end_distance"] == 5.0
+        assert round_tripped["direction_ref"] == {
+            "edge_ref": None,
+            "sketch_line_ref": None,
+            "fixed_axis": "x",
+        }
+    finally:
+        replace_document(saved_document)
+        replace_all_sketches(saved_sketches)
 
 
 # --- Cascade delete ------------------------------------------------------------
