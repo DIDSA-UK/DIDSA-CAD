@@ -1002,6 +1002,107 @@ void main() {
     });
   });
 
+  group('Boolean family, first entry: FeatureDto.fromJson for a merge Feature', () {
+    test('parses body_ids', () {
+      final dto = FeatureDto.fromJson({
+        'type': 'merge',
+        'id': 'merge-1',
+        'locked': false,
+        'produces': 'body',
+        'body_ids': ['body-1', 'body-2'],
+      });
+
+      expect(dto.type, 'merge');
+      expect(dto.bodyIds, ['body-1', 'body-2']);
+      expect(dto.produces, 'body');
+    });
+
+    test('defaults bodyIds to empty when omitted', () {
+      final dto = FeatureDto.fromJson({
+        'type': 'extrude',
+        'id': 'ef-1',
+        'locked': false,
+        'produces': 'body',
+        'sketch_feature_id': 'sf-1',
+        'extrude_type': 'boss',
+        'start_distance': 0.0,
+        'end_distance': 10.0,
+      });
+
+      expect(dto.bodyIds, isEmpty);
+    });
+  });
+
+  group('Boolean family, first entry: DocumentApiClient createMergeFeature/updateMergeFeature', () {
+    http.Response jsonResponse(Object body, {int status = 201}) =>
+        http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});
+
+    test('createMergeFeature sends body_ids', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'merge',
+            'id': 'merge-1',
+            'locked': false,
+            'produces': 'body',
+            'body_ids': ['body-1', 'body-2'],
+          });
+        }),
+      );
+
+      final feature = await client.createMergeFeature('part-1', bodyIds: const ['body-1', 'body-2']);
+
+      expect(capturedBody, {
+        'body_ids': ['body-1', 'body-2'],
+      });
+      expect(feature.bodyIds, ['body-1', 'body-2']);
+    });
+
+    test('updateMergeFeature only sends body_ids when supplied', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'merge',
+            'id': 'merge-1',
+            'locked': false,
+            'produces': 'body',
+            'body_ids': ['body-1', 'body-3'],
+          }, status: 200);
+        }),
+      );
+
+      await client.updateMergeFeature('part-1', 'merge-1', bodyIds: const ['body-1', 'body-3']);
+
+      expect(capturedBody, {
+        'body_ids': ['body-1', 'body-3'],
+      });
+    });
+
+    test('updateMergeFeature sends an empty body when nothing supplied', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'merge',
+            'id': 'merge-1',
+            'locked': false,
+            'produces': 'body',
+            'body_ids': ['body-1', 'body-2'],
+          }, status: 200);
+        }),
+      );
+
+      await client.updateMergeFeature('part-1', 'merge-1');
+
+      expect(capturedBody, <String, dynamic>{});
+    });
+  });
+
   group('DocumentApiClient createCreatePlaneFeature/updateCreatePlaneFeature', () {
     http.Response jsonResponse(Object body, {int status = 201}) =>
         http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});

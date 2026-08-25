@@ -616,6 +616,32 @@ class MirrorFeatureResponse(BaseModel):
     produces: Produces
 
 
+class MergeFeatureCreate(BaseModel):
+    """Creates a `MergeFeature` fusing every Body named in `body_ids` (2+
+    required - see `app.document.router._validate_merge_body_ids`) into a
+    single Body. Symmetric, no target/tool distinction, no options - unlike
+    `MirrorFeatureCreate.merge`, there is no mode to pick."""
+
+    body_ids: list[str]
+
+
+class MergeFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `MirrorFeatureUpdate`/`SurfaceFeatureUpdate`."""
+
+    body_ids: list[str] | None = None
+
+
+class MergeFeatureResponse(BaseModel):
+    type: Literal["merge"] = "merge"
+    id: str
+    body_ids: list[str]
+    locked: bool
+    # B1: see SketchFeatureResponse.produces above - always BODY for a
+    # MergeFeature.
+    produces: Produces
+
+
 class PatternDirectionRefSchema(BaseModel):
     """Pattern/Mirror scoping's Phase 2 (`docs/pattern-mirror-scope.md`
     §2.2/§2.5): the wire counterpart to `app.document.models.
@@ -1721,6 +1747,7 @@ FeatureResponse = Union[
     SweepFeatureResponse,
     SurfaceFeatureResponse,
     MirrorFeatureResponse,
+    MergeFeatureResponse,
     PatternFeatureResponse,
     ImportFeatureResponse,
     GearFeatureResponse,

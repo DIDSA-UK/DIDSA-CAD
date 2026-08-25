@@ -76,6 +76,25 @@ void main() {
       expect(await pendingResult, FeaturePickerAction.surface);
     });
 
+    testWidgets('Boolean family, first entry: tapping Merge resolves FeaturePickerAction.merge',
+        (tester) async {
+      await openSheet(tester);
+      // Combine starts collapsed (unlike the other sections), so it needs an
+      // extra tap to expand before its Merge entry is reachable. Combine
+      // sits low enough in the regrouped, taller sheet that it's off the
+      // fixed 800x600 test viewport - same "scroll it into view before
+      // tapping" fix as the Repeat section's own Pattern entry needed
+      // (bevel_design_screen_test.dart's precedent for a long form on a
+      // small test viewport).
+      await tester.ensureVisible(find.text('Combine'));
+      await tester.tap(find.text('Combine'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Merge'));
+      await tester.tap(find.text('Merge'));
+      await tester.pumpAndSettle();
+      expect(await pendingResult, FeaturePickerAction.merge);
+    });
+
     testWidgets('the picker sheet groups entries into collapsible sections', (tester) async {
       await openSheet(tester);
       expect(find.text('Sketch-based'), findsOneWidget);

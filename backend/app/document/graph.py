@@ -45,6 +45,7 @@ from app.document.models import (
     GearFeature,
     LoftFeature,
     LoftMode,
+    MergeFeature,
     MirrorFeature,
     Part,
     PatternAxisRef,
@@ -403,6 +404,13 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
     Body edge depends on that edge's owning Feature, a Sketch Line depends
     on its owning SketchFeature, a fixed world axis depends on nothing).
 
+    Boolean family, first entry (Merge): a `MergeFeature` depends on the
+    owning Feature of every `body_ids` entry (`base_feature_id`-deduplicated
+    via a `set`, identical to Fillet/Chamfer's own `edge_refs` treatment
+    above) - deleting the Extrude/Revolve/etc. that created a Body a Merge
+    fuses must cascade-delete the Merge too, same reasoning as every other
+    reference kind in this function.
+
     Pattern/Mirror Phase 8: a `MirrorFeature`/`PatternFeature` with `tool_
     feature_id` set depends on that Feature directly (already a bare
     Feature id, no `base_feature_id` mapping needed, mirroring `source_
@@ -439,6 +447,8 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
             depends_on = _surface_dependencies(part, feature)
         elif isinstance(feature, MirrorFeature):
             depends_on = _mirror_dependencies(feature)
+        elif isinstance(feature, MergeFeature):
+            depends_on = tuple({base_feature_id(bid) for bid in feature.body_ids})
         elif isinstance(feature, PatternFeature):
             depends_on = _pattern_dependencies(part, feature)
         elif isinstance(feature, GearFeature):

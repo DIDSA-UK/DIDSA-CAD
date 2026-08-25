@@ -23,6 +23,8 @@ String featureDisplayName(List<FeatureDto> features, int index) {
     'import' => 'Import',
     'mirror' => 'Mirror',
     'pattern' => 'Pattern',
+    // Boolean family, first entry.
+    'merge' => 'Merge',
     // Gear-tree UX: the gear-family Feature types (built straight from
     // parameters via their own dedicated design screen - GearDesignScreen/
     // BevelDesignScreen/GearChainDesignScreen - never through a Sketch, see
@@ -72,6 +74,9 @@ String _featureTypeAsset(String type) => switch (type) {
       'import' => 'assets/icons/feature/parttoolbar_import.svg',
       'mirror' => 'assets/icons/feature/feature_mirror.svg',
       'pattern' => 'assets/icons/feature/feature_pattern.svg',
+      // Boolean family, first entry - shared with Subtract/Common's own
+      // future entries once they land (see the asset's own file).
+      'merge' => 'assets/icons/feature/feature_merge.svg',
       // Gear-tree UX: one shared "gear" category glyph for every gear-family
       // Feature type (spur/internal gear, rack, bevel gear, bevel pair, gear
       // chain, planetary set) - they're all built by the same family of
@@ -87,6 +92,11 @@ String _featureTypeAsset(String type) => switch (type) {
         'assets/icons/feature/feature_gear.svg',
       _ => 'assets/icons/feature/feature_new_sketch.svg',
     };
+
+/// Boolean family, first entry: every Feature `type` string the "Booleans"
+/// tree section (`_buildBooleansSection`) groups together - `merge` today;
+/// Subtract/Common/Split extend this set in their own follow-up work.
+const _booleanFeatureTypes = {'merge'};
 
 /// The "Build Tree": a Part's currently-computed Bodies (top, collapsible)
 /// followed by its user-authored Features (Sketch/Extrude/etc, also
@@ -448,6 +458,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
         if (widget.bodyIds.isNotEmpty) _buildBodiesSection(context),
         if (widget.features.any((f) => f.type == 'create_plane')) _buildPlanesSection(context),
         if (widget.features.any((f) => f.type == 'surface')) _buildSurfacesSection(context),
+        if (widget.features.any((f) => _booleanFeatureTypes.contains(f.type))) _buildBooleansSection(context),
         _buildFeaturesSection(context),
       ],
     );
@@ -578,6 +589,49 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
                 dense: true,
                 visualDensity: VisualDensity.compact,
                 leading: const SvgIcon('assets/icons/feature/feature_surface.svg', size: 24),
+                title: Text(
+                  featureDisplayName(widget.features, widget.features.indexOf(feature)),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: _rowTitleStyle,
+                ),
+                trailing: hidden ? const Icon(Icons.visibility_off, size: 18) : null,
+                onTap: () => widget.onFeatureTap(feature),
+                onLongPress: () => widget.onFeatureLongPress(feature),
+              ),
+            );
+          }),
+      ],
+    );
+  }
+
+  /// The Booleans section - real produced Body objects from the Boolean
+  /// family (Merge today; Subtract/Common/Split extend this filter in their
+  /// own follow-up work - see [_booleanFeatureTypes]). Mirrors
+  /// [_buildSurfacesSection] exactly - omitted entirely when there are none
+  /// yet (same "no empty section" rule), tapping a row reuses
+  /// [FeatureTreePanel.onFeatureTap], starts collapsed. Unlike Planes/
+  /// Surfaces, a Boolean row's own leading glyph is per-Feature-type (via
+  /// [_featureTypeAsset]), not one fixed icon for the whole section - the
+  /// family covers more than one visually distinct operation.
+  Widget _buildBooleansSection(BuildContext context) {
+    final booleanFeatures = widget.features.where((f) => _booleanFeatureTypes.contains(f.type)).toList();
+    return ExpansionTile(
+      initiallyExpanded: false,
+      dense: true,
+      visualDensity: VisualDensity.compact,
+      leading: const SvgIcon('assets/icons/feature/feature_merge.svg', size: 26),
+      title: const Text('Booleans', maxLines: 1, overflow: TextOverflow.ellipsis, style: _sectionTitleStyle),
+      children: [
+        for (final feature in booleanFeatures)
+          Builder(builder: (context) {
+            final hidden = widget.hiddenFeatureIds.contains(feature.id);
+            return Opacity(
+              opacity: hidden ? 0.5 : 1.0,
+              child: ListTile(
+                dense: true,
+                visualDensity: VisualDensity.compact,
+                leading: SvgIcon(_featureTypeAsset(feature.type), size: 24),
                 title: Text(
                   featureDisplayName(widget.features, widget.features.indexOf(feature)),
                   maxLines: 1,

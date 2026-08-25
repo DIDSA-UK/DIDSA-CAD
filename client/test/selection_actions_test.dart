@@ -286,13 +286,15 @@ void main() {
 
     test(
         'Phase 6: two Bodies together now offer both Mirror and Pattern enabled '
-        '(Pattern widened from exactly-one-Body to 1+, mirroring Mirror)', () {
+        '(Pattern widened from exactly-one-Body to 1+, mirroring Mirror), plus '
+        'Boolean family, first entry: Merge alongside them', () {
       const bodyA = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b1');
       const bodyB = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b2');
       final actions = contextActionsFor({bodyA, bodyB});
       expect(actions, [
         const SelectionContextAction('Mirror', enabled: true),
         const SelectionContextAction('Pattern', enabled: true),
+        const SelectionContextAction('Merge', enabled: true),
       ]);
     });
 
@@ -300,6 +302,26 @@ void main() {
       const body = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b1');
       final actions = contextActionsFor({body, _face0});
       expect(actions, isEmpty);
+    });
+  });
+
+  group('Boolean family, first entry: contextActionsFor Merge', () {
+    test('a lone Body does not offer Merge - nothing to merge with', () {
+      const body = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b1');
+      final actions = contextActionsFor({body});
+      expect(actions, isNot(contains(const SelectionContextAction('Merge', enabled: true))));
+    });
+
+    test('three Bodies together still offer Merge alongside Mirror/Pattern', () {
+      const bodyA = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b1');
+      const bodyB = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b2');
+      const bodyC = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b3');
+      final actions = contextActionsFor({bodyA, bodyB, bodyC});
+      expect(actions, [
+        const SelectionContextAction('Mirror', enabled: true),
+        const SelectionContextAction('Pattern', enabled: true),
+        const SelectionContextAction('Merge', enabled: true),
+      ]);
     });
   });
 

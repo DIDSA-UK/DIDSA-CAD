@@ -69,6 +69,12 @@ class SelectionContextPanel extends StatelessWidget {
   /// for a disabled one" contract as [onMirror].
   final VoidCallback? onPattern;
 
+  /// Boolean family, first entry: fired when the user taps an *enabled*
+  /// Merge button (2+ Bodies selected - see `selection_actions.dart`'s
+  /// `contextActionsFor`) - same "never called for a disabled one" contract
+  /// as [onMirror]/[onPattern].
+  final VoidCallback? onMerge;
+
   const SelectionContextPanel({
     super.key,
     required this.selectedEntities,
@@ -81,6 +87,7 @@ class SelectionContextPanel extends StatelessWidget {
     this.onNewSketch,
     this.onMirror,
     this.onPattern,
+    this.onMerge,
   });
 
   @override
@@ -151,6 +158,8 @@ class SelectionContextPanel extends StatelessWidget {
         return action.enabled ? onMirror : null;
       case 'Pattern':
         return action.enabled ? onPattern : null;
+      case 'Merge':
+        return action.enabled ? onMerge : null;
       default:
         return null;
     }
