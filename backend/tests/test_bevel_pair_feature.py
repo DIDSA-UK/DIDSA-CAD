@@ -25,14 +25,21 @@ numerically, not just it compiles":
 
 import math
 
+import pytest
 from fastapi.testclient import TestClient
 
-from app.document.bevel_pair import _tilted_basis
+from app.document.bevel_pair import _tilted_basis, resolve_bevel_pair_from_bodies
 from app.document.create_plane import resolve_plane_ref
-from app.document.models import PlaneRef
+from app.document.models import BevelPairFeature, BevelPairMemberSpec, PlaneRef, SpiralBevelHand
 from app.document.bevel_math import pitch_cone_half_angles
 from app.main import app
 from app.sketch.models import Plane
+from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Common
+from OCC.Core.BRepGProp import brepgprop
+from OCC.Core.GProp import GProp_GProps
+from OCC.Core.TopAbs import TopAbs_SOLID
+from OCC.Core.TopExp import TopExp_Explorer
+from OCC.Core.TopoDS import topods
 from tests.conftest import TEST_API_KEY
 
 client = TestClient(app)
@@ -546,3 +553,286 @@ def test_native_export_import_round_trips_a_bevel_pair_feature():
     finally:
         replace_document(saved_document)
         replace_all_sketches(saved_sketches)
+
+
+# --- Spiral bevel pair (docs/gear-design/13-spiral-bevel-pair.md), Workstream
+# 13 - the real `BevelPairFeature` spiral variant, built directly against
+# `12-spiral-bevel-gear.md`'s own Spike C (per-build meshing-phase search) and
+# `13-spiral-bevel-pair.md`'s own Spike C (zero-overlap confirmation once a
+# resolvable tooth-count ratio is used). 10T/20T (face_width 8) and 8T/16T
+# (face_width 6) are the exact two resolvable ratios that spike validated -
+# a tooth-count-*symmetric* pair has a real, pre-existing, non-spiral gap in
+# `resolve_member_profile_shifts` (that doc's own Spike C §1) that would
+# confound a zero-overlap check unrelated to anything spiral, so it's
+# deliberately avoided here, not overlooked. ------------------------------
+
+
+def _member_solids(shape) -> list:
+    solids = []
+    explorer = TopExp_Explorer(shape, TopAbs_SOLID)
+    while explorer.More():
+        solids.append(topods.Solid(explorer.Current()))
+        explorer.Next()
+    return solids
+
+
+def _measured_common_overlap(solid_1, solid_2) -> float:
+    """Real `BRepAlgoAPI_Common` overlap volume (mm^3) between two real
+    solids - the same direct measurement methodology every spike in this
+    thread has used, not a proxy."""
+    common = BRepAlgoAPI_Common(solid_1, solid_2)
+    common.Build()
+    assert common.IsDone()
+    props = GProp_GProps()
+    brepgprop.VolumeProperties(common.Shape(), props)
+    return abs(props.Mass())
+
+
+def _spiral_pair_feature(
+    tooth_count_1: int,
+    tooth_count_2: int,
+    *,
+    module: float = 4.0,
+    face_width: float = 8.0,
+    spiral_angle_degrees: float = 0.0,
+    hand_1: SpiralBevelHand = SpiralBevelHand.RIGHT,
+    hand_2: SpiralBevelHand = SpiralBevelHand.LEFT,
+) -> BevelPairFeature:
+    return BevelPairFeature(
+        id="spiral-pair-test",
+        plane_ref=PlaneRef(fixed_plane=Plane.XY),
+        module=module,
+        member_1=BevelPairMemberSpec(tooth_count=tooth_count_1, spiral_hand=hand_1),
+        member_2=BevelPairMemberSpec(tooth_count=tooth_count_2, spiral_hand=hand_2),
+        face_width=face_width,
+        spiral_angle_degrees=spiral_angle_degrees,
+    )
+
+
+def _build_and_measure_overlap(feature: BevelPairFeature) -> tuple[float, list[str]]:
+    """Builds a real `BevelPairFeature` directly (bypassing the HTTP router,
+    same "call the resolver directly" style `test_tilted_basis_*` above
+    already uses) and returns the real measured overlap between its two
+    real assembled member solids, plus the build's own warnings."""
+    shape, warnings = resolve_bevel_pair_from_bodies(feature, None, {}, frozenset())
+    solids = _member_solids(shape)
+    assert len(solids) == 2, "expected exactly 2 member solids in the assembled compound"
+    return _measured_common_overlap(solids[0], solids[1]), warnings
+
+
+@pytest.mark.parametrize("spiral_angle_degrees", [0.0, 25.0, 45.0])
+def test_spiral_bevel_pair_real_overlap_stays_near_zero_for_a_resolvable_10t_20t_ratio(spiral_angle_degrees):
+    """`13-spiral-bevel-pair.md`'s own Spike C §2/§5: once the per-build
+    phase search (`app.document.bevel_pair._search_meshing_phase`) resolves
+    meshing phase and the pair's tooth-count ratio is one `resolve_member_
+    profile_shifts` can actually fully resolve (10T/20T - not tooth-count-
+    symmetric), real measured `BRepAlgoAPI_Common` overlap between the two
+    real assembled member solids is exactly zero across the whole spiral-
+    angle range that spike tested - confirmed here directly against this
+    session's own real, committed construction and phase search, not
+    assumed from that spike's own scratch harness."""
+    feature = _spiral_pair_feature(10, 20, spiral_angle_degrees=spiral_angle_degrees)
+    overlap, warnings = _build_and_measure_overlap(feature)
+    assert overlap < 1.0, f"beta={spiral_angle_degrees}: overlap={overlap}mm^3, warnings={warnings}"
+
+
+def test_spiral_bevel_pair_real_overlap_stays_near_zero_for_a_resolvable_8t_16t_ratio():
+    """The second resolvable ratio `13-spiral-bevel-pair.md`'s own Spike C
+    validated (face_width 6, matching that spike's own calibration)."""
+    feature = _spiral_pair_feature(8, 16, face_width=6.0, spiral_angle_degrees=20.0)
+    overlap, warnings = _build_and_measure_overlap(feature)
+    assert overlap < 1.0, f"overlap={overlap}mm^3, warnings={warnings}"
+
+
+def test_spiral_bevel_pair_same_hand_produces_real_measurably_worse_overlap_than_opposite_hand():
+    """`13-spiral-bevel-pair.md`'s own Spike C §3: same-hand pairing is a
+    real, separate, substantial interference effect that a phase search
+    cannot fix, cleanly isolated from the (now-resolved) radial dimension
+    by using a resolvable tooth-count ratio - confirmed here directly
+    against real geometry, not just via the pure-math hand-mismatch
+    warning (`test_bevel_math.py`'s own coverage of that)."""
+    opposite = _spiral_pair_feature(
+        10, 20, spiral_angle_degrees=20.0, hand_1=SpiralBevelHand.RIGHT, hand_2=SpiralBevelHand.LEFT
+    )
+    same = _spiral_pair_feature(
+        10, 20, spiral_angle_degrees=20.0, hand_1=SpiralBevelHand.RIGHT, hand_2=SpiralBevelHand.RIGHT
+    )
+    opposite_overlap, _ = _build_and_measure_overlap(opposite)
+    same_overlap, _ = _build_and_measure_overlap(same)
+    assert opposite_overlap < 1.0
+    assert same_overlap > opposite_overlap + 1.0
+
+
+def test_spiral_bevel_pair_via_router_produces_a_valid_body_with_spiral_fields_in_the_response():
+    part = _create_part()
+    response = _create_pair(
+        part["id"],
+        member_1={"tooth_count": 10, "spiral_hand": "right"},
+        member_2={"tooth_count": 20, "spiral_hand": "left"},
+        face_width=8.0,
+        spiral_angle_degrees=20.0,
+    )
+    assert response.status_code == 201, response.json()
+    body = response.json()
+    assert body["spiral_angle_degrees"] == 20.0
+    assert body["member_1"]["spiral_hand"] == "right"
+    assert body["member_2"]["spiral_hand"] == "left"
+
+    mesh = _mesh(part["id"])
+    assert len(mesh) == 2
+    for entry in mesh:
+        assert len(entry["mesh"]["vertices"]) > 0
+
+
+def test_spiral_bevel_pair_hand_mismatch_surfaces_a_warning():
+    part = _create_part()
+    response = _create_pair(
+        part["id"],
+        member_1={"tooth_count": 10, "spiral_hand": "right"},
+        member_2={"tooth_count": 20, "spiral_hand": "right"},
+        face_width=8.0,
+        spiral_angle_degrees=20.0,
+    )
+    assert response.status_code == 201, response.json()
+    warnings = response.json()["warnings"]
+    assert any("same hand of spiral" in w for w in warnings), warnings
+
+
+def test_spiral_bevel_pair_zero_spiral_angle_never_warns_about_hand_even_with_matching_hands():
+    """The real "literal no-op" contract: `spiral_angle_degrees == 0.0`
+    makes hand of spiral meaningless (mirrors `BevelGearFeature.spiral_
+    hand`'s own convention), so two same-hand members shouldn't warn."""
+    part = _create_part()
+    response = _create_pair(
+        part["id"],
+        member_1={"tooth_count": 20, "spiral_hand": "right"},
+        member_2={"tooth_count": 40, "spiral_hand": "right"},
+    )
+    assert response.status_code == 201, response.json()
+    assert not any("hand of spiral" in w for w in response.json()["warnings"])
+
+
+def test_spiral_build_cost_warning_surfaces_through_the_bevel_pair_router_at_high_spiral_angle():
+    part = _create_part()
+    response = _create_pair(
+        part["id"],
+        member_1={"tooth_count": 10, "spiral_hand": "right"},
+        member_2={"tooth_count": 20, "spiral_hand": "left"},
+        face_width=8.0,
+        spiral_angle_degrees=50.0,
+    )
+    assert response.status_code == 201, response.json()
+    warnings = response.json()["warnings"]
+    assert any("high spiral angle" in w for w in warnings), warnings
+    assert any("meshing-phase search" in w for w in warnings), warnings
+
+
+def test_update_bevel_pair_feature_can_toggle_spiral_fields():
+    part = _create_part()
+    create_response = _create_pair(
+        part["id"],
+        member_1={"tooth_count": 10, "spiral_hand": "right"},
+        member_2={"tooth_count": 20, "spiral_hand": "left"},
+        face_width=8.0,
+    )
+    assert create_response.status_code == 201, create_response.json()
+    feature_id = create_response.json()["id"]
+
+    patch_response = client.patch(
+        f"/document/parts/{part['id']}/bevel-pair-features/{feature_id}",
+        json={"spiral_angle_degrees": 15.0},
+    )
+    assert patch_response.status_code == 200, patch_response.json()
+    assert patch_response.json()["spiral_angle_degrees"] == 15.0
+
+    # Toggling back off - the same real "literal no-op" contract as the
+    # single-gear case, pinned at the router level.
+    patch_response_off = client.patch(
+        f"/document/parts/{part['id']}/bevel-pair-features/{feature_id}",
+        json={"spiral_angle_degrees": 0.0},
+    )
+    assert patch_response_off.status_code == 200, patch_response_off.json()
+    assert patch_response_off.json()["spiral_angle_degrees"] == 0.0
+
+
+def test_native_export_import_round_trips_spiral_bevel_pair_fields():
+    """The spiral-specific extension of `test_native_export_import_a_
+    bevel_pair_feature` above - the same `native_format.py` omission risk
+    that workstream's own instruction called out, now for `spiral_angle_
+    degrees`/`spiral_hand`."""
+    from app.document.store import get_document, replace_document
+    from app.sketch.store import all_sketches, replace_all_sketches
+
+    saved_document = get_document()
+    saved_sketches = dict(all_sketches())
+    try:
+        part = _create_part("Native Spiral Bevel Pair Test")
+        pair_response = _create_pair(
+            part["id"],
+            member_1={"tooth_count": 10, "spiral_hand": "right"},
+            member_2={"tooth_count": 20, "spiral_hand": "left"},
+            face_width=8.0,
+            spiral_angle_degrees=18.0,
+        )
+        assert pair_response.status_code == 201, pair_response.json()
+        feature_id = pair_response.json()["id"]
+
+        export_response = client.get("/document/export/native")
+        assert export_response.status_code == 200
+        exported = export_response.json()
+        pair_dicts = [
+            f for p in exported["document"]["parts"] for f in p["features"] if f["type"] == "bevel_pair"
+        ]
+        exported_feature = next(f for f in pair_dicts if f["id"] == feature_id)
+        assert exported_feature["spiral_angle_degrees"] == 18.0
+        assert exported_feature["member_1"]["spiral_hand"] == "right"
+        assert exported_feature["member_2"]["spiral_hand"] == "left"
+
+        import_response = client.post("/document/import/native", json=exported)
+        assert import_response.status_code == 200, import_response.json()
+        refetch_response = client.get(f"/document/parts/{part['id']}")
+        assert refetch_response.status_code == 200
+    finally:
+        replace_document(saved_document)
+        replace_all_sketches(saved_sketches)
+
+
+def test_gear_preview_bevel_pair_surfaces_hand_mismatch_warning_without_building_a_real_solid():
+    """Cheap, pure-math preview check (`13-spiral-bevel-pair.md`'s own
+    Spike C §3) - a bevel-pair preview never builds a real OCCT solid at
+    all (`_gear_preview_bevel_pair_response` reuses `bevel_math.bevel_gear_
+    geometry` directly), so this stays fast even though the create-path
+    equivalent above is a real, expensive OCCT build."""
+    response = client.post(
+        "/document/gear/preview",
+        json={
+            "gear_kind": "bevel_pair",
+            "bevel_pair": {
+                "module": 4.0,
+                "member_1": {"tooth_count": 10, "spiral_hand": "right"},
+                "member_2": {"tooth_count": 20, "spiral_hand": "right"},
+                "face_width": 8.0,
+                "spiral_angle_degrees": 20.0,
+            },
+        },
+    )
+    assert response.status_code == 200, response.json()
+    assert any("same hand of spiral" in w for w in response.json()["warnings"])
+
+
+def test_gear_preview_bevel_pair_does_not_warn_about_hand_for_opposite_hands():
+    response = client.post(
+        "/document/gear/preview",
+        json={
+            "gear_kind": "bevel_pair",
+            "bevel_pair": {
+                "module": 4.0,
+                "member_1": {"tooth_count": 10, "spiral_hand": "right"},
+                "member_2": {"tooth_count": 20, "spiral_hand": "left"},
+                "face_width": 8.0,
+                "spiral_angle_degrees": 20.0,
+            },
+        },
+    )
+    assert response.status_code == 200, response.json()
+    assert not any("hand of spiral" in w for w in response.json()["warnings"])

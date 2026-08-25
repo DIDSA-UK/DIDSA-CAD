@@ -1041,10 +1041,14 @@ class BevelPairMemberSpecSchema(BaseModel):
     value (`0.0`, or a computed negative shift) keeps this member's own
     tooth clear of the other member's material (`app.document.bevel_pair.
     resolve_member_profile_shifts`) - same auto-or-override convention as
-    `RackFeatureCreate.backing_height`."""
+    `RackFeatureCreate.backing_height`. `spiral_hand` mirrors `BevelGear
+    FeatureCreate.spiral_hand` - see `app.document.models.BevelPairMember
+    Spec.spiral_hand`'s own docstring for why hand is per-member while
+    `BevelPairFeatureCreate.spiral_angle_degrees` is shared."""
 
     tooth_count: int
     profile_shift: float | None = None
+    spiral_hand: SpiralBevelHand = SpiralBevelHand.RIGHT
 
 
 class BevelPairFeatureCreate(BaseModel):
@@ -1059,7 +1063,10 @@ class BevelPairFeatureCreate(BaseModel):
     automated live bevel pairing vs. `BevelGearFeatureCreate`'s own direct
     `pitch_cone_angle_degrees` field. No `target_body_ids`/Boss-Cut `mode`
     at all - a pair always mints two brand-new Bodies (see `BevelPairFeature`'s
-    own docstring)."""
+    own docstring). `spiral_angle_degrees` (default `0.0`, a literal no-op -
+    see `BevelPairFeature`'s own docstring) is pair-level shared, not
+    per-member - `BevelPairMemberSpecSchema.spiral_hand` is the per-member
+    field instead."""
 
     plane_ref: PlaneRefSchema | None = None
     module: float
@@ -1072,6 +1079,7 @@ class BevelPairFeatureCreate(BaseModel):
     # See `BevelGearFeatureCreate.points_per_flank`'s own docstring -
     # applies to both members' own tooth flanks.
     points_per_flank: int = 12
+    spiral_angle_degrees: float = 0.0
 
 
 class BevelPairFeatureUpdate(BaseModel):
@@ -1087,6 +1095,7 @@ class BevelPairFeatureUpdate(BaseModel):
     shaft_angle_degrees: float | None = None
     backlash: float | None = None
     points_per_flank: int | None = None
+    spiral_angle_degrees: float | None = None
 
 
 class BevelPairFeatureResponse(BaseModel):
@@ -1101,6 +1110,7 @@ class BevelPairFeatureResponse(BaseModel):
     shaft_angle_degrees: float
     backlash: float
     points_per_flank: int = 12
+    spiral_angle_degrees: float = 0.0
     # The *resolved* profile_shift for each member (app.document.bevel_
     # pair.resolve_member_profile_shifts) - identical to member_1/member_2's
     # own profile_shift when it's an explicit value, but the actual
@@ -1446,10 +1456,16 @@ class GearPreviewBevelPairMemberRequest(BaseModel):
     see `BevelPairMemberSpecSchema`'s own docstring for why only these two
     fields legitimately differ per member, and for the `profile_shift`
     auto-or-override convention (mirrored here so a preview matches what
-    Create would actually produce)."""
+    Create would actually produce). `spiral_hand` mirrors `BevelPairMember
+    SpecSchema.spiral_hand` - included here (cheap, pure math) so the
+    live preview can surface `bevel_math.spiral_hand_mismatch_warning`
+    before Create, even though the preview's own axial-cross-section
+    envelope can't show spiral curvature itself (`12-spiral-bevel-gear.md`'s
+    own "Preview stays unchanged" finding, unaffected by this)."""
 
     tooth_count: int
     profile_shift: float | None = None
+    spiral_hand: SpiralBevelHand = SpiralBevelHand.RIGHT
 
 
 class GearPreviewBevelPairRequest(BaseModel):
@@ -1457,7 +1473,8 @@ class GearPreviewBevelPairRequest(BaseModel):
     minus `plane_ref`. Cone angles are not accepted here either - like the
     real Feature, they're auto-derived from both members' own tooth counts
     plus `shaft_angle_degrees` (`app.document.bevel_math.pitch_cone_half_
-    angles`)."""
+    angles`). `spiral_angle_degrees` is shared, mirroring `BevelPairFeature
+    Create`'s own field."""
 
     module: float
     member_1: GearPreviewBevelPairMemberRequest
@@ -1466,6 +1483,7 @@ class GearPreviewBevelPairRequest(BaseModel):
     pressure_angle_degrees: float = 20.0
     shaft_angle_degrees: float = 90.0
     backlash: float = 0.0
+    spiral_angle_degrees: float = 0.0
 
 
 class GearPreviewBevelMember(BaseModel):

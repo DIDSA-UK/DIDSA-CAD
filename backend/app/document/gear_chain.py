@@ -53,6 +53,10 @@ from app.document.gear_chain_math import (
     GearGeometryError,
     ResolvedGearChain,
     compound_axial_overlap,
+    meshing_phase_base,
+    pitch_radius,
+    propagate_meshing_phase,
+    rack_meshing_phase_base,
     resolve_chain,
     thin_member_warning,
 )
@@ -249,6 +253,40 @@ def _rack_rotation(resolved_stage, orientation_fallback: float) -> float:
     return orientation + math.pi / 2
 
 
+# One meshing junction's propagated phase state: the outgoing member's own
+# `kind`, its pitch radius (`None` for RACK - `gear_chain_math.propagate_
+# meshing_phase`'s own arc-length-unit marker), and its phase value
+# (radians if round, mm along its own tooth-row axis if RACK).
+_PhaseState = tuple[ChainMemberKind, float | None, float]
+
+
+def _member_phase(
+    member: GearChainMemberSpec, group: GearGroup, predecessor: _PhaseState | None, incoming_direction: float | None
+) -> float:
+    """The phase value (radians for a round EXTERNAL/INTERNAL member, mm
+    along its own rotated tooth-row axis for a RACK) to apply to `member`
+    so one of its own tooth gaps sits at the meshing contact point with
+    `predecessor` - `None` for stage 0's own incoming member, which has no
+    predecessor and stays at this module's `0.0` zero-reference by
+    convention (`gear_chain_math.meshing_phase_base`'s own documented
+    baseline case)."""
+    kind = ChainMemberKind(member.member_type.value)
+    is_rack = kind == ChainMemberKind.RACK
+    radius = None if is_rack else group.module * member.tooth_count / 2
+    if predecessor is None:
+        return 0.0
+    predecessor_kind, predecessor_radius, predecessor_phase = predecessor
+    assert incoming_direction is not None
+    base_value = (
+        rack_meshing_phase_base(member.tooth_count, math.pi * group.module)
+        if is_rack
+        else meshing_phase_base(member.tooth_count, predecessor_kind, incoming_direction)
+    )
+    return propagate_meshing_phase(
+        predecessor_kind, predecessor_radius, predecessor_phase, kind, radius, incoming_direction, base_value
+    )
+
+
 def resolve_gear_chain_from_bodies(
     feature: GearChainFeature,
     part: Part,
@@ -287,6 +325,13 @@ def resolve_gear_chain_from_bodies(
     ]
 
     stage_shapes: list[TopoDS_Shape] = []
+    # Propagated meshing-phase state, carried stage to stage - `None` until
+    # the first stage is built (stage 0's own incoming member has no
+    # predecessor). `gear_chain_math.propagate_meshing_phase`'s own module
+    # note explains why this can't be computed per-junction in isolation:
+    # each successor's correct phase depends on its immediate predecessor's
+    # *actual* applied phase, not just its kind.
+    prev_state: _PhaseState | None = None
     for i, stage in enumerate(feature.stages):
         resolved_stage = resolved_chain.stages[i]
         x, y = resolved_stage.center
@@ -294,7 +339,20 @@ def resolve_gear_chain_from_bodies(
         if stage.is_compound:
             group_a = groups[stage.compound_member_a.group_id]
             group_b = groups[stage.compound_member_b.group_id]
-            basis_a = _positioned_basis(chain_basis, x, y, z=0.0)
+            rotation_a = _member_phase(stage.compound_member_a, group_a, prev_state, resolved_stage.incoming_direction)
+            # `compound_member_b` (the outgoing-facing member) gets a fixed
+            # 0.0 reference, decoupled from `compound_member_a`'s own
+            # rotation - this construction has no shared-shaft "keyed at a
+            # specific relative angle" constraint to preserve (see
+            # `GearChainStage`'s own docstring: nothing here claims the two
+            # members are printed/manufactured as one clocked part), so 0.0
+            # is just as valid a starting phase for the next junction's own
+            # `propagate_meshing_phase` correction as any other value would
+            # be - and far simpler than threading `compound_member_a`'s own
+            # rotation through a same-shaft coupling assumption this
+            # module doesn't otherwise make.
+            prev_state = (ChainMemberKind(stage.compound_member_b.member_type.value), group_b.module * stage.compound_member_b.tooth_count / 2, 0.0)
+            basis_a = _positioned_basis(chain_basis, x, y, z=0.0, rotation=rotation_a)
             basis_b = _positioned_basis(chain_basis, x, y, z=stage.compound_axial_offset)
             solid_a = _build_member_solid(basis_a, stage.compound_member_a, group_a)
             solid_b = _build_member_solid(basis_b, stage.compound_member_b, group_b)
@@ -339,10 +397,19 @@ def resolve_gear_chain_from_bodies(
                 stage_shapes.append(compound)
         else:
             group = groups[stage.member.group_id]
-            rotation = 0.0
-            if stage.member.member_type == GearChainMemberType.RACK:
+            phase = _member_phase(stage.member, group, prev_state, resolved_stage.incoming_direction)
+            is_rack = stage.member.member_type == GearChainMemberType.RACK
+            if is_rack:
                 rotation = _rack_rotation(resolved_stage, math.radians(feature.start_direction_degrees))
-            basis = _positioned_basis(chain_basis, x, y, rotation=rotation)
+                shift = phase
+            else:
+                rotation = phase
+                shift = 0.0
+            radius = None if is_rack else group.module * stage.member.tooth_count / 2
+            prev_state = (ChainMemberKind(stage.member.member_type.value), radius, phase)
+            shifted_x = x + shift * math.cos(rotation)
+            shifted_y = y + shift * math.sin(rotation)
+            basis = _positioned_basis(chain_basis, shifted_x, shifted_y, rotation=rotation)
             stage_shapes.append(_build_member_solid(basis, stage.member, group))
 
     whole_chain = TopoDS_Compound()

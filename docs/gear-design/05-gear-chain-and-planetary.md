@@ -80,13 +80,37 @@ circles always overlap by design (`sum of addendum radii = center_distance
 overlap is OK" threshold can't resolve that ambiguity. The chain's own
 topology already disambiguates it instead:
 
-- **Consecutive stage pairs**: no check at all — correctness is
-  guaranteed by `gear_math`'s exact center-distance formula.
+- **Consecutive stage pairs**: no *body-envelope* check — correctness
+  there is guaranteed by `gear_math`'s exact center-distance formula
+  (the two solids' addendum circles are always tangent-or-overlapping by
+  the design margin above, never further apart or closer). Getting the
+  two solids' actual *tooth phase* right — one member's tooth landing in
+  the other's gap rather than tooth-on-tooth, at the correct centre
+  distance — is a separate concern this section originally left
+  unaddressed entirely: every non-rack member was built with `app.
+  document.gear`'s own fixed "tooth 0 at local azimuth 0" convention with
+  no rotation ever applied, silently producing real tooth-on-tooth
+  interference for most tooth-count combinations. Fixed by `app.document.
+  gear_chain_math.meshing_phase_base`/`propagate_meshing_phase` — see
+  that module's own extensive derivation notes (two real-OCCT
+  counterexamples that ruled out two successively-simpler, wrong
+  versions of the fix along the way) and `PlanetaryGearFeature`'s own
+  parallel section below for the sun/ring/planet case. A rack member
+  gets the equivalent fix (`rack_meshing_phase_base`) only when it's a
+  junction's own *successor* — a real, separate, still-open bug in `app.
+  document.gear_chain._rack_rotation`'s own orientation formula makes a
+  RACK-as-predecessor junction (a rack as the chain's first stage, or a
+  rack in the middle of a gear-rack-gear chain) mesh incorrectly
+  regardless of tooth phase, documented but not fixed as part of this
+  workstream.
 - **Every non-adjacent pair**: exact overlap test (zero tolerance — any
   overlap is a genuine problem), *plus* a small default **print-clearance
   margin** (e.g. 0.2mm — flag pairs that come within this distance
   without literally overlapping; geometrically-fine isn't the same as
-  printable). Both non-blocking warnings.
+  printable). Both non-blocking warnings. This is still a pure
+  *body-envelope* check, unrelated to tooth phase — it catches a bent
+  chain looping back on itself, not tooth-on-tooth interference between
+  meshing neighbours (which the point above now covers separately).
 
 Bounding shape differs per stage type — be precise, don't treat every
 stage as a generic circle:
@@ -159,8 +183,38 @@ Kept as its own Feature type, not folded into `GearChainFeature` — its
 topology is genuinely different: branching (sun meshes every planet,
 every planet meshes the ring), not a sequence. Resolves into N+2
 positioned Bodies (sun, ring, N planets) in one pass, same multi-body
-convention as `GearChainFeature`. Static/positioned only — no
-kinematics/rotation.
+convention as `GearChainFeature`. Static/positioned only — no continuous
+kinematics/rotation simulation, but each member's own one-time build
+rotation *is* chosen (not left at zero) for correct tooth-mesh phase — see
+below.
+
+**Meshing-phase alignment**: originally, sun/ring/every planet all shared
+`app.document.gear`'s own fixed "tooth 0 at local azimuth 0" build
+convention with no per-member rotation ever applied — real, silent
+tooth-on-tooth interference for essentially every tooth-count
+combination, the same bug `GearChainFeature`'s own section above
+describes, generalized here to the branching sun/ring/N-planets topology
+instead of a sequence. Fixed the same way: the sun anchors this
+assembly's own zero-reference (rotation `0.0`, arbitrary but fixed); each
+planet's own rotation is then *fully* determined by its own mesh with the
+sun (`app.document.gear_chain_math.meshing_phase_base`/`propagate_
+meshing_phase`, sun as predecessor, the planet's own orbital azimuth as
+the junction's `incoming_direction`) — a planet has exactly one
+rotational degree of freedom, and the sun-mesh constraint alone consumes
+all of it, so there is nothing left to independently choose to also
+satisfy the ring. The ring's own rotation is instead solved for once,
+from planet 0's resulting rotation (planet 0 as predecessor, the ring as
+successor, at the ring's own azimuth directly opposite planet 0's,
+`INTERNAL` flipping the correction's sign the same way it does for a
+chain's own external-into-internal junction) — and, per the already-
+enforced assembly condition (`(N_sun + N_ring) mod N_planets == 0`), that
+same ring rotation was confirmed (real `BRepAlgoAPI_Common` measurement,
+not assumed) to also correctly mesh every *other* planet, not just planet
+0. Verified at 0.000000mm³ overlap across sun/ring/every-planet for
+multiple planet counts and tooth-count ratios (all clear of the
+low-tooth-count real involute tip interference `gear_chain_math`'s own
+module note documents — a genuine, pre-existing, separate geometric
+limitation no phase fix can itself resolve).
 
 **Inputs, resolved** (a real gap found while walking a full user flow
 end to end — none of this was specified before):

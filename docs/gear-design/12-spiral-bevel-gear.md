@@ -10,7 +10,7 @@ further down are kept as historical record (the real implementation is
 built directly against their own validated findings, not a re-derivation),
 but read the status note first.
 
-## Status: single-gear variant done; pairing (Workstream 13) not started
+## Status: single-gear variant done; pairing (Workstream 13) also done - see that doc's own status note
 
 `BevelGearFeature` now has a real spiral variant, backend and client, built
 directly against Spike A/B/C's own findings below - not a re-derivation.
@@ -77,10 +77,11 @@ directly against Spike A/B/C's own findings below - not a re-derivation.
   azimuthal property), exactly as this doc's own UX proposal anticipated.
 
 **Explicitly out of scope here, unchanged from the "Proposed v1 scope"
-section below**: `BevelPairFeature`'s own spiral variant (Workstream 13,
-`13-spiral-bevel-pair.md` - depends on this landing, now that it has);
-Gleason long-and-short-addendum/true envelope surfaces; root fillet;
-hypoid; DXF flat-pattern export.
+section below**: Gleason long-and-short-addendum/true envelope surfaces;
+root fillet; hypoid; DXF flat-pattern export. `BevelPairFeature`'s own
+spiral variant (Workstream 13, `13-spiral-bevel-pair.md` - depended on this
+landing, and it has) is no longer out of scope - it's done too, see that
+doc's own status note.
 
 ---
 

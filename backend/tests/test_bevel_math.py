@@ -42,6 +42,7 @@ from app.document.bevel_math import (
     spherical_involute_roll_angle_at_colatitude,
     spiral_build_cost_warning,
     spiral_curve_offset_angle,
+    spiral_hand_mismatch_warning,
     virtual_spur_gear_geometry,
 )
 from app.document.gear_math import GearGeometryError, involute_point, spur_gear_geometry
@@ -949,3 +950,36 @@ def test_spiral_build_cost_warning_fires_at_and_above_the_threshold():
     assert spiral_build_cost_warning(SPIRAL_BUILD_COST_WARNING_THRESHOLD_DEGREES) is not None
     assert spiral_build_cost_warning(60.0) is not None
     assert spiral_build_cost_warning(-60.0) is not None
+
+
+# ---------------------------------------------------------------------------
+# Hand-of-spiral compatibility (docs/gear-design/13-spiral-bevel-pair.md,
+# Workstream 13) - a simple field-compatibility check, not a margin
+# computation (that doc's own Spike C §3/§5 go/no-go).
+# ---------------------------------------------------------------------------
+
+
+def test_spiral_hand_mismatch_warning_is_none_at_zero_spiral_angle_regardless_of_hands():
+    # Meaningless unless spiral_angle_degrees != 0.0 - same "meaningless
+    # unless" convention SpiralBevelHand/SpiralHand's own docstrings use.
+    assert spiral_hand_mismatch_warning(0.0, SpiralHand.RIGHT, SpiralHand.RIGHT) is None
+    assert spiral_hand_mismatch_warning(0.0, SpiralHand.LEFT, SpiralHand.RIGHT) is None
+
+
+def test_spiral_hand_mismatch_warning_is_none_for_opposite_hands():
+    # The required, correctly-meshing configuration - 13-spiral-bevel-
+    # pair.md's own Spike C §3 confirms opposite-hand overlap stays exactly
+    # 0.0 across a real beta sweep on a resolvable tooth-count ratio.
+    assert spiral_hand_mismatch_warning(20.0, SpiralHand.RIGHT, SpiralHand.LEFT) is None
+    assert spiral_hand_mismatch_warning(20.0, SpiralHand.LEFT, SpiralHand.RIGHT) is None
+
+
+def test_spiral_hand_mismatch_warning_fires_for_a_same_hand_pair():
+    warning = spiral_hand_mismatch_warning(20.0, SpiralHand.RIGHT, SpiralHand.RIGHT)
+    assert warning is not None
+    assert "same hand of spiral" in warning
+    assert "right" in warning
+
+    warning_left = spiral_hand_mismatch_warning(20.0, SpiralHand.LEFT, SpiralHand.LEFT)
+    assert warning_left is not None
+    assert "left" in warning_left

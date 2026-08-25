@@ -518,4 +518,121 @@ void main() {
     expect((pairBody?['member_1'] as Map)['profile_shift'], isNull);
     expect((pairBody?['member_2'] as Map)['profile_shift'], -0.3);
   });
+
+  testWidgets('Bevel Pair Spiral off by default sends spiral_angle_degrees: 0.0', (tester) async {
+    Map<String, dynamic>? pairBody;
+    final client = DocumentApiClient(
+      httpClient: MockClient((request) async {
+        if (request.url.path == '/document/gear/preview') {
+          return jsonResponse(bevelPairPreviewResponse());
+        }
+        if (request.url.path == '/document/parts') {
+          return jsonResponse({'id': 'part-1', 'name': 'Bevel Pair Part', 'feature_ids': []}, status: 201);
+        }
+        if (request.url.path == '/document/parts/part-1/bevel-pair-features') {
+          pairBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'bevel_pair',
+            'id': 'pair-1',
+            'locked': false,
+            'produces': 'body',
+            'module': 4.0,
+            'member_1': {'tooth_count': 20, 'profile_shift': 0.0, 'spiral_hand': 'right'},
+            'member_2': {'tooth_count': 40, 'profile_shift': 0.0, 'spiral_hand': 'left'},
+            'face_width': 15.0,
+            'pressure_angle_degrees': 20.0,
+            'shaft_angle_degrees': 90.0,
+            'backlash': 0.0,
+            'spiral_angle_degrees': 0.0,
+          }, status: 201);
+        }
+        return jsonResponse({'id': 'part-1', 'name': 'Bevel Pair Part', 'feature_ids': []});
+      }),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(home: BevelDesignScreen(documentApi: client, initialMode: BevelMultiKind.pair)),
+    );
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pumpAndSettle();
+
+    // Off by default, so the shared angle field and both members' own hand
+    // pickers never appear.
+    expect(find.text('Spiral angle'), findsNothing);
+    expect(find.text('Hand of spiral'), findsNothing);
+
+    await tester.ensureVisible(find.byType(FilledButton));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(FilledButton));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(pairBody?['spiral_angle_degrees'], 0.0);
+    expect((pairBody?['member_1'] as Map)['spiral_hand'], 'right');
+    expect((pairBody?['member_2'] as Map)['spiral_hand'], 'left');
+  });
+
+  testWidgets('Turning Bevel Pair Spiral on reveals per-member hand pickers and sends them on Create', (tester) async {
+    Map<String, dynamic>? pairBody;
+    final client = DocumentApiClient(
+      httpClient: MockClient((request) async {
+        if (request.url.path == '/document/gear/preview') {
+          return jsonResponse(bevelPairPreviewResponse());
+        }
+        if (request.url.path == '/document/parts') {
+          return jsonResponse({'id': 'part-1', 'name': 'Bevel Pair Part', 'feature_ids': []}, status: 201);
+        }
+        if (request.url.path == '/document/parts/part-1/bevel-pair-features') {
+          pairBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'bevel_pair',
+            'id': 'pair-1',
+            'locked': false,
+            'produces': 'body',
+            'module': 4.0,
+            'member_1': {'tooth_count': 20, 'profile_shift': 0.0, 'spiral_hand': 'right'},
+            'member_2': {'tooth_count': 40, 'profile_shift': 0.0, 'spiral_hand': 'right'},
+            'face_width': 15.0,
+            'pressure_angle_degrees': 20.0,
+            'shaft_angle_degrees': 90.0,
+            'backlash': 0.0,
+            'spiral_angle_degrees': 25.0,
+            'warnings': ['both members of this bevel pair share the same hand of spiral (right)'],
+          }, status: 201);
+        }
+        return jsonResponse({'id': 'part-1', 'name': 'Bevel Pair Part', 'feature_ids': []});
+      }),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(home: BevelDesignScreen(documentApi: client, initialMode: BevelMultiKind.pair)),
+    );
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.text('Spiral'));
+    await tester.tap(find.text('Spiral'));
+    await tester.pumpAndSettle();
+
+    // Turning it on reveals the shared angle field once, and a "Hand of
+    // spiral" picker for EACH member (unlike the single-gear form's one).
+    expect(find.text('Spiral angle'), findsOneWidget);
+    expect(find.text('Hand of spiral'), findsNWidgets(2));
+
+    await tester.enterText(find.widgetWithText(TextField, 'Spiral angle'), '25');
+    // member_1 defaults Right, member_2 defaults Left - flip member_2's
+    // own picker to Right too, to exercise the same-hand path end to end.
+    await tester.tap(find.text('Right').last);
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.byType(FilledButton));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(FilledButton));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(pairBody?['spiral_angle_degrees'], 25.0);
+    expect((pairBody?['member_1'] as Map)['spiral_hand'], 'right');
+    expect((pairBody?['member_2'] as Map)['spiral_hand'], 'right');
+  });
 }

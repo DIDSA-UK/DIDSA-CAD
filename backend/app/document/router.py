@@ -10,7 +10,7 @@ from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 
 from app.document.ai_plan import validate_ai_plan as validate_ai_plan_steps
 from app.document.ai_plan_schemas import PlanValidateRequest, PlanValidateResponse
-from app.document.bevel import resolve_bevel_gear
+from app.document.bevel import _spiral_hand_from_feature, resolve_bevel_gear
 from app.document.bevel_pair import resolve_bevel_pair, resolve_member_profile_shifts
 from app.document.chamfer import resolve_chamfer
 from app.document.create_plane import (
@@ -56,6 +56,7 @@ from app.document.bevel_math import (
     bevel_pair_mesh_preview,
     max_recommended_face_width,
     pitch_cone_half_angles,
+    spiral_hand_mismatch_warning,
 )
 from app.document.rack import resolve_rack
 from app.document.loft import resolve_loft
@@ -361,11 +362,15 @@ def _gear_chain_stage_to_schema(stage: GearChainStage) -> GearChainStageSchema:
 
 
 def _bevel_pair_member_to_domain(schema: BevelPairMemberSpecSchema) -> BevelPairMemberSpec:
-    return BevelPairMemberSpec(tooth_count=schema.tooth_count, profile_shift=schema.profile_shift)
+    return BevelPairMemberSpec(
+        tooth_count=schema.tooth_count, profile_shift=schema.profile_shift, spiral_hand=schema.spiral_hand
+    )
 
 
 def _bevel_pair_member_to_schema(member: BevelPairMemberSpec) -> BevelPairMemberSpecSchema:
-    return BevelPairMemberSpecSchema(tooth_count=member.tooth_count, profile_shift=member.profile_shift)
+    return BevelPairMemberSpecSchema(
+        tooth_count=member.tooth_count, profile_shift=member.profile_shift, spiral_hand=member.spiral_hand
+    )
 
 
 def _point_ref_to_domain(schema: PointRefSchema) -> PointRef:
@@ -820,6 +825,7 @@ def _bevel_pair_feature_response(
         shaft_angle_degrees=feature.shaft_angle_degrees,
         backlash=feature.backlash,
         points_per_flank=feature.points_per_flank,
+        spiral_angle_degrees=feature.spiral_angle_degrees,
         effective_profile_shift_1=effective_profile_shift_1,
         effective_profile_shift_2=effective_profile_shift_2,
         locked=part.is_locked(feature.id),
@@ -3502,6 +3508,7 @@ def create_bevel_pair_feature(part_id: str, payload: BevelPairFeatureCreate) -> 
         shaft_angle_degrees=payload.shaft_angle_degrees,
         backlash=payload.backlash,
         points_per_flank=payload.points_per_flank,
+        spiral_angle_degrees=payload.spiral_angle_degrees,
     )
     _, warnings = resolve_bevel_pair(part, feature)  # raises on an unresolvable/invalid bevel pair
     part.add_feature(feature)
@@ -3544,6 +3551,9 @@ def update_bevel_pair_feature(part_id: str, feature_id: str, payload: BevelPairF
     new_points_per_flank = (
         payload.points_per_flank if payload.points_per_flank is not None else feature.points_per_flank
     )
+    new_spiral_angle_degrees = (
+        payload.spiral_angle_degrees if payload.spiral_angle_degrees is not None else feature.spiral_angle_degrees
+    )
 
     _validate_plane_ref(part, new_plane_ref)
 
@@ -3558,6 +3568,7 @@ def update_bevel_pair_feature(part_id: str, feature_id: str, payload: BevelPairF
         shaft_angle_degrees=new_shaft_angle_degrees,
         backlash=new_backlash,
         points_per_flank=new_points_per_flank,
+        spiral_angle_degrees=new_spiral_angle_degrees,
     )
     _, warnings = resolve_bevel_pair(part, candidate)  # raises on an unresolvable/invalid bevel pair
 
@@ -3570,6 +3581,7 @@ def update_bevel_pair_feature(part_id: str, feature_id: str, payload: BevelPairF
     feature.shaft_angle_degrees = candidate.shaft_angle_degrees
     feature.backlash = candidate.backlash
     feature.points_per_flank = candidate.points_per_flank
+    feature.spiral_angle_degrees = candidate.spiral_angle_degrees
     return _bevel_pair_feature_response(part, feature, warnings)
 
 
@@ -4074,6 +4086,18 @@ def _gear_preview_bevel_pair_response(payload: GearPreviewBevelPairRequest) -> t
         for w in (
             _bevel_face_width_warning("member_1", geometry_1),
             _bevel_face_width_warning("member_2", geometry_2),
+            # `docs/gear-design/13-spiral-bevel-pair.md`'s own Spike C §3 -
+            # cheap, pure math (no OCCT), so the preview can surface a
+            # hand-of-spiral mismatch before Create even though its own
+            # axial-cross-section envelope can't show spiral curvature
+            # itself (unaffected - see GearPreviewBevelMember's own
+            # docstring / 12-spiral-bevel-gear.md's "Preview stays
+            # unchanged" finding).
+            spiral_hand_mismatch_warning(
+                payload.spiral_angle_degrees,
+                _spiral_hand_from_feature(payload.member_1.spiral_hand),
+                _spiral_hand_from_feature(payload.member_2.spiral_hand),
+            ),
         )
         if w
     ]
