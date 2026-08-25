@@ -186,3 +186,80 @@ class _BodyOpacitySheetState extends State<_BodyOpacitySheet> {
     );
   }
 }
+
+/// Shows a bottom sheet with a single slider for the 3D viewport's Polygon
+/// Resolution (curved-surface tessellation density) - 0% (coarsest, fewest
+/// triangles) to 100% (finest, most), 5% steps, same shape as
+/// [showBodyOpacitySheet] just above (a slider plus an Apply button, no
+/// live preview until confirmed) - returns the chosen quality on Apply, or
+/// null if dismissed without applying. Unlike opacity's slider, this one is
+/// *not* inverted: a higher percentage directly means finer/smoother
+/// curves, since "more resolution" is the intuitive direction here.
+Future<double?> showPolygonResolutionSheet(BuildContext context, {required double initialQuality}) {
+  return showModalBottomSheet<double>(
+    context: context,
+    builder: (sheetContext) => _PolygonResolutionSheet(initialQuality: initialQuality),
+  );
+}
+
+class _PolygonResolutionSheet extends StatefulWidget {
+  final double initialQuality;
+  const _PolygonResolutionSheet({required this.initialQuality});
+
+  @override
+  State<_PolygonResolutionSheet> createState() => _PolygonResolutionSheetState();
+}
+
+class _PolygonResolutionSheetState extends State<_PolygonResolutionSheet> {
+  late double _quality;
+
+  @override
+  void initState() {
+    super.initState();
+    _quality = widget.initialQuality;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final resolutionPercent = (_quality * 100).round();
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Polygon Resolution', style: Theme.of(context).textTheme.titleMedium),
+            Text(
+              'Higher resolution smooths curved surfaces at the cost of more triangles.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            Row(
+              children: [
+                Expanded(
+                  child: Slider(
+                    value: resolutionPercent.toDouble(),
+                    min: 0,
+                    max: 100,
+                    divisions: 20,
+                    label: '$resolutionPercent%',
+                    onChanged: (value) => setState(() => _quality = value / 100),
+                  ),
+                ),
+                SizedBox(width: 48, child: Text('$resolutionPercent%', textAlign: TextAlign.end)),
+              ],
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: () => Navigator.of(context).pop(_quality),
+                child: const Text('Apply'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}

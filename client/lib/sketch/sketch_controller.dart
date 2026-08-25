@@ -2553,9 +2553,16 @@ class SketchController extends ChangeNotifier {
     constraints
       ..clear()
       ..addEntries(result.constraints.map((c) => MapEntry(c.id, c)));
-    // Same >= 2 filter as [_refreshProfile] (a standalone Circle profile is
-    // exactly 2 points: center, radius point).
-    _closedProfileFills = result.profile.fillableLoops.where((loop) => loop.pointIds.length >= 2).toList();
+    // `pointIds.length >= 2` alone (a standalone Circle profile is exactly
+    // 2 points: center, radius point) used to also drop every Text-contour
+    // loop, since a Text loop's own `pointIds` is always empty (see
+    // `ProfileLoopDto.textVertices`'s own doc comment) - `isTextLoop`
+    // recognizes those separately now, so a closed Text profile gets the
+    // same "ready to extrude" fill overlay every other closed loop does
+    // (see `SketchCanvas._paintClosedProfileFill`/`_addLoopBoundary`).
+    _closedProfileFills = result.profile.fillableLoops
+        .where((loop) => loop.pointIds.length >= 2 || loop.isTextLoop)
+        .toList();
     _profileBranchPointIds = result.profile.branchPointIds;
   }
 

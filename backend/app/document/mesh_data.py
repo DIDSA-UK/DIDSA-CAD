@@ -27,6 +27,43 @@ class MeshQuality:
 
 DEFAULT_MESH_QUALITY = MeshQuality()
 
+# Polygon Resolution slider (client: hamburger menu > View > Polygon
+# Resolution, same bottom-sheet-slider UX as Body Transparency): the
+# client's own `quality` (0.0 = coarsest/fewest triangles, 1.0 = finest/
+# most) maps onto both deflection tolerances via straight-line
+# interpolation between these two bounds. Chosen so `quality=0.5` lands
+# exactly on `DEFAULT_MESH_QUALITY`'s own 0.5/0.5 (symmetric bounds around
+# that midpoint), so the slider's own default position reproduces every
+# existing caller's un-parameterized tessellation byte-for-byte, and so
+# `GET /parts/{id}/mesh`'s `quality` query param can stay optional
+# (`None` = `DEFAULT_MESH_QUALITY`, completely unparameterized, for every
+# existing/test call site that never passes it at all).
+#
+# The finest bound is deliberately conservative, not "as fine as OCCT
+# allows" - `MeshQuality`'s own docstring already flags the Pi 5 as this
+# viewport's target deployment hardware, and a too-fine deflection on a
+# complex part multiplies both tessellation time and (per
+# `client/lib/viewport3d/mesh_geometry.dart`'s own flat, unwelded
+# triangle-soup convention - 3 fresh vertices per triangle, no sharing)
+# the vertex/index buffer size the client has to upload to the GPU every
+# time the mesh changes.
+_FINEST_DEFLECTION = 0.1
+_COARSEST_DEFLECTION = 0.9
+
+
+def mesh_quality_from_slider(quality: float) -> MeshQuality:
+    """`quality` (see this module's own `_FINEST_DEFLECTION`/
+    `_COARSEST_DEFLECTION` doc comment) -> the `MeshQuality` it maps to -
+    the same linear_deflection value used for both tolerances, since a
+    curved surface's own triangle count is driven by both together and
+    the client's slider only exposes one combined "resolution" knob, not
+    two independent ones. Callers are expected to clamp `quality` to
+    [0, 1] themselves (`GET /parts/{id}/mesh`'s own `Query(ge=0.0,
+    le=1.0)` does) - this does not re-clamp, so an out-of-range input
+    extrapolates past the two named bounds rather than silently clipping."""
+    deflection = _COARSEST_DEFLECTION - quality * (_COARSEST_DEFLECTION - _FINEST_DEFLECTION)
+    return MeshQuality(linear_deflection=deflection, angular_deflection=deflection)
+
 
 @dataclass
 class Triangle:

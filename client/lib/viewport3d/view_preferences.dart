@@ -15,6 +15,10 @@ class ViewPreferences {
   static const String bgColourPrefKey = 'view_bg_colour';
   static const String bodyColourPrefKey = 'view_body_colour';
   static const String bodyOpacityPrefKey = 'view_body_opacity';
+  // Polygon Resolution slider (hamburger menu > View > Polygon Resolution) -
+  // see [defaultMeshQuality]'s own doc comment for what the stored value
+  // means.
+  static const String meshQualityPrefKey = 'view_mesh_quality';
   static const String renderModePrefKey = 'view_render_mode';
   // A4: perspective toggle (false = orthographic default per A4 brief)
   static const String perspectivePrefKey = 'view_perspective';
@@ -43,6 +47,17 @@ class ViewPreferences {
   static const String defaultBodyColourHex = '#B0B8C1';
   static const double defaultBodyOpacity = 1.0;
 
+  /// The Polygon Resolution slider's own value, `0.0` (coarsest) .. `1.0`
+  /// (finest) - sent straight through as `DocumentApiClient.getPartMesh`'s
+  /// `meshQuality` param, which the backend maps onto real tessellation
+  /// tolerances (`app.document.mesh_data.mesh_quality_from_slider`). `0.5`
+  /// reproduces the backend's own pre-slider `DEFAULT_MESH_QUALITY`
+  /// tessellation exactly (see that function's own doc comment for why the
+  /// bounds are chosen symmetric around 0.5), so a first-launch/cleared-
+  /// preferences client's very first mesh fetch looks identical to before
+  /// this slider existed.
+  static const double defaultMeshQuality = 0.5;
+
   /// Stage 19a Item 5: the most common default render mode in professional
   /// CAD tools (Fusion 360, SolidWorks, Onshape) - was [ViewportRenderMode.shaded].
   static const ViewportRenderMode defaultRenderMode = ViewportRenderMode.shadedWithEdges;
@@ -59,6 +74,7 @@ class ViewPreferences {
   static String _bgColourHex = defaultBgColourHex;
   static String _bodyColourHex = defaultBodyColourHex;
   static double _bodyOpacity = defaultBodyOpacity;
+  static double _meshQuality = defaultMeshQuality;
   static ViewportRenderMode _renderMode = defaultRenderMode;
   static bool _isPerspective = defaultIsPerspective;
   static double _farClip = kDefaultFarClip;
@@ -67,6 +83,7 @@ class ViewPreferences {
   static String get bgColourHex => _bgColourHex;
   static String get bodyColourHex => _bodyColourHex;
   static double get bodyOpacity => _bodyOpacity;
+  static double get meshQuality => _meshQuality;
   static ViewportRenderMode get renderMode => _renderMode;
   static bool get isPerspective => _isPerspective;
   static double get farClip => _farClip;
@@ -82,6 +99,7 @@ class ViewPreferences {
     _bgColourHex = prefs.getString(bgColourPrefKey) ?? defaultBgColourHex;
     _bodyColourHex = prefs.getString(bodyColourPrefKey) ?? defaultBodyColourHex;
     _bodyOpacity = prefs.getDouble(bodyOpacityPrefKey) ?? defaultBodyOpacity;
+    _meshQuality = prefs.getDouble(meshQualityPrefKey) ?? defaultMeshQuality;
     final storedRenderMode = prefs.getString(renderModePrefKey);
     _renderMode = ViewportRenderMode.values.firstWhere(
       (mode) => mode.name == storedRenderMode,
@@ -109,6 +127,12 @@ class ViewPreferences {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setDouble(bodyOpacityPrefKey, opacity);
     _bodyOpacity = opacity;
+  }
+
+  static Future<void> setMeshQuality(double quality) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(meshQualityPrefKey, quality);
+    _meshQuality = quality;
   }
 
   static Future<void> setRenderMode(ViewportRenderMode mode) async {

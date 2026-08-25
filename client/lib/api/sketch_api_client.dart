@@ -1319,7 +1319,29 @@ class ProfileLoopDto {
   final List<String> lineIds;
   final List<ProfileLoopDto> innerLoops;
 
-  ProfileLoopDto({required this.pointIds, this.lineIds = const [], this.innerLoops = const []});
+  /// Bug fix: a Text-contour loop (`app.sketch.profile._text_profile`) has
+  /// no real Points to read `pointIds` from - the backend's own
+  /// `ProfileResponse.text_vertices` carries this loop's tessellated
+  /// (x, y) polygon (already placed in sketch-local space) instead, so the
+  /// canvas can still recognize/fill it as a real closed loop rather than
+  /// silently treating every Text loop as if it were degenerate (see
+  /// [isTextLoop]/`SketchCanvas._profileLoopPath`). `null` for every
+  /// non-Text loop.
+  final List<(double, double)>? textVertices;
+
+  ProfileLoopDto({
+    required this.pointIds,
+    this.lineIds = const [],
+    this.innerLoops = const [],
+    this.textVertices,
+  });
+
+  /// Whether this loop is a Text glyph contour rather than a Line/Circle/
+  /// Ellipse-chain polygon - mirrors the backend's own
+  /// `app.sketch.profile._is_text_profile` (both key off whether a
+  /// tessellated-vertices fallback is present at all, since a Text loop's
+  /// [pointIds] is always empty).
+  bool get isTextLoop => textVertices != null;
 
   factory ProfileLoopDto.fromJson(Map<String, dynamic> json) => ProfileLoopDto(
         pointIds: (json['point_ids'] as List<dynamic>).cast<String>(),
@@ -1327,6 +1349,8 @@ class ProfileLoopDto {
         innerLoops: (json['inner_loops'] as List<dynamic>? ?? [])
             .map((loop) => ProfileLoopDto.fromJson(loop as Map<String, dynamic>))
             .toList(),
+        textVertices:
+            (json['text_vertices'] as List<dynamic>?)?.map(TextContourDto._point).toList(),
       );
 }
 

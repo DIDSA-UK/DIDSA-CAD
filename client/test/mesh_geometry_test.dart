@@ -38,7 +38,7 @@ void main() {
     ]);
   });
 
-  test('meshBuffersFromMesh writes a flat 16-bit index buffer from triangleIndices', () {
+  test('meshBuffersFromMesh writes a flat 32-bit index buffer from triangleIndices', () {
     final mesh = MeshDto(
       vertices: [
         [0, 0, 0],
@@ -59,9 +59,48 @@ void main() {
     );
 
     final buffers = meshBuffersFromMesh(mesh);
-    final indices = Uint16List.sublistView(buffers.indexData);
+    final indices = Uint32List.sublistView(buffers.indexData);
 
     expect(indices, [0, 1, 2, 2, 1, 3]);
+  });
+
+  test(
+      'meshBuffersFromMesh survives a vertex index past the old 16-bit ceiling - '
+      'regression guard for the Uint16 index-wraparound bug (a dense mesh - e.g. '
+      'several concentric curved bands with internal ribs - rendered as a garbled, '
+      'self-intersecting mess in the 3D viewport while the exact same tessellation '
+      'exported to glTF looked correct, because indices above 65535 silently wrapped '
+      'mod 65536 instead of pointing at the real vertex)', () {
+    // One triangle whose own vertex data sits harmlessly near the origin, but
+    // whose *index* into a much larger vertex list is deliberately placed
+    // just past the old Uint16 ceiling - only the index buffer's own dtype
+    // matters for this bug, not how many vertices are actually populated.
+    const overflowIndex = 70000;
+    final vertices = List.generate(
+      overflowIndex + 3,
+      (i) => i == overflowIndex
+          ? [0.0, 0.0, 0.0]
+          : i == overflowIndex + 1
+              ? [1.0, 0.0, 0.0]
+              : i == overflowIndex + 2
+                  ? [0.0, 1.0, 0.0]
+                  : [0.0, 0.0, 0.0],
+    );
+    final normals = List.generate(vertices.length, (_) => [0.0, 0.0, 1.0]);
+    final mesh = MeshDto(
+      vertices: vertices,
+      normals: normals,
+      triangleIndices: [
+        [overflowIndex, overflowIndex + 1, overflowIndex + 2],
+      ],
+    );
+
+    final buffers = meshBuffersFromMesh(mesh);
+    final indices = Uint32List.sublistView(buffers.indexData);
+
+    // A Uint16-backed index buffer would have wrapped these to
+    // [70000 - 65536, 70001 - 65536, 70002 - 65536] = [4464, 4465, 4466].
+    expect(indices, [overflowIndex, overflowIndex + 1, overflowIndex + 2]);
   });
 
   test(
@@ -89,8 +128,8 @@ void main() {
     expect(defaulted.vertexCount, explicit.vertexCount);
     expect(defaulted.vertexData, explicit.vertexData);
     expect(
-      Uint16List.sublistView(defaulted.indexData),
-      Uint16List.sublistView(explicit.indexData),
+      Uint32List.sublistView(defaulted.indexData),
+      Uint32List.sublistView(explicit.indexData),
     );
   });
 
@@ -130,7 +169,7 @@ void main() {
     final secondCopyNormalZ = buffers.vertexData[41];
     expect(secondCopyNormalZ, -1);
 
-    final indices = Uint16List.sublistView(buffers.indexData);
+    final indices = Uint32List.sublistView(buffers.indexData);
     expect(indices.length, 6);
     // Front-facing triangle, unchanged.
     expect(indices.sublist(0, 3), [0, 1, 2]);
@@ -278,14 +317,14 @@ void main() {
       ]);
     });
 
-    test('writes a flat 16-bit index buffer of 0..vertexCount-1', () {
+    test('writes a flat 32-bit index buffer of 0..vertexCount-1', () {
       final buffers = triangleHighlightBuffers([
         (vm.Vector3(0, 0, 0), vm.Vector3(1, 0, 0), vm.Vector3(0, 1, 0)),
         (vm.Vector3(0, 0, 0), vm.Vector3(0, 1, 0), vm.Vector3(0, 0, 1)),
       ]);
 
       // 2 input triangles → 4 output triangles → 12 vertices → 12 indices.
-      final indices = Uint16List.sublistView(buffers.indexData);
+      final indices = Uint32List.sublistView(buffers.indexData);
       expect(indices, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
     });
 

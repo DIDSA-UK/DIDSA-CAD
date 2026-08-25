@@ -3695,16 +3695,35 @@ class _SketchPainter extends CustomPainter {
   /// isn't drawn in place of the real (possibly non-circular, rotated)
   /// ellipse shape.
   ///
-  /// Known v1 gap: a Text-contour loop (`loop.pointIds` empty, `line_ids`
-  /// holding just the owning Text entity's id - see
-  /// `app.sketch.profile._text_profile`) has no packed-point convention
-  /// this function recognizes at all, so it safely returns false (no
-  /// crash, simply no green "ready to extrude" overlay drawn) for any
-  /// profile that includes one - Text already renders its own filled
-  /// glyph shape directly (see the dedicated Text loop in [paint]), which
-  /// covers the most important "this is solid" visual signal; the
-  /// additional green overlay other extrudable profiles get is deferred.
+  /// Bug fix (on-device feedback: closed-profile detection either didn't
+  /// pick up Text at all, or read as wrong): a Text-contour loop
+  /// (`loop.pointIds` empty, `line_ids` holding just the owning Text
+  /// entity's id - see `app.sketch.profile._text_profile`) used to have no
+  /// packed-point convention this function recognized at all, so it always
+  /// returned false here - no green "ready to extrude" overlay was ever
+  /// drawn for a Text profile, even a genuinely closed one, which read as
+  /// "profile detection doesn't see my text." Text's own tessellated
+  /// polygon travels separately, in `loop.textVertices`/`ProfileLoopDto.
+  /// isTextLoop` (`ProfileResponse.text_vertices`, added alongside this
+  /// fix - previously computed server-side by `_text_profile` but never
+  /// round-tripped to the client at all), already placed in sketch-local
+  /// (x, y) the same way every other entity's `pointIds` resolve to
+  /// screen space below - so it's added as a closed sub-path directly,
+  /// exactly like the ordinary polygon case just past this branch. A
+  /// glyph's own holes (e.g. "o"'s counter) are separate `innerLoops`
+  /// entries, each itself a Text loop with its own `textVertices` -
+  /// [_profileLoopPath] already adds every `innerLoops` entry as its own
+  /// sub-path into the same even-odd [path], so a hole "just works" here
+  /// with no extra handling.
   bool _addLoopBoundary(Path path, ProfileLoopDto loop) {
+    if (loop.isTextLoop) {
+      final vertices = loop.textVertices!;
+      if (vertices.length < 3) return false;
+      final screenPoints = [for (final v in vertices) transform.sketchToScreen(v.$1, v.$2)];
+      path.addPolygon(screenPoints, true);
+      return true;
+    }
+
     // On-device feedback fix: a Profile loop can now reference a Pattern/
     // Mirror instance's own derived (synthetic-id) Points/Arcs, not just
     // real ones - `controller.points`/`controller.arcs` only ever hold the

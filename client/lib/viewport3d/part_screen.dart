@@ -341,6 +341,13 @@ class _PartScreenState extends State<PartScreen> {
   String _bodyColourHex = ViewPreferences.defaultBodyColourHex;
   double _bodyOpacity = ViewPreferences.defaultBodyOpacity;
 
+  /// Polygon Resolution slider - unlike every other [ViewPreferences] field
+  /// on this screen, this one is a *mesh fetch* param (see
+  /// [DocumentApiClient.getPartMesh]'s `meshQuality`), not a pure rendering
+  /// preference, so changing it re-fetches (see [_onMeshQualityChanged])
+  /// rather than just triggering a repaint of already-fetched data.
+  double _meshQuality = ViewPreferences.defaultMeshQuality;
+
   /// The `PhysicallyBasedMaterial`/lighting upgrade's own controls - see
   /// [ScenePreferences], loaded/persisted the same way as the block above.
   double _sceneRoughness = ScenePreferences.defaultRoughness;
@@ -3727,10 +3734,28 @@ class _PartScreenState extends State<PartScreen> {
     await ViewPreferences.load();
     await ScenePreferences.load();
     if (!mounted) return;
+    // Bug fix: this async load races [_loadPart] (both fired, unawaited,
+    // from initState) - on a slow/first launch, [_refreshMesh] can already
+    // have fetched the Part's mesh (using [_meshQuality]'s in-memory
+    // default) before this stored preference finishes loading. Every other
+    // preference here is a pure rendering param that just needs a repaint
+    // to pick up (the `setState` below already does that), but
+    // [_meshQuality] is a *fetch* param (see [DocumentApiClient.
+    // getPartMesh]'s `meshQuality`) - a `setState` alone would silently
+    // leave the already-fetched mesh at the wrong resolution until
+    // something else happened to re-trigger [_refreshMesh]. Re-fetching
+    // here whenever the stored value actually differs from what
+    // [_refreshMesh] would have already used closes that gap; a no-op
+    // (skipped) on every launch where the two preference loads didn't race,
+    // which is the common case since `shared_preferences` IO is normally
+    // much faster than the part-creation/first-mesh-fetch round trip.
+    final storedMeshQuality = ViewPreferences.meshQuality;
+    final meshQualityChanged = storedMeshQuality != _meshQuality;
     setState(() {
       _bgColourHex = ViewPreferences.bgColourHex;
       _bodyColourHex = ViewPreferences.bodyColourHex;
       _bodyOpacity = ViewPreferences.bodyOpacity;
+      _meshQuality = storedMeshQuality;
       _renderMode = ViewPreferences.renderMode;
       _isPerspective = ViewPreferences.isPerspective;
       _farClip = ViewPreferences.farClip;
@@ -3738,6 +3763,9 @@ class _PartScreenState extends State<PartScreen> {
       _sceneLightIntensity = ScenePreferences.lightIntensity;
       _sceneEmissiveIntensity = ScenePreferences.emissiveIntensity;
     });
+    if (meshQualityChanged && _part != null) {
+      await _refreshMesh();
+    }
   }
 
   Future<void> _onBgColourChanged(String hex) async {
@@ -3768,6 +3796,16 @@ class _PartScreenState extends State<PartScreen> {
   Future<void> _onBodyOpacityChanged(double opacity) async {
     setState(() => _bodyOpacity = opacity);
     await ViewPreferences.setBodyOpacity(opacity);
+  }
+
+  /// Unlike [_onBodyOpacityChanged] etc., [_meshQuality] is a mesh *fetch*
+  /// param (see [DocumentApiClient.getPartMesh]'s `meshQuality`), not a
+  /// pure rendering preference - a `setState` alone would just repaint the
+  /// already-fetched (old-resolution) mesh, so this also re-fetches it.
+  Future<void> _onMeshQualityChanged(double quality) async {
+    setState(() => _meshQuality = quality);
+    await ViewPreferences.setMeshQuality(quality);
+    await _refreshMesh();
   }
 
   /// A4: toggles perspective/orthographic projection.
@@ -4227,6 +4265,7 @@ class _PartScreenState extends State<PartScreen> {
       part.id,
       hiddenFeatureIds: _hiddenFeatureIds.toList(),
       rollbackExcludedFeatureIds: _rollbackExcludedFeatureIds.toList(),
+      meshQuality: _meshQuality,
     );
     if (!mounted) return;
     final isPlaceholder = response.length == 1 && response.first.source == 'placeholder';
@@ -6760,6 +6799,7 @@ class _PartScreenState extends State<PartScreen> {
       hiddenFeatureIds: _hiddenFeatureIds.toList(),
       rollbackExcludedFeatureIds:
           _rollbackExcludedFeatureIds.where((id) => id != featureId).toList(),
+      meshQuality: _meshQuality,
     );
     if (!mounted) return;
     BodyMeshDto? match;
@@ -8677,6 +8717,7 @@ class _PartScreenState extends State<PartScreen> {
       hiddenFeatureIds: _hiddenFeatureIds.toList(),
       rollbackExcludedFeatureIds:
           _rollbackExcludedFeatureIds.where((id) => id != featureId).toList(),
+      meshQuality: _meshQuality,
     );
     if (!mounted) return;
     BodyMeshDto? match;
@@ -9361,6 +9402,8 @@ class _PartScreenState extends State<PartScreen> {
                     onBgColourChanged: _onBgColourChanged,
                     onBodyColourChanged: _onBodyColourChanged,
                     onBodyOpacityChanged: _onBodyOpacityChanged,
+                    meshQuality: _meshQuality,
+                    onMeshQualityChanged: _onMeshQualityChanged,
                     sceneRoughness: _sceneRoughness,
                     sceneLightIntensity: _sceneLightIntensity,
                     sceneEmissiveIntensity: _sceneEmissiveIntensity,

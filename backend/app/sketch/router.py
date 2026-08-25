@@ -403,6 +403,7 @@ def _profile_response(profile: Profile) -> ProfileResponse:
         point_ids=profile.point_ids,
         line_ids=profile.line_ids,
         inner_loops=[_profile_response(inner) for inner in profile.inner_loops],
+        text_vertices=profile.text_vertices,
     )
 
 

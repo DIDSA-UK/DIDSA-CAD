@@ -69,7 +69,7 @@ from app.document.graph import (
     transitive_dependents,
 )
 from app.document.import_geometry import resolve_import
-from app.document.mesh import DEFAULT_MESH_QUALITY, MeshData, tessellate_shape
+from app.document.mesh import DEFAULT_MESH_QUALITY, MeshData, mesh_quality_from_slider, tessellate_shape
 from app.document.mesh_data import Triangle
 from app.document.mesh_export import encode_glb, encode_obj, encode_stl
 from app.document.mirror import resolve_mirror
@@ -4555,6 +4555,7 @@ def get_part_mesh(
     part_id: str,
     hidden_feature_ids: list[str] = Query(default=[]),
     rollback_excluded_feature_ids: list[str] = Query(default=[]),
+    quality: float | None = Query(default=None, ge=0.0, le=1.0),
 ) -> list[BodyMeshResponse]:
     """A1: returns an array of Bodies rather than one combined mesh - each
     entry is one independently-tessellated Body, carrying its own stable
@@ -4602,12 +4603,23 @@ def get_part_mesh(
       there is truly no Body to report at all - not even a hidden one).
 
     Both are purely client-side and never persisted here; the client
-    re-sends whichever apply on every mesh fetch."""
+    re-sends whichever apply on every mesh fetch.
+
+    `quality`: the 3D viewport's own Polygon Resolution slider (hamburger
+    menu > View > Polygon Resolution, same bottom-sheet-slider UX as Body
+    Transparency) - 0.0 (coarsest, fewest triangles) .. 1.0 (finest, most),
+    mapped onto real OCCT tessellation tolerances by
+    `app.document.mesh_data.mesh_quality_from_slider`. `None` (the default -
+    every pre-existing call site, including every test, that never sends
+    this param at all) keeps using `DEFAULT_MESH_QUALITY` completely
+    unparameterized, so this is purely additive: no existing behavior
+    changes unless a client actually opts in by sending a value."""
     part = get_part_or_404(part_id)
+    mesh_quality = DEFAULT_MESH_QUALITY if quality is None else mesh_quality_from_slider(quality)
 
     if not part.produces_solid_geometry:
         box = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
-        mesh_data = tessellate_shape(box, DEFAULT_MESH_QUALITY)
+        mesh_data = tessellate_shape(box, mesh_quality)
         return [
             BodyMeshResponse(
                 body_id=_PLACEHOLDER_BODY_ID, source="placeholder", mesh=_mesh_vertex_data(mesh_data)
@@ -4620,7 +4632,7 @@ def get_part_mesh(
         BodyMeshResponse(
             body_id=body_id,
             source="computed",
-            mesh=_mesh_vertex_data(tessellate_shape(shape, DEFAULT_MESH_QUALITY)),
+            mesh=_mesh_vertex_data(tessellate_shape(shape, mesh_quality)),
             hidden=base_feature_id(body_id) in hidden,
         )
         for body_id, shape in bodies.items()
