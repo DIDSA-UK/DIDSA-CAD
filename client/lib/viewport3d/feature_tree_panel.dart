@@ -390,7 +390,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
                           ],
                         ),
                       ),
-                      Positioned(top: 0, bottom: 0, right: -7, child: _buildDragHandle(totalWidth)),
+                      Positioned(top: 0, bottom: 0, right: -12, child: _buildDragHandle(totalWidth)),
                     ],
                   ),
                 ),
@@ -402,12 +402,16 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
     );
   }
 
-  /// The trailing-edge resize grip - a 14px-wide invisible hit target
-  /// (comfortable for touch even though the visible grip inside it is
-  /// slimmer) that adjusts [_widthFraction] by the same fraction of
-  /// [totalWidth] the user's finger/pointer actually moved, clamped to
-  /// [_minWidthFraction]/[_maxWidthFraction] so the panel can never be
-  /// dragged down to unreadable or out past covering the whole viewport.
+  /// The trailing-edge resize grip - a 24px-wide invisible hit target
+  /// (on-device feedback: the original 14px target and its 4x56 visible grip
+  /// were both too small to find/grab reliably) that adjusts [_widthFraction]
+  /// by the same fraction of [totalWidth] the user's finger/pointer actually
+  /// moved, clamped to [_minWidthFraction]/[_maxWidthFraction] so the panel
+  /// can never be dragged down to unreadable or out past covering the whole
+  /// viewport. The visible grip itself is now 6x64 - thicker and taller, so
+  /// it reads clearly as a draggable affordance rather than a thin divider
+  /// line. [build]'s own `Positioned` offsets this by half its new width
+  /// (`right: -12`) to keep it centered straddling the panel's edge.
   Widget _buildDragHandle(double totalWidth) {
     return MouseRegion(
       cursor: SystemMouseCursors.resizeLeftRight,
@@ -423,14 +427,14 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
           });
         },
         child: SizedBox(
-          width: 14,
+          width: 24,
           child: Center(
             child: Container(
-              width: 4,
-              height: 56,
+              width: 6,
+              height: 64,
               decoration: BoxDecoration(
                 color: Theme.of(context).colorScheme.outlineVariant,
-                borderRadius: BorderRadius.circular(2),
+                borderRadius: BorderRadius.circular(3),
               ),
             ),
           ),
