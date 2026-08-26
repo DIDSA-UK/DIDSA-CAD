@@ -29,6 +29,7 @@ import '../sketch/sketch_controller.dart';
 import '../sketch/sketch_screen.dart';
 import 'add_button_menu.dart';
 import 'body_naming.dart';
+import 'boolean_panel.dart';
 import 'cascade_delete_dialog.dart';
 import 'chamfer_panel.dart';
 import 'create_plane_context_sheet.dart';
@@ -93,6 +94,10 @@ const _bodyProducingFeatureTypes = {
   // docstring), so it's an eligible Mirror/Pattern/Merge source the same
   // way every other type in this set already is.
   'merge',
+  // Boolean family, Subtract/Common: a BooleanFeature re-registers its own
+  // target Body id(s) too (see the backend `BooleanFeature`'s own
+  // docstring), same "eligible source" reasoning as `merge` just above.
+  'boolean',
 };
 
 /// Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
@@ -139,6 +144,23 @@ enum _MirrorStep { pickingBodies, pickingPlane }
 /// for why the Feature is created at that transition rather than deferred to
 /// [MergePanel]'s own Confirm).
 enum _MergeStep { pickingBodies, confirming }
+
+/// Boolean family, Subtract/Common: which third of the guided Subtract/
+/// Common flow is currently live - mirrors [_MirrorStep]'s own two-stage
+/// body-picking shape, generalized to two independent body picks instead of
+/// one body pick plus one plane pick (see this file's own "Boolean family,
+/// Subtract/Common" state-field section header comment for the full
+/// reasoning). `pickingTargets` accumulates 1+ Body taps (mirrors
+/// `_MergeStep.pickingBodies`'s own multi-select-then-confirm shape, just
+/// gated on 1+ instead of 2+ - see `_confirmBooleanTargetSelection`);
+/// `pickingTools` accumulates a second, disjoint set of 1+ Body taps the
+/// identical way (see `_confirmBooleanToolSelection`, which also creates
+/// the preview BooleanFeature - the same "the Feature is created at the
+/// transition into the final step, not deferred to the panel's own
+/// Confirm" convention `_confirmMergeBodySelection` already uses);
+/// `confirming` just shows [BooleanPanel]'s summary/Keep-Consume-toggle/
+/// Cancel/Confirm over the already-created preview BooleanFeature.
+enum _BooleanStep { pickingTargets, pickingTools, confirming }
 
 /// Pattern/Mirror scoping's Phase 2/6 (`docs/pattern-mirror-scope.md`
 /// §2.2/§2.8/§4): which half of the guided Pattern flow is currently live -
@@ -612,6 +634,7 @@ class _PartScreenState extends State<PartScreen> {
       !_mirrorActive &&
       !_patternActive &&
       !_mergeActive &&
+      !_booleanActive &&
       !_profilePickerActive &&
       !_pathPickerActive;
 
@@ -634,6 +657,7 @@ class _PartScreenState extends State<PartScreen> {
           !_mirrorActive &&
           !_patternActive &&
           !_mergeActive &&
+          !_booleanActive &&
           !_profilePickerActive &&
           !_pathPickerActive) ||
       // Pattern/Mirror scoping's Phase 6: the Build Tree multi-select
@@ -683,6 +707,7 @@ class _PartScreenState extends State<PartScreen> {
       _mirrorActive ||
       _patternActive ||
       _mergeActive ||
+      _booleanActive ||
       _profilePickerActive ||
       _pathPickerActive ||
       _planeSelectionMode;
@@ -838,6 +863,16 @@ class _PartScreenState extends State<PartScreen> {
             entity.kind == SelectionEntityKind.face ||
             entity.kind == SelectionEntityKind.sketchLine)) {
       _setPatternAxisFromEntity(entity);
+      return;
+    }
+    // Boolean family, Subtract/Common: a Body tap during `pickingTools` that
+    // lands on one of the already-confirmed target Bodies is ignored
+    // outright (not toggled) - see this file's own "Boolean family,
+    // Subtract/Common" state-field section header comment for why targets
+    // and tools must stay disjoint within one session.
+    if (_booleanStep == _BooleanStep.pickingTools &&
+        entity.kind == SelectionEntityKind.body &&
+        (_booleanTargetBodyIds?.contains(entity.bodyId) ?? false)) {
       return;
     }
     setState(() {
@@ -1623,6 +1658,104 @@ class _PartScreenState extends State<PartScreen> {
   /// only ever reads the already-captured [_mergeBodyIds], never
   /// [_selectedEntities], once `confirming` is reached).
   static const _mergeBodyPickerSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: false,
+    body: true,
+    sketchPoint: false,
+    sketchLine: false,
+    sketchCircle: false,
+    sketchArc: false,
+    sketchEllipse: false,
+    sketchSpline: false,
+    plane: false,
+  );
+
+  // --- Boolean family, Subtract/Common ----------------------------------------
+  // Two-stage picking over Bodies, both sides already-existing Bodies (unlike
+  // every ExtrudeFeature-family Boss/Cut, which fuses/cuts a freshly-computed
+  // *transient* solid into/from `target_body_ids` - see the backend
+  // `BooleanFeature`'s own docstring) - `_booleanStep` tracks which of the
+  // three mutually-exclusive phases is currently live (see `_BooleanStep`'s
+  // own doc comment). `pickingTargets`/`pickingTools` each accumulate Body
+  // taps in `_selectedEntities` via the generic toggle, exactly like
+  // `_MergeStep.pickingBodies` does - a single shared body-only filter (see
+  // `_booleanBodyPickerSelectionFilter` below) covers both stages, since
+  // (unlike Mirror, whose second stage picks a face/plane instead) both of
+  // this flow's stages pick the same kind of thing. The one piece of
+  // special-casing this needs beyond Merge's own shape: a Body tap during
+  // `pickingTools` that lands on one of the already-confirmed
+  // `_booleanTargetBodyIds` is ignored outright (see `_toggleSelectedEntity`'s
+  // own Boolean branch) - target_body_ids/tool_body_ids must stay disjoint
+  // (the backend's own `_validate_boolean_body_ids`), so a target can never
+  // also become a tool pick within the same session.
+
+  /// Which third of the guided Subtract/Common flow is currently live, or
+  /// null when neither is active at all - see `_BooleanStep`'s own doc
+  /// comment.
+  _BooleanStep? _booleanStep;
+
+  bool get _booleanActive => _booleanStep != null;
+
+  /// SUBTRACT or COMMON - which guided entry (or ambient/long-press entry)
+  /// started this session; set once at entry and never changed for the rest
+  /// of the session (there is no UI to switch operations mid-flow - that's a
+  /// delete+recreate, same as every other Feature type's immutable "mode"
+  /// field).
+  BooleanOperation _booleanOperation = BooleanOperation.subtract;
+
+  /// The Body/Bodies being operated *on*, captured once the `pickingTargets`
+  /// step is confirmed - mirrors [_mergeBodyIds]/[_mirrorSourceBodyIds]
+  /// exactly. Null until that step completes.
+  List<String>? _booleanTargetBodyIds;
+
+  /// The Body/Bodies being operated *with*, captured once the `pickingTools`
+  /// step is confirmed - mirrors [_booleanTargetBodyIds]'s own shape. Null
+  /// until that step completes.
+  List<String>? _booleanToolBodyIds;
+
+  /// Whether [_booleanToolBodyIds] are deleted once the operation runs
+  /// (`true`, the default - matches the backend's own `BooleanFeature.
+  /// consume_tool_bodies` default) or kept registered and untouched
+  /// (`false`) - see [BooleanPanel.consumeToolBodies].
+  bool _booleanConsumeToolBodies = true;
+
+  /// The BooleanFeature created as soon as `pickingTools` is confirmed (see
+  /// this section's own header comment) - mirrors [_previewMergeFeatureId]'s
+  /// simple pattern.
+  String? _previewBooleanFeatureId;
+
+  /// B4: non-null while [BooleanPanel] is editing an *already-existing*
+  /// BooleanFeature - mirrors [_editingMergeFeatureId].
+  String? _editingBooleanFeatureId;
+
+  /// B4: the edited Feature's own stored values from just before editing
+  /// started - [_cancelBoolean] PATCHes these back verbatim when
+  /// [_editingBooleanFeatureId] is set, same reason [_mergeEditSnapshot]
+  /// exists.
+  ({
+    BooleanOperation operation,
+    List<String> targetBodyIds,
+    List<String> toolBodyIds,
+    bool consumeToolBodies,
+  })? _booleanEditSnapshot;
+
+  /// [_selectedEntities]' value from just before the panel opened - restored
+  /// by both [_confirmBoolean] and [_cancelBoolean], mirrors
+  /// [_entitiesBeforeMerge].
+  Set<SelectionEntityRef>? _entitiesBeforeBoolean;
+
+  /// The pre-Boolean mesh [_cancelBoolean] restores to on Cancel - mirrors
+  /// [_meshBeforeMerge].
+  List<BodyMeshDto>? _meshBeforeBoolean;
+
+  /// Locks [_selectionFilterOverrides] to Bodies only for the whole Boolean
+  /// session (`pickingTargets` through `confirming`) - mirrors
+  /// [_mergeBodyPickerSelectionFilter] exactly, including "kept live for the
+  /// panel's whole lifetime rather than swapped out for a second filter" -
+  /// unlike Mirror, both of this flow's own two picking stages want the
+  /// identical body-only filter, so there is no second filter to swap to.
+  static const _booleanBodyPickerSelectionFilter = SelectionFilterState(
     vertex: false,
     edge: false,
     face: false,
@@ -5045,6 +5178,10 @@ class _PartScreenState extends State<PartScreen> {
         _startPatternPicker();
       case FeaturePickerAction.merge:
         _startMergePicker();
+      case FeaturePickerAction.subtract:
+        _startBooleanPicker(BooleanOperation.subtract);
+      case FeaturePickerAction.common:
+        _startBooleanPicker(BooleanOperation.common);
     }
   }
 
@@ -5599,6 +5736,12 @@ class _PartScreenState extends State<PartScreen> {
       // branches above exactly.
       final opened = _openMergePanelForEdit(feature);
       if (!opened) await _endRollback();
+    } else if (feature.type == 'boolean') {
+      // Boolean family, Subtract/Common: mirrors the merge branch just
+      // above exactly - rollback is ended by _confirmBoolean/_cancelBoolean
+      // instead.
+      final opened = _openBooleanPanelForEdit(feature);
+      if (!opened) await _endRollback();
     } else if (feature.type == 'surface') {
       // Bug fix: mirrors the merge branch just above exactly - a Surface row
       // tap used to fall through to the defensive `else` below too. Rollback
@@ -5865,6 +6008,11 @@ class _PartScreenState extends State<PartScreen> {
       // own gate exactly, minus the `_isEligibleToolFeature` widening -
       // Merge has no `tool_feature_id`-style mode of its own.
       showMerge: _bodyProducingFeatureTypes.contains(feature.type),
+      // Boolean family, Subtract/Common: same gate as [showMerge] exactly -
+      // any Feature that mints a Body of its own is a valid Subtract/Common
+      // target seed.
+      showSubtract: _bodyProducingFeatureTypes.contains(feature.type),
+      showCommon: _bodyProducingFeatureTypes.contains(feature.type),
     );
     if (!mounted || action == null) return;
 
@@ -5885,6 +6033,10 @@ class _PartScreenState extends State<PartScreen> {
         _openMirrorPanelFromFeature(feature);
       case FeatureContextMenuAction.merge:
         _openMergePanelFromFeature(feature);
+      case FeatureContextMenuAction.subtract:
+        _openBooleanPanelFromFeature(feature, BooleanOperation.subtract);
+      case FeatureContextMenuAction.common:
+        _openBooleanPanelFromFeature(feature, BooleanOperation.common);
       case FeatureContextMenuAction.toggleVisibility:
         await _toggleFeatureVisibility(feature);
       case FeatureContextMenuAction.delete:
@@ -8063,6 +8215,334 @@ class _PartScreenState extends State<PartScreen> {
     await _endRollback();
   }
 
+  // --- Boolean family, Subtract/Common ----------------------------------------
+  // See this file's own "Boolean family, Subtract/Common" state-field section
+  // header comment for the full picking-shape reasoning.
+
+  /// [FeaturePickerAction.subtract]/[FeaturePickerAction.common]'s guided
+  /// "Add" FAB entries - starts the `pickingTargets` step with an empty
+  /// selection and a Body-only filter; [_confirmBooleanTargetSelection]
+  /// advances to `pickingTools` once 1+ Bodies are picked. Mirrors
+  /// [_startMergePicker]'s own shape, plus recording which [operation] this
+  /// session is for.
+  void _startBooleanPicker(BooleanOperation operation) {
+    setState(() {
+      _booleanStep = _BooleanStep.pickingTargets;
+      _booleanOperation = operation;
+      _booleanTargetBodyIds = null;
+      _booleanToolBodyIds = null;
+      _booleanConsumeToolBodies = true;
+      _previewBooleanFeatureId = null;
+      _editingBooleanFeatureId = null;
+      _booleanEditSnapshot = null;
+      _meshBeforeBoolean = _bodies;
+      _entitiesBeforeBoolean = _selectedEntities;
+      _selectedEntities = {};
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _selectionFilterOverrides.push(_booleanBodyPickerSelectionFilter);
+    });
+  }
+
+  /// The number of Bodies picked so far during whichever of `pickingTargets`/
+  /// `pickingTools` is currently live - drives each step's own ribbon text
+  /// and gates its confirm button. Mirrors [_mergePickedBodyCount] exactly
+  /// (both stages read the same [_selectedEntities], so this one getter
+  /// covers both, unlike Mirror's two textually-distinct steps needing two
+  /// separate helpers for their two different pick kinds).
+  int _booleanPickedBodyCount() =>
+      _selectedEntities.where((e) => e.kind == SelectionEntityKind.body).length;
+
+  /// Confirms the `pickingTargets` step (the ribbon's checkmark) - captures
+  /// every currently-selected Body into [_booleanTargetBodyIds], clears
+  /// [_selectedEntities] for the second pick, and advances to
+  /// `pickingTools`. The same [_booleanBodyPickerSelectionFilter] stays
+  /// pushed throughout (unlike Mirror's swap-to-a-second-filter shape - see
+  /// this file's own "Boolean family, Subtract/Common" section header
+  /// comment for why).
+  void _confirmBooleanTargetSelection() {
+    final bodyIds =
+        _selectedEntities.where((e) => e.kind == SelectionEntityKind.body).map((e) => e.bodyId).toList();
+    if (bodyIds.isEmpty) return; // Defensive - the confirm button is disabled until then.
+    setState(() {
+      _booleanTargetBodyIds = bodyIds;
+      _booleanStep = _BooleanStep.pickingTools;
+      _selectedEntities = {};
+    });
+  }
+
+  /// Confirms the `pickingTools` step (the ribbon's checkmark) - captures
+  /// every currently-selected Body into [_booleanToolBodyIds], advances to
+  /// `confirming`, and immediately creates the preview BooleanFeature
+  /// (mirrors [_confirmMergeBodySelection]'s own "the moment the picking is
+  /// done, the Feature is already fully defined" shape - [BooleanPanel]'s
+  /// only further-editable field, [_booleanConsumeToolBodies], defaults to
+  /// `true` here and can be toggled afterward via
+  /// [_setBooleanConsumeToolBodies]). Never reached from
+  /// [_openBooleanPanelForEdit] - B4 editing enters straight at `confirming`
+  /// instead, so this only ever creates, never PATCHes.
+  void _confirmBooleanToolSelection() {
+    final targetBodyIds = _booleanTargetBodyIds;
+    if (targetBodyIds == null) return; // Defensive - unreachable outside `pickingTools`.
+    final bodyIds =
+        _selectedEntities.where((e) => e.kind == SelectionEntityKind.body).map((e) => e.bodyId).toList();
+    if (bodyIds.isEmpty) return; // Defensive - the confirm button is disabled until then.
+    final part = _part;
+    if (part == null) return;
+    setState(() {
+      _booleanToolBodyIds = bodyIds;
+      _booleanStep = _BooleanStep.confirming;
+    });
+    _runGuarded(() async {
+      final created = await _api.createBooleanFeature(
+        part.id,
+        operation: _booleanOperation,
+        targetBodyIds: targetBodyIds,
+        toolBodyIds: bodyIds,
+        consumeToolBodies: _booleanConsumeToolBodies,
+      );
+      _previewBooleanFeatureId = created.id;
+      await _refreshMesh();
+    });
+  }
+
+  /// [SelectionContextPanel.onSubtract]/[onCommon]'s callback -
+  /// `contextActionsFor` enables both buttons for 2+ Bodies, nothing else,
+  /// selected (see that function's own Boolean branch). Since an ambient
+  /// selection can't disambiguate which of those Bodies should be a target
+  /// vs. a tool, this pre-seeds `pickingTargets` with the *entire* current
+  /// selection (mirrors [_onMergeTapped]'s "these Bodies are already exactly
+  /// what the user wants" shortcut) and jumps straight to `pickingTools` -
+  /// same flow as the guided path from that point on, just with stage one
+  /// already filled in.
+  void _onBooleanTapped(BooleanOperation operation) {
+    final bodyIds =
+        _selectedEntities.where((e) => e.kind == SelectionEntityKind.body).map((e) => e.bodyId).toList();
+    if (bodyIds.length < 2) return; // Defensive - contextActionsFor already guarantees this.
+    setState(() {
+      _meshBeforeBoolean = _bodies;
+      _entitiesBeforeBoolean = _selectedEntities;
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _selectionFilterOverrides.push(_booleanBodyPickerSelectionFilter);
+      _booleanOperation = operation;
+      _booleanTargetBodyIds = bodyIds;
+      _booleanToolBodyIds = null;
+      _booleanConsumeToolBodies = true;
+      _previewBooleanFeatureId = null;
+      _editingBooleanFeatureId = null;
+      _booleanEditSnapshot = null;
+      _booleanStep = _BooleanStep.pickingTools;
+      _selectedEntities = {};
+    });
+  }
+
+  /// On-device feedback shape mirrored from [_openMergePanelFromFeature]:
+  /// long-press "Subtract"/"Common" on a single body-producing Feature row
+  /// pre-seeds that Feature's own current Body/Bodies as the *targets* and
+  /// jumps straight to `pickingTools` - the user picks 1+ tool Bodies before
+  /// confirming. [_onFeatureLongPress] is the only caller.
+  void _openBooleanPanelFromFeature(FeatureDto feature, BooleanOperation operation) {
+    final seedBodyIds =
+        _bodies.map((b) => b.bodyId).where((bid) => baseFeatureId(bid) == feature.id).toList();
+    setState(() {
+      _meshBeforeBoolean = _bodies;
+      _entitiesBeforeBoolean = _selectedEntities;
+      _selectedEntities = {};
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _selectionFilterOverrides.push(_booleanBodyPickerSelectionFilter);
+      _booleanOperation = operation;
+      _booleanTargetBodyIds = seedBodyIds;
+      _booleanToolBodyIds = null;
+      _booleanConsumeToolBodies = true;
+      _previewBooleanFeatureId = null;
+      _editingBooleanFeatureId = null;
+      _booleanEditSnapshot = null;
+      _booleanStep = _BooleanStep.pickingTools;
+    });
+  }
+
+  /// B4: opens [BooleanPanel] to edit an *already-existing* BooleanFeature -
+  /// mirrors [_openMergePanelForEdit]'s shape (a defensive `bool` return,
+  /// since a real BooleanFeature always has 1+ entries in each of
+  /// `target_body_ids`/`tool_body_ids`, but this stays defensive rather than
+  /// assuming). Enters directly at `confirming` - unlike the guided "Add"
+  /// FAB entry, there's no picking step to go through, since [feature]
+  /// already names every target/tool Body.
+  bool _openBooleanPanelForEdit(FeatureDto feature) {
+    final targetBodyIds = feature.targetBodyIds;
+    final toolBodyIds = feature.toolBodyIds;
+    final operationValue = feature.operation;
+    if (targetBodyIds.isEmpty || toolBodyIds.isEmpty || operationValue == null) return false;
+    final operation = BooleanOperation.fromApiValue(operationValue);
+    setState(() {
+      _booleanStep = _BooleanStep.confirming;
+      _booleanOperation = operation;
+      _editingBooleanFeatureId = feature.id;
+      _previewBooleanFeatureId = feature.id;
+      _booleanTargetBodyIds = targetBodyIds;
+      _booleanToolBodyIds = toolBodyIds;
+      _booleanConsumeToolBodies = feature.consumeToolBodies;
+      _booleanEditSnapshot = (
+        operation: operation,
+        targetBodyIds: targetBodyIds,
+        toolBodyIds: toolBodyIds,
+        consumeToolBodies: feature.consumeToolBodies,
+      );
+      _meshBeforeBoolean = _bodies;
+      _entitiesBeforeBoolean = _selectedEntities;
+      _selectionMode = true;
+      _selectionFilterOverrides.push(_booleanBodyPickerSelectionFilter);
+    });
+    return true;
+  }
+
+  /// [BooleanPanel.onConsumeToolBodiesChanged] - a single discrete toggle,
+  /// not a continuously-changing pick, so (unlike [_setMirrorMerge]'s own
+  /// debounced re-solve) this PATCHes directly once the preview
+  /// BooleanFeature already exists (always true by the time [BooleanPanel]
+  /// itself is on screen - see `confirming`'s own entry points above, both
+  /// of which create/reconstruct it first).
+  void _setBooleanConsumeToolBodies(bool consume) {
+    setState(() => _booleanConsumeToolBodies = consume);
+    final part = _part;
+    final previewId = _previewBooleanFeatureId;
+    if (part == null || previewId == null) return;
+    _runGuarded(() async {
+      await _api.updateBooleanFeature(part.id, previewId, consumeToolBodies: consume);
+      await _refreshMesh();
+    });
+  }
+
+  /// Keeps the just-created/edited BooleanFeature, restores whatever was
+  /// selected before the panel opened, and rolls B4 rollback forward -
+  /// mirrors [_confirmMerge]'s shape exactly.
+  Future<void> _confirmBoolean() async {
+    await _runGuarded(_refreshFeatures);
+    if (!mounted) return;
+    setState(() {
+      _featureTreeVisible = false;
+      _booleanStep = null;
+      _booleanTargetBodyIds = null;
+      _booleanToolBodyIds = null;
+      _selectedEntities = _entitiesBeforeBoolean ?? {};
+      _entitiesBeforeBoolean = null;
+      _previewBooleanFeatureId = null;
+      _editingBooleanFeatureId = null;
+      _booleanEditSnapshot = null;
+      _meshBeforeBoolean = null;
+      _selectionFilterOverrides.pop();
+    });
+    await _endRollback();
+  }
+
+  /// Deletes the just-created preview BooleanFeature (new flow, if any - a
+  /// Cancel tapped straight from `pickingTargets`/`pickingTools`, before
+  /// tools were ever confirmed, has nothing to delete yet) or PATCHes
+  /// [_booleanEditSnapshot]'s stashed original values back (edit flow) -
+  /// mirrors [_cancelMerge]'s structure exactly.
+  Future<void> _cancelBoolean() async {
+    final part = _part;
+    final previewId = _previewBooleanFeatureId;
+    final meshBefore = _meshBeforeBoolean;
+    final wasEditing = _editingBooleanFeatureId != null;
+    final editSnapshot = _booleanEditSnapshot;
+    setState(() {
+      _featureTreeVisible = false;
+      _booleanStep = null;
+      _booleanTargetBodyIds = null;
+      _booleanToolBodyIds = null;
+      _selectedEntities = _entitiesBeforeBoolean ?? {};
+      _entitiesBeforeBoolean = null;
+      _previewBooleanFeatureId = null;
+      _editingBooleanFeatureId = null;
+      _booleanEditSnapshot = null;
+      _meshBeforeBoolean = null;
+      _selectionFilterOverrides.pop();
+    });
+    if (part != null && previewId != null) {
+      if (wasEditing && editSnapshot != null) {
+        await _runGuarded(() async {
+          await _api.updateBooleanFeature(
+            part.id,
+            previewId,
+            operation: editSnapshot.operation,
+            targetBodyIds: editSnapshot.targetBodyIds,
+            toolBodyIds: editSnapshot.toolBodyIds,
+            consumeToolBodies: editSnapshot.consumeToolBodies,
+          );
+          await _refreshFeatures();
+        });
+      } else {
+        await _runGuarded(() async {
+          await _api.deleteFeature(part.id, previewId);
+          // Mirrors [_cancelMerge]'s own optimization: restore the pre-
+          // Boolean mesh directly (no network round-trip) when a snapshot
+          // was captured on open.
+          if (meshBefore != null) {
+            _bodies = meshBefore;
+          } else {
+            await _refreshMesh();
+          }
+          await _refreshFeatures();
+        });
+      }
+    }
+    await _endRollback();
+  }
+
+  /// Boolean family, Subtract/Common: axis-aligned min/max corners of every
+  /// Body in [bodyIds]' own current mesh vertices (looked up in [_bodies],
+  /// already fetched for rendering - no backend round trip). Returns null
+  /// when none of [bodyIds] currently has mesh data to bound.
+  ({vm.Vector3 min, vm.Vector3 max})? _axisAlignedBoundsOf(List<String> bodyIds) {
+    vm.Vector3? min;
+    vm.Vector3? max;
+    for (final body in _bodies) {
+      if (!bodyIds.contains(body.bodyId)) continue;
+      for (final vertex in body.mesh.vertices) {
+        final p = vm.Vector3(vertex[0], vertex[1], vertex[2]);
+        min = min == null
+            ? p
+            : vm.Vector3(math.min(min.x, p.x), math.min(min.y, p.y), math.min(min.z, p.z));
+        max = max == null
+            ? p
+            : vm.Vector3(math.max(max.x, p.x), math.max(max.y, p.y), math.max(max.z, p.z));
+      }
+    }
+    if (min == null || max == null) return null;
+    return (min: min, max: max);
+  }
+
+  /// Boolean family, Subtract/Common: a cheap, purely client-side "do these
+  /// actually overlap?" pre-check for the `pickingTools` ribbon's own inline
+  /// hint (see the `PickerRibbon` call site below) - a coarse axis-aligned
+  /// bounding-box intersection test over data already on hand ([_bodies]'
+  /// own mesh vertices), not the real `BRepAlgoAPI_Cut`/`BRepAlgoAPI_Common`
+  /// boolean itself (too expensive to run speculatively on every tap - see
+  /// the backend `BooleanFeature`'s own docstring). An AABB always contains
+  /// its own shape, so this can produce a false "these overlap" (the boxes
+  /// overlap but the real shapes don't quite touch) but never a false
+  /// "these don't overlap" - the hint only ever under-fires, never wrongly
+  /// suppresses a genuine no-op-operation warning. Returns `true` (no hint)
+  /// when either side has no mesh data yet to compare - nothing to warn
+  /// about against unknown geometry.
+  bool _booleanBodiesMayOverlap(List<String> targetBodyIds, List<String> toolBodyIds) {
+    final targetBounds = _axisAlignedBoundsOf(targetBodyIds);
+    final toolBounds = _axisAlignedBoundsOf(toolBodyIds);
+    if (targetBounds == null || toolBounds == null) return true;
+    return targetBounds.min.x <= toolBounds.max.x &&
+        targetBounds.max.x >= toolBounds.min.x &&
+        targetBounds.min.y <= toolBounds.max.y &&
+        targetBounds.max.y >= toolBounds.min.y &&
+        targetBounds.min.z <= toolBounds.max.z &&
+        targetBounds.max.z >= toolBounds.min.z;
+  }
+
   // --- Pattern/Mirror scoping Phase 2: Pattern -------------------------------
   // See docs/pattern-mirror-scope.md §2.2/§4 and this file's own "Pattern/
   // Mirror scoping Phase 2: Pattern" state-field section above for the full
@@ -9789,7 +10269,8 @@ class _PartScreenState extends State<PartScreen> {
                       _sweepSketchFeature != null ||
                       _mirrorActive ||
                       _patternActive ||
-                      _mergeActive,
+                      _mergeActive ||
+                      _booleanActive,
                   // Prompt E: only one of _filletActive/_chamferActive is
                   // ever true at a time (see the Chamfer state section's own
                   // header comment), so a simple ternary - not a list -
@@ -9948,6 +10429,7 @@ class _PartScreenState extends State<PartScreen> {
                     !_mirrorActive &&
                     !_patternActive &&
                     !_mergeActive &&
+                    !_booleanActive &&
                     !_profilePickerActive &&
                     !_pathPickerActive)
                   Positioned.fill(
@@ -9966,6 +10448,8 @@ class _PartScreenState extends State<PartScreen> {
                         onMirror: _onMirrorTapped,
                         onPattern: _onPatternTapped,
                         onMerge: _onMergeTapped,
+                        onSubtract: () => _onBooleanTapped(BooleanOperation.subtract),
+                        onCommon: () => _onBooleanTapped(BooleanOperation.common),
                       ),
                       bodyNames: _bodyNames,
                     ),
@@ -10221,6 +10705,32 @@ class _PartScreenState extends State<PartScreen> {
                       bodyCount: _mergeBodyIds?.length ?? 0,
                       onConfirm: _confirmMerge,
                       onCancel: _cancelMerge,
+                    ),
+                  ),
+                // [BooleanPanel] itself only ever handles the `confirming`
+                // step - `pickingTargets`/`pickingTools` each have their own
+                // [PickerRibbon] instead (see below), mirroring
+                // [MergePanel]'s own shape.
+                if (_booleanStep == _BooleanStep.confirming)
+                  Positioned.fill(
+                    // Bug fix: mirrors the Extrude panel slot's own stable-
+                    // key reasoning exactly, above.
+                    key: const ValueKey('boolean-panel-slot'),
+                    child: BooleanPanel(
+                      key: ValueKey(
+                        _editingBooleanFeatureId ??
+                            '${_booleanTargetBodyIds?.join(',')}-${_booleanToolBodyIds?.join(',')}',
+                      ),
+                      title: _editingBooleanFeatureId != null
+                          ? (_booleanOperation == BooleanOperation.subtract ? 'Edit Subtract' : 'Edit Common')
+                          : (_booleanOperation == BooleanOperation.subtract ? 'Subtract' : 'Common'),
+                      isSubtract: _booleanOperation == BooleanOperation.subtract,
+                      targetBodyCount: _booleanTargetBodyIds?.length ?? 0,
+                      toolBodyCount: _booleanToolBodyIds?.length ?? 0,
+                      consumeToolBodies: _booleanConsumeToolBodies,
+                      onConsumeToolBodiesChanged: _setBooleanConsumeToolBodies,
+                      onConfirm: _confirmBoolean,
+                      onCancel: _cancelBoolean,
                     ),
                   ),
                 // [PatternPanel] itself only ever handles the `configuring`
@@ -10634,6 +11144,56 @@ class _PartScreenState extends State<PartScreen> {
                       onConfirm: _busy || _mergePickedBodyCount() < 2 ? null : _confirmMergeBodySelection,
                     ),
                   ),
+                // Boolean family, Subtract/Common guided "Add" FAB entries
+                // (`_startBooleanPicker`): shown for the whole
+                // `pickingTargets` step - mirrors [_MergeStep.pickingBodies]'s
+                // own identical [PickerRibbon] just above, gated on 1+
+                // instead of 2+ (a Boolean's own `tool_body_ids` supplies the
+                // second Body/Bodies, in the next step).
+                if (_booleanStep == _BooleanStep.pickingTargets)
+                  Positioned.fill(
+                    child: PickerRibbon(
+                      title: _booleanOperation == BooleanOperation.subtract ? 'Subtract' : 'Common',
+                      tooltip: _booleanPickedBodyCount() == 0
+                          ? 'Select target body/bodies'
+                          : '${_booleanPickedBodyCount()} body(s) selected - tap checkmark to confirm',
+                      onCancel: _cancelBoolean,
+                      showConfirm: true,
+                      onConfirm:
+                          _busy || _booleanPickedBodyCount() == 0 ? null : _confirmBooleanTargetSelection,
+                    ),
+                  ),
+                // The second half of the same flow - `pickingTools` picks a
+                // second, disjoint set of Bodies (see [_toggleSelectedEntity]'s
+                // own Boolean branch for how a tap on an already-picked
+                // target is ignored here). Includes a cheap client-side "do
+                // these actually overlap?" hint (see
+                // [_booleanBodiesMayOverlap]'s own doc comment) once 1+ tool
+                // Bodies are picked, before this step's own confirm.
+                if (_booleanStep == _BooleanStep.pickingTools)
+                  Positioned.fill(
+                    child: PickerRibbon(
+                      title: _booleanOperation == BooleanOperation.subtract ? 'Subtract' : 'Common',
+                      tooltip: _booleanPickedBodyCount() == 0
+                          ? (_booleanOperation == BooleanOperation.subtract
+                              ? 'Select tool body/bodies to subtract'
+                              : 'Select tool body/bodies to intersect')
+                          : !_booleanBodiesMayOverlap(
+                              _booleanTargetBodyIds ?? const [],
+                              _selectedEntities
+                                  .where((e) => e.kind == SelectionEntityKind.body)
+                                  .map((e) => e.bodyId)
+                                  .toList(),
+                            )
+                              ? '${_booleanPickedBodyCount()} body(s) selected - these bodies don\'t '
+                                  'appear to overlap, this may have no effect'
+                              : '${_booleanPickedBodyCount()} body(s) selected - tap checkmark to confirm',
+                      onCancel: _cancelBoolean,
+                      showConfirm: true,
+                      onConfirm:
+                          _busy || _booleanPickedBodyCount() == 0 ? null : _confirmBooleanToolSelection,
+                    ),
+                  ),
                 // Pattern/Mirror scoping's Phase 2/6 guided "Add" FAB entry
                 // (`_startPatternPicker`): shown for the whole `pickingBodies`
                 // step, mirroring [_MirrorStep.pickingBodies]'s own identical
@@ -10707,7 +11267,8 @@ class _PartScreenState extends State<PartScreen> {
                         _loftActive ||
                         _mirrorActive ||
                         _patternActive ||
-                        _mergeActive)
+                        _mergeActive ||
+                        _booleanActive)
                     ? 180
                     : 0,
               ),
@@ -10725,6 +11286,7 @@ class _PartScreenState extends State<PartScreen> {
                       !_mirrorActive &&
                       !_patternActive &&
                       !_mergeActive &&
+                      !_booleanActive &&
                       !_profilePickerActive &&
                       !_pathPickerActive &&
                       // On-device feedback ("the tooltip at the top of the

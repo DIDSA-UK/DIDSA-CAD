@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from app.document.models import (
     BevelGearFeature,
     BevelPairFeature,
+    BooleanFeature,
     ChamferFeature,
     CreatePlaneFeature,
     ExtrudeFeature,
@@ -411,6 +412,12 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
     fuses must cascade-delete the Merge too, same reasoning as every other
     reference kind in this function.
 
+    Boolean family, Subtract/Common: a `BooleanFeature` depends on the
+    owning Feature of every `target_body_ids` AND `tool_body_ids` entry
+    (same `base_feature_id`-deduplicated-via-`set` treatment as Merge's own
+    `body_ids` just above) - deleting the Extrude/Revolve/etc. that created
+    either a target or a tool Body must cascade-delete the Boolean too.
+
     Pattern/Mirror Phase 8: a `MirrorFeature`/`PatternFeature` with `tool_
     feature_id` set depends on that Feature directly (already a bare
     Feature id, no `base_feature_id` mapping needed, mirroring `source_
@@ -449,6 +456,10 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
             depends_on = _mirror_dependencies(feature)
         elif isinstance(feature, MergeFeature):
             depends_on = tuple({base_feature_id(bid) for bid in feature.body_ids})
+        elif isinstance(feature, BooleanFeature):
+            depends_on = tuple(
+                {base_feature_id(bid) for bid in (*feature.target_body_ids, *feature.tool_body_ids)}
+            )
         elif isinstance(feature, PatternFeature):
             depends_on = _pattern_dependencies(part, feature)
         elif isinstance(feature, GearFeature):

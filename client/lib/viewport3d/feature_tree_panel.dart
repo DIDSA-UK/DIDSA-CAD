@@ -25,6 +25,12 @@ String featureDisplayName(List<FeatureDto> features, int index) {
     'pattern' => 'Pattern',
     // Boolean family, first entry.
     'merge' => 'Merge',
+    // Boolean family, Subtract/Common: one shared Feature `type` ("boolean")
+    // for both, dispatching on `feature.operation` for the display label -
+    // mirrors the gear-family precedent below (6 gear types sharing one
+    // glyph with distinct text labels), just for the label instead of the
+    // icon.
+    'boolean' => feature.operation == 'common' ? 'Common' : 'Subtract',
     // Gear-tree UX: the gear-family Feature types (built straight from
     // parameters via their own dedicated design screen - GearDesignScreen/
     // BevelDesignScreen/GearChainDesignScreen - never through a Sketch, see
@@ -75,8 +81,13 @@ String _featureTypeAsset(String type) => switch (type) {
       'mirror' => 'assets/icons/feature/feature_mirror.svg',
       'pattern' => 'assets/icons/feature/feature_pattern.svg',
       // Boolean family, first entry - shared with Subtract/Common's own
-      // future entries once they land (see the asset's own file).
+      // entries below (see the asset's own file).
       'merge' => 'assets/icons/feature/feature_merge.svg',
+      // Boolean family, Subtract/Common: reuses the same Boolean-family
+      // glyph Merge does - gear-family precedent just below already
+      // establishes "one shared category icon, distinct text labels" for a
+      // family of related Feature types.
+      'boolean' => 'assets/icons/feature/feature_merge.svg',
       // Gear-tree UX: one shared "gear" category glyph for every gear-family
       // Feature type (spur/internal gear, rack, bevel gear, bevel pair, gear
       // chain, planetary set) - they're all built by the same family of

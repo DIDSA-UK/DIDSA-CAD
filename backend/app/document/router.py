@@ -82,6 +82,7 @@ from app.document.models import (
     BevelGearType,
     BevelPairFeature,
     BevelPairMemberSpec,
+    BooleanFeature,
     ChamferFeature,
     CreatePlaneFeature,
     Document,
@@ -137,6 +138,9 @@ from app.document.schemas import (
     BevelPairMemberSpecSchema,
     BevelPairMeshPreviewResult,
     BodyMeshResponse,
+    BooleanFeatureCreate,
+    BooleanFeatureResponse,
+    BooleanFeatureUpdate,
     CascadeDeletePreviewResponse,
     CascadeDeleteResponse,
     ChamferFeatureCreate,
@@ -627,6 +631,16 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
+    if isinstance(feature, BooleanFeature):
+        return BooleanFeatureResponse(
+            id=feature.id,
+            operation=feature.operation,
+            target_body_ids=feature.target_body_ids,
+            tool_body_ids=feature.tool_body_ids,
+            consume_tool_bodies=feature.consume_tool_bodies,
+            locked=part.is_locked(feature.id),
+            produces=feature.produces,
+        )
     if isinstance(feature, PatternFeature):
         return PatternFeatureResponse(
             id=feature.id,
@@ -1021,6 +1035,45 @@ def _validate_merge_body_ids(part: Part, body_ids: list[str]) -> None:
             "with fewer than two",
         )
     for body_id in body_ids:
+        source_feature = part.get_feature(base_feature_id(body_id))
+        if source_feature is None or source_feature.produces != Produces.BODY:
+            raise HTTPException(
+                status_code=400,
+                detail=f"body_ids entry {body_id!r} does not refer to a Body-producing Feature in this Part",
+            )
+
+
+def _validate_boolean_body_ids(
+    part: Part, target_body_ids: list[str], tool_body_ids: list[str]
+) -> None:
+    """`BooleanFeature` (Subtract/Common) requires at least one entry in
+    each of `target_body_ids`/`tool_body_ids` - there is nothing to
+    subtract/intersect against with either side empty (422, same
+    structured-validation-error shape `_validate_merge_body_ids`'s
+    fewer-than-2 case uses). The two lists must also be disjoint - a Body
+    can't be both a target and a tool of the same operation, which would
+    otherwise leave `app.document.boolean`'s per-target fold operating on
+    a Body it (or `consume_tool_bodies`) might simultaneously delete out
+    from under itself. Every entry (either list) must resolve (via
+    `base_feature_id`, same round-trip tolerance as `_validate_merge_
+    body_ids`) to a Feature that currently produces a Body in this Part -
+    checked via `produces == Produces.BODY`, identical to `_validate_
+    merge_body_ids` (no Boss/Cut-specific producer-type set to narrow
+    against, same reasoning as that function's own docstring)."""
+    if not target_body_ids or not tool_body_ids:
+        raise HTTPException(
+            status_code=422,
+            detail="BooleanFeature requires at least one target_body_ids entry and at least one "
+            "tool_body_ids entry",
+        )
+    overlap = set(target_body_ids) & set(tool_body_ids)
+    if overlap:
+        raise HTTPException(
+            status_code=422,
+            detail=f"target_body_ids and tool_body_ids must be disjoint - {sorted(overlap)!r} "
+            "appear in both",
+        )
+    for body_id in (*target_body_ids, *tool_body_ids):
         source_feature = part.get_feature(base_feature_id(body_id))
         if source_feature is None or source_feature.produces != Produces.BODY:
             raise HTTPException(
@@ -3161,6 +3214,63 @@ def update_merge_feature(
     _validate_merge_body_ids(part, new_body_ids)
 
     feature.body_ids = new_body_ids
+    return _feature_response(part, feature)
+
+
+@router.post("/parts/{part_id}/boolean-features", response_model=BooleanFeatureResponse, status_code=201)
+def create_boolean_feature(part_id: str, payload: BooleanFeatureCreate) -> BooleanFeatureResponse:
+    """Boolean family, Subtract/Common: mirrors `create_merge_feature`'s
+    shape (fails closed on payload-shape validation alone, no eager OCCT
+    resolve - like Merge, a `BooleanFeature` has no per-instance geometry
+    of its own to fail, just a repeated Cut/Common fold over Bodies already
+    known to exist)."""
+    part = get_part_or_404(part_id)
+    target_body_ids = list(payload.target_body_ids)
+    tool_body_ids = list(payload.tool_body_ids)
+    _validate_boolean_body_ids(part, target_body_ids, tool_body_ids)
+    feature = BooleanFeature(
+        id=str(uuid.uuid4()),
+        operation=payload.operation,
+        target_body_ids=target_body_ids,
+        tool_body_ids=tool_body_ids,
+        consume_tool_bodies=payload.consume_tool_bodies,
+    )
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_boolean_feature_or_404(part: Part, feature_id: str) -> BooleanFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, BooleanFeature):
+        raise HTTPException(status_code=404, detail="Boolean feature not found")
+    return feature
+
+
+@router.patch("/parts/{part_id}/boolean-features/{feature_id}", response_model=BooleanFeatureResponse)
+def update_boolean_feature(
+    part_id: str, feature_id: str, payload: BooleanFeatureUpdate
+) -> BooleanFeatureResponse:
+    """Mirrors `update_merge_feature`'s exact shape - same validate-before-
+    mutate discipline, omitted fields keep their current value."""
+    part = get_part_or_404(part_id)
+    feature = _get_boolean_feature_or_404(part, feature_id)
+
+    new_target_body_ids = (
+        list(payload.target_body_ids) if payload.target_body_ids is not None else feature.target_body_ids
+    )
+    new_tool_body_ids = (
+        list(payload.tool_body_ids) if payload.tool_body_ids is not None else feature.tool_body_ids
+    )
+    _validate_boolean_body_ids(part, new_target_body_ids, new_tool_body_ids)
+
+    feature.operation = payload.operation if payload.operation is not None else feature.operation
+    feature.target_body_ids = new_target_body_ids
+    feature.tool_body_ids = new_tool_body_ids
+    feature.consume_tool_bodies = (
+        payload.consume_tool_bodies
+        if payload.consume_tool_bodies is not None
+        else feature.consume_tool_bodies
+    )
     return _feature_response(part, feature)
 
 

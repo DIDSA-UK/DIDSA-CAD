@@ -75,6 +75,13 @@ class SelectionContextPanel extends StatelessWidget {
   /// as [onMirror]/[onPattern].
   final VoidCallback? onMerge;
 
+  /// Boolean family, Subtract/Common: fired when the user taps an *enabled*
+  /// Subtract/Common button (2+ Bodies selected - see
+  /// `selection_actions.dart`'s `contextActionsFor`) - same "never called
+  /// for a disabled one" contract as [onMerge].
+  final VoidCallback? onSubtract;
+  final VoidCallback? onCommon;
+
   const SelectionContextPanel({
     super.key,
     required this.selectedEntities,
@@ -88,6 +95,8 @@ class SelectionContextPanel extends StatelessWidget {
     this.onMirror,
     this.onPattern,
     this.onMerge,
+    this.onSubtract,
+    this.onCommon,
   });
 
   @override
@@ -160,6 +169,10 @@ class SelectionContextPanel extends StatelessWidget {
         return action.enabled ? onPattern : null;
       case 'Merge':
         return action.enabled ? onMerge : null;
+      case 'Subtract':
+        return action.enabled ? onSubtract : null;
+      case 'Common':
+        return action.enabled ? onCommon : null;
       default:
         return null;
     }

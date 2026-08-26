@@ -96,6 +96,20 @@ void main() {
       expect(await pendingResult, FeaturePickerAction.merge);
     });
 
+    testWidgets('Boolean family, Subtract/Common: tapping Subtract resolves FeaturePickerAction.subtract',
+        (tester) async {
+      await openSheet(tester);
+      await expandAndTap(tester, 'Combine', 'Subtract');
+      expect(await pendingResult, FeaturePickerAction.subtract);
+    });
+
+    testWidgets('Boolean family, Subtract/Common: tapping Common resolves FeaturePickerAction.common',
+        (tester) async {
+      await openSheet(tester);
+      await expandAndTap(tester, 'Combine', 'Common');
+      expect(await pendingResult, FeaturePickerAction.common);
+    });
+
     testWidgets('the picker sheet groups entries into collapsible sections, all collapsed by default', (
       tester,
     ) async {
@@ -114,6 +128,8 @@ void main() {
       expect(find.text('Fillet'), findsNothing);
       expect(find.text('Mirror'), findsNothing);
       expect(find.text('Merge'), findsNothing);
+      expect(find.text('Subtract'), findsNothing);
+      expect(find.text('Common'), findsNothing);
     });
 
     testWidgets(

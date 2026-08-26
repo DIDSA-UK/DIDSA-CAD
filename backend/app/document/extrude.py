@@ -43,6 +43,7 @@ from app.document.models import (
     BevelGearFeature,
     BevelGearType,
     BevelPairFeature,
+    BooleanFeature,
     ChamferFeature,
     ExtrudeFeature,
     ExtrudeType,
@@ -1001,7 +1002,13 @@ def _apply_feature_to_bodies(
     (an empty `realized_shapes` list - see that branch's own inline
     comment). Symmetric, no target/tool distinction, no options - every
     input Body is always consumed into the result, unlike Mirror/Pattern's
-    optional `MergeMode.FUSE_INTO_ONE`."""
+    optional `MergeMode.FUSE_INTO_ONE`.
+
+    Boolean family, Subtract/Common: `BooleanFeature` delegates to
+    `app.document.boolean.apply_boolean_to_bodies`, which mutates `bodies`
+    in place - see that function's own docstring for the full fold/
+    consume-vs-keep semantics."""
+    from app.document.boolean import apply_boolean_to_bodies
     from app.document.chamfer import resolve_chamfer_from_bodies
     from app.document.fillet import resolve_fillet_from_bodies
     from app.document.import_geometry import resolve_import
@@ -1177,6 +1184,16 @@ def _apply_feature_to_bodies(
             )
             return
         _fuse_realized_instances(bodies, feature_index, present_body_ids, [])
+        return
+
+    if isinstance(feature, BooleanFeature):
+        # Boolean family, Subtract/Common: unlike Merge's symmetric fuse,
+        # this has a real target/tool distinction over two sets of
+        # already-existing, already-registered Bodies - see
+        # `app.document.boolean.apply_boolean_to_bodies`'s own docstring
+        # for the full fold/consume-vs-keep semantics; it mutates `bodies`
+        # in place, the same convention `_apply_boss_or_cut` uses.
+        apply_boolean_to_bodies(bodies, feature)
         return
 
     if isinstance(feature, PatternFeature):

@@ -25,6 +25,8 @@ from app.document.models import (
     BevelGearType,
     BevelPairFeature,
     BevelPairMemberSpec,
+    BooleanFeature,
+    BooleanOperation,
     ChamferFeature,
     CreatePlaneFeature,
     Document,
@@ -966,6 +968,15 @@ def _feature_to_dict(feature: Feature) -> dict:
             "id": feature.id,
             "body_ids": list(feature.body_ids),
         }
+    if isinstance(feature, BooleanFeature):
+        return {
+            "type": "boolean",
+            "id": feature.id,
+            "operation": feature.operation.value,
+            "target_body_ids": list(feature.target_body_ids),
+            "tool_body_ids": list(feature.tool_body_ids),
+            "consume_tool_bodies": feature.consume_tool_bodies,
+        }
     if isinstance(feature, PatternFeature):
         return {
             "type": "pattern",
@@ -1204,6 +1215,14 @@ def _feature_from_dict(data: dict) -> Feature:
         return MergeFeature(
             id=feature_id,
             body_ids=list(data.get("body_ids", [])),
+        )
+    if feature_type == "boolean":
+        return BooleanFeature(
+            id=feature_id,
+            operation=BooleanOperation(_require(data, "operation")),
+            target_body_ids=list(data.get("target_body_ids", [])),
+            tool_body_ids=list(data.get("tool_body_ids", [])),
+            consume_tool_bodies=data.get("consume_tool_bodies", True),
         )
     if feature_type == "pattern":
         return PatternFeature(

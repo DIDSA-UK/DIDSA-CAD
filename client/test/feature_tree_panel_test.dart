@@ -546,4 +546,44 @@ void main() {
       });
     }
   });
+
+  group('Boolean family, Subtract/Common: one shared "boolean" type, dispatching on operation', () {
+    test('featureDisplayName labels a boolean Feature by its own operation, not a generic name', () {
+      final features = [
+        FeatureDto(type: 'boolean', id: 'f1', locked: false, produces: 'body', operation: 'subtract'),
+        FeatureDto(type: 'boolean', id: 'f2', locked: false, produces: 'body', operation: 'common'),
+      ];
+      expect(featureDisplayName(features, 0), 'Subtract 1');
+      // Shares the same `type` ("boolean") as f1, so the ordinal counts
+      // across both operations together - mirrors ExtrudeType's own Boss/Cut
+      // precedent (one shared "extrude" type/ordinal counter regardless of
+      // mode), not a per-operation counter.
+      expect(featureDisplayName(features, 1), 'Common 2');
+    });
+
+    testWidgets('a "boolean" Feature row shows the shared Boolean-family (Merge) icon', (tester) async {
+      await tester.pumpWidget(
+        _wrap(
+          FeatureTreePanel(
+            visible: true,
+            features: [
+              FeatureDto(type: 'boolean', id: 'f1', locked: false, produces: 'body', operation: 'subtract'),
+            ],
+            selectedFeatureId: null,
+            onFeatureTap: (_) {},
+            onFeatureLongPress: (_) {},
+            onClose: () {},
+            onBodyTap: (_) {},
+          ),
+        ),
+      );
+
+      expect(
+        find.byWidgetPredicate(
+          (w) => w is SvgIcon && w.asset == 'assets/icons/feature/feature_merge.svg',
+        ),
+        findsOneWidget,
+      );
+    });
+  });
 }

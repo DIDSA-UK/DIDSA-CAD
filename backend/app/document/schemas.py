@@ -4,6 +4,7 @@ from pydantic import BaseModel
 
 from app.document.models import (
     BevelGearType,
+    BooleanOperation,
     ExtrudeType,
     FixedAxis,
     GearChainMemberType,
@@ -639,6 +640,45 @@ class MergeFeatureResponse(BaseModel):
     locked: bool
     # B1: see SketchFeatureResponse.produces above - always BODY for a
     # MergeFeature.
+    produces: Produces
+
+
+class BooleanFeatureCreate(BaseModel):
+    """Creates a `BooleanFeature` (Boolean family, Subtract/Common) folding
+    every Body named by `tool_body_ids` (1+ required) into/against every
+    Body named by `target_body_ids` (1+ required, disjoint from
+    `tool_body_ids` - see `app.document.router._validate_boolean_body_ids`)
+    via `operation` (SUBTRACT/COMMON). `consume_tool_bodies` (default
+    `True`, matching `BooleanFeature`'s own dataclass default) mirrors
+    `GearFeatureCreate.is_internal`'s plain-bool convention rather than a
+    new enum."""
+
+    operation: BooleanOperation
+    target_body_ids: list[str]
+    tool_body_ids: list[str]
+    consume_tool_bodies: bool = True
+
+
+class BooleanFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `MergeFeatureUpdate`/`MirrorFeatureUpdate`."""
+
+    operation: BooleanOperation | None = None
+    target_body_ids: list[str] | None = None
+    tool_body_ids: list[str] | None = None
+    consume_tool_bodies: bool | None = None
+
+
+class BooleanFeatureResponse(BaseModel):
+    type: Literal["boolean"] = "boolean"
+    id: str
+    operation: BooleanOperation
+    target_body_ids: list[str]
+    tool_body_ids: list[str]
+    consume_tool_bodies: bool
+    locked: bool
+    # B1: see SketchFeatureResponse.produces above - always BODY for a
+    # BooleanFeature.
     produces: Produces
 
 
@@ -1748,6 +1788,7 @@ FeatureResponse = Union[
     SurfaceFeatureResponse,
     MirrorFeatureResponse,
     MergeFeatureResponse,
+    BooleanFeatureResponse,
     PatternFeatureResponse,
     ImportFeatureResponse,
     GearFeatureResponse,
