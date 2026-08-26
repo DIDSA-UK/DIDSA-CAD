@@ -195,6 +195,52 @@ class _FakeDocumentBackend {
       }, 200);
     }
 
+    if (path == '/document/parts/part-1/merge-features' && method == 'POST') {
+      for (final feature in features) {
+        feature['locked'] = true;
+      }
+      final feature = {
+        'type': 'merge',
+        'id': 'feature-${_nextFeatureId++}',
+        'body_ids': body['body_ids'],
+        'locked': false,
+      };
+      features.add(feature);
+      return _json(feature, 201);
+    }
+
+    if (path == '/document/parts/part-1/boolean-features' && method == 'POST') {
+      for (final feature in features) {
+        feature['locked'] = true;
+      }
+      final feature = {
+        'type': 'boolean',
+        'id': 'feature-${_nextFeatureId++}',
+        'operation': body['operation'],
+        'target_body_ids': body['target_body_ids'],
+        'tool_body_ids': body['tool_body_ids'],
+        'consume_tool_bodies': body['consume_tool_bodies'],
+        'locked': false,
+      };
+      features.add(feature);
+      return _json(feature, 201);
+    }
+
+    if (path == '/document/parts/part-1/split-features' && method == 'POST') {
+      for (final feature in features) {
+        feature['locked'] = true;
+      }
+      final feature = {
+        'type': 'split',
+        'id': 'feature-${_nextFeatureId++}',
+        'target_body_id': body['target_body_id'],
+        'tool': body['tool'],
+        'locked': false,
+      };
+      features.add(feature);
+      return _json(feature, 201);
+    }
+
     if (path == '/document/parts/part-1/extrude-features' && method == 'POST') {
       for (final feature in features) {
         feature['locked'] = true;
@@ -3179,4 +3225,197 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  // --- Ambient SelectionContextPanel entry points ---------------------------
+  // No widget-test coverage existed at all for any ambient SelectionContextPanel
+  // entry point before this - exactly how a real dead-end bug in
+  // `_onBooleanTapped` shipped unnoticed (fixed on this branch already, commit
+  // "Fix Subtract/Common's ambient entry: land on an editable target step").
+  // `onSelectionToggle!` called directly on the [PartViewport] widget (rather
+  // than exercising its own real screen-tap -> ray -> hit-test pipeline, which
+  // is `part_viewport_test.dart`'s own job) stands in for "the 3D viewport
+  // reported a tap on this Body" - the same pattern the Pattern skip-instance
+  // test above already establishes; `_toggleSelectedEntity` never validates a
+  // toggled id against real mesh data, so no seeded Bodies are needed for any
+  // of these.
+
+  testWidgets(
+      'Boolean family, Subtract/Common: ambient Subtract entry lands on the editable pickingTargets '
+      'step with the selection pre-populated (not locked into pickingTools), and deselecting one body '
+      'then confirming advances to pickingTools with that body still available to pick as a tool',
+      (tester) async {
+    final backend = _FakeDocumentBackend();
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+          const SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'body-a'),
+        );
+    await tester.pump();
+    tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+          const SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'body-b'),
+        );
+    await tester.pump();
+
+    await tester.ensureVisible(find.widgetWithText(OutlinedButton, 'Subtract'));
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Subtract'));
+    await tester.pump();
+
+    // Bug-fix regression: lands on the editable `pickingTargets` step (its
+    // own PickerRibbon, both Bodies still freely toggle-able), not locked
+    // straight into `pickingTools` with nothing left to pick as a tool.
+    expect(find.text('2 body(s) selected - tap checkmark to confirm'), findsOneWidget);
+
+    // Deselect body-b - still fully editable at this point.
+    tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+          const SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'body-b'),
+        );
+    await tester.pump();
+    expect(find.text('1 body(s) selected - tap checkmark to confirm'), findsOneWidget);
+
+    await tester.ensureVisible(find.byTooltip('Confirm'));
+    await tester.tap(find.byTooltip('Confirm'));
+    await tester.pump();
+
+    // Now on `pickingTools` - body-b (deselected as a target) must still be
+    // available to pick as a tool.
+    expect(find.text('Select tool body/bodies to subtract'), findsOneWidget);
+    tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+          const SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'body-b'),
+        );
+    await tester.pump();
+    expect(find.textContaining('1 body(s) selected'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+      'Boolean family, Subtract/Common: ambient Common entry lands on the editable pickingTargets '
+      'step with the selection pre-populated too, same fix as Subtract',
+      (tester) async {
+    final backend = _FakeDocumentBackend();
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+          const SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'body-a'),
+        );
+    await tester.pump();
+    tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+          const SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'body-b'),
+        );
+    await tester.pump();
+
+    await tester.ensureVisible(find.widgetWithText(OutlinedButton, 'Common'));
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Common'));
+    await tester.pump();
+
+    expect(find.text('2 body(s) selected - tap checkmark to confirm'), findsOneWidget);
+
+    tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+          const SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'body-b'),
+        );
+    await tester.pump();
+    expect(find.text('1 body(s) selected - tap checkmark to confirm'), findsOneWidget);
+
+    await tester.ensureVisible(find.byTooltip('Confirm'));
+    await tester.tap(find.byTooltip('Confirm'));
+    await tester.pump();
+
+    expect(find.text('Select tool body/bodies to intersect'), findsOneWidget);
+    tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+          const SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'body-b'),
+        );
+    await tester.pump();
+    expect(find.textContaining('1 body(s) selected'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+      'Boolean family, first entry: ambient Merge entry lands directly on the confirming step - '
+      'its own already-correct, no-dead-end behavior, covered here so a future regression is caught '
+      'the same way the Subtract/Common bug fix above is',
+      (tester) async {
+    final backend = _FakeDocumentBackend();
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+          const SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'body-a'),
+        );
+    await tester.pump();
+    tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+          const SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'body-b'),
+        );
+    await tester.pump();
+
+    await tester.ensureVisible(find.widgetWithText(OutlinedButton, 'Merge'));
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Merge'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(find.text('Merging 2 bodies'), findsOneWidget);
+    expect(backend.features.any((f) => f['type'] == 'merge'), isTrue);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+      'Boolean family, fourth/last entry: ambient Split entry (1 body selected) reaches the '
+      'tool-picking step', (tester) async {
+    final backend = _FakeDocumentBackend();
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+          const SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'body-a'),
+        );
+    await tester.pump();
+
+    await tester.ensureVisible(find.widgetWithText(OutlinedButton, 'Split'));
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Split'));
+    await tester.pump();
+
+    expect(find.text('Select cutting plane, surface, or sketch'), findsOneWidget);
+    expect(find.text('New Surface'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }

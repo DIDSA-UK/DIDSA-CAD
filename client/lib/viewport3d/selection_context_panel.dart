@@ -82,6 +82,12 @@ class SelectionContextPanel extends StatelessWidget {
   final VoidCallback? onSubtract;
   final VoidCallback? onCommon;
 
+  /// Boolean family, fourth/last entry: fired when the user taps an
+  /// *enabled* Split button (a single Body selected - see
+  /// `selection_actions.dart`'s `contextActionsFor`) - same "never called
+  /// for a disabled one" contract as [onMirror]/[onPattern].
+  final VoidCallback? onSplit;
+
   const SelectionContextPanel({
     super.key,
     required this.selectedEntities,
@@ -97,6 +103,7 @@ class SelectionContextPanel extends StatelessWidget {
     this.onMerge,
     this.onSubtract,
     this.onCommon,
+    this.onSplit,
   });
 
   @override
@@ -173,6 +180,8 @@ class SelectionContextPanel extends StatelessWidget {
         return action.enabled ? onSubtract : null;
       case 'Common':
         return action.enabled ? onCommon : null;
+      case 'Split':
+        return action.enabled ? onSplit : null;
       default:
         return null;
     }

@@ -31,6 +31,8 @@ String featureDisplayName(List<FeatureDto> features, int index) {
     // glyph with distinct text labels), just for the label instead of the
     // icon.
     'boolean' => feature.operation == 'common' ? 'Common' : 'Subtract',
+    // Boolean family, fourth/last entry.
+    'split' => 'Split',
     // Gear-tree UX: the gear-family Feature types (built straight from
     // parameters via their own dedicated design screen - GearDesignScreen/
     // BevelDesignScreen/GearChainDesignScreen - never through a Sketch, see
@@ -88,6 +90,11 @@ String _featureTypeAsset(String type) => switch (type) {
       // establishes "one shared category icon, distinct text labels" for a
       // family of related Feature types.
       'boolean' => 'assets/icons/feature/feature_merge.svg',
+      // Boolean family, fourth/last entry: its own distinct glyph, not the
+      // shared Merge/Subtract/Common one above - a Split produces 2 Bodies
+      // from 1, not 1 from 2+, a visually distinct enough silhouette to be
+      // worth its own icon (see `assets/icons/feature/feature_split.svg`).
+      'split' => 'assets/icons/feature/feature_split.svg',
       // Gear-tree UX: one shared "gear" category glyph for every gear-family
       // Feature type (spur/internal gear, rack, bevel gear, bevel pair, gear
       // chain, planetary set) - they're all built by the same family of

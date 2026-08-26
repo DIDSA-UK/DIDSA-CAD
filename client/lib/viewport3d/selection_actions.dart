@@ -126,9 +126,14 @@ List<SelectionContextAction> contextActionsFor(
           SelectionContextAction('Common', enabled: true),
         ];
       }
+      // Boolean family, fourth/last entry: a single Body also offers Split -
+      // unlike Merge/Subtract/Common (which all need 2+ Bodies to combine),
+      // Split only ever needs exactly one target Body, so this belongs on
+      // the single-Body branch, not the 2+ one above.
       return const [
         SelectionContextAction('Mirror', enabled: true),
         SelectionContextAction('Pattern', enabled: true),
+        SelectionContextAction('Split', enabled: true),
       ];
     }
     return const [];

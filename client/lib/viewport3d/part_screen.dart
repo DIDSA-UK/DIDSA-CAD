@@ -62,6 +62,7 @@ import 'selection_hit_test.dart' show SelectionEntityKind, SelectionEntityRef;
 import 'selection_list_drawer.dart';
 import 'sketch_geometry_3d.dart';
 import 'sketch_orientation_indicator.dart';
+import 'split_panel.dart';
 import 'surface_panel.dart';
 import 'sweep_panel.dart';
 import 'svg_icon.dart';
@@ -98,6 +99,11 @@ const _bodyProducingFeatureTypes = {
   // target Body id(s) too (see the backend `BooleanFeature`'s own
   // docstring), same "eligible source" reasoning as `merge` just above.
   'boolean',
+  // Boolean family, fourth/last entry: a SplitFeature re-registers its own
+  // target Body's id (as `target_body_id#0`/`#1`) too (see the backend
+  // `SplitFeature`'s own docstring), same "eligible source" reasoning as
+  // `merge`/`boolean` just above.
+  'split',
 };
 
 /// Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
@@ -161,6 +167,19 @@ enum _MergeStep { pickingBodies, confirming }
 /// `confirming` just shows [BooleanPanel]'s summary/Keep-Consume-toggle/
 /// Cancel/Confirm over the already-created preview BooleanFeature.
 enum _BooleanStep { pickingTargets, pickingTools, confirming }
+
+/// Boolean family, fourth/last entry: which third of the guided Split flow is
+/// currently live - mirrors [_BooleanStep]'s own three-stage shape, but
+/// `pickingTarget` (singular - Split only ever has one target Body, unlike
+/// Boolean's 1+) auto-advances the instant a Body is tapped rather than
+/// waiting on its own confirm (see `_PartScreenState`'s own "Boolean family,
+/// fourth/last entry: Split" state-field section header comment for the full
+/// reasoning); `pickingTool` similarly auto-advances the instant a Plane/
+/// Surface is unambiguously resolved, whether via a direct viewport tap or
+/// via the inline "New Surface" Sketch mini-step; `confirming` just shows
+/// `SplitPanel`'s summary/Cancel/Confirm over the already-created preview
+/// SplitFeature.
+enum _SplitStep { pickingTarget, pickingTool, confirming }
 
 /// Pattern/Mirror scoping's Phase 2/6 (`docs/pattern-mirror-scope.md`
 /// §2.2/§2.8/§4): which half of the guided Pattern flow is currently live -
@@ -320,6 +339,14 @@ class _PartScreenState extends State<PartScreen> {
       .where((b) => b.source == 'computed' && b.isSurface)
       .map((b) => b.bodyId)
       .toList();
+
+  /// Boolean family, fourth/last entry: whether [bodyId] names an existing
+  /// Surface (its own rendered, non-solid shell), not an ordinary solid
+  /// Body - `_splitToolPickerSelectionFilter`'s own `body: true` lets both
+  /// kinds through the same [SelectionEntityKind.body] hit-test, this is
+  /// what `_toggleSelectedEntity`'s own Split branch uses to tell them apart
+  /// (a Split tool is a Surface's shell, never a plain solid Body).
+  bool _bodyIsSurface(String bodyId) => _bodies.any((b) => b.bodyId == bodyId && b.isSurface);
 
   /// Memoization for [_visibleBodies] - `identical(_visibleBodiesCacheSource,
   /// _bodies)` tells us the last computed [_visibleBodiesCache] is still
@@ -736,6 +763,7 @@ class _PartScreenState extends State<PartScreen> {
       _patternActive ||
       _mergeActive ||
       _booleanActive ||
+      _splitActive ||
       _profilePickerActive ||
       _pathPickerActive ||
       _planeSelectionMode;
@@ -901,6 +929,44 @@ class _PartScreenState extends State<PartScreen> {
     if (_booleanStep == _BooleanStep.pickingTools &&
         entity.kind == SelectionEntityKind.body &&
         (_booleanTargetBodyIds?.contains(entity.bodyId) ?? false)) {
+      return;
+    }
+    // Boolean family, fourth/last entry: a Body tap during `pickingTarget`
+    // both captures it and advances straight to `pickingTool` - Split only
+    // ever needs exactly one target Body, so (unlike Merge/Boolean's own
+    // multi-select-then-confirm `pickingBodies`/`pickingTargets` steps) there
+    // is no reason to wait on a separate confirm - mirrors the "New Sketch"
+    // plane-tap's own single-unambiguous-pick auto-advance (see
+    // `PickerRibbon.showConfirm`'s own doc comment), generalized from a
+    // plane-kind entity to a body-kind one.
+    if (_splitStep == _SplitStep.pickingTarget && entity.kind == SelectionEntityKind.body) {
+      _confirmSplitTargetSelection(entity.bodyId);
+      return;
+    }
+    // A face/referencePlane/createPlane tap during `pickingTool` sets the
+    // Plane tool and advances straight to `confirming` - mirrors
+    // [_setMirrorPlane]'s own replace-not-accumulate shape, generalized to
+    // "immediately confirm" since Split's tool is a single unambiguous pick,
+    // not an editable-until-confirmed one the way Mirror's own plane pick is.
+    if (_splitStep == _SplitStep.pickingTool &&
+        (entity.kind == SelectionEntityKind.face ||
+            entity.kind == SelectionEntityKind.referencePlane ||
+            entity.kind == SelectionEntityKind.createPlane)) {
+      _confirmSplitToolPlane(_planeRefDtoFor(entity));
+      return;
+    }
+    // A Body tap during `pickingTool` only resolves the Split tool when it
+    // names an existing Surface's own rendered shell (see `_bodyIsSurface`) -
+    // an ordinary solid Body tap is silently ignored (Split's tool is never a
+    // plain Body, and `_splitToolPickerSelectionFilter`'s own `body: true` is
+    // only there to let a Surface's shell through the same hit-test kind).
+    if (_splitStep == _SplitStep.pickingTool &&
+        entity.kind == SelectionEntityKind.body &&
+        _bodyIsSurface(entity.bodyId)) {
+      _confirmSplitToolSurface(entity.bodyId);
+      return;
+    }
+    if (_splitStep == _SplitStep.pickingTool && entity.kind == SelectionEntityKind.body) {
       return;
     }
     setState(() {
@@ -1795,6 +1861,138 @@ class _PartScreenState extends State<PartScreen> {
     sketchEllipse: false,
     sketchSpline: false,
     plane: false,
+  );
+
+  // --- Boolean family, fourth/last entry: Split -------------------------------
+  // Divides one existing Body into two independent, surviving pieces along a
+  // Plane or an existing Surface (see the backend `SplitFeature`'s own
+  // docstring) - unlike Merge/Boolean (which combine 2+ already-existing
+  // Bodies), Split takes exactly one target and produces two from it.
+  // `pickingTarget` picks that single target Body - a Body tap auto-advances
+  // immediately (mirrors the "New Sketch" plane-tap's own single-
+  // unambiguous-pick shape, generalized from a plane-kind entity to a
+  // body-kind one - see `_toggleSelectedEntity`'s own Split branch), no
+  // separate confirm needed, same reasoning `PickerRibbon.showConfirm`'s own
+  // doc comment gives for that convention. `pickingTool` then picks the
+  // cutting Plane/Surface: a face/plane-like tap sets `_splitToolPlaneRef`
+  // and auto-advances the same way; tapping an existing Surface's own
+  // rendered shell (a Body-kind tap whose id resolves to a Surface - see
+  // `_bodyIsSurface`) sets `_splitToolSurfaceFeatureId` instead; the ribbon's
+  // own extra "New Surface" button opens an inline Sketch-picker sub-step
+  // instead (`_startSplitSurfaceSketchPicker`) that, once a Sketch is picked,
+  // shows a small direction/start/end form (reusing `SurfacePanel` itself)
+  // whose own Confirm silently creates a real, permanent backing
+  // SurfaceFeature and sets `_splitToolSurfaceFeatureId` to it before
+  // continuing - `SplitFeature.tool` only ever references a Plane or a
+  // Surface, this is simply another way to obtain one, not a third tool kind.
+  // `confirming` just shows `SplitPanel`'s summary/Cancel/Confirm over the
+  // already-created preview SplitFeature (created the moment the tool is
+  // picked, same "create at the transition into the final step" convention
+  // `_confirmMergeBodySelection`/`_confirmBooleanToolSelection` already use).
+
+  /// Which third of the guided Split flow is currently live, or null when
+  /// Split isn't active at all - see `_SplitStep`'s own doc comment.
+  _SplitStep? _splitStep;
+
+  /// True while any part of a Split session is live - unlike
+  /// [_mergeActive]/[_booleanActive] this also covers the inline "New
+  /// Surface" mini-step ([_splitSurfaceSketchFeature]), which briefly
+  /// suspends [_splitStep] itself (see [_startSplitSurfaceSketchPicker]).
+  bool get _splitActive => _splitStep != null || _splitSurfaceSketchFeature != null;
+
+  /// The single Body being split, captured the moment `pickingTarget`'s one
+  /// required Body tap lands - mirrors [_mergeBodyIds]/[_booleanTargetBodyIds]'
+  /// own shape, just a single id instead of a list (Split only ever has one
+  /// target). Null until that tap happens.
+  String? _splitTargetBodyId;
+
+  /// The cutting tool - exactly one of these two is ever set at a time,
+  /// mirroring `SplitToolRef`'s own "one of two" convention on the backend.
+  /// Both null until `pickingTool` resolves one.
+  PlaneRefDto? _splitToolPlaneRef;
+  String? _splitToolSurfaceFeatureId;
+
+  /// True while the Feature tree is acting as a Sketch picker for Split's own
+  /// inline "New Surface" mini-step - mirrors [_surfaceSketchPickerActive].
+  bool _splitSurfaceSketchPickerActive = false;
+
+  /// While [_splitSurfaceSketchPickerActive], every current Sketch Feature's
+  /// id - mirrors [_pickableSurfaceSketchIds] (every Sketch is pickable, no
+  /// eligibility check needed - a Split's Surface tool has the identical
+  /// "even a single open wire is fine" tolerance the ordinary Surface flow
+  /// does, since it's the exact same backend Feature type).
+  Set<String> _pickableSplitSurfaceSketchIds = {};
+
+  /// The Sketch Feature currently being extruded via the mini-step's own
+  /// `SurfacePanel`, or null when that form is closed - mirrors
+  /// [_surfaceSketchFeature]. Non-null briefly suspends `_splitStep` itself
+  /// (see [_splitActive]'s own doc comment) - the mini-step's form replaces
+  /// the ordinary `pickingTool` ribbon in the widget tree.
+  FeatureDto? _splitSurfaceSketchFeature;
+
+  double _splitSurfaceStartDistance = 0.0;
+  double _splitSurfaceEndDistance = 10.0;
+  String? _splitSurfaceFixedAxis;
+
+  /// The SplitFeature created as soon as `pickingTool` resolves a tool (see
+  /// this section's own header comment) - mirrors [_previewMergeFeatureId]'s
+  /// simple pattern.
+  String? _previewSplitFeatureId;
+
+  /// B4: non-null while `SplitPanel` is editing an *already-existing*
+  /// SplitFeature - mirrors [_editingMergeFeatureId].
+  String? _editingSplitFeatureId;
+
+  /// B4: the edited Feature's own stored values from just before editing
+  /// started - [_cancelSplit] PATCHes these back verbatim when
+  /// [_editingSplitFeatureId] is set, same reason [_mergeEditSnapshot] exists.
+  ({String targetBodyId, PlaneRefDto? toolPlaneRef, String? toolSurfaceFeatureId})? _splitEditSnapshot;
+
+  /// [_selectedEntities]' value from just before the panel opened - restored
+  /// by both [_confirmSplit] and [_cancelSplit], mirrors
+  /// [_entitiesBeforeMerge].
+  Set<SelectionEntityRef>? _entitiesBeforeSplit;
+
+  /// The pre-Split mesh [_cancelSplit] restores to on Cancel - mirrors
+  /// [_meshBeforeMerge].
+  List<BodyMeshDto>? _meshBeforeSplit;
+
+  /// Locks [_selectionFilterOverrides] to Bodies only for `pickingTarget` -
+  /// mirrors [_mergeBodyPickerSelectionFilter].
+  static const _splitBodyPickerSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: false,
+    body: true,
+    sketchPoint: false,
+    sketchLine: false,
+    sketchCircle: false,
+    sketchArc: false,
+    sketchEllipse: false,
+    sketchSpline: false,
+    plane: false,
+  );
+
+  /// Locks [_selectionFilterOverrides] to face/plane-like/body kinds for
+  /// `pickingTool` - `body: true` (unlike [_mirrorSelectionFilter]) so an
+  /// existing Surface's own rendered shell is tappable too (a Surface is
+  /// rendered/hit-tested as an ordinary [SelectionEntityKind.body], tagged
+  /// via `BodyMeshDto.isSurface` - see `_bodyIsSurface`); a tap that resolves
+  /// to an ordinary solid Body instead is ignored (see
+  /// `_toggleSelectedEntity`'s own Split branch) - Split's tool is never a
+  /// plain Body.
+  static const _splitToolPickerSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: true,
+    body: true,
+    sketchPoint: false,
+    sketchLine: false,
+    sketchCircle: false,
+    sketchArc: false,
+    sketchEllipse: false,
+    sketchSpline: false,
+    plane: true,
   );
 
   // --- Pattern/Mirror scoping Phase 2/6: Pattern ------------------------------
@@ -5210,6 +5408,8 @@ class _PartScreenState extends State<PartScreen> {
         _startBooleanPicker(BooleanOperation.subtract);
       case FeaturePickerAction.common:
         _startBooleanPicker(BooleanOperation.common);
+      case FeaturePickerAction.split:
+        _startSplitPicker();
     }
   }
 
@@ -5776,6 +5976,12 @@ class _PartScreenState extends State<PartScreen> {
       // is ended by _confirmSurface/_cancelSurface instead.
       final opened = _openSurfacePanelForEdit(feature);
       if (!opened) await _endRollback();
+    } else if (feature.type == 'split') {
+      // Boolean family, fourth/last entry: mirrors the merge/boolean/surface
+      // branches just above exactly - rollback is ended by
+      // _confirmSplit/_cancelSplit instead.
+      final opened = _openSplitPanelForEdit(feature);
+      if (!opened) await _endRollback();
     } else if (_gearFamilyFeatureTypes.contains(feature.type)) {
       // Gear-tree UX: GearFeature/RackFeature/BevelGearFeature/
       // BevelPairFeature/GearChainFeature/PlanetaryGearFeature are built
@@ -6071,6 +6277,9 @@ class _PartScreenState extends State<PartScreen> {
       // target seed.
       showSubtract: _bodyProducingFeatureTypes.contains(feature.type),
       showCommon: _bodyProducingFeatureTypes.contains(feature.type),
+      // Boolean family, fourth/last entry: same gate as [showMerge]/
+      // [showSubtract]/[showCommon] exactly.
+      showSplit: _bodyProducingFeatureTypes.contains(feature.type),
     );
     if (!mounted || action == null) return;
 
@@ -6095,6 +6304,8 @@ class _PartScreenState extends State<PartScreen> {
         _openBooleanPanelFromFeature(feature, BooleanOperation.subtract);
       case FeatureContextMenuAction.common:
         _openBooleanPanelFromFeature(feature, BooleanOperation.common);
+      case FeatureContextMenuAction.split:
+        _openSplitPanelFromFeature(feature);
       case FeatureContextMenuAction.toggleVisibility:
         await _toggleFeatureVisibility(feature);
       case FeatureContextMenuAction.delete:
@@ -8367,33 +8578,46 @@ class _PartScreenState extends State<PartScreen> {
 
   /// [SelectionContextPanel.onSubtract]/[onCommon]'s callback -
   /// `contextActionsFor` enables both buttons for 2+ Bodies, nothing else,
-  /// selected (see that function's own Boolean branch). Since an ambient
-  /// selection can't disambiguate which of those Bodies should be a target
-  /// vs. a tool, this pre-seeds `pickingTargets` with the *entire* current
-  /// selection (mirrors [_onMergeTapped]'s "these Bodies are already exactly
-  /// what the user wants" shortcut) and jumps straight to `pickingTools` -
-  /// same flow as the guided path from that point on, just with stage one
-  /// already filled in.
+  /// selected (see that function's own Boolean branch).
+  ///
+  /// Bug fix: this used to lock the *entire* ambient selection as
+  /// `_booleanTargetBodyIds` immediately and jump straight to `pickingTools`
+  /// (skipping the editable `pickingTargets` step the guided flow always
+  /// gets). That has a real dead end: `contextActionsFor` only shows these
+  /// buttons once 2+ Bodies are selected, so on a Part with exactly 2 Bodies
+  /// (the natural first thing to test Subtract/Common on), selecting both to
+  /// make the buttons appear immediately consumed every Body in the Part as
+  /// a target, leaving nothing left to pick as a tool and no way back to
+  /// reconsider which Bodies should be targets - "can't select bodies to be
+  /// tool or subject" (on-device report). Now this lands on `pickingTargets`
+  /// instead, with the ambient selection carried straight into
+  /// `_selectedEntities` as its *starting*, still-editable picks - tapping
+  /// Confirm immediately reproduces the old one-tap shortcut when that really
+  /// is what the user wants, but tapping one of the pre-picked Bodies again
+  /// first (ordinary toggle - see [_toggleSelectedEntity], which only special-
+  /// cases `pickingTools`) frees it up to be picked as a tool in the next
+  /// step instead, exactly like starting from the guided "Add" FAB entry
+  /// would.
   void _onBooleanTapped(BooleanOperation operation) {
-    final bodyIds =
-        _selectedEntities.where((e) => e.kind == SelectionEntityKind.body).map((e) => e.bodyId).toList();
+    final entities = _selectedEntities;
+    final bodyIds = entities.where((e) => e.kind == SelectionEntityKind.body).map((e) => e.bodyId).toList();
     if (bodyIds.length < 2) return; // Defensive - contextActionsFor already guarantees this.
     setState(() {
       _meshBeforeBoolean = _bodies;
-      _entitiesBeforeBoolean = _selectedEntities;
+      _entitiesBeforeBoolean = entities;
       _selectionMode = true;
       _toolbarOpen = false;
       _featureTreeVisible = false;
       _selectionFilterOverrides.push(_booleanBodyPickerSelectionFilter);
       _booleanOperation = operation;
-      _booleanTargetBodyIds = bodyIds;
+      _booleanTargetBodyIds = null;
       _booleanToolBodyIds = null;
       _booleanConsumeToolBodies = true;
       _previewBooleanFeatureId = null;
       _editingBooleanFeatureId = null;
       _booleanEditSnapshot = null;
-      _booleanStep = _BooleanStep.pickingTools;
-      _selectedEntities = {};
+      _booleanStep = _BooleanStep.pickingTargets;
+      _selectedEntities = entities;
     });
   }
 
@@ -8599,6 +8823,394 @@ class _PartScreenState extends State<PartScreen> {
         targetBounds.max.y >= toolBounds.min.y &&
         targetBounds.min.z <= toolBounds.max.z &&
         targetBounds.max.z >= toolBounds.min.z;
+  }
+
+  // --- Boolean family, fourth/last entry: Split -------------------------------
+
+  /// [FeaturePickerAction.split]'s guided "Add" FAB entry - starts the
+  /// `pickingTarget` step with an empty selection and a Body-only filter;
+  /// a single Body tap both captures it and advances to `pickingTool` (see
+  /// `_toggleSelectedEntity`'s own Split branch) - mirrors [_startMergePicker]'s
+  /// shape, minus the multi-select-then-confirm part Merge's own `pickingBodies`
+  /// needs (Split only ever picks exactly one target).
+  void _startSplitPicker() {
+    setState(() {
+      _splitStep = _SplitStep.pickingTarget;
+      _splitTargetBodyId = null;
+      _splitToolPlaneRef = null;
+      _splitToolSurfaceFeatureId = null;
+      _previewSplitFeatureId = null;
+      _editingSplitFeatureId = null;
+      _splitEditSnapshot = null;
+      _meshBeforeSplit = _bodies;
+      _entitiesBeforeSplit = _selectedEntities;
+      _selectedEntities = {};
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _selectionFilterOverrides.push(_splitBodyPickerSelectionFilter);
+    });
+  }
+
+  /// `_toggleSelectedEntity`'s own Split branch calls this the instant a
+  /// Body is tapped during `pickingTarget` - captures [bodyId] and swaps the
+  /// selection filter over to `_splitToolPickerSelectionFilter` for the next
+  /// step. No confirm step of its own (see this file's own "Boolean family,
+  /// fourth/last entry: Split" state-field section header comment).
+  void _confirmSplitTargetSelection(String bodyId) {
+    setState(() {
+      _splitTargetBodyId = bodyId;
+      _splitStep = _SplitStep.pickingTool;
+      _selectedEntities = {};
+      _selectionFilterOverrides.pop();
+      _selectionFilterOverrides.push(_splitToolPickerSelectionFilter);
+    });
+  }
+
+  /// Creates the preview SplitFeature for `_splitTargetBodyId` against
+  /// whichever of [toolPlaneRef]/[toolSurfaceFeatureId] is set (exactly one,
+  /// enforced by every caller) and refreshes the mesh - the actual network
+  /// call shared by [_confirmSplitToolPlane]/[_confirmSplitToolSurface]/
+  /// [_confirmSplitSurfaceMiniStep], each of which wraps this in its own
+  /// single [_runGuarded] call (never nested).
+  Future<void> _createSplitPreview({PlaneRefDto? toolPlaneRef, String? toolSurfaceFeatureId}) async {
+    final part = _part;
+    final targetBodyId = _splitTargetBodyId;
+    if (part == null || targetBodyId == null) return;
+    final created = await _api.createSplitFeature(
+      part.id,
+      targetBodyId: targetBodyId,
+      toolPlaneRef: toolPlaneRef,
+      toolSurfaceFeatureId: toolSurfaceFeatureId,
+    );
+    _previewSplitFeatureId = created.id;
+    await _refreshMesh();
+  }
+
+  /// `_toggleSelectedEntity`'s own Split branch calls this the instant a
+  /// face/plane-like tap resolves the tool during `pickingTool` - sets
+  /// [_splitToolPlaneRef], advances straight to `confirming`, and creates
+  /// the preview SplitFeature (mirrors [_confirmBooleanToolSelection]'s own
+  /// "the moment the picking is done, the Feature is already fully defined"
+  /// shape).
+  void _confirmSplitToolPlane(PlaneRefDto planeRef) {
+    if (_splitTargetBodyId == null) return; // Defensive - unreachable outside `pickingTool`.
+    setState(() {
+      _splitToolPlaneRef = planeRef;
+      _splitToolSurfaceFeatureId = null;
+      _splitStep = _SplitStep.confirming;
+    });
+    _runGuarded(() => _createSplitPreview(toolPlaneRef: planeRef));
+  }
+
+  /// `_toggleSelectedEntity`'s own Split branch calls this the instant a tap
+  /// on an existing Surface's own rendered shell resolves the tool during
+  /// `pickingTool` - mirrors [_confirmSplitToolPlane] exactly, for the
+  /// Surface-tool case. Also the final step [_confirmSplitSurfaceMiniStep]
+  /// itself calls once its own freshly-created SurfaceFeature exists.
+  void _confirmSplitToolSurface(String surfaceFeatureId) {
+    if (_splitTargetBodyId == null) return; // Defensive - unreachable outside `pickingTool`.
+    setState(() {
+      _splitToolSurfaceFeatureId = surfaceFeatureId;
+      _splitToolPlaneRef = null;
+      _splitStep = _SplitStep.confirming;
+    });
+    _runGuarded(() => _createSplitPreview(toolSurfaceFeatureId: surfaceFeatureId));
+  }
+
+  /// [SelectionContextPanel.onSplit]'s callback - `contextActionsFor` enables
+  /// this button for exactly one Body, nothing else, selected. Unlike
+  /// [_onBooleanTapped] (whose own ambient entry has a real dead-end bug this
+  /// mirrors the *fix* for - see that method's own doc comment for the full
+  /// incident), Split's target is always exactly one Body by construction
+  /// (`contextActionsFor`'s own gate), so there is no "locked the whole
+  /// selection, nothing left to pick" trap to reproduce: pre-seeding
+  /// `_splitTargetBodyId` from the one selected Body and landing straight on
+  /// the still-fully-editable `pickingTool` step (never `confirming`, the
+  /// tool is never resolvable from an ambient selection the way a Boolean's
+  /// own tool Bodies can be) is both correct and the closest possible mirror
+  /// of the guided "Add" FAB entry's own end state after its `pickingTarget`
+  /// step.
+  void _onSplitTapped() {
+    final entities = _selectedEntities;
+    final bodyIds = entities.where((e) => e.kind == SelectionEntityKind.body).map((e) => e.bodyId).toList();
+    if (bodyIds.length != 1) return; // Defensive - contextActionsFor already guarantees this.
+    setState(() {
+      _meshBeforeSplit = _bodies;
+      _entitiesBeforeSplit = entities;
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _selectionFilterOverrides.push(_splitToolPickerSelectionFilter);
+      _splitTargetBodyId = bodyIds.single;
+      _splitToolPlaneRef = null;
+      _splitToolSurfaceFeatureId = null;
+      _previewSplitFeatureId = null;
+      _editingSplitFeatureId = null;
+      _splitEditSnapshot = null;
+      _splitStep = _SplitStep.pickingTool;
+      _selectedEntities = {};
+    });
+  }
+
+  /// On-device feedback shape mirrored from [_openMergePanelFromFeature]:
+  /// long-press "Split" on a single body-producing Feature row pre-seeds
+  /// that Feature's own current Body as the target and jumps straight to
+  /// `pickingTool` - the user picks a Plane/Surface before confirming.
+  /// [_onFeatureLongPress] is the only caller. Does nothing (defensive only)
+  /// if [feature] doesn't currently resolve to any Body at all.
+  void _openSplitPanelFromFeature(FeatureDto feature) {
+    final seedBodyIds =
+        _bodies.map((b) => b.bodyId).where((bid) => baseFeatureId(bid) == feature.id).toList();
+    if (seedBodyIds.isEmpty) return;
+    setState(() {
+      _meshBeforeSplit = _bodies;
+      _entitiesBeforeSplit = _selectedEntities;
+      _selectedEntities = {};
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _selectionFilterOverrides.push(_splitToolPickerSelectionFilter);
+      _splitTargetBodyId = seedBodyIds.first;
+      _splitToolPlaneRef = null;
+      _splitToolSurfaceFeatureId = null;
+      _previewSplitFeatureId = null;
+      _editingSplitFeatureId = null;
+      _splitEditSnapshot = null;
+      _splitStep = _SplitStep.pickingTool;
+    });
+  }
+
+  /// B4: opens `SplitPanel` to edit an *already-existing* SplitFeature -
+  /// mirrors [_openMergePanelForEdit]'s shape (a defensive `bool` return,
+  /// since a real SplitFeature always has a `target_body_id` and exactly one
+  /// of `toolPlaneRef`/`toolSurfaceFeatureId`, but this stays defensive
+  /// rather than assuming). Enters directly at `confirming` - unlike the
+  /// guided "Add" FAB entry, there's no picking step to go through, since
+  /// [feature] already names both the target and the tool.
+  bool _openSplitPanelForEdit(FeatureDto feature) {
+    final targetBodyId = feature.targetBodyId;
+    final toolPlaneRef = feature.toolPlaneRef;
+    final toolSurfaceFeatureId = feature.toolSurfaceFeatureId;
+    if (targetBodyId == null) return false;
+    if (toolPlaneRef == null && toolSurfaceFeatureId == null) return false;
+    setState(() {
+      _splitStep = _SplitStep.confirming;
+      _editingSplitFeatureId = feature.id;
+      _previewSplitFeatureId = feature.id;
+      _splitTargetBodyId = targetBodyId;
+      _splitToolPlaneRef = toolPlaneRef;
+      _splitToolSurfaceFeatureId = toolSurfaceFeatureId;
+      _splitEditSnapshot = (
+        targetBodyId: targetBodyId,
+        toolPlaneRef: toolPlaneRef,
+        toolSurfaceFeatureId: toolSurfaceFeatureId,
+      );
+      _meshBeforeSplit = _bodies;
+      _entitiesBeforeSplit = _selectedEntities;
+      _selectionMode = true;
+      _selectionFilterOverrides.push(_splitToolPickerSelectionFilter);
+    });
+    return true;
+  }
+
+  /// Keeps the just-created/edited SplitFeature, restores whatever was
+  /// selected before the panel opened, and rolls B4 rollback forward -
+  /// mirrors [_confirmMerge]'s shape exactly.
+  Future<void> _confirmSplit() async {
+    await _runGuarded(_refreshFeatures);
+    if (!mounted) return;
+    setState(() {
+      _featureTreeVisible = false;
+      _splitStep = null;
+      _splitTargetBodyId = null;
+      _splitToolPlaneRef = null;
+      _splitToolSurfaceFeatureId = null;
+      _selectedEntities = _entitiesBeforeSplit ?? {};
+      _entitiesBeforeSplit = null;
+      _previewSplitFeatureId = null;
+      _editingSplitFeatureId = null;
+      _splitEditSnapshot = null;
+      _meshBeforeSplit = null;
+      _selectionFilterOverrides.pop();
+    });
+    await _endRollback();
+  }
+
+  /// Deletes the just-created preview SplitFeature (new flow, if any - a
+  /// Cancel tapped straight from `pickingTarget`/`pickingTool`, before a tool
+  /// was ever resolved, has nothing to delete yet) or PATCHes
+  /// [_splitEditSnapshot]'s stashed original values back (edit flow) -
+  /// mirrors [_cancelMerge]'s structure exactly.
+  Future<void> _cancelSplit() async {
+    final part = _part;
+    final previewId = _previewSplitFeatureId;
+    final meshBefore = _meshBeforeSplit;
+    final wasEditing = _editingSplitFeatureId != null;
+    final editSnapshot = _splitEditSnapshot;
+    setState(() {
+      _featureTreeVisible = false;
+      _splitStep = null;
+      _splitTargetBodyId = null;
+      _splitToolPlaneRef = null;
+      _splitToolSurfaceFeatureId = null;
+      _selectedEntities = _entitiesBeforeSplit ?? {};
+      _entitiesBeforeSplit = null;
+      _previewSplitFeatureId = null;
+      _editingSplitFeatureId = null;
+      _splitEditSnapshot = null;
+      _meshBeforeSplit = null;
+      _selectionFilterOverrides.pop();
+    });
+    if (part != null && previewId != null) {
+      if (wasEditing && editSnapshot != null) {
+        await _runGuarded(() async {
+          await _api.updateSplitFeature(
+            part.id,
+            previewId,
+            targetBodyId: editSnapshot.targetBodyId,
+            toolPlaneRef: editSnapshot.toolPlaneRef,
+            toolSurfaceFeatureId: editSnapshot.toolSurfaceFeatureId,
+          );
+          await _refreshFeatures();
+        });
+      } else {
+        await _runGuarded(() async {
+          await _api.deleteFeature(part.id, previewId);
+          if (meshBefore != null) {
+            _bodies = meshBefore;
+          } else {
+            await _refreshMesh();
+          }
+          await _refreshFeatures();
+        });
+      }
+    }
+    await _endRollback();
+  }
+
+  /// Boolean family, fourth/last entry: `'Plane'`/`'Plane (<fixedPlane>)'`,
+  /// or `'Surface (<name>)'` when known - the tool summary `SplitPanel`
+  /// shows. Mirrors [BooleanPanel.isSubtract]'s own "caller computes the
+  /// summary copy" split, since only [PartScreen] has [_surfaceNames] to
+  /// resolve a Surface's own display name from.
+  String get _splitToolSummary {
+    final surfaceFeatureId = _splitToolSurfaceFeatureId;
+    if (surfaceFeatureId != null) {
+      final name = _surfaceNames[surfaceFeatureId];
+      return name == null ? 'Surface' : 'Surface ($name)';
+    }
+    final fixedPlane = _splitToolPlaneRef?.fixedPlane;
+    return fixedPlane == null ? 'Plane' : 'Plane ($fixedPlane)';
+  }
+
+  // --- Boolean family, fourth/last entry: Split's own inline "New Surface"
+  // mini-step - opened from the `pickingTool` ribbon's own extra button
+  // (`extraActionLabel: 'New Surface'`), for "cut along a Sketch, given a
+  // direction" without adding a third tool-kind to `SplitFeature`'s own data
+  // model (it always ultimately references a Plane or a Surface - this mini-
+  // step's only job is to mint a real, permanent SurfaceFeature for it to
+  // reference). Mirrors the ordinary Surface flow's own `_surfaceSketchPickerActive`/
+  // `_pickableSurfaceSketchIds`/`_openSurfacePanel` shape closely, but
+  // deliberately does *not* reuse that flow's own state/methods directly
+  // (`_surfaceSketchFeature`/`_confirmSurface`/`_cancelSurface`) - those carry
+  // Surface-specific bookkeeping (auto-hiding the backing Sketch on confirm,
+  // a 500ms debounced live-preview PATCH loop) this scoped-inside-Split
+  // mini-step has no need for: the backing SurfaceFeature is created exactly
+  // once, on this mini-step's own Confirm, not on every field edit - "silently
+  // creates a backing SurfaceFeature ... before continuing" is a single POST,
+  // not a live preview.
+
+  /// Opens the Feature tree in Sketch-picker mode for Split's own "New
+  /// Surface" mini-step - mirrors [_startSurfaceSketchPicker], minus the
+  /// [_planeSelectionModeStack] pop (Split never uses that stack).
+  void _startSplitSurfaceSketchPicker() {
+    setState(() {
+      _splitSurfaceSketchPickerActive = true;
+      _featureTreeVisible = true;
+      _toolbarOpen = false;
+      _pickableSplitSurfaceSketchIds = {
+        for (final f in _features)
+          if (f.type == 'sketch') f.id,
+      };
+    });
+  }
+
+  /// [FeatureTreePanel.onSketchPicked] while [_splitSurfaceSketchPickerActive] -
+  /// mirrors [_onSurfaceSketchPicked], opening the mini-step's own form
+  /// instead of the full [SurfacePanel] flow.
+  void _onSplitSurfaceSketchPicked(FeatureDto feature) {
+    setState(() {
+      _splitSurfaceSketchPickerActive = false;
+      _featureTreeVisible = false;
+      _pickableSplitSurfaceSketchIds = {};
+      _splitSurfaceSketchFeature = feature;
+      _splitSurfaceStartDistance = 0.0;
+      _splitSurfaceEndDistance = 10.0;
+      _splitSurfaceFixedAxis = null;
+    });
+  }
+
+  /// Exits picker mode without picking a Sketch, back to `pickingTool` -
+  /// mirrors [_cancelSurfaceSketchPicker].
+  void _cancelSplitSurfaceSketchPicker() {
+    setState(() {
+      _splitSurfaceSketchPickerActive = false;
+      _featureTreeVisible = false;
+      _pickableSplitSurfaceSketchIds = {};
+    });
+  }
+
+  /// The mini-step's own [SurfacePanel.onChanged] - unlike
+  /// [_onSurfaceValuesChanged], this does *not* schedule a debounced
+  /// network call (see this section's own header comment) - the values are
+  /// simply held until [_confirmSplitSurfaceMiniStep] sends them all at
+  /// once.
+  void _onSplitSurfaceValuesChanged(double start, double end, String? fixedAxis) {
+    _splitSurfaceStartDistance = start;
+    _splitSurfaceEndDistance = end;
+    _splitSurfaceFixedAxis = fixedAxis;
+  }
+
+  /// The mini-step's own Confirm - creates the real, permanent backing
+  /// SurfaceFeature for real (a single POST, see this section's own header
+  /// comment), then immediately calls [_confirmSplitToolSurface] with its
+  /// new id to finish the ordinary `pickingTool` -> `confirming` transition,
+  /// exactly as if that Surface had already existed and been tapped
+  /// directly in the viewport.
+  void _confirmSplitSurfaceMiniStep() {
+    final part = _part;
+    final sketchFeature = _splitSurfaceSketchFeature;
+    if (part == null || sketchFeature == null) return;
+    final startDistance = _splitSurfaceStartDistance;
+    final endDistance = _splitSurfaceEndDistance;
+    final fixedAxis = _splitSurfaceFixedAxis;
+    final directionRef = fixedAxis == null ? null : PatternDirectionRefDto(fixedAxis: fixedAxis);
+    setState(() {
+      _splitSurfaceSketchFeature = null;
+      _splitStep = _SplitStep.confirming;
+    });
+    _runGuarded(() async {
+      final createdSurface = await _api.createSurfaceFeature(
+        part.id,
+        sketchFeatureId: sketchFeature.id,
+        startDistance: startDistance,
+        endDistance: endDistance,
+        directionRef: directionRef,
+      );
+      await _refreshFeatures();
+      _splitToolSurfaceFeatureId = createdSurface.id;
+      _splitToolPlaneRef = null;
+      await _createSplitPreview(toolSurfaceFeatureId: createdSurface.id);
+    });
+  }
+
+  /// Discards the mini-step's own form without creating anything (nothing
+  /// was ever created until Confirm - see this section's own header
+  /// comment, so unlike [_cancelSurface] there is nothing to delete),
+  /// returning to `pickingTool`.
+  void _cancelSplitSurfaceMiniStep() {
+    setState(() => _splitSurfaceSketchFeature = null);
   }
 
   // --- Pattern/Mirror scoping Phase 2: Pattern -------------------------------
@@ -10501,6 +11113,7 @@ class _PartScreenState extends State<PartScreen> {
                     !_patternActive &&
                     !_mergeActive &&
                     !_booleanActive &&
+                    !_splitActive &&
                     !_profilePickerActive &&
                     !_pathPickerActive)
                   Positioned.fill(
@@ -10521,6 +11134,7 @@ class _PartScreenState extends State<PartScreen> {
                         onMerge: _onMergeTapped,
                         onSubtract: () => _onBooleanTapped(BooleanOperation.subtract),
                         onCommon: () => _onBooleanTapped(BooleanOperation.common),
+                        onSplit: _onSplitTapped,
                       ),
                       bodyNames: _selectionBodyNames,
                     ),
@@ -10542,6 +11156,8 @@ class _PartScreenState extends State<PartScreen> {
                         _cancelRevolveSketchPicker();
                       } else if (_sweepSketchPickerActive) {
                         _cancelSweepSketchPicker();
+                      } else if (_splitSurfaceSketchPickerActive) {
+                        _cancelSplitSurfaceSketchPicker();
                       } else if (_loftSketchPickerActive) {
                         _cancelLoftSketchPicker();
                       } else if (_sourceFeaturePickerTarget != null) {
@@ -10552,31 +11168,37 @@ class _PartScreenState extends State<PartScreen> {
                     },
                     // Prompt F: only one of _sketchPickerActive/
                     // _surfaceSketchPickerActive/_revolveSketchPickerActive/
-                    // _sweepSketchPickerActive is ever true at a time (same
-                    // "one panel/picker active" invariant every other flow in
-                    // this file relies on), so a chain of ternaries picks
-                    // whichever is live - mirrors the previewOverlayBodyId/
-                    // previewOverlayMesh ternary above. Loft's own picker uses
-                    // isFeaturePickerMode instead (see that block's own top
-                    // comment for why), not this one.
+                    // _sweepSketchPickerActive/_splitSurfaceSketchPickerActive
+                    // is ever true at a time (same "one panel/picker active"
+                    // invariant every other flow in this file relies on), so
+                    // a chain of ternaries picks whichever is live - mirrors
+                    // the previewOverlayBodyId/previewOverlayMesh ternary
+                    // above. Loft's own picker uses isFeaturePickerMode
+                    // instead (see that block's own top comment for why),
+                    // not this one.
                     isSketchPickerMode: _sketchPickerActive ||
                         _surfaceSketchPickerActive ||
                         _revolveSketchPickerActive ||
-                        _sweepSketchPickerActive,
+                        _sweepSketchPickerActive ||
+                        _splitSurfaceSketchPickerActive,
                     pickableSketchIds: _sketchPickerActive
                         ? _pickableSketchIds
                         : _surfaceSketchPickerActive
                             ? _pickableSurfaceSketchIds
                             : _revolveSketchPickerActive
                                 ? _pickableRevolveSketchIds
-                                : _pickableSweepSketchIds,
+                                : _sweepSketchPickerActive
+                                    ? _pickableSweepSketchIds
+                                    : _pickableSplitSurfaceSketchIds,
                     onSketchPicked: _sketchPickerActive
                         ? _onSketchPicked
                         : _surfaceSketchPickerActive
                             ? _onSurfaceSketchPicked
                             : _revolveSketchPickerActive
                                 ? _onRevolveSketchPicked
-                                : _onSweepSketchPicked,
+                                : _sweepSketchPickerActive
+                                    ? _onSweepSketchPicked
+                                    : _onSplitSurfaceSketchPicked,
                     // Loft's own multi-select section picker shares this
                     // exact mode with the Pattern/Mirror source-feature
                     // picker (only one of the two is ever active at a time,
@@ -10813,6 +11435,49 @@ class _PartScreenState extends State<PartScreen> {
                       onConsumeToolBodiesChanged: _setBooleanConsumeToolBodies,
                       onConfirm: _confirmBoolean,
                       onCancel: _cancelBoolean,
+                    ),
+                  ),
+                // Boolean family, fourth/last entry: Split's own inline "New
+                // Surface" mini-step form - shown instead of the ordinary
+                // `pickingTool` ribbon while [_splitSurfaceSketchFeature] is
+                // set (a Sketch has been picked via the Feature tree, see
+                // `_onSplitSurfaceSketchPicked`), reusing [SurfacePanel]
+                // itself for its direction/start/end fields (see this file's
+                // own "Boolean family, fourth/last entry: Split's own inline
+                // 'New Surface' mini-step" section header comment for why
+                // this doesn't reuse the ordinary Surface flow's own state).
+                if (_splitSurfaceSketchFeature != null)
+                  Positioned.fill(
+                    // Bug fix: mirrors the Extrude panel slot's own stable-
+                    // key reasoning exactly, above.
+                    key: const ValueKey('split-surface-mini-step-slot'),
+                    child: SurfacePanel(
+                      key: ValueKey(_splitSurfaceSketchFeature!.id),
+                      title: 'New Surface',
+                      tooltip: 'Direction and distance for the cutting surface',
+                      initialStartDistance: _splitSurfaceStartDistance,
+                      initialEndDistance: _splitSurfaceEndDistance,
+                      initialFixedAxis: _splitSurfaceFixedAxis,
+                      onChanged: _onSplitSurfaceValuesChanged,
+                      onConfirm: _confirmSplitSurfaceMiniStep,
+                      onCancel: _cancelSplitSurfaceMiniStep,
+                    ),
+                  ),
+                // [SplitPanel] itself only ever handles the `confirming` step
+                // - `pickingTarget`/`pickingTool` each have their own
+                // [PickerRibbon] instead (see below), mirroring
+                // [MergePanel]'s own shape.
+                if (_splitStep == _SplitStep.confirming)
+                  Positioned.fill(
+                    // Bug fix: mirrors the Extrude panel slot's own stable-
+                    // key reasoning exactly, above.
+                    key: const ValueKey('split-panel-slot'),
+                    child: SplitPanel(
+                      key: ValueKey(_editingSplitFeatureId ?? _splitTargetBodyId),
+                      title: _editingSplitFeatureId != null ? 'Edit Split' : 'Split',
+                      toolSummary: _splitToolSummary,
+                      onConfirm: _confirmSplit,
+                      onCancel: _cancelSplit,
                     ),
                   ),
                 // [PatternPanel] itself only ever handles the `configuring`
@@ -11274,6 +11939,46 @@ class _PartScreenState extends State<PartScreen> {
                       showConfirm: true,
                       onConfirm:
                           _busy || _booleanPickedBodyCount() == 0 ? null : _confirmBooleanToolSelection,
+                    ),
+                  ),
+                // Boolean family, fourth/last entry guided "Add" FAB/ambient/
+                // long-press entries (`_startSplitPicker`/`_onSplitTapped`/
+                // `_openSplitPanelFromFeature`): shown for the whole
+                // `pickingTarget` step - unlike every other Boolean-family
+                // ribbon above, no confirm button at all (`showConfirm`
+                // omitted, defaults false) - a single Body tap both captures
+                // it and advances immediately (see `_toggleSelectedEntity`'s
+                // own Split branch), mirroring the "New Sketch" plane-tap's
+                // own single-unambiguous-pick shape.
+                if (_splitStep == _SplitStep.pickingTarget)
+                  Positioned.fill(
+                    child: PickerRibbon(
+                      title: 'Split',
+                      tooltip: 'Select body to split',
+                      onCancel: _cancelSplit,
+                    ),
+                  ),
+                // The second half of the same flow - `pickingTool` picks the
+                // cutting Plane/Surface, also auto-advancing the instant a
+                // face/plane-like or existing-Surface tap resolves it (see
+                // `_toggleSelectedEntity`'s own Split branch). The extra
+                // "New Surface" button opens an inline Sketch-picker
+                // mini-step instead (`_startSplitSurfaceSketchPicker`) - see
+                // this file's own "Boolean family, fourth/last entry: Split's
+                // own inline 'New Surface' mini-step" section header comment.
+                // Hidden while that mini-step's own form
+                // ([_splitSurfaceSketchFeature]) is open, which replaces this
+                // ribbon in the widget tree instead (mirrors [MirrorPanel]'s
+                // own hidden-while-its-source-Feature-picker-is-up condition
+                // just above).
+                if (_splitStep == _SplitStep.pickingTool && _splitSurfaceSketchFeature == null)
+                  Positioned.fill(
+                    child: PickerRibbon(
+                      title: 'Split',
+                      tooltip: 'Select cutting plane, surface, or sketch',
+                      onCancel: _cancelSplit,
+                      extraActionLabel: 'New Surface',
+                      onExtraAction: _startSplitSurfaceSketchPicker,
                     ),
                   ),
                 // Pattern/Mirror scoping's Phase 2/6 guided "Add" FAB entry

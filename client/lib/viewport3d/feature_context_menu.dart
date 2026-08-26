@@ -29,7 +29,10 @@ import 'svg_icon.dart';
 /// family, Subtract/Common: [subtract]/[common] mirror [merge] the same way,
 /// each seeding the long-pressed Feature's own Body/Bodies as the *targets*
 /// of a new guided Subtract/Common session (see [showSubtract]/[showCommon]'s
-/// own doc comment).
+/// own doc comment). Boolean family, fourth/last entry: [split] mirrors
+/// [merge]/[subtract]/[common] the same way, seeding the long-pressed
+/// Feature's own Body as the guided Split flow's single required target
+/// (see [showSplit]'s own doc comment).
 ///
 /// Bug fix: [surface] gives Extrude Surface the same long-press-on-Sketch
 /// route Extrude/Revolve/Sweep already have - previously the only way to
@@ -46,6 +49,7 @@ enum FeatureContextMenuAction {
   merge,
   subtract,
   common,
+  split,
   toggleVisibility,
   delete,
 }
@@ -115,7 +119,8 @@ enum FeatureContextMenuAction {
 /// enabled when shown, same reasoning as [showPattern]/[showMirror].
 /// Boolean family, Subtract/Common: [showSubtract]/[showCommon] mirror
 /// [showMerge]'s own gate exactly - same reasoning, same always-enabled-
-/// when-shown shape.
+/// when-shown shape. Boolean family, fourth/last entry: [showSplit] mirrors
+/// [showMerge]/[showSubtract]/[showCommon]'s own gate exactly too.
 Future<FeatureContextMenuAction?> showFeatureContextMenu(
   BuildContext context, {
   required bool isHidden,
@@ -135,6 +140,7 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
   bool showMerge = false,
   bool showSubtract = false,
   bool showCommon = false,
+  bool showSplit = false,
 }) {
   return showModalBottomSheet<FeatureContextMenuAction>(
     context: context,
@@ -217,6 +223,12 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
                 leading: const SvgIcon('assets/icons/feature/feature_merge.svg'),
                 title: const Text('Common'),
                 onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.common),
+              ),
+            if (showSplit)
+              ListTile(
+                leading: const SvgIcon('assets/icons/feature/feature_split.svg'),
+                title: const Text('Split'),
+                onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.split),
               ),
             ListTile(
               leading: Icon(isHidden ? Icons.visibility : Icons.visibility_off),
