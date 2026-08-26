@@ -234,7 +234,7 @@ from app.document.schemas import (
     SweepFeatureResponse,
     SweepFeatureUpdate,
 )
-from app.document.split import resolve_split
+from app.document.split import CONNECTABLE_CURVE_ENTITY_TYPES, resolve_split
 from app.document.sweep import resolve_sweep
 from app.document.store import get_document, get_part_or_404, replace_document
 from app.session_context import bind_session_id
@@ -431,6 +431,7 @@ def _split_tool_ref_to_domain(schema: SplitToolRefSchema) -> SplitToolRef:
     return SplitToolRef(
         plane_ref=_plane_ref_to_domain(schema.plane_ref) if schema.plane_ref else None,
         surface_feature_id=schema.surface_feature_id,
+        sketch_line_ref=_sketch_entity_ref_to_domain(schema.sketch_line_ref) if schema.sketch_line_ref else None,
     )
 
 
@@ -438,6 +439,7 @@ def _split_tool_ref_to_schema(ref: SplitToolRef) -> SplitToolRefSchema:
     return SplitToolRefSchema(
         plane_ref=_plane_ref_to_schema(ref.plane_ref) if ref.plane_ref else None,
         surface_feature_id=ref.surface_feature_id,
+        sketch_line_ref=_sketch_entity_ref_to_schema(ref.sketch_line_ref) if ref.sketch_line_ref else None,
     )
 
 
@@ -1131,30 +1133,45 @@ def _validate_split_target_body_id(part: Part, target_body_id: str) -> None:
 
 def _validate_split_tool_ref(part: Part, tool: SplitToolRef) -> None:
     """Boolean family, fourth/last entry: enforces exactly one of `plane_
-    ref`/`surface_feature_id` is supplied, matching `SplitToolRef`'s own
-    "one of two" convention (see its docstring), and that whichever one is
-    supplied is itself well-formed: a `plane_ref` is validated by the
-    existing `_validate_plane_ref` (already shared by `CreatePlaneFeature`/
-    `MirrorFeature`), and a `surface_feature_id` must name a real
-    `SurfaceFeature` in this Part (checked via `isinstance`, not just
+    ref`/`surface_feature_id`/`sketch_line_ref` is supplied, matching
+    `SplitToolRef`'s own "one of three" convention (see its docstring), and
+    that whichever one is supplied is itself well-formed: a `plane_ref` is
+    validated by the existing `_validate_plane_ref` (already shared by
+    `CreatePlaneFeature`/`MirrorFeature`), a `surface_feature_id` must name
+    a real `SurfaceFeature` in this Part (checked via `isinstance`, not just
     `part.get_feature(...) is not None` - any other Feature type id would
-    otherwise silently pass this check)."""
-    set_count = sum(x is not None for x in (tool.plane_ref, tool.surface_feature_id))
+    otherwise silently pass this check), and a `sketch_line_ref` must have
+    an `entity_type` that is actually a connectable curve (`app.document.
+    split.CONNECTABLE_CURVE_ENTITY_TYPES`) - the same typed-slot check
+    `edge_ref`/`face_ref` already get elsewhere in this module. Whether the
+    referenced Sketch/entity actually still exists is left to `resolve_
+    split`'s own eager-resolve-to-validate call (same "structural shape here,
+    referential/geometric validity there" split every other tool kind
+    already gets)."""
+    set_count = sum(x is not None for x in (tool.plane_ref, tool.surface_feature_id, tool.sketch_line_ref))
     if set_count != 1:
         raise HTTPException(
             status_code=422,
-            detail="SplitFeature tool must have exactly one of plane_ref or surface_feature_id",
+            detail="SplitFeature tool must have exactly one of plane_ref, surface_feature_id, or "
+            "sketch_line_ref",
         )
     if tool.plane_ref is not None:
         _validate_plane_ref(part, tool.plane_ref)
-    else:
-        assert tool.surface_feature_id is not None
+    elif tool.surface_feature_id is not None:
         surface_feature = part.get_feature(tool.surface_feature_id)
         if not isinstance(surface_feature, SurfaceFeature):
             raise HTTPException(
                 status_code=400,
                 detail="SplitFeature tool surface_feature_id does not refer to a SurfaceFeature "
                 "in this Part",
+            )
+    else:
+        assert tool.sketch_line_ref is not None
+        if tool.sketch_line_ref.entity_type not in CONNECTABLE_CURVE_ENTITY_TYPES:
+            raise HTTPException(
+                status_code=422,
+                detail="SplitFeature tool sketch_line_ref must reference a connectable curve entity "
+                "(line, arc, ellipse_arc, or spline)",
             )
 
 

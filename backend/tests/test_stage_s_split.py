@@ -1,14 +1,15 @@
 """Boolean family, fourth/last entry: real-OCCT tests for `SplitFeature` -
 divides one existing Body into two independent, surviving pieces along a
-`plane_ref` or an existing `SurfaceFeature` (`app.document.split.resolve_
-split_pieces`'s own oversized-half-space-block technique - see that
-module's own top-level docstring). Mirrors test_stage_r_boolean.py's own
-structure/helpers (copy-pasted, not shared via conftest, same as every
-other test_stage*.py file), plus the THREE_POINTS vertex-picking helper
-from test_stage_c4_create_plane.py for the non-axis-aligned-plane coverage
-below. Needs a real pythonocc-core environment (not available in this
-repo's own dev sandbox - see docs/status.md's dated entries for whether a
-real on-device/CI pass has actually run by the time this is read).
+`plane_ref`, an existing `SurfaceFeature`, or a raw `sketch_line_ref`
+(`app.document.split.resolve_split_pieces`'s own oversized-half-space-block
+technique - see that module's own top-level docstring). Mirrors
+test_stage_r_boolean.py's own structure/helpers (copy-pasted, not shared
+via conftest, same as every other test_stage*.py file), plus the
+THREE_POINTS vertex-picking helper from test_stage_c4_create_plane.py for
+the non-axis-aligned-plane coverage below. Needs a real pythonocc-core
+environment (not available in this repo's own dev sandbox - see
+docs/status.md's dated entries for whether a real on-device/CI pass has
+actually run by the time this is read).
 """
 
 import itertools
@@ -159,6 +160,36 @@ def _create_three_points_plane(part_id: str, point_refs: list[dict]):
     )
 
 
+def _add_arc(sketch_id: str, center_point_id: str, start_point_id: str, end_point_id: str) -> dict:
+    response = client.post(
+        f"/sketch/sketches/{sketch_id}/arcs",
+        json={
+            "center_point_id": center_point_id,
+            "start_point_id": start_point_id,
+            "end_point_id": end_point_id,
+        },
+    )
+    assert response.status_code == 201
+    return response.json()
+
+
+def _add_spline(sketch_id: str, through_point_ids: list[str]) -> dict:
+    response = client.post(
+        f"/sketch/sketches/{sketch_id}/splines",
+        json={"through_point_ids": through_point_ids},
+    )
+    assert response.status_code == 201
+    return response.json()
+
+
+def _sketch_line_ref(sketch_id: str, entity_type: str, entity_id: str) -> dict:
+    return {"sketch_line_ref": {"sketch_id": sketch_id, "entity_type": entity_type, "entity_id": entity_id}}
+
+
+def _feature_types(part_id: str) -> list[str]:
+    return [f["type"] for f in client.get(f"/document/parts/{part_id}/features").json()]
+
+
 def _first_tilted_three_vertex_plane(part_id: str, body_id: str) -> dict:
     """A plane through 3 real Body vertices, filtered to one whose own
     `normal` has all 3 components non-zero - i.e. genuinely tilted, not
@@ -202,6 +233,42 @@ def test_split_tool_with_both_plane_ref_and_surface_feature_id_is_rejected():
         part["id"],
         target_id,
         {"plane_ref": {"fixed_plane": "XY"}, "surface_feature_id": surface["id"]},
+    )
+
+    assert response.status_code == 422
+
+
+def test_split_tool_with_plane_ref_and_sketch_line_ref_both_set_is_rejected():
+    part = _create_part()
+    target_id = _make_box(part["id"])
+    line_sketch = _create_sketch_feature(part["id"], plane="XZ")
+    p1 = _add_point(line_sketch["sketch_id"], -20.0, -20.0)
+    p2 = _add_point(line_sketch["sketch_id"], 20.0, 20.0)
+    line = _add_line(line_sketch["sketch_id"], p1["id"], p2["id"])
+
+    response = _create_split(
+        part["id"],
+        target_id,
+        {
+            "plane_ref": {"fixed_plane": "XY"},
+            **_sketch_line_ref(line_sketch["sketch_id"], "line", line["id"]),
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_split_tool_with_sketch_line_ref_pointing_at_a_non_connectable_entity_type_is_rejected():
+    """A typed-slot check, mirroring `edge_ref`/`face_ref`'s own
+    `shape_type` checks - Circle/Ellipse/Point/Text are never connectable
+    curves (see `app.document.split.CONNECTABLE_CURVE_ENTITY_TYPES`), so
+    this must be rejected before ever trying to resolve the Sketch/entity
+    at all."""
+    part = _create_part()
+    target_id = _make_box(part["id"])
+
+    response = _create_split(
+        part["id"], target_id, _sketch_line_ref("some-sketch-id", "circle", "some-entity-id")
     )
 
     assert response.status_code == 422
@@ -348,6 +415,167 @@ def test_split_by_a_surface_feature_with_an_open_chain_sketch_is_rejected_as_mis
     assert response.json()["detail"]["type"] == "missing_reference"
 
 
+# --- Split by a raw Sketch line/curve (no backing SurfaceFeature) --------------
+
+
+def test_split_by_a_sketch_line_produces_two_independent_pieces_with_no_surface_feature_created():
+    """The bug this whole `sketch_line_ref` tool kind replaces: extruding a
+    picked Sketch line into a Surface first (the old inline "New Surface"
+    mini-step) used to be the only way to Split along a raw Sketch curve,
+    and silently failed for anything but a closed profile. A plain open
+    Line, used directly, must now produce the same result a `plane_ref`/
+    `surface_feature_id` Split would - and must not create any Feature
+    beyond the SplitFeature itself, unlike the old mini-step it replaces.
+
+    A 20x20x10 target box straddling y=0 (y in [-10, 10], x in [0, 20],
+    z in [0, 10]), split by a short, diagonal Line sketched on the fixed XZ
+    plane (normal +Y, anchored at y=0) - deliberately much smaller than the
+    target box's own footprint (unlike the Surface-tool test's own
+    generously-oversized square), to exercise `_sketch_line_block`'s own
+    "cover the target regardless of the curve's own extent" contract. Since
+    the Line is straight, this must produce exactly the same split as the
+    fixed-XY-plane test: piece #0 (Common, +Y side) spans y in [0, 10];
+    piece #1 (Cut, -Y side) spans y in [-10, 0]."""
+    part = _create_part()
+    target_id = _make_box(part["id"], x0=0.0, y0=-10.0, size=20.0, start_z=0.0, end_z=10.0)
+
+    line_sketch = _create_sketch_feature(part["id"], plane="XZ")
+    p1 = _add_point(line_sketch["sketch_id"], 1.0, 0.0)
+    p2 = _add_point(line_sketch["sketch_id"], 3.0, 2.0)
+    line = _add_line(line_sketch["sketch_id"], p1["id"], p2["id"])
+    features_before = _feature_types(part["id"])
+
+    response = _create_split(
+        part["id"], target_id, _sketch_line_ref(line_sketch["sketch_id"], "line", line["id"])
+    )
+
+    assert response.status_code == 201
+    body_ids = _body_ids(part["id"])
+    assert f"{target_id}#0" in body_ids
+    assert f"{target_id}#1" in body_ids
+
+    x_range_0, y_range_0, z_range_0 = _bbox_ranges(part["id"], f"{target_id}#0")
+    x_range_1, y_range_1, z_range_1 = _bbox_ranges(part["id"], f"{target_id}#1")
+    assert y_range_0 == pytest.approx((0.0, 10.0), abs=1e-4)
+    assert y_range_1 == pytest.approx((-10.0, 0.0), abs=1e-4)
+    # Both pieces must still span the target box's own full x/z extent -
+    # the Line itself is much smaller than the box, so this is really a
+    # check that `_sketch_line_block`'s own closure comfortably covers the
+    # target regardless of the curve's own (in this case tiny) extent,
+    # rather than only covering a footprint as wide as the Line itself.
+    assert x_range_0 == pytest.approx((0.0, 20.0), abs=1e-4)
+    assert x_range_1 == pytest.approx((0.0, 20.0), abs=1e-4)
+    assert z_range_0 == pytest.approx((0.0, 10.0), abs=1e-4)
+    assert z_range_1 == pytest.approx((0.0, 10.0), abs=1e-4)
+
+    features_after = _feature_types(part["id"])
+    assert "surface" not in features_after
+    assert features_after.count("split") == features_before.count("split") + 1
+
+
+def test_split_by_a_sketch_arc_produces_two_pieces_that_reconstruct_the_original_bounds():
+    """An Arc used directly as a Split tool - a genuinely curved cutting
+    surface, not just a flat one. Center (10, 0), start (18, 0), end
+    (2, 0): the CCW-from-start convention (`app.sketch.models.Arc`'s own
+    docstring) sweeps the *top* semicircle, bulging up to (10, 8) - well
+    inside the target box's own y in [-10, 10] and x in [0, 20] footprint,
+    so the cutting surface genuinely intersects the box rather than
+    grazing its boundary.
+
+    Checked two ways: the two pieces' combined bounding box must
+    reconstruct the original box exactly (same "nothing lost or
+    duplicated outside the original bounds" check the tilted-plane
+    robustness test already makes), and - proof the actual curved shape
+    took effect, not just a flat split through the chord's own baseline -
+    one of the two pieces' own y_max must be capped at the arc's own peak
+    (y ~= 8) rather than reaching the box's own full y_max (10); which of
+    the two pieces that is depends on this construction's own arbitrary
+    "+v side" choice (see `_sketch_line_block`'s own docstring), so this
+    checks the sorted pair rather than a specific piece index."""
+    part = _create_part()
+    target_id = _make_box(part["id"], x0=0.0, y0=-10.0, size=20.0, start_z=0.0, end_z=20.0)
+    original_bounds = _bbox_ranges(part["id"], target_id)
+
+    arc_sketch = _create_sketch_feature(part["id"], plane="XY")
+    center = _add_point(arc_sketch["sketch_id"], 10.0, 0.0)
+    start = _add_point(arc_sketch["sketch_id"], 18.0, 0.0)
+    end = _add_point(arc_sketch["sketch_id"], 2.0, 0.0)
+    arc = _add_arc(arc_sketch["sketch_id"], center["id"], start["id"], end["id"])
+
+    response = _create_split(
+        part["id"], target_id, _sketch_line_ref(arc_sketch["sketch_id"], "arc", arc["id"])
+    )
+
+    assert response.status_code == 201
+    body_ids = _body_ids(part["id"])
+    assert f"{target_id}#0" in body_ids
+    assert f"{target_id}#1" in body_ids
+
+    bounds_0 = _bbox_ranges(part["id"], f"{target_id}#0")
+    bounds_1 = _bbox_ranges(part["id"], f"{target_id}#1")
+    combined_bounds = [
+        (min(bounds_0[axis][0], bounds_1[axis][0]), max(bounds_0[axis][1], bounds_1[axis][1]))
+        for axis in range(3)
+    ]
+    for axis in range(3):
+        assert combined_bounds[axis] == pytest.approx(original_bounds[axis], abs=1e-4)
+    y_maxes = sorted([bounds_0[1][1], bounds_1[1][1]])
+    assert y_maxes[0] == pytest.approx(8.0, abs=0.5)
+    assert y_maxes[1] == pytest.approx(10.0, abs=1e-4)
+    # Neither piece is clipped along z (the sketch's own normal/prism
+    # axis) - both must still span the target box's own full z extent,
+    # confirming the depth calc comfortably cleared the whole Body.
+    assert bounds_0[2] == pytest.approx((0.0, 20.0), abs=1e-4)
+    assert bounds_1[2] == pytest.approx((0.0, 20.0), abs=1e-4)
+
+    features_after = _feature_types(part["id"])
+    assert "surface" not in features_after
+
+
+def test_split_by_a_sketch_spline_produces_two_pieces_that_reconstruct_the_original_bounds():
+    """A Spline used directly as a Split tool - same "combined bounds
+    reconstruct the original, nothing lost outside it" robustness check as
+    the Arc case above, without re-asserting the exact bulge height (a
+    Spline's own cubic-Bezier shape is a less exact target to assert
+    against than a circular Arc's, and the tilted-plane/Arc tests already
+    cover "the curved-boundary technique genuinely follows the curve" from
+    both the coverage and shape-fidelity angles)."""
+    part = _create_part()
+    target_id = _make_box(part["id"], x0=0.0, y0=-10.0, size=20.0, start_z=0.0, end_z=10.0)
+    original_bounds = _bbox_ranges(part["id"], target_id)
+
+    spline_sketch = _create_sketch_feature(part["id"], plane="XY")
+    p1 = _add_point(spline_sketch["sketch_id"], 2.0, 0.0)
+    p2 = _add_point(spline_sketch["sketch_id"], 10.0, 5.0)
+    p3 = _add_point(spline_sketch["sketch_id"], 18.0, 0.0)
+    spline = _add_spline(spline_sketch["sketch_id"], [p1["id"], p2["id"], p3["id"]])
+
+    response = _create_split(
+        part["id"], target_id, _sketch_line_ref(spline_sketch["sketch_id"], "spline", spline["id"])
+    )
+
+    assert response.status_code == 201
+    body_ids = _body_ids(part["id"])
+    assert f"{target_id}#0" in body_ids
+    assert f"{target_id}#1" in body_ids
+
+    bounds_0 = _bbox_ranges(part["id"], f"{target_id}#0")
+    bounds_1 = _bbox_ranges(part["id"], f"{target_id}#1")
+    combined_bounds = [
+        (min(bounds_0[axis][0], bounds_1[axis][0]), max(bounds_0[axis][1], bounds_1[axis][1]))
+        for axis in range(3)
+    ]
+    for axis in range(3):
+        assert combined_bounds[axis] == pytest.approx(original_bounds[axis], abs=1e-4)
+    # Neither piece is clipped along z (the sketch's own normal/prism
+    # axis) - both must still span the target box's own full z extent.
+    assert bounds_0[2] == pytest.approx((0.0, 10.0), abs=1e-4)
+    assert bounds_1[2] == pytest.approx((0.0, 10.0), abs=1e-4)
+
+    features_after = _feature_types(part["id"])
+    assert "surface" not in features_after
+
+
 # --- Non-axis-aligned robustness -----------------------------------------------
 
 
@@ -441,6 +669,39 @@ def test_split_by_surface_round_trips_through_native_export_import():
         replace_all_sketches(saved_sketches)
 
 
+def test_split_by_sketch_line_round_trips_through_native_export_import():
+    from app.document.store import get_document, replace_document
+    from app.sketch.store import all_sketches, replace_all_sketches
+
+    saved_document = get_document()
+    saved_sketches = dict(all_sketches())
+    try:
+        part = _create_part()
+        target_id = _make_box(part["id"], x0=0.0, y0=-10.0, size=20.0, start_z=0.0, end_z=10.0)
+        line_sketch = _create_sketch_feature(part["id"], plane="XZ")
+        p1 = _add_point(line_sketch["sketch_id"], 1.0, 0.0)
+        p2 = _add_point(line_sketch["sketch_id"], 3.0, 2.0)
+        line = _add_line(line_sketch["sketch_id"], p1["id"], p2["id"])
+        tool = _sketch_line_ref(line_sketch["sketch_id"], "line", line["id"])
+        split = _create_split(part["id"], target_id, tool).json()
+
+        exported = client.get("/document/export/native")
+        assert exported.status_code == 200
+
+        imported = client.post("/document/import/native", json=exported.json())
+        assert imported.status_code == 200
+
+        features = client.get(f"/document/parts/{part['id']}/features").json()
+        round_tripped = next(f for f in features if f["type"] == "split")
+        assert round_tripped["target_body_id"] == split["target_body_id"] == target_id
+        assert round_tripped["tool"]["sketch_line_ref"] == tool["sketch_line_ref"]
+        assert round_tripped["tool"]["plane_ref"] is None
+        assert round_tripped["tool"]["surface_feature_id"] is None
+    finally:
+        replace_document(saved_document)
+        replace_all_sketches(saved_sketches)
+
+
 # --- Cascade delete ------------------------------------------------------------
 
 
@@ -499,6 +760,30 @@ def test_deleting_the_referenced_surface_feature_cascade_deletes_the_split_featu
     assert target_id in remaining
 
 
+def test_deleting_the_referenced_sketchs_owning_sketch_feature_cascade_deletes_the_split_feature():
+    """The `sketch_line_ref` tool kind's own cascade-delete edge, mirroring
+    the plane/surface cases above: deleting the SketchFeature that owns the
+    referenced Sketch entity must take the SplitFeature with it, leaving
+    the target Body's own owning Extrude alone."""
+    part = _create_part()
+    target_id = _make_box(part["id"], x0=0.0, y0=-10.0, size=20.0, start_z=0.0, end_z=10.0)
+    line_sketch = _create_sketch_feature(part["id"], plane="XZ")
+    p1 = _add_point(line_sketch["sketch_id"], 1.0, 0.0)
+    p2 = _add_point(line_sketch["sketch_id"], 3.0, 2.0)
+    line = _add_line(line_sketch["sketch_id"], p1["id"], p2["id"])
+    split = _create_split(
+        part["id"], target_id, _sketch_line_ref(line_sketch["sketch_id"], "line", line["id"])
+    ).json()
+
+    response = client.delete(f"/document/parts/{part['id']}/features/{line_sketch['id']}/cascade")
+
+    assert response.status_code == 200
+    assert set(response.json()["deleted_feature_ids"]) == {line_sketch["id"], split["id"]}
+    remaining = _remaining_feature_ids(part["id"])
+    assert split["id"] not in remaining
+    assert target_id in remaining
+
+
 # --- Update endpoint -------------------------------------------------------------
 
 
@@ -525,6 +810,34 @@ def test_update_split_feature_switches_from_plane_to_surface_tool():
     body = response.json()
     assert body["tool"]["surface_feature_id"] == surface["id"]
     assert body["tool"]["plane_ref"] is None
+    assert body["target_body_id"] == target_id
+
+    body_ids = _body_ids(part["id"])
+    assert f"{target_id}#0" in body_ids
+    assert f"{target_id}#1" in body_ids
+
+
+def test_update_split_feature_switches_from_plane_to_sketch_line_tool():
+    part = _create_part()
+    target_id = _make_box(part["id"], x0=0.0, y0=-10.0, size=20.0, start_z=0.0, end_z=10.0)
+    split = _create_split(part["id"], target_id, {"plane_ref": {"fixed_plane": "XZ"}}).json()
+
+    line_sketch = _create_sketch_feature(part["id"], plane="XZ")
+    p1 = _add_point(line_sketch["sketch_id"], 1.0, 0.0)
+    p2 = _add_point(line_sketch["sketch_id"], 3.0, 2.0)
+    line = _add_line(line_sketch["sketch_id"], p1["id"], p2["id"])
+    tool = _sketch_line_ref(line_sketch["sketch_id"], "line", line["id"])
+
+    response = client.patch(
+        f"/document/parts/{part['id']}/split-features/{split['id']}",
+        json={"tool": tool},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["tool"]["sketch_line_ref"] == tool["sketch_line_ref"]
+    assert body["tool"]["plane_ref"] is None
+    assert body["tool"]["surface_feature_id"] is None
     assert body["target_body_id"] == target_id
 
     body_ids = _body_ids(part["id"])

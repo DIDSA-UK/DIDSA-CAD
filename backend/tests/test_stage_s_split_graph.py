@@ -22,7 +22,7 @@ from app.document.models import (
     SubShapeType,
     SurfaceFeature,
 )
-from app.sketch.models import Plane
+from app.sketch.models import Plane, SketchEntityRef, SketchEntityType
 
 
 def _part_with_sketch_and_extrude(sketch_id: str = "sf1", extrude_id: str = "ef1") -> tuple[Part, str, str]:
@@ -132,6 +132,29 @@ def test_split_by_a_surface_feature_depends_on_that_surface_feature_directly():
     assert order.index(sketch_feature_id) < order.index("split1")
 
 
+def test_split_by_a_sketch_line_ref_depends_on_that_sketchs_owning_sketch_feature():
+    part, sketch_feature_id, extrude_id = _part_with_sketch_and_extrude()
+    line_sketch = SketchFeature(id="sf2", sketch_id="sketch-line")
+    part.add_feature(line_sketch)
+    split = SplitFeature(
+        id="split1",
+        target_body_id=extrude_id,
+        tool=SplitToolRef(
+            sketch_line_ref=SketchEntityRef(
+                sketch_id="sketch-line", entity_type=SketchEntityType.LINE, entity_id="line1"
+            )
+        ),
+    )
+    part.add_feature(split)
+
+    nodes = build_feature_graph(part)
+    split_node = next(n for n in nodes if n.id == "split1")
+    assert set(split_node.depends_on) == {extrude_id, "sf2"}
+    order = topological_order(nodes)
+    assert order.index("sf2") < order.index("split1")
+    assert order.index(sketch_feature_id) < order.index("split1")
+
+
 def test_cascade_deleting_the_target_bodys_owning_extrude_takes_the_split_with_it():
     part, _sketch_feature_id, extrude_id = _part_with_sketch_and_extrude()
     split = SplitFeature(
@@ -176,6 +199,25 @@ def test_cascade_deleting_the_referenced_surface_feature_takes_the_split_with_it
 
     nodes = build_feature_graph(part)
     assert transitive_dependents(nodes, "surface1") == {"surface1", "split1"}
+
+
+def test_cascade_deleting_the_referenced_sketch_features_owning_feature_takes_the_split_with_it():
+    part, _sketch_feature_id, extrude_id = _part_with_sketch_and_extrude()
+    line_sketch = SketchFeature(id="sf2", sketch_id="sketch-line")
+    part.add_feature(line_sketch)
+    split = SplitFeature(
+        id="split1",
+        target_body_id=extrude_id,
+        tool=SplitToolRef(
+            sketch_line_ref=SketchEntityRef(
+                sketch_id="sketch-line", entity_type=SketchEntityType.LINE, entity_id="line1"
+            )
+        ),
+    )
+    part.add_feature(split)
+
+    nodes = build_feature_graph(part)
+    assert transitive_dependents(nodes, "sf2") == {"sf2", "split1"}
 
 
 def test_deleting_an_unrelated_extrude_leaves_the_split_alone():

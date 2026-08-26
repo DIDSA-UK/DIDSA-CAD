@@ -22,7 +22,7 @@ Both pieces are registered back under the target Body's own base id by
 that function's docstring), not here - this module only ever resolves the
 two piece shapes.
 
-Two cutting-tool kinds (`SplitToolRef` - see its own docstring):
+Three cutting-tool kinds (`SplitToolRef` - see its own docstring):
 - `plane_ref`: resolved via `app.document.create_plane.resolve_plane_ref`
   (already shared by `CreatePlaneFeature`/`MirrorFeature`) to a
   `ResolvedPlane`, then the block is a rectangular box on the plane's own
@@ -34,27 +34,45 @@ Two cutting-tool kinds (`SplitToolRef` - see its own docstring):
   own bounding-box axes: a naive world-axis-aligned box sized from the
   bounding box alone would not reliably cover a tilted plane's own cross-
   section of that box.
-- `surface_feature_id`: an existing `SurfaceFeature`'s own backing Sketch
-  profile (closed profiles only - see `_surface_block`'s own docstring),
-  swept far enough past the target Body's bounding box, along the same
-  direction that Feature's own `direction_ref` (or Sketch-normal default)
-  resolves to. Unlike the Plane case, this can only extend the tool along
-  its own sweep direction, not laterally - the profile's own in-plane
-  shape is used as drawn, so (mirroring standard "draw your cutting
-  surface past the part" CAD guidance) a Surface-tool Split still needs
-  its backing Sketch profile to already span the target Body's own
+- `surface_feature_id`: an existing, already-created `SurfaceFeature`'s own
+  backing Sketch profile (closed profiles only - see `_surface_block`'s own
+  docstring), swept far enough past the target Body's bounding box, along
+  the same direction that Feature's own `direction_ref` (or Sketch-normal
+  default) resolves to. Unlike the Plane case, this can only extend the
+  tool along its own sweep direction, not laterally - the profile's own
+  in-plane shape is used as drawn, so (mirroring standard "draw your
+  cutting surface past the part" CAD guidance) a Surface-tool Split still
+  needs its backing Sketch profile to already span the target Body's own
   cross-section for a complete split; a too-small profile produces a
   partial, real-but-incomplete cut rather than an error.
+- `sketch_line_ref`: a single connectable-curve Sketch entity (Line, Arc,
+  EllipseArc, or Spline - `CONNECTABLE_CURVE_ENTITY_TYPES` below), used
+  directly with no backing `SurfaceFeature` at all - see `_sketch_line_
+  block`'s own docstring for how an open curve like this (almost always
+  open - a single segment, not a closed loop) gets turned into a genuine
+  solid block. This is the guided flow's replacement for what used to be
+  an inline "New Surface" mini-step silently persisting a real
+  `SurfaceFeature` merely to extrude a picked Sketch line/curve into an
+  "infinite" cutting surface - picking the raw curve now resolves
+  immediately instead, always normal to its own host Sketch plane (no
+  direction override - there is no persisted Feature for one to attach
+  to).
 """
 
 import logging
+import math
 
 from fastapi import HTTPException
 from OCC.Core.Bnd import Bnd_Box
 from OCC.Core.BRep import BRep_Builder
 from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut
 from OCC.Core.BRepBndLib import brepbndlib
-from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+from OCC.Core.BRepBuilderAPI import (
+    BRepBuilderAPI_MakeEdge,
+    BRepBuilderAPI_MakeFace,
+    BRepBuilderAPI_MakePolygon,
+    BRepBuilderAPI_MakeWire,
+)
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakePrism
 from OCC.Core.gp import gp_Dir, gp_Vec
 from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape
@@ -68,11 +86,14 @@ from app.document.extrude import (
     face_for_profile,
     select_profiles,
 )
+from app.document.graph import sketch_feature_id_for_sketch
+from app.document.loft import wire_for_open_chain
 from app.document.models import Part, ResolvedPlane, SketchFeature, SplitFeature, SplitToolRef, SurfaceFeature
 from app.document.pattern import direction_vector
 from app.document.plane_geometry import signed_distance_to_plane, world_point_to_basis
-from app.sketch.profile import ProfileStatus, detect_profile
-from app.sketch.store import get_sketch_or_404
+from app.sketch.models import Arc, EllipseArc, Line, Sketch, SketchEntity, SketchEntityRef, SketchEntityType, Spline
+from app.sketch.profile import OpenChain, ProfileStatus, detect_profile
+from app.sketch.store import get_sketch_or_404, resolve_sketch_entity
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +102,18 @@ logger = logging.getLogger(__name__)
 # boundary can never leave a sliver of the target Body outside the block
 # on its own "should be fully covered" side.
 _MARGIN_PADDING = 10.0
+
+# `SplitToolRef.sketch_line_ref`'s own accepted `entity_type`s - exactly the
+# Sketch entities with a real, non-`None` `endpoint_point_ids()` (see that
+# method's own base-class docstring in `app.sketch.models.SketchEntity`):
+# genuine open curves with two distinct connection points, as opposed to
+# Circle/Ellipse (always already closed, no endpoints) or Point/Text (no
+# curve at all). Shared with `app.document.router._validate_split_tool_ref`
+# for its own typed-slot check, the same "one shared source of truth" every
+# other typed-slot field (`SubShapeType.EDGE`/`FACE`, ...) already gets.
+CONNECTABLE_CURVE_ENTITY_TYPES = frozenset(
+    {SketchEntityType.LINE, SketchEntityType.ARC, SketchEntityType.ELLIPSE_ARC, SketchEntityType.SPLINE}
+)
 
 
 def _bbox_corners_and_diagonal(shape: TopoDS_Shape) -> tuple[list[tuple[float, float, float]], float]:
@@ -219,6 +252,203 @@ def _surface_block(
     return compound
 
 
+_CIRCLE_SAMPLE_ANGLES = [i * 2.0 * math.pi / 16 for i in range(16)]
+
+
+def _curve_extent_points_local(sketch: Sketch, entity: SketchEntity) -> list[tuple[float, float]]:
+    """A handful of points, in `sketch`'s own local (x, y) space, that
+    together bound `entity`'s own visual extent - folded into `_sketch_
+    line_block`'s own combined-extent computation alongside the target
+    Body's bounding box, so a bulging Arc/Spline that reaches further out
+    than the Body still gets fully covered (see that function's own
+    docstring for what this feeds into and why - a rotated-frame extent,
+    not a plain axis-aligned one, is what actually needs covering, so this
+    can't just reuse an axis-aligned bounding box).
+
+    Deliberately conservative rather than exact: an Arc/EllipseArc samples
+    16 evenly-spaced points around its own *full* circle (ignoring which
+    portion the arc actually sweeps, and - for EllipseArc - approximating
+    the ellipse as a circle of its own major radius, which always fully
+    contains it since major >= minor by construction) - safe over-
+    estimates either way, and correct at any rotation, unlike a plain
+    axis-aligned bounding box's own corners (which do *not* reliably bound
+    a circle's extent once projected onto a rotated pair of axes - only
+    "center +/- radius along that exact axis" does, and 16 samples around
+    the circle approximates that closely enough given the generous flat
+    padding every caller already adds on top). A Spline instead reports
+    every one of its own Bezier poles exactly (a cubic Bezier segment
+    always lies within its own poles' convex hull, and a convex hull's
+    extent along *any* axis is always exactly its own vertices' - poles
+    are real points, so this one is exact, not an approximation)."""
+    if isinstance(entity, Line):
+        a, b = sketch.points[entity.start_point_id], sketch.points[entity.end_point_id]
+        return [(a.x, a.y), (b.x, b.y)]
+    if isinstance(entity, (Arc, EllipseArc)):
+        center = sketch.points[entity.center_point_id]
+        r = entity.radius(sketch.points) if isinstance(entity, Arc) else entity.major_radius(sketch.points)
+        return [(center.x + r * math.cos(theta), center.y + r * math.sin(theta)) for theta in _CIRCLE_SAMPLE_ANGLES]
+    assert isinstance(entity, Spline)
+    pole_ids = {pid for segment in entity.segments() for pid in segment}
+    return [(sketch.points[pid].x, sketch.points[pid].y) for pid in pole_ids]
+
+
+def _sketch_line_block(
+    part: Part,
+    bodies: dict[str, TopoDS_Shape],
+    ref: SketchEntityRef,
+    target_shape: TopoDS_Shape,
+    excluded_feature_ids: frozenset[str],
+) -> TopoDS_Shape | None:
+    """The `sketch_line_ref`-tool counterpart of `_plane_block`/`_surface_
+    block` - builds a genuinely closed, valid profile directly from one
+    open Sketch curve (Line/Arc/EllipseArc/Spline - see this module's own
+    `CONNECTABLE_CURVE_ENTITY_TYPES`), with no backing `SurfaceFeature`
+    (unlike `_surface_block`, which requires a *closed* profile precisely
+    because it has no such closing technique of its own).
+
+    An open curve alone has no face `BRepBuilderAPI_MakeFace` can build a
+    solid from, so this closes it into a proper loop first, in a local 2D
+    frame anchored to the curve's own start->end chord (`e_u` along the
+    chord, `e_v` its own in-plane perpendicular, origin at the curve's own
+    start point): continue straight from each open end, *along* `e_u`
+    (i.e. extending the chord's own direction, not perpendicular to it),
+    far enough past `min_u`/`max_u` - the combined extent, in this same
+    (u, v) frame, of both the target Body's own bounding box *and* the
+    curve's own extent (`_curve_extent_points_local`) - then close the two
+    far ends with a rectangle-shaped cap on one arbitrary side (`+v`, past
+    `max_v` of that same combined extent). For a dead-straight Line (whose
+    own chord already lies exactly along `e_u`, `v=0` throughout), this
+    degenerates to exactly the flat, fully-covering rectangle `_plane_
+    block` itself would build for the equivalent plane - which is the
+    correctness bar this whole construction is built to hit for a curved
+    entity too: continuing straight *along the chord* (not off to the
+    side) is what guarantees the closed loop's own footprint fully covers
+    the target Body's bounding box regardless of how short the curve is
+    relative to it, unlike a naive "translate both ends by one fixed
+    perpendicular offset" - which does close a valid loop, but one whose
+    footprint can be no wider than the curve's own extent along `e_u`, so
+    it can leave most of a much-larger target Body's own bounding box
+    uncovered by the block entirely (silently producing a wrong split
+    instead of raising anything, since nothing here would notice). Only
+    the closure itself is a flat approximation - it still genuinely
+    follows the curve's own actual shape across the curve's own span (a
+    wavy Spline still cuts a wavy split), same "only defined out to where
+    it matters" latitude `_plane_block`'s/`_surface_block`'s own
+    oversized-but-flat far side already takes. Known sharp edge, not
+    fully bulletproofed: a pathological curve that re-crosses its own
+    chord (so some interior point sits at `v=0` or beyond `max_v` other
+    than at its own two ends) could self-intersect this loop - a single
+    user-drawn Line/Arc/Spline used as a dividing curve realistically
+    never does.
+
+    The resulting planar face sits exactly on the Sketch's own plane (like
+    the curve itself), then prisms along that plane's own normal - see
+    `SplitToolRef.sketch_line_ref`'s own docstring for why there is no
+    direction override for this tool kind. `None` if `ref`'s own Sketch/
+    entity can no longer be resolved, or resolves to something other than a
+    connectable curve - the same tolerance `_surface_block` already gives a
+    stale/edited-away reference."""
+    sketch_feature_id = sketch_feature_id_for_sketch(part, ref.sketch_id)
+    sketch_feature = part.get_feature(sketch_feature_id) if sketch_feature_id is not None else None
+    if not isinstance(sketch_feature, SketchFeature):
+        return None
+    try:
+        entity = resolve_sketch_entity(ref)
+    except HTTPException:
+        return None
+    if not isinstance(entity, (Line, Arc, EllipseArc, Spline)):
+        return None
+    sketch = get_sketch_or_404(sketch_feature.sketch_id)
+    try:
+        basis = resolve_sketch_basis(part, sketch_feature, bodies, excluded_feature_ids)
+    except HTTPException:
+        # A custom-anchor-plane Sketch whose own CreatePlaneFeature (or
+        # further chain) can't currently be resolved - same tolerance
+        # `_surface_block`'s own identical call site already gives this.
+        return None
+
+    start_id, end_id = entity.endpoint_point_ids()
+    chain = OpenChain(sketch_id=sketch.id, point_ids=[start_id, end_id], line_ids=[ref.entity_id])
+    open_wire = wire_for_open_chain(sketch, chain, basis)
+    start, end = sketch.points[start_id], sketch.points[end_id]
+
+    chord_x, chord_y = end.x - start.x, end.y - start.y
+    chord_length = math.hypot(chord_x, chord_y)
+    # e_u along the chord, e_v its own in-plane perpendicular - an
+    # arbitrary fallback orientation when the chord is degenerate (a
+    # curved entity whose two ends happen to coincide) still closes the
+    # loop correctly, just without the "reduces to `_plane_block`'s own
+    # rectangle for a Line" property (moot for a degenerate Line, which
+    # would be a zero-length entity to begin with).
+    e_u = (1.0, 0.0) if chord_length == 0 else (chord_x / chord_length, chord_y / chord_length)
+    e_v = (-e_u[1], e_u[0])
+
+    def to_uv(local_x: float, local_y: float) -> tuple[float, float]:
+        dx, dy = local_x - start.x, local_y - start.y
+        return dx * e_u[0] + dy * e_u[1], dx * e_v[0] + dy * e_v[1]
+
+    def from_uv(u: float, v: float) -> tuple[float, float]:
+        return (start.x + u * e_u[0] + v * e_v[0], start.y + u * e_u[1] + v * e_v[1])
+
+    corners, target_diagonal = _bbox_corners_and_diagonal(target_shape)
+    target_local = [world_point_to_basis(basis, corner) for corner in corners]
+    extent_local = _curve_extent_points_local(sketch, entity)
+    all_uv = [to_uv(x, y) for x, y in (*target_local, *extent_local)]
+    margin = target_diagonal + _MARGIN_PADDING
+    min_u = min(u for u, _v in all_uv) - margin
+    max_u = max(u for u, _v in all_uv) + margin
+    max_v = max(v for _u, v in all_uv) + margin
+
+    start_ext = from_uv(min_u, 0.0)
+    end_ext = from_uv(max_u, 0.0)
+    far_corner_from_end = from_uv(max_u, max_v)
+    far_corner_from_start = from_uv(min_u, max_v)
+
+    wire_maker = BRepBuilderAPI_MakeWire()
+    wire_maker.Add(
+        BRepBuilderAPI_MakeEdge(
+            basis_point_to_world(basis, *start_ext), basis_point_to_world(basis, start.x, start.y)
+        ).Edge()
+    )
+    wire_maker.Add(open_wire)
+    wire_maker.Add(
+        BRepBuilderAPI_MakeEdge(
+            basis_point_to_world(basis, end.x, end.y), basis_point_to_world(basis, *end_ext)
+        ).Edge()
+    )
+    wire_maker.Add(
+        BRepBuilderAPI_MakeEdge(
+            basis_point_to_world(basis, *end_ext), basis_point_to_world(basis, *far_corner_from_end)
+        ).Edge()
+    )
+    wire_maker.Add(
+        BRepBuilderAPI_MakeEdge(
+            basis_point_to_world(basis, *far_corner_from_end), basis_point_to_world(basis, *far_corner_from_start)
+        ).Edge()
+    )
+    wire_maker.Add(
+        BRepBuilderAPI_MakeEdge(
+            basis_point_to_world(basis, *far_corner_from_start), basis_point_to_world(basis, *start_ext)
+        ).Edge()
+    )
+    face = BRepBuilderAPI_MakeFace(wire_maker.Wire()).Face()
+
+    # Depth along the plane's own normal - identical technique to `_surface_
+    # block`'s own depth calc (project the target's bounding-box corners
+    # onto the normal axis through the plane's own origin, take the largest
+    # positive value plus margin): the curve/loop above already sits
+    # exactly on the plane (w=0), so only the `+normal` side needs to clear
+    # the target Body, exactly like `_plane_block`'s own single-sided box.
+    normal = basis_normal(basis)
+    ox, oy, oz = basis.origin
+    nx, ny, nz = normal.X(), normal.Y(), normal.Z()
+    depth_margin = target_diagonal + _MARGIN_PADDING
+    ws = [(cx - ox) * nx + (cy - oy) * ny + (cz - oz) * nz for cx, cy, cz in corners]
+    depth = max(max(ws), 0.0) + depth_margin
+    vector = gp_Vec(nx * depth, ny * depth, nz * depth)
+    return BRepPrimAPI_MakePrism(face, vector).Shape()
+
+
 def _split_tool_block(
     part: Part,
     bodies: dict[str, TopoDS_Shape],
@@ -226,11 +456,11 @@ def _split_tool_block(
     target_shape: TopoDS_Shape,
     excluded_feature_ids: frozenset[str],
 ) -> TopoDS_Shape | None:
-    """Resolves `tool` (see `SplitToolRef`'s own docstring for its two
+    """Resolves `tool` (see `SplitToolRef`'s own docstring for its three
     mutually-exclusive kinds) to its own oversized half-space block -
-    `None` only for the `surface_feature_id` case when the referenced
-    Feature no longer exists, or its own resolution does (see `_surface_
-    block`'s own docstring)."""
+    `None` when the referenced Feature/Sketch entity no longer exists, or
+    its own resolution does (see `_surface_block`'s/`_sketch_line_block`'s
+    own docstrings)."""
     if tool.plane_ref is not None:
         try:
             basis = resolve_plane_ref(part, bodies, tool.plane_ref, excluded_feature_ids)
@@ -238,11 +468,14 @@ def _split_tool_block(
             return None
         return _plane_block(basis, target_shape)
 
-    assert tool.surface_feature_id is not None
-    surface_feature = part.get_feature(tool.surface_feature_id)
-    if not isinstance(surface_feature, SurfaceFeature):
-        return None
-    return _surface_block(part, bodies, surface_feature, target_shape, excluded_feature_ids)
+    if tool.surface_feature_id is not None:
+        surface_feature = part.get_feature(tool.surface_feature_id)
+        if not isinstance(surface_feature, SurfaceFeature):
+            return None
+        return _surface_block(part, bodies, surface_feature, target_shape, excluded_feature_ids)
+
+    assert tool.sketch_line_ref is not None
+    return _sketch_line_block(part, bodies, tool.sketch_line_ref, target_shape, excluded_feature_ids)
 
 
 def resolve_split_pieces(
