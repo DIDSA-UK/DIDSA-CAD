@@ -65,6 +65,42 @@ Four parallel research tasks, none of which write implementation code:
 
 Findings will be appended below as each completes, then synthesized into a design section.
 
+### Finding 1 — gear preview architecture (complete)
+
+`/document/gear/preview` (`backend/app/document/router.py`, `_gear_preview_*` handlers) is
+confirmed 2D-only, zero-OCCT (`gear_math.py`/`gear_chain_math.py`/`bevel_math.py` — no
+`OCC.Core.*` import anywhere in those modules), built on a repo-wide documented convention
+(`docs/gear-design/00-conventions.md:53-60`, "OCCT-free `*_math.py` vs. OCCT-dependent
+construction module" split, per Feature type).
+
+**Verdict: this pattern does not generalize to a real coarse-3D LOD placeholder.** Three
+structural reasons:
+1. **2D-only by construction** — every preview response is `list[tuple[float,float]]` outline
+   points; no code path produces a 3D shape/mesh. `12-spiral-bevel-gear.md:433-443`'s own
+   scope-down (spiral curvature is "inherently an azimuthal/out-of-plane property" the
+   schematic structurally can't show — direct the user to the real 3D solid instead) already
+   makes this exact point for a narrower case.
+2. **Pre-commit-only by construction** — `GearDesignScreen` is popped/replaced by `PartScreen`
+   the moment Create/Save succeeds (`gear_design_screen.dart:460`, `:508-510`); preview and
+   real geometry are never simultaneously mounted. LOD needs the placeholder to occupy the
+   *same viewport slot* as the eventual real geometry and be toggled after the real Body
+   exists — the opposite lifecycle.
+3. **Gear-math-specific precondition doesn't hold for other Feature types** — `loft.py`,
+   `pattern.py`, `boolean.py`, `split.py`, `surface.py`, `sweep.py`, `revolve.py`, `extrude.py`
+   all import `OCC.Core.*` directly with no OCCT-free math sibling; there is no closed-form
+   analytic substitute for "what will a loft/boolean/pattern result look like" the way an
+   involute tooth outline is closed-form. Real LOD for these needs an actual coarse
+   `TopoDS_Shape` from a **lower-fidelity pass through real OCCT**, not a 2D stand-in.
+
+**Carried forward as real prior art**: (a) the cheap-vs-expensive module-split *category* of
+idea, applied on the 3D side instead of via 2D math duplication; (b) a concrete drift-bug
+lesson — the 2026-08-25→2026-08-26 meshing-phase preview bug (PR #170) is first-party proof
+that a duplicated "fast path that must visually track a slow path" silently drifts unless it
+either calls into the real shared logic or is pinned against it by a test; (c) the
+debounce-cheap-path/settle-expensive-path UX cadence (`08-entry-screen-and-preview.md:22-27`)
+is a reasonable rhythm to reuse conceptually for "placeholder now, swap in real geometry once
+built."
+
 ---
 
 ## Open questions / cross-cutting decisions
