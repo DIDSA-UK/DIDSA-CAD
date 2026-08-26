@@ -8367,33 +8367,46 @@ class _PartScreenState extends State<PartScreen> {
 
   /// [SelectionContextPanel.onSubtract]/[onCommon]'s callback -
   /// `contextActionsFor` enables both buttons for 2+ Bodies, nothing else,
-  /// selected (see that function's own Boolean branch). Since an ambient
-  /// selection can't disambiguate which of those Bodies should be a target
-  /// vs. a tool, this pre-seeds `pickingTargets` with the *entire* current
-  /// selection (mirrors [_onMergeTapped]'s "these Bodies are already exactly
-  /// what the user wants" shortcut) and jumps straight to `pickingTools` -
-  /// same flow as the guided path from that point on, just with stage one
-  /// already filled in.
+  /// selected (see that function's own Boolean branch).
+  ///
+  /// Bug fix: this used to lock the *entire* ambient selection as
+  /// `_booleanTargetBodyIds` immediately and jump straight to `pickingTools`
+  /// (skipping the editable `pickingTargets` step the guided flow always
+  /// gets). That has a real dead end: `contextActionsFor` only shows these
+  /// buttons once 2+ Bodies are selected, so on a Part with exactly 2 Bodies
+  /// (the natural first thing to test Subtract/Common on), selecting both to
+  /// make the buttons appear immediately consumed every Body in the Part as
+  /// a target, leaving nothing left to pick as a tool and no way back to
+  /// reconsider which Bodies should be targets - "can't select bodies to be
+  /// tool or subject" (on-device report). Now this lands on `pickingTargets`
+  /// instead, with the ambient selection carried straight into
+  /// `_selectedEntities` as its *starting*, still-editable picks - tapping
+  /// Confirm immediately reproduces the old one-tap shortcut when that really
+  /// is what the user wants, but tapping one of the pre-picked Bodies again
+  /// first (ordinary toggle - see [_toggleSelectedEntity], which only special-
+  /// cases `pickingTools`) frees it up to be picked as a tool in the next
+  /// step instead, exactly like starting from the guided "Add" FAB entry
+  /// would.
   void _onBooleanTapped(BooleanOperation operation) {
-    final bodyIds =
-        _selectedEntities.where((e) => e.kind == SelectionEntityKind.body).map((e) => e.bodyId).toList();
+    final entities = _selectedEntities;
+    final bodyIds = entities.where((e) => e.kind == SelectionEntityKind.body).map((e) => e.bodyId).toList();
     if (bodyIds.length < 2) return; // Defensive - contextActionsFor already guarantees this.
     setState(() {
       _meshBeforeBoolean = _bodies;
-      _entitiesBeforeBoolean = _selectedEntities;
+      _entitiesBeforeBoolean = entities;
       _selectionMode = true;
       _toolbarOpen = false;
       _featureTreeVisible = false;
       _selectionFilterOverrides.push(_booleanBodyPickerSelectionFilter);
       _booleanOperation = operation;
-      _booleanTargetBodyIds = bodyIds;
+      _booleanTargetBodyIds = null;
       _booleanToolBodyIds = null;
       _booleanConsumeToolBodies = true;
       _previewBooleanFeatureId = null;
       _editingBooleanFeatureId = null;
       _booleanEditSnapshot = null;
-      _booleanStep = _BooleanStep.pickingTools;
-      _selectedEntities = {};
+      _booleanStep = _BooleanStep.pickingTargets;
+      _selectedEntities = entities;
     });
   }
 
