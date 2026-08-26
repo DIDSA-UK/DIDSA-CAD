@@ -24,11 +24,32 @@ numerically, not just it compiles":
 """
 
 import math
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.document.bevel_pair import _tilted_basis, resolve_bevel_pair_from_bodies
+import app.document.bevel_pair as bevel_pair_module
+from app.document.bevel import _spiral_hand_from_feature
+from app.document.bevel_pair import (
+    _PHASE_SEARCH_EARLY_EXIT_OVERLAP_MM3,
+    _PHASE_SEARCH_GRID_POINTS,
+    _PHASE_SEARCH_REFINE_ITERATIONS,
+    _best_of_scored,
+    _build_member_solid,
+    _common_overlap_volume,
+    _init_phase_search_worker,
+    _member_geometry,
+    _phase_search_worker_count,
+    _run_phase_search_tier,
+    _search_meshing_phase,
+    _shape_from_brep_bytes,
+    _shape_to_brep_bytes,
+    _tilted_basis,
+    resolve_bevel_pair_from_bodies,
+    resolve_member_profile_shifts,
+)
 from app.document.create_plane import resolve_plane_ref
 from app.document.models import BevelPairFeature, BevelPairMemberSpec, PlaneRef, SpiralBevelHand
 from app.document.bevel_math import pitch_cone_half_angles
@@ -597,6 +618,7 @@ def _spiral_pair_feature(
     spiral_angle_degrees: float = 0.0,
     hand_1: SpiralBevelHand = SpiralBevelHand.RIGHT,
     hand_2: SpiralBevelHand = SpiralBevelHand.LEFT,
+    points_per_flank: int = 12,
 ) -> BevelPairFeature:
     return BevelPairFeature(
         id="spiral-pair-test",
@@ -605,6 +627,7 @@ def _spiral_pair_feature(
         member_1=BevelPairMemberSpec(tooth_count=tooth_count_1, spiral_hand=hand_1),
         member_2=BevelPairMemberSpec(tooth_count=tooth_count_2, spiral_hand=hand_2),
         face_width=face_width,
+        points_per_flank=points_per_flank,
         spiral_angle_degrees=spiral_angle_degrees,
     )
 
@@ -725,6 +748,190 @@ def test_spiral_build_cost_warning_surfaces_through_the_bevel_pair_router_at_hig
     warnings = response.json()["warnings"]
     assert any("high spiral angle" in w for w in warnings), warnings
     assert any("meshing-phase search" in w for w in warnings), warnings
+
+
+# --- Meshing-phase search performance rewrite (warm start + tiered,        --
+# --- parallel search) - speeding up the worst case this section's own     --
+# --- tests above already established (up to ~9 minutes on slow hardware,  --
+# --- per `_search_meshing_phase`'s own prior docstring) without changing  --
+# --- its external contract at all - every test above this comment keeps   --
+# --- passing unchanged, since none of them observe *how* the search       --
+# --- reached its answer, only that it reached a correct one. ------------
+
+
+def _build_member_solids_directly(feature: BevelPairFeature) -> tuple:
+    """Builds both members' real solids exactly the way `resolve_bevel_
+    pair_from_bodies` does up through its own member-build step, but as a
+    plain synchronous call - bypassing that function's own member-build
+    `ProcessPoolExecutor` entirely (each `_build_member_solid` call here
+    runs directly in the test process) - so a test can hand `_search_
+    meshing_phase` (or a hand-rolled reference tier, for a monotonicity
+    comparison) real geometry without a pool construction of its own
+    muddying a `ProcessPoolExecutor`-counting assertion elsewhere.
+
+    Returns `(solid_1, solid_2_base, basis_2, tooth_count_2)` -
+    `solid_2_base` still carries only the FIXED meshing-phase convention
+    (`_build_member_solid`'s own `phase_offset`), not any additional search
+    delta, exactly the "base" shape `_search_meshing_phase`'s own real
+    caller (`resolve_bevel_pair_from_bodies`) hands it."""
+    basis_1 = resolve_plane_ref(None, {}, feature.plane_ref, frozenset())
+    basis_2 = _tilted_basis(basis_1, math.radians(feature.shaft_angle_degrees))
+    gamma_1, gamma_2 = pitch_cone_half_angles(
+        feature.member_1.tooth_count, feature.member_2.tooth_count, feature.shaft_angle_degrees
+    )
+    profile_shift_1, profile_shift_2 = resolve_member_profile_shifts(
+        module=feature.module,
+        tooth_count_1=feature.member_1.tooth_count,
+        tooth_count_2=feature.member_2.tooth_count,
+        face_width=feature.face_width,
+        pressure_angle_degrees=feature.pressure_angle_degrees,
+        shaft_angle_degrees=feature.shaft_angle_degrees,
+        backlash=feature.backlash,
+        profile_shift_1=feature.member_1.profile_shift,
+        profile_shift_2=feature.member_2.profile_shift,
+        gamma_1=gamma_1,
+        gamma_2=gamma_2,
+    )
+    geometry_kwargs = dict(
+        module=feature.module,
+        face_width=feature.face_width,
+        pressure_angle_degrees=feature.pressure_angle_degrees,
+        backlash=feature.backlash,
+    )
+    geometry_1 = _member_geometry(
+        tooth_count=feature.member_1.tooth_count, profile_shift=profile_shift_1, gamma=gamma_1, **geometry_kwargs
+    )
+    geometry_2 = _member_geometry(
+        tooth_count=feature.member_2.tooth_count, profile_shift=profile_shift_2, gamma=gamma_2, **geometry_kwargs
+    )
+    spiral_hand_1 = _spiral_hand_from_feature(feature.member_1.spiral_hand)
+    spiral_hand_2 = _spiral_hand_from_feature(feature.member_2.spiral_hand)
+    solid_1_brep, _ = _build_member_solid(
+        basis_1,
+        geometry_1,
+        feature.member_1.tooth_count,
+        feature.points_per_flank,
+        math.pi / 2,
+        feature.spiral_angle_degrees,
+        spiral_hand_1,
+    )
+    solid_2_brep, _ = _build_member_solid(
+        basis_2,
+        geometry_2,
+        feature.member_2.tooth_count,
+        feature.points_per_flank,
+        -math.pi / 2 + math.pi / feature.member_2.tooth_count,
+        feature.spiral_angle_degrees,
+        spiral_hand_2,
+    )
+    return _shape_from_brep_bytes(solid_1_brep), _shape_from_brep_bytes(solid_2_brep), basis_2, feature.member_2.tooth_count
+
+
+def test_spiral_bevel_pair_resolvable_ratio_resolves_via_warm_start_without_opening_a_phase_search_pool(monkeypatch):
+    """`_search_meshing_phase`'s own warm start (delta=0, checked directly
+    against the already-built solids, no rotation/pool/BREP round-trip)
+    should resolve a resolvable ratio like 10T/20T entirely on its own,
+    per `13-spiral-bevel-pair.md`'s own Spike C table (every resolvable
+    ratio it tested already measures ~0mm^3 at the fixed default phase).
+    Confirmed here by counting real `ProcessPoolExecutor` constructions
+    during a full, real build: exactly 1 - `resolve_bevel_pair_from_
+    bodies`'s own always-required 2-worker member-build pool - not 2. If
+    the warm start were ever bypassed (a regression re-introducing the old
+    unconditional-search behavior), the phase search would open a SECOND
+    pool of its own here and this count would catch it, unlike a bare
+    "the overlap is still small" assertion (which the old, slower algorithm
+    would also have satisfied)."""
+    construct_count = 0
+    real_pool_executor = bevel_pair_module.ProcessPoolExecutor
+
+    def _counting_pool_executor(*args, **kwargs):
+        nonlocal construct_count
+        construct_count += 1
+        return real_pool_executor(*args, **kwargs)
+
+    monkeypatch.setattr(bevel_pair_module, "ProcessPoolExecutor", _counting_pool_executor)
+
+    feature = _spiral_pair_feature(10, 20, spiral_angle_degrees=25.0)
+    overlap, warnings = _build_and_measure_overlap(feature)
+
+    assert overlap < 1.0, f"overlap={overlap}mm^3, warnings={warnings}"
+    assert construct_count == 1, (
+        f"expected only the member-build pool (1 ProcessPoolExecutor construction), got {construct_count} - "
+        "a second construction means the phase-search pool opened, i.e. the warm start didn't resolve this alone"
+    )
+
+
+def test_search_meshing_phase_symmetric_ratio_escalates_through_tiers_and_never_worse_than_full_tier_alone():
+    """20T/20T (tooth-count-symmetric) is real, search-worthy input, not a
+    warm-startable one - `13-spiral-bevel-pair.md`'s own Spike C/`12-
+    spiral-bevel-gear.md`'s own §4 sweep both measure substantial real
+    overlap for this exact ratio at the fixed default phase, unresolved by
+    `resolve_member_profile_shifts`'s own pre-existing, unrelated
+    tooth-count-symmetric gap - so `_search_meshing_phase` must actually
+    run its own draft tier here, per this module's own top-level docstring.
+
+    Confirms the "monotonicity guard" that same docstring promises: the
+    tiered result (draft, then full only if draft isn't good enough) is
+    never a worse (higher) measured overlap than running the ORIGINAL,
+    un-tiered algorithm - the full tier's own grid/refine budget, in one
+    shot, no draft first (`_run_phase_search_tier` called directly at full
+    size) - against the exact same real geometry."""
+    feature = _spiral_pair_feature(20, 20, module=3.0, face_width=6.0, points_per_flank=6, spiral_angle_degrees=40.0)
+    solid_1, solid_2_base, basis_2, tooth_count_2 = _build_member_solids_directly(feature)
+
+    zero_overlap = _common_overlap_volume(solid_1, solid_2_base)
+    assert zero_overlap is None or zero_overlap > _PHASE_SEARCH_EARLY_EXIT_OVERLAP_MM3, (
+        f"test setup expectation broken: this symmetric ratio measured {zero_overlap}mm^3 at delta=0 - "
+        "already resolvable via the warm start alone, so it can't exercise tiering at all"
+    )
+
+    tiered_delta, tiered_overlap = _search_meshing_phase(solid_1, solid_2_base, basis_2, tooth_count_2)
+
+    half_pitch = math.radians(180.0 / tooth_count_2)
+    mp_context = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(
+        max_workers=_phase_search_worker_count(),
+        mp_context=mp_context,
+        initializer=_init_phase_search_worker,
+        initargs=(_shape_to_brep_bytes(solid_1), _shape_to_brep_bytes(solid_2_base), basis_2),
+    ) as executor:
+        full_only_delta, full_only_overlap = _run_phase_search_tier(
+            executor,
+            solid_1,
+            solid_2_base,
+            basis_2,
+            half_pitch,
+            _PHASE_SEARCH_GRID_POINTS,
+            _PHASE_SEARCH_REFINE_ITERATIONS,
+            zero_overlap,
+        )
+
+    assert full_only_overlap is not None, "the full-tier-only reference found no usable signal at all"
+    assert tiered_overlap is not None, "the tiered search found no usable signal at all"
+    assert tiered_overlap <= full_only_overlap + 1e-6, (
+        f"tiered search ({tiered_overlap}mm^3 at delta={tiered_delta}) should never be worse than the "
+        f"full-tier-only algorithm ({full_only_overlap}mm^3 at delta={full_only_delta})"
+    )
+
+
+def test_best_of_scored_resolves_from_remaining_usable_trials_when_some_are_none():
+    """`_best_of_scored` is the exact fold/filter `_run_phase_search_tier`
+    calls to pick a grid scan's own winner - `None` standing in for a
+    trial whose own worker/boolean failed (`_common_overlap_volume`'s own
+    guard). A real forced-`ProcessPoolExecutor`-worker-failure test isn't
+    practical here (a `spawn`ed worker re-imports this whole module fresh
+    in its own process, so a main-process monkeypatch can never reach code
+    already running inside one), so this exercises the identical fold
+    logic directly, mirroring the pre-existing "no usable signal" coverage
+    of `_search_meshing_phase` itself one level down, at the granularity
+    where fault-tolerance is actually decided."""
+    scored = [(None, -0.10), (2.5, -0.05), (None, 0.0), (0.7, 0.05), (None, 0.10)]
+    assert _best_of_scored(scored) == (0.05, 0.7)
+
+
+def test_best_of_scored_returns_none_when_every_trial_in_the_batch_is_unusable():
+    scored = [(None, -0.10), (None, 0.0), (None, 0.10)]
+    assert _best_of_scored(scored) is None
 
 
 def test_update_bevel_pair_feature_can_toggle_spiral_fields():
