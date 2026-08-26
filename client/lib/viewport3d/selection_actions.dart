@@ -106,34 +106,24 @@ List<SelectionContextAction> contextActionsFor(
   final bodies = selection.where((s) => s.kind == SelectionEntityKind.body).toList();
   if (bodies.isNotEmpty) {
     if (bodies.length == selection.length) {
-      // Boolean family, first entry: 2+ Bodies, nothing else selected, also
-      // offers Merge alongside Mirror/Pattern - a new precedence branch
-      // rather than replacing the existing one, since a single Body has
-      // nothing to merge with (Mirror/Pattern stay offered for exactly one,
-      // unchanged from before this addition).
-      // Boolean family, Subtract/Common: the same 2+ Bodies selection also
-      // offers Subtract/Common alongside Merge - an ambient selection can't
-      // disambiguate which Bodies should be a target vs. a tool the way the
-      // guided flow's own two-stage picker does, so both buttons pre-seed
-      // the *entire* current selection as targets and jump straight to
-      // tool-picking (see `PartScreen._onBooleanTapped`'s own doc comment).
-      if (bodies.length >= 2) {
-        return const [
-          SelectionContextAction('Mirror', enabled: true),
-          SelectionContextAction('Pattern', enabled: true),
-          SelectionContextAction('Merge', enabled: true),
-          SelectionContextAction('Subtract', enabled: true),
-          SelectionContextAction('Common', enabled: true),
-        ];
-      }
-      // Boolean family, fourth/last entry: a single Body also offers Split -
-      // unlike Merge/Subtract/Common (which all need 2+ Bodies to combine),
-      // Split only ever needs exactly one target Body, so this belongs on
-      // the single-Body branch, not the 2+ one above.
+      // Pattern/Mirror scoping's Phase 1/2/6: one or more Bodies, nothing
+      // else selected, offers Mirror/Pattern - no target-vs-tool ambiguity
+      // for either (Mirror/Pattern always treat the *whole* selection as
+      // its own source Bodies).
+      //
+      // On-device feedback: the whole Boolean family (Merge/Subtract/
+      // Common/Split) used to also appear here for a 2+-Body (Merge/
+      // Subtract/Common) or single-Body (Split) selection, pre-seeding the
+      // ambient selection as targets/tools - removed for being unclear:
+      // this table can't disambiguate which Body the user means as the
+      // target vs. the tool the way the guided flow's own two-stage
+      // picker does. The guided "Add > Feature > Combine" entries (and,
+      // for an already-existing Feature, its own long-press context menu -
+      // see `feature_context_menu.dart`) are the only entry points for
+      // all four now.
       return const [
         SelectionContextAction('Mirror', enabled: true),
         SelectionContextAction('Pattern', enabled: true),
-        SelectionContextAction('Split', enabled: true),
       ];
     }
     return const [];
