@@ -101,6 +101,54 @@ debounce-cheap-path/settle-expensive-path UX cadence (`08-entry-screen-and-previ
 is a reasonable rhythm to reuse conceptually for "placeholder now, swap in real geometry once
 built."
 
+### Finding 3 — client viewport3d / mesh / Feature-tree state (complete)
+
+**Mesh delivery today**: `GET /parts/{part_id}/mesh` (`router.py:5114-5203`) returns one
+`BodyMeshResponse` per Body (already per-Body, not one opaque blob), with a `source:
+"placeholder"|"computed"` flag — but that placeholder is **Part-level all-or-nothing** (a
+fixed 10×10×10 box shown only while the whole Part has zero geometry), not a per-Feature
+concept. A `quality: float` slider maps to OCCT tessellation tolerance, but it's one global
+value applied to every Body on every fetch — no per-Feature/per-Body quality today.
+`PartScreen` (`part_screen.dart`) holds mesh state as plain `StatefulWidget` fields
+(`_bodies: List<BodyMeshDto>`, no Riverpod/Provider), replaced wholesale on every
+`_refreshMesh()`.
+
+**Reusable precedent, better than expected**:
+- `PartViewport` already has real per-Body scene-node granularity (`_meshNodes`/`_edgesNodes`
+  maps keyed by `body_id`, `part_viewport.dart:874-886`) — a Body is a distinct
+  renderable/removable node, not merged into one mesh.
+- `previewOverlayBodyId`/`previewOverlayMesh` (`part_viewport.dart:546-566`) is a **working,
+  in-production single-slot mesh-substitution mechanism** — during Fillet/Chamfer editing, one
+  Body's rendered mesh is swapped for an alternate while the rest stay unchanged. Structurally
+  the same shape an LOD "show coarse mesh for Body X" swap needs, just hardcoded to one Body
+  at a time (would need generalizing to a map).
+- `FeatureDto.hasLostReference` (a plain backend-sourced bool) already drives a Feature-tree
+  badge (glyph overlay + amber subtitle, `feature_tree_panel.dart:704-737`) — the exact
+  template for a "coarse stand-in" badge: add a field, add a Stack child/subtitle branch, zero
+  new state machinery needed for the tree-row display itself.
+- `baseFeatureId()` (`body_naming.dart:59-61`) is the existing, correct Body→Feature mapping
+  (handles the multi-solid `#N` split case) for tying a per-Feature LOD choice to the Bodies
+  it must apply to.
+- `_hiddenFeatureIds`/`_rollbackExcludedFeatureIds` (`part_screen.dart:581,613`) are the direct
+  precedent for "a `Set<String>` of Feature ids = one piece of client-only per-Feature state,
+  threaded through `_refreshMesh`" — the pattern a coarse/full toggle-override set would
+  follow.
+
+**Genuinely missing (confirms Finding 2's async-infra conclusion from the client side too)**:
+today's only "slow build" UX (`PartScreen._runGuarded`'s delayed `_BuildingGeometryOverlay`,
+and `GearDesignScreen`'s unconditional build hint) is **purely cosmetic busy/idle** — one
+global bool for the whole screen, zero association with which Feature, zero notion of
+"coarse result available now, full result still pending." No per-Feature/per-Body coarse-vs-
+full wire tag exists; no background-build signal exists (corroborates the synchronous-backend
+finding independently, via a `document_api_client.dart` grep: zero `job_id`/`task_id`/
+`status`/`async` vocabulary anywhere). A real toggle needs: (1) a per-Body/Feature "coarse" tag
+in the mesh response, (2) either real backend async infra or a client-side illusion (fetch
+coarse fast, background-refetch full, swap on arrival — fits the existing synchronous request
+model with no backend architecture change), (3) a small new per-Feature state container in
+`PartScreen` (map/set, following the `_hiddenFeatureIds` convention), (4) generalizing the
+single-slot preview-overlay mechanism to a map, (5) a new Feature-tree tap target (both
+`onTap`/`onLongPress` are already claimed).
+
 ---
 
 ## Open questions / cross-cutting decisions
