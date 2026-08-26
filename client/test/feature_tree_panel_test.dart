@@ -15,6 +15,9 @@ FeatureDto _extrude(String id, {bool locked = true}) =>
 FeatureDto _gearFamily(String type, String id, {bool locked = true}) =>
     FeatureDto(type: type, id: id, locked: locked, produces: 'body');
 
+FeatureDto _surface(String id, {bool locked = true}) =>
+    FeatureDto(type: 'surface', id: id, locked: locked, produces: 'surface');
+
 Widget _wrap(FeatureTreePanel panel) => MaterialApp(home: Scaffold(body: panel));
 
 void main() {
@@ -584,6 +587,234 @@ void main() {
         ),
         findsOneWidget,
       );
+    });
+  });
+
+  group('Bug fix: Surfaces section lists produced Surface objects, not a second Feature row', () {
+    // The Surfaces-section row and the SurfaceFeature's own Features-section
+    // row share the exact same display name ("Surface 1" from both
+    // `surfaceDisplayNames` and `featureDisplayName`) - unlike Bodies
+    // ("Body 1" vs "Extrude 1"), so any test that needs to interact with
+    // (tap/long-press) exactly one "Surface 1" row must first collapse the
+    // Features section (which starts expanded) to avoid an ambiguous
+    // two-widget match. This helper does that, then expands Surfaces.
+    Future<void> collapseFeaturesExpandSurfaces(WidgetTester tester) async {
+      await tester.tap(find.text('Features'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Surfaces'));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('Surfaces section is hidden entirely when there are no computed Surfaces', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _wrap(
+          FeatureTreePanel(
+            visible: true,
+            features: [_sketch('s1'), _surface('sf1', locked: false)],
+            selectedFeatureId: null,
+            onFeatureTap: (_) {},
+            onFeatureLongPress: (_) {},
+            onClose: () {},
+            onBodyTap: (_) {},
+          ),
+        ),
+      );
+
+      expect(find.text('Surfaces'), findsNothing);
+    });
+
+    testWidgets(
+      'a Surface renders one row under "Surfaces", named via surfaceDisplayNames, and still '
+      'appears once under Features too',
+      (tester) async {
+        final features = [_sketch('s1'), _surface('sf1', locked: false)];
+        final names = surfaceDisplayNames(features, ['sf1']);
+        await tester.pumpWidget(
+          _wrap(
+            FeatureTreePanel(
+              visible: true,
+              features: features,
+              selectedFeatureId: null,
+              onFeatureTap: (_) {},
+              onFeatureLongPress: (_) {},
+              onClose: () {},
+              onBodyTap: (_) {},
+              surfaceIds: const ['sf1'],
+              surfaceNames: names,
+            ),
+          ),
+        );
+
+        expect(find.text('Surfaces'), findsOneWidget);
+        // Surfaces starts collapsed, Features starts expanded - so right now
+        // "Surface 1" is exactly the one Features-section row.
+        expect(find.text('Surface 1'), findsOneWidget);
+
+        // Expand Surfaces too - its own row is a second, distinct "Surface
+        // 1" widget alongside the still-present Features-section one.
+        await tester.tap(find.text('Surfaces'));
+        await tester.pumpAndSettle();
+        expect(find.text('Surface 1'), findsNWidgets(2));
+      },
+    );
+
+    testWidgets('tapping a Surface row calls onSurfaceTap, not onFeatureTap', (tester) async {
+      String? tapped;
+      var featureTapped = false;
+      final features = [_surface('sf1', locked: false)];
+      final names = surfaceDisplayNames(features, ['sf1']);
+      await tester.pumpWidget(
+        _wrap(
+          FeatureTreePanel(
+            visible: true,
+            features: features,
+            selectedFeatureId: null,
+            onFeatureTap: (_) => featureTapped = true,
+            onFeatureLongPress: (_) {},
+            onClose: () {},
+            onBodyTap: (_) {},
+            onSurfaceTap: (id) => tapped = id,
+            surfaceIds: const ['sf1'],
+            surfaceNames: names,
+          ),
+        ),
+      );
+
+      await collapseFeaturesExpandSurfaces(tester);
+      await tester.tap(find.text('Surface 1'));
+      await tester.pump();
+
+      expect(tapped, 'sf1');
+      expect(featureTapped, isFalse);
+    });
+
+    testWidgets('long-pressing a Surface row calls onSurfaceLongPress with that id', (
+      tester,
+    ) async {
+      String? longPressed;
+      final features = [_surface('sf1', locked: false)];
+      final names = surfaceDisplayNames(features, ['sf1']);
+      await tester.pumpWidget(
+        _wrap(
+          FeatureTreePanel(
+            visible: true,
+            features: features,
+            selectedFeatureId: null,
+            onFeatureTap: (_) {},
+            onFeatureLongPress: (_) {},
+            onClose: () {},
+            onBodyTap: (_) {},
+            onSurfaceLongPress: (id) => longPressed = id,
+            surfaceIds: const ['sf1'],
+            surfaceNames: names,
+          ),
+        ),
+      );
+
+      await collapseFeaturesExpandSurfaces(tester);
+      await tester.longPress(find.text('Surface 1'));
+      await tester.pump();
+
+      expect(longPressed, 'sf1');
+    });
+
+    testWidgets('long-pressing a Surface row is a no-op when onSurfaceLongPress is not supplied', (
+      tester,
+    ) async {
+      final features = [_surface('sf1', locked: false)];
+      final names = surfaceDisplayNames(features, ['sf1']);
+      await tester.pumpWidget(
+        _wrap(
+          FeatureTreePanel(
+            visible: true,
+            features: features,
+            selectedFeatureId: null,
+            onFeatureTap: (_) {},
+            onFeatureLongPress: (_) {},
+            onClose: () {},
+            onBodyTap: (_) {},
+            surfaceIds: const ['sf1'],
+            surfaceNames: names,
+          ),
+        ),
+      );
+
+      await collapseFeaturesExpandSurfaces(tester);
+
+      // Must not throw.
+      await tester.longPress(find.text('Surface 1'));
+      await tester.pump();
+    });
+
+    testWidgets('a hidden Surface shows its row dimmed with a visibility-off icon', (
+      tester,
+    ) async {
+      final features = [_surface('sf1', locked: false)];
+      final names = surfaceDisplayNames(features, ['sf1']);
+      await tester.pumpWidget(
+        _wrap(
+          FeatureTreePanel(
+            visible: true,
+            features: features,
+            selectedFeatureId: null,
+            onFeatureTap: (_) {},
+            onFeatureLongPress: (_) {},
+            onClose: () {},
+            onBodyTap: (_) {},
+            surfaceIds: const ['sf1'],
+            surfaceNames: names,
+            hiddenSurfaceIds: const {'sf1'},
+          ),
+        ),
+      );
+
+      await collapseFeaturesExpandSurfaces(tester);
+
+      expect(find.text('Surface 1'), findsOneWidget);
+      expect(find.byIcon(Icons.visibility_off), findsOneWidget);
+    });
+
+    testWidgets('a Body and a Surface both present render distinct sections, never mixed', (
+      tester,
+    ) async {
+      final features = [_extrude('e1', locked: true), _surface('sf1', locked: false)];
+      final bodyNames = bodyDisplayNames(features, ['e1']);
+      final surfNames = surfaceDisplayNames(features, ['sf1']);
+      await tester.pumpWidget(
+        _wrap(
+          FeatureTreePanel(
+            visible: true,
+            features: features,
+            selectedFeatureId: null,
+            onFeatureTap: (_) {},
+            onFeatureLongPress: (_) {},
+            onClose: () {},
+            onBodyTap: (_) {},
+            bodyIds: const ['e1'],
+            bodyNames: bodyNames,
+            surfaceIds: const ['sf1'],
+            surfaceNames: surfNames,
+          ),
+        ),
+      );
+
+      expect(find.text('Bodies'), findsOneWidget);
+      expect(find.text('Surfaces'), findsOneWidget);
+
+      await tester.tap(find.text('Bodies'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Surfaces'));
+      await tester.pumpAndSettle();
+
+      // "Body 1" only ever has one row (Bodies section; the owning Feature
+      // is named "Extrude 1", no collision there). "Surface 1" has two -
+      // one under Surfaces, one under the still-expanded Features section
+      // for the same SurfaceFeature - never three, i.e. never duplicated
+      // *within* the Surfaces section itself.
+      expect(find.text('Body 1'), findsOneWidget);
+      expect(find.text('Surface 1'), findsNWidgets(2));
     });
   });
 }

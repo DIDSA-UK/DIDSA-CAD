@@ -299,14 +299,27 @@ class _PartScreenState extends State<PartScreen> {
   List<BodyMeshDto> _bodies = [];
   String? _selectedFeatureId;
 
-  /// B3 revision: the Part's real, currently-computed Body ids, hidden or
-  /// not - excludes only the dev-time placeholder box (`source:
-  /// "placeholder"`), which is never a real Body and shouldn't appear in
-  /// the Build Tree's Bodies section or [SelectionListDrawer]'s naming. Not
-  /// filtered by [BodyMeshDto.hidden] - the Build Tree needs to keep
-  /// listing a hidden Body so Show can be reached again from its own row.
-  List<String> get _computedBodyIds =>
-      _bodies.where((b) => b.source == 'computed').map((b) => b.bodyId).toList();
+  /// B3 revision: the Part's real, currently-computed *solid Body* ids,
+  /// hidden or not - excludes the dev-time placeholder box (`source:
+  /// "placeholder"`), which is never a real Body, and (bug fix) a
+  /// `SurfaceFeature`'s own non-solid shell (`BodyMeshDto.isSurface`) -
+  /// both `/mesh` entry kinds share `source: "computed"`, so `isSurface` is
+  /// what actually tells them apart. A Surface belongs only in
+  /// [_computedSurfaceIds]/[_surfaceNames] and the Build Tree's own
+  /// Surfaces section, never here or in the Build Tree's Bodies section
+  /// (see [_selectionBodyNames] for the one place a Surface's own name
+  /// still needs to reach [SelectionListDrawer]).
+  List<String> get _computedBodyIds => _bodies
+      .where((b) => b.source == 'computed' && !b.isSurface)
+      .map((b) => b.bodyId)
+      .toList();
+
+  /// [_computedBodyIds]'s Surfaces counterpart - every currently-computed
+  /// Surface id, hidden or not.
+  List<String> get _computedSurfaceIds => _bodies
+      .where((b) => b.source == 'computed' && b.isSurface)
+      .map((b) => b.bodyId)
+      .toList();
 
   /// Memoization for [_visibleBodies] - `identical(_visibleBodiesCacheSource,
   /// _bodies)` tells us the last computed [_visibleBodiesCache] is still
@@ -347,6 +360,21 @@ class _PartScreenState extends State<PartScreen> {
   /// Recomputed on every build; cheap (a handful of Bodies/Features at
   /// most) and always needs to reflect the latest [_features]/[_bodies].
   Map<String, String> get _bodyNames => bodyDisplayNames(_features, _computedBodyIds);
+
+  /// [_bodyNames]'s Surfaces-section counterpart - "Surface 1"/"Surface 2"...
+  /// display names for [_computedSurfaceIds], same shared naming/ordering
+  /// scheme (see `body_naming.dart`'s `surfaceDisplayNames`).
+  Map<String, String> get _surfaceNames => surfaceDisplayNames(_features, _computedSurfaceIds);
+
+  /// Bug fix: [SelectionListDrawer.bodyNames] resolves a selected
+  /// `SelectionEntityKind.body` entity's display name from this one map -
+  /// a selected Surface (still tapped/highlighted via that same `body` kind,
+  /// see [_onSurfaceTap]) needs its own "Surface N" name here too, or it
+  /// falls through to [SelectionListDrawer]'s raw-id fallback and gets
+  /// mislabeled "Body" plus a truncated id hash - [_bodyNames] alone (real
+  /// solid Bodies only, since the Bug 1/2 fix) is no longer the complete
+  /// id-to-name map every `body`-kind selection can resolve against.
+  Map<String, String> get _selectionBodyNames => {..._bodyNames, ..._surfaceNames};
 
   /// The reference plane currently tap-selected in the 3D viewport, if any -
   /// drives both [PartViewport]'s brighter highlight and [PartToolbar]'s
@@ -5910,6 +5938,36 @@ class _PartScreenState extends State<PartScreen> {
     }
   }
 
+  /// [_onBodyTap]'s Surfaces-section counterpart - a Surface's shape is
+  /// still one entry among [_visibleBodies] (bug fix: only excluded from
+  /// [_computedBodyIds]/the Bodies section, never from the 3D viewport
+  /// itself or its selection plumbing), so the exact same
+  /// `SelectionEntityKind.body` toggle already used for a real solid Body
+  /// selects/highlights it too - no separate selection kind needed.
+  void _onSurfaceTap(String surfaceId) {
+    _toggleSelectedEntity(SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: surfaceId));
+  }
+
+  /// [_onBodyLongPress]'s Surfaces-section counterpart - same context-menu
+  /// Hide/Show flow, resolved back to the owning `SurfaceFeature` via
+  /// [baseFeatureId] exactly like a Body row does.
+  Future<void> _onSurfaceLongPress(String surfaceId) async {
+    if (_busy) return;
+    final feature = _featureById(baseFeatureId(surfaceId));
+    if (feature == null) return;
+
+    final action = await showBodyContextMenu(
+      context,
+      isHidden: _hiddenFeatureIds.contains(feature.id),
+    );
+    if (!mounted || action == null) return;
+
+    switch (action) {
+      case BodyContextMenuAction.toggleVisibility:
+        await _toggleFeatureVisibility(feature);
+    }
+  }
+
   /// Animates the 3D camera to face this Feature's Sketch plane (per the
   /// brief's "camera animation when entering a sketch") before navigating to
   /// its 2D canvas - skips straight to navigation if the plane can't be
@@ -10264,9 +10322,22 @@ class _PartScreenState extends State<PartScreen> {
                   // both join it too - see docs/pattern-mirror-scope.md
                   // §2.1/§2.2/§4's own confirmation that both take this
                   // same simple path.
+                  //
+                  // Bug fix: Surface belongs here too - it's a Body-level
+                  // pick (a Sketch, no re-picking of sub-shapes of its own
+                  // in-progress result - see docs/live-preview-pattern.md's
+                  // decision tree, step 2's "No" branch), so it was a plain
+                  // oversight that it was never added alongside Extrude/
+                  // Revolve/Sweep/Mirror/Pattern/Merge/Boolean above. Without
+                  // this, a Surface being actively configured rendered with
+                  // no live-preview tint at all (on top of - and now separate
+                  // from - the Part.produces_displayable_geometry bug that
+                  // used to hide it from `/mesh` entirely for a Sketch+
+                  // Surface-only Part).
                   isPreviewMesh: _extrudeSketchFeature != null ||
                       _revolveSketchFeature != null ||
                       _sweepSketchFeature != null ||
+                      _surfaceActive ||
                       _mirrorActive ||
                       _patternActive ||
                       _mergeActive ||
@@ -10451,7 +10522,7 @@ class _PartScreenState extends State<PartScreen> {
                         onSubtract: () => _onBooleanTapped(BooleanOperation.subtract),
                         onCommon: () => _onBooleanTapped(BooleanOperation.common),
                       ),
-                      bodyNames: _bodyNames,
+                      bodyNames: _selectionBodyNames,
                     ),
                   ),
                 Positioned.fill(
@@ -10526,7 +10597,18 @@ class _PartScreenState extends State<PartScreen> {
                     bodyNames: _bodyNames,
                     onBodyTap: _onBodyTap,
                     onBodyLongPress: _onBodyLongPress,
-                    hiddenBodyIds: {for (final body in _bodies) if (body.hidden) body.bodyId},
+                    hiddenBodyIds: {
+                      for (final body in _bodies)
+                        if (body.hidden && !body.isSurface) body.bodyId,
+                    },
+                    surfaceIds: _computedSurfaceIds,
+                    surfaceNames: _surfaceNames,
+                    onSurfaceTap: _onSurfaceTap,
+                    onSurfaceLongPress: _onSurfaceLongPress,
+                    hiddenSurfaceIds: {
+                      for (final body in _bodies)
+                        if (body.hidden && body.isSurface) body.bodyId,
+                    },
                   ),
                 ),
                 Positioned.fill(

@@ -2015,9 +2015,23 @@ class Part:
     @property
     def produces_solid_geometry(self) -> bool:
         """True once any Feature in this Part's history produces real solid
-        geometry (see `Feature.produces_solid_geometry`) - drives whether
-        `get_part_mesh` should keep returning its placeholder box."""
+        geometry (see `Feature.produces_solid_geometry`). Kept meaning
+        literally "solid" - see `produces_displayable_geometry` below for
+        the broader "anything tessellatable at all" check `get_part_mesh`
+        actually gates on."""
         return any(f.produces_solid_geometry for f in self.features)
+
+    @property
+    def produces_displayable_geometry(self) -> bool:
+        """True once any Feature in this Part's history yields a real,
+        tessellatable shape via `compute_part_bodies` - a solid Body or a
+        non-solid Surface alike (`Produces.BODY`/`Produces.SURFACE`; a
+        `PLANE`/`SKETCH`/`NONE` Feature never does). Distinct from
+        `produces_solid_geometry` above: this is what `get_part_mesh`
+        should gate its placeholder box on, so a Surface-only Part (no
+        Extrude/Revolve/etc.) still gets its real geometry rendered instead
+        of staying stuck on the placeholder."""
+        return any(f.produces in (Produces.BODY, Produces.SURFACE) for f in self.features)
 
     def is_locked(self, feature_id: str) -> bool:
         """True if `feature_id` is not the last Feature in the list (so it

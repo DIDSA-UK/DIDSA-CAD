@@ -4889,8 +4889,10 @@ def get_part_mesh(
     own tessellation only (not globally unique across the array).
 
     Placeholder mesh (a fixed box, `body_id="placeholder"`) while the Part
-    has no ExtrudeFeature yet, per `Part.produces_solid_geometry` - always
-    exactly one entry in that case. Once it does, this instead recomputes
+    has no displayable geometry yet, per `Part.produces_displayable_
+    geometry` (any Feature that yields a real solid Body *or* a non-solid
+    Surface) - always exactly one entry in that case. Once it does, this
+    instead recomputes
     every ExtrudeFeature's real OCCT geometry (Boss/Cut, in dependency-graph
     order - see app.document.extrude.compute_part_bodies) and tessellates
     each resulting Body independently, before the two exclusion params
@@ -4942,7 +4944,7 @@ def get_part_mesh(
     part = get_part_or_404(part_id)
     mesh_quality = DEFAULT_MESH_QUALITY if quality is None else mesh_quality_from_slider(quality)
 
-    if not part.produces_solid_geometry:
+    if not part.produces_displayable_geometry:
         box = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
         mesh_data = tessellate_shape(box, mesh_quality)
         return [
@@ -4959,6 +4961,7 @@ def get_part_mesh(
             source="computed",
             mesh=_mesh_vertex_data(tessellate_shape(shape, mesh_quality)),
             hidden=base_feature_id(body_id) in hidden,
+            is_surface=isinstance(part.get_feature(base_feature_id(body_id)), SurfaceFeature),
         )
         for body_id, shape in bodies.items()
     ]
@@ -5000,12 +5003,16 @@ def _export_bodies_or_400(part: Part) -> dict[str, object]:
     """The current Body map every export format below shares (per
     `compute_part_bodies`, the same source of truth `/mesh` tessellates
     from) - 400s up front for a Part with nothing to export, rather than
-    each format silently emitting an empty/invalid file."""
-    if not part.produces_solid_geometry:
-        raise HTTPException(status_code=400, detail="Part has no solid geometry to export")
+    each format silently emitting an empty/invalid file. Shares `/mesh`'s
+    own `produces_displayable_geometry` gate (not `produces_solid_
+    geometry`) so a Surface-only Part - which has the same real,
+    tessellatable-but-not-solid geometry - can be exported too, same as it
+    can now be viewed."""
+    if not part.produces_displayable_geometry:
+        raise HTTPException(status_code=400, detail="Part has no geometry to export")
     bodies = compute_part_bodies(part)
     if not bodies:
-        raise HTTPException(status_code=400, detail="Part has no solid geometry to export")
+        raise HTTPException(status_code=400, detail="Part has no geometry to export")
     return bodies
 
 

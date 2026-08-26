@@ -111,10 +111,11 @@ String _featureTypeAsset(String type) => switch (type) {
 /// rows - a single Feature that splits into multiple Bodies (A1's
 /// multi-solid amendment) now genuinely shows as multiple Body entries
 /// here, which the original B3 pass deliberately (and, per that feedback,
-/// wrongly) avoided doing. Planes/Surfaces sections are meant to sit
-/// alongside Bodies once Create Plane/Fillet (C/D/E) actually produce
-/// something to list - no such data source exists yet, so there is nothing
-/// to render for them today.
+/// wrongly) avoided doing. Planes sit alongside Bodies for the same reason
+/// once Create Plane produces something to list; Surfaces mirrors both -
+/// real produced Surface objects (`surfaceIds`/`surfaceNames`), not a
+/// second copy of their own SurfaceFeature row (bug fix - see
+/// [_buildSurfacesSection]'s own doc comment for the pre-fix shape).
 ///
 /// On-device feedback ("we now have the ability to edit parent features and
 /// parametric flow is working - I think [the Locked badge] can be
@@ -199,6 +200,34 @@ class FeatureTreePanel extends StatefulWidget {
   /// which is the whole point of this on-device follow-up).
   final Set<String> hiddenBodyIds;
 
+  /// Bug fix: the Part's currently-computed *Surface* ids (`GET /mesh`,
+  /// `source: "computed"` entries with `is_surface: true`) - mirrors
+  /// [bodyIds] exactly, just for the Surfaces section instead of Bodies,
+  /// since a Surface is a real produced object too, not a Feature row (see
+  /// `SurfaceFeature`'s own docstring).
+  final List<String> surfaceIds;
+
+  /// Stable "Surface 1"/"Surface 2"... display names for [surfaceIds] - see
+  /// `body_naming.dart`'s `surfaceDisplayNames`. Mirrors [bodyNames].
+  final Map<String, String> surfaceNames;
+
+  /// Tapping a row in the Surfaces section - selects/highlights that
+  /// Surface's shape in the 3D viewport. Mirrors [onBodyTap]; nullable
+  /// (unlike [onBodyTap]) purely so every pre-existing test/call site built
+  /// before Surfaces got their own section doesn't need to pass a no-op -
+  /// [surfaceIds] defaults to empty, so the section (and this callback)
+  /// simply doesn't render for them.
+  final void Function(String surfaceId)? onSurfaceTap;
+
+  /// Long-pressing a Surfaces-section row toggles that Surface's own
+  /// Hide/Show state. Mirrors [onBodyLongPress]; `null` disables the
+  /// long-press entirely (defensive default for any test/fixture built
+  /// before this).
+  final void Function(String surfaceId)? onSurfaceLongPress;
+
+  /// Surface ids the backend tagged `hidden`. Mirrors [hiddenBodyIds].
+  final Set<String> hiddenSurfaceIds;
+
   /// Prompt D: true while the tree is acting as a Sketch picker for a
   /// pending Extrude (entered from the "Add" FAB's Feature > Extrude entry
   /// when no eligible Sketch is already selected) - shows the picker banner
@@ -273,6 +302,11 @@ class FeatureTreePanel extends StatefulWidget {
     this.bodyNames = const {},
     this.hiddenFeatureIds = const {},
     this.hiddenBodyIds = const {},
+    this.onSurfaceTap,
+    this.onSurfaceLongPress,
+    this.surfaceIds = const [],
+    this.surfaceNames = const {},
+    this.hiddenSurfaceIds = const {},
     this.isSketchPickerMode = false,
     this.pickableSketchIds = const {},
     this.onSketchPicked,
@@ -467,7 +501,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
       children: [
         if (widget.bodyIds.isNotEmpty) _buildBodiesSection(context),
         if (widget.features.any((f) => f.type == 'create_plane')) _buildPlanesSection(context),
-        if (widget.features.any((f) => f.type == 'surface')) _buildSurfacesSection(context),
+        if (widget.surfaceIds.isNotEmpty) _buildSurfacesSection(context),
         _buildFeaturesSection(context),
       ],
     );
@@ -571,46 +605,47 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
     );
   }
 
-  /// The Surfaces section - real produced non-solid Surface objects, one row
-  /// per SurfaceFeature (always 1:1, unlike Bodies' potential Feature-to-
-  /// multiple-Bodies split - see the backend `SurfaceFeature`'s own
-  /// docstring, no Boss/Cut merging concept at all, so no separate id/name
-  /// map is needed the way [_buildBodiesSection] needs one). Mirrors
-  /// [_buildPlanesSection]
-  /// exactly - omitted entirely when there are none yet (same "no empty
-  /// section" rule), tapping a row reuses [FeatureTreePanel.onFeatureTap],
-  /// starts collapsed.
+  /// The Surfaces section - real produced non-solid Surface objects (bug
+  /// fix: previously one row per SurfaceFeature, reusing [onFeatureTap]/
+  /// [onFeatureLongPress] - redundant with that same Feature's own row
+  /// already listed under Features below). Now mirrors [_buildBodiesSection]
+  /// exactly instead: one row per [FeatureTreePanel.surfaceIds] entry, named
+  /// via [FeatureTreePanel.surfaceNames], tapping/long-pressing a row calls
+  /// [FeatureTreePanel.onSurfaceTap]/[onSurfaceLongPress] rather than
+  /// opening the owning Feature for edit. Omitted entirely when there are
+  /// none yet (same "no empty section" rule as Bodies), starts collapsed.
   Widget _buildSurfacesSection(BuildContext context) {
-    final surfaceFeatures = widget.features.where((f) => f.type == 'surface').toList();
+    final orderedIds = widget.surfaceNames.keys.where(widget.surfaceIds.contains).toList();
     return ExpansionTile(
       initiallyExpanded: false,
       dense: true,
       visualDensity: VisualDensity.compact,
       leading: const SvgIcon('assets/icons/feature/feature_surface.svg', size: 26),
       title: const Text('Surfaces', maxLines: 1, overflow: TextOverflow.ellipsis, style: _sectionTitleStyle),
-      children: [
-        for (final feature in surfaceFeatures)
-          Builder(builder: (context) {
-            final hidden = widget.hiddenFeatureIds.contains(feature.id);
-            return Opacity(
-              opacity: hidden ? 0.5 : 1.0,
-              child: ListTile(
-                dense: true,
-                visualDensity: VisualDensity.compact,
-                leading: const SvgIcon('assets/icons/feature/feature_surface.svg', size: 24),
-                title: Text(
-                  featureDisplayName(widget.features, widget.features.indexOf(feature)),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: _rowTitleStyle,
-                ),
-                trailing: hidden ? const Icon(Icons.visibility_off, size: 18) : null,
-                onTap: () => widget.onFeatureTap(feature),
-                onLongPress: () => widget.onFeatureLongPress(feature),
-              ),
-            );
-          }),
-      ],
+      children: [for (final surfaceId in orderedIds) _buildSurfaceTile(surfaceId)],
+    );
+  }
+
+  /// One Surface's row inside the Surfaces section - mirrors
+  /// [_buildBodyTile] exactly.
+  Widget _buildSurfaceTile(String surfaceId) {
+    final hidden = widget.hiddenSurfaceIds.contains(surfaceId);
+    return Opacity(
+      opacity: hidden ? 0.5 : 1.0,
+      child: ListTile(
+        dense: true,
+        visualDensity: VisualDensity.compact,
+        leading: const SvgIcon('assets/icons/feature/feature_surface.svg', size: 24),
+        title: Text(
+          widget.surfaceNames[surfaceId] ?? surfaceId,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: _rowTitleStyle,
+        ),
+        trailing: hidden ? const Icon(Icons.visibility_off, size: 18) : null,
+        onTap: widget.onSurfaceTap == null ? null : () => widget.onSurfaceTap!(surfaceId),
+        onLongPress: widget.onSurfaceLongPress == null ? null : () => widget.onSurfaceLongPress!(surfaceId),
+      ),
     );
   }
 
