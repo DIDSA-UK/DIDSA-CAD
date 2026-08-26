@@ -875,8 +875,24 @@ def test_search_meshing_phase_symmetric_ratio_escalates_through_tiers_and_never_
     never a worse (higher) measured overlap than running the ORIGINAL,
     un-tiered algorithm - the full tier's own grid/refine budget, in one
     shot, no draft first (`_run_phase_search_tier` called directly at full
-    size) - against the exact same real geometry."""
-    feature = _spiral_pair_feature(20, 20, module=3.0, face_width=6.0, points_per_flank=6, spiral_angle_degrees=40.0)
+    size) - against the exact same real geometry.
+
+    `points_per_flank=12` (the production default) is deliberate, not
+    incidental: an earlier version of this test used a lower value (6) to
+    save CI time, which - confirmed directly, not guessed at - pushed this
+    exact 20T/20T geometry into `_assemble_gear_solid`'s own "end-cap
+    flattening failed, falling back to the true spherical cap" branch. That
+    fallback shape is genuinely marginal, and `BRepAlgoAPI_Common` against
+    it is NOT reproducibly deterministic run-to-run (confirmed by a direct
+    repro: two back-to-back `_search_meshing_phase` calls against the
+    identical in-memory solids landed on different overlaps) - real CI
+    caught exactly this as a flaky failure on one architecture. `module=4,
+    face_width=8, spiral_angle_degrees=20` (matching `12-spiral-bevel-
+    gear.md`'s own Spike C sweep baseline) at `points_per_flank=12`
+    produces a clean, warning-free solid and was confirmed by a direct,
+    repeated real-OCCT run to give bit-identical results run-to-run before
+    being used here."""
+    feature = _spiral_pair_feature(20, 20, module=4.0, face_width=8.0, points_per_flank=12, spiral_angle_degrees=20.0)
     solid_1, solid_2_base, basis_2, tooth_count_2 = _build_member_solids_directly(feature)
 
     zero_overlap = _common_overlap_volume(solid_1, solid_2_base)
