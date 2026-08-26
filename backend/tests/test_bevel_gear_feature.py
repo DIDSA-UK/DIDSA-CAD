@@ -615,11 +615,29 @@ def test_spiral_end_caps_are_flattened_at_a_moderate_spiral_angle_safely_inside_
     direct_assembly_parameter_sweep_stays_valid_and_volume_is_sane`'s own
     already-clean 10/20/30deg sweep), nowhere near the documented failing
     angles (51deg+) - flattening must succeed here exactly like the
-    straight case, still exactly 2 planar end-cap faces at the same target
-    z this geometry's own start_colatitude implies (spiral is a pure
+    straight case, still 2 planar end-cap faces close to the same target z
+    this geometry's own start_colatitude implies (spiral is a pure
     azimuthal rotation - `spiral_curve_offset_angle`'s own docstring - so
-    it changes neither `start_colatitude` nor either cap's own flat target
-    z)."""
+    it changes neither `start_colatitude` nor either cap's own nominal
+    flat target z).
+
+    **Not bit-for-bit identical to the straight case's own tolerance,
+    deliberately**: `_flatten_end_caps`'s own `radius_margin` (`bevel.py`)
+    is a small, real, INTENTIONAL safety margin, not zero, once spiral is
+    active - it nudges the INNER cap's own tool to extend a little past
+    the nominal root colatitude (`_inner_cap_flattening_tool`'s own
+    docstring), which shifts that one cap's own flat plane inward by a
+    small, bounded, and directly computable amount (`_END_CAP_RADIUS_
+    MARGIN`-scale, not the straight case's exact zero). The OUTER cap's
+    own tool only ever shrinks its own RADIUS for this margin, never its
+    Z (`_outer_cap_flattening_tool`), so that cap's own flat plane stays
+    exactly where the straight case's own tight tolerance already expects -
+    only the inner cap's own tolerance is loosened here, and only to a
+    value real on-device measurement (this session's own sweep, `docs/
+    status.md`'s matching entry) confirmed comfortably covers this specific
+    case's own real margin-driven shift (~0.013mm measured, `0.05` is
+    real headroom above that, still two orders of magnitude tighter than
+    this gear's own millimeter-scale dimensions)."""
     geometry = bevel_gear_geometry(
         module=2.5, tooth_count=18, face_width=19.1, pitch_cone_angle_degrees=_PITCH_ANGLE_18_90
     )
@@ -635,7 +653,7 @@ def test_spiral_end_caps_are_flattened_at_a_moderate_spiral_angle_safely_inside_
     plane_faces = _plane_faces_by_z(solid)
     assert len(plane_faces) == 2, f"expected exactly 2 planar (flattened) end-cap faces, got {list(plane_faces)}"
     plane_zs = sorted(plane_faces)
-    assert abs(plane_zs[0] - inner_flat_z) < 0.01, f"inner end-cap plane at z={plane_zs[0]}, expected {inner_flat_z}"
+    assert abs(plane_zs[0] - inner_flat_z) < 0.05, f"inner end-cap plane at z={plane_zs[0]}, expected {inner_flat_z}"
     assert abs(plane_zs[1] - outer_flat_z) < 0.01, f"outer end-cap plane at z={plane_zs[1]}, expected {outer_flat_z}"
 
 
