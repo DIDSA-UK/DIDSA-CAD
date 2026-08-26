@@ -97,10 +97,15 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
   final _spiralAngleController = TextEditingController(text: '20');
   String _spiralHand = 'right';
 
-  // Bevel pair mode.
-  final _toothCount1Controller = TextEditingController(text: '20');
+  // Bevel pair mode. 24T/48T keeps the same 1:2 ratio the old 20T/40T
+  // default used (a ratio class already validated as "resolvable" by
+  // 13-spiral-bevel-pair.md's own Spike C), scaled up for more headroom
+  // above the ~17-18-tooth undercut floor - a reasoned, moderate bump,
+  // not an independently-re-verified-on-OCCT threshold the way the chain/
+  // planetary defaults are (see docs/status.md's dated entry).
+  final _toothCount1Controller = TextEditingController(text: '24');
   final _profileShift1Controller = TextEditingController(text: '0');
-  final _toothCount2Controller = TextEditingController(text: '40');
+  final _toothCount2Controller = TextEditingController(text: '48');
   final _profileShift2Controller = TextEditingController(text: '0');
   final _pairFaceWidthController = TextEditingController(text: '15');
   final _shaftAngleController = TextEditingController(text: '90');
