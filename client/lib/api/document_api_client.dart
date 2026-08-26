@@ -594,6 +594,15 @@ class FeatureDto {
   /// SurfaceFeature's own id. Mutually exclusive with [toolPlaneRef].
   final String? toolSurfaceFeatureId;
 
+  /// Boolean family, fourth/last entry - only present on a `"split"`
+  /// Feature, and only when its `tool` is a raw Sketch line/curve entity
+  /// (no backing SurfaceFeature at all): the picked Line/Arc/EllipseArc/
+  /// Spline itself. Mutually exclusive with [toolPlaneRef]/
+  /// [toolSurfaceFeatureId] - the guided flow's own replacement for what
+  /// used to be an inline "New Surface" mini-step (see `PartScreen`'s own
+  /// Split state-field section header comment).
+  final SketchEntityRefDto? toolSketchLineRef;
+
   FeatureDto({
     required this.type,
     required this.id,
@@ -659,6 +668,7 @@ class FeatureDto {
     this.targetBodyId,
     this.toolPlaneRef,
     this.toolSurfaceFeatureId,
+    this.toolSketchLineRef,
   });
 
   factory FeatureDto.fromJson(Map<String, dynamic> json) => FeatureDto(
@@ -770,6 +780,10 @@ class FeatureDto {
             : PlaneRefDto.fromJson(
                 (json['tool'] as Map<String, dynamic>)['plane_ref'] as Map<String, dynamic>),
         toolSurfaceFeatureId: (json['tool'] as Map<String, dynamic>?)?['surface_feature_id'] as String?,
+        toolSketchLineRef: (json['tool'] as Map<String, dynamic>?)?['sketch_line_ref'] == null
+            ? null
+            : SketchEntityRefDto.fromJson(
+                (json['tool'] as Map<String, dynamic>)['sketch_line_ref'] as Map<String, dynamic>),
       );
 }
 
@@ -1930,18 +1944,20 @@ class DocumentApiClient {
 
   /// Boolean family, fourth/last entry: creates a `SplitFeature` dividing
   /// [targetBodyId] into two independent, surviving pieces along `tool` -
-  /// exactly one of [toolPlaneRef]/[toolSurfaceFeatureId] must be supplied
-  /// (the backend's own `_validate_split_tool_ref` enforces this; not
-  /// checked client-side, mirroring every other "exactly one of N" wire
-  /// shape in this file, e.g. [PlaneRefDto] itself). Mirrors
-  /// [createBooleanFeature]'s own target/tool shape, minus
-  /// `consumeToolBodies` - Split has no such concept, the tool is never a
-  /// registered Body of its own the way a Boolean's `tool_body_ids` is.
+  /// exactly one of [toolPlaneRef]/[toolSurfaceFeatureId]/
+  /// [toolSketchLineRef] must be supplied (the backend's own `_validate_
+  /// split_tool_ref` enforces this; not checked client-side, mirroring
+  /// every other "exactly one of N" wire shape in this file, e.g.
+  /// [PlaneRefDto] itself). Mirrors [createBooleanFeature]'s own
+  /// target/tool shape, minus `consumeToolBodies` - Split has no such
+  /// concept, the tool is never a registered Body of its own the way a
+  /// Boolean's `tool_body_ids` is.
   Future<FeatureDto> createSplitFeature(
     String partId, {
     required String targetBodyId,
     PlaneRefDto? toolPlaneRef,
     String? toolSurfaceFeatureId,
+    SketchEntityRefDto? toolSketchLineRef,
   }) =>
       _send(
         () => _httpClient.post(
@@ -1952,6 +1968,7 @@ class DocumentApiClient {
                 'tool': {
                   if (toolPlaneRef != null) 'plane_ref': toolPlaneRef.toJson(),
                   if (toolSurfaceFeatureId != null) 'surface_feature_id': toolSurfaceFeatureId,
+                  if (toolSketchLineRef != null) 'sketch_line_ref': toolSketchLineRef.toJson(),
                 },
               }),
             ),
@@ -1960,16 +1977,18 @@ class DocumentApiClient {
 
   /// Partial update for an existing SplitFeature - [targetBodyId] may be
   /// supplied on its own; a `tool` change replaces the whole `tool` object
-  /// at once (supplying either of [toolPlaneRef]/[toolSurfaceFeatureId]
-  /// sends the entire new `tool`, matching the backend's own `SplitToolRef`
-  /// being an indivisible "exactly one of two" value, not two independently
-  /// patchable fields) - omitted fields otherwise keep their current value.
+  /// at once (supplying any of [toolPlaneRef]/[toolSurfaceFeatureId]/
+  /// [toolSketchLineRef] sends the entire new `tool`, matching the
+  /// backend's own `SplitToolRef` being an indivisible "exactly one of
+  /// three" value, not independently patchable fields) - omitted fields
+  /// otherwise keep their current value.
   Future<FeatureDto> updateSplitFeature(
     String partId,
     String featureId, {
     String? targetBodyId,
     PlaneRefDto? toolPlaneRef,
     String? toolSurfaceFeatureId,
+    SketchEntityRefDto? toolSketchLineRef,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -1977,10 +1996,11 @@ class DocumentApiClient {
               headers: _headers,
               body: jsonEncode({
                 if (targetBodyId != null) 'target_body_id': targetBodyId,
-                if (toolPlaneRef != null || toolSurfaceFeatureId != null)
+                if (toolPlaneRef != null || toolSurfaceFeatureId != null || toolSketchLineRef != null)
                   'tool': {
                     if (toolPlaneRef != null) 'plane_ref': toolPlaneRef.toJson(),
                     if (toolSurfaceFeatureId != null) 'surface_feature_id': toolSurfaceFeatureId,
+                    if (toolSketchLineRef != null) 'sketch_line_ref': toolSketchLineRef.toJson(),
                   },
               }),
             ),
