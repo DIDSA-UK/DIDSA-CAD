@@ -48,6 +48,10 @@ from app.document.gear_chain_math import (
     chain_overall_ratio,
     compound_transition_ratio,
     mesh_link_ratio,
+    meshing_phase_base,
+    pitch_radius,
+    propagate_meshing_phase,
+    rack_meshing_phase_base,
     resolve_chain as resolve_chain_positions_and_interference,
 )
 from app.document.bevel_math import (
@@ -4103,6 +4107,40 @@ def _chain_stage_math_spec(stage: GearChainStage, groups: dict[str, GearGroup]) 
     )
 
 
+# One meshing junction's propagated phase state - mirrors `app.document.
+# gear_chain._PhaseState` exactly (kind, pitch_radius-or-None-for-rack,
+# phase-value; see `_preview_rack_rotation`'s docstring for why this is
+# duplicated rather than imported).
+_PreviewPhaseState = tuple[ChainMemberKind, float | None, float]
+
+
+def _preview_member_phase(
+    member_spec: ChainMemberSpec, predecessor: _PreviewPhaseState | None, incoming_direction: float | None
+) -> float:
+    """Mirrors `app.document.gear_chain._member_phase` exactly (see
+    `_preview_rack_rotation`'s own docstring for why this is duplicated
+    rather than imported) - the phase value (radians for a round EXTERNAL/
+    INTERNAL member, mm along its own rotated tooth-row axis for a RACK) to
+    apply to `member_spec` so one of its own tooth gaps sits at the
+    meshing contact point with `predecessor` - `0.0` for the first member
+    in a chain (`predecessor is None`), matching `meshing_phase_base`'s own
+    documented zero-reference baseline."""
+    is_rack = member_spec.kind == ChainMemberKind.RACK
+    radius = None if is_rack else pitch_radius(member_spec)
+    if predecessor is None:
+        return 0.0
+    predecessor_kind, predecessor_radius, predecessor_phase = predecessor
+    assert incoming_direction is not None
+    base_value = (
+        rack_meshing_phase_base(member_spec.tooth_count, math.pi * member_spec.module)
+        if is_rack
+        else meshing_phase_base(member_spec.tooth_count, predecessor_kind, incoming_direction)
+    )
+    return propagate_meshing_phase(
+        predecessor_kind, predecessor_radius, predecessor_phase, member_spec.kind, radius, incoming_direction, base_value
+    )
+
+
 def _preview_member_outline(
     stage_index: int,
     label: str,
@@ -4140,7 +4178,7 @@ def _preview_member_outline(
         pressure_angle_degrees=member_spec.pressure_angle_degrees,
         is_internal=is_internal,
     )
-    outline_points = _preview_transform_profile(full_gear_profile_points(geometry), center)
+    outline_points = _preview_transform_profile(full_gear_profile_points(geometry), center, rotation)
     return GearPreviewMember(
         stage_index=stage_index,
         label=label,
@@ -4180,8 +4218,21 @@ def _gear_preview_chain_response(payload: GearPreviewChainRequest) -> GearPrevie
         )
 
         members: list[GearPreviewMember] = []
+        # Propagated meshing-phase state, carried stage to stage - mirrors
+        # `app.document.gear_chain.resolve_gear_chain_from_bodies`'s own
+        # `prev_state` loop variable exactly (see `_preview_member_phase`'s
+        # docstring for why this duplication exists).
+        prev_state: _PreviewPhaseState | None = None
         for i, (stage, spec, resolved_stage) in enumerate(zip(stages, stage_specs, resolved.stages)):
             if spec.is_compound:
+                rotation_a = _preview_member_phase(spec.compound_member_a, prev_state, resolved_stage.incoming_direction)
+                # `compound_member_b` (the outgoing-facing member) gets a
+                # fixed 0.0 reference, decoupled from `compound_member_a`'s
+                # own rotation - mirrors `resolve_gear_chain_from_bodies`'s
+                # own decoupling exactly (see that function's inline
+                # comment for why: no shared-shaft "keyed at a specific
+                # relative angle" constraint exists here to preserve).
+                prev_state = (spec.compound_member_b.kind, pitch_radius(spec.compound_member_b), 0.0)
                 members.append(
                     _preview_member_outline(
                         i,
@@ -4190,6 +4241,7 @@ def _gear_preview_chain_response(payload: GearPreviewChainRequest) -> GearPrevie
                         stage.compound_member_a.group_id,
                         groups_by_id[stage.compound_member_a.group_id].display_color,
                         resolved_stage.center,
+                        rotation_a,
                     )
                 )
                 members.append(
@@ -4203,11 +4255,12 @@ def _gear_preview_chain_response(payload: GearPreviewChainRequest) -> GearPrevie
                     )
                 )
             else:
+                phase = _preview_member_phase(spec.member, prev_state, resolved_stage.incoming_direction)
+                is_rack = spec.member.kind == ChainMemberKind.RACK
                 rotation = (
-                    _preview_rack_rotation(resolved_stage, payload.start_direction_degrees)
-                    if spec.member.kind == ChainMemberKind.RACK
-                    else 0.0
+                    _preview_rack_rotation(resolved_stage, payload.start_direction_degrees) if is_rack else phase
                 )
+                prev_state = (spec.member.kind, None if is_rack else pitch_radius(spec.member), phase)
                 members.append(
                     _preview_member_outline(
                         i,
@@ -4319,13 +4372,43 @@ def _gear_preview_planetary_response(payload: GearPreviewPlanetaryRequest) -> Ge
             f"outer reach (dedendum diameter {ring_geometry.dedendum_radius * 2!r})"
         )
 
+    # Meshing-phase alignment - mirrors `app.document.planetary_gear.
+    # resolve_planetary_from_bodies`'s own phase-computation block exactly
+    # (see that function's inline comment for the full derivation/real-OCCT
+    # verification this reuses) - duplicated here rather than imported, per
+    # this module's established "duplicate the cheap math" precedent
+    # (`_preview_rack_rotation`'s own docstring).
+    sun_rotation = 0.0
+    planet_0_azimuth = 0.0
+    planet_0_base = meshing_phase_base(planet_tooth_count, ChainMemberKind.EXTERNAL, planet_0_azimuth)
+    planet_0_rotation = propagate_meshing_phase(
+        ChainMemberKind.EXTERNAL,
+        sun_geometry.pitch_radius,
+        sun_rotation,
+        ChainMemberKind.EXTERNAL,
+        planet_geometry.pitch_radius,
+        planet_0_azimuth,
+        planet_0_base,
+    )
+    ring_azimuth = planet_0_azimuth + math.pi
+    ring_base = meshing_phase_base(payload.ring_tooth_count, ChainMemberKind.EXTERNAL, ring_azimuth)
+    ring_rotation = propagate_meshing_phase(
+        ChainMemberKind.EXTERNAL,
+        planet_geometry.pitch_radius,
+        planet_0_rotation,
+        ChainMemberKind.INTERNAL,
+        ring_geometry.pitch_radius,
+        ring_azimuth,
+        ring_base,
+    )
+
     members = [
         GearPreviewMember(
             stage_index=0,
             label="sun",
             member_type="external",
             center=(0.0, 0.0),
-            outline_points=full_gear_profile_points(sun_geometry),
+            outline_points=_preview_transform_profile(full_gear_profile_points(sun_geometry), (0.0, 0.0), sun_rotation),
             pitch_radius=sun_geometry.pitch_radius,
             base_radius=sun_geometry.base_radius,
             addendum_radius=sun_geometry.addendum_radius,
@@ -4336,7 +4419,7 @@ def _gear_preview_planetary_response(payload: GearPreviewPlanetaryRequest) -> Ge
             label="ring",
             member_type="internal",
             center=(0.0, 0.0),
-            outline_points=full_gear_profile_points(ring_geometry),
+            outline_points=_preview_transform_profile(full_gear_profile_points(ring_geometry), (0.0, 0.0), ring_rotation),
             pitch_radius=ring_geometry.pitch_radius,
             base_radius=ring_geometry.base_radius,
             addendum_radius=ring_geometry.addendum_radius,
@@ -4349,13 +4432,23 @@ def _gear_preview_planetary_response(payload: GearPreviewPlanetaryRequest) -> Ge
     for i in range(payload.planet_count):
         angle = 2 * math.pi * i / payload.planet_count
         center = (orbit_radius * math.cos(angle), orbit_radius * math.sin(angle))
+        planet_base = meshing_phase_base(planet_tooth_count, ChainMemberKind.EXTERNAL, angle)
+        planet_rotation = propagate_meshing_phase(
+            ChainMemberKind.EXTERNAL,
+            sun_geometry.pitch_radius,
+            sun_rotation,
+            ChainMemberKind.EXTERNAL,
+            planet_geometry.pitch_radius,
+            angle,
+            planet_base,
+        )
         members.append(
             GearPreviewMember(
                 stage_index=2 + i,
                 label=f"planet_{i}",
                 member_type="external",
                 center=center,
-                outline_points=_preview_transform_profile(planet_outline, center),
+                outline_points=_preview_transform_profile(planet_outline, center, planet_rotation),
                 pitch_radius=planet_geometry.pitch_radius,
                 base_radius=planet_geometry.base_radius,
                 addendum_radius=planet_geometry.addendum_radius,
