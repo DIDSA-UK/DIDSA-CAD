@@ -154,6 +154,35 @@ _END_CAP_HEIGHT_MARGIN = 1.0
 # gears; a small enough value to stay far below any real gear dimension.
 _END_CAP_FUZZY_VALUE = 1e-3
 
+# `_flatten_end_caps`'s own spiral-only `radius_margin` scaling - converts
+# `twist_per_section` (radians) into a linear-mm bulge estimate via the
+# SAGITTA of the azimuthal chord two adjacent root/tip-land sections
+# subtend at a given radius (`radius * (1 - cos(twist/2))`, small-angle-
+# approximated to `radius * twist**2 / 8` - the same standard sagitta
+# formula a chord's own deviation from its arc uses), NOT a plain linear
+# `radius * twist` estimate. This was a real, on-device-caught mistake in
+# this session's own first attempt at this margin, worth naming so nobody
+# repeats it: a plain linear estimate came out multiple mm for entirely
+# ordinary geometry (e.g. ~3mm for an 18-tooth/module-2.5 gear at a
+# moderate 25-degree spiral angle that never needed any extra margin at
+# all - `spiral_section_count_for_twist` alone already made flattening
+# succeed there with zero margin) - large enough to visibly shift the
+# flattened cap's own flat plane and leave an un-trimmed sliver of the
+# original spherical dome behind, a real regression this session's own
+# pre-existing test suite (`test_spiral_bevel_direct_assembly_parameter_
+# sweep_stays_valid_and_volume_is_sane`) caught directly (a previously-
+# clean case's own volume ratio drifted outside its existing tolerance).
+# Direct on-device measurement (probing the real root-land loft surface's
+# own deviation from the ideal root cone, `docs/status.md`'s matching
+# dated entry has the full case table) confirmed the sagitta formula
+# tracks the REAL measured deviation closely - consistently 73-87% of the
+# sagitta estimate across six geometrically-diverse cases (tooth counts
+# 10-20, moduli 2.5-4.0, spiral angles 10-72deg) - so `_SPIRAL_BULGE_
+# SAFETY_FACTOR` below applies real, modest headroom on top of an already
+# well-matched estimate, not a blind multiplier compensating for a wrong
+# formula shape.
+_SPIRAL_BULGE_SAFETY_FACTOR = 1.5
+
 
 def _invalid_bevel_parameters(detail: str) -> HTTPException:
     """A bevel gear parameter combination `bevel_math` itself rejects -
@@ -792,20 +821,24 @@ def _flatten_end_caps(
     whatever `section_count` it actually ends up using (which can exceed
     the bound-driven minimum if the caller/feature passed a larger one
     explicitly). Converted to a linear-mm bulge estimate at each cap's own
-    `root_radius = sphere_radius * sin(start_colatitude)` via the small-
-    angle approximation `arc_length ~= radius * angle` (both this function's
-    own `radius_margin` terms below and `_inner_cap_flattening_tool`'s own
-    colatitude-delta conversion share this same approximation) - a real,
-    but deliberately secondary, safety net for whatever residual surface-
-    bulge `_tooth_side_faces_spiral`'s own N-section root/tip-land loft
-    still carries after `spiral_section_count_for_twist` has already cut it
-    down close to (not exactly to) zero. See `_outer_cap_flattening_tool`'s
-    own docstring for why growing this margin is safe in each tool's own
-    respective direction (shrink further for the subtractive `Cut` tool,
-    extend further for the additive `Fuse` tool - never the other way
-    round for either)."""
-    outer_radius_margin = geometry.cone_distance * math.sin(start_colatitude) * twist_per_section
-    inner_radius_margin = geometry.inner_cone_distance * math.sin(start_colatitude) * twist_per_section
+    `root_radius = sphere_radius * sin(start_colatitude)` via the SAGITTA
+    of the azimuthal chord two adjacent sections subtend at that radius
+    (`radius * twist_per_section**2 / 8`, `_SPIRAL_BULGE_SAFETY_FACTOR`'s
+    own module-level comment has the full real-measurement derivation/
+    on-device confirmation for why this specific formula, not a plain
+    linear `radius * twist` one - both this function's own `radius_margin`
+    terms below and `_inner_cap_flattening_tool`'s own colatitude-delta
+    conversion share it) - a real, but deliberately secondary, safety net
+    for whatever residual surface-bulge `_tooth_side_faces_spiral`'s own
+    N-section root/tip-land loft still carries after `spiral_section_
+    count_for_twist` has already cut it down close to (not exactly to)
+    zero. See `_outer_cap_flattening_tool`'s own docstring for why growing
+    this margin is safe in each tool's own respective direction (shrink
+    further for the subtractive `Cut` tool, extend further for the
+    additive `Fuse` tool - never the other way round for either)."""
+    bulge_sagitta = (twist_per_section**2) / 8 * _SPIRAL_BULGE_SAFETY_FACTOR
+    outer_radius_margin = geometry.cone_distance * math.sin(start_colatitude) * bulge_sagitta
+    inner_radius_margin = geometry.inner_cone_distance * math.sin(start_colatitude) * bulge_sagitta
 
     inner_tool = _inner_cap_flattening_tool(basis, geometry.inner_cone_distance, start_colatitude, inner_radius_margin)
     fuse = BRepAlgoAPI_Fuse(solid, inner_tool)
