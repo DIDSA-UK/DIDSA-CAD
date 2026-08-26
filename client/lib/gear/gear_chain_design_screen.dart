@@ -72,7 +72,12 @@ class _ChainStageForm {
 
   _ChainStageForm({
     this.kind = ChainStageKind.external,
-    String toothCount = '20',
+    // 36T: comfortably clear of the ~30-34-tooth real involute tip-
+    // interference threshold two similarly-sized external gears hit at
+    // standard proportions (measured directly on this app's own geometry,
+    // see docs/status.md) - a fresh stage should mesh cleanly by default,
+    // not silently interfere the way 15T used to.
+    String toothCount = '36',
     String faceWidth = '5',
     String turnAngle = '0',
     String outerDiameter = '',
@@ -124,17 +129,28 @@ class _GearChainDesignScreenState extends State<GearChainDesignScreen> {
   // Chain mode state.
   final _startDirectionController = TextEditingController(text: '0');
   final _printClearanceController = TextEditingController(text: '0.2');
+  // 36T/40T: a real, measured (BRepAlgoAPI_Common, 0.00000mm^3) meshing
+  // pair, not a guess - see docs/status.md's dated entry for this default
+  // change.
   final List<_ChainStageForm> _stages = [
-    _ChainStageForm(toothCount: '20'),
-    _ChainStageForm(toothCount: '15'),
+    _ChainStageForm(toothCount: '36'),
+    _ChainStageForm(toothCount: '40'),
   ];
 
-  // Planetary mode state.
-  final _sunToothCountController = TextEditingController(text: '20');
-  final _ringToothCountController = TextEditingController(text: '60');
+  // Planetary mode state. 40T sun / 120T ring / 4 planets: the exact
+  // combination measured at 0.000000mm^3 overlap across the sun, ring,
+  // and every planet (real OCCT, see docs/status.md) - the same "reuse
+  // already-proven-safe numbers" reasoning as the chain default above.
+  // Assembly condition (sun+ring) % planet_count == 0 holds (160 % 4 == 0).
+  final _sunToothCountController = TextEditingController(text: '40');
+  final _ringToothCountController = TextEditingController(text: '120');
   final _planetCountController = TextEditingController(text: '4');
   final _planetaryFaceWidthController = TextEditingController(text: '5');
-  final _ringOuterDiameterController = TextEditingController(text: '140');
+  // 260mm: at module 2.0 a 120-tooth ring's own dedendum diameter is
+  // 2 * (2 * (60 + 1.25)) = 245mm - this must exceed that (server-
+  // validated), so 260 preserves the old default's own ~15mm margin above
+  // its ring's dedendum diameter, just scaled to the new tooth count.
+  final _ringOuterDiameterController = TextEditingController(text: '260');
 
   Timer? _previewDebounce;
   bool _previewLoading = false;
@@ -424,7 +440,7 @@ class _GearChainDesignScreenState extends State<GearChainDesignScreen> {
   }
 
   void _addStage() {
-    setState(() => _stages.add(_ChainStageForm(toothCount: '15')));
+    setState(() => _stages.add(_ChainStageForm(toothCount: '36')));
     _schedulePreview();
   }
 
