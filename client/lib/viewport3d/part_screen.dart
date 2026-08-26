@@ -371,9 +371,9 @@ class _PartScreenState extends State<PartScreen> {
   /// a selected Surface (still tapped/highlighted via that same `body` kind,
   /// see [_onSurfaceTap]) needs its own "Surface N" name here too, or it
   /// falls through to [SelectionListDrawer]'s raw-id fallback and gets
-  /// mislabeled "Body <hash>" - [_bodyNames] alone (real solid Bodies only,
-  /// since the Bug 1/2 fix) is no longer the complete id-to-name map every
-  /// `body`-kind selection can resolve against.
+  /// mislabeled "Body" plus a truncated id hash - [_bodyNames] alone (real
+  /// solid Bodies only, since the Bug 1/2 fix) is no longer the complete
+  /// id-to-name map every `body`-kind selection can resolve against.
   Map<String, String> get _selectionBodyNames => {..._bodyNames, ..._surfaceNames};
 
   /// The reference plane currently tap-selected in the 3D viewport, if any -
