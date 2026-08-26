@@ -275,12 +275,16 @@ void main() {
   });
 
   group('Pattern/Mirror scoping Phase 1/2/6: contextActionsFor Mirror/Pattern', () {
-    test('a lone Body offers a real, enabled Mirror and a real, enabled Pattern', () {
+    test(
+        'a lone Body offers a real, enabled Mirror and a real, enabled Pattern, plus '
+        'Boolean family, fourth/last entry: Split (Split only ever needs exactly one '
+        'target Body, unlike Merge/Subtract/Common which all need 2+)', () {
       const body = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b1');
       final actions = contextActionsFor({body});
       expect(actions, [
         const SelectionContextAction('Mirror', enabled: true),
         const SelectionContextAction('Pattern', enabled: true),
+        const SelectionContextAction('Split', enabled: true),
       ]);
     });
 

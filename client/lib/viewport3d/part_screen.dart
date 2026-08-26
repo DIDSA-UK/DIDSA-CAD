@@ -9089,18 +9089,19 @@ class _PartScreenState extends State<PartScreen> {
     await _endRollback();
   }
 
-  /// Boolean family, fourth/last entry: 'Plane', or 'Surface (<name>)' when
-  /// known - the tool summary `SplitPanel` shows. Mirrors
-  /// [BooleanPanel.isSubtract]'s own "caller computes the summary copy"
-  /// split, since only [PartScreen] has [_surfaceNames] to resolve a
-  /// Surface's own display name from.
+  /// Boolean family, fourth/last entry: `'Plane'`/`'Plane (<fixedPlane>)'`,
+  /// or `'Surface (<name>)'` when known - the tool summary `SplitPanel`
+  /// shows. Mirrors [BooleanPanel.isSubtract]'s own "caller computes the
+  /// summary copy" split, since only [PartScreen] has [_surfaceNames] to
+  /// resolve a Surface's own display name from.
   String get _splitToolSummary {
     final surfaceFeatureId = _splitToolSurfaceFeatureId;
     if (surfaceFeatureId != null) {
       final name = _surfaceNames[surfaceFeatureId];
       return name == null ? 'Surface' : 'Surface ($name)';
     }
-    return 'Plane';
+    final fixedPlane = _splitToolPlaneRef?.fixedPlane;
+    return fixedPlane == null ? 'Plane' : 'Plane ($fixedPlane)';
   }
 
   // --- Boolean family, fourth/last entry: Split's own inline "New Surface"

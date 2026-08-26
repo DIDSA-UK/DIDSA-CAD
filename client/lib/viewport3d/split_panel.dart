@@ -21,8 +21,8 @@ class SplitPanel extends StatelessWidget {
 
   final String? tooltip;
 
-  /// 'Plane' or 'Surface (<name>)' - which kind of tool this Split uses,
-  /// and (for a Surface) its own display name when known. Computed by
+  /// `'Plane'` or `'Surface (<name>)'` - which kind of tool this Split
+  /// uses, and (for a Surface) its own display name when known. Computed by
   /// [PartScreen] (it alone has the id-to-name maps this needs), not this
   /// widget - mirrors [BooleanPanel.isSubtract]'s own "caller decides which
   /// summary copy applies" split.
