@@ -784,22 +784,32 @@ def test_spiral_end_cap_flattening_fallback_still_surfaces_a_warning_beyond_the_
     docstring is explicit that per-step twist is a real, calibrated safety
     margin against the four *documented* failures above, not a guarantee
     against every conceivable one (that same docstring's own "Honest
-    limitation" paragraph). This reuses `test_end_cap_flattening_fallback_
-    surfaces_a_warning`'s own already-marginal straight-bevel case (module
-    2.5, 6 teeth, face_width 33.0 - deep in the fold-risk regime, already
-    flagged by `BRepCheck_Analyzer` before either boolean even runs, for
-    reasons unrelated to spiral twist at all) with a moderate spiral angle
-    layered on top: this fix only ever RAISES section count/margins, never
-    lowers them, so a gear that was already marginal before any spiral
-    twist is added is not expected to be rescued by a fix aimed at a
-    different mechanism (surface bulge between sections, not fold risk on
-    an already-degenerate flank). The fallback-with-warning safety net
-    (`_assemble_gear_solid`'s own `except HTTPException` handler) must
-    still produce a structurally valid, non-blocking result - same warning,
-    same face count as the straight case - not an uncaught exception."""
-    geometry = bevel_gear_geometry(module=2.5, tooth_count=6, face_width=33.0, pitch_cone_angle_degrees=_PITCH_ANGLE_6_80)
+    limitation" paragraph).
+
+    Found by real, direct on-device probing (not guessed): this session's
+    own already-marginal straight-bevel case (`test_end_cap_flattening_
+    fallback_surfaces_a_warning`'s own module 2.5/6-tooth/face_width 33.0
+    fold-risk geometry) turned out NOT to reproduce this once any spiral
+    angle was layered on - real testing found `spiral_section_count_for_
+    twist`'s own extra sections happened to let flattening succeed there
+    regardless (only the pre-existing, unrelated `_assembly_sanity_
+    warnings` volume-mismatch check still fired) - a genuinely different,
+    unplanned outcome, not silently assumed. Pushed further instead
+    (face_width 40.0, same module/tooth-count/pitch-cone-angle, β=40°) to
+    find a combination real on-device testing confirms still trips
+    `_flatten_end_caps` itself post-fix - this fix only ever RAISES section
+    count/margins, never lowers them, so it was never expected to rescue
+    every possible marginal-geometry case, only the four documented ones.
+    The fallback-with-warning safety net (`_assemble_gear_solid`'s own
+    `except HTTPException` handler) must still produce a structurally
+    valid, non-blocking result here - the flattening warning present (an
+    independent volume-sanity warning may also fire alongside it, unlike
+    the pre-existing straight-bevel test's own single-warning case - both
+    are real, both non-blocking, not mutually exclusive), same face count
+    as an un-flattened build, no uncaught exception."""
+    geometry = bevel_gear_geometry(module=2.5, tooth_count=6, face_width=40.0, pitch_cone_angle_degrees=_PITCH_ANGLE_6_80)
     solid, warnings = bevel_module._assemble_gear_solid(
-        _XY_BASIS, geometry, 6, spiral_angle_degrees=20.0, spiral_hand=SpiralHand.RIGHT
+        _XY_BASIS, geometry, 6, spiral_angle_degrees=40.0, spiral_hand=SpiralHand.RIGHT
     )
     assert any("could not be flattened" in w for w in warnings), warnings
 
