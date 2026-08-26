@@ -685,19 +685,22 @@ class BooleanFeatureResponse(BaseModel):
 class SplitToolRefSchema(BaseModel):
     """Boolean family, fourth/last entry: the wire counterpart to `app.
     document.models.SplitToolRef` - exactly one of `plane_ref`/`surface_
-    feature_id` should be supplied, matching `SplitToolRef`'s own "one of
-    two optional fields" convention (see its docstring); not enforced
-    here, checked by `app.document.router._validate_split_tool_ref`."""
+    feature_id`/`sketch_line_ref` should be supplied, matching
+    `SplitToolRef`'s own "one of three optional fields" convention (see its
+    docstring); not enforced here, checked by `app.document.router.
+    _validate_split_tool_ref`."""
 
     plane_ref: PlaneRefSchema | None = None
     surface_feature_id: str | None = None
+    sketch_line_ref: SketchEntityRefSchema | None = None
 
 
 class SplitFeatureCreate(BaseModel):
     """Boolean family, fourth/last entry: creates a `SplitFeature` dividing
     the Body named by `target_body_id` into two independent, surviving
-    pieces along `tool` (a Plane or an existing Surface - see `SplitToolRef
-    Schema`'s own docstring). The API layer validates `target_body_id`
+    pieces along `tool` (a Plane, an existing Surface, or a raw Sketch
+    line/curve entity - see `SplitToolRefSchema`'s own docstring). The API
+    layer validates `target_body_id`
     resolves to a Body-producing Feature in this Part, and `tool` is
     structurally valid and itself resolvable, before construction (see
     `app.document.router._validate_split_tool_ref`/`app.document.split.

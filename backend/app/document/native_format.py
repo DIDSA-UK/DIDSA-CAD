@@ -827,6 +827,7 @@ def _split_tool_ref_to_dict(ref: SplitToolRef) -> dict:
     return {
         "plane_ref": _plane_ref_to_dict(ref.plane_ref) if ref.plane_ref else None,
         "surface_feature_id": ref.surface_feature_id,
+        "sketch_line_ref": _sketch_entity_ref_to_dict(ref.sketch_line_ref) if ref.sketch_line_ref else None,
     }
 
 
@@ -834,6 +835,9 @@ def _split_tool_ref_from_dict(data: dict) -> SplitToolRef:
     return SplitToolRef(
         plane_ref=_plane_ref_from_dict(data["plane_ref"]) if data.get("plane_ref") else None,
         surface_feature_id=data.get("surface_feature_id"),
+        sketch_line_ref=_sketch_entity_ref_from_dict(data["sketch_line_ref"])
+        if data.get("sketch_line_ref")
+        else None,
     )
 
 
