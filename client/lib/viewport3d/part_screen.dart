@@ -10322,9 +10322,22 @@ class _PartScreenState extends State<PartScreen> {
                   // both join it too - see docs/pattern-mirror-scope.md
                   // §2.1/§2.2/§4's own confirmation that both take this
                   // same simple path.
+                  //
+                  // Bug fix: Surface belongs here too - it's a Body-level
+                  // pick (a Sketch, no re-picking of sub-shapes of its own
+                  // in-progress result - see docs/live-preview-pattern.md's
+                  // decision tree, step 2's "No" branch), so it was a plain
+                  // oversight that it was never added alongside Extrude/
+                  // Revolve/Sweep/Mirror/Pattern/Merge/Boolean above. Without
+                  // this, a Surface being actively configured rendered with
+                  // no live-preview tint at all (on top of - and now separate
+                  // from - the Part.produces_displayable_geometry bug that
+                  // used to hide it from `/mesh` entirely for a Sketch+
+                  // Surface-only Part).
                   isPreviewMesh: _extrudeSketchFeature != null ||
                       _revolveSketchFeature != null ||
                       _sweepSketchFeature != null ||
+                      _surfaceActive ||
                       _mirrorActive ||
                       _patternActive ||
                       _mergeActive ||
