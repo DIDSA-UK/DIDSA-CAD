@@ -599,6 +599,200 @@ def test_end_cap_flattening_fallback_surfaces_a_warning():
     assert face_count == 4 * 6 + 2
 
 
+# --- Spiral-aware twins of the four end-cap-flattening tests above
+# (docs/gear-design/12-spiral-bevel-gear.md's own documented "end-cap
+# flattening failed" table) - `bevel_math.spiral_section_count_for_twist`'s
+# own real on-device calibration (see its docstring/docs/status.md) - not
+# exercised at all by the four straight-only tests above (confirmed before
+# this fix: none of them ever pass spiral_angle_degrees).
+
+
+def test_spiral_end_caps_are_flattened_at_a_moderate_spiral_angle_safely_inside_the_smooth_regime():
+    """Twin of `test_end_caps_are_flattened_at_the_tooth_root_not_left_
+    spherical` above, at spiral_angle_degrees=25 - safely inside the
+    "ordinary" spiral-angle range (`docs/gear-design/12-spiral-bevel-
+    gear.md`'s own Spike A §3 "5-30deg main sweep" / `test_spiral_bevel_
+    direct_assembly_parameter_sweep_stays_valid_and_volume_is_sane`'s own
+    already-clean 10/20/30deg sweep), nowhere near the documented failing
+    angles (51deg+) - flattening must succeed here exactly like the
+    straight case, still exactly 2 planar end-cap faces at the same target
+    z this geometry's own start_colatitude implies (spiral is a pure
+    azimuthal rotation - `spiral_curve_offset_angle`'s own docstring - so
+    it changes neither `start_colatitude` nor either cap's own flat target
+    z)."""
+    geometry = bevel_gear_geometry(
+        module=2.5, tooth_count=18, face_width=19.1, pitch_cone_angle_degrees=_PITCH_ANGLE_18_90
+    )
+    solid, warnings = bevel_module._assemble_gear_solid(
+        _XY_BASIS, geometry, 18, spiral_angle_degrees=25.0, spiral_hand=SpiralHand.RIGHT
+    )
+    assert warnings == []
+
+    start_colatitude = max(geometry.root_cone_angle, geometry.base_cone_angle)
+    outer_flat_z = geometry.cone_distance * math.cos(start_colatitude)
+    inner_flat_z = geometry.inner_cone_distance * math.cos(start_colatitude)
+
+    plane_faces = _plane_faces_by_z(solid)
+    assert len(plane_faces) == 2, f"expected exactly 2 planar (flattened) end-cap faces, got {list(plane_faces)}"
+    plane_zs = sorted(plane_faces)
+    assert abs(plane_zs[0] - inner_flat_z) < 0.01, f"inner end-cap plane at z={plane_zs[0]}, expected {inner_flat_z}"
+    assert abs(plane_zs[1] - outer_flat_z) < 0.01, f"outer end-cap plane at z={plane_zs[1]}, expected {outer_flat_z}"
+
+
+def test_spiral_end_cap_flattening_never_touches_real_tooth_flank_material():
+    """Twin of `test_end_cap_flattening_never_touches_real_tooth_flank_
+    material` above, at spiral_angle_degrees=25."""
+    geometry = bevel_gear_geometry(
+        module=2.5, tooth_count=18, face_width=19.1, pitch_cone_angle_degrees=_PITCH_ANGLE_18_90
+    )
+    solid, warnings = bevel_module._assemble_gear_solid(
+        _XY_BASIS, geometry, 18, spiral_angle_degrees=25.0, spiral_hand=SpiralHand.RIGHT
+    )
+    assert warnings == []
+
+    start_colatitude = max(geometry.root_cone_angle, geometry.base_cone_angle)
+    outer_flat_z = geometry.cone_distance * math.cos(start_colatitude)
+
+    BRepMesh_IncrementalMesh(solid, 0.02, False, 0.1, True)
+    max_excess = float("-inf")
+    explorer = TopExp_Explorer(solid, TopAbs_FACE)
+    while explorer.More():
+        face = topods.Face(explorer.Current())
+        explorer.Next()
+        surface = BRep_Tool.Surface(face)
+        if GeomAdaptor_Surface(surface).GetType() == GeomAbs_Plane:
+            continue
+        location = TopLoc_Location()
+        triangulation = BRep_Tool.Triangulation(face, location)
+        if triangulation is None:
+            continue
+        transform = location.Transformation()
+        for i in range(1, triangulation.NbNodes() + 1):
+            point = triangulation.Node(i).Transformed(transform)
+            max_excess = max(max_excess, point.Z() - outer_flat_z)
+    assert max_excess > float("-inf"), "expected at least one non-planar (tooth) face with mesh vertices"
+    assert max_excess < 0.05, f"a tooth-region vertex sits {max_excess}mm past the outer flat cap - real material was cut"
+
+
+def test_spiral_inner_cap_flattens_correctly_on_a_tilted_basis_not_just_the_untilted_one():
+    """Twin of `test_inner_cap_flattens_correctly_on_a_tilted_basis_not_
+    just_the_untilted_one` above, at spiral_angle_degrees=20 - the tilted-
+    basis regression that motivated `_inner_cap_flattening_tool`'s own
+    explicit-X-direction fix is orthogonal to spiral (a pure basis/apex
+    concern, unrelated to the flank/root-land twist this workstream's own
+    fix addresses), but this locks in that the two don't interact badly -
+    a tilted `BevelPairFeature` member built with spiral must still flatten
+    exactly like the untilted case."""
+    geometry = bevel_gear_geometry(
+        module=4.0, tooth_count=40, face_width=15.0, pitch_cone_angle_degrees=63.43494882292201
+    )
+    tilted_basis = ResolvedPlane(
+        origin=(0.0, 0.0, 0.0), x_axis=(1.0, 0.0, 0.0), y_axis=(0.0, 0.0, -1.0), normal=(0.0, 1.0, 0.0)
+    )
+
+    untilted_solid, untilted_warnings = bevel_module._assemble_gear_solid(
+        _XY_BASIS, geometry, 40, spiral_angle_degrees=20.0, spiral_hand=SpiralHand.RIGHT
+    )
+    tilted_solid, tilted_warnings = bevel_module._assemble_gear_solid(
+        tilted_basis, geometry, 40, spiral_angle_degrees=20.0, spiral_hand=SpiralHand.RIGHT
+    )
+    assert untilted_warnings == []
+    assert tilted_warnings == []
+
+    def count_planar_faces(solid) -> int:
+        n = 0
+        explorer = TopExp_Explorer(solid, TopAbs_FACE)
+        while explorer.More():
+            face = topods.Face(explorer.Current())
+            explorer.Next()
+            surface = BRep_Tool.Surface(face)
+            if surface is not None and GeomAdaptor_Surface(surface).GetType() == GeomAbs_Plane:
+                n += 1
+        return n
+
+    untilted_planar = count_planar_faces(untilted_solid)
+    tilted_planar = count_planar_faces(tilted_solid)
+    assert untilted_planar == 2, f"untilted basis: expected 2 flat end caps, got {untilted_planar}"
+    assert tilted_planar == 2, (
+        f"tilted basis: expected 2 flat end caps (same as the untilted case), got {tilted_planar} - "
+        "the inner cap flattening tool's own sphere is not correctly oriented for this basis"
+    )
+
+
+def test_spiral_end_cap_flattening_now_succeeds_for_every_documented_failing_case():
+    """The real point of this workstream: `docs/gear-design/12-spiral-
+    bevel-gear.md`'s own results table documented 4 real, on-device-
+    confirmed `_flatten_end_caps` failures - 10T/10T at β=70°, and 20T/20T
+    at β=68°/70°/72° (all module 4, matching that table's own parameters -
+    10T/10T face_width=8, 20T/20T face_width=16, both at the shaft=90°/
+    equal-tooth-count 45° pitch cone angle) - re-tested here directly
+    against `_assemble_gear_solid` at its own default `spiral_section_
+    count` (i.e. exactly what a real `BevelGearFeature` build does, not a
+    hand-picked section count): every one of these four now succeeds
+    (flattening warning absent, exactly 2 planar end-cap faces), confirmed
+    on real `pythonocc-core` in this session (see `bevel_math.py`'s own
+    `_SPIRAL_TWIST_PER_SECTION_BOUND` docstring and `docs/status.md`'s
+    matching dated entry for the full before/after sweep this asserts a
+    slice of)."""
+    cases = [
+        (10, 8.0, 70.0),
+        (20, 16.0, 68.0),
+        (20, 16.0, 70.0),
+        (20, 16.0, 72.0),
+    ]
+    for tooth_count, face_width, beta in cases:
+        pitch_cone_angle_degrees = 45.0  # equal tooth counts, 90deg shaft - atan(1) exactly
+        geometry = bevel_gear_geometry(
+            module=4.0, tooth_count=tooth_count, face_width=face_width, pitch_cone_angle_degrees=pitch_cone_angle_degrees
+        )
+        solid, warnings = bevel_module._assemble_gear_solid(
+            _XY_BASIS, geometry, tooth_count, spiral_angle_degrees=beta, spiral_hand=SpiralHand.RIGHT
+        )
+        assert warnings == [], (tooth_count, beta, warnings)
+
+        planar_faces = 0
+        explorer = TopExp_Explorer(solid, TopAbs_FACE)
+        while explorer.More():
+            face = topods.Face(explorer.Current())
+            explorer.Next()
+            surface = BRep_Tool.Surface(face)
+            if surface is not None and GeomAdaptor_Surface(surface).GetType() == GeomAbs_Plane:
+                planar_faces += 1
+        assert planar_faces == 2, (tooth_count, beta, planar_faces)
+
+
+def test_spiral_end_cap_flattening_fallback_still_surfaces_a_warning_beyond_the_fixed_range():
+    """"Still fails gracefully" - `spiral_section_count_for_twist`'s own
+    docstring is explicit that per-step twist is a real, calibrated safety
+    margin against the four *documented* failures above, not a guarantee
+    against every conceivable one (that same docstring's own "Honest
+    limitation" paragraph). This reuses `test_end_cap_flattening_fallback_
+    surfaces_a_warning`'s own already-marginal straight-bevel case (module
+    2.5, 6 teeth, face_width 33.0 - deep in the fold-risk regime, already
+    flagged by `BRepCheck_Analyzer` before either boolean even runs, for
+    reasons unrelated to spiral twist at all) with a moderate spiral angle
+    layered on top: this fix only ever RAISES section count/margins, never
+    lowers them, so a gear that was already marginal before any spiral
+    twist is added is not expected to be rescued by a fix aimed at a
+    different mechanism (surface bulge between sections, not fold risk on
+    an already-degenerate flank). The fallback-with-warning safety net
+    (`_assemble_gear_solid`'s own `except HTTPException` handler) must
+    still produce a structurally valid, non-blocking result - same warning,
+    same face count as the straight case - not an uncaught exception."""
+    geometry = bevel_gear_geometry(module=2.5, tooth_count=6, face_width=33.0, pitch_cone_angle_degrees=_PITCH_ANGLE_6_80)
+    solid, warnings = bevel_module._assemble_gear_solid(
+        _XY_BASIS, geometry, 6, spiral_angle_degrees=20.0, spiral_hand=SpiralHand.RIGHT
+    )
+    assert any("could not be flattened" in w for w in warnings), warnings
+
+    face_count = 0
+    explorer = TopExp_Explorer(solid, TopAbs_FACE)
+    while explorer.More():
+        face_count += 1
+        explorer.Next()
+    assert face_count == 4 * 6 + 2
+
+
 # --- Spiral bevel (docs/gear-design/12-spiral-bevel-gear.md), Workstream 12 -
 # single-gear construction only; BevelPairFeature's own spiral variant is a
 # separate, later workstream (13).
