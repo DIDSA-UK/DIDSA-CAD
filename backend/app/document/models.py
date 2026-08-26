@@ -806,6 +806,76 @@ class BooleanFeature(Feature):
         return Produces.BODY
 
 
+@dataclass(frozen=True)
+class SplitToolRef:
+    """Boolean family, fourth/last entry (`SplitFeature`): the cutting tool
+    a Split divides its `target_body_id` against - exactly one of the two
+    fields is ever set (payload shape validated by the router, same
+    "exactly one of N fields" convention `PointRef`/`PlaneRef` already
+    establish - see either's own docstring):
+    - `plane_ref`: any `PlaneRef` (a Body face, a fixed reference plane, or
+      an existing Plane feature) - reused verbatim rather than inventing a
+      narrower "just the fixed/existing-Plane cases" type, since a Body
+      face is just as valid a cutting plane for a Split as it is for a
+      Mirror.
+    - `surface_feature_id`: an existing `SurfaceFeature` in this Part - the
+      reason `SurfaceFeature` exists as a real, reusable Feature rather
+      than a throwaway internal helper (see its own docstring's explicit
+      "A Split feature ... is the reason this exists"). Lets a Split cut
+      along a Sketch-derived, potentially non-planar cutting tool, not just
+      a flat plane.
+
+    Resolved to an oversized half-space solid "block" by `app.document.
+    split._split_tool_block` - see that module's own top-level docstring
+    for why a manually-built block (rather than `BRepAlgoAPI_Splitter`/
+    `BOPAlgo`) is what actually performs the split."""
+
+    plane_ref: PlaneRef | None = None
+    surface_feature_id: str | None = None
+
+
+@dataclass
+class SplitFeature(Feature):
+    """Boolean family, fourth/last entry (Merge/Subtract/Common came
+    first): divides `target_body_id`'s current shape into two independent,
+    surviving Bodies along `tool` (a Plane or an existing Surface - see
+    `SplitToolRef`'s own docstring), via `app.document.split.resolve_split_
+    pieces`. Unlike Merge/Boolean (which combine 2+ already-existing
+    Bodies), Split takes exactly one target and produces exactly two
+    outputs from it - both pieces are registered back under `target_body_
+    id` itself via `_register_solids` (see `app.document.extrude.compute_
+    part_bodies`'s own `SplitFeature` branch), yielding `target_body_id#0`/
+    `target_body_id#1` the same way any other multi-solid-producing
+    operation in this codebase does (Boss over a multi-profile Sketch, a
+    Cut that severs a Body in two, ...) - there is no third "consume vs
+    keep" choice the way `BooleanFeature.consume_tool_bodies` has, since
+    both halves of a Split always survive.
+
+    Deliberately does not build on `BRepAlgoAPI_Splitter`/`BOPAlgo` (not
+    confirmed available in this project's pinned pythonocc-core build) -
+    see `app.document.split`'s own top-level docstring for the oversized-
+    half-space-block technique this uses instead, built from `target_body_
+    id`'s own `Bnd_Box` so it stays robust for a cutting Plane/Surface at
+    any orientation relative to the target Body, not just one aligned with
+    its bounding-box axes."""
+
+    id: str
+    target_body_id: str
+    tool: SplitToolRef
+
+    @property
+    def type(self) -> str:
+        return "split"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
 class FixedAxis(str, Enum):
     """Pattern/Mirror scoping's Phase 2 (`docs/pattern-mirror-scope.md`
     §2.2/§2.5): a world-space X/Y/Z direction, for `PatternDirectionRef`'s

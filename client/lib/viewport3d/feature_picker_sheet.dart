@@ -22,6 +22,8 @@ enum FeaturePickerAction {
   // Boolean family, Subtract/Common.
   subtract,
   common,
+  // Boolean family, fourth/last entry.
+  split,
 }
 
 /// Shows the fly-up bottom sheet listing every feature type the "Add" FAB's
@@ -38,9 +40,8 @@ enum FeaturePickerAction {
 /// alongside a pure reference Plane), Modify (Fillet/Chamfer), and Repeat
 /// (Mirror/Pattern - not titled "Pattern" itself, since that collided with
 /// the "Pattern" entry it contains - see that section's own doc comment). A
-/// Combine section (Merge/Subtract/Common/Split) holds three real entries
-/// (Merge, Subtract, Common) plus one still-disabled placeholder (Split)
-/// left for its own follow-up session to populate - see [_CombineSection].
+/// Combine section (Merge/Subtract/Common/Split) holds all four as real,
+/// enabled entries - see [_CombineSection].
 ///
 /// On-device feedback: every section now starts collapsed (`initiallyExpanded:
 /// false`, previously only Combine did) - with six sections, opening the
@@ -255,11 +256,13 @@ class _FeatureEntry extends StatelessWidget {
 /// entry: [FeaturePickerAction.merge] is now a real, enabled entry (mirrors
 /// every other [_FeatureEntry] row). Boolean family, Subtract/Common:
 /// [FeaturePickerAction.subtract]/[FeaturePickerAction.common] are now real,
-/// enabled entries too, replacing their own former disabled placeholders;
-/// Split stays a disabled placeholder for its own follow-up session to wire
-/// up. A bespoke widget (not a plain [_FeatureSection]) since it mixes three
-/// real [_FeatureEntry] rows with one still-disabled row, which
-/// [_FeatureSection] itself has no concept of.
+/// enabled entries too, replacing their own former disabled placeholders.
+/// Boolean family, fourth/last entry: [FeaturePickerAction.split] replaces
+/// its own former disabled "Coming soon" placeholder the same way - every
+/// entry in this section is now real, so this could revert to a plain
+/// [_FeatureSection]; kept as its own bespoke widget anyway to minimize the
+/// diff against the disabled-placeholder era rather than churning this
+/// section's own structure in the same change that finally fills it in.
 class _CombineSection extends StatelessWidget {
   const _CombineSection();
 
@@ -291,7 +294,11 @@ class _CombineSection extends StatelessWidget {
           label: 'Common',
           action: FeaturePickerAction.common,
         ),
-        ListTile(enabled: false, title: Text('Split'), subtitle: Text('Coming soon')),
+        _FeatureEntry(
+          icon: 'assets/icons/feature/feature_split.svg',
+          label: 'Split',
+          action: FeaturePickerAction.split,
+        ),
       ],
     );
   }

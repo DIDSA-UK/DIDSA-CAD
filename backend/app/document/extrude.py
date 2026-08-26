@@ -67,6 +67,7 @@ from app.document.models import (
     RevolveFeature,
     RevolveMode,
     SketchFeature,
+    SplitFeature,
     SubShapeRef,
     SubShapeType,
     SurfaceFeature,
@@ -1007,7 +1008,13 @@ def _apply_feature_to_bodies(
     Boolean family, Subtract/Common: `BooleanFeature` delegates to
     `app.document.boolean.apply_boolean_to_bodies`, which mutates `bodies`
     in place - see that function's own docstring for the full fold/
-    consume-vs-keep semantics."""
+    consume-vs-keep semantics.
+
+    Boolean family, fourth/last entry: `SplitFeature` delegates to
+    `app.document.split.resolve_split_pieces`, then registers both
+    resulting pieces back under its own `target_body_id` (see this
+    function's own `SplitFeature` branch below for why they're combined
+    into one compound before a single `_register_solids` call)."""
     from app.document.boolean import apply_boolean_to_bodies
     from app.document.chamfer import resolve_chamfer_from_bodies
     from app.document.fillet import resolve_fillet_from_bodies
@@ -1194,6 +1201,39 @@ def _apply_feature_to_bodies(
         # for the full fold/consume-vs-keep semantics; it mutates `bodies`
         # in place, the same convention `_apply_boss_or_cut` uses.
         apply_boolean_to_bodies(bodies, feature)
+        return
+
+    if isinstance(feature, SplitFeature):
+        # Boolean family, fourth/last entry: unlike Merge/Boolean (which
+        # combine 2+ already-existing Bodies), a Split takes exactly one
+        # target and produces exactly two pieces from it - see
+        # `app.document.split.resolve_split_pieces`'s own docstring for the
+        # oversized-half-space-block technique. Both pieces are combined
+        # into one compound and run through `_register_solids` together
+        # (rather than two separate calls, which would have the second
+        # overwrite the first's un-suffixed registration) so they land as
+        # `target_body_id#0`/`target_body_id#1` in `_explode_solids`'s own
+        # deterministic visitation order - `piece_a` (Common) always first,
+        # `piece_b` (Cut) always second - the same #N-suffix convention
+        # every other multi-solid-producing operation in this codebase
+        # already uses. Either piece resolving to zero solids (e.g. the
+        # tool doesn't actually cross the target Body) simply registers
+        # only the other one, un-suffixed - same "zero solids registers
+        # nothing" tolerance `_register_solids` already documents.
+        from app.document.split import resolve_split_pieces
+
+        result = resolve_split_pieces(part, bodies, feature, excluded_feature_ids)
+        if result is None:
+            return
+        piece_a, piece_b = result
+        target_id = feature.target_body_id
+        del bodies[target_id]
+        combined = TopoDS_Compound()
+        builder = BRep_Builder()
+        builder.MakeCompound(combined)
+        builder.Add(combined, piece_a)
+        builder.Add(combined, piece_b)
+        _register_solids(bodies, target_id, combined)
         return
 
     if isinstance(feature, PatternFeature):

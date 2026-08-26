@@ -121,6 +121,8 @@ from app.document.models import (
     RevolveFeature,
     RevolveMode,
     SketchFeature,
+    SplitFeature,
+    SplitToolRef,
     SubShapeRef,
     SubShapeType,
     SurfaceFeature,
@@ -220,6 +222,10 @@ from app.document.schemas import (
     SketchEntityRefSchema,
     SketchFeatureCreate,
     SketchFeatureResponse,
+    SplitFeatureCreate,
+    SplitFeatureResponse,
+    SplitFeatureUpdate,
+    SplitToolRefSchema,
     SubShapeRefSchema,
     SurfaceFeatureCreate,
     SurfaceFeatureResponse,
@@ -228,6 +234,7 @@ from app.document.schemas import (
     SweepFeatureResponse,
     SweepFeatureUpdate,
 )
+from app.document.split import resolve_split
 from app.document.sweep import resolve_sweep
 from app.document.store import get_document, get_part_or_404, replace_document
 from app.session_context import bind_session_id
@@ -417,6 +424,20 @@ def _plane_ref_to_schema(ref: PlaneRef) -> PlaneRefSchema:
         face_ref=_subshape_ref_to_schema(ref.face_ref) if ref.face_ref else None,
         fixed_plane=ref.fixed_plane,
         plane_feature_id=ref.plane_feature_id,
+    )
+
+
+def _split_tool_ref_to_domain(schema: SplitToolRefSchema) -> SplitToolRef:
+    return SplitToolRef(
+        plane_ref=_plane_ref_to_domain(schema.plane_ref) if schema.plane_ref else None,
+        surface_feature_id=schema.surface_feature_id,
+    )
+
+
+def _split_tool_ref_to_schema(ref: SplitToolRef) -> SplitToolRefSchema:
+    return SplitToolRefSchema(
+        plane_ref=_plane_ref_to_schema(ref.plane_ref) if ref.plane_ref else None,
+        surface_feature_id=ref.surface_feature_id,
     )
 
 
@@ -638,6 +659,14 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             target_body_ids=feature.target_body_ids,
             tool_body_ids=feature.tool_body_ids,
             consume_tool_bodies=feature.consume_tool_bodies,
+            locked=part.is_locked(feature.id),
+            produces=feature.produces,
+        )
+    if isinstance(feature, SplitFeature):
+        return SplitFeatureResponse(
+            id=feature.id,
+            target_body_id=feature.target_body_id,
+            tool=_split_tool_ref_to_schema(feature.tool),
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
@@ -1079,6 +1108,53 @@ def _validate_boolean_body_ids(
             raise HTTPException(
                 status_code=400,
                 detail=f"body_ids entry {body_id!r} does not refer to a Body-producing Feature in this Part",
+            )
+
+
+def _validate_split_target_body_id(part: Part, target_body_id: str) -> None:
+    """Boolean family, fourth/last entry: `target_body_id` must resolve
+    (via `base_feature_id`, same round-trip tolerance as `_validate_merge_
+    body_ids`/`_validate_boolean_body_ids`) to a Feature that currently
+    produces a Body in this Part - checked via `produces == Produces.BODY`,
+    identical to those two (not `_validate_target_body_ids`'s own narrower
+    Boss/Cut-specific isinstance tuple, which excludes Merge/Boolean/
+    Mirror/Pattern-produced Bodies entirely - a Split's own target has no
+    such restriction, any existing Body is a valid pick)."""
+    target_feature = part.get_feature(base_feature_id(target_body_id))
+    if target_feature is None or target_feature.produces != Produces.BODY:
+        raise HTTPException(
+            status_code=400,
+            detail=f"target_body_id {target_body_id!r} does not refer to a Body-producing Feature "
+            "in this Part",
+        )
+
+
+def _validate_split_tool_ref(part: Part, tool: SplitToolRef) -> None:
+    """Boolean family, fourth/last entry: enforces exactly one of `plane_
+    ref`/`surface_feature_id` is supplied, matching `SplitToolRef`'s own
+    "one of two" convention (see its docstring), and that whichever one is
+    supplied is itself well-formed: a `plane_ref` is validated by the
+    existing `_validate_plane_ref` (already shared by `CreatePlaneFeature`/
+    `MirrorFeature`), and a `surface_feature_id` must name a real
+    `SurfaceFeature` in this Part (checked via `isinstance`, not just
+    `part.get_feature(...) is not None` - any other Feature type id would
+    otherwise silently pass this check)."""
+    set_count = sum(x is not None for x in (tool.plane_ref, tool.surface_feature_id))
+    if set_count != 1:
+        raise HTTPException(
+            status_code=422,
+            detail="SplitFeature tool must have exactly one of plane_ref or surface_feature_id",
+        )
+    if tool.plane_ref is not None:
+        _validate_plane_ref(part, tool.plane_ref)
+    else:
+        assert tool.surface_feature_id is not None
+        surface_feature = part.get_feature(tool.surface_feature_id)
+        if not isinstance(surface_feature, SurfaceFeature):
+            raise HTTPException(
+                status_code=400,
+                detail="SplitFeature tool surface_feature_id does not refer to a SurfaceFeature "
+                "in this Part",
             )
 
 
@@ -3271,6 +3347,56 @@ def update_boolean_feature(
         if payload.consume_tool_bodies is not None
         else feature.consume_tool_bodies
     )
+    return _feature_response(part, feature)
+
+
+@router.post("/parts/{part_id}/split-features", response_model=SplitFeatureResponse, status_code=201)
+def create_split_feature(part_id: str, payload: SplitFeatureCreate) -> SplitFeatureResponse:
+    """Boolean family, fourth/last entry: mirrors `create_mirror_feature`'s
+    shape - unlocked from the start, fails closed (via `_validate_split_
+    target_body_id`/`_validate_split_tool_ref` for payload shape, then
+    `resolve_split` for referential/geometric validity - including the
+    tool's own resolvability) before ever persisting an unresolvable
+    Split."""
+    part = get_part_or_404(part_id)
+    tool = _split_tool_ref_to_domain(payload.tool)
+    _validate_split_target_body_id(part, payload.target_body_id)
+    _validate_split_tool_ref(part, tool)
+    feature = SplitFeature(id=str(uuid.uuid4()), target_body_id=payload.target_body_id, tool=tool)
+    resolve_split(part, feature)  # raises on an unresolvable reference; result unused here
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_split_feature_or_404(part: Part, feature_id: str) -> SplitFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, SplitFeature):
+        raise HTTPException(status_code=404, detail="Split feature not found")
+    return feature
+
+
+@router.patch("/parts/{part_id}/split-features/{feature_id}", response_model=SplitFeatureResponse)
+def update_split_feature(
+    part_id: str, feature_id: str, payload: SplitFeatureUpdate
+) -> SplitFeatureResponse:
+    """Mirrors `update_mirror_feature`'s exact shape - same validate-
+    before-mutate discipline against a scratch Feature sharing the real
+    one's id."""
+    part = get_part_or_404(part_id)
+    feature = _get_split_feature_or_404(part, feature_id)
+
+    new_target_body_id = (
+        payload.target_body_id if payload.target_body_id is not None else feature.target_body_id
+    )
+    new_tool = _split_tool_ref_to_domain(payload.tool) if payload.tool is not None else feature.tool
+    _validate_split_target_body_id(part, new_target_body_id)
+    _validate_split_tool_ref(part, new_tool)
+
+    candidate = SplitFeature(id=feature.id, target_body_id=new_target_body_id, tool=new_tool)
+    resolve_split(part, candidate)  # raises on an unresolvable reference
+
+    feature.target_body_id = candidate.target_body_id
+    feature.tool = candidate.tool
     return _feature_response(part, feature)
 
 

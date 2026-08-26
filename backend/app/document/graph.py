@@ -59,6 +59,7 @@ from app.document.models import (
     RevolveFeature,
     RevolveMode,
     SketchFeature,
+    SplitFeature,
     SurfaceFeature,
     SweepFeature,
     SweepMode,
@@ -418,6 +419,16 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
     `body_ids` just above) - deleting the Extrude/Revolve/etc. that created
     either a target or a tool Body must cascade-delete the Boolean too.
 
+    Boolean family, fourth/last entry: a `SplitFeature` depends on the
+    owning Feature of `target_body_id` (`base_feature_id`-mapped, identical
+    treatment to every other Body-id reference above) plus whatever `tool`
+    itself depends on - `_plane_ref_dependency` for a `plane_ref` tool
+    (already shared by `CreatePlaneFeature`/`MirrorFeature`), or the
+    referenced `SurfaceFeature`'s own id directly (already a bare Feature
+    id, no `base_feature_id` mapping needed, mirroring `plane_feature_id`'s
+    own identical treatment in `_plane_ref_dependency`) for a `surface_
+    feature_id` tool - see `_split_dependencies`.
+
     Pattern/Mirror Phase 8: a `MirrorFeature`/`PatternFeature` with `tool_
     feature_id` set depends on that Feature directly (already a bare
     Feature id, no `base_feature_id` mapping needed, mirroring `source_
@@ -460,6 +471,8 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
             depends_on = tuple(
                 {base_feature_id(bid) for bid in (*feature.target_body_ids, *feature.tool_body_ids)}
             )
+        elif isinstance(feature, SplitFeature):
+            depends_on = _split_dependencies(feature)
         elif isinstance(feature, PatternFeature):
             depends_on = _pattern_dependencies(part, feature)
         elif isinstance(feature, GearFeature):
@@ -544,6 +557,24 @@ def _plane_ref_dependency(ref: PlaneRef) -> str | None:
     if ref.plane_feature_id is not None:
         return ref.plane_feature_id
     return None
+
+
+def _split_dependencies(feature: SplitFeature) -> tuple[str, ...]:
+    """Boolean family, fourth/last entry: `build_feature_graph`'s
+    `SplitFeature` dependency-edge logic, split out to keep `build_feature_
+    graph` itself's per-type dispatch readable - the owning Feature of
+    `target_body_id` (`base_feature_id`-mapped), plus whatever `feature.
+    tool` itself depends on: `_plane_ref_dependency` for a `plane_ref` tool,
+    or `surface_feature_id` directly (already a bare Feature id) for a
+    Surface tool."""
+    deps: set[str] = {base_feature_id(feature.target_body_id)}
+    if feature.tool.plane_ref is not None:
+        plane_dep = _plane_ref_dependency(feature.tool.plane_ref)
+        if plane_dep is not None:
+            deps.add(plane_dep)
+    elif feature.tool.surface_feature_id is not None:
+        deps.add(feature.tool.surface_feature_id)
+    return tuple(deps)
 
 
 def _mirror_dependencies(feature: MirrorFeature) -> tuple[str, ...]:

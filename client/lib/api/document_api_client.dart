@@ -572,6 +572,28 @@ class FeatureDto {
   /// (`false`).
   final bool consumeToolBodies;
 
+  /// Boolean family, fourth/last entry - only present on a `"split"`
+  /// Feature: the single Body (the backend's `SplitFeature.target_body_id`)
+  /// divided into two independent pieces, `target_body_id#0`/`#1` in the
+  /// mesh response afterward.
+  final String? targetBodyId;
+
+  /// Boolean family, fourth/last entry - only present on a `"split"`
+  /// Feature, and only when its `tool` is a Plane: the cutting plane (a
+  /// Body face, a fixed reference plane, or an existing Plane - reuses
+  /// [PlaneRefDto] verbatim, same type [mirrorPlane]/[faceRefs] entries
+  /// already use). Mutually exclusive with [toolSurfaceFeatureId] - the
+  /// backend's own `SplitToolRef` has exactly one of the two set, flattened
+  /// here onto [FeatureDto] directly (from the wire's nested `tool` object)
+  /// rather than a separate DTO, matching every other Feature-type-specific
+  /// field on this class.
+  final PlaneRefDto? toolPlaneRef;
+
+  /// Boolean family, fourth/last entry - only present on a `"split"`
+  /// Feature, and only when its `tool` is an existing Surface: that
+  /// SurfaceFeature's own id. Mutually exclusive with [toolPlaneRef].
+  final String? toolSurfaceFeatureId;
+
   FeatureDto({
     required this.type,
     required this.id,
@@ -634,6 +656,9 @@ class FeatureDto {
     this.operation,
     this.toolBodyIds = const [],
     this.consumeToolBodies = true,
+    this.targetBodyId,
+    this.toolPlaneRef,
+    this.toolSurfaceFeatureId,
   });
 
   factory FeatureDto.fromJson(Map<String, dynamic> json) => FeatureDto(
@@ -739,6 +764,12 @@ class FeatureDto {
         operation: json['operation'] as String?,
         toolBodyIds: (json['tool_body_ids'] as List?)?.cast<String>() ?? const [],
         consumeToolBodies: json['consume_tool_bodies'] as bool? ?? true,
+        targetBodyId: json['target_body_id'] as String?,
+        toolPlaneRef: (json['tool'] as Map<String, dynamic>?)?['plane_ref'] == null
+            ? null
+            : PlaneRefDto.fromJson(
+                (json['tool'] as Map<String, dynamic>)['plane_ref'] as Map<String, dynamic>),
+        toolSurfaceFeatureId: (json['tool'] as Map<String, dynamic>?)?['surface_feature_id'] as String?,
       );
 }
 
@@ -1892,6 +1923,65 @@ class DocumentApiClient {
                 if (targetBodyIds != null) 'target_body_ids': targetBodyIds,
                 if (toolBodyIds != null) 'tool_body_ids': toolBodyIds,
                 if (consumeToolBodies != null) 'consume_tool_bodies': consumeToolBodies,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Boolean family, fourth/last entry: creates a `SplitFeature` dividing
+  /// [targetBodyId] into two independent, surviving pieces along `tool` -
+  /// exactly one of [toolPlaneRef]/[toolSurfaceFeatureId] must be supplied
+  /// (the backend's own `_validate_split_tool_ref` enforces this; not
+  /// checked client-side, mirroring every other "exactly one of N" wire
+  /// shape in this file, e.g. [PlaneRefDto] itself). Mirrors
+  /// [createBooleanFeature]'s own target/tool shape, minus
+  /// `consumeToolBodies` - Split has no such concept, the tool is never a
+  /// registered Body of its own the way a Boolean's `tool_body_ids` is.
+  Future<FeatureDto> createSplitFeature(
+    String partId, {
+    required String targetBodyId,
+    PlaneRefDto? toolPlaneRef,
+    String? toolSurfaceFeatureId,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/split-features'),
+              headers: _headers,
+              body: jsonEncode({
+                'target_body_id': targetBodyId,
+                'tool': {
+                  if (toolPlaneRef != null) 'plane_ref': toolPlaneRef.toJson(),
+                  if (toolSurfaceFeatureId != null) 'surface_feature_id': toolSurfaceFeatureId,
+                },
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing SplitFeature - [targetBodyId] may be
+  /// supplied on its own; a `tool` change replaces the whole `tool` object
+  /// at once (supplying either of [toolPlaneRef]/[toolSurfaceFeatureId]
+  /// sends the entire new `tool`, matching the backend's own `SplitToolRef`
+  /// being an indivisible "exactly one of two" value, not two independently
+  /// patchable fields) - omitted fields otherwise keep their current value.
+  Future<FeatureDto> updateSplitFeature(
+    String partId,
+    String featureId, {
+    String? targetBodyId,
+    PlaneRefDto? toolPlaneRef,
+    String? toolSurfaceFeatureId,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/split-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (targetBodyId != null) 'target_body_id': targetBodyId,
+                if (toolPlaneRef != null || toolSurfaceFeatureId != null)
+                  'tool': {
+                    if (toolPlaneRef != null) 'plane_ref': toolPlaneRef.toJson(),
+                    if (toolSurfaceFeatureId != null) 'surface_feature_id': toolSurfaceFeatureId,
+                  },
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

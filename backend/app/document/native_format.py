@@ -65,6 +65,8 @@ from app.document.models import (
     RevolveMode,
     SketchFeature,
     SpiralBevelHand,
+    SplitFeature,
+    SplitToolRef,
     SubShapeRef,
     SubShapeType,
     SurfaceFeature,
@@ -821,6 +823,20 @@ def _plane_ref_from_dict(data: dict) -> PlaneRef:
     )
 
 
+def _split_tool_ref_to_dict(ref: SplitToolRef) -> dict:
+    return {
+        "plane_ref": _plane_ref_to_dict(ref.plane_ref) if ref.plane_ref else None,
+        "surface_feature_id": ref.surface_feature_id,
+    }
+
+
+def _split_tool_ref_from_dict(data: dict) -> SplitToolRef:
+    return SplitToolRef(
+        plane_ref=_plane_ref_from_dict(data["plane_ref"]) if data.get("plane_ref") else None,
+        surface_feature_id=data.get("surface_feature_id"),
+    )
+
+
 def _pattern_direction_ref_to_dict(ref: PatternDirectionRef) -> dict:
     return {
         "edge_ref": _subshape_ref_to_dict(ref.edge_ref) if ref.edge_ref else None,
@@ -976,6 +992,13 @@ def _feature_to_dict(feature: Feature) -> dict:
             "target_body_ids": list(feature.target_body_ids),
             "tool_body_ids": list(feature.tool_body_ids),
             "consume_tool_bodies": feature.consume_tool_bodies,
+        }
+    if isinstance(feature, SplitFeature):
+        return {
+            "type": "split",
+            "id": feature.id,
+            "target_body_id": feature.target_body_id,
+            "tool": _split_tool_ref_to_dict(feature.tool),
         }
     if isinstance(feature, PatternFeature):
         return {
@@ -1223,6 +1246,12 @@ def _feature_from_dict(data: dict) -> Feature:
             target_body_ids=list(data.get("target_body_ids", [])),
             tool_body_ids=list(data.get("tool_body_ids", [])),
             consume_tool_bodies=data.get("consume_tool_bodies", True),
+        )
+    if feature_type == "split":
+        return SplitFeature(
+            id=feature_id,
+            target_body_id=_require(data, "target_body_id"),
+            tool=_split_tool_ref_from_dict(_require(data, "tool")),
         )
     if feature_type == "pattern":
         return PatternFeature(

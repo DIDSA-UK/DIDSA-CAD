@@ -682,6 +682,50 @@ class BooleanFeatureResponse(BaseModel):
     produces: Produces
 
 
+class SplitToolRefSchema(BaseModel):
+    """Boolean family, fourth/last entry: the wire counterpart to `app.
+    document.models.SplitToolRef` - exactly one of `plane_ref`/`surface_
+    feature_id` should be supplied, matching `SplitToolRef`'s own "one of
+    two optional fields" convention (see its docstring); not enforced
+    here, checked by `app.document.router._validate_split_tool_ref`."""
+
+    plane_ref: PlaneRefSchema | None = None
+    surface_feature_id: str | None = None
+
+
+class SplitFeatureCreate(BaseModel):
+    """Boolean family, fourth/last entry: creates a `SplitFeature` dividing
+    the Body named by `target_body_id` into two independent, surviving
+    pieces along `tool` (a Plane or an existing Surface - see `SplitToolRef
+    Schema`'s own docstring). The API layer validates `target_body_id`
+    resolves to a Body-producing Feature in this Part, and `tool` is
+    structurally valid and itself resolvable, before construction (see
+    `app.document.router._validate_split_tool_ref`/`app.document.split.
+    resolve_split`)."""
+
+    target_body_id: str
+    tool: SplitToolRefSchema
+
+
+class SplitFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `MergeFeatureUpdate`/`BooleanFeatureUpdate`."""
+
+    target_body_id: str | None = None
+    tool: SplitToolRefSchema | None = None
+
+
+class SplitFeatureResponse(BaseModel):
+    type: Literal["split"] = "split"
+    id: str
+    target_body_id: str
+    tool: SplitToolRefSchema
+    locked: bool
+    # B1: see SketchFeatureResponse.produces above - always BODY for a
+    # SplitFeature.
+    produces: Produces
+
+
 class PatternDirectionRefSchema(BaseModel):
     """Pattern/Mirror scoping's Phase 2 (`docs/pattern-mirror-scope.md`
     §2.2/§2.5): the wire counterpart to `app.document.models.
@@ -1789,6 +1833,7 @@ FeatureResponse = Union[
     MirrorFeatureResponse,
     MergeFeatureResponse,
     BooleanFeatureResponse,
+    SplitFeatureResponse,
     PatternFeatureResponse,
     ImportFeatureResponse,
     GearFeatureResponse,
