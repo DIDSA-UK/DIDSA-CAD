@@ -100,6 +100,43 @@ void main() {
       expect(dto.hidden, isFalse);
     });
 
+    test('bug fix: parses is_surface: true for a SurfaceFeature entry', () {
+      final dto = BodyMeshDto.fromJson({
+        'body_id': 'surf-1',
+        'source': 'computed',
+        'is_surface': true,
+        'mesh': {
+          'vertices': [
+            [0.0, 0.0, 0.0],
+          ],
+          'normals': [
+            [0.0, 0.0, 1.0],
+          ],
+          'triangle_indices': <List<int>>[],
+        },
+      });
+
+      expect(dto.isSurface, isTrue);
+    });
+
+    test('defaults is_surface to false when the key is absent (older fixtures/real solid Bodies)', () {
+      final dto = BodyMeshDto.fromJson({
+        'body_id': 'boss-1',
+        'source': 'computed',
+        'mesh': {
+          'vertices': [
+            [0.0, 0.0, 0.0],
+          ],
+          'normals': [
+            [0.0, 0.0, 1.0],
+          ],
+          'triangle_indices': <List<int>>[],
+        },
+      });
+
+      expect(dto.isSurface, isFalse);
+    });
+
     test('on-device feedback: parses face_edge_ids (one list per face)', () {
       final dto = BodyMeshDto.fromJson({
         'body_id': 'boss-1',

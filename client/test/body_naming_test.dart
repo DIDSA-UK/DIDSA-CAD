@@ -64,4 +64,25 @@ void main() {
       expect(names['does-not-exist'], 'Body 2');
     });
   });
+
+  group('surfaceDisplayNames', () {
+    test('an empty surface id list produces an empty map', () {
+      expect(surfaceDisplayNames([_feature('f1')], const []), isEmpty);
+    });
+
+    test('numbers Surfaces "Surface N", in Feature creation order - same scheme as Bodies', () {
+      final features = [_feature('surf-z', type: 'surface'), _feature('surf-a', type: 'surface')];
+      final names = surfaceDisplayNames(features, ['surf-a', 'surf-z']);
+
+      expect(names['surf-z'], 'Surface 1');
+      expect(names['surf-a'], 'Surface 2');
+    });
+
+    test('Body and Surface ids are named independently - each restarts its own count at 1', () {
+      final features = [_feature('boss-1'), _feature('surf-1', type: 'surface')];
+
+      expect(bodyDisplayNames(features, ['boss-1'])['boss-1'], 'Body 1');
+      expect(surfaceDisplayNames(features, ['surf-1'])['surf-1'], 'Surface 1');
+    });
+  });
 }

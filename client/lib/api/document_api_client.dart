@@ -832,11 +832,20 @@ class BodyMeshDto {
   final MeshDto mesh;
   final bool hidden;
 
+  /// True for a `SurfaceFeature`'s own non-solid shell, false for a real
+  /// solid Body - both come back tagged `source: "computed"`, so this is
+  /// what lets [PartScreen] keep a Surface out of the Build Tree's Bodies
+  /// section (and the viewport's own body-selection lists), listing it
+  /// under Surfaces instead. See `app.document.schemas.BodyMeshResponse`'s
+  /// own docstring.
+  final bool isSurface;
+
   BodyMeshDto({
     required this.bodyId,
     required this.source,
     required this.mesh,
     this.hidden = false,
+    this.isSurface = false,
   });
 
   factory BodyMeshDto.fromJson(Map<String, dynamic> json) => BodyMeshDto(
@@ -844,6 +853,7 @@ class BodyMeshDto {
         source: json['source'] as String,
         mesh: MeshDto.fromJson(json['mesh'] as Map<String, dynamic>),
         hidden: json['hidden'] as bool? ?? false,
+        isSurface: json['is_surface'] as bool? ?? false,
       );
 }
 

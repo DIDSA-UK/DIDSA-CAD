@@ -12,9 +12,11 @@ sandbox.
 
 A `SurfaceFeature` never flips `Part.produces_solid_geometry` (see that
 class's own docstring - `produces_solid_geometry` is always False, `produces`
-is always SURFACE, not BODY), so every test below also creates one ordinary
-Boss Extrude first - otherwise `GET /mesh` would just keep returning its
-placeholder box and never actually compute/tessellate the Surface at all.
+is always SURFACE, not BODY). Most tests below also create one ordinary Boss
+Extrude first anyway, simply to exercise the more common mixed-Part shape;
+`Part.produces_displayable_geometry` (which `GET /mesh` actually gates on)
+is True for a Surface-only Part too, and the "--- Surface-only Part ---"
+section below covers that directly, with no Extrude at all.
 """
 
 from fastapi.testclient import TestClient
@@ -347,6 +349,43 @@ def test_surface_feature_round_trips_through_native_export_import():
     finally:
         replace_document(saved_document)
         replace_all_sketches(saved_sketches)
+
+
+# --- Surface-only Part (no solid Feature at all) ------------------------------
+
+
+def test_surface_only_part_returns_computed_geometry_not_placeholder():
+    """A Part whose only geometry-producing Feature is a Surface - no
+    Extrude/Revolve/etc. anywhere in its history - must still flip `GET
+    /mesh` over to real, computed geometry (`Part.produces_displayable_
+    geometry`), not keep serving the fixed placeholder box forever."""
+    part = _create_part()
+    surface_sketch = _create_square_sketch_feature(part["id"], x0=0.0, y0=0.0, size=10.0)
+    surface = _create_surface_feature(part["id"], surface_sketch["id"], end_distance=5.0).json()
+
+    bodies = _get_bodies(part["id"])
+
+    assert len(bodies) == 1
+    surface_body = bodies[0]
+    assert surface_body["body_id"] == surface["id"]
+    assert surface_body["source"] == "computed"
+    assert surface_body["is_surface"] is True
+
+
+def test_mesh_response_tags_surface_entries_and_body_entries_correctly():
+    """`is_surface` distinguishes a Surface's own shell from a real solid
+    Body within the same `GET /mesh` response - both come back tagged
+    `source="computed"`."""
+    part = _create_part()
+    body_sketch = _create_square_sketch_feature(part["id"], x0=0.0, y0=0.0)
+    extrude = _create_extrude_feature(part["id"], body_sketch["id"])
+    surface_sketch = _create_square_sketch_feature(part["id"], x0=100.0, y0=0.0)
+    surface = _create_surface_feature(part["id"], surface_sketch["id"], end_distance=5.0).json()
+
+    bodies = _get_bodies(part["id"])
+
+    assert _body(bodies, extrude["id"])["is_surface"] is False
+    assert _body(bodies, surface["id"])["is_surface"] is True
 
 
 # --- Cascade delete ------------------------------------------------------------

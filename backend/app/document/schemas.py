@@ -1848,12 +1848,21 @@ class BodyMeshResponse(BaseModel):
     hidden Body (so Show can be reached again from the tree, not only from
     whichever Feature originally produced it), which an omitted entry can't
     support. `source="placeholder"` is never `hidden` - there is nothing to
-    hide yet at that point."""
+    hide yet at that point.
+
+    `is_surface` distinguishes a `SurfaceFeature`'s own non-solid shell from
+    a real solid Body within this same array - both come back tagged
+    `source="computed"` (they're both real, tessellated `compute_part_
+    bodies` output), so the client needs this to keep a Surface out of the
+    Build Tree's Bodies section (and the viewport's own body-selection
+    lists), showing it only under Surfaces instead. `False` for every solid
+    Body and for `source="placeholder"`."""
 
     body_id: str
     source: Literal["placeholder", "computed"]
     mesh: MeshVertexData
     hidden: bool = False
+    is_surface: bool = False
 
 
 class NativeImportResponse(BaseModel):

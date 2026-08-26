@@ -19,9 +19,24 @@ import '../api/document_api_client.dart';
 /// produced a Body, in that order, the same way [featureDisplayName]
 /// counts same-type Features up rather than restarting per Feature.
 Map<String, String> bodyDisplayNames(List<FeatureDto> features, List<String> bodyIds) {
+  return _displayNames(features, bodyIds, 'Body');
+}
+
+/// [bodyDisplayNames]'s Surfaces-section counterpart - identical stable-
+/// ordering-by-creation-index scheme, "Surface 1"/"Surface 2"... instead of
+/// "Body 1"/"Body 2"... Kept as its own entry point (rather than a third
+/// `bodyDisplayNames` argument every existing Bodies-section call site
+/// would need to pass) since a Surface's own ids are already a disjoint
+/// list (`BodyMeshDto.isSurface`), never mixed with real Body ids by the
+/// caller.
+Map<String, String> surfaceDisplayNames(List<FeatureDto> features, List<String> surfaceIds) {
+  return _displayNames(features, surfaceIds, 'Surface');
+}
+
+Map<String, String> _displayNames(List<FeatureDto> features, List<String> ids, String label) {
   final featureIndex = <String, int>{for (var i = 0; i < features.length; i++) features[i].id: i};
 
-  final sorted = [...bodyIds]
+  final sorted = [...ids]
     ..sort((a, b) {
       final indexA = featureIndex[baseFeatureId(a)] ?? features.length;
       final indexB = featureIndex[baseFeatureId(b)] ?? features.length;
@@ -29,7 +44,7 @@ Map<String, String> bodyDisplayNames(List<FeatureDto> features, List<String> bod
       return _splitIndex(a).compareTo(_splitIndex(b));
     });
 
-  return {for (var i = 0; i < sorted.length; i++) sorted[i]: 'Body ${i + 1}'};
+  return {for (var i = 0; i < sorted.length; i++) sorted[i]: '$label ${i + 1}'};
 }
 
 /// Mirrors backend `app.document.graph.base_feature_id`: strips a `#N`

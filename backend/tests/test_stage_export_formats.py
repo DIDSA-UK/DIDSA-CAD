@@ -88,3 +88,42 @@ def test_export_of_a_part_with_no_solid_geometry_is_rejected(fmt):
     part = client.post("/document/parts", json={"name": "Empty Part"}).json()
     response = client.get(f"/document/parts/{part['id']}/export/{fmt}")
     assert response.status_code == 400
+
+
+def _create_surface_only_part(name: str = "Surface Only Part") -> str:
+    """A Part whose only geometry-producing Feature is a `SurfaceFeature` -
+    no Extrude/Revolve/etc. - to exercise the export gate widened alongside
+    `GET /mesh`'s own `produces_displayable_geometry` fix (see
+    `test_surface.py`'s "Surface-only Part" section for the `/mesh` half of
+    this coverage)."""
+    part = client.post("/document/parts", json={"name": name}).json()
+    part_id = part["id"]
+    sketch_feature = client.post(
+        f"/document/parts/{part_id}/features/sketch", json={"plane": "XY"}
+    ).json()
+    sketch_id = sketch_feature["sketch_id"]
+    corners = [
+        client.post(f"/sketch/sketches/{sketch_id}/points", json={"x": x, "y": y}).json()
+        for x, y in [(0, 0), (10, 0), (10, 10), (0, 10)]
+    ]
+    for a, b in zip(corners, corners[1:] + corners[:1]):
+        client.post(
+            f"/sketch/sketches/{sketch_id}/lines",
+            json={"start_point_id": a["id"], "end_point_id": b["id"]},
+        )
+    client.post(
+        f"/document/parts/{part_id}/surface-features",
+        json={
+            "sketch_feature_id": sketch_feature["id"],
+            "start_distance": 0.0,
+            "end_distance": 10.0,
+        },
+    )
+    return part_id
+
+
+@pytest.mark.parametrize("fmt", ["step", "stl", "obj", "glb"])
+def test_export_of_a_surface_only_part_succeeds(fmt):
+    part_id = _create_surface_only_part()
+    response = client.get(f"/document/parts/{part_id}/export/{fmt}")
+    assert response.status_code == 200
