@@ -134,6 +134,62 @@ value applied to every Body on every fetch — no per-Feature/per-Body quality t
   threaded through `_refreshMesh`" — the pattern a coarse/full toggle-override set would
   follow.
 
+### Finding 2 — backend Feature-cost & `body_cache.py` survey (complete)
+
+**Zero async infra, confirmed independently.** Whole-tree grep: exactly one `async def`
+(`session_context.py:45`, a per-request contextvar dependency, unrelated to background work);
+zero Celery/RQ/BackgroundTasks/websocket/asyncio-task use anywhere. One real nuance:
+`bevel_pair.py` already uses `ProcessPoolExecutor` (`spawn` context, BREP-bytes IPC) for
+in-request parallelism (member builds + phase-search grid scan) — this shortens wall-clock via
+multi-core use but the HTTP handler still blocks until every worker finishes; no early return,
+no polling, no cancellation. Worth knowing as a reusable *pattern* (subprocess isolation via
+BREP-byte pickling) if background-build infra is ever built, but it is not that infra itself.
+
+**`body_cache.py` solves repeat-call cost only, confirmed precisely.** A generic, per-Part
+checkpoint chain (Feature-id sequence + `feature_fingerprint` + Body snapshot after each step
+from the *last* call); a later call only re-runs the diverging suffix. With an empty/no-match
+cache it falls straight through to a full rebuild — **zero benefit on a first build**, exactly
+as expected.
+
+**Critical structural finding, not previously known: body_cache is bypassed on nearly every
+real interaction with a Part containing an expensive Feature type, not just the first build.**
+Every "fresh entry point" resolver (`resolve_gear`, `resolve_loft`, `resolve_bevel_gear`,
+`resolve_bevel_pair`, `resolve_gear_chain`, `resolve_split`, `resolve_pattern`, `resolve_sweep`,
+`resolve_revolve`) self-excludes its own not-yet-persisted feature id
+(`all_excluded = excluded_feature_ids | {feature.id}`), which is therefore always non-empty —
+forcing the *uncached* `compute_part_bodies` branch (full rebuild of every prior Feature) on
+**every single create/update call**, regardless of body_cache's existence. Worse: `GET
+/parts/{id}/features` (the plain feature list) re-triggers a full uncached rebuild too, for
+every Gear/Loft/BevelGear/BevelPair/GearChain Feature in the Part — `_feature_response`
+dispatches these five types to helpers that recompute `warnings` via the same uncached
+`resolve_X` call even on a plain list fetch (`router.py:771,929,827,866,958`). For
+`BevelPairFeature` specifically this means **loading the feature list re-runs the entire
+spiral-bevel-pair build** (member builds + phase search) every time. `excluded_feature_ids`
+(true B4 rollback) and `/gear/preview` are confirmed as two fully separate code paths sharing
+nothing.
+
+**Ranked structural cost survey** (no runtime numbers available in this sandbox — code-shape
+only; real numbers pending from the parallel OCCT-profiling child session):
+1. **`PatternFeature` with `merge=FUSE_INTO_ONE` (or `tool_feature_id`) and a large instance
+   count — highest-risk, least-guarded.** Structurally identical to the already-known-expensive
+   "sequential `BRepAlgoAPI_Fuse` chain" shape, but applies to an *arbitrary* (possibly
+   expensive) child Body, and **no upper bound exists anywhere** on `count_1`/`count_2`/
+   `count_angular` (`router.py:1400-1485` — lower bounds only). A user can request e.g.
+   `count_1=1000,count_2=1000,merge=true` today with no server-side rejection.
+2. **`PlanetaryGearFeature` with a large `planet_count` — real, unoptimized.** Builds
+   `2 + planet_count` full gear solids **fully serially**, no parallelization — the exact shape
+   `bevel_pair.py` diagnosed and fixed with `ProcessPoolExecutor` for its 2-member case, never
+   applied here. No `planet_count` cap found. No dated status.md entry indicates it's ever been
+   profiled.
+3. **`BooleanFeature` — bounded by existing Body count, not a free integer field, but its
+   `M × N` nested-loop over `target_body_ids × tool_body_ids` has no upper bound either.**
+   `split.py`/`surface.py` by contrast are structurally bounded (constant op count regardless
+   of input) — genuinely low risk.
+4. **`GearChainFeature` with many stages — plausible but self-limiting** (UI-driven one-stage-
+   at-a-time authoring, unlike Pattern's single free integer field).
+5. **`LoftFeature` — lower cost-confidence, but flagged as genuinely untested for correctness**
+   (module docstring repeatedly self-flags as never run against real `pythonocc-core`).
+
 **Genuinely missing (confirms Finding 2's async-infra conclusion from the client side too)**:
 today's only "slow build" UX (`PartScreen._runGuarded`'s delayed `_BuildingGeometryOverlay`,
 and `GearDesignScreen`'s unconditional build hint) is **purely cosmetic busy/idle** — one
