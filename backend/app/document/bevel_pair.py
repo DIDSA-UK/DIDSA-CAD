@@ -120,19 +120,22 @@ byte-for-byte.
 
 **Cost/timeout, a real decision, not a silently-absorbed risk**: Spike C's
 own on-device numbers (§4) put a single phase-search trial at 1-3s in the
-well-behaved regime but up to ~16s near/past a notch, times this module's
-own bounded eval budget (`_PHASE_SEARCH_GRID_POINTS` coarse-grid points
-plus `_PHASE_SEARCH_REFINE_ITERATIONS` golden-section steps, ~33 trials
-worst case) - up to roughly 9 minutes for the search alone in the worst
-case, on top of both members' own build cost (which itself grows near a
-notch, per `bevel_math.spiral_build_cost_warning`). The client
-(`DocumentApiClient`) raises its own request timeout specifically for a
-spiral `BevelPairFeature` create/update call (`ApiConfig.
+well-behaved regime but up to ~16s near/past a notch. The original,
+un-tiered implementation ran a fixed `_PHASE_SEARCH_GRID_POINTS`-point
+coarse grid plus `_PHASE_SEARCH_REFINE_ITERATIONS` golden-section steps
+unconditionally (~33 trials worst case, ~9 minutes for the search alone),
+even for a phase that was already correct. `_search_meshing_phase` (below)
+now short-circuits that entirely for the common case and, only when it
+can't, spends the expensive full budget - see that function's own
+docstring for the warm-start/tiering/parallelization this was rebuilt
+around, and `docs/status.md`'s dated entry for this change for the real
+before/after numbers it was measured against. The client
+(`DocumentApiClient`) still raises its own request timeout specifically for
+a spiral `BevelPairFeature` create/update call (`ApiConfig.
 spiralBevelPairRequestTimeout`, not the blanket `documentRequestTimeout`
-used everywhere else) rather than raising every `/document` call's own
-timeout for a cost that's concentrated in exactly one Feature type's own
-worst case - see that constant's own doc comment for the exact budget this
-is sized against."""
+used everywhere else) as a safe upper bound sized against the *old*
+worst case - left unchanged here deliberately (see that constant's own doc
+comment)."""
 
 import math
 import multiprocessing
@@ -276,22 +279,90 @@ def _rotated_about_axis(shape: TopoDS_Shape, basis: ResolvedPlane, angle: float)
 # nothing for a search to improve on.
 #
 # Algorithm (Spike C §1/§3, validated against a real parameter sweep
-# there): a coarse grid pre-scan across a window sized to HALF the angular
-# tooth pitch of the member being searched over (`180 / tooth_count_2`
-# degrees - Spike C's own §3 finding that the phase-vs-overlap landscape is
-# not globally unimodal past a notch, so a plain wide-window golden-section
-# alone is NOT sound), followed by a local golden-section refine within one
-# grid step of the best grid point (sound there specifically because Spike
-# B's own low-beta stable-optimum finding shows the landscape IS smooth
-# within one such narrow band). Each trial is one rigid rotation
-# (`_rotated_about_axis`, already-built solids, no rebuild) plus one real
-# `BRepAlgoAPI_Common` - "cheap" in the well-behaved regime (Spike C's own
-# 1-3s/trial) but genuinely expensive near/past a notch (up to ~16s/trial
-# there) - see `resolve_bevel_pair_from_bodies`'s own docstring for how the
-# eval budget below and the client's own request timeout were sized against
-# that real cost.
+# there; re-measured on real hardware for the warm-start/tiering rewrite
+# below, `docs/status.md`'s dated entry for this change): a coarse grid
+# pre-scan across a window sized to HALF the angular tooth pitch of the
+# member being searched over (`180 / tooth_count_2` degrees - Spike C's own
+# §3 finding that the phase-vs-overlap landscape is not globally unimodal
+# past a notch, so a plain wide-window golden-section alone is NOT sound),
+# followed by a local golden-section refine within one grid step of the
+# best grid point (sound there specifically because Spike B's own low-beta
+# stable-optimum finding shows the landscape IS smooth within one such
+# narrow band). Each trial is one rigid rotation (`_rotated_about_axis`,
+# already-built solids, no rebuild) plus one real `BRepAlgoAPI_Common` -
+# "cheap" in the well-behaved regime (Spike C's own 1-3s/trial) but
+# genuinely expensive near/past a notch (up to ~16s/trial there).
+#
+# `13-spiral-bevel-pair.md`'s own Spike C §2/§5 table (also reproduced in
+# `12-spiral-bevel-gear.md`'s own §4 sweep) shows every *resolvable*
+# tooth-count ratio it tested (non-tooth-count-symmetric, e.g. 10T/20T,
+# 8T/16T) already measures essentially 0.0mm^3 overlap at the existing
+# fixed convention (delta=0) - only tooth-count-*symmetric* pairs (10T/10T,
+# 20T/20T) carry a real, search-worthy residual. `_search_meshing_phase`
+# below exploits that directly: it checks delta=0 first, in-process,
+# against the already-built solids (no rotation, no `ProcessPoolExecutor`,
+# no BREP round-trip at all) and returns immediately if that's already good
+# enough (`_PHASE_SEARCH_EARLY_EXIT_OVERLAP_MM3`) - a "warm start" that
+# resolves the common case in the time of one boolean, not up to 33. Only
+# when that fails does it pay for a real search, and even then in two
+# tiers rather than one fixed budget: a cheap "draft" grid/refine
+# (`_PHASE_SEARCH_DRAFT_GRID_POINTS`/`_PHASE_SEARCH_DRAFT_REFINE_
+# ITERATIONS`) first, escalating to the original full budget
+# (`_PHASE_SEARCH_GRID_POINTS`/`_PHASE_SEARCH_REFINE_ITERATIONS`) only if
+# the draft tier's own result still isn't good enough - provably never
+# worse than running the full budget alone (see `_search_meshing_phase`'s
+# own "monotonicity guard" below), since the full tier still runs (using
+# the same already-open worker pool) whenever the draft tier doesn't
+# already clear the threshold.
+#
+# Whenever a tier's grid scan does run, it's genuinely parallel - each grid
+# point is an independent trial (no shared mutable state, exactly the
+# property `resolve_bevel_pair_from_bodies`'s own two-member build already
+# relies on for its own `ProcessPoolExecutor`), so there's real wall-clock
+# to reclaim on a multi-core phone. Unlike that member-build pool (exactly
+# 2 members, always `max_workers=2`), this pool's own worker count scales
+# with `os.cpu_count()` (`_phase_search_worker_count`) and its own
+# `initializer` deserializes `solid_1`/`solid_2_base` from BREP bytes ONCE
+# PER WORKER PROCESS (`_init_phase_search_worker`), not once per trial -
+# each trial (`_phase_search_trial`) then only exchanges a single `float`
+# in and a single `float | None` out, genuinely cheap IPC even though the
+# BREP payload itself (a modest solid, tens-to-low-hundreds of KB per
+# `_shape_to_brep_bytes`'s own docstring) is not.
 _PHASE_SEARCH_GRID_POINTS = 21
 _PHASE_SEARCH_REFINE_ITERATIONS = 10
+_PHASE_SEARCH_DRAFT_GRID_POINTS = 9
+"""The draft tier's own coarse-grid point count - a smaller version of
+`_PHASE_SEARCH_GRID_POINTS` for the same `+-(180 / tooth_count_2)` window,
+paid for only once the delta=0 warm start (`_PHASE_SEARCH_EARLY_EXIT_
+OVERLAP_MM3`) fails. Odd, same as the full tier, so the window's own
+center (delta=0 - the warm start's own reading, already known) is always
+exactly one of this tier's grid points too (`_run_phase_search_tier`
+reuses it rather than re-submitting it to the pool). Not yet validated
+against on-device timing across a wide range of gear sizes - a reasonable
+starting guess (less than half the full tier's own 21 points) rather than
+a derived value; tune once real before/after numbers exist."""
+_PHASE_SEARCH_DRAFT_REFINE_ITERATIONS = 4
+"""The draft tier's own golden-section refine budget - `_GOLDEN_RATIO`
+convergence is geometric (each iteration shrinks the bracket by the same
+fixed ratio), so 4 iterations already narrows the draft tier's own local
+window by `_GOLDEN_RATIO**4 ~= 0.15x` - enough to meaningfully sharpen the
+draft grid's own best point without paying the full tier's own 10-iteration
+cost twice. Same "starting guess, not on-device-validated" caveat as
+`_PHASE_SEARCH_DRAFT_GRID_POINTS` above."""
+_PHASE_SEARCH_EARLY_EXIT_OVERLAP_MM3 = 1.0
+"""The overlap (mm^3) at or below which a phase candidate is treated as
+"good enough" to stop searching - both for the delta=0 warm start and for
+early-exiting the draft tier before ever escalating to the full one.
+Matches this project's own existing informal "near zero" convention for
+real, measured `BRepAlgoAPI_Common` overlap (`test_bevel_pair_feature.py`'s
+own `test_spiral_bevel_pair_real_overlap_stays_near_zero_for_a_resolvable_
+10t_20t_ratio`'s `overlap < 1.0` assertion, and `13-spiral-bevel-pair.md`'s
+own Spike C table treating readings under ~1mm^3 as "essentially zero," not
+as still-improvable). An absolute mm^3 figure, not normalized by module or
+face_width - reasonable for the gear sizes this project's own test suite
+and design docs exercise, but may need revisiting once tested across a
+much wider size range (a tiny module's "near zero" is not the same absolute
+volume as a large one's)."""
 _GOLDEN_RATIO = (math.sqrt(5) - 1) / 2
 
 
@@ -360,59 +431,255 @@ def _member_solid_is_marginal(warnings: list[str]) -> bool:
     return any(any(marker in w for marker in _MARGINAL_SOLID_WARNING_MARKERS) for w in warnings)
 
 
-def _search_meshing_phase(
-    solid_1: TopoDS_Shape, solid_2_base: TopoDS_Shape, basis_2: ResolvedPlane, tooth_count_2: int
-) -> tuple[float, float | None]:
-    """Coarse-grid-plus-golden-section-refine search for the extra phase
-    delta (radians, applied on top of `solid_2_base`'s own already-baked-in
-    fixed-convention rotation) that minimizes real measured overlap between
-    `solid_1` and a rotated `solid_2_base` - `docs/gear-design/12-spiral-
-    bevel-gear.md`'s own Spike C, go/no-go: GO.
+_phase_search_worker_solid_1: TopoDS_Shape | None = None
+_phase_search_worker_solid_2_base: TopoDS_Shape | None = None
+_phase_search_worker_basis_2: ResolvedPlane | None = None
+"""The `ProcessPoolExecutor` worker's own per-process cache, set exactly
+once per worker by `_init_phase_search_worker` (its own `initializer`) -
+module-level rather than threaded through `_phase_search_trial`'s own
+arguments specifically so each worker deserializes `solid_1`/`solid_2_base`
+from BREP bytes ONCE PER PROCESS, not once per trial: a `ProcessPoolExecutor`
+initializer runs a single time per worker before it starts pulling
+submitted calls, so every trial that worker ever runs afterward reuses
+these same in-memory `TopoDS_Shape` objects, exchanging only a `float` in
+and a `float | None` out per call (`_phase_search_trial`) - genuinely cheap
+per-trial IPC, unlike re-sending the BREP payload itself every time."""
 
-    Window: `+-(180 / tooth_count_2)` degrees - half the angular tooth
-    pitch of member 2 (the member being rotated) - Spike C's own §3 finding
-    that this scales correctly with tooth count and is confirmed sufficient
-    to bracket the true optimum even in a genuinely bad-default-alignment
-    case, unlike a fixed absolute window. The grid always includes the
-    existing fixed convention itself (delta=0, `_PHASE_SEARCH_GRID_POINTS`
-    is odd) as one of its own candidates, so this search can never do worse
-    than not searching at all.
 
-    Returns `(best_delta_radians, best_overlap_mm3)`. `best_overlap_mm3` is
-    `None` if not even one grid point produced a usable (non-`None`,
-    non-negative) `BRepAlgoAPI_Common` reading anywhere in the window - the
-    "no usable signal ANYWHERE," not just per-trial, case - in which case
-    `best_delta_radians` is `0.0` (the unchanged fixed convention) and the
-    caller should surface this as a real, non-blocking warning rather than
-    silently trusting an unsearched default."""
-    half_pitch = math.radians(180.0 / tooth_count_2)
+def _init_phase_search_worker(solid_1_brep: bytes, solid_2_base_brep: bytes, basis_2: ResolvedPlane) -> None:
+    """`ProcessPoolExecutor`'s own `initializer` for the phase-search pool -
+    runs once in each freshly-spawned worker process, before that worker
+    accepts any `_phase_search_trial` call. Deserializes both members' own
+    BREP bytes (`_shape_from_brep_bytes` - the same round-trip `_build_
+    member_solid`'s own worker already uses to cross a process boundary,
+    reused here rather than inventing a second serialization path) into
+    this worker's own module-level cache; `basis_2` is already a plain
+    dataclass of tuples of floats (`ResolvedPlane`), so it pickles across
+    the `spawn` boundary for free, same as every other plain-data argument
+    this module already passes to a worker."""
+    global _phase_search_worker_solid_1, _phase_search_worker_solid_2_base, _phase_search_worker_basis_2
+    _phase_search_worker_solid_1 = _shape_from_brep_bytes(solid_1_brep)
+    _phase_search_worker_solid_2_base = _shape_from_brep_bytes(solid_2_base_brep)
+    _phase_search_worker_basis_2 = basis_2
 
-    def overlap_at(delta: float) -> float | None:
-        rotated = _rotated_about_axis(solid_2_base, basis_2, delta)
-        return _common_overlap_volume(solid_1, rotated)
 
-    grid_deltas = [
-        -half_pitch + 2 * half_pitch * i / (_PHASE_SEARCH_GRID_POINTS - 1)
-        for i in range(_PHASE_SEARCH_GRID_POINTS)
-    ]
-    scored = [(overlap_at(delta), delta) for delta in grid_deltas]
+def _phase_search_trial(delta: float) -> float | None:
+    """One grid-scan trial, run in a phase-search worker process against
+    its own already-deserialized `_phase_search_worker_solid_1`/`_phase_
+    search_worker_solid_2_base`/`_phase_search_worker_basis_2` (set once by
+    `_init_phase_search_worker`, never re-sent). Identical math to the
+    original single-process `overlap_at` closure this replaces - one rigid
+    rotation of `solid_2_base` by `delta` about `basis_2`'s own axis
+    (`_rotated_about_axis`) plus one real `BRepAlgoAPI_Common` (`_common_
+    overlap_volume`, including its own negative-mass "no usable signal"
+    guard) - just executed in a worker instead of the main process, so
+    concurrent trials genuinely run on separate cores."""
+    rotated = _rotated_about_axis(_phase_search_worker_solid_2_base, _phase_search_worker_basis_2, delta)
+    return _common_overlap_volume(_phase_search_worker_solid_1, rotated)
+
+
+def _phase_search_worker_count() -> int:
+    """Worker count for the phase-search pool - deliberately NOT the
+    member-build pool's own hardcoded `max_workers=2` (`resolve_bevel_pair_
+    from_bodies`'s own docstring: that pool only ever needs exactly 2,
+    since there are only ever exactly 2 members), since a grid scan can
+    have many more independent trials than that. `os.cpu_count() - 1`
+    leaves one core free for the phone's own UI/Termux/proot overhead
+    while the search runs (a judgment call, not on-device-validated - see
+    this module's own top-level "Cost/timeout" docstring for the broader
+    caveat); floored at 2 (never worth a single-worker "pool" when at least
+    2 cores are assumed available for the member builds that already ran
+    immediately before this) and capped at `_PHASE_SEARCH_GRID_POINTS - 1`
+    (no point paying for more workers than the full tier could ever
+    schedule at once - the draft tier alone would leave some idle)."""
+    cpu_count = os.cpu_count() or 2
+    return max(2, min(cpu_count - 1, _PHASE_SEARCH_GRID_POINTS - 1))
+
+
+def _parallel_grid_scan(executor: ProcessPoolExecutor, deltas: list[float]) -> list[tuple[float | None, float]]:
+    """Submits one `_phase_search_trial` call per `delta` to `executor`
+    (already constructed, already `_init_phase_search_worker`-initialized)
+    and collects every result - genuinely concurrent (all deltas submitted
+    before any result is awaited), unlike the original single-process
+    algorithm's own sequential list comprehension it replaces. Returns
+    `(overlap, delta)` pairs in the same shape `_run_phase_search_tier`'s
+    own `min`/filter logic below already expects (mirroring the pre-tiering
+    code's own `scored` list)."""
+    futures = [executor.submit(_phase_search_trial, delta) for delta in deltas]
+    return [(future.result(), delta) for future, delta in zip(futures, deltas)]
+
+
+def _best_of_scored(scored: list[tuple[float | None, float]]) -> tuple[float, float] | None:
+    """Picks the lowest-overlap `(delta, overlap)` pair out of a grid
+    scan's own `(overlap, delta)` results, ignoring any `None` ("unusable
+    trial" - a failed/negative-mass `BRepAlgoAPI_Common` reading, `_common_
+    overlap_volume`'s own guard) entries - `None` if EVERY trial in the
+    batch was unusable. Deliberately a plain function over an already-
+    collected list, independent of whether that list came from a real
+    parallel `_parallel_grid_scan` or a hand-built one - so a worker-
+    failure-tolerance test can exercise "some trials came back `None`, does
+    the tier still resolve from the rest" directly, without needing to
+    force a real `ProcessPoolExecutor` worker to fail."""
     usable = [(overlap, delta) for overlap, delta in scored if overlap is not None]
     if not usable:
-        return 0.0, None
+        return None
     best_overlap, best_delta = min(usable, key=lambda pair: pair[0])
+    return best_delta, best_overlap
 
-    step = 2 * half_pitch / (_PHASE_SEARCH_GRID_POINTS - 1)
+
+def _run_phase_search_tier(
+    executor: ProcessPoolExecutor,
+    solid_1: TopoDS_Shape,
+    solid_2_base: TopoDS_Shape,
+    basis_2: ResolvedPlane,
+    half_pitch: float,
+    grid_points: int,
+    refine_iterations: int,
+    zero_delta_overlap: float | None,
+) -> tuple[float, float | None]:
+    """One grid-scan-plus-golden-section-refine tier - the same algorithm
+    the original single-tier `_search_meshing_phase` ran unconditionally,
+    now parameterized by `grid_points`/`refine_iterations` so `_search_
+    meshing_phase` below can run it once at draft size and, only if that's
+    not good enough, again at full size against the SAME already-open
+    `executor` (constructing a `ProcessPoolExecutor` - a fresh `spawn`
+    interpreter per worker - is real, non-negligible cost of its own; both
+    tiers sharing one pool is why `_search_meshing_phase` opens it exactly
+    once rather than once per tier).
+
+    `zero_delta_overlap` is the delta=0 reading `_search_meshing_phase`
+    already computed in-process as its own warm-start check, BEFORE this
+    tier (or this pool) ever runs - reused here instead of re-submitting
+    delta=0 to the pool a second time, since `grid_points` is always odd
+    (both tiers), so the window's own center is always exactly one of this
+    tier's grid points.
+
+    The grid scan itself runs in parallel (`_parallel_grid_scan`); the
+    golden-section refine stays serial, directly against the already-in-
+    memory `solid_1`/`solid_2_base` in THIS (the main) process - no BREP
+    round-trip - because it's inherently sequential/adaptive (each step's
+    bracket depends on the last) and a minority of trials even after
+    tiering, not worth forcing into the pool.
+
+    Returns `(best_delta_radians, best_overlap_mm3)`, `best_overlap_mm3`
+    `None` (and `best_delta_radians` `0.0`) if not even one trial in this
+    tier - grid or refine - produced a usable reading anywhere in the
+    window, mirroring the original function's own "no usable signal
+    ANYWHERE" contract."""
+    grid_deltas = [-half_pitch + 2 * half_pitch * i / (grid_points - 1) for i in range(grid_points)]
+    zero_index = grid_points // 2  # grid_points is odd - this is exactly the window's own center.
+    pool_deltas = grid_deltas[:zero_index] + grid_deltas[zero_index + 1 :]
+    scored = [(zero_delta_overlap, 0.0)] + _parallel_grid_scan(executor, pool_deltas)
+    best = _best_of_scored(scored)
+    if best is None:
+        return 0.0, None
+    best_delta, best_overlap = best
+
+    step = 2 * half_pitch / (grid_points - 1)
 
     def f(delta: float) -> float:
-        overlap = overlap_at(delta)
+        rotated = _rotated_about_axis(solid_2_base, basis_2, delta)
+        overlap = _common_overlap_volume(solid_1, rotated)
         return overlap if overlap is not None else math.inf
 
-    refined_delta, refined_overlap = _golden_section_minimize(
-        f, best_delta - step, best_delta + step, _PHASE_SEARCH_REFINE_ITERATIONS
-    )
+    refined_delta, refined_overlap = _golden_section_minimize(f, best_delta - step, best_delta + step, refine_iterations)
     if refined_overlap < best_overlap:
         return refined_delta, refined_overlap
     return best_delta, best_overlap
+
+
+def _search_meshing_phase(
+    solid_1: TopoDS_Shape, solid_2_base: TopoDS_Shape, basis_2: ResolvedPlane, tooth_count_2: int
+) -> tuple[float, float | None]:
+    """Finds the extra phase delta (radians, applied on top of `solid_2_
+    base`'s own already-baked-in fixed-convention rotation) that minimizes
+    real measured overlap between `solid_1` and a rotated `solid_2_base` -
+    `docs/gear-design/12-spiral-bevel-gear.md`'s own Spike C, go/no-go: GO.
+    Same external contract as the original implementation (same signature,
+    same return shape, same "delta=0 is always a candidate, so this can
+    never do worse than not searching at all" guarantee) - rebuilt
+    internally for speed, per this module's own top-level algorithm
+    docstring above, once on-device feedback showed the original fixed
+    ~33-trial budget could take up to ~9 minutes on slower hardware.
+
+    Three stages, cheapest first, each skipped entirely once a candidate is
+    already good enough (`_PHASE_SEARCH_EARLY_EXIT_OVERLAP_MM3`):
+
+    1. **Warm start**: measure delta=0 directly against the already-built
+       `solid_1`/`solid_2_base` - no rotation, no `ProcessPoolExecutor`, no
+       BREP serialization. Per `13-spiral-bevel-pair.md`'s own Spike C
+       table, every *resolvable* (non-tooth-count-symmetric) ratio it
+       tested already lands here, at essentially zero real cost.
+    2. **Draft tier**: a cheap grid-plus-refine pass (`_PHASE_SEARCH_DRAFT_
+       GRID_POINTS`/`_PHASE_SEARCH_DRAFT_REFINE_ITERATIONS`) via a freshly
+       opened, parallel worker pool.
+    3. **Full tier**: the original fixed budget (`_PHASE_SEARCH_GRID_
+       POINTS`/`_PHASE_SEARCH_REFINE_ITERATIONS`), reusing the SAME pool
+       stage 2 already opened.
+
+    **Monotonicity guard**: since stage 3 only ever runs when stage 2
+    wasn't good enough, and stage 3's own window/grid is a strict superset
+    in resolution of stage 2's (same window, more points), stage 3 should
+    never do worse - but its own golden-section refine starts from a
+    different bracket than stage 2's, so this is confirmed rather than
+    assumed: the two tiers' own final results are compared directly before
+    returning, and the better of the two wins, so this function's own
+    worst-case result is never worse than running stage 3 alone would have
+    been.
+
+    Returns `(best_delta_radians, best_overlap_mm3)` - `best_overlap_mm3`
+    `None` (with `best_delta_radians` `0.0`) only if NEITHER tier found
+    even one usable reading anywhere in the window, the same "no usable
+    signal ANYWHERE" case the caller (`resolve_bevel_pair_from_bodies`)
+    already surfaces as a real, non-blocking warning."""
+    zero_overlap = _common_overlap_volume(solid_1, solid_2_base)
+    if zero_overlap is not None and zero_overlap <= _PHASE_SEARCH_EARLY_EXIT_OVERLAP_MM3:
+        return 0.0, zero_overlap
+
+    half_pitch = math.radians(180.0 / tooth_count_2)
+    solid_1_brep = _shape_to_brep_bytes(solid_1)
+    solid_2_base_brep = _shape_to_brep_bytes(solid_2_base)
+    # `spawn`, not the platform-default `fork` - the same real, on-device-
+    # confirmed OCCT-post-fork-deadlock hazard `resolve_bevel_pair_from_
+    # bodies`'s own member-build pool already documents, equally applicable
+    # here (this process has already imported OCCT by the time this pool
+    # is opened).
+    mp_context = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(
+        max_workers=_phase_search_worker_count(),
+        mp_context=mp_context,
+        initializer=_init_phase_search_worker,
+        initargs=(solid_1_brep, solid_2_base_brep, basis_2),
+    ) as executor:
+        draft_delta, draft_overlap = _run_phase_search_tier(
+            executor,
+            solid_1,
+            solid_2_base,
+            basis_2,
+            half_pitch,
+            _PHASE_SEARCH_DRAFT_GRID_POINTS,
+            _PHASE_SEARCH_DRAFT_REFINE_ITERATIONS,
+            zero_overlap,
+        )
+        if draft_overlap is not None and draft_overlap <= _PHASE_SEARCH_EARLY_EXIT_OVERLAP_MM3:
+            return draft_delta, draft_overlap
+
+        full_delta, full_overlap = _run_phase_search_tier(
+            executor,
+            solid_1,
+            solid_2_base,
+            basis_2,
+            half_pitch,
+            _PHASE_SEARCH_GRID_POINTS,
+            _PHASE_SEARCH_REFINE_ITERATIONS,
+            zero_overlap,
+        )
+
+    if draft_overlap is None:
+        return full_delta, full_overlap
+    if full_overlap is None:
+        return draft_delta, draft_overlap
+    return (full_delta, full_overlap) if full_overlap <= draft_overlap else (draft_delta, draft_overlap)
 
 
 def _shape_to_brep_bytes(shape: TopoDS_Shape) -> bytes:
