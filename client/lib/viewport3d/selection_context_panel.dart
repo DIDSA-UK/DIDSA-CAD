@@ -69,25 +69,6 @@ class SelectionContextPanel extends StatelessWidget {
   /// for a disabled one" contract as [onMirror].
   final VoidCallback? onPattern;
 
-  /// Boolean family, first entry: fired when the user taps an *enabled*
-  /// Merge button (2+ Bodies selected - see `selection_actions.dart`'s
-  /// `contextActionsFor`) - same "never called for a disabled one" contract
-  /// as [onMirror]/[onPattern].
-  final VoidCallback? onMerge;
-
-  /// Boolean family, Subtract/Common: fired when the user taps an *enabled*
-  /// Subtract/Common button (2+ Bodies selected - see
-  /// `selection_actions.dart`'s `contextActionsFor`) - same "never called
-  /// for a disabled one" contract as [onMerge].
-  final VoidCallback? onSubtract;
-  final VoidCallback? onCommon;
-
-  /// Boolean family, fourth/last entry: fired when the user taps an
-  /// *enabled* Split button (a single Body selected - see
-  /// `selection_actions.dart`'s `contextActionsFor`) - same "never called
-  /// for a disabled one" contract as [onMirror]/[onPattern].
-  final VoidCallback? onSplit;
-
   const SelectionContextPanel({
     super.key,
     required this.selectedEntities,
@@ -100,10 +81,6 @@ class SelectionContextPanel extends StatelessWidget {
     this.onNewSketch,
     this.onMirror,
     this.onPattern,
-    this.onMerge,
-    this.onSubtract,
-    this.onCommon,
-    this.onSplit,
   });
 
   @override
@@ -174,14 +151,6 @@ class SelectionContextPanel extends StatelessWidget {
         return action.enabled ? onMirror : null;
       case 'Pattern':
         return action.enabled ? onPattern : null;
-      case 'Merge':
-        return action.enabled ? onMerge : null;
-      case 'Subtract':
-        return action.enabled ? onSubtract : null;
-      case 'Common':
-        return action.enabled ? onCommon : null;
-      case 'Split':
-        return action.enabled ? onSplit : null;
       default:
         return null;
     }

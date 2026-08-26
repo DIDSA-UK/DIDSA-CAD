@@ -71,7 +71,7 @@ from OCC.Core.Bnd import Bnd_Box
 from OCC.Core.BRepBndLib import brepbndlib
 from OCC.Core.Geom import Geom_BezierCurve
 from OCC.Core.GProp import GProp_GProps
-from OCC.Core.gp import gp_Ax1, gp_Circ, gp_Dir, gp_Pln, gp_Pnt, gp_Trsf, gp_Vec
+from OCC.Core.gp import gp_Ax1, gp_Circ, gp_Dir, gp_Elips, gp_Pln, gp_Pnt, gp_Trsf, gp_Vec
 from OCC.Core.TColgp import TColgp_Array1OfPnt
 from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_VERTEX
 from OCC.Core.TopExp import TopExp_Explorer
@@ -80,6 +80,7 @@ from OCC.Core.TopoDS import TopoDS_Shape, TopoDS_Wire, topods
 from app.document.create_plane import resolve_sketch_basis
 from app.document.extrude import (
     EXTRUDABLE_STATUSES,
+    _ellipse_axis,
     arc_axis,
     basis_point_to_world,
     compute_part_bodies,
@@ -89,7 +90,7 @@ from app.document.extrude import (
 from app.document.models import LoftFeature, LoftSection, Part, ResolvedPlane, SketchFeature
 from app.document.plane_geometry import is_mirrored_basis
 from app.document.sweep import resolve_path_wire
-from app.sketch.models import Arc, Sketch, SketchEntityRef, SketchEntityType, Spline
+from app.sketch.models import Arc, EllipseArc, Sketch, SketchEntityRef, SketchEntityType, Spline
 from app.sketch.profile import (
     OpenChain,
     OpenChainStatus,
@@ -292,11 +293,13 @@ def wire_for_open_chain(sketch: Sketch, chain: OpenChain, basis: ResolvedPlane) 
     """Builds an *unclosed* wire from `chain` - the open-profile counterpart
     to `app.document.extrude.wire_for_profile`, used only for a thin/sheet
     Loft section (see `_resolve_open_section`). Reuses the identical
-    Line/Arc/Spline per-hop edge construction `wire_for_profile`'s own
-    mixed-chain branch uses, just walking `chain.line_ids` (one fewer entry
-    than `chain.point_ids`, no wrap-around hop) instead of a closed
+    Line/Arc/EllipseArc/Spline per-hop edge construction `wire_for_profile`'s
+    own mixed-chain branch uses, just walking `chain.line_ids` (one fewer
+    entry than `chain.point_ids`, no wrap-around hop) instead of a closed
     Profile's `line_ids`/`point_ids` pair."""
-    if not any(isinstance(sketch.entities.get(entity_id), (Arc, Spline)) for entity_id in chain.line_ids):
+    if not any(
+        isinstance(sketch.entities.get(entity_id), (Arc, EllipseArc, Spline)) for entity_id in chain.line_ids
+    ):
         polygon = BRepBuilderAPI_MakePolygon()
         for point_id in chain.point_ids:
             point = sketch.points[point_id]
@@ -318,6 +321,25 @@ def wire_for_open_chain(sketch: Sketch, chain: OpenChain, basis: ResolvedPlane) 
             p1, p2 = (end, start) if is_mirrored_basis(basis) else (start, end)
             edge = BRepBuilderAPI_MakeEdge(
                 gp_Circ(axis, radius),
+                basis_point_to_world(basis, p1.x, p1.y),
+                basis_point_to_world(basis, p2.x, p2.y),
+            ).Edge()
+            wire_maker.Add(edge)
+        elif isinstance(entity, EllipseArc):
+            # Mirrors wire_for_profile's own identical EllipseArc branch -
+            # see that branch's own doc comment for the P1/P2-swap
+            # reasoning and its "reasoned-but-unverified on a mirrored
+            # basis" caveat, which applies here unchanged.
+            center = sketch.points[entity.center_point_id]
+            major_radius = entity.major_radius(sketch.points)
+            minor_radius = entity.minor_radius(sketch.points)
+            rotation = entity.rotation(sketch.points)
+            axis = _ellipse_axis(basis, center.x, center.y, rotation)
+            start = sketch.points[entity.start_point_id]
+            end = sketch.points[entity.end_point_id]
+            p1, p2 = (end, start) if is_mirrored_basis(basis) else (start, end)
+            edge = BRepBuilderAPI_MakeEdge(
+                gp_Elips(axis, major_radius, minor_radius),
                 basis_point_to_world(basis, p1.x, p1.y),
                 basis_point_to_world(basis, p2.x, p2.y),
             ).Edge()

@@ -48,6 +48,10 @@ from app.document.gear_chain_math import (
     chain_overall_ratio,
     compound_transition_ratio,
     mesh_link_ratio,
+    meshing_phase_base,
+    pitch_radius,
+    propagate_meshing_phase,
+    rack_meshing_phase_base,
     resolve_chain as resolve_chain_positions_and_interference,
 )
 from app.document.bevel_math import (
@@ -234,7 +238,7 @@ from app.document.schemas import (
     SweepFeatureResponse,
     SweepFeatureUpdate,
 )
-from app.document.split import resolve_split
+from app.document.split import CONNECTABLE_CURVE_ENTITY_TYPES, resolve_split
 from app.document.sweep import resolve_sweep
 from app.document.store import get_document, get_part_or_404, replace_document
 from app.session_context import bind_session_id
@@ -431,6 +435,7 @@ def _split_tool_ref_to_domain(schema: SplitToolRefSchema) -> SplitToolRef:
     return SplitToolRef(
         plane_ref=_plane_ref_to_domain(schema.plane_ref) if schema.plane_ref else None,
         surface_feature_id=schema.surface_feature_id,
+        sketch_line_ref=_sketch_entity_ref_to_domain(schema.sketch_line_ref) if schema.sketch_line_ref else None,
     )
 
 
@@ -438,6 +443,7 @@ def _split_tool_ref_to_schema(ref: SplitToolRef) -> SplitToolRefSchema:
     return SplitToolRefSchema(
         plane_ref=_plane_ref_to_schema(ref.plane_ref) if ref.plane_ref else None,
         surface_feature_id=ref.surface_feature_id,
+        sketch_line_ref=_sketch_entity_ref_to_schema(ref.sketch_line_ref) if ref.sketch_line_ref else None,
     )
 
 
@@ -1131,30 +1137,45 @@ def _validate_split_target_body_id(part: Part, target_body_id: str) -> None:
 
 def _validate_split_tool_ref(part: Part, tool: SplitToolRef) -> None:
     """Boolean family, fourth/last entry: enforces exactly one of `plane_
-    ref`/`surface_feature_id` is supplied, matching `SplitToolRef`'s own
-    "one of two" convention (see its docstring), and that whichever one is
-    supplied is itself well-formed: a `plane_ref` is validated by the
-    existing `_validate_plane_ref` (already shared by `CreatePlaneFeature`/
-    `MirrorFeature`), and a `surface_feature_id` must name a real
-    `SurfaceFeature` in this Part (checked via `isinstance`, not just
+    ref`/`surface_feature_id`/`sketch_line_ref` is supplied, matching
+    `SplitToolRef`'s own "one of three" convention (see its docstring), and
+    that whichever one is supplied is itself well-formed: a `plane_ref` is
+    validated by the existing `_validate_plane_ref` (already shared by
+    `CreatePlaneFeature`/`MirrorFeature`), a `surface_feature_id` must name
+    a real `SurfaceFeature` in this Part (checked via `isinstance`, not just
     `part.get_feature(...) is not None` - any other Feature type id would
-    otherwise silently pass this check)."""
-    set_count = sum(x is not None for x in (tool.plane_ref, tool.surface_feature_id))
+    otherwise silently pass this check), and a `sketch_line_ref` must have
+    an `entity_type` that is actually a connectable curve (`app.document.
+    split.CONNECTABLE_CURVE_ENTITY_TYPES`) - the same typed-slot check
+    `edge_ref`/`face_ref` already get elsewhere in this module. Whether the
+    referenced Sketch/entity actually still exists is left to `resolve_
+    split`'s own eager-resolve-to-validate call (same "structural shape here,
+    referential/geometric validity there" split every other tool kind
+    already gets)."""
+    set_count = sum(x is not None for x in (tool.plane_ref, tool.surface_feature_id, tool.sketch_line_ref))
     if set_count != 1:
         raise HTTPException(
             status_code=422,
-            detail="SplitFeature tool must have exactly one of plane_ref or surface_feature_id",
+            detail="SplitFeature tool must have exactly one of plane_ref, surface_feature_id, or "
+            "sketch_line_ref",
         )
     if tool.plane_ref is not None:
         _validate_plane_ref(part, tool.plane_ref)
-    else:
-        assert tool.surface_feature_id is not None
+    elif tool.surface_feature_id is not None:
         surface_feature = part.get_feature(tool.surface_feature_id)
         if not isinstance(surface_feature, SurfaceFeature):
             raise HTTPException(
                 status_code=400,
                 detail="SplitFeature tool surface_feature_id does not refer to a SurfaceFeature "
                 "in this Part",
+            )
+    else:
+        assert tool.sketch_line_ref is not None
+        if tool.sketch_line_ref.entity_type not in CONNECTABLE_CURVE_ENTITY_TYPES:
+            raise HTTPException(
+                status_code=422,
+                detail="SplitFeature tool sketch_line_ref must reference a connectable curve entity "
+                "(line, arc, ellipse_arc, or spline)",
             )
 
 
@@ -4086,6 +4107,40 @@ def _chain_stage_math_spec(stage: GearChainStage, groups: dict[str, GearGroup]) 
     )
 
 
+# One meshing junction's propagated phase state - mirrors `app.document.
+# gear_chain._PhaseState` exactly (kind, pitch_radius-or-None-for-rack,
+# phase-value; see `_preview_rack_rotation`'s docstring for why this is
+# duplicated rather than imported).
+_PreviewPhaseState = tuple[ChainMemberKind, float | None, float]
+
+
+def _preview_member_phase(
+    member_spec: ChainMemberSpec, predecessor: _PreviewPhaseState | None, incoming_direction: float | None
+) -> float:
+    """Mirrors `app.document.gear_chain._member_phase` exactly (see
+    `_preview_rack_rotation`'s own docstring for why this is duplicated
+    rather than imported) - the phase value (radians for a round EXTERNAL/
+    INTERNAL member, mm along its own rotated tooth-row axis for a RACK) to
+    apply to `member_spec` so one of its own tooth gaps sits at the
+    meshing contact point with `predecessor` - `0.0` for the first member
+    in a chain (`predecessor is None`), matching `meshing_phase_base`'s own
+    documented zero-reference baseline."""
+    is_rack = member_spec.kind == ChainMemberKind.RACK
+    radius = None if is_rack else pitch_radius(member_spec)
+    if predecessor is None:
+        return 0.0
+    predecessor_kind, predecessor_radius, predecessor_phase = predecessor
+    assert incoming_direction is not None
+    base_value = (
+        rack_meshing_phase_base(member_spec.tooth_count, math.pi * member_spec.module)
+        if is_rack
+        else meshing_phase_base(member_spec.tooth_count, predecessor_kind, incoming_direction)
+    )
+    return propagate_meshing_phase(
+        predecessor_kind, predecessor_radius, predecessor_phase, member_spec.kind, radius, incoming_direction, base_value
+    )
+
+
 def _preview_member_outline(
     stage_index: int,
     label: str,
@@ -4123,7 +4178,7 @@ def _preview_member_outline(
         pressure_angle_degrees=member_spec.pressure_angle_degrees,
         is_internal=is_internal,
     )
-    outline_points = _preview_transform_profile(full_gear_profile_points(geometry), center)
+    outline_points = _preview_transform_profile(full_gear_profile_points(geometry), center, rotation)
     return GearPreviewMember(
         stage_index=stage_index,
         label=label,
@@ -4163,8 +4218,21 @@ def _gear_preview_chain_response(payload: GearPreviewChainRequest) -> GearPrevie
         )
 
         members: list[GearPreviewMember] = []
+        # Propagated meshing-phase state, carried stage to stage - mirrors
+        # `app.document.gear_chain.resolve_gear_chain_from_bodies`'s own
+        # `prev_state` loop variable exactly (see `_preview_member_phase`'s
+        # docstring for why this duplication exists).
+        prev_state: _PreviewPhaseState | None = None
         for i, (stage, spec, resolved_stage) in enumerate(zip(stages, stage_specs, resolved.stages)):
             if spec.is_compound:
+                rotation_a = _preview_member_phase(spec.compound_member_a, prev_state, resolved_stage.incoming_direction)
+                # `compound_member_b` (the outgoing-facing member) gets a
+                # fixed 0.0 reference, decoupled from `compound_member_a`'s
+                # own rotation - mirrors `resolve_gear_chain_from_bodies`'s
+                # own decoupling exactly (see that function's inline
+                # comment for why: no shared-shaft "keyed at a specific
+                # relative angle" constraint exists here to preserve).
+                prev_state = (spec.compound_member_b.kind, pitch_radius(spec.compound_member_b), 0.0)
                 members.append(
                     _preview_member_outline(
                         i,
@@ -4173,6 +4241,7 @@ def _gear_preview_chain_response(payload: GearPreviewChainRequest) -> GearPrevie
                         stage.compound_member_a.group_id,
                         groups_by_id[stage.compound_member_a.group_id].display_color,
                         resolved_stage.center,
+                        rotation_a,
                     )
                 )
                 members.append(
@@ -4186,11 +4255,12 @@ def _gear_preview_chain_response(payload: GearPreviewChainRequest) -> GearPrevie
                     )
                 )
             else:
+                phase = _preview_member_phase(spec.member, prev_state, resolved_stage.incoming_direction)
+                is_rack = spec.member.kind == ChainMemberKind.RACK
                 rotation = (
-                    _preview_rack_rotation(resolved_stage, payload.start_direction_degrees)
-                    if spec.member.kind == ChainMemberKind.RACK
-                    else 0.0
+                    _preview_rack_rotation(resolved_stage, payload.start_direction_degrees) if is_rack else phase
                 )
+                prev_state = (spec.member.kind, None if is_rack else pitch_radius(spec.member), phase)
                 members.append(
                     _preview_member_outline(
                         i,
@@ -4302,13 +4372,43 @@ def _gear_preview_planetary_response(payload: GearPreviewPlanetaryRequest) -> Ge
             f"outer reach (dedendum diameter {ring_geometry.dedendum_radius * 2!r})"
         )
 
+    # Meshing-phase alignment - mirrors `app.document.planetary_gear.
+    # resolve_planetary_from_bodies`'s own phase-computation block exactly
+    # (see that function's inline comment for the full derivation/real-OCCT
+    # verification this reuses) - duplicated here rather than imported, per
+    # this module's established "duplicate the cheap math" precedent
+    # (`_preview_rack_rotation`'s own docstring).
+    sun_rotation = 0.0
+    planet_0_azimuth = 0.0
+    planet_0_base = meshing_phase_base(planet_tooth_count, ChainMemberKind.EXTERNAL, planet_0_azimuth)
+    planet_0_rotation = propagate_meshing_phase(
+        ChainMemberKind.EXTERNAL,
+        sun_geometry.pitch_radius,
+        sun_rotation,
+        ChainMemberKind.EXTERNAL,
+        planet_geometry.pitch_radius,
+        planet_0_azimuth,
+        planet_0_base,
+    )
+    ring_azimuth = planet_0_azimuth + math.pi
+    ring_base = meshing_phase_base(payload.ring_tooth_count, ChainMemberKind.EXTERNAL, ring_azimuth)
+    ring_rotation = propagate_meshing_phase(
+        ChainMemberKind.EXTERNAL,
+        planet_geometry.pitch_radius,
+        planet_0_rotation,
+        ChainMemberKind.INTERNAL,
+        ring_geometry.pitch_radius,
+        ring_azimuth,
+        ring_base,
+    )
+
     members = [
         GearPreviewMember(
             stage_index=0,
             label="sun",
             member_type="external",
             center=(0.0, 0.0),
-            outline_points=full_gear_profile_points(sun_geometry),
+            outline_points=_preview_transform_profile(full_gear_profile_points(sun_geometry), (0.0, 0.0), sun_rotation),
             pitch_radius=sun_geometry.pitch_radius,
             base_radius=sun_geometry.base_radius,
             addendum_radius=sun_geometry.addendum_radius,
@@ -4319,7 +4419,7 @@ def _gear_preview_planetary_response(payload: GearPreviewPlanetaryRequest) -> Ge
             label="ring",
             member_type="internal",
             center=(0.0, 0.0),
-            outline_points=full_gear_profile_points(ring_geometry),
+            outline_points=_preview_transform_profile(full_gear_profile_points(ring_geometry), (0.0, 0.0), ring_rotation),
             pitch_radius=ring_geometry.pitch_radius,
             base_radius=ring_geometry.base_radius,
             addendum_radius=ring_geometry.addendum_radius,
@@ -4332,13 +4432,23 @@ def _gear_preview_planetary_response(payload: GearPreviewPlanetaryRequest) -> Ge
     for i in range(payload.planet_count):
         angle = 2 * math.pi * i / payload.planet_count
         center = (orbit_radius * math.cos(angle), orbit_radius * math.sin(angle))
+        planet_base = meshing_phase_base(planet_tooth_count, ChainMemberKind.EXTERNAL, angle)
+        planet_rotation = propagate_meshing_phase(
+            ChainMemberKind.EXTERNAL,
+            sun_geometry.pitch_radius,
+            sun_rotation,
+            ChainMemberKind.EXTERNAL,
+            planet_geometry.pitch_radius,
+            angle,
+            planet_base,
+        )
         members.append(
             GearPreviewMember(
                 stage_index=2 + i,
                 label=f"planet_{i}",
                 member_type="external",
                 center=center,
-                outline_points=_preview_transform_profile(planet_outline, center),
+                outline_points=_preview_transform_profile(planet_outline, center, planet_rotation),
                 pitch_radius=planet_geometry.pitch_radius,
                 base_radius=planet_geometry.base_radius,
                 addendum_radius=planet_geometry.addendum_radius,

@@ -11,7 +11,22 @@ import math
 import pytest
 from fastapi.testclient import TestClient
 
-from app.document.gear_math import minimum_profile_shift_to_avoid_undercut
+from app.document.gear_chain_math import (
+    ChainMemberKind,
+    ChainMemberSpec,
+    ChainStageSpec,
+    meshing_phase_base,
+    propagate_meshing_phase,
+    resolve_chain,
+)
+from app.document.gear_math import (
+    full_gear_profile_points,
+    full_rack_profile_points,
+    minimum_profile_shift_to_avoid_undercut,
+    planetary_planet_tooth_count,
+    rack_tooth_geometry,
+    spur_gear_geometry,
+)
 from app.main import app
 from tests.conftest import TEST_API_KEY
 
@@ -254,6 +269,154 @@ def test_chain_preview_reproduces_spike_1_worked_example_interference():
     assert pairs == {(1, 3), (1, 4), (2, 4)}
 
 
+# --- Chain preview meshing-phase alignment ----------------------------------
+#
+# `app.document.gear_chain`'s own real `GearChainFeature` construction fix
+# (`gear_chain_math.meshing_phase_base`/`propagate_meshing_phase`, verified
+# there via real OCCT boolean intersection) rotates every non-first round
+# member so a tooth *gap*, not a tooth, meets its neighbour - but that fix
+# only ever touched the OCCT-dependent `resolve_gear_chain_from_bodies`
+# construction path, leaving this preview endpoint (a completely separate
+# code path, per this module's own established "duplicate the cheap math"
+# convention - see `_preview_rack_rotation`'s docstring in router.py)
+# silently unrotated: every round member's `outline_points` came back at
+# rotation 0.0 regardless of what its neighbours actually needed, which is
+# exactly the symptom a user reported directly (tooth-on-tooth, not
+# tooth-to-gap, in the 2D preview - the real construction was already
+# correct). These tests assert the preview's own `outline_points` reflect
+# the identical rotation `meshing_phase_base`/`propagate_meshing_phase`
+# predict - not a re-verification of the formula itself (already covered,
+# with real OCCT, by `test_gear_chain_math.py`/`test_gear_chain_feature.py`),
+# just that the preview actually calls it now.
+
+
+def _rotated_translated_points(points, center, rotation):
+    """Mirrors `router._preview_transform_profile`'s own rotate-then-
+    translate formula exactly - the independent expected-value computation
+    these tests check the preview's `outline_points` against."""
+    cos_a, sin_a = math.cos(rotation), math.sin(rotation)
+    return [(center[0] + x * cos_a - y * sin_a, center[1] + x * sin_a + y * cos_a) for x, y in points]
+
+
+def _assert_points_match(actual, expected, *, abs_tol=1e-6):
+    assert len(actual) == len(expected)
+    for (ax, ay), (ex, ey) in zip(actual, expected):
+        assert ax == pytest.approx(ex, abs=abs_tol)
+        assert ay == pytest.approx(ey, abs=abs_tol)
+
+
+def test_chain_preview_applies_meshing_phase_rotation_on_a_bent_three_stage_chain():
+    """The same bent 3-stage case (36T/40T at a -60deg turn/48T, module 3)
+    that `test_gear_chain_feature.py`'s own `test_three_stage_chain_with_a_
+    turn_meshes_without_overlap` uses for the real construction - the exact
+    real-OCCT counterexample that drove `propagate_meshing_phase`'s own
+    predecessor-rotation-aware, bent-junction-aware correction (a per-
+    junction-only rule passes at the first junction but leaves real overlap
+    at the second - see that module's own notes). Stage 0 always stays at
+    this module's 0.0 zero-reference (no predecessor); stages 1 and 2 each
+    need their own nonzero, junction-specific rotation - a preview that
+    still hardcoded rotation=0.0 (this bug, before the fix) would leave all
+    three outlines unrotated, which this test's own sanity-check assertions
+    on the independently-computed expected rotations rule out."""
+    module = 3.0
+    tooth_counts = (36, 40, 48)
+    specs = [
+        ChainStageSpec(member=ChainMemberSpec(ChainMemberKind.EXTERNAL, module, 20.0, tooth_counts[0], 10.0)),
+        ChainStageSpec(
+            turn_angle_degrees=-60.0,
+            member=ChainMemberSpec(ChainMemberKind.EXTERNAL, module, 20.0, tooth_counts[1], 10.0),
+        ),
+        ChainStageSpec(member=ChainMemberSpec(ChainMemberKind.EXTERNAL, module, 20.0, tooth_counts[2], 10.0)),
+    ]
+    resolved = resolve_chain(specs, 0.0, 0.5)
+
+    stage0_rotation = 0.0
+    stage1_base = meshing_phase_base(tooth_counts[1], ChainMemberKind.EXTERNAL, resolved.stages[1].incoming_direction)
+    stage1_rotation = propagate_meshing_phase(
+        ChainMemberKind.EXTERNAL,
+        module * tooth_counts[0] / 2,
+        stage0_rotation,
+        ChainMemberKind.EXTERNAL,
+        module * tooth_counts[1] / 2,
+        resolved.stages[1].incoming_direction,
+        stage1_base,
+    )
+    stage2_base = meshing_phase_base(tooth_counts[2], ChainMemberKind.EXTERNAL, resolved.stages[2].incoming_direction)
+    stage2_rotation = propagate_meshing_phase(
+        ChainMemberKind.EXTERNAL,
+        module * tooth_counts[1] / 2,
+        stage1_rotation,
+        ChainMemberKind.EXTERNAL,
+        module * tooth_counts[2] / 2,
+        resolved.stages[2].incoming_direction,
+        stage2_base,
+    )
+    rotations = (stage0_rotation, stage1_rotation, stage2_rotation)
+    # A broken, still-hardcoded-to-0.0 preview would trivially satisfy
+    # "stage0 == 0.0" but not this - both junction corrections are real,
+    # nonzero, and distinct from each other (the bent-junction case this
+    # combination exists to exercise).
+    assert stage1_rotation != pytest.approx(0.0, abs=1e-9)
+    assert stage2_rotation != pytest.approx(stage1_rotation, abs=1e-9)
+
+    response = _chain_preview(
+        chain={
+            "groups": [{"id": "g1", "module": module, "pressure_angle_degrees": 20.0}],
+            "stages": [
+                {"member": {"member_type": "external", "group_id": "g1", "tooth_count": tooth_counts[0], "face_width": 10.0}},
+                {
+                    "turn_angle_degrees": -60.0,
+                    "member": {"member_type": "external", "group_id": "g1", "tooth_count": tooth_counts[1], "face_width": 10.0},
+                },
+                {"member": {"member_type": "external", "group_id": "g1", "tooth_count": tooth_counts[2], "face_width": 10.0}},
+            ],
+        }
+    )
+    assert response.status_code == 200, response.json()
+    members = response.json()["chain"]["members"]
+    assert len(members) == 3
+
+    for member, tooth_count, rotation in zip(members, tooth_counts, rotations):
+        geometry = spur_gear_geometry(module=module, tooth_count=tooth_count, pressure_angle_degrees=20.0, is_internal=False)
+        expected = _rotated_translated_points(full_gear_profile_points(geometry), member["center"], rotation)
+        _assert_points_match(member["outline_points"], expected)
+
+
+def test_chain_preview_rack_rotation_is_unaffected_by_the_meshing_phase_fix():
+    """`_preview_rack_rotation` (a rack's own perpendicular-to-the-segment
+    orientation, unrelated to tooth phase) was already correct before this
+    fix and must stay byte-identical. A 2-stage chain has only one segment,
+    whose direction is `start_direction_degrees` regardless of either
+    stage's own `turn_angle_degrees` (`resolve_chain_positions`'s own
+    `k == 0` special case - a per-stage turn only steers the segment
+    *leaving* a stage from the second segment onward), so this uses a
+    nonzero `start_direction_degrees` directly to get a genuinely bent
+    (not axis-aligned) segment."""
+    response = _chain_preview(
+        chain={
+            "groups": [{"id": "g1", "module": 3.0, "pressure_angle_degrees": 20.0}],
+            "stages": [
+                {"member": {"member_type": "external", "group_id": "g1", "tooth_count": 36, "face_width": 10.0}},
+                {"member": {"member_type": "rack", "group_id": "g1", "tooth_count": 15, "face_width": 10.0}},
+            ],
+            "start_direction_degrees": 25.0,
+        }
+    )
+    assert response.status_code == 200, response.json()
+    members = response.json()["chain"]["members"]
+    rack_member = members[1]
+    # Same formula `_preview_rack_rotation`/`gear_chain._rack_rotation`
+    # already used pre-fix: incoming_direction + pi/2 (the rack's own
+    # length axis, perpendicular to the segment it sits on).
+    incoming_direction = math.radians(25.0)
+    expected_rotation = incoming_direction + math.pi / 2
+    rack_geometry = rack_tooth_geometry(module=3.0, pressure_angle_degrees=20.0)
+    expected = _rotated_translated_points(
+        full_rack_profile_points(rack_geometry, 15), rack_member["center"], expected_rotation
+    )
+    _assert_points_match(rack_member["outline_points"], expected)
+
+
 def test_chain_preview_rejects_fewer_than_two_stages_as_422():
     response = _chain_preview(
         chain={
@@ -296,7 +459,57 @@ def _planetary_preview(**overrides) -> dict:
     return client.post("/document/gear/preview", json=payload)
 
 
+# --- Planetary preview meshing-phase alignment ------------------------------
+#
+# `app.document.planetary_gear.resolve_planetary_from_bodies`'s own real
+# construction fix (sun anchors the zero-reference; each planet's rotation
+# comes from its own sun mesh; the ring's rotation is solved once from
+# planet 0 - verified there via real OCCT boolean intersection, per that
+# module's own inline comment) never touched this preview's separate code
+# path either - see the chain preview's own equivalent section above for
+# the full story (same bug, same fix shape, generalized here from a
+# sequential chain to sun/ring/N-planets).
+
+
+def _planetary_expected_rotations(*, module, sun_teeth, ring_teeth, planet_count):
+    """Mirrors `planetary_gear.resolve_planetary_from_bodies`'s own phase-
+    computation block exactly (see that function's inline comment for the
+    full derivation) - the independent expected-value computation these
+    tests check the preview's `outline_points` against."""
+    planet_teeth = planetary_planet_tooth_count(sun_teeth, ring_teeth)
+    sun_pitch_radius = module * sun_teeth / 2
+    ring_pitch_radius = module * ring_teeth / 2
+    planet_pitch_radius = module * planet_teeth / 2
+
+    sun_rotation = 0.0
+    planet_0_azimuth = 0.0
+    planet_0_base = meshing_phase_base(planet_teeth, ChainMemberKind.EXTERNAL, planet_0_azimuth)
+    planet_0_rotation = propagate_meshing_phase(
+        ChainMemberKind.EXTERNAL, sun_pitch_radius, sun_rotation,
+        ChainMemberKind.EXTERNAL, planet_pitch_radius, planet_0_azimuth, planet_0_base,
+    )
+    ring_azimuth = planet_0_azimuth + math.pi
+    ring_base = meshing_phase_base(ring_teeth, ChainMemberKind.EXTERNAL, ring_azimuth)
+    ring_rotation = propagate_meshing_phase(
+        ChainMemberKind.EXTERNAL, planet_pitch_radius, planet_0_rotation,
+        ChainMemberKind.INTERNAL, ring_pitch_radius, ring_azimuth, ring_base,
+    )
+
+    planet_rotations = []
+    for i in range(planet_count):
+        phi = 2 * math.pi * i / planet_count
+        planet_base = meshing_phase_base(planet_teeth, ChainMemberKind.EXTERNAL, phi)
+        planet_rotations.append(
+            propagate_meshing_phase(
+                ChainMemberKind.EXTERNAL, sun_pitch_radius, sun_rotation,
+                ChainMemberKind.EXTERNAL, planet_pitch_radius, phi, planet_base,
+            )
+        )
+    return sun_rotation, ring_rotation, planet_rotations
+
+
 def test_planetary_preview_returns_sun_ring_and_evenly_spaced_planets():
+    module, sun_teeth, ring_teeth, planet_count = 2.0, 20, 60, 4
     response = _planetary_preview()
     assert response.status_code == 200, response.json()
     planetary = response.json()["planetary"]
@@ -316,6 +529,86 @@ def test_planetary_preview_returns_sun_ring_and_evenly_spaced_planets():
     assert planets[1]["center"][1] == pytest.approx(40.0, abs=1e-9)
     assert planetary["sun_to_planet_ratio"] == 1.0
     assert planetary["planet_to_ring_ratio"] == 3.0
+
+    # Tooth-phase check for the user's own exact reported combination
+    # (module=2, sun=20T, ring=60T, planet_count=4) - low enough tooth
+    # counts that real involute tip interference is a separate, expected,
+    # pre-existing confound (out of scope here, see this module's own
+    # meshing-phase section notes), so this only checks the *rotation*
+    # applied to each outline, not real geometric clearance.
+    sun_rotation, ring_rotation, planet_rotations = _planetary_expected_rotations(
+        module=module, sun_teeth=sun_teeth, ring_teeth=ring_teeth, planet_count=planet_count
+    )
+    sun_geometry = spur_gear_geometry(module=module, tooth_count=sun_teeth, pressure_angle_degrees=20.0, is_internal=False)
+    ring_geometry = spur_gear_geometry(module=module, tooth_count=ring_teeth, pressure_angle_degrees=20.0, is_internal=True)
+    planet_teeth = planetary_planet_tooth_count(sun_teeth, ring_teeth)
+    planet_geometry = spur_gear_geometry(module=module, tooth_count=planet_teeth, pressure_angle_degrees=20.0, is_internal=False)
+
+    _assert_points_match(
+        sun["outline_points"], _rotated_translated_points(full_gear_profile_points(sun_geometry), sun["center"], sun_rotation)
+    )
+    _assert_points_match(
+        ring["outline_points"], _rotated_translated_points(full_gear_profile_points(ring_geometry), ring["center"], ring_rotation)
+    )
+    for planet, rotation in zip(planets, planet_rotations):
+        _assert_points_match(
+            planet["outline_points"],
+            _rotated_translated_points(full_gear_profile_points(planet_geometry), planet["center"], rotation),
+        )
+
+
+def test_planetary_preview_applies_meshing_phase_rotation_at_tooth_counts_clear_of_the_undercut_confound():
+    """`test_planetary_gear_feature.py`'s own real-OCCT-verified safe
+    combination (sun 40T, ring 120T, planet_count 4, module 3) - clear of
+    the low-tooth-count involute tip interference confound its own
+    `test_sun_ring_and_four_planets_mesh_without_overlap` docstring
+    documents, so this test's own phase check can't be confused with that
+    separate, unrelated limitation."""
+    module, sun_teeth, ring_teeth, planet_count = 3.0, 40, 120, 4
+    response = _planetary_preview(
+        planetary={
+            "module": module,
+            "sun_tooth_count": sun_teeth,
+            "ring_tooth_count": ring_teeth,
+            "planet_count": planet_count,
+            "face_width": 10.0,
+            "ring_outer_diameter": module * (ring_teeth + 10),
+        }
+    )
+    assert response.status_code == 200, response.json()
+    members = response.json()["planetary"]["members"]
+    sun, ring = members[0], members[1]
+    planets = members[2:]
+    assert len(planets) == planet_count
+
+    sun_rotation, ring_rotation, planet_rotations = _planetary_expected_rotations(
+        module=module, sun_teeth=sun_teeth, ring_teeth=ring_teeth, planet_count=planet_count
+    )
+    sun_geometry = spur_gear_geometry(module=module, tooth_count=sun_teeth, pressure_angle_degrees=20.0, is_internal=False)
+    ring_geometry = spur_gear_geometry(module=module, tooth_count=ring_teeth, pressure_angle_degrees=20.0, is_internal=True)
+    planet_teeth = planetary_planet_tooth_count(sun_teeth, ring_teeth)
+    planet_geometry = spur_gear_geometry(module=module, tooth_count=planet_teeth, pressure_angle_degrees=20.0, is_internal=False)
+
+    _assert_points_match(
+        sun["outline_points"], _rotated_translated_points(full_gear_profile_points(sun_geometry), sun["center"], sun_rotation)
+    )
+    _assert_points_match(
+        ring["outline_points"], _rotated_translated_points(full_gear_profile_points(ring_geometry), ring["center"], ring_rotation)
+    )
+    for planet, rotation in zip(planets, planet_rotations):
+        _assert_points_match(
+            planet["outline_points"],
+            _rotated_translated_points(full_gear_profile_points(planet_geometry), planet["center"], rotation),
+        )
+    # Regression guard for the actual bug (every round member silently
+    # unrotated) - a broken preview would make every planet's rotation
+    # (and the ring's) come back as 0.0 regardless of its own orbital
+    # position; none of these do, and not every planet shares the same
+    # raw rotation value either (planet 0 vs planet 1, 90 degrees apart in
+    # orbit, land 180 degrees apart in raw rotation here).
+    assert ring_rotation != pytest.approx(0.0, abs=1e-9)
+    assert all(r != pytest.approx(0.0, abs=1e-9) for r in planet_rotations)
+    assert planet_rotations[0] != pytest.approx(planet_rotations[1], abs=1e-9)
 
 
 def test_planetary_preview_blocks_when_planet_tooth_count_is_not_a_positive_even_difference():

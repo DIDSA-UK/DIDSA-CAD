@@ -809,7 +809,7 @@ class BooleanFeature(Feature):
 @dataclass(frozen=True)
 class SplitToolRef:
     """Boolean family, fourth/last entry (`SplitFeature`): the cutting tool
-    a Split divides its `target_body_id` against - exactly one of the two
+    a Split divides its `target_body_id` against - exactly one of the three
     fields is ever set (payload shape validated by the router, same
     "exactly one of N fields" convention `PointRef`/`PlaneRef` already
     establish - see either's own docstring):
@@ -818,12 +818,23 @@ class SplitToolRef:
       narrower "just the fixed/existing-Plane cases" type, since a Body
       face is just as valid a cutting plane for a Split as it is for a
       Mirror.
-    - `surface_feature_id`: an existing `SurfaceFeature` in this Part - the
-      reason `SurfaceFeature` exists as a real, reusable Feature rather
-      than a throwaway internal helper (see its own docstring's explicit
-      "A Split feature ... is the reason this exists"). Lets a Split cut
-      along a Sketch-derived, potentially non-planar cutting tool, not just
-      a flat plane.
+    - `surface_feature_id`: an existing, already-created `SurfaceFeature` in
+      this Part (built ahead of time via New > Feature > Surfacing > Extrude
+      Surface, with a real closed profile) - the reason `SurfaceFeature`
+      exists as a real, reusable Feature rather than a throwaway internal
+      helper (see its own docstring's explicit "A Split feature ... is the
+      reason this exists"). Lets a Split cut along a Sketch-derived,
+      potentially non-planar cutting tool, not just a flat plane.
+    - `sketch_line_ref`: a single connectable-curve Sketch entity (Line,
+      Arc, EllipseArc, or Spline - see `app.document.split.
+      CONNECTABLE_CURVE_ENTITY_TYPES`), used directly with no backing
+      SurfaceFeature ever created - an "infinite" cutting surface extruded
+      normal to the entity's own host Sketch plane, assumed automatically
+      (no direction override: there is no persisted Feature for one to
+      attach to). This is the guided flow's own replacement for what used
+      to be an inline "New Surface" mini-step that silently persisted a
+      real SurfaceFeature as a side effect of picking a Sketch as a Split
+      tool - picking a raw sketch curve now resolves immediately instead.
 
     Resolved to an oversized half-space solid "block" by `app.document.
     split._split_tool_block` - see that module's own top-level docstring
@@ -832,6 +843,7 @@ class SplitToolRef:
 
     plane_ref: PlaneRef | None = None
     surface_feature_id: str | None = None
+    sketch_line_ref: SketchEntityRef | None = None
 
 
 @dataclass

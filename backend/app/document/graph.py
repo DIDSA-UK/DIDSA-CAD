@@ -423,11 +423,14 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
     owning Feature of `target_body_id` (`base_feature_id`-mapped, identical
     treatment to every other Body-id reference above) plus whatever `tool`
     itself depends on - `_plane_ref_dependency` for a `plane_ref` tool
-    (already shared by `CreatePlaneFeature`/`MirrorFeature`), or the
+    (already shared by `CreatePlaneFeature`/`MirrorFeature`), the
     referenced `SurfaceFeature`'s own id directly (already a bare Feature
     id, no `base_feature_id` mapping needed, mirroring `plane_feature_id`'s
     own identical treatment in `_plane_ref_dependency`) for a `surface_
-    feature_id` tool - see `_split_dependencies`.
+    feature_id` tool, or `sketch_line_ref`'s own owning `SketchFeature`
+    (`sketch_feature_id_for_sketch`, mirroring `_revolve_dependencies`'s
+    identical `axis_ref` treatment) for a raw-sketch-curve tool - see
+    `_split_dependencies`.
 
     Pattern/Mirror Phase 8: a `MirrorFeature`/`PatternFeature` with `tool_
     feature_id` set depends on that Feature directly (already a bare
@@ -472,7 +475,7 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
                 {base_feature_id(bid) for bid in (*feature.target_body_ids, *feature.tool_body_ids)}
             )
         elif isinstance(feature, SplitFeature):
-            depends_on = _split_dependencies(feature)
+            depends_on = _split_dependencies(part, feature)
         elif isinstance(feature, PatternFeature):
             depends_on = _pattern_dependencies(part, feature)
         elif isinstance(feature, GearFeature):
@@ -559,14 +562,17 @@ def _plane_ref_dependency(ref: PlaneRef) -> str | None:
     return None
 
 
-def _split_dependencies(feature: SplitFeature) -> tuple[str, ...]:
+def _split_dependencies(part: Part, feature: SplitFeature) -> tuple[str, ...]:
     """Boolean family, fourth/last entry: `build_feature_graph`'s
     `SplitFeature` dependency-edge logic, split out to keep `build_feature_
     graph` itself's per-type dispatch readable - the owning Feature of
     `target_body_id` (`base_feature_id`-mapped), plus whatever `feature.
     tool` itself depends on: `_plane_ref_dependency` for a `plane_ref` tool,
-    or `surface_feature_id` directly (already a bare Feature id) for a
-    Surface tool."""
+    `surface_feature_id` directly (already a bare Feature id) for a Surface
+    tool, or - mirroring `_revolve_dependencies`'s identical `axis_ref`
+    treatment - the owning `SketchFeature` of `sketch_line_ref`'s own Sketch
+    for a raw-sketch-curve tool (`sketch_feature_id_for_sketch`, `None` if
+    unresolvable, same tolerance as every other reference kind here)."""
     deps: set[str] = {base_feature_id(feature.target_body_id)}
     if feature.tool.plane_ref is not None:
         plane_dep = _plane_ref_dependency(feature.tool.plane_ref)
@@ -574,6 +580,10 @@ def _split_dependencies(feature: SplitFeature) -> tuple[str, ...]:
             deps.add(plane_dep)
     elif feature.tool.surface_feature_id is not None:
         deps.add(feature.tool.surface_feature_id)
+    elif feature.tool.sketch_line_ref is not None:
+        sketch_feature_id = sketch_feature_id_for_sketch(part, feature.tool.sketch_line_ref.sketch_id)
+        if sketch_feature_id is not None:
+            deps.add(sketch_feature_id)
     return tuple(deps)
 
 

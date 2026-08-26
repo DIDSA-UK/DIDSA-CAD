@@ -275,79 +275,41 @@ void main() {
   });
 
   group('Pattern/Mirror scoping Phase 1/2/6: contextActionsFor Mirror/Pattern', () {
-    test(
-        'a lone Body offers a real, enabled Mirror and a real, enabled Pattern, plus '
-        'Boolean family, fourth/last entry: Split (Split only ever needs exactly one '
-        'target Body, unlike Merge/Subtract/Common which all need 2+)', () {
+    test('a lone Body offers a real, enabled Mirror and a real, enabled Pattern, nothing else '
+        '(on-device feedback: the Boolean family - Merge/Subtract/Common/Split - no longer '
+        'appears in this ambient table at all, for any Body-selection combination - selection-'
+        'order/target-vs-tool ambiguity made it unclear; the guided "Add > Feature > Combine" '
+        'entries, and each Feature\'s own long-press context menu, are the only entry points '
+        'left for all four)', () {
       const body = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b1');
       final actions = contextActionsFor({body});
       expect(actions, [
         const SelectionContextAction('Mirror', enabled: true),
         const SelectionContextAction('Pattern', enabled: true),
-        const SelectionContextAction('Split', enabled: true),
       ]);
     });
 
     test(
-        'Phase 6: two Bodies together now offer both Mirror and Pattern enabled '
-        '(Pattern widened from exactly-one-Body to 1+, mirroring Mirror), plus '
-        'Boolean family, first entry: Merge alongside them, plus Boolean family, '
-        'Subtract/Common: Subtract and Common alongside all of them', () {
+        'Phase 6: two or more Bodies together still only offer Mirror and Pattern (Pattern '
+        'widened from exactly-one-Body to 1+, mirroring Mirror) - no Merge/Subtract/Common '
+        'ambient entry either, same reasoning as the lone-Body case above', () {
       const bodyA = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b1');
       const bodyB = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b2');
-      final actions = contextActionsFor({bodyA, bodyB});
-      expect(actions, [
-        const SelectionContextAction('Mirror', enabled: true),
-        const SelectionContextAction('Pattern', enabled: true),
-        const SelectionContextAction('Merge', enabled: true),
-        const SelectionContextAction('Subtract', enabled: true),
-        const SelectionContextAction('Common', enabled: true),
-      ]);
+      const bodyC = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b3');
+      final twoBodies = contextActionsFor({bodyA, bodyB});
+      final threeBodies = contextActionsFor({bodyA, bodyB, bodyC});
+      for (final actions in [twoBodies, threeBodies]) {
+        expect(actions, [
+          const SelectionContextAction('Mirror', enabled: true),
+          const SelectionContextAction('Pattern', enabled: true),
+        ]);
+      }
     });
 
     test('a Body mixed with a Body sub-shape still suppresses everything', () {
       const body = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b1');
       final actions = contextActionsFor({body, _face0});
       expect(actions, isEmpty);
-    });
-  });
-
-  group('Boolean family, first entry: contextActionsFor Merge', () {
-    test('a lone Body does not offer Merge - nothing to merge with', () {
-      const body = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b1');
-      final actions = contextActionsFor({body});
-      expect(actions, isNot(contains(const SelectionContextAction('Merge', enabled: true))));
-    });
-
-    test('three Bodies together still offer Merge alongside Mirror/Pattern', () {
-      const bodyA = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b1');
-      const bodyB = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b2');
-      const bodyC = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b3');
-      final actions = contextActionsFor({bodyA, bodyB, bodyC});
-      expect(actions, [
-        const SelectionContextAction('Mirror', enabled: true),
-        const SelectionContextAction('Pattern', enabled: true),
-        const SelectionContextAction('Merge', enabled: true),
-        const SelectionContextAction('Subtract', enabled: true),
-        const SelectionContextAction('Common', enabled: true),
-      ]);
-    });
-  });
-
-  group('Boolean family, Subtract/Common: contextActionsFor Subtract/Common', () {
-    test('a lone Body does not offer Subtract/Common - nothing to operate against', () {
-      const body = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b1');
-      final actions = contextActionsFor({body});
-      expect(actions, isNot(contains(const SelectionContextAction('Subtract', enabled: true))));
-      expect(actions, isNot(contains(const SelectionContextAction('Common', enabled: true))));
-    });
-
-    test('two Bodies together offer both Subtract and Common alongside Merge/Mirror/Pattern', () {
-      const bodyA = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b1');
-      const bodyB = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b2');
-      final actions = contextActionsFor({bodyA, bodyB});
-      expect(actions, contains(const SelectionContextAction('Subtract', enabled: true)));
-      expect(actions, contains(const SelectionContextAction('Common', enabled: true)));
     });
   });
 
