@@ -316,3 +316,10 @@ handed the chunk-1 prompt directly rather than via a fresh `claude/lod-body-cach
 fix` branch — the two prior coordinator-dispatched attempts on that branch name had already
 errored out and been archived; this session's own branch carries the same fix), PR not yet
 opened by this session (coordinator/user to open per this project's own convention).
+
+Follow-up, same branch: a code review found the fix above had dropped the pre-existing
+"a since-broken unrelated Feature must not take the whole feature list down" resilience —
+fixed by re-wrapping each of the five router helpers' `compute_part_bodies(part)` call in the
+same `except HTTPException: warnings = []` fallback the pre-fix code had, plus a new regression
+test proving it. Full backend suite re-verified for real: **1880/1880 passed** — full detail in
+`docs/status.md`'s same 2026-08-27 entry.
