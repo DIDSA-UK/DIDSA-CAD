@@ -1093,3 +1093,80 @@ def test_gear_preview_bevel_pair_does_not_warn_about_hand_for_opposite_hands():
     )
     assert response.status_code == 200, response.json()
     assert not any("hand of spiral" in w for w in response.json()["warnings"])
+
+
+# --- body_cache GET-list regression (LOD investigation §6) -----------------
+
+
+def test_get_features_repeated_call_does_not_reopen_the_phase_search_pool_after_the_first_read(monkeypatch):
+    """Bug fix (LOD investigation §6, `docs/lod-strategy/00-status.md`):
+    `GET /parts/{id}/features` recomputes each BevelPairFeature's own
+    `warnings` for display (`_bevel_pair_feature_response`, `router.py`) -
+    before this fix, that recompute always excluded the Feature's own id
+    the same way create/update validation does, forcing `compute_part_
+    bodies` onto its always-uncached branch and discarding `app.document.
+    body_cache` entirely - so a plain, non-mutating re-read of an
+    ALREADY-PERSISTED, UNCHANGED spiral bevel pair re-ran the ENTIRE build
+    (both members, plus the meshing-phase search when the warm start
+    doesn't resolve it) on every single fetch, every time, forever.
+
+    20T/20T (tooth-count-symmetric) is deliberately the same ratio
+    `test_search_meshing_phase_symmetric_ratio_escalates_through_tiers_...`
+    above uses precisely because it does NOT resolve via the warm start - a
+    real `_search_meshing_phase` `ProcessPoolExecutor` opens on any
+    uncached build of this Feature, on top of the member-build pool
+    `resolve_bevel_pair_from_bodies` always opens (see
+    `test_spiral_bevel_pair_resolvable_ratio_resolves_via_warm_start_
+    without_opening_a_phase_search_pool` above for that pool-counting
+    technique, used identically here).
+
+    Two successive `GET /parts/{id}/features` calls: the first is a
+    genuine cache-cold build (this Part has never gone through `body_
+    cache`'s cached branch before) and is expected to open pools; the
+    second, on a completely unchanged Part, must be served entirely from
+    `app.document.extrude.cached_feature_warnings` - zero pool
+    constructions - not rebuild this bevel pair from scratch a second
+    time."""
+    construct_count = 0
+    real_pool_executor = bevel_pair_module.ProcessPoolExecutor
+
+    def _counting_pool_executor(*args, **kwargs):
+        nonlocal construct_count
+        construct_count += 1
+        return real_pool_executor(*args, **kwargs)
+
+    monkeypatch.setattr(bevel_pair_module, "ProcessPoolExecutor", _counting_pool_executor)
+
+    part = _create_part()
+    response = _create_pair(
+        part["id"],
+        module=4.0,
+        member_1=_member(20),
+        member_2=_member(20),
+        face_width=8.0,
+        points_per_flank=12,
+        spiral_angle_degrees=20.0,
+    )
+    assert response.status_code == 201, response.json()
+
+    first = client.get(f"/document/parts/{part['id']}/features")
+    assert first.status_code == 200, first.json()
+
+    count_after_first_read = construct_count
+    assert count_after_first_read > 0, (
+        "test setup expectation broken: the first read should have needed a real, uncached build "
+        "(cold body_cache/cached_feature_warnings), opening at least the member-build pool"
+    )
+
+    second = client.get(f"/document/parts/{part['id']}/features")
+    assert second.status_code == 200, second.json()
+
+    assert construct_count == count_after_first_read, (
+        f"expected zero new ProcessPoolExecutor constructions on the second read "
+        f"({construct_count - count_after_first_read} opened) - the second GET of an unchanged "
+        "Part should be served entirely from the cache, not rebuild the bevel pair from scratch"
+    )
+
+    # Warnings themselves are stable across both reads (same underlying,
+    # unchanged geometry, live-resolved or cache-served alike).
+    assert first.json()[0]["warnings"] == second.json()[0]["warnings"]

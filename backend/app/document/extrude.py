@@ -786,6 +786,16 @@ def resolve_feature_tool_shape(
     share the identical computation, rather than `compute_part_bodies`'s
     own inline solid-construction-then-`_apply_boss_or_cut` calls being the
     only way to ever get at one of these Feature types' own raw solid.
+    Bug fix (LOD investigation §6): `_apply_feature_to_bodies`'s own
+    GearFeature/BevelGearFeature/LoftFeature branches below no longer call
+    through here - they call their own `resolve_X_from_bodies` directly
+    instead, specifically so they can keep that call's own `warnings`
+    (this function discards them, below, since Pattern/Mirror's
+    `tool_feature_id` path has no use for them) for `_feature_warnings_
+    cache` - this function still serves ExtrudeFeature/RevolveFeature/
+    SweepFeature/RackFeature's own `_apply_feature_to_bodies` branches
+    unchanged, and every Feature type unchanged for Pattern/Mirror's own
+    `tool_feature_id` path.
 
     Returns `(tool_shape, target_body_ids, is_cut)` - `target_body_ids`/
     `is_cut` are simply that Feature's own fields (`target_body_ids`,
@@ -914,6 +924,84 @@ def resolve_feature_tool_shape(
         return solid, feature.target_body_ids, feature.mode == LoftMode.CUT
 
     return None
+
+
+# Bug fix (LOD investigation §6, docs/lod-strategy/00-status.md): a
+# part-scoped cache of the non-blocking `warnings` a Gear/BevelGear/Loft/
+# GearChain/BevelPair Feature's own real construction produced the last
+# time `_apply_feature_to_bodies` actually ran its step for that Feature -
+# read back by `app.document.router`'s `_X_feature_response` helpers for a
+# plain `GET /parts/{id}/features` re-read, instead of those helpers calling
+# straight back into `resolve_gear`/`resolve_loft`/etc (the create/update
+# entry points, which always self-exclude their own Feature id and so force
+# `compute_part_bodies` onto its always-uncached branch - see each helper's
+# own docstring in router.py for the full bug history).
+#
+# Deliberately a *separate* dict here, not an addition to `body_cache.
+# _CheckpointChain`'s own snapshots - keeps `body_cache.py`'s generic
+# checkpoint-chain mechanism (part-agnostic, Feature-type-agnostic, no
+# concept of "warnings" at all) completely untouched, while still piggy-
+# backing on its exact invalidation behaviour for free: `_apply_feature_to_
+# bodies` (and so the `_record_feature_warnings` call inside each branch
+# below) only ever runs for a Feature `body_cache.compute_with_cache`
+# decided actually needs (re)computing - a real change to that Feature, a
+# change somewhere upstream of it, or this Part's first-ever call - so
+# simply overwriting this cache's own entry every time that happens keeps
+# it exactly as correct as the Body itself, with no separate invalidation
+# logic of its own to get out of sync. A Feature whose step hasn't run
+# since the last `clear_feature_warnings_cache()` (a fresh process, or a
+# native import reusing this Part's id) has no entry yet - `cached_feature_
+# warnings` returns `[]` for it, mirroring every `_X_feature_response`
+# helper's own pre-existing "soft-fail to `[]`" convention for a
+# currently-unresolvable Feature.
+_feature_warnings_cache: dict[str, dict[str, list[str]]] = {}
+
+
+def clear_feature_warnings_cache() -> None:
+    """Mirrors `app.document.body_cache.clear()` exactly - called from the
+    same place (`app.document.store.replace_document`) for the same reason
+    (a freshly-imported Part can reuse an id a stale entry here still
+    references with completely different Feature content)."""
+    _feature_warnings_cache.clear()
+
+
+def _record_feature_warnings(
+    part: Part, feature_id: str, warnings: list[str], excluded_feature_ids: frozenset[str]
+) -> None:
+    """Records `warnings` for later `cached_feature_warnings` lookup, UNLESS
+    `excluded_feature_ids` is non-empty - a non-empty set means this
+    particular `_apply_feature_to_bodies` call is either the B4 true-
+    rollback preview (`GET /parts/{id}/mesh`'s own
+    `rollback_excluded_feature_ids`, a temporary "as if these Features
+    didn't exist" view - see `compute_part_bodies`'s own docstring) or a
+    create/update entry point's self-exclusion validation
+    (`resolve_gear`/`resolve_loft`/etc, `compute_part_bodies(part,
+    {feature.id})`) - bodies built under either is deliberately NOT this
+    Part's real current state, so the `warnings` a Feature happens to
+    produce while it runs *within* one of those calls must never overwrite
+    this cache's own "real current state" entry, or a later plain `GET
+    /features` re-read could serve a rollback- or validation-specific
+    result instead of the Feature's own true one. Every call actually
+    reached from `compute_part_bodies`'s cached branch (`body_cache.
+    compute_with_cache`) always has an empty `excluded_feature_ids` - see
+    that function's own docstring - so this is a no-op restriction for the
+    one call path this cache actually exists to serve."""
+    if excluded_feature_ids:
+        return
+    _feature_warnings_cache.setdefault(part.id, {})[feature_id] = warnings
+
+
+def cached_feature_warnings(part: Part, feature_id: str) -> list[str]:
+    """The `warnings` `_apply_feature_to_bodies` most recently recorded for
+    `feature_id` the last time its own step actually ran inside
+    `compute_part_bodies`'s cached branch - `[]` if never recorded (see this
+    module's own `_feature_warnings_cache` docstring above). Callers should
+    call `compute_part_bodies(part)` (the ordinary cached call) first, same
+    as `/mesh` already does - that guarantees a Part's first-ever call
+    computes every Feature's step at least once, so this is only ever
+    stale-empty for a genuinely currently-unresolvable Feature, never a
+    "hasn't been computed yet" gap for an otherwise-healthy one."""
+    return _feature_warnings_cache.get(part.id, {}).get(feature_id, [])
 
 
 def _apply_feature_to_bodies(
@@ -1368,17 +1456,30 @@ def _apply_feature_to_bodies(
         return
 
     if isinstance(feature, GearFeature):
-        # docs/gear-design/02-gear-feature.md: resolve_gear_from_bodies
-        # always raises a structured HTTPException on failure rather
-        # than resolve_feature_tool_shape returning None for it (no
-        # backing Sketch, so no "currently has nothing to build" state
-        # to tolerate) - every gear-specific failure mode is caught
-        # and skipped here the same way every other Feature type's own
-        # branch tolerates its own structured errors; anything else
-        # (e.g. a missing_reference from an upstream plane_ref) still
-        # propagates and fails the whole request.
+        # docs/gear-design/02-gear-feature.md: calls resolve_gear_from_
+        # bodies directly rather than through resolve_feature_tool_shape
+        # (unlike RevolveFeature/SweepFeature just above, which genuinely
+        # need that function's generic Sketch-backed dispatch) - this
+        # branch already knows its own Feature type, and calling straight
+        # through is what lets it keep this build's own non-blocking
+        # `warnings` (root-fillet-fallback findings, undercut warnings)
+        # instead of discarding them, so `_record_feature_warnings` below
+        # can make them available to a later plain `GET /features` re-read
+        # (see this module's own `_feature_warnings_cache` docstring) -
+        # `resolve_feature_tool_shape`'s own GearFeature branch would have
+        # discarded them the same way it still does for Pattern/Mirror's
+        # own `tool_feature_id` path, which has no such need. Always raises
+        # a structured HTTPException on failure rather than returning None
+        # (no backing Sketch, so no "currently has nothing to build" state
+        # to tolerate) - every gear-specific failure mode is caught and
+        # skipped here the same way every other Feature type's own branch
+        # tolerates its own structured errors; anything else (e.g. a
+        # missing_reference from an upstream plane_ref) still propagates
+        # and fails the whole request.
+        from app.document.gear import resolve_gear_from_bodies
+
         try:
-            result = resolve_feature_tool_shape(part, bodies, feature.id, excluded_feature_ids)
+            solid, warnings = resolve_gear_from_bodies(feature, part, bodies, excluded_feature_ids)
         except HTTPException as exc:
             if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
                 "invalid_gear_parameters",
@@ -1386,11 +1487,12 @@ def _apply_feature_to_bodies(
             ):
                 raise
             logger.warning("Skipping GearFeature %s: could not be resolved", feature.id)
+            _record_feature_warnings(part, feature.id, [], excluded_feature_ids)
             return
-        if result is None:
-            return
-        solid, target_body_ids, is_cut = result
-        _apply_boss_or_cut(bodies, feature.id, feature_index, is_cut, target_body_ids, solid)
+        _record_feature_warnings(part, feature.id, warnings, excluded_feature_ids)
+        _apply_boss_or_cut(
+            bodies, feature.id, feature_index, feature.gear_type == GearType.CUT, feature.target_body_ids, solid
+        )
         return
 
     if isinstance(feature, RackFeature):
@@ -1413,11 +1515,16 @@ def _apply_feature_to_bodies(
         return
 
     if isinstance(feature, BevelGearFeature):
-        # docs/gear-design/10-bevel-gear.md: mirrors the GearFeature/
-        # RackFeature branches above exactly, including their own
-        # structured error types.
+        # docs/gear-design/10-bevel-gear.md: calls resolve_bevel_gear_from_
+        # bodies directly rather than through resolve_feature_tool_shape -
+        # mirrors the GearFeature branch above exactly, including its own
+        # structured error types, for the identical "keep this build's own
+        # `warnings` instead of discarding them" reason (see that branch's
+        # own comment).
+        from app.document.bevel import resolve_bevel_gear_from_bodies
+
         try:
-            result = resolve_feature_tool_shape(part, bodies, feature.id, excluded_feature_ids)
+            solid, warnings = resolve_bevel_gear_from_bodies(feature, part, bodies, excluded_feature_ids)
         except HTTPException as exc:
             if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
                 "invalid_bevel_parameters",
@@ -1425,23 +1532,30 @@ def _apply_feature_to_bodies(
             ):
                 raise
             logger.warning("Skipping BevelGearFeature %s: could not be resolved", feature.id)
+            _record_feature_warnings(part, feature.id, [], excluded_feature_ids)
             return
-        if result is None:
-            return
-        solid, target_body_ids, is_cut = result
-        _apply_boss_or_cut(bodies, feature.id, feature_index, is_cut, target_body_ids, solid)
+        _record_feature_warnings(part, feature.id, warnings, excluded_feature_ids)
+        _apply_boss_or_cut(
+            bodies, feature.id, feature_index, feature.bevel_type == BevelGearType.CUT, feature.target_body_ids, solid
+        )
         return
 
     if isinstance(feature, LoftFeature):
-        # docs/gear-design/04-helical-herringbone-loft.md: tolerates
-        # this Loft's own stale/broken references (an edited-away
-        # section, an unresolvable reference_point, a geometrically-
-        # invalid loft) - mirrors the SweepFeature branch above's
-        # deliberately narrow catch for the identical reason (a
-        # missing_reference from an upstream plane/Sketch dependency
-        # must still propagate and fail the whole request).
+        # docs/gear-design/04-helical-herringbone-loft.md: calls
+        # resolve_loft_from_bodies directly rather than through
+        # resolve_feature_tool_shape, for the identical "keep this build's
+        # own `warnings` (self-intersection findings) instead of
+        # discarding them" reason the GearFeature/BevelGearFeature branches
+        # above give. Tolerates this Loft's own stale/broken references (an
+        # edited-away section, an unresolvable reference_point, a
+        # geometrically-invalid loft) - mirrors the SweepFeature branch
+        # above's deliberately narrow catch for the identical reason (a
+        # missing_reference from an upstream plane/Sketch dependency must
+        # still propagate and fail the whole request).
+        from app.document.loft import resolve_loft_from_bodies
+
         try:
-            result = resolve_feature_tool_shape(part, bodies, feature.id, excluded_feature_ids)
+            solid, warnings = resolve_loft_from_bodies(feature, part, bodies, excluded_feature_ids)
         except HTTPException as exc:
             if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
                 "invalid_loft_section",
@@ -1449,11 +1563,12 @@ def _apply_feature_to_bodies(
             ):
                 raise
             logger.warning("Skipping LoftFeature %s: could not be resolved", feature.id)
+            _record_feature_warnings(part, feature.id, [], excluded_feature_ids)
             return
-        if result is None:
-            return
-        solid, target_body_ids, is_cut = result
-        _apply_boss_or_cut(bodies, feature.id, feature_index, is_cut, target_body_ids, solid)
+        _record_feature_warnings(part, feature.id, warnings, excluded_feature_ids)
+        _apply_boss_or_cut(
+            bodies, feature.id, feature_index, feature.mode == LoftMode.CUT, feature.target_body_ids, solid
+        )
         return
 
     if isinstance(feature, GearChainFeature):
@@ -1469,7 +1584,7 @@ def _apply_feature_to_bodies(
         from app.document.gear_chain import resolve_gear_chain_from_bodies
 
         try:
-            shape, _warnings = resolve_gear_chain_from_bodies(feature, part, bodies, excluded_feature_ids)
+            shape, warnings = resolve_gear_chain_from_bodies(feature, part, bodies, excluded_feature_ids)
         except HTTPException as exc:
             if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
                 "invalid_gear_chain_parameters",
@@ -1482,7 +1597,14 @@ def _apply_feature_to_bodies(
             ):
                 raise
             logger.warning("Skipping GearChainFeature %s: could not be resolved", feature.id)
+            _record_feature_warnings(part, feature.id, [], excluded_feature_ids)
             return
+        # Bug fix (LOD investigation §6): kept (previously `_warnings`,
+        # discarded) so a later plain `GET /features` re-read can read it
+        # back via `cached_feature_warnings` instead of re-resolving this
+        # Feature from scratch - see this module's own
+        # `_feature_warnings_cache` docstring above.
+        _record_feature_warnings(part, feature.id, warnings, excluded_feature_ids)
         _register_solids(bodies, feature.id, shape)
         return
 
@@ -1516,7 +1638,7 @@ def _apply_feature_to_bodies(
         from app.document.bevel_pair import resolve_bevel_pair_from_bodies
 
         try:
-            shape, _warnings = resolve_bevel_pair_from_bodies(feature, part, bodies, excluded_feature_ids)
+            shape, warnings = resolve_bevel_pair_from_bodies(feature, part, bodies, excluded_feature_ids)
         except HTTPException as exc:
             if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
                 "invalid_bevel_pair_parameters",
@@ -1524,7 +1646,15 @@ def _apply_feature_to_bodies(
             ):
                 raise
             logger.warning("Skipping BevelPairFeature %s: could not be resolved", feature.id)
+            _record_feature_warnings(part, feature.id, [], excluded_feature_ids)
             return
+        # Bug fix (LOD investigation §6): kept (previously `_warnings`,
+        # discarded) so a later plain `GET /features` re-read can read it
+        # back via `cached_feature_warnings` instead of re-resolving this
+        # Feature (its entire real spiral-bevel-pair build, including the
+        # meshing-phase search) from scratch - see this module's own
+        # `_feature_warnings_cache` docstring above.
+        _record_feature_warnings(part, feature.id, warnings, excluded_feature_ids)
         _register_solids(bodies, feature.id, shape)
         return
 
