@@ -379,8 +379,8 @@ void main() {
 
     expect(requestedPaths, contains('POST /document/parts/part-1/bevel-pair-features'));
     expect(pairBody?['shaft_angle_degrees'], 90.0);
-    expect((pairBody?['member_1'] as Map)['tooth_count'], 20);
-    expect((pairBody?['member_2'] as Map)['tooth_count'], 40);
+    expect((pairBody?['member_1'] as Map)['tooth_count'], 24);
+    expect((pairBody?['member_2'] as Map)['tooth_count'], 48);
   });
 
   testWidgets(
