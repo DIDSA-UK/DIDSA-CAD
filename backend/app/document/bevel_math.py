@@ -1029,6 +1029,132 @@ def spiral_curve_offset_angle(
     return sign * (math.tan(spiral_angle) / math.sin(pitch_cone_half_angle)) * math.log(sphere_radius / mean_sphere_radius)
 
 
+_SPIRAL_TWIST_PER_SECTION_BOUND = 1.0
+"""`spiral_section_count_for_twist`'s own calibrated bound, in units of half
+the angular tooth pitch (`pi / tooth_count`) - the same unit `bevel_pair.
+_search_meshing_phase`'s own search window (`half_pitch_degrees = 180 /
+tooth_count`, `docs/gear-design/12-spiral-bevel-gear.md`'s own §3 "principled
+... guarantees covering one full period of whatever aliasing structure
+produces these walls" finding) already uses for a sibling problem - reused
+here rather than inventing a fresh unit, since both are asking "how much of
+one tooth's own angular pitch is a plausible scale for this effect." A
+value of `1.0` reads as "no more than one full half-pitch of twist may
+accumulate between two adjacent sections" - the simplest concrete
+statement in that shared unit, not a fractional multiplier chosen to hit a
+target.
+
+**Calibrated on-device, not guessed** (this session's own real-
+`pythonocc-core` 7.9.3 sweep; `docs/status.md`'s matching dated entry has
+the full before/after table): swept `spiral_section_count` (3 through 30)
+directly against `_assemble_gear_solid` for all four documented `_flatten_
+end_caps` failures (`docs/gear-design/12-spiral-bevel-gear.md`'s own
+results table - 10T/10T at β=70°, 20T/20T at β=68°/70°/72°, all module 4,
+default `points_per_flank=12`). Flattening first started succeeding at
+`spiral_section_count=4` in EVERY one of the four cases (and stayed
+succeeding all the way to 30, confirmed monotonic in this sweep - never a
+case that got WORSE with more sections), so `4` (3 loft steps) is the
+real, measured minimum this bound needs to reach or exceed for all four.
+
+At `spiral_section_count=3` (2 steps, the pre-fix default), the per-step
+twist ratio `total_twist / (2 * half_pitch)` measured 2.056 for the
+tightest-margin case of the four (10T/10T, β=70°) and higher (3.70-4.61)
+for the other three - so a bound of `1.0` (which demands `total_twist /
+(bound * half_pitch) <= 2` before it stops raising the section count,
+i.e. requires that same ratio to fall to `1.0` or below before accepting
+`section_count=3`) forces every one of the four documented cases well
+past their own measured minimum of 4 (to 6-11 sections, depending on the
+case's own total twist) - real headroom over the measured minimum, in the
+same spirit `DEFAULT_SPIRAL_SECTION_COUNT` itself was validated with
+headroom above its own measured convergence point, not pinned to the bare
+minimum. Confirmed cheap: build time at these higher section counts
+stayed within the existing ~similar-to-n=4 envelope in this sweep (this
+module's own per-section construction cost is small relative to the
+fixed sewing/`ShapeFix_Shell`/mesh-based sanity-check cost every build
+already pays) - see `docs/status.md`'s entry for the real numbers, not
+just this claim.
+
+**Honest limitation, named per this project's own established
+convention** (not glossed over): per-step twist is NOT a fully reliable
+predictor of exactly which `(tooth_count, β)` combination will fail -
+this same sweep found several combinations with a LARGER twist ratio than
+every one of the four documented failures that nonetheless succeeded at
+the pre-fix default `section_count=3` (e.g. 10T/10T at β=75°/80°/85°, all
+comfortably clean at n=3, ratios 2.79-8.55 - higher than the 70° failure's
+own 2.056), consistent with `12-spiral-bevel-gear.md`'s own already-
+documented finding that this failure mode is a genuine irregular "notch"
+in the underlying `BRepAlgoAPI_Fuse`/`Cut` boolean, not a smooth function
+of spiral angle or twist magnitude alone. This function is a real,
+calibrated, principled safety margin against the documented failures, not
+a guarantee against every conceivable one - exactly the "small, bounded,
+secondary safety net" role `_flatten_end_caps`'s own `radius_margin`
+terms play for whatever residual this doesn't fully eliminate."""
+
+
+def spiral_section_count_for_twist(
+    geometry: BevelGearGeometry,
+    tooth_count: int,
+    spiral_angle_degrees: float,
+    spiral_hand: SpiralHand = SpiralHand.RIGHT,
+    section_count: int = DEFAULT_SPIRAL_SECTION_COUNT,
+) -> int:
+    """Raises `section_count` above `DEFAULT_SPIRAL_SECTION_COUNT` once a
+    spiral tooth's own accumulated azimuthal twist would otherwise make
+    `app.document.bevel._thru_sections_face_n`'s own N-section loft bulge
+    too far off the true root/tip cone between adjacent sections - the real
+    root cause `docs/gear-design/12-spiral-bevel-gear.md`'s own results
+    table names as "end-cap flattening failed" for several tooth-count/
+    spiral-angle combinations (see this module's own top-level module note
+    and `app.document.bevel._flatten_end_caps`'s docstring for the full
+    mechanism: `_END_CAP_RADIUS_MARGIN`/`_END_CAP_HEIGHT_MARGIN` were tuned
+    only against straight-bevel geometry, which has zero such bulge, so a
+    large enough per-section twist makes the loft surface stray outside
+    those margins).
+
+    Reuses `spiral_curve_offset_angle` directly (the same closed-form
+    `curve(R) = [tan(beta)/sin(gamma)] * ln(R/R_mean)` this file's own flank
+    construction already uses) rather than inventing a new formula: the
+    total azimuthal twist a tooth's cross-section accumulates from the outer
+    (back) cone to the inner cone is `curve(cone_distance) -
+    curve(inner_cone_distance)` - and since `curve(R) = C * ln(R/R_mean)`
+    for a per-build constant `C`, this difference is exactly `C *
+    ln(cone_distance/inner_cone_distance)`, independent of `R_mean` (the log
+    ratio's own `R_mean` term cancels) - so the specific `mean_radius` passed
+    to both calls below is a bookkeeping detail, not a free parameter that
+    changes the answer.
+
+    Dividing that total twist across `section_count - 1` steps (the number
+    of *loft spans* between `section_count` sections, not the section count
+    itself) gives the actual per-step twist `_thru_sections_face_n` has to
+    approximate with one N-section loft segment; this picks the smallest
+    `section_count` that brings that per-step figure at or below
+    `_SPIRAL_TWIST_PER_SECTION_BOUND * (pi / tooth_count)` - `spiral_hand`
+    doesn't affect the answer (it only flips `curve(R)`'s sign, and this
+    function only cares about the magnitude), kept as a parameter purely
+    for call-site symmetry with `bevel_tooth_flank_sections`'s own
+    signature.
+
+    `spiral_angle_degrees == 0.0` returns `section_count` completely
+    unchanged (byte-for-byte, not merely `pytest.approx`) - `_assemble_gear_
+    solid`'s own straight-bevel path must stay a **literal no-op**, per this
+    workstream's own hard requirement (verified directly in `test_bevel_
+    math.py`, not just assumed from `spiral_curve_offset_angle`'s own
+    `spiral_angle == 0.0` short-circuit, since this function's own `ceil`/
+    `max` arithmetic below is a second place that guarantee could
+    accidentally break)."""
+    if spiral_angle_degrees == 0.0:
+        return section_count
+    spiral_angle = math.radians(spiral_angle_degrees)
+    gamma = geometry.pitch_cone_angle
+    mean_radius = (geometry.cone_distance + geometry.inner_cone_distance) / 2.0
+    total_twist = abs(
+        spiral_curve_offset_angle(spiral_angle, gamma, geometry.cone_distance, mean_radius, spiral_hand)
+        - spiral_curve_offset_angle(spiral_angle, gamma, geometry.inner_cone_distance, mean_radius, spiral_hand)
+    )
+    max_twist_per_step = _SPIRAL_TWIST_PER_SECTION_BOUND * (math.pi / tooth_count)
+    needed_steps = math.ceil(total_twist / max_twist_per_step)
+    return max(section_count, needed_steps + 1)
+
+
 def _spiral_section_radii(cone_distance: float, inner_cone_distance: float, section_count: int) -> list[float]:
     """`section_count` sphere radii, evenly spaced from `cone_distance`
     (outer/back cone, index 0) to `inner_cone_distance` (inner cone, last
