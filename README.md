@@ -1,4 +1,4 @@
-![Image Alt Text](path/to/image.png)
+![](1000497307-1536x480.png)
 
 # DIDSA-CAD
 
