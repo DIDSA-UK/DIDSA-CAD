@@ -43,6 +43,7 @@ from app.document.bevel_math import (
     spiral_build_cost_warning,
     spiral_curve_offset_angle,
     spiral_hand_mismatch_warning,
+    spiral_section_count_for_twist,
     virtual_spur_gear_geometry,
 )
 from app.document.gear_math import GearGeometryError, involute_point, spur_gear_geometry
@@ -938,6 +939,92 @@ def test_bevel_tooth_flank_sections_linear_interpolation_error_shrinks_with_more
     # over-claiming an arbitrary exact factor).
     assert error_2 / 3 > error_3 > error_5 > error_9 > 0.0
     assert error_5 < error_2 / 10.0
+
+
+# ---------------------------------------------------------------------------
+# spiral_section_count_for_twist (docs/gear-design/12-spiral-bevel-gear.md's
+# own end-cap-flattening fix) - see bevel_math.py's own module note
+# (_SPIRAL_TWIST_PER_SECTION_BOUND) for the real on-device calibration this
+# is built on.
+# ---------------------------------------------------------------------------
+
+
+def test_spiral_section_count_for_twist_is_a_bit_for_bit_no_op_at_zero_spiral_angle(spiral_bevel_geometry):
+    # The hard requirement this workstream's own task instructions call
+    # out explicitly: spiral_angle_degrees == 0.0 must leave
+    # DEFAULT_SPIRAL_SECTION_COUNT (or whatever section_count the caller
+    # passed) completely untouched, so _assemble_gear_solid's own straight-
+    # bevel path stays the exact literal no-op it already is.
+    assert spiral_section_count_for_twist(spiral_bevel_geometry, 20, 0.0) == DEFAULT_SPIRAL_SECTION_COUNT
+    assert spiral_section_count_for_twist(spiral_bevel_geometry, 20, 0.0, section_count=7) == 7
+    assert spiral_section_count_for_twist(spiral_bevel_geometry, 20, 0.0, SpiralHand.LEFT, 12) == 12
+
+
+def test_spiral_section_count_for_twist_never_reduces_a_caller_supplied_count():
+    # max(section_count, needed) - a caller-supplied section_count already
+    # above the twist-driven minimum (more fidelity than strictly required)
+    # must never be silently lowered.
+    gamma_1, _gamma_2 = pitch_cone_half_angles(10, 10, 90.0)
+    geometry = bevel_gear_geometry(module=4.0, tooth_count=10, face_width=8.0, pitch_cone_angle_degrees=math.degrees(gamma_1))
+    assert spiral_section_count_for_twist(geometry, 10, 70.0, section_count=50) == 50
+
+
+def test_spiral_section_count_for_twist_raises_the_count_for_every_documented_failing_case():
+    # The four real, documented `_flatten_end_caps` failures (`docs/gear-
+    # design/12-spiral-bevel-gear.md`'s own results table) - real on-device
+    # testing (this session's own sweep, recorded in bevel_math.py's own
+    # `_SPIRAL_TWIST_PER_SECTION_BOUND` docstring and docs/status.md) found
+    # flattening first starts succeeding at spiral_section_count=4 for every
+    # one of these; this function must ask for strictly more than the
+    # DEFAULT_SPIRAL_SECTION_COUNT=3 default in every case, and in
+    # particular must clear that measured minimum of 4 with real headroom
+    # (not land exactly on it).
+    cases = [
+        (10, 4.0, 8.0, 70.0),
+        (20, 4.0, 16.0, 68.0),
+        (20, 4.0, 16.0, 70.0),
+        (20, 4.0, 16.0, 72.0),
+    ]
+    for tooth_count, module, face_width, beta in cases:
+        gamma_1, _gamma_2 = pitch_cone_half_angles(tooth_count, tooth_count, 90.0)
+        geometry = bevel_gear_geometry(
+            module=module, tooth_count=tooth_count, face_width=face_width, pitch_cone_angle_degrees=math.degrees(gamma_1)
+        )
+        count = spiral_section_count_for_twist(geometry, tooth_count, beta)
+        assert count > DEFAULT_SPIRAL_SECTION_COUNT, (tooth_count, beta, count)
+        assert count >= 6, (tooth_count, beta, count)  # real headroom above the measured minimum of 4
+
+
+def test_spiral_section_count_for_twist_grows_with_spiral_angle(spiral_bevel_geometry):
+    # Monotonicity sanity check - more accumulated twist (a larger spiral
+    # angle, same geometry) should never ask for FEWER sections.
+    low = spiral_section_count_for_twist(spiral_bevel_geometry, 20, 20.0)
+    high = spiral_section_count_for_twist(spiral_bevel_geometry, 20, 70.0)
+    assert high >= low
+
+
+def test_spiral_section_count_for_twist_matches_the_closed_form_directly(spiral_bevel_geometry):
+    # Direct re-derivation of the formula (not a re-run of the same code
+    # path) - total twist from spiral_curve_offset_angle's own closed form,
+    # divided across (section_count - 1) steps, must fall at or below
+    # _SPIRAL_TWIST_PER_SECTION_BOUND * (pi / tooth_count) for whatever
+    # count this function actually returns, and the count one below it
+    # must NOT satisfy that same bound (the returned count is the minimum
+    # that clears it, not an arbitrary larger one).
+    tooth_count = 20
+    beta_degrees = 40.0
+    gamma = spiral_bevel_geometry.pitch_cone_angle
+    mean_radius = (spiral_bevel_geometry.cone_distance + spiral_bevel_geometry.inner_cone_distance) / 2.0
+    beta = math.radians(beta_degrees)
+    total_twist = abs(
+        spiral_curve_offset_angle(beta, gamma, spiral_bevel_geometry.cone_distance, mean_radius, SpiralHand.RIGHT)
+        - spiral_curve_offset_angle(beta, gamma, spiral_bevel_geometry.inner_cone_distance, mean_radius, SpiralHand.RIGHT)
+    )
+    bound = math.pi / tooth_count  # _SPIRAL_TWIST_PER_SECTION_BOUND == 1.0
+    count = spiral_section_count_for_twist(spiral_bevel_geometry, tooth_count, beta_degrees)
+    assert total_twist / (count - 1) <= bound + 1e-9
+    if count > DEFAULT_SPIRAL_SECTION_COUNT:
+        assert total_twist / (count - 2) > bound
 
 
 def test_spiral_build_cost_warning_is_none_below_the_threshold():
