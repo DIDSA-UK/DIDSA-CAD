@@ -27,9 +27,13 @@ doc and any design-doc content — no implementation).
 | Item | State | Branch / PR | Notes |
 |---|---|---|---|
 | Phase 0 investigation | complete | — | see findings 1-4 below |
-| Design doc | drafted, see `01-design.md` | — | **awaiting user approval — nothing dispatched yet** |
-| Plan approval | not yet received | — | silence is not approval; do not dispatch implementation until explicit sign-off lands in the coordinator conversation |
-| Implementation chunks | proposed (5), not decomposed into dispatch prompts | — | blocked on approval |
+| Design doc (Phase 1) | approved | `01-design.md` | user approved 2026-08-27; also approved building Phase 2 (real cancellation/disconnect-resilience) as a separate, sequenced follow-on — see below |
+| Phase 1 chunk 1 (body_cache GET-list fix) | dispatched | `claude/lod-body-cache-get-features-fix`, session `session_014YYzi8osL7CMzoASk27h7R` | independent, no dependency on chunk 2 |
+| Phase 1 chunk 2 (coarse-mesh mechanism + gear-family builders) | dispatched | `claude/lod-coarse-mesh-gear-family`, session `session_01TumNhrECsEJggwMUcRK5LX` | foundational — chunks 3/4/5 depend on this merging first |
+| Phase 1 chunk 3 (Pattern coarse builder) | not yet dispatched | — | blocked on chunk 2 merging |
+| Phase 1 chunk 4 (Loft coarse builder) | not yet dispatched | — | blocked on chunk 2 merging |
+| Phase 1 chunk 5 (client) | not yet dispatched | — | blocked on chunk 2 merging |
+| Phase 2 design pass | in progress | — | in-process research agent dispatched 2026-08-27; will produce `02-phase2-design.md` for approval before any Phase 2 implementation is dispatched |
 
 ---
 
@@ -238,9 +242,17 @@ correctness question exists by construction. Client work generalizes existing pe
 mesh-swap/badge plumbing rather than inventing new state machinery. Five proposed
 implementation chunks, listed in `01-design.md` §8.
 
-**This plan has not been approved.** Per the coordinator's own operating instructions, silence
-is not approval — do not dispatch any of the five chunks below until explicit sign-off appears
-in this session's own conversation.
+**Approved 2026-08-27.** The user also asked what Phase 2 (real cancellation + disconnect-
+resilience for the genuine long-tail build, e.g. a still-slow symmetric spiral bevel pair)
+would concretely add beyond Phase 1's placeholder — see the chat exchange this doc doesn't
+reproduce; short version: cancellation and disconnect-resilience are worth building, UI
+concurrency and fine-grained progress are not (given the single-user self-hosted deployment
+context). Decision: **keep Phase 1 and Phase 2 as separate, sequenced efforts, not folded
+together** — different risk classes (Phase 1 is a narrow addition; Phase 2 is this backend's
+first-ever async/job pattern), and Phase 2 genuinely depends on Phase 1's client-side
+coarse/pending state rather than the reverse. Phase 1 chunks 1-2 dispatched now; a Phase 2
+design pass is running in parallel and will come back for its own approval before any Phase 2
+implementation is dispatched.
 
 ---
 
