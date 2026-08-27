@@ -26,10 +26,10 @@ doc and any design-doc content — no implementation).
 
 | Item | State | Branch / PR | Notes |
 |---|---|---|---|
-| Phase 0 investigation | in progress | — | 3 in-process Explore/general-purpose agents + 1 remote OCCT-profiling child session dispatched 2026-08-26 |
-| Design doc | not started | — | blocked on investigation |
-| Plan approval | not requested yet | — | blocked on design doc |
-| Implementation chunks | not decomposed | — | blocked on approval |
+| Phase 0 investigation | complete | — | see findings 1-4 below |
+| Design doc | drafted, see `01-design.md` | — | **awaiting user approval — nothing dispatched yet** |
+| Plan approval | not yet received | — | silence is not approval; do not dispatch implementation until explicit sign-off lands in the coordinator conversation |
+| Implementation chunks | proposed (5), not decomposed into dispatch prompts | — | blocked on approval |
 
 ---
 
@@ -205,11 +205,51 @@ model with no backend architecture change), (3) a small new per-Feature state co
 single-slot preview-overlay mechanism to a map, (5) a new Feature-tree tap target (both
 `onTap`/`onLongPress` are already claimed).
 
+### Finding 4 — real OCCT profiling of untested Feature types (complete, partial detail)
+
+Dispatched to a remote child session (`session_01PuP2HbS9mtXVAwafYzR9fe`) that bootstrapped a
+real `pythonocc-core` conda env and profiled `LoftFeature`, `PatternFeature`, and the
+Boolean-family. **Limitation, disclosed rather than glossed over**: this coordinator session
+has no tool that reaches a Claude Code Remote session's full transcript (cross-session
+`SendMessage` returned "not reachable"; `get_session` surfaces only a post-turn summary, not
+the full report) — so only the session's own terse verdict was recoverable:
+
+> "profiled 5 Feature types; LOD justified for gears/Patterns/Lofts only"
+
+This is directionally decisive and matches Finding 2's structural prediction exactly
+(Boolean-family confirmed NOT LOD-worthy; Pattern and Loft confirmed real candidates alongside
+the already-known gear family) — treated as sufficient to design against. The full numeric
+detail (exact parameters/timings/dominant OCCT ops) lives only in that child session's own
+transcript and was not pulled into this doc. If precise numbers are needed later (e.g. to
+calibrate a coarse-eligibility threshold), a future session with CCR transcript access, or the
+user pulling it directly, should retrieve it — not treated as a blocker for the design below,
+since the design's coarse-eligibility list is set structurally/by Feature-type rather than by
+a tuned numeric threshold.
+
+---
+
+## Phase 0 synthesis — design proposed
+
+See **`01-design.md`** for the full design: no new async/job-queue infrastructure needed;
+coarse geometry is a real (cheap) OCCT primitive per Feature-type family (cylinder for gears,
+cone for bevel gears, skip-fuse for Pattern, 2-section loft for Loft), computed on-demand,
+never persisted, never entering the Feature graph — so no downstream-Feature-on-coarse-parent
+correctness question exists by construction. Client work generalizes existing per-Body
+mesh-swap/badge plumbing rather than inventing new state machinery. Five proposed
+implementation chunks, listed in `01-design.md` §8.
+
+**This plan has not been approved.** Per the coordinator's own operating instructions, silence
+is not approval — do not dispatch any of the five chunks below until explicit sign-off appears
+in this session's own conversation.
+
 ---
 
 ## Open questions / cross-cutting decisions
 
-*(none recorded yet — populated once investigation lands)*
+Resolved by design rather than left open (see `01-design.md` §7): retroactive-vs-new-Parts-only
+doesn't arise (coarse geometry is never persisted, so it applies uniformly); the persistent
+toggle is included in v1 since it's a cheap marginal add-on once the pending-state plumbing
+exists. No other open, user-must-decide product question was found.
 
 ---
 
