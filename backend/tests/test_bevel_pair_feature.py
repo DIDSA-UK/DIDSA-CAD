@@ -686,6 +686,40 @@ def test_spiral_bevel_pair_same_hand_produces_real_measurably_worse_overlap_than
     assert same_overlap > opposite_overlap + 1.0
 
 
+def test_spiral_bevel_pair_end_cap_flattening_now_succeeds_and_unskips_the_meshing_phase_search():
+    """`docs/gear-design/12-spiral-bevel-gear.md`'s own end-cap-flattening
+    fix (`bevel_math.spiral_section_count_for_twist`), exercised at the
+    pair level - previously untested here entirely (this test file had
+    zero flattening-related assertions before this workstream, confirmed
+    by grep before writing this). A tooth-count-symmetric 10T/10T spiral
+    pair at β=70° (module 4, face_width 8 - the default `_spiral_pair_
+    feature` parameters, matching this workstream's own documented single-
+    gear failure case exactly, `test_bevel_gear_feature.py`'s own `test_
+    spiral_end_cap_flattening_now_succeeds_for_every_documented_failing_
+    case`) used to flag `member_1:`/`member_2:` "could not be flattened"
+    for BOTH members (both share the same tooth count/geometry) before
+    this fix.
+
+    Two real, separate benefits confirmed directly here, not assumed from
+    the single-gear fix alone:
+    (a) the flattening warning is now absent for both members;
+    (b) `_member_solid_is_marginal`'s own gate (`bevel_pair.py`) no longer
+    trips, so the real per-build meshing-phase search actually runs
+    instead of being skipped - checked by confirming the "meshing-phase
+    search... was skipped because a member's own solid is already flagged
+    as geometrically marginal" warning is ALSO absent (that specific
+    skip-reason only fires when `_member_solid_is_marginal` is true for
+    either member's own pre-search warnings - `resolve_bevel_pair_from_
+    bodies`'s own `if feature.spiral_angle_degrees != 0.0:` branch), not
+    just that the build didn't raise."""
+    feature = _spiral_pair_feature(10, 10, spiral_angle_degrees=70.0)
+    shape, warnings = resolve_bevel_pair_from_bodies(feature, None, {}, frozenset())
+    assert not any("could not be flattened" in w for w in warnings), warnings
+    assert not any("meshing-phase search" in w and "skipped" in w for w in warnings), warnings
+    solids = _member_solids(shape)
+    assert len(solids) == 2, "expected exactly 2 member solids in the assembled compound"
+
+
 def test_spiral_bevel_pair_via_router_produces_a_valid_body_with_spiral_fields_in_the_response():
     part = _create_part()
     response = _create_pair(

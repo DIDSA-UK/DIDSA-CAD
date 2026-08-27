@@ -1089,8 +1089,15 @@ def resolve_bevel_pair_from_bodies(
             raise _bevel_pair_failed(str(exc)) from exc
     solid_1 = _shape_from_brep_bytes(solid_1_brep)
     solid_2 = _shape_from_brep_bytes(solid_2_brep)
-    warnings.extend(f"member_1: {w}" for w in warnings_1)
-    warnings.extend(f"member_2: {w}" for w in warnings_2)
+    # Collected separately from `warnings` (rather than appended into it
+    # directly) so the final return below can put these first - a full
+    # un-flattened dome/dish on either member is the single most visually
+    # severe fallback this module surfaces (immediately, obviously wrong on
+    # inspection, unlike the purely-advisory hub/face_width/mesh/hand/cost
+    # warnings already in `warnings` by this point), so it belongs ahead of
+    # them, not buried after. Mirrors `app.document.bevel.resolve_bevel_
+    # gear_from_bodies`'s identical reordering for the single-gear case.
+    assembly_warnings = [f"member_1: {w}" for w in warnings_1] + [f"member_2: {w}" for w in warnings_2]
 
     # `docs/gear-design/12-spiral-bevel-gear.md`'s own Spike C, wired into
     # real construction here per `13-spiral-bevel-pair.md`'s own go/no-go:
@@ -1128,7 +1135,7 @@ def resolve_bevel_pair_from_bodies(
     builder.MakeCompound(compound)
     builder.Add(compound, solid_1)
     builder.Add(compound, solid_2)
-    return compound, warnings
+    return compound, assembly_warnings + warnings
 
 
 def resolve_bevel_pair(
