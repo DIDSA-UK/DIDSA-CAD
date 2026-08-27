@@ -32,7 +32,7 @@ from OCC.Core.BRepBuilderAPI import (
 )
 from OCC.Core.BRepFilletAPI import BRepFilletAPI_MakeFillet
 from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_ThruSections
-from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakePrism
+from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakePrism
 from OCC.Core.GeomAPI import GeomAPI_Interpolate
 from OCC.Core.gp import gp_Ax2, gp_Circ, gp_Vec
 from OCC.Core.TColgp import TColgp_HArray1OfPnt
@@ -687,3 +687,136 @@ def resolve_gear(
     not stacked on top of it."""
     bodies = compute_part_bodies(part, excluded_feature_ids | {feature.id})
     return resolve_gear_from_bodies(feature, part, bodies, excluded_feature_ids | {feature.id})
+
+
+# ---------------------------------------------------------------------------
+# Coarse (LOD) construction - `docs/lod-strategy/01-design.md` SS3: a single
+# `BRepPrimAPI_MakeCylinder` sized from this gear's own addendum diameter and
+# face width, standing in for the real tooth-by-tooth solid above. Applied
+# unconditionally (no `helix_angle_degrees`/herringbone gate - a cylinder is
+# equally cheap regardless of those parameters, so there is no server-side
+# "is this one actually expensive" classification to make; whether/when to
+# actually show this to the user instead of the real geometry is a client-
+# side timing decision, out of this chunk's own scope per the design's SS8
+# chunk breakdown).
+#
+# **Never persisted, never enters the Feature graph** - this is a pure
+# rendering-layer stand-in computed on demand by `app.document.router`'s
+# `tier=coarse` mesh query and coarse-preview endpoints only. It is never
+# the input to any Boolean/Boss/Cut resolution - `resolve_gear_from_bodies`
+# above (the real construction) is what every downstream Feature always
+# resolves against, unconditionally.
+
+
+def coarse_gear_solid(basis: ResolvedPlane, radius: float, face_width: float) -> TopoDS_Shape:
+    """The coarse stand-in itself: one plain cylinder, `radius` around
+    `basis`'s own axis (its origin/normal - the same axis
+    `resolve_gear_from_bodies`'s own straight-tooth path extrudes along),
+    `face_width` tall. Shared by `app.document.gear_chain`/`app.document.
+    planetary_gear`'s own coarse builders (per `01-design.md` SS3's "cylinder
+    for gears... members" row) - a chain/planetary member has no
+    `GearFeature` of its own to pass, just a resolved radius/face_width by
+    different field paths, mirroring `_gear_face`'s own "promote to an
+    explicit-params helper once a second caller needs it" convention."""
+    axis = gp_Ax2(basis_point_to_world(basis, 0.0, 0.0), basis_normal(basis))
+    return BRepPrimAPI_MakeCylinder(axis, radius, face_width).Shape()
+
+
+def coarse_gear_radius_from_geometry(
+    is_internal: bool, outer_diameter: float | None, geometry: SpurGearGeometry
+) -> float:
+    """The radius a coarse stand-in cylinder should use for an already-
+    resolved `SpurGearGeometry` - `outer_diameter / 2` for an internal gear
+    (its real rim, already the coarsest correct proxy for "the material
+    this gear occupies"; the tooth-inward annulus detail is exactly what
+    coarse is meant to skip - mirrors `_gear_face`'s own internal/external
+    split), otherwise the external gear's own real `addendum_radius`. Takes
+    plain params rather than a whole `GearFeature` (mirrors `_gear_face`'s
+    own "promote to an explicit-params helper once a second caller needs
+    it" convention) so `app.document.gear_chain`/`app.document.
+    planetary_gear`'s own coarse builders can reuse this directly for one
+    chain/planetary member at a time, neither of which has a `GearFeature`
+    of its own to pass."""
+    if is_internal:
+        assert outer_diameter is not None  # enforced by each caller before this is ever reached
+        outer_radius = outer_diameter / 2
+        if outer_radius <= geometry.dedendum_radius:
+            # Same "no rim material left" guard `_gear_face` (the real
+            # construction path) already enforces before ever building
+            # anything - `app.document.planetary_gear`'s own coarse ring
+            # builder already re-checks this the same way; this mirrors
+            # that check in here instead, so every other coarse caller
+            # (gear.py's own `coarse_gear_radius`, `gear_chain.py`'s
+            # internal-member coarse path) gets it too rather than each
+            # needing its own copy.
+            raise GearGeometryError(
+                f"outer_diameter ({outer_diameter!r}) must exceed the tooth profile's own outer "
+                f"reach (dedendum diameter {geometry.dedendum_radius * 2!r}) - there is no rim material left "
+                "otherwise"
+            )
+        return outer_radius
+    return geometry.addendum_radius
+
+
+def coarse_gear_radius(feature: GearFeature) -> float:
+    """The radius `resolve_gear_coarse_from_bodies` builds its stand-in
+    cylinder at - cheap pure-Python math only (no OCCT, no tooth wire/loft
+    construction), per `01-design.md` SS2's "computed synchronously in
+    milliseconds" requirement. Reuses `resolve_gear_profile_shift`/`spur_
+    gear_geometry` exactly as `resolve_gear_from_bodies` does, so a coarse
+    and full build agree on which resolved `profile_shift` they're each
+    sizing against - not a second, drifting copy of that resolution."""
+    resolved_profile_shift = resolve_gear_profile_shift(
+        module=feature.module,
+        tooth_count=feature.tooth_count,
+        pressure_angle_degrees=feature.pressure_angle_degrees,
+        backlash=feature.backlash,
+        profile_shift=feature.profile_shift,
+        is_internal=feature.is_internal,
+    )
+    try:
+        geometry = spur_gear_geometry(
+            module=feature.module,
+            tooth_count=feature.tooth_count,
+            pressure_angle_degrees=feature.pressure_angle_degrees,
+            profile_shift=resolved_profile_shift,
+            backlash=feature.backlash,
+            is_internal=feature.is_internal,
+        )
+    except GearGeometryError as exc:
+        raise _invalid_gear_parameters(str(exc)) from exc
+    try:
+        return coarse_gear_radius_from_geometry(feature.is_internal, feature.outer_diameter, geometry)
+    except GearGeometryError as exc:
+        raise _invalid_gear_parameters(str(exc)) from exc
+
+
+def resolve_gear_coarse_from_bodies(
+    feature: GearFeature,
+    part: Part,
+    bodies: dict[str, TopoDS_Shape],
+    excluded_feature_ids: frozenset[str],
+) -> TopoDS_Shape:
+    """The coarse stand-in for one `GearFeature`, positioned exactly like
+    `resolve_gear_from_bodies`'s own real solid (same `resolve_plane_ref`
+    call) but built from `coarse_gear_solid` instead of the real tooth
+    construction - `app.document.router`'s `tier=coarse` mesh query and
+    coarse-preview endpoint both call this, never anything that persists
+    or registers against the Feature graph."""
+    if feature.is_internal and feature.outer_diameter is None:
+        raise _invalid_gear_parameters("outer_diameter is required for an internal gear")
+    if feature.face_width <= 0:
+        raise _invalid_gear_parameters(f"face_width must be positive, got {feature.face_width!r}")
+    basis = resolve_plane_ref(part, bodies, feature.plane_ref, excluded_feature_ids)
+    radius = coarse_gear_radius(feature)
+    return coarse_gear_solid(basis, radius, feature.face_width)
+
+
+def resolve_gear_coarse(
+    part: Part, feature: GearFeature, excluded_feature_ids: frozenset[str] = frozenset()
+) -> TopoDS_Shape:
+    """Fresh entry point for a not-yet-created `GearFeature` payload (the
+    coarse-preview endpoint) or for `tier=coarse` mesh serving - mirrors
+    `resolve_gear`'s own self-exclusion convention exactly."""
+    bodies = compute_part_bodies(part, excluded_feature_ids | {feature.id})
+    return resolve_gear_coarse_from_bodies(feature, part, bodies, excluded_feature_ids | {feature.id})

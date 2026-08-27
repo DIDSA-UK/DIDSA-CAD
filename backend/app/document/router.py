@@ -7,11 +7,12 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
+from OCC.Core.TopoDS import TopoDS_Shape
 
 from app.document.ai_plan import validate_ai_plan as validate_ai_plan_steps
 from app.document.ai_plan_schemas import PlanValidateRequest, PlanValidateResponse
-from app.document.bevel import _spiral_hand_from_feature, resolve_bevel_gear
-from app.document.bevel_pair import resolve_bevel_pair, resolve_member_profile_shifts
+from app.document.bevel import _spiral_hand_from_feature, resolve_bevel_gear, resolve_bevel_gear_coarse
+from app.document.bevel_pair import resolve_bevel_pair, resolve_bevel_pair_coarse, resolve_member_profile_shifts
 from app.document.chamfer import resolve_chamfer
 from app.document.create_plane import (
     basis_for_sketch,
@@ -20,14 +21,18 @@ from app.document.create_plane import (
     resolve_external_vertex_position,
 )
 from app.document.extrude import (
+    _register_solids,
+    cached_feature_warnings,
+    coarse_eligible_feature_ids,
     compute_part_bodies,
+    compute_part_bodies_coarse,
     edge_endpoint_vertex_refs,
     resolve_circular_edge_arc,
     resolve_full_circular_edge,
     select_profiles,
 )
 from app.document.fillet import resolve_fillet
-from app.document.gear import resolve_gear, resolve_gear_profile_shift
+from app.document.gear import resolve_gear, resolve_gear_coarse, resolve_gear_profile_shift
 from app.document.gear_math import (
     GearGeometryError,
     default_rack_backing_height,
@@ -64,8 +69,8 @@ from app.document.bevel_math import (
 )
 from app.document.rack import resolve_rack
 from app.document.loft import resolve_loft
-from app.document.gear_chain import resolve_gear_chain
-from app.document.planetary_gear import resolve_planetary
+from app.document.gear_chain import resolve_gear_chain, resolve_gear_chain_coarse
+from app.document.planetary_gear import resolve_planetary, resolve_planetary_coarse
 from app.document.graph import (
     base_feature_id,
     build_feature_graph,
@@ -762,13 +767,39 @@ def _gear_feature_response(
     see `app.document.gear.resolve_gear_from_bodies`) is only known at
     create/update time from that call's own return value - a plain `GET
     .../features` re-read (this function's other caller, via
-    `_feature_response`) re-resolves the Gear to recompute them fresh,
-    soft-failing to `[]` rather than raising, same as Loft's identical
-    "since-broken Feature still shown, not one whose failure takes down
-    the whole feature list" reasoning."""
+    `_feature_response`) instead reads the last value `compute_part_bodies`
+    computed for this Feature out of `app.document.extrude.
+    cached_feature_warnings` (see the `warnings is None` branch below),
+    `[]` if never computed, same as Loft's identical "since-broken Feature
+    still shown, not one whose failure takes down the whole feature list"
+    reasoning - including when the failure belongs to some other, unrelated
+    Feature in the same Part (see the `try`/`except` below)."""
     if warnings is None:
+        # Bug fix (LOD investigation, §6): a plain GET re-read of an
+        # already-persisted, unchanged Feature has no reason to exclude its
+        # own id the way create/update validation (`resolve_gear`) does -
+        # that self-exclusion is what forced `compute_part_bodies` onto its
+        # always-uncached `excluded_feature_ids`-non-empty branch, discarding
+        # `body_cache` entirely. `compute_part_bodies(part)` (the ordinary
+        # cached call, same one `/mesh` already makes) both brings `bodies`
+        # up to date AND - as a side effect of `_apply_feature_to_bodies`'s
+        # own GearFeature branch, whenever it actually runs - refreshes
+        # `cached_feature_warnings`'s own entry for this Feature; reading it
+        # back here needs no `resolve_gear_from_bodies` call of its own, so a
+        # repeat fetch of an unchanged Part costs nothing beyond the cache
+        # lookup, not even this one Feature's own rebuild.
+        #
+        # `compute_part_bodies(part)` walks every Feature in the Part, not
+        # just this one - same as the old `resolve_gear(part, feature)` it
+        # replaced (that also computed the whole Part, just excluding this
+        # Feature's own id). So a since-broken *unrelated* Feature elsewhere
+        # (e.g. a Mirror/Pattern/Split whose reference was deleted) can still
+        # raise `missing_reference` here - caught the same way the old code
+        # caught it, so this Feature's row still renders rather than taking
+        # the whole `GET /parts/{id}/features` response down with it.
         try:
-            _, warnings = resolve_gear(part, feature)
+            compute_part_bodies(part)
+            warnings = cached_feature_warnings(part, feature.id)
         except HTTPException:
             logger.warning("GearFeature %s could not be resolved for its response", feature.id)
             warnings = []
@@ -817,14 +848,25 @@ def _bevel_gear_feature_response(
     sanity findings - see `app.document.bevel.resolve_bevel_gear_from_
     bodies`) is only known at create/update time from that call's own
     return value - a plain `GET .../features` re-read (this function's
-    other caller, via `_feature_response`) re-resolves the bevel gear to
-    recompute them fresh, soft-failing to `[]` rather than raising, same
-    "since-broken Feature still shown, not one whose failure takes down
-    the whole feature list" reasoning as every other warnings-bearing
-    Feature type here."""
+    other caller, via `_feature_response`) instead reads the last value
+    `compute_part_bodies` computed for this Feature out of `app.document.
+    extrude.cached_feature_warnings` (see the `warnings is None` branch
+    below), `[]` if never computed, same "since-broken Feature still shown,
+    not one whose failure takes down the whole feature list" reasoning as
+    every other warnings-bearing Feature type here - including when the
+    failure belongs to some other, unrelated Feature in the same Part."""
     if warnings is None:
+        # Bug fix (LOD investigation, §6) - see `_gear_feature_response`'s
+        # identical fix above for the full reasoning: a plain-GET re-read
+        # reads `cached_feature_warnings` (refreshed as a side effect of
+        # `compute_part_bodies`'s own cached build, whenever this Feature's
+        # own step actually runs) instead of calling `resolve_bevel_gear`'s
+        # always-uncached self-exclusion. Same try/except scope as before -
+        # `compute_part_bodies(part)` walks the whole Part, so a since-broken
+        # unrelated Feature elsewhere must not take this row down with it.
         try:
-            _, warnings = resolve_bevel_gear(part, feature)
+            compute_part_bodies(part)
+            warnings = cached_feature_warnings(part, feature.id)
         except HTTPException:
             logger.warning("BevelGearFeature %s could not be resolved for its response", feature.id)
             warnings = []
@@ -857,13 +899,30 @@ def _bevel_pair_feature_response(
     sanity findings, label-prefixed - see `app.document.bevel_pair.
     resolve_bevel_pair_from_bodies`'s own return value) is only known at
     create/update time - a plain `GET .../features` re-read (this
-    function's other caller, via `_feature_response`) re-resolves the pair
-    to recompute them fresh, soft-failing to `[]` rather than raising, same
-    "since-broken Feature still shown" reasoning as every other
-    warnings-bearing Feature type here."""
+    function's other caller, via `_feature_response`) instead reads the
+    last value `compute_part_bodies` computed for this Feature out of `app.
+    document.extrude.cached_feature_warnings` (see the `warnings is None`
+    branch below), `[]` if never computed, same "since-broken Feature still
+    shown" reasoning as every other warnings-bearing Feature type here -
+    including when the failure belongs to some other, unrelated Feature in
+    the same Part."""
     if warnings is None:
+        # Bug fix (LOD investigation, §6) - see `_gear_feature_response`'s
+        # identical fix above for the full reasoning: a plain-GET re-read
+        # reads `cached_feature_warnings` (refreshed as a side effect of
+        # `compute_part_bodies`'s own cached build, whenever this Feature's
+        # own step actually runs - a real cache hit runs it for NEITHER of
+        # the two member builds NOR the meshing-phase search) instead of
+        # `resolve_bevel_pair`'s always-uncached self-exclusion - this is
+        # the specific case that used to re-run the entire spiral-bevel-pair
+        # build (both members, plus the meshing-phase search) on every
+        # single `GET /parts/{id}/features` fetch, unconditionally. Same
+        # try/except scope as before - `compute_part_bodies(part)` walks the
+        # whole Part, so a since-broken unrelated Feature elsewhere must not
+        # take this row down with it.
         try:
-            _, warnings = resolve_bevel_pair(part, feature)
+            compute_part_bodies(part)
+            warnings = cached_feature_warnings(part, feature.id)
         except HTTPException:
             logger.warning("BevelPairFeature %s could not be resolved for its response", feature.id)
             warnings = []
@@ -918,15 +977,27 @@ def _loft_feature_response(part: Part, feature: LoftFeature, warnings: list[str]
     `warnings` are only known at create/update time (from `app.document.
     loft.resolve_loft`'s own return value - see `create_loft_feature`/
     `update_loft_feature`) - a plain `GET .../features` re-read (this
-    function's other caller, via `_feature_response`) re-resolves the Loft
-    to recompute them fresh rather than persisting them on the Feature
-    itself (mirrors `_create_plane_feature_response`'s own "resolve live
-    geometry on every read" convention), soft-failing to `[]` rather than
-    raising - a since-broken Loft is still shown (as a locked/lit Feature
-    row), not one whose failure takes down the whole feature list."""
+    function's other caller, via `_feature_response`) instead reads the
+    last value `compute_part_bodies` computed for this Feature out of `app.
+    document.extrude.cached_feature_warnings` (see the `warnings is None`
+    branch below) rather than persisting them on the Feature itself
+    (mirrors `_create_plane_feature_response`'s own "resolve live geometry
+    on every read" convention), `[]` if never computed - a since-broken
+    Loft is still shown (as a locked/lit Feature row), not one whose
+    failure - its own, or an unrelated Feature's elsewhere in the Part -
+    takes down the whole feature list."""
     if warnings is None:
+        # Bug fix (LOD investigation, §6) - see `_gear_feature_response`'s
+        # identical fix above for the full reasoning: a plain-GET re-read
+        # reads `cached_feature_warnings` (refreshed as a side effect of
+        # `compute_part_bodies`'s own cached build, whenever this Feature's
+        # own step actually runs) instead of calling `resolve_loft`'s
+        # always-uncached self-exclusion. Same try/except scope as before -
+        # `compute_part_bodies(part)` walks the whole Part, so a since-broken
+        # unrelated Feature elsewhere must not take this row down with it.
         try:
-            _, warnings = resolve_loft(part, feature)
+            compute_part_bodies(part)
+            warnings = cached_feature_warnings(part, feature.id)
         except HTTPException:
             logger.warning("LoftFeature %s could not be resolved for its response", feature.id)
             warnings = []
@@ -949,13 +1020,25 @@ def _gear_chain_feature_response(
 ) -> GearChainFeatureResponse:
     """`docs/gear-design/05-gear-chain-and-planetary.md`: mirrors
     `_loft_feature_response`'s own "known only at create/update time,
-    re-resolved live for a GET" treatment exactly - `warnings` here covers
-    both interference findings and compound-join volume-loss/thin-member
-    findings (`app.document.gear_chain.resolve_gear_chain`'s own second
-    return value)."""
+    read back from `app.document.extrude.cached_feature_warnings` for a
+    GET" treatment exactly (see the `warnings is None` branch below) -
+    `warnings` here covers both interference findings and compound-join
+    volume-loss/thin-member findings (`app.document.gear_chain.
+    resolve_gear_chain`'s own second return value). Same "a since-broken
+    Feature elsewhere in the Part must not take this row down with it"
+    resilience as every other warnings-bearing Feature type here."""
     if warnings is None:
+        # Bug fix (LOD investigation, §6) - see `_gear_feature_response`'s
+        # identical fix above for the full reasoning: a plain-GET re-read
+        # reads `cached_feature_warnings` (refreshed as a side effect of
+        # `compute_part_bodies`'s own cached build, whenever this Feature's
+        # own step actually runs) instead of calling `resolve_gear_chain`'s
+        # always-uncached self-exclusion. Same try/except scope as before -
+        # `compute_part_bodies(part)` walks the whole Part, so a since-broken
+        # unrelated Feature elsewhere must not take this row down with it.
         try:
-            _, warnings = resolve_gear_chain(part, feature)
+            compute_part_bodies(part)
+            warnings = cached_feature_warnings(part, feature.id)
         except HTTPException:
             logger.warning("GearChainFeature %s could not be resolved for its response", feature.id)
             warnings = []
@@ -984,6 +1067,37 @@ def _mesh_vertex_data(mesh_data: MeshData) -> MeshVertexData:
         topology_vertex_ids=mesh_data.topology_vertex_ids,
         face_edge_ids=mesh_data.face_edge_ids,
     )
+
+
+_COARSE_PREVIEW_BASE_ID = "coarse-preview"
+"""`docs/lod-strategy/01-design.md` SS4's coarse-preview endpoints (the 3D
+analogue of `/gear/preview`, but for a not-yet-created gear-family Feature)
+have no real Feature id to key a Body off of - nothing is persisted, so
+there is no `feature.id` `_register_solids` could otherwise use. A fixed,
+synthetic base id plays that role instead; `_coarse_preview_response`'s own
+docstring covers the resulting `body_id` shape."""
+
+
+def _coarse_preview_response(shape: TopoDS_Shape, mesh_quality: float) -> list[BodyMeshResponse]:
+    """Tessellates a not-yet-persisted coarse stand-in `shape` (one member's
+    cone, a bevel pair's two cones, a chain/planetary's several members,
+    ...) into the same per-Body `BodyMeshResponse` shape `GET /mesh` itself
+    returns - `_register_solids` splits `shape` into its maximally-connected
+    solids first (`_COARSE_PREVIEW_BASE_ID` alone for a single solid,
+    `f"{_COARSE_PREVIEW_BASE_ID}#{i}"` for N>1, exactly its own documented
+    convention), so a multi-Body coarse-eligible Feature type (BevelPair,
+    GearChain, PlanetaryGear) comes back as one entry per member here too,
+    not one merged mesh. Every entry is tagged `source="coarse"` - nothing
+    this builds from is ever persisted or registered against any real
+    Feature graph."""
+    bodies: dict[str, TopoDS_Shape] = {}
+    _register_solids(bodies, _COARSE_PREVIEW_BASE_ID, shape)
+    return [
+        BodyMeshResponse(
+            body_id=body_id, source="coarse", mesh=_mesh_vertex_data(tessellate_shape(body_shape, mesh_quality))
+        )
+        for body_id, body_shape in bodies.items()
+    ]
 
 
 def _validate_extrude_distances(start_distance: float, end_distance: float) -> None:
@@ -3458,6 +3572,46 @@ def create_gear_feature(part_id: str, payload: GearFeatureCreate) -> GearFeature
     return _gear_feature_response(part, feature, warnings)
 
 
+@router.post("/parts/{part_id}/gear-features/coarse-preview", response_model=list[BodyMeshResponse])
+def preview_gear_feature_coarse(
+    part_id: str, payload: GearFeatureCreate, quality: float | None = Query(default=None, ge=0.0, le=1.0)
+) -> list[BodyMeshResponse]:
+    """`docs/lod-strategy/01-design.md` SS4: the 3D analogue of `/gear/
+    preview` for a not-yet-created `GearFeature` - a real coarse solid
+    (`app.document.gear.resolve_gear_coarse`) instead of a 2D outline.
+    Mirrors `create_gear_feature`'s own validate-then-build shape exactly
+    (same scratch Feature, same payload validation), but never calls
+    `part.add_feature` - nothing is persisted, no Feature is created, no
+    Part state changes; `part_id` is used only to resolve `plane_ref`
+    against this Part's own already-real geometry."""
+    part = get_part_or_404(part_id)
+    mesh_quality = DEFAULT_MESH_QUALITY if quality is None else mesh_quality_from_slider(quality)
+    _validate_gear_feature_payload(payload.is_internal, payload.outer_diameter)
+    plane_ref = _plane_ref_to_domain(payload.plane_ref) if payload.plane_ref is not None else _default_plane_ref()
+    _validate_plane_ref(part, plane_ref)
+    _validate_target_body_ids(part, payload.gear_type == GearType.CUT, payload.target_body_ids)
+    feature = GearFeature(
+        id=str(uuid.uuid4()),
+        plane_ref=plane_ref,
+        gear_type=payload.gear_type,
+        is_internal=payload.is_internal,
+        module=payload.module,
+        tooth_count=payload.tooth_count,
+        face_width=payload.face_width,
+        pressure_angle_degrees=payload.pressure_angle_degrees,
+        profile_shift=payload.profile_shift,
+        backlash=payload.backlash,
+        root_fillet_radius=payload.root_fillet_radius,
+        outer_diameter=payload.outer_diameter,
+        target_body_ids=list(payload.target_body_ids),
+        helix_angle_degrees=payload.helix_angle_degrees,
+        herringbone=payload.herringbone,
+        points_per_flank=payload.points_per_flank,
+    )
+    shape = resolve_gear_coarse(part, feature)  # raises on an unresolvable/invalid gear
+    return _coarse_preview_response(shape, mesh_quality)
+
+
 def _get_gear_feature_or_404(part: Part, feature_id: str) -> GearFeature:
     feature = part.get_feature(feature_id)
     if not isinstance(feature, GearFeature):
@@ -3677,6 +3831,40 @@ def create_bevel_gear_feature(part_id: str, payload: BevelGearFeatureCreate) -> 
     return _bevel_gear_feature_response(part, feature, warnings)
 
 
+@router.post("/parts/{part_id}/bevel-gear-features/coarse-preview", response_model=list[BodyMeshResponse])
+def preview_bevel_gear_feature_coarse(
+    part_id: str, payload: BevelGearFeatureCreate, quality: float | None = Query(default=None, ge=0.0, le=1.0)
+) -> list[BodyMeshResponse]:
+    """`docs/lod-strategy/01-design.md` SS4: mirrors `preview_gear_feature_
+    coarse`'s own shape exactly, for a not-yet-created `BevelGearFeature` -
+    same `create_bevel_gear_feature` validate-then-build path, but built
+    via `app.document.bevel.resolve_bevel_gear_coarse` and never
+    persisted."""
+    part = get_part_or_404(part_id)
+    mesh_quality = DEFAULT_MESH_QUALITY if quality is None else mesh_quality_from_slider(quality)
+    plane_ref = _plane_ref_to_domain(payload.plane_ref) if payload.plane_ref is not None else _default_plane_ref()
+    _validate_plane_ref(part, plane_ref)
+    _validate_target_body_ids(part, payload.bevel_type == BevelGearType.CUT, payload.target_body_ids)
+    feature = BevelGearFeature(
+        id=str(uuid.uuid4()),
+        plane_ref=plane_ref,
+        bevel_type=payload.bevel_type,
+        module=payload.module,
+        tooth_count=payload.tooth_count,
+        face_width=payload.face_width,
+        pitch_cone_angle_degrees=payload.pitch_cone_angle_degrees,
+        pressure_angle_degrees=payload.pressure_angle_degrees,
+        backlash=payload.backlash,
+        profile_shift=payload.profile_shift,
+        target_body_ids=list(payload.target_body_ids),
+        points_per_flank=payload.points_per_flank,
+        spiral_angle_degrees=payload.spiral_angle_degrees,
+        spiral_hand=payload.spiral_hand,
+    )
+    shape = resolve_bevel_gear_coarse(part, feature)  # raises on an unresolvable/invalid bevel gear
+    return _coarse_preview_response(shape, mesh_quality)
+
+
 def _get_bevel_gear_feature_or_404(part: Part, feature_id: str) -> BevelGearFeature:
     feature = part.get_feature(feature_id)
     if not isinstance(feature, BevelGearFeature):
@@ -3786,6 +3974,36 @@ def create_gear_chain_feature(part_id: str, payload: GearChainFeatureCreate) -> 
     return _gear_chain_feature_response(part, feature, warnings)
 
 
+@router.post("/parts/{part_id}/gear-chain-features/coarse-preview", response_model=list[BodyMeshResponse])
+def preview_gear_chain_feature_coarse(
+    part_id: str, payload: GearChainFeatureCreate, quality: float | None = Query(default=None, ge=0.0, le=1.0)
+) -> list[BodyMeshResponse]:
+    """`docs/lod-strategy/01-design.md` SS4: mirrors `preview_gear_feature_
+    coarse`'s own shape exactly, for a not-yet-created `GearChainFeature` -
+    same `create_gear_chain_feature` validate-then-build path, but built
+    via `app.document.gear_chain.resolve_gear_chain_coarse` and never
+    persisted. Every stage's own member(s) come back as their own entry
+    (`_coarse_preview_response`), same as the real chain's own multi-Body
+    compound."""
+    part = get_part_or_404(part_id)
+    mesh_quality = DEFAULT_MESH_QUALITY if quality is None else mesh_quality_from_slider(quality)
+    groups = [_gear_group_to_domain(g) for g in payload.groups]
+    stages = [_gear_chain_stage_to_domain(s) for s in payload.stages]
+    _validate_gear_chain_stages(groups, stages)
+    plane_ref = _plane_ref_to_domain(payload.plane_ref) if payload.plane_ref is not None else _default_plane_ref()
+    _validate_plane_ref(part, plane_ref)
+    feature = GearChainFeature(
+        id=str(uuid.uuid4()),
+        plane_ref=plane_ref,
+        groups=groups,
+        stages=stages,
+        start_direction_degrees=payload.start_direction_degrees,
+        print_clearance_margin=payload.print_clearance_margin,
+    )
+    shape = resolve_gear_chain_coarse(part, feature)  # raises on an unresolvable/invalid chain
+    return _coarse_preview_response(shape, mesh_quality)
+
+
 def _get_gear_chain_feature_or_404(part: Part, feature_id: str) -> GearChainFeature:
     feature = part.get_feature(feature_id)
     if not isinstance(feature, GearChainFeature):
@@ -3871,6 +4089,36 @@ def create_planetary_gear_feature(part_id: str, payload: PlanetaryGearFeatureCre
     resolve_planetary(part, feature)  # raises (blocking) on an invalid/unresolvable planetary set
     part.add_feature(feature)
     return _feature_response(part, feature)
+
+
+@router.post("/parts/{part_id}/planetary-gear-features/coarse-preview", response_model=list[BodyMeshResponse])
+def preview_planetary_gear_feature_coarse(
+    part_id: str, payload: PlanetaryGearFeatureCreate, quality: float | None = Query(default=None, ge=0.0, le=1.0)
+) -> list[BodyMeshResponse]:
+    """`docs/lod-strategy/01-design.md` SS4: mirrors `preview_gear_feature_
+    coarse`'s own shape exactly, for a not-yet-created `PlanetaryGearFeature`
+    - same `create_planetary_gear_feature` validate-then-build path, but
+    built via `app.document.planetary_gear.resolve_planetary_coarse` and
+    never persisted. Sun/ring/every planet come back as their own entry
+    (`_coarse_preview_response`), same as the real assembly's own multi-Body
+    compound."""
+    part = get_part_or_404(part_id)
+    mesh_quality = DEFAULT_MESH_QUALITY if quality is None else mesh_quality_from_slider(quality)
+    plane_ref = _plane_ref_to_domain(payload.plane_ref) if payload.plane_ref is not None else _default_plane_ref()
+    _validate_plane_ref(part, plane_ref)
+    feature = PlanetaryGearFeature(
+        id=str(uuid.uuid4()),
+        plane_ref=plane_ref,
+        module=payload.module,
+        sun_tooth_count=payload.sun_tooth_count,
+        ring_tooth_count=payload.ring_tooth_count,
+        planet_count=payload.planet_count,
+        face_width=payload.face_width,
+        ring_outer_diameter=payload.ring_outer_diameter,
+        pressure_angle_degrees=payload.pressure_angle_degrees,
+    )
+    shape = resolve_planetary_coarse(part, feature)  # raises (blocking) on an invalid/unresolvable planetary set
+    return _coarse_preview_response(shape, mesh_quality)
 
 
 def _get_planetary_gear_feature_or_404(part: Part, feature_id: str) -> PlanetaryGearFeature:
@@ -3961,6 +4209,38 @@ def create_bevel_pair_feature(part_id: str, payload: BevelPairFeatureCreate) -> 
     _, warnings = resolve_bevel_pair(part, feature)  # raises on an unresolvable/invalid bevel pair
     part.add_feature(feature)
     return _bevel_pair_feature_response(part, feature, warnings)
+
+
+@router.post("/parts/{part_id}/bevel-pair-features/coarse-preview", response_model=list[BodyMeshResponse])
+def preview_bevel_pair_feature_coarse(
+    part_id: str, payload: BevelPairFeatureCreate, quality: float | None = Query(default=None, ge=0.0, le=1.0)
+) -> list[BodyMeshResponse]:
+    """`docs/lod-strategy/01-design.md` SS4: mirrors `preview_gear_feature_
+    coarse`'s own shape exactly, for a not-yet-created `BevelPairFeature` -
+    same `create_bevel_pair_feature` validate-then-build path, but built via
+    `app.document.bevel_pair.resolve_bevel_pair_coarse` (two cones, no
+    meshing-phase search) and never persisted. Both members come back as
+    their own entry (`_coarse_preview_response`), same as the real pair's
+    own 2-Body compound."""
+    part = get_part_or_404(part_id)
+    mesh_quality = DEFAULT_MESH_QUALITY if quality is None else mesh_quality_from_slider(quality)
+    plane_ref = _plane_ref_to_domain(payload.plane_ref) if payload.plane_ref is not None else _default_plane_ref()
+    _validate_plane_ref(part, plane_ref)
+    feature = BevelPairFeature(
+        id=str(uuid.uuid4()),
+        plane_ref=plane_ref,
+        module=payload.module,
+        member_1=_bevel_pair_member_to_domain(payload.member_1),
+        member_2=_bevel_pair_member_to_domain(payload.member_2),
+        face_width=payload.face_width,
+        pressure_angle_degrees=payload.pressure_angle_degrees,
+        shaft_angle_degrees=payload.shaft_angle_degrees,
+        backlash=payload.backlash,
+        points_per_flank=payload.points_per_flank,
+        spiral_angle_degrees=payload.spiral_angle_degrees,
+    )
+    shape = resolve_bevel_pair_coarse(part, feature)  # raises on an unresolvable/invalid bevel pair
+    return _coarse_preview_response(shape, mesh_quality)
 
 
 def _get_bevel_pair_feature_or_404(part: Part, feature_id: str) -> BevelPairFeature:
@@ -5117,6 +5397,7 @@ def get_part_mesh(
     hidden_feature_ids: list[str] = Query(default=[]),
     rollback_excluded_feature_ids: list[str] = Query(default=[]),
     quality: float | None = Query(default=None, ge=0.0, le=1.0),
+    tier: Literal["full", "coarse"] = Query(default="full"),
 ) -> list[BodyMeshResponse]:
     """A1: returns an array of Bodies rather than one combined mesh - each
     entry is one independently-tessellated Body, carrying its own stable
@@ -5176,7 +5457,35 @@ def get_part_mesh(
     every pre-existing call site, including every test, that never sends
     this param at all) keeps using `DEFAULT_MESH_QUALITY` completely
     unparameterized, so this is purely additive: no existing behavior
-    changes unless a client actually opts in by sending a value."""
+    changes unless a client actually opts in by sending a value.
+
+    `tier` (`docs/lod-strategy/01-design.md` SS4): `"full"` (the default -
+    every pre-existing call site, unchanged) is everything above. `"coarse"`
+    instead returns `BodyMeshResponse`s built from `app.document.extrude.
+    compute_part_bodies_coarse` (a cheap real-OCCT primitive - a cylinder or
+    cone - standing in for a Gear/BevelGear/BevelPair/GearChain/
+    PlanetaryGear Feature's own real construction), filtered down to only
+    the Bodies a coarse-eligible Feature produced (`coarse_eligible_
+    feature_ids`) and tagged `source="coarse"` - every other Body (an
+    Extrude, say, with no coarse builder of its own yet) is left out of a
+    `tier="coarse"` response entirely rather than re-served unchanged; a
+    client wanting the rest already has (or is concurrently fetching) the
+    real `tier="full"` response. `hidden_feature_ids`/`rollback_excluded_
+    feature_ids` still apply identically. Never persisted, never affects
+    `part`'s own stored state - a pure rendering-layer stand-in, computed
+    fresh on every call.
+
+    Known, narrow limitation (a pre-existing ambiguity in this app's own
+    Body-identity model, not introduced by this filter): a Gear/BevelGear
+    Feature whose `target_body_ids` is non-empty (bossed/cut into an
+    already-existing Body rather than starting a new standalone one)
+    inherits that existing Body's own id (`_apply_boss_or_cut`'s survivor-
+    id tie-break), not its own feature id - `coarse_eligible_feature_ids`'s
+    `base_feature_id` lookup then attributes that Body to whichever earlier
+    Feature it merged into, not to the Gear/BevelGear itself, so it is
+    left out of a `tier="coarse"` response in that specific case. The
+    common case (an empty `target_body_ids` - a gear/bevel gear that mints
+    its own standalone Body) is unaffected."""
     part = get_part_or_404(part_id)
     mesh_quality = DEFAULT_MESH_QUALITY if quality is None else mesh_quality_from_slider(quality)
 
@@ -5189,8 +5498,24 @@ def get_part_mesh(
             )
         ]
 
-    bodies = compute_part_bodies(part, frozenset(rollback_excluded_feature_ids))
     hidden = frozenset(hidden_feature_ids)
+
+    if tier == "coarse":
+        rollback_excluded = frozenset(rollback_excluded_feature_ids)
+        coarse_eligible = coarse_eligible_feature_ids(part)
+        bodies = compute_part_bodies_coarse(part, rollback_excluded)
+        return [
+            BodyMeshResponse(
+                body_id=body_id,
+                source="coarse",
+                mesh=_mesh_vertex_data(tessellate_shape(shape, mesh_quality)),
+                hidden=base_feature_id(body_id) in hidden,
+            )
+            for body_id, shape in bodies.items()
+            if base_feature_id(body_id) in coarse_eligible
+        ]
+
+    bodies = compute_part_bodies(part, frozenset(rollback_excluded_feature_ids))
     return [
         BodyMeshResponse(
             body_id=body_id,

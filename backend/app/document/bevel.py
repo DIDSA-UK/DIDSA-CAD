@@ -82,7 +82,7 @@ from OCC.Core.BRepGProp import brepgprop
 from OCC.Core.BRepLib import breplib
 from OCC.Core.BRepMesh import BRepMesh_IncrementalMesh
 from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_ThruSections
-from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakeSphere
+from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeCone, BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakeSphere
 from OCC.Core.BRepTools import breptools
 from OCC.Core.Geom import Geom_SphericalSurface
 from OCC.Core.Geom2d import Geom2d_Line
@@ -108,6 +108,8 @@ from app.document.bevel_math import (
     bevel_tooth_flank_sections,
     max_recommended_face_width,
     spiral_build_cost_warning,
+    spiral_curve_offset_angle,
+    spiral_section_count_for_twist,
     thin_hub_warning,
     tredgold_base_colatitude,
 )
@@ -151,6 +153,35 @@ _END_CAP_HEIGHT_MARGIN = 1.0
 # the sewn shell's own root-land boundary, by construction) for realistic
 # gears; a small enough value to stay far below any real gear dimension.
 _END_CAP_FUZZY_VALUE = 1e-3
+
+# `_flatten_end_caps`'s own spiral-only `radius_margin` scaling - converts
+# `twist_per_section` (radians) into a linear-mm bulge estimate via the
+# SAGITTA of the azimuthal chord two adjacent root/tip-land sections
+# subtend at a given radius (`radius * (1 - cos(twist/2))`, small-angle-
+# approximated to `radius * twist**2 / 8` - the same standard sagitta
+# formula a chord's own deviation from its arc uses), NOT a plain linear
+# `radius * twist` estimate. This was a real, on-device-caught mistake in
+# this session's own first attempt at this margin, worth naming so nobody
+# repeats it: a plain linear estimate came out multiple mm for entirely
+# ordinary geometry (e.g. ~3mm for an 18-tooth/module-2.5 gear at a
+# moderate 25-degree spiral angle that never needed any extra margin at
+# all - `spiral_section_count_for_twist` alone already made flattening
+# succeed there with zero margin) - large enough to visibly shift the
+# flattened cap's own flat plane and leave an un-trimmed sliver of the
+# original spherical dome behind, a real regression this session's own
+# pre-existing test suite (`test_spiral_bevel_direct_assembly_parameter_
+# sweep_stays_valid_and_volume_is_sane`) caught directly (a previously-
+# clean case's own volume ratio drifted outside its existing tolerance).
+# Direct on-device measurement (probing the real root-land loft surface's
+# own deviation from the ideal root cone, `docs/status.md`'s matching
+# dated entry has the full case table) confirmed the sagitta formula
+# tracks the REAL measured deviation closely - consistently 73-87% of the
+# sagitta estimate across six geometrically-diverse cases (tooth counts
+# 10-20, moduli 2.5-4.0, spiral angles 10-72deg) - so `_SPIRAL_BULGE_
+# SAFETY_FACTOR` below applies real, modest headroom on top of an already
+# well-matched estimate, not a blind multiplier compensating for a wrong
+# formula shape.
+_SPIRAL_BULGE_SAFETY_FACTOR = 1.5
 
 
 def _invalid_bevel_parameters(detail: str) -> HTTPException:
@@ -565,7 +596,9 @@ def _spherical_cap_face(
 # ---------------------------------------------------------------------------
 
 
-def _outer_cap_flattening_tool(basis: ResolvedPlane, sphere_radius: float, start_colatitude: float) -> TopoDS_Shape:
+def _outer_cap_flattening_tool(
+    basis: ResolvedPlane, sphere_radius: float, start_colatitude: float, radius_margin: float = 0.0
+) -> TopoDS_Shape:
     """A plain coaxial cylinder, tangent to the outer cap's own tooth-root
     latitude circle, spanning from that tangent plane out to (and safely
     past) the sphere's own pole - used to `BRepAlgoAPI_Cut` away the outer
@@ -573,6 +606,23 @@ def _outer_cap_flattening_tool(basis: ResolvedPlane, sphere_radius: float, start
     geometric argument for why every point at `radius < root_radius` is
     solid material bulging past this exact plane, and every point at
     `radius >= root_radius` - every real tooth flank/land face - never is).
+
+    `radius_margin` (default `0.0`, straight bevel's own byte-for-byt no-op
+    value): an *additional* shrink on top of `_END_CAP_RADIUS_MARGIN` below,
+    `_flatten_end_caps`'s own real-worst-case spiral bulge estimate
+    (`spiral_section_count_for_twist`'s own module docstring/`bevel_math.py`
+    has the derivation) - a real spiral tooth's own N-section root-land loft
+    is only guaranteed to pass exactly through its own sampled cross-
+    sections, not to stay exactly on the root cone in between, so it can
+    dip to a slightly smaller `radius_from_axis` than the nominal
+    `root_radius` between two adjacent sections. Shrinking this tool's own
+    radius further (not less) is the safe direction for a `Cut` tool
+    specifically: it only ever narrows the region this tool can remove, so
+    a larger `radius_margin` can only leave MORE of a thin, already-
+    negligible sliver of the true dome un-cut at the very edge (a small,
+    bounded cost - see `_flatten_end_caps`'s own docstring), never risk
+    removing genuine tooth material that happens to dip slightly inward of
+    the nominal boundary.
 
     A plain, possibly-overshooting-height cylinder is provably safe here
     specifically for `Cut` (unlike the analogous `Fuse` case on the inner
@@ -594,7 +644,7 @@ def _outer_cap_flattening_tool(basis: ResolvedPlane, sphere_radius: float, start
     boundary) makes `BRepAlgoAPI_Cut` drop most of the flat disc face it
     should produce (silently, no exception - the boolean's own coincident-
     edge degeneracy)."""
-    radius = sphere_radius * math.sin(start_colatitude) - _END_CAP_RADIUS_MARGIN
+    radius = sphere_radius * math.sin(start_colatitude) - _END_CAP_RADIUS_MARGIN - radius_margin
     tangent_z = sphere_radius * math.cos(start_colatitude)
     height = (sphere_radius - tangent_z) + _END_CAP_HEIGHT_MARGIN
     base_center = _basis_point3_to_world(basis, 0.0, 0.0, tangent_z)
@@ -603,7 +653,9 @@ def _outer_cap_flattening_tool(basis: ResolvedPlane, sphere_radius: float, start
     return BRepPrimAPI_MakeCylinder(axis, radius, height).Shape()
 
 
-def _inner_cap_flattening_tool(basis: ResolvedPlane, sphere_radius: float, start_colatitude: float) -> TopoDS_Shape:
+def _inner_cap_flattening_tool(
+    basis: ResolvedPlane, sphere_radius: float, start_colatitude: float, radius_margin: float = 0.0
+) -> TopoDS_Shape:
     """The EXACT solid needed to `BRepAlgoAPI_Fuse`-fill the inner cap's
     own recessed dish: a genuine `BRepPrimAPI_MakeSphere` spherical
     SEGMENT (the "latitude1/latitude2" overload, not the plain-radius one)
@@ -667,19 +719,43 @@ def _inner_cap_flattening_tool(basis: ResolvedPlane, sphere_radius: float, start
     call on both booleans is this module's real answer to the coincident-
     edge case instead, and `_flatten_end_caps`'s own post-boolean face-count
     check (`_single_solid_face_count`) is the backstop for the cases even
-    that doesn't resolve - see both of those for the full picture."""
+    that doesn't resolve - see both of those for the full picture.
+
+    `radius_margin` (default `0.0`, straight bevel's own byte-for-byte no-op
+    value): the same spiral-bulge estimate `_outer_cap_flattening_tool`
+    takes, but EXTENDING this tool's own colatitude range past
+    `start_colatitude` (toward the tooth, not away from it) rather than
+    shrinking anything - the opposite direction from the "shrunk sphere"
+    experiment this docstring's own prior paragraph already found WORSE, so
+    it does not reintroduce that failure mode. Safe for this tool
+    specifically because `Fuse` is additive: extending the fill tool
+    slightly past the nominal root colatitude can only ensure a spiral
+    root-land loft that dips slightly inward (a smaller local `radius_from_
+    axis` than the nominal `root_radius` between two adjacent sections,
+    `_flatten_end_caps`'s own docstring has the mechanism) is still fully
+    covered by the fill - never risks removing anything, since there is no
+    subtraction here to remove real material with. Converted from a
+    linear-mm margin to a colatitude delta via the same small-angle
+    approximation `_flatten_end_caps` uses to derive `radius_margin` in the
+    first place (`arc_length ~= sphere_radius * delta_angle` for small
+    `delta_angle`): `delta_colatitude = radius_margin / sphere_radius`."""
     ox, oy, oz = basis.origin
     nx, ny, nz = basis.normal
     xx, xy, xz = basis.x_axis
     apex = _basis_point3_to_world(basis, 0.0, 0.0, 0.0)
     axis = gp_Ax2(apex, gp_Dir(nx, ny, nz), gp_Dir(xx, xy, xz))
-    angle1 = math.pi / 2 - start_colatitude
+    delta_colatitude = radius_margin / sphere_radius if sphere_radius else 0.0
+    angle1 = math.pi / 2 - start_colatitude - delta_colatitude
     angle2 = math.pi / 2
     return BRepPrimAPI_MakeSphere(axis, sphere_radius, angle1, angle2).Shape()
 
 
 def _flatten_end_caps(
-    basis: ResolvedPlane, geometry: BevelGearGeometry, start_colatitude: float, solid: TopoDS_Shape
+    basis: ResolvedPlane,
+    geometry: BevelGearGeometry,
+    start_colatitude: float,
+    solid: TopoDS_Shape,
+    twist_per_section: float = 0.0,
 ) -> TopoDS_Shape:
     """Trims both spherical end-caps (`_spherical_cap_face`, one per
     `_assemble_gear_solid` call - outer at `geometry.cone_distance`, inner
@@ -733,8 +809,38 @@ def _flatten_end_caps(
     outer cap's own flat plane belongs. Cutting last always re-establishes
     that exact plane regardless, trimming away any such overshoot along
     with the original dome in the same pass; cutting first would leave that
-    overshoot in place uncorrected, since nothing runs after it to catch it."""
-    inner_tool = _inner_cap_flattening_tool(basis, geometry.inner_cone_distance, start_colatitude)
+    overshoot in place uncorrected, since nothing runs after it to catch it.
+
+    **`twist_per_section`** (default `0.0` - straight bevel's own byte-for-
+    byte no-op value, since there is no per-section approximation there at
+    all): the worst-case azimuthal twist (radians) `app.document.bevel_
+    math.spiral_section_count_for_twist`'s own effective section count still
+    leaves between two adjacent spiral cross-sections - `_assemble_gear_
+    solid`'s own caller computes this once, from the same `spiral_curve_
+    offset_angle` total-twist quantity that function already derives, using
+    whatever `section_count` it actually ends up using (which can exceed
+    the bound-driven minimum if the caller/feature passed a larger one
+    explicitly). Converted to a linear-mm bulge estimate at each cap's own
+    `root_radius = sphere_radius * sin(start_colatitude)` via the SAGITTA
+    of the azimuthal chord two adjacent sections subtend at that radius
+    (`radius * twist_per_section**2 / 8`, `_SPIRAL_BULGE_SAFETY_FACTOR`'s
+    own module-level comment has the full real-measurement derivation/
+    on-device confirmation for why this specific formula, not a plain
+    linear `radius * twist` one - both this function's own `radius_margin`
+    terms below and `_inner_cap_flattening_tool`'s own colatitude-delta
+    conversion share it) - a real, but deliberately secondary, safety net
+    for whatever residual surface-bulge `_tooth_side_faces_spiral`'s own
+    N-section root/tip-land loft still carries after `spiral_section_
+    count_for_twist` has already cut it down close to (not exactly to)
+    zero. See `_outer_cap_flattening_tool`'s own docstring for why growing
+    this margin is safe in each tool's own respective direction (shrink
+    further for the subtractive `Cut` tool, extend further for the
+    additive `Fuse` tool - never the other way round for either)."""
+    bulge_sagitta = (twist_per_section**2) / 8 * _SPIRAL_BULGE_SAFETY_FACTOR
+    outer_radius_margin = geometry.cone_distance * math.sin(start_colatitude) * bulge_sagitta
+    inner_radius_margin = geometry.inner_cone_distance * math.sin(start_colatitude) * bulge_sagitta
+
+    inner_tool = _inner_cap_flattening_tool(basis, geometry.inner_cone_distance, start_colatitude, inner_radius_margin)
     fuse = BRepAlgoAPI_Fuse(solid, inner_tool)
     fuse.SetFuzzyValue(_END_CAP_FUZZY_VALUE)
     fuse.Build()
@@ -742,7 +848,7 @@ def _flatten_end_caps(
         raise _bevel_failed("could not fill the inner end-cap's own central spherical dish")
     filled = fuse.Shape()
 
-    outer_tool = _outer_cap_flattening_tool(basis, geometry.cone_distance, start_colatitude)
+    outer_tool = _outer_cap_flattening_tool(basis, geometry.cone_distance, start_colatitude, outer_radius_margin)
     cut = BRepAlgoAPI_Cut(filled, outer_tool)
     cut.SetFuzzyValue(_END_CAP_FUZZY_VALUE)
     cut.Build()
@@ -1126,7 +1232,27 @@ def _tooth_side_faces_spiral(
             )
             for k in range(n_sections)
         ]
-        faces.append(_thru_sections_face_n(tip_wires))
+        tip_land_face = _thru_sections_face_n(tip_wires)
+        if i == 0 and fold_warning is None:
+            # `docs/gear-design/12-spiral-bevel-gear.md`'s own "OCCT
+            # construction — open questions" flagged the fold-risk
+            # thresholds as "tuned for straight/Tredgold-straight teeth...
+            # needs re-validation, not carry-forward" - `_flank_fold_
+            # warning` is already generic/face-agnostic (walks a UV grid off
+            # `BRep_Tool.Surface(face)`, no flank-specific assumption), it
+            # was just never called on the root-land/tip-land faces before
+            # this session. Checked here too, not just the flank, since
+            # tip-land/root-land are now the SAME kind of N-section
+            # `ruled=False` loft the flank is (`_thru_sections_face_n`) -
+            # the exact-cone shortcut that made the straight-bevel version
+            # of these faces immune to this risk no longer applies once
+            # spiral is active (this module's own top-level docstring has
+            # the full mechanism). `fold_warning is None` short-circuits
+            # once the flank check above already found one - one non-
+            # blocking warning is this module's own established convention,
+            # not a growing list of near-duplicate ones.
+            fold_warning = _flank_fold_warning(tip_land_face)
+        faces.append(tip_land_face)
 
         next_angle = 2 * math.pi * ((i + 1) % tooth_count) / tooth_count
         next_right_sections = [[_rotate_about_z(p, next_angle) for p in section] for section in right0_sections]
@@ -1140,7 +1266,11 @@ def _tooth_side_faces_spiral(
             )
             for k in range(n_sections)
         ]
-        faces.append(_thru_sections_face_n(root_wires))
+        root_land_face = _thru_sections_face_n(root_wires)
+        if i == 0 and fold_warning is None:
+            # Same reasoning as the tip-land check above.
+            fold_warning = _flank_fold_warning(root_land_face)
+        faces.append(root_land_face)
     return faces, fold_warning
 
 
@@ -1171,9 +1301,20 @@ def _assemble_gear_solid(
     verified directly in `test_bevel_gear_feature.py`, not just assumed
     from `bevel_tooth_flank_sections`'s own bit-for-bit math reduction).
     Only `spiral_angle_degrees != 0.0` takes the new `bevel_tooth_flank_
-    sections`/`_tooth_side_faces_spiral` path, at `spiral_section_count`
-    cross-sections (`DEFAULT_SPIRAL_SECTION_COUNT = 3`, per that doc's own
-    Spike A §3 convergence finding, re-validated in `test_bevel_math.py`)."""
+    sections`/`_tooth_side_faces_spiral` path, at `max(spiral_section_count,
+    spiral_section_count_for_twist(...))` cross-sections
+    (`DEFAULT_SPIRAL_SECTION_COUNT = 3`, per that doc's own Spike A §3
+    convergence finding, re-validated in `test_bevel_math.py`) -
+    `spiral_section_count_for_twist` (`bevel_math.py`) raises that count
+    further whenever the per-build twist would otherwise leave the N-
+    section root/tip-land loft too far off the true root/tip cone for
+    `_flatten_end_caps`'s own fixed margins to reliably cover (this
+    module's own top-level docstring has the full root-cause chain from
+    `docs/gear-design/12-spiral-bevel-gear.md`'s own documented "end-cap
+    flattening failed" cases) - `max(...)`, not a plain override, since a
+    caller-supplied `spiral_section_count` above the twist-driven minimum
+    (more fidelity than strictly required) is never something this
+    should silently reduce."""
     start_colatitude = max(geometry.root_cone_angle, tredgold_base_colatitude(geometry))
     face_colatitude = geometry.face_cone_angle
 
@@ -1184,15 +1325,38 @@ def _assemble_gear_solid(
         side_faces, fold_warning = _tooth_side_faces_straight(basis, geometry, tooth_count, right0, left0, start_colatitude)
         outer_right, inner_right = right0_outer, right0_inner
         outer_left, inner_left = left0_outer, left0_inner
+        twist_per_section = 0.0
     else:
+        effective_section_count = max(
+            spiral_section_count,
+            spiral_section_count_for_twist(geometry, tooth_count, spiral_angle_degrees, spiral_hand, spiral_section_count),
+        )
         right0_sections, left0_sections = bevel_tooth_flank_sections(
-            geometry, spiral_angle_degrees, spiral_hand, points_per_flank, spiral_section_count
+            geometry, spiral_angle_degrees, spiral_hand, points_per_flank, effective_section_count
         )
         side_faces, fold_warning = _tooth_side_faces_spiral(
             basis, geometry, tooth_count, right0_sections, left0_sections, start_colatitude
         )
         outer_right, inner_right = right0_sections[0], right0_sections[-1]
         outer_left, inner_left = left0_sections[0], left0_sections[-1]
+
+        # `_flatten_end_caps`'s own secondary safety margin - the actual
+        # worst-case per-step twist left over after `effective_section_
+        # count` above, not just the bound `spiral_section_count_for_twist`
+        # targeted (which can differ when a caller-supplied `spiral_
+        # section_count` already exceeds the twist-driven minimum). Reuses
+        # the identical `spiral_curve_offset_angle` total-twist derivation
+        # that function already makes - see its own docstring for why
+        # `mean_radius`'s exact value doesn't affect this difference.
+        spiral_angle = math.radians(spiral_angle_degrees)
+        mean_radius = (geometry.cone_distance + geometry.inner_cone_distance) / 2.0
+        total_twist = abs(
+            spiral_curve_offset_angle(spiral_angle, geometry.pitch_cone_angle, geometry.cone_distance, mean_radius, spiral_hand)
+            - spiral_curve_offset_angle(
+                spiral_angle, geometry.pitch_cone_angle, geometry.inner_cone_distance, mean_radius, spiral_hand
+            )
+        )
+        twist_per_section = total_twist / (effective_section_count - 1)
 
     faces: list[TopoDS_Face] = list(side_faces)
     faces.append(
@@ -1231,7 +1395,7 @@ def _assemble_gear_solid(
 
     warnings = [fold_warning] if fold_warning else []
     try:
-        flattened = _flatten_end_caps(basis, geometry, start_colatitude, solid)
+        flattened = _flatten_end_caps(basis, geometry, start_colatitude, solid, twist_per_section)
     except HTTPException:
         # A real, on-device-confirmed failure mode (`_flatten_end_caps`'s
         # own docstring/`_single_solid_face_count`): an already-marginal
@@ -1321,16 +1485,33 @@ def resolve_bevel_gear_from_bodies(
         warnings.append(cost_warning)
 
     basis = resolve_plane_ref(part, bodies, feature.plane_ref, excluded_feature_ids)
-    solid, assembly_warnings = _assemble_gear_solid(
-        basis,
-        geometry,
-        feature.tooth_count,
-        feature.points_per_flank,
-        spiral_angle_degrees=feature.spiral_angle_degrees,
-        spiral_hand=_spiral_hand_from_feature(feature.spiral_hand),
-    )
-    warnings.extend(assembly_warnings)
-    return solid, warnings
+    try:
+        solid, assembly_warnings = _assemble_gear_solid(
+            basis,
+            geometry,
+            feature.tooth_count,
+            feature.points_per_flank,
+            spiral_angle_degrees=feature.spiral_angle_degrees,
+            spiral_hand=_spiral_hand_from_feature(feature.spiral_hand),
+        )
+    except GearGeometryError as exc:
+        # `bevel_gear_geometry` above only rejects `pitch_cone_angle_
+        # degrees` outside `(0, 90]` - `_assemble_gear_solid` itself raises
+        # this for a value *inside* that range but still too close to a
+        # crown gear (`tredgold_base_colatitude`'s own `TREDGOLD_MAX_
+        # PITCH_CONE_ANGLE_DEGREES` guard, `bevel_math.py`), which was
+        # uncaught here (a real, pre-existing gap this fix-up pass found
+        # while regression-testing `coarse_bevel_cone_solid`'s own matching
+        # guard - see `docs/status.md`'s follow-up note on this).
+        raise _invalid_bevel_parameters(str(exc)) from exc
+    # `assembly_warnings` (fold risk, end-cap-flattening fallback, assembly-
+    # sanity volume mismatch) leads the returned list, ahead of the purely
+    # advisory warnings collected above (face_width/thin-hub/build-cost) -
+    # a full un-flattened dome/dish is the single most visually severe
+    # fallback this module surfaces (immediately, obviously wrong on
+    # inspection, unlike an advisory margin warning), so it belongs first,
+    # not buried after warnings the user is far more likely to shrug off.
+    return solid, assembly_warnings + warnings
 
 
 def resolve_bevel_gear(
@@ -1340,3 +1521,92 @@ def resolve_bevel_gear(
     mirrors `app.document.gear.resolve_gear`'s exact shape."""
     bodies = compute_part_bodies(part, excluded_feature_ids | {feature.id})
     return resolve_bevel_gear_from_bodies(feature, part, bodies, excluded_feature_ids | {feature.id})
+
+
+# ---------------------------------------------------------------------------
+# Coarse (LOD) construction - `docs/lod-strategy/01-design.md` SS3: a single
+# `BRepPrimAPI_MakeCone` sized from this gear's own pitch cone geometry,
+# standing in for the real `4N + 2`-face sewn-shell solid above. **Never
+# persisted, never enters the Feature graph** - see `app.document.gear`'s
+# own matching section for the full invariant this and every other coarse
+# builder in this codebase keeps.
+
+
+def coarse_bevel_cone_solid(basis: ResolvedPlane, geometry: BevelGearGeometry) -> TopoDS_Shape:
+    """The coarse stand-in itself: one plain cone, apex at `basis`'s own
+    origin (the real construction's own local-frame convention - see this
+    module's own top-level "Local-frame helpers" section), opening along
+    `basis`'s normal out to the outer (back-cone) face. `axial_height` is
+    the outer face's distance from the apex *along the axis* (`cone_
+    distance` is the *slant* distance - `cone_distance * cos(pitch_cone_
+    angle)` projects it onto the axis, the standard right-triangle relation
+    the same `pitch_radius = cone_distance * sin(pitch_cone_angle)` identity
+    `bevel_math.bevel_gear_geometry`'s own docstring already relies on).
+    `outer_radius` is the standard "outside diameter / 2" approximation
+    (`pitch_radius + addendum * cos(pitch_cone_angle)`, the same closed-form
+    bevel-gear-handbook estimate for a back-cone addendum circle) - close
+    enough for a deliberately low-fidelity stand-in, not meant to match the
+    real tooth tip circle exactly. Shared by `app.document.bevel_pair`'s own
+    coarse builder (one cone per member), mirroring `_assemble_gear_solid`'s
+    own reuse there.
+
+    Calls `tredgold_base_colatitude(geometry)` purely for its own crown-gear
+    (`pitch_cone_angle_degrees` -> 90) degeneracy guard - the same one
+    `_assemble_gear_solid`'s own `start_colatitude` computation relies on -
+    and discards the result: `axial_height` below needs that same `cos
+    (pitch_cone_angle)` denominator to stay finite, and without this call
+    nothing in this coarse path ever checks it, so a crown-gear input would
+    reach `BRepPrimAPI_MakeCone` with `axial_height == 0.0` and fail there
+    as an unhandled OCCT error instead of the structured `GearGeometryError`
+    every caller here already knows how to turn into a clean 422. Raises
+    `GearGeometryError` on that guard, same as `bevel_gear_geometry` itself -
+    every caller of this function already wraps it accordingly."""
+    tredgold_base_colatitude(geometry)
+    axial_height = geometry.cone_distance * math.cos(geometry.pitch_cone_angle)
+    outer_radius = geometry.pitch_radius + geometry.addendum * math.cos(geometry.pitch_cone_angle)
+    axis = gp_Ax2(_basis_point3_to_world(basis, 0.0, 0.0, 0.0), basis_normal(basis))
+    return BRepPrimAPI_MakeCone(axis, 0.0, outer_radius, axial_height).Shape()
+
+
+def resolve_bevel_gear_coarse_from_bodies(
+    feature: BevelGearFeature,
+    part: Part,
+    bodies: dict[str, TopoDS_Shape],
+    excluded_feature_ids: frozenset[str],
+) -> TopoDS_Shape:
+    """The coarse stand-in for one `BevelGearFeature`, positioned exactly
+    like `resolve_bevel_gear_from_bodies`'s own real solid (same `resolve_
+    plane_ref`/`bevel_gear_geometry` calls - cheap pure-Python math only,
+    no OCCT construction beyond the final cone) but built from `coarse_
+    bevel_cone_solid` instead of the real sewn-shell assembly."""
+    if feature.points_per_flank < 2:
+        raise _invalid_bevel_parameters(f"points_per_flank must be >= 2, got {feature.points_per_flank!r}")
+    try:
+        geometry = bevel_gear_geometry(
+            module=feature.module,
+            tooth_count=feature.tooth_count,
+            face_width=feature.face_width,
+            pressure_angle_degrees=feature.pressure_angle_degrees,
+            backlash=feature.backlash,
+            profile_shift=feature.profile_shift,
+            pitch_cone_angle_degrees=feature.pitch_cone_angle_degrees,
+        )
+    except GearGeometryError as exc:
+        raise _invalid_bevel_parameters(str(exc)) from exc
+    if feature.face_width <= 0:
+        raise _invalid_bevel_parameters(f"face_width must be positive, got {feature.face_width!r}")
+    basis = resolve_plane_ref(part, bodies, feature.plane_ref, excluded_feature_ids)
+    try:
+        return coarse_bevel_cone_solid(basis, geometry)
+    except GearGeometryError as exc:
+        raise _invalid_bevel_parameters(str(exc)) from exc
+
+
+def resolve_bevel_gear_coarse(
+    part: Part, feature: BevelGearFeature, excluded_feature_ids: frozenset[str] = frozenset()
+) -> TopoDS_Shape:
+    """Fresh entry point for a not-yet-created `BevelGearFeature` payload
+    (the coarse-preview endpoint) or for `tier=coarse` mesh serving -
+    mirrors `resolve_bevel_gear`'s own self-exclusion convention exactly."""
+    bodies = compute_part_bodies(part, excluded_feature_ids | {feature.id})
+    return resolve_bevel_gear_coarse_from_bodies(feature, part, bodies, excluded_feature_ids | {feature.id})
