@@ -621,6 +621,92 @@ class _PartScreenState extends State<PartScreen> {
   /// should render or be tappable right now.
   Set<String> get _viewportHiddenFeatureIds => {..._hiddenFeatureIds, ..._rollbackExcludedFeatureIds};
 
+  /// `docs/lod-strategy/01-design.md` SS5 chunk 5 - the "re-opening a Part"
+  /// flow: `body_id` -> coarse [MeshDto] for every Body currently rendering
+  /// its coarse stand-in instead of full detail, passed straight through to
+  /// [PartViewport.coarseOverlayMeshes]. An entry exists here for one of two
+  /// reasons - genuinely pending (its `body_id` is also in
+  /// [_pendingCoarseBodyIds], full detail hasn't arrived yet) or pinned (its
+  /// owning Feature is in [_pinnedCoarseFeatureIds], full detail may already
+  /// be cached but the user chose to keep seeing coarse anyway) - the two
+  /// render identically, [_refreshMesh]'s own cleanup is what tells them
+  /// apart (see its own doc comment). Follows the exact `Set<String>`-of-ids
+  /// convention [_hiddenFeatureIds]/[_rollbackExcludedFeatureIds] establish,
+  /// generalized to a map since a rendered override needs the mesh itself,
+  /// not just a flag.
+  final Map<String, MeshDto> _coarseOverlayMeshes = {};
+
+  /// The subset of [_coarseOverlayMeshes]' keys that are genuinely still
+  /// waiting on their real full-detail fetch (as opposed to a pinned
+  /// Feature's Body, which may already be long-cached) - exists purely so
+  /// [_pendingDetailFeatureIds]/the Feature-tree badge can tell "still
+  /// loading" apart from "user chose this," a distinction the render map
+  /// itself (by design) doesn't need to make.
+  final Set<String> _pendingCoarseBodyIds = {};
+
+  /// Feature ids the user has manually pinned to always show coarse (the
+  /// persistent toggle `01-design.md` SS5 asks for) - [_toggleCoarsePin] is
+  /// the only mutator.
+  final Set<String> _pinnedCoarseFeatureIds = {};
+
+  /// Incremented on every [_refreshMesh] call - lets that call's own
+  /// background coarse-tier fetch (which resolves independently, on no
+  /// fixed ordering relative to the real fetch it runs alongside) recognize
+  /// a newer [_refreshMesh] call already superseded it, so a slow, stale
+  /// coarse response can never clobber state a later call already settled.
+  int _meshRefreshGeneration = 0;
+
+  /// `docs/lod-strategy/01-design.md` SS5 chunk 5, flow 1 ("creating a new
+  /// coarse-eligible Feature"): the not-yet-persisted coarse-preview Bodies
+  /// for whichever create flow is currently in flight - passed straight
+  /// through to [PartViewport.transientCoarsePreviewBodies]. Cleared the
+  /// moment the real create call returns (successfully or not) and the real
+  /// Body(ies) take over rendering through the ordinary [_bodies] path.
+  List<BodyMeshDto> _pendingCreateCoarsePreviewBodies = [];
+
+  /// [FeatureTreePanel.pendingDetailFeatureIds] - maps [_pendingCoarseBodyIds]
+  /// back to the Feature id that produced each Body ([baseFeatureId],
+  /// `body_naming.dart`'s existing, correct Body-to-Feature helper - handles
+  /// the multi-solid `#N` split case, so a multi-Body coarse Feature (e.g.
+  /// a BevelPair's two members) shows one badge on its one Feature row, not
+  /// a mismatch).
+  Set<String> get _pendingDetailFeatureIds => _pendingCoarseBodyIds.map(baseFeatureId).toSet();
+
+  /// [FeatureTreePanel.onToggleCoarsePin] - pinning fetches a coarse mesh
+  /// for [feature]'s own already-loaded Bodies right away (a genuinely
+  /// pending Body already has one on the way via [_refreshMesh]'s own
+  /// background fetch); unpinning drops the override for any Body that
+  /// isn't *also* genuinely pending, letting the ordinary full mesh take
+  /// back over immediately rather than waiting for the next refresh.
+  Future<void> _toggleCoarsePin(FeatureDto feature) async {
+    final part = _part;
+    if (part == null) return;
+    if (_pinnedCoarseFeatureIds.contains(feature.id)) {
+      setState(() {
+        _pinnedCoarseFeatureIds.remove(feature.id);
+        _coarseOverlayMeshes.removeWhere(
+          (bodyId, _) => baseFeatureId(bodyId) == feature.id && !_pendingCoarseBodyIds.contains(bodyId),
+        );
+      });
+      return;
+    }
+    setState(() => _pinnedCoarseFeatureIds.add(feature.id));
+    List<BodyMeshDto> coarse;
+    try {
+      coarse = await _api.getPartMesh(part.id, tier: 'coarse');
+    } catch (_) {
+      return; // Best-effort - the pin itself still took effect; a later refresh will pick this up.
+    }
+    if (!mounted || !_pinnedCoarseFeatureIds.contains(feature.id)) return;
+    setState(() {
+      for (final body in coarse) {
+        if (baseFeatureId(body.bodyId) == feature.id) {
+          _coarseOverlayMeshes[body.bodyId] = body.mesh;
+        }
+      }
+    });
+  }
+
   /// The subset of [_hiddenFeatureIds] hidden purely because
   /// [_confirmExtrude]'s auto-hide-the-consumed-Sketch bookkeeping put them
   /// there - never because the user explicitly hid them, and never one of
@@ -3735,16 +3821,28 @@ class _PartScreenState extends State<PartScreen> {
 
     final existingId = _previewLoftFeatureId;
     if (existingId == null) {
-      final created = await _api.createLoftFeature(
-        part.id,
+      unawaited(_showLoftCreateCoarsePreview(
         sections: sections,
         mode: mode.apiValue,
         ruled: ruled,
         targetBodyIds: targetBodyIds,
         thickness: thickness,
         guideCurveRefs: guideCurveRefs,
-      );
-      _previewLoftFeatureId = created.id;
+      ));
+      try {
+        final created = await _api.createLoftFeature(
+          part.id,
+          sections: sections,
+          mode: mode.apiValue,
+          ruled: ruled,
+          targetBodyIds: targetBodyIds,
+          thickness: thickness,
+          guideCurveRefs: guideCurveRefs,
+        );
+        _previewLoftFeatureId = created.id;
+      } finally {
+        _clearPendingCreateCoarsePreview();
+      }
     } else {
       await _api.updateLoftFeature(
         part.id,
@@ -4813,23 +4911,170 @@ class _PartScreenState extends State<PartScreen> {
   Future<void> _refreshMesh() async {
     final part = _part;
     if (part == null) return;
+    final generation = ++_meshRefreshGeneration;
+    // `docs/lod-strategy/01-design.md` SS4/SS5's "re-opening a Part" flow:
+    // fires alongside (not before) the real fetch below - a coarse-eligible
+    // Body renders its fast stand-in the moment this resolves, the real
+    // fetch swaps it back out for full detail whenever *it* resolves,
+    // whichever order that happens to be. Fire-and-forget: this method's
+    // own return value is about full detail, same contract every existing
+    // caller already relies on.
+    unawaited(_refreshCoarseOverlay(part.id, generation));
+
     final response = await _api.getPartMesh(
       part.id,
       hiddenFeatureIds: _hiddenFeatureIds.toList(),
       rollbackExcludedFeatureIds: _rollbackExcludedFeatureIds.toList(),
       meshQuality: _meshQuality,
     );
-    if (!mounted) return;
+    if (!mounted || generation != _meshRefreshGeneration) return;
     final isPlaceholder = response.length == 1 && response.first.source == 'placeholder';
     final newBodies = isPlaceholder ? <BodyMeshDto>[] : response;
     final justGotFirstBody = _bodies.isEmpty && newBodies.isNotEmpty && !_hasAutoHiddenReferencePlanes;
     setState(() {
       _bodies = newBodies;
+      // Full detail has now landed for every Body named here - drop its
+      // coarse override too, unless its owning Feature is pinned (in which
+      // case the override stays, deliberately, until the user unpins it).
+      final newBodyIds = newBodies.map((b) => b.bodyId).toSet();
+      _pendingCoarseBodyIds.removeWhere(newBodyIds.contains);
+      _coarseOverlayMeshes.removeWhere(
+        (bodyId, _) => newBodyIds.contains(bodyId) && !_pinnedCoarseFeatureIds.contains(baseFeatureId(bodyId)),
+      );
       if (justGotFirstBody) {
         _referencePlanesHidden = true;
         _hasAutoHiddenReferencePlanes = true;
       }
     });
+  }
+
+  /// [_refreshMesh]'s own background half - see its call site's doc
+  /// comment. Best-effort: a failed/slow coarse fetch never blocks or fails
+  /// [_refreshMesh] itself, it just means no early placeholder for whatever
+  /// Bodies it would have covered.
+  Future<void> _refreshCoarseOverlay(String partId, int generation) async {
+    List<BodyMeshDto> coarse;
+    try {
+      coarse = await _api.getPartMesh(partId, tier: 'coarse');
+    } catch (_) {
+      return;
+    }
+    if (!mounted || generation != _meshRefreshGeneration) return;
+    // Guards the reverse race (this resolving *after* the same-generation
+    // real fetch already landed and cleared pending state) - a Body already
+    // present in [_bodies] already has its own full detail current, so
+    // re-marking it pending here would show a stale coarse overlay on top
+    // of already-correct geometry with nothing left to ever clear it.
+    final alreadyFull = _bodies.map((b) => b.bodyId).toSet();
+    setState(() {
+      for (final body in coarse) {
+        if (alreadyFull.contains(body.bodyId)) continue;
+        _coarseOverlayMeshes[body.bodyId] = body.mesh;
+        _pendingCoarseBodyIds.add(body.bodyId);
+      }
+    });
+  }
+
+  /// `docs/lod-strategy/01-design.md` SS5 chunk 5, flow 1: fired
+  /// fire-and-forget alongside a brand-new PatternFeature's own real
+  /// `createPatternFeature` call ([_ensurePatternFeatureExists]'s own
+  /// `existingId == null` branches, both Rectangular and Circular) - shows
+  /// the not-yet-persisted Pattern's own coarse stand-in immediately via
+  /// [PartViewport.transientCoarsePreviewBodies], so the user sees
+  /// *something* real for the exact duration the slow real request is in
+  /// flight. Best-effort: a failed preview never blocks or fails the real
+  /// create call it runs alongside.
+  Future<void> _showPatternCreateCoarsePreview({
+    required List<String> sourceBodyIds,
+    List<String> sourceFeatureIds = const [],
+    String patternType = 'rectangular',
+    PatternDirectionRefDto? direction1,
+    int count1 = 1,
+    double spacing1 = 0.0,
+    bool reverse1 = false,
+    PatternDirectionRefDto? direction2,
+    int count2 = 1,
+    double spacing2 = 0.0,
+    bool reverse2 = false,
+    PatternAxisRefDto? axis,
+    int countAngular = 1,
+    double angleTotal = 360.0,
+    bool reverseAngular = false,
+    List<int> skipIndices = const [],
+    MergeMode merge = MergeMode.keepSeparate,
+    String? toolFeatureId,
+  }) async {
+    final part = _part;
+    if (part == null) return;
+    List<BodyMeshDto> coarse;
+    try {
+      coarse = await _api.previewPatternFeatureCoarse(
+        part.id,
+        sourceBodyIds: sourceBodyIds,
+        sourceFeatureIds: sourceFeatureIds,
+        patternType: patternType,
+        direction1: direction1,
+        count1: count1,
+        spacing1: spacing1,
+        reverse1: reverse1,
+        direction2: direction2,
+        count2: count2,
+        spacing2: spacing2,
+        reverse2: reverse2,
+        axis: axis,
+        countAngular: countAngular,
+        angleTotal: angleTotal,
+        reverseAngular: reverseAngular,
+        skipIndices: skipIndices,
+        merge: merge,
+        toolFeatureId: toolFeatureId,
+      );
+    } catch (_) {
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _pendingCreateCoarsePreviewBodies = coarse);
+  }
+
+  /// Mirrors [_showPatternCreateCoarsePreview] exactly, for a brand-new
+  /// LoftFeature's own real `createLoftFeature` call
+  /// ([_ensureLoftFeatureExists]'s `existingId == null` branch).
+  Future<void> _showLoftCreateCoarsePreview({
+    required List<LoftSectionDto> sections,
+    required String mode,
+    bool ruled = false,
+    List<String> targetBodyIds = const [],
+    double? thickness,
+    List<SketchEntityRefDto> guideCurveRefs = const [],
+  }) async {
+    final part = _part;
+    if (part == null) return;
+    List<BodyMeshDto> coarse;
+    try {
+      coarse = await _api.previewLoftFeatureCoarse(
+        part.id,
+        sections: sections,
+        mode: mode,
+        ruled: ruled,
+        targetBodyIds: targetBodyIds,
+        thickness: thickness,
+        guideCurveRefs: guideCurveRefs,
+      );
+    } catch (_) {
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _pendingCreateCoarsePreviewBodies = coarse);
+  }
+
+  /// Clears whatever [_showPatternCreateCoarsePreview]/
+  /// [_showLoftCreateCoarsePreview] most recently populated - called the
+  /// moment the real create call they ran alongside returns (successfully
+  /// or not), so the transient overlay never outlives the request it was
+  /// standing in for.
+  void _clearPendingCreateCoarsePreview() {
+    if (_pendingCreateCoarsePreviewBodies.isEmpty) return;
+    setState(() => _pendingCreateCoarsePreviewBodies = []);
   }
 
   /// Re-fetches every Feature's Sketch content (points/lines/circles) and
@@ -9961,8 +10206,7 @@ class _PartScreenState extends State<PartScreen> {
       if (axis == null) return;
       final existingId = _previewPatternFeatureId;
       if (existingId == null) {
-        final created = await _api.createPatternFeature(
-          part.id,
+        unawaited(_showPatternCreateCoarsePreview(
           sourceBodyIds: sourceBodyIds,
           sourceFeatureIds: _patternSourceFeatureIds,
           patternType: 'circular',
@@ -9973,8 +10217,25 @@ class _PartScreenState extends State<PartScreen> {
           skipIndices: skipIndices,
           merge: _patternMerge,
           toolFeatureId: _patternToolFeatureId,
-        );
-        _previewPatternFeatureId = created.id;
+        ));
+        try {
+          final created = await _api.createPatternFeature(
+            part.id,
+            sourceBodyIds: sourceBodyIds,
+            sourceFeatureIds: _patternSourceFeatureIds,
+            patternType: 'circular',
+            axis: axis,
+            countAngular: _patternCountAngular,
+            angleTotal: _patternAngleTotal,
+            reverseAngular: _patternReverseAngular,
+            skipIndices: skipIndices,
+            merge: _patternMerge,
+            toolFeatureId: _patternToolFeatureId,
+          );
+          _previewPatternFeatureId = created.id;
+        } finally {
+          _clearPendingCreateCoarsePreview();
+        }
       } else {
         await _api.updatePatternFeature(
           part.id,
@@ -10000,8 +10261,7 @@ class _PartScreenState extends State<PartScreen> {
     final hasSecondDirection = _patternHasSecondDirection;
     final existingId = _previewPatternFeatureId;
     if (existingId == null) {
-      final created = await _api.createPatternFeature(
-        part.id,
+      unawaited(_showPatternCreateCoarsePreview(
         sourceBodyIds: sourceBodyIds,
         sourceFeatureIds: _patternSourceFeatureIds,
         direction1: direction1,
@@ -10015,8 +10275,28 @@ class _PartScreenState extends State<PartScreen> {
         skipIndices: skipIndices,
         merge: _patternMerge,
         toolFeatureId: _patternToolFeatureId,
-      );
-      _previewPatternFeatureId = created.id;
+      ));
+      try {
+        final created = await _api.createPatternFeature(
+          part.id,
+          sourceBodyIds: sourceBodyIds,
+          sourceFeatureIds: _patternSourceFeatureIds,
+          direction1: direction1,
+          count1: _patternCount1,
+          spacing1: _patternSpacing1,
+          reverse1: _patternReverse1,
+          direction2: hasSecondDirection ? _patternDirection2 : null,
+          count2: hasSecondDirection ? _patternCount2 : 1,
+          spacing2: hasSecondDirection ? _patternSpacing2 : 0.0,
+          reverse2: hasSecondDirection ? _patternReverse2 : false,
+          skipIndices: skipIndices,
+          merge: _patternMerge,
+          toolFeatureId: _patternToolFeatureId,
+        );
+        _previewPatternFeatureId = created.id;
+      } finally {
+        _clearPendingCreateCoarsePreview();
+      }
     } else {
       await _api.updatePatternFeature(
         part.id,
@@ -10804,6 +11084,13 @@ class _PartScreenState extends State<PartScreen> {
                   // concurrent live-edit flow is ever added.
                   previewOverlayBodyId: _filletActive ? _filletPreviewBodyId : _chamferPreviewBodyId,
                   previewOverlayMesh: _filletActive ? _filletPreviewMesh : _chamferPreviewMesh,
+                  // `docs/lod-strategy/01-design.md` SS5 chunk 5: [_effectiveCoarseOverlayMeshes]
+                  // is [_coarseOverlayMeshes] as-is - genuinely-pending Bodies
+                  // and pinned-Feature Bodies render identically, only their
+                  // lifecycle (when the entry is removed again) differs, and
+                  // that's handled where the map is mutated, not here.
+                  coarseOverlayMeshes: _coarseOverlayMeshes,
+                  transientCoarsePreviewBodies: _pendingCreateCoarsePreviewBodies,
                   skippedPreviewBodyIds: _patternSkippedBodyIds,
                   // On-device UX feedback on the guided "New > Mirror" flow:
                   // reference planes are temporarily forced visible for the
@@ -10985,6 +11272,9 @@ class _PartScreenState extends State<PartScreen> {
                     hiddenFeatureIds: _viewportHiddenFeatureIds,
                     onFeatureTap: _onFeatureTap,
                     onFeatureLongPress: _onFeatureLongPress,
+                    pendingDetailFeatureIds: _pendingDetailFeatureIds,
+                    pinnedCoarseFeatureIds: _pinnedCoarseFeatureIds,
+                    onToggleCoarsePin: _toggleCoarsePin,
                     onClose: () {
                       if (_sketchPickerActive) {
                         _cancelSketchPicker();

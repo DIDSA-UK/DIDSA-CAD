@@ -30,9 +30,7 @@ doc and any design-doc content — no implementation).
 | Design doc (Phase 1) | approved | `01-design.md` | user approved 2026-08-27; also approved building Phase 2 (real cancellation/disconnect-resilience) as a separate, sequenced follow-on — see below |
 | Phase 1 chunk 1 (body_cache GET-list fix) | **merged to `main`** | branch `claude/new-session-yihda3`, [PR #173](https://github.com/DIDSA-UK/DIDSA-CAD/pull/173) | Code-reviewed (found and fixed a real lockout regression), merged 2026-08-27. |
 | Phase 1 chunk 2 (coarse-mesh mechanism + gear-family builders) | code-reviewed, fix-up merged with `main`, **PR pending** | branch `claude/lod-coarse-mesh-gear-family` | Coarse builders for Gear/BevelGear/BevelPair/GearChain/PlanetaryGear, `tier=coarse` on `GET /mesh`, 5 new coarse-preview endpoints, `source="coarse"` schema addition. Two code-review rounds found and fixed real validation gaps; branch merged forward against `main` twice (PR #172, then PR #173) to reconcile cross-cutting `bevel.py`/`router.py`/`extrude.py` changes. Full suite 1882/1882 passed pre-fix-up (real OCCT); fix-up and merge resolution verified by code review + syntax check only, not an independent OCCT re-run (this coordinator's own sandbox has no `pythonocc-core`). Foundational — chunks 3/4/5 can build on this once its PR merges. |
-| Phase 1 chunk 3 (Pattern coarse builder) | not yet dispatched | — | blocked on chunk 2 merging |
-| Phase 1 chunk 4 (Loft coarse builder) | not yet dispatched | — | blocked on chunk 2 merging |
-| Phase 1 chunk 5 (client) | not yet dispatched | — | blocked on chunk 2 merging |
+| Phase 1 chunks 3/4/5 (Pattern/Loft coarse builders + client) | implemented, **PR not yet opened** | branch `claude/lod-pattern-loft-client` | Pattern/Loft coarse builders + coarse-preview endpoints + instance-count cap (backend, real-OCCT verified: 1909→1919, zero regressions); client mesh-override generalization, per-Feature pending/pinned state, both flows wired (create-time for Pattern/Loft only, re-open universally), Feature-tree badge + pin toggle (real Flutter, `flutter analyze` 0 issues, `flutter test` 1453 passed/0 failed). Full detail below. |
 | Phase 2 design pass | drafted, see `02-phase2-design.md` | — | **awaiting user approval — no Phase 2 implementation dispatched yet** |
 
 ---
@@ -398,3 +396,65 @@ spending a third fix-up round on a bounded edge case.
   only in this coordinator's own sandbox (no `pythonocc-core` available here) — not an
   independent OCCT re-run; trusting the branch's own last real 1882/1882 pass plus the
   non-overlapping nature of the merged-in changes.
+
+---
+
+### Phase 1 chunks 3/4/5 — Pattern/Loft coarse builders + client wiring (branch `claude/lod-pattern-loft-client`)
+
+- **Branch**: `claude/lod-pattern-loft-client`, based on `main` post-chunk-2-merge (PR #174).
+  **PR not yet opened** — the coordinator should open it.
+- **Scope**: `01-design.md` §8 items 3 (Pattern coarse builder), 4 (Loft coarse builder), and 5
+  (client) — folded into one session since 3/4 are small and 5 needed their real, landed
+  endpoint shapes to build against rather than hypothetical ones.
+  - **Backend**: `resolve_pattern_coarse_from_bodies`/`resolve_pattern_coarse`
+    (`app.document.pattern`) — reuses the existing, unchanged `_rectangular_instances`/
+    `_circular_instances`/`resolve_pattern_from_bodies`, skipping only the fuse chain
+    `MergeMode.FUSE_INTO_ONE`/`tool_feature_id` would otherwise require (a `tool_feature_id`
+    coarse pass also never runs the final boolean into the target — realized-but-unfused tool
+    copies only). `resolve_loft_coarse_from_bodies`/`resolve_loft_coarse`
+    (`app.document.loft`) — a `dataclasses.replace(feature, sections=[first, last])` copy handed
+    to the real, unchanged `resolve_loft_from_bodies`. Both extend `compute_part_bodies_coarse`'s
+    dispatch and `coarse_eligible_feature_ids`; new `POST .../pattern-features/coarse-preview`
+    and `.../loft-features/coarse-preview` endpoints, mirroring chunk 2's five existing ones
+    exactly. Also closed the `PatternFeature` instance-count upper-bound gap Finding 2/§6
+    flagged (`_PATTERN_MAX_TOTAL_INSTANCES = 500`, a judgment call, applied to the *total*
+    instance count).
+  - **Client**: generalized the mesh-override mechanism via a **new, separate**
+    `coarseOverlayMeshes`/`transientCoarsePreviewBodies` pair on `PartViewport` (kept
+    `previewOverlayBodyId`/`previewOverlayMesh`, the live Fillet/Chamfer preview, completely
+    untouched — a deliberate call within the design's own "your call" latitude, since the two
+    represent genuinely different rendering states); new `_coarseOverlayMeshes`/
+    `_pendingCoarseBodyIds`/`_pinnedCoarseFeatureIds` state in `PartScreen`, following the
+    `_hiddenFeatureIds` convention; both flows wired — Part re-open universally (via
+    `_refreshMesh`'s new background `tier=coarse` fetch, benefiting every coarse-eligible
+    Feature type with no per-type work), create-time coarse preview specifically for
+    `PatternFeature`/`LoftFeature` (the two types whose own configuration panel actually mounts
+    `PartScreen`'s `PartViewport` — the five gear-family types use a separate `GearDesignScreen`
+    with no viewport mounted at all, so flow 1 doesn't apply to them without a larger, separate
+    piece of work); Feature-tree pending-detail badge (`feature_tree_panel.dart`, mirrors
+    `hasLostReference`'s exact template, client-only computed state, no new backend field) and a
+    persistent pin-to-coarse toggle (a new trailing `IconButton`, shown only for a coarse-eligible
+    type).
+- **Verification, both stacks real, kept separate**:
+  - **Backend**: bootstrapped a real `pythonocc-core=7.9.3` conda-forge env (micromamba
+    GitHub-Releases-asset route). Real, race-free baseline (`git stash`, run to completion
+    *before* touching the tree again — see this session's own `docs/status.md` entry for a
+    disclosed verification hiccup along the way, since fixed): **1909 passed**. Full suite after
+    all changes: **1919 passed** (10 new, all in `backend/tests/test_lod_pattern_loft.py`), zero
+    regressions.
+  - **Client**: bootstrapped a real Flutter SDK (`git clone --depth 1 --branch master
+    https://github.com/flutter/flutter.git`, landed on 3.48.0-0.3.pre — recent enough to be past
+    the 2026-06-09 `flutter_scene`/`flutter_gpu` API cutoff this doc's own history previously
+    hit, so `flutter test` compiled and ran real `PartViewport` widget tests, not just
+    `flutter analyze`). `flutter analyze`: 0 issues (one transient `prefer_final_fields` hit
+    while iterating led to catching and fixing a real bug pre-ship — a missing clear-before-
+    rebuild in the new transient-node sync method). `flutter test`: **1453 passed, 10 skipped**
+    (pre-existing GPU/Impeller-unavailable skips, same class already documented elsewhere in
+    this suite), **0 failed** — includes 8 new tests (3 `part_viewport_test.dart`, 5
+    `feature_tree_panel_test.dart`).
+- **Not done this session** (explicitly out of scope, or a documented judgment-call scope
+  reduction): Phase 2; any change to the gear-family coarse builders chunk 2 built;
+  `BooleanFeature`/`SplitFeature`/`SurfaceFeature` coarse builders; flow 1 (create-time coarse
+  preview) for the five gear-family types (architectural reason above); a wireframe/edges
+  overlay for `transientCoarsePreviewBodies` (filled faces only).
+- Full detail: `docs/status.md`'s 2026-08-27 "LOD Phase 1 chunks 3/4/5" entry.

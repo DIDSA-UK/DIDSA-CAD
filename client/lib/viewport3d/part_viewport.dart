@@ -565,6 +565,39 @@ class PartViewport extends StatefulWidget {
   final String? previewOverlayBodyId;
   final MeshDto? previewOverlayMesh;
 
+  /// `docs/lod-strategy/01-design.md` SS5 (LOD chunk 5): a generalized,
+  /// *separate* sibling of [previewOverlayBodyId]/[previewOverlayMesh] -
+  /// deliberately its own mechanism rather than folded into that single-
+  /// slot pair (which stays exactly as-is, still driving the live Fillet/
+  /// Chamfer edit-preview overlay), since the two represent genuinely
+  /// different rendering states: that pair is "this one Body's operation is
+  /// mid-edit, show its current effect" (ephemeral, one Body, orange tint),
+  /// while this map is "this Body's full-detail geometry hasn't arrived yet,
+  /// show its real-but-coarse stand-in instead" (can span many Bodies at
+  /// once, spans however long the full `/mesh` fetch takes, its own
+  /// distinct tint - see [_syncMeshNode]). Keyed by `body_id` - every entry
+  /// substitutes for the matching Body in [bodies] the same way
+  /// [previewOverlayMesh] substitutes for [previewOverlayBodyId]'s single
+  /// Body, generalized to N Bodies at once. A `body_id` with no matching
+  /// entry in [bodies] is simply never rendered via this map (this is the
+  /// "Part re-open" flow's own shape - the coarse and full `/mesh` responses
+  /// always agree on which `body_id`s exist).
+  final Map<String, MeshDto> coarseOverlayMeshes;
+
+  /// `docs/lod-strategy/01-design.md` SS5 chunk 5, flow 1 ("creating a new
+  /// coarse-eligible Feature"): a not-yet-created Feature's own coarse-
+  /// preview response has no real `body_id` to key [coarseOverlayMeshes]
+  /// off of (nothing is persisted - the backend mints a synthetic id, see
+  /// `app.document.router._COARSE_PREVIEW_BASE_ID`), so there is no existing
+  /// entry in [bodies] for it to substitute into. These render as extra,
+  /// purely-visual scene nodes instead - not part of [bodies] itself, so
+  /// they never participate in hit-testing/selection/camera-bounds fitting,
+  /// same "visual-only, not real state" contract [previewOverlayMesh]
+  /// already has for its own single-Body case. Cleared by the caller
+  /// ([PartScreen]) the moment the real create call returns and the real
+  /// Body takes over rendering through the ordinary [bodies] path.
+  final List<BodyMeshDto> transientCoarsePreviewBodies;
+
   /// Pattern/Mirror scoping's skip-instances redesign: the body ids (from
   /// [bodies]) of every Pattern instance the user has currently marked
   /// skip - rendered with a distinct, more-transparent grey tint (see
@@ -806,6 +839,8 @@ class PartViewport extends StatefulWidget {
     this.isPreviewMesh = false,
     this.previewOverlayBodyId,
     this.previewOverlayMesh,
+    this.coarseOverlayMeshes = const {},
+    this.transientCoarsePreviewBodies = const [],
     this.skippedPreviewBodyIds = const {},
     this.referencePlanesHidden = false,
     this.renderMode = ViewportRenderMode.shaded,
@@ -850,6 +885,17 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   @visibleForTesting
   double get debugCameraDistance => _camera.distance;
 
+  /// `docs/lod-strategy/01-design.md` SS5 chunk 5: test-only window into
+  /// which Bodies actually got a real filled-faces [Node] built for them -
+  /// lets a test confirm [coarseOverlayMeshes] substitutes a *rendered*
+  /// mesh without minting any extra body id, and that
+  /// [transientCoarsePreviewBodies] renders into its own separate,
+  /// non-overlapping node set (see [debugTransientMeshNodeBodyIds]).
+  @visibleForTesting
+  Set<String> get debugMeshNodeBodyIds => _meshNodes.keys.toSet();
+  @visibleForTesting
+  Set<String> get debugTransientMeshNodeBodyIds => _transientMeshNodes.keys.toSet();
+
   /// On-device feedback: "after selecting axis for revolve, 3d viewport
   /// moves and shouldn't" - [_syncMeshNode] used to re-center the camera
   /// target on every single mesh update, not just the first, so any live
@@ -884,6 +930,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// [ViewportRenderModeX.showsEdges] set, regardless of whether the faces
   /// themselves are also showing.
   Map<String, Node> _edgesNodes = {};
+
+  /// `docs/lod-strategy/01-design.md` SS5 chunk 5: one filled-faces [Node]
+  /// per [PartViewport.transientCoarsePreviewBodies] entry, keyed by that
+  /// entry's own (synthetic) `body_id` - a separate map from [_meshNodes]
+  /// since these Bodies are never part of [PartViewport.bodies] and must
+  /// never be mistaken for real, hit-testable geometry.
+  Map<String, Node> _transientMeshNodes = {};
   Map<ReferencePlaneKind, Node> _planeNodes = {};
   Map<String, Node> _sketchNodes = {};
   Map<String, Node> _createPlaneNodes = {};
@@ -1226,6 +1279,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         widget.isPreviewMesh != oldWidget.isPreviewMesh ||
         widget.previewOverlayBodyId != oldWidget.previewOverlayBodyId ||
         widget.previewOverlayMesh != oldWidget.previewOverlayMesh ||
+        widget.coarseOverlayMeshes != oldWidget.coarseOverlayMeshes ||
+        widget.transientCoarsePreviewBodies != oldWidget.transientCoarsePreviewBodies ||
         widget.skippedPreviewBodyIds != oldWidget.skippedPreviewBodyIds ||
         widget.renderMode != oldWidget.renderMode ||
         widget.bodyColourHex != oldWidget.bodyColourHex ||
@@ -1247,6 +1302,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (widget.bodies != oldWidget.bodies ||
         widget.previewOverlayBodyId != oldWidget.previewOverlayBodyId ||
         widget.previewOverlayMesh != oldWidget.previewOverlayMesh ||
+        widget.coarseOverlayMeshes != oldWidget.coarseOverlayMeshes ||
         widget.renderMode != oldWidget.renderMode ||
         widget.bodiesHidden != oldWidget.bodiesHidden) {
       setState(_syncEdgesNode);
@@ -1431,6 +1487,15 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       scene.remove(node);
     }
     _meshNodes = {};
+    // Rendered/cleared unconditionally, independent of the `bodies.isEmpty`
+    // early-return just below - a not-yet-created Loft can be the very
+    // first solid in an empty Part, so its coarse-preview overlay must
+    // still show even though `widget.bodies` (the real, persisted Bodies)
+    // is empty. Never touches camera targeting/zoom bounds (see this
+    // method's own logic further down) - these are purely-visual, not-yet-
+    // real Bodies, same "no camera-bounds participation" contract
+    // [PartViewport.transientCoarsePreviewBodies]'s own doc comment states.
+    _syncTransientPreviewNodes(scene);
     final bodies = widget.bodies;
     if (bodies.isEmpty) {
       debugPrint('[PartViewport] _syncMeshNode: no bodies yet');
@@ -1475,6 +1540,16 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         // `body.mesh`), only the rendered geometry for this one Node swaps.
         final isPreviewOverlay =
             widget.previewOverlayMesh != null && body.bodyId == widget.previewOverlayBodyId;
+        // `docs/lod-strategy/01-design.md` SS5: this Body's full-detail
+        // mesh hasn't arrived yet - substitute its coarse stand-in the same
+        // way [isPreviewOverlay] substitutes a live-edit preview, just
+        // keyed through a map instead of a single id/mesh pair. Checked
+        // after [isPreviewOverlay] so a genuine live-edit overlay (rare to
+        // ever coincide with a coarse-pending Body, but structurally
+        // possible) still wins - an in-progress user edit is more urgent
+        // to show accurately than a loading-state placeholder.
+        final coarseMesh = widget.coarseOverlayMeshes[body.bodyId];
+        final isCoarseOverlay = !isPreviewOverlay && coarseMesh != null;
         final isSkippedInstance = widget.skippedPreviewBodyIds.contains(body.bodyId);
         // Deliberately *not* renderMirrorCorrectedMesh (on-device feedback,
         // 2026-07-21 follow-up round): that correction was applied
@@ -1492,7 +1567,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         // Body source uniformly - reverted here pending a properly
         // source-scoped re-diagnosis (see mesh_geometry.dart's
         // renderMirrorCorrectedMesh doc comment).
-        final mesh = isPreviewOverlay ? widget.previewOverlayMesh! : body.mesh;
+        final mesh = isPreviewOverlay ? widget.previewOverlayMesh! : (isCoarseOverlay ? coarseMesh : body.mesh);
         if (mesh.vertices.isEmpty) {
           // flutter_scene's UnskinnedGeometry.uploadVertexData allocates a
           // GPU device buffer sized off the vertex/index data - a
@@ -1516,19 +1591,30 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         // whenever bodyOpacity < 1.0) needs double-sided-winding geometry,
         // or flutter_scene back-face-culls it regardless of the material's
         // own doubleSided flag - see geometryFromMesh's doc comment.
-        final isTranslucent =
-            widget.isPreviewMesh || isPreviewOverlay || isSkippedInstance || widget.bodyOpacity < 1.0;
+        final isTranslucent = widget.isPreviewMesh ||
+            isPreviewOverlay ||
+            isCoarseOverlay ||
+            isSkippedInstance ||
+            widget.bodyOpacity < 1.0;
         final geometry = geometryFromMesh(mesh, doubleSidedWinding: isTranslucent);
         // Live-operation preview overlays stay a flat, translucent tint -
         // they're meant to read as a distinct "in-progress" indicator, not
         // real lit geometry, so they're deliberately left on UnlitMaterial.
         // A Pattern instance marked skip gets its own pale, mostly-see-
         // through grey instead - checked first so it wins over the ordinary
-        // preview tint for that one Body.
+        // preview tint for that one Body. A coarse-pending Body gets its own
+        // distinct pale blue - deliberately a different hue from both the
+        // live-edit orange and the skip grey, so "waiting on full detail"
+        // reads as its own state at a glance rather than being mistaken for
+        // either.
         final material = isSkippedInstance
             ? (UnlitMaterial()
               ..alphaMode = AlphaMode.blend
               ..baseColorFactor = vm.Vector4(0.55, 0.55, 0.55, 0.25))
+            : isCoarseOverlay
+            ? (UnlitMaterial()
+              ..alphaMode = AlphaMode.blend
+              ..baseColorFactor = vm.Vector4(0.25, 0.55, 1.0, 0.45))
             : (widget.isPreviewMesh || isPreviewOverlay)
             ? (UnlitMaterial()
               ..alphaMode = AlphaMode.blend
@@ -1579,6 +1665,39 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       '[PartViewport][RenderDebug] bounds: center=${bounds?.center} '
       'boundingSphereRadius=${bounds?.boundingSphereRadius} cameraDistance=${_camera.distance}',
     );
+  }
+
+  /// `docs/lod-strategy/01-design.md` SS5 chunk 5, flow 1: rebuilds
+  /// [_transientMeshNodes] from scratch - removes every Node it built last
+  /// time from [scene] first (same "clear, then rebuild" shape [_meshNodes]
+  /// itself uses), then builds one filled-faces [Node] per [PartViewport.
+  /// transientCoarsePreviewBodies] entry - always the same coarse-pending
+  /// tint [_syncMeshNode]'s own `isCoarseOverlay` branch uses (these are, by
+  /// definition, always coarse), always double-sided (translucent). Gated
+  /// by the same [ViewportRenderModeX.showsFilledFaces]/[PartViewport.
+  /// bodiesHidden] checks the real Bodies loop uses, so toggling either one
+  /// off hides a not-yet-created Feature's own preview too, matching what a
+  /// user would expect ("hide bodies" hides everything currently rendered,
+  /// not just persisted geometry) - the clear above still runs first either
+  /// way, so switching *into* that state promptly removes any nodes already
+  /// in the scene rather than leaving them stranded.
+  void _syncTransientPreviewNodes(Scene scene) {
+    for (final node in _transientMeshNodes.values) {
+      scene.remove(node);
+    }
+    _transientMeshNodes = {};
+    if (!widget.renderMode.showsFilledFaces || widget.bodiesHidden) return;
+    for (final body in widget.transientCoarsePreviewBodies) {
+      final mesh = body.mesh;
+      if (mesh.vertices.isEmpty) continue;
+      final geometry = geometryFromMesh(mesh, doubleSidedWinding: true);
+      final material = UnlitMaterial()
+        ..alphaMode = AlphaMode.blend
+        ..baseColorFactor = vm.Vector4(0.25, 0.55, 1.0, 0.45);
+      final node = Node(mesh: Mesh(geometry, material));
+      scene.add(node);
+      _transientMeshNodes[body.bodyId] = node;
+    }
   }
 
   /// On-device feedback ("zoom level is clamped in the 3d sketcher... user
@@ -1642,7 +1761,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       // identical reversion for why.
       final mesh = (widget.previewOverlayMesh != null && body.bodyId == widget.previewOverlayBodyId)
           ? widget.previewOverlayMesh!
-          : body.mesh;
+          : widget.coarseOverlayMeshes[body.bodyId] ?? body.mesh;
       var segments = edgeSegmentsFromMesh(mesh);
       if (segments.isEmpty) continue;
       if (biased) {

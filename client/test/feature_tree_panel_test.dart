@@ -817,4 +817,152 @@ void main() {
       expect(find.text('Surface 1'), findsNWidgets(2));
     });
   });
+
+  // --- LOD (docs/lod-strategy/01-design.md SS5 chunk 5): pending-detail
+  // badge + pin-to-coarse toggle ------------------------------------------
+
+  testWidgets(
+    'a coarse-eligible Feature in pendingDetailFeatureIds shows the hourglass badge and '
+    'the "Loading full detail…" subtitle',
+    (tester) async {
+      await tester.pumpWidget(
+        _wrap(
+          FeatureTreePanel(
+            visible: true,
+            features: [_gearFamily('pattern', 'p1')],
+            selectedFeatureId: null,
+            onFeatureTap: (_) {},
+            onFeatureLongPress: (_) {},
+            onClose: () {},
+            onBodyTap: (_) {},
+            pendingDetailFeatureIds: const {'p1'},
+          ),
+        ),
+      );
+
+      expect(find.byIcon(Icons.hourglass_bottom), findsOneWidget);
+      expect(find.text('Loading full detail…'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'hasLostReference wins over a pending-detail badge for the same row - no hourglass, no '
+    '"Loading full detail…" text',
+    (tester) async {
+      await tester.pumpWidget(
+        _wrap(
+          FeatureTreePanel(
+            visible: true,
+            features: [
+              FeatureDto(type: 'pattern', id: 'p1', locked: false, produces: 'body', hasLostReference: true),
+            ],
+            selectedFeatureId: null,
+            onFeatureTap: (_) {},
+            onFeatureLongPress: (_) {},
+            onClose: () {},
+            onBodyTap: (_) {},
+            pendingDetailFeatureIds: const {'p1'},
+          ),
+        ),
+      );
+
+      expect(find.byIcon(Icons.warning_rounded), findsOneWidget);
+      expect(find.byIcon(Icons.hourglass_bottom), findsNothing);
+      expect(find.text('Lost reference'), findsOneWidget);
+      expect(find.text('Loading full detail…'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'the pin-to-coarse control only renders for a coarse-eligible Feature type when '
+    'onToggleCoarsePin is supplied',
+    (tester) async {
+      await tester.pumpWidget(
+        _wrap(
+          FeatureTreePanel(
+            visible: true,
+            features: [_gearFamily('pattern', 'p1'), _extrude('e1', locked: false)],
+            selectedFeatureId: null,
+            onFeatureTap: (_) {},
+            onFeatureLongPress: (_) {},
+            onClose: () {},
+            onBodyTap: (_) {},
+            onToggleCoarsePin: (_) {},
+          ),
+        ),
+      );
+
+      // One pin control total - the Pattern row gets one, the plain Extrude
+      // row (not coarse-eligible) gets none.
+      expect(find.byIcon(Icons.blur_off), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'the pin-to-coarse control is absent entirely when onToggleCoarsePin is omitted',
+    (tester) async {
+      await tester.pumpWidget(
+        _wrap(
+          FeatureTreePanel(
+            visible: true,
+            features: [_gearFamily('pattern', 'p1')],
+            selectedFeatureId: null,
+            onFeatureTap: (_) {},
+            onFeatureLongPress: (_) {},
+            onClose: () {},
+            onBodyTap: (_) {},
+          ),
+        ),
+      );
+
+      expect(find.byIcon(Icons.blur_off), findsNothing);
+      expect(find.byIcon(Icons.blur_on), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'tapping the pin-to-coarse control calls onToggleCoarsePin with that row\'s own Feature, '
+    'and pinnedCoarseFeatureIds flips the icon to the pinned glyph',
+    (tester) async {
+      FeatureDto? tapped;
+      await tester.pumpWidget(
+        _wrap(
+          FeatureTreePanel(
+            visible: true,
+            features: [_gearFamily('loft', 'l1')],
+            selectedFeatureId: null,
+            onFeatureTap: (_) {},
+            onFeatureLongPress: (_) {},
+            onClose: () {},
+            onBodyTap: (_) {},
+            onToggleCoarsePin: (feature) => tapped = feature,
+          ),
+        ),
+      );
+
+      expect(find.byIcon(Icons.blur_off), findsOneWidget);
+      await tester.tap(find.byIcon(Icons.blur_off));
+      await tester.pumpAndSettle();
+      expect(tapped?.id, 'l1');
+
+      await tester.pumpWidget(
+        _wrap(
+          FeatureTreePanel(
+            visible: true,
+            features: [_gearFamily('loft', 'l1')],
+            selectedFeatureId: null,
+            onFeatureTap: (_) {},
+            onFeatureLongPress: (_) {},
+            onClose: () {},
+            onBodyTap: (_) {},
+            onToggleCoarsePin: (feature) => tapped = feature,
+            pinnedCoarseFeatureIds: const {'l1'},
+          ),
+        ),
+      );
+
+      expect(find.byIcon(Icons.blur_on), findsOneWidget);
+      expect(find.byIcon(Icons.blur_off), findsNothing);
+    },
+  );
 }

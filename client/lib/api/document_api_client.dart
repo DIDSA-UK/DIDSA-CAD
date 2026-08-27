@@ -2072,6 +2072,65 @@ class DocumentApiClient {
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// `docs/lod-strategy/01-design.md` SS4/SS8 chunk 5: the 3D coarse
+  /// analogue of [createPatternFeature], for a not-yet-created payload -
+  /// every instance realized via the same rigid-transform placement the
+  /// real construction uses, but never fused, instead of the full fuse-
+  /// chain construction `merge=fuseIntoOne`/[toolFeatureId] would otherwise
+  /// require. Same params as [createPatternFeature] (mirrors it exactly),
+  /// but nothing is persisted - the returned Bodies are tagged
+  /// `source: 'coarse'` and use synthetic, session-local ids, never a real
+  /// Feature's own body id.
+  Future<List<BodyMeshDto>> previewPatternFeatureCoarse(
+    String partId, {
+    required List<String> sourceBodyIds,
+    List<String> sourceFeatureIds = const [],
+    String patternType = 'rectangular',
+    PatternDirectionRefDto? direction1,
+    int count1 = 1,
+    double spacing1 = 0.0,
+    bool reverse1 = false,
+    PatternDirectionRefDto? direction2,
+    int count2 = 1,
+    double spacing2 = 0.0,
+    bool reverse2 = false,
+    PatternAxisRefDto? axis,
+    int countAngular = 1,
+    double angleTotal = 360.0,
+    bool reverseAngular = false,
+    List<int> skipIndices = const [],
+    MergeMode merge = MergeMode.keepSeparate,
+    String? toolFeatureId,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/pattern-features/coarse-preview'),
+              headers: _headers,
+              body: jsonEncode({
+                'source_body_ids': sourceBodyIds,
+                'source_feature_ids': sourceFeatureIds,
+                'pattern_type': patternType,
+                if (direction1 != null) 'direction_1': direction1.toJson(),
+                'count_1': count1,
+                'spacing_1': spacing1,
+                'reverse_1': reverse1,
+                if (direction2 != null) 'direction_2': direction2.toJson(),
+                'count_2': count2,
+                'spacing_2': spacing2,
+                'reverse_2': reverse2,
+                if (axis != null) 'axis': axis.toJson(),
+                'count_angular': countAngular,
+                'angle_total': angleTotal,
+                'reverse_angular': reverseAngular,
+                'skip_indices': skipIndices,
+                'merge': merge.apiValue,
+                if (toolFeatureId != null) 'tool_feature_id': toolFeatureId,
+              }),
+            ),
+        (body) =>
+            (body as List).map((b) => BodyMeshDto.fromJson(b as Map<String, dynamic>)).toList(),
+      );
+
   /// Partial update for an existing PatternFeature - any subset of fields
   /// may be supplied; omitted fields keep their current value. Used for the
   /// live-preview debounced re-solve, same pattern as [updateMirrorFeature].
@@ -2279,6 +2338,40 @@ class DocumentApiClient {
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// `docs/lod-strategy/01-design.md` SS4/SS8 chunk 5: the 3D coarse
+  /// analogue of [createLoftFeature], for a not-yet-created payload - a
+  /// real but cheap two-section loft instead of the full N-section
+  /// construction. Same params as [createLoftFeature] (mirrors it exactly),
+  /// but nothing is persisted - no Feature is created, no Part state
+  /// changes; the returned Bodies are tagged `source: 'coarse'` and use
+  /// synthetic, session-local ids (`app.document.router.
+  /// _COARSE_PREVIEW_BASE_ID`), never a real Feature's own body id.
+  Future<List<BodyMeshDto>> previewLoftFeatureCoarse(
+    String partId, {
+    required List<LoftSectionDto> sections,
+    required String mode,
+    bool ruled = false,
+    List<String> targetBodyIds = const [],
+    double? thickness,
+    List<SketchEntityRefDto> guideCurveRefs = const [],
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/loft-features/coarse-preview'),
+              headers: _headers,
+              body: jsonEncode({
+                'sections': sections.map((s) => s.toJson()).toList(),
+                'mode': mode,
+                'ruled': ruled,
+                'target_body_ids': targetBodyIds,
+                if (thickness != null) 'thickness': thickness,
+                'guide_curve_refs': guideCurveRefs.map((r) => r.toJson()).toList(),
+              }),
+            ),
+        (body) =>
+            (body as List).map((b) => BodyMeshDto.fromJson(b as Map<String, dynamic>)).toList(),
+      );
+
   /// Partial update for an existing LoftFeature - any subset of
   /// [sections]/[mode]/[ruled]/[targetBodyIds]/[thickness]/[guideCurveRefs]
   /// may be supplied, mirroring [updateSweepFeature]'s omitted-vs-current-
@@ -2467,24 +2560,35 @@ class DocumentApiClient {
   /// `quality` query param entirely, so the backend falls back to its own
   /// unparameterized `DEFAULT_MESH_QUALITY`, byte-for-byte the same
   /// tessellation every caller got before this param existed.
+  /// `docs/lod-strategy/01-design.md` SS4: [tier] = `'coarse'` asks for the
+  /// fast, real-but-low-fidelity stand-in geometry the backend's coarse
+  /// builders produce for a coarse-eligible Feature (Gear/BevelGear/
+  /// BevelPair/GearChain/PlanetaryGear/Pattern/Loft) instead of every
+  /// Body's own full-detail construction - the response is filtered down to
+  /// only those Bodies (`coarse_eligible_feature_ids`), each tagged
+  /// `source: 'coarse'`. `'full'` (the default) is byte-for-byte the same
+  /// request this method always sent before `tier` existed.
   Future<List<BodyMeshDto>> getPartMesh(
     String partId, {
     List<String> hiddenFeatureIds = const [],
     List<String> rollbackExcludedFeatureIds = const [],
     double? meshQuality,
+    String tier = 'full',
   }) =>
       _send(
         () => _httpClient.get(
               _uri('/document/parts/$partId/mesh').replace(
                 queryParameters: hiddenFeatureIds.isEmpty &&
                         rollbackExcludedFeatureIds.isEmpty &&
-                        meshQuality == null
+                        meshQuality == null &&
+                        tier == 'full'
                     ? null
                     : {
                         if (hiddenFeatureIds.isNotEmpty) 'hidden_feature_ids': hiddenFeatureIds,
                         if (rollbackExcludedFeatureIds.isNotEmpty)
                           'rollback_excluded_feature_ids': rollbackExcludedFeatureIds,
                         if (meshQuality != null) 'quality': meshQuality.toString(),
+                        if (tier != 'full') 'tier': tier,
                       },
               ),
               headers: _headers,
