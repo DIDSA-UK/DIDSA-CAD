@@ -693,7 +693,13 @@ class _PartScreenState extends State<PartScreen> {
     setState(() => _pinnedCoarseFeatureIds.add(feature.id));
     List<BodyMeshDto> coarse;
     try {
-      coarse = await _api.getPartMesh(part.id, tier: 'coarse');
+      coarse = await _api.getPartMesh(
+        part.id,
+        hiddenFeatureIds: _hiddenFeatureIds.toList(),
+        rollbackExcludedFeatureIds: _rollbackExcludedFeatureIds.toList(),
+        meshQuality: _meshQuality,
+        tier: 'coarse',
+      );
     } catch (_) {
       return; // Best-effort - the pin itself still took effect; a later refresh will pick this up.
     }
@@ -4845,7 +4851,7 @@ class _PartScreenState extends State<PartScreen> {
       }
       _part = part;
       debugPrint('[PartScreen] getPartMesh...');
-      await _refreshMesh();
+      await _refreshMesh(isInitialLoad: true);
       debugPrint('[PartScreen] getPartMesh done: ${_bodies.length} body/bodies');
       await _refreshFeatures();
       await _refreshSketchGeometries();
@@ -4908,18 +4914,30 @@ class _PartScreenState extends State<PartScreen> {
   /// job by accident) - fragile the moment that incidental timing didn't
   /// line up. Now self-contained: every real change to [_bodies] happens
   /// inside its own `setState`, so a repaint is never left to chance.
-  Future<void> _refreshMesh() async {
+  ///
+  /// [isInitialLoad] scopes the background coarse-tier fetch below to
+  /// `01-design.md` SS4/SS5's actual "re-opening a Part" flow: only
+  /// [_loadPart]'s own single call site passes `true`. Every other call
+  /// site here is a routine post-edit refresh (feature create/update/
+  /// delete/undo/redo, live fillet/chamfer preview, ...) - firing the
+  /// coarse-tier request there too would trigger a real, deliberately
+  /// uncached `compute_part_bodies_coarse` rebuild of every coarse-eligible
+  /// Feature in the Part on every trivial edit, almost always thrown away
+  /// the moment the real (parallel) fetch below lands and supersedes it.
+  Future<void> _refreshMesh({bool isInitialLoad = false}) async {
     final part = _part;
     if (part == null) return;
     final generation = ++_meshRefreshGeneration;
-    // `docs/lod-strategy/01-design.md` SS4/SS5's "re-opening a Part" flow:
-    // fires alongside (not before) the real fetch below - a coarse-eligible
-    // Body renders its fast stand-in the moment this resolves, the real
-    // fetch swaps it back out for full detail whenever *it* resolves,
-    // whichever order that happens to be. Fire-and-forget: this method's
-    // own return value is about full detail, same contract every existing
-    // caller already relies on.
-    unawaited(_refreshCoarseOverlay(part.id, generation));
+    if (isInitialLoad) {
+      // `docs/lod-strategy/01-design.md` SS4/SS5's "re-opening a Part" flow:
+      // fires alongside (not before) the real fetch below - a coarse-eligible
+      // Body renders its fast stand-in the moment this resolves, the real
+      // fetch swaps it back out for full detail whenever *it* resolves,
+      // whichever order that happens to be. Fire-and-forget: this method's
+      // own return value is about full detail, same contract every existing
+      // caller already relies on.
+      unawaited(_refreshCoarseOverlay(part.id, generation));
+    }
 
     final response = await _api.getPartMesh(
       part.id,
@@ -4955,7 +4973,13 @@ class _PartScreenState extends State<PartScreen> {
   Future<void> _refreshCoarseOverlay(String partId, int generation) async {
     List<BodyMeshDto> coarse;
     try {
-      coarse = await _api.getPartMesh(partId, tier: 'coarse');
+      coarse = await _api.getPartMesh(
+        partId,
+        hiddenFeatureIds: _hiddenFeatureIds.toList(),
+        rollbackExcludedFeatureIds: _rollbackExcludedFeatureIds.toList(),
+        meshQuality: _meshQuality,
+        tier: 'coarse',
+      );
     } catch (_) {
       return;
     }

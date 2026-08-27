@@ -458,3 +458,8 @@ spending a third fix-up round on a bounded edge case.
   preview) for the five gear-family types (architectural reason above); a wireframe/edges
   overlay for `transientCoarsePreviewBodies` (filled faces only).
 - Full detail: `docs/status.md`'s 2026-08-27 "LOD Phase 1 chunks 3/4/5" entry.
+- **Follow-up fix, same PR (#175), coordinator review**: `_refreshMesh`'s background `tier=coarse`
+  fetch was firing on every one of its ~38 call sites, not just Part re-open — scoped it to the
+  initial-load call site only, and passed the missing `hiddenFeatureIds`/
+  `rollbackExcludedFeatureIds`/`meshQuality` filters through to the coarse-tier fetches. See
+  `docs/status.md`'s follow-up paragraph on the same 2026-08-27 entry above for detail.
