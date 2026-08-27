@@ -290,4 +290,163 @@ void main() {
     },
   );
 
+  // --- LOD (docs/lod-strategy/01-design.md SS5 chunk 5): coarseOverlayMeshes
+  // / transientCoarsePreviewBodies -------------------------------------------
+
+  testWidgets(
+    'coarseOverlayMeshes renders a Node for the real body id - never a separate/extra one',
+    (tester) async {
+      final key = GlobalKey<PartViewportState>();
+      final coarseMesh = MeshDto(
+        vertices: [
+          [0, 0, 0],
+          [5, 0, 0],
+          [0, 5, 0],
+        ],
+        normals: _boxMesh.normals,
+        triangleIndices: _boxMesh.triangleIndices,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 400,
+              height: 400,
+              child: PartViewport(
+                key: key,
+                bodies: [_boxBody],
+                selectedPlane: null,
+                onPlaneTap: (_) {},
+                onBackgroundTap: () {},
+                coarseOverlayMeshes: {'body-1': coarseMesh},
+              ),
+            ),
+          ),
+        ),
+      );
+      final gpuReady = await _pumpUntil(
+        tester,
+        () => find.byType(CircularProgressIndicator).evaluate().isEmpty,
+        maxPumps: 300,
+      );
+      if (!gpuReady) {
+        markTestSkipped('PartViewport GPU/Impeller setup did not complete - no real GPU backend in this sandbox');
+        return;
+      }
+      await tester.pump();
+
+      // Substitutes the real Body's own rendered mesh - `bodies` (and so
+      // hit-testing/selection) is keyed by `body-1` either way, so the
+      // coarse override must never mint any extra id of its own.
+      expect(key.currentState!.debugMeshNodeBodyIds, {'body-1'});
+      expect(key.currentState!.debugTransientMeshNodeBodyIds, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'transientCoarsePreviewBodies renders into its own node set, separate from the real bodies',
+    (tester) async {
+      final key = GlobalKey<PartViewportState>();
+      final previewMesh = MeshDto(
+        vertices: [
+          [20, 20, 20],
+          [25, 20, 20],
+          [20, 25, 20],
+        ],
+        normals: _boxMesh.normals,
+        triangleIndices: _boxMesh.triangleIndices,
+      );
+      final previewBody = BodyMeshDto(bodyId: 'coarse-preview', source: 'coarse', mesh: previewMesh);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 400,
+              height: 400,
+              child: PartViewport(
+                key: key,
+                bodies: [_boxBody],
+                selectedPlane: null,
+                onPlaneTap: (_) {},
+                onBackgroundTap: () {},
+                transientCoarsePreviewBodies: [previewBody],
+              ),
+            ),
+          ),
+        ),
+      );
+      final gpuReady = await _pumpUntil(
+        tester,
+        () => find.byType(CircularProgressIndicator).evaluate().isEmpty,
+        maxPumps: 300,
+      );
+      if (!gpuReady) {
+        markTestSkipped('PartViewport GPU/Impeller setup did not complete - no real GPU backend in this sandbox');
+        return;
+      }
+      await tester.pump();
+
+      expect(key.currentState!.debugMeshNodeBodyIds, {'body-1'});
+      expect(key.currentState!.debugTransientMeshNodeBodyIds, {'coarse-preview'});
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'clearing transientCoarsePreviewBodies (the real create call returning) removes its Node',
+    (tester) async {
+      final key = GlobalKey<PartViewportState>();
+      final previewBody = BodyMeshDto(
+        bodyId: 'coarse-preview',
+        source: 'coarse',
+        mesh: MeshDto(
+          vertices: [
+            [20, 20, 20],
+            [25, 20, 20],
+            [20, 25, 20],
+          ],
+          normals: _boxMesh.normals,
+          triangleIndices: _boxMesh.triangleIndices,
+        ),
+      );
+      Widget buildWith(List<BodyMeshDto> transientBodies) => MaterialApp(
+            home: Scaffold(
+              body: SizedBox(
+                width: 400,
+                height: 400,
+                child: PartViewport(
+                  key: key,
+                  bodies: [_boxBody],
+                  selectedPlane: null,
+                  onPlaneTap: (_) {},
+                  onBackgroundTap: () {},
+                  transientCoarsePreviewBodies: transientBodies,
+                ),
+              ),
+            ),
+          );
+
+      await tester.pumpWidget(buildWith([previewBody]));
+      final gpuReady = await _pumpUntil(
+        tester,
+        () => find.byType(CircularProgressIndicator).evaluate().isEmpty,
+        maxPumps: 300,
+      );
+      if (!gpuReady) {
+        markTestSkipped('PartViewport GPU/Impeller setup did not complete - no real GPU backend in this sandbox');
+        return;
+      }
+      await tester.pump();
+      expect(key.currentState!.debugTransientMeshNodeBodyIds, {'coarse-preview'});
+
+      await tester.pumpWidget(buildWith(const []));
+      await tester.pump();
+
+      expect(key.currentState!.debugTransientMeshNodeBodyIds, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
 }

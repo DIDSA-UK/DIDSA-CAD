@@ -53,7 +53,7 @@ of this module.
 
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from fastapi import HTTPException
 from OCC.Core.BRep import BRep_Tool
@@ -721,3 +721,55 @@ def resolve_loft(
     all_excluded = excluded_feature_ids | {feature.id}
     bodies = compute_part_bodies(part, all_excluded)
     return resolve_loft_from_bodies(feature, part, bodies, all_excluded)
+
+
+# Coarse (LOD) construction - `docs/lod-strategy/01-design.md` SS3: a
+# single `BRepOffsetAPI_ThruSections` call using only `feature.sections`'
+# own first and last entries, instead of every section in between - one
+# cheap loft instead of N-section fidelity. Built by handing a *shortened*
+# `LoftFeature` (`dataclasses.replace`, the same "derive a variant Feature
+# via replace" idiom `app.document.gear`/`gear_chain`/`bevel_pair` already
+# use for their own coarse/warm-start variants) straight to `resolve_loft_
+# from_bodies` - every section-wire-building helper, and whatever `ruled`/
+# closed-vs-thin-profile/guide-curve branching that function already does,
+# runs completely unchanged; only the section *list* passed in differs.
+# For the minimum valid input (exactly 2 sections), "first and last" is the
+# *whole* input, so this degrades gracefully to something equivalent to
+# the real construction - never a special case, never a crash.
+#
+# **Never persisted, never enters the Feature graph** - same invariant
+# every other coarse builder in this codebase already honors.
+
+
+def resolve_loft_coarse_from_bodies(
+    feature: LoftFeature,
+    part: Part,
+    bodies_so_far: dict[str, TopoDS_Shape],
+    excluded_feature_ids: frozenset[str],
+) -> TopoDS_Shape:
+    """The coarse stand-in for one `LoftFeature` - lofts only between
+    `feature.sections[0]` and `feature.sections[-1]`, discarding every
+    section in between, via a shortened `dataclasses.replace(feature, ...)`
+    copy handed to the real `resolve_loft_from_bodies` unchanged (see this
+    section's own module-level comment above). Discards that call's own
+    non-blocking self-intersection `warnings` - a coarse stand-in has no
+    equivalent "surfaced on the Feature's own response" use for them, same
+    "second return value not needed here" treatment `app.document.extrude.
+    resolve_feature_tool_shape`'s own GearFeature/BevelGearFeature/
+    LoftFeature branches already give the real construction's warnings."""
+    if len(feature.sections) < 2:
+        raise _invalid_loft_section(0, "a Loft needs at least 2 sections")
+    coarse_feature = replace(feature, sections=[feature.sections[0], feature.sections[-1]])
+    solid, _warnings = resolve_loft_from_bodies(coarse_feature, part, bodies_so_far, excluded_feature_ids)
+    return solid
+
+
+def resolve_loft_coarse(
+    part: Part, feature: LoftFeature, excluded_feature_ids: frozenset[str] = frozenset()
+) -> TopoDS_Shape:
+    """Fresh entry point for a not-yet-created `LoftFeature` payload (the
+    coarse-preview endpoint) or for `tier=coarse` mesh serving - mirrors
+    `resolve_loft`'s own self-exclusion convention exactly."""
+    all_excluded = excluded_feature_ids | {feature.id}
+    bodies = compute_part_bodies(part, all_excluded)
+    return resolve_loft_coarse_from_bodies(feature, part, bodies, all_excluded)

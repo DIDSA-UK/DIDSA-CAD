@@ -68,7 +68,7 @@ from app.document.bevel_math import (
     spiral_hand_mismatch_warning,
 )
 from app.document.rack import resolve_rack
-from app.document.loft import resolve_loft
+from app.document.loft import resolve_loft, resolve_loft_coarse
 from app.document.gear_chain import resolve_gear_chain, resolve_gear_chain_coarse
 from app.document.planetary_gear import resolve_planetary, resolve_planetary_coarse
 from app.document.graph import (
@@ -84,7 +84,7 @@ from app.document.mesh_data import Triangle
 from app.document.mesh_export import encode_glb, encode_obj, encode_stl
 from app.document.mirror import resolve_mirror
 from app.document.native_format import NativeFormatError, export_native, import_native
-from app.document.pattern import resolve_pattern
+from app.document.pattern import resolve_pattern, resolve_pattern_coarse
 from app.document.step_export import export_step
 from app.document.models import (
     BevelGearFeature,
@@ -1511,6 +1511,31 @@ def _validate_pattern_direction_ref(ref: PatternDirectionRef, field_name: str) -
         raise HTTPException(status_code=422, detail=f"{field_name} edge_ref must have shape_type=EDGE")
 
 
+_PATTERN_MAX_TOTAL_INSTANCES = 500
+"""`docs/lod-strategy/00-status.md` Finding 2 / `01-design.md` §6: prior to
+this, `count_1`/`count_2`/`count_angular` had lower bounds only (`_validate_
+pattern_rectangular_payload`/`_validate_pattern_circular_payload` below),
+so a payload like `count_1=1000, count_2=1000, merge=true` was accepted
+with no server-side rejection - a real, if previously theoretical,
+unbounded-cost request (each additional instance is another `BRepAlgoAPI_
+Fuse` call in the `MergeMode.FUSE_INTO_ONE`/`tool_feature_id` chain,
+`app.document.extrude._fuse_realized_instances`/`app.document.pattern.
+resolve_pattern_tool_feature_from_bodies`).
+
+500 is a judgment call, not a precisely-derived constant (no per-instance
+timing data was available for this specific chain at the time this cap was
+added) - picked to comfortably cover every realistic real-world Pattern use
+this project's own docs/examples describe (bolt-hole circles, perforation/
+vent grids, tooth-like arrays - typically single digits to a few dozen
+instances, rarely more than ~100) while still closing off an unbounded
+integer field a client can otherwise set to any value. Applies to the
+*total* instance count - Rectangular's own `count_1 * count_2` product,
+Circular's own `count_angular` alone (it has no second dimension to
+multiply against) - not either input dimension individually, so `count_1=
+50, count_2=50` (2500 total) is still rejected even though neither factor
+alone looks large."""
+
+
 def _validate_pattern_rectangular_payload(
     direction_1: PatternDirectionRef | None,
     count_1: int,
@@ -1542,6 +1567,12 @@ def _validate_pattern_rectangular_payload(
             status_code=422,
             detail="PatternFeature count_1 * count_2 must be >= 2 - otherwise no new Body is produced "
             "beyond the existing seed",
+        )
+    if count_1 * count_2 > _PATTERN_MAX_TOTAL_INSTANCES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"PatternFeature count_1 * count_2 must not exceed {_PATTERN_MAX_TOTAL_INSTANCES} "
+            f"total instances (got {count_1 * count_2})",
         )
     if direction_2 is not None:
         _validate_pattern_direction_ref(direction_2, "direction_2")
@@ -1594,6 +1625,12 @@ def _validate_pattern_circular_payload(
             status_code=422,
             detail="PatternFeature count_angular must be >= 2 - otherwise no new Body is produced "
             "beyond the existing seed",
+        )
+    if count_angular > _PATTERN_MAX_TOTAL_INSTANCES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"PatternFeature count_angular must not exceed {_PATTERN_MAX_TOTAL_INSTANCES} "
+            f"(got {count_angular})",
         )
     if angle_total <= 0 or angle_total > 360:
         raise HTTPException(status_code=422, detail="PatternFeature angle_total must be > 0 and <= 360")
@@ -3234,6 +3271,38 @@ def create_loft_feature(part_id: str, payload: LoftFeatureCreate) -> LoftFeature
     _, warnings = resolve_loft(part, feature)  # raises on an unresolvable/invalid loft
     part.add_feature(feature)
     return _loft_feature_response(part, feature, warnings)
+
+
+@router.post("/parts/{part_id}/loft-features/coarse-preview", response_model=list[BodyMeshResponse])
+def preview_loft_feature_coarse(
+    part_id: str, payload: LoftFeatureCreate, quality: float | None = Query(default=None, ge=0.0, le=1.0)
+) -> list[BodyMeshResponse]:
+    """`docs/lod-strategy/01-design.md` SS4: the 3D coarse analogue of
+    `create_loft_feature`, for a not-yet-created `LoftFeature` payload - a
+    real but cheap two-section loft (`app.document.loft.resolve_loft_
+    coarse`) instead of the full N-section construction. Mirrors `create_
+    loft_feature`'s own validate-then-build shape exactly (same scratch
+    Feature, same payload validation), but never calls `part.add_feature` -
+    nothing is persisted, no Feature is created, no Part state changes."""
+    part = get_part_or_404(part_id)
+    mesh_quality = DEFAULT_MESH_QUALITY if quality is None else mesh_quality_from_slider(quality)
+    sections = [_loft_section_to_domain(section) for section in payload.sections]
+    guide_curve_refs = [_sketch_entity_ref_to_domain(ref) for ref in payload.guide_curve_refs]
+    _validate_loft_sections(sections)
+    _validate_loft_thickness(payload.thickness)
+    _validate_loft_guide_curve_refs(guide_curve_refs)
+    _validate_target_body_ids(part, payload.mode == LoftMode.CUT, payload.target_body_ids)
+    feature = LoftFeature(
+        id=str(uuid.uuid4()),
+        sections=sections,
+        mode=payload.mode,
+        ruled=payload.ruled,
+        target_body_ids=list(payload.target_body_ids),
+        thickness=payload.thickness,
+        guide_curve_refs=guide_curve_refs,
+    )
+    shape = resolve_loft_coarse(part, feature)  # raises on an unresolvable/invalid loft
+    return _coarse_preview_response(shape, mesh_quality)
 
 
 def _get_loft_feature_or_404(part: Part, feature_id: str) -> LoftFeature:
@@ -5145,6 +5214,72 @@ def create_pattern_feature(part_id: str, payload: PatternFeatureCreate) -> Patte
     resolve_pattern(part, feature)  # raises on an unresolvable reference; result unused here
     part.add_feature(feature)
     return _feature_response(part, feature)
+
+
+@router.post("/parts/{part_id}/pattern-features/coarse-preview", response_model=list[BodyMeshResponse])
+def preview_pattern_feature_coarse(
+    part_id: str, payload: PatternFeatureCreate, quality: float | None = Query(default=None, ge=0.0, le=1.0)
+) -> list[BodyMeshResponse]:
+    """`docs/lod-strategy/01-design.md` SS4: the 3D coarse analogue of
+    `create_pattern_feature`, for a not-yet-created `PatternFeature`
+    payload - every instance realized via the same rigid-transform
+    placement the real construction uses, but never fused
+    (`app.document.pattern.resolve_pattern_coarse`) - instead of the full
+    fuse-chain construction `merge == MergeMode.FUSE_INTO_ONE`/
+    `tool_feature_id` would otherwise require. Mirrors `create_pattern_
+    feature`'s own validate-then-build shape exactly (same scratch
+    Feature, same payload validation), but never calls `part.add_feature` -
+    nothing is persisted, no Feature is created, no Part state changes."""
+    part = get_part_or_404(part_id)
+    mesh_quality = DEFAULT_MESH_QUALITY if quality is None else mesh_quality_from_slider(quality)
+    source_body_ids = list(payload.source_body_ids)
+    source_feature_ids = list(payload.source_feature_ids)
+    direction_1 = (
+        _pattern_direction_ref_to_domain(payload.direction_1) if payload.direction_1 is not None else None
+    )
+    direction_2 = (
+        _pattern_direction_ref_to_domain(payload.direction_2) if payload.direction_2 is not None else None
+    )
+    axis = _pattern_axis_ref_to_domain(payload.axis) if payload.axis is not None else None
+    _validate_pattern_source_body_ids(part, source_body_ids, source_feature_ids, payload.tool_feature_id)
+    _validate_pattern_payload(
+        payload.pattern_type,
+        direction_1,
+        payload.count_1,
+        payload.count_2,
+        direction_2,
+        axis,
+        payload.count_angular,
+        payload.angle_total,
+        payload.skip_indices,
+    )
+    _validate_tool_feature_id(
+        part, payload.tool_feature_id, source_body_ids, source_feature_ids, payload.merge, "PatternFeature"
+    )
+
+    feature = PatternFeature(
+        id=str(uuid.uuid4()),
+        source_body_ids=source_body_ids,
+        source_feature_ids=source_feature_ids,
+        pattern_type=payload.pattern_type,
+        direction_1=direction_1,
+        count_1=payload.count_1,
+        spacing_1=payload.spacing_1,
+        reverse_1=payload.reverse_1,
+        direction_2=direction_2,
+        count_2=payload.count_2,
+        spacing_2=payload.spacing_2,
+        reverse_2=payload.reverse_2,
+        axis=axis,
+        count_angular=payload.count_angular,
+        angle_total=payload.angle_total,
+        reverse_angular=payload.reverse_angular,
+        skip_indices=list(payload.skip_indices),
+        merge=payload.merge,
+        tool_feature_id=payload.tool_feature_id,
+    )
+    shape = resolve_pattern_coarse(part, feature)  # raises on an unresolvable reference
+    return _coarse_preview_response(shape, mesh_quality)
 
 
 def _get_pattern_feature_or_404(part: Part, feature_id: str) -> PatternFeature:
