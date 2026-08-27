@@ -124,6 +124,14 @@ Each needs "sketch_feature_id" naming an earlier "sketch" step.
   give either radius_point_id or a literal radius.
 - sketch_arc: {local_id, kind:"sketch_arc", sketch_feature_id,
   center_point_id, start_point_id, end_point_id?, end_angle?, construction?}
+  IMPORTANT direction rule: the arc is always traced from start_point_id to
+  end_point_id (or to the point end_angle implies) going
+  COUNTER-CLOCKWISE around center_point_id - never the shorter of the two
+  possible arcs, never clockwise. There is no field to request clockwise or
+  "the short way round" - if the two points you chose are on the "wrong"
+  side of each other for this rule, you get an arc that sweeps most of the
+  way around the circle instead of the small corner you meant (this is the
+  single most common sketch_arc mistake - see the worked example below).
 - sketch_ellipse: {local_id, kind:"sketch_ellipse", sketch_feature_id,
   center_point_id, major_point_id?, major_radius?, angle?, minor_radius
   (required), construction?}
@@ -240,6 +248,51 @@ picking a selector that fillets more or fewer edges than the user actually
 asked for. When several Body-producing steps exist (e.g. a pattern
 producing several copies), double-check "of" names the specific step the
 user means, not just the most recently defined one.
+
+## Rounded corners drawn IN a Sketch (not a Fillet/Chamfer feature)
+
+Fillet/Chamfer (above) round the edges of an already-built solid Body -
+use that whenever the rounded corner is on a shape you are about to
+extrude/revolve/sweep as a plain sharp-cornered profile, since it needs no
+tangency math from you at all: sketch the sharp-cornered profile, extrude/
+revolve/sweep it, then Fillet the resulting Body edge. Prefer this over a
+sketch_arc corner whenever it's available - it cannot come out backwards.
+
+Only use a sketch_arc to round a corner directly inside a Sketch when the
+rounded shape itself must exist as 2D sketch geometry - most commonly a
+Sweep path, where the profile travels along a sketch that itself has a
+rounded corner. When you do this, you must place a sketch_arc's
+start_point_id/end_point_id yourself so the arc is tangent to the two
+straight segments it connects, and the direction rule above (always
+counter-clockwise from start to end) means the order you name them in
+matters:
+
+To round a 90-degree corner where one straight segment arrives at corner
+point C travelling in direction D1 and the next straight segment leaves C
+travelling in direction D2, with fillet radius r:
+1. The arc's center is offset from C by r, perpendicular to each segment,
+   on the inside of the turn (the side the corner bends toward).
+2. The two tangent points - where the straight segments actually end/start
+   now, instead of at C itself - are each r back from C along their own
+   segment's direction, i.e. incoming_tangent_point = C - r*D1 and
+   outgoing_tangent_point = C + r*D2 (D1, D2 unit vectors).
+3. Figure out whether the corner turns left or right (i.e. whether D2 is a
+   counter-clockwise or clockwise turn from D1). If left (CCW) turn: start
+   the arc at incoming_tangent_point and end at outgoing_tangent_point - the
+   natural CCW sweep is the short way round. If right (CW) turn: you must
+   swap them - start_point_id must be outgoing_tangent_point and
+   end_point_id must be incoming_tangent_point - naming them in direction-
+   of-travel order (as you would for the CCW case) produces an arc that
+   sweeps the long way around the circle instead of the small corner, which
+   is the single most common way this goes wrong.
+Sanity-check every sketch_arc corner this way before finalizing your plan:
+does the arc as you've defined it (start to end, going CCW) trace the
+SHORT way around, hugging the actual corner - not loop most of the way
+around the circle and not bulge out the wrong side of the path? If you are
+not confident of the direction, prefer end_angle (an absolute angle from
+center, easier to reason about directly than a second point) or reconsider
+whether a Fillet feature on a downstream Body would avoid this arithmetic
+entirely.
 
 ## Reference kind-checking
 
