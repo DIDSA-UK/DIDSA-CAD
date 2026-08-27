@@ -33,7 +33,7 @@ doc and any design-doc content — no implementation).
 | Phase 1 chunk 3 (Pattern coarse builder) | not yet dispatched | — | blocked on chunk 2 merging |
 | Phase 1 chunk 4 (Loft coarse builder) | not yet dispatched | — | blocked on chunk 2 merging |
 | Phase 1 chunk 5 (client) | not yet dispatched | — | blocked on chunk 2 merging |
-| Phase 2 design pass | in progress | — | in-process research agent dispatched 2026-08-27; will produce `02-phase2-design.md` for approval before any Phase 2 implementation is dispatched |
+| Phase 2 design pass | drafted, see `02-phase2-design.md` | — | **awaiting user approval — no Phase 2 implementation dispatched yet** |
 
 ---
 
@@ -253,6 +253,21 @@ first-ever async/job pattern), and Phase 2 genuinely depends on Phase 1's client
 coarse/pending state rather than the reverse. Phase 1 chunks 1-2 dispatched now; a Phase 2
 design pass is running in parallel and will come back for its own approval before any Phase 2
 implementation is dispatched.
+
+### Phase 2 research finding — disconnect was never actually losing work
+
+The Phase 2 research pass (dispatched 2026-08-27) found something that changes the framing of
+"disconnect resilience": every create/update route is a plain sync `def` with no
+disconnect-checking anywhere in the codebase, so a dropped client connection does NOT stop an
+in-flight build — the server thread runs to completion and persists the Feature regardless.
+The client's own 720s `spiralBevelPairRequestTimeout` is itself a self-inflicted disconnect on
+a long build, and the server still finishes and succeeds after it fires. So the real Phase 2
+gap is (a) a cheap channel back for a reconnected client to learn the outcome (today, the only
+fallback is `GET /features`, which — absent chunk 1's fix — re-runs the entire build just to
+answer that question), and (b) genuine mid-build cancellation, a real gap with no existing
+analogue. Full design: `02-phase2-design.md`.
+
+**Not yet approved — no Phase 2 implementation dispatched.**
 
 ---
 
