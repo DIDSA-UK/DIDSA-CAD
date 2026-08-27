@@ -28,7 +28,7 @@ doc and any design-doc content — no implementation).
 |---|---|---|---|
 | Phase 0 investigation | complete | — | see findings 1-4 below |
 | Design doc (Phase 1) | approved | `01-design.md` | user approved 2026-08-27; also approved building Phase 2 (real cancellation/disconnect-resilience) as a separate, sequenced follow-on — see below |
-| Phase 1 chunk 1 (body_cache GET-list fix) | dispatched | `claude/lod-body-cache-get-features-fix`, session `session_014YYzi8osL7CMzoASk27h7R` | independent, no dependency on chunk 2 |
+| Phase 1 chunk 1 (body_cache GET-list fix) | dispatched (respawned once) | `claude/lod-body-cache-get-features-fix`, session `session_01YRJvRKaSw8sAKZgFiPdi7B` | independent, no dependency on chunk 2. First attempt (`session_014YYzi8osL7CMzoASk27h7R`) errored out with a generic execution failure before pushing any commit — archived, respawned 2026-08-27 08:56 with the identical brief |
 | Phase 1 chunk 2 (coarse-mesh mechanism + gear-family builders) | dispatched | `claude/lod-coarse-mesh-gear-family`, session `session_01TumNhrECsEJggwMUcRK5LX` | foundational — chunks 3/4/5 depend on this merging first |
 | Phase 1 chunk 3 (Pattern coarse builder) | not yet dispatched | — | blocked on chunk 2 merging |
 | Phase 1 chunk 4 (Loft coarse builder) | not yet dispatched | — | blocked on chunk 2 merging |
