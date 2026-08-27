@@ -154,7 +154,7 @@ from OCC.Core.GProp import GProp_GProps
 from OCC.Core.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf
 from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape
 
-from app.document.bevel import _assemble_gear_solid, _spiral_hand_from_feature
+from app.document.bevel import _assemble_gear_solid, _spiral_hand_from_feature, coarse_bevel_cone_solid
 from app.document.bevel_math import (
     MESH_MARGIN_SAFETY_BUFFER_DEGREES,
     BevelGearGeometry,
@@ -1087,6 +1087,17 @@ def resolve_bevel_pair_from_bodies(
             solid_2_brep, warnings_2 = future_2.result()
         except _MemberBuildFailed as exc:
             raise _bevel_pair_failed(str(exc)) from exc
+        except GearGeometryError as exc:
+            # `_build_member_solid`'s own worker only converts an
+            # `HTTPException` `_assemble_gear_solid` raises into
+            # `_MemberBuildFailed` - a `GearGeometryError` (e.g. the
+            # Tredgold crown-gear guard, `tredgold_base_colatitude`) is a
+            # plain picklable `ValueError` subclass that crosses the
+            # `ProcessPoolExecutor` boundary unchanged, so it lands here
+            # directly instead. A real, pre-existing gap this fix-up pass
+            # found while regression-testing `coarse_bevel_cone_solid`'s
+            # own matching guard - see `docs/status.md`'s follow-up note.
+            raise _invalid_bevel_pair_parameters(str(exc)) from exc
     solid_1 = _shape_from_brep_bytes(solid_1_brep)
     solid_2 = _shape_from_brep_bytes(solid_2_brep)
     # Collected separately from `warnings` (rather than appended into it
@@ -1147,3 +1158,93 @@ def resolve_bevel_pair(
     all_excluded = excluded_feature_ids | {feature.id}
     bodies = compute_part_bodies(part, all_excluded)
     return resolve_bevel_pair_from_bodies(feature, part, bodies, all_excluded)
+
+
+# ---------------------------------------------------------------------------
+# Coarse (LOD) construction - `docs/lod-strategy/01-design.md` SS3: reuses
+# `app.document.bevel`'s own coarse cone builder for each of the two
+# members, positioned via this module's own real `_tilted_basis` (apex-
+# aligned pair positioning, unchanged), but with NO meshing-phase search at
+# all - `_search_meshing_phase` is this whole Feature type's single biggest
+# per-build cost (a real per-build `ProcessPoolExecutor` grid search,
+# `BRepAlgoAPI_Common` per trial), and two independently-positioned cones is
+# already a sufficient coarse approximation of a bevel pair's own envelope;
+# there is no meshing-alignment detail left to search for once neither
+# member has real teeth. Skips `resolve_member_profile_shifts`'s own two-
+# pass search for the same reason (no real tooth-tip interference risk left
+# to correct for against a plain cone). **Never persisted, never enters the
+# Feature graph** - see `app.document.gear`'s own matching section for the
+# full invariant.
+
+
+def resolve_bevel_pair_coarse_from_bodies(
+    feature: BevelPairFeature,
+    part: Part,
+    bodies: dict[str, TopoDS_Shape],
+    excluded_feature_ids: frozenset[str],
+) -> TopoDS_Shape:
+    """The coarse stand-in for one `BevelPairFeature` - a `TopoDS_Compound`
+    of exactly 2 cones (one per member), positioned via the same apex-
+    aligned `_tilted_basis` the real construction uses. Deliberately skips
+    `resolve_bevel_pair_from_bodies`'s own `resolve_member_profile_shifts`
+    (real-tooth interference correction) and `_search_meshing_phase` (real-
+    tooth meshing-phase alignment) entirely - neither has anything left to
+    correct for once both members are plain cones with no teeth."""
+    if feature.points_per_flank < 2:
+        raise _invalid_bevel_pair_parameters(f"points_per_flank must be >= 2, got {feature.points_per_flank!r}")
+    try:
+        gamma_1, gamma_2 = pitch_cone_half_angles(
+            feature.member_1.tooth_count, feature.member_2.tooth_count, feature.shaft_angle_degrees
+        )
+    except GearGeometryError as exc:
+        raise _invalid_bevel_pair_parameters(str(exc)) from exc
+    if feature.face_width <= 0:
+        raise _invalid_bevel_pair_parameters(f"face_width must be positive, got {feature.face_width!r}")
+
+    try:
+        geometry_1 = _member_geometry(
+            module=feature.module,
+            tooth_count=feature.member_1.tooth_count,
+            face_width=feature.face_width,
+            pressure_angle_degrees=feature.pressure_angle_degrees,
+            backlash=feature.backlash,
+            profile_shift=feature.member_1.profile_shift if feature.member_1.profile_shift is not None else 0.0,
+            gamma=gamma_1,
+        )
+        geometry_2 = _member_geometry(
+            module=feature.module,
+            tooth_count=feature.member_2.tooth_count,
+            face_width=feature.face_width,
+            pressure_angle_degrees=feature.pressure_angle_degrees,
+            backlash=feature.backlash,
+            profile_shift=feature.member_2.profile_shift if feature.member_2.profile_shift is not None else 0.0,
+            gamma=gamma_2,
+        )
+    except GearGeometryError as exc:
+        raise _invalid_bevel_pair_parameters(str(exc)) from exc
+
+    basis_1 = resolve_plane_ref(part, bodies, feature.plane_ref, excluded_feature_ids)
+    basis_2 = _tilted_basis(basis_1, math.radians(feature.shaft_angle_degrees))
+    try:
+        cone_1 = coarse_bevel_cone_solid(basis_1, geometry_1)
+        cone_2 = coarse_bevel_cone_solid(basis_2, geometry_2)
+    except GearGeometryError as exc:
+        raise _invalid_bevel_pair_parameters(str(exc)) from exc
+
+    compound = TopoDS_Compound()
+    builder = BRep_Builder()
+    builder.MakeCompound(compound)
+    builder.Add(compound, cone_1)
+    builder.Add(compound, cone_2)
+    return compound
+
+
+def resolve_bevel_pair_coarse(
+    part: Part, feature: BevelPairFeature, excluded_feature_ids: frozenset[str] = frozenset()
+) -> TopoDS_Shape:
+    """Fresh entry point for a not-yet-created `BevelPairFeature` payload
+    (the coarse-preview endpoint) or for `tier=coarse` mesh serving -
+    mirrors `resolve_bevel_pair`'s own self-exclusion convention exactly."""
+    all_excluded = excluded_feature_ids | {feature.id}
+    bodies = compute_part_bodies(part, all_excluded)
+    return resolve_bevel_pair_coarse_from_bodies(feature, part, bodies, all_excluded)

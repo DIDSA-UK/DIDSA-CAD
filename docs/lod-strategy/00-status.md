@@ -28,8 +28,8 @@ doc and any design-doc content — no implementation).
 |---|---|---|---|
 | Phase 0 investigation | complete | — | see findings 1-4 below |
 | Design doc (Phase 1) | approved | `01-design.md` | user approved 2026-08-27; also approved building Phase 2 (real cancellation/disconnect-resilience) as a separate, sequenced follow-on — see below |
-| Phase 1 chunk 1 (body_cache GET-list fix) | user starting manually | branch `claude/lod-body-cache-get-features-fix` (base: `main`) | Two coordinator-dispatched attempts (`session_014YYzi8osL7CMzoASk27h7R`, then respawn `session_01YRJvRKaSw8sAKZgFiPdi7B`) both errored out generically within seconds, no commits pushed either time — archived. Prompt handed to the user as a file 2026-08-27; they're starting the session directly, likely a platform/environment hiccup with two heavy `create_session` calls back-to-back rather than a prompt problem (the earlier solo OCCT-profiling dispatch in the same environment completed fine) |
-| Phase 1 chunk 2 (coarse-mesh mechanism + gear-family builders) | user starting manually | branch `claude/lod-coarse-mesh-gear-family` (base: `main`) | Coordinator-dispatched attempt (`session_01TumNhrECsEJggwMUcRK5LX`) errored out generically with no commits pushed — archived. Prompt handed to the user as a file 2026-08-27; foundational — chunks 3/4/5 depend on this merging first |
+| Phase 1 chunk 1 (body_cache GET-list fix) | **merged to `main`** | branch `claude/new-session-yihda3`, [PR #173](https://github.com/DIDSA-UK/DIDSA-CAD/pull/173) | Code-reviewed (found and fixed a real lockout regression), merged 2026-08-27. |
+| Phase 1 chunk 2 (coarse-mesh mechanism + gear-family builders) | code-reviewed, fix-up merged with `main`, **PR pending** | branch `claude/lod-coarse-mesh-gear-family` | Coarse builders for Gear/BevelGear/BevelPair/GearChain/PlanetaryGear, `tier=coarse` on `GET /mesh`, 5 new coarse-preview endpoints, `source="coarse"` schema addition. Two code-review rounds found and fixed real validation gaps; branch merged forward against `main` twice (PR #172, then PR #173) to reconcile cross-cutting `bevel.py`/`router.py`/`extrude.py` changes. Full suite 1882/1882 passed pre-fix-up (real OCCT); fix-up and merge resolution verified by code review + syntax check only, not an independent OCCT re-run (this coordinator's own sandbox has no `pythonocc-core`). Foundational — chunks 3/4/5 can build on this once its PR merges. |
 | Phase 1 chunk 3 (Pattern coarse builder) | not yet dispatched | — | blocked on chunk 2 merging |
 | Phase 1 chunk 4 (Loft coarse builder) | not yet dispatched | — | blocked on chunk 2 merging |
 | Phase 1 chunk 5 (client) | not yet dispatched | — | blocked on chunk 2 merging |
@@ -282,10 +282,7 @@ exists. No other open, user-must-decide product question was found.
 
 ## Dispatched implementation sessions
 
-*(populated after plan approval, per session: branch, PR link, scope, state, verification
-status)*
-
-### Phase 1 chunk 1 — body_cache GET-list fix (branch `claude/lod-body-cache-get-features-fix`)
+### Phase 1 chunk 1 — body_cache GET-list fix (branch `claude/new-session-yihda3`)
 
 Landed the fix this doc's own "Status at a glance" table and §6 describe: `app.document.
 router`'s five `_X_feature_response` helpers (Gear/BevelGear/BevelPair/Loft/GearChain) no
@@ -311,15 +308,93 @@ zero regressions, the +9 all new (a real `ProcessPoolExecutor`-counting test on 
 tooth-count-symmetric spiral bevel pair proving a second `GET /features` opens zero pools, two
 real-OCCT call-counting tests for Gear/Loft, and 6 pure dict-level tests for the new
 `_feature_warnings_cache` itself) — full detail in this session's own `docs/status.md` entry,
-2026-08-27. Session state: complete, pushed to `claude/new-session-yihda3` (this session was
-handed the chunk-1 prompt directly rather than via a fresh `claude/lod-body-cache-get-features-
-fix` branch — the two prior coordinator-dispatched attempts on that branch name had already
-errored out and been archived; this session's own branch carries the same fix), PR not yet
-opened by this session (coordinator/user to open per this project's own convention).
+2026-08-27.
 
-Follow-up, same branch: a code review found the fix above had dropped the pre-existing
+**Follow-up, same branch**: a code review found the fix above had dropped the pre-existing
 "a since-broken unrelated Feature must not take the whole feature list down" resilience —
 fixed by re-wrapping each of the five router helpers' `compute_part_bodies(part)` call in the
 same `except HTTPException: warnings = []` fallback the pre-fix code had, plus a new regression
-test proving it. Full backend suite re-verified for real: **1880/1880 passed** — full detail in
-`docs/status.md`'s same 2026-08-27 entry.
+test proving it. Full backend suite re-verified for real: **1880/1880 passed**.
+
+**Coordinator note, logged not fixed**: a second review pass found a narrower, non-regressive
+limitation — when a Part has both an unrelated broken Feature and multiple warning-bearing
+Features, each warning-bearing helper's fallback independently re-runs the same failing prefix
+once per call within a single request (never worse than the pre-fix baseline, which always
+recomputed on every call). Logged in `docs/status.md`'s coordinator review note rather than
+spending a third fix-up round on a bounded edge case.
+
+**Status: merged to `main` via [PR #173](https://github.com/DIDSA-UK/DIDSA-CAD/pull/173),
+2026-08-27.** Full detail in `docs/status.md`'s 2026-08-27 entry.
+
+---
+
+### Phase 1 chunk 2 — coarse-mesh mechanism + gear-family coarse builders
+
+- **Branch**: `claude/lod-coarse-mesh-gear-family`. Code-reviewed (two rounds, both found and
+  fixed real gaps), merged forward against `main` twice to reconcile with PR #172 (spiral bevel
+  end-cap flattening) and PR #173 (chunk 1, above) — both cross-cutting the same files
+  (`bevel.py`, `router.py`, `extrude.py`). **PR not yet opened.**
+- **Scope**: the full `01-design.md` §8 item 2 — coarse builders for `GearFeature`,
+  `BevelGearFeature`, `BevelPairFeature`, `GearChainFeature`, `PlanetaryGearFeature` (one real
+  `BRepPrimAPI_MakeCylinder`/`MakeCone` each, positioned via each Feature type's own real
+  positioning math, never the real tooth construction); a new `app.document.extrude.
+  compute_part_bodies_coarse`/`coarse_eligible_feature_ids` serving mechanism (a brand-new
+  function, `compute_part_bodies`'s own real code path untouched); a new `tier=coarse` query
+  parameter on `GET /parts/{id}/mesh`; five new `POST /parts/{id}/{route}/coarse-preview`
+  endpoints (the 3D analogue of `/gear/preview` for a not-yet-created Feature payload); a new
+  `source="coarse"` value on `BodyMeshResponse`.
+- **Invariant honored, checked directly**: coarse geometry is never persisted and never enters
+  the Feature graph — every coarse-preview endpoint's own test asserts `GET /parts/{id}/features`
+  stays empty afterward; `compute_part_bodies_coarse` is deliberately never cached via `body_
+  cache`, so it can never leak into the real checkpoint chain a later real `compute_part_bodies`
+  call reads back.
+- **Verification, real throughout**: bootstrapped a real `pythonocc-core` conda env this session
+  (Miniconda + `conda env create -f backend/environment.yml`, `micro.mamba.pm` blocked — same
+  `repo.anaconda.com` fallback the 2026-08-07/2026-08-21/2026-08-26 entries in `docs/status.md`
+  already used). Real baseline: 1870 passed before any change. New `backend/tests/
+  test_lod_coarse_mesh.py` (12 tests): one coarse-builder + one coarse-preview test per Feature
+  type, plus a cross-cutting test confirming `tier=coarse` excludes an ordinary Extrude Body
+  alongside a Gear in the same Part. Every pre-existing gear-family test file re-run in full:
+  170/170 passed (confirms the existing full-fidelity code paths are genuinely untouched). Full
+  suite after all changes: 1882/1882 passed, zero regressions.
+- **What chunks 3/4/5 can now build on**: `compute_part_bodies_coarse`/`coarse_eligible_
+  feature_ids` (extend the isinstance dispatch inside `compute_part_bodies_coarse` with a
+  Pattern/Loft branch once each has its own coarse resolver — no other change needed there);
+  the `tier=coarse` query parameter and `source="coarse"` schema value (already generic, not
+  gear-family-specific); the `POST .../coarse-preview` endpoint pattern (mirror `create_*`'s
+  own validate-then-build shape, call the coarse resolver instead, never call `part.add_
+  feature`) for Pattern/Loft's own not-yet-created-Feature preview case; chunk 5's client work
+  can wire against the gear-family coverage this chunk already provides and extend to Pattern/
+  Loft once chunks 3/4 land.
+- **Known limitation, documented in the `tier=coarse` endpoint's own docstring rather than left
+  implicit**: a Gear/BevelGear Feature bossed/cut into an already-existing Body (non-empty
+  `target_body_ids`) inherits that Body's own id (`_apply_boss_or_cut`'s survivor-id tie-break),
+  so `coarse_eligible_feature_ids`'s `base_feature_id` lookup attributes it to the earlier
+  Feature instead of the Gear/BevelGear itself — a pre-existing ambiguity in this app's own
+  Body-identity model (an Extrude Boss fused onto another Extrude has the identical ambiguity
+  today), not something LOD introduces or needs to fix; the common case (a gear/bevel gear that
+  mints its own standalone Body) is unaffected.
+- **Not done this session** (explicitly out of scope): `PatternFeature`/`LoftFeature` coarse
+  builders (chunks 3/4); any Flutter/client changes (chunk 5); the `body_cache` GET-list bypass
+  bug (chunk 1, a separate parallel session); any async/background-job infrastructure
+  (deliberately not needed per the design).
+- **Fix-up (commit `1fc9ba3`)**: a coordinator code review before merge found three related
+  validation gaps in the new coarse-preview endpoints — a degenerate 90° bevel pitch-cone angle
+  500'd instead of returning the same clean 422 the real create endpoint gives; an internal
+  gear/chain-member with `outer_diameter<=0` 500'd; a positive-but-too-small internal
+  `outer_diameter` silently rendered a plausible coarse preview for parameters the real endpoint
+  would reject. All three fixed (mirroring the equivalent checks the real construction paths
+  already had), with regression tests, and — as a related find — the same crown-gear guard gap
+  was also missing from the real `resolve_bevel_gear_from_bodies` path, fixed there too. A
+  second code review of the fix-up's own diff found zero further issues.
+- **Coordinator merge**: rebased twice against `main` to reconcile cross-cutting changes — PR
+  #172 (spiral bevel end-cap flattening, same day) also touched `bevel.py`; PR #173 (chunk 1,
+  above) also touched `router.py`/`extrude.py`. One real semantic conflict, resolved by hand:
+  PR #172 reordered `resolve_bevel_gear_from_bodies`'s returned warnings
+  (`assembly_warnings + warnings`) while this chunk's fix-up independently wrapped the same
+  `_assemble_gear_solid` call in a `try/except` — both changes kept, the try/except wraps the
+  call and the reordered return statement is unchanged. Full detail:
+  `docs/status.md`'s 2026-08-27 entries. Verified by code review and `py_compile` syntax check
+  only in this coordinator's own sandbox (no `pythonocc-core` available here) — not an
+  independent OCCT re-run; trusting the branch's own last real 1882/1882 pass plus the
+  non-overlapping nature of the merged-in changes.
