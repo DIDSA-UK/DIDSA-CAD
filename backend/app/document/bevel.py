@@ -1321,14 +1321,25 @@ def resolve_bevel_gear_from_bodies(
         warnings.append(cost_warning)
 
     basis = resolve_plane_ref(part, bodies, feature.plane_ref, excluded_feature_ids)
-    solid, assembly_warnings = _assemble_gear_solid(
-        basis,
-        geometry,
-        feature.tooth_count,
-        feature.points_per_flank,
-        spiral_angle_degrees=feature.spiral_angle_degrees,
-        spiral_hand=_spiral_hand_from_feature(feature.spiral_hand),
-    )
+    try:
+        solid, assembly_warnings = _assemble_gear_solid(
+            basis,
+            geometry,
+            feature.tooth_count,
+            feature.points_per_flank,
+            spiral_angle_degrees=feature.spiral_angle_degrees,
+            spiral_hand=_spiral_hand_from_feature(feature.spiral_hand),
+        )
+    except GearGeometryError as exc:
+        # `bevel_gear_geometry` above only rejects `pitch_cone_angle_
+        # degrees` outside `(0, 90]` - `_assemble_gear_solid` itself raises
+        # this for a value *inside* that range but still too close to a
+        # crown gear (`tredgold_base_colatitude`'s own `TREDGOLD_MAX_
+        # PITCH_CONE_ANGLE_DEGREES` guard, `bevel_math.py`), which was
+        # uncaught here (a real, pre-existing gap this fix-up pass found
+        # while regression-testing `coarse_bevel_cone_solid`'s own matching
+        # guard - see `docs/status.md`'s follow-up note on this).
+        raise _invalid_bevel_parameters(str(exc)) from exc
     warnings.extend(assembly_warnings)
     return solid, warnings
 
@@ -1367,7 +1378,20 @@ def coarse_bevel_cone_solid(basis: ResolvedPlane, geometry: BevelGearGeometry) -
     enough for a deliberately low-fidelity stand-in, not meant to match the
     real tooth tip circle exactly. Shared by `app.document.bevel_pair`'s own
     coarse builder (one cone per member), mirroring `_assemble_gear_solid`'s
-    own reuse there."""
+    own reuse there.
+
+    Calls `tredgold_base_colatitude(geometry)` purely for its own crown-gear
+    (`pitch_cone_angle_degrees` -> 90) degeneracy guard - the same one
+    `_assemble_gear_solid`'s own `start_colatitude` computation relies on -
+    and discards the result: `axial_height` below needs that same `cos
+    (pitch_cone_angle)` denominator to stay finite, and without this call
+    nothing in this coarse path ever checks it, so a crown-gear input would
+    reach `BRepPrimAPI_MakeCone` with `axial_height == 0.0` and fail there
+    as an unhandled OCCT error instead of the structured `GearGeometryError`
+    every caller here already knows how to turn into a clean 422. Raises
+    `GearGeometryError` on that guard, same as `bevel_gear_geometry` itself -
+    every caller of this function already wraps it accordingly."""
+    tredgold_base_colatitude(geometry)
     axial_height = geometry.cone_distance * math.cos(geometry.pitch_cone_angle)
     outer_radius = geometry.pitch_radius + geometry.addendum * math.cos(geometry.pitch_cone_angle)
     axis = gp_Ax2(_basis_point3_to_world(basis, 0.0, 0.0, 0.0), basis_normal(basis))
@@ -1402,7 +1426,10 @@ def resolve_bevel_gear_coarse_from_bodies(
     if feature.face_width <= 0:
         raise _invalid_bevel_parameters(f"face_width must be positive, got {feature.face_width!r}")
     basis = resolve_plane_ref(part, bodies, feature.plane_ref, excluded_feature_ids)
-    return coarse_bevel_cone_solid(basis, geometry)
+    try:
+        return coarse_bevel_cone_solid(basis, geometry)
+    except GearGeometryError as exc:
+        raise _invalid_bevel_parameters(str(exc)) from exc
 
 
 def resolve_bevel_gear_coarse(

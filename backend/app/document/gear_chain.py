@@ -45,7 +45,13 @@ from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape
 
 from app.document.create_plane import resolve_plane_ref
 from app.document.extrude import _explode_solids, basis_normal, compute_part_bodies
-from app.document.gear import _gear_face, _gear_outline_wire, coarse_gear_radius_from_geometry, coarse_gear_solid
+from app.document.gear import (
+    _gear_face,
+    _gear_outline_wire,
+    _invalid_gear_parameters,
+    coarse_gear_radius_from_geometry,
+    coarse_gear_solid,
+)
 from app.document.gear_chain_math import (
     ChainMemberKind,
     ChainMemberSpec,
@@ -472,7 +478,17 @@ def _build_member_solid_coarse(basis: ResolvedPlane, member: GearChainMemberSpec
         raise _invalid_gear_chain_parameters(str(exc)) from exc
     if is_internal and member.outer_diameter is None:
         raise _invalid_gear_chain_parameters("outer_diameter is required for an internal chain member")
-    radius = coarse_gear_radius_from_geometry(is_internal, member.outer_diameter, geometry)
+    try:
+        radius = coarse_gear_radius_from_geometry(is_internal, member.outer_diameter, geometry)
+    except GearGeometryError as exc:
+        # `invalid_gear_parameters` (not this module's own `invalid_gear_
+        # chain_parameters`) - matches `_build_member_solid`'s own real
+        # path exactly: an internal member's outer_diameter/dedendum_
+        # radius check lives in `_gear_face` (shared with `app.document.
+        # gear`, both real paths reuse the identical function), which
+        # raises `app.document.gear._invalid_gear_parameters`, not this
+        # module's own error type.
+        raise _invalid_gear_parameters(str(exc)) from exc
     return coarse_gear_solid(basis, radius, member.face_width)
 
 

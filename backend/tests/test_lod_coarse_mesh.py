@@ -431,3 +431,175 @@ def test_tier_coarse_excludes_bodies_from_non_coarse_eligible_features():
     coarse_mesh = _mesh(part["id"], tier="coarse")
     assert len(coarse_mesh) == 1
     assert coarse_mesh[0]["source"] == "coarse"
+
+
+# --- Regression: coarse-preview validation gaps (fix-up pass) ----------------
+#
+# A follow-up code review against `docs/lod-strategy/01-design.md` found the
+# coarse builders above skip three validity checks their own real-
+# construction counterparts already enforce - each one letting a rejected
+# parameter combination either 500 on an unhandled OCCT failure, or (the
+# too-small-outer_diameter case) silently build a plausible-looking coarse
+# solid for a gear the real endpoint would refuse to create at all. Every
+# test below asserts the coarse-preview endpoint now gives the *same*
+# structured 422 (`detail["type"]`) the real create endpoint already gives
+# for the identical payload - not just "some 4xx", the same failure mode.
+
+
+def test_bevel_gear_coarse_preview_crown_gear_returns_same_422_as_create():
+    """`pitch_cone_angle_degrees=90` (a crown gear) passes `bevel_gear_
+    geometry`'s own `0 < angle <= 90` range check but fails the Tredgold
+    degeneracy guard (`TREDGOLD_MAX_PITCH_CONE_ANGLE_DEGREES = 89.5`) that
+    `_assemble_gear_solid` (the real path) enforces via `tredgold_base_
+    colatitude` - `coarse_bevel_cone_solid` used to skip that guard
+    entirely and hand `axial_height = cone_distance * cos(90deg) = 0.0` to
+    `BRepPrimAPI_MakeCone`, which OCCT rejects as an unhandled 500."""
+    part = _create_part()
+    payload = {
+        "bevel_type": "boss",
+        "module": 4.0,
+        "tooth_count": 20,
+        "face_width": 15.0,
+        "pitch_cone_angle_degrees": 90.0,
+    }
+
+    create_response = _create_bevel(part["id"], pitch_cone_angle_degrees=90.0)
+    assert create_response.status_code == 422, create_response.json()
+    assert create_response.json()["detail"]["type"] == "invalid_bevel_parameters"
+
+    coarse_response = client.post(f"/document/parts/{part['id']}/bevel-gear-features/coarse-preview", json=payload)
+    assert coarse_response.status_code == 422, coarse_response.json()
+    assert coarse_response.json()["detail"]["type"] == "invalid_bevel_parameters"
+
+
+def test_bevel_pair_coarse_preview_crown_gear_returns_same_422_as_create():
+    """`bevel_pair.py`'s coarse path reuses `bevel.coarse_bevel_cone_solid`
+    per member - the same Tredgold guard gap, reachable here via a
+    `shaft_angle_degrees`/tooth-count combination that drives one member's
+    own `pitch_cone_half_angles` result to a crown gear (40/20 teeth at a
+    120-degree shaft angle: `gamma_1 = atan(sin(120deg) / (20/40 +
+    cos(120deg))) = atan(sin(120deg) / 0) -> 90 degrees exactly, up to
+    floating point)."""
+    part = _create_part()
+    payload = {
+        "module": 4.0,
+        "member_1": _bevel_pair_member(40),
+        "member_2": _bevel_pair_member(20),
+        "face_width": 15.0,
+        "shaft_angle_degrees": 120.0,
+    }
+
+    create_response = _create_bevel_pair(
+        part["id"],
+        member_1=_bevel_pair_member(40),
+        member_2=_bevel_pair_member(20),
+        shaft_angle_degrees=120.0,
+    )
+    assert create_response.status_code == 422, create_response.json()
+    assert create_response.json()["detail"]["type"] == "invalid_bevel_pair_parameters"
+
+    coarse_response = client.post(f"/document/parts/{part['id']}/bevel-pair-features/coarse-preview", json=payload)
+    assert coarse_response.status_code == 422, coarse_response.json()
+    assert coarse_response.json()["detail"]["type"] == "invalid_bevel_pair_parameters"
+
+
+def test_internal_gear_coarse_preview_nonpositive_outer_diameter_returns_same_422_as_create():
+    """`outer_diameter <= 0` reaches `BRepPrimAPI_MakeCylinder` with a non-
+    positive radius in the coarse path and 500s - the real path's own
+    `_gear_face` rejects it first via its `outer_radius <= dedendum_radius`
+    check (module=2/tooth_count=20 internal: dedendum diameter is 45mm, so
+    any non-positive `outer_diameter` is far below it)."""
+    part = _create_part()
+    payload = {
+        "gear_type": "boss",
+        "is_internal": True,
+        "module": 2.0,
+        "tooth_count": 20,
+        "face_width": 5.0,
+        "outer_diameter": 0.0,
+    }
+
+    create_response = _create_gear(part["id"], is_internal=True, outer_diameter=0.0)
+    assert create_response.status_code == 422, create_response.json()
+    assert create_response.json()["detail"]["type"] == "invalid_gear_parameters"
+
+    coarse_response = client.post(f"/document/parts/{part['id']}/gear-features/coarse-preview", json=payload)
+    assert coarse_response.status_code == 422, coarse_response.json()
+    assert coarse_response.json()["detail"]["type"] == "invalid_gear_parameters"
+
+
+def test_internal_gear_coarse_preview_too_small_outer_diameter_returns_same_422_as_create():
+    """A positive but too-small `outer_diameter` (here 30mm, below the
+    45mm dedendum diameter for module=2/tooth_count=20 internal) used to
+    build a plausible-looking coarse cylinder for a parameter combination
+    the real endpoint rejects outright as "no rim material left" -
+    silently misleading rather than crashing."""
+    part = _create_part()
+    payload = {
+        "gear_type": "boss",
+        "is_internal": True,
+        "module": 2.0,
+        "tooth_count": 20,
+        "face_width": 5.0,
+        "outer_diameter": 30.0,
+    }
+
+    create_response = _create_gear(part["id"], is_internal=True, outer_diameter=30.0)
+    assert create_response.status_code == 422, create_response.json()
+    assert create_response.json()["detail"]["type"] == "invalid_gear_parameters"
+
+    coarse_response = client.post(f"/document/parts/{part['id']}/gear-features/coarse-preview", json=payload)
+    assert coarse_response.status_code == 422, coarse_response.json()
+    assert coarse_response.json()["detail"]["type"] == "invalid_gear_parameters"
+
+
+def test_gear_chain_internal_member_coarse_preview_nonpositive_outer_diameter_returns_same_422_as_create():
+    """The same `outer_diameter <= 0` gap, reached through `gear_chain.py`'s
+    own reuse of `gear.py`'s coarse radius helper for an INTERNAL chain
+    member. An INTERNAL member is only valid as the chain's *last* stage,
+    and must have a strictly larger tooth_count than the meshing external
+    member before it (`_validate_gear_chain_stages`/`gear_chain_math`'s own
+    meshing check) - a 2-stage 20/40-tooth chain clears both of those so
+    the outer_diameter/dedendum_radius check under test is what actually
+    fires."""
+    part = _create_part()
+    groups = [_group("g1", 2.0)]
+    stages = [
+        _stage(_chain_member("external", "g1", 20)),
+        _stage({**_chain_member("internal", "g1", 40), "outer_diameter": 0.0}),
+    ]
+    payload = {"groups": groups, "stages": stages}
+
+    create_response = _create_gear_chain(part["id"], groups, stages)
+    assert create_response.status_code == 422, create_response.json()
+    # The real path's `_build_member_solid` reuses `app.document.gear.
+    # _gear_face` directly for this exact check, so its error `type` is
+    # `gear.py`'s own `invalid_gear_parameters`, not this module's `invalid_
+    # gear_chain_parameters` - the coarse path mirrors that exactly.
+    assert create_response.json()["detail"]["type"] == "invalid_gear_parameters"
+
+    coarse_response = client.post(f"/document/parts/{part['id']}/gear-chain-features/coarse-preview", json=payload)
+    assert coarse_response.status_code == 422, coarse_response.json()
+    assert coarse_response.json()["detail"]["type"] == create_response.json()["detail"]["type"]
+
+
+def test_gear_chain_internal_member_coarse_preview_too_small_outer_diameter_returns_same_422_as_create():
+    """The same too-small-but-positive `outer_diameter` gap, reached
+    through `gear_chain.py`'s own reuse of `gear.py`'s coarse radius
+    helper for an INTERNAL chain member (module=2/tooth_count=40 internal:
+    85mm dedendum diameter, 50mm outer_diameter is below it)."""
+    part = _create_part()
+    groups = [_group("g1", 2.0)]
+    stages = [
+        _stage(_chain_member("external", "g1", 20)),
+        _stage({**_chain_member("internal", "g1", 40), "outer_diameter": 50.0}),
+    ]
+    payload = {"groups": groups, "stages": stages}
+
+    create_response = _create_gear_chain(part["id"], groups, stages)
+    assert create_response.status_code == 422, create_response.json()
+    assert create_response.json()["detail"]["type"] == "invalid_gear_parameters"
+
+    coarse_response = client.post(f"/document/parts/{part['id']}/gear-chain-features/coarse-preview", json=payload)
+    assert coarse_response.status_code == 422, coarse_response.json()
+    assert coarse_response.json()["detail"]["type"] == create_response.json()["detail"]["type"]

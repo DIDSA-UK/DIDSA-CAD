@@ -739,7 +739,22 @@ def coarse_gear_radius_from_geometry(
     of its own to pass."""
     if is_internal:
         assert outer_diameter is not None  # enforced by each caller before this is ever reached
-        return outer_diameter / 2
+        outer_radius = outer_diameter / 2
+        if outer_radius <= geometry.dedendum_radius:
+            # Same "no rim material left" guard `_gear_face` (the real
+            # construction path) already enforces before ever building
+            # anything - `app.document.planetary_gear`'s own coarse ring
+            # builder already re-checks this the same way; this mirrors
+            # that check in here instead, so every other coarse caller
+            # (gear.py's own `coarse_gear_radius`, `gear_chain.py`'s
+            # internal-member coarse path) gets it too rather than each
+            # needing its own copy.
+            raise GearGeometryError(
+                f"outer_diameter ({outer_diameter!r}) must exceed the tooth profile's own outer "
+                f"reach (dedendum diameter {geometry.dedendum_radius * 2!r}) - there is no rim material left "
+                "otherwise"
+            )
+        return outer_radius
     return geometry.addendum_radius
 
 
@@ -770,7 +785,10 @@ def coarse_gear_radius(feature: GearFeature) -> float:
         )
     except GearGeometryError as exc:
         raise _invalid_gear_parameters(str(exc)) from exc
-    return coarse_gear_radius_from_geometry(feature.is_internal, feature.outer_diameter, geometry)
+    try:
+        return coarse_gear_radius_from_geometry(feature.is_internal, feature.outer_diameter, geometry)
+    except GearGeometryError as exc:
+        raise _invalid_gear_parameters(str(exc)) from exc
 
 
 def resolve_gear_coarse_from_bodies(

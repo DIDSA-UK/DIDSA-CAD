@@ -1087,6 +1087,17 @@ def resolve_bevel_pair_from_bodies(
             solid_2_brep, warnings_2 = future_2.result()
         except _MemberBuildFailed as exc:
             raise _bevel_pair_failed(str(exc)) from exc
+        except GearGeometryError as exc:
+            # `_build_member_solid`'s own worker only converts an
+            # `HTTPException` `_assemble_gear_solid` raises into
+            # `_MemberBuildFailed` - a `GearGeometryError` (e.g. the
+            # Tredgold crown-gear guard, `tredgold_base_colatitude`) is a
+            # plain picklable `ValueError` subclass that crosses the
+            # `ProcessPoolExecutor` boundary unchanged, so it lands here
+            # directly instead. A real, pre-existing gap this fix-up pass
+            # found while regression-testing `coarse_bevel_cone_solid`'s
+            # own matching guard - see `docs/status.md`'s follow-up note.
+            raise _invalid_bevel_pair_parameters(str(exc)) from exc
     solid_1 = _shape_from_brep_bytes(solid_1_brep)
     solid_2 = _shape_from_brep_bytes(solid_2_brep)
     warnings.extend(f"member_1: {w}" for w in warnings_1)
@@ -1207,8 +1218,11 @@ def resolve_bevel_pair_coarse_from_bodies(
 
     basis_1 = resolve_plane_ref(part, bodies, feature.plane_ref, excluded_feature_ids)
     basis_2 = _tilted_basis(basis_1, math.radians(feature.shaft_angle_degrees))
-    cone_1 = coarse_bevel_cone_solid(basis_1, geometry_1)
-    cone_2 = coarse_bevel_cone_solid(basis_2, geometry_2)
+    try:
+        cone_1 = coarse_bevel_cone_solid(basis_1, geometry_1)
+        cone_2 = coarse_bevel_cone_solid(basis_2, geometry_2)
+    except GearGeometryError as exc:
+        raise _invalid_bevel_pair_parameters(str(exc)) from exc
 
     compound = TopoDS_Compound()
     builder = BRep_Builder()
