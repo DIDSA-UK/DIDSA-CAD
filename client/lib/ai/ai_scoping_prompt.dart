@@ -40,7 +40,21 @@ schema below - nothing else in that final message.''';
 const String _freshPartNote = '''
 This conversation always builds a brand-new Part. You never modify a Part
 that already exists - there is no "current part" for you to reason about,
-and no way to reference one; every plan starts from nothing.''';
+and no way to reference one; every plan starts from nothing.
+
+This holds even if you already produced one plan earlier in this same
+conversation and the user is now asking for something more (another
+feature, a change, an addition): each plan you emit is still built from
+nothing, completely independent of any Part your previous plan in this
+chat may have created. So if the user's new request builds on what you
+already described, your new plan must re-emit every earlier step (every
+sketch point/line/circle/etc. and every feature) with the exact same
+local_ids and exact same values as your previous plan message in this
+conversation, copied verbatim, then add the new step(s) on top of them -
+never assume an earlier plan's local_ids or Bodies still exist, and never
+re-derive or re-type earlier coordinates/dimensions from memory (that is
+how a second feature ends up subtly misaligned with the first - always
+copy the old plan's own numbers, don't reconstruct them).''';
 
 /// Existing-Part editing (docs/ai-modelling/09-existing-part-editing.md):
 /// swapped in for [_freshPartNote] whenever [buildAiScopingSystemPrompt] is
@@ -212,6 +226,21 @@ revolve, sweep, pattern, mirror, or gear_request - never a sketch or a
 create_plane step. All four selectors are relative to the world/global
 X/Y/Z axes, not a tilted Sketch's own local plane.
 
+These four selectors are the ONLY way to pick edges - there is no way to
+name one single arbitrary edge, and no selector for "some but not all" of
+a face's edges (e.g. just the two long top edges of a rectangular block,
+leaving the two short ones sharp). Each selector always grabs a whole,
+fixed group of edges at once - decide which real-world request maps onto
+which selector, and if the user's request does not cleanly match any of
+the four (they want only some edges of a face, or an edge that only exists
+on a shape more complex than a box, or a shape with more than one "top"),
+this is exactly the kind of scope ambiguity you must ask about rather than
+force-fit the closest selector - do not silently over- or under-fillet by
+picking a selector that fillets more or fewer edges than the user actually
+asked for. When several Body-producing steps exist (e.g. a pattern
+producing several copies), double-check "of" names the specific step the
+user means, not just the most recently defined one.
+
 ## Reference kind-checking
 
 Every reference must point at the right KIND of earlier step, not just any
@@ -347,7 +376,51 @@ Assistant (final message, nothing else in it):
       "module": 2, "tooth_count": 20, "face_width": 10, "pressure_angle": 20 }
   ]
 }
-```''';
+```
+
+Example 4 - a follow-up request in the same conversation, after you already
+emitted a plan and the user pressed Generate:
+
+User: (first turn, as Example 1's block above) "I need a 60x40x10mm
+rectangular block with 5mm fillets on the top edges."
+
+Assistant: (emits the Example 1 JSON plan above)
+
+User (next turn): "Now add a 4mm hole through the middle of the top face."
+
+This is still a brand-new Part from nothing (see "Editing an existing
+Part" above only applies when that section is present in this prompt) -
+your new plan must include everything from the Example 1 plan again,
+values copied verbatim, plus the new hole:
+```json
+{
+  "version": 1,
+  "steps": [
+    { "local_id": "sk1", "kind": "sketch", "plane": "XY" },
+    { "local_id": "p1", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 0, "y": 0 },
+    { "local_id": "p2", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 60, "y": 0 },
+    { "local_id": "p3", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 60, "y": 40 },
+    { "local_id": "p4", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 0, "y": 40 },
+    { "local_id": "r1", "kind": "sketch_rectangle", "sketch_feature_id": "sk1",
+      "corner_point_ids": ["p1", "p2", "p3", "p4"], "width": 60, "height": 40 },
+    { "local_id": "f1", "kind": "extrude", "sketch_feature_id": "sk1",
+      "extrude_type": "boss", "start_distance": 0, "end_distance": 10 },
+    { "local_id": "f2", "kind": "fillet",
+      "edges": { "selector": "top_face_edges", "of": "f1" }, "radius": 5 },
+    { "local_id": "sk2", "kind": "sketch", "plane": "XY" },
+    { "local_id": "hc", "kind": "sketch_point", "sketch_feature_id": "sk2", "x": 30, "y": 20 },
+    { "local_id": "hole1", "kind": "sketch_circle", "sketch_feature_id": "sk2",
+      "center_point_id": "hc", "radius": 2 },
+    { "local_id": "f3", "kind": "extrude", "sketch_feature_id": "sk2",
+      "extrude_type": "cut", "start_distance": 0, "end_distance": 10 }
+  ]
+}
+```
+(the block's rectangle and fillet are repeated exactly as in the first
+turn's plan - same coordinates, same local_ids - because each plan is
+still built from nothing; the hole's centre, 30,20, is the true middle of
+the 60x40 block, re-derived from the same numbers already used above, not
+a fresh guess)''';
 
 /// Locked: `ai_plan_detection.dart`'s `detectPlanInAssistantText` depends
 /// structurally on the model actually honouring this instruction - never
