@@ -1633,6 +1633,156 @@ def compute_part_bodies(
     return body_cache.compute_with_cache(part.id, order, features_by_id, _apply_step)
 
 
+def compute_part_bodies_coarse(
+    part: Part, excluded_feature_ids: frozenset[str] = frozenset()
+) -> dict[str, TopoDS_Shape]:
+    """`docs/lod-strategy/01-design.md` SS4: `compute_part_bodies`'s coarse
+    counterpart, for `app.document.router`'s `tier=coarse` mesh query and
+    coarse-preview endpoints. Identical topological walk over `part.
+    features`, but a Gear/BevelGear/BevelPair/GearChain/PlanetaryGear
+    Feature's own contribution is built via its coarse resolver (a cheap
+    real-OCCT primitive - see each of those modules' own "Coarse (LOD)
+    construction" section) instead of its real `resolve_X_from_bodies`
+    construction; every other Feature type (Extrude, Loft, Pattern,
+    Boolean, ...) is resolved exactly as `_apply_feature_to_bodies` already
+    would - those have no coarse builder of their own yet (`01-design.md`
+    SS8's chunks 3/4 add Pattern/Loft later), so there is nothing to
+    substitute for them here, and their own real cost is unchanged by this
+    function's existence (this chunk only ever makes the gear-family
+    Features above cheaper, never anything else more expensive).
+
+    A brand-new function, not a modified `_apply_feature_to_bodies` -
+    `compute_part_bodies`'s own real code path (and every one of its
+    existing callers) is completely untouched by this addition.
+
+    Deliberately uncached - `app.document.body_cache`'s checkpoint chain is
+    never consulted or written here (same reasoning `compute_part_bodies`'s
+    own non-empty-`excluded_feature_ids` branch already uses to skip it: a
+    coarse result is a temporary, per-call rendering artifact, not the
+    Part's own real current state, and must never leak into - or be
+    poisoned by - the real cache a later real `compute_part_bodies` call
+    reads back). Coarse geometry computed here is never persisted and never
+    registered against any Feature's own graph state - purely a return
+    value for the caller to tessellate and discard."""
+    from app.document.bevel import resolve_bevel_gear_coarse_from_bodies
+    from app.document.bevel_pair import resolve_bevel_pair_coarse_from_bodies
+    from app.document.gear import resolve_gear_coarse_from_bodies
+    from app.document.gear_chain import resolve_gear_chain_coarse_from_bodies
+    from app.document.planetary_gear import resolve_planetary_coarse_from_bodies
+
+    feature_index = {feature.id: i for i, feature in enumerate(part.features)}
+    order = topological_order(build_feature_graph(part))
+    bodies: dict[str, TopoDS_Shape] = {}
+    for feature_id in order:
+        feature = part.get_feature(feature_id)
+        if feature.id in excluded_feature_ids:
+            continue
+
+        if isinstance(feature, GearFeature):
+            try:
+                solid = resolve_gear_coarse_from_bodies(feature, part, bodies, excluded_feature_ids)
+            except HTTPException as exc:
+                if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
+                    "invalid_gear_parameters",
+                    "gear_failed",
+                ):
+                    raise
+                logger.warning("Skipping coarse GearFeature %s: could not be resolved", feature.id)
+                continue
+            _apply_boss_or_cut(
+                bodies, feature.id, feature_index, feature.gear_type == GearType.CUT, feature.target_body_ids, solid
+            )
+            continue
+
+        if isinstance(feature, BevelGearFeature):
+            try:
+                solid = resolve_bevel_gear_coarse_from_bodies(feature, part, bodies, excluded_feature_ids)
+            except HTTPException as exc:
+                if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
+                    "invalid_bevel_parameters",
+                    "bevel_failed",
+                ):
+                    raise
+                logger.warning("Skipping coarse BevelGearFeature %s: could not be resolved", feature.id)
+                continue
+            _apply_boss_or_cut(
+                bodies,
+                feature.id,
+                feature_index,
+                feature.bevel_type == BevelGearType.CUT,
+                feature.target_body_ids,
+                solid,
+            )
+            continue
+
+        if isinstance(feature, BevelPairFeature):
+            try:
+                shape = resolve_bevel_pair_coarse_from_bodies(feature, part, bodies, excluded_feature_ids)
+            except HTTPException as exc:
+                if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
+                    "invalid_bevel_pair_parameters",
+                    "bevel_failed",
+                ):
+                    raise
+                logger.warning("Skipping coarse BevelPairFeature %s: could not be resolved", feature.id)
+                continue
+            _register_solids(bodies, feature.id, shape)
+            continue
+
+        if isinstance(feature, GearChainFeature):
+            try:
+                shape = resolve_gear_chain_coarse_from_bodies(feature, part, bodies, excluded_feature_ids)
+            except HTTPException as exc:
+                if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
+                    "invalid_gear_chain_parameters",
+                    "gear_chain_compound_join_failed",
+                    "gear_chain_failed",
+                    "invalid_gear_parameters",
+                    "gear_failed",
+                    "invalid_rack_parameters",
+                    "rack_failed",
+                ):
+                    raise
+                logger.warning("Skipping coarse GearChainFeature %s: could not be resolved", feature.id)
+                continue
+            _register_solids(bodies, feature.id, shape)
+            continue
+
+        if isinstance(feature, PlanetaryGearFeature):
+            try:
+                shape = resolve_planetary_coarse_from_bodies(feature, part, bodies, excluded_feature_ids)
+            except HTTPException as exc:
+                if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
+                    "invalid_planetary_parameters",
+                    "invalid_gear_parameters",
+                    "gear_failed",
+                ):
+                    raise
+                logger.warning("Skipping coarse PlanetaryGearFeature %s: could not be resolved", feature.id)
+                continue
+            _register_solids(bodies, feature.id, shape)
+            continue
+
+        _apply_feature_to_bodies(feature, part, bodies, feature_index, excluded_feature_ids)
+
+    return bodies
+
+
+def coarse_eligible_feature_ids(part: Part) -> frozenset[str]:
+    """Every Feature id in `part` that `compute_part_bodies_coarse` above
+    builds via a coarse resolver rather than real construction -
+    `app.document.router`'s `tier=coarse` mesh query uses this to filter
+    its response down to just the Bodies a coarse-eligible Feature
+    produced (`docs/lod-strategy/01-design.md` SS4: "for any Body whose
+    producing Feature is coarse-eligible"), leaving every other Body's
+    entry out rather than re-serving it unchanged."""
+    return frozenset(
+        feature.id
+        for feature in part.features
+        if isinstance(feature, (GearFeature, BevelGearFeature, BevelPairFeature, GearChainFeature, PlanetaryGearFeature))
+    )
+
+
 _TOPABS_FOR_SUBSHAPE_TYPE = {
     SubShapeType.EDGE: TopAbs_EDGE,
     SubShapeType.FACE: TopAbs_FACE,

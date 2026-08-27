@@ -45,7 +45,7 @@ from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape
 
 from app.document.create_plane import resolve_plane_ref
 from app.document.extrude import _explode_solids, basis_normal, compute_part_bodies
-from app.document.gear import _gear_face, _gear_outline_wire
+from app.document.gear import _gear_face, _gear_outline_wire, coarse_gear_radius_from_geometry, coarse_gear_solid
 from app.document.gear_chain_math import (
     ChainMemberKind,
     ChainMemberSpec,
@@ -430,3 +430,133 @@ def resolve_gear_chain(
     all_excluded = excluded_feature_ids | {feature.id}
     bodies = compute_part_bodies(part, all_excluded)
     return resolve_gear_chain_from_bodies(feature, part, bodies, all_excluded)
+
+
+# ---------------------------------------------------------------------------
+# Coarse (LOD) construction - `docs/lod-strategy/01-design.md` SS3: reuses
+# `app.document.gear`'s own coarse cylinder builder for each EXTERNAL/
+# INTERNAL member, positioned via the exact same stage/orbit math
+# (`gear_chain_math.resolve_chain`, `_positioned_basis`, `_member_phase`)
+# `resolve_gear_chain_from_bodies` uses - real tooth construction is never
+# built for any member. A RACK member reuses its own already-cheap real
+# solid unchanged (per Finding 2's own structural survey: a rack's
+# construction is rigid-transform-only, not the expensive part of this
+# Feature type, so there is nothing to coarsen there). Never runs the real
+# function's own compound-merge fuse/volume-loss check - places every
+# compound stage's two members side by side in the compound unfused,
+# always (mirroring `01-design.md` SS3's own `PatternFeature` row: "skip
+# the fuse chain... still real solids, just not booleaned together" - the
+# same simplification, applied here to a compound gear-chain stage's own
+# always-real-but-unfused member pair). **Never persisted, never enters the
+# Feature graph** - see `app.document.gear`'s own matching section for the
+# full invariant.
+
+
+def _build_member_solid_coarse(basis: ResolvedPlane, member: GearChainMemberSpec, group: GearGroup) -> TopoDS_Shape:
+    """`_build_member_solid`'s coarse counterpart - a plain cylinder for
+    EXTERNAL/INTERNAL (`app.document.gear.coarse_gear_solid`/`coarse_gear_
+    radius_from_geometry`), the real rack solid unchanged for RACK (already
+    cheap - see this section's own top-level docstring)."""
+    if member.member_type == GearChainMemberType.RACK:
+        return _build_member_solid(basis, member, group)
+
+    is_internal = member.member_type == GearChainMemberType.INTERNAL
+    try:
+        geometry = spur_gear_geometry(
+            module=group.module,
+            tooth_count=member.tooth_count,
+            pressure_angle_degrees=group.pressure_angle_degrees,
+            is_internal=is_internal,
+        )
+    except GearGeometryError as exc:
+        raise _invalid_gear_chain_parameters(str(exc)) from exc
+    if is_internal and member.outer_diameter is None:
+        raise _invalid_gear_chain_parameters("outer_diameter is required for an internal chain member")
+    radius = coarse_gear_radius_from_geometry(is_internal, member.outer_diameter, geometry)
+    return coarse_gear_solid(basis, radius, member.face_width)
+
+
+def resolve_gear_chain_coarse_from_bodies(
+    feature: GearChainFeature,
+    part: Part,
+    bodies: dict[str, TopoDS_Shape],
+    excluded_feature_ids: frozenset[str],
+) -> TopoDS_Shape:
+    """The coarse stand-in for one `GearChainFeature` - every stage's own
+    member(s), positioned identically to `resolve_gear_chain_from_bodies`
+    (same `resolve_chain`/`_positioned_basis`/`_member_phase` calls - cheap
+    pure-Python math, unaffected by this function's own coarse/full
+    choice), but built via `_build_member_solid_coarse` and assembled with
+    no compound-merge fuse step at all (see this section's own top-level
+    docstring)."""
+    groups = {g.id: g for g in feature.groups}
+    _validate_group_adjacency(feature)
+    stage_specs = _build_stage_specs(feature, groups)
+    try:
+        resolved_chain: ResolvedGearChain = resolve_chain(
+            stage_specs, feature.start_direction_degrees, feature.print_clearance_margin
+        )
+    except GearGeometryError as exc:
+        raise _invalid_gear_chain_parameters(str(exc)) from exc
+
+    chain_basis = resolve_plane_ref(part, bodies, feature.plane_ref, excluded_feature_ids)
+
+    stage_shapes: list[TopoDS_Shape] = []
+    prev_state: _PhaseState | None = None
+    for i, stage in enumerate(feature.stages):
+        resolved_stage = resolved_chain.stages[i]
+        x, y = resolved_stage.center
+
+        if stage.is_compound:
+            group_a = groups[stage.compound_member_a.group_id]
+            group_b = groups[stage.compound_member_b.group_id]
+            rotation_a = _member_phase(stage.compound_member_a, group_a, prev_state, resolved_stage.incoming_direction)
+            prev_state = (
+                ChainMemberKind(stage.compound_member_b.member_type.value),
+                group_b.module * stage.compound_member_b.tooth_count / 2,
+                0.0,
+            )
+            basis_a = _positioned_basis(chain_basis, x, y, z=0.0, rotation=rotation_a)
+            basis_b = _positioned_basis(chain_basis, x, y, z=stage.compound_axial_offset)
+            solid_a = _build_member_solid_coarse(basis_a, stage.compound_member_a, group_a)
+            solid_b = _build_member_solid_coarse(basis_b, stage.compound_member_b, group_b)
+            compound = TopoDS_Compound()
+            builder = BRep_Builder()
+            builder.MakeCompound(compound)
+            builder.Add(compound, solid_a)
+            builder.Add(compound, solid_b)
+            stage_shapes.append(compound)
+        else:
+            group = groups[stage.member.group_id]
+            phase = _member_phase(stage.member, group, prev_state, resolved_stage.incoming_direction)
+            is_rack = stage.member.member_type == GearChainMemberType.RACK
+            if is_rack:
+                rotation = _rack_rotation(resolved_stage, math.radians(feature.start_direction_degrees))
+                shift = phase
+            else:
+                rotation = phase
+                shift = 0.0
+            radius = None if is_rack else group.module * stage.member.tooth_count / 2
+            prev_state = (ChainMemberKind(stage.member.member_type.value), radius, phase)
+            shifted_x = x + shift * math.cos(rotation)
+            shifted_y = y + shift * math.sin(rotation)
+            basis = _positioned_basis(chain_basis, shifted_x, shifted_y, rotation=rotation)
+            stage_shapes.append(_build_member_solid_coarse(basis, stage.member, group))
+
+    whole_chain = TopoDS_Compound()
+    builder = BRep_Builder()
+    builder.MakeCompound(whole_chain)
+    for shape in stage_shapes:
+        builder.Add(whole_chain, shape)
+    return whole_chain
+
+
+def resolve_gear_chain_coarse(
+    part: Part, feature: GearChainFeature, excluded_feature_ids: frozenset[str] = frozenset()
+) -> TopoDS_Shape:
+    """Fresh entry point for a not-yet-created `GearChainFeature` payload
+    (the coarse-preview endpoint) or for `tier=coarse` mesh serving -
+    mirrors `resolve_gear_chain`'s own self-exclusion convention exactly."""
+    all_excluded = excluded_feature_ids | {feature.id}
+    bodies = compute_part_bodies(part, all_excluded)
+    return resolve_gear_chain_coarse_from_bodies(feature, part, bodies, all_excluded)

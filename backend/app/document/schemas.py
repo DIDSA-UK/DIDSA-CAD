@@ -1904,10 +1904,19 @@ class BodyMeshResponse(BaseModel):
     bodies` output), so the client needs this to keep a Surface out of the
     Build Tree's Bodies section (and the viewport's own body-selection
     lists), showing it only under Surfaces instead. `False` for every solid
-    Body and for `source="placeholder"`."""
+    Body and for `source="placeholder"`.
+
+    `source="coarse"` (`docs/lod-strategy/01-design.md`) is a real but
+    deliberately low-fidelity OCCT solid - a plain cylinder/cone standing in
+    for a Gear/BevelGear/BevelPair/GearChain/PlanetaryGear Feature's own
+    full construction - returned only when `GET /mesh`'s own `tier=coarse`
+    query parameter is set, or by a coarse-preview endpoint for a not-yet-
+    created Feature payload. Never persisted, never an input to any
+    Boolean/Boss/Cut resolution - purely a rendering-layer stand-in for the
+    real geometry `source="computed"` always represents."""
 
     body_id: str
-    source: Literal["placeholder", "computed"]
+    source: Literal["placeholder", "computed", "coarse"]
     mesh: MeshVertexData
     hidden: bool = False
     is_surface: bool = False

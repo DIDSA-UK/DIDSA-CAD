@@ -82,7 +82,7 @@ from OCC.Core.BRepGProp import brepgprop
 from OCC.Core.BRepLib import breplib
 from OCC.Core.BRepMesh import BRepMesh_IncrementalMesh
 from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_ThruSections
-from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakeSphere
+from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeCone, BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakeSphere
 from OCC.Core.BRepTools import breptools
 from OCC.Core.Geom import Geom_SphericalSurface
 from OCC.Core.Geom2d import Geom2d_Line
@@ -1340,3 +1340,76 @@ def resolve_bevel_gear(
     mirrors `app.document.gear.resolve_gear`'s exact shape."""
     bodies = compute_part_bodies(part, excluded_feature_ids | {feature.id})
     return resolve_bevel_gear_from_bodies(feature, part, bodies, excluded_feature_ids | {feature.id})
+
+
+# ---------------------------------------------------------------------------
+# Coarse (LOD) construction - `docs/lod-strategy/01-design.md` SS3: a single
+# `BRepPrimAPI_MakeCone` sized from this gear's own pitch cone geometry,
+# standing in for the real `4N + 2`-face sewn-shell solid above. **Never
+# persisted, never enters the Feature graph** - see `app.document.gear`'s
+# own matching section for the full invariant this and every other coarse
+# builder in this codebase keeps.
+
+
+def coarse_bevel_cone_solid(basis: ResolvedPlane, geometry: BevelGearGeometry) -> TopoDS_Shape:
+    """The coarse stand-in itself: one plain cone, apex at `basis`'s own
+    origin (the real construction's own local-frame convention - see this
+    module's own top-level "Local-frame helpers" section), opening along
+    `basis`'s normal out to the outer (back-cone) face. `axial_height` is
+    the outer face's distance from the apex *along the axis* (`cone_
+    distance` is the *slant* distance - `cone_distance * cos(pitch_cone_
+    angle)` projects it onto the axis, the standard right-triangle relation
+    the same `pitch_radius = cone_distance * sin(pitch_cone_angle)` identity
+    `bevel_math.bevel_gear_geometry`'s own docstring already relies on).
+    `outer_radius` is the standard "outside diameter / 2" approximation
+    (`pitch_radius + addendum * cos(pitch_cone_angle)`, the same closed-form
+    bevel-gear-handbook estimate for a back-cone addendum circle) - close
+    enough for a deliberately low-fidelity stand-in, not meant to match the
+    real tooth tip circle exactly. Shared by `app.document.bevel_pair`'s own
+    coarse builder (one cone per member), mirroring `_assemble_gear_solid`'s
+    own reuse there."""
+    axial_height = geometry.cone_distance * math.cos(geometry.pitch_cone_angle)
+    outer_radius = geometry.pitch_radius + geometry.addendum * math.cos(geometry.pitch_cone_angle)
+    axis = gp_Ax2(_basis_point3_to_world(basis, 0.0, 0.0, 0.0), basis_normal(basis))
+    return BRepPrimAPI_MakeCone(axis, 0.0, outer_radius, axial_height).Shape()
+
+
+def resolve_bevel_gear_coarse_from_bodies(
+    feature: BevelGearFeature,
+    part: Part,
+    bodies: dict[str, TopoDS_Shape],
+    excluded_feature_ids: frozenset[str],
+) -> TopoDS_Shape:
+    """The coarse stand-in for one `BevelGearFeature`, positioned exactly
+    like `resolve_bevel_gear_from_bodies`'s own real solid (same `resolve_
+    plane_ref`/`bevel_gear_geometry` calls - cheap pure-Python math only,
+    no OCCT construction beyond the final cone) but built from `coarse_
+    bevel_cone_solid` instead of the real sewn-shell assembly."""
+    if feature.points_per_flank < 2:
+        raise _invalid_bevel_parameters(f"points_per_flank must be >= 2, got {feature.points_per_flank!r}")
+    try:
+        geometry = bevel_gear_geometry(
+            module=feature.module,
+            tooth_count=feature.tooth_count,
+            face_width=feature.face_width,
+            pressure_angle_degrees=feature.pressure_angle_degrees,
+            backlash=feature.backlash,
+            profile_shift=feature.profile_shift,
+            pitch_cone_angle_degrees=feature.pitch_cone_angle_degrees,
+        )
+    except GearGeometryError as exc:
+        raise _invalid_bevel_parameters(str(exc)) from exc
+    if feature.face_width <= 0:
+        raise _invalid_bevel_parameters(f"face_width must be positive, got {feature.face_width!r}")
+    basis = resolve_plane_ref(part, bodies, feature.plane_ref, excluded_feature_ids)
+    return coarse_bevel_cone_solid(basis, geometry)
+
+
+def resolve_bevel_gear_coarse(
+    part: Part, feature: BevelGearFeature, excluded_feature_ids: frozenset[str] = frozenset()
+) -> TopoDS_Shape:
+    """Fresh entry point for a not-yet-created `BevelGearFeature` payload
+    (the coarse-preview endpoint) or for `tier=coarse` mesh serving -
+    mirrors `resolve_bevel_gear`'s own self-exclusion convention exactly."""
+    bodies = compute_part_bodies(part, excluded_feature_ids | {feature.id})
+    return resolve_bevel_gear_coarse_from_bodies(feature, part, bodies, excluded_feature_ids | {feature.id})
