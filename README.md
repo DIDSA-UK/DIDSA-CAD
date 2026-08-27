@@ -1,3 +1,5 @@
+![Image Alt Text](path/to/image.png)
+
 # DIDSA-CAD
 
 Self-hosted, containerized parametric CAD tool built on the OpenCascade (OCCT) geometry kernel. See [docs/project-brief.md](docs/project-brief.md) for full architecture and roadmap.
