@@ -29,7 +29,7 @@ doc and any design-doc content — no implementation).
 | Phase 0 investigation | complete | — | see findings 1-4 below |
 | Design doc (Phase 1) | approved | `01-design.md` | user approved 2026-08-27; also approved building Phase 2 (real cancellation/disconnect-resilience) as a separate, sequenced follow-on — see below |
 | Phase 1 chunk 1 (body_cache GET-list fix) | user starting manually | branch `claude/lod-body-cache-get-features-fix` (base: `main`) | Two coordinator-dispatched attempts (`session_014YYzi8osL7CMzoASk27h7R`, then respawn `session_01YRJvRKaSw8sAKZgFiPdi7B`) both errored out generically within seconds, no commits pushed either time — archived. Prompt handed to the user as a file 2026-08-27; they're starting the session directly, likely a platform/environment hiccup with two heavy `create_session` calls back-to-back rather than a prompt problem (the earlier solo OCCT-profiling dispatch in the same environment completed fine) |
-| Phase 1 chunk 2 (coarse-mesh mechanism + gear-family builders) | user starting manually | branch `claude/lod-coarse-mesh-gear-family` (base: `main`) | Coordinator-dispatched attempt (`session_01TumNhrECsEJggwMUcRK5LX`) errored out generically with no commits pushed — archived. Prompt handed to the user as a file 2026-08-27; foundational — chunks 3/4/5 depend on this merging first |
+| Phase 1 chunk 2 (coarse-mesh mechanism + gear-family builders) | **complete, pushed** | branch `claude/lod-coarse-mesh-gear-family` (base: `main`) | User-dispatched retry (after the coordinator-dispatched `session_01TumNhrECsEJggwMUcRK5LX` errored out generically with no commits) completed for real — coarse builders for Gear/BevelGear/BevelPair/GearChain/PlanetaryGear, `tier=coarse` on `GET /mesh`, 5 new coarse-preview endpoints, `source="coarse"` schema addition. Full suite 1882/1882 passed (1870 baseline + 12 new). Foundational — chunks 3/4/5 can now build on this endpoint/schema plumbing once it merges. See `docs/status.md`'s 2026-08-27 entry for full detail |
 | Phase 1 chunk 3 (Pattern coarse builder) | not yet dispatched | — | blocked on chunk 2 merging |
 | Phase 1 chunk 4 (Loft coarse builder) | not yet dispatched | — | blocked on chunk 2 merging |
 | Phase 1 chunk 5 (client) | not yet dispatched | — | blocked on chunk 2 merging |
@@ -282,5 +282,50 @@ exists. No other open, user-must-decide product question was found.
 
 ## Dispatched implementation sessions
 
-*(none yet — populated after plan approval, per session: branch, PR link, scope, state,
-verification status)*
+### Phase 1 chunk 2 — coarse-mesh mechanism + gear-family coarse builders
+
+- **Branch**: `claude/lod-coarse-mesh-gear-family` (base: `main`). Pushed, not yet merged/PR'd.
+- **Scope**: the full `01-design.md` §8 item 2 — coarse builders for `GearFeature`,
+  `BevelGearFeature`, `BevelPairFeature`, `GearChainFeature`, `PlanetaryGearFeature` (one real
+  `BRepPrimAPI_MakeCylinder`/`MakeCone` each, positioned via each Feature type's own real
+  positioning math, never the real tooth construction); a new `app.document.extrude.
+  compute_part_bodies_coarse`/`coarse_eligible_feature_ids` serving mechanism (a brand-new
+  function, `compute_part_bodies`'s own real code path untouched); a new `tier=coarse` query
+  parameter on `GET /parts/{id}/mesh`; five new `POST /parts/{id}/{route}/coarse-preview`
+  endpoints (the 3D analogue of `/gear/preview` for a not-yet-created Feature payload); a new
+  `source="coarse"` value on `BodyMeshResponse`.
+- **Invariant honored, checked directly**: coarse geometry is never persisted and never enters
+  the Feature graph — every coarse-preview endpoint's own test asserts `GET /parts/{id}/features`
+  stays empty afterward; `compute_part_bodies_coarse` is deliberately never cached via `body_
+  cache`, so it can never leak into the real checkpoint chain a later real `compute_part_bodies`
+  call reads back.
+- **Verification, real throughout**: bootstrapped a real `pythonocc-core` conda env this session
+  (Miniconda + `conda env create -f backend/environment.yml`, `micro.mamba.pm` blocked — same
+  `repo.anaconda.com` fallback the 2026-08-07/2026-08-21/2026-08-26 entries in `docs/status.md`
+  already used). Real baseline: 1870 passed before any change. New `backend/tests/
+  test_lod_coarse_mesh.py` (12 tests): one coarse-builder + one coarse-preview test per Feature
+  type, plus a cross-cutting test confirming `tier=coarse` excludes an ordinary Extrude Body
+  alongside a Gear in the same Part. Every pre-existing gear-family test file re-run in full:
+  170/170 passed (confirms the existing full-fidelity code paths are genuinely untouched). Full
+  suite after all changes: 1882/1882 passed, zero regressions.
+- **What chunks 3/4/5 can now build on**: `compute_part_bodies_coarse`/`coarse_eligible_
+  feature_ids` (extend the isinstance dispatch inside `compute_part_bodies_coarse` with a
+  Pattern/Loft branch once each has its own coarse resolver — no other change needed there);
+  the `tier=coarse` query parameter and `source="coarse"` schema value (already generic, not
+  gear-family-specific); the `POST .../coarse-preview` endpoint pattern (mirror `create_*`'s
+  own validate-then-build shape, call the coarse resolver instead, never call `part.add_
+  feature`) for Pattern/Loft's own not-yet-created-Feature preview case; chunk 5's client work
+  can wire against the gear-family coverage this chunk already provides and extend to Pattern/
+  Loft once chunks 3/4 land.
+- **Known limitation, documented in the `tier=coarse` endpoint's own docstring rather than left
+  implicit**: a Gear/BevelGear Feature bossed/cut into an already-existing Body (non-empty
+  `target_body_ids`) inherits that Body's own id (`_apply_boss_or_cut`'s survivor-id tie-break),
+  so `coarse_eligible_feature_ids`'s `base_feature_id` lookup attributes it to the earlier
+  Feature instead of the Gear/BevelGear itself — a pre-existing ambiguity in this app's own
+  Body-identity model (an Extrude Boss fused onto another Extrude has the identical ambiguity
+  today), not something LOD introduces or needs to fix; the common case (a gear/bevel gear that
+  mints its own standalone Body) is unaffected.
+- **Not done this session** (explicitly out of scope): `PatternFeature`/`LoftFeature` coarse
+  builders (chunks 3/4); any Flutter/client changes (chunk 5); the `body_cache` GET-list bypass
+  bug (chunk 1, a separate parallel session); any async/background-job infrastructure
+  (deliberately not needed per the design).
