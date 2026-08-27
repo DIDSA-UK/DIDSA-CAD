@@ -4,6 +4,7 @@ from collections import OrderedDict
 from fastapi import HTTPException
 
 from app.document import body_cache
+from app.document.extrude import clear_feature_warnings_cache
 from app.document.models import Document, Part, SketchFeature
 from app.session_context import get_current_session_id
 
@@ -60,13 +61,21 @@ def replace_document(document: Document) -> None:
     so clearing it globally rather than per-session is harmless - it just
     means an import in one session can force a cache rebuild for another
     session's unrelated Part in the vanishingly unlikely event of a uuid4
-    collision."""
+    collision.
+
+    LOD investigation §6: also clears `app.document.extrude.
+    clear_feature_warnings_cache` - the sibling per-Feature `warnings` cache
+    a plain `GET /features` re-read now reads from instead of recomputing
+    live (see that module's own `_feature_warnings_cache` docstring) - for
+    the identical stale-uuid4-reuse reason, kept in sync with `body_cache`
+    by being cleared at this exact same call site."""
     session_id = get_current_session_id()
     with _lock:
         _documents[session_id] = document
         _documents.move_to_end(session_id)
         _evict_oldest_locked()
     body_cache.clear()
+    clear_feature_warnings_cache()
 
 
 def _evict_oldest_locked() -> None:
