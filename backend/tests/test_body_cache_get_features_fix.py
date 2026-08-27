@@ -19,6 +19,36 @@ own "drive the real router/`compute_part_bodies`, not a synthetic
 `apply_step`" choice, but deliberately uses the cheapest possible Feature
 configuration of each type (a small straight-tooth gear, a straight
 2-section loft) - the call COUNT is what's under test here, not build cost.
+
+Code-review follow-up (same branch, after `9da90f8`): the fix above traded
+one bug for another - routing the read path through `compute_part_bodies
+(part)` with no `try`/`except` of its own dropped the pre-existing "a
+since-broken Feature is still shown, not one whose failure takes down the
+whole feature list" resilience the old `resolve_gear`/`resolve_loft`/etc
+call had (that call was *also* a whole-Part build, just with this Feature's
+own id excluded, wrapped in a blanket `except HTTPException: warnings =
+[]`). `compute_part_bodies(part)` processes every Feature in the Part, not
+just the one whose response is currently being built, so a totally
+unrelated Feature elsewhere that can no longer be resolved took the
+*entire* `GET /parts/{id}/features` response down with it (whatever error
+that unrelated Feature's own resolution raises - a 422 `missing_reference`,
+confirmed below - propagating straight out as the *list* endpoint's own
+response) instead of just losing its own row's warnings. `_gear_feature_response`/
+`_bevel_gear_feature_response`/`_bevel_pair_feature_response`/
+`_loft_feature_response`/`_gear_chain_feature_response` in `app.document.
+router` now re-wrap their own `compute_part_bodies(part)` call in the same
+`except HTTPException: warnings = []` fallback.
+`test_get_features_survives_a_since_broken_unrelated_feature_elsewhere_in_
+the_part` below proves it, built without any B4 rollback/hide trick
+(`test_bugfix_hide_vs_rollback_exclusion.py`'s own scenario relies on
+`rollback_excluded_feature_ids`, which the plain `GET .../features` path
+never sets) and without deleting any Feature (`delete_feature` refuses to
+remove one a later Feature depends on) - a custom Plane anchored to a Line
+in a plain Sketch, with a second Sketch+Extrude anchored to that Plane;
+deleting the Line via the standalone `/sketch` API (which knows nothing
+about the Feature graph, so never checks for a dependent CreatePlaneFeature)
+makes the Plane's own reference dangle from then on, on every ordinary
+`compute_part_bodies(part)` call.
 """
 
 import app.document.gear as gear_module
@@ -185,6 +215,144 @@ def test_get_features_repeated_call_does_not_recompute_an_unchanged_loft(monkeyp
         "of an unchanged Part should be served entirely from the cache"
     )
     assert first.json() == second.json()
+
+
+# --- Code-review follow-up: a since-broken unrelated Feature must not take -
+# --- the whole `GET /features` response down with it -----------------------
+
+
+def _create_gear_with_undercut_warning(part_id: str) -> dict:
+    """A cheap straight-tooth external Gear guaranteed to carry a real,
+    non-empty `warnings` entry - `app.document.gear_math.undercut_warning`
+    - without needing an expensive helical/herringbone build: an explicit
+    `profile_shift=0.0` (rather than the default `None`/auto) at
+    `tooth_count=8` sits well below `minimum_tooth_count_without_undercut`'s
+    own ~17-tooth threshold at the default 20-degree pressure angle, and
+    `resolve_gear_from_bodies`'s own "explicit profile_shift always wins"
+    rule means auto-resolution never clears it back to `None`/[]."""
+    response = client.post(
+        f"/document/parts/{part_id}/gear-features",
+        json={
+            "gear_type": "boss",
+            "is_internal": False,
+            "module": 2.0,
+            "tooth_count": 8,
+            "face_width": 5.0,
+            "profile_shift": 0.0,
+        },
+    )
+    assert response.status_code == 201, response.json()
+    return response.json()
+
+
+def test_get_features_survives_a_since_broken_unrelated_feature_elsewhere_in_the_part():
+    """The literal reproduction of the code-review-found regression: a Gear
+    that would normally carry `warnings`, alongside a completely separate,
+    genuinely broken Feature chain - `GET /parts/{id}/features` must still
+    return 200 and still render every Feature's row, the Gear's included,
+    exactly like the pre-`9da90f8` code always did.
+
+    The broken chain needs no B4 rollback/hide trick and no Feature
+    deletion (`delete_feature` refuses to remove a Feature a later one
+    depends on, and every Feature-creation endpoint here eagerly validates
+    its own references at creation time - there is no way to *create* a
+    Feature naming an already-dangling reference). Instead: a custom
+    `normal_to_line_at_point` Plane anchored to a Line in a plain Sketch,
+    with a second Sketch+Extrude anchored to that Plane. Once both exist,
+    the Line is deleted via the standalone `/sketch` API (`DELETE /sketch/
+    sketches/{sketch_id}/lines/{line_id}`) - a lower-level API that knows
+    nothing about the Feature graph and so never checks whether any
+    CreatePlaneFeature still references the Line, exactly the "topology
+    drift after the fact" this codebase's own resilience conventions
+    (Fillet/Chamfer/Revolve/Sweep/CreatePlaneFeature's own response) are
+    built to tolerate. From that point on, `resolve_sketch_entity` fails
+    closed with a structured `missing_reference` (`app.document.plane_
+    geometry.resolve_normal_to_line_at_point`), on every ordinary
+    `compute_part_bodies(part)` call - not just a B4 preview - and the
+    Extrude built on the now-broken Plane re-raises it (`ExtrudeFeature`'s
+    own branch in `app.document.extrude._apply_feature_to_bodies` only
+    tolerates `invalid_profile_ref`, not `missing_reference` - see that
+    branch's own comment)."""
+    part = _create_part()
+
+    # A totally independent Gear, nowhere near the broken chain below.
+    gear = _create_gear_with_undercut_warning(part["id"])
+    sanity = client.get(f"/document/parts/{part['id']}/features")
+    assert sanity.status_code == 200, sanity.json()
+    sanity_gear_row = next(f for f in sanity.json() if f["id"] == gear["id"])
+    assert sanity_gear_row["warnings"], "test setup expectation broken: the Gear should already carry a warning"
+
+    anchor_sketch = client.post(f"/document/parts/{part['id']}/features/sketch", json={"plane": "XY"})
+    assert anchor_sketch.status_code == 201, anchor_sketch.json()
+    anchor_sketch = anchor_sketch.json()
+    anchor_sketch_id = anchor_sketch["sketch_id"]
+    start_point = _add_point(anchor_sketch_id, 0.0, 0.0)
+    end_point = _add_point(anchor_sketch_id, 10.0, 0.0)
+    line = _add_line(anchor_sketch_id, start_point["id"], end_point["id"])
+
+    broken_plane = client.post(
+        f"/document/parts/{part['id']}/create-plane-features",
+        json={
+            "plane_type": "normal_to_line_at_point",
+            "line_ref": {"sketch_id": anchor_sketch_id, "entity_type": "line", "entity_id": line["id"]},
+            "point_ref": {"sketch_id": anchor_sketch_id, "entity_type": "point", "entity_id": start_point["id"]},
+        },
+    )
+    assert broken_plane.status_code == 201, broken_plane.json()
+    broken_plane = broken_plane.json()
+
+    sketch_on_broken_plane = client.post(
+        f"/document/parts/{part['id']}/features/sketch",
+        json={"plane_feature_id": broken_plane["id"]},
+    )
+    assert sketch_on_broken_plane.status_code == 201, sketch_on_broken_plane.json()
+    sketch_on_broken_plane = sketch_on_broken_plane.json()
+    _add_polygon(sketch_on_broken_plane["sketch_id"], [(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)])
+    extrude_on_broken_plane = client.post(
+        f"/document/parts/{part['id']}/extrude-features",
+        json={
+            "sketch_feature_id": sketch_on_broken_plane["id"],
+            "extrude_type": "boss",
+            "start_distance": 0.0,
+            "end_distance": 1.0,
+            "target_body_ids": [],
+        },
+    )
+    assert extrude_on_broken_plane.status_code == 201, extrude_on_broken_plane.json()
+    extrude_on_broken_plane = extrude_on_broken_plane.json()
+
+    # *Now* break it - the Feature graph itself has no idea this just
+    # happened.
+    delete_line_response = client.delete(f"/sketch/sketches/{anchor_sketch_id}/lines/{line['id']}")
+    assert delete_line_response.status_code == 200, delete_line_response.json()
+
+    # Sanity check that the chain is genuinely broken now, at the layer
+    # that actually surfaces it (`/mesh`, which always calls the ordinary
+    # `compute_part_bodies(part)`) - if this stops 422-ing, the scenario
+    # below no longer exercises the regression at all.
+    mesh_response = client.get(f"/document/parts/{part['id']}/mesh")
+    assert mesh_response.status_code == 422, mesh_response.json()
+    assert mesh_response.json()["detail"]["type"] == "missing_reference"
+
+    list_response = client.get(f"/document/parts/{part['id']}/features")
+    assert list_response.status_code == 200, list_response.json()
+    listed_ids = {f["id"] for f in list_response.json()}
+    assert listed_ids == {
+        gear["id"],
+        anchor_sketch["id"],
+        broken_plane["id"],
+        sketch_on_broken_plane["id"],
+        extrude_on_broken_plane["id"],
+    }
+    gear_row = next(f for f in list_response.json() if f["id"] == gear["id"])
+    assert gear_row["warnings"] == [], (
+        "compute_part_bodies(part) fails for every read while the chain is broken, so this "
+        "falls back to [] - same fallback value the pre-9da90f8 code used"
+    )
+
+    single_response = client.get(f"/document/parts/{part['id']}/features/{gear['id']}")
+    assert single_response.status_code == 200, single_response.json()
+    assert single_response.json()["warnings"] == []
 
 
 # --- app.document.extrude._feature_warnings_cache (pure dict-level) --------

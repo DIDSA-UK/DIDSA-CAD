@@ -768,7 +768,8 @@ def _gear_feature_response(
     cached_feature_warnings` (see the `warnings is None` branch below),
     `[]` if never computed, same as Loft's identical "since-broken Feature
     still shown, not one whose failure takes down the whole feature list"
-    reasoning."""
+    reasoning - including when the failure belongs to some other, unrelated
+    Feature in the same Part (see the `try`/`except` below)."""
     if warnings is None:
         # Bug fix (LOD investigation, §6): a plain GET re-read of an
         # already-persisted, unchanged Feature has no reason to exclude its
@@ -783,8 +784,21 @@ def _gear_feature_response(
         # back here needs no `resolve_gear_from_bodies` call of its own, so a
         # repeat fetch of an unchanged Part costs nothing beyond the cache
         # lookup, not even this one Feature's own rebuild.
-        compute_part_bodies(part)
-        warnings = cached_feature_warnings(part, feature.id)
+        #
+        # `compute_part_bodies(part)` walks every Feature in the Part, not
+        # just this one - same as the old `resolve_gear(part, feature)` it
+        # replaced (that also computed the whole Part, just excluding this
+        # Feature's own id). So a since-broken *unrelated* Feature elsewhere
+        # (e.g. a Mirror/Pattern/Split whose reference was deleted) can still
+        # raise `missing_reference` here - caught the same way the old code
+        # caught it, so this Feature's row still renders rather than taking
+        # the whole `GET /parts/{id}/features` response down with it.
+        try:
+            compute_part_bodies(part)
+            warnings = cached_feature_warnings(part, feature.id)
+        except HTTPException:
+            logger.warning("GearFeature %s could not be resolved for its response", feature.id)
+            warnings = []
     # Cheap (pure gear_math, no OCCT) to recompute alongside the response -
     # never raises (falls back to 0.0 internally), so unlike `resolve_gear`
     # above this needs no try/except of its own. Mirrors `_bevel_pair_
@@ -835,16 +849,23 @@ def _bevel_gear_feature_response(
     extrude.cached_feature_warnings` (see the `warnings is None` branch
     below), `[]` if never computed, same "since-broken Feature still shown,
     not one whose failure takes down the whole feature list" reasoning as
-    every other warnings-bearing Feature type here."""
+    every other warnings-bearing Feature type here - including when the
+    failure belongs to some other, unrelated Feature in the same Part."""
     if warnings is None:
         # Bug fix (LOD investigation, §6) - see `_gear_feature_response`'s
         # identical fix above for the full reasoning: a plain-GET re-read
         # reads `cached_feature_warnings` (refreshed as a side effect of
         # `compute_part_bodies`'s own cached build, whenever this Feature's
         # own step actually runs) instead of calling `resolve_bevel_gear`'s
-        # always-uncached self-exclusion.
-        compute_part_bodies(part)
-        warnings = cached_feature_warnings(part, feature.id)
+        # always-uncached self-exclusion. Same try/except scope as before -
+        # `compute_part_bodies(part)` walks the whole Part, so a since-broken
+        # unrelated Feature elsewhere must not take this row down with it.
+        try:
+            compute_part_bodies(part)
+            warnings = cached_feature_warnings(part, feature.id)
+        except HTTPException:
+            logger.warning("BevelGearFeature %s could not be resolved for its response", feature.id)
+            warnings = []
     return BevelGearFeatureResponse(
         id=feature.id,
         plane_ref=_plane_ref_to_schema(feature.plane_ref),
@@ -878,7 +899,9 @@ def _bevel_pair_feature_response(
     last value `compute_part_bodies` computed for this Feature out of `app.
     document.extrude.cached_feature_warnings` (see the `warnings is None`
     branch below), `[]` if never computed, same "since-broken Feature still
-    shown" reasoning as every other warnings-bearing Feature type here."""
+    shown" reasoning as every other warnings-bearing Feature type here -
+    including when the failure belongs to some other, unrelated Feature in
+    the same Part."""
     if warnings is None:
         # Bug fix (LOD investigation, §6) - see `_gear_feature_response`'s
         # identical fix above for the full reasoning: a plain-GET re-read
@@ -889,9 +912,16 @@ def _bevel_pair_feature_response(
         # `resolve_bevel_pair`'s always-uncached self-exclusion - this is
         # the specific case that used to re-run the entire spiral-bevel-pair
         # build (both members, plus the meshing-phase search) on every
-        # single `GET /parts/{id}/features` fetch, unconditionally.
-        compute_part_bodies(part)
-        warnings = cached_feature_warnings(part, feature.id)
+        # single `GET /parts/{id}/features` fetch, unconditionally. Same
+        # try/except scope as before - `compute_part_bodies(part)` walks the
+        # whole Part, so a since-broken unrelated Feature elsewhere must not
+        # take this row down with it.
+        try:
+            compute_part_bodies(part)
+            warnings = cached_feature_warnings(part, feature.id)
+        except HTTPException:
+            logger.warning("BevelPairFeature %s could not be resolved for its response", feature.id)
+            warnings = []
     # Cheap (pure math, no OCCT) - computed fresh here regardless of
     # whether `warnings` was already known, rather than threading it
     # through every caller: `resolve_bevel_pair_from_bodies` doesn't return
@@ -950,16 +980,23 @@ def _loft_feature_response(part: Part, feature: LoftFeature, warnings: list[str]
     (mirrors `_create_plane_feature_response`'s own "resolve live geometry
     on every read" convention), `[]` if never computed - a since-broken
     Loft is still shown (as a locked/lit Feature row), not one whose
-    failure takes down the whole feature list."""
+    failure - its own, or an unrelated Feature's elsewhere in the Part -
+    takes down the whole feature list."""
     if warnings is None:
         # Bug fix (LOD investigation, §6) - see `_gear_feature_response`'s
         # identical fix above for the full reasoning: a plain-GET re-read
         # reads `cached_feature_warnings` (refreshed as a side effect of
         # `compute_part_bodies`'s own cached build, whenever this Feature's
         # own step actually runs) instead of calling `resolve_loft`'s
-        # always-uncached self-exclusion.
-        compute_part_bodies(part)
-        warnings = cached_feature_warnings(part, feature.id)
+        # always-uncached self-exclusion. Same try/except scope as before -
+        # `compute_part_bodies(part)` walks the whole Part, so a since-broken
+        # unrelated Feature elsewhere must not take this row down with it.
+        try:
+            compute_part_bodies(part)
+            warnings = cached_feature_warnings(part, feature.id)
+        except HTTPException:
+            logger.warning("LoftFeature %s could not be resolved for its response", feature.id)
+            warnings = []
     return LoftFeatureResponse(
         id=feature.id,
         sections=[_loft_section_to_schema(section) for section in feature.sections],
@@ -983,16 +1020,24 @@ def _gear_chain_feature_response(
     GET" treatment exactly (see the `warnings is None` branch below) -
     `warnings` here covers both interference findings and compound-join
     volume-loss/thin-member findings (`app.document.gear_chain.
-    resolve_gear_chain`'s own second return value)."""
+    resolve_gear_chain`'s own second return value). Same "a since-broken
+    Feature elsewhere in the Part must not take this row down with it"
+    resilience as every other warnings-bearing Feature type here."""
     if warnings is None:
         # Bug fix (LOD investigation, §6) - see `_gear_feature_response`'s
         # identical fix above for the full reasoning: a plain-GET re-read
         # reads `cached_feature_warnings` (refreshed as a side effect of
         # `compute_part_bodies`'s own cached build, whenever this Feature's
         # own step actually runs) instead of calling `resolve_gear_chain`'s
-        # always-uncached self-exclusion.
-        compute_part_bodies(part)
-        warnings = cached_feature_warnings(part, feature.id)
+        # always-uncached self-exclusion. Same try/except scope as before -
+        # `compute_part_bodies(part)` walks the whole Part, so a since-broken
+        # unrelated Feature elsewhere must not take this row down with it.
+        try:
+            compute_part_bodies(part)
+            warnings = cached_feature_warnings(part, feature.id)
+        except HTTPException:
+            logger.warning("GearChainFeature %s could not be resolved for its response", feature.id)
+            warnings = []
     return GearChainFeatureResponse(
         id=feature.id,
         plane_ref=_plane_ref_to_schema(feature.plane_ref),
