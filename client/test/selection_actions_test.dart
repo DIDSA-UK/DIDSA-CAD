@@ -51,6 +51,37 @@ void main() {
       },
     );
 
+    test(
+      'Bug fix: a lone curved face offers only Chamfer/Fillet, not Create Plane/New Sketch on Face',
+      () {
+        final actions = contextActionsFor({_face0}, isFacePlanar: (bodyId, faceId) => false);
+        expect(actions, [
+          const SelectionContextAction('Chamfer', enabled: true),
+          const SelectionContextAction('Fillet', enabled: true),
+        ]);
+      },
+    );
+
+    test(
+      'Bug fix: a lone Surface face offers only Create Plane/New Sketch on Face, not Chamfer/Fillet',
+      () {
+        final actions = contextActionsFor({_face0}, isSolidBody: (bodyId) => false);
+        expect(actions, [
+          const SelectionContextAction('Create Plane', enabled: true),
+          const SelectionContextAction('New Sketch on Face', enabled: true),
+        ]);
+      },
+    );
+
+    test('Bug fix: a lone curved Surface face offers nothing at all', () {
+      final actions = contextActionsFor(
+        {_face0},
+        isFacePlanar: (bodyId, faceId) => false,
+        isSolidBody: (bodyId) => false,
+      );
+      expect(actions, isEmpty);
+    });
+
     test('C3: exactly two faces alone offers a real, enabled Create Plane (Midplane)', () {
       const face1 = SelectionEntityRef(kind: SelectionEntityKind.face, id: 1);
       final actions = contextActionsFor({_face0, face1});

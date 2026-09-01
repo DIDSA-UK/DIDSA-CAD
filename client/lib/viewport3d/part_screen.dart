@@ -349,6 +349,24 @@ class _PartScreenState extends State<PartScreen> {
   /// (a Split tool is a Surface's shell, never a plain solid Body).
   bool _bodyIsSurface(String bodyId) => _bodies.any((b) => b.bodyId == bodyId && b.isSurface);
 
+  /// Bug fix (on-device feedback: "create plane"/"new sketch on face" are
+  /// offered for a curved face, which can't actually be used with either"):
+  /// the real lookup `selection_actions.dart`'s `FacePlanarityChecker`
+  /// needs, backed by whichever [_bodies] entry owns [bodyId] and its own
+  /// dense `mesh.faceIsPlanar[faceId]` (see that field's own doc comment) -
+  /// `true` (permissive) when the Body/face isn't found or the response
+  /// predates this field (an empty list), same "not known, not known to be
+  /// curved" contract [FacePlanarityChecker] itself documents.
+  bool _isFacePlanar(String bodyId, int faceId) {
+    for (final body in _bodies) {
+      if (body.bodyId != bodyId) continue;
+      final faceIsPlanar = body.mesh.faceIsPlanar;
+      if (faceId < 0 || faceId >= faceIsPlanar.length) return true;
+      return faceIsPlanar[faceId];
+    }
+    return true;
+  }
+
   /// Memoization for [_visibleBodies] - `identical(_visibleBodiesCacheSource,
   /// _bodies)` tells us the last computed [_visibleBodiesCache] is still
   /// valid, so unrelated rebuilds (toggling selection mode, picking an
@@ -11491,6 +11509,8 @@ class _PartScreenState extends State<PartScreen> {
                         selectedEntities: _selectedEntities,
                         isPointOnLine: _isPointOnLine,
                         isPointOnArc: _isPointOnArc,
+                        isFacePlanar: _isFacePlanar,
+                        isSolidBody: (bodyId) => !_bodyIsSurface(bodyId),
                         onCreatePlane: _onCreatePlaneTapped,
                         onFillet: _onFilletTapped,
                         onChamfer: _onChamferTapped,

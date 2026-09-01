@@ -11870,13 +11870,32 @@ class SketchController extends ChangeNotifier {
       final startA = points[lineA.startPointId];
       final endA = points[lineA.endPointId];
       final startB = points[lineB.startPointId];
-      final endB = points[lineB.endPointId];
-      if (startA == null || endA == null || startB == null || endB == null) return null;
-      final midAX = (startA.x + endA.x) / 2;
-      final midAY = (startA.y + endA.y) / 2;
-      final midBX = (startB.x + endB.x) / 2;
-      final midBY = (startB.y + endB.y) / 2;
-      return math.sqrt(math.pow(midBX - midAX, 2) + math.pow(midBY - midAY, 2));
+      if (startA == null || endA == null || startB == null) return null;
+      // Bug fix (on-device feedback: a vertical dimension between two
+      // parallel Lines showed a bogus midpoint-to-midpoint value, e.g.
+      // 63.72 instead of the real 50 vertical gap - re-derived here as the
+      // perpendicular distance from Line B's start Point to the infinite
+      // line through Line A, matching exactly what `confirmGhostValue`'s
+      // own `lineDistance` branch actually creates (a `LineDistanceConstraint`,
+      // backend's SLVS_C_PT_LINE_DISTANCE anchored the same way - see
+      // `_signed_point_line_distance`'s own doc comment in
+      // app.sketch.solver/app.sketch.models) - not the raw distance between
+      // the two Lines' midpoints, which only matches the perpendicular gap
+      // when both midpoints happen to line up exactly perpendicular to the
+      // Lines' shared direction. For two Lines that are actually parallel
+      // (the only case this ghost is ever offered for - see
+      // `_buildLinePairGhosts`), the perpendicular distance is the same
+      // everywhere along their length, so this is exactly the "vertical"/
+      // "horizontal" gap the user expects when the parallel pair happens to
+      // be axis-aligned.
+      final dx = endA.x - startA.x;
+      final dy = endA.y - startA.y;
+      final length = math.sqrt(dx * dx + dy * dy);
+      if (length < 1e-12) {
+        return math.sqrt(math.pow(startB.x - startA.x, 2) + math.pow(startB.y - startA.y, 2));
+      }
+      final cross = (startB.x - startA.x) * dy - (startB.y - startA.y) * dx;
+      return (cross / length).abs();
     }
     if (ghost.kind == GhostKind.angle) {
       final lineA = lines[ghost.lineAId];

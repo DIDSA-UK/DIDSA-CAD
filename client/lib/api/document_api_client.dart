@@ -812,6 +812,16 @@ class MeshDto {
   // to const [] for the same backward-compatibility reason as the ids
   // above.
   final List<List<int>> faceEdgeIds;
+  // Bug fix (on-device feedback: "create plane"/"new sketch on face" are
+  // offered for a curved face, which can't actually be used with either"):
+  // faceIsPlanar[faceId] is whether that face is planar - same dense
+  // one-entry-per-face shape as faceEdgeIds above, letting the 3D
+  // viewport's face-selection context menu gate those two actions (and
+  // nothing else - Chamfer/Fillet work on curved faces just fine) on this
+  // instead of only finding out via a rejected request after the fact.
+  // Defaults to const [] for the same backward-compatibility reason as
+  // every other id list here.
+  final List<bool> faceIsPlanar;
 
   MeshDto({
     required this.vertices,
@@ -823,6 +833,7 @@ class MeshDto {
     this.topologyVertices = const [],
     this.topologyVertexIds = const [],
     this.faceEdgeIds = const [],
+    this.faceIsPlanar = const [],
   });
 
   factory MeshDto.fromJson(Map<String, dynamic> json) => MeshDto(
@@ -845,6 +856,7 @@ class MeshDto {
                 ?.map((ids) => (ids as List).map((v) => v as int).toList())
                 .toList() ??
             const [],
+        faceIsPlanar: (json['face_is_planar'] as List?)?.map((v) => v as bool).toList() ?? const [],
       );
 
   static List<List<double>> _triples(List raw) =>
