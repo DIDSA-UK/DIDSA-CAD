@@ -70,6 +70,8 @@ from app.document.gear_math import (
     spur_gear_geometry,
     validate_planetary_assembly,
 )
+from app.document.job_cancellation import CancellationToken
+from app.document.job_cancellation import cancellation_scope as _cancellation_scope
 from app.document.models import Part, PlanetaryGearFeature, ResolvedPlane
 from app.document.occt_process_utils import shape_from_brep_bytes as _shape_from_brep_bytes
 from app.document.occt_process_utils import shape_to_brep_bytes as _shape_to_brep_bytes
@@ -162,6 +164,7 @@ def resolve_planetary_from_bodies(
     part: Part,
     bodies: dict[str, TopoDS_Shape],
     excluded_feature_ids: frozenset[str],
+    cancellation: CancellationToken | None = None,
 ) -> TopoDS_Shape:
     """The real OCCT compound for one `PlanetaryGearFeature` - sun (centre),
     ring (concentric with the sun), and `feature.planet_count` planets
@@ -172,7 +175,17 @@ def resolve_planetary_from_bodies(
     `_register_solids` unchanged. Raises a structured `HTTPException`
     rather than returning `None` on any failure - a `PlanetaryGearFeature`
     has no "temporarily has nothing to build" state, same reasoning
-    `GearFeature`/`GearChainFeature` already use."""
+    `GearFeature`/`GearChainFeature` already use.
+
+    `cancellation` (LOD Phase 2 chunk 3, `app.document.job_cancellation`) is
+    `None` for every synchronous caller (`resolve_planetary`'s own default)
+    - a pure no-op in that case, byte-for-byte the same behavior as before
+    job-mode existed for this Feature type. `app.document.jobs`'s own job
+    runner is the only caller that ever passes a real `CancellationToken`,
+    threaded down into the one `ProcessPoolExecutor` this function can open
+    (below) - mirrors `app.document.bevel_pair.resolve_bevel_pair_from_
+    bodies`'s own identical parameter/reasoning exactly, sharing the same
+    `cancellation_scope` hook rather than duplicating it."""
     try:
         planet_tooth_count = planetary_planet_tooth_count(feature.sun_tooth_count, feature.ring_tooth_count)
     except GearGeometryError as exc:
@@ -302,7 +315,8 @@ def resolve_planetary_from_bodies(
     # above already ran, synchronously, before this point, unchanged.
     mp_context = multiprocessing.get_context("spawn")
     member_count = 2 + feature.planet_count
-    with ProcessPoolExecutor(max_workers=_planetary_pool_worker_count(member_count), mp_context=mp_context) as executor:
+    executor = ProcessPoolExecutor(max_workers=_planetary_pool_worker_count(member_count), mp_context=mp_context)
+    with executor, _cancellation_scope(cancellation, executor):
         sun_future = executor.submit(_build_member_solid_worker, basis, sun_geometry, False, None, feature.face_width)
         ring_future = executor.submit(
             _build_member_solid_worker, ring_basis, ring_geometry, True, feature.ring_outer_diameter, feature.face_width
@@ -327,14 +341,19 @@ def resolve_planetary_from_bodies(
 
 
 def resolve_planetary(
-    part: Part, feature: PlanetaryGearFeature, excluded_feature_ids: frozenset[str] = frozenset()
+    part: Part,
+    feature: PlanetaryGearFeature,
+    excluded_feature_ids: frozenset[str] = frozenset(),
+    cancellation: CancellationToken | None = None,
 ) -> TopoDS_Shape:
     """Fresh entry point for the router's create/update validation - mirrors
     `app.document.gear_chain.resolve_gear_chain`'s own self-exclusion
-    convention exactly."""
+    convention exactly. `cancellation` defaults to `None` (every synchronous
+    caller) - only `app.document.jobs`'s own job runner ever passes a real
+    `CancellationToken`."""
     all_excluded = excluded_feature_ids | {feature.id}
     bodies = compute_part_bodies(part, all_excluded)
-    return resolve_planetary_from_bodies(feature, part, bodies, all_excluded)
+    return resolve_planetary_from_bodies(feature, part, bodies, all_excluded, cancellation)
 
 
 # ---------------------------------------------------------------------------

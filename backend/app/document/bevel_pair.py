@@ -141,7 +141,6 @@ import math
 import multiprocessing
 import os
 from concurrent.futures import ProcessPoolExecutor
-from contextlib import nullcontext
 from dataclasses import replace
 
 from fastapi import HTTPException
@@ -173,24 +172,12 @@ from app.document.bevel_math import (
 from app.document.create_plane import resolve_plane_ref
 from app.document.extrude import compute_part_bodies
 from app.document.job_cancellation import CancellationToken
+from app.document.job_cancellation import cancellation_scope as _cancellation_scope
 from app.document.models import BevelPairFeature, Part, ResolvedPlane
 from app.document.occt_process_utils import shape_from_brep_bytes as _shape_from_brep_bytes
 from app.document.occt_process_utils import shape_to_brep_bytes as _shape_to_brep_bytes
 
 _MEMBER_LABELS = ("member_1", "member_2")
-
-
-def _cancellation_scope(cancellation: CancellationToken | None, executor: ProcessPoolExecutor):
-    """`cancellation.track(executor)` when job-mode passed a real
-    `CancellationToken`, a plain no-op context manager otherwise - every
-    synchronous (non-job) caller passes `cancellation=None`, so this is a
-    pure no-op for them, byte-for-byte the same pool behavior as before
-    cancellation support existed. See `app.document.job_cancellation`'s own
-    module docstring for why this hook lives at the pool-open boundary
-    specifically."""
-    if cancellation is None:
-        return nullcontext()
-    return cancellation.track(executor)
 
 
 def _invalid_bevel_pair_parameters(detail: str) -> HTTPException:

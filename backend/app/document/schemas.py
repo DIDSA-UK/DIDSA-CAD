@@ -1295,43 +1295,6 @@ class BevelPairFeatureResponse(BaseModel):
     warnings: list[str] = []
 
 
-class BevelPairJobCreateResponse(BaseModel):
-    """`docs/lod-strategy/02-phase2-design.md` SS4: returned immediately by
-    the job-mode create endpoint, before the real build has even started -
-    genuinely different shape from `BevelPairFeatureResponse` (no resolved
-    geometry/warnings yet), the reason job-mode is a separate route rather
-    than a query flag on the existing synchronous one."""
-
-    job_id: str
-    status: Literal["running"] = "running"
-
-
-class BevelPairJobStatusResponse(BaseModel):
-    """`GET /parts/{part_id}/jobs/{job_id}` - `result` is only ever set once
-    `status == "succeeded"`, and is then the *exact same* `BevelPairFeature
-    Response` shape the synchronous create endpoint returns (so client
-    result-handling code doesn't need a second code path); `error` is only
-    ever set once `status == "failed"`, carrying the same structured
-    `{"type": ..., "detail": ...}` shape every other structured validation
-    error in this codebase already uses."""
-
-    job_id: str
-    status: Literal["running", "succeeded", "failed", "cancelled"]
-    result: BevelPairFeatureResponse | None = None
-    error: dict | None = None
-
-
-class BevelPairJobCancelResponse(BaseModel):
-    """Returned by `POST /parts/{part_id}/jobs/{job_id}/cancel` - `status`
-    may still read `"running"` immediately after this call (the kill
-    request was issued, but the background build thread hasn't necessarily
-    noticed and finished yet) - poll `GET .../jobs/{job_id}` to observe the
-    actual transition to `"cancelled"`."""
-
-    job_id: str
-    status: Literal["running", "succeeded", "failed", "cancelled"]
-
-
 class LoftSectionSchema(BaseModel):
     """`docs/gear-design/04-helical-herringbone-loft.md` (4b): the wire
     counterpart to `app.document.models.LoftSection` - see that dataclass's
@@ -1533,6 +1496,56 @@ class PlanetaryGearFeatureResponse(BaseModel):
     pressure_angle_degrees: float
     locked: bool
     produces: Produces
+
+
+class JobCreateResponse(BaseModel):
+    """`docs/lod-strategy/02-phase2-design.md` SS4: returned immediately by
+    a job-mode create endpoint, before the real build has even started -
+    genuinely different shape from the matching synchronous `*Response`
+    (no resolved geometry/warnings yet), the reason job-mode is a separate
+    route rather than a query flag on the existing synchronous one. Shared
+    by every job-mode Feature type (`BevelPairFeature`, `PlanetaryGear
+    Feature` - LOD Phase 2 chunks 2/3) - this immediate-acknowledgment
+    shape never varies by Feature type, so one schema serves all of them
+    rather than one per-type duplicate (originally `BevelPairJobCreate
+    Response`, generalized here when a second Feature type gained job
+    mode)."""
+
+    job_id: str
+    status: Literal["running"] = "running"
+
+
+class JobStatusResponse(BaseModel):
+    """`GET /parts/{part_id}/jobs/{job_id}` - shared by every job-mode
+    Feature type (originally `BevelPairJobStatusResponse`, generalized when
+    `PlanetaryGearFeature` gained job mode too). `result` is only ever set
+    once `status == "succeeded"`, and is then the *exact same* response
+    shape the matching synchronous create endpoint returns for that job's
+    own Feature type (`BevelPairFeatureResponse` or `PlanetaryGearFeature
+    Response` - `app.document.router`'s own poll handler dispatches on the
+    job's actual Feature type, not this schema), so client result-handling
+    code for a given Feature type doesn't need a second code path just
+    because the fetch was async. `error` is only ever set once `status ==
+    "failed"`, carrying the same structured `{"type": ..., "detail": ...}`
+    shape every other structured validation error in this codebase already
+    uses."""
+
+    job_id: str
+    status: Literal["running", "succeeded", "failed", "cancelled"]
+    result: BevelPairFeatureResponse | PlanetaryGearFeatureResponse | None = None
+    error: dict | None = None
+
+
+class JobCancelResponse(BaseModel):
+    """Returned by `POST /parts/{part_id}/jobs/{job_id}/cancel` - shared by
+    every job-mode Feature type (originally `BevelPairJobCancelResponse`).
+    `status` may still read `"running"` immediately after this call (the
+    kill request was issued, but the background build thread hasn't
+    necessarily noticed and finished yet) - poll `GET .../jobs/{job_id}` to
+    observe the actual transition to `"cancelled"`."""
+
+    job_id: str
+    status: Literal["running", "succeeded", "failed", "cancelled"]
 
 
 class GearPreviewChainRequest(BaseModel):
@@ -1881,7 +1894,21 @@ FeatureResponse = Union[
     LoftFeatureResponse,
     BevelGearFeatureResponse,
     BevelPairFeatureResponse,
+    GearChainFeatureResponse,
+    PlanetaryGearFeatureResponse,
 ]
+"""Pre-existing bug fix (found while verifying LOD Phase 2 chunk 3's own new
+`PlanetaryGearFeature` job-mode tests): `GearChainFeatureResponse`/`Planetary
+GearFeatureResponse` both existed as real response schemas (`_feature_
+response`'s own dispatch in `app.document.router` already builds them
+correctly) but were never added to this Union - so `GET /parts/{part_id}/
+features` (and anything else typed `list[FeatureResponse]`) 500s with a
+`ResponseValidationError` for ANY Part containing a `GearChainFeature` or
+`PlanetaryGearFeature`, unconditionally, regardless of job mode. Reproduced
+directly against `main` (pre-dating this session's own changes entirely) -
+a plain synchronous `POST .../planetary-gear-features` followed by `GET
+.../features` 500s the identical way. Never caught before because no prior
+test exercised `GET /features` for either of these two Feature types."""
 
 
 class MeshVertexData(BaseModel):

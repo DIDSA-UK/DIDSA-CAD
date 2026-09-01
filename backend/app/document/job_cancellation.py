@@ -17,7 +17,7 @@ change.
 
 import threading
 from concurrent.futures import ProcessPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from typing import Iterator
 
 
@@ -44,25 +44,26 @@ def _kill_pool_workers(executor: ProcessPoolExecutor) -> None:
     Deliberately does NOT call `executor.shutdown()` itself, even though
     killing every worker is exactly the kind of thing you'd expect to want
     torn down immediately. `resolve_bevel_pair_from_bodies`/`_search_
-    meshing_phase` (`app.document.bevel_pair`) both already own an outer
-    `with ProcessPoolExecutor(...) as executor:` block that is *guaranteed*
-    to call `shutdown()` on its own exit - the exception this kill produces
-    (whatever a worker dying mid-`Future.result()` surfaces: `BrokenProcess
-    Pool`, `EOFError`, ...) has nowhere else to go but out through that
-    block. Calling `shutdown()` here too, from THIS thread (`cancel()`'s own
-    caller, typically the `POST .../cancel` request thread), used to race
-    that guaranteed call - both threads tearing down the same executor's
-    internal IPC file descriptors concurrently produced a genuine, real,
-    reproducible `OSError: [Errno 9] Bad file descriptor` on ARM64 CI
-    (`docs/status.md`'s dated entry for this fix). `ProcessPoolExecutor.
-    shutdown` is idempotent only for *sequential* calls (a second call
-    after the first has fully completed is a safe no-op) - concurrent calls
-    from two different threads are not the same thing and are not safe.
-    Leaving the sole `shutdown()` call to the owning thread's own context
-    manager removes the second caller entirely, closing the race at its
-    root instead of catching its fallout after the fact (`app.document.
-    jobs`'s own job-runner still does that too, as a backstop for any other
-    shape this kind of race could take)."""
+    meshing_phase` (`app.document.bevel_pair`) and `resolve_planetary_from_
+    bodies` (`app.document.planetary_gear`, LOD Phase 2 chunk 3) each already
+    own an outer `with ProcessPoolExecutor(...) as executor:` block that is
+    *guaranteed* to call `shutdown()` on its own exit - the exception this
+    kill produces (whatever a worker dying mid-`Future.result()` surfaces:
+    `BrokenProcessPool`, `EOFError`, ...) has nowhere else to go but out
+    through that block. Calling `shutdown()` here too, from THIS thread
+    (`cancel()`'s own caller, typically the `POST .../cancel` request
+    thread), used to race that guaranteed call - both threads tearing down
+    the same executor's internal IPC file descriptors concurrently produced
+    a genuine, real, reproducible `OSError: [Errno 9] Bad file descriptor`
+    on ARM64 CI (`docs/status.md`'s dated entry for this fix).
+    `ProcessPoolExecutor.shutdown` is idempotent only for *sequential*
+    calls (a second call after the first has fully completed is a safe
+    no-op) - concurrent calls from two different threads are not the same
+    thing and are not safe. Leaving the sole `shutdown()` call to the
+    owning thread's own context manager removes the second caller
+    entirely, closing the race at its root instead of catching its fallout
+    after the fact (`app.document.jobs`'s own job-runner still does that
+    too, as a backstop for any other shape this kind of race could take)."""
     processes = list(getattr(executor, "_processes", {}).values())
     for process in processes:
         try:
@@ -143,3 +144,20 @@ class CancellationToken:
             return False
         _kill_pool_workers(executor)
         return True
+
+
+def cancellation_scope(cancellation: "CancellationToken | None", executor: ProcessPoolExecutor):
+    """`cancellation.track(executor)` when job-mode passed a real
+    `CancellationToken`, a plain no-op context manager otherwise - every
+    synchronous (non-job) caller passes `cancellation=None`, so this is a
+    pure no-op for them, byte-for-byte the same pool behavior as before
+    cancellation support existed. Promoted out of `app.document.bevel_pair`
+    (LOD Phase 2 chunk 2's original, sole owner) to here (LOD Phase 2 chunk
+    3) so `app.document.planetary_gear`'s own pool can reuse the identical
+    hook rather than duplicating it - `bevel_pair.py` now imports this
+    directly instead of keeping its own private copy, a pure refactor with
+    no behavior change (confirmed by its own existing test suite passing
+    unchanged)."""
+    if cancellation is None:
+        return nullcontext()
+    return cancellation.track(executor)

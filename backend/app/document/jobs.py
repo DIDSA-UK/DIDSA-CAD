@@ -1,9 +1,21 @@
-"""In-memory job store for job-mode `BevelPairFeature` builds
+"""In-memory job store for job-mode Feature builds
 (`docs/lod-strategy/02-phase2-design.md` SS2/SS4) - deliberately scoped to
-this one Feature type's genuine, measured long-tail build cost (up to
-~170s+ for a tooth-count-symmetric spiral pair, `docs/status.md`'s
-2026-08-26 entries), not a general async-job system. Every other Feature
-type's create/update endpoint stays fully synchronous, untouched.
+the two Feature types with a genuine, measured/structural long-tail build
+cost (`BevelPairFeature`, up to ~170s+ for a tooth-count-symmetric spiral
+pair, `docs/status.md`'s 2026-08-26 entries; `PlanetaryGearFeature`, LOD
+Phase 2 chunk 3, once it has real `ProcessPoolExecutor` pooling to cancel
+into - chunk 1's own work), not a general async-job system. Every other
+Feature type's create/update endpoint stays fully synchronous, untouched.
+
+Originally built (chunk 2) scoped only to `BevelPairFeature`; generalized
+here (chunk 3) to a second Feature type by widening `JobRecord.feature`'s
+own type and splitting the single `_run_bevel_pair_job`/`submit_bevel_pair_
+job` pair into a shared, Feature-type-agnostic `_run_job`/`_submit_job`
+core plus one thin, type-specific `submit_*_job` wrapper per Feature type -
+the job store itself (`_jobs`/`_running_job_id`, eviction, the one-job-at-
+a-time concurrency policy) and the poll/cancel surface (`get_job`/
+`cancel_job`, below) were already fully generic and needed no changes at
+all.
 
 **A plain in-memory dict, no new durability** - matches `app.document.
 body_cache`'s own explicit "single-process, no-locking" precedent, and the
@@ -40,14 +52,32 @@ absorbing)."""
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 
 from fastapi import HTTPException
+from OCC.Core.TopoDS import TopoDS_Shape
 
 from app.document.bevel_pair import resolve_bevel_pair
 from app.document.job_cancellation import CancellationToken, JobCancelled
-from app.document.models import BevelPairFeature, Part
+from app.document.models import BevelPairFeature, Part, PlanetaryGearFeature
+from app.document.planetary_gear import resolve_planetary
+
+JobFeature = BevelPairFeature | PlanetaryGearFeature
+"""The Feature types job-mode currently supports - see this module's own
+top-level docstring for why these two specifically. A future Feature type
+extends this union plus adds its own thin `submit_*_job` wrapper below; the
+job store/poll/cancel machinery needs no further changes."""
+
+_ResolveFn = Callable[[Part, JobFeature, CancellationToken], "tuple[TopoDS_Shape, list[str] | None]"]
+"""One job's own "do the real, cancellable build" call - `(part, feature,
+cancellation) -> (shape, warnings)`. `resolve_bevel_pair` already matches
+this shape directly; `resolve_planetary` returns a bare shape (`Planetary
+GearFeatureResponse` has no `warnings` field at all - `app.document.router`'s
+own generic `_feature_response` dispatch confirms this), so `_resolve_
+planetary_job` below adapts it to the same `(shape, warnings)` contract
+rather than branching `_run_job` itself on Feature type."""
 
 _JOB_TTL_SECONDS = 15 * 60
 """How long a job stays fetchable after reaching a terminal state
@@ -69,10 +99,12 @@ class JobStatus(str, Enum):
 class JobRecord:
     """One job's own state - never exposes `part`/`feature` outside this
     module directly; `app.document.router`'s own endpoints read `status`/
-    `warnings`/`error` and use `feature` only to build the exact same
-    `BevelPairFeatureResponse` shape the synchronous endpoint already
-    returns (`_bevel_pair_feature_response(job.part, job.feature, job.
-    warnings)`).
+    `warnings`/`error` and use `feature`/`part` only to build the exact same
+    response shape the matching synchronous endpoint already returns
+    (`_bevel_pair_feature_response(job.part, job.feature, job.warnings)` for
+    a `BevelPairFeature` job, `_feature_response(job.part, job.feature)` for
+    a `PlanetaryGearFeature` one - dispatched by `isinstance(job.feature,
+    ...)`, the router's own job, not this module's).
 
     `part` is the literal `Part` object reference the request handler
     already resolved (`get_part_or_404`) at job-creation time - captured
@@ -86,7 +118,7 @@ class JobRecord:
     id: str
     part_id: str
     part: Part
-    feature: BevelPairFeature
+    feature: JobFeature
     cancellation: CancellationToken
     status: JobStatus = JobStatus.RUNNING
     warnings: list[str] | None = None
@@ -127,20 +159,32 @@ def _finish_job_locked(job_id: str, status: JobStatus, *, warnings: list[str] | 
         _running_job_id = None
 
 
-def _run_bevel_pair_job(job_id: str) -> None:
-    """The background build thread's own entry point - runs the exact same
-    `resolve_bevel_pair` the synchronous `create_bevel_pair_feature`
-    endpoint calls, then persists via `part.add_feature` on success, same
-    validate-then-persist discipline every Feature type here already uses.
-    Never touches `app.session_context`/`app.document.store` - `part`/
-    `feature` were both already captured, in the request thread, by
-    `submit_bevel_pair_job` before this thread ever started."""
+def _resolve_planetary_job(part: Part, feature: PlanetaryGearFeature, cancellation: CancellationToken) -> "tuple[TopoDS_Shape, list[str] | None]":
+    """Adapts `resolve_planetary`'s own bare-shape return (no `warnings` -
+    `PlanetaryGearFeatureResponse` has no such field, unlike `BevelPairFeature
+    Response`) to `_ResolveFn`'s shared `(shape, warnings)` contract, so
+    `_run_job` below stays a single, real implementation shared by both
+    Feature types rather than branching on Feature type internally."""
+    shape = resolve_planetary(part, feature, cancellation=cancellation)
+    return shape, None
+
+
+def _run_job(job_id: str, resolve_fn: _ResolveFn) -> None:
+    """The background build thread's own entry point, generic across every
+    job-mode Feature type - `resolve_fn` is `resolve_bevel_pair` or `_resolve_
+    planetary_job` (any future Feature type's own analogous adapter), the
+    same real function the matching synchronous create endpoint calls, so
+    job-mode and the synchronous path can never quietly drift apart. Persists
+    via `part.add_feature` on success, same validate-then-persist discipline
+    every Feature type here already uses. Never touches `app.session_context`/
+    `app.document.store` - `part`/`feature` were both already captured, in
+    the request thread, by `_submit_job` before this thread ever started."""
     with _lock:
         record = _jobs[job_id]
     part, feature, cancellation = record.part, record.feature, record.cancellation
 
     try:
-        _shape, warnings = resolve_bevel_pair(part, feature, cancellation=cancellation)
+        _shape, warnings = resolve_fn(part, feature, cancellation=cancellation)
     except Exception as exc:  # noqa: BLE001 - classification below decides FAILED vs CANCELLED for every flavor
         # `cancellation.is_cancelled()` is the authoritative signal here, not
         # just `isinstance(exc, JobCancelled)`. `track()` (`app.document.
@@ -154,7 +198,9 @@ def _run_bevel_pair_job(job_id: str) -> None:
         # passes through `track()`'s `except` at all. Checking the flag
         # directly classifies a job as `cancelled` whenever cancellation was
         # actually requested, regardless of which layer or exception type a
-        # cancellation-triggered teardown happens to surface.
+        # cancellation-triggered teardown happens to surface - true for
+        # either job-mode Feature type's own `resolve_fn`, not just
+        # `resolve_bevel_pair`'s.
         if isinstance(exc, JobCancelled) or cancellation.is_cancelled():
             with _lock:
                 _finish_job_locked(job_id, JobStatus.CANCELLED)
@@ -185,15 +231,18 @@ def _run_bevel_pair_job(job_id: str) -> None:
         _finish_job_locked(job_id, JobStatus.SUCCEEDED, warnings=warnings)
 
 
-def submit_bevel_pair_job(part_id: str, part: Part, feature: BevelPairFeature) -> JobRecord:
+def _submit_job(part_id: str, part: Part, feature: JobFeature, resolve_fn: _ResolveFn) -> JobRecord:
     """Creates and starts a new job - called from the request thread (so
     `part` is already the correct, session-scoped `Part` object), returns
     immediately with the job in `running` state; the actual build runs in a
     dedicated `threading.Thread` (NOT FastAPI's own request-handling
     threadpool - a long job must not consume one of that pool's limited
     slots for its full duration). Raises `409` if another job is already
-    running anywhere in this server process (see this module's own
-    top-level "Concurrency policy" docstring)."""
+    running anywhere in this server process, REGARDLESS of Feature type -
+    the concurrency policy is process-wide, not per-type (see this module's
+    own top-level "Concurrency policy" docstring: a job's pool(s) already
+    claim most/all available cores, so two concurrent expensive builds of
+    any mix of Feature types would only slow each other down)."""
     global _running_job_id
     with _lock:
         _sweep_expired_locked()
@@ -210,9 +259,24 @@ def submit_bevel_pair_job(part_id: str, part: Part, feature: BevelPairFeature) -
         _jobs[job_id] = record
         _running_job_id = job_id
 
-    thread = threading.Thread(target=_run_bevel_pair_job, args=(job_id,), daemon=True)
+    thread = threading.Thread(target=_run_job, args=(job_id, resolve_fn), daemon=True)
     thread.start()
     return record
+
+
+def submit_bevel_pair_job(part_id: str, part: Part, feature: BevelPairFeature) -> JobRecord:
+    """Thin, `BevelPairFeature`-specific wrapper around `_submit_job` -
+    `resolve_bevel_pair` already matches `_ResolveFn`'s own `(part, feature,
+    cancellation) -> (shape, warnings)` contract directly, no adapter
+    needed."""
+    return _submit_job(part_id, part, feature, resolve_bevel_pair)
+
+
+def submit_planetary_job(part_id: str, part: Part, feature: PlanetaryGearFeature) -> JobRecord:
+    """Thin, `PlanetaryGearFeature`-specific wrapper around `_submit_job` -
+    via `_resolve_planetary_job`'s own return-shape adapter (see that
+    function's own docstring)."""
+    return _submit_job(part_id, part, feature, _resolve_planetary_job)
 
 
 def get_job(part_id: str, job_id: str) -> JobRecord:

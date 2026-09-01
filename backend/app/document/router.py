@@ -14,7 +14,7 @@ from app.document.ai_plan_schemas import PlanValidateRequest, PlanValidateRespon
 from app.document.bevel import _spiral_hand_from_feature, resolve_bevel_gear, resolve_bevel_gear_coarse
 from app.document.bevel_pair import resolve_bevel_pair, resolve_bevel_pair_coarse, resolve_member_profile_shifts
 from app.document.chamfer import resolve_chamfer
-from app.document.jobs import JobStatus, cancel_job, get_job, submit_bevel_pair_job
+from app.document.jobs import JobStatus, cancel_job, get_job, submit_bevel_pair_job, submit_planetary_job
 from app.document.create_plane import (
     basis_for_sketch,
     refresh_external_references,
@@ -147,9 +147,9 @@ from app.document.schemas import (
     BevelPairFeatureCreate,
     BevelPairFeatureResponse,
     BevelPairFeatureUpdate,
-    BevelPairJobCancelResponse,
-    BevelPairJobCreateResponse,
-    BevelPairJobStatusResponse,
+    JobCancelResponse,
+    JobCreateResponse,
+    JobStatusResponse,
     BevelPairMemberSpecSchema,
     BevelPairMeshPreviewResult,
     BodyMeshResponse,
@@ -4316,8 +4316,8 @@ def preview_bevel_pair_feature_coarse(
     return _coarse_preview_response(shape, mesh_quality)
 
 
-@router.post("/parts/{part_id}/bevel-pair-features/jobs", response_model=BevelPairJobCreateResponse, status_code=202)
-def create_bevel_pair_feature_job(part_id: str, payload: BevelPairFeatureCreate) -> BevelPairJobCreateResponse:
+@router.post("/parts/{part_id}/bevel-pair-features/jobs", response_model=JobCreateResponse, status_code=202)
+def create_bevel_pair_feature_job(part_id: str, payload: BevelPairFeatureCreate) -> JobCreateResponse:
     """`docs/lod-strategy/02-phase2-design.md` SS4: job-mode counterpart to
     `create_bevel_pair_feature` - a separate route, not a query flag,
     because the response shape genuinely differs (an immediate `{job_id,
@@ -4352,37 +4352,80 @@ def create_bevel_pair_feature_job(part_id: str, payload: BevelPairFeatureCreate)
         spiral_angle_degrees=payload.spiral_angle_degrees,
     )
     job = submit_bevel_pair_job(part_id, part, feature)  # raises 409 if a job is already running
-    return BevelPairJobCreateResponse(job_id=job.id, status="running")
+    return JobCreateResponse(job_id=job.id, status="running")
 
 
-@router.get("/parts/{part_id}/jobs/{job_id}", response_model=BevelPairJobStatusResponse)
-def get_job_status(part_id: str, job_id: str) -> BevelPairJobStatusResponse:
+@router.post("/parts/{part_id}/planetary-gear-features/jobs", response_model=JobCreateResponse, status_code=202)
+def create_planetary_gear_feature_job(part_id: str, payload: PlanetaryGearFeatureCreate) -> JobCreateResponse:
+    """LOD Phase 2 chunk 3 - job-mode counterpart to `create_planetary_gear_
+    feature`, mirroring `create_bevel_pair_feature_job` above exactly (same
+    reasoning for the separate route/`202`/background-thread shape - see
+    that endpoint's own docstring). Only the cheap, synchronous part of
+    `create_planetary_gear_feature` runs on this request (payload-shape
+    validation, `_validate_plane_ref`, building the `PlanetaryGearFeature`
+    object itself - no OCCT yet); `app.document.jobs.submit_planetary_job`
+    hands the real build (`resolve_planetary`, now cancellation-aware -
+    chunk 1's own pooling plus this chunk's `cancellation` threading) to a
+    dedicated background thread.
+
+    `preview_planetary_gear_feature_coarse` above and every other Feature
+    type's own synchronous create endpoint are completely untouched."""
+    part = get_part_or_404(part_id)
+    plane_ref = _plane_ref_to_domain(payload.plane_ref) if payload.plane_ref is not None else _default_plane_ref()
+    _validate_plane_ref(part, plane_ref)
+    feature = PlanetaryGearFeature(
+        id=str(uuid.uuid4()),
+        plane_ref=plane_ref,
+        module=payload.module,
+        sun_tooth_count=payload.sun_tooth_count,
+        ring_tooth_count=payload.ring_tooth_count,
+        planet_count=payload.planet_count,
+        face_width=payload.face_width,
+        ring_outer_diameter=payload.ring_outer_diameter,
+        pressure_angle_degrees=payload.pressure_angle_degrees,
+    )
+    job = submit_planetary_job(part_id, part, feature)  # raises 409 if a job is already running
+    return JobCreateResponse(job_id=job.id, status="running")
+
+
+@router.get("/parts/{part_id}/jobs/{job_id}", response_model=JobStatusResponse)
+def get_job_status(part_id: str, job_id: str) -> JobStatusResponse:
     """Polls a job's current state (`app.document.jobs.get_job` - a cheap
-    dict lookup, never re-runs any part of the build). On `succeeded`,
-    embeds the exact same `BevelPairFeatureResponse` shape `create_bevel_
-    pair_feature` itself returns (`_bevel_pair_feature_response`, called
-    with the job's own already-known `warnings` - no re-resolution). On
-    `failed`, `error` carries the same structured `{"type": ..., "detail":
+    dict lookup, never re-runs any part of the build) - shared by every
+    job-mode Feature type (`BevelPairFeature`, `PlanetaryGearFeature`), one
+    handler/route for both rather than a duplicate poll endpoint per type.
+    On `succeeded`, embeds the exact same response shape the matching
+    synchronous create endpoint itself returns, dispatched by the job's own
+    actual Feature type: `_bevel_pair_feature_response` (with the job's own
+    already-known `warnings` - no re-resolution) for a `BevelPairFeature`
+    job, `_feature_response` (cheap - no OCCT, `PlanetaryGearFeatureResponse`
+    has no `warnings` field to begin with) for a `PlanetaryGearFeature` one.
+    On `failed`, `error` carries the same structured `{"type": ..., "detail":
     ...}` shape the synchronous endpoint's own `HTTPException` would have
     raised."""
     job = get_job(part_id, job_id)
     if job.status is JobStatus.SUCCEEDED:
-        result = _bevel_pair_feature_response(job.part, job.feature, job.warnings)
-        return BevelPairJobStatusResponse(job_id=job.id, status=job.status.value, result=result)
+        if isinstance(job.feature, BevelPairFeature):
+            result = _bevel_pair_feature_response(job.part, job.feature, job.warnings)
+        else:
+            result = _feature_response(job.part, job.feature)
+        return JobStatusResponse(job_id=job.id, status=job.status.value, result=result)
     if job.status is JobStatus.FAILED:
-        return BevelPairJobStatusResponse(job_id=job.id, status=job.status.value, error=job.error)
-    return BevelPairJobStatusResponse(job_id=job.id, status=job.status.value)
+        return JobStatusResponse(job_id=job.id, status=job.status.value, error=job.error)
+    return JobStatusResponse(job_id=job.id, status=job.status.value)
 
 
-@router.post("/parts/{part_id}/jobs/{job_id}/cancel", response_model=BevelPairJobCancelResponse)
-def cancel_job_endpoint(part_id: str, job_id: str) -> BevelPairJobCancelResponse:
+@router.post("/parts/{part_id}/jobs/{job_id}/cancel", response_model=JobCancelResponse)
+def cancel_job_endpoint(part_id: str, job_id: str) -> JobCancelResponse:
     """Requests cancellation of an in-flight job (`app.document.jobs.
     cancel_job` - `404` if the job doesn't exist/belong to this Part, `409`
-    if it already reached a terminal state). The Feature is never added to
-    the Part if cancelled before the build completes and persists - see
-    `app.document.jobs._run_bevel_pair_job`'s own final pre-persist check."""
+    if it already reached a terminal state) - shared by every job-mode
+    Feature type, same reasoning as `get_job_status` above. The Feature is
+    never added to the Part if cancelled before the build completes and
+    persists - see `app.document.jobs._run_job`'s own final pre-persist
+    check."""
     job = cancel_job(part_id, job_id)
-    return BevelPairJobCancelResponse(job_id=job.id, status=job.status.value)
+    return JobCancelResponse(job_id=job.id, status=job.status.value)
 
 
 def _get_bevel_pair_feature_or_404(part: Part, feature_id: str) -> BevelPairFeature:
