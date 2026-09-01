@@ -9,9 +9,48 @@ Reuses `app.document.gear`'s own real internals directly (`_gear_outline_
 wire`/`_gear_face`/`spur_gear_geometry`), same reuse `app.document.
 gear_chain` already established for `GearChainFeature`. Static/positioned
 only - sun, ring, and every planet are built once and placed, no
-kinematics/rotation (per that Feature's own docstring)."""
+kinematics/rotation (per that Feature's own docstring).
+
+**Members build concurrently, in separate processes** (LOD Phase 2 chunk 1,
+`docs/lod-strategy/00-status.md` Finding 2 - "the fix `bevel_pair.py`
+applied for its 2-member case, never applied here"). `sun_solid`/`ring_
+solid`/every `planet_solids[i]` are fully independent builds (different
+geometry/basis, no shared mutable state - identical property `app.document.
+bevel_pair.resolve_bevel_pair_from_bodies`'s own 2-member pool already
+relies on), so `_build_member_solid` runs each in its own OS process via a
+`ProcessPoolExecutor`, mirroring that module's pattern exactly: `spawn`
+context (OCCT is not fork-safe - see `bevel_pair.py`'s own top-level
+docstring for the on-device-reproduced deadlock this avoids), and a real
+BREP-bytes round-trip (now `app.document.occt_process_utils`, promoted out
+of `bevel_pair.py` this same session so both modules share one
+serialization path instead of duplicating it) since a `TopoDS_Shape` itself
+can't cross a process boundary.
+
+**Worker count, deliberately NOT `bevel_pair.py`'s own fixed
+`max_workers=2`**: a planetary set can have anywhere from `2 + planet_count`
+(2 to a handful of planets is typical, but the field has no upper bound)
+independent builds to submit, not always exactly 2 - `_planetary_pool_worker_
+count` scales with `os.cpu_count()` the same way `bevel_pair.py`'s own
+phase-search pool (`_phase_search_worker_count`) already does for its own
+variable-sized batch of trials, for the identical reason (more independent
+units of work than a hardcoded small constant could ever schedule).
+
+Every build's own validation (`planetary_planet_tooth_count`/`spur_gear_
+geometry`/`validate_planetary_assembly`/the `face_width`/`ring_outer_
+diameter` checks) stays exactly where it was - synchronous, in the calling
+process, before any pool ever opens - only the solid *construction* itself
+(`_build_member_solid`) moves to the pool. A worker-raised exception (e.g.
+`GearGeometryError` from a race the pre-flight checks above didn't already
+catch) is a plain picklable `ValueError` subclass, so it crosses the
+`ProcessPoolExecutor` boundary unchanged, same as `bevel_pair.py`'s own
+documented `GearGeometryError` cross-process behavior - no `_MemberBuildFailed`-
+style wrapper is needed here since `_build_member_solid` itself never
+raises an `HTTPException` (unlike `bevel.py`'s `_assemble_gear_solid`)."""
 
 import math
+import multiprocessing
+import os
+from concurrent.futures import ProcessPoolExecutor
 
 from fastapi import HTTPException
 from OCC.Core.BRep import BRep_Builder
@@ -32,6 +71,8 @@ from app.document.gear_math import (
     validate_planetary_assembly,
 )
 from app.document.models import Part, PlanetaryGearFeature, ResolvedPlane
+from app.document.occt_process_utils import shape_from_brep_bytes as _shape_from_brep_bytes
+from app.document.occt_process_utils import shape_to_brep_bytes as _shape_to_brep_bytes
 
 _POINTS_PER_FLANK = 12
 
@@ -58,6 +99,62 @@ def _build_member_solid(
     normal = basis_normal(basis)
     prism_vector = gp_Vec(normal.X(), normal.Y(), normal.Z()).Multiplied(face_width)
     return BRepPrimAPI_MakePrism(face, prism_vector).Shape()
+
+
+class _MemberBuildFailed(Exception):
+    """A plain, guaranteed-cleanly-picklable stand-in for the `HTTPException`
+    `_gear_face`'s own internal-gear branch can raise (`outer_diameter` not
+    exceeding the tooth profile's own dedendum reach) - mirrors `app.
+    document.bevel_pair._MemberBuildFailed`'s own docstring/reasoning
+    exactly (an `HTTPException` risks losing `status_code` across a real
+    `spawn`-context pickle round-trip). In practice this specific branch is
+    already unreachable for the ring member by the time `_build_member_
+    solid_worker` runs it - `resolve_planetary_from_bodies`'s own pre-flight
+    `ring_outer_diameter` check below enforces the identical condition
+    first, synchronously, before any pool ever opens - kept here as the
+    same defense-in-depth `bevel_pair.py` already establishes for its own
+    analogous worker, not because a live code path reaches it today."""
+
+
+def _build_member_solid_worker(
+    basis: ResolvedPlane, geometry: SpurGearGeometry, is_internal: bool, outer_diameter: float | None, face_width: float
+) -> bytes:
+    """The `ProcessPoolExecutor` worker entry point - module-level
+    (picklable by reference), picklable-only inputs (`ResolvedPlane`/
+    `SpurGearGeometry` are both plain dataclasses of primitives), BREP-bytes
+    output (a `TopoDS_Shape` itself can't cross a process boundary) -
+    mirrors `app.document.bevel_pair._build_member_solid`'s own worker
+    shape. Runs the exact same `_build_member_solid` the old sequential code
+    called directly, just inside a worker process now. A `GearGeometryError`
+    this module's own pre-flight checks below didn't already catch is a
+    plain, cleanly-picklable exception that crosses the `ProcessPoolExecutor`
+    boundary and surfaces from `Future.result()` unchanged, same as `app.
+    document.bevel_pair`'s own documented cross-process `GearGeometryError`
+    behavior; any `HTTPException` `_gear_face` itself raises is caught and
+    re-raised as `_MemberBuildFailed` instead, for the same reason that
+    class's own docstring gives."""
+    try:
+        solid = _build_member_solid(basis, geometry, is_internal, outer_diameter, face_width)
+    except HTTPException as exc:
+        raise _MemberBuildFailed(str(exc.detail)) from None
+    return _shape_to_brep_bytes(solid)
+
+
+def _planetary_pool_worker_count(member_count: int) -> int:
+    """Worker count for the sun/ring/planets pool - deliberately NOT `app.
+    document.bevel_pair`'s own fixed `max_workers=2` (that module always
+    has exactly 2 members; a planetary set has `2 + planet_count`, which
+    varies), so this scales with `os.cpu_count()` the same way that
+    module's own variable-sized phase-search pool
+    (`_phase_search_worker_count`) already does, for the identical reason.
+    `os.cpu_count() - 1` leaves one core free for the phone's own UI/
+    Termux/proot overhead while the pool runs (same judgment call that
+    function's own docstring already makes, not independently
+    on-device-validated here); floored at 2 (never worth a single-worker
+    "pool") and capped at `member_count` (no reason to spin up more workers
+    than there are independent builds to submit)."""
+    cpu_count = os.cpu_count() or 2
+    return max(2, min(cpu_count - 1, member_count))
 
 
 def resolve_planetary_from_bodies(
@@ -153,7 +250,6 @@ def resolve_planetary_from_bodies(
     # symbolically here, since the existing assembly-condition check is
     # already the standard textbook criterion for this).
     sun_rotation = 0.0
-    sun_solid = _build_member_solid(basis, sun_geometry, False, None, feature.face_width)
 
     planet_0_azimuth = 0.0
     planet_0_base = meshing_phase_base(planet_tooth_count, ChainMemberKind.EXTERNAL, planet_0_azimuth)
@@ -178,10 +274,9 @@ def resolve_planetary_from_bodies(
         ring_base,
     )
     ring_basis = _positioned_basis(basis, 0.0, 0.0, rotation=ring_rotation)
-    ring_solid = _build_member_solid(ring_basis, ring_geometry, True, feature.ring_outer_diameter, feature.face_width)
 
     orbit_radius = sun_geometry.pitch_radius + planet_geometry.pitch_radius
-    planet_solids = []
+    planet_bases = []
     for i in range(feature.planet_count):
         phi = 2 * math.pi * i / feature.planet_count
         planet_base = meshing_phase_base(planet_tooth_count, ChainMemberKind.EXTERNAL, phi)
@@ -195,8 +290,33 @@ def resolve_planetary_from_bodies(
             planet_base,
         )
         px, py = orbit_radius * math.cos(phi), orbit_radius * math.sin(phi)
-        planet_basis = _positioned_basis(basis, px, py, rotation=planet_rotation)
-        planet_solids.append(_build_member_solid(planet_basis, planet_geometry, False, None, feature.face_width))
+        planet_bases.append(_positioned_basis(basis, px, py, rotation=planet_rotation))
+
+    # Every member build is independent (different geometry/basis, no
+    # shared mutable state) - submitted to a real `ProcessPoolExecutor` for
+    # genuine multi-core parallelism, mirroring `app.document.bevel_pair.
+    # resolve_bevel_pair_from_bodies`'s own pooling exactly (this module's
+    # own top-level docstring has the full reasoning: `spawn` context,
+    # BREP-bytes round-trip, why a process pool rather than threads). Only
+    # the solid *construction* moves to the pool - every validation check
+    # above already ran, synchronously, before this point, unchanged.
+    mp_context = multiprocessing.get_context("spawn")
+    member_count = 2 + feature.planet_count
+    with ProcessPoolExecutor(max_workers=_planetary_pool_worker_count(member_count), mp_context=mp_context) as executor:
+        sun_future = executor.submit(_build_member_solid_worker, basis, sun_geometry, False, None, feature.face_width)
+        ring_future = executor.submit(
+            _build_member_solid_worker, ring_basis, ring_geometry, True, feature.ring_outer_diameter, feature.face_width
+        )
+        planet_futures = [
+            executor.submit(_build_member_solid_worker, planet_basis, planet_geometry, False, None, feature.face_width)
+            for planet_basis in planet_bases
+        ]
+        try:
+            sun_solid = _shape_from_brep_bytes(sun_future.result())
+            ring_solid = _shape_from_brep_bytes(ring_future.result())
+            planet_solids = [_shape_from_brep_bytes(future.result()) for future in planet_futures]
+        except _MemberBuildFailed as exc:
+            raise _invalid_planetary_parameters(str(exc)) from exc
 
     compound = TopoDS_Compound()
     builder = BRep_Builder()

@@ -140,8 +140,8 @@ comment)."""
 import math
 import multiprocessing
 import os
-import tempfile
 from concurrent.futures import ProcessPoolExecutor
+from contextlib import nullcontext
 from dataclasses import replace
 
 from fastapi import HTTPException
@@ -149,7 +149,6 @@ from OCC.Core.BRep import BRep_Builder
 from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Common
 from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform
 from OCC.Core.BRepGProp import brepgprop
-from OCC.Core.BRepTools import breptools
 from OCC.Core.GProp import GProp_GProps
 from OCC.Core.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf
 from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape
@@ -173,9 +172,25 @@ from app.document.bevel_math import (
 )
 from app.document.create_plane import resolve_plane_ref
 from app.document.extrude import compute_part_bodies
+from app.document.job_cancellation import CancellationToken
 from app.document.models import BevelPairFeature, Part, ResolvedPlane
+from app.document.occt_process_utils import shape_from_brep_bytes as _shape_from_brep_bytes
+from app.document.occt_process_utils import shape_to_brep_bytes as _shape_to_brep_bytes
 
 _MEMBER_LABELS = ("member_1", "member_2")
+
+
+def _cancellation_scope(cancellation: CancellationToken | None, executor: ProcessPoolExecutor):
+    """`cancellation.track(executor)` when job-mode passed a real
+    `CancellationToken`, a plain no-op context manager otherwise - every
+    synchronous (non-job) caller passes `cancellation=None`, so this is a
+    pure no-op for them, byte-for-byte the same pool behavior as before
+    cancellation support existed. See `app.document.job_cancellation`'s own
+    module docstring for why this hook lives at the pool-open boundary
+    specifically."""
+    if cancellation is None:
+        return nullcontext()
+    return cancellation.track(executor)
 
 
 def _invalid_bevel_pair_parameters(detail: str) -> HTTPException:
@@ -589,7 +604,11 @@ def _run_phase_search_tier(
 
 
 def _search_meshing_phase(
-    solid_1: TopoDS_Shape, solid_2_base: TopoDS_Shape, basis_2: ResolvedPlane, tooth_count_2: int
+    solid_1: TopoDS_Shape,
+    solid_2_base: TopoDS_Shape,
+    basis_2: ResolvedPlane,
+    tooth_count_2: int,
+    cancellation: "CancellationToken | None" = None,
 ) -> tuple[float, float | None]:
     """Finds the extra phase delta (radians, applied on top of `solid_2_
     base`'s own already-baked-in fixed-convention rotation) that minimizes
@@ -645,12 +664,13 @@ def _search_meshing_phase(
     # here (this process has already imported OCCT by the time this pool
     # is opened).
     mp_context = multiprocessing.get_context("spawn")
-    with ProcessPoolExecutor(
+    executor = ProcessPoolExecutor(
         max_workers=_phase_search_worker_count(),
         mp_context=mp_context,
         initializer=_init_phase_search_worker,
         initargs=(solid_1_brep, solid_2_base_brep, basis_2),
-    ) as executor:
+    )
+    with executor, _cancellation_scope(cancellation, executor):
         draft_delta, draft_overlap = _run_phase_search_tier(
             executor,
             solid_1,
@@ -680,44 +700,6 @@ def _search_meshing_phase(
     if full_overlap is None:
         return draft_delta, draft_overlap
     return (full_delta, full_overlap) if full_overlap <= draft_overlap else (draft_delta, draft_overlap)
-
-
-def _shape_to_brep_bytes(shape: TopoDS_Shape) -> bytes:
-    """Round-trips `shape` through a real BREP file (`breptools.Write` has
-    no in-memory/string overload confirmed available in this session - no
-    on-device pythonocc-core to check against, so a real temp file is the
-    one guaranteed-available serialization path) - the only way to move a
-    `TopoDS_Shape` (a SWIG-wrapped C++ object, not picklable) across a
-    `ProcessPoolExecutor` worker boundary. A modest bevel gear solid's own
-    BREP text is small (tens to low hundreds of KB) and local disk I/O on
-    this app's own Pi 5 target hardware is far cheaper than the minutes-
-    scale OCCT construction this is unblocking, so the extra round-trip
-    cost here is not the bottleneck this workstream is chasing."""
-    fd, path = tempfile.mkstemp(suffix=".brep")
-    os.close(fd)
-    try:
-        breptools.Write(shape, path)
-        with open(path, "rb") as f:
-            return f.read()
-    finally:
-        os.unlink(path)
-
-
-def _shape_from_brep_bytes(data: bytes) -> TopoDS_Shape:
-    """Inverse of `_shape_to_brep_bytes` - the main process's own half of
-    the round-trip, reconstructing a real `TopoDS_Shape` from a worker
-    process's finished solid."""
-    fd, path = tempfile.mkstemp(suffix=".brep")
-    os.close(fd)
-    try:
-        with open(path, "wb") as f:
-            f.write(data)
-        shape = TopoDS_Shape()
-        builder = BRep_Builder()
-        breptools.Read(shape, path, builder)
-        return shape
-    finally:
-        os.unlink(path)
 
 
 def _build_member_solid(
@@ -921,6 +903,7 @@ def resolve_bevel_pair_from_bodies(
     part: Part,
     bodies: dict[str, TopoDS_Shape],
     excluded_feature_ids: frozenset[str],
+    cancellation: CancellationToken | None = None,
 ) -> tuple[TopoDS_Shape, list[str]]:
     """The real OCCT compound for one `BevelPairFeature` - both members'
     solids, built by calling `app.document.bevel._assemble_gear_solid`
@@ -931,7 +914,17 @@ def resolve_bevel_pair_from_bodies(
     from_bodies`'s own shape exactly. Raises a structured `HTTPException`
     rather than returning `None` on any failure - a `BevelPairFeature` has
     no "temporarily has nothing to build" state, same reasoning every
-    other gear-family Feature here already uses."""
+    other gear-family Feature here already uses.
+
+    `cancellation` (LOD Phase 2, `app.document.job_cancellation`) is `None`
+    for every synchronous caller (`resolve_bevel_pair`'s own default) - a
+    pure no-op in that case, byte-for-byte the same behavior as before
+    job-mode existed. `app.document.jobs`'s own job runner is the only
+    caller that ever passes a real `CancellationToken`, threaded down into
+    both `ProcessPoolExecutor` sites this function can open (the member-
+    build pool below, and - for a spiral pair - `_search_meshing_phase`'s
+    own phase-search pool) so a cancel request can reach whichever one is
+    actually live and terminate its worker processes directly."""
     if feature.points_per_flank < 2:
         # Mirrors `app.document.bevel.resolve_bevel_gear_from_bodies`'s own
         # identical guard - applies to both members here, built via the same
@@ -1061,7 +1054,8 @@ def resolve_bevel_pair_from_bodies(
     # cost next to the multi-second-plus builds this is parallelizing), but
     # immune to this whole class of post-fork corruption.
     mp_context = multiprocessing.get_context("spawn")
-    with ProcessPoolExecutor(max_workers=2, mp_context=mp_context) as executor:
+    executor = ProcessPoolExecutor(max_workers=2, mp_context=mp_context)
+    with executor, _cancellation_scope(cancellation, executor):
         future_1 = executor.submit(
             _build_member_solid,
             basis_1,
@@ -1131,7 +1125,7 @@ def resolve_bevel_pair_from_bodies(
             )
         else:
             phase_delta, best_overlap = _search_meshing_phase(
-                solid_1, solid_2, basis_2, feature.member_2.tooth_count
+                solid_1, solid_2, basis_2, feature.member_2.tooth_count, cancellation
             )
             if best_overlap is None:
                 warnings.append(
@@ -1150,14 +1144,19 @@ def resolve_bevel_pair_from_bodies(
 
 
 def resolve_bevel_pair(
-    part: Part, feature: BevelPairFeature, excluded_feature_ids: frozenset[str] = frozenset()
+    part: Part,
+    feature: BevelPairFeature,
+    excluded_feature_ids: frozenset[str] = frozenset(),
+    cancellation: CancellationToken | None = None,
 ) -> tuple[TopoDS_Shape, list[str]]:
     """Fresh entry point for the router's create/update validation - mirrors
     `app.document.planetary_gear.resolve_planetary`'s own self-exclusion
-    convention exactly."""
+    convention exactly. `cancellation` defaults to `None` (every synchronous
+    caller) - only `app.document.jobs`'s own job runner ever passes a real
+    `CancellationToken`."""
     all_excluded = excluded_feature_ids | {feature.id}
     bodies = compute_part_bodies(part, all_excluded)
-    return resolve_bevel_pair_from_bodies(feature, part, bodies, all_excluded)
+    return resolve_bevel_pair_from_bodies(feature, part, bodies, all_excluded, cancellation)
 
 
 # ---------------------------------------------------------------------------
