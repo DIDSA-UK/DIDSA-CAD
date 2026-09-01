@@ -32,7 +32,8 @@ doc and any design-doc content — no implementation).
 | Phase 1 chunk 2 (coarse-mesh mechanism + gear-family builders) | **merged to `main`** | branch `claude/lod-coarse-mesh-gear-family`, [PR #174](https://github.com/DIDSA-UK/DIDSA-CAD/pull/174) | Two code-review rounds found and fixed real validation gaps in the new coarse-preview endpoints; branch merged forward against `main` twice (PR #172, then PR #173) to reconcile cross-cutting `bevel.py`/`router.py`/`extrude.py` changes, one real semantic conflict resolved by hand. Full suite 1882/1882 passed pre-fix-up (real OCCT); the fix-up and both merge-forward passes were verified by code review + syntax check only in this coordinator's sandbox (no `pythonocc-core` available here), merged 2026-08-27. Foundational plumbing now available on `main` — chunks 3/4/5 unblocked. |
 | Phase 1 chunks 3+4+5 (Pattern/Loft coarse builders + client toggle) | implemented, **under coordinator review** | branch `claude/lod-pattern-loft-client`, [PR #175](https://github.com/DIDSA-UK/DIDSA-CAD/pull/175) | Pattern/Loft coarse builders + coarse-preview endpoints + instance-count cap (backend, real-OCCT verified: 1909→1919, zero regressions); client mesh-override generalization, per-Feature pending/pinned state, both flows wired (create-time for Pattern/Loft only — the five gear-family types' own create flow lives in `GearDesignScreen`, which has no `PartViewport` mounted; re-open flow wired universally), Feature-tree badge + pin toggle (real Flutter, `flutter analyze` 0 issues, `flutter test` 1453 passed/0 failed). PR opened directly by the implementing session. Full detail below. |
 | Phase 2 design pass | approved | `02-phase2-design.md` | Phase 2 implementation dispatched — chunks 1+2 below. |
-| Phase 2 chunks 1+2 (planetary pooling + `BevelPairFeature` job mode) | implemented, **PR open** | branch `claude/lod-phase2-planetary-and-bevel-jobs`, [PR #179](https://github.com/DIDSA-UK/DIDSA-CAD/pull/179) | `ProcessPoolExecutor` pooling added to `planetary_gear.py` (Finding 2's own flagged perf gap, plus the hard prerequisite for future cancellation); new in-memory job store + real mid-build cancellation + 3 new routes, scoped only to `BevelPairFeature`. Real-OCCT verified: 1919 → 1933, zero regressions. Full detail below. |
+| Phase 2 chunks 1+2 (planetary pooling + `BevelPairFeature` job mode) | **merged to `main`** | branch `claude/lod-phase2-planetary-and-bevel-jobs`, [PR #179](https://github.com/DIDSA-UK/DIDSA-CAD/pull/179) | `ProcessPoolExecutor` pooling added to `planetary_gear.py` (Finding 2's own flagged perf gap, plus the hard prerequisite for future cancellation); new in-memory job store + real mid-build cancellation + 3 new routes, scoped only to `BevelPairFeature`. Real-OCCT verified: 1919 → 1933, zero regressions. Merged 2026-09-01 - chunk 3 unblocked. Full detail below. |
+| Phase 2 chunk 3 (`PlanetaryGearFeature` job mode) | implemented | branch `claude/lod-phase2-planetary-jobs` | Extends the exact chunk-2 job-mode mechanism to `PlanetaryGearFeature` - generalized the job store (was `BevelPairFeature`-specific) rather than duplicating it; added `cancellation` support to `resolve_planetary_from_bodies`. Found and fixed a real pre-existing bug (`GearChainFeature`/`PlanetaryGearFeature` missing from the `FeatureResponse` Union, 500ing `GET /features`) and a real concurrent-shutdown race in the shared cancellation mechanism (affects `BevelPairFeature` too), both via this session's own verification. Real-OCCT verified: 1933 → 1941, zero regressions. Full detail below. |
 
 ---
 
@@ -266,7 +267,8 @@ fallback is `GET /features`, which — absent chunk 1's fix — re-runs the enti
 answer that question), and (b) genuine mid-build cancellation, a real gap with no existing
 analogue. Full design: `02-phase2-design.md`.
 
-**Approved — chunks 1+2 dispatched and implemented, see "Dispatched implementation sessions" below.**
+**Approved — chunks 1+2 dispatched, implemented, and merged to `main`; chunk 3 dispatched and
+implemented next, see "Dispatched implementation sessions" below.**
 
 ---
 
@@ -535,3 +537,79 @@ spending a third fix-up round on a bounded edge case.
   - UI concurrency or fine-grained progress reporting (explicitly out of scope per the approved
     design, `02-phase2-design.md` §7).
 - Full detail: `docs/status.md`'s 2026-09-01 "LOD Phase 2 chunks 1+2" entry.
+- **Merged to `main` 2026-09-01** (via PR #179) - confirmed merged (not just PR-open) before the
+  chunk 3 session below started, per that session's own explicit dependency check.
+
+---
+
+### Phase 2 chunk 3 — `PlanetaryGearFeature` job mode (branch `claude/lod-phase2-planetary-jobs`)
+
+- **Branch**: `claude/lod-phase2-planetary-jobs`, based on `main` after confirming PR #179
+  (chunks 1+2) had actually merged (`git log origin/main` checked directly - the dispatch prompt's
+  own explicit instruction, since a prior attempt to start this session was correctly stopped and
+  reported when the branch hadn't merged yet at that time).
+- **Scope**: extends chunk 2's exact `BevelPairFeature` job-mode mechanism to `PlanetaryGearFeature`,
+  now that it has real pooling to cancel into (chunk 1). Read the merged chunks 1+2 code directly
+  before starting, per the dispatch prompt's own instruction not to guess at the landed shape.
+  - **Generalized the job store, did not duplicate it**: `app.document.job_cancellation`'s
+    `CancellationToken`/`JobCancelled` were already Feature-type-agnostic. `app.document.jobs` (built
+    `BevelPairFeature`-specific in chunk 2, correctly scoped at the time) - `JobRecord.feature`
+    widened to `BevelPairFeature | PlanetaryGearFeature`; `_run_bevel_pair_job`/`submit_bevel_pair_job`
+    split into a shared `_run_job`/`_submit_job` core (a small adapter, `_resolve_planetary_job`,
+    normalizes `resolve_planetary`'s bare-shape return to the same `(shape, warnings)` contract
+    `resolve_bevel_pair` already matches - `PlanetaryGearFeatureResponse` has no `warnings` field at
+    all) plus a thin `submit_planetary_job` wrapper. The job store itself (eviction, the one-job-at-
+    a-time concurrency policy, now confirmed process-wide across both Feature types) and `get_job`/
+    `cancel_job` needed zero changes - already fully generic.
+  - **Schemas/router**: `BevelPairJob*Response` renamed to generic `Job*Response`
+    (`JobStatusResponse.result` widened to `BevelPairFeatureResponse | PlanetaryGearFeatureResponse |
+    None`) - one shared `GET /parts/{id}/jobs/{job_id}`/`POST .../cancel` pair now serves both
+    Feature types. New `POST /parts/{id}/planetary-gear-features/jobs` (202) mirrors
+    `create_bevel_pair_feature_job` exactly. `get_job_status` dispatches its success-branch response
+    by the job's actual Feature type (`_bevel_pair_feature_response` vs. the generic
+    `_feature_response`). `BevelPairFeature`'s own job-mode create/cancel mechanics untouched.
+  - **Cancellation**: promoted `bevel_pair.py`'s private `_cancellation_scope` into
+    `job_cancellation.py` as public `cancellation_scope` (pure refactor, zero behavior change -
+    `bevel_pair.py` imports it back under its original name). `planetary_gear.py`'s
+    `resolve_planetary_from_bodies`/`resolve_planetary` gained the identical optional `cancellation`
+    parameter, wired into chunk 1's own sun/ring/planet pool via the same shared hook.
+- **Real pre-existing bug found and fixed, unrelated to job mode**: `GET /parts/{id}/features` 500'd
+  for ANY Part containing a `GearChainFeature` or `PlanetaryGearFeature` - both response schemas exist
+  and are correctly built, but neither was ever added to the `FeatureResponse` `Union` in
+  `schemas.py`. Reproduced directly against `main`, pre-dating this session entirely; never caught
+  before because no prior test exercised `GET /features` for either type. Fixed by adding both to
+  the Union.
+- **Real race found and fixed via this session's own cancellation test, in the shared
+  `job_cancellation.py` mechanism (affects `BevelPairFeature` too, not just `PlanetaryGearFeature`)**:
+  the cancelling thread and the job's own owning thread both call `ProcessPoolExecutor.shutdown()` on
+  the same executor - safe repeated from one thread, not thread-safe under two genuinely concurrent
+  calls; confirmed on-device as a real ~1-in-3 race (root-caused with a raw reproduction script, not
+  guessed at) surfacing as a spurious `OSError: [Errno 9] Bad file descriptor` that turned a clean
+  cancellation into `failed` instead of `cancelled`. Fixed by swallowing exceptions from both
+  `shutdown()` call sites (a new `shutdown_pool_quietly` helper, plus `_kill_pool_workers`'s own call)
+  - the already-issued `process.kill()` calls are the real, externally-observable effect (confirmed
+  via `os.kill(pid, 0)` in every cancellation test), so losing a shutdown-only race is safe. Stress-
+  tested: the previously-flaky test passed 5/5 further runs after the fix; `bevel_pair.py`'s own
+  equivalent test (exposed to the identical, never-previously-caught race) re-run 3/3 clean.
+- **Verification, real throughout**: same bootstrapped `pythonocc-core=7.9.3` env (still warm from
+  the chunks-1+2 session). Real baseline (post-PR-#179-merge, before any change): **1933 passed** -
+  matches chunks-1+2's own final count exactly. New `backend/tests/test_planetary_gear_jobs.py`
+  (8 tests, mirroring `test_bevel_pair_jobs.py`'s own shape): fast job-mode create; result parity
+  with a synchronous create (Feature lands in both `GET /features`, now fixed, and `GET /mesh`);
+  status transitions through `running`; **real cancellation** against a genuinely slow configuration
+  (module=40, 800/2400 tooth, 4 planets - real wall-clock confirmed several seconds) with live worker
+  PIDs confirmed dead afterward, job settled `cancelled`, Feature never persisted; cancel-on-terminal
+  409; exception-path parity (odd tooth difference); the concurrency-policy 409 proven explicitly
+  **across Feature types** (a running `PlanetaryGearFeature` job blocks a concurrent `BevelPairFeature`
+  job-mode create); unknown-job 404. Every pre-existing suite this session's changes touch
+  (`test_planetary_gear_feature.py`, `test_planetary_gear_pooling.py`, `test_bevel_pair_feature.py`,
+  `test_bevel_pair_jobs.py`) re-run in full: **70/70 passed**, confirming the generalization and the
+  shutdown-race fix left every existing code path byte-for-byte behaviorally unaffected. Full suite:
+  **1941 passed, 0 failed** (1096.12s, `pytest-xdist` 4 cores) - 1933 + 8 new, zero regressions.
+- **Not done this session** (explicitly out of scope): any client/Flutter changes (chunk 4, a
+  separate session, can now build against both Feature types' identical job-mode endpoint shapes);
+  any change to `BevelPairFeature`'s own job-mode create/cancellation mechanics beyond the shared-
+  infrastructure generalization and the shutdown-race fix (both apply equally to it); any other
+  Feature type's synchronous contract (the `FeatureResponse` fix restores parity for two types that
+  were simply broken, not a contract change).
+- Full detail: `docs/status.md`'s 2026-09-01 "LOD Phase 2 chunk 3" entry.
