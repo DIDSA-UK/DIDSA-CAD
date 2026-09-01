@@ -213,50 +213,43 @@ void main() {
     expect(chainBody?['stages'], hasLength(2));
   });
 
-  testWidgets('Create in Planetary mode posts via createPlanetaryGearFeature', (tester) async {
-    final requestedPaths = <String>[];
-    final client = DocumentApiClient(
-      httpClient: MockClient((request) async {
-        requestedPaths.add('${request.method} ${request.url.path}');
-        if (request.url.path == '/document/gear/preview') {
-          return jsonResponse(planetaryPreviewResponse());
-        }
-        if (request.url.path == '/document/parts') {
-          return jsonResponse({'id': 'part-1', 'name': 'Planetary Gear Part', 'feature_ids': []}, status: 201);
-        }
-        if (request.url.path == '/document/parts/part-1/planetary-gear-features') {
-          return jsonResponse({
-            'type': 'planetary_gear',
-            'id': 'planetary-1',
-            'locked': false,
-            'produces': 'body',
-            'module': 2.0,
-            'sun_tooth_count': 20,
-            'ring_tooth_count': 60,
-            'planet_count': 4,
-            'face_width': 5.0,
-            'ring_outer_diameter': 140.0,
-            'pressure_angle_degrees': 20.0,
-          }, status: 201);
-        }
-        return jsonResponse({'id': 'part-1', 'name': 'Planetary Gear Part', 'feature_ids': []});
-      }),
-    );
+  testWidgets(
+    'Create in Planetary mode job-mode-creates via createPlanetaryGearFeatureJob '
+    '(LOD Phase 2 chunk 4)',
+    (tester) async {
+      final requestedPaths = <String>[];
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          requestedPaths.add('${request.method} ${request.url.path}');
+          if (request.url.path == '/document/gear/preview') {
+            return jsonResponse(planetaryPreviewResponse());
+          }
+          if (request.url.path == '/document/parts') {
+            return jsonResponse({'id': 'part-1', 'name': 'Planetary Gear Part', 'feature_ids': []}, status: 201);
+          }
+          if (request.url.path == '/document/parts/part-1/planetary-gear-features/jobs') {
+            return jsonResponse({'job_id': 'planetary-job-1', 'status': 'running'}, status: 202);
+          }
+          return jsonResponse({'id': 'part-1', 'name': 'Planetary Gear Part', 'feature_ids': []});
+        }),
+      );
 
-    await tester.pumpWidget(
-      MaterialApp(home: GearChainDesignScreen(documentApi: client, initialMode: GearMultiKind.planetary)),
-    );
-    await tester.pump(const Duration(milliseconds: 600));
-    await tester.pumpAndSettle();
+      await tester.pumpWidget(
+        MaterialApp(home: GearChainDesignScreen(documentApi: client, initialMode: GearMultiKind.planetary)),
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pumpAndSettle();
 
-    await tester.ensureVisible(find.byType(FilledButton));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byType(FilledButton));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 100));
+      await tester.ensureVisible(find.byType(FilledButton));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(FilledButton));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
 
-    expect(requestedPaths, contains('POST /document/parts/part-1/planetary-gear-features'));
-  });
+      expect(requestedPaths, contains('POST /document/parts/part-1/planetary-gear-features/jobs'));
+      expect(requestedPaths, isNot(contains('POST /document/parts/part-1/planetary-gear-features')));
+    },
+  );
 
   testWidgets('Add stage appends another stage row', (tester) async {
     final client = DocumentApiClient(

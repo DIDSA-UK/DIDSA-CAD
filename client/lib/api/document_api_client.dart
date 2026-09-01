@@ -918,6 +918,63 @@ class CascadeDeleteResultDto {
       );
 }
 
+/// LOD Phase 2 (`docs/lod-strategy/02-phase2-design.md` SS4): returned
+/// immediately by a job-mode create endpoint - mirrors the backend's
+/// `JobCreateResponse`. The build itself hasn't started resolving yet when
+/// this comes back; poll [DocumentApiClient.getJobStatus] with [jobId] for
+/// the eventual outcome.
+class JobCreateDto {
+  final String jobId;
+  final String status;
+
+  JobCreateDto({required this.jobId, required this.status});
+
+  factory JobCreateDto.fromJson(Map<String, dynamic> json) =>
+      JobCreateDto(jobId: json['job_id'] as String, status: json['status'] as String);
+}
+
+/// `GET /parts/{part_id}/jobs/{job_id}` - mirrors the backend's
+/// `JobStatusResponse`. [status] is one of `'running'`/`'succeeded'`/
+/// `'failed'`/`'cancelled'`. [result] is only ever set once [status] ==
+/// `'succeeded'`, and parses via the same [FeatureDto.fromJson] every
+/// synchronous create endpoint's own response already does (the backend's
+/// `BevelPairFeatureResponse`/`PlanetaryGearFeatureResponse` share
+/// [FeatureDto]'s shape - `app.document.router.get_job_status`'s own
+/// docstring). [error] is only ever set once [status] == `'failed'`, the
+/// same structured `{"type": ..., "detail": ...}` map every other domain
+/// error in this backend uses.
+class JobStatusDto {
+  final String jobId;
+  final String status;
+  final FeatureDto? result;
+  final Map<String, dynamic>? error;
+
+  JobStatusDto({required this.jobId, required this.status, this.result, this.error});
+
+  factory JobStatusDto.fromJson(Map<String, dynamic> json) => JobStatusDto(
+        jobId: json['job_id'] as String,
+        status: json['status'] as String,
+        result: json['result'] != null ? FeatureDto.fromJson(json['result'] as Map<String, dynamic>) : null,
+        error: (json['error'] as Map?)?.cast<String, dynamic>(),
+      );
+}
+
+/// `POST /parts/{part_id}/jobs/{job_id}/cancel` - mirrors the backend's
+/// `JobCancelResponse`. [status] may still read `'running'` immediately
+/// after this call returns (the kill request was issued, but the
+/// background build thread hasn't necessarily noticed and finished yet) -
+/// poll [DocumentApiClient.getJobStatus] to observe the actual transition
+/// to `'cancelled'`.
+class JobCancelDto {
+  final String jobId;
+  final String status;
+
+  JobCancelDto({required this.jobId, required this.status});
+
+  factory JobCancelDto.fromJson(Map<String, dynamic> json) =>
+      JobCancelDto(jobId: json['job_id'] as String, status: json['status'] as String);
+}
+
 /// AI Modelling workstream 5's `POST /document/parts/{part_id}/ai-plan/
 /// validate` response - one entry per plan step
 /// (`backend/app/document/ai_plan_schemas.py`'s `StepResult`). [error] is
@@ -1473,7 +1530,15 @@ class DocumentApiClient {
       throw ApiException('Could not reach the server: $e');
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw ApiException('Server returned ${response.statusCode}: ${_detailOf(response)}');
+      // LOD Phase 2 chunk 4: `statusCode` was never populated here (unlike
+      // `sketch_api_client.dart`'s own identically-shaped `_send`, which
+      // already passes it) - needed so a job-mode poll can tell a genuine
+      // 404 (the job id is unknown to the server - see `_PartScreenState.
+      // _pollJob`'s own doc comment) apart from a transient network error,
+      // rather than polling forever against a job the server has already
+      // forgotten.
+      throw ApiException('Server returned ${response.statusCode}: ${_detailOf(response)}',
+          statusCode: response.statusCode);
     }
     final decoded = response.body.isEmpty ? null : jsonDecode(response.body);
     return onSuccess(decoded);
@@ -1491,7 +1556,8 @@ class DocumentApiClient {
       throw ApiException('Could not reach the server: $e');
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw ApiException('Server returned ${response.statusCode}: ${_detailOf(response)}');
+      throw ApiException('Server returned ${response.statusCode}: ${_detailOf(response)}',
+          statusCode: response.statusCode);
     }
     return response.bodyBytes;
   }
@@ -3025,18 +3091,89 @@ class DocumentApiClient {
         () => _httpClient.post(
               _uri('/document/parts/$partId/planetary-gear-features'),
               headers: _headers,
-              body: jsonEncode({
-                if (planeRef != null) 'plane_ref': planeRef.toJson(),
-                'module': module,
-                'sun_tooth_count': sunToothCount,
-                'ring_tooth_count': ringToothCount,
-                'planet_count': planetCount,
-                'face_width': faceWidth,
-                'ring_outer_diameter': ringOuterDiameter,
-                'pressure_angle_degrees': pressureAngleDegrees,
-              }),
+              body: jsonEncode(planetaryGearFeatureJson(
+                planeRef: planeRef,
+                module: module,
+                sunToothCount: sunToothCount,
+                ringToothCount: ringToothCount,
+                planetCount: planetCount,
+                faceWidth: faceWidth,
+                ringOuterDiameter: ringOuterDiameter,
+                pressureAngleDegrees: pressureAngleDegrees,
+              )),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// The exact wire payload [createPlanetaryGearFeature] above sends,
+  /// factored out (LOD Phase 2 chunk 4) for the same reason
+  /// [bevelPairFeatureJson] was - shared by [createPlanetaryGearFeatureJob]/
+  /// [previewPlanetaryGearFeatureCoarse] and by a caller (e.g.
+  /// [GearChainDesignScreen]'s own job-mode create path) that needs the same
+  /// payload for more than one of those calls.
+  static Map<String, dynamic> planetaryGearFeatureJson({
+    PlaneRefDto? planeRef,
+    required double module,
+    required int sunToothCount,
+    required int ringToothCount,
+    required int planetCount,
+    required double faceWidth,
+    required double ringOuterDiameter,
+    double pressureAngleDegrees = 20.0,
+  }) =>
+      {
+        if (planeRef != null) 'plane_ref': planeRef.toJson(),
+        'module': module,
+        'sun_tooth_count': sunToothCount,
+        'ring_tooth_count': ringToothCount,
+        'planet_count': planetCount,
+        'face_width': faceWidth,
+        'ring_outer_diameter': ringOuterDiameter,
+        'pressure_angle_degrees': pressureAngleDegrees,
+      };
+
+  /// LOD Phase 2 chunk 4: job-mode counterpart to [createPlanetaryGearFeature]
+  /// - mirrors [createBevelPairFeatureJob]'s own shape exactly. [payload] is
+  /// normally built via [planetaryGearFeatureJson].
+  Future<JobCreateDto> createPlanetaryGearFeatureJob(String partId, Map<String, dynamic> payload) => _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/planetary-gear-features/jobs'),
+              headers: _headers,
+              body: jsonEncode(payload),
+            ),
+        (body) => JobCreateDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// LOD Phase 2 chunk 4: the 3D coarse analogue of
+  /// [createPlanetaryGearFeature] for a not-yet-created payload - mirrors
+  /// [previewBevelPairFeatureCoarse]'s own shape. [payload] is the same
+  /// [planetaryGearFeatureJson] map [createPlanetaryGearFeatureJob] was
+  /// submitted with.
+  Future<List<BodyMeshDto>> previewPlanetaryGearFeatureCoarse(String partId, Map<String, dynamic> payload) => _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/planetary-gear-features/coarse-preview'),
+              headers: _headers,
+              body: jsonEncode(payload),
+            ),
+        (body) => (body as List).map((b) => BodyMeshDto.fromJson(b as Map<String, dynamic>)).toList(),
+      );
+
+  /// LOD Phase 2 chunk 4 (`docs/lod-strategy/02-phase2-design.md` SS4):
+  /// polls a job's current state - shared by every job-mode Feature type
+  /// (`BevelPairFeature`, `PlanetaryGearFeature`), the same one route the
+  /// backend itself uses for both (`app.document.router.get_job_status`).
+  Future<JobStatusDto> getJobStatus(String partId, String jobId) => _send(
+        () => _httpClient.get(_uri('/document/parts/$partId/jobs/$jobId'), headers: _headers),
+        (body) => JobStatusDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Requests cancellation of an in-flight job - shared by every job-mode
+  /// Feature type, same reasoning as [getJobStatus]. Throws [ApiException]
+  /// (404: unknown job; 409: already reached a terminal state), matching
+  /// `app.document.router.cancel_job_endpoint`.
+  Future<JobCancelDto> cancelJob(String partId, String jobId) => _send(
+        () => _httpClient.post(_uri('/document/parts/$partId/jobs/$jobId/cancel'), headers: _headers),
+        (body) => JobCancelDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Gear-tree UX: partial update for an existing PlanetaryGearFeature -
@@ -3288,29 +3425,99 @@ class DocumentApiClient {
         () => _httpClient.post(
               _uri('/document/parts/$partId/bevel-pair-features'),
               headers: _headers,
-              body: jsonEncode({
-                if (planeRef != null) 'plane_ref': planeRef.toJson(),
-                'module': module,
-                'member_1': {
-                  'tooth_count': toothCount1,
-                  'profile_shift': profileShift1,
-                  'spiral_hand': spiralHand1,
-                },
-                'member_2': {
-                  'tooth_count': toothCount2,
-                  'profile_shift': profileShift2,
-                  'spiral_hand': spiralHand2,
-                },
-                'face_width': faceWidth,
-                'pressure_angle_degrees': pressureAngleDegrees,
-                'shaft_angle_degrees': shaftAngleDegrees,
-                'backlash': backlash,
-                'points_per_flank': pointsPerFlank,
-                'spiral_angle_degrees': spiralAngleDegrees,
-              }),
+              body: jsonEncode(bevelPairFeatureJson(
+                planeRef: planeRef,
+                module: module,
+                toothCount1: toothCount1,
+                profileShift1: profileShift1,
+                toothCount2: toothCount2,
+                profileShift2: profileShift2,
+                faceWidth: faceWidth,
+                pressureAngleDegrees: pressureAngleDegrees,
+                shaftAngleDegrees: shaftAngleDegrees,
+                backlash: backlash,
+                pointsPerFlank: pointsPerFlank,
+                spiralAngleDegrees: spiralAngleDegrees,
+                spiralHand1: spiralHand1,
+                spiralHand2: spiralHand2,
+              )),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
         timeout: spiralAngleDegrees != 0.0 ? ApiConfig.spiralBevelPairRequestTimeout : null,
+      );
+
+  /// The exact wire payload [createBevelPairFeature] above sends, factored
+  /// out (LOD Phase 2 chunk 4) so [createBevelPairFeatureJob]/
+  /// [previewBevelPairFeatureCoarse] - and a caller building a payload once
+  /// to reuse across both, like [BevelDesignScreen]'s own job-mode create
+  /// path - share one source of truth for the field names/shape instead of
+  /// three independent copies.
+  static Map<String, dynamic> bevelPairFeatureJson({
+    PlaneRefDto? planeRef,
+    required double module,
+    required int toothCount1,
+    double? profileShift1,
+    required int toothCount2,
+    double? profileShift2,
+    required double faceWidth,
+    double pressureAngleDegrees = 20.0,
+    double shaftAngleDegrees = 90.0,
+    double backlash = 0.0,
+    int pointsPerFlank = 12,
+    double spiralAngleDegrees = 0.0,
+    String spiralHand1 = 'right',
+    String spiralHand2 = 'left',
+  }) =>
+      {
+        if (planeRef != null) 'plane_ref': planeRef.toJson(),
+        'module': module,
+        'member_1': {
+          'tooth_count': toothCount1,
+          'profile_shift': profileShift1,
+          'spiral_hand': spiralHand1,
+        },
+        'member_2': {
+          'tooth_count': toothCount2,
+          'profile_shift': profileShift2,
+          'spiral_hand': spiralHand2,
+        },
+        'face_width': faceWidth,
+        'pressure_angle_degrees': pressureAngleDegrees,
+        'shaft_angle_degrees': shaftAngleDegrees,
+        'backlash': backlash,
+        'points_per_flank': pointsPerFlank,
+        'spiral_angle_degrees': spiralAngleDegrees,
+      };
+
+  /// LOD Phase 2 chunk 4 (`docs/lod-strategy/02-phase2-design.md` SS4):
+  /// job-mode counterpart to [createBevelPairFeature] - same payload shape
+  /// ([bevelPairFeatureJson]), but posts to the job-mode route and returns
+  /// immediately with a [JobCreateDto] rather than waiting for the real
+  /// build. [payload] is normally built via [bevelPairFeatureJson] and
+  /// reused for [previewBevelPairFeatureCoarse] and [PendingJobStore]
+  /// persistence, so all three describe the exact same not-yet-created
+  /// Feature.
+  Future<JobCreateDto> createBevelPairFeatureJob(String partId, Map<String, dynamic> payload) => _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/bevel-pair-features/jobs'),
+              headers: _headers,
+              body: jsonEncode(payload),
+            ),
+        (body) => JobCreateDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// LOD Phase 2 chunk 4: the 3D coarse analogue of [createBevelPairFeature]
+  /// for a not-yet-created payload - mirrors [previewPatternFeatureCoarse]'s
+  /// own shape/never-persisted contract. [payload] is the same
+  /// [bevelPairFeatureJson] map [createBevelPairFeatureJob] was submitted
+  /// with.
+  Future<List<BodyMeshDto>> previewBevelPairFeatureCoarse(String partId, Map<String, dynamic> payload) => _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/bevel-pair-features/coarse-preview'),
+              headers: _headers,
+              body: jsonEncode(payload),
+            ),
+        (body) => (body as List).map((b) => BodyMeshDto.fromJson(b as Map<String, dynamic>)).toList(),
       );
 
   /// Gear-tree UX: partial update for an existing BevelPairFeature - mirrors

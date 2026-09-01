@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../api/document_api_client.dart';
 import '../api/sketch_api_client.dart' show ApiException;
 import '../viewport3d/part_screen.dart';
+import '../viewport3d/pending_job_store.dart';
 import 'field_help_icon.dart';
 import 'gear_chain_preview_canvas.dart';
 import 'gear_preset_controls.dart';
@@ -520,8 +521,17 @@ class _GearChainDesignScreenState extends State<GearChainDesignScreen> {
         );
         warnings = feature.warnings;
       } else {
-        final feature = await _api.createPlanetaryGearFeature(
-          part.id,
+        // LOD Phase 2 chunk 4 (`docs/lod-strategy/02-phase2-design.md` SS6
+        // item 4): job-mode create instead of the synchronous call above -
+        // mirrors `BevelDesignScreen`'s own identical change exactly. A
+        // large `planet_count` is `00-status.md` Finding 2's own flagged
+        // genuine long tail (serial sun+ring+planet-count solid builds, no
+        // upper bound) - this screen has no way to know up front whether a
+        // given set crosses that threshold, so job mode applies uniformly
+        // to every PlanetaryGearFeature create, same as the backend's own
+        // route does.
+        final payload = DocumentApiClient.planetaryGearFeatureJson(
+          planeRef: planeRef,
           module: _module,
           sunToothCount: int.parse(_sunToothCountController.text),
           ringToothCount: int.parse(_ringToothCountController.text),
@@ -529,9 +539,14 @@ class _GearChainDesignScreenState extends State<GearChainDesignScreen> {
           faceWidth: double.parse(_planetaryFaceWidthController.text),
           ringOuterDiameter: double.parse(_ringOuterDiameterController.text),
           pressureAngleDegrees: _pressureAngleDegrees,
-          planeRef: planeRef,
         );
-        warnings = feature.warnings;
+        final job = await _api.createPlanetaryGearFeatureJob(part.id, payload);
+        await PendingJobStore.save(PendingFeatureJob(
+          partId: part.id,
+          jobId: job.jobId,
+          featureKind: PendingFeatureJob.kindPlanetaryGear,
+          coarsePreviewPayload: payload,
+        ));
       }
       if (!mounted) return;
       Navigator.of(context).pushReplacement(

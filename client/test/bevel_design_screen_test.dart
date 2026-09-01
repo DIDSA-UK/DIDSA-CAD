@@ -333,55 +333,48 @@ void main() {
     expect(gearBody?['spiral_hand'], 'left');
   });
 
-  testWidgets('Create in Bevel Pair mode posts via createBevelPairFeature', (tester) async {
-    final requestedPaths = <String>[];
-    Map<String, dynamic>? pairBody;
-    final client = DocumentApiClient(
-      httpClient: MockClient((request) async {
-        requestedPaths.add('${request.method} ${request.url.path}');
-        if (request.url.path == '/document/gear/preview') {
-          return jsonResponse(bevelPairPreviewResponse());
-        }
-        if (request.url.path == '/document/parts') {
-          return jsonResponse({'id': 'part-1', 'name': 'Bevel Pair Part', 'feature_ids': []}, status: 201);
-        }
-        if (request.url.path == '/document/parts/part-1/bevel-pair-features') {
-          pairBody = jsonDecode(request.body) as Map<String, dynamic>;
-          return jsonResponse({
-            'type': 'bevel_pair',
-            'id': 'pair-1',
-            'locked': false,
-            'produces': 'body',
-            'module': 4.0,
-            'member_1': {'tooth_count': 20, 'profile_shift': 0.0},
-            'member_2': {'tooth_count': 40, 'profile_shift': 0.0},
-            'face_width': 15.0,
-            'pressure_angle_degrees': 20.0,
-            'shaft_angle_degrees': 90.0,
-            'backlash': 0.0,
-          }, status: 201);
-        }
-        return jsonResponse({'id': 'part-1', 'name': 'Bevel Pair Part', 'feature_ids': []});
-      }),
-    );
+  testWidgets(
+    'Create in Bevel Pair mode job-mode-creates via createBevelPairFeatureJob '
+    '(LOD Phase 2 chunk 4 - a spiral bevel pair is the confirmed genuine long tail)',
+    (tester) async {
+      final requestedPaths = <String>[];
+      Map<String, dynamic>? pairBody;
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          requestedPaths.add('${request.method} ${request.url.path}');
+          if (request.url.path == '/document/gear/preview') {
+            return jsonResponse(bevelPairPreviewResponse());
+          }
+          if (request.url.path == '/document/parts') {
+            return jsonResponse({'id': 'part-1', 'name': 'Bevel Pair Part', 'feature_ids': []}, status: 201);
+          }
+          if (request.url.path == '/document/parts/part-1/bevel-pair-features/jobs') {
+            pairBody = jsonDecode(request.body) as Map<String, dynamic>;
+            return jsonResponse({'job_id': 'pair-job-1', 'status': 'running'}, status: 202);
+          }
+          return jsonResponse({'id': 'part-1', 'name': 'Bevel Pair Part', 'feature_ids': []});
+        }),
+      );
 
-    await tester.pumpWidget(
-      MaterialApp(home: BevelDesignScreen(documentApi: client, initialMode: BevelMultiKind.pair)),
-    );
-    await tester.pump(const Duration(milliseconds: 600));
-    await tester.pumpAndSettle();
+      await tester.pumpWidget(
+        MaterialApp(home: BevelDesignScreen(documentApi: client, initialMode: BevelMultiKind.pair)),
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pumpAndSettle();
 
-    await tester.ensureVisible(find.byType(FilledButton));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byType(FilledButton));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 100));
+      await tester.ensureVisible(find.byType(FilledButton));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(FilledButton));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
 
-    expect(requestedPaths, contains('POST /document/parts/part-1/bevel-pair-features'));
-    expect(pairBody?['shaft_angle_degrees'], 90.0);
-    expect((pairBody?['member_1'] as Map)['tooth_count'], 24);
-    expect((pairBody?['member_2'] as Map)['tooth_count'], 48);
-  });
+      expect(requestedPaths, contains('POST /document/parts/part-1/bevel-pair-features/jobs'));
+      expect(requestedPaths, isNot(contains('POST /document/parts/part-1/bevel-pair-features')));
+      expect(pairBody?['shaft_angle_degrees'], 90.0);
+      expect((pairBody?['member_1'] as Map)['tooth_count'], 24);
+      expect((pairBody?['member_2'] as Map)['tooth_count'], 48);
+    },
+  );
 
   testWidgets(
     'Bevel Pair profile shift defaults to Auto, showing the live-computed value and sending null',
@@ -407,23 +400,9 @@ void main() {
           if (request.url.path == '/document/parts') {
             return jsonResponse({'id': 'part-1', 'name': 'Bevel Pair Part', 'feature_ids': []}, status: 201);
           }
-          if (request.url.path == '/document/parts/part-1/bevel-pair-features') {
+          if (request.url.path == '/document/parts/part-1/bevel-pair-features/jobs') {
             pairBody = jsonDecode(request.body) as Map<String, dynamic>;
-            return jsonResponse({
-              'type': 'bevel_pair',
-              'id': 'pair-1',
-              'locked': false,
-              'produces': 'body',
-              'module': 4.0,
-              'member_1': {'tooth_count': 20, 'profile_shift': null},
-              'member_2': {'tooth_count': 40, 'profile_shift': null},
-              'face_width': 15.0,
-              'pressure_angle_degrees': 20.0,
-              'shaft_angle_degrees': 90.0,
-              'backlash': 0.0,
-              'effective_profile_shift_1': 0.0,
-              'effective_profile_shift_2': -0.52,
-            }, status: 201);
+            return jsonResponse({'job_id': 'pair-job-1', 'status': 'running'}, status: 202);
           }
           return jsonResponse({'id': 'part-1', 'name': 'Bevel Pair Part', 'feature_ids': []});
         }),
@@ -464,23 +443,9 @@ void main() {
         if (request.url.path == '/document/parts') {
           return jsonResponse({'id': 'part-1', 'name': 'Bevel Pair Part', 'feature_ids': []}, status: 201);
         }
-        if (request.url.path == '/document/parts/part-1/bevel-pair-features') {
+        if (request.url.path == '/document/parts/part-1/bevel-pair-features/jobs') {
           pairBody = jsonDecode(request.body) as Map<String, dynamic>;
-          return jsonResponse({
-            'type': 'bevel_pair',
-            'id': 'pair-1',
-            'locked': false,
-            'produces': 'body',
-            'module': 4.0,
-            'member_1': {'tooth_count': 20, 'profile_shift': 0.0},
-            'member_2': {'tooth_count': 40, 'profile_shift': -0.3},
-            'face_width': 15.0,
-            'pressure_angle_degrees': 20.0,
-            'shaft_angle_degrees': 90.0,
-            'backlash': 0.0,
-            'effective_profile_shift_1': 0.0,
-            'effective_profile_shift_2': -0.3,
-          }, status: 201);
+          return jsonResponse({'job_id': 'pair-job-1', 'status': 'running'}, status: 202);
         }
         return jsonResponse({'id': 'part-1', 'name': 'Bevel Pair Part', 'feature_ids': []});
       }),
@@ -529,22 +494,9 @@ void main() {
         if (request.url.path == '/document/parts') {
           return jsonResponse({'id': 'part-1', 'name': 'Bevel Pair Part', 'feature_ids': []}, status: 201);
         }
-        if (request.url.path == '/document/parts/part-1/bevel-pair-features') {
+        if (request.url.path == '/document/parts/part-1/bevel-pair-features/jobs') {
           pairBody = jsonDecode(request.body) as Map<String, dynamic>;
-          return jsonResponse({
-            'type': 'bevel_pair',
-            'id': 'pair-1',
-            'locked': false,
-            'produces': 'body',
-            'module': 4.0,
-            'member_1': {'tooth_count': 20, 'profile_shift': 0.0, 'spiral_hand': 'right'},
-            'member_2': {'tooth_count': 40, 'profile_shift': 0.0, 'spiral_hand': 'left'},
-            'face_width': 15.0,
-            'pressure_angle_degrees': 20.0,
-            'shaft_angle_degrees': 90.0,
-            'backlash': 0.0,
-            'spiral_angle_degrees': 0.0,
-          }, status: 201);
+          return jsonResponse({'job_id': 'pair-job-1', 'status': 'running'}, status: 202);
         }
         return jsonResponse({'id': 'part-1', 'name': 'Bevel Pair Part', 'feature_ids': []});
       }),
@@ -582,23 +534,9 @@ void main() {
         if (request.url.path == '/document/parts') {
           return jsonResponse({'id': 'part-1', 'name': 'Bevel Pair Part', 'feature_ids': []}, status: 201);
         }
-        if (request.url.path == '/document/parts/part-1/bevel-pair-features') {
+        if (request.url.path == '/document/parts/part-1/bevel-pair-features/jobs') {
           pairBody = jsonDecode(request.body) as Map<String, dynamic>;
-          return jsonResponse({
-            'type': 'bevel_pair',
-            'id': 'pair-1',
-            'locked': false,
-            'produces': 'body',
-            'module': 4.0,
-            'member_1': {'tooth_count': 20, 'profile_shift': 0.0, 'spiral_hand': 'right'},
-            'member_2': {'tooth_count': 40, 'profile_shift': 0.0, 'spiral_hand': 'right'},
-            'face_width': 15.0,
-            'pressure_angle_degrees': 20.0,
-            'shaft_angle_degrees': 90.0,
-            'backlash': 0.0,
-            'spiral_angle_degrees': 25.0,
-            'warnings': ['both members of this bevel pair share the same hand of spiral (right)'],
-          }, status: 201);
+          return jsonResponse({'job_id': 'pair-job-1', 'status': 'running'}, status: 202);
         }
         return jsonResponse({'id': 'part-1', 'name': 'Bevel Pair Part', 'feature_ids': []});
       }),
