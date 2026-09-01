@@ -50,6 +50,7 @@ import 'override_stack.dart';
 import 'part_toolbar.dart';
 import 'part_viewport.dart';
 import 'pattern_panel.dart';
+import 'pending_job_store.dart';
 import 'picker_ribbon.dart';
 import 'plane_context_sheet.dart';
 import 'reference_planes.dart';
@@ -648,6 +649,23 @@ class _PartScreenState extends State<PartScreen> {
   /// persistent toggle `01-design.md` SS5 asks for) - [_toggleCoarsePin] is
   /// the only mutator.
   final Set<String> _pinnedCoarseFeatureIds = {};
+
+  /// `docs/lod-strategy/02-phase2-design.md` SS6 item 4: the job-mode
+  /// BevelPairFeature/PlanetaryGearFeature create currently being tracked
+  /// (polled, coarse-previewed, cancellable), or null when no job-mode
+  /// create is in flight for this Part - see [PendingJobStore]/
+  /// [_checkForPendingJob]. Mirrors [_pendingCoarseBodyIds] etc.'s own "one
+  /// field, set/cleared by exactly the methods that own this lifecycle"
+  /// convention.
+  PendingFeatureJob? _activeJob;
+
+  /// [_activeJob]'s own poll loop - cancelled (not merely left to expire)
+  /// the moment [_activeJob] itself is cleared, by every one of
+  /// [_onJobSucceeded]/[_onJobFailed]/[_onJobCancelled]/[_onJobUnknown]/
+  /// [_cancelActiveJob]/[dispose] (see [_stopTrackingJob]).
+  Timer? _jobPollTimer;
+
+  static const Duration _jobPollInterval = Duration(seconds: 2);
 
   /// Incremented on every [_refreshMesh] call - lets that call's own
   /// background coarse-tier fetch (which resolves independently, on no
@@ -4822,6 +4840,7 @@ class _PartScreenState extends State<PartScreen> {
     _extrudeDebounce?.cancel();
     _surfaceDebounce?.cancel();
     _busyOverlayTimer?.cancel();
+    _jobPollTimer?.cancel();
     if (widget.documentApi == null) {
       _api.close();
     }
@@ -4850,6 +4869,14 @@ class _PartScreenState extends State<PartScreen> {
         debugPrint('[PartScreen] createPart done: ${part.id}');
       }
       _part = part;
+      // LOD Phase 2 chunk 4: fire-and-forget, same convention
+      // `_refreshMesh`'s own background coarse-tier fetch below uses - a
+      // brand-new job-mode create (this screen's own `initialPartId` is the
+      // Part `BevelDesignScreen`/`GearChainDesignScreen` just minted and
+      // saved a job against) and a genuine resume-on-reconnect (a later
+      // relaunch re-opening that same Part id while the job is still
+      // running server-side) are handled by the exact same check.
+      unawaited(_checkForPendingJob());
       debugPrint('[PartScreen] getPartMesh...');
       await _refreshMesh(isInitialLoad: true);
       debugPrint('[PartScreen] getPartMesh done: ${_bodies.length} body/bodies');
@@ -5099,6 +5126,192 @@ class _PartScreenState extends State<PartScreen> {
   void _clearPendingCreateCoarsePreview() {
     if (_pendingCreateCoarsePreviewBodies.isEmpty) return;
     setState(() => _pendingCreateCoarsePreviewBodies = []);
+  }
+
+  /// `docs/lod-strategy/02-phase2-design.md` SS6 item 4: called once
+  /// [_part] is set - whether that's a brand-new Part a job-mode create
+  /// just minted (`BevelDesignScreen`/`GearChainDesignScreen` already saved
+  /// the job to [PendingJobStore] before navigating here), or a later
+  /// relaunch re-opening the same Part id while that job is still running
+  /// server-side. Either way, from here on it's the exact same tracking
+  /// path - see [_trackJob].
+  Future<void> _checkForPendingJob() async {
+    final part = _part;
+    if (part == null) return;
+    final pending = await PendingJobStore.load();
+    if (!mounted || pending == null || pending.partId != part.id) return;
+    await _trackJob(pending);
+  }
+
+  /// Starts (or resumes) tracking [pending]: shows its coarse placeholder
+  /// (best-effort, see [_showJobCoarsePreview]) and polls its status every
+  /// [_jobPollInterval] until it reaches a terminal state.
+  Future<void> _trackJob(PendingFeatureJob pending) async {
+    if (!mounted) return;
+    setState(() => _activeJob = pending);
+    unawaited(_showJobCoarsePreview(pending));
+    _jobPollTimer?.cancel();
+    _jobPollTimer = Timer.periodic(_jobPollInterval, (_) => _pollJob());
+    unawaited(_pollJob()); // don't wait a full interval before the first check
+  }
+
+  /// Mirrors [_showPatternCreateCoarsePreview]/[_showLoftCreateCoarsePreview]
+  /// exactly - the same [PartViewport.transientCoarsePreviewBodies]/
+  /// [_pendingCreateCoarsePreviewBodies] mechanism, best-effort (never
+  /// blocks or fails the polling this runs alongside). [pending]'s own
+  /// stored [PendingFeatureJob.coarsePreviewPayload] is the exact payload
+  /// the real job-mode create was submitted with, so this is guaranteed to
+  /// describe the same geometry the job is resolving, not a re-derived
+  /// approximation from whatever a design screen's form fields currently
+  /// hold (which may have already changed, or belong to a screen that
+  /// isn't even mounted any more, by the time this resolves).
+  Future<void> _showJobCoarsePreview(PendingFeatureJob pending) async {
+    final part = _part;
+    if (part == null) return;
+    List<BodyMeshDto> coarse;
+    try {
+      coarse = pending.featureKind == PendingFeatureJob.kindBevelPair
+          ? await _api.previewBevelPairFeatureCoarse(part.id, pending.coarsePreviewPayload)
+          : await _api.previewPlanetaryGearFeatureCoarse(part.id, pending.coarsePreviewPayload);
+    } catch (_) {
+      return;
+    }
+    // The tracked job may have already settled (or a different one started)
+    // by the time this resolves - never clobber a newer state with a stale
+    // preview.
+    if (!mounted || _activeJob?.jobId != pending.jobId) return;
+    setState(() => _pendingCreateCoarsePreviewBodies = coarse);
+  }
+
+  /// [_jobPollTimer]'s own tick - a cheap dict-lookup poll (`GET
+  /// .../jobs/{job_id}`), never re-running any part of the build. A 404
+  /// (the backend's job store is a plain in-memory dict with no durability
+  /// across a server restart, per `02-phase2-design.md` SS2 - a resumed
+  /// client can be polling a job id the server no longer knows about) is
+  /// treated as a settled-unknown outcome via [_onJobUnknown] rather than
+  /// polled forever; any other error is assumed transient and simply
+  /// retried next tick.
+  Future<void> _pollJob() async {
+    final job = _activeJob;
+    final part = _part;
+    if (job == null || part == null) return;
+    JobStatusDto status;
+    try {
+      status = await _api.getJobStatus(part.id, job.jobId);
+    } on ApiException catch (e) {
+      if (e.statusCode == 404) await _onJobUnknown();
+      return;
+    } catch (_) {
+      return;
+    }
+    if (!mounted || _activeJob?.jobId != job.jobId) return;
+    if (status.status == 'succeeded') {
+      await _onJobSucceeded();
+    } else if (status.status == 'failed') {
+      await _onJobFailed(status.error);
+    } else if (status.status == 'cancelled') {
+      await _onJobCancelled();
+    }
+    // 'running' - nothing to do, the next tick checks again.
+  }
+
+  /// Stops [_jobPollTimer] and clears [_activeJob]/
+  /// [_pendingCreateCoarsePreviewBodies] - the one place every terminal
+  /// outcome ([_onJobSucceeded]/[_onJobFailed]/[_onJobCancelled]/
+  /// [_onJobUnknown]/[_cancelActiveJob]) and [dispose] stop tracking from.
+  /// Deliberately does not touch [PendingJobStore] - callers that mean to
+  /// stop resuming this job too (every terminal outcome; [dispose] does
+  /// not, so a screen that's merely gone away can still resume) clear it
+  /// themselves right after calling this.
+  void _stopTrackingJob() {
+    _jobPollTimer?.cancel();
+    _jobPollTimer = null;
+    if (!mounted) {
+      _activeJob = null;
+      _pendingCreateCoarsePreviewBodies = [];
+      return;
+    }
+    setState(() {
+      _activeJob = null;
+      _pendingCreateCoarsePreviewBodies = [];
+    });
+  }
+
+  /// On success, swaps in the real result exactly the way Phase 1's own
+  /// coarse-to-full transition already does for the re-open flow - a plain
+  /// [_refreshFeatures]/[_refreshMesh], since the Feature is already
+  /// persisted server-side by the time [JobStatusDto.status] reads
+  /// `'succeeded'`.
+  Future<void> _onJobSucceeded() async {
+    _stopTrackingJob();
+    await PendingJobStore.clear();
+    await _runGuarded(() async {
+      await _refreshFeatures();
+      await _refreshMesh();
+    });
+  }
+
+  /// The same error UX a synchronous create's own failure produces today
+  /// (`_runGuarded`'s [_errorMessage] red banner) - a job-mode failure just
+  /// arrives later, off a poll instead of an awaited call.
+  Future<void> _onJobFailed(Map<String, dynamic>? error) async {
+    _stopTrackingJob();
+    await PendingJobStore.clear();
+    if (!mounted) return;
+    setState(() => _errorMessage = _jobErrorMessage(error));
+  }
+
+  /// The job settled `cancelled` - whether via [_cancelActiveJob] itself
+  /// (which already stopped tracking synchronously) or a cancellation this
+  /// screen didn't request (e.g. issued from a different client during a
+  /// resume gap). Either way, nothing further to do: the backend's own
+  /// pre-persist `is_cancelled()` check guarantees no Feature was added.
+  Future<void> _onJobCancelled() async {
+    _stopTrackingJob();
+    await PendingJobStore.clear();
+  }
+
+  /// The server no longer knows about this job id (see [_pollJob]'s own
+  /// doc comment) - nothing was ever persisted (a Feature only lands once
+  /// the job store itself observes success), so this is safe to treat as a
+  /// no-op outcome rather than an ambiguous one.
+  Future<void> _onJobUnknown() async {
+    _stopTrackingJob();
+    await PendingJobStore.clear();
+    if (!mounted) return;
+    setState(() => _errorMessage = 'Lost track of the in-progress build - nothing was created.');
+  }
+
+  /// [_detailOf]'s own structured-error-parsing convention (`{"type": ...,
+  /// "detail": ...}`), applied to [JobStatusDto.error] instead of an HTTP
+  /// response body - the two are the same shape by construction
+  /// (`JobStatusResponse.error`'s own doc comment).
+  String _jobErrorMessage(Map<String, dynamic>? error) {
+    final detail = error?['detail'];
+    if (detail is String) return detail;
+    if (detail is Map && detail['detail'] is String) return detail['detail'] as String;
+    return 'Build failed.';
+  }
+
+  /// [_BuildingGeometryOverlay]'s own Cancel button - the job-mode
+  /// counterpart to giving up on a build in progress. Best-effort against a
+  /// transient failure of the cancel call itself: keeps polling rather than
+  /// stranding the job locally - a job this screen loses track of
+  /// client-side but that's still genuinely running server-side is exactly
+  /// the orphaned-build state this whole mechanism exists to avoid.
+  Future<void> _cancelActiveJob() async {
+    final job = _activeJob;
+    final part = _part;
+    if (job == null || part == null) return;
+    try {
+      await _api.cancelJob(part.id, job.jobId);
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() => _errorMessage = e.message);
+      return;
+    }
+    _stopTrackingJob();
+    await PendingJobStore.clear();
   }
 
   /// Re-fetches every Feature's Sketch content (points/lines/circles) and
@@ -11001,7 +11214,8 @@ class _PartScreenState extends State<PartScreen> {
       child: Stack(
         children: [
           _buildScaffold(context),
-          if (_showBusyOverlay) const _BuildingGeometryOverlay(),
+          if (_showBusyOverlay || _activeJob != null)
+            _BuildingGeometryOverlay(onCancel: _activeJob != null ? _cancelActiveJob : null),
         ],
       ),
     );
@@ -12260,46 +12474,60 @@ class _PartScreenState extends State<PartScreen> {
 /// bottom - that's where [PickerRibbon]/confirm FABs already live for
 /// several of this screen's other modes.
 class _BuildingGeometryOverlay extends StatelessWidget {
-  const _BuildingGeometryOverlay();
+  const _BuildingGeometryOverlay({this.onCancel});
+
+  /// LOD Phase 2 chunk 4: non-null only while a job-mode BevelPairFeature/
+  /// PlanetaryGearFeature create is in flight (see
+  /// [_PartScreenState._activeJob]) - renders a real Cancel button and
+  /// stops swallowing pointer events in the overlay's own small footprint
+  /// for that case (the rest of the viewport/UI stays interactive either
+  /// way; see `02-phase2-design.md` SS7's own explicit UI-concurrency
+  /// scope-down). Every other (ordinary synchronous busy) caller passes
+  /// nothing, keeping this overlay's original IgnorePointer/no-button
+  /// shape unchanged.
+  final VoidCallback? onCancel;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final content = Container(
+      margin: const EdgeInsets.only(top: 72, left: 24, right: 24),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface.withValues(alpha: 0.95),
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 8, offset: Offset(0, 2))],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(
+            width: 16,
+            height: 16,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+          const SizedBox(width: 12),
+          Flexible(
+            child: Text(
+              'Building geometry - complex gears can take a while...',
+              style: theme.textTheme.bodyMedium,
+            ),
+          ),
+          if (onCancel != null) ...[
+            const SizedBox(width: 12),
+            TextButton(onPressed: onCancel, child: const Text('Cancel')),
+          ],
+        ],
+      ),
+    );
     return Positioned(
       top: 0,
       left: 0,
       right: 0,
       child: SafeArea(
-        child: IgnorePointer(
-          child: Align(
-            alignment: Alignment.topCenter,
-            child: Container(
-              margin: const EdgeInsets.only(top: 72, left: 24, right: 24),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              decoration: BoxDecoration(
-                color: theme.colorScheme.surface.withValues(alpha: 0.95),
-                borderRadius: BorderRadius.circular(24),
-                boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 8, offset: Offset(0, 2))],
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                  const SizedBox(width: 12),
-                  Flexible(
-                    child: Text(
-                      'Building geometry - complex gears can take a while...',
-                      style: theme.textTheme.bodyMedium,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
+        child: Align(
+          alignment: Alignment.topCenter,
+          child: onCancel == null ? IgnorePointer(child: content) : content,
         ),
       ),
     );

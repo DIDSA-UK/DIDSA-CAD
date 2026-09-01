@@ -35,6 +35,7 @@ doc and any design-doc content — no implementation).
 | Phase 2 chunks 1+2 (planetary pooling + `BevelPairFeature` job mode) | **merged to `main`** | branch `claude/lod-phase2-planetary-and-bevel-jobs`, [PR #179](https://github.com/DIDSA-UK/DIDSA-CAD/pull/179) | `ProcessPoolExecutor` pooling added to `planetary_gear.py` (Finding 2's own flagged perf gap, plus the hard prerequisite for future cancellation); new in-memory job store + real mid-build cancellation + 3 new routes, scoped only to `BevelPairFeature`. Real-OCCT verified: 1919 → 1933, zero regressions. Merged 2026-09-01 - chunk 3 unblocked. Full detail below. |
 | Phase 2 cancel-race fix (FAILED-vs-CANCELLED classification) | **merged to `main`** | branch `claude/lod-phase2-cancel-race-fix`, [PR #181](https://github.com/DIDSA-UK/DIDSA-CAD/pull/181) | Found and fixed a real, CI-reproduced race in chunk 1+2's own cancellation path: two threads (the cancelling one, the job's own owning one) both called `ProcessPoolExecutor.shutdown()` on the same executor, occasionally producing a spurious `OSError` that misclassified a clean cancellation as `failed`. Fixed by removing the redundant `shutdown()` call plus an `is_cancelled()`-authoritative classification backstop in the job runner. Real-OCCT verified (30/30 on the specific race, full suite unchanged at 1933). Merged 2026-09-01, independently of and just ahead of chunk 3 below - chunk 3 reconciled with it on merge. |
 | Phase 2 chunk 3 (`PlanetaryGearFeature` job mode) | **merged to `main`** | branch `claude/lod-phase2-planetary-jobs`, [PR #180](https://github.com/DIDSA-UK/DIDSA-CAD/pull/180) | Extends the exact chunk-2 job-mode mechanism to `PlanetaryGearFeature` - generalized the job store (was `BevelPairFeature`-specific) rather than duplicating it; added `cancellation` support to `resolve_planetary_from_bodies`. Found and fixed a real pre-existing bug (`GearChainFeature`/`PlanetaryGearFeature` missing from the `FeatureResponse` Union, 500ing `GET /features`). Independently hit the same cancellation race PR #181 fixed; reconciled by merging `main` and adopting PR #181's fix rather than shipping a competing one. Real-OCCT verified: 1933 → 1941, zero regressions; CI green on both amd64/arm64 legs post-merge. Merged 2026-09-01. Full detail below. |
+| Phase 2 chunk 4 (client job-mode wiring, `BevelPairFeature`/`PlanetaryGearFeature`) | implemented | branch `claude/lod-phase2-client-jobs` | Job-mode create (instead of synchronous) for both Feature types, wired at the point `PartScreen` mounts (not at the point of the create call itself - see below) since neither type's own create flow has a `PartViewport` mounted; a new `PendingJobStore` (`shared_preferences`) makes a fresh job-mode create and a genuine resume-on-reconnect the exact same code path; polling reuses Phase 1's own coarse-preview/pending-state-clearing mechanism unchanged; a new Cancel button on the existing busy overlay. Real Flutter (3.48.0-0.3.pre): `flutter analyze` 0 issues, `flutter test` 1469 passed/10 pre-existing skips/0 failed (1455 baseline + 14 new). Full detail below. |
 
 ---
 
@@ -660,3 +661,80 @@ spending a third fix-up round on a bounded edge case.
   any other Feature type's synchronous contract (the `FeatureResponse` fix restores parity for two
   types that were simply broken, not a contract change).
 - Full detail: `docs/status.md`'s 2026-09-01 "LOD Phase 2 chunk 3" entry.
+
+---
+
+### Phase 2 chunk 4 — client job-mode wiring for `BevelPairFeature`/`PlanetaryGearFeature` (branch `claude/lod-phase2-client-jobs`)
+
+- **Branch**: `claude/lod-phase2-client-jobs`, based on `main` after confirming PR #179 (chunks 1+2),
+  PR #180 (chunk 3), and PR #181 (cancel-race fix) had all actually merged (`git log origin/main`
+  checked directly, not assumed). Wires both `BevelPairFeature` and `PlanetaryGearFeature` at once,
+  since chunk 3 had already landed by the time this session started.
+- **Scope**: `02-phase2-design.md` §6 item 4 - job-mode create flow, polling, a cancel affordance, and
+  resume-on-reconnect, for both job-mode-eligible Feature types. No backend changes (all Phase 2
+  backend work was already done in prior sessions).
+- **The architectural wrinkle this chunk had to solve, not just wire around**: `BevelPairFeature`/
+  `PlanetaryGearFeature` are created from `BevelDesignScreen`/`GearChainDesignScreen`, neither of
+  which mounts a `PartViewport` (Phase 0 Finding 1's own "pre-commit-only by construction" finding) -
+  unlike Pattern/Loft (Phase 1 chunks 3/4/5), there is no viewport available at the point of the
+  create call itself for a coarse placeholder to render into. Both screens already create the Part
+  first, call the real create endpoint, then push a brand-new `PartScreen(initialPartId: ...)` only
+  once that succeeds - so this chunk turned job-mode create into a two-step handoff instead: the
+  design screen now calls the job-mode create endpoint (fast, 202) and persists `{part_id, job_id,
+  feature_kind, coarse_preview_payload}` to a new `PendingJobStore` (`client/lib/viewport3d/
+  pending_job_store.dart`, `shared_preferences`-backed, mirrors `ViewPreferences`'s own convention)
+  before pushing `PartScreen` exactly as before - no new constructor param needed. `PartScreen.
+  _loadPart` fires a fire-and-forget `_checkForPendingJob()` the moment `_part` is set; if a stored
+  pending job matches, it starts tracking. **This one check is both the fresh-job-mode-create path
+  and the genuine resume-on-reconnect path (app closed/backgrounded, a later launch reaches the same
+  Part id again while the job is still running server-side) - deliberately unified, not two separate
+  mechanisms.**
+- **Tracking** (`part_screen.dart`, all new): shows the coarse placeholder via the stored payload
+  against the already-merged `POST .../{bevel-pair,planetary-gear}-features/coarse-preview` endpoints
+  (two new tiny `DocumentApiClient` methods) - reuses Phase 1's own `_pendingCreateCoarsePreviewBodies`/
+  `PartViewport.transientCoarsePreviewBodies` slot unchanged, not rebuilt. No existing polling
+  pattern/helper was found anywhere in this codebase (checked directly, confirming Phase 0 Finding
+  2's "zero async infra" client-side too) - a small `Timer.periodic` (2s) was written, with an
+  immediate first check so the UI doesn't wait a full interval. On `succeeded`: a plain
+  `_refreshFeatures`/`_refreshMesh` - the exact mechanism Phase 1's own coarse-to-full transition
+  already uses, no job-mode-specific swap logic needed. On `failed`: the same `_errorMessage` banner
+  UX a synchronous create's own failure already produces. On `cancelled`: cleared silently, trusting
+  the backend's own pre-persist `is_cancelled()` guarantee.
+- **Cancel affordance**: `_BuildingGeometryOverlay` (the existing busy-state banner) gained an
+  optional `onCancel` callback, rendering a real button and dropping its `IgnorePointer` wrap only
+  when set - every ordinary synchronous-busy caller is completely unaffected. Best-effort against a
+  transient failure of the cancel call itself (keeps polling rather than stranding the job locally).
+- **A real, narrow gap closed while implementing resume**: `DocumentApiClient._send`/`_sendBytes`
+  never actually populated `ApiException.statusCode` (unlike `sketch_api_client.dart`'s own
+  identically-shaped `_send`, which already does) - fixed, since telling a genuine `404` (the
+  backend's job store is a plain in-memory dict, no durability across a restart - `02-phase2-
+  design.md` §2) apart from a transient network error is what lets a resumed poll stop cleanly
+  instead of looping forever.
+- **Disclosed limitation, not glossed over**: this app has no "reopen the last session's Part"
+  affordance of its own today - the resume mechanism itself is real and independently verified
+  (seed `PendingJobStore`, construct a fresh `PartScreen` against that Part id, confirm it resumes),
+  but whether the app's own top-level navigation ever lands back on that Part id after a real
+  relaunch is a property of the rest of the session model, outside this chunk's scope.
+- **Verification, real throughout**: bootstrapped a real Flutter SDK this session (`git clone --depth
+  1 --branch master https://github.com/flutter/flutter.git`, matching `.github/workflows/
+  client-verify.yml`'s own channel pin) - landed on 3.48.0-0.3.pre, the same snapshot Phase 1 chunks
+  3/4/5 landed on. `flutter analyze`: **0 issues**. New/touched tests: `document_api_client_test.dart`
+  (+7 - payload builders match what the real create calls send; the four new job-mode/coarse-preview
+  client methods hit the right routes and parse correctly; `getJobStatus` parses running/succeeded-
+  with-result/failed-with-structured-error; the `statusCode` fix). New `part_screen_job_mode_test.dart`
+  (+7, widget-level, mocked HTTP, no real network): resume shows the coarse placeholder + Cancel and
+  genuinely keeps polling (advancing the fake clock triggers a real second status check); succeeded
+  swaps in the real result and clears `PendingJobStore`; failed surfaces the structured error text;
+  an unrequested `cancelled` clears silently; tapping Cancel calls the cancel endpoint and clears
+  state immediately; an unknown/404 job stops tracking instead of polling forever; no Cancel
+  affordance when nothing is pending. Updated 5 existing Bevel Pair-mode tests (`bevel_design_screen_
+  test.dart`) and 1 existing Planetary-mode test (`gear_chain_design_screen_test.dart`) to the new
+  job-mode route/response shape - these would otherwise have broken outright (parsing the old fixture
+  as a `JobCreateDto` throws), not just gone stale. Full suite: **1469 passed, 10 skipped, 0 failed**
+  (1455 baseline - Phase 1 chunks 3/4/5's own final count - + 14 new, zero regressions; skips are the
+  same pre-existing GPU/Impeller-unavailable class already documented, none new).
+- **Not done this session** (explicitly out of scope per the dispatch prompt): any backend changes;
+  UI concurrency or fine-grained progress reporting (`02-phase2-design.md` §7's own explicit scope-
+  down); any Feature type beyond `BevelPairFeature`/`PlanetaryGearFeature` (no other type has job-mode
+  endpoints).
+- Full detail: `docs/status.md`'s 2026-09-01 "LOD Phase 2 chunk 4" entry.

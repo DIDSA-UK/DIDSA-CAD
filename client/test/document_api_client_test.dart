@@ -1887,4 +1887,214 @@ void main() {
       expect(feature.type, 'rack');
     });
   });
+
+  group('LOD Phase 2 chunk 4: job-mode BevelPairFeature/PlanetaryGearFeature client wiring', () {
+    http.Response jsonResponse(Object body, {int status = 200}) =>
+        http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});
+
+    Map<String, dynamic> minimalMeshJson() => {
+          'vertices': [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+          ],
+          'normals': [
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0],
+          ],
+          'triangle_indices': [
+            [0, 1, 2],
+          ],
+        };
+
+    test('bevelPairFeatureJson builds the same wire shape createBevelPairFeature sends', () async {
+      Map<String, dynamic>? sentBody;
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          sentBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'bevel_pair',
+            'id': 'pair-1',
+            'locked': false,
+            'produces': 'body',
+            'module': 4.0,
+            'member_1': {'tooth_count': 20, 'profile_shift': null},
+            'member_2': {'tooth_count': 40, 'profile_shift': null},
+            'face_width': 15.0,
+            'pressure_angle_degrees': 20.0,
+            'shaft_angle_degrees': 90.0,
+            'backlash': 0.0,
+          }, status: 201);
+        }),
+      );
+
+      await client.createBevelPairFeature(
+        'part-1',
+        module: 4.0,
+        toothCount1: 20,
+        toothCount2: 40,
+        faceWidth: 15.0,
+      );
+
+      final payload = DocumentApiClient.bevelPairFeatureJson(
+        module: 4.0,
+        toothCount1: 20,
+        toothCount2: 40,
+        faceWidth: 15.0,
+      );
+      expect(payload, sentBody);
+    });
+
+    test('createBevelPairFeatureJob posts the given payload to the jobs route and parses a 202', () async {
+      Uri? capturedUri;
+      Map<String, dynamic>? capturedBody;
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedUri = request.url;
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({'job_id': 'job-1', 'status': 'running'}, status: 202);
+        }),
+      );
+      final payload = DocumentApiClient.bevelPairFeatureJson(
+        module: 4.0,
+        toothCount1: 20,
+        toothCount2: 40,
+        faceWidth: 15.0,
+        spiralAngleDegrees: 25.0,
+      );
+
+      final job = await client.createBevelPairFeatureJob('part-1', payload);
+
+      expect(capturedUri?.path, '/document/parts/part-1/bevel-pair-features/jobs');
+      expect(capturedBody, payload);
+      expect(job.jobId, 'job-1');
+      expect(job.status, 'running');
+    });
+
+    test('previewBevelPairFeatureCoarse posts to the coarse-preview route and parses the Body array', () async {
+      Uri? capturedUri;
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedUri = request.url;
+          return jsonResponse([
+            {'body_id': 'coarse-member-1', 'source': 'coarse', 'mesh': minimalMeshJson()},
+            {'body_id': 'coarse-member-2', 'source': 'coarse', 'mesh': minimalMeshJson()},
+          ]);
+        }),
+      );
+
+      final bodies = await client.previewBevelPairFeatureCoarse(
+        'part-1',
+        DocumentApiClient.bevelPairFeatureJson(module: 4.0, toothCount1: 20, toothCount2: 40, faceWidth: 15.0),
+      );
+
+      expect(capturedUri?.path, '/document/parts/part-1/bevel-pair-features/coarse-preview');
+      expect(bodies.map((b) => b.bodyId).toList(), ['coarse-member-1', 'coarse-member-2']);
+      expect(bodies.every((b) => b.source == 'coarse'), isTrue);
+    });
+
+    test('planetaryGearFeatureJson/createPlanetaryGearFeatureJob/previewPlanetaryGearFeatureCoarse mirror the '
+        'bevel pair ones exactly', () async {
+      final requestedPaths = <String>[];
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          requestedPaths.add('${request.method} ${request.url.path}');
+          if (request.url.path.endsWith('/jobs')) {
+            return jsonResponse({'job_id': 'planetary-job-1', 'status': 'running'}, status: 202);
+          }
+          return jsonResponse([
+            {'body_id': 'coarse-sun', 'source': 'coarse', 'mesh': minimalMeshJson()},
+          ]);
+        }),
+      );
+      final payload = DocumentApiClient.planetaryGearFeatureJson(
+        module: 2.0,
+        sunToothCount: 20,
+        ringToothCount: 60,
+        planetCount: 4,
+        faceWidth: 5.0,
+        ringOuterDiameter: 140.0,
+      );
+
+      final job = await client.createPlanetaryGearFeatureJob('part-1', payload);
+      final bodies = await client.previewPlanetaryGearFeatureCoarse('part-1', payload);
+
+      expect(requestedPaths, contains('POST /document/parts/part-1/planetary-gear-features/jobs'));
+      expect(requestedPaths, contains('POST /document/parts/part-1/planetary-gear-features/coarse-preview'));
+      expect(job.jobId, 'planetary-job-1');
+      expect(bodies.single.bodyId, 'coarse-sun');
+    });
+
+    test('getJobStatus parses running/succeeded (with an embedded FeatureDto result)/failed (with a structured '
+        'error)', () async {
+      var response = jsonResponse({'job_id': 'job-1', 'status': 'running'});
+      final client = DocumentApiClient(httpClient: MockClient((request) async => response));
+
+      final running = await client.getJobStatus('part-1', 'job-1');
+      expect(running.status, 'running');
+      expect(running.result, isNull);
+      expect(running.error, isNull);
+
+      response = jsonResponse({
+        'job_id': 'job-1',
+        'status': 'succeeded',
+        'result': {
+          'type': 'bevel_pair',
+          'id': 'pair-1',
+          'locked': false,
+          'produces': 'body',
+          'module': 4.0,
+          'member_1': {'tooth_count': 20, 'profile_shift': null},
+          'member_2': {'tooth_count': 40, 'profile_shift': null},
+          'face_width': 15.0,
+          'pressure_angle_degrees': 20.0,
+          'shaft_angle_degrees': 90.0,
+          'backlash': 0.0,
+          'warnings': ['both members share the same hand of spiral'],
+        },
+      });
+      final succeeded = await client.getJobStatus('part-1', 'job-1');
+      expect(succeeded.status, 'succeeded');
+      expect(succeeded.result?.id, 'pair-1');
+      expect(succeeded.result?.warnings, ['both members share the same hand of spiral']);
+
+      response = jsonResponse({
+        'job_id': 'job-1',
+        'status': 'failed',
+        'error': {'type': 'bevel_failed', 'detail': 'unresolvable spiral bevel pair'},
+      });
+      final failed = await client.getJobStatus('part-1', 'job-1');
+      expect(failed.status, 'failed');
+      expect(failed.result, isNull);
+      expect(failed.error?['detail'], 'unresolvable spiral bevel pair');
+    });
+
+    test('cancelJob posts to the cancel route and parses the response', () async {
+      Uri? capturedUri;
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedUri = request.url;
+          return jsonResponse({'job_id': 'job-1', 'status': 'running'});
+        }),
+      );
+
+      final result = await client.cancelJob('part-1', 'job-1');
+
+      expect(capturedUri?.path, '/document/parts/part-1/jobs/job-1/cancel');
+      expect(result.status, 'running');
+    });
+
+    test('a 404 propagates as an ApiException with statusCode 404 (needed to tell a dead job apart from a '
+        'transient network error when resuming a poll)', () async {
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async => jsonResponse({'detail': 'job not found'}, status: 404)),
+      );
+
+      await expectLater(
+        () => client.getJobStatus('part-1', 'unknown-job'),
+        throwsA(isA<ApiException>().having((e) => e.statusCode, 'statusCode', 404)),
+      );
+    });
+  });
 }

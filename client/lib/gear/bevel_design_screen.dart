@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../api/document_api_client.dart';
 import '../api/sketch_api_client.dart' show ApiException;
 import '../viewport3d/part_screen.dart';
+import '../viewport3d/pending_job_store.dart';
 import 'bevel_preview_canvas.dart';
 import 'field_help_icon.dart';
 import 'gear_preset_controls.dart';
@@ -553,8 +554,16 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
         );
         warnings = feature.warnings;
       } else {
-        final feature = await _api.createBevelPairFeature(
-          part.id,
+        // LOD Phase 2 chunk 4 (`docs/lod-strategy/02-phase2-design.md` SS6
+        // item 4): a spiral BevelPairFeature is the confirmed genuine long
+        // tail (`00-status.md`'s own motivating case - a 12+ minute build
+        // that timed out on a phone) - job-mode create instead of the
+        // synchronous call above, so this screen returns immediately
+        // instead of blocking on the real build. `PartScreen` picks up
+        // polling/the coarse placeholder/the cancel affordance the moment
+        // it mounts (see `PendingJobStore`/`PartScreen._checkForPendingJob`).
+        final payload = DocumentApiClient.bevelPairFeatureJson(
+          planeRef: planeRef,
           module: _module,
           toothCount1: int.parse(_toothCount1Controller.text),
           profileShift1: _profileShift1Auto ? null : double.parse(_profileShift1Controller.text),
@@ -566,11 +575,16 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
           pressureAngleDegrees: _pressureAngleDegrees,
           shaftAngleDegrees: double.parse(_shaftAngleController.text),
           backlash: double.parse(_pairBacklashController.text),
-          planeRef: planeRef,
           pointsPerFlank: _pointsPerFlank,
           spiralAngleDegrees: _effectivePairSpiralAngleDegrees,
         );
-        warnings = feature.warnings;
+        final job = await _api.createBevelPairFeatureJob(part.id, payload);
+        await PendingJobStore.save(PendingFeatureJob(
+          partId: part.id,
+          jobId: job.jobId,
+          featureKind: PendingFeatureJob.kindBevelPair,
+          coarsePreviewPayload: payload,
+        ));
       }
       if (!mounted) return;
       Navigator.of(context).pushReplacement(
