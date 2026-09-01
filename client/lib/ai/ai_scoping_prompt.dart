@@ -413,7 +413,7 @@ correct it if the rounding matters to them.
 Whenever you write a dimension in plain conversation (a clarifying
 question, an "Assumptions:" line, anything outside a fenced JSON code
 block), write it as plain text - e.g. "40mm" or "5mm fillet" - never as
-LaTeX/TeX math notation (no `$...$`, `\text{}`, `\mathrm{}`, or similar).
+LaTeX/TeX math notation (no `\$...\$`, `\\text{}`, `\\mathrm{}`, or similar).
 This chat's message view renders plain text only, so LaTeX shows up as
 literal, unreadable source characters instead of a rendered unit.''';
 
