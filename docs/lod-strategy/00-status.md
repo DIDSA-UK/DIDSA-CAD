@@ -32,7 +32,7 @@ doc and any design-doc content — no implementation).
 | Phase 1 chunk 2 (coarse-mesh mechanism + gear-family builders) | **merged to `main`** | branch `claude/lod-coarse-mesh-gear-family`, [PR #174](https://github.com/DIDSA-UK/DIDSA-CAD/pull/174) | Two code-review rounds found and fixed real validation gaps in the new coarse-preview endpoints; branch merged forward against `main` twice (PR #172, then PR #173) to reconcile cross-cutting `bevel.py`/`router.py`/`extrude.py` changes, one real semantic conflict resolved by hand. Full suite 1882/1882 passed pre-fix-up (real OCCT); the fix-up and both merge-forward passes were verified by code review + syntax check only in this coordinator's sandbox (no `pythonocc-core` available here), merged 2026-08-27. Foundational plumbing now available on `main` — chunks 3/4/5 unblocked. |
 | Phase 1 chunks 3+4+5 (Pattern/Loft coarse builders + client toggle) | implemented, **under coordinator review** | branch `claude/lod-pattern-loft-client`, [PR #175](https://github.com/DIDSA-UK/DIDSA-CAD/pull/175) | Pattern/Loft coarse builders + coarse-preview endpoints + instance-count cap (backend, real-OCCT verified: 1909→1919, zero regressions); client mesh-override generalization, per-Feature pending/pinned state, both flows wired (create-time for Pattern/Loft only — the five gear-family types' own create flow lives in `GearDesignScreen`, which has no `PartViewport` mounted; re-open flow wired universally), Feature-tree badge + pin toggle (real Flutter, `flutter analyze` 0 issues, `flutter test` 1453 passed/0 failed). PR opened directly by the implementing session. Full detail below. |
 | Phase 2 design pass | approved | `02-phase2-design.md` | Phase 2 implementation dispatched — chunks 1+2 below. |
-| Phase 2 chunks 1+2 (planetary pooling + `BevelPairFeature` job mode) | implemented | branch `claude/lod-phase2-planetary-and-bevel-jobs` | `ProcessPoolExecutor` pooling added to `planetary_gear.py` (Finding 2's own flagged perf gap, plus the hard prerequisite for future cancellation); new in-memory job store + real mid-build cancellation + 3 new routes, scoped only to `BevelPairFeature`. Real-OCCT verified: 1919 → 1933, zero regressions. Full detail below. |
+| Phase 2 chunks 1+2 (planetary pooling + `BevelPairFeature` job mode) | implemented, **PR open** | branch `claude/lod-phase2-planetary-and-bevel-jobs`, [PR #179](https://github.com/DIDSA-UK/DIDSA-CAD/pull/179) | `ProcessPoolExecutor` pooling added to `planetary_gear.py` (Finding 2's own flagged perf gap, plus the hard prerequisite for future cancellation); new in-memory job store + real mid-build cancellation + 3 new routes, scoped only to `BevelPairFeature`. Real-OCCT verified: 1919 → 1933, zero regressions. Full detail below. |
 
 ---
 
@@ -470,9 +470,10 @@ spending a third fix-up round on a bounded edge case.
 ### Phase 2 chunks 1+2 — planetary pooling + `BevelPairFeature` job mode (branch `claude/lod-phase2-planetary-and-bevel-jobs`)
 
 - **Branch**: `claude/lod-phase2-planetary-and-bevel-jobs`, based on `main` post-Phase-1 (PR #178,
-  the latest merged `main` at dispatch time). Folds `02-phase2-design.md` §6 chunks 1 and 2 into
-  one session — independent pieces (chunk 2 only needs `bevel_pair.py`'s *existing* pooling, not
-  this session's new planetary pooling), both backend Python/OCCT work.
+  the latest merged `main` at dispatch time). **PR open**: [PR #179](https://github.com/DIDSA-UK/DIDSA-CAD/pull/179).
+  Folds `02-phase2-design.md` §6 chunks 1 and 2 into one session — independent pieces (chunk 2 only
+  needs `bevel_pair.py`'s *existing* pooling, not this session's new planetary pooling), both
+  backend Python/OCCT work.
 - **Scope — Part A (chunk 1)**: `ProcessPoolExecutor` pooling for `PlanetaryGearFeature`
   (`00-status.md` Finding 2's own flagged perf gap — "the fix `bevel_pair.py` applied for its
   2-member case, never applied here"), mirroring `bevel_pair.py`'s own `spawn`-context/BREP-bytes
