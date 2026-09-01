@@ -535,3 +535,42 @@ spending a third fix-up round on a bounded edge case.
   - UI concurrency or fine-grained progress reporting (explicitly out of scope per the approved
     design, `02-phase2-design.md` §7).
 - Full detail: `docs/status.md`'s 2026-09-01 "LOD Phase 2 chunks 1+2" entry.
+
+### Phase 2 cancel-race fix — FAILED-vs-CANCELLED classification (branch `claude/lod-phase2-cancel-race-fix`)
+
+- **Branch**: `claude/lod-phase2-cancel-race-fix`, based on `main` post-chunks-1+2 (PR #179, merged).
+  **PR open**: [PR #181](https://github.com/DIDSA-UK/DIDSA-CAD/pull/181). Fixes a real,
+  reproducible bug the chunks-1+2 session's own job-mode cancellation path shipped with: `main`'s CI (ARM64 matrix leg) was red on `test_bevel_pair_jobs.py::test_cancel_during_
+  an_active_phase_search_pool_kills_workers_and_never_persists` — a genuinely slow, tooth-count-
+  symmetric spiral pair cancelled mid-phase-search settled on `JobStatus.FAILED` (`[Errno 9] Bad
+  file descriptor`) instead of `JobStatus.CANCELLED`.
+- **Root cause**: both `bevel_pair.py` pool sites (`resolve_bevel_pair_from_bodies`'s member-build
+  pool, `_search_meshing_phase`'s phase-search pool) open their `ProcessPoolExecutor` as
+  `with executor, _cancellation_scope(cancellation, executor):` — nested context managers, so the
+  outer `executor`'s own `shutdown()`-on-exit runs *after* `CancellationToken.track()`'s narrow
+  `except` window has already closed. `cancel()` (the request thread) already called
+  `executor.shutdown()` itself inside `_kill_pool_workers`; the build thread's own outer `with
+  executor:` block then called `shutdown()` again once the kill-triggered exception propagated out
+  — two threads tearing down the same pool's IPC file descriptors concurrently, producing a real
+  `OSError` that surfaced *after* `track()`'s own `except` had already exited, so it reached
+  `jobs.py`'s job runner unrecognized — `FAILED`, not `CANCELLED`.
+- **Fix 1 (architectural backstop, `app.document.jobs._run_bevel_pair_job`)**: the job runner now
+  checks `cancellation.is_cancelled()` as the authoritative signal for every exception the build
+  call raises, not just `isinstance(exc, JobCancelled)` — any exception surfacing after a real
+  cancellation request classifies the job `CANCELLED`, regardless of which layer, thread, or
+  specific exception type a future cancellation-triggered teardown race happens to produce.
+- **Fix 2 (closing the race itself, `app.document.job_cancellation._kill_pool_workers`)**: no
+  longer calls `executor.shutdown()` — only kills the worker processes. The owning thread's own
+  outer `with executor:` block is guaranteed to call `shutdown()` exactly once on its own exit;
+  removing the second caller closes the concurrent-shutdown race at its root.
+- **Verification, real throughout**: real `pythonocc-core=7.9.3` conda-forge env. Reproduced the
+  original failure locally against the unfixed code first — 8 failures across 35 attempts (~23%),
+  every one the identical `[Errno 9] Bad file descriptor` detail CI reported. Real baseline full
+  suite (unfixed code, `pytest-xdist -n auto`): **1933 passed, 0 failed** (the race is
+  low-probability, didn't hit this particular full-suite pass — consistent with CI's own single
+  failure out of 1933). After both fixes: the specific test run **30/30, zero failures**. Full
+  suite against the fix: **1933 passed, 0 failed** — matches baseline exactly, zero regressions.
+- **Not done this session** (explicitly out of scope per the dispatch prompt): any other part of
+  the Phase 2 job-mode mechanism (endpoint shapes, the job store, the pooling itself); extending
+  job-mode to `PlanetaryGearFeature`; any client-side work.
+- Full detail: `docs/status.md`'s 2026-09-01 "LOD Phase 2 cancel-race fix" entry.
