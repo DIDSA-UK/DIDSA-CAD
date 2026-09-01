@@ -1769,17 +1769,19 @@ def compute_part_bodies_coarse(
     """`docs/lod-strategy/01-design.md` SS4: `compute_part_bodies`'s coarse
     counterpart, for `app.document.router`'s `tier=coarse` mesh query and
     coarse-preview endpoints. Identical topological walk over `part.
-    features`, but a Gear/BevelGear/BevelPair/GearChain/PlanetaryGear
-    Feature's own contribution is built via its coarse resolver (a cheap
-    real-OCCT primitive - see each of those modules' own "Coarse (LOD)
-    construction" section) instead of its real `resolve_X_from_bodies`
-    construction; every other Feature type (Extrude, Loft, Pattern,
-    Boolean, ...) is resolved exactly as `_apply_feature_to_bodies` already
-    would - those have no coarse builder of their own yet (`01-design.md`
-    SS8's chunks 3/4 add Pattern/Loft later), so there is nothing to
-    substitute for them here, and their own real cost is unchanged by this
-    function's existence (this chunk only ever makes the gear-family
-    Features above cheaper, never anything else more expensive).
+    features`, but a Gear/BevelGear/BevelPair/GearChain/PlanetaryGear/
+    Pattern/Loft Feature's own contribution is built via its coarse
+    resolver (a cheap real-OCCT construction - see each of those modules'
+    own "Coarse (LOD) construction" section) instead of its real
+    `resolve_X_from_bodies` construction; every other Feature type
+    (Extrude, Boolean, Split, Surface, ...) is resolved exactly as
+    `_apply_feature_to_bodies` already would - those have no coarse
+    builder of their own (`01-design.md` SS3's own explicit scope-down:
+    `BooleanFeature`/`SplitFeature`/`SurfaceFeature` confirmed not
+    worth it), so there is nothing to substitute for them here, and their
+    own real cost is unchanged by this function's existence (this only
+    ever makes the Feature types above cheaper, never anything else more
+    expensive).
 
     A brand-new function, not a modified `_apply_feature_to_bodies` -
     `compute_part_bodies`'s own real code path (and every one of its
@@ -1798,6 +1800,8 @@ def compute_part_bodies_coarse(
     from app.document.bevel_pair import resolve_bevel_pair_coarse_from_bodies
     from app.document.gear import resolve_gear_coarse_from_bodies
     from app.document.gear_chain import resolve_gear_chain_coarse_from_bodies
+    from app.document.loft import resolve_loft_coarse_from_bodies
+    from app.document.pattern import resolve_pattern_coarse_from_bodies
     from app.document.planetary_gear import resolve_planetary_coarse_from_bodies
 
     feature_index = {feature.id: i for i, feature in enumerate(part.features)}
@@ -1893,6 +1897,42 @@ def compute_part_bodies_coarse(
             _register_solids(bodies, feature.id, shape)
             continue
 
+        if isinstance(feature, PatternFeature):
+            # `docs/lod-strategy/01-design.md` SS3: mirrors the real
+            # `_apply_feature_to_bodies` PatternFeature branch's own
+            # blanket `except HTTPException` tolerance above (that branch
+            # never narrows to specific structured error types either) -
+            # a coarse rendering pass tolerates a Pattern that currently
+            # can't resolve at all exactly as loosely as the real pass
+            # does. Always registers under `feature.id`
+            # (`_register_solids`, chunk 2's own multi-Body coarse
+            # convention) regardless of `tool_feature_id` - see `resolve_
+            # pattern_coarse_from_bodies`'s own docstring for why a coarse
+            # tool-feature pattern never touches its own target Body.
+            try:
+                shape = resolve_pattern_coarse_from_bodies(part, bodies, feature, excluded_feature_ids)
+            except HTTPException:
+                logger.warning("Skipping coarse PatternFeature %s: could not be resolved", feature.id)
+                continue
+            _register_solids(bodies, feature.id, shape)
+            continue
+
+        if isinstance(feature, LoftFeature):
+            try:
+                solid = resolve_loft_coarse_from_bodies(feature, part, bodies, excluded_feature_ids)
+            except HTTPException as exc:
+                if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
+                    "invalid_loft_section",
+                    "loft_failed",
+                ):
+                    raise
+                logger.warning("Skipping coarse LoftFeature %s: could not be resolved", feature.id)
+                continue
+            _apply_boss_or_cut(
+                bodies, feature.id, feature_index, feature.mode == LoftMode.CUT, feature.target_body_ids, solid
+            )
+            continue
+
         _apply_feature_to_bodies(feature, part, bodies, feature_index, excluded_feature_ids)
 
     return bodies
@@ -1905,11 +1945,26 @@ def coarse_eligible_feature_ids(part: Part) -> frozenset[str]:
     its response down to just the Bodies a coarse-eligible Feature
     produced (`docs/lod-strategy/01-design.md` SS4: "for any Body whose
     producing Feature is coarse-eligible"), leaving every other Body's
-    entry out rather than re-serving it unchanged."""
+    entry out rather than re-serving it unchanged. Extended by chunks 3/4
+    (`docs/lod-strategy/00-status.md`'s "Dispatched implementation
+    sessions") to add `PatternFeature`/`LoftFeature` once each had its own
+    coarse resolver - `compute_part_bodies_coarse`'s own gear-family
+    branches above are otherwise untouched by that addition."""
     return frozenset(
         feature.id
         for feature in part.features
-        if isinstance(feature, (GearFeature, BevelGearFeature, BevelPairFeature, GearChainFeature, PlanetaryGearFeature))
+        if isinstance(
+            feature,
+            (
+                GearFeature,
+                BevelGearFeature,
+                BevelPairFeature,
+                GearChainFeature,
+                PlanetaryGearFeature,
+                PatternFeature,
+                LoftFeature,
+            ),
+        )
     )
 
 

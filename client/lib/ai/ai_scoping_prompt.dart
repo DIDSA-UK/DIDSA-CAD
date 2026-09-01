@@ -40,7 +40,21 @@ schema below - nothing else in that final message.''';
 const String _freshPartNote = '''
 This conversation always builds a brand-new Part. You never modify a Part
 that already exists - there is no "current part" for you to reason about,
-and no way to reference one; every plan starts from nothing.''';
+and no way to reference one; every plan starts from nothing.
+
+This holds even if you already produced one plan earlier in this same
+conversation and the user is now asking for something more (another
+feature, a change, an addition): each plan you emit is still built from
+nothing, completely independent of any Part your previous plan in this
+chat may have created. So if the user's new request builds on what you
+already described, your new plan must re-emit every earlier step (every
+sketch point/line/circle/etc. and every feature) with the exact same
+local_ids and exact same values as your previous plan message in this
+conversation, copied verbatim, then add the new step(s) on top of them -
+never assume an earlier plan's local_ids or Bodies still exist, and never
+re-derive or re-type earlier coordinates/dimensions from memory (that is
+how a second feature ends up subtly misaligned with the first - always
+copy the old plan's own numbers, don't reconstruct them).''';
 
 /// Existing-Part editing (docs/ai-modelling/09-existing-part-editing.md):
 /// swapped in for [_freshPartNote] whenever [buildAiScopingSystemPrompt] is
@@ -110,6 +124,14 @@ Each needs "sketch_feature_id" naming an earlier "sketch" step.
   give either radius_point_id or a literal radius.
 - sketch_arc: {local_id, kind:"sketch_arc", sketch_feature_id,
   center_point_id, start_point_id, end_point_id?, end_angle?, construction?}
+  IMPORTANT direction rule: the arc is always traced from start_point_id to
+  end_point_id (or to the point end_angle implies) going
+  COUNTER-CLOCKWISE around center_point_id - never the shorter of the two
+  possible arcs, never clockwise. There is no field to request clockwise or
+  "the short way round" - if the two points you chose are on the "wrong"
+  side of each other for this rule, you get an arc that sweeps most of the
+  way around the circle instead of the small corner you meant (this is the
+  single most common sketch_arc mistake - see the worked example below).
 - sketch_ellipse: {local_id, kind:"sketch_ellipse", sketch_feature_id,
   center_point_id, major_point_id?, major_radius?, angle?, minor_radius
   (required), construction?}
@@ -211,6 +233,66 @@ once it exists:
 revolve, sweep, pattern, mirror, or gear_request - never a sketch or a
 create_plane step. All four selectors are relative to the world/global
 X/Y/Z axes, not a tilted Sketch's own local plane.
+
+These four selectors are the ONLY way to pick edges - there is no way to
+name one single arbitrary edge, and no selector for "some but not all" of
+a face's edges (e.g. just the two long top edges of a rectangular block,
+leaving the two short ones sharp). Each selector always grabs a whole,
+fixed group of edges at once - decide which real-world request maps onto
+which selector, and if the user's request does not cleanly match any of
+the four (they want only some edges of a face, or an edge that only exists
+on a shape more complex than a box, or a shape with more than one "top"),
+this is exactly the kind of scope ambiguity you must ask about rather than
+force-fit the closest selector - do not silently over- or under-fillet by
+picking a selector that fillets more or fewer edges than the user actually
+asked for. When several Body-producing steps exist (e.g. a pattern
+producing several copies), double-check "of" names the specific step the
+user means, not just the most recently defined one.
+
+## Rounded corners drawn IN a Sketch (not a Fillet/Chamfer feature)
+
+Fillet/Chamfer (above) round the edges of an already-built solid Body -
+use that whenever the rounded corner is on a shape you are about to
+extrude/revolve/sweep as a plain sharp-cornered profile, since it needs no
+tangency math from you at all: sketch the sharp-cornered profile, extrude/
+revolve/sweep it, then Fillet the resulting Body edge. Prefer this over a
+sketch_arc corner whenever it's available - it cannot come out backwards.
+
+Only use a sketch_arc to round a corner directly inside a Sketch when the
+rounded shape itself must exist as 2D sketch geometry - most commonly a
+Sweep path, where the profile travels along a sketch that itself has a
+rounded corner. When you do this, you must place a sketch_arc's
+start_point_id/end_point_id yourself so the arc is tangent to the two
+straight segments it connects, and the direction rule above (always
+counter-clockwise from start to end) means the order you name them in
+matters:
+
+To round a 90-degree corner where one straight segment arrives at corner
+point C travelling in direction D1 and the next straight segment leaves C
+travelling in direction D2, with fillet radius r:
+1. The arc's center is offset from C by r, perpendicular to each segment,
+   on the inside of the turn (the side the corner bends toward).
+2. The two tangent points - where the straight segments actually end/start
+   now, instead of at C itself - are each r back from C along their own
+   segment's direction, i.e. incoming_tangent_point = C - r*D1 and
+   outgoing_tangent_point = C + r*D2 (D1, D2 unit vectors).
+3. Figure out whether the corner turns left or right (i.e. whether D2 is a
+   counter-clockwise or clockwise turn from D1). If left (CCW) turn: start
+   the arc at incoming_tangent_point and end at outgoing_tangent_point - the
+   natural CCW sweep is the short way round. If right (CW) turn: you must
+   swap them - start_point_id must be outgoing_tangent_point and
+   end_point_id must be incoming_tangent_point - naming them in direction-
+   of-travel order (as you would for the CCW case) produces an arc that
+   sweeps the long way around the circle instead of the small corner, which
+   is the single most common way this goes wrong.
+Sanity-check every sketch_arc corner this way before finalizing your plan:
+does the arc as you've defined it (start to end, going CCW) trace the
+SHORT way around, hugging the actual corner - not loop most of the way
+around the circle and not bulge out the wrong side of the path? If you are
+not confident of the direction, prefer end_angle (an absolute angle from
+center, easier to reason about directly than a second point) or reconsider
+whether a Fillet feature on a downstream Body would avoid this arithmetic
+entirely.
 
 ## Reference kind-checking
 
@@ -347,7 +429,51 @@ Assistant (final message, nothing else in it):
       "module": 2, "tooth_count": 20, "face_width": 10, "pressure_angle": 20 }
   ]
 }
-```''';
+```
+
+Example 4 - a follow-up request in the same conversation, after you already
+emitted a plan and the user pressed Generate:
+
+User: (first turn, as Example 1's block above) "I need a 60x40x10mm
+rectangular block with 5mm fillets on the top edges."
+
+Assistant: (emits the Example 1 JSON plan above)
+
+User (next turn): "Now add a 4mm hole through the middle of the top face."
+
+This is still a brand-new Part from nothing (see "Editing an existing
+Part" above only applies when that section is present in this prompt) -
+your new plan must include everything from the Example 1 plan again,
+values copied verbatim, plus the new hole:
+```json
+{
+  "version": 1,
+  "steps": [
+    { "local_id": "sk1", "kind": "sketch", "plane": "XY" },
+    { "local_id": "p1", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 0, "y": 0 },
+    { "local_id": "p2", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 60, "y": 0 },
+    { "local_id": "p3", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 60, "y": 40 },
+    { "local_id": "p4", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 0, "y": 40 },
+    { "local_id": "r1", "kind": "sketch_rectangle", "sketch_feature_id": "sk1",
+      "corner_point_ids": ["p1", "p2", "p3", "p4"], "width": 60, "height": 40 },
+    { "local_id": "f1", "kind": "extrude", "sketch_feature_id": "sk1",
+      "extrude_type": "boss", "start_distance": 0, "end_distance": 10 },
+    { "local_id": "f2", "kind": "fillet",
+      "edges": { "selector": "top_face_edges", "of": "f1" }, "radius": 5 },
+    { "local_id": "sk2", "kind": "sketch", "plane": "XY" },
+    { "local_id": "hc", "kind": "sketch_point", "sketch_feature_id": "sk2", "x": 30, "y": 20 },
+    { "local_id": "hole1", "kind": "sketch_circle", "sketch_feature_id": "sk2",
+      "center_point_id": "hc", "radius": 2 },
+    { "local_id": "f3", "kind": "extrude", "sketch_feature_id": "sk2",
+      "extrude_type": "cut", "start_distance": 0, "end_distance": 10 }
+  ]
+}
+```
+(the block's rectangle and fillet are repeated exactly as in the first
+turn's plan - same coordinates, same local_ids - because each plan is
+still built from nothing; the hole's centre, 30,20, is the true middle of
+the 60x40 block, re-derived from the same numbers already used above, not
+a fresh guess)''';
 
 /// Locked: `ai_plan_detection.dart`'s `detectPlanInAssistantText` depends
 /// structurally on the model actually honouring this instruction - never

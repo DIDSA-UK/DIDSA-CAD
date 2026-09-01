@@ -19,12 +19,13 @@ import logging
 import math
 
 from fastapi import HTTPException
+from OCC.Core.BRep import BRep_Builder
 from OCC.Core.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
 from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
 from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform
 from OCC.Core.GeomAbs import GeomAbs_Circle, GeomAbs_Cylinder, GeomAbs_Line
 from OCC.Core.gp import gp_Ax1, gp_Dir, gp_Trsf, gp_Vec
-from OCC.Core.TopoDS import TopoDS_Shape, topods
+from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape, topods
 
 from app.document.create_plane import resolve_sketch_basis
 from app.document.extrude import basis_point_to_world, compute_part_bodies, resolve_subshape_from_bodies
@@ -477,39 +478,27 @@ def _invalid_tool_feature_ref(tool_feature_id: str) -> HTTPException:
     )
 
 
-def resolve_pattern_tool_feature_from_bodies(
+def _resolve_pattern_tool_shape_and_target(
     part: Part,
     bodies: dict[str, TopoDS_Shape],
     feature: PatternFeature,
     excluded_feature_ids: frozenset[str],
-) -> tuple[str, TopoDS_Shape]:
-    """Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
-    §2.11/§4): `PatternFeature.tool_feature_id` mode - repeats the
-    referenced upstream Cut/Boss-into-target Feature's own standalone,
-    pre-boolean tool shape (`app.document.extrude.resolve_feature_tool_
-    shape`) `count - 1` times into the *same* shared target, rather than
-    `count` independent Body copies.
-
-    Index 0 is already baked into the target - the seed Cut/Boss already
-    ran once, earlier in feature order (this Feature can only reference an
-    upstream Feature) - so this reuses `_rectangular_instances`/`_circular_
-    instances` unchanged (passing the tool shape in as their own `source`
-    parameter) to compute exactly the *other* `count - 1` transformed tool
-    copies, `skip_indices` filtered the same way as the ordinary Body-seed
-    path. Every realized copy is unioned into one combined tool
-    (`BRepAlgoAPI_Fuse`), then a single `BRepAlgoAPI_Cut`/`BRepAlgoAPI_Fuse`
-    (matching the referenced Feature's own Cut/Boss mode) is applied
-    against the target's *current* shape - not `count - 1` separate
-    booleans, the same "union then one boolean" reasoning `app.document.
-    extrude._fuse_realized_instances` already uses for `MergeMode.FUSE_
-    INTO_ONE`.
+) -> tuple[str, TopoDS_Shape, bool]:
+    """Shared prefix of `resolve_pattern_tool_feature_from_bodies` (real)
+    and `resolve_pattern_coarse_from_bodies` (LOD, `docs/lod-strategy/
+    01-design.md` SS3): resolves `feature.tool_feature_id`'s own
+    standalone, pre-boolean tool shape and this Pattern's own current
+    target Body id, without realizing any instance or running any
+    fuse/boolean of its own - both callers diverge only in what they do
+    with the returned tool shape (real: realize + fuse instances into one
+    combined tool, then boolean into the target; coarse: realize instances
+    and stop there). Returns `(target_body_id, tool_shape, is_cut)`.
 
     Re-checks `tool_feature_qualifies` here for the same recompute-time
     drift tolerance `app.document.mirror.resolve_mirror_tool_feature_from_
     bodies`'s own identical check gives (see that function's own doc
     comment for the full reasoning). v1 scope: exactly one target -
-    `target_body_ids[0]`. Returns `(target_body_id, new_shape)`, mirroring
-    that function's own return shape exactly.
+    `target_body_ids[0]`.
 
     Bug fix (on-device feedback: "trying to pattern a hole produced no
     visible second hole, and a small stray cut showed up in the wrong
@@ -554,6 +543,46 @@ def resolve_pattern_tool_feature_from_bodies(
     target_id = target_body_ids[0]
     if target_id not in bodies:
         raise _invalid_tool_feature_ref(tool_feature_id)
+    return target_id, tool_shape, is_cut
+
+
+def resolve_pattern_tool_feature_from_bodies(
+    part: Part,
+    bodies: dict[str, TopoDS_Shape],
+    feature: PatternFeature,
+    excluded_feature_ids: frozenset[str],
+) -> tuple[str, TopoDS_Shape]:
+    """Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
+    §2.11/§4): `PatternFeature.tool_feature_id` mode - repeats the
+    referenced upstream Cut/Boss-into-target Feature's own standalone,
+    pre-boolean tool shape (`_resolve_pattern_tool_shape_and_target`, which
+    wraps `app.document.extrude.resolve_feature_tool_shape`) `count - 1`
+    times into the *same* shared target, rather than `count` independent
+    Body copies.
+
+    Index 0 is already baked into the target - the seed Cut/Boss already
+    ran once, earlier in feature order (this Feature can only reference an
+    upstream Feature) - so this reuses `_rectangular_instances`/`_circular_
+    instances` unchanged (passing the tool shape in as their own `source`
+    parameter) to compute exactly the *other* `count - 1` transformed tool
+    copies, `skip_indices` filtered the same way as the ordinary Body-seed
+    path. Every realized copy is unioned into one combined tool
+    (`BRepAlgoAPI_Fuse`), then a single `BRepAlgoAPI_Cut`/`BRepAlgoAPI_Fuse`
+    (matching the referenced Feature's own Cut/Boss mode) is applied
+    against the target's *current* shape - not `count - 1` separate
+    booleans, the same "union then one boolean" reasoning `app.document.
+    extrude._fuse_realized_instances` already uses for `MergeMode.FUSE_
+    INTO_ONE`.
+
+    v1 scope: exactly one target - `target_body_ids[0]`. Returns
+    `(target_body_id, new_shape)`, mirroring that function's own return
+    shape exactly."""
+    tool_feature_id = feature.tool_feature_id
+    assert tool_feature_id is not None
+
+    target_id, tool_shape, is_cut = _resolve_pattern_tool_shape_and_target(
+        part, bodies, feature, excluded_feature_ids
+    )
 
     if feature.pattern_type == PatternType.CIRCULAR:
         instances = _circular_instances(
@@ -602,3 +631,87 @@ def resolve_pattern(
     if feature.tool_feature_id is not None:
         return resolve_pattern_tool_feature_from_bodies(part, bodies, feature, all_excluded)
     return resolve_pattern_from_bodies(part, bodies, feature, all_excluded)
+
+
+# Coarse (LOD) construction - `docs/lod-strategy/01-design.md` SS3: a
+# `PatternFeature` without `merge == MergeMode.FUSE_INTO_ONE` (and without
+# `tool_feature_id`) is already cheap - rigid-transform-only instance
+# placement via `BRepBuilderAPI_Transform`, reused here completely
+# unchanged (`_rectangular_instances`/`_circular_instances`,
+# `resolve_pattern_from_bodies` itself). The expensive part is exclusively
+# the sequential `BRepAlgoAPI_Fuse` chain `MergeMode.FUSE_INTO_ONE` (or a
+# `tool_feature_id`) requires - the coarse builder below skips that chain
+# entirely, unconditionally (regardless of `feature.merge`), returning
+# every non-seed instance as its own disjoint solid instead of one fused
+# result. This is a correct, if unmerged, real coarse pass - not a lossy
+# approximation of shape.
+#
+# **Never persisted, never enters the Feature graph** - same invariant
+# every other coarse builder in this codebase (`app.document.gear.
+# coarse_gear_solid` et al) already honors; see this module's own real
+# resolvers above for the construction this stands in for.
+
+
+def resolve_pattern_coarse_from_bodies(
+    part: Part,
+    bodies: dict[str, TopoDS_Shape],
+    feature: PatternFeature,
+    excluded_feature_ids: frozenset[str],
+) -> TopoDS_Shape:
+    """The coarse stand-in for one `PatternFeature`: every non-seed
+    instance, realized via the same rigid-transform placement the real
+    construction uses, combined into one `TopoDS_Compound` of disjoint
+    solids rather than fused together - `app.document.extrude.
+    _register_solids`/`app.document.router._coarse_preview_response`
+    (chunk 2's own convention for a multi-Body coarse Feature, e.g.
+    `BevelPairFeature`/`GearChainFeature`) split that compound back into
+    one Body per instance for the caller.
+
+    Dispatches on `feature.tool_feature_id` exactly like `resolve_pattern`'s
+    own top-level dispatch, but - unlike the real per-case resolvers
+    (`resolve_pattern_from_bodies`/`resolve_pattern_tool_feature_from_
+    bodies`) - a coarse caller never booleans anything into an existing
+    target Body: even when `tool_feature_id` is set, this returns the
+    realized-but-unfused tool copies alone (the target Body itself is left
+    exactly as whatever earlier step in the walk already produced it,
+    unmodified) - a coarse rendering frame has no need to also represent
+    the boolean effect on the target, only to show where the pattern's own
+    instances land, real-if-coarse. `app.document.router`'s `tier=coarse`
+    mesh query and coarse-preview endpoint both call this (via `resolve_
+    pattern_coarse`/`app.document.extrude.compute_part_bodies_coarse`),
+    never anything that persists or registers against the Feature graph."""
+    if feature.tool_feature_id is not None:
+        tool_feature_id = feature.tool_feature_id
+        _target_id, tool_shape, _is_cut = _resolve_pattern_tool_shape_and_target(
+            part, bodies, feature, excluded_feature_ids
+        )
+        if feature.pattern_type == PatternType.CIRCULAR:
+            instances = _circular_instances(
+                part, bodies, feature, tool_shape, tool_feature_id, excluded_feature_ids
+            )
+        else:
+            instances = _rectangular_instances(
+                part, bodies, feature, tool_shape, tool_feature_id, excluded_feature_ids
+            )
+        solids = list(instances.values())
+    else:
+        per_source_instances = resolve_pattern_from_bodies(part, bodies, feature, excluded_feature_ids)
+        solids = [shape for instances in per_source_instances.values() for shape in instances.values()]
+
+    compound = TopoDS_Compound()
+    builder = BRep_Builder()
+    builder.MakeCompound(compound)
+    for solid in solids:
+        builder.Add(compound, solid)
+    return compound
+
+
+def resolve_pattern_coarse(
+    part: Part, feature: PatternFeature, excluded_feature_ids: frozenset[str] = frozenset()
+) -> TopoDS_Shape:
+    """Fresh entry point for a not-yet-created `PatternFeature` payload
+    (the coarse-preview endpoint) or for `tier=coarse` mesh serving -
+    mirrors `resolve_pattern`'s own self-exclusion convention exactly."""
+    all_excluded = excluded_feature_ids | {feature.id}
+    bodies = compute_part_bodies(part, all_excluded)
+    return resolve_pattern_coarse_from_bodies(part, bodies, feature, all_excluded)

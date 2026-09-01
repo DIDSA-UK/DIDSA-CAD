@@ -39,6 +39,13 @@ class _FakeDocumentBackend {
   /// `_features` happens to already contain what the test expects.
   int featuresGetCount = 0;
 
+  /// LOD Phase 1 chunks 3/4/5 follow-up fix: every `GET .../mesh` request's
+  /// query parameters, in call order - lets tests assert exactly when (and
+  /// with what filters) a `tier=coarse` request fires alongside the
+  /// ordinary full-tier one, instead of only ever seeing the latter's
+  /// response.
+  final List<Map<String, String>> meshRequests = [];
+
   // Starts past every seeded Feature's id (seeds are always "feature-N" in
   // creation order) so a newly-created Feature's id never collides with a
   // seeded one.
@@ -92,6 +99,7 @@ class _FakeDocumentBackend {
     }
 
     if (path == '/document/parts/part-1/mesh' && method == 'GET') {
+      meshRequests.add(request.url.queryParameters);
       // Prompt A3: the backend (Prompt A1) now returns an array of Bodies -
       // this fake always returns the single-entry placeholder-box shape,
       // since none of these tests actually exercise real Extrude geometry.
@@ -2371,6 +2379,94 @@ void main() {
     await tester.pump(const Duration(milliseconds: 250));
 
     expect(find.byIcon(Icons.visibility_off), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  // LOD Phase 1 chunks 3/4/5 follow-up fix: a coordinator review of PR #175
+  // found `_refreshMesh` firing its background `tier=coarse` fetch
+  // unconditionally, on every one of its ~38 call sites, rather than only
+  // `01-design.md` SS4/SS5's "re-opening a Part" flow. The two tests below
+  // pin the fix down.
+  testWidgets(
+      'the initial Part load fires exactly one tier=coarse mesh fetch; a routine post-edit '
+      'refresh (Hide/Show) fetches the full mesh again but never re-fires the coarse one', (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': false},
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+    // Lets the fire-and-forget `_refreshCoarseOverlay` triggered by the
+    // initial load settle before the counts below are read.
+    await tester.pump(const Duration(milliseconds: 250));
+
+    final coarseRequestsAfterLoad = backend.meshRequests.where((q) => q['tier'] == 'coarse').length;
+    expect(coarseRequestsAfterLoad, 1, reason: 'initial load must fire exactly one coarse-tier fetch');
+    final totalMeshRequestsAfterLoad = backend.meshRequests.length;
+
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    await tester.longPress(find.text('Sketch 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('Hide'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    // The routine Hide/Show edit still goes through `_refreshMesh` (its
+    // full-tier fetch must still fire, same as before this fix)...
+    expect(backend.meshRequests.length, greaterThan(totalMeshRequestsAfterLoad));
+    // ...but must never fire another `tier=coarse` request - that's the
+    // regression this fix closes.
+    expect(backend.meshRequests.where((q) => q['tier'] == 'coarse').length, coarseRequestsAfterLoad);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+      'the initial-load coarse-tier mesh fetch passes the same hiddenFeatureIds/'
+      'rollbackExcludedFeatureIds/meshQuality filters as the full-tier fetch it runs alongside',
+      (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': false},
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          initialHiddenFeatureIds: const ['feature-1'],
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+    await tester.pump(const Duration(milliseconds: 250));
+
+    final coarseRequest = backend.meshRequests.firstWhere((q) => q['tier'] == 'coarse');
+    final fullRequest = backend.meshRequests.firstWhere((q) => q['tier'] != 'coarse');
+
+    expect(coarseRequest['hidden_feature_ids'], 'feature-1');
+    expect(coarseRequest['hidden_feature_ids'], fullRequest['hidden_feature_ids']);
+    expect(coarseRequest['rollback_excluded_feature_ids'], fullRequest['rollback_excluded_feature_ids']);
+    expect(coarseRequest['quality'], isNotNull);
+    expect(coarseRequest['quality'], fullRequest['quality']);
     expect(tester.takeException(), isNull);
   });
 

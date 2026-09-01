@@ -3,6 +3,23 @@ import 'package:flutter/material.dart';
 import '../api/document_api_client.dart';
 import 'svg_icon.dart';
 
+/// `docs/lod-strategy/01-design.md` SS3: every `FeatureDto.type` the
+/// backend's `compute_part_bodies_coarse`/`coarse_eligible_feature_ids`
+/// (`app.document.extrude`) knows how to build a coarse stand-in for -
+/// mirrored here (rather than derived from a backend field) purely to
+/// decide whether to show the pin-to-coarse control at all, matching this
+/// codebase's existing convention of a small hardcoded type-string set for
+/// a UI-only concern (see `featureDisplayName`'s own `switch` just below).
+const Set<String> _coarseEligibleFeatureTypes = {
+  'gear',
+  'bevel_gear',
+  'bevel_pair',
+  'gear_chain',
+  'planetary_gear',
+  'pattern',
+  'loft',
+};
+
 /// The display name for the Feature at [index] in [features] - shared
 /// between the tree's own rows and anything else (e.g. the cascade-delete
 /// confirmation dialog) that needs to name a Feature the same way the tree
@@ -295,6 +312,28 @@ class FeatureTreePanel extends StatefulWidget {
   /// label for picking ordered Loft sections.
   final String featurePickerLabel;
 
+  /// `docs/lod-strategy/01-design.md` SS5 chunk 5: Feature ids that
+  /// currently have only coarse geometry while their full-detail fetch is
+  /// still pending - client-only computed state (see [PartScreen]'s own
+  /// `_pendingCoarseBodyIds`/`baseFeatureId` mapping), not a backend-sourced
+  /// field the way [FeatureDto.hasLostReference] is. Drives the same badge
+  /// template that field's own glyph overlay/subtitle-color-and-text change
+  /// already establishes, just for a different, non-error condition.
+  final Set<String> pendingDetailFeatureIds;
+
+  /// The subset of coarse-eligible Feature ids the user has manually pinned
+  /// to always show coarse, even once full detail is cached - the
+  /// persistent toggle `01-design.md` SS5 asks for. Purely a display/toggle-
+  /// state input here (rendering the pin control itself); [PartScreen] owns
+  /// actually swapping the rendered mesh.
+  final Set<String> pinnedCoarseFeatureIds;
+
+  /// Toggles [feature]'s membership in [pinnedCoarseFeatureIds] - `null`
+  /// (the default) hides the pin control entirely for every row, matching
+  /// every other optional callback's own "omitted disables the affordance"
+  /// convention in this widget.
+  final void Function(FeatureDto feature)? onToggleCoarsePin;
+
   const FeatureTreePanel({
     super.key,
     required this.visible,
@@ -322,6 +361,9 @@ class FeatureTreePanel extends StatefulWidget {
     this.selectedFeaturePickerIds = const {},
     this.onFeaturePickerToggle,
     this.featurePickerLabel = 'Select source Features',
+    this.pendingDetailFeatureIds = const {},
+    this.pinnedCoarseFeatureIds = const {},
+    this.onToggleCoarsePin,
   });
 
   @override
@@ -679,6 +721,14 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
     final selected = feature.id == widget.selectedFeatureId;
     final hidden = widget.hiddenFeatureIds.contains(feature.id);
     final isSketch = feature.type == 'sketch';
+    // `docs/lod-strategy/01-design.md` SS5 chunk 5: only shown when there's
+    // no more urgent `hasLostReference` warning already occupying this same
+    // badge/subtitle slot - a stale reference is a real problem to fix, a
+    // pending coarse-to-full swap is just this Feature's normal, temporary
+    // "still loading" state.
+    final hasPendingDetail = !feature.hasLostReference && widget.pendingDetailFeatureIds.contains(feature.id);
+    final isCoarseEligible = _coarseEligibleFeatureTypes.contains(feature.type);
+    final isPinnedCoarse = widget.pinnedCoarseFeatureIds.contains(feature.id);
     // Dimmed (but still tappable - an ineligible tap surfaces a SnackBar via
     // onSketchPicked rather than being inert) whenever picking and this row
     // isn't a Sketch with a known-closed profile.
@@ -714,6 +764,12 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
                 right: -2,
                 bottom: -2,
                 child: Icon(Icons.warning_rounded, size: 14, color: Colors.amber.shade800),
+              )
+            else if (hasPendingDetail)
+              Positioned(
+                right: -2,
+                bottom: -2,
+                child: Icon(Icons.hourglass_bottom, size: 14, color: Colors.blue.shade600),
               ),
           ],
         ),
@@ -726,18 +782,36 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
         subtitle: Text(
           feature.hasLostReference
               ? 'Lost reference'
-              : _hasEditPanel(feature.type)
-                  ? 'Editable'
-                  : 'Imported',
+              : hasPendingDetail
+                  ? 'Loading full detail…'
+                  : _hasEditPanel(feature.type)
+                      ? 'Editable'
+                      : 'Imported',
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: feature.hasLostReference
               ? _rowSubtitleStyle.copyWith(color: Colors.amber.shade800, fontWeight: FontWeight.bold)
-              : _rowSubtitleStyle,
+              : hasPendingDetail
+                  ? _rowSubtitleStyle.copyWith(color: Colors.blue.shade600, fontWeight: FontWeight.bold)
+                  : _rowSubtitleStyle,
         ),
-        trailing: widget.isFeaturePickerMode
-            ? (featurePickerSelected ? const Icon(Icons.check_circle, size: 18) : null)
-            : (hidden ? const Icon(Icons.visibility_off, size: 18) : null),
+        trailing: () {
+          final pinIcon = widget.onToggleCoarsePin != null && isCoarseEligible && !widget.isFeaturePickerMode
+              ? IconButton(
+                  icon: Icon(isPinnedCoarse ? Icons.blur_on : Icons.blur_off, size: 18),
+                  tooltip: isPinnedCoarse ? 'Always showing simplified geometry' : 'Always show simplified geometry',
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  onPressed: () => widget.onToggleCoarsePin!(feature),
+                )
+              : null;
+          final stateIcon = widget.isFeaturePickerMode
+              ? (featurePickerSelected ? const Icon(Icons.check_circle, size: 18) : null)
+              : (hidden ? const Icon(Icons.visibility_off, size: 18) : null);
+          final children = [if (pinIcon != null) pinIcon, if (stateIcon != null) stateIcon];
+          return children.isEmpty ? null : Row(mainAxisSize: MainAxisSize.min, children: children);
+        }(),
         onTap: () {
           if (widget.isSketchPickerMode) {
             if (isSketch) widget.onSketchPicked?.call(feature);
