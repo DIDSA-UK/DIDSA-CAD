@@ -539,8 +539,8 @@ spending a third fix-up round on a bounded edge case.
 ### Phase 2 cancel-race fix — FAILED-vs-CANCELLED classification (branch `claude/lod-phase2-cancel-race-fix`)
 
 - **Branch**: `claude/lod-phase2-cancel-race-fix`, based on `main` post-chunks-1+2 (PR #179, merged).
-  Fixes a real, reproducible bug the chunks-1+2 session's own job-mode cancellation path shipped
-  with: `main`'s CI (ARM64 matrix leg) was red on `test_bevel_pair_jobs.py::test_cancel_during_
+  **PR open**: [PR #181](https://github.com/DIDSA-UK/DIDSA-CAD/pull/181). Fixes a real,
+  reproducible bug the chunks-1+2 session's own job-mode cancellation path shipped with: `main`'s CI (ARM64 matrix leg) was red on `test_bevel_pair_jobs.py::test_cancel_during_
   an_active_phase_search_pool_kills_workers_and_never_persists` — a genuinely slow, tooth-count-
   symmetric spiral pair cancelled mid-phase-search settled on `JobStatus.FAILED` (`[Errno 9] Bad
   file descriptor`) instead of `JobStatus.CANCELLED`.
