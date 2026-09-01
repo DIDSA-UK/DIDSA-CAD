@@ -397,5 +397,6 @@ every other `local_id` reference's existing failure mode in
 
 `pytest -n auto` re-run against the freshly-bootstrapped environment
 before any spike script ran, to confirm the environment itself wasn't a
-confound - see this session's `docs/status.md` entry for the exact
-pass count.
+confound: **1941 passed, 0 failed** (25m19s wall-clock) - clean, so
+nothing in the spike findings above is attributable to the environment
+build itself.
