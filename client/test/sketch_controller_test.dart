@@ -4629,6 +4629,147 @@ void main() {
     });
   });
 
+  group(
+      'Circle drag respects a confirmed driving dimension (on-device feedback: "a circle size '
+      'can be changed by dragging when it has a dimension that should be driving it - when '
+      'dropped, the dimension changes instead of the circle returning to the dimension driven '
+      'size" - the Circle group above only ever exercised a still-provisional radius dimension, '
+      'which is the one case free-form resizing is actually correct for)', () {
+    test(
+        'dragging the radius Point with a confirmed dimension and a free centre translates the '
+        'whole Circle instead of resizing it, and never touches the dimension\'s own value',
+        () async {
+      controller.selectDrawTool(SketchTool.circle);
+      await controller.handleCanvasTap(20, 20); // centre, deliberately off the origin - stays free
+      await controller.handleCanvasTap(30, 20); // radius 10
+      controller.exitToSelectMode();
+      final circle = controller.circles.values.single;
+      final radiusConstraintId =
+          controller.constraints.values.whereType<DistanceConstraintDto>().single.id;
+
+      controller.enterDimensionMode();
+      // On the boundary but off every cardinal axis (see the reference
+      // "auto-created radius dimension" test above in this file for why -
+      // tapping a cardinal Point's own exact position would select that
+      // Point instead of the Circle itself).
+      await controller.handleCanvasTap(20 + 10 * math.cos(math.pi / 4), 20 + 10 * math.sin(math.pi / 4));
+      await controller.confirmGhostValue('radius', 10.0);
+      final confirmed = controller.constraints[radiusConstraintId] as DistanceConstraintDto;
+      expect(confirmed.provisional, isFalse);
+      controller.exitToSelectMode();
+
+      final centreBefore = controller.points[circle.centerPointId]!;
+      final northBefore = controller.points[circle.cardinalPointIds[0]]!;
+      final eastBefore = controller.points[circle.cardinalPointIds[1]]!;
+
+      backend.requestLog.clear();
+      final rim0 = controller.points[circle.radiusPointId]!;
+      controller.cursorX = rim0.x;
+      controller.cursorY = rim0.y;
+      expect(controller.beginPointDrag(circle.radiusPointId), isTrue);
+      await controller.updatePointDrag(rim0.x + 7, rim0.y + 3); // dragged (7, 3), not just outward
+      await controller.endPointDrag();
+
+      expect(
+        backend.requestLog.any((r) => r.contains('/constraints/$radiusConstraintId')),
+        isFalse,
+        reason: 'the confirmed dimension must never be PATCHed by a plain drag',
+      );
+      final centreAfter = controller.points[circle.centerPointId]!;
+      final rimAfter = controller.points[circle.radiusPointId]!;
+      final northAfter = controller.points[circle.cardinalPointIds[0]]!;
+      final eastAfter = controller.points[circle.cardinalPointIds[1]]!;
+      expect(centreAfter.x, closeTo(centreBefore.x + 7, 1e-6));
+      expect(centreAfter.y, closeTo(centreBefore.y + 3, 1e-6));
+      expect(northAfter.x, closeTo(northBefore.x + 7, 1e-6));
+      expect(northAfter.y, closeTo(northBefore.y + 3, 1e-6));
+      expect(eastAfter.x, closeTo(eastBefore.x + 7, 1e-6));
+      expect(eastAfter.y, closeTo(eastBefore.y + 3, 1e-6));
+      final radiusAfter =
+          math.sqrt(math.pow(rimAfter.x - centreAfter.x, 2) + math.pow(rimAfter.y - centreAfter.y, 2));
+      expect(radiusAfter, closeTo(10.0, 1e-6), reason: 'the confirmed radius must be exactly preserved');
+      final reloaded = controller.constraints[radiusConstraintId] as DistanceConstraintDto;
+      expect(reloaded.distance, closeTo(10.0, 1e-6));
+    });
+
+    test(
+        'dragging the centre with a confirmed dimension still translates the whole Circle, same as '
+        'before confirming', () async {
+      controller.selectDrawTool(SketchTool.circle);
+      await controller.handleCanvasTap(20, 20);
+      await controller.handleCanvasTap(30, 20);
+      controller.exitToSelectMode();
+      final circle = controller.circles.values.single;
+
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(20 + 10 * math.cos(math.pi / 4), 20 + 10 * math.sin(math.pi / 4));
+      await controller.confirmGhostValue('radius', 10.0);
+      controller.exitToSelectMode();
+
+      final northBefore = controller.points[circle.cardinalPointIds[0]]!;
+      final centre0 = controller.points[circle.centerPointId]!;
+      controller.cursorX = centre0.x;
+      controller.cursorY = centre0.y;
+      expect(controller.beginPointDrag(circle.centerPointId), isTrue);
+      await controller.updatePointDrag(centre0.x + 4, centre0.y - 6);
+
+      final northAfter = controller.points[circle.cardinalPointIds[0]]!;
+      expect(northAfter.x, closeTo(northBefore.x + 4, 1e-6));
+      expect(northAfter.y, closeTo(northBefore.y - 6, 1e-6));
+    });
+
+    test(
+        'dragging the radius Point is refused outright once the confirmed dimension\'s own centre '
+        'is fully pinned/grounded - there is nowhere left for the drag to go', () async {
+      controller.selectDrawTool(SketchTool.circle);
+      await controller.handleCanvasTap(0, 0); // centre placed exactly on the origin
+      await controller.handleCanvasTap(10, 0); // radius 10
+      controller.exitToSelectMode();
+      final circle = controller.circles.values.single;
+
+      // Ground the centre by tying it Coincident to the origin (same
+      // grounding recipe the "fully constrained and grounded Point refuses
+      // to be dragged" test above this one uses) - selected directly via
+      // [selectEntity] rather than tapping, since the centre was placed
+      // exactly on top of the origin and so isn't distinctly tappable.
+      controller.selectEntity(SketchSelection(kind: SelectionKind.point, id: controller.originPointId!));
+      controller.selectEntity(SketchSelection(kind: SelectionKind.point, id: circle.centerPointId));
+      await controller.addCoincidentConstraint();
+
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(10 * math.cos(math.pi / 4), 10 * math.sin(math.pi / 4));
+      await controller.confirmGhostValue('radius', 10.0);
+      controller.exitToSelectMode();
+
+      final radiusConstraint = controller.constraints.values.whereType<DistanceConstraintDto>().single;
+      expect(radiusConstraint.provisional, isFalse);
+      expect(controller.isPointFullyPinned(circle.centerPointId), isTrue);
+      expect(controller.beginPointDrag(circle.radiusPointId), isFalse);
+    });
+
+    test(
+        'dragging the radius Point with a still-provisional dimension keeps resizing (the '
+        'pre-existing, still-correct behaviour) even after this fix', () async {
+      controller.selectDrawTool(SketchTool.circle);
+      await controller.handleCanvasTap(20, 20);
+      await controller.handleCanvasTap(30, 20); // radius 10, never confirmed
+      controller.exitToSelectMode();
+      final circle = controller.circles.values.single;
+      final radiusConstraint = controller.constraints.values.whereType<DistanceConstraintDto>().single;
+      expect(radiusConstraint.provisional, isTrue);
+
+      final rim0 = controller.points[circle.radiusPointId]!;
+      controller.cursorX = rim0.x;
+      controller.cursorY = rim0.y;
+      expect(controller.beginPointDrag(circle.radiusPointId), isTrue);
+      await controller.updatePointDrag(20, 45); // dragged straight out to radius 25
+
+      final rim = controller.points[circle.radiusPointId]!;
+      expect(rim.x, closeTo(20, 1e-6));
+      expect(rim.y, closeTo(45, 1e-6));
+    });
+  });
+
   group('Arc closed-form drag (same on-device bug/fix as Circle - see that group\'s own doc comment - '
       'an Arc\'s own radius DistanceConstraint is provisional too, so the general solver path left it '
       'genuinely free during a drag)', () {

@@ -1388,6 +1388,13 @@ class ConstraintOption {
 /// [SketchController._buildLinePairGhosts].
 enum GhostKind { length, linear, vertical, horizontal, radius, diameter, lineDistance, angle }
 
+/// Bug fix (on-device feedback: dragging a Circle with an already-confirmed
+/// driving dimension used to silently overwrite that dimension's value
+/// instead of respecting it) - see [SketchController._circleDragMode]'s own
+/// doc comment for what each of these three outcomes means and when each
+/// applies.
+enum CircleDragMode { resize, translate, blocked }
+
 /// A client-side-only preview of a dimension that doesn't exist as a real
 /// Constraint yet (or whose existing value hasn't been confirmed for
 /// editing yet) - Stage 13 item 5. Nothing here is sent to the backend
@@ -4501,6 +4508,77 @@ class SketchController extends ChangeNotifier {
     return result;
   }
 
+  /// Bug fix (on-device feedback: "a circle size can be changed by dragging
+  /// when it has a dimension that should be driving it - when dropped, the
+  /// dimension changes instead of the circle returning to the dimension
+  /// driven size"): [_closedFormCircleGeometry] above resizes unconditionally
+  /// whenever the Circle is still "intact", with no regard for whether its
+  /// own radius/diameter `DistanceConstraint` has already been *confirmed*
+  /// (a real, user-set driving dimension) rather than merely `provisional`
+  /// (the just-drawn, not-yet-dimensioned case that closed-form dragging was
+  /// actually built for - see that method's own doc comment). A confirmed
+  /// dimension must stay authoritative until the user edits its value
+  /// directly (the ghost/inline-text-box flow), not get silently overwritten
+  /// by wherever the shape was last dragged to.
+  ///
+  /// [resize] is the pre-existing, still-correct behaviour: no confirmed
+  /// dimension exists yet, so there is nothing to protect and free-form
+  /// dragging is exactly the intended "feel out the size" gesture. Also used
+  /// for a centre-Point drag regardless of confirmation state, since that
+  /// never resizes anything in the first place (it's already a pure
+  /// translate - see [_closedFormCircleGeometry]'s own centre branch).
+  ///
+  /// [translate] is the fix: dragging any *other* Point (radius Point or a
+  /// cardinal) while a real dimension is confirmed moves the *whole* Circle
+  /// rigidly instead - the confirmed radius is respected exactly, and
+  /// [_settleClosedFormShapeDrag] skips its own dimension-value-update step
+  /// for this case (see [circleDragTranslatesOnly]).
+  ///
+  /// [blocked] is the one case with nowhere left to go at all: the Circle's
+  /// own centre is itself fully pinned (see [isPointFullyPinned]), so
+  /// neither resizing (forbidden - the dimension is driving) nor
+  /// translating (forbidden - the centre can't move either) is possible.
+  /// [beginPointDrag] refuses the grab outright for this case, the same
+  /// "there's nowhere for this drag to go" precedent it already applies to
+  /// an ordinary (non-closed-form) fully-pinned Point.
+  CircleDragMode _circleDragMode(SketchCircleView circle, String draggedPointId) {
+    if (draggedPointId == circle.centerPointId) return CircleDragMode.resize;
+    final radiusConstraint = _circleRadiusConstraint(circle);
+    if (radiusConstraint == null || radiusConstraint.provisional) return CircleDragMode.resize;
+    return isPointFullyPinned(circle.centerPointId) ? CircleDragMode.blocked : CircleDragMode.translate;
+  }
+
+  /// [_closedFormCircleGeometry]'s own drag-target-position computation,
+  /// wrapped with [_circleDragMode]'s dispatch - the single call site both
+  /// [updatePointDrag] (live preview) and [_settleClosedFormShapeDrag] (drop/
+  /// undo) use, so the two can never disagree about which of resize/
+  /// translate/blocked a given drag is. [translate] is implemented by
+  /// reusing [_closedFormCircleGeometry]'s own centre-drag branch outright -
+  /// computing the delta from [draggedPointId]'s own current position to the
+  /// [targetX]/[targetY] it's being dragged toward, then asking for the
+  /// geometry as if the centre itself had moved by that same delta, which is
+  /// exactly a rigid translate of the whole Circle.
+  Map<String, (double, double)>? _closedFormCircleDragPositions(
+    SketchCircleView circle,
+    String draggedPointId,
+    double targetX,
+    double targetY,
+  ) {
+    switch (_circleDragMode(circle, draggedPointId)) {
+      case CircleDragMode.blocked:
+        return null;
+      case CircleDragMode.resize:
+        return _closedFormCircleGeometry(circle, draggedPointId, targetX, targetY);
+      case CircleDragMode.translate:
+        final dragged = points[draggedPointId];
+        final center = points[circle.centerPointId];
+        if (dragged == null || center == null) return null;
+        final dx = targetX - dragged.x;
+        final dy = targetY - dragged.y;
+        return _closedFormCircleGeometry(circle, circle.centerPointId, center.x + dx, center.y + dy);
+    }
+  }
+
   /// The still-intact Arc [pointId] belongs to (as centre, start, or end
   /// Point), or null - same "every Point it was built from still present,
   /// live-checked" contract as [_intactPolygonForVertex]/[_intactCircleForPoint].
@@ -4909,6 +4987,14 @@ class SketchController extends ChangeNotifier {
     final DistanceConstraintDto? radiusConstraint;
     final String centerId;
     final String rimId;
+    // Bug fix (on-device feedback, see [_circleDragMode]'s own doc
+    // comment): true only for a Circle drag [_circleDragMode] resolved to
+    // [CircleDragMode.translate] - the confirmed dimension was respected by
+    // moving the whole Circle instead of resizing it, so (unlike every
+    // other branch below, which always means "the dimension needs to catch
+    // up with wherever this settled") the dimension-value update just below
+    // must be skipped entirely for this one case: the radius never changed.
+    var circleDragTranslatesOnly = false;
     if (polygon != null) {
       positions = _closedFormPolygonVertices(polygon, draggedPointId, targetX, targetY);
       radiusConstraint = _polygonRadiusConstraint(polygon);
@@ -4920,7 +5006,8 @@ class SketchController extends ChangeNotifier {
       centerId = slot.center1PointId;
       rimId = slot.aPointId;
     } else if (circle != null) {
-      positions = _closedFormCircleGeometry(circle, draggedPointId, targetX, targetY);
+      circleDragTranslatesOnly = _circleDragMode(circle, draggedPointId) == CircleDragMode.translate;
+      positions = _closedFormCircleDragPositions(circle, draggedPointId, targetX, targetY);
       radiusConstraint = _circleRadiusConstraint(circle);
       centerId = circle.centerPointId;
       rimId = circle.radiusPointId;
@@ -4933,7 +5020,7 @@ class SketchController extends ChangeNotifier {
     if (positions == null) return;
     await _applyClosedFormPositions(positions, sync: true);
 
-    if (radiusConstraint == null || radiusConstraint.provisional) return;
+    if (radiusConstraint == null || radiusConstraint.provisional || circleDragTranslatesOnly) return;
     // Read back from [points] (just written by [_applyClosedFormPositions]
     // above), not [positions] directly - a Polygon vertex drag's own
     // [_closedFormPolygonVertices] output never includes the centre (it
@@ -5009,6 +5096,17 @@ class SketchController extends ChangeNotifier {
       // left to move into either, same reasoning as the over-constrained
       // case above but for the opposite ("done", not "broken") reason.
       if (isPointFullyPinned(pointId)) return false;
+    }
+    // Bug fix (on-device feedback, see [_circleDragMode]'s own doc
+    // comment): the intact-shape exemption just above is deliberately blind
+    // to [isPointFullyPinned] ("a formula always has somewhere to go") -
+    // true for a resize or a translate, but not for [CircleDragMode.blocked]
+    // (a confirmed dimension protects the radius, and the centre itself has
+    // nowhere left to move either) - refuse the grab outright rather than
+    // starting a drag guaranteed to visibly do nothing.
+    final intactCircle = _intactCircleForPoint(pointId);
+    if (intactCircle != null && _circleDragMode(intactCircle, pointId) == CircleDragMode.blocked) {
+      return false;
     }
     final point = points[pointId]!;
     _draggingPointId = pointId;
@@ -5123,7 +5221,7 @@ class SketchController extends ChangeNotifier {
       } else if (intactSlot != null) {
         positions = _closedFormSlotGeometry(intactSlot, pointId, newX, newY);
       } else if (intactCircle != null) {
-        positions = _closedFormCircleGeometry(intactCircle, pointId, newX, newY);
+        positions = _closedFormCircleDragPositions(intactCircle, pointId, newX, newY);
       } else if (intactArc != null) {
         positions = _closedFormArcGeometry(intactArc, pointId, newX, newY);
       } else if (intactEllipse != null) {
