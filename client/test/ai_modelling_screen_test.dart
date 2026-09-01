@@ -527,6 +527,36 @@ Here's the plan:
   });
 
   testWidgets(
+      'A validation failure with a `message` (e.g. a cut extrude missing target_body_ids) shows the message, '
+      'not just the bare error type', (tester) async {
+    final client = DocumentApiClient(
+      httpClient: MockClient((request) async {
+        if (request.url.path == '/document/parts') {
+          return jsonResponse({'id': 'part-1', 'name': 'AI Modelling Part', 'feature_ids': []});
+        }
+        return jsonResponse({
+          'results': [
+            {
+              'local_id': 'g1',
+              'ok': false,
+              'warnings': [],
+              'error': {'type': 'invalid_step_payload', 'message': 'cut requires at least one target_body_ids entry'},
+            },
+          ],
+        });
+      }),
+    );
+    final provider = FakeAiProvider((transcript, systemPrompt) async => const AiTurnResult(assistantText: minimalPlanText));
+
+    await tester.pumpWidget(MaterialApp(home: AiModellingScreen(provider: provider, documentApi: client)));
+    await sendMessage(tester, 'External spur gear, module 2, 20 teeth');
+    await tester.tap(find.text('Generate'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('invalid_step_payload: cut requires at least one target_body_ids entry'), findsOneWidget);
+  });
+
+  testWidgets(
       'Fix 3a: a validation report shows the resolved edge count on an ok Fillet/Chamfer row (`02` doc exercise)',
       (tester) async {
     final client = DocumentApiClient(

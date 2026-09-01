@@ -365,3 +365,57 @@ annotated with what actually shipped.
    *and* the `f1: ok — includes 1 hole` annotation render together -
    every prior fix-3a/3b test only ever exercised a response with one
    failing step, exactly the blind spot this fix closes.
+
+## Real user report (2026-09-01): a cut extrude's plan silently omitted `target_body_ids`
+
+A user building a bracket from a hand sketch (an L-profile boss extrude,
+a 3-point plane, a bolt-hole sketch with four circles, then a cut extrude
+through those circles) hit `invalid_step_payload` on the plan's final
+step, with every one of the other 28 steps reporting `ok`. Two real gaps,
+both now fixed:
+
+1. **The system prompt itself taught the wrong pattern.** `target_body_ids`
+   is documented as an optional field (`target_body_ids?`) on
+   extrude/revolve/sweep, true only for "boss"/non-cut steps -
+   `ai_plan.py`'s `_handle_extrude`/`_handle_revolve`/`_handle_sweep` all
+   reject an empty `target_body_ids` whenever the step is in cut mode
+   (`invalid_step_payload`, "cut requires at least one target_body_ids
+   entry"; see `05-backend-plan-validation.md`). But `_fewShotExamples`'s
+   own worked "add a hole" example (`ai_scoping_prompt.dart`) built its
+   cut step (`f3`) with no `target_body_ids` at all - a real few-shot
+   example modelling the exact mistake the backend rejects, actively
+   training the LLM to reproduce it on every cut/hole request. Fixed:
+   the example's `f3` now carries `"target_body_ids": ["f1"]` plus an
+   inline note, and the Features section gained an explicit paragraph
+   stating the requirement (not just the `?` in the field list) and
+   naming the exact failure mode by name, so the model self-checks every
+   cut step before finalizing a plan.
+2. **Nothing in the UI would have surfaced the gap even before Generate.**
+   `ai_plan_summary.dart`'s per-step summary line for a cut-mode
+   extrude/revolve/sweep never rendered `target_body_ids` at all - a
+   well-formed cut and a broken one both read as e.g. "Extrude 0→50mm
+   (cut)", so a user proofreading the plan panel (the one layer this
+   feature already relies on for catching LLM mistakes - see `03`'s
+   hallucinated-`end_distance` finding above) had nothing to catch this
+   by eye. Separately, `AiModellingScreen._validationResultText` only
+   ever showed a failed step's bare `error.type` (e.g.
+   "invalid_step_payload"), even though the backend's own error object
+   already carries a human-readable `message` for exactly this case -
+   the validation report told the user *that* something failed, never
+   *what to fix*. Both fixed: a cut-mode step's summary line now appends
+   `, into <body ids>` (or `, into ⚠ no body specified` when the list is
+   empty) so the gap is visible in the plan panel itself, and the
+   validation report now renders `type: message` (falling back to
+   `type (key=value, ...)` for the errors that carry structured detail
+   fields instead of a `message`, and to bare `type` only when neither is
+   present) so a failure's own explanation is never hidden behind an
+   opaque code.
+
+No change to the two-layer failure-handling design itself (`00-
+conventions.md`) - dry-run validation still creates nothing on a
+structural failure like this one, by design (see that section's own
+no-auto-rollback reasoning); a richer "preview the scratch geometry
+built so far" capability would need the `/ai-plan/validate` endpoint to
+return mesh data for a state it currently never keeps around after the
+request returns, which is real, unscoped follow-on work, not part of
+this fix.

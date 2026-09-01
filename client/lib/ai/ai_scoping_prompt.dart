@@ -207,6 +207,17 @@ convenient.
 - sweep: {local_id, kind:"sweep", sketch_feature_id, path_refs (at least
   one local_id, ordered), mode:"boss"|"cut", target_body_ids?,
   profile_refs?}
+
+`target_body_ids` is genuinely optional (may be omitted or left `[]`) ONLY
+for "boss"/non-cut steps. Whenever `extrude_type`/`mode` is "cut", you MUST
+give at least one `target_body_ids` entry naming the earlier extrude/
+revolve/sweep/pattern/mirror/gear_request step the cut removes material
+from (usually the body the hole/pocket/slot passes through) - an empty or
+missing `target_body_ids` on a cut step fails validation with
+`invalid_step_payload` ("cut requires at least one target_body_ids entry")
+and blocks the whole plan, even if every other step is fine. This is the
+single most common way a plan otherwise fails right at the last step, so
+double-check every cut/cut-mode step has it before finalizing your plan.
 - fillet: {local_id, kind:"fillet", edges: <edge selector, see below>,
   radius}
 - chamfer: {local_id, kind:"chamfer", edges: <edge selector, see below>,
@@ -532,7 +543,8 @@ values copied verbatim, plus the new hole:
     { "local_id": "hole1", "kind": "sketch_circle", "sketch_feature_id": "sk2",
       "center_point_id": "hc", "radius": 2 },
     { "local_id": "f3", "kind": "extrude", "sketch_feature_id": "sk2",
-      "extrude_type": "cut", "start_distance": 0, "end_distance": 10 }
+      "extrude_type": "cut", "start_distance": 0, "end_distance": 10,
+      "target_body_ids": ["f1"] }
   ]
 }
 ```
@@ -540,7 +552,8 @@ values copied verbatim, plus the new hole:
 turn's plan - same coordinates, same local_ids - because each plan is
 still built from nothing; the hole's centre, 30,20, is the true middle of
 the 60x40 block, re-derived from the same numbers already used above, not
-a fresh guess)''';
+a fresh guess; note f3's `target_body_ids: ["f1"]` - every cut step must
+name the body it cuts into, never left empty)''';
 
 /// Locked: `ai_plan_detection.dart`'s `detectPlanInAssistantText` depends
 /// structurally on the model actually honouring this instruction - never
