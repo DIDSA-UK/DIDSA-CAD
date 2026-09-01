@@ -39,20 +39,36 @@ def _kill_pool_workers(executor: ProcessPoolExecutor) -> None:
     process is always safe to reclaim (the OS cleans up everything it
     held), unlike force-killing a thread mid-C++-call into OCCT (`02-
     phase2-design.md` SS3's own reasoning for why this needed a process pool
-    to begin with, not a thread pool). `shutdown(wait=True, cancel_futures=
-    True)` afterward reaps the now-dead workers and drops any
-    still-queued-but-not-yet-started futures (a grid-scan trial that never
-    got to run) - safe to call even though `resolve_bevel_pair_from_bodies`'s
-    own `with ProcessPoolExecutor(...) as executor:` block will *also* call
-    `shutdown` on its normal exit; `ProcessPoolExecutor.shutdown` is
-    idempotent."""
+    to begin with, not a thread pool).
+
+    Deliberately does NOT call `executor.shutdown()` itself, even though
+    killing every worker is exactly the kind of thing you'd expect to want
+    torn down immediately. `resolve_bevel_pair_from_bodies`/`_search_
+    meshing_phase` (`app.document.bevel_pair`) both already own an outer
+    `with ProcessPoolExecutor(...) as executor:` block that is *guaranteed*
+    to call `shutdown()` on its own exit - the exception this kill produces
+    (whatever a worker dying mid-`Future.result()` surfaces: `BrokenProcess
+    Pool`, `EOFError`, ...) has nowhere else to go but out through that
+    block. Calling `shutdown()` here too, from THIS thread (`cancel()`'s own
+    caller, typically the `POST .../cancel` request thread), used to race
+    that guaranteed call - both threads tearing down the same executor's
+    internal IPC file descriptors concurrently produced a genuine, real,
+    reproducible `OSError: [Errno 9] Bad file descriptor` on ARM64 CI
+    (`docs/status.md`'s dated entry for this fix). `ProcessPoolExecutor.
+    shutdown` is idempotent only for *sequential* calls (a second call
+    after the first has fully completed is a safe no-op) - concurrent calls
+    from two different threads are not the same thing and are not safe.
+    Leaving the sole `shutdown()` call to the owning thread's own context
+    manager removes the second caller entirely, closing the race at its
+    root instead of catching its fallout after the fact (`app.document.
+    jobs`'s own job-runner still does that too, as a backstop for any other
+    shape this kind of race could take)."""
     processes = list(getattr(executor, "_processes", {}).values())
     for process in processes:
         try:
             process.kill()
         except Exception:  # noqa: BLE001 - already-exited/unreachable process, nothing to do
             pass
-    executor.shutdown(wait=True, cancel_futures=True)
 
 
 class CancellationToken:
