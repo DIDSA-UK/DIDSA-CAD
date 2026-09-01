@@ -110,17 +110,43 @@ def test_worker_raised_http_exception_survives_the_spawn_pickle_round_trip_as_me
 
 
 def test_resolve_planetary_surfaces_a_worker_build_failure_as_invalid_planetary_parameters(monkeypatch):
-    """End-to-end: if `_build_member_solid_worker` ever raised `_MemberBuild
-    Failed` for real (forced here via monkeypatch, since the real pre-flight
-    guard makes this otherwise unreachable), `resolve_planetary_from_bodies`
-    must surface it as the same structured `invalid_planetary_parameters`
-    422 every other planetary validation failure already uses - not an
-    unhandled `_MemberBuildFailed` leaking out of this module."""
+    """End-to-end: if a worker ever raised `_MemberBuildFailed` for real
+    (the real pre-flight guard makes this otherwise unreachable),
+    `resolve_planetary_from_bodies` must surface it as the same structured
+    `invalid_planetary_parameters` 422 every other planetary validation
+    failure already uses - not an unhandled `_MemberBuildFailed` leaking out
+    of this module.
 
-    def _always_fails(*args, **kwargs):
-        raise _MemberBuildFailed("outer_diameter too small")
+    A real forced-`ProcessPoolExecutor`-worker-failure test isn't practical
+    here, same reason `test_bevel_pair_feature.py`'s own equivalent comment
+    gives: a `spawn`ed worker re-imports this whole module fresh in its own
+    process, so a local test closure isn't even picklable to submit, let
+    alone able to reach code already running inside one. Instead, this
+    swaps in a fake `ProcessPoolExecutor` whose `Future.result()` raises
+    `_MemberBuildFailed` directly - no pickling, no subprocess - exercising
+    `resolve_planetary_from_bodies`'s own real exception-wrapping logic
+    in-process, the same granularity `_best_of_scored`'s own direct-call
+    coverage already uses in `test_bevel_pair_feature.py` for its analogous
+    case."""
 
-    monkeypatch.setattr(planetary_gear_module, "_build_member_solid_worker", _always_fails)
+    class _ImmediateFailingFuture:
+        def result(self):
+            raise _MemberBuildFailed("outer_diameter too small")
+
+    class _FakeExecutor:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+        def submit(self, fn, *args, **kwargs):
+            return _ImmediateFailingFuture()
+
+    monkeypatch.setattr(planetary_gear_module, "ProcessPoolExecutor", _FakeExecutor)
 
     feature = _feature()
     with pytest.raises(HTTPException) as exc_info:
