@@ -8905,6 +8905,24 @@ class SketchController extends ChangeNotifier {
     });
   }
 
+  /// Bug fix (on-device feedback: Tangent was the last constraint-picker
+  /// button left permanently `wired: false`): the Point id shared between
+  /// [arc1Id]'s and [arc2Id]'s own start/end Points - the *same* Point id,
+  /// not merely coincident-but-distinct (mirrors [_isPointOnLine]'s own
+  /// "explicit references over implicit geometric inference" convention,
+  /// and matches backend `Sketch.add_curve_tangent_constraint`'s own
+  /// validation exactly) - or null if the two Arcs don't share one. Gates,
+  /// and supplies the actual argument for, the curve+curve Tangent combo.
+  String? _sharedArcEndpoint(String arc1Id, String arc2Id) {
+    final arc1 = arcs[arc1Id];
+    final arc2 = arcs[arc2Id];
+    if (arc1 == null || arc2 == null) return null;
+    for (final pointId in [arc1.startPointId, arc1.endPointId]) {
+      if (pointId == arc2.startPointId || pointId == arc2.endPointId) return pointId;
+    }
+    return null;
+  }
+
   /// Stage 13 item 6 (extended by Stage 16 item 7): which constraint-type
   /// buttons the flyout should offer for the current [selectionSet], per the
   /// prompt's selection-set table. Coincident/Parallel/Perpendicular/
@@ -8995,14 +9013,38 @@ class SketchController extends ChangeNotifier {
     // of Circle/Arc (both Circles, both Arcs, or one of each), not just two
     // Circles.
     if (kinds.every((k) => k == SelectionKind.circle || k == SelectionKind.arc)) {
-      return const [
-        ConstraintOption(type: ConstraintOptionType.concentric, label: 'Concentric', wired: true),
-        ConstraintOption(type: ConstraintOptionType.equalRadius, label: 'Equal radius', wired: true),
+      final options = [
+        const ConstraintOption(type: ConstraintOptionType.concentric, label: 'Concentric', wired: true),
+        const ConstraintOption(type: ConstraintOptionType.equalRadius, label: 'Equal radius', wired: true),
       ];
+      // Bug fix (on-device feedback: Tangent was the one remaining
+      // constraint-picker button left permanently `wired: false` - see
+      // this option's own git history): a curve+curve Tangent only makes
+      // sense for two Arcs that already share an endpoint Point (a Circle
+      // has none to share - see backend CurveTangentConstraint's own doc
+      // comment for why the shared-Point condition, not any Line-style
+      // perpendicular-distance trick, is what "tangent" even means for two
+      // curves) - added alongside Concentric/Equal radius, not instead of
+      // them, since all three are independently meaningful for the same
+      // pair.
+      if (sel[0].kind == SelectionKind.arc &&
+          sel[1].kind == SelectionKind.arc &&
+          _sharedArcEndpoint(sel[0].id, sel[1].id) != null) {
+        options.add(const ConstraintOption(type: ConstraintOptionType.tangent, label: 'Tangent', wired: true));
+      }
+      return options;
     }
 
-    if (kinds.contains(SelectionKind.circle) && kinds.contains(SelectionKind.line)) {
-      return const [ConstraintOption(type: ConstraintOptionType.tangent, label: 'Tangent', wired: false)];
+    // Bug fix (on-device feedback): widened from Circle-only to Circle/Arc,
+    // and flipped from the last permanently `wired: false` placeholder to a
+    // real, enabled action - the backend's TangentConstraint (see its own
+    // doc comment) pins a perpendicular centre-to-line distance and has
+    // never required the two to already touch, so this is offered for any
+    // Line + Circle/Arc pair, connected or not - unlike the Arc+Arc case
+    // above, which only exists at all for a shared endpoint.
+    if (kinds.contains(SelectionKind.line) &&
+        (kinds.contains(SelectionKind.circle) || kinds.contains(SelectionKind.arc))) {
+      return const [ConstraintOption(type: ConstraintOptionType.tangent, label: 'Tangent', wired: true)];
     }
 
     if (kinds.length == 1 && kinds.single == SelectionKind.point) {
@@ -9084,6 +9126,9 @@ class SketchController extends ChangeNotifier {
         break;
       case ConstraintOptionType.pointOnEllipse:
         await addPointOnEllipseConstraint();
+        break;
+      case ConstraintOptionType.tangent:
+        await addTangentConstraint();
         break;
       default:
         break;
@@ -12405,6 +12450,61 @@ class SketchController extends ChangeNotifier {
     );
   }
 
+  /// The "Line + Circle/Arc" half of Tangent - order-agnostic (the user may
+  /// select either one first), same shape [_createPointAndEntityConstraint]
+  /// already uses for an analogous kind-not-click-order pairing, just with
+  /// [SketchApiClient.createTangentConstraint]'s own fixed circleOrArcId-
+  /// then-lineId argument order.
+  Future<void> _createLineTangentConstraint() async {
+    if (_selectionSet.length != 2 || _busy || _sketchId == null) return;
+    final lineSel = _selectionSet.where((s) => s.kind == SelectionKind.line);
+    final curveSel =
+        _selectionSet.where((s) => s.kind == SelectionKind.circle || s.kind == SelectionKind.arc);
+    if (lineSel.length != 1 || curveSel.length != 1) return;
+    final lineId = lineSel.first.id;
+    final curveId = curveSel.first.id;
+    await _runGuarded(() async {
+      final constraint = await _api.createTangentConstraint(_sketchId!, curveId, lineId);
+      _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
+      await _solveAndTrackDof();
+      _selectionSet.clear();
+      _ribbonVisible = false;
+    });
+  }
+
+  /// The "two Arcs sharing an endpoint" half of Tangent - see
+  /// [_sharedArcEndpoint]/[SketchApiClient.createCurveTangentConstraint].
+  Future<void> _createCurveTangentConstraint() async {
+    if (_selectionSet.length != 2 || _busy || _sketchId == null) return;
+    final a = _selectionSet[0];
+    final b = _selectionSet[1];
+    if (a.kind != SelectionKind.arc || b.kind != SelectionKind.arc) return;
+    final shared = _sharedArcEndpoint(a.id, b.id);
+    if (shared == null) return;
+    await _runGuarded(() async {
+      final constraint = await _api.createCurveTangentConstraint(_sketchId!, a.id, b.id, shared);
+      _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
+      await _solveAndTrackDof();
+      _selectionSet.clear();
+      _ribbonVisible = false;
+    });
+  }
+
+  /// Dispatches Tangent's own two backend shapes based on the current
+  /// selection - see [availableConstraintOptions]'s own doc comments for
+  /// exactly which two selection combinations this button is ever offered
+  /// for (a Line + Circle/Arc pair, or two Arcs sharing an endpoint).
+  Future<void> addTangentConstraint() async {
+    if (!canApplyConstraint(ConstraintOptionType.tangent)) return;
+    if (_selectionSet.length == 2 &&
+        _selectionSet[0].kind == SelectionKind.arc &&
+        _selectionSet[1].kind == SelectionKind.arc) {
+      await _createCurveTangentConstraint();
+      return;
+    }
+    await _createLineTangentConstraint();
+  }
+
   Future<void> addParallelConstraint() async {
     if (!canApplyConstraint(ConstraintOptionType.parallel)) return;
     await _createSelectionSetConstraint(_api.createParallelConstraint);
@@ -14732,6 +14832,14 @@ class SketchController extends ChangeNotifier {
           final labelItem =
               _pairMidpointLabel(c.center1PointId, c.center2PointId, '=R', entry.key, isSelected, labelOffset);
           if (labelItem != null) items.add(labelItem);
+        case CurveTangentConstraintDto c:
+          // Anchored at the shared Point itself (unlike Concentric/Equal
+          // Radius's own midpoint-between-centres glyph) - that's the one
+          // location this constraint is actually about, and a midpoint
+          // between two Arcs' centres can land somewhere with no visual
+          // relation to either curve.
+          final labelItem = _pointGlyphLabel(c.sharedPointId, 'Tan.', entry.key, isSelected, labelOffset);
+          if (labelItem != null) items.add(labelItem);
         case ParallelConstraintDto c:
           if (isImplicitLineDistanceParallel(c.line1Id, c.line2Id)) break;
           final labelItem =
@@ -14749,6 +14857,18 @@ class SketchController extends ChangeNotifier {
         case CollinearConstraintDto c:
           final labelItem =
               _lineMidpointPairLabel(c.line1Id, c.line2Id, 'Collin.', entry.key, isSelected, labelOffset);
+          if (labelItem != null) items.add(labelItem);
+        case TangentConstraintDto c:
+          // Pre-existing gap fix (found while wiring Tangent's own
+          // context-flyout button): this had no overlay case at all, even
+          // though a Slot's own internal corner tangency has always used
+          // this DTO - simple center-anchored glyph, same "no real
+          // dimension value to show" shape Collinear/Parallel/Perpendicular
+          // above already use, just anchored at the one Point this
+          // constraint's own centre-to-line distance is actually about
+          // (its perpendicular foot on the Line has no stable identity to
+          // anchor at instead).
+          final labelItem = _pointGlyphLabel(c.centerPointId, 'Tan.', entry.key, isSelected, labelOffset);
           if (labelItem != null) items.add(labelItem);
         case PointLineDistanceConstraintDto c:
           final point = points[c.pointId];

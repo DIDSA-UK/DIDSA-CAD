@@ -795,6 +795,8 @@ abstract class ConstraintDto {
         return SplineTangentConstraintDto.fromJson(json);
       case 'tangent':
         return TangentConstraintDto.fromJson(json);
+      case 'curve_tangent':
+        return CurveTangentConstraintDto.fromJson(json);
       case 'equal_radius':
         return EqualRadiusConstraintDto.fromJson(json);
       case 'point_on_line':
@@ -1158,6 +1160,38 @@ class TangentConstraintDto extends ConstraintDto {
         centerPointId: json['center_point_id'] as String,
         radiusPointId: json['radius_point_id'] as String,
         lineId: json['line_id'] as String,
+      );
+}
+
+/// Two Arcs meeting smoothly at a shared endpoint Point (an S-curve, or a
+/// Slot-style corner) - [TangentConstraintDto]'s curve-curve sibling. Only
+/// ever two Arcs (never a Circle, which has no endpoint Point to share) -
+/// see backend `CurveTangentConstraint`'s own doc comment for why the
+/// tangency condition is "the shared Point is collinear with both centres"
+/// rather than a Line-distance/radius-equality term.
+class CurveTangentConstraintDto extends ConstraintDto {
+  final String entity1Id;
+  final String entity2Id;
+  final String center1PointId;
+  final String center2PointId;
+  final String sharedPointId;
+
+  const CurveTangentConstraintDto({
+    required super.id,
+    required this.entity1Id,
+    required this.entity2Id,
+    required this.center1PointId,
+    required this.center2PointId,
+    required this.sharedPointId,
+  });
+
+  factory CurveTangentConstraintDto.fromJson(Map<String, dynamic> json) => CurveTangentConstraintDto(
+        id: json['id'] as String,
+        entity1Id: json['entity1_id'] as String,
+        entity2Id: json['entity2_id'] as String,
+        center1PointId: json['center1_point_id'] as String,
+        center2PointId: json['center2_point_id'] as String,
+        sharedPointId: json['shared_point_id'] as String,
       );
 }
 
@@ -2843,6 +2877,29 @@ class SketchApiClient {
                 'type': 'tangent',
                 'circle_or_arc_id': circleOrArcId,
                 'line_id': lineId,
+              }),
+            ),
+        (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Two Arcs meeting smoothly at a shared endpoint Point - see
+  /// CurveTangentConstraintDto's own doc comment. [sharedPointId] must be
+  /// the same Point id used as one of each Arc's own start/end Points.
+  Future<ConstraintDto> createCurveTangentConstraint(
+    String sketchId,
+    String entity1Id,
+    String entity2Id,
+    String sharedPointId,
+  ) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/constraints'),
+              headers: _headers,
+              body: jsonEncode({
+                'type': 'curve_tangent',
+                'entity1_id': entity1Id,
+                'entity2_id': entity2Id,
+                'shared_point_id': sharedPointId,
               }),
             ),
         (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),

@@ -19,6 +19,7 @@ from app.sketch.constraints import (
     AtMidpointConstraint,
     CoincidentConstraint,
     CollinearConstraint,
+    CurveTangentConstraint,
     DistanceConstraint,
     EqualLengthConstraint,
     EqualRadiusConstraint,
@@ -133,6 +134,24 @@ _RESIDUAL_CHECKABLE_CONSTRAINT_TYPES = (
     ParallelConstraint,
 )
 
+# CurveTangentConstraint is deliberately NOT in either allowlist above yet,
+# same "don't guess" conservatism AtMidpointConstraint's own exclusion
+# above documents - every existing entry in `_REDUNDANCY_SAFE_CONSTRAINT_
+# TYPES` was added only once empirically confirmed never to need py-slvs's
+# own redundancy detection (see e.g. PointOnEllipseConstraint's own comment:
+# "confirmed empirically... across 6 configurations"), which this sandbox
+# has no pythonocc-core/py-slvs install to do for a brand-new constraint
+# type. `_residual_verified_convergence`'s own formula for it is written
+# below (`elif isinstance(constraint, CurveTangentConstraint)`) and is
+# straightforward to verify - the shared Point's perpendicular distance
+# from the infinite line through both centres, exactly the collinearity
+# condition `add_to_solver` itself enforces - but it stays excluded from
+# `_RESIDUAL_CHECKABLE_CONSTRAINT_TYPES` until that's actually been run
+# against real py-slvs solves, not merely reasoned about. Excluding it from
+# both is always safe (a Sketch containing it simply never qualifies for
+# either rescue path, same as one containing AtMidpointConstraint already
+# doesn't - it just relies on py-slvs's own `result_code` unassisted,
+# nothing regresses by leaving it out).
 _RESIDUAL_TOLERANCE = 1e-4
 
 
@@ -317,6 +336,23 @@ def _residual_verified_convergence(sketch: Sketch) -> bool | None:
                 points[constraint.line_end_id],
             )
             if abs(actual_distance - radius) > tolerance:
+                return False
+        elif isinstance(constraint, CurveTangentConstraint):
+            # See this module's own `_RESIDUAL_CHECKABLE_CONSTRAINT_TYPES`
+            # doc comment for why this branch exists but the type isn't
+            # actually in that allowlist yet - written and correct, just
+            # not turned on until confirmed against a real py-slvs solve.
+            center1 = points[constraint.center1_point_id]
+            center2 = points[constraint.center2_point_id]
+            shared = points[constraint.shared_point_id]
+            if _distance(center1, center2) < 1e-9:
+                # Degenerate (concentric) centres - "the line through both
+                # centres" isn't well-defined, and genuine tangency at a
+                # shared Point isn't a coherent concept for concentric
+                # curves anyway, so this can never count as verified.
+                return False
+            actual_distance = _point_line_distance(shared, center1, center2)
+            if actual_distance > tolerance:
                 return False
         elif isinstance(constraint, LineDistanceConstraint):
             # Signed, not `_point_line_distance`'s unsigned sibling -

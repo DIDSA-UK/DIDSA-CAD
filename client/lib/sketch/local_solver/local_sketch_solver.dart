@@ -258,6 +258,13 @@ int _addToSolver(ConstraintDto c, SolverBuilder b, LineEndpoints lineEndpoints) 
     final tangentLine = b.lineSegment(b.point2d(ls), b.point2d(le));
     return b.equalLengthPointLineDistance(center, radiusLine, tangentLine);
   }
+  if (c is CurveTangentConstraintDto) {
+    final center1 = b.point2d(c.center1PointId);
+    final center2 = b.point2d(c.center2PointId);
+    final centersLine = b.lineSegment(center1, center2);
+    final shared = b.point2d(c.sharedPointId);
+    return b.pointOnLine(shared, centersLine);
+  }
   if (c is EqualRadiusConstraintDto) {
     final line1 = b.lineSegment(b.point2d(c.center1PointId), b.point2d(c.radius1PointId));
     final line2 = b.lineSegment(b.point2d(c.center2PointId), b.point2d(c.radius2PointId));

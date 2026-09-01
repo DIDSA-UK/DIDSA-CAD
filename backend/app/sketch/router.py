@@ -10,6 +10,7 @@ from app.sketch.constraints import (
     CollinearConstraint,
     ConcentricConstraint,
     Constraint,
+    CurveTangentConstraint,
     DistanceConstraint,
     EqualLengthConstraint,
     EqualRadiusConstraint,
@@ -71,6 +72,8 @@ from app.sketch.schemas import (
     ConstraintCreate,
     ConstraintResponse,
     ConstraintValueUpdate,
+    CurveTangentConstraintCreate,
+    CurveTangentConstraintResponse,
     DeleteEntityResponse,
     DeletePatternMirrorInstanceResponse,
     DistanceConstraintCreate,
@@ -518,6 +521,15 @@ def _constraint_response(constraint: Constraint) -> ConstraintResponse:
             center_point_id=constraint.center_point_id,
             radius_point_id=constraint.radius_point_id,
             line_id=constraint.line_id,
+        )
+    if isinstance(constraint, CurveTangentConstraint):
+        return CurveTangentConstraintResponse(
+            id=constraint.id,
+            entity1_id=constraint.entity1_id,
+            entity2_id=constraint.entity2_id,
+            center1_point_id=constraint.center1_point_id,
+            center2_point_id=constraint.center2_point_id,
+            shared_point_id=constraint.shared_point_id,
         )
     if isinstance(constraint, EqualRadiusConstraint):
         return EqualRadiusConstraintResponse(
@@ -1522,6 +1534,10 @@ def create_constraint(sketch_id: str, payload: ConstraintCreate) -> ConstraintRe
             constraint = sketch.add_at_midpoint_constraint(payload.point_id, payload.line_id)
         elif isinstance(payload, TangentConstraintCreate):
             constraint = sketch.add_tangent_constraint(payload.circle_or_arc_id, payload.line_id)
+        elif isinstance(payload, CurveTangentConstraintCreate):
+            constraint = sketch.add_curve_tangent_constraint(
+                payload.entity1_id, payload.entity2_id, payload.shared_point_id
+            )
         elif isinstance(payload, EqualRadiusConstraintCreate):
             constraint = sketch.add_equal_radius_constraint(
                 payload.entity1_id, payload.entity2_id, radius2_point_id=payload.radius2_point_id

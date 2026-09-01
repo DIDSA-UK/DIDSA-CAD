@@ -2035,6 +2035,17 @@ class _FakeBackend {
             'line_id': body['line_id'],
           };
           break;
+        case 'curve_tangent':
+          constraint = {
+            'id': id,
+            'type': 'curve_tangent',
+            'entity1_id': body['entity1_id'],
+            'entity2_id': body['entity2_id'],
+            'center1_point_id': _centerRadiusPointIds(body['entity1_id'] as String).$1,
+            'center2_point_id': _centerRadiusPointIds(body['entity2_id'] as String).$1,
+            'shared_point_id': body['shared_point_id'],
+          };
+          break;
         case 'equal_radius':
           final radius1 = _centerRadiusPointIds(body['entity1_id'] as String);
           final entity2Id = body['entity2_id'] as String;
@@ -9605,6 +9616,128 @@ void main() {
     expect(controller.selectionSet.every((s) => s.kind == SelectionKind.arc), isTrue);
     expect(controller.canApplyConstraint(ConstraintOptionType.concentric), isTrue);
     expect(controller.canApplyConstraint(ConstraintOptionType.equalRadius), isTrue);
+    // Bug fix: Tangent only makes sense for two Arcs that already share an
+    // endpoint Point - these two don't, so it must stay unavailable
+    // alongside Concentric/Equal radius, not offered unconditionally.
+    expect(controller.canApplyConstraint(ConstraintOptionType.tangent), isFalse);
+  });
+
+  // Bug fix (on-device feedback: Tangent was the last constraint-picker
+  // button left permanently `wired: false`): two Arcs that DO share an
+  // endpoint Point (drawn as a connected chain, e.g. an S-curve) offer
+  // Tangent alongside Concentric/Equal radius.
+  test('availableConstraintOptions offers Tangent for two Arcs sharing an endpoint Point', () async {
+    controller.selectDrawTool(SketchTool.arc);
+    await controller.handleCanvasTap(0, 0); // arc1 center
+    await controller.handleCanvasTap(5, 0); // arc1 start - radius 5
+    await controller.handleCanvasTap(0, 5); // arc1 end, at 90 degrees
+    final arc1Id = controller.arcs.keys.single;
+    final sharedPointId = controller.arcs[arc1Id]!.endPointId;
+
+    await controller.handleCanvasTap(-10, 5); // arc2 center
+    await controller.handleCanvasTap(0, 5); // arc2 start - lands exactly on arc1's own
+    // end Point, so _pointIdAt reuses its id rather than creating a new,
+    // merely-coincident one (see SketchController._pointIdAt's own doc
+    // comment: only the origin is special-cased that way).
+    await controller.handleCanvasTap(-10, 1000); // arc2 end, snapped onto its own
+    // radius-10 circle in the +y direction from its center (-10, 5).
+    controller.exitToSelectMode();
+
+    final onRim1 = 5 * math.sqrt(0.5);
+    await controller.handleCanvasTap(onRim1, onRim1); // arc1's rim, at 45 degrees
+    final onRim2 = 10 * math.sqrt(0.5);
+    await controller.handleCanvasTap(-10 + onRim2, 5 + onRim2); // arc2's rim, at 45 degrees
+
+    expect(controller.selectionSet.length, 2);
+    expect(controller.selectionSet.every((s) => s.kind == SelectionKind.arc), isTrue);
+    final arc2Id = controller.selectionSet.last.id;
+    expect(controller.arcs[arc2Id]!.startPointId, sharedPointId);
+
+    final types = controller.availableConstraintOptions.map((o) => o.type).toSet();
+    expect(
+      types,
+      {ConstraintOptionType.concentric, ConstraintOptionType.equalRadius, ConstraintOptionType.tangent},
+    );
+    expect(controller.canApplyConstraint(ConstraintOptionType.tangent), isTrue);
+  });
+
+  test('addTangentConstraint creates a CurveTangentConstraint for two Arcs sharing an endpoint',
+      () async {
+    controller.selectDrawTool(SketchTool.arc);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+    await controller.handleCanvasTap(0, 5);
+    final arc1Id = controller.arcs.keys.single;
+    final sharedPointId = controller.arcs[arc1Id]!.endPointId;
+
+    await controller.handleCanvasTap(-10, 5);
+    await controller.handleCanvasTap(0, 5);
+    await controller.handleCanvasTap(-10, 1000);
+    final arc2Id = controller.arcs.keys.last;
+    controller.exitToSelectMode();
+
+    final onRim1 = 5 * math.sqrt(0.5);
+    await controller.handleCanvasTap(onRim1, onRim1);
+    final onRim2 = 10 * math.sqrt(0.5);
+    await controller.handleCanvasTap(-10 + onRim2, 5 + onRim2);
+
+    await controller.addTangentConstraint();
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.selectionSet, isEmpty);
+    final created = controller.constraints.values.whereType<CurveTangentConstraintDto>().single;
+    expect({created.entity1Id, created.entity2Id}, {arc1Id, arc2Id});
+    expect(created.sharedPointId, sharedPointId);
+    expect(created.center1PointId, controller.arcs[arc1Id]!.centerPointId);
+    expect(created.center2PointId, controller.arcs[arc2Id]!.centerPointId);
+  });
+
+  // Bug fix: Tangent between a Line and a Circle/Arc is order-agnostic (the
+  // user may select either one first) and, unlike the Arc+Arc case above,
+  // doesn't require them to already touch - the backend's TangentConstraint
+  // pins a perpendicular centre-to-line distance regardless.
+  test('availableConstraintOptions offers Tangent for a Line+Arc selection, either tap order',
+      () async {
+    controller.selectDrawTool(SketchTool.arc);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+    await controller.handleCanvasTap(0, 5);
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(20, 0);
+    await controller.handleCanvasTap(20, 10);
+    controller.exitToSelectMode();
+
+    final onRim = 5 * math.sqrt(0.5);
+    await controller.handleCanvasTap(onRim, onRim); // the Arc
+    await controller.handleCanvasTap(20, 5); // the Line
+
+    expect(controller.selectionSet.map((s) => s.kind).toSet(), {SelectionKind.arc, SelectionKind.line});
+    final options = controller.availableConstraintOptions;
+    expect(options.map((o) => o.type), [ConstraintOptionType.tangent]);
+    expect(options.single.wired, isTrue);
+  });
+
+  test('addTangentConstraint creates a TangentConstraint for a Line+Circle selection', () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+    final circleId = controller.circles.keys.single;
+    final centerId = controller.circles[circleId]!.centerPointId;
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(20, 0);
+    await controller.handleCanvasTap(20, 10);
+    final lineId = controller.lines.keys.single;
+    controller.exitToSelectMode();
+
+    await controller.handleCanvasTap(20, 5); // the Line, tapped first this time
+    await controller.handleCanvasTap(5 * math.cos(math.pi / 4), 5 * math.sin(math.pi / 4)); // the Circle
+
+    await controller.addTangentConstraint();
+
+    expect(controller.errorMessage, isNull);
+    final created = controller.constraints.values.whereType<TangentConstraintDto>().single;
+    expect(created.centerPointId, centerId);
+    expect(created.lineId, lineId);
   });
 
   test('canApplyConstraint(concentric)/(equalRadius) are true for a Circle and an Arc selected together',

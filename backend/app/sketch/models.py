@@ -13,6 +13,7 @@ from app.sketch.constraints import (
     CollinearConstraint,
     ConcentricConstraint,
     Constraint,
+    CurveTangentConstraint,
     DistanceConstraint,
     EqualLengthConstraint,
     EqualRadiusConstraint,
@@ -4423,6 +4424,40 @@ class Sketch:
             line_id=line_id,
             line_start_id=line.start_point_id,
             line_end_id=line.end_point_id,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
+
+    def add_curve_tangent_constraint(
+        self, entity1_id: str, entity2_id: str, shared_point_id: str
+    ) -> CurveTangentConstraint:
+        """Two Arcs meeting smoothly at [shared_point_id] - only Arcs can
+        use this (a Circle has no endpoint Point to share, see
+        `CurveTangentConstraint`'s own docstring). [shared_point_id] must be
+        the *same* Point id used as one of each Arc's own start/end Points
+        (an explicit-reference check, same "explicit references over
+        implicit geometric inference" convention `_isPointOnLine`-style
+        combos elsewhere in this codebase already use) - a Point that's
+        merely coincident-but-distinct from each Arc's own endpoint doesn't
+        qualify."""
+        entity1 = self.entities.get(entity1_id)
+        entity2 = self.entities.get(entity2_id)
+        if not isinstance(entity1, Arc):
+            raise KeyError(entity1_id)
+        if not isinstance(entity2, Arc):
+            raise KeyError(entity2_id)
+        if shared_point_id not in (entity1.start_point_id, entity1.end_point_id):
+            raise ValueError(f"{shared_point_id} is not an endpoint of arc {entity1_id}")
+        if shared_point_id not in (entity2.start_point_id, entity2.end_point_id):
+            raise ValueError(f"{shared_point_id} is not an endpoint of arc {entity2_id}")
+
+        constraint = CurveTangentConstraint(
+            id=str(uuid.uuid4()),
+            entity1_id=entity1_id,
+            entity2_id=entity2_id,
+            center1_point_id=entity1.center_point_id,
+            center2_point_id=entity2.center_point_id,
+            shared_point_id=shared_point_id,
         )
         self.constraints[constraint.id] = constraint
         return constraint

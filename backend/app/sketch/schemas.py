@@ -931,6 +931,19 @@ class ConcentricConstraintCreate(BaseModel):
     entity2_id: str
 
 
+class CurveTangentConstraintCreate(BaseModel):
+    """Two Arcs meeting smoothly at a shared endpoint Point - see
+    app.sketch.constraints.CurveTangentConstraint's own docstring for why
+    this only ever takes two Arcs (never a Circle, which has no endpoint to
+    share) and why TangentConstraintCreate's own circle_or_arc_id/line_id
+    shape doesn't apply here."""
+
+    type: Literal["curve_tangent"]
+    entity1_id: str
+    entity2_id: str
+    shared_point_id: str
+
+
 class EqualRadiusConstraintCreate(BaseModel):
     type: Literal["equal_radius"]
     entity1_id: str
@@ -996,6 +1009,7 @@ ConstraintCreate = Union[
     AngleConstraintCreate,
     CoincidentConstraintCreate,
     ConcentricConstraintCreate,
+    CurveTangentConstraintCreate,
     ParallelConstraintCreate,
     PerpendicularConstraintCreate,
     EqualLengthConstraintCreate,
@@ -1136,6 +1150,16 @@ class ConcentricConstraintResponse(BaseModel):
     center2_point_id: str
 
 
+class CurveTangentConstraintResponse(BaseModel):
+    type: Literal["curve_tangent"] = "curve_tangent"
+    id: str
+    entity1_id: str
+    entity2_id: str
+    center1_point_id: str
+    center2_point_id: str
+    shared_point_id: str
+
+
 class EqualRadiusConstraintResponse(BaseModel):
     type: Literal["equal_radius"] = "equal_radius"
     id: str
@@ -1198,6 +1222,7 @@ ConstraintResponse = Union[
     AngleConstraintResponse,
     CoincidentConstraintResponse,
     ConcentricConstraintResponse,
+    CurveTangentConstraintResponse,
     ParallelConstraintResponse,
     PerpendicularConstraintResponse,
     EqualLengthConstraintResponse,
