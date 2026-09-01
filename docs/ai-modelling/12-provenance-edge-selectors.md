@@ -11,11 +11,12 @@ provenance cache and per-Feature-type capture (`app.document.extrude`/
 resolve_edge_selector`), the `ai_plan.py` wiring (local_id resolution +
 referential validation), and both client-side mirrors (`ai_plan.dart`'s
 schema, `ai_scoping_prompt.dart`'s LLM-facing vocabulary). Full backend
-suite (1941 baseline + 8 new Workstream 12 tests) passes clean - see
-"Implementation notes (2026-09-01)" below for what changed from this
-doc's own original proposal, and the one real limitation discovered only
-during implementation (`sketch_rectangle`/`sketch_polygon`/`sketch_slot`
-shorthands have no addressable internal Lines).
+suite **1947 passed, 0 failed** (1941 baseline + 6 new Workstream 12
+tests) - see "Implementation notes (2026-09-01)" below for what changed
+from this doc's own original proposal, and the one real limitation
+discovered only during implementation (`sketch_rectangle`/
+`sketch_polygon`/`sketch_slot` shorthands have no addressable internal
+Lines).
 
 ## The problem this adds to, precisely
 
@@ -409,7 +410,7 @@ explicit steps instead of silently failing.
 
 ## Tests (built, `backend/tests/test_ai_plan_validate.py`)
 
-Eight new tests, all passing against real `pythonocc-core`:
+Six new tests, all passing against real `pythonocc-core`:
 `test_edge_from_sketch_point_selects_one_specific_corner_edge`,
 `test_edge_from_sketch_point_discriminates_between_different_corners`
 (two different corners resolve to two different real edges - the actual
