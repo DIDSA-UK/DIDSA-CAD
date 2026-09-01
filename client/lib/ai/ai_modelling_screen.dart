@@ -1192,12 +1192,30 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   /// - **3b**: an Extrude/Revolve/Sweep step's `holeCount` (real backend
   ///   truth from `detect_profile`, never a client-side guess).
   String _validationResultText(AiPlanStepResultDto r) {
-    if (!r.ok) return (r.error?['type'] ?? r.error ?? 'failed').toString();
+    if (!r.ok) return _formatStepError(r.error);
     final edgeCount = r.resolvedEdges?.length;
     if (edgeCount != null) return 'ok ($edgeCount edge${edgeCount == 1 ? '' : 's'})';
     final holeCount = r.holeCount;
     if (holeCount != null && holeCount > 0) return 'ok — includes $holeCount hole${holeCount == 1 ? '' : 's'}';
     return 'ok';
+  }
+
+  /// The backend's own `error` map (`ai_plan.py`'s `_StepError`/
+  /// `StepResult.error`, see `05-backend-plan-validation.md`) is always
+  /// `{"type": "...", ...}` - `type` alone (the old behaviour here) is a
+  /// bare machine code like "invalid_step_payload" that tells the user
+  /// nothing about what to actually change. Most hand-raised errors also
+  /// carry a human-readable `message` (e.g. "cut requires at least one
+  /// target_body_ids entry") or, failing that, other detail keys (`field`,
+  /// `local_id`, `body_id`, ...) worth surfacing instead of dropping them
+  /// on the floor.
+  String _formatStepError(Map<String, dynamic>? error) {
+    if (error == null) return 'failed';
+    final type = (error['type'] ?? 'failed').toString();
+    final message = error['message'];
+    if (message != null) return '$type: $message';
+    final details = error.entries.where((e) => e.key != 'type').map((e) => '${e.key}=${e.value}').join(', ');
+    return details.isEmpty ? type : '$type ($details)';
   }
 
   Widget _stepStatusIcon(TranslationStepStatus status) => switch (status) {

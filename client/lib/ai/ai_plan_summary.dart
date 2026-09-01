@@ -103,13 +103,16 @@ String _summarizeStep(AiGenerationPlan plan, AiPlanStep step) {
       return 'Rectangle (${step.cornerPointIds.length} corners)';
 
     case AiExtrudeStep():
-      return 'Extrude ${_fmt(step.startDistance)}→${_fmt(step.endDistance)}mm (${step.extrudeType.wireValue})';
+      final cutSuffix = step.extrudeType == AiExtrudeType.cut ? _cutTargetSuffix(step.targetBodyIds) : '';
+      return 'Extrude ${_fmt(step.startDistance)}→${_fmt(step.endDistance)}mm (${step.extrudeType.wireValue}$cutSuffix)';
 
     case AiRevolveStep():
-      return 'Revolve ${_fmt(step.angle)}° (${step.mode.wireValue})';
+      final cutSuffix = step.mode == AiRevolveMode.cut ? _cutTargetSuffix(step.targetBodyIds) : '';
+      return 'Revolve ${_fmt(step.angle)}° (${step.mode.wireValue}$cutSuffix)';
 
     case AiSweepStep():
-      return 'Sweep along ${step.pathRefs.length} path(s) (${step.mode.wireValue})';
+      final cutSuffix = step.mode == AiSweepMode.cut ? _cutTargetSuffix(step.targetBodyIds) : '';
+      return 'Sweep along ${step.pathRefs.length} path(s) (${step.mode.wireValue}$cutSuffix)';
 
     case AiFilletStep():
       return 'Fillet ${_selectorLabel(step.edges)} @${_fmt(step.radius)}mm';
@@ -134,6 +137,17 @@ String _summarizeStep(AiGenerationPlan plan, AiPlanStep step) {
       final params = step.parameters.entries.map((e) => '${e.key}=${e.value}').join(', ');
       return 'Gear request: $params';
   }
+}
+
+/// Real finding: `target_body_ids` is required (validation fails with
+/// `invalid_step_payload`) whenever a cut-mode step's list is empty, but
+/// this was previously invisible in the plan panel - a "cut" step and a
+/// well-formed one read identically until Generate/preflight ran. Surfacing
+/// it here, including the empty case, lets a human catch the gap by eye
+/// before spending a validation round-trip on it.
+String _cutTargetSuffix(List<String> targetBodyIds) {
+  if (targetBodyIds.isEmpty) return ', into ⚠ no body specified';
+  return ', into ${targetBodyIds.join(', ')}';
 }
 
 String _selectorLabel(AiEdgeSelector edges) {

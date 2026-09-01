@@ -93,6 +93,53 @@ void main() {
     expect(summary[3], contains('5mm'));
   });
 
+  /// Real-world case: a cut extrude with an empty/missing `target_body_ids`
+  /// fails backend validation (`invalid_step_payload`, "cut requires at
+  /// least one target_body_ids entry") but previously read identically to a
+  /// well-formed cut in the plan panel - "Extrude 0→50mm (cut)" either way.
+  /// A human proofreading the plan before Generate had no way to spot the
+  /// gap; this must be visible in the summary itself.
+  test('a cut extrude with no target_body_ids visibly flags the missing target', () {
+    final plan = AiGenerationPlan.fromJson({
+      'version': 1,
+      'steps': [
+        {'local_id': 'sk1', 'kind': 'sketch', 'plane': 'XY'},
+        {
+          'local_id': 'f1',
+          'kind': 'extrude',
+          'sketch_feature_id': 'sk1',
+          'extrude_type': 'cut',
+          'start_distance': 0,
+          'end_distance': 50,
+        },
+      ],
+    });
+
+    final summary = summarizeAiPlan(plan)[1];
+    expect(summary, contains('no body specified'));
+  });
+
+  test('a cut extrude with target_body_ids shows which body it cuts into', () {
+    final plan = AiGenerationPlan.fromJson({
+      'version': 1,
+      'steps': [
+        {'local_id': 'sk1', 'kind': 'sketch', 'plane': 'XY'},
+        {
+          'local_id': 'f1',
+          'kind': 'extrude',
+          'sketch_feature_id': 'sk1',
+          'extrude_type': 'cut',
+          'start_distance': 0,
+          'end_distance': 50,
+          'target_body_ids': ['ext1'],
+        },
+      ],
+    });
+
+    final summary = summarizeAiPlan(plan)[1];
+    expect(summary, contains('into ext1'));
+  });
+
   test('sketch step names its fixed plane literally', () {
     final summary = summarizeAiPlan(lockedExamplePlan());
     expect(summary[0], 'New Sketch on XY');
