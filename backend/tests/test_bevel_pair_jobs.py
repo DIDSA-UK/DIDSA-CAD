@@ -254,12 +254,12 @@ def test_cancel_on_an_unknown_job_returns_404():
 
 
 def test_job_mode_surfaces_the_same_structured_error_a_synchronous_create_would():
-    """An invalid pair (a shaft angle that makes `pitch_cone_half_angles`
-    unsolvable) - the synchronous endpoint 422s with a structured
-    `invalid_bevel_pair_parameters` detail; job mode must surface the exact
-    same structured error via the poll endpoint's own `error` field once
-    the job settles on `failed`."""
-    payload = _pair_payload(member_1=_member(60), member_2=_member(60), shaft_angle_degrees=1.0)
+    """An invalid pair (zero face_width - mirrors `test_bevel_pair_feature.
+    py`'s own `test_zero_face_width_is_rejected`) - the synchronous endpoint
+    422s with a structured `invalid_bevel_pair_parameters` detail; job mode
+    must surface the exact same structured error via the poll endpoint's
+    own `error` field once the job settles on `failed`."""
+    payload = _pair_payload(face_width=0.0)
 
     part_sync = _create_part("Sync Fail")
     sync_response = client.post(f"/document/parts/{part_sync['id']}/bevel-pair-features", json=payload)
