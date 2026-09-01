@@ -1,10 +1,15 @@
-# LOD Strategy — Phase 2 design: cancellation + reconnect (proposed)
+# LOD Strategy — Phase 2 design: cancellation + reconnect (approved)
 
-Status: **proposed, not yet approved**. Scope confirmed with the user: cancellation of an
+Status: **approved 2026-09-01**. Scope confirmed with the user: cancellation of an
 in-progress expensive build, and a cheap way for a reconnected client to learn the outcome —
 explicitly NOT UI concurrency (do other work while a build runs) and NOT fine-grained progress
-percentages. Builds on Phase 1's client-side coarse/pending state; sequenced after Phase 1,
-not folded into it (see `00-status.md`'s 2026-08-27 entries for why).
+percentages. Builds on Phase 1's client-side coarse/pending state, now merged to `main` (PRs
+#173/#174/#175) — chunk 4 below reuses the real, already-landed coarse-preview endpoints for
+`BevelPairFeature`/`PlanetaryGearFeature` (`POST /parts/{id}/bevel-pair-features/coarse-preview`,
+`.../planetary-gear-features/coarse-preview`) to show a placeholder while a job-mode build
+polls, not a hypothetical mechanism. Re-checked against `main` before dispatch: nothing landed
+since Phase 1 touches `bevel_pair.py`/`planetary_gear.py`/`router.py`/`extrude.py`, so this
+design's assumptions still hold.
 
 ## 1. The central reframing: disconnect was never actually losing work
 
