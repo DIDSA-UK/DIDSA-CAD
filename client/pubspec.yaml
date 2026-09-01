@@ -55,6 +55,17 @@ dependencies:
   # falls back to the picked file's raw bytes there rather than crashing.
   flutter_image_compress: ^2.3.0
 
+  # AI Modelling image-input follow-up: bakes a picked photo's EXIF
+  # orientation tag into its actual pixel data before it's shown in the
+  # chat transcript or sent to a vision provider - `Image.memory` (used for
+  # both) and `flutter_image_compress`'s own auto-correction ignore/apply
+  # EXIF inconsistently across platforms/versions, so a portrait phone
+  # photo can render sideways in-app and be misread by the vision model
+  # (mixed-up left/right or up/down in extracted geometry). Already present
+  # transitively (via flutter_svg et al.) - pinned here as a direct
+  # dependency since `ai_modelling_screen.dart` now imports it directly.
+  image: ^4.9.1
+
   # AI Modelling workstream 11 (voice input, `docs/ai-modelling/11-voice-
   # input.md`): on-device speech-to-text for the mic button beside Send.
   # Android/iOS confirmed supported (per the package's own platform-support

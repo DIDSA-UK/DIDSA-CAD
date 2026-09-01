@@ -126,12 +126,23 @@ class OpenAiCompatibleProvider implements AiProvider {
   /// text seed for the ordinary scoping conversation rather than a second,
   /// competing plan-generation path.
   static const String _imageExtractionPrompt =
-      'You are looking at a hand sketch or engineering drawing of a mechanical/CAD part. '
-      'Describe it in careful technical detail for someone who will use your description to '
-      'plan a 3D CAD model: overall shape and proportions, distinct features (holes, fillets, '
-      'chamfers, ribs, bosses, slots, etc.), any dimension callouts or measurements you can '
-      'read (quote them exactly as written, including units), and anything ambiguous or '
-      'illegible. Do not propose CAD modelling steps or JSON - only describe what you see.';
+      'You are looking at a hand sketch or engineering drawing of a mechanical/CAD part, which '
+      'may show multiple separate views (e.g. front/top/side, or a folded-profile view plus a '
+      'flat view) of the same part. Describe it in careful technical detail for someone who will '
+      'use your description to plan a 3D CAD model: overall shape and proportions, distinct '
+      'features (holes, fillets, chamfers, ribs, bosses, slots, etc.), any dimension callouts or '
+      'measurements you can read (quote them exactly as written, including units), and anything '
+      'ambiguous or illegible. If the drawing states a projection convention (e.g. "1st angle" or '
+      '"3rd angle projection") or labels any axes, quote that exactly too, and say which view is '
+      'which (front/top/side/etc.) rather than assuming. For every view, describe hole/feature '
+      'positions as distances from that view\'s own labelled edges or corners (e.g. "8mm from the '
+      'right edge, 8mm from the top edge") - never as bare "left"/"right"/"top"/"bottom" without '
+      'saying which edge, since the sketch photo may be rotated relative to how you are reading '
+      'it. Explicitly state how each view lines up with the others (e.g. which edge or feature in '
+      'one view corresponds to which in another) so positions given in one view can be placed '
+      'correctly relative to geometry defined in a different view. If any view or its text/labels '
+      'appears rotated or upside-down in the photo, say so explicitly. Do not propose CAD '
+      'modelling steps or JSON - only describe what you see.';
 
   @override
   Future<String> extractImageDescription(Uint8List imageBytes, String mimeType) async {

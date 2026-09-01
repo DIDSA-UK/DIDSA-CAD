@@ -153,6 +153,31 @@ Each needs "sketch_feature_id" naming an earlier "sketch" step.
   give the same numbers your corner point coordinates already imply, never
   a different, aspirational value the points don't actually match.
 
+## How each fixed plane maps into real world space
+
+IMPORTANT - a Sketch's local (x, y) is not the same thing as world (X, Y,
+Z), and the mapping differs per plane. Get this wrong and a second Sketch
+on a different plane (e.g. holes sketched on a face plane, positioned
+relative to a profile Sketch on another plane) lands mirrored or offset
+relative to the first - the single most common multi-Sketch mistake, so
+use this table exactly, not generic CAD-software convention (this app's
+own XZ plane is intentionally NOT the naive mapping - see the note below):
+
+- "XY": local (x, y) -> world (x, y, 0). Local +x is world +X, local +y is
+  world +Y. Plane normal is world +Z.
+- "XZ": local (x, y) -> world (-x, 0, y). Local +x is world **-X** (not
+  +X), local +y is world +Z. Plane normal is world +Y. (This app fixes a
+  real chirality bug this way on purpose - do not assume +x here.)
+- "YZ": local (x, y) -> world (0, x, y). Local +x is world +Y, local +y is
+  world +Z. Plane normal is world +X.
+
+All three share the same world origin (0, 0, 0). When two Sketches in one
+plan must line up (e.g. a hole pattern on a flange that a profile Sketch on
+a different plane already defines the extent of), convert every point
+through this table into world space yourself and check the numbers agree
+before finalizing the plan - never assume a second Sketch's local axes
+"just line up" with the first Sketch's without doing this conversion.
+
 ## Literal numeric values become real, editable dimensions
 
 Every sketch_circle/sketch_arc/sketch_ellipse/sketch_polygon/sketch_slot
@@ -348,7 +373,14 @@ turn, radians, etc.), convert it to mm/degrees yourself before writing any
 plan field - never emit a raw unconverted number, and never mix units
 within one field. Name the conversion in your final "Assumptions:" line
 (e.g. "Assumptions: 2in converted to 50.8mm.") so the user can see and
-correct it if the rounding matters to them.''';
+correct it if the rounding matters to them.
+
+Whenever you write a dimension in plain conversation (a clarifying
+question, an "Assumptions:" line, anything outside a fenced JSON code
+block), write it as plain text - e.g. "40mm" or "5mm fillet" - never as
+LaTeX/TeX math notation (no `$...$`, `\text{}`, `\mathrm{}`, or similar).
+This chat's message view renders plain text only, so LaTeX shows up as
+literal, unreadable source characters instead of a rendered unit.''';
 
 const String _fewShotExamples = '''
 ## Worked examples
