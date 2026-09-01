@@ -1295,6 +1295,43 @@ class BevelPairFeatureResponse(BaseModel):
     warnings: list[str] = []
 
 
+class BevelPairJobCreateResponse(BaseModel):
+    """`docs/lod-strategy/02-phase2-design.md` SS4: returned immediately by
+    the job-mode create endpoint, before the real build has even started -
+    genuinely different shape from `BevelPairFeatureResponse` (no resolved
+    geometry/warnings yet), the reason job-mode is a separate route rather
+    than a query flag on the existing synchronous one."""
+
+    job_id: str
+    status: Literal["running"] = "running"
+
+
+class BevelPairJobStatusResponse(BaseModel):
+    """`GET /parts/{part_id}/jobs/{job_id}` - `result` is only ever set once
+    `status == "succeeded"`, and is then the *exact same* `BevelPairFeature
+    Response` shape the synchronous create endpoint returns (so client
+    result-handling code doesn't need a second code path); `error` is only
+    ever set once `status == "failed"`, carrying the same structured
+    `{"type": ..., "detail": ...}` shape every other structured validation
+    error in this codebase already uses."""
+
+    job_id: str
+    status: Literal["running", "succeeded", "failed", "cancelled"]
+    result: BevelPairFeatureResponse | None = None
+    error: dict | None = None
+
+
+class BevelPairJobCancelResponse(BaseModel):
+    """Returned by `POST /parts/{part_id}/jobs/{job_id}/cancel` - `status`
+    may still read `"running"` immediately after this call (the kill
+    request was issued, but the background build thread hasn't necessarily
+    noticed and finished yet) - poll `GET .../jobs/{job_id}` to observe the
+    actual transition to `"cancelled"`."""
+
+    job_id: str
+    status: Literal["running", "succeeded", "failed", "cancelled"]
+
+
 class LoftSectionSchema(BaseModel):
     """`docs/gear-design/04-helical-herringbone-loft.md` (4b): the wire
     counterpart to `app.document.models.LoftSection` - see that dataclass's
