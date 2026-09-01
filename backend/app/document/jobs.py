@@ -185,15 +185,30 @@ def _run_job(job_id: str, resolve_fn: _ResolveFn) -> None:
 
     try:
         _shape, warnings = resolve_fn(part, feature, cancellation=cancellation)
-    except JobCancelled:
-        with _lock:
-            _finish_job_locked(job_id, JobStatus.CANCELLED)
-        return
-    except HTTPException as exc:
-        with _lock:
-            _finish_job_locked(job_id, JobStatus.FAILED, error={"status_code": exc.status_code, "detail": exc.detail})
-        return
-    except Exception as exc:  # noqa: BLE001 - any other real construction failure still needs to reach the client
+    except Exception as exc:  # noqa: BLE001 - classification below decides FAILED vs CANCELLED for every flavor
+        # `cancellation.is_cancelled()` is the authoritative signal here, not
+        # just `isinstance(exc, JobCancelled)`. `track()` (`app.document.
+        # job_cancellation`) only converts an exception to `JobCancelled`
+        # while its own narrow `with` scope is still open; a cancellation
+        # can also tear down the `ProcessPoolExecutor` a hair after that
+        # scope has already exited (e.g. the owning thread's own outer
+        # `with ProcessPoolExecutor(...) as executor:` racing its `shutdown()`
+        # against `cancel()`'s), in which case whatever raw exception that
+        # produces (`OSError`, `BrokenProcessPool`, `EOFError`, ...) never
+        # passes through `track()`'s `except` at all. Checking the flag
+        # directly classifies a job as `cancelled` whenever cancellation was
+        # actually requested, regardless of which layer or exception type a
+        # cancellation-triggered teardown happens to surface - true for
+        # either job-mode Feature type's own `resolve_fn`, not just
+        # `resolve_bevel_pair`'s.
+        if isinstance(exc, JobCancelled) or cancellation.is_cancelled():
+            with _lock:
+                _finish_job_locked(job_id, JobStatus.CANCELLED)
+            return
+        if isinstance(exc, HTTPException):
+            with _lock:
+                _finish_job_locked(job_id, JobStatus.FAILED, error={"status_code": exc.status_code, "detail": exc.detail})
+            return
         with _lock:
             _finish_job_locked(
                 job_id, JobStatus.FAILED, error={"status_code": 500, "detail": f"unexpected job failure: {exc}"}

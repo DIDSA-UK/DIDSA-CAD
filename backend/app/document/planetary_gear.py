@@ -70,7 +70,7 @@ from app.document.gear_math import (
     spur_gear_geometry,
     validate_planetary_assembly,
 )
-from app.document.job_cancellation import CancellationToken, shutdown_pool_quietly
+from app.document.job_cancellation import CancellationToken
 from app.document.job_cancellation import cancellation_scope as _cancellation_scope
 from app.document.models import Part, PlanetaryGearFeature, ResolvedPlane
 from app.document.occt_process_utils import shape_from_brep_bytes as _shape_from_brep_bytes
@@ -316,29 +316,21 @@ def resolve_planetary_from_bodies(
     mp_context = multiprocessing.get_context("spawn")
     member_count = 2 + feature.planet_count
     executor = ProcessPoolExecutor(max_workers=_planetary_pool_worker_count(member_count), mp_context=mp_context)
-    try:
-        with _cancellation_scope(cancellation, executor):
-            sun_future = executor.submit(_build_member_solid_worker, basis, sun_geometry, False, None, feature.face_width)
-            ring_future = executor.submit(
-                _build_member_solid_worker, ring_basis, ring_geometry, True, feature.ring_outer_diameter, feature.face_width
-            )
-            planet_futures = [
-                executor.submit(_build_member_solid_worker, planet_basis, planet_geometry, False, None, feature.face_width)
-                for planet_basis in planet_bases
-            ]
-            try:
-                sun_solid = _shape_from_brep_bytes(sun_future.result())
-                ring_solid = _shape_from_brep_bytes(ring_future.result())
-                planet_solids = [_shape_from_brep_bytes(future.result()) for future in planet_futures]
-            except _MemberBuildFailed as exc:
-                raise _invalid_planetary_parameters(str(exc)) from exc
-    finally:
-        # `shutdown_pool_quietly`, not a plain `with executor:` - see that
-        # function's own docstring for the real, on-device-confirmed
-        # concurrent-shutdown race with `_kill_pool_workers`'s own call this
-        # swallows (found via this exact module's own real cancellation
-        # test, LOD Phase 2 chunk 3).
-        shutdown_pool_quietly(executor)
+    with executor, _cancellation_scope(cancellation, executor):
+        sun_future = executor.submit(_build_member_solid_worker, basis, sun_geometry, False, None, feature.face_width)
+        ring_future = executor.submit(
+            _build_member_solid_worker, ring_basis, ring_geometry, True, feature.ring_outer_diameter, feature.face_width
+        )
+        planet_futures = [
+            executor.submit(_build_member_solid_worker, planet_basis, planet_geometry, False, None, feature.face_width)
+            for planet_basis in planet_bases
+        ]
+        try:
+            sun_solid = _shape_from_brep_bytes(sun_future.result())
+            ring_solid = _shape_from_brep_bytes(ring_future.result())
+            planet_solids = [_shape_from_brep_bytes(future.result()) for future in planet_futures]
+        except _MemberBuildFailed as exc:
+            raise _invalid_planetary_parameters(str(exc)) from exc
 
     compound = TopoDS_Compound()
     builder = BRep_Builder()

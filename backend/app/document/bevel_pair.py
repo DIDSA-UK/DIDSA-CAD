@@ -171,7 +171,7 @@ from app.document.bevel_math import (
 )
 from app.document.create_plane import resolve_plane_ref
 from app.document.extrude import compute_part_bodies
-from app.document.job_cancellation import CancellationToken, shutdown_pool_quietly
+from app.document.job_cancellation import CancellationToken
 from app.document.job_cancellation import cancellation_scope as _cancellation_scope
 from app.document.models import BevelPairFeature, Part, ResolvedPlane
 from app.document.occt_process_utils import shape_from_brep_bytes as _shape_from_brep_bytes
@@ -657,37 +657,30 @@ def _search_meshing_phase(
         initializer=_init_phase_search_worker,
         initargs=(solid_1_brep, solid_2_base_brep, basis_2),
     )
-    try:
-        with _cancellation_scope(cancellation, executor):
-            draft_delta, draft_overlap = _run_phase_search_tier(
-                executor,
-                solid_1,
-                solid_2_base,
-                basis_2,
-                half_pitch,
-                _PHASE_SEARCH_DRAFT_GRID_POINTS,
-                _PHASE_SEARCH_DRAFT_REFINE_ITERATIONS,
-                zero_overlap,
-            )
-            if draft_overlap is not None and draft_overlap <= _PHASE_SEARCH_EARLY_EXIT_OVERLAP_MM3:
-                return draft_delta, draft_overlap
+    with executor, _cancellation_scope(cancellation, executor):
+        draft_delta, draft_overlap = _run_phase_search_tier(
+            executor,
+            solid_1,
+            solid_2_base,
+            basis_2,
+            half_pitch,
+            _PHASE_SEARCH_DRAFT_GRID_POINTS,
+            _PHASE_SEARCH_DRAFT_REFINE_ITERATIONS,
+            zero_overlap,
+        )
+        if draft_overlap is not None and draft_overlap <= _PHASE_SEARCH_EARLY_EXIT_OVERLAP_MM3:
+            return draft_delta, draft_overlap
 
-            full_delta, full_overlap = _run_phase_search_tier(
-                executor,
-                solid_1,
-                solid_2_base,
-                basis_2,
-                half_pitch,
-                _PHASE_SEARCH_GRID_POINTS,
-                _PHASE_SEARCH_REFINE_ITERATIONS,
-                zero_overlap,
-            )
-    finally:
-        # `shutdown_pool_quietly`, not a plain `with executor:` - see that
-        # function's own docstring for the real, on-device-confirmed
-        # concurrent-shutdown race with `_kill_pool_workers`'s own call
-        # (LOD Phase 2 chunk 3) this swallows.
-        shutdown_pool_quietly(executor)
+        full_delta, full_overlap = _run_phase_search_tier(
+            executor,
+            solid_1,
+            solid_2_base,
+            basis_2,
+            half_pitch,
+            _PHASE_SEARCH_GRID_POINTS,
+            _PHASE_SEARCH_REFINE_ITERATIONS,
+            zero_overlap,
+        )
 
     if draft_overlap is None:
         return full_delta, full_overlap
@@ -1049,50 +1042,43 @@ def resolve_bevel_pair_from_bodies(
     # immune to this whole class of post-fork corruption.
     mp_context = multiprocessing.get_context("spawn")
     executor = ProcessPoolExecutor(max_workers=2, mp_context=mp_context)
-    try:
-        with _cancellation_scope(cancellation, executor):
-            future_1 = executor.submit(
-                _build_member_solid,
-                basis_1,
-                geometry_1,
-                feature.member_1.tooth_count,
-                feature.points_per_flank,
-                math.pi / 2,
-                feature.spiral_angle_degrees,
-                spiral_hand_1,
-            )
-            future_2 = executor.submit(
-                _build_member_solid,
-                basis_2,
-                geometry_2,
-                feature.member_2.tooth_count,
-                feature.points_per_flank,
-                -math.pi / 2 + math.pi / feature.member_2.tooth_count,
-                feature.spiral_angle_degrees,
-                spiral_hand_2,
-            )
-            try:
-                solid_1_brep, warnings_1 = future_1.result()
-                solid_2_brep, warnings_2 = future_2.result()
-            except _MemberBuildFailed as exc:
-                raise _bevel_pair_failed(str(exc)) from exc
-            except GearGeometryError as exc:
-                # `_build_member_solid`'s own worker only converts an
-                # `HTTPException` `_assemble_gear_solid` raises into
-                # `_MemberBuildFailed` - a `GearGeometryError` (e.g. the
-                # Tredgold crown-gear guard, `tredgold_base_colatitude`) is a
-                # plain picklable `ValueError` subclass that crosses the
-                # `ProcessPoolExecutor` boundary unchanged, so it lands here
-                # directly instead. A real, pre-existing gap this fix-up pass
-                # found while regression-testing `coarse_bevel_cone_solid`'s
-                # own matching guard - see `docs/status.md`'s follow-up note.
-                raise _invalid_bevel_pair_parameters(str(exc)) from exc
-    finally:
-        # `shutdown_pool_quietly`, not a plain `with executor:` - see that
-        # function's own docstring for the real, on-device-confirmed
-        # concurrent-shutdown race with `_kill_pool_workers`'s own call
-        # (LOD Phase 2 chunk 3) this swallows.
-        shutdown_pool_quietly(executor)
+    with executor, _cancellation_scope(cancellation, executor):
+        future_1 = executor.submit(
+            _build_member_solid,
+            basis_1,
+            geometry_1,
+            feature.member_1.tooth_count,
+            feature.points_per_flank,
+            math.pi / 2,
+            feature.spiral_angle_degrees,
+            spiral_hand_1,
+        )
+        future_2 = executor.submit(
+            _build_member_solid,
+            basis_2,
+            geometry_2,
+            feature.member_2.tooth_count,
+            feature.points_per_flank,
+            -math.pi / 2 + math.pi / feature.member_2.tooth_count,
+            feature.spiral_angle_degrees,
+            spiral_hand_2,
+        )
+        try:
+            solid_1_brep, warnings_1 = future_1.result()
+            solid_2_brep, warnings_2 = future_2.result()
+        except _MemberBuildFailed as exc:
+            raise _bevel_pair_failed(str(exc)) from exc
+        except GearGeometryError as exc:
+            # `_build_member_solid`'s own worker only converts an
+            # `HTTPException` `_assemble_gear_solid` raises into
+            # `_MemberBuildFailed` - a `GearGeometryError` (e.g. the
+            # Tredgold crown-gear guard, `tredgold_base_colatitude`) is a
+            # plain picklable `ValueError` subclass that crosses the
+            # `ProcessPoolExecutor` boundary unchanged, so it lands here
+            # directly instead. A real, pre-existing gap this fix-up pass
+            # found while regression-testing `coarse_bevel_cone_solid`'s
+            # own matching guard - see `docs/status.md`'s follow-up note.
+            raise _invalid_bevel_pair_parameters(str(exc)) from exc
     solid_1 = _shape_from_brep_bytes(solid_1_brep)
     solid_2 = _shape_from_brep_bytes(solid_2_brep)
     # Collected separately from `warnings` (rather than appended into it
