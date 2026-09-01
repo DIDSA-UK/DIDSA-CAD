@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
+import 'package:image/image.dart' as img;
 import 'package:speech_to_text/speech_to_text.dart';
 
 import '../api/document_api_client.dart';
@@ -472,6 +473,9 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         bytes = await File(path).readAsBytes();
         mimeType = _mimeTypeForExtension(file.extension ?? '');
       }
+      final oriented = _bakeExifOrientation(bytes, mimeType);
+      bytes = oriented.$1;
+      mimeType = oriented.$2;
       if (!mounted) return;
       setState(() {
         _pendingImageBytes = bytes;
@@ -485,6 +489,40 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         _preparingImage = false;
         _imageError = 'Could not process "${file.name}": $e';
       });
+    }
+  }
+
+  /// Bakes a still-present EXIF orientation tag into the image's actual
+  /// pixel data, returning (possibly re-encoded) bytes plus the mime type
+  /// that now matches them. Needed because neither of this screen's two
+  /// consumers of these bytes honour EXIF orientation on their own:
+  /// `Image.memory` (the chat bubble/attachment preview below) always
+  /// renders the stored pixel grid as-is, and a provider's vision call
+  /// (`extractImageDescription`) isn't guaranteed to either - so a portrait
+  /// phone photo saved with an EXIF "rotate 90"/"rotate 270" tag (rather
+  /// than physically rotated pixels, the common camera convention) can show
+  /// sideways in-app and get its geometry read with left/right or up/down
+  /// swapped by the vision model. `flutter_image_compress`'s own
+  /// `autoCorrectionAngle` (on by default) does this for the compressed
+  /// path on Android/iOS, but inconsistently across its own versions/
+  /// codecs (a known upstream flakiness, not this app's own bug) and not
+  /// at all for the raw-bytes fallback path (desktop, or a failed
+  /// compression) - so this runs unconditionally on every path instead of
+  /// trusting either. HEIC/HEIF source bytes fail to decode here (the
+  /// `image` package has no HEIC decoder) and are returned unchanged - no
+  /// worse than before this fix, since nothing corrected them previously
+  /// either.
+  static (Uint8List, String) _bakeExifOrientation(Uint8List bytes, String mimeType) {
+    try {
+      final decoded = img.decodeImage(bytes);
+      if (decoded == null) return (bytes, mimeType);
+      final oriented = img.bakeOrientation(decoded);
+      if (mimeType == 'image/png') {
+        return (Uint8List.fromList(img.encodePng(oriented)), mimeType);
+      }
+      return (Uint8List.fromList(img.encodeJpg(oriented, quality: 90)), 'image/jpeg');
+    } catch (_) {
+      return (bytes, mimeType);
     }
   }
 

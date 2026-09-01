@@ -32,6 +32,9 @@ from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape
 from app.document.create_plane import resolve_sketch_basis
 from app.document.extrude import (
     EXTRUDABLE_STATUSES,
+    _edge_provenance_from_builder,
+    _profile_boundary_shapes,
+    _record_feature_edge_provenance,
     basis_point_to_world,
     compute_part_bodies,
     face_for_profile,
@@ -181,14 +184,25 @@ def resolve_revolve_from_bodies(
     profiles = select_profiles(candidates, feature.profile_refs)
 
     solids = []
+    provenance_by_profile: list[dict[str, dict[str, int]] | None] = []
     for profile in profiles:
         face = face_for_profile(sketch, profile, basis)
         revol_maker = BRepPrimAPI_MakeRevol(face, axis, angle_radians)
         if not revol_maker.IsDone():
             raise _revolve_failed()
-        solids.append(revol_maker.Shape())
+        shape = revol_maker.Shape()
+        solids.append(shape)
+        point_to_vertex, line_to_edge = _profile_boundary_shapes(sketch, profile, basis, face)
+        provenance_by_profile.append(_edge_provenance_from_builder(revol_maker, point_to_vertex, line_to_edge, shape))
 
     if len(solids) == 1:
+        # Workstream 12 (docs/ai-modelling/12-provenance-edge-selectors.md):
+        # same "only the common single-profile, no-target case" reasoning
+        # as `app.document.extrude._solid_for_extrude_feature`'s identical
+        # guard - see that function's own comment.
+        provenance = provenance_by_profile[0]
+        if not feature.target_body_ids and provenance is not None:
+            _record_feature_edge_provenance(part, feature.id, provenance, excluded_feature_ids)
         return solids[0]
 
     builder = BRep_Builder()

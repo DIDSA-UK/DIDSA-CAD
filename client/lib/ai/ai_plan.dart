@@ -138,12 +138,17 @@ enum AiCreatePlaneType {
 
 /// `EdgeSelectorKind` (`ai_plan_schemas.py`) - the four deterministic
 /// Fillet/Chamfer edge-selector heuristics, resolved server-side against
-/// real Body topology (`app.document.ai_plan_edges`), never client-side.
+/// real Body topology (`app.document.ai_plan_edges`), never client-side -
+/// plus two more (Workstream 12, `docs/ai-modelling/12-provenance-edge-
+/// selectors.md`) resolving a specific single edge by sketch-entity
+/// lineage instead of a geometric guess.
 enum AiEdgeSelectorKind {
   topFaceEdges('top_face_edges'),
   bottomFaceEdges('bottom_face_edges'),
   verticalEdges('vertical_edges'),
-  allEdgesOfFaceAtPosition('all_edges_of_face_at_position');
+  allEdgesOfFaceAtPosition('all_edges_of_face_at_position'),
+  edgeFromSketchPoint('edge_from_sketch_point'),
+  edgeFromSketchLine('edge_from_sketch_line');
 
   final String wireValue;
   const AiEdgeSelectorKind(this.wireValue);
@@ -174,19 +179,40 @@ class AiEdgeSelector {
   final AiEdgeSelectorKind selector;
   final String of;
   final AiCardinalDirection? direction;
+  // Workstream 12: required iff selector == edgeFromSketchPoint.
+  final String? sketchPointRef;
+  // Workstream 12: required iff selector == edgeFromSketchLine.
+  final String? sketchLineRef;
+  // Workstream 12, edgeFromSketchLine only: false (default) selects the
+  // edge as originally drawn; true selects its generated counterpart on
+  // the swept-to end. Ignored otherwise.
+  final bool far;
 
-  const AiEdgeSelector({required this.selector, required this.of, this.direction});
+  const AiEdgeSelector({
+    required this.selector,
+    required this.of,
+    this.direction,
+    this.sketchPointRef,
+    this.sketchLineRef,
+    this.far = false,
+  });
 
   factory AiEdgeSelector.fromJson(Map<String, dynamic> json) => AiEdgeSelector(
         selector: AiEdgeSelectorKind.fromWire(json['selector'] as String),
         of: json['of'] as String,
         direction: json['direction'] == null ? null : AiCardinalDirection.fromWire(json['direction'] as String),
+        sketchPointRef: json['sketch_point_ref'] as String?,
+        sketchLineRef: json['sketch_line_ref'] as String?,
+        far: json['far'] as bool? ?? false,
       );
 
   Map<String, dynamic> toJson() => {
         'selector': selector.wireValue,
         'of': of,
         if (direction != null) 'direction': direction!.wireValue,
+        if (sketchPointRef != null) 'sketch_point_ref': sketchPointRef,
+        if (sketchLineRef != null) 'sketch_line_ref': sketchLineRef,
+        if (far) 'far': far,
       };
 }
 

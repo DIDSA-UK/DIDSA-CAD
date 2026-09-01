@@ -110,14 +110,25 @@ existing "3D Part Design"/"2D Drawing"/"Gear Design" tiles on
 `ToolChooserScreen`) - a user describes a part in plain English, an LLM
 asks clarifying questions to scope it, then a client-side translator turns
 the resulting structured plan into a real Feature-tree part via this
-app's own Sketch/Feature API. **Status: first end-to-end usable version
-done** (workstreams 1-5 all built and tested; see `README.md`'s own
-delivery-order table) - every step kind except `gear_request` (detected
-and surfaced, not auto-executed - a real, deliberate gap, see
+app's own Sketch/Feature API. **Status: all eleven planned workstreams are built** (see `README.md`'s
+own delivery-order table) - every step kind except `gear_request`
+(detected and surfaced, not auto-executed - a real, deliberate gap, see
 `04-translator-and-execution.md`'s "Real scope of `gear_request`
-handling") goes from a plain-English request to a real Feature-tree part.
-On-device feedback and the `gear_request` full hand-off remain, per that
-same table.
+handling") goes from a plain-English request, or an attached hand-sketch/
+drawing photo, to a real Feature-tree part. The `gear_request` full
+hand-off remains, per that same table. First real on-device feedback
+round (2026-09-01, `docs/status.md`) fixed three concrete bugs (attached-
+photo EXIF orientation not baked into pixel data before display/vision
+call; the system prompt never told the LLM each fixed plane's actual
+local-to-world axis mapping, so a second Sketch on a different plane could
+land mirrored/offset relative to a first one built on another plane -
+including this app's own intentional XZ chirality flip, which a generic
+CAD-convention guess gets backwards; the image-extraction prompt not
+asking for edge-anchored, view-to-view-correlated positions - and added a
+plain-text-units instruction after a provider emitted LaTeX into a chat
+view that only renders plain text) - see that entry for the on-device
+verification gap this session couldn't close (no Flutter toolchain
+available).
 Key decisions: client-direct (Flutter calls the chosen AI provider - local
 or cloud - directly; no new backend AI-brokering endpoint), a structured
 JSON plan + deterministic client-side translator rather than freeform
@@ -126,19 +137,38 @@ stateless dry-run plan-validation endpoint reusing every existing Feature
 type's own `resolve_X` functions, never persisting anything), and a
 provider abstraction unifying local + OpenAI cloud on the OpenAI-
 compatible chat-completions wire shape with a separate Anthropic adapter.
-v1 is text-input only, composing only from Sketch's existing entity types
-and a subset of existing Feature types (gear-shaped requests route to the
-now-complete Gear Design screens instead of freeform generation); image
-upload (sketch/drawing photo interpretation) is real, deliberately
-deferred scope with its own not-yet-designed workstream
-(`06-image-input-deferred.md`) - explicitly excludes reverse-engineering
-a photo of a real physical object as a v1 non-goal. One real open design
-problem flagged for the next implementation session:
-`03-structured-plan-schema.md`'s Fillet/Chamfer edge-selection scheme
-(a Body's edges don't exist until it's built, unlike Sketch entities)
-isn't fully resolved - a coarse deterministic-selector approach is
-recommended over a mid-execution LLM call, but the actual selector set
-still needs designing.
+Composes only from Sketch's existing entity types and a subset of
+existing Feature types (gear-shaped requests route to the Gear Design
+screens instead of freeform generation); reverse-engineering a photo of a
+real physical object (rather than a hand sketch/engineering drawing) stays
+a non-goal.
+
+**Fillet/Chamfer edge selection had a real gap - single-arbitrary-edge
+targeting - closed 2026-09-01 (`docs/ai-modelling/12-provenance-edge-
+selectors.md`, built).** `03-structured-plan-schema.md`'s original four
+selectors (`top_face_edges`/`bottom_face_edges`/`vertical_edges`/
+`all_edges_of_face_at_position: <cardinal direction>`) are geometric
+heuristics with no way to express "just this one edge" or "just this one
+corner" - real on-device testing hit this ceiling. Two new selectors,
+`edge_from_sketch_point`/`edge_from_sketch_line`, now resolve a specific
+single edge by sketch-entity lineage instead (OCCT shape-history via
+`.Generated()`/`.Modified()`, the same idiom `app.document.gear`'s own
+root-fillet code already used) - `edge_from_sketch_point` (a corner) works
+uniformly on Extrude/Revolve/Sweep with no known failure case;
+`edge_from_sketch_line` (a specific straight edge, near or far side) works
+the same way except a full-360° Revolve's own radially-oriented edges,
+which fail closed rather than guess. Real, disclosed remaining gaps: only
+a single-profile Boss with no `target_body_ids` (a fuse/cut/MultiProfile
+rebuilds topology in a way the cached indices wouldn't survive);
+`sketch_rectangle`/`sketch_polygon`/`sketch_slot` shorthands have no
+addressable internal Lines for `edge_from_sketch_line` to name (only their
+corner points, which `edge_from_sketch_point` already covers fine); the
+mixed Line/Arc/Spline wire path and curved Sweep paths are unconfirmed.
+Still real, not-yet-scoped follow-on payoff: the identical mechanism could
+unlock `PatternDirectionStep`/`PatternAxisStep`'s own already-documented
+"same problem" gap, and a `face_from_sketch_entity` counterpart could
+unlock `CreatePlaneStep`'s currently-excluded `OFFSET_FACE`/etc. plane
+types - neither designed or built here.
 
 ## Analysis tools
 

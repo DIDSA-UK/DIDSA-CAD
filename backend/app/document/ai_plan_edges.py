@@ -22,6 +22,16 @@ Indices in every returned `SubShapeRef` use the same "undeduplicated,
 *not* `app.document.mesh`'s own dense (degenerate-edges-skip-an-id)
 scheme, which can disagree with this one for a Body that happens to have
 a degenerate edge.
+
+Workstream 12 (docs/ai-modelling/12-provenance-edge-selectors.md) added
+two more selectors, `EDGE_FROM_SKETCH_POINT`/`EDGE_FROM_SKETCH_LINE` -
+unlike the four heuristics above, these resolve a *specific single* edge
+by sketch-entity lineage (`app.document.extrude`'s `_feature_edge_
+provenance_cache`, populated as a side effect of that Feature's own real
+construction), not a geometric guess over the finished Body. See that
+module's own docstring for the full mechanism and its real, disclosed
+limits (only Extrude/Revolve/Sweep; only a single-profile Boss with no
+target_body_ids; never an edge a *prior* Fillet/Chamfer created).
 """
 
 from fastapi import HTTPException
@@ -34,7 +44,8 @@ from OCC.Core.TopoDS import TopoDS_Shape, TopoDS_Vertex, topods
 from OCC.Core.TopTools import TopTools_IndexedMapOfShape
 
 from app.document.ai_plan_schemas import CardinalDirection, EdgeSelectorKind
-from app.document.models import SubShapeRef, SubShapeType
+from app.document.extrude import cached_feature_edge_provenance
+from app.document.models import Part, SubShapeRef, SubShapeType
 
 # ~2.6 degrees off pure alignment - tight enough to reject a merely-close
 # face/edge on a chamfered or lightly-angled body, loose enough to absorb
@@ -156,18 +167,76 @@ def _vertical_edge_refs(body_id: str, edge_map: TopTools_IndexedMapOfShape) -> l
     return refs
 
 
+_PROVENANCE_SELECTOR_KINDS = frozenset(
+    {EdgeSelectorKind.EDGE_FROM_SKETCH_POINT, EdgeSelectorKind.EDGE_FROM_SKETCH_LINE}
+)
+
+
+def _resolve_provenance_selector(
+    part: Part,
+    feature_id: str,
+    body_id: str,
+    selector: EdgeSelectorKind,
+    provenance_key: str,
+    sketch_entity_id: str,
+) -> list[SubShapeRef]:
+    """Workstream 12: looks `sketch_entity_id` up in `feature_id`'s own
+    cached edge-provenance (`app.document.extrude.cached_feature_edge_
+    provenance`) under `provenance_key` ("points"/"lines_near"/
+    "lines_far") - a plain dict lookup, never a geometric guess. Fails
+    closed with the same `edge_selector_no_matching_edges` the four
+    heuristics already use (never a silent empty selection) whenever the
+    provenance cache has nothing for this Feature at all (no matching
+    profile shape when it last ran, a MultiProfile/fused/cut/
+    target_body_ids-non-empty case, or - the one guaranteed-permanent case,
+    not just a v1 gap - `feature_id` names a Fillet/Chamfer, whose own
+    edges have no sketch lineage at all to trace back to) or has nothing
+    for this specific sketch entity (e.g. a full-360 Revolve's own
+    disclosed radial-edge gap for `lines_far`)."""
+    provenance = cached_feature_edge_provenance(part, feature_id)
+    index = None if provenance is None else provenance.get(provenance_key, {}).get(sketch_entity_id)
+    if index is None:
+        raise _no_matching_edges(body_id, selector)
+    return [SubShapeRef(body_id=body_id, shape_type=SubShapeType.EDGE, index=index)]
+
+
 def resolve_edge_selector(
     body: TopoDS_Shape,
     body_id: str,
     selector: EdgeSelectorKind,
     direction: CardinalDirection | None,
+    *,
+    part: Part | None = None,
+    feature_id: str | None = None,
+    sketch_point_id: str | None = None,
+    sketch_line_id: str | None = None,
+    far: bool = False,
 ) -> list[SubShapeRef]:
     """The `SubShapeRef`s (EDGE, indexed the same way `resolve_subshape_
     from_bodies` reads them) a `fillet`/`chamfer` plan step's `edges`
     selector names against `body`'s real current topology. Raises a
     structured 422 `HTTPException` (never returns an empty list silently)
     for "no matching face", "no matching edges", and "selector needs a
-    direction but none was given"."""
+    direction but none was given".
+
+    `part`/`feature_id`/`sketch_point_id`/`sketch_line_id`/`far` are only
+    used by the two Workstream 12 provenance selectors (`EDGE_FROM_SKETCH_
+    POINT`/`EDGE_FROM_SKETCH_LINE`) - `part`/`feature_id` must both be
+    given for either (the caller's own job to supply, per `EdgeSelector.of`
+    resolving to a real Feature id), and `sketch_point_id`/`sketch_line_id`
+    is the already-resolved *real* sketch entity id the corresponding
+    `EdgeSelector.sketch_point_ref`/`sketch_line_ref` plan-local_id
+    resolved to (never the plan-local_id itself - that resolution is the
+    caller's job, exactly like every other plan-local_id in this schema)."""
+    if selector in _PROVENANCE_SELECTOR_KINDS:
+        assert part is not None and feature_id is not None
+        if selector == EdgeSelectorKind.EDGE_FROM_SKETCH_POINT:
+            assert sketch_point_id is not None
+            return _resolve_provenance_selector(part, feature_id, body_id, selector, "points", sketch_point_id)
+        assert sketch_line_id is not None
+        provenance_key = "lines_far" if far else "lines_near"
+        return _resolve_provenance_selector(part, feature_id, body_id, selector, provenance_key, sketch_line_id)
+
     edge_map = TopTools_IndexedMapOfShape()
     topexp.MapShapes(body, TopAbs_EDGE, edge_map)
 

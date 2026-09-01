@@ -202,12 +202,30 @@ class EdgeSelectorKind(str, Enum):
     """The four deterministic edge-selector heuristics adopted for v1
     (see 03-structured-plan-schema.md's "Open design problem" section,
     option (b)) - resolved against a Body's real, already-computed
-    topology by `app.document.ai_plan_edges`, never by a second LLM call."""
+    topology by `app.document.ai_plan_edges`, never by a second LLM call -
+    plus two more (Workstream 12, `docs/ai-modelling/12-provenance-edge-
+    selectors.md`) resolving a *specific single* edge by tracing it back to
+    the sketch entity that produced it (via OCCT's own `.Generated()`/
+    `.Modified()` shape-history query), rather than a geometric heuristic
+    over the finished Body - see that doc's own "Spike findings" for the
+    exact mechanics and confirmed limits per Feature type."""
 
     TOP_FACE_EDGES = "top_face_edges"
     BOTTOM_FACE_EDGES = "bottom_face_edges"
     VERTICAL_EDGES = "vertical_edges"
     ALL_EDGES_OF_FACE_AT_POSITION = "all_edges_of_face_at_position"
+    # Workstream 12: the safe, primary provenance selector - a corner
+    # sketch_point local_id names the single lateral edge generated at
+    # that corner. Confirmed clean (no failure case found) on Extrude,
+    # partial Revolve, full-360 Revolve, and Sweep.
+    EDGE_FROM_SKETCH_POINT = "edge_from_sketch_point"
+    # Workstream 12: the more powerful, slightly riskier provenance
+    # selector - a sketch_line local_id names either that edge as
+    # originally drawn (far=False) or its generated counterpart on the
+    # swept-to end (far=True). Real, confirmed working, with one disclosed
+    # exception: a full-360 Revolve's radially-oriented profile edges can
+    # have no far-edge result at all (fails closed, never a silent guess).
+    EDGE_FROM_SKETCH_LINE = "edge_from_sketch_line"
 
 
 class CardinalDirection(str, Enum):
@@ -229,9 +247,23 @@ class EdgeSelector(BaseModel):
     selector: EdgeSelectorKind
     of: str  # local_id of an earlier Body-producing step (extrude/revolve/sweep/pattern/mirror/gear_request)
     # Required iff selector == ALL_EDGES_OF_FACE_AT_POSITION; unused (and
-    # ignored) for the other three selectors, which have a fixed direction
-    # (+z/-z) or none (vertical_edges) baked into their own name.
+    # ignored) for every other selector.
     direction: CardinalDirection | None = None
+    # Required iff selector == EDGE_FROM_SKETCH_POINT: local_id of a
+    # sketch_point step belonging to the same profile Sketch `of`'s
+    # Body-producing step consumed. Unused otherwise.
+    sketch_point_ref: str | None = None
+    # Required iff selector == EDGE_FROM_SKETCH_LINE: local_id of a
+    # sketch_line step, same Sketch requirement as sketch_point_ref above.
+    # Unused otherwise.
+    sketch_line_ref: str | None = None
+    # EDGE_FROM_SKETCH_LINE only, optional (default False): False selects
+    # the edge as originally drawn, on the profile's own base/start face;
+    # True selects its generated counterpart on the swept-to end (Extrude's
+    # end face, Revolve's end-angle face, Sweep's path-end face). Ignored
+    # for every other selector, including EDGE_FROM_SKETCH_POINT (which has
+    # no such ambiguity - a corner generates exactly one lateral edge).
+    far: bool = False
 
 
 class FilletStep(BaseModel):
