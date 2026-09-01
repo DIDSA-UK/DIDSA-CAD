@@ -1,10 +1,15 @@
-# Workstream 12 (proposed, not built): Provenance-Based Edge Selectors
+# Workstream 12 (spike run, schema locked; implementation not yet built): Provenance-Based Edge Selectors
 
-Read `00-conventions.md` first. This is a **scoping doc, like `03`'s own
-original "Open design problem" section before its spike ran** - it
-proposes a schema/backend shape and names the exact spike that needs to
-run against real `pythonocc-core` before any of it is built for real. No
-code changes accompany this doc.
+Read `00-conventions.md` first. This started as a scoping doc, like `03`'s
+own original "Open design problem" section before its spike ran. **The
+spike below has now run for real, against real `pythonocc-core`** (real
+`BRepPrimAPI_MakePrism`/`BRepPrimAPI_MakeRevol`/`BRepOffsetAPI_
+MakePipeShell` shapes, not a hand-built fixture) - see "Spike findings
+(2026-09-01)" below. The mechanism is confirmed and the schema shape is
+locked; the backend/`body_cache.py` implementation itself is still real,
+not-yet-built work (a follow-up session's job), same "confirmed workable,
+not yet wired up" state `03`'s own Spike 2 left its four selectors in
+before workstream 4 actually built the translator around them.
 
 ## The problem this adds to, precisely
 
@@ -74,81 +79,135 @@ same idea. This app doesn't use OCAF; the proposal below is a narrow,
 purpose-built version of the same concept, scoped to exactly the cases
 this schema needs.
 
-## Proposed schema shape
+## Locked schema shape
 
-Extend `EdgeSelectorKind` (`ai_plan_schemas.py`) with one new value:
+**Two new selectors, not one** - the spike found the vertex-based one is
+strictly simpler and more robust than the edge-based one (see findings
+below), so both are worth shipping rather than picking one. Extend
+`EdgeSelectorKind` (`ai_plan_schemas.py`):
 
 ```python
-EDGE_FROM_SKETCH_LINE = "edge_from_sketch_line"
+EDGE_FROM_SKETCH_POINT = "edge_from_sketch_point"  # the safe, primary case
+EDGE_FROM_SKETCH_LINE = "edge_from_sketch_line"    # the more powerful, slightly riskier case
 ```
 
-and give `EdgeSelector` one new optional field, following the exact
-pattern `direction` already establishes for
-`ALL_EDGES_OF_FACE_AT_POSITION` (required iff that one selector is used,
-ignored otherwise):
+and give `EdgeSelector` new optional fields, following the exact pattern
+`direction` already establishes for `ALL_EDGES_OF_FACE_AT_POSITION`
+(required iff that one selector is used, ignored otherwise):
 
 ```python
 class EdgeSelector(BaseModel):
     selector: EdgeSelectorKind
     of: str
     direction: CardinalDirection | None = None
-    # Required iff selector == EDGE_FROM_SKETCH_LINE; unused otherwise.
+    # Required iff selector == EDGE_FROM_SKETCH_POINT.
+    sketch_point_ref: str | None = None
+    # Required iff selector == EDGE_FROM_SKETCH_LINE.
     sketch_line_ref: str | None = None
+    # EDGE_FROM_SKETCH_LINE only, optional (default False): the edge as
+    # originally drawn, on the profile's own base/start face (False), or
+    # its generated counterpart on the swept-to end - Extrude's end face,
+    # Revolve's end-angle face, Sweep's path-end face (True). Ignored for
+    # EDGE_FROM_SKETCH_POINT, which has no such ambiguity (see findings).
+    far: bool = False
 ```
 
-`sketch_line_ref` names an earlier `sketch_line` step's `local_id` - one
-belonging to the same profile Sketch that `of`'s Body-producing step
-consumed (a referential-validity rule for `05-backend-plan-validation.md`
-to add, mirroring `revolve.axis_ref`'s existing "must resolve to a
-sketch_line step" check). Resolves to exactly one edge (or, for a
-Revolve - see below - the caller may get a face back and this selector's
-own contract needs to define what "the edge" means there), never a
-selector-of-many like the four heuristics.
+`sketch_point_ref`/`sketch_line_ref` name an earlier `sketch_point`/
+`sketch_line` step's `local_id` - one belonging to the same profile Sketch
+that `of`'s Body-producing step consumed (a referential-validity rule for
+`05-backend-plan-validation.md` to add, mirroring `revolve.axis_ref`'s
+existing "must resolve to a sketch_line step" check). Each resolves to
+exactly one edge, never a selector-of-many like the four heuristics.
 
 `chamfer`/`fillet`'s `edges` field shape is completely unchanged - this is
 additive to `EdgeSelectorKind`/`EdgeSelector` only, `FilletFeature`/
 `ChamferFeature` themselves (which only ever store the final resolved
 `SubShapeRef` list) need zero changes.
 
-## Per-Feature-type mechanics (what the spike below needs to confirm)
+## Per-Feature-type mechanics (confirmed by the spike)
 
-**Extrude** (`extrude.py`). `_prism_for_profile`/`wire_for_profile` build
-the profile wire, then discard the `BRepPrimAPI_MakePrism` builder after
-taking `.Shape()`. Two real sub-cases inside `wire_for_profile` itself:
-- The common "pure Line-chain polygon" fast path builds the wire via
-  `BRepBuilderAPI_MakePolygon.Add(point)` per vertex - it never retains a
-  per-edge `(sketch_line_id -> wire edge)` mapping today; one would need
-  to be built alongside it (ordered pairing of `profile.point_ids`/
-  `profile.line_ids`, one hop per line - needs confirming this pairing is
-  always 1:1 for every real profile shape, not just the simple ones
-  tested so far).
-- The mixed Line/Arc/Spline path already builds each hop as its own edge
-  individually before stitching via `BRepBuilderAPI_MakeWire` - a parallel
-  `(sketch_entity_id -> edge)` list is a much smaller add here, since each
-  edge already exists as its own local variable at construction time.
-- The Circle/Ellipse/Text single-entity profiles need no mapping at all -
-  the whole wire is unambiguously "that one entity."
+**Extrude** (`extrude.py`, `BRepPrimAPI_MakePrism`). Confirmed against an
+asymmetric quadrilateral profile (a heuristic selector genuinely couldn't
+pick one edge of it unambiguously):
+- `.Generated(vertex)`/`.Generated(edge)` return **empty** when queried
+  against edges/vertices obtained by exploring the *wire* object held
+  before `BRepBuilderAPI_MakeFace(wire)` wraps it - a real object-identity
+  gotcha, not a dead end: `MakeFace` does not preserve the wire's own edge/
+  vertex object identity into the face it builds. The fix is simple and
+  makes the eventual implementation easier, not harder: **always
+  re-explore edges/vertices from the exact `TopoDS_Face` object actually
+  passed into `BRepPrimAPI_MakePrism`** (i.e. `face_for_profile`'s return
+  value in the real code, after any transform - never a wire held earlier
+  in the pipeline).
+- Queried correctly (from the face), `.Generated(vertex)` returns exactly
+  one shape, an EDGE - the lateral (vertical) edge at that corner. Clean,
+  unambiguous, one call, no further disambiguation needed - this is
+  `EDGE_FROM_SKETCH_POINT`, and it's exactly the same idiom
+  `gear._apply_root_fillet` already ships. (One real wrinkle, handled
+  automatically rather than needing special-casing: `TopExp_Explorer` over
+  a face's vertices visits each real corner twice, undeduplicated - both
+  duplicate instances of a corner returned bit-identical `Generated()`
+  results in every case tested, so either one can be used safely.)
+- Queried correctly, `.Generated(edge)` returns exactly one shape, a FACE
+  (the lateral wall swept from that edge) - always exactly 4 edges for a
+  straight profile edge: the original edge itself, its far/generated
+  counterpart, and two vertical connectors. The far edge is picked by a
+  purely topological rule, confirmed on every edge of the test profile:
+  **the one edge of those 4 that shares no vertex with the originally-
+  queried edge** - no coordinate/vector-direction math needed at all,
+  which matters because it should generalize cleanly to Revolve's curved
+  counterpart edges too (confirmed below). This is `EDGE_FROM_SKETCH_LINE`
+  with `far=True`; `far=False` is just the original queried edge itself,
+  needing no `.Generated()` call at all (only mapping it into the final
+  Body's own real edge index, straightforward since it's still present
+  unmodified in the result).
+- For every case above, the resolved edge's `topexp.MapShapes`-based index
+  (the same 0-based scheme `ai_plan_edges.py` already uses) was confirmed
+  directly against the real coordinates of the edge OCCT returned - it is
+  a valid, directly-usable `SubShapeRef.index`.
+- `wire_for_profile`'s Circle/Ellipse/Text single-entity profiles need no
+  mapping at all (the whole wire is unambiguously "that one entity"); the
+  `BRepBuilderAPI_MakePolygon` fast path and the mixed Line/Arc/Spline path
+  both need a `(sketch_entity_id -> face vertex/edge)` map built at
+  construction time (not confirmed for the mixed-chain path specifically
+  in this spike, which used the polygon path only - a real, disclosed gap
+  for the implementation session to close, not expected to behave
+  differently in principle since it also produces a straight-edge wire).
 
-**Revolve** (`revolve.py`, `BRepPrimAPI_MakeRevol`). A profile *edge*
-sweeps into a *face*, not another edge - `.Generated(profile_edge)` needs
-confirming against real OCCT for exactly what it returns (a single lateral
-face is the expected case; the spike needs to check this for both a
-partial-angle revolve, which also creates two new cap faces bounded partly
-by the original profile edges, and a full 360° revolve, which doesn't).
-`edge_from_sketch_line` on a Revolve body most likely needs to mean "an
-edge of the generated lateral face" rather than the face itself - which
-specific edge (the far one, at the swept end?) needs a real decision once
-the spike shows what `.Generated()` actually returns, not guessed here.
+**Revolve** (`revolve.py`, `BRepPrimAPI_MakeRevol`). Confirmed against an
+asymmetric trapezoidal profile (a bushing-style cross-section), for both a
+90° partial revolve and a full 360° revolve:
+- `.Generated(vertex)` behaves identically to Extrude - exactly one
+  generated EDGE (the circular/helical arc that vertex swept through) -
+  in **both** the partial and full case. `EDGE_FROM_SKETCH_POINT` is
+  equally clean and reliable on Revolve.
+- `.Generated(edge)` behaves like Extrude for a **partial** revolve
+  (exactly one generated FACE, 4 edges, same "shares no vertex" far-edge
+  rule applies) - **but for a full 360° revolve, a profile edge lying
+  radially (perpendicular to the revolution axis, both endpoints at
+  different radii) can generate zero shapes at all** - the flat annular
+  face it sweeps into apparently isn't tracked as "generated from" that
+  edge the way a curved lateral face is. **This must fail closed**
+  (`edge_selector_no_matching_edges`, matching `ai_plan_edges.py`'s
+  existing convention exactly - the four heuristics already fail this way
+  rather than returning an empty selection silently), not attempt a
+  fallback guess. `EDGE_FROM_SKETCH_LINE` is real and mostly reliable on
+  Revolve, with this one confirmed, boundable, disclosed exception -
+  `EDGE_FROM_SKETCH_POINT` has no equivalent gap and should be considered
+  the safer default recommendation to the LLM for Revolve bodies.
 
-**Sweep** (`sweep.py`, `BRepOffsetAPI_MakePipeShell`). The highest-risk of
-the three - `sweep.py`'s own comments already document real, hard-won
-`MakePipeShell` quirks specific to this codebase (natural-parametrization
-surprises, single-wire-only `.Add()`, needing `BRepLib.BuildCurves3d`
-workarounds elsewhere in this codebase for edge cases with pcurves - see
-`bevel.py`'s own gotcha). `.Generated()`'s behavior on a
-`MakePipeShell`-produced shell needs its own dedicated confirmation, not
-an assumption it behaves like `MakePrism`/`MakeRevol` just because the API
-name is similar.
+**Sweep** (`sweep.py`, `BRepOffsetAPI_MakePipeShell`). Confirmed against a
+straight path with an asymmetric quadrilateral section - and, contrary to
+this doc's original "highest risk" framing, **this was the cleanest of the
+three**: `.Generated(edge)`/`.Generated(vertex)` both work correctly when
+queried directly against the *original* section wire's own edges/vertices
+(no `MakeFace`-style object-identity gotcha - `pipe_maker.Add(wire)` keeps
+the wire's own edges/vertices addressable, unlike `MakePrism`'s face-
+wrapping step). Both selectors work exactly as they do for Extrude's
+polygon fast path. Not yet tested: a curved (Arc/Spline) path or section,
+or the multi-hop `MakePipeShell.Add()`-per-edge pattern `sweep.py`'s own
+comments describe for a mixed-entity path - a real, disclosed gap for the
+implementation session, not expected to change the underlying idiom.
 
 **Pattern/Mirror/gear_request bodies - explicitly excluded.** A Pattern
 instance's edges have no single simple sketch lineage (multiplied by
@@ -213,40 +272,79 @@ this whole workstream exists to get away from - so option 1 is the
 stronger choice unless a spike finds option 1 genuinely can't be threaded
 through `body_cache.py` cleanly.
 
-## Spike needed before any of this is built
+## Spike findings (2026-09-01): confirmed against real OCCT geometry
 
-Same "spike before committing" discipline `03`'s own "Spike 2" already
-established for the original four selectors - this proposal is
-unconfirmed against real geometry and should stay that way in this doc
-until one runs. Concretely, against a real `pythonocc-core` environment
-(bootstrap recipe: `03`'s own "Environment note for future sessions"),
-confirm:
+Run in a freshly-bootstrapped real backend environment (`miniforge` +
+`mamba env create -f backend/environment.yml`, the same recipe `03`'s own
+"Environment note for future sessions" and this project's prior gear-
+design/bevel spikes all used - `pythonocc-core=7.9.3=novtk*`, confirmed
+importable). Full existing backend test suite re-run against the fresh
+environment first, per this project's own standing practice, to rule out
+the environment itself as a source of any finding below - see this doc's
+own "Full-suite verification" section. Scripts themselves are scratch,
+not committed, per this project's spike convention - built real
+`BRepPrimAPI_MakePrism`/`BRepPrimAPI_MakeRevol`/`BRepOffsetAPI_
+MakePipeShell` shapes directly (no shortcut access to anything the real
+`extrude.py`/`revolve.py`/`sweep.py` code paths wouldn't also have), using
+deliberately asymmetric profiles specifically so a heuristic selector
+could not have picked the same edge - the case that actually justifies
+this workstream, not just a plain box repeating `03`'s own Spike 2.
 
-1. `BRepPrimAPI_MakePrism.Generated(edge)`/`.Modified(edge)`, given a wire
-   edge identified via a real `(sketch_line_id -> wire edge)` mapping
-   built through both `wire_for_profile` branches above, reliably returns
-   the single correct lateral edge - for a plain rectangular profile
-   *and* for an asymmetric profile where a heuristic selector genuinely
-   couldn't disambiguate (the case that actually justifies this
-   workstream).
-2. The same idiom against `BRepPrimAPI_MakeRevol`, resolving the open
-   "what does `.Generated()` return, and which edge of it counts as *the*
-   edge" question above, for both a partial and a full 360° revolve.
-3. The same idiom against `BRepOffsetAPI_MakePipeShell`, specifically
-   because `sweep.py`'s own prior on-device-feedback history shows this
-   API has already surprised this codebase more than once.
-4. Whether option 1's `body_cache.py` extension can carry the provenance
-   dict cleanly through its existing checkpoint-chain reuse logic, or
-   whether a real complication (e.g. a step whose cached snapshot is
-   reused across calls needing its provenance dict reconstructed
-   identically) forces a rethink.
+**Headline result: the mechanism works, for both new selectors, on all
+three Feature types**, with two confirmed real gotchas (both now written
+into the "Per-Feature-type mechanics" section above, not left as open
+questions):
 
-If the spike finds `.Generated()`/`.Modified()` behave inconsistently
-enough on any one of the three Feature types (Sweep is the likely
-candidate, per its own history above), landing this for Extrude/Revolve
-only - and leaving Sweep on heuristic selectors alone, explicitly
-disclosed as a known gap - is a legitimate partial-build outcome, not a
-failure of the workstream.
+1. `BRepPrimAPI_MakePrism`/`BRepPrimAPI_MakeRevol` require querying
+   `.Generated()`/`.Modified()` against edges/vertices re-explored from
+   the exact `TopoDS_Face` object actually passed into the builder - a
+   separately-held wire reference from earlier in the pipeline returns
+   empty results, silently, rather than an error. This is a real
+   implementation-order constraint (re-derive the sketch-entity mapping
+   from the *same* face object right before/as the builder runs), not a
+   dead end - and `BRepOffsetAPI_MakePipeShell` doesn't share this
+   constraint at all (see below), so it's specific to the face-wrapping
+   step `MakePrism`/`MakeRevol` both need and `MakePipeShell` doesn't.
+2. A full 360° revolve's radially-oriented profile edges (perpendicular
+   to the axis) can have no `.Generated()` result at all for
+   `EDGE_FROM_SKETCH_LINE` - confirmed, bounded, and must fail closed
+   (`edge_selector_no_matching_edges`) rather than guess. This has no
+   effect on `EDGE_FROM_SKETCH_POINT`, which had zero failures across
+   every case tested (partial revolve, full revolve, Extrude, Sweep) -
+   this is why the schema above ships both selectors rather than
+   `EDGE_FROM_SKETCH_LINE` alone, and why `EDGE_FROM_SKETCH_POINT` is the
+   one worth recommending to the LLM by default in the system prompt once
+   built.
+
+**Genuinely surprising result, reversing this doc's original risk
+ranking**: Sweep (`BRepOffsetAPI_MakePipeShell`) was the *cleanest* of the
+three, not the riskiest as originally flagged from `sweep.py`'s own prior
+API-gotcha history - `.Generated()` worked directly against the section
+wire's own original edges/vertices with no object-identity gotcha at all.
+Extrude and Revolve share the face-wrapping gotcha (both go through
+`face_for_profile`); Sweep's `pipe_maker.Add(wire)` doesn't wrap into a
+face first, so it doesn't inherit that constraint. Worth remembering for
+future spikes on this codebase: an API's *prior* history of surprises in
+one context doesn't reliably predict how it behaves for a materially
+different query (shape history vs. the pipe-shell construction quirks
+`sweep.py`'s own comments document, which are about section/transition
+handling, not `.Generated()`).
+
+**Not yet tested, real disclosed gaps for the implementation session**:
+the mixed Line/Arc/Spline wire-construction path (only the
+`BRepBuilderAPI_MakePolygon` straight-edge fast path was spiked); a curved
+Sweep path or section; and whether option 1's `body_cache.py` extension
+(the provenance dict riding alongside the existing per-step snapshot)
+threads cleanly through its checkpoint-chain reuse logic end to end - this
+spike confirmed the OCCT query mechanics in isolation, not the full
+per-step-cache wiring, which is real implementation work still ahead
+rather than a spiked-and-confirmed fact.
+
+If a future implementation pass finds the mixed-chain path or curved
+Sweep genuinely doesn't extend cleanly, landing this for the straight-
+edge/straight-path cases confirmed here - disclosing the rest as a known
+gap - is a legitimate partial-build outcome, not a failure of the
+workstream, matching the standing allowance this doc already carried.
 
 ## Payoff beyond Fillet/Chamfer (real, not this workstream's job to wire up)
 
@@ -276,15 +374,28 @@ scoped or designed here.
   ever needs to know a sketch entity's `local_id`, which it already has at
   plan-authoring time under the existing schema.
 
-## Tests (once the spike confirms real behavior)
+## Tests (once the implementation lands)
 
 Mirroring `03`'s own Spike 2 discipline (`backend/tests/test_ai_plan_
 validate.py`'s existing "fillet-then-select-again multi-step case"
-pattern): for each Feature type the spike confirms, a test building a
-deliberately asymmetric profile (so a heuristic selector genuinely
-couldn't have picked the same edge unambiguously) and confirming
-`edge_from_sketch_line` resolves to the geometrically correct single edge,
-plus a negative test confirming a `sketch_line_ref` naming a line from the
-*wrong* Sketch (or a non-`sketch_line` step) fails plan validation with a
-clear referential error, matching every other `local_id` reference's
-existing failure mode in `05-backend-plan-validation.md`.
+pattern): for each Feature type confirmed above, a test building the same
+kind of deliberately asymmetric profile this spike used and confirming
+both `edge_from_sketch_point` and `edge_from_sketch_line` (`far=False` and
+`far=True`) resolve to the geometrically correct single edge; a full-360°
+Revolve test confirming a radial `edge_from_sketch_line` fails closed with
+`edge_selector_no_matching_edges` rather than silently returning nothing;
+a multi-step test mirroring Spike 2's own "fillet-then-select-again" case,
+confirming a provenance selector still resolves correctly against a body a
+prior Fillet already modified, as long as it targets a different original
+sketch entity; and a negative test confirming a `sketch_point_ref`/
+`sketch_line_ref` naming an entity from the *wrong* Sketch (or the wrong
+step kind) fails plan validation with a clear referential error, matching
+every other `local_id` reference's existing failure mode in
+`05-backend-plan-validation.md`.
+
+## Full-suite verification (this spike session)
+
+`pytest -n auto` re-run against the freshly-bootstrapped environment
+before any spike script ran, to confirm the environment itself wasn't a
+confound - see this session's `docs/status.md` entry for the exact
+pass count.
