@@ -158,12 +158,16 @@ own local plane rather than world X/Y/Z - real requests testing hit this
 ceiling. **Not a naming/id problem** - the four selectors are geometric
 heuristics resolved fresh from topology, not name lookups, so there's
 nothing today for a richer "the LLM asks for or is told real edge/face
-ids" scheme to attach to. A future workstream extending this would need
-to design that reporting/naming layer first (e.g. the translator
-describing each Body's faces/edges back to the LLM as a compact
-mid-conversation summary once created, or a broader selector vocabulary
-covering the gaps above) - real, unscoped design work, not a quick
-addition to the current four.
+ids" scheme to attach to. **Scoped, not yet built**:
+`docs/ai-modelling/12-provenance-edge-selectors.md` proposes a new
+`edge_from_sketch_line` selector resolved via OCCT shape-history
+(`.Generated()`/`.Modified()` off the same builder that already
+constructs an Extrude/Revolve/Sweep Body), reusing an idiom already
+shipped in `app.document.gear`'s own root-fillet code rather than
+inventing a new naming/id system - names the exact real-OCCT spike that
+needs to run before any of it is built, and the same mechanism's
+disclosed follow-on payoff for `PatternDirectionStep`/`PatternAxisStep`'s
+own already-documented identical gap.
 
 ## Analysis tools
 
