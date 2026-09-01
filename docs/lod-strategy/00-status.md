@@ -313,8 +313,10 @@ expected side effect of cancellation. A real, reproducible race in the classific
 not test flakiness or an environmental fluke — confirmed via the actual pytest traceback, not
 assumed.
 
-Fix-up dispatched (`session_0125TpzU45UYuE2kL94JTaeb`, branch
-`claude/lod-phase2-cancel-race-fix`): the fix should be architectural — `jobs.py`'s job-runner
+Coordinator-dispatched attempt (`session_0125TpzU45UYuE2kL94JTaeb`) errored out — archived, not
+investigated per the user's own instruction (established pattern this whole effort). Prompt
+handed to the user as a file 2026-09-01; they're starting it directly on branch
+`claude/lod-phase2-cancel-race-fix`. The fix should be architectural — `jobs.py`'s job-runner
 should check `cancellation.is_cancelled()` as the authoritative FAILED-vs-CANCELLED signal,
 not rely solely on catching `JobCancelled` from one narrow scope, so any exception flavor
 surfacing after a cancel request classifies correctly regardless of which layer/thread produces
