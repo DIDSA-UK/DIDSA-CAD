@@ -33,9 +33,9 @@ doc and any design-doc content — no implementation).
 | Phase 1 chunks 3+4+5 (Pattern/Loft coarse builders + client toggle) | **merged to `main`** | branch `claude/lod-pattern-loft-client`, [PR #175](https://github.com/DIDSA-UK/DIDSA-CAD/pull/175) | Pattern/Loft coarse builders + coarse-preview endpoints + instance-count cap (backend, real-OCCT verified: 1909→1919, zero regressions); client mesh-override generalization, per-Feature pending/pinned state, both flows wired (create-time for Pattern/Loft only — the five gear-family types' own create flow lives in `GearDesignScreen`, which has no `PartViewport` mounted; re-open flow wired universally), Feature-tree badge + pin toggle (real Flutter, `flutter analyze` 0 issues, `flutter test` 1453 passed/0 failed). Coordinator review found the coarse-tier fetch firing on every one of ~38 `_refreshMesh()` call sites instead of just Part re-open — fixed in a clean fix-up (verified: real Flutter re-run + a real backend suite re-run to confirm the client-only fix didn't touch backend state). Merged 2026-08-27. |
 | **Phase 1 (all 5 chunks) — complete** | — | PRs [#173](https://github.com/DIDSA-UK/DIDSA-CAD/pull/173) [#174](https://github.com/DIDSA-UK/DIDSA-CAD/pull/174) [#175](https://github.com/DIDSA-UK/DIDSA-CAD/pull/175) | The full v1 LOD experience (per `01-design.md`) is on `main`: coarse placeholders for Gear/BevelGear/BevelPair/GearChain/PlanetaryGear/Pattern/Loft, served on Part re-open and (for Pattern/Loft) at create-time, with a Feature-tree badge and persistent pin-to-coarse toggle. Every merged chunk went through at least one real coordinator code-review round; three found and fixed real issues before merge (a lockout regression, three validation gaps, and a refresh-scope design deviation) — none were hypothetical, all were confirmed via a concrete failure scenario before dispatching a fix-up. |
 | Phase 2 design pass | **approved** 2026-09-01, see `02-phase2-design.md` | — | Cancellation + reconnect for `BevelPairFeature`/`PlanetaryGearFeature`'s genuine long-tail builds — no general async infra, everything else keeps its synchronous contract. Re-checked against `main` before dispatch: nothing since Phase 1 touches the relevant files. |
-| Phase 2 chunks 1+2 (`planetary_gear.py` pooling + job store/job-mode endpoint for `BevelPairFeature`) | user starting manually | branch `claude/lod-phase2-planetary-and-bevel-jobs` (base: `main`) | Both coordinator-dispatched attempts (`session_01PDptGJHTxfjN3tQT6BCkMD`, `session_01WncWBfKiheRrgzd659yAKP`) errored out — archived, not investigated per the user's own instruction. Folded into one prompt/branch (confirmed independent — chunk 2 only needs `bevel_pair.py`'s existing pooling, not chunk 1's new planetary pooling — and both are backend Python/OCCT work, no double-toolchain risk the way Phase 1's chunk-3/4/5 fold had). Prompt handed to the user as a file 2026-09-01; they're starting it directly. |
-| Phase 2 chunk 3 (extend job-mode to `PlanetaryGearFeature`) | prompt handed to user | branch `claude/lod-phase2-planetary-jobs` (base: `main`, once chunks 1+2 merge) | Depends on chunks 1+2 merging first (planetary pooling + the job-mode pattern it establishes) — prompt says so explicitly and instructs the session to confirm before starting rather than guess at an unmerged API. |
-| Phase 2 chunk 4 (client: job-mode create/poll/cancel, resume-on-reconnect) | prompt handed to user | branch `claude/lod-phase2-client-jobs` (base: `main`, once chunks 1+2 merge, chunk 3 optional) | Depends on chunks 1+2 merging at minimum (for the `BevelPairFeature` endpoint shape); can proceed with just that Feature type if chunk 3 isn't ready yet and extend to `PlanetaryGearFeature` as a small follow-up. Reuses Phase 1's already-merged coarse-preview endpoints/mesh-override mechanism for the placeholder shown while polling. |
+| Phase 2 chunks 1+2 (`planetary_gear.py` pooling + job store/job-mode endpoint for `BevelPairFeature`) | **merged to `main`, CI red — fix-up in progress** | branch `claude/lod-phase2-planetary-and-bevel-jobs`, [PR #179](https://github.com/DIDSA-UK/DIDSA-CAD/pull/179) | Two coordinator-dispatched attempts errored out (archived, not investigated per the user's instruction); folded into one prompt (confirmed independent, same toolchain, no double-bootstrap risk); user started it manually and merged directly. `ProcessPoolExecutor` pooling added to `planetary_gear.py`; new in-memory job store + real mid-build cancellation + 3 new routes for `BevelPairFeature`. Implementing session's own real-OCCT run: 1919→1933, "zero regressions" claimed — **but the ARM64 leg of `main`'s own post-merge CI is red** (run [33504260119](https://github.com/DIDSA-UK/DIDSA-CAD/actions/runs/33504260119/job/99844455696): `1 failed, 1932 passed`), a genuine race the x86_64-only sandbox verification didn't catch. Diagnosed directly (see below) and a fix-up dispatched. |
+| Phase 2 chunk 3 (extend job-mode to `PlanetaryGearFeature`) | prompt handed to user | branch `claude/lod-phase2-planetary-jobs` (base: `main`, once chunks 1+2's CI is green) | Depends on chunks 1+2 — now merged, but should wait for the cancel-vs-fail race fix-up to land first, since chunk 3 extends the exact classification logic that's currently broken. |
+| Phase 2 chunk 4 (client: job-mode create/poll/cancel, resume-on-reconnect) | prompt handed to user | branch `claude/lod-phase2-client-jobs` (base: `main`, once chunks 1+2's CI is green) | Same caution as chunk 3 — the `BevelPairFeature` job endpoint it wires against currently misreports cancellation as failure on a real (if racy) path; wait for the fix-up. |
 
 ---
 
@@ -269,7 +269,7 @@ fallback is `GET /features`, which — absent chunk 1's fix — re-runs the enti
 answer that question), and (b) genuine mid-build cancellation, a real gap with no existing
 analogue. Full design: `02-phase2-design.md`.
 
-**Not yet approved — no Phase 2 implementation dispatched.**
+**Approved — chunks 1+2 dispatched and implemented, see "Dispatched implementation sessions" below.**
 
 ---
 
@@ -283,6 +283,43 @@ exists. No other open, user-must-decide product question was found.
 ---
 
 ## Dispatched implementation sessions
+
+### Coordinator finding — `main`'s post-PR#179 CI is red (ARM64), real bug not flakiness
+
+PR #179 (Phase 2 chunks 1+2) was merged directly by the user, outside this coordinator's usual
+pre-merge review. Checked `main`'s own CI after the fact (something not previously available —
+first time this coordination effort has had real GitHub Actions signal, versus this session's
+own sandbox lacking `pythonocc-core`): the `Backend - build and test` workflow's ARM64 matrix
+leg failed on the merge commit (`6d729fd`, run
+[33504260119](https://github.com/DIDSA-UK/DIDSA-CAD/actions/runs/33504260119/job/99844455696)),
+`1 failed, 1932 passed`. The x86_64 leg was cancelled as a side effect (not an independent
+pass), so this specific race is unconfirmed there — but nothing about its cause is ARM-specific.
+
+**The failing test**: `test_bevel_pair_jobs.py::test_cancel_during_an_active_phase_search_pool_
+kills_workers_and_never_persists` — cancels a genuinely in-flight job and expects
+`JobStatus.CANCELLED`, got `JobStatus.FAILED` with `error: [Errno 9] Bad file descriptor`.
+
+**Root cause, diagnosed by reading `job_cancellation.py` directly**: `CancellationToken.track()`
+only converts an exception to `JobCancelled` (→ `CANCELLED`) if it surfaces *inside* its own
+`with track(executor):` scope. But `cancel()`'s `_kill_pool_workers()` already calls
+`executor.shutdown(wait=True, cancel_futures=True)` from the cancelling thread, and the build
+thread's own *outer* `with ProcessPoolExecutor(...) as executor:` block will *also* call
+`.shutdown()` on its exit once `JobCancelled` propagates out of `track()`'s narrower scope. Two
+threads tearing down the same pool's IPC file descriptors concurrently is exactly the shape
+that produces a raw `OSError: Bad file descriptor` — and if it surfaces during the *outer*
+context manager's own exit (after `track()`'s `except` window has already closed), it
+propagates uncaught as a genuine "unexpected failure" instead of being recognized as an
+expected side effect of cancellation. A real, reproducible race in the classification logic,
+not test flakiness or an environmental fluke — confirmed via the actual pytest traceback, not
+assumed.
+
+Fix-up dispatched (`session_0125TpzU45UYuE2kL94JTaeb`, branch
+`claude/lod-phase2-cancel-race-fix`): the fix should be architectural — `jobs.py`'s job-runner
+should check `cancellation.is_cancelled()` as the authoritative FAILED-vs-CANCELLED signal,
+not rely solely on catching `JobCancelled` from one narrow scope, so any exception flavor
+surfacing after a cancel request classifies correctly regardless of which layer/thread produces
+it. Chunks 3/4 (both build directly on this classification logic) should wait for this fix-up
+to land before starting.
 
 ### Phase 1 chunk 1 — body_cache GET-list fix (branch `claude/new-session-yihda3`)
 
@@ -467,3 +504,74 @@ spending a third fix-up round on a bounded edge case.
   initial-load call site only, and passed the missing `hiddenFeatureIds`/
   `rollbackExcludedFeatureIds`/`meshQuality` filters through to the coarse-tier fetches. See
   `docs/status.md`'s follow-up paragraph on the same 2026-08-27 entry above for detail.
+
+---
+
+### Phase 2 chunks 1+2 — planetary pooling + `BevelPairFeature` job mode (branch `claude/lod-phase2-planetary-and-bevel-jobs`)
+
+- **Branch**: `claude/lod-phase2-planetary-and-bevel-jobs`, based on `main` post-Phase-1 (PR #178,
+  the latest merged `main` at dispatch time). **PR open**: [PR #179](https://github.com/DIDSA-UK/DIDSA-CAD/pull/179).
+  Folds `02-phase2-design.md` §6 chunks 1 and 2 into one session — independent pieces (chunk 2 only
+  needs `bevel_pair.py`'s *existing* pooling, not this session's new planetary pooling), both
+  backend Python/OCCT work.
+- **Scope — Part A (chunk 1)**: `ProcessPoolExecutor` pooling for `PlanetaryGearFeature`
+  (`00-status.md` Finding 2's own flagged perf gap — "the fix `bevel_pair.py` applied for its
+  2-member case, never applied here"), mirroring `bevel_pair.py`'s own `spawn`-context/BREP-bytes
+  pattern exactly. Promoted `bevel_pair.py`'s previously-private BREP-bytes serialization helpers
+  to a new shared `app.document.occt_process_utils` module (a pure refactor — `bevel_pair.py`'s own
+  extensive test suite, which imports those names directly, needed zero changes since it re-exports
+  them under their original names). Also the hard prerequisite chunk 3 (a future session) needs
+  before `PlanetaryGearFeature` can be safely cancellable at all — killing a worker OS *process* is
+  safe, killing a thread mid-C++-call into OCCT is not (`02-phase2-design.md` §3).
+- **Scope — Part B (chunk 2, the primary Phase 2 deliverable)**: a new in-memory job store
+  (`app.document.jobs`) and real mid-build cancellation (`app.document.job_cancellation`,
+  reaching into a `ProcessPoolExecutor`'s own worker process handles and terminating them directly
+  — `Future.cancel()` only ever cancels *queued* work), scoped only to `BevelPairFeature`. Three
+  new routes: `POST /parts/{id}/bevel-pair-features/jobs` (202, returns `{job_id, status:
+  "running"}` immediately — the real build runs in a dedicated background thread, not FastAPI's
+  own request threadpool), `GET /parts/{id}/jobs/{job_id}` (polls; on success embeds the *exact
+  same* `BevelPairFeatureResponse` the synchronous endpoint returns), `POST
+  /parts/{id}/jobs/{job_id}/cancel`. One job running at a time per server process (a second
+  concurrent create gets a `409`, chosen over queueing). `bevel_pair.py`'s own resolvers gained an
+  optional `cancellation` parameter, `None` by default — a pure no-op for every synchronous caller,
+  zero change to any other Feature type's existing contract. Phase 1's coarse-preview endpoint for
+  `BevelPairFeature` is completely untouched, ready for a future client session to poll job-mode
+  behind it.
+- **Real invariant confirmed, not just claimed**: a cancelled job's Feature is never added to the
+  Part — the job runner does a final `is_cancelled()` check immediately before `part.add_feature`,
+  closing the race where a build finishes cleanly a hair after `cancel()` fires.
+- **Verification, real throughout**: bootstrapped a real `pythonocc-core=7.9.3` conda-forge env
+  (Miniconda + `conda env create -f backend/environment.yml`, `repo.anaconda.com` route —
+  `micro.mamba.pm` blocked by this sandbox's own egress, same fallback prior sessions used; needed
+  a one-time `conda tos accept` for the `pkgs/main`/`pkgs/r`/`pkgs/msys2` channels this session
+  hit that earlier entries didn't). Real baseline: **1919 passed** (955.79s). Part A: the two
+  pre-existing suites this session's changes touch (`test_planetary_gear_feature.py`,
+  `test_bevel_pair_feature.py`) re-run in full, unmodified — **56/56 passed**, confirming the
+  shared-module refactor and new pooling left both existing code paths byte-for-byte unaffected.
+  New `test_planetary_gear_pooling.py` (5 tests: pool-construction counting, worker-count sizing,
+  worker-exception propagation via a fake executor — a real forced-spawn-worker-failure test isn't
+  practical, same limitation `test_bevel_pair_feature.py` already documents — and a same-result-
+  as-a-direct-serial-build check via real tessellated bounding boxes). Real wall-clock before/after,
+  disclosed honestly rather than cherry-picked: at the test suite's own default scale, pooling is
+  actually a net *loss* in this sandbox (`spawn`'s own per-worker startup cost dominates when each
+  member build is cheap) — a genuinely heavy configuration crosses over to a clear ~23% win. Part
+  B: new `test_bevel_pair_jobs.py` (9 tests, real HTTP) — job-mode create returns in well under 1s
+  (not waiting for the build); job-mode create matches a synchronous create of the identical
+  payload field-for-field; **real cancellation** against the exact tooth-count-symmetric spiral
+  config `test_bevel_pair_feature.py`'s own equivalent test confirms is real-search-worthy — polls
+  until a live pool with real worker PIDs is confirmed active (not assumed), cancels mid-flight,
+  confirms those exact PIDs are actually dead afterward, the job settles on `cancelled`, and the
+  Feature was never persisted; exception-path parity (an invalid pair 422s identically via both
+  paths); the `409` concurrency policy; `404`s for unknown jobs. Full suite after both parts:
+  **1933 passed, 0 failed** (1047.93s, `pytest-xdist` 4 cores) — 1919 + 5 + 9, zero regressions.
+- **Not done this session** (explicitly out of scope, unblocked for future sessions):
+  - Chunk 3 (extending job-mode to `PlanetaryGearFeature`) — depends on this session's Part A
+    pooling landing, now unblocked.
+  - Chunk 4 (client/Flutter job-mode wiring — fire, poll, cancel affordance, resume-on-reconnect)
+    — depends on this session's endpoint shapes existing, now landed; can build against
+    `POST .../bevel-pair-features/jobs` / `GET .../jobs/{id}` / `POST .../jobs/{id}/cancel` exactly
+    as specified above.
+  - Any change to any other Feature type's existing synchronous contract.
+  - UI concurrency or fine-grained progress reporting (explicitly out of scope per the approved
+    design, `02-phase2-design.md` §7).
+- Full detail: `docs/status.md`'s 2026-09-01 "LOD Phase 2 chunks 1+2" entry.
