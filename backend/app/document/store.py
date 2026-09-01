@@ -4,7 +4,7 @@ from collections import OrderedDict
 from fastapi import HTTPException
 
 from app.document import body_cache
-from app.document.extrude import clear_feature_warnings_cache
+from app.document.extrude import clear_feature_edge_provenance_cache, clear_feature_warnings_cache
 from app.document.models import Document, Part, SketchFeature
 from app.session_context import get_current_session_id
 
@@ -68,7 +68,13 @@ def replace_document(document: Document) -> None:
     a plain `GET /features` re-read now reads from instead of recomputing
     live (see that module's own `_feature_warnings_cache` docstring) - for
     the identical stale-uuid4-reuse reason, kept in sync with `body_cache`
-    by being cleared at this exact same call site."""
+    by being cleared at this exact same call site.
+
+    Workstream 12 (docs/ai-modelling/12-provenance-edge-selectors.md): also
+    clears `clear_feature_edge_provenance_cache` - the sibling per-Feature
+    edge-provenance cache `app.document.ai_plan_edges`'s new selectors read
+    from, same shape and same stale-uuid4-reuse reason as the warnings
+    cache above."""
     session_id = get_current_session_id()
     with _lock:
         _documents[session_id] = document
@@ -76,6 +82,7 @@ def replace_document(document: Document) -> None:
         _evict_oldest_locked()
     body_cache.clear()
     clear_feature_warnings_cache()
+    clear_feature_edge_provenance_cache()
 
 
 def _evict_oldest_locked() -> None:

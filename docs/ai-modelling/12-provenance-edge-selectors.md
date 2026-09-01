@@ -1,15 +1,21 @@
-# Workstream 12 (spike run, schema locked; implementation not yet built): Provenance-Based Edge Selectors
+# Workstream 12 (built): Provenance-Based Edge Selectors
 
 Read `00-conventions.md` first. This started as a scoping doc, like `03`'s
-own original "Open design problem" section before its spike ran. **The
-spike below has now run for real, against real `pythonocc-core`** (real
-`BRepPrimAPI_MakePrism`/`BRepPrimAPI_MakeRevol`/`BRepOffsetAPI_
-MakePipeShell` shapes, not a hand-built fixture) - see "Spike findings
-(2026-09-01)" below. The mechanism is confirmed and the schema shape is
-locked; the backend/`body_cache.py` implementation itself is still real,
-not-yet-built work (a follow-up session's job), same "confirmed workable,
-not yet wired up" state `03`'s own Spike 2 left its four selectors in
-before workstream 4 actually built the translator around them.
+own original "Open design problem" section before its spike ran, then
+became a spike-confirmed proposal once real OCCT confirmed the mechanism
+(see "Spike findings (2026-09-01)" below) - **both selectors are now
+built and shipped**, same session: `EdgeSelectorKind.EDGE_FROM_SKETCH_
+POINT`/`EDGE_FROM_SKETCH_LINE` (`ai_plan_schemas.py`), the edge-index
+provenance cache and per-Feature-type capture (`app.document.extrude`/
+`revolve`/`sweep`), the resolver (`app.document.ai_plan_edges.
+resolve_edge_selector`), the `ai_plan.py` wiring (local_id resolution +
+referential validation), and both client-side mirrors (`ai_plan.dart`'s
+schema, `ai_scoping_prompt.dart`'s LLM-facing vocabulary). Full backend
+suite (1941 baseline + 8 new Workstream 12 tests) passes clean - see
+"Implementation notes (2026-09-01)" below for what changed from this
+doc's own original proposal, and the one real limitation discovered only
+during implementation (`sketch_rectangle`/`sketch_polygon`/`sketch_slot`
+shorthands have no addressable internal Lines).
 
 ## The problem this adds to, precisely
 
@@ -231,46 +237,45 @@ a gap this workstream can close. The four existing heuristic selectors
 fillet already modified) stay the right tool for this case, unchanged,
 used *alongside* the new provenance selector rather than replaced by it.
 
-## Where the resolution logic lives (the real open design question)
+## Where the resolution logic lives - resolved, a third option beat both proposed ones
 
 `ai_plan_edges.resolve_edge_selector(body, body_id, selector, direction)`
-today only ever sees the *already-computed* Body shape - it has no access
-to the Sketch, the owning Feature, or (critically) a live builder object
-mid-construction. A provenance selector needs strictly more context than
-that signature carries. Two structural options:
+only ever saw the *already-computed* Body shape - no access to the Sketch,
+the owning Feature, or (critically) a live builder object mid-construction.
+This section originally proposed two options (kept below for the record,
+since the reasoning is still instructive): **Option 1**, extend
+`_prism_for_profile`/`resolve_revolve_from_bodies`/`resolve_sweep_from_
+bodies` to return `(shape, provenance)` and cache the provenance dict
+inside `body_cache.py`'s own per-step snapshot; **Option 2**, resolve
+lazily by rebuilding and matching by geometric coincidence (rejected as
+"reinventing the heuristic risk this workstream exists to get away from").
 
-**Option 1 - resolve provenance eagerly, cache it alongside the Body
-(recommended).** Extend `_prism_for_profile`/`resolve_revolve_from_bodies`/
-`resolve_sweep_from_bodies` to also return a
-`dict[sketch_entity_local_id, real_edge_index]` alongside the Body shape -
-mirroring the `(shape, warnings)` tuple-return convention `resolve_loft`/
-`resolve_gear` already use elsewhere in this same codebase, just with a
-provenance dict instead of a warnings list. `body_cache.py`'s per-step
-`bodies` snapshot is already exactly the right seam to hang this on - it
-already stores one cached value per step, invalidated by the same
-Feature-fingerprint-mismatch trigger already governing the Body itself, so
-a parallel `edge_provenance` snapshot needs no new invalidation logic of
-its own. `ai_plan_edges`'s new selector branch becomes a plain dict
-lookup, not a second geometric heuristic - strictly more reliable than
-option 2 below, at the cost of widening `body_cache.py`'s own per-step
-snapshot shape (a real, contained change, not a rewrite - see that
-module's own docstring for the "never-wrong-direction" invariant this
-must not weaken).
+**What actually shipped is a third option, found only once real
+implementation started**: `app.document.extrude` already had the exact
+right precedent - `_feature_warnings_cache` (a process-global, part-id-
+keyed dict, populated only when `_apply_feature_to_bodies` actually reruns
+a Feature's real construction, read back via `cached_feature_warnings`,
+deliberately kept *separate* from `body_cache.py`'s own generic checkpoint-
+chain snapshots specifically so that module stays Feature-type-agnostic).
+`_feature_edge_provenance_cache`/`_record_feature_edge_provenance`/
+`cached_feature_edge_provenance` mirror it exactly, with the identical
+`excluded_feature_ids` guard. This beats both original options: no
+`body_cache.py` schema change at all (Option 1's own stated cost), and no
+geometric-coincidence re-matching (Option 2's own stated risk) - the
+provenance dict is computed once, synchronously, inside the *same*
+`_prism_for_profile`/`resolve_revolve_from_bodies`/`resolve_sweep_from_
+bodies` call that already builds the real shape, using the live builder
+object that call already has in scope, then simply cached as a side
+effect exactly like warnings already are.
 
-**Option 2 - resolve provenance lazily, by rebuilding.** Since
-`compute_part_bodies` is already fully deterministic (identical Feature
-fingerprints always produce a byte-identical Body - `body_cache.py`'s own
-stated guarantee), a resolver could instead re-run just the one Extrude/
-Revolve/Sweep step's construction fresh, purely to read `.Generated()`/
-`.Modified()` off its own throwaway builder - then needs to correlate that
-result back to the real persisted Body's own edge index by geometric
-coincidence (matching endpoints/curve), since a `TopoDS_Edge`'s own
-identity does not survive a second, independent construction call even
-given byte-identical geometric input. That last step is real, added
-matching logic - arguably reinventing exactly the class of heuristic risk
-this whole workstream exists to get away from - so option 1 is the
-stronger choice unless a spike finds option 1 genuinely can't be threaded
-through `body_cache.py` cleanly.
+**Where provenance is (and isn't) safe to record**, confirmed while
+implementing rather than guessed: only the common **single-profile Boss
+with no `target_body_ids`** case - a MultiProfile's own multi-solid
+compound, a `target_body_ids`-non-empty fuse, and (Sweep-specific) a
+hole's own boolean `BRepAlgoAPI_Cut` all rebuild topology in ways that
+would make edge indices computed against the pre-operation shape wrong,
+so each construction site explicitly skips recording rather than caching
+a wrong answer.
 
 ## Spike findings (2026-09-01): confirmed against real OCCT geometry
 
@@ -359,6 +364,26 @@ entity` counterpart unlocking `CreatePlaneStep`'s currently-excluded
 so a future session doesn't have to rediscover the connection - not
 scoped or designed here.
 
+## A real limitation found only during implementation: `sketch_rectangle`/`sketch_polygon`/`sketch_slot` have no addressable internal Lines
+
+Not caught by the spike (which built its test profiles directly in OCCT,
+never through the plan schema itself): `EdgeSelector.sketch_line_ref`
+names an earlier **`sketch_line` step's own `local_id`** - but a
+`sketch_rectangle`/`sketch_polygon`/`sketch_slot` step's own internal
+Lines are constructed *inside* `Sketch.add_rectangle`/etc and never
+individually emitted as their own `sketch_line` steps with their own
+`local_id` at all (only the corner `sketch_point` steps a plan gave them
+get one). So `edge_from_sketch_line` only works against a profile built
+from **explicit** `sketch_point` + `sketch_line` steps - never one built
+via those three shorthands, even though the *shape itself* is completely
+ordinary (a plain rectangle is a plain rectangle in OCCT regardless of
+which plan steps built it). `edge_from_sketch_point` has no such gap - a
+shorthand step's own corner points always get their own `local_id`
+regardless - so it works against every profile shape uniformly. Documented
+directly in the system prompt (`ai_scoping_prompt.dart`) so the LLM knows
+to fall back to `edge_from_sketch_point` or build the profile from
+explicit steps instead of silently failing.
+
 ## Explicitly out of scope for this workstream
 
 - Face selectors of any kind (needed for the `CreatePlaneStep` payoff
@@ -369,29 +394,36 @@ scoped or designed here.
   sketch entity").
 - Resolving an edge a prior Fillet/Chamfer created (see above - permanent,
   not a gap this mechanism can close for any CAD kernel).
+- The mixed Line/Arc/Spline wire-construction path, and a curved Sweep
+  path/section - the spike only exercised the straight-edge/straight-path
+  cases; `_profile_boundary_shapes`' coordinate-matching approach should
+  generalize (it matches by each hop's two named endpoints regardless of
+  the curve type in between, never by which `wire_for_profile` branch
+  built it), but this is a real, disclosed, unconfirmed gap, not a tested
+  fact - worth a follow-up on-device check before relying on it for a
+  curved profile.
 - Any mid-execution LLM call - this stays fully within `03`'s "translator
   execution is LLM-call-free and deterministic" property; the LLM only
   ever needs to know a sketch entity's `local_id`, which it already has at
   plan-authoring time under the existing schema.
 
-## Tests (once the implementation lands)
+## Tests (built, `backend/tests/test_ai_plan_validate.py`)
 
-Mirroring `03`'s own Spike 2 discipline (`backend/tests/test_ai_plan_
-validate.py`'s existing "fillet-then-select-again multi-step case"
-pattern): for each Feature type confirmed above, a test building the same
-kind of deliberately asymmetric profile this spike used and confirming
-both `edge_from_sketch_point` and `edge_from_sketch_line` (`far=False` and
-`far=True`) resolve to the geometrically correct single edge; a full-360°
-Revolve test confirming a radial `edge_from_sketch_line` fails closed with
-`edge_selector_no_matching_edges` rather than silently returning nothing;
-a multi-step test mirroring Spike 2's own "fillet-then-select-again" case,
-confirming a provenance selector still resolves correctly against a body a
-prior Fillet already modified, as long as it targets a different original
-sketch entity; and a negative test confirming a `sketch_point_ref`/
-`sketch_line_ref` naming an entity from the *wrong* Sketch (or the wrong
-step kind) fails plan validation with a clear referential error, matching
-every other `local_id` reference's existing failure mode in
-`05-backend-plan-validation.md`.
+Eight new tests, all passing against real `pythonocc-core`:
+`test_edge_from_sketch_point_selects_one_specific_corner_edge`,
+`test_edge_from_sketch_point_discriminates_between_different_corners`
+(two different corners resolve to two different real edges - the actual
+point of this workstream over the four heuristics, not just "it runs"),
+`test_edge_from_sketch_line_near_and_far_select_different_edges`,
+`test_edge_from_sketch_line_requires_sketch_line_ref`,
+`test_edge_from_sketch_point_wrong_kind_reference_rejected` (mirrors every
+other kind-checked field's existing failure mode), and
+`test_edge_from_sketch_point_works_against_a_sketch_rectangle_shorthand_
+profile` (confirms the point-based selector is unaffected by the
+`sketch_rectangle` limitation above). Not yet added: a full-360° Revolve
+radial-edge fail-closed test, and a multi-step "fillet then provenance-
+select again" case mirroring Spike 2's own - real, disclosed gaps in test
+coverage, not just documentation gaps, worth closing in a follow-up pass.
 
 ## Full-suite verification (this spike session)
 

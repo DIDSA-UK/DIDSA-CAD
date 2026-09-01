@@ -365,6 +365,197 @@ def test_edge_selectors_vertical_and_face_at_position() -> None:
     assert results["c2"]["ok"] is True
 
 
+def _quad_sketch_steps(sketch_local_id: str = "sk1") -> list[dict]:
+    """sk1 -> p1..p4 -> l1..l4: the same 60x40 axis-aligned rectangle
+    `_rectangle_sketch_steps` builds, but via explicit sketch_line steps
+    instead of the sketch_rectangle shorthand - needed for
+    edge_from_sketch_line tests specifically, since a sketch_rectangle
+    step's own internal Lines never get their own plan-local_id (only the
+    corner sketch_point steps do) - see Workstream 12's own disclosed
+    "only works with an explicit sketch_line step" limitation
+    (docs/ai-modelling/12-provenance-edge-selectors.md)."""
+    return [
+        {"local_id": sketch_local_id, "kind": "sketch", "plane": "XY"},
+        {"local_id": "p1", "kind": "sketch_point", "sketch_feature_id": sketch_local_id, "x": 0, "y": 0},
+        {"local_id": "p2", "kind": "sketch_point", "sketch_feature_id": sketch_local_id, "x": 60, "y": 0},
+        {"local_id": "p3", "kind": "sketch_point", "sketch_feature_id": sketch_local_id, "x": 60, "y": 40},
+        {"local_id": "p4", "kind": "sketch_point", "sketch_feature_id": sketch_local_id, "x": 0, "y": 40},
+        {"local_id": "l1", "kind": "sketch_line", "sketch_feature_id": sketch_local_id, "start_point_id": "p1", "end_point_id": "p2"},
+        {"local_id": "l2", "kind": "sketch_line", "sketch_feature_id": sketch_local_id, "start_point_id": "p2", "end_point_id": "p3"},
+        {"local_id": "l3", "kind": "sketch_line", "sketch_feature_id": sketch_local_id, "start_point_id": "p3", "end_point_id": "p4"},
+        {"local_id": "l4", "kind": "sketch_line", "sketch_feature_id": sketch_local_id, "start_point_id": "p4", "end_point_id": "p1"},
+    ]
+
+
+def _extrude_step(local_id: str = "f1", sketch_feature_id: str = "sk1") -> dict:
+    return {
+        "local_id": local_id,
+        "kind": "extrude",
+        "sketch_feature_id": sketch_feature_id,
+        "extrude_type": "boss",
+        "start_distance": 0,
+        "end_distance": 10,
+    }
+
+
+def test_edge_from_sketch_point_selects_one_specific_corner_edge() -> None:
+    """Workstream 12 (docs/ai-modelling/12-provenance-edge-selectors.md):
+    the safe, primary provenance selector - a corner's own sketch_point
+    local_id names exactly the one vertical edge generated there."""
+    part = _create_part()
+    steps = _rectangle_sketch_steps() + [
+        _extrude_step(),
+        {
+            "local_id": "c1",
+            "kind": "fillet",
+            "edges": {"selector": "edge_from_sketch_point", "of": "f1", "sketch_point_ref": "p1"},
+            "radius": 1,
+        },
+    ]
+
+    response = _validate(part["id"], steps)
+    results = _results_by_local_id(response)
+
+    assert results["c1"]["ok"] is True, results["c1"]
+    resolved_edges = results["c1"]["resolved_edges"]
+    assert len(resolved_edges) == 1
+    assert resolved_edges[0]["body_id"] == "f1"
+    assert resolved_edges[0]["shape_type"] == "edge"
+
+
+def test_edge_from_sketch_point_discriminates_between_different_corners() -> None:
+    """The real point of Workstream 12 over the four heuristics: two
+    different corners must resolve to two different real edges, not the
+    same fixed answer regardless of which sketch_point_ref was named."""
+    part = _create_part()
+    steps = _rectangle_sketch_steps() + [
+        _extrude_step(),
+        {
+            "local_id": "c1",
+            "kind": "fillet",
+            "edges": {"selector": "edge_from_sketch_point", "of": "f1", "sketch_point_ref": "p1"},
+            "radius": 1,
+        },
+        {
+            "local_id": "c2",
+            "kind": "fillet",
+            "edges": {"selector": "edge_from_sketch_point", "of": "f1", "sketch_point_ref": "p3"},
+            "radius": 1,
+        },
+    ]
+
+    response = _validate(part["id"], steps)
+    results = _results_by_local_id(response)
+
+    assert results["c1"]["ok"] is True, results["c1"]
+    assert results["c2"]["ok"] is True, results["c2"]
+    index1 = results["c1"]["resolved_edges"][0]["index"]
+    index2 = results["c2"]["resolved_edges"][0]["index"]
+    assert index1 != index2
+
+
+def test_edge_from_sketch_line_near_and_far_select_different_edges() -> None:
+    """Workstream 12's more powerful selector - far=False (the edge as
+    originally drawn, on the base face) and far=True (its generated
+    counterpart on the extruded end) for the *same* sketch_line_ref must
+    resolve to two different real edges."""
+    part = _create_part()
+    steps = _quad_sketch_steps() + [
+        _extrude_step(),
+        {
+            "local_id": "c1",
+            "kind": "fillet",
+            "edges": {"selector": "edge_from_sketch_line", "of": "f1", "sketch_line_ref": "l1", "far": False},
+            "radius": 1,
+        },
+        {
+            "local_id": "c2",
+            "kind": "fillet",
+            "edges": {"selector": "edge_from_sketch_line", "of": "f1", "sketch_line_ref": "l1", "far": True},
+            "radius": 1,
+        },
+    ]
+
+    response = _validate(part["id"], steps)
+    results = _results_by_local_id(response)
+
+    assert results["c1"]["ok"] is True, results["c1"]
+    assert results["c2"]["ok"] is True, results["c2"]
+    near_index = results["c1"]["resolved_edges"][0]["index"]
+    far_index = results["c2"]["resolved_edges"][0]["index"]
+    assert near_index != far_index
+
+
+def test_edge_from_sketch_line_requires_sketch_line_ref() -> None:
+    part = _create_part()
+    steps = _quad_sketch_steps() + [
+        _extrude_step(),
+        {
+            "local_id": "c1",
+            "kind": "fillet",
+            "edges": {"selector": "edge_from_sketch_line", "of": "f1"},
+            "radius": 1,
+        },
+    ]
+
+    response = _validate(part["id"], steps)
+    results = _results_by_local_id(response)
+
+    assert results["c1"]["ok"] is False
+    assert results["c1"]["error"]["type"] == "invalid_step_payload"
+
+
+def test_edge_from_sketch_point_wrong_kind_reference_rejected() -> None:
+    """`sketch_point_ref` naming a sketch_line step (wrong kind, but a real
+    local_id) must be rejected the same structural way every other
+    kind-checked field in this schema already is - never an uncaught
+    AttributeError from reading a sketch_line's `_Resolved.point_id`
+    (always None for that kind)."""
+    part = _create_part()
+    steps = _quad_sketch_steps() + [
+        _extrude_step(),
+        {
+            "local_id": "c1",
+            "kind": "fillet",
+            "edges": {"selector": "edge_from_sketch_point", "of": "f1", "sketch_point_ref": "l1"},
+            "radius": 1,
+        },
+    ]
+
+    response = _validate(part["id"], steps)
+    results = _results_by_local_id(response)
+
+    assert results["c1"]["ok"] is False
+    assert results["c1"]["error"]["type"] == "wrong_kind_reference"
+
+
+def test_edge_from_sketch_point_works_against_a_sketch_rectangle_shorthand_profile() -> None:
+    """Real, disclosed limitation (docs/ai-modelling/12-provenance-edge-
+    selectors.md): a sketch_rectangle step's own internal Lines never get
+    their own plan-local_id, so there is no sketch_line_ref a plan could
+    even name for one of its sides - edge_from_sketch_line only works with
+    an explicit sketch_line step (see `_quad_sketch_steps`'s own doc
+    comment above). This confirms the *point*-based selector still works
+    fine against a sketch_rectangle profile instead (the corner points
+    always have their own local_id regardless of which shorthand built the
+    rectangle)."""
+    part = _create_part()
+    steps = _rectangle_sketch_steps() + [
+        _extrude_step(),
+        {
+            "local_id": "c1",
+            "kind": "fillet",
+            "edges": {"selector": "edge_from_sketch_point", "of": "f1", "sketch_point_ref": "p2"},
+            "radius": 1,
+        },
+    ]
+
+    response = _validate(part["id"], steps)
+    results = _results_by_local_id(response)
+
+    assert results["c1"]["ok"] is True, results["c1"]
+
+
 def test_circular_pattern_axis_accepts_sketch_line_ref() -> None:
     """Bug fix found while implementing workstream 4: `PatternAxisStep`
     used to also accept `fixed_axis` (copied from `PatternDirectionStep`'s

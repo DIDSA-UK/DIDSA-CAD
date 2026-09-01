@@ -11,7 +11,7 @@ import logging
 import math
 
 from fastapi import HTTPException
-from OCC.Core.BRep import BRep_Builder
+from OCC.Core.BRep import BRep_Builder, BRep_Tool
 from OCC.Core.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
 from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
 from OCC.Core.BRepBuilderAPI import (
@@ -28,7 +28,7 @@ from OCC.Core.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Elips, gp_Pnt, gp_Trsf, gp_V
 from OCC.Core.TColgp import TColgp_Array1OfPnt
 from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED, TopAbs_SOLID, TopAbs_VERTEX
 from OCC.Core.TopExp import TopExp_Explorer, topexp
-from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape, TopoDS_Vertex, TopoDS_Wire, topods
+from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Edge, TopoDS_Shape, TopoDS_Vertex, TopoDS_Wire, topods
 from OCC.Core.TopTools import TopTools_IndexedMapOfShape
 
 from app.document import body_cache
@@ -434,12 +434,241 @@ def face_for_profile(sketch: Sketch, profile: Profile, basis: ResolvedPlane):
     return face_maker.Face()
 
 
-def _prism_for_profile(sketch: Sketch, profile: Profile, feature: ExtrudeFeature, basis: ResolvedPlane):
+# Workstream 12 (docs/ai-modelling/12-provenance-edge-selectors.md): a
+# small, real-world-coordinate tolerance for matching a sketch Point's own
+# known world position (via `basis_point_to_world`) against a face's real
+# OCCT vertex/edge positions - loose enough to absorb ordinary floating-
+# point noise from OCCT's own construction/transform, tight enough to
+# never conflate two genuinely distinct profile points.
+_PROVENANCE_TOLERANCE = 1e-6
+
+
+def _profile_boundary_shapes(
+    sketch: Sketch, profile: Profile, basis: ResolvedPlane, face, transform: gp_Trsf | None = None
+) -> tuple[dict[str, TopoDS_Vertex], dict[str, TopoDS_Edge]]:
+    """Workstream 12: matches `face`'s own vertices/edges - re-explored
+    directly from `face` itself, never a separately-held wire reference
+    (`.Generated()`/`.Modified()` silently return nothing otherwise,
+    confirmed by that workstream's own spike) - back to the sketch Point/
+    Line ids that placed them, purely by real-world coordinate. `transform`,
+    if given, is applied to each sketch point's own world position before
+    matching (needed for Extrude, whose actual prism face is `face` moved
+    to `start_distance` first - see `_prism_for_profile`; Revolve/Sweep
+    pass None, since their own face/wire is used exactly as `face_for_
+    profile`/`wire_for_profile` built it, with no further transform).
+    `face` itself may be a Face, Wire, or any other `TopoDS_Shape` -
+    `TopExp_Explorer` doesn't care, and Sweep passes a bare Wire here (see
+    `resolve_sweep_from_bodies`).
+
+    A single Line/Arc/Spline hop's own edge is identified purely by its two
+    named endpoint coordinates (via `profile.point_ids[i]`/`point_ids[i+1]`
+    wrapping around - see `Profile`'s own docstring for this loop
+    convention), never by which `wire_for_profile` construction branch
+    built it - this is why one matching routine covers the polygon-fast-
+    path and the mixed Line/Arc/Spline path identically, with no need to
+    track per-branch construction details. A Spline's own interior
+    through-points never appear in `profile.point_ids` at all, so they're
+    simply never matched - only each hop's two connection endpoints are,
+    exactly the granularity a `sketch_point`/`sketch_line` plan step can
+    name anyway.
+
+    Empty for a single-entity profile (Circle/Ellipse/Text) - there is no
+    per-hop line/point to distinguish, and the AI-plan schema's
+    `sketch_line_ref`/`sketch_point_ref` can never name one of those entity
+    types' own sub-parts anyway (they only ever name a `sketch_point`/
+    `sketch_line` step)."""
+    if len(profile.line_ids) == 1 and isinstance(
+        sketch.entities.get(profile.line_ids[0]), (Circle, Ellipse, TextEntity)
+    ):
+        return {}, {}
+
+    def world_point(point_id: str) -> gp_Pnt:
+        point = sketch.points[point_id]
+        pnt = basis_point_to_world(basis, point.x, point.y)
+        return pnt.Transformed(transform) if transform is not None else pnt
+
+    point_ids = profile.point_ids
+    point_world = {point_id: world_point(point_id) for point_id in point_ids}
+
+    face_vertices: list[TopoDS_Vertex] = []
+    explorer = TopExp_Explorer(face, TopAbs_VERTEX)
+    while explorer.More():
+        face_vertices.append(topods.Vertex(explorer.Current()))
+        explorer.Next()
+
+    point_to_vertex: dict[str, TopoDS_Vertex] = {}
+    for point_id, target in point_world.items():
+        for vertex in face_vertices:
+            if BRep_Tool.Pnt(vertex).Distance(target) < _PROVENANCE_TOLERANCE:
+                point_to_vertex[point_id] = vertex
+                break
+
+    face_edges: list[TopoDS_Edge] = []
+    explorer = TopExp_Explorer(face, TopAbs_EDGE)
+    while explorer.More():
+        face_edges.append(topods.Edge(explorer.Current()))
+        explorer.Next()
+
+    def edge_endpoints(edge: TopoDS_Edge) -> tuple[gp_Pnt, gp_Pnt]:
+        v1, v2 = TopoDS_Vertex(), TopoDS_Vertex()
+        topexp.Vertices(edge, v1, v2)
+        return BRep_Tool.Pnt(v1), BRep_Tool.Pnt(v2)
+
+    line_to_edge: dict[str, TopoDS_Edge] = {}
+    count = len(point_ids)
+    for i, line_id in enumerate(profile.line_ids):
+        p1 = point_world[point_ids[i]]
+        p2 = point_world[point_ids[(i + 1) % count]]
+        for edge in face_edges:
+            e1, e2 = edge_endpoints(edge)
+            if (e1.Distance(p1) < _PROVENANCE_TOLERANCE and e2.Distance(p2) < _PROVENANCE_TOLERANCE) or (
+                e1.Distance(p2) < _PROVENANCE_TOLERANCE and e2.Distance(p1) < _PROVENANCE_TOLERANCE
+            ):
+                line_to_edge[line_id] = edge
+                break
+
+    return point_to_vertex, line_to_edge
+
+
+def _rounded_point(pnt: gp_Pnt) -> tuple[float, float, float]:
+    return (round(pnt.X(), 6), round(pnt.Y(), 6), round(pnt.Z(), 6))
+
+
+def _edge_vertex_key_set(edge: TopoDS_Edge) -> frozenset[tuple[float, float, float]]:
+    v1, v2 = TopoDS_Vertex(), TopoDS_Vertex()
+    topexp.Vertices(edge, v1, v2)
+    return frozenset({_rounded_point(BRep_Tool.Pnt(v1)), _rounded_point(BRep_Tool.Pnt(v2))})
+
+
+def _far_edge_in_lateral_face(lateral_face, queried_edge: TopoDS_Edge) -> TopoDS_Edge | None:
+    """Workstream 12: the one edge of `lateral_face` (a `.Generated(queried_
+    edge)` result - always 4 edges for a straight profile edge swept into a
+    lateral wall) that shares no vertex with `queried_edge` itself -
+    confirmed by that workstream's own spike as a purely topological (no
+    vector-direction math) way to pick the "far" counterpart, which
+    generalizes to Revolve's curved lateral faces too."""
+    queried_keys = _edge_vertex_key_set(queried_edge)
+    explorer = TopExp_Explorer(lateral_face, TopAbs_EDGE)
+    while explorer.More():
+        candidate = topods.Edge(explorer.Current())
+        if _edge_vertex_key_set(candidate).isdisjoint(queried_keys):
+            return candidate
+        explorer.Next()
+    return None
+
+
+def _edge_index(edge_map: TopTools_IndexedMapOfShape, edge: TopoDS_Edge) -> int | None:
+    """The 0-based index `app.document.ai_plan_edges`/`SubShapeRef` already
+    use, or `None` if `edge` isn't found in `edge_map` at all (defensive
+    only - shouldn't happen for an edge that came from the same shape
+    `edge_map` was built from)."""
+    index = edge_map.FindIndex(edge)
+    return (index - 1) if index > 0 else None
+
+
+def _edge_provenance_from_builder(
+    builder, point_to_vertex: dict[str, TopoDS_Vertex], line_to_edge: dict[str, TopoDS_Edge], final_shape: TopoDS_Shape
+) -> dict[str, dict[str, int]] | None:
+    """Workstream 12: `{"points": {...}, "lines_near": {...}, "lines_far":
+    {...}}`, each mapping a real sketch entity id to a 0-based real edge
+    index into `final_shape`'s own `topexp.MapShapes` scheme (the same one
+    `app.document.ai_plan_edges` already uses) - built by querying
+    `.Generated()`/`.Modified()` on `builder` (the exact live object that
+    just constructed `final_shape` - see this module's own spike findings,
+    `docs/ai-modelling/12-provenance-edge-selectors.md`, for why `.
+    Generated()` returns nothing for a shape not literally the one the
+    builder was given). Returns `None` if nothing at all resolved (every
+    point/line failed to match - not expected in practice, defensive
+    only)."""
+    edge_map = TopTools_IndexedMapOfShape()
+    topexp.MapShapes(final_shape, TopAbs_EDGE, edge_map)
+
+    points: dict[str, int] = {}
+    for point_id, vertex in point_to_vertex.items():
+        for generated in builder.Generated(vertex):
+            if generated.ShapeType() == TopAbs_EDGE:
+                index = _edge_index(edge_map, topods.Edge(generated))
+                if index is not None:
+                    points[point_id] = index
+            break
+
+    lines_near: dict[str, int] = {}
+    lines_far: dict[str, int] = {}
+    for line_id, edge in line_to_edge.items():
+        near_index = _edge_index(edge_map, edge)
+        if near_index is not None:
+            lines_near[line_id] = near_index
+        for generated in builder.Generated(edge):
+            if generated.ShapeType() == TopAbs_FACE:
+                far_edge = _far_edge_in_lateral_face(generated, edge)
+                if far_edge is not None:
+                    far_index = _edge_index(edge_map, far_edge)
+                    if far_index is not None:
+                        lines_far[line_id] = far_index
+            break
+
+    if not points and not lines_near and not lines_far:
+        return None
+    return {"points": points, "lines_near": lines_near, "lines_far": lines_far}
+
+
+# Workstream 12: a part-scoped cache of the real edge-index provenance an
+# ExtrudeFeature/RevolveFeature/SweepFeature's own construction produced
+# the last time `_solid_for_extrude_feature`/`resolve_revolve_from_bodies`/
+# `resolve_sweep_from_bodies` actually ran its step - read back by `app.
+# document.ai_plan_edges`'s `EDGE_FROM_SKETCH_POINT`/`EDGE_FROM_SKETCH_LINE`
+# selectors. Deliberately mirrors `_feature_warnings_cache` below exactly
+# (a separate dict, not an addition to `body_cache._CheckpointChain`'s own
+# snapshots) - see that cache's own docstring for the full "piggyback on
+# body_cache's invalidation for free" reasoning, which applies identically
+# here even though the two caches serve different consumers.
+_feature_edge_provenance_cache: dict[str, dict[str, dict[str, dict[str, int]]]] = {}
+
+
+def clear_feature_edge_provenance_cache() -> None:
+    """Mirrors `clear_feature_warnings_cache` exactly - called from the
+    same place (`app.document.store.replace_document`) for the same
+    reason."""
+    _feature_edge_provenance_cache.clear()
+
+
+def _record_feature_edge_provenance(
+    part: Part, feature_id: str, provenance: dict[str, dict[str, int]], excluded_feature_ids: frozenset[str]
+) -> None:
+    """Mirrors `_record_feature_warnings` exactly, including its own
+    `excluded_feature_ids` guard (see that function's own doc comment) - a
+    rollback preview's or a create/update entry point's own self-exclusion
+    validation must never overwrite this cache's "real current state"
+    entry."""
+    if excluded_feature_ids:
+        return
+    _feature_edge_provenance_cache.setdefault(part.id, {})[feature_id] = provenance
+
+
+def cached_feature_edge_provenance(part: Part, feature_id: str) -> dict[str, dict[str, int]] | None:
+    """The edge-index provenance most recently recorded for `feature_id`,
+    or `None` if never recorded - no matching profile shape, a
+    MultiProfile/fused/cut/`target_body_ids`-non-empty case (see each
+    construction site's own "only the common single-profile, no-target
+    case" comment), or this Feature's step genuinely hasn't run since the
+    last `clear_feature_edge_provenance_cache()`. Callers should call
+    `compute_part_bodies(part)` first, same as `cached_feature_warnings`
+    already documents."""
+    return _feature_edge_provenance_cache.get(part.id, {}).get(feature_id)
+
+
+def _prism_for_profile(
+    sketch: Sketch, profile: Profile, feature: ExtrudeFeature, basis: ResolvedPlane
+) -> tuple[TopoDS_Shape, dict[str, dict[str, int]] | None]:
     """One profile's face, moved to `feature.start_distance` along the
     Sketch plane's normal and swept the remaining span to
     `feature.end_distance` - the single-profile half of what used to be
     `_solid_for_extrude_feature` before C2 split it out so it can be
-    called once per sub-profile of a MultiProfile."""
+    called once per sub-profile of a MultiProfile. Also returns (Workstream
+    12) this one profile's own edge-index provenance, or `None` if nothing
+    resolved - the caller (`_solid_for_extrude_feature`) decides whether
+    it's actually safe to record (only the single-profile, no-target
+    case)."""
     normal = basis_normal(basis)
     direction = gp_Vec(normal.X(), normal.Y(), normal.Z())
 
@@ -453,7 +682,11 @@ def _prism_for_profile(sketch: Sketch, profile: Profile, feature: ExtrudeFeature
     moved_face = BRepBuilderAPI_Transform(face, start_transform, True).Shape()
 
     prism_vector = direction.Multiplied(feature.end_distance - feature.start_distance)
-    return BRepPrimAPI_MakePrism(moved_face, prism_vector).Shape()
+    prism = BRepPrimAPI_MakePrism(moved_face, prism_vector)
+    shape = prism.Shape()
+    point_to_vertex, line_to_edge = _profile_boundary_shapes(sketch, profile, basis, moved_face)
+    provenance = _edge_provenance_from_builder(prism, point_to_vertex, line_to_edge, shape)
+    return shape, provenance
 
 
 def invalid_profile_ref(ref: SketchEntityRef) -> HTTPException:
@@ -613,9 +846,24 @@ def _solid_for_extrude_feature(
     else:
         candidates = result.loops
     profiles = select_profiles(candidates, feature.profile_refs)
-    solids = [_prism_for_profile(sketch, profile, feature, basis) for profile in profiles]
+    prism_results = [_prism_for_profile(sketch, profile, feature, basis) for profile in profiles]
+    solids = [shape for shape, _provenance in prism_results]
 
     if len(solids) == 1:
+        # Workstream 12: only recorded for the common, unambiguous case - a
+        # single-profile Boss with no target. A non-empty target_body_ids
+        # fuses this raw prism into an existing Body (a real, separate
+        # boolean operation `_apply_boss_or_cut` performs afterward,
+        # outside this function's own return value) - that rebuilds
+        # topology in a way these edge indices, computed against the raw
+        # pre-fuse prism, would no longer match. A MultiProfile Boss (2+
+        # solids, the `else` branch below) is excluded for the same
+        # "indices computed against a shape that isn't the one actually
+        # registered" reason - the compound built below is a different
+        # shape from any one sub-profile's own raw prism.
+        provenance = prism_results[0][1]
+        if not feature.target_body_ids and provenance is not None:
+            _record_feature_edge_provenance(part, feature.id, provenance, excluded_feature_ids)
         return solids[0]
 
     builder = BRep_Builder()

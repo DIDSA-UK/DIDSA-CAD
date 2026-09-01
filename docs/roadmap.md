@@ -143,31 +143,32 @@ screens instead of freeform generation); reverse-engineering a photo of a
 real physical object (rather than a hand sketch/engineering drawing) stays
 a non-goal.
 
-**Fillet/Chamfer edge selection is deliberately coarse, and on-device
-testing (2026-09-01) confirms it's a real limitation, not just a v1
-placeholder.** `03-structured-plan-schema.md`'s locked scheme gives the
-LLM exactly four selectors (`top_face_edges`/`bottom_face_edges`/
-`vertical_edges`/`all_edges_of_face_at_position: <cardinal direction>`),
-resolved deterministically against real OCCT topology once a Body exists
-(`backend/app/document/ai_plan_edges.py`) - chosen over a mid-execution
-LLM call specifically to keep the translator LLM-call-free and
-deterministic. This works well for boxy, axis-aligned parts but has no way
-to express "just this one edge," "every edge except these two," an edge
-on a non-axis-aligned face, or an edge selection relative to a Sketch's
-own local plane rather than world X/Y/Z - real requests testing hit this
-ceiling. **Not a naming/id problem** - the four selectors are geometric
-heuristics resolved fresh from topology, not name lookups, so there's
-nothing today for a richer "the LLM asks for or is told real edge/face
-ids" scheme to attach to. **Scoped, not yet built**:
-`docs/ai-modelling/12-provenance-edge-selectors.md` proposes a new
-`edge_from_sketch_line` selector resolved via OCCT shape-history
-(`.Generated()`/`.Modified()` off the same builder that already
-constructs an Extrude/Revolve/Sweep Body), reusing an idiom already
-shipped in `app.document.gear`'s own root-fillet code rather than
-inventing a new naming/id system - names the exact real-OCCT spike that
-needs to run before any of it is built, and the same mechanism's
-disclosed follow-on payoff for `PatternDirectionStep`/`PatternAxisStep`'s
-own already-documented identical gap.
+**Fillet/Chamfer edge selection had a real gap - single-arbitrary-edge
+targeting - closed 2026-09-01 (`docs/ai-modelling/12-provenance-edge-
+selectors.md`, built).** `03-structured-plan-schema.md`'s original four
+selectors (`top_face_edges`/`bottom_face_edges`/`vertical_edges`/
+`all_edges_of_face_at_position: <cardinal direction>`) are geometric
+heuristics with no way to express "just this one edge" or "just this one
+corner" - real on-device testing hit this ceiling. Two new selectors,
+`edge_from_sketch_point`/`edge_from_sketch_line`, now resolve a specific
+single edge by sketch-entity lineage instead (OCCT shape-history via
+`.Generated()`/`.Modified()`, the same idiom `app.document.gear`'s own
+root-fillet code already used) - `edge_from_sketch_point` (a corner) works
+uniformly on Extrude/Revolve/Sweep with no known failure case;
+`edge_from_sketch_line` (a specific straight edge, near or far side) works
+the same way except a full-360° Revolve's own radially-oriented edges,
+which fail closed rather than guess. Real, disclosed remaining gaps: only
+a single-profile Boss with no `target_body_ids` (a fuse/cut/MultiProfile
+rebuilds topology in a way the cached indices wouldn't survive);
+`sketch_rectangle`/`sketch_polygon`/`sketch_slot` shorthands have no
+addressable internal Lines for `edge_from_sketch_line` to name (only their
+corner points, which `edge_from_sketch_point` already covers fine); the
+mixed Line/Arc/Spline wire path and curved Sweep paths are unconfirmed.
+Still real, not-yet-scoped follow-on payoff: the identical mechanism could
+unlock `PatternDirectionStep`/`PatternAxisStep`'s own already-documented
+"same problem" gap, and a `face_from_sketch_entity` counterpart could
+unlock `CreatePlaneStep`'s currently-excluded `OFFSET_FACE`/etc. plane
+types - neither designed or built here.
 
 ## Analysis tools
 

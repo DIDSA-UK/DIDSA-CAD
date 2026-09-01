@@ -40,8 +40,11 @@ from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Edge, TopoDS_Shape, TopoDS_W
 from app.document.create_plane import resolve_sketch_basis
 from app.document.extrude import (
     EXTRUDABLE_STATUSES,
-    arc_axis,
+    _edge_provenance_from_builder,
     _ellipse_axis,
+    _profile_boundary_shapes,
+    _record_feature_edge_provenance,
+    arc_axis,
     basis_point_to_world,
     compute_part_bodies,
     select_profiles,
@@ -124,12 +127,17 @@ def _sweep_failed() -> HTTPException:
     return HTTPException(status_code=422, detail={"type": "sweep_failed"})
 
 
-def _sweep_wire(path_wire: TopoDS_Wire, wire: TopoDS_Wire) -> TopoDS_Shape:
+def _sweep_wire(path_wire: TopoDS_Wire, wire: TopoDS_Wire) -> tuple[TopoDS_Shape, BRepOffsetAPI_MakePipeShell]:
     """Sweeps one closed `wire` (a Profile's outer boundary, or one of its
     holes - see `resolve_sweep_from_bodies`, which sweeps each of those
     independently and boolean-cuts the results together rather than
     handing `BRepOffsetAPI_MakePipeShell` a compound outer+hole section in
-    one call) along `path_wire`, producing a solid.
+    one call) along `path_wire`, producing a solid. Also returns the live
+    `pipe_maker` builder itself (Workstream 12, docs/ai-modelling/12-
+    provenance-edge-selectors.md) - its own `.Generated()`/`.Modified()`
+    only works when queried while it's still the exact object that just
+    ran the sweep, so a caller needing edge-index provenance can't get it
+    back later from `wire`/`shape` alone.
 
     `BRepOffsetAPI_MakePipeShell.Add` only ever accepts a single Wire (or
     Edge/Vertex) as one swept "section", not a Face - see this function's
@@ -153,7 +161,7 @@ def _sweep_wire(path_wire: TopoDS_Wire, wire: TopoDS_Wire) -> TopoDS_Shape:
     pipe_maker.Build()
     if not pipe_maker.IsDone() or not pipe_maker.MakeSolid():
         raise _sweep_failed()
-    return pipe_maker.Shape()
+    return pipe_maker.Shape(), pipe_maker
 
 
 @dataclass
@@ -521,16 +529,32 @@ def resolve_sweep_from_bodies(
     profiles = select_profiles(candidates, feature.profile_refs)
 
     solids = []
+    provenance_by_profile: list[dict[str, dict[str, int]] | None] = []
     for profile in profiles:
         outer_wire = wire_for_profile(sketch, profile, basis)
-        solid = _sweep_wire(path_wire, outer_wire)
+        solid, pipe_maker = _sweep_wire(path_wire, outer_wire)
+        point_to_vertex, line_to_edge = _profile_boundary_shapes(sketch, profile, basis, outer_wire)
+        provenance = _edge_provenance_from_builder(pipe_maker, point_to_vertex, line_to_edge, solid)
         for inner_loop in profile.inner_loops:
             inner_wire = wire_for_profile(sketch, inner_loop, basis)
-            inner_solid = _sweep_wire(path_wire, inner_wire)
+            inner_solid, _inner_pipe_maker = _sweep_wire(path_wire, inner_wire)
             solid = BRepAlgoAPI_Cut(solid, inner_solid).Shape()
+            # Workstream 12: the boolean Cut above rebuilds topology from
+            # scratch - the provenance indices computed against the
+            # pre-Cut outer solid no longer correspond to real edges in
+            # this rebuilt one, so they must not be recorded.
+            provenance = None
         solids.append(solid)
+        provenance_by_profile.append(provenance)
 
     if len(solids) == 1:
+        # Workstream 12 (docs/ai-modelling/12-provenance-edge-selectors.md):
+        # same "only the common single-profile, no-target case" reasoning
+        # as `app.document.extrude._solid_for_extrude_feature`'s identical
+        # guard - see that function's own comment.
+        provenance = provenance_by_profile[0]
+        if not feature.target_body_ids and provenance is not None:
+            _record_feature_edge_provenance(part, feature.id, provenance, excluded_feature_ids)
         return solids[0]
 
     builder = BRep_Builder()

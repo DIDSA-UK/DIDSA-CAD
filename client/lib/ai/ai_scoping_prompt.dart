@@ -245,34 +245,69 @@ convenient.
 
 ## Fillet/Chamfer edge selection
 
-A Fillet/Chamfer's "edges" field never names a specific edge - Body edges
-do not exist yet when you write a plan (nothing is built until Generate).
-Name one of four selectors instead, resolved against the real geometry
-once it exists:
+A Fillet/Chamfer's "edges" field never names a specific edge by raw index -
+Body edges do not exist yet when you write a plan (nothing is built until
+Generate). Name one of six selectors instead, resolved against the real
+geometry once it exists:
 - {"selector":"top_face_edges", "of": <local_id>}
 - {"selector":"bottom_face_edges", "of": <local_id>}
 - {"selector":"vertical_edges", "of": <local_id>}
 - {"selector":"all_edges_of_face_at_position", "of": <local_id>,
   "direction":"+x"|"-x"|"+y"|"-y"|"+z"|"-z"}
+- {"selector":"edge_from_sketch_point", "of": <local_id>,
+  "sketch_point_ref": <local_id of a sketch_point step>} - the ONE
+  vertical/lateral edge generated at that corner of the profile. Use this
+  whenever the user means one specific corner ("round just this corner,"
+  "fillet the front-left post") rather than a whole face's worth of edges.
+- {"selector":"edge_from_sketch_line", "of": <local_id>,
+  "sketch_line_ref": <local_id of a sketch_line step>, "far": true|false}
+  - the ONE edge that sketch_line became: as originally drawn (far: false
+  or omitted - the default) or its generated counterpart on the swept-to
+  end (far: true - e.g. the far/end face of an Extrude, the end-angle face
+  of a Revolve). Use this whenever the user means one specific straight
+  edge of a face, not the whole face's perimeter (e.g. "just the two long
+  top edges, leave the short ones sharp" - name each long edge's own
+  sketch_line separately, "far": true for the top-face copy of each).
+  IMPORTANT: "sketch_line_ref" can only name an explicit sketch_line step -
+  a sketch_rectangle/sketch_polygon/sketch_slot step's own internal edges
+  are never individually addressable this way (only the corner
+  sketch_point steps you gave it are). If the profile you need to target a
+  specific edge of was built with one of those shorthands, either use
+  "edge_from_sketch_point" on one of its two endpoints instead (if a
+  corner, not a whole edge, is what's actually needed), or build that
+  profile from explicit sketch_point + sketch_line steps instead of the
+  shorthand so each edge has its own local_id to name.
 "of" must name a step that actually produces a solid Body - extrude,
 revolve, sweep, pattern, mirror, or gear_request - never a sketch or a
-create_plane step. All four selectors are relative to the world/global
-X/Y/Z axes, not a tilted Sketch's own local plane.
+create_plane step. The first four selectors are relative to the world/
+global X/Y/Z axes, not a tilted Sketch's own local plane.
 
-These four selectors are the ONLY way to pick edges - there is no way to
-name one single arbitrary edge, and no selector for "some but not all" of
-a face's edges (e.g. just the two long top edges of a rectangular block,
-leaving the two short ones sharp). Each selector always grabs a whole,
-fixed group of edges at once - decide which real-world request maps onto
-which selector, and if the user's request does not cleanly match any of
-the four (they want only some edges of a face, or an edge that only exists
-on a shape more complex than a box, or a shape with more than one "top"),
-this is exactly the kind of scope ambiguity you must ask about rather than
-force-fit the closest selector - do not silently over- or under-fillet by
-picking a selector that fillets more or fewer edges than the user actually
-asked for. When several Body-producing steps exist (e.g. a pattern
-producing several copies), double-check "of" names the specific step the
-user means, not just the most recently defined one.
+The last two (sketch-entity-based) selectors only work when "of" names an
+extrude/revolve/sweep step directly built from a Sketch profile you also
+defined in this same plan - never a pattern/mirror/gear_request result
+(those have no single sketch line/point a copy's own edge traces back to -
+use one of the first four selectors for a patterned/mirrored Body
+instead), and never an edge a PRIOR fillet/chamfer step itself created
+(a rounded corner has no sketch line/point of its own to name - if you
+need to fillet a shape's overall corners AND also round one specific
+straight edge, do the sketch-entity-based fillet/chamfer first, before any
+selector that could touch the same edges). If the sketch_point_ref/
+sketch_line_ref you name does not resolve on the real geometry (e.g. a
+full-360-degree Revolve's own radially-oriented profile edges have no
+"far" counterpart), you get a clear "no matching edge" failure rather than
+a silently wrong result - re-check your selector choice, don't retry the
+same one.
+
+Even with six selectors, there is still no way to name "every edge of a
+face except these two," or an edge on a face position no selector above
+covers - each selector always grabs either one specific edge or a whole,
+fixed group at once. If the user's request does not cleanly match any of
+them, this is exactly the kind of scope ambiguity you must ask about
+rather than force-fit the closest selector - do not silently over- or
+under-fillet by picking a selector that fillets more or fewer edges than
+the user actually asked for. When several Body-producing steps exist (e.g.
+a pattern producing several copies), double-check "of" names the specific
+step the user means, not just the most recently defined one.
 
 ## Rounded corners drawn IN a Sketch (not a Fillet/Chamfer feature)
 

@@ -59,6 +59,7 @@ from app.document.ai_plan_edges import resolve_edge_selector
 from app.document.ai_plan_schemas import (
     ChamferStep,
     CreatePlaneStep,
+    EdgeSelectorKind,
     ExtrudeStep,
     FilletStep,
     GearRequestStep,
@@ -684,11 +685,44 @@ def _resolve_edges(v: _PlanValidator, edges) -> tuple[list, list[SubShapeRefSche
     `StepResult.resolved_edges` wire counterpart, with `body_id` rewritten
     from this pass's own scratch Feature id back to `edges.of`'s plan
     local_id (plus any `#N` multi-solid suffix `_resolve_body_shape`
-    added) - see that field's own doc comment."""
+    added) - see that field's own doc comment.
+
+    Workstream 12 (docs/ai-modelling/12-provenance-edge-selectors.md):
+    `EDGE_FROM_SKETCH_POINT`/`EDGE_FROM_SKETCH_LINE` additionally need
+    `edges.sketch_point_ref`/`sketch_line_ref` resolved from a plan-local
+    `local_id` to the real sketch entity id `app.document.extrude`'s
+    provenance cache is actually keyed by - exactly the same "resolve
+    local_id to real id, let the caller pass real ids onward" split every
+    other field in this module already follows (see `_entity_ref`). Can
+    never be `existing:<id>` (`_lookup`'s own `_lookup_existing` fallback
+    has no `sketch_point`/`sketch_line` case - an existing Sketch's
+    individual entities are never directly referenceable, per this
+    module's own docstring)."""
     target = v._lookup_body(edges.of, "edges.of")
+    sketch_point_id = None
+    sketch_line_id = None
+    if edges.selector == EdgeSelectorKind.EDGE_FROM_SKETCH_POINT:
+        if edges.sketch_point_ref is None:
+            raise _StepError({"type": "invalid_step_payload", "message": "edge_from_sketch_point requires sketch_point_ref"})
+        sketch_point_id = v._lookup(edges.sketch_point_ref, frozenset({"sketch_point"}), "edges.sketch_point_ref").point_id
+    elif edges.selector == EdgeSelectorKind.EDGE_FROM_SKETCH_LINE:
+        if edges.sketch_line_ref is None:
+            raise _StepError({"type": "invalid_step_payload", "message": "edge_from_sketch_line requires sketch_line_ref"})
+        sketch_line_id = v._lookup(edges.sketch_line_ref, frozenset({"sketch_line"}), "edges.sketch_line_ref").entity_id
+
     bodies = compute_part_bodies(v.part, frozenset())
     body_id, body_shape = v._resolve_body_shape(bodies, target.feature_id)
-    edge_refs = resolve_edge_selector(body_shape, body_id, edges.selector, edges.direction)
+    edge_refs = resolve_edge_selector(
+        body_shape,
+        body_id,
+        edges.selector,
+        edges.direction,
+        part=v.part,
+        feature_id=target.feature_id,
+        sketch_point_id=sketch_point_id,
+        sketch_line_id=sketch_line_id,
+        far=edges.far,
+    )
     suffix = body_id[len(target.feature_id) :]
     resolved_edges = [
         SubShapeRefSchema(body_id=f"{edges.of}{suffix}", shape_type=ref.shape_type, index=ref.index)
