@@ -15,6 +15,7 @@ SketchRigidity _analyze({
   Map<String, String> lineStartPointId = const {},
   Map<String, String> lineEndPointId = const {},
   required Iterable<ConstraintDto> constraints,
+  bool trustConvergedSolve = false,
 }) =>
     SketchRigidity.analyze(
       pointIds: pointIds,
@@ -22,6 +23,7 @@ SketchRigidity _analyze({
       lineStartPointId: lineStartPointId,
       lineEndPointId: lineEndPointId,
       constraints: constraints,
+      trustConvergedSolve: trustConvergedSolve,
     );
 
 void main() {
@@ -133,6 +135,140 @@ void main() {
       expect(rigidity.isPointOverConstrained('b'), isFalse);
       expect(rigidity.isSegmentOverConstrained('a', 'b'), isTrue);
       expect(rigidity.isSegmentOverConstrained('a', 'origin'), isTrue);
+    });
+
+    test('trustConvergedSolve suppresses a redundant-but-consistent over-constrained verdict', () {
+      // Same fixture as the test above - deliberately still over-constrained
+      // by this module's own topological count - but now told the backend's
+      // last solve for this exact state actually converged.
+      final rigidity = _analyze(
+        pointIds: ['origin', 'a'],
+        constraints: const [
+          DistanceConstraintDto(id: 'c1', pointAId: 'origin', pointBId: 'a', distance: 5.0),
+          HorizontalConstraintDto(id: 'c2', lineId: 'l1', pointAId: 'origin', pointBId: 'a'),
+          VerticalConstraintDto(id: 'c3', lineId: 'l2', pointAId: 'origin', pointBId: 'a'),
+        ],
+        trustConvergedSolve: true,
+      );
+      expect(rigidity.isPointOverConstrained('a'), isFalse);
+      // Not reclassified as fully constrained either - the cluster's own
+      // removed/raw DOF tally is still exactly what it was (this only
+      // suppresses raising a false alarm from it, it doesn't reinterpret
+      // the count as a clean 0).
+      expect(rigidity.isPointFullyConstrained('a'), isFalse);
+    });
+
+    test(
+        'bug fix (on-device feedback: "a line to line (across flats) dimension combined with a '
+        'horizontal constraint on an edge causes a red outline... a typical method for fully '
+        'constraining a hex or other polygon") - a Regular Polygon\'s own deliberately-redundant '
+        'EqualRadius/Angle chain plus a Horizontal edge AND a matching across-flats LineDistance '
+        'together reads as over-constrained by this module\'s own per-type counting alone, but not '
+        'once told the backend actually converged', () {
+      // A hexagon: origin Coincident with centre, radius confirmed
+      // (non-provisional), the same EqualRadius+central-Angle chain
+      // Sketch.add_polygon itself builds (see that class's own docstring),
+      // plus a Horizontal edge and a matching across-flats LineDistance -
+      // exactly the on-device reproduction, both individually genuine
+      // (see the sibling test below) but doubly redundant together.
+      final vertices = ['v0', 'v1', 'v2', 'v3', 'v4', 'v5'];
+      final lineStart = <String, String>{};
+      final lineEnd = <String, String>{};
+      for (var i = 0; i < 6; i++) {
+        lineStart['edge$i'] = vertices[i];
+        lineEnd['edge$i'] = vertices[(i + 1) % 6];
+        lineStart['radial$i'] = 'center';
+        lineEnd['radial$i'] = vertices[i];
+      }
+      final constraints = <ConstraintDto>[
+        const CoincidentConstraintDto(id: 'coincident', pointAId: 'origin', pointBId: 'center'),
+        const DistanceConstraintDto(id: 'radius', pointAId: 'center', pointBId: 'v0', distance: 10.0),
+        for (var i = 1; i < 6; i++)
+          EqualRadiusConstraintDto(
+            id: 'equal_radius_$i',
+            center1PointId: 'center',
+            radius1PointId: 'v0',
+            center2PointId: 'center',
+            radius2PointId: vertices[i],
+          ),
+        for (var i = 0; i < 5; i++)
+          AngleConstraintDto(id: 'angle_$i', line1Id: 'radial$i', line2Id: 'radial${i + 1}', angleDegrees: 60.0),
+        const HorizontalConstraintDto(id: 'horizontal', lineId: 'edge0', pointAId: 'v0', pointBId: 'v1'),
+        const LineDistanceConstraintDto(id: 'across_flats', line1Id: 'edge0', line2Id: 'edge3', distance: 17.32),
+      ];
+
+      final overConstrained = _analyze(
+        pointIds: ['origin', 'center', ...vertices],
+        originPointId: 'origin',
+        lineStartPointId: lineStart,
+        lineEndPointId: lineEnd,
+        constraints: constraints,
+      );
+      expect(overConstrained.isPointOverConstrained('v0'), isTrue,
+          reason: 'sanity check: this module\'s own naive per-type counting really does flag this '
+              'combination on its own, without the fix below');
+
+      final trusted = _analyze(
+        pointIds: ['origin', 'center', ...vertices],
+        originPointId: 'origin',
+        lineStartPointId: lineStart,
+        lineEndPointId: lineEnd,
+        constraints: constraints,
+        trustConvergedSolve: true,
+      );
+      for (final id in ['center', ...vertices]) {
+        expect(trusted.isPointOverConstrained(id), isFalse, reason: '$id must not read as over-constrained');
+      }
+    });
+
+    test('the same Polygon chain with only ONE of Horizontal/across-flats present is never '
+        'over-constrained even without trustConvergedSolve - each alone removes a genuine remaining '
+        'degree of freedom (the shape\'s own rotation), only the pair together is redundant', () {
+      final vertices = ['v0', 'v1', 'v2', 'v3', 'v4', 'v5'];
+      final lineStart = <String, String>{};
+      final lineEnd = <String, String>{};
+      for (var i = 0; i < 6; i++) {
+        lineStart['edge$i'] = vertices[i];
+        lineEnd['edge$i'] = vertices[(i + 1) % 6];
+        lineStart['radial$i'] = 'center';
+        lineEnd['radial$i'] = vertices[i];
+      }
+      final baseConstraints = <ConstraintDto>[
+        const CoincidentConstraintDto(id: 'coincident', pointAId: 'origin', pointBId: 'center'),
+        const DistanceConstraintDto(id: 'radius', pointAId: 'center', pointBId: 'v0', distance: 10.0),
+        for (var i = 1; i < 6; i++)
+          EqualRadiusConstraintDto(
+            id: 'equal_radius_$i',
+            center1PointId: 'center',
+            radius1PointId: 'v0',
+            center2PointId: 'center',
+            radius2PointId: vertices[i],
+          ),
+        for (var i = 0; i < 5; i++)
+          AngleConstraintDto(id: 'angle_$i', line1Id: 'radial$i', line2Id: 'radial${i + 1}', angleDegrees: 60.0),
+      ];
+
+      final horizontalOnly = _analyze(
+        pointIds: ['origin', 'center', ...vertices],
+        lineStartPointId: lineStart,
+        lineEndPointId: lineEnd,
+        constraints: [
+          ...baseConstraints,
+          const HorizontalConstraintDto(id: 'horizontal', lineId: 'edge0', pointAId: 'v0', pointBId: 'v1'),
+        ],
+      );
+      expect(horizontalOnly.isPointOverConstrained('v0'), isFalse);
+
+      final acrossFlatsOnly = _analyze(
+        pointIds: ['origin', 'center', ...vertices],
+        lineStartPointId: lineStart,
+        lineEndPointId: lineEnd,
+        constraints: [
+          ...baseConstraints,
+          const LineDistanceConstraintDto(id: 'across_flats', line1Id: 'edge0', line2Id: 'edge3', distance: 17.32),
+        ],
+      );
+      expect(acrossFlatsOnly.isPointOverConstrained('v0'), isFalse);
     });
   });
 

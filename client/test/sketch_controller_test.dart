@@ -4862,6 +4862,80 @@ void main() {
     expect(controller.circles, isEmpty);
   });
 
+  test(
+      'bug fix (on-device feedback: "when dragging a polygon with the reference circles in place, '
+      'the drag does not behave as desired (jumpy and bad solving)... reference circles not being '
+      'considered as a part of the polygon closed profile"): dragging a vertex keeps the inscribed '
+      'circle live-tracking its own tangent position throughout the closed-form drag, instead of '
+      'staying frozen at its pre-drag position until an unrelated later solve catches it up',
+      () async {
+    controller.togglePolygonReferenceCircles();
+    controller.selectDrawTool(SketchTool.polygon);
+    controller.setPolygonSides(6);
+    await controller.handleCanvasTap(0, 0); // centre
+    await controller.handleCanvasTap(10, 0); // first vertex - radius 10
+    controller.exitToSelectMode();
+    final polygon = controller.polygons.values.single;
+    final inscribed = controller.circles[polygon.inscribedCircleId]!;
+    final inscribedBefore = controller.points[inscribed.radiusPointId]!;
+
+    backend.requestLog.clear();
+    final vertex0 = controller.points[polygon.vertexPointIds[0]]!;
+    controller.cursorX = vertex0.x;
+    controller.cursorY = vertex0.y;
+    expect(controller.beginPointDrag(polygon.vertexPointIds[0]), isTrue);
+    // Resize to radius 20, rotated 90 degrees.
+    await controller.updatePointDrag(0, 20);
+
+    expect(backend.requestLog.any((r) => r.contains('/solve')), isFalse,
+        reason: 'the closed-form path never needs to solve anything');
+    final center = controller.points[polygon.centerPointId]!;
+    final inscribedAfter = controller.points[inscribed.radiusPointId]!;
+    final actualInradius = math.sqrt(
+      math.pow(inscribedAfter.x - center.x, 2) + math.pow(inscribedAfter.y - center.y, 2),
+    );
+    expect(actualInradius, closeTo(20.0 * math.cos(math.pi / 6), 1e-6),
+        reason: 'the inscribed circle must resize live along with the vertex drag, not lag behind it');
+    // Tangent to the first edge (vertex0-vertex1), i.e. in the direction of
+    // that edge's own midpoint from centre - vertex0 is now at (0, 20)
+    // (base angle pi/2), so the first edge's midpoint direction is
+    // pi/2 + pi/6 = 2*pi/3.
+    final expectedAngle = math.pi / 2 + math.pi / 6;
+    expect(inscribedAfter.x, closeTo(actualInradius * math.cos(expectedAngle), 1e-6));
+    expect(inscribedAfter.y, closeTo(actualInradius * math.sin(expectedAngle), 1e-6));
+    expect(
+      math.sqrt(math.pow(inscribedAfter.x - inscribedBefore.x, 2) + math.pow(inscribedAfter.y - inscribedBefore.y, 2)),
+      greaterThan(1.0),
+      reason: 'sanity check: the inscribed radius Point actually moved, this is not a no-op fixture',
+    );
+  });
+
+  test(
+      'the inscribed circle also translates correctly when dragging the Polygon\'s own centre, same '
+      'as every vertex', () async {
+    controller.togglePolygonReferenceCircles();
+    controller.selectDrawTool(SketchTool.polygon);
+    controller.setPolygonSides(6);
+    await controller.handleCanvasTap(20, 20); // centre, off the origin
+    await controller.handleCanvasTap(30, 20); // first vertex - radius 10
+    controller.exitToSelectMode();
+    final polygon = controller.polygons.values.single;
+    final inscribed = controller.circles[polygon.inscribedCircleId]!;
+    final inscribedBefore = controller.points[inscribed.radiusPointId]!;
+
+    backend.requestLog.clear();
+    final center0 = controller.points[polygon.centerPointId]!;
+    controller.cursorX = center0.x;
+    controller.cursorY = center0.y;
+    expect(controller.beginPointDrag(polygon.centerPointId), isTrue);
+    await controller.updatePointDrag(center0.x + 5, center0.y + 7);
+
+    expect(backend.requestLog.any((r) => r.contains('/solve')), isFalse);
+    final inscribedAfter = controller.points[inscribed.radiusPointId]!;
+    expect(inscribedAfter.x, closeTo(inscribedBefore.x + 5, 1e-6));
+    expect(inscribedAfter.y, closeTo(inscribedBefore.y + 7, 1e-6));
+  });
+
   test('a placed polygon drops out of controller.polygons once one of its Points is deleted',
       () async {
     controller.selectDrawTool(SketchTool.polygon);

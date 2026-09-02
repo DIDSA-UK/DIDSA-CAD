@@ -2597,6 +2597,13 @@ class SketchController extends ChangeNotifier {
         lineStartPointId: {for (final line in lines.values) line.id: line.startPointId},
         lineEndPointId: {for (final line in lines.values) line.id: line.endPointId},
         constraints: constraints.values,
+        // Bug fix (on-device feedback: a Polygon's own Horizontal-edge +
+        // across-flats-LineDistance combination showed a false red
+        // over-constrained outline) - see [SketchRigidity.analyze]'s own
+        // `trustConvergedSolve` doc comment for why deferring to the
+        // backend's last known convergence, when available, is strictly
+        // more trustworthy than this getter's own topological approximation.
+        trustConvergedSolve: _lastSolveConverged,
       );
 
   /// py-slvs's own report of which Constraints were implicated the last
@@ -5393,6 +5400,31 @@ class SketchController extends ChangeNotifier {
   /// comment for the bug this closes (a centre drag used to reach the
   /// general solver path at all, with nothing protecting a still-
   /// provisional radius from collapsing).
+  ///
+  /// Bug fix (on-device feedback: "dragging a polygon with the reference
+  /// circles in place... jumpy and bad solving"): the circumscribed
+  /// reference circle needs no special handling here - it shares the
+  /// Polygon's own centre/first-vertex Points directly (see
+  /// `Sketch.add_polygon`'s own doc comment), so it already tracks live via
+  /// the ordinary vertex/centre positions above. The *inscribed* one is a
+  /// genuinely separate Point though (tangent to the first edge, not
+  /// coincident with any vertex - same doc comment), which this used to
+  /// leave out of the returned map entirely: frozen at its pre-drag
+  /// position for the whole live drag (this is the closed-form path -
+  /// nothing else moves it either) and only snapped to its correct tangent
+  /// position once the drop's own settle/general-solve reconciled the real
+  /// TangentConstraint, reading as a stale, disconnected circle mid-drag
+  /// followed by a visible jump at release. Recomputed directly here
+  /// instead, at the mathematically exact inradius
+  /// (`circumradius * cos(pi / sides)`, the same formula `add_polygon`
+  /// itself seeds it at) in the direction of the first edge's own midpoint
+  /// (`baseAngle + pi / sides` - halfway between vertex 0 and vertex 1,
+  /// which is where a regular polygon's incircle is tangent to that edge
+  /// by construction) - a formula, exactly like every other Point this
+  /// method already computes, so it stays live throughout the drag with no
+  /// separate solve needed. Silently skipped (not an error) when this
+  /// Polygon has no inscribed circle, or its own radius Point has gone
+  /// missing independently of the Polygon itself (e.g. deleted directly).
   Map<String, (double, double)>? _closedFormPolygonVertices(
     SketchPolygonView polygon,
     String draggedVertexId,
@@ -5401,6 +5433,9 @@ class SketchController extends ChangeNotifier {
   ) {
     final center = points[polygon.centerPointId];
     if (center == null) return null;
+    final inscribedCircle = polygon.inscribedCircleId != null ? circles[polygon.inscribedCircleId] : null;
+    final inscribedRadiusPointId =
+        inscribedCircle != null && points.containsKey(inscribedCircle.radiusPointId) ? inscribedCircle.radiusPointId : null;
     if (draggedVertexId == polygon.centerPointId) {
       final dx = targetX - center.x;
       final dy = targetY - center.y;
@@ -5408,6 +5443,10 @@ class SketchController extends ChangeNotifier {
       for (final vertexId in polygon.vertexPointIds) {
         final p = points[vertexId];
         if (p != null) result[vertexId] = (p.x + dx, p.y + dy);
+      }
+      if (inscribedRadiusPointId != null) {
+        final p = points[inscribedRadiusPointId]!;
+        result[inscribedRadiusPointId] = (p.x + dx, p.y + dy);
       }
       return result;
     }
@@ -5422,6 +5461,12 @@ class SketchController extends ChangeNotifier {
     for (var i = 0; i < polygon.vertexPointIds.length; i++) {
       final angle = baseAngle + 2 * math.pi * i / polygon.sides;
       result[polygon.vertexPointIds[i]] = (center.x + radius * math.cos(angle), center.y + radius * math.sin(angle));
+    }
+    if (inscribedRadiusPointId != null) {
+      final inradius = radius * math.cos(math.pi / polygon.sides);
+      final midAngle = baseAngle + math.pi / polygon.sides;
+      result[inscribedRadiusPointId] =
+          (center.x + inradius * math.cos(midAngle), center.y + inradius * math.sin(midAngle));
     }
     return result;
   }
