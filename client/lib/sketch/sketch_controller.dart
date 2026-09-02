@@ -3270,6 +3270,20 @@ class SketchController extends ChangeNotifier {
         if (startId == null) return null;
         final start = points[startId];
         if (start == null) return null;
+        if (_tangentArcModeEnabled) {
+          final continuation = _tangentArcContinuation(startId, cursorX, cursorY);
+          if (continuation != null) {
+            final (_, centerX, centerY, anchorX, anchorY) = continuation;
+            return ArcGhost(
+              centerX: centerX,
+              centerY: centerY,
+              startX: anchorX,
+              startY: anchorY,
+              endX: cursorX,
+              endY: cursorY,
+            );
+          }
+        }
         final snapped = _snappedLineEndWithInference(start.x, start.y, cursorX, cursorY, anchorPointId: startId);
         return LineGhost(startX: start.x, startY: start.y, endX: snapped.$1, endY: snapped.$2);
       case LineConstructionMethod.midpoint:
@@ -3667,6 +3681,114 @@ class SketchController extends ChangeNotifier {
     final dirY = math.sin(tangentAngle);
     final projection = (centerX - x0) * dirX + (centerY - y0) * dirY;
     return (x0 + projection * dirX, y0 + projection * dirY);
+  }
+
+  /// Session N (#7): the existing Line or Arc (if any) [anchorPointId] is
+  /// itself an endpoint of, plus that entity's own tangent direction at
+  /// that exact point (an arbitrary-sign direction vector - a tangent line
+  /// has no inherent "forward", see [_tangentArcCenterFrom]'s own doc
+  /// comment for why that's fine here) - what
+  /// [tangentArcModeEnabled] continues tangent *from*. A Line's own
+  /// direction is unambiguous; an Arc's tangent at a rim Point is
+  /// perpendicular to that Point's own radius vector, regardless of which
+  /// of the Arc's two endpoints [anchorPointId] happens to be or which way
+  /// its sweep runs (a circle's tangent line at a given point never
+  /// depends on that). Checks Lines before Arcs when (implausibly) both
+  /// share this exact Point - an arbitrary but consistent tie-break, not a
+  /// meaningful priority choice.
+  (SketchSelection, double, double)? _tangentContinuationSource(String anchorPointId) {
+    final anchor = points[anchorPointId];
+    if (anchor == null) return null;
+    for (final line in lines.values) {
+      final String otherId;
+      if (line.startPointId == anchorPointId) {
+        otherId = line.endPointId;
+      } else if (line.endPointId == anchorPointId) {
+        otherId = line.startPointId;
+      } else {
+        continue;
+      }
+      final other = points[otherId];
+      if (other == null) continue;
+      final dirX = anchor.x - other.x;
+      final dirY = anchor.y - other.y;
+      if (dirX * dirX + dirY * dirY < 1e-12) continue;
+      return (SketchSelection(kind: SelectionKind.line, id: line.id), dirX, dirY);
+    }
+    for (final arc in arcs.values) {
+      if (arc.startPointId != anchorPointId && arc.endPointId != anchorPointId) continue;
+      final center = points[arc.centerPointId];
+      if (center == null) continue;
+      final radiusX = anchor.x - center.x;
+      final radiusY = anchor.y - center.y;
+      if (radiusX * radiusX + radiusY * radiusY < 1e-12) continue;
+      // Perpendicular to the radius vector - a 90-degree rotation, either
+      // sign (see this method's own doc comment on why direction sign
+      // doesn't matter here).
+      return (SketchSelection(kind: SelectionKind.arc, id: arc.id), -radiusY, radiusX);
+    }
+    return null;
+  }
+
+  /// Session N (#7): the centre of the unique circle through both
+  /// ([px], [py]) and ([qx], [qy]) that's tangent to direction
+  /// ([tx], [ty]) at ([px], [py]) - the standard external tangent-arc
+  /// construction every "line then tangent arc" CAD tool uses. Solves the
+  /// two linear equations a centre [C] must satisfy: perpendicular to the
+  /// tangent direction at P (`(C-P)-T = 0`, i.e. `C-T = P-T`), and
+  /// equidistant from both P and Q (`|C-P| = |C-Q|`, expanded to
+  /// `C-(Q-P) = (Q-Q - P-P) / 2`) - two equations, two unknowns (`C.x`,
+  /// `C.y`), solved directly rather than iteratively. Neither equation
+  /// distinguishes [tx]/[ty] from its own negation, so the result is
+  /// identical regardless of which of the two directions along the
+  /// tangent line it's given - there is only ever one such circle for an
+  /// *undirected* tangent line, matching how [_tangentContinuationSource]
+  /// itself never picks a particular sign either.
+  ///
+  /// Null when the two equations are (near-)parallel - `det` near zero -
+  /// which happens exactly when Q sits (almost) exactly on the tangent
+  /// line through P itself: geometrically, continuing *exactly* straight
+  /// has no meaningful finite-radius tangent arc (the "circle" degenerates
+  /// to the line itself, infinite radius) - callers fall back to an
+  /// ordinary straight Line in that case, which is the correct behaviour
+  /// for that degenerate direction anyway.
+  (double, double)? _tangentArcCenterFrom(double px, double py, double tx, double ty, double qx, double qy) {
+    final a1 = tx;
+    final b1 = ty;
+    final c1 = px * tx + py * ty;
+    final a2 = qx - px;
+    final b2 = qy - py;
+    final c2 = ((qx * qx + qy * qy) - (px * px + py * py)) / 2;
+    final det = a1 * b2 - a2 * b1;
+    if (det.abs() < 1e-9) return null;
+    final centerX = (c1 * b2 - c2 * b1) / det;
+    final centerY = (a1 * c2 - a2 * c1) / det;
+    return (centerX, centerY);
+  }
+
+  /// Session N (#7): the tangent-Arc ghost/commit geometry for continuing
+  /// from [anchorPointId] toward the cursor at ([qx], [qy]), or null if
+  /// [tangentArcModeEnabled] doesn't apply here - no tangent source at
+  /// this exact Point ([_tangentContinuationSource]), or the cursor is
+  /// (near-)exactly along that source's own tangent direction
+  /// ([_tangentArcCenterFrom]'s own degenerate case, correctly left to an
+  /// ordinary Line instead). Returns the source entity (for the eventual
+  /// Tangent/CurveTangent Constraint), the computed Arc centre, and the
+  /// anchor's own coordinates (so callers building an [ArcGhost] don't
+  /// need to re-fetch the anchor Point separately).
+  (SketchSelection, double, double, double, double)? _tangentArcContinuation(
+    String anchorPointId,
+    double qx,
+    double qy,
+  ) {
+    final source = _tangentContinuationSource(anchorPointId);
+    if (source == null) return null;
+    final (target, tx, ty) = source;
+    final anchor = points[anchorPointId];
+    if (anchor == null) return null;
+    final center = _tangentArcCenterFrom(anchor.x, anchor.y, tx, ty, qx, qy);
+    if (center == null) return null;
+    return (target, center.$1, center.$2, anchor.x, anchor.y);
   }
 
   /// Session N: the tangent or point-on-curve candidate (whichever, if
@@ -4807,6 +4929,31 @@ class SketchController extends ChangeNotifier {
 
   void toggleInferenceSuppressed() {
     _inferenceSuppressed = !_inferenceSuppressed;
+    notifyListeners();
+  }
+
+  /// Session N (#7): whether continuing a Line chain
+  /// ([LineConstructionMethod.endToEnd] only) draws a tangent Arc instead
+  /// of a straight Line for the *next* segment - and every one after that,
+  /// until toggled off again (sticky, same shape as [dragModeEnabled]/
+  /// [inferenceSuppressed]).
+  ///
+  /// Deliberately an explicit toggle, not an automatic "any non-straight
+  /// drag becomes an arc" inference: this sketcher's default is a sharp
+  /// corner at every chain vertex, and continuing to support that (a bent
+  /// polyline is extremely common) means a mere direction change can't by
+  /// itself switch entity types - SolidWorks's own real behaviour here is
+  /// also a deliberate toggle (drag back over the last point, or a
+  /// keyboard shortcut), never silent auto-detection, for exactly this
+  /// reason. Only ever has a visible effect where
+  /// [_tangentContinuationSource] finds something to actually continue
+  /// tangent *from* - toggled on with no such source (a fresh, unconnected
+  /// chain start), it draws an ordinary Line, same as if this were off.
+  bool _tangentArcModeEnabled = false;
+  bool get tangentArcModeEnabled => _tangentArcModeEnabled;
+
+  void toggleTangentArcMode() {
+    _tangentArcModeEnabled = !_tangentArcModeEnabled;
     notifyListeners();
   }
 
@@ -14300,6 +14447,24 @@ class SketchController extends ChangeNotifier {
     }
 
     final closingLoop = isHoveringChainStart;
+
+    // Session N (#7): tangent-arc continuation pre-empts the ordinary
+    // straight-Line path entirely once toggled on and a genuine tangent
+    // source applies - scoped to *not* closing the loop, since closing
+    // needs the free end to land exactly on the chain's own fixed first
+    // Point (see [isHoveringChainStart]), which the tangent-arc solve
+    // has no way to target (it always uses the live cursor as its own
+    // free point Q) - a deliberate scope limit for this pass, not a
+    // bug: closing a loop with a tangent arc falls back to an ordinary
+    // straight closing edge instead.
+    if (_tangentArcModeEnabled && !closingLoop) {
+      final continuation = _tangentArcContinuation(_chainStartPointId!, cursorX, cursorY);
+      if (continuation != null) {
+        await _commitTangentArcContinuation(continuation);
+        return;
+      }
+    }
+
     // Phase 6.1: captured from the start Point and the tap's cursor
     // position *before* the loop-closing case swaps in a fixed endpoint -
     // a closing edge's slope is dictated by the loop, not freely aimed, so
@@ -14338,6 +14503,91 @@ class SketchController extends ChangeNotifier {
       } else {
         _chainStartPointId = endPointId;
       }
+    });
+  }
+
+  /// Session N (#7): commits the tangent-Arc [continuation]
+  /// [_tangentArcContinuation] already computed - a new centre Point (the
+  /// solved tangent-circle centre), a new end Point at the live cursor,
+  /// and the Arc itself between the chain's current start and that new
+  /// end, tied to [continuation]'s own source entity by whichever real
+  /// Constraint applies (a plain [TangentConstraint] against a Line
+  /// source, or the newer [CurveTangentConstraint] - "the shared Point is
+  /// collinear with both Arcs' centres" - against an Arc source). Mirrors
+  /// [_clickArcTool]'s own end-Point handling (a bare [_api.createPoint],
+  /// no coincidence-check) rather than [_pointIdAtCursor]'s generic
+  /// tap-to-place path - this end Point's position is solved geometry, not
+  /// a raw tap, the same reasoning that method's own third tap already
+  /// follows. Continues the chain from the new end Point afterward, same
+  /// as an ordinary Line continuation - further taps draw another tangent
+  /// Arc (if still toggled on and a source still applies) or an ordinary
+  /// Line (once toggled off, or once continuing from a Point with no
+  /// tangent source of its own - e.g. this Arc's own far end, which
+  /// nothing yet connects on its *other* side).
+  Future<void> _commitTangentArcContinuation(
+    (SketchSelection, double, double, double, double) continuation,
+  ) async {
+    final (source, centerX, centerY, anchorX, anchorY) = continuation;
+    final startId = _chainStartPointId!;
+    await _runGuarded(() async {
+      final center = await _api.createPoint(_sketchId!, centerX, centerY);
+      points[center.id] = SketchPointView(id: center.id, x: center.x, y: center.y);
+      _pushUndo(() async {
+        await _api.deletePoint(_sketchId!, center.id);
+        points.remove(center.id);
+      });
+      await _autoCoincideIfNear(center.id, center.x, center.y);
+
+      final endPoint = await _api.createPoint(_sketchId!, cursorX, cursorY);
+      points[endPoint.id] = SketchPointView(id: endPoint.id, x: endPoint.x, y: endPoint.y);
+      _pushUndo(() async {
+        await _api.deletePoint(_sketchId!, endPoint.id);
+        points.remove(endPoint.id);
+      });
+
+      // The backend's Arc always sweeps counter-clockwise from its own
+      // startPointId to endPointId (see the backend's app.sketch.models.Arc
+      // docstring, and _clickArcTool's own identical swap) - pick whichever
+      // of (anchor, new end) as (start, end) makes that sweep the shorter
+      // one, the correct default for a smooth tangent continuation. Unlike
+      // _clickArcTool's own live _arcSweepAccumulator (there is no
+      // continuous cursor-sweep history for a closed-form tangent arc,
+      // just the one commit), this reads the shorter-vs-longer choice
+      // directly off the two endpoints' angles around the solved centre.
+      final startAngle = math.atan2(anchorY - centerY, anchorX - centerX);
+      final endAngleRaw = math.atan2(cursorY - centerY, cursorX - centerX);
+      var sweep = endAngleRaw - startAngle;
+      while (sweep <= -math.pi) {
+        sweep += 2 * math.pi;
+      }
+      while (sweep > math.pi) {
+        sweep -= 2 * math.pi;
+      }
+      final sweptClockwise = sweep < 0;
+      final arcStartId = sweptClockwise ? endPoint.id : startId;
+      final arcEndId = sweptClockwise ? startId : endPoint.id;
+
+      final arc = await _api.createArc(_sketchId!, center.id, arcStartId, arcEndId);
+      arcs[arc.id] = SketchArcView(
+        id: arc.id,
+        centerPointId: arc.centerPointId,
+        startPointId: arc.startPointId,
+        endPointId: arc.endPointId,
+        construction: arc.construction,
+      );
+      _pushUndo(() async {
+        await _api.deleteArc(_sketchId!, arc.id);
+        arcs.remove(arc.id);
+      });
+
+      final tangentConstraint = source.kind == SelectionKind.line
+          ? await _api.createTangentConstraint(_sketchId!, arc.id, source.id)
+          : await _api.createCurveTangentConstraint(_sketchId!, arc.id, source.id, startId);
+      _pushUndo(() async => _api.deleteConstraint(_sketchId!, tangentConstraint.id));
+
+      await _solveAndTrackDof();
+
+      _chainStartPointId = endPoint.id;
     });
   }
 

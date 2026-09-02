@@ -3377,6 +3377,123 @@ void main() {
     expect(inference?.target?.id, segment1Id);
   });
 
+  // --- Session N (#7): tangent-arc chain continuation ------------------------
+
+  test(
+      'toggling tangentArcMode on and continuing a Line chain from a connected Line\'s endpoint '
+      'previews an ArcGhost, tangent to that Line, instead of a LineGhost', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0); // horizontal - direction (1, 0) at its own end
+    controller.finishChain();
+
+    await controller.handleCanvasTap(10, 0); // resume from segment1's own endpoint
+    controller.toggleTangentArcMode();
+    expect(controller.tangentArcModeEnabled, isTrue);
+    controller.moveCursorToSketchPoint(20, 10);
+
+    final ghost = controller.activeDrawGhost;
+    expect(ghost, isA<ArcGhost>());
+    final arcGhost = ghost as ArcGhost;
+    // The unique circle through (10, 0) and (20, 10), tangent to (1, 0) at
+    // (10, 0), by construction (see _tangentArcCenterFrom's own doc
+    // comment): centre (10, 10), radius 10 - verified independently by
+    // hand (perpendicular check: (10,10)-(10,0) = (0,10), dot (1,0) = 0;
+    // equidistant check: both (10,0) and (20,10) are exactly 10 from
+    // (10, 10)).
+    expect(arcGhost.centerX, closeTo(10, 1e-9));
+    expect(arcGhost.centerY, closeTo(10, 1e-9));
+    expect(arcGhost.startX, closeTo(10, 1e-9));
+    expect(arcGhost.startY, closeTo(0, 1e-9));
+    expect(arcGhost.endX, closeTo(20, 1e-9));
+    expect(arcGhost.endY, closeTo(10, 1e-9));
+  });
+
+  test(
+      'committing a tangent-arc continuation from a Line creates an Arc tangent to it '
+      '(TangentConstraint) and continues the chain from the Arc\'s own new end', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    final segment1Id = controller.lines.keys.single;
+
+    await controller.handleCanvasTap(10, 0);
+    controller.toggleTangentArcMode();
+    await controller.handleCanvasTap(20, 10);
+
+    final arc = controller.arcs.values.single;
+    final tangent = controller.constraints.values.whereType<TangentConstraintDto>().single;
+    expect(tangent.lineId, segment1Id);
+    final center = controller.points[arc.centerPointId]!;
+    expect(center.x, closeTo(10, 1e-9));
+    expect(center.y, closeTo(10, 1e-9));
+
+    // The Arc's own far end (not the shared Point with segment1) is
+    // exactly where the chain continues from next.
+    final sharedWithSegment1 = controller.lines[segment1Id]!.endPointId;
+    final arcFarEndId = arc.startPointId == sharedWithSegment1 ? arc.endPointId : arc.startPointId;
+
+    controller.toggleTangentArcMode();
+    expect(controller.tangentArcModeEnabled, isFalse);
+    await controller.handleCanvasTap(30, 30); // an ordinary follow-up Line segment
+    final segment2 = controller.lines.values.last;
+    expect(segment2.startPointId, arcFarEndId);
+  });
+
+  test(
+      'committing a tangent-arc continuation from an Arc creates a second Arc tied to it by a '
+      'CurveTangentConstraint at their shared Point', () async {
+    controller.selectDrawTool(SketchTool.arc);
+    await controller.handleCanvasTap(0, 0); // centre
+    await controller.handleCanvasTap(10, 0); // start
+    await controller.handleCanvasTap(0, 10); // end (quarter-circle, CCW)
+    final firstArc = controller.arcs.values.single;
+
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 10); // resume from the first Arc's own end Point
+    controller.toggleTangentArcMode();
+    controller.moveCursorToSketchPoint(-10, 20);
+    await controller.handleCanvasTap(-10, 20);
+
+    expect(controller.arcs.length, 2);
+    final created = controller.constraints.values.whereType<CurveTangentConstraintDto>().single;
+    expect({created.entity1Id, created.entity2Id}, {firstArc.id, controller.arcs.keys.last});
+    expect(created.sharedPointId, firstArc.endPointId);
+  });
+
+  test(
+      'tangentArcMode with no tangent source at the current chain Point (a fresh, unconnected '
+      'start) falls back to an ordinary LineGhost/straight Line', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0); // fresh chain start, connects to nothing
+    controller.toggleTangentArcMode();
+    controller.moveCursorToSketchPoint(10, 7);
+
+    expect(controller.activeDrawGhost, isA<LineGhost>());
+
+    await controller.handleCanvasTap(10, 7);
+    expect(controller.arcs, isEmpty);
+    expect(controller.lines.length, 1);
+  });
+
+  test('tangentArcMode never applies while closing the chain loop - closing always draws a straight '
+      'edge back to the chain\'s own first Point', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    await controller.handleCanvasTap(10, 10);
+    controller.toggleTangentArcMode();
+    // Hovering back over the chain's own first Point (0, 0) closes the
+    // loop - see isHoveringChainStart.
+    controller.moveCursorToSketchPoint(0, 0);
+    await controller.handleCanvasTap(0, 0);
+
+    expect(controller.arcs, isEmpty);
+    expect(controller.lines.length, 3);
+    expect(controller.chainInProgress, isFalse);
+  });
+
   // --- Phase 6.2.1: Arc tool -------------------------------------------------
 
   test('activeDrawGhost previews a plain circle while only the arc center is placed', () async {

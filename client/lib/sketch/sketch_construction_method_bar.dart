@@ -128,6 +128,22 @@ class SketchConstructionMethodBar extends StatelessWidget {
           selected: controller.lineConstructionMethod == LineConstructionMethod.midpoint,
           onTap: () => controller.setLineConstructionMethod(LineConstructionMethod.midpoint),
         ),
+        // Session N (#7): an explicit, sticky toggle - not automatic
+        // detection from cursor direction - so continuing to draw an
+        // ordinary sharp-cornered polyline stays the untouched default.
+        // Only meaningful for end-to-end chaining (midpoint's own Line
+        // has no "next segment" to continue tangent from), and only ever
+        // has a visible effect once the chain's current Point actually
+        // connects to something tangent-continuable - see
+        // [SketchController.tangentArcModeEnabled]'s own doc comment.
+        if (controller.lineConstructionMethod == LineConstructionMethod.endToEnd) ...[
+          const SizedBox(width: 8),
+          FilterChip(
+            label: const Text('Tangent arc'),
+            selected: controller.tangentArcModeEnabled,
+            onSelected: (_) => controller.toggleTangentArcMode(),
+          ),
+        ],
       ];
     }
     if (controller.activeTool == SketchTool.rectangle) {
