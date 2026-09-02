@@ -539,6 +539,20 @@ def test_dragging_the_minor_point_past_the_major_radius_swaps_which_axis_is_majo
         f"/sketch/sketches/{sketch['id']}/ellipses",
         json={"center_point_id": center["id"], "major_point_id": major["id"], "minor_radius": 3.0},
     ).json()
+    # Confirm the major dimension at its own current value first. Both of a
+    # freshly-created Ellipse's DistanceConstraints start provisional (see
+    # add_ellipse's own doc comment), so without this the minor-axis PATCH
+    # below would be `update_constraint_value`'s "sketch's first real
+    # dimension" case (_scale_sketch_for_first_dimension) instead of the
+    # ordinary single-point reseed (_reseed_distance_constraint_free_point)
+    # - scaling the *whole* sketch, major point included, by 15/3 and
+    # confounding this test's actual target. Patching at the unchanged
+    # current value keeps that scale a no-op (1.0) while still flipping
+    # provisional off.
+    client.patch(
+        f"/sketch/sketches/{sketch['id']}/constraints/{_major_constraint_id(sketch['id'], ellipse['id'])}",
+        json={"value": 9.0},
+    )
 
     response = client.patch(
         f"/sketch/sketches/{sketch['id']}/constraints/{_minor_constraint_id(sketch['id'], ellipse['id'])}",
@@ -549,6 +563,19 @@ def test_dragging_the_minor_point_past_the_major_radius_swaps_which_axis_is_majo
     updated = client.get(f"/sketch/sketches/{sketch['id']}/ellipses/{ellipse['id']}").json()
     assert updated["major_radius"] == pytest.approx(15.0)
     assert updated["minor_radius"] == pytest.approx(9.0)
+
+
+def _major_constraint_id(sketch_id: str, ellipse_id: str) -> str:
+    constraints = client.get(f"/sketch/sketches/{sketch_id}/constraints").json()
+    ellipse = client.get(f"/sketch/sketches/{sketch_id}/ellipses/{ellipse_id}").json()
+    for constraint in constraints:
+        if (
+            constraint["type"] == "distance"
+            and {constraint["point_a_id"], constraint["point_b_id"]}
+            == {ellipse["center_point_id"], ellipse["major_point_id"]}
+        ):
+            return constraint["id"]
+    raise AssertionError("major radius DistanceConstraint not found")
 
 
 def _minor_constraint_id(sketch_id: str, ellipse_id: str) -> str:
