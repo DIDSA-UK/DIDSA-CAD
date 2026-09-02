@@ -29,6 +29,7 @@ from app.document.models import (
     BooleanOperation,
     ChamferFeature,
     CreatePlaneFeature,
+    DeleteBodyFeature,
     Document,
     ExtrudeFeature,
     ExtrudeType,
@@ -999,6 +1000,12 @@ def _feature_to_dict(feature: Feature) -> dict:
             "tool_body_ids": list(feature.tool_body_ids),
             "consume_tool_bodies": feature.consume_tool_bodies,
         }
+    if isinstance(feature, DeleteBodyFeature):
+        return {
+            "type": "delete_body",
+            "id": feature.id,
+            "body_ids": list(feature.body_ids),
+        }
     if isinstance(feature, SplitFeature):
         return {
             "type": "split",
@@ -1252,6 +1259,11 @@ def _feature_from_dict(data: dict) -> Feature:
             target_body_ids=list(data.get("target_body_ids", [])),
             tool_body_ids=list(data.get("tool_body_ids", [])),
             consume_tool_bodies=data.get("consume_tool_bodies", True),
+        )
+    if feature_type == "delete_body":
+        return DeleteBodyFeature(
+            id=feature_id,
+            body_ids=list(data.get("body_ids", [])),
         )
     if feature_type == "split":
         return SplitFeature(

@@ -1965,6 +1965,42 @@ class DocumentApiClient {
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// Direct Editing family (first entry): creates a DeleteBodyFeature
+  /// removing every Body named in [bodyIds] (1+ required - see the
+  /// backend's `_validate_delete_body_ids`) entirely. Mirrors
+  /// [createMergeFeature]'s own shape exactly, just a lower floor (deleting
+  /// a single Body is the common case, unlike merging one).
+  Future<FeatureDto> createDeleteBodyFeature(
+    String partId, {
+    required List<String> bodyIds,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/delete-body-features'),
+              headers: _headers,
+              body: jsonEncode({'body_ids': bodyIds}),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing DeleteBodyFeature - mirrors
+  /// [updateMergeFeature]'s own shape exactly.
+  Future<FeatureDto> updateDeleteBodyFeature(
+    String partId,
+    String featureId, {
+    List<String>? bodyIds,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/delete-body-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (bodyIds != null) 'body_ids': bodyIds,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
   /// Boolean family, Subtract/Common: creates a BooleanFeature folding every
   /// Body named in [toolBodyIds] (1+ required) into/against every Body
   /// named in [targetBodyIds] (1+ required, disjoint from [toolBodyIds] -

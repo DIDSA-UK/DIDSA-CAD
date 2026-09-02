@@ -2077,6 +2077,40 @@ class BevelPairFeature(Feature):
 
 
 @dataclass
+class DeleteBodyFeature(Feature):
+    """Direct Editing family (first entry - see `docs/direct-editing-scope.md`):
+    removes every Body named in `body_ids` (1+ required - see
+    `app.document.router._validate_delete_body_ids`) from the Part's Bodies
+    entirely. Unlike Merge/Boolean, which combine Bodies into a new or
+    existing one, this simply discards them - closest existing ancestor is
+    `BooleanFeature.consume_tool_bodies`'s plain `bodies.pop(...)` removal
+    (`app.document.boolean.apply_boolean_to_bodies`), generalized here to be
+    the Feature's *entire* effect rather than a side option of a fold. No
+    OCCT geometry of its own to construct or fail (see `app.document.
+    delete_body.apply_delete_body_to_bodies`), so `produces` is NONE and
+    `produces_solid_geometry` is False - a DeleteBodyFeature never
+    contributes shape to the Part, only removes it. There is deliberately no
+    "keep" mode: selecting the Bodies to delete IS the interaction (a
+    client-side "select inverse" convenience is a UI affordance, not a
+    second Feature type - see the scope doc's own reasoning)."""
+
+    id: str
+    body_ids: list[str]
+
+    @property
+    def type(self) -> str:
+        return "delete_body"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return False
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.NONE
+
+
+@dataclass
 class Part:
     """An independent solid-modeling history: an ordered list of Features.
 

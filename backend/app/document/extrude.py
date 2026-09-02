@@ -45,6 +45,7 @@ from app.document.models import (
     BevelPairFeature,
     BooleanFeature,
     ChamferFeature,
+    DeleteBodyFeature,
     ExtrudeFeature,
     ExtrudeType,
     Feature,
@@ -1354,6 +1355,7 @@ def _apply_feature_to_bodies(
     into one compound before a single `_register_solids` call)."""
     from app.document.boolean import apply_boolean_to_bodies
     from app.document.chamfer import resolve_chamfer_from_bodies
+    from app.document.delete_body import apply_delete_body_to_bodies
     from app.document.fillet import resolve_fillet_from_bodies
     from app.document.import_geometry import resolve_import
     from app.document.mirror import (
@@ -1538,6 +1540,15 @@ def _apply_feature_to_bodies(
         # for the full fold/consume-vs-keep semantics; it mutates `bodies`
         # in place, the same convention `_apply_boss_or_cut` uses.
         apply_boolean_to_bodies(bodies, feature)
+        return
+
+    if isinstance(feature, DeleteBodyFeature):
+        # Direct Editing family, first entry: unlike every Boolean-family
+        # branch above, this has no OCCT geometry of its own to construct -
+        # see `app.document.delete_body.apply_delete_body_to_bodies`'s own
+        # docstring for the full skip-with-warning resilience convention
+        # (identical to `apply_boolean_to_bodies`'s tool-body removal).
+        apply_delete_body_to_bodies(bodies, feature)
         return
 
     if isinstance(feature, SplitFeature):

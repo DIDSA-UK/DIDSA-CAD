@@ -35,6 +35,7 @@ import 'chamfer_panel.dart';
 import 'create_plane_context_sheet.dart';
 import 'create_plane_geometry_3d.dart';
 import 'create_plane_panel.dart';
+import 'delete_body_panel.dart';
 import 'extrude_panel.dart';
 import 'feature_context_menu.dart';
 import 'feature_picker_sheet.dart';
@@ -818,6 +819,7 @@ class _PartScreenState extends State<PartScreen> {
       !_patternActive &&
       !_mergeActive &&
       !_booleanActive &&
+      !_deleteBodyActive &&
       !_profilePickerActive &&
       !_pathPickerActive;
 
@@ -841,6 +843,7 @@ class _PartScreenState extends State<PartScreen> {
           !_patternActive &&
           !_mergeActive &&
           !_booleanActive &&
+          !_deleteBodyActive &&
           !_profilePickerActive &&
           !_pathPickerActive) ||
       // Pattern/Mirror scoping's Phase 6: the Build Tree multi-select
@@ -892,6 +895,7 @@ class _PartScreenState extends State<PartScreen> {
       _mergeActive ||
       _booleanActive ||
       _splitActive ||
+      _deleteBodyActive ||
       _profilePickerActive ||
       _pathPickerActive ||
       _planeSelectionMode;
@@ -1904,6 +1908,65 @@ class _PartScreenState extends State<PartScreen> {
   /// only ever reads the already-captured [_mergeBodyIds], never
   /// [_selectedEntities], once `confirming` is reached).
   static const _mergeBodyPickerSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: false,
+    body: true,
+    sketchPoint: false,
+    sketchLine: false,
+    sketchCircle: false,
+    sketchArc: false,
+    sketchEllipse: false,
+    sketchSpline: false,
+    plane: false,
+  );
+
+  // --- Direct Editing family, first entry: Delete Body ------------------------
+  // Simpler still than Merge above: no guided "Add" FAB entry, no picking step
+  // at all - always triggered ambient (`SelectionContextPanel.onDeleteBody`,
+  // see `_onDeleteBodyTapped`), from a Body-only selection that already names
+  // every Body to delete, so `_deleteBodyActive` is a plain bool rather than a
+  // step enum (there is no `pickingBodies` phase for it to be null through).
+  // Mirrors Merge's own "eager create, no further parameter to debounce"
+  // shape exactly (see `docs/direct-editing-scope.md`'s own Pattern
+  // classification) - opening the panel immediately creates the preview
+  // DeleteBodyFeature, [DeleteBodyPanel] itself only ever shows the resulting
+  // summary/Confirm/Cancel.
+
+  /// True while a Delete Body session (create or B4 edit) is live - mirrors
+  /// [_mergeActive], just a plain bool since there is no picking step.
+  bool _deleteBodyActive = false;
+
+  /// The Bodies being deleted, captured the moment the panel opens (either
+  /// from the ambient selection, or - for B4 editing - from the
+  /// already-existing Feature's own `body_ids`) - mirrors [_mergeBodyIds].
+  List<String>? _deleteBodyBodyIds;
+
+  /// The DeleteBodyFeature created as soon as the panel opens - mirrors
+  /// [_previewMergeFeatureId] exactly.
+  String? _previewDeleteBodyFeatureId;
+
+  /// B4: non-null while [DeleteBodyPanel] is editing an *already-existing*
+  /// DeleteBodyFeature - mirrors [_editingMergeFeatureId].
+  String? _editingDeleteBodyFeatureId;
+
+  /// B4: the edited Feature's own stored `body_ids` from just before editing
+  /// started - mirrors [_mergeEditSnapshot].
+  ({List<String> bodyIds})? _deleteBodyEditSnapshot;
+
+  /// [_selectedEntities]' value from just before the panel opened - mirrors
+  /// [_entitiesBeforeMerge].
+  Set<SelectionEntityRef>? _entitiesBeforeDeleteBody;
+
+  /// The pre-delete mesh [_cancelDeleteBody] restores to on Cancel - mirrors
+  /// [_meshBeforeMerge].
+  List<BodyMeshDto>? _meshBeforeDeleteBody;
+
+  /// Locks [_selectionFilterOverrides] to Bodies only for the whole session -
+  /// mirrors [_mergeBodyPickerSelectionFilter] (kept live even though no
+  /// further picking is expected once the panel is open, same "a stray tap
+  /// is harmless" reasoning that field's own doc comment gives).
+  static const _deleteBodySelectionFilter = SelectionFilterState(
     vertex: false,
     edge: false,
     face: false,
@@ -6491,6 +6554,12 @@ class _PartScreenState extends State<PartScreen> {
       // branches above exactly.
       final opened = _openMergePanelForEdit(feature);
       if (!opened) await _endRollback();
+    } else if (feature.type == 'delete_body') {
+      // Direct Editing family (first entry): mirrors the merge branch just
+      // above exactly - rollback is ended by _confirmDeleteBody/
+      // _cancelDeleteBody instead.
+      final opened = _openDeleteBodyPanelForEdit(feature);
+      if (!opened) await _endRollback();
     } else if (feature.type == 'boolean') {
       // Boolean family, Subtract/Common: mirrors the merge branch just
       // above exactly - rollback is ended by _confirmBoolean/_cancelBoolean
@@ -8965,6 +9034,149 @@ class _PartScreenState extends State<PartScreen> {
           // Mirrors [_cancelMirror]'s own optimization: restore the pre-Merge
           // mesh directly (no network round-trip) when a snapshot was
           // captured on open.
+          if (meshBefore != null) {
+            _bodies = meshBefore;
+          } else {
+            await _refreshMesh();
+          }
+          await _refreshFeatures();
+        });
+      }
+    }
+    await _endRollback();
+  }
+
+  // --- Direct Editing family, first entry: Delete Body ------------------------
+  // See this file's own "Direct Editing family, first entry: Delete Body"
+  // state-field section header comment for the full reasoning.
+
+  /// [SelectionContextPanel.onDeleteBody]'s callback - `contextActionsFor`
+  /// enables this button for 1+ Bodies, nothing else, selected. Mirrors
+  /// [_onMirrorTapped]'s shape exactly - those Bodies are already exactly
+  /// what the user wants deleted, so this opens the panel directly with no
+  /// picking step of its own.
+  void _onDeleteBodyTapped() {
+    final bodyIds =
+        _selectedEntities.where((e) => e.kind == SelectionEntityKind.body).map((e) => e.bodyId).toList();
+    if (bodyIds.isEmpty) return; // Defensive - contextActionsFor already guarantees this.
+    _openDeleteBodyPanel(bodyIds);
+  }
+
+  /// Opens [DeleteBodyPanel] and immediately creates the preview
+  /// DeleteBodyFeature - mirrors [_confirmMergeBodySelection]'s own eager-
+  /// create shape (there is no further parameter for a later debounce to
+  /// wait on, so the moment [bodyIds] is known already fully defines this
+  /// Feature). If creation fails (e.g. an unresolvable body id), closes
+  /// the panel back out rather than leaving it stuck open with nothing to
+  /// edit - mirrors [_openFilletPanel]'s identical failure handling.
+  Future<void> _openDeleteBodyPanel(List<String> bodyIds) async {
+    final part = _part;
+    if (part == null) return;
+    setState(() {
+      _deleteBodyActive = true;
+      _deleteBodyBodyIds = bodyIds;
+      _meshBeforeDeleteBody = _bodies;
+      _entitiesBeforeDeleteBody = _selectedEntities;
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _selectionFilterOverrides.push(_deleteBodySelectionFilter);
+    });
+    await _runGuarded(() async {
+      final created = await _api.createDeleteBodyFeature(part.id, bodyIds: bodyIds);
+      _previewDeleteBodyFeatureId = created.id;
+      await _refreshMesh();
+    });
+    if (_previewDeleteBodyFeatureId == null && mounted) {
+      setState(() {
+        _deleteBodyActive = false;
+        _deleteBodyBodyIds = null;
+        _selectedEntities = _entitiesBeforeDeleteBody ?? {};
+        _entitiesBeforeDeleteBody = null;
+        _meshBeforeDeleteBody = null;
+        _selectionFilterOverrides.pop();
+      });
+    }
+  }
+
+  /// B4: opens [DeleteBodyPanel] to edit an *already-existing*
+  /// DeleteBodyFeature - mirrors [_openMergePanelForEdit]'s shape (a
+  /// defensive `bool` return, since a real DeleteBodyFeature always has 1+
+  /// `body_ids`, but this stays defensive rather than assuming).
+  /// [_previewDeleteBodyFeatureId] is seeded with [feature.id] itself so
+  /// [_confirmDeleteBody]/[_cancelDeleteBody] never mistake this for a
+  /// fresh creation to delete on Cancel.
+  bool _openDeleteBodyPanelForEdit(FeatureDto feature) {
+    final bodyIds = feature.bodyIds;
+    if (bodyIds.isEmpty) return false;
+    setState(() {
+      _deleteBodyActive = true;
+      _editingDeleteBodyFeatureId = feature.id;
+      _previewDeleteBodyFeatureId = feature.id;
+      _deleteBodyBodyIds = bodyIds;
+      _deleteBodyEditSnapshot = (bodyIds: bodyIds);
+      _meshBeforeDeleteBody = _bodies;
+      _entitiesBeforeDeleteBody = _selectedEntities;
+      _selectionMode = true;
+      _selectionFilterOverrides.push(_deleteBodySelectionFilter);
+    });
+    return true;
+  }
+
+  /// Keeps the just-created/edited DeleteBodyFeature, restores whatever was
+  /// selected before the panel opened, and rolls B4 rollback forward -
+  /// mirrors [_confirmMerge]'s shape exactly.
+  Future<void> _confirmDeleteBody() async {
+    await _runGuarded(_refreshFeatures);
+    if (!mounted) return;
+    setState(() {
+      _featureTreeVisible = false;
+      _deleteBodyActive = false;
+      _deleteBodyBodyIds = null;
+      _selectedEntities = _entitiesBeforeDeleteBody ?? {};
+      _entitiesBeforeDeleteBody = null;
+      _previewDeleteBodyFeatureId = null;
+      _editingDeleteBodyFeatureId = null;
+      _deleteBodyEditSnapshot = null;
+      _meshBeforeDeleteBody = null;
+      _selectionFilterOverrides.pop();
+    });
+    await _endRollback();
+  }
+
+  /// Deletes the just-created preview DeleteBodyFeature (new-delete flow) or
+  /// PATCHes [_deleteBodyEditSnapshot]'s stashed original `body_ids` back
+  /// (edit flow) - mirrors [_cancelMerge]'s structure exactly.
+  Future<void> _cancelDeleteBody() async {
+    final part = _part;
+    final previewId = _previewDeleteBodyFeatureId;
+    final meshBefore = _meshBeforeDeleteBody;
+    final wasEditing = _editingDeleteBodyFeatureId != null;
+    final editSnapshot = _deleteBodyEditSnapshot;
+    setState(() {
+      _featureTreeVisible = false;
+      _deleteBodyActive = false;
+      _deleteBodyBodyIds = null;
+      _selectedEntities = _entitiesBeforeDeleteBody ?? {};
+      _entitiesBeforeDeleteBody = null;
+      _previewDeleteBodyFeatureId = null;
+      _editingDeleteBodyFeatureId = null;
+      _deleteBodyEditSnapshot = null;
+      _meshBeforeDeleteBody = null;
+      _selectionFilterOverrides.pop();
+    });
+    if (part != null && previewId != null) {
+      if (wasEditing && editSnapshot != null) {
+        await _runGuarded(() async {
+          await _api.updateDeleteBodyFeature(part.id, previewId, bodyIds: editSnapshot.bodyIds);
+          await _refreshFeatures();
+        });
+      } else {
+        await _runGuarded(() async {
+          await _api.deleteFeature(part.id, previewId);
+          // Mirrors [_cancelMerge]'s own optimization: restore the pre-
+          // delete mesh directly (no network round-trip) when a snapshot
+          // was captured on open.
           if (meshBefore != null) {
             _bodies = meshBefore;
           } else {
@@ -11499,6 +11711,7 @@ class _PartScreenState extends State<PartScreen> {
                     !_mergeActive &&
                     !_booleanActive &&
                     !_splitActive &&
+                    !_deleteBodyActive &&
                     !_profilePickerActive &&
                     !_pathPickerActive)
                   Positioned.fill(
@@ -11518,6 +11731,7 @@ class _PartScreenState extends State<PartScreen> {
                         onNewSketch: _onNewSketchTapped,
                         onMirror: _onMirrorTapped,
                         onPattern: _onPatternTapped,
+                        onDeleteBody: _onDeleteBodyTapped,
                       ),
                       bodyNames: _selectionBodyNames,
                     ),
@@ -11787,6 +12001,21 @@ class _PartScreenState extends State<PartScreen> {
                       bodyCount: _mergeBodyIds?.length ?? 0,
                       onConfirm: _confirmMerge,
                       onCancel: _cancelMerge,
+                    ),
+                  ),
+                // Direct Editing family (first entry): [DeleteBodyPanel]
+                // has no picking step of its own - always opens straight
+                // into this confirm/summary state, mirroring [MergePanel]'s
+                // own slot shape immediately above.
+                if (_deleteBodyActive)
+                  Positioned.fill(
+                    key: const ValueKey('delete-body-panel-slot'),
+                    child: DeleteBodyPanel(
+                      key: ValueKey(_editingDeleteBodyFeatureId ?? _deleteBodyBodyIds?.join(',')),
+                      title: _editingDeleteBodyFeatureId != null ? 'Edit Delete Body' : 'Delete Body',
+                      bodyCount: _deleteBodyBodyIds?.length ?? 0,
+                      onConfirm: _confirmDeleteBody,
+                      onCancel: _cancelDeleteBody,
                     ),
                   ),
                 // [BooleanPanel] itself only ever handles the `confirming`
@@ -12399,7 +12628,8 @@ class _PartScreenState extends State<PartScreen> {
                         _mirrorActive ||
                         _patternActive ||
                         _mergeActive ||
-                        _booleanActive)
+                        _booleanActive ||
+                        _deleteBodyActive)
                     ? 180
                     : 0,
               ),
@@ -12418,6 +12648,7 @@ class _PartScreenState extends State<PartScreen> {
                       !_patternActive &&
                       !_mergeActive &&
                       !_booleanActive &&
+                      !_deleteBodyActive &&
                       !_profilePickerActive &&
                       !_pathPickerActive &&
                       // On-device feedback ("the tooltip at the top of the

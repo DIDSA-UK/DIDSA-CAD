@@ -38,6 +38,7 @@ from app.document.models import (
     BooleanFeature,
     ChamferFeature,
     CreatePlaneFeature,
+    DeleteBodyFeature,
     ExtrudeFeature,
     ExtrudeType,
     Feature,
@@ -474,6 +475,13 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
             depends_on = tuple(
                 {base_feature_id(bid) for bid in (*feature.target_body_ids, *feature.tool_body_ids)}
             )
+        elif isinstance(feature, DeleteBodyFeature):
+            # Direct Editing family: identical `body_ids`-derived treatment
+            # to MergeFeature just above - deleting the Extrude/Revolve/etc.
+            # that created a Body a DeleteBodyFeature removes must cascade-
+            # delete the DeleteBodyFeature too, same reasoning as every
+            # other reference kind in this function.
+            depends_on = tuple({base_feature_id(bid) for bid in feature.body_ids})
         elif isinstance(feature, SplitFeature):
             depends_on = _split_dependencies(part, feature)
         elif isinstance(feature, PatternFeature):

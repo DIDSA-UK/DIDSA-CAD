@@ -95,6 +95,7 @@ from app.document.models import (
     BooleanFeature,
     ChamferFeature,
     CreatePlaneFeature,
+    DeleteBodyFeature,
     Document,
     ExtrudeFeature,
     ExtrudeType,
@@ -167,6 +168,9 @@ from app.document.schemas import (
     CreatePlaneFeatureCreate,
     CreatePlaneFeatureResponse,
     CreatePlaneFeatureUpdate,
+    DeleteBodyFeatureCreate,
+    DeleteBodyFeatureResponse,
+    DeleteBodyFeatureUpdate,
     ExternalEdgeReferenceCreate,
     ExternalEdgeReferenceResponse,
     ExternalVertexReferenceCreate,
@@ -674,6 +678,13 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             target_body_ids=feature.target_body_ids,
             tool_body_ids=feature.tool_body_ids,
             consume_tool_bodies=feature.consume_tool_bodies,
+            locked=part.is_locked(feature.id),
+            produces=feature.produces,
+        )
+    if isinstance(feature, DeleteBodyFeature):
+        return DeleteBodyFeatureResponse(
+            id=feature.id,
+            body_ids=feature.body_ids,
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
@@ -1187,6 +1198,32 @@ def _validate_merge_body_ids(part: Part, body_ids: list[str]) -> None:
             status_code=422,
             detail="MergeFeature requires at least 2 body_ids entries - there is nothing to merge "
             "with fewer than two",
+        )
+    for body_id in body_ids:
+        source_feature = part.get_feature(base_feature_id(body_id))
+        if source_feature is None or source_feature.produces != Produces.BODY:
+            raise HTTPException(
+                status_code=400,
+                detail=f"body_ids entry {body_id!r} does not refer to a Body-producing Feature in this Part",
+            )
+
+
+def _validate_delete_body_ids(part: Part, body_ids: list[str]) -> None:
+    """Direct Editing family (first entry): `DeleteBodyFeature` requires at
+    least 1 `body_ids` entry - there is nothing to delete with an empty
+    list (422, same structured-validation-error shape `_validate_merge_
+    body_ids`'s fewer-than-2 case uses, just a lower floor since deleting
+    a single Body is a perfectly normal case, unlike merging one). Each
+    entry must resolve (via `base_feature_id`, same round-trip tolerance as
+    `_validate_merge_body_ids`) to a Feature that currently produces a Body
+    in this Part - identical `produces == Produces.BODY` check, no
+    Boss/Cut-specific producer-type set to narrow against (same reasoning
+    as `_validate_merge_body_ids`'s own docstring)."""
+    if not body_ids:
+        raise HTTPException(
+            status_code=422,
+            detail="DeleteBodyFeature requires at least 1 body_ids entry - there is nothing to "
+            "delete with an empty list",
         )
     for body_id in body_ids:
         source_feature = part.get_feature(base_feature_id(body_id))
@@ -3556,6 +3593,50 @@ def update_boolean_feature(
         if payload.consume_tool_bodies is not None
         else feature.consume_tool_bodies
     )
+    return _feature_response(part, feature)
+
+
+@router.post(
+    "/parts/{part_id}/delete-body-features", response_model=DeleteBodyFeatureResponse, status_code=201
+)
+def create_delete_body_feature(
+    part_id: str, payload: DeleteBodyFeatureCreate
+) -> DeleteBodyFeatureResponse:
+    """Direct Editing family (first entry): mirrors `create_merge_feature`'s
+    shape (fails closed on payload-shape validation alone, no eager OCCT
+    resolve - `DeleteBodyFeature` has no per-instance geometry of its own to
+    fail, it's a plain removal from `bodies` - see `app.document.
+    delete_body.apply_delete_body_to_bodies`)."""
+    part = get_part_or_404(part_id)
+    body_ids = list(payload.body_ids)
+    _validate_delete_body_ids(part, body_ids)
+    feature = DeleteBodyFeature(id=str(uuid.uuid4()), body_ids=body_ids)
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_delete_body_feature_or_404(part: Part, feature_id: str) -> DeleteBodyFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, DeleteBodyFeature):
+        raise HTTPException(status_code=404, detail="Delete body feature not found")
+    return feature
+
+
+@router.patch(
+    "/parts/{part_id}/delete-body-features/{feature_id}", response_model=DeleteBodyFeatureResponse
+)
+def update_delete_body_feature(
+    part_id: str, feature_id: str, payload: DeleteBodyFeatureUpdate
+) -> DeleteBodyFeatureResponse:
+    """Mirrors `update_merge_feature`'s exact shape - same validate-before-
+    mutate discipline, omitted fields keep their current value."""
+    part = get_part_or_404(part_id)
+    feature = _get_delete_body_feature_or_404(part, feature_id)
+
+    new_body_ids = list(payload.body_ids) if payload.body_ids is not None else feature.body_ids
+    _validate_delete_body_ids(part, new_body_ids)
+
+    feature.body_ids = new_body_ids
     return _feature_response(part, feature)
 
 

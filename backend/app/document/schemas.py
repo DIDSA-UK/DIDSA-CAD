@@ -682,6 +682,32 @@ class BooleanFeatureResponse(BaseModel):
     produces: Produces
 
 
+class DeleteBodyFeatureCreate(BaseModel):
+    """Direct Editing family (first entry): creates a `DeleteBodyFeature`
+    removing every Body named in `body_ids` (1+ required - see `app.
+    document.router._validate_delete_body_ids`). No "keep" mode - see
+    `DeleteBodyFeature`'s own docstring."""
+
+    body_ids: list[str]
+
+
+class DeleteBodyFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `MergeFeatureUpdate`/`BooleanFeatureUpdate`."""
+
+    body_ids: list[str] | None = None
+
+
+class DeleteBodyFeatureResponse(BaseModel):
+    type: Literal["delete_body"] = "delete_body"
+    id: str
+    body_ids: list[str]
+    locked: bool
+    # B1: see SketchFeatureResponse.produces above - always NONE for a
+    # DeleteBodyFeature (it removes geometry, never contributes any).
+    produces: Produces
+
+
 class SplitToolRefSchema(BaseModel):
     """Boolean family, fourth/last entry: the wire counterpart to `app.
     document.models.SplitToolRef` - exactly one of `plane_ref`/`surface_
@@ -1886,6 +1912,7 @@ FeatureResponse = Union[
     MirrorFeatureResponse,
     MergeFeatureResponse,
     BooleanFeatureResponse,
+    DeleteBodyFeatureResponse,
     SplitFeatureResponse,
     PatternFeatureResponse,
     ImportFeatureResponse,

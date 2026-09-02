@@ -148,9 +148,16 @@ List<SelectionContextAction> contextActionsFor(
       // for an already-existing Feature, its own long-press context menu -
       // see `feature_context_menu.dart`) are the only entry points for
       // all four now.
+      // Direct Editing family (docs/direct-editing-scope.md): Delete Body
+      // has no target-vs-tool ambiguity the way Merge/Subtract/Common do
+      // (see the removed-Boolean-family comment above) - every selected
+      // Body is simply marked for deletion, symmetric like Mirror/Pattern,
+      // so it's safe to offer directly from this table rather than only
+      // through a guided flow.
       return const [
         SelectionContextAction('Mirror', enabled: true),
         SelectionContextAction('Pattern', enabled: true),
+        SelectionContextAction('Delete Body', enabled: true),
       ];
     }
     return const [];

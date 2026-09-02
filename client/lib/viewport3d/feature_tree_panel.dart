@@ -50,6 +50,8 @@ String featureDisplayName(List<FeatureDto> features, int index) {
     'boolean' => feature.operation == 'common' ? 'Common' : 'Subtract',
     // Boolean family, fourth/last entry.
     'split' => 'Split',
+    // Direct Editing family, first entry.
+    'delete_body' => 'Delete Body',
     // Gear-tree UX: the gear-family Feature types (built straight from
     // parameters via their own dedicated design screen - GearDesignScreen/
     // BevelDesignScreen/GearChainDesignScreen - never through a Sketch, see
@@ -112,6 +114,11 @@ String _featureTypeAsset(String type) => switch (type) {
       // from 1, not 1 from 2+, a visually distinct enough silhouette to be
       // worth its own icon (see `assets/icons/feature/feature_split.svg`).
       'split' => 'assets/icons/feature/feature_split.svg',
+      // Direct Editing family, first entry: its own distinct glyph - a
+      // DeleteBodyFeature removes geometry entirely rather than combining
+      // or splitting it, a different-enough operation to be worth its own
+      // icon rather than reusing Merge/Boolean's or Split's.
+      'delete_body' => 'assets/icons/feature/feature_delete_body.svg',
       // Gear-tree UX: one shared "gear" category glyph for every gear-family
       // Feature type (spur/internal gear, rack, bevel gear, bevel pair, gear
       // chain, planetary set) - they're all built by the same family of
