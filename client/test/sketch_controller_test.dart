@@ -2035,6 +2035,17 @@ class _FakeBackend {
             'line_id': body['line_id'],
           };
           break;
+        case 'curve_tangent':
+          constraint = {
+            'id': id,
+            'type': 'curve_tangent',
+            'entity1_id': body['entity1_id'],
+            'entity2_id': body['entity2_id'],
+            'center1_point_id': _centerRadiusPointIds(body['entity1_id'] as String).$1,
+            'center2_point_id': _centerRadiusPointIds(body['entity2_id'] as String).$1,
+            'shared_point_id': body['shared_point_id'],
+          };
+          break;
         case 'equal_radius':
           final radius1 = _centerRadiusPointIds(body['entity1_id'] as String);
           final entity2Id = body['entity2_id'] as String;
@@ -4770,6 +4781,147 @@ void main() {
     });
   });
 
+  group(
+      'Circle drag respects a confirmed driving dimension (on-device feedback: "a circle size '
+      'can be changed by dragging when it has a dimension that should be driving it - when '
+      'dropped, the dimension changes instead of the circle returning to the dimension driven '
+      'size" - the Circle group above only ever exercised a still-provisional radius dimension, '
+      'which is the one case free-form resizing is actually correct for)', () {
+    test(
+        'dragging the radius Point with a confirmed dimension and a free centre translates the '
+        'whole Circle instead of resizing it, and never touches the dimension\'s own value',
+        () async {
+      controller.selectDrawTool(SketchTool.circle);
+      await controller.handleCanvasTap(20, 20); // centre, deliberately off the origin - stays free
+      await controller.handleCanvasTap(30, 20); // radius 10
+      controller.exitToSelectMode();
+      final circle = controller.circles.values.single;
+      final radiusConstraintId =
+          controller.constraints.values.whereType<DistanceConstraintDto>().single.id;
+
+      controller.enterDimensionMode();
+      // On the boundary but off every cardinal axis (see the reference
+      // "auto-created radius dimension" test above in this file for why -
+      // tapping a cardinal Point's own exact position would select that
+      // Point instead of the Circle itself).
+      await controller.handleCanvasTap(20 + 10 * math.cos(math.pi / 4), 20 + 10 * math.sin(math.pi / 4));
+      await controller.confirmGhostValue('radius', 10.0);
+      final confirmed = controller.constraints[radiusConstraintId] as DistanceConstraintDto;
+      expect(confirmed.provisional, isFalse);
+      controller.exitToSelectMode();
+
+      final centreBefore = controller.points[circle.centerPointId]!;
+      final northBefore = controller.points[circle.cardinalPointIds[0]]!;
+      final eastBefore = controller.points[circle.cardinalPointIds[1]]!;
+
+      backend.requestLog.clear();
+      final rim0 = controller.points[circle.radiusPointId]!;
+      controller.cursorX = rim0.x;
+      controller.cursorY = rim0.y;
+      expect(controller.beginPointDrag(circle.radiusPointId), isTrue);
+      await controller.updatePointDrag(rim0.x + 7, rim0.y + 3); // dragged (7, 3), not just outward
+      await controller.endPointDrag();
+
+      expect(
+        backend.requestLog.any((r) => r.contains('/constraints/$radiusConstraintId')),
+        isFalse,
+        reason: 'the confirmed dimension must never be PATCHed by a plain drag',
+      );
+      final centreAfter = controller.points[circle.centerPointId]!;
+      final rimAfter = controller.points[circle.radiusPointId]!;
+      final northAfter = controller.points[circle.cardinalPointIds[0]]!;
+      final eastAfter = controller.points[circle.cardinalPointIds[1]]!;
+      expect(centreAfter.x, closeTo(centreBefore.x + 7, 1e-6));
+      expect(centreAfter.y, closeTo(centreBefore.y + 3, 1e-6));
+      expect(northAfter.x, closeTo(northBefore.x + 7, 1e-6));
+      expect(northAfter.y, closeTo(northBefore.y + 3, 1e-6));
+      expect(eastAfter.x, closeTo(eastBefore.x + 7, 1e-6));
+      expect(eastAfter.y, closeTo(eastBefore.y + 3, 1e-6));
+      final radiusAfter =
+          math.sqrt(math.pow(rimAfter.x - centreAfter.x, 2) + math.pow(rimAfter.y - centreAfter.y, 2));
+      expect(radiusAfter, closeTo(10.0, 1e-6), reason: 'the confirmed radius must be exactly preserved');
+      final reloaded = controller.constraints[radiusConstraintId] as DistanceConstraintDto;
+      expect(reloaded.distance, closeTo(10.0, 1e-6));
+    });
+
+    test(
+        'dragging the centre with a confirmed dimension still translates the whole Circle, same as '
+        'before confirming', () async {
+      controller.selectDrawTool(SketchTool.circle);
+      await controller.handleCanvasTap(20, 20);
+      await controller.handleCanvasTap(30, 20);
+      controller.exitToSelectMode();
+      final circle = controller.circles.values.single;
+
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(20 + 10 * math.cos(math.pi / 4), 20 + 10 * math.sin(math.pi / 4));
+      await controller.confirmGhostValue('radius', 10.0);
+      controller.exitToSelectMode();
+
+      final northBefore = controller.points[circle.cardinalPointIds[0]]!;
+      final centre0 = controller.points[circle.centerPointId]!;
+      controller.cursorX = centre0.x;
+      controller.cursorY = centre0.y;
+      expect(controller.beginPointDrag(circle.centerPointId), isTrue);
+      await controller.updatePointDrag(centre0.x + 4, centre0.y - 6);
+
+      final northAfter = controller.points[circle.cardinalPointIds[0]]!;
+      expect(northAfter.x, closeTo(northBefore.x + 4, 1e-6));
+      expect(northAfter.y, closeTo(northBefore.y - 6, 1e-6));
+    });
+
+    test(
+        'dragging the radius Point is refused outright once the confirmed dimension\'s own centre '
+        'is fully pinned/grounded - there is nowhere left for the drag to go', () async {
+      controller.selectDrawTool(SketchTool.circle);
+      await controller.handleCanvasTap(0, 0); // centre placed exactly on the origin
+      await controller.handleCanvasTap(10, 0); // radius 10
+      controller.exitToSelectMode();
+      final circle = controller.circles.values.single;
+
+      // Ground the centre by tying it Coincident to the origin (same
+      // grounding recipe the "fully constrained and grounded Point refuses
+      // to be dragged" test above this one uses) - selected directly via
+      // [selectEntity] rather than tapping, since the centre was placed
+      // exactly on top of the origin and so isn't distinctly tappable.
+      controller.selectEntity(SketchSelection(kind: SelectionKind.point, id: controller.originPointId!));
+      controller.selectEntity(SketchSelection(kind: SelectionKind.point, id: circle.centerPointId));
+      await controller.addCoincidentConstraint();
+
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(10 * math.cos(math.pi / 4), 10 * math.sin(math.pi / 4));
+      await controller.confirmGhostValue('radius', 10.0);
+      controller.exitToSelectMode();
+
+      final radiusConstraint = controller.constraints.values.whereType<DistanceConstraintDto>().single;
+      expect(radiusConstraint.provisional, isFalse);
+      expect(controller.isPointFullyPinned(circle.centerPointId), isTrue);
+      expect(controller.beginPointDrag(circle.radiusPointId), isFalse);
+    });
+
+    test(
+        'dragging the radius Point with a still-provisional dimension keeps resizing (the '
+        'pre-existing, still-correct behaviour) even after this fix', () async {
+      controller.selectDrawTool(SketchTool.circle);
+      await controller.handleCanvasTap(20, 20);
+      await controller.handleCanvasTap(30, 20); // radius 10, never confirmed
+      controller.exitToSelectMode();
+      final circle = controller.circles.values.single;
+      final radiusConstraint = controller.constraints.values.whereType<DistanceConstraintDto>().single;
+      expect(radiusConstraint.provisional, isTrue);
+
+      final rim0 = controller.points[circle.radiusPointId]!;
+      controller.cursorX = rim0.x;
+      controller.cursorY = rim0.y;
+      expect(controller.beginPointDrag(circle.radiusPointId), isTrue);
+      await controller.updatePointDrag(20, 45); // dragged straight out to radius 25
+
+      final rim = controller.points[circle.radiusPointId]!;
+      expect(rim.x, closeTo(20, 1e-6));
+      expect(rim.y, closeTo(45, 1e-6));
+    });
+  });
+
   group('Arc closed-form drag (same on-device bug/fix as Circle - see that group\'s own doc comment - '
       'an Arc\'s own radius DistanceConstraint is provisional too, so the general solver path left it '
       'genuinely free during a drag)', () {
@@ -4971,6 +5123,103 @@ void main() {
     final maxLength = lengths.reduce(math.max);
     final minLength = lengths.reduce(math.min);
     expect(maxLength - minLength, lessThan(1e-2), reason: 'EqualLength chain drifted: $lengths');
+  });
+
+  group(
+      'Polygon centre drag (on-device feedback: "dragging the centre of a polygon completely broke, '
+      'collapsed") - bug fix: _intactPolygonForVertex used to delegate entirely to '
+      '_polygonForVertex, a vertex-membership-only check that never matches the centre Point id, so '
+      'a centre drag always fell through to the general solver path, never the closed-form one '
+      'every other shape\'s own centre drag already used. Invisible once the radius dimension was '
+      'confirmed, but with it still provisional (the common case right after drawing one) the '
+      'solver skips that Constraint entirely, leaving every vertex\'s own distance from the dragged '
+      'centre with nothing pinning it at all - free to collapse toward zero', () {
+    test('dragging the centre of a still-provisional (freshly drawn, undimensioned) Polygon '
+        'translates every vertex by the same delta instead of collapsing them toward the centre',
+        () async {
+      controller.selectDrawTool(SketchTool.polygon);
+      controller.setPolygonSides(5);
+      await controller.handleCanvasTap(20, 20); // centre, deliberately off the origin - stays free
+      await controller.handleCanvasTap(30, 20); // first vertex - radius 10
+      controller.exitToSelectMode();
+      final polygon = controller.polygons.values.single;
+      final radiusConstraint = controller.constraints.values.whereType<DistanceConstraintDto>().single;
+      expect(radiusConstraint.provisional, isTrue, reason: 'sanity check: never confirmed in this test');
+
+      final verticesBefore = {for (final id in polygon.vertexPointIds) id: controller.points[id]!};
+
+      controller.cursorX = 20;
+      controller.cursorY = 20;
+      expect(controller.beginPointDrag(polygon.centerPointId), isTrue);
+      await controller.updatePointDrag(25, 27); // dragged (5, 7)
+
+      final centreAfter = controller.points[polygon.centerPointId]!;
+      expect(centreAfter.x, closeTo(25.0, 1e-6));
+      expect(centreAfter.y, closeTo(27.0, 1e-6));
+      for (final id in polygon.vertexPointIds) {
+        final before = verticesBefore[id]!;
+        final after = controller.points[id]!;
+        expect(after.x, closeTo(before.x + 5.0, 1e-6), reason: '$id.x did not translate cleanly');
+        expect(after.y, closeTo(before.y + 7.0, 1e-6), reason: '$id.y did not translate cleanly');
+        final radius = math.sqrt(math.pow(after.x - centreAfter.x, 2) + math.pow(after.y - centreAfter.y, 2));
+        expect(radius, closeTo(10.0, 1e-6), reason: '$id collapsed or resized instead of translating');
+      }
+    });
+
+    test('dragging the centre of a Polygon with a confirmed radius dimension still translates '
+        'cleanly, and never touches the dimension\'s own value', () async {
+      controller.selectDrawTool(SketchTool.polygon);
+      controller.setPolygonSides(5);
+      await controller.handleCanvasTap(20, 20);
+      await controller.handleCanvasTap(30, 20); // radius 10
+      controller.exitToSelectMode();
+      final polygon = controller.polygons.values.single;
+      final radiusConstraintId = controller.constraints.values.whereType<DistanceConstraintDto>().single.id;
+      final radiusConstraint = controller.constraints[radiusConstraintId] as DistanceConstraintDto;
+      controller.constraints[radiusConstraintId] = DistanceConstraintDto(
+        id: radiusConstraint.id,
+        pointAId: radiusConstraint.pointAId,
+        pointBId: radiusConstraint.pointBId,
+        distance: radiusConstraint.distance,
+        provisional: false,
+      );
+
+      backend.requestLog.clear();
+      controller.cursorX = 20;
+      controller.cursorY = 20;
+      expect(controller.beginPointDrag(polygon.centerPointId), isTrue);
+      await controller.updatePointDrag(25, 27);
+      await controller.endPointDrag();
+
+      expect(
+        backend.requestLog.any((r) => r.contains('/constraints/$radiusConstraintId')),
+        isFalse,
+        reason: 'a pure centre translate must never PATCH the confirmed radius dimension',
+      );
+      final centreAfter = controller.points[polygon.centerPointId]!;
+      for (final id in polygon.vertexPointIds) {
+        final after = controller.points[id]!;
+        final radius = math.sqrt(math.pow(after.x - centreAfter.x, 2) + math.pow(after.y - centreAfter.y, 2));
+        expect(radius, closeTo(10.0, 1e-6));
+      }
+    });
+
+    test('dragging the centre is refused outright once it is itself fully pinned/grounded - there '
+        'is nowhere left for a translate to go', () async {
+      controller.selectDrawTool(SketchTool.polygon);
+      controller.setPolygonSides(5);
+      await controller.handleCanvasTap(0, 0); // centre placed exactly on the origin
+      await controller.handleCanvasTap(10, 0); // radius 10
+      controller.exitToSelectMode();
+      final polygon = controller.polygons.values.single;
+
+      controller.selectEntity(SketchSelection(kind: SelectionKind.point, id: controller.originPointId!));
+      controller.selectEntity(SketchSelection(kind: SelectionKind.point, id: polygon.centerPointId));
+      await controller.addCoincidentConstraint();
+
+      expect(controller.isPointFullyPinned(polygon.centerPointId), isTrue);
+      expect(controller.beginPointDrag(polygon.centerPointId), isFalse);
+    });
   });
 
   group('On-device feedback: deleting a Point/Line that belongs to a Slot/Rectangle no longer leaves '
@@ -5246,8 +5495,8 @@ void main() {
     expect(circle.edgeY, 2);
   });
 
-  test('activeDrawGhost previews the ellipse outline (clamped minor radius) once center and major '
-      'point are both placed', () async {
+  test('activeDrawGhost previews the ellipse outline once centre and major point are both placed',
+      () async {
     controller.selectDrawTool(SketchTool.ellipse);
     await controller.handleCanvasTap(0, 0); // center
     await controller.handleCanvasTap(10, 0); // major point - major radius 10
@@ -5265,13 +5514,34 @@ void main() {
     expect(ellipse.majorX, 10);
     expect(ellipse.majorY, 0);
     expect(ellipse.minorRadius, closeTo(4, 1e-9));
+  });
 
-    // Clamped: a cursor further from the axis than the major radius (10)
-    // never previews a minor radius exceeding it.
+  test(
+      'activeDrawGhost swaps which axis previews as major once the perpendicular (candidate minor) '
+      'distance exceeds the placed axis\'s own length, rather than clamping it down (on-device '
+      'feedback: "it\'s impossible for the second axis to be larger than the first axis - either '
+      'axis should be able to be major or minor")', () async {
+    controller.selectDrawTool(SketchTool.ellipse);
+    await controller.handleCanvasTap(0, 0); // center
+    await controller.handleCanvasTap(10, 0); // major point - major radius 10
+
+    // Perpendicular distance from (5, 50) to the y=0 major axis is 50,
+    // well past the placed axis's own length (10) - the perpendicular
+    // axis becomes the new major one instead of clamping to 10.
     controller.cursorX = 5;
     controller.cursorY = 50;
-    final clamped = controller.activeDrawGhost as EllipseGhost;
-    expect(clamped.minorRadius, closeTo(10, 1e-9));
+    final ghost = controller.activeDrawGhost as EllipseGhost;
+    expect(ghost.centerX, 0);
+    expect(ghost.centerY, 0);
+    // The new major axis is the *perpendicular projection* of the cursor
+    // (matching how the un-swapped minor radius was always a perpendicular
+    // projection, not a raw cursor distance) - straight up the Y axis from
+    // this cursor position, at length 50.
+    expect(ghost.majorX, closeTo(0, 1e-9));
+    expect(ghost.majorY, closeTo(50, 1e-9));
+    // The originally-placed axis's own length (10) becomes the new minor
+    // radius - major >= minor still holds, just via the other axis.
+    expect(ghost.minorRadius, closeTo(10, 1e-9));
   });
 
   test('the ellipse tool places center, major point, then minor radius across three taps, creating '
@@ -5308,6 +5578,79 @@ void main() {
     // the CoincidentConstraint tying the new centre Point to the origin
     // (see SketchController._pointIdAt's own doc comment).
     expect(controller.constraints.length, 6);
+  });
+
+  test(
+      'placing an ellipse whose third tap ends up perpendicular-further from the axis than the '
+      'second tap relocates the already-placed major Point to the real (longer) major axis instead '
+      'of clamping the minor radius down to match it (on-device feedback: "either axis should be '
+      'able to be major or minor")', () async {
+    controller.selectDrawTool(SketchTool.ellipse);
+    await controller.handleCanvasTap(20, 0); // centre, away from the origin
+    await controller.handleCanvasTap(30, 0); // major point - major radius 10
+    final placedMajorId = controller.ellipseMajorPointId!;
+    await controller.handleCanvasTap(25, 50); // perpendicular distance from the axis: 50
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.ellipses.length, 1);
+    final ellipse = controller.ellipses.values.single;
+    expect(ellipse.majorPointId, placedMajorId, reason: 'the same Point relocates, rather than a new one appearing');
+    expect(ellipse.minorRadius, closeTo(10, 1e-6), reason: 'the originally-placed axis (10) becomes the new minor radius');
+    expect(controller.points[ellipse.majorPointId]!.x, closeTo(20, 1e-6));
+    expect(controller.points[ellipse.majorPointId]!.y, closeTo(50, 1e-6));
+    final major = controller.points[ellipse.majorPointId]!;
+    final center = controller.points[ellipse.centerPointId]!;
+    final majorRadius = math.sqrt(math.pow(major.x - center.x, 2) + math.pow(major.y - center.y, 2));
+    expect(majorRadius, greaterThan(ellipse.minorRadius), reason: 'major >= minor still holds, via the swapped axis');
+  });
+
+  test(
+      'the major-axis tap landing on the origin (or any other already-existing Point) falls back to '
+      'the old clamped (not swapped) behaviour, rather than relocating a Point something else might '
+      'depend on for a purely internal axis-relabeling decision', () async {
+    controller.selectDrawTool(SketchTool.ellipse);
+    await controller.handleCanvasTap(10, 0); // centre, away from the origin
+    await controller.handleCanvasTap(0, 0); // major point - snaps near the origin
+    // Never literally the origin's own id (see _pointIdAt's own "never
+    // reuse the origin's own id" fix) - a fresh Point coincident with it
+    // instead - but still correctly flagged as "reused", not fresh, since
+    // relocating it would violate that very CoincidentConstraint.
+    expect(controller.ellipseMajorPointId, isNot(controller.originPointId));
+    await controller.handleCanvasTap(5, 50); // perpendicular distance far exceeds the major radius (10)
+
+    expect(controller.errorMessage, isNull);
+    final ellipse = controller.ellipses.values.single;
+    expect(controller.points[ellipse.majorPointId]!.x, closeTo(0, 1e-9), reason: 'the reused Point never moved');
+    expect(controller.points[ellipse.majorPointId]!.y, closeTo(0, 1e-9));
+    expect(ellipse.minorRadius, closeTo(10, 1e-6), reason: 'clamped to the (unmoved) major radius, old behaviour');
+  });
+
+  test(
+      'the same fallback applies to an ordinary reused Point, not just the origin - tapping the '
+      'major axis exactly onto an existing Line\'s own endpoint must never silently drag that Line '
+      'along for the ride just because this Ellipse\'s own axes get relabeled', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(30, 0);
+    await controller.handleCanvasTap(30, 30); // an unrelated Line, one endpoint at (30, 0)
+    controller.finishChain();
+    controller.exitToSelectMode();
+    final line = controller.lines.values.single;
+    final sharedPointId = controller.points[line.startPointId]!.x == 30 && controller.points[line.startPointId]!.y == 0
+        ? line.startPointId
+        : line.endPointId;
+
+    controller.selectDrawTool(SketchTool.ellipse);
+    await controller.handleCanvasTap(20, 0); // centre
+    await controller.handleCanvasTap(30, 0); // major point - lands exactly on the Line's own endpoint
+    expect(controller.ellipseMajorPointId, sharedPointId, reason: 'sanity check: the tap really did reuse it');
+    await controller.handleCanvasTap(25, 50); // perpendicular distance far exceeds the major radius (10)
+
+    expect(controller.errorMessage, isNull);
+    final ellipse = controller.ellipses.values.single;
+    expect(ellipse.majorPointId, sharedPointId);
+    expect(controller.points[sharedPointId]!.x, closeTo(30, 1e-9), reason: 'the shared Line endpoint never moved');
+    expect(controller.points[sharedPointId]!.y, closeTo(0, 1e-9));
+    expect(ellipse.minorRadius, closeTo(10, 1e-6), reason: 'clamped, not swapped, to protect the shared Point');
   });
 
   test('tapping an Ellipse in select mode, away from its defining Points, recognizes SelectionKind.ellipse',
@@ -5688,6 +6031,225 @@ void main() {
       final majorAfter = controller.points[ellipse.majorPointId]!;
       expect(majorAfter.x, closeTo(majorBefore.x, 1e-9));
       expect(majorAfter.y, closeTo(majorBefore.y, 1e-9));
+    });
+  });
+
+  group('EllipseArc closed-form drag (same on-device bug/fix as Ellipse - both of an EllipseArc\'s '
+      'own radius DistanceConstraints are provisional too - generalized to also carry the '
+      'curve-tracking start/end Points along, which a plain Ellipse has none of)', () {
+    Future<SketchEllipseArcView> placeArc() async {
+      controller.selectDrawTool(SketchTool.ellipseArc);
+      await controller.handleCanvasTap(20, 20); // center
+      await controller.handleCanvasTap(30, 20); // major point - radius 10
+      await controller.handleCanvasTap(25, 24); // minor radius 4
+      await controller.handleCanvasTap(20, 24); // start angle: local (0, 4) -> pi/2
+      await controller.handleCanvasTap(10, 20); // end angle: local (-10, 0) -> pi
+      return controller.ellipseArcs.values.single;
+    }
+
+    test('dragging the centre translates every Point (major/minor/start/end) by the same delta, '
+        'both radii and the rotation unchanged, with zero solver/network calls', () async {
+      final ellipseArc = await placeArc();
+      final majorBefore = controller.points[ellipseArc.majorPointId]!;
+      final minorBefore = controller.points[ellipseArc.minorPointId]!;
+      final startBefore = controller.points[ellipseArc.startPointId]!;
+      final endBefore = controller.points[ellipseArc.endPointId]!;
+
+      backend.requestLog.clear();
+      final center0 = controller.points[ellipseArc.centerPointId]!;
+      controller.cursorX = center0.x;
+      controller.cursorY = center0.y;
+      expect(controller.beginPointDrag(ellipseArc.centerPointId), isTrue);
+      await controller.updatePointDrag(center0.x + 5, center0.y + 5);
+
+      expect(backend.requestLog.any((r) => r.contains('/solve')), isFalse,
+          reason: 'the closed-form path never needs to solve anything');
+      final majorAfter = controller.points[ellipseArc.majorPointId]!;
+      final minorAfter = controller.points[ellipseArc.minorPointId]!;
+      final startAfter = controller.points[ellipseArc.startPointId]!;
+      final endAfter = controller.points[ellipseArc.endPointId]!;
+      expect(majorAfter.x, closeTo(majorBefore.x + 5, 1e-9));
+      expect(majorAfter.y, closeTo(majorBefore.y + 5, 1e-9));
+      expect(minorAfter.x, closeTo(minorBefore.x + 5, 1e-9));
+      expect(minorAfter.y, closeTo(minorBefore.y + 5, 1e-9));
+      expect(startAfter.x, closeTo(startBefore.x + 5, 1e-9));
+      expect(startAfter.y, closeTo(startBefore.y + 5, 1e-9));
+      expect(endAfter.x, closeTo(endBefore.x + 5, 1e-9));
+      expect(endAfter.y, closeTo(endBefore.y + 5, 1e-9));
+    });
+
+    test('dragging the major-axis Point resizes and rotates the ellipse, carries the minor radius '
+        'along at its old magnitude, and re-projects start/end onto the new curve at their own '
+        'unchanged parametric angle rather than leaving them off-curve', () async {
+      final ellipseArc = await placeArc();
+      final center = controller.points[ellipseArc.centerPointId]!;
+
+      backend.requestLog.clear();
+      final major0 = controller.points[ellipseArc.majorPointId]!;
+      controller.cursorX = major0.x;
+      controller.cursorY = major0.y;
+      expect(controller.beginPointDrag(ellipseArc.majorPointId), isTrue);
+      // Rotate the major axis to 90 degrees and stretch it to radius 20.
+      await controller.updatePointDrag(center.x, center.y + 20);
+
+      expect(backend.requestLog.any((r) => r.contains('/solve')), isFalse);
+      final major = controller.points[ellipseArc.majorPointId]!;
+      expect(major.x, closeTo(center.x, 1e-6));
+      expect(major.y, closeTo(center.y + 20, 1e-6));
+      final minor = controller.points[ellipseArc.minorPointId]!;
+      final minorRadius = math.sqrt(math.pow(minor.x - center.x, 2) + math.pow(minor.y - center.y, 2));
+      expect(minorRadius, closeTo(4, 1e-6), reason: 'minor radius must track its own old value, not collapse');
+      // Neither start nor end sits at a nameable world position after a
+      // 90-degree rotation + non-uniform stretch (their own local (u, v) is
+      // fixed, but the transform from local to world isn't a plain rotation
+      // once the two radii differ) - checked against the new curve's own
+      // implicit equation instead, in the new rotated frame (rotation is
+      // now pi/2, so world (x, y) -> local (u, v) is a -pi/2 rotation).
+      double localAngle(SketchPointView p) {
+        final localX = (p.x - center.x) * math.cos(-math.pi / 2) - (p.y - center.y) * math.sin(-math.pi / 2);
+        final localY = (p.x - center.x) * math.sin(-math.pi / 2) + (p.y - center.y) * math.cos(-math.pi / 2);
+        return math.atan2(localY / minorRadius, localX / 20);
+      }
+
+      expect(localAngle(controller.points[ellipseArc.startPointId]!), closeTo(math.pi / 2, 1e-6),
+          reason: 'start must keep its own pi/2 parametric angle, re-anchored onto the new curve');
+      // atan2's own branch cut: +pi and -pi are the same angle here, so
+      // compare the magnitude rather than the signed value.
+      expect(localAngle(controller.points[ellipseArc.endPointId]!).abs(), closeTo(math.pi, 1e-6),
+          reason: 'end must keep its own pi parametric angle, re-anchored onto the new curve');
+    });
+
+    test('dragging the minor-axis Point within the major radius rescales only the minor radius, '
+        'projected onto the perpendicular axis - the major axis is untouched', () async {
+      final ellipseArc = await placeArc();
+      final center = controller.points[ellipseArc.centerPointId]!;
+
+      backend.requestLog.clear();
+      final minor0 = controller.points[ellipseArc.minorPointId]!;
+      controller.cursorX = minor0.x;
+      controller.cursorY = minor0.y;
+      expect(controller.beginPointDrag(ellipseArc.minorPointId), isTrue);
+      await controller.updatePointDrag(center.x, center.y + 9); // minor radius 9, still under major (10)
+
+      expect(backend.requestLog.any((r) => r.contains('/solve')), isFalse);
+      final minor = controller.points[ellipseArc.minorPointId]!;
+      expect(minor.x, closeTo(center.x, 1e-6));
+      expect(minor.y, closeTo(center.y + 9, 1e-6));
+      final major = controller.points[ellipseArc.majorPointId]!;
+      expect(major.x, closeTo(30, 1e-6), reason: 'major axis must be untouched by a minor-axis drag');
+      expect(major.y, closeTo(20, 1e-6));
+    });
+
+    test('dragging the minor-axis Point past the major radius is clamped, not swapped - unlike a '
+        'plain Ellipse, an EllipseArc cannot let its axes exchange roles mid-drag', () async {
+      final ellipseArc = await placeArc();
+      final center = controller.points[ellipseArc.centerPointId]!;
+
+      final minor0 = controller.points[ellipseArc.minorPointId]!;
+      controller.cursorX = minor0.x;
+      controller.cursorY = minor0.y;
+      expect(controller.beginPointDrag(ellipseArc.minorPointId), isTrue);
+      await controller.updatePointDrag(center.x, center.y + 25); // far past the major radius (10)
+
+      final minor = controller.points[ellipseArc.minorPointId]!;
+      final minorRadius = math.sqrt(math.pow(minor.x - center.x, 2) + math.pow(minor.y - center.y, 2));
+      expect(minorRadius, closeTo(10, 1e-6), reason: 'clamped at the major radius, not left to exceed it');
+      final major = controller.points[ellipseArc.majorPointId]!;
+      expect(major.x, closeTo(30, 1e-6), reason: 'major must stay exactly where it was - never swapped');
+      expect(major.y, closeTo(20, 1e-6));
+    });
+
+    test('dragging the major-axis Point shorter than the current minor radius is clamped at the '
+        'minor radius, the symmetric case of the minor-past-major clamp above', () async {
+      final ellipseArc = await placeArc();
+      final center = controller.points[ellipseArc.centerPointId]!;
+
+      final major0 = controller.points[ellipseArc.majorPointId]!;
+      controller.cursorX = major0.x;
+      controller.cursorY = major0.y;
+      expect(controller.beginPointDrag(ellipseArc.majorPointId), isTrue);
+      await controller.updatePointDrag(center.x + 1, center.y); // far shorter than the minor radius (4)
+
+      final major = controller.points[ellipseArc.majorPointId]!;
+      final majorRadius = math.sqrt(math.pow(major.x - center.x, 2) + math.pow(major.y - center.y, 2));
+      expect(majorRadius, closeTo(4, 1e-6), reason: 'clamped at the minor radius, not left to go below it');
+    });
+
+    test('dragging the start Point re-projects it onto the curve at the drag target\'s own '
+        'parametric angle, leaving centre/major/minor/end untouched', () async {
+      final ellipseArc = await placeArc();
+      final center = controller.points[ellipseArc.centerPointId]!;
+      final majorBefore = controller.points[ellipseArc.majorPointId]!;
+      final minorBefore = controller.points[ellipseArc.minorPointId]!;
+      final endBefore = controller.points[ellipseArc.endPointId]!;
+
+      backend.requestLog.clear();
+      final start0 = controller.points[ellipseArc.startPointId]!;
+      controller.cursorX = start0.x;
+      controller.cursorY = start0.y;
+      expect(controller.beginPointDrag(ellipseArc.startPointId), isTrue);
+      // Dragged toward local angle 0 (straight along the major axis).
+      await controller.updatePointDrag(center.x + 30, center.y);
+
+      expect(backend.requestLog.any((r) => r.contains('/solve')), isFalse);
+      final start = controller.points[ellipseArc.startPointId]!;
+      expect(start.x, closeTo(center.x + 10, 1e-4), reason: 'projected onto the curve, not the raw drag target');
+      expect(start.y, closeTo(center.y, 1e-4));
+      final major = controller.points[ellipseArc.majorPointId]!;
+      final minor = controller.points[ellipseArc.minorPointId]!;
+      final end = controller.points[ellipseArc.endPointId]!;
+      expect(major.x, closeTo(majorBefore.x, 1e-9));
+      expect(major.y, closeTo(majorBefore.y, 1e-9));
+      expect(minor.x, closeTo(minorBefore.x, 1e-9));
+      expect(minor.y, closeTo(minorBefore.y, 1e-9));
+      expect(end.x, closeTo(endBefore.x, 1e-9));
+      expect(end.y, closeTo(endBefore.y, 1e-9));
+    });
+
+    test('dropping a minor-axis drag past the major radius PATCHes the already-clamped value, not '
+        'the raw dragged one, once the minor dimension is confirmed', () async {
+      final ellipseArc = await placeArc();
+      final center = controller.points[ellipseArc.centerPointId]!;
+      final minorConstraint = controller.constraints.values.whereType<DistanceConstraintDto>().firstWhere((c) =>
+          (c.pointAId == ellipseArc.centerPointId && c.pointBId == ellipseArc.minorPointId) ||
+          (c.pointAId == ellipseArc.minorPointId && c.pointBId == ellipseArc.centerPointId));
+      controller.constraints[minorConstraint.id] = DistanceConstraintDto(
+        id: minorConstraint.id,
+        pointAId: minorConstraint.pointAId,
+        pointBId: minorConstraint.pointBId,
+        distance: minorConstraint.distance,
+        provisional: false,
+      );
+
+      final minor0 = controller.points[ellipseArc.minorPointId]!;
+      controller.cursorX = minor0.x;
+      controller.cursorY = minor0.y;
+      expect(controller.beginPointDrag(ellipseArc.minorPointId), isTrue);
+      await controller.updatePointDrag(center.x, center.y + 25); // way past the major radius (10)
+      await controller.endPointDrag();
+
+      final reloaded = controller.constraints[minorConstraint.id] as DistanceConstraintDto;
+      expect(reloaded.distance, closeTo(10.0, 1e-6),
+          reason: 'PATCHed with the clamped value (the major radius), never the raw 25 overshoot');
+    });
+
+    test('once a defining Point is gone (no longer intact), dragging the major Point falls back to '
+        'the ordinary drag path instead of the closed-form one', () async {
+      final ellipseArc = await placeArc();
+      controller.points.remove(ellipseArc.startPointId);
+      final minorBefore = controller.points[ellipseArc.minorPointId]!;
+
+      final major0 = controller.points[ellipseArc.majorPointId]!;
+      controller.cursorX = major0.x;
+      controller.cursorY = major0.y;
+      expect(controller.beginPointDrag(ellipseArc.majorPointId), isTrue);
+      await controller.updatePointDrag(major0.x, major0.y + 20);
+
+      // The closed-form path (which would have rotated it instantly, per
+      // the test above) didn't run - the minor Point never moved.
+      final minorAfter = controller.points[ellipseArc.minorPointId]!;
+      expect(minorAfter.x, closeTo(minorBefore.x, 1e-9));
+      expect(minorAfter.y, closeTo(minorBefore.y, 1e-9));
     });
   });
 
@@ -9252,10 +9814,15 @@ void main() {
     // 50.0 DistanceConstraint satisfied, without any server round trip.
     await localController.updatePointDrag(30, 40);
 
-    // The dragged Point's own PATCH still happens (that part is unchanged -
-    // only the *other* Points' reflow is local now), but no /solve or
-    // /solve-and-refresh round trip should have fired.
-    expect(localBackend.requestLog.any((r) => r.contains('/solve')), isFalse);
+    // Round-trip elimination (on-device investigation: dragging still felt
+    // bad even with the reflow solved locally, because the dragged Point's
+    // own PATCH was still an awaited network round trip on every frame) -
+    // updatePointDrag now writes the dragged Point's own position straight
+    // into local state and tries the local solve for it too, so a
+    // successful local drag frame makes NO network request at all, not
+    // merely no /solve one.
+    expect(localBackend.requestLog, isEmpty,
+        reason: 'a successful local drag frame should touch the network not at all');
 
     final draggedPoint = localController.points[draggedId]!;
     final otherPoint = localController.points[otherId]!;
@@ -9318,7 +9885,12 @@ void main() {
     localBackend.requestLog.clear();
     await localController.updateLineDrag(20, 20);
 
-    expect(localBackend.requestLog.any((r) => r.contains('/solve')), isFalse);
+    // Round-trip elimination - see the point-drag test above's own doc
+    // comment. A successful local drag frame (both endpoints written
+    // straight into local state, no PATCH for either) touches the network
+    // not at all.
+    expect(localBackend.requestLog, isEmpty,
+        reason: 'a successful local drag frame should touch the network not at all');
 
     final draggedStart = localController.points[lineStartId]!;
     final third = localController.points[thirdPointId]!;
@@ -9329,17 +9901,15 @@ void main() {
   });
 
   test(
-      'updateLineDrag falls back to the server round trip (never applies a partial/inconsistent '
-      'local result) when dragging an axis-aligned Line whose own Horizontal Constraint, combined '
-      'with a separate Constraint reaching out to a third free Point, confuses the native solver\'s '
-      'anchor pinning - on-device-investigation bug fix: found via the test above, generalized - a '
-      'Horizontal/Vertical Constraint between two simultaneously-anchored Points is fine on its own, '
-      'but combined with any other Constraint reaching from one of them to a free Point, the native '
-      'solver was found to sometimes move an "anchored" Point anyway, which would otherwise silently '
-      'teleport the dragged Line somewhere else - not yet root-caused at the FFI/SLVS level, so this '
-      'checks anchor points landed where they were pinned before trusting the rest of a local solve\'s '
-      'result at all, falling back to the safe network path if not',
-      () async {
+      'updateLineDrag soft-drags both of an axis-aligned Line\'s endpoints at once (Horizontal '
+      'Constraint) while a separate Constraint reaches out from one of them to a third, genuinely '
+      'free Point - the exact fixture that used to trip up the older hard-pin mechanism (a '
+      'Horizontal/Vertical Constraint between two simultaneously-anchored Points, combined with any '
+      'other Constraint reaching from one of them to a free Point, could come back with an "anchored" '
+      'Point moved by the native solver - see git history for the anchor-drift guard this used to be '
+      'named for, retired once soft-drag made "the anchor moved" an expected outcome rather than a '
+      'bug to detect) - now converges locally in one shot, both Constraints genuinely satisfied, no '
+      'server round trip needed', () async {
     final libraryPath = _findHostSlvsLibrary();
     if (libraryPath == null) {
       markTestSkipped('host didsa_slvs_ffi library not built - see client/native/slvs/CMakeLists.txt');
@@ -9391,23 +9961,118 @@ void main() {
     expect(grabbed, isTrue);
     localBackend.requestLog.clear();
     await localController.updateLineDrag(20, 20);
-    // The network fallback's own solve fires via `unawaited(...)` (see
-    // _maybeSolveDuringDrag) - a real pointer-move handler can't block on
-    // it either, so updateLineDrag itself doesn't await it - one microtask
-    // turn lets it actually reach the (fake) backend before asserting on
-    // requestLog below.
+
+    // Converges locally in one shot - no fallback to the server round trip
+    // needed, now that a soft-dragged anchor moving to satisfy a Constraint
+    // is the intended outcome rather than something to reject (see
+    // solveSketchLocally's own doc comment). Round-trip elimination (see
+    // the point-drag test above): both endpoints were also written
+    // straight into local state rather than PATCHed, so this touches the
+    // network not at all, not merely skipping /solve.
+    expect(localBackend.requestLog, isEmpty,
+        reason: 'a successful local drag frame should touch the network not at all');
+
+    final start = localController.points[line.startPointId]!;
+    final end = localController.points[line.endPointId]!;
+    final third = localController.points[thirdPointId]!;
+    expect(start.y, closeTo(end.y, 1e-6), reason: 'the Horizontal Constraint is still genuinely satisfied');
+    final dc1Distance =
+        math.sqrt(math.pow(third.x - start.x, 2) + math.pow(third.y - start.y, 2));
+    expect(dc1Distance, closeTo(25.0, 1e-3), reason: 'the DistanceConstraint reaching to the third Point holds too');
+    // Both endpoints still land close to where the drag put them (10, 20)/
+    // (20, 20) - soft-drag clamps, it doesn't ignore the drag.
+    expect(start.x, closeTo(10.0, 1.0));
+    expect(start.y, closeTo(20.0, 1.0));
+    expect(end.x, closeTo(20.0, 1.0));
+    expect(end.y, closeTo(20.0, 1.0));
+  });
+
+  test(
+      'updatePointDrag falls back to the network PATCH for the dragged Point itself, not just the '
+      'reflow, when the local solve genuinely cannot converge (round-trip elimination\'s own safety '
+      'net: a library IS available here, unlike the very first PATCH test in this group, but this '
+      'frame\'s local solve still fails - a genuine triangle-inequality violation, not something a '
+      'naive DOF count catches pre-drag, so even solveSketchLocally\'s own retry-without-anchor '
+      'can\'t save it either)', () async {
+    final libraryPath = _findHostSlvsLibrary();
+    if (libraryPath == null) {
+      markTestSkipped('host didsa_slvs_ffi library not built - see client/native/slvs/CMakeLists.txt');
+      return;
+    }
+    final bindings = SlvsNativeBindings(ffi.DynamicLibrary.open(libraryPath));
+    final localBackend = _FakeBackend();
+    final localClient = MockClient((request) async => localBackend.handle(request));
+    final localController =
+        SketchController(api: SketchApiClient(httpClient: localClient), localSolverBindings: bindings);
+    await localController.ensureSketch();
+
+    localController.selectDrawTool(SketchTool.point);
+    await localController.handleCanvasTap(5, 5); // point A - away from the origin
+    localController.exitToSelectMode();
+    final pointA = localController.points.keys.firstWhere((id) => id != localController.originPointId);
+    localController.selectDrawTool(SketchTool.point);
+    await localController.handleCanvasTap(0, 5); // point B - a second free Point
+    localController.exitToSelectMode();
+    final pointB =
+        localController.points.keys.firstWhere((id) => id != localController.originPointId && id != pointA);
+    // Not two duplicate Constraints on the same pair (beginPointDrag's own
+    // pre-drag rigidity check already refuses a grab for that - trivially
+    // detectable by equation count alone, without ever running a solve).
+    // This is a genuine *geometric* infeasibility instead - A and B both
+    // confirmed at distance 5 from the (fixed) origin, but also confirmed
+    // 100 apart from each other, violating the triangle inequality (two
+    // Points each within 5 of a shared centre can never be more than 10
+    // apart) - not visible to a naive DOF/equation count (3 equations, 4
+    // unknowns, structurally under-determined by 1), so the grab is
+    // allowed, and only the real numeric solve - both with and without the
+    // dragged Point's own soft-drag bias - fails to converge.
+    localController.constraints['c1'] = DistanceConstraintDto(
+      id: 'c1',
+      pointAId: localController.originPointId!,
+      pointBId: pointA,
+      distance: 5.0,
+    );
+    localController.constraints['c2'] = DistanceConstraintDto(
+      id: 'c2',
+      pointAId: localController.originPointId!,
+      pointBId: pointB,
+      distance: 5.0,
+    );
+    localController.constraints['c3'] = DistanceConstraintDto(
+      id: 'c3',
+      pointAId: pointA,
+      pointBId: pointB,
+      distance: 100.0,
+    );
+
+    final grabbed = localController.beginPointDrag(pointA);
+    expect(grabbed, isTrue);
+    localBackend.requestLog.clear();
+    await localController.updatePointDrag(20, 20);
+    // The fallback PATCH is no longer awaited before applying (round-trip
+    // elimination, part 2 - see updatePointDrag's own fallback comment) -
+    // it fires via `unawaited(...)`, so one microtask turn is needed
+    // before it actually reaches the (fake) backend, same pattern already
+    // used elsewhere in this file for _maybeSolveDuringDrag's own fire-
+    // and-forget solve.
     await Future<void>.delayed(Duration.zero);
 
-    // The local solve's anchor-drift safety check must have rejected its
-    // own result (see _trySolveDuringDragLocally's own doc comment),
-    // falling back to the throttled server round trip instead - not left
-    // silently un-reflowed, and *definitely* not left with the dragged
-    // Line's endpoints moved somewhere other than where the drag put them.
-    expect(localBackend.requestLog.any((r) => r.contains('/solve')), isTrue);
-    expect(localController.points[line.startPointId]!.x, 10); // 5 + (20 - 15)
-    expect(localController.points[line.startPointId]!.y, 20); // 5 + (20 - 5)
-    expect(localController.points[line.endPointId]!.x, 20); // 15 + (20 - 15)
-    expect(localController.points[line.endPointId]!.y, 20); // 5 + (20 - 5)
+    expect(
+      localBackend.requestLog.any((r) => r.startsWith('PATCH') && r.contains('/points/$pointA')),
+      isTrue,
+      reason: 'the dragged Point\'s own position must still reach the backend via the network '
+          'fallback when the local solve can\'t converge - it is no longer PATCHed unconditionally '
+          'on every frame the way it was before round-trip elimination',
+    );
+    // The fallback path applies the raw (unconstrained) drag position
+    // exactly like it always did before this optimization existed - the
+    // geometric contradiction is this Point's problem to settle on drop,
+    // not something this frame's PATCH tries to resolve itself. Cursor
+    // origin is (0, 5) (point B's placement tap, the most recent one
+    // before the drag started), point origin is (5, 5) (point A's own
+    // position).
+    expect(localController.points[pointA]!.x, closeTo(25.0, 1e-6)); // 5 + (20 - 0)
+    expect(localController.points[pointA]!.y, closeTo(20.0, 1e-6)); // 5 + (20 - 5)
   });
 
   test('endPointDrag clears draggingPointId and re-solves from the dropped position', () async {
@@ -9605,6 +10270,128 @@ void main() {
     expect(controller.selectionSet.every((s) => s.kind == SelectionKind.arc), isTrue);
     expect(controller.canApplyConstraint(ConstraintOptionType.concentric), isTrue);
     expect(controller.canApplyConstraint(ConstraintOptionType.equalRadius), isTrue);
+    // Bug fix: Tangent only makes sense for two Arcs that already share an
+    // endpoint Point - these two don't, so it must stay unavailable
+    // alongside Concentric/Equal radius, not offered unconditionally.
+    expect(controller.canApplyConstraint(ConstraintOptionType.tangent), isFalse);
+  });
+
+  // Bug fix (on-device feedback: Tangent was the last constraint-picker
+  // button left permanently `wired: false`): two Arcs that DO share an
+  // endpoint Point (drawn as a connected chain, e.g. an S-curve) offer
+  // Tangent alongside Concentric/Equal radius.
+  test('availableConstraintOptions offers Tangent for two Arcs sharing an endpoint Point', () async {
+    controller.selectDrawTool(SketchTool.arc);
+    await controller.handleCanvasTap(0, 0); // arc1 center
+    await controller.handleCanvasTap(5, 0); // arc1 start - radius 5
+    await controller.handleCanvasTap(0, 5); // arc1 end, at 90 degrees
+    final arc1Id = controller.arcs.keys.single;
+    final sharedPointId = controller.arcs[arc1Id]!.endPointId;
+
+    await controller.handleCanvasTap(-10, 5); // arc2 center
+    await controller.handleCanvasTap(0, 5); // arc2 start - lands exactly on arc1's own
+    // end Point, so _pointIdAt reuses its id rather than creating a new,
+    // merely-coincident one (see SketchController._pointIdAt's own doc
+    // comment: only the origin is special-cased that way).
+    await controller.handleCanvasTap(-10, 1000); // arc2 end, snapped onto its own
+    // radius-10 circle in the +y direction from its center (-10, 5).
+    controller.exitToSelectMode();
+
+    final onRim1 = 5 * math.sqrt(0.5);
+    await controller.handleCanvasTap(onRim1, onRim1); // arc1's rim, at 45 degrees
+    final onRim2 = 10 * math.sqrt(0.5);
+    await controller.handleCanvasTap(-10 + onRim2, 5 + onRim2); // arc2's rim, at 45 degrees
+
+    expect(controller.selectionSet.length, 2);
+    expect(controller.selectionSet.every((s) => s.kind == SelectionKind.arc), isTrue);
+    final arc2Id = controller.selectionSet.last.id;
+    expect(controller.arcs[arc2Id]!.startPointId, sharedPointId);
+
+    final types = controller.availableConstraintOptions.map((o) => o.type).toSet();
+    expect(
+      types,
+      {ConstraintOptionType.concentric, ConstraintOptionType.equalRadius, ConstraintOptionType.tangent},
+    );
+    expect(controller.canApplyConstraint(ConstraintOptionType.tangent), isTrue);
+  });
+
+  test('addTangentConstraint creates a CurveTangentConstraint for two Arcs sharing an endpoint',
+      () async {
+    controller.selectDrawTool(SketchTool.arc);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+    await controller.handleCanvasTap(0, 5);
+    final arc1Id = controller.arcs.keys.single;
+    final sharedPointId = controller.arcs[arc1Id]!.endPointId;
+
+    await controller.handleCanvasTap(-10, 5);
+    await controller.handleCanvasTap(0, 5);
+    await controller.handleCanvasTap(-10, 1000);
+    final arc2Id = controller.arcs.keys.last;
+    controller.exitToSelectMode();
+
+    final onRim1 = 5 * math.sqrt(0.5);
+    await controller.handleCanvasTap(onRim1, onRim1);
+    final onRim2 = 10 * math.sqrt(0.5);
+    await controller.handleCanvasTap(-10 + onRim2, 5 + onRim2);
+
+    await controller.addTangentConstraint();
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.selectionSet, isEmpty);
+    final created = controller.constraints.values.whereType<CurveTangentConstraintDto>().single;
+    expect({created.entity1Id, created.entity2Id}, {arc1Id, arc2Id});
+    expect(created.sharedPointId, sharedPointId);
+    expect(created.center1PointId, controller.arcs[arc1Id]!.centerPointId);
+    expect(created.center2PointId, controller.arcs[arc2Id]!.centerPointId);
+  });
+
+  // Bug fix: Tangent between a Line and a Circle/Arc is order-agnostic (the
+  // user may select either one first) and, unlike the Arc+Arc case above,
+  // doesn't require them to already touch - the backend's TangentConstraint
+  // pins a perpendicular centre-to-line distance regardless.
+  test('availableConstraintOptions offers Tangent for a Line+Arc selection, either tap order',
+      () async {
+    controller.selectDrawTool(SketchTool.arc);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+    await controller.handleCanvasTap(0, 5);
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(20, 0);
+    await controller.handleCanvasTap(20, 10);
+    controller.exitToSelectMode();
+
+    final onRim = 5 * math.sqrt(0.5);
+    await controller.handleCanvasTap(onRim, onRim); // the Arc
+    await controller.handleCanvasTap(20, 3); // the Line, well away from its midpoint's own snap zone
+
+    expect(controller.selectionSet.map((s) => s.kind).toSet(), {SelectionKind.arc, SelectionKind.line});
+    final options = controller.availableConstraintOptions;
+    expect(options.map((o) => o.type), [ConstraintOptionType.tangent]);
+    expect(options.single.wired, isTrue);
+  });
+
+  test('addTangentConstraint creates a TangentConstraint for a Line+Circle selection', () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+    final circleId = controller.circles.keys.single;
+    final centerId = controller.circles[circleId]!.centerPointId;
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(20, 0);
+    await controller.handleCanvasTap(20, 10);
+    final lineId = controller.lines.keys.single;
+    controller.exitToSelectMode();
+
+    await controller.handleCanvasTap(20, 3); // the Line, tapped first this time, well away from its midpoint's own snap zone
+    await controller.handleCanvasTap(5 * math.cos(math.pi / 4), 5 * math.sin(math.pi / 4)); // the Circle
+
+    await controller.addTangentConstraint();
+
+    expect(controller.errorMessage, isNull);
+    final created = controller.constraints.values.whereType<TangentConstraintDto>().single;
+    expect(created.centerPointId, centerId);
+    expect(created.lineId, lineId);
   });
 
   test('canApplyConstraint(concentric)/(equalRadius) are true for a Circle and an Arc selected together',
@@ -9736,8 +10523,8 @@ void main() {
     expect(controller.isImplicitEqualRadiusTie(crossTie), isTrue);
   });
 
-  test('canApplyConstraint is false for every wired type when a Circle and a Line are selected '
-      '(Tangent is offered but not wired)', () async {
+  test('canApplyConstraint is false for every wired type except Tangent when a Circle and a Line '
+      'are selected', () async {
     controller.selectDrawTool(SketchTool.circle);
     await controller.handleCanvasTap(0, 0);
     await controller.handleCanvasTap(5, 0);
@@ -9753,7 +10540,12 @@ void main() {
     await controller.handleCanvasTap(23, 10.1); // the line, away from its midpoint
 
     expect(controller.selectionSet.length, 2);
+    // Bug fix: Tangent used to be the one permanently `wired: false`
+    // placeholder here - now wired for real, so it's the one exception to
+    // this loop's own "nothing else applies" assertion.
+    expect(controller.canApplyConstraint(ConstraintOptionType.tangent), isTrue);
     for (final type in ConstraintOptionType.values) {
+      if (type == ConstraintOptionType.tangent) continue;
       expect(controller.canApplyConstraint(type), isFalse, reason: '$type');
     }
   });

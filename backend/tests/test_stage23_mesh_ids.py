@@ -221,6 +221,50 @@ def test_placeholder_mesh_also_includes_face_edge_ids():
         assert len(edge_ids) == 4
 
 
+# --- face_is_planar (bug fix: "create plane"/"new sketch on face" offered ---
+# --- for a curved face, which can't actually be used with either") ----------
+
+
+def test_box_extrude_has_face_is_planar_matching_face_count_and_all_planar():
+    part = _create_part()
+
+    mesh = _boss_box_mesh(part["id"])["mesh"]
+
+    assert len(mesh["face_is_planar"]) == 6
+    assert all(mesh["face_is_planar"])
+
+
+def test_cylindrical_boss_has_a_curved_side_face_and_two_planar_caps():
+    part = _create_part()
+    sketch_feature = _create_sketch_feature(part["id"])
+    sketch_id = sketch_feature["sketch_id"]
+    center = client.post(f"/sketch/sketches/{sketch_id}/points", json={"x": 0.0, "y": 0.0}).json()
+    circle_response = client.post(
+        f"/sketch/sketches/{sketch_id}/circles",
+        json={"center_point_id": center["id"], "radius": 5.0, "angle": 0.0},
+    )
+    assert circle_response.status_code == 201
+
+    _create_extrude_feature(part["id"], sketch_feature["id"])
+    bodies = _get_bodies(part["id"])
+    assert len(bodies) == 1
+    mesh = bodies[0]["mesh"]
+
+    # 2 flat end caps + 1 curved cylindrical wall.
+    assert len(mesh["face_is_planar"]) == 3
+    assert sorted(mesh["face_is_planar"]) == [False, True, True]
+
+
+def test_placeholder_mesh_also_includes_face_is_planar():
+    part = _create_part()
+
+    bodies = _get_bodies(part["id"])
+
+    mesh = bodies[0]["mesh"]
+    assert len(mesh["face_is_planar"]) == 6
+    assert all(mesh["face_is_planar"])
+
+
 # --- hidden Body, no other geometry ------------------------------------------
 
 

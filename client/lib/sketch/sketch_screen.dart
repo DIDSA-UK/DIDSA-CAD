@@ -137,7 +137,9 @@ List<ArcDto> _arcDtosFrom(SketchController controller) => [
 
 List<EllipseDto> _ellipseDtosFrom(SketchController controller) => [
       for (final ellipse in controller.ellipses.values)
-        if (controller.points[ellipse.centerPointId] != null && controller.points[ellipse.majorPointId] != null)
+        if (controller.points[ellipse.centerPointId] != null &&
+            controller.points[ellipse.majorPointId] != null &&
+            controller.points[ellipse.minorPointId] != null)
           EllipseDto(
             id: ellipse.id,
             centerPointId: ellipse.centerPointId,
@@ -151,7 +153,23 @@ List<EllipseDto> _ellipseDtosFrom(SketchController controller) => [
               controller.points[ellipse.centerPointId]!,
               controller.points[ellipse.majorPointId]!,
             ),
-            minorRadius: ellipse.minorRadius,
+            // Bug fix (on-device feedback: after dragging an axis endpoint,
+            // the wireframe curve visibly didn't pass through its own axis
+            // Point) - this used to read `ellipse.minorRadius`, a cached
+            // scalar only reassigned once a full backend response lands
+            // (creation, undo/redo, solve confirmation), while majorRadius
+            // just above was already computed live. A closed-form drag on
+            // minorPointId/minorPointNegId (see
+            // SketchController._closedFormEllipseGeometry) moves the real
+            // Point instantly, client-side only, without ever touching
+            // this stored field - so mid-drag (and until the next full
+            // server round trip lands) the two radii disagreed, drawing an
+            // ellipse that matched neither the true major nor true minor
+            // axis Point. Recomputed live, the same way majorRadius is.
+            minorRadius: _sketchPointDistance(
+              controller.points[ellipse.centerPointId]!,
+              controller.points[ellipse.minorPointId]!,
+            ),
             rotation: math.atan2(
               controller.points[ellipse.majorPointId]!.y - controller.points[ellipse.centerPointId]!.y,
               controller.points[ellipse.majorPointId]!.x - controller.points[ellipse.centerPointId]!.x,
@@ -182,7 +200,24 @@ List<EllipseArcDto> _ellipseArcDtosFrom(SketchController controller) => [
               controller.points[ellipseArc.centerPointId]!,
               controller.points[ellipseArc.majorPointId]!,
             ),
-            minorRadius: ellipseArc.minorRadius,
+            // Same bug/fix as _ellipseDtosFrom's own minorRadius - see its
+            // doc comment. ellipseArc.minorPointId isn't guarded by the
+            // `if` above the way Ellipse's own minorPointId now is (an
+            // EllipseArc's minor Point is never directly closed-form-
+            // dragged the way a plain Ellipse's is - see
+            // SketchController._closedFormEllipseGeometry's own doc
+            // comment for why only Ellipse has that path - but it can
+            // still move via the general solver drag path, which writes
+            // Points locally without touching this cached field either),
+            // so this falls back to the cached value rather than a null
+            // check failing the whole `if` guard above and hiding the
+            // entire EllipseArc.
+            minorRadius: controller.points[ellipseArc.minorPointId] != null
+                ? _sketchPointDistance(
+                    controller.points[ellipseArc.centerPointId]!,
+                    controller.points[ellipseArc.minorPointId]!,
+                  )
+                : ellipseArc.minorRadius,
             rotation: math.atan2(
               controller.points[ellipseArc.majorPointId]!.y - controller.points[ellipseArc.centerPointId]!.y,
               controller.points[ellipseArc.majorPointId]!.x - controller.points[ellipseArc.centerPointId]!.x,

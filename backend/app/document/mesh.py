@@ -1,7 +1,8 @@
 from OCC.Core.BRep import BRep_Tool
-from OCC.Core.BRepAdaptor import BRepAdaptor_Curve
+from OCC.Core.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
 from OCC.Core.BRepMesh import BRepMesh_IncrementalMesh
 from OCC.Core.GCPnts import GCPnts_TangentialDeflection
+from OCC.Core.GeomAbs import GeomAbs_Plane
 from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED, TopAbs_VERTEX
 from OCC.Core.TopExp import TopExp_Explorer, topexp
 from OCC.Core.TopLoc import TopLoc_Location
@@ -75,6 +76,7 @@ def tessellate_shape(shape, quality: MeshQuality = DEFAULT_MESH_QUALITY) -> Mesh
     while explorer.More():
         face = topods.Face(explorer.Current())
         _append_face_triangles(face, mesh, face_id)
+        mesh.face_is_planar.append(BRepAdaptor_Surface(face).GetType() == GeomAbs_Plane)
         face_id += 1
         explorer.Next()
 

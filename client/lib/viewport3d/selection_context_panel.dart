@@ -29,6 +29,17 @@ class SelectionContextPanel extends StatelessWidget {
   /// way - see [PointOnArcChecker]'s own doc comment.
   final PointOnArcChecker? isPointOnArc;
 
+  /// Bug fix (on-device feedback): threaded through to [contextActionsFor]
+  /// so a lone curved face's own Create Plane/New Sketch on Face entries
+  /// can be left off entirely - see [FacePlanarityChecker]'s own doc
+  /// comment.
+  final FacePlanarityChecker? isFacePlanar;
+
+  /// Bug fix (on-device feedback): threaded through to [contextActionsFor]
+  /// so a lone Surface face's own Chamfer/Fillet entries can be left off
+  /// entirely - see [FaceSolidityChecker]'s own doc comment.
+  final FaceSolidityChecker? isSolidBody;
+
   /// C2/C3/C4: fired when the user taps an *enabled* Create Plane button -
   /// never called for a disabled/placeholder one. [PartScreen] inspects
   /// [selectedEntities] itself to decide which of the six flows to open,
@@ -74,6 +85,8 @@ class SelectionContextPanel extends StatelessWidget {
     required this.selectedEntities,
     this.isPointOnLine,
     this.isPointOnArc,
+    this.isFacePlanar,
+    this.isSolidBody,
     this.onCreatePlane,
     this.onFillet,
     this.onChamfer,
@@ -85,8 +98,13 @@ class SelectionContextPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final actions =
-        contextActionsFor(selectedEntities, isPointOnLine: isPointOnLine, isPointOnArc: isPointOnArc);
+    final actions = contextActionsFor(
+      selectedEntities,
+      isPointOnLine: isPointOnLine,
+      isPointOnArc: isPointOnArc,
+      isFacePlanar: isFacePlanar,
+      isSolidBody: isSolidBody,
+    );
     if (actions.isEmpty) return const SizedBox.shrink();
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),

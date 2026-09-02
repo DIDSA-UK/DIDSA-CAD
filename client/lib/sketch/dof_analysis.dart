@@ -123,6 +123,11 @@ const Map<String, int> dofCostByConstraintType = {
   'tangent': 1, // equal_length_point_line_distance(centre, radius_line,
   // tangent_line) - confirmed via direct py-slvs probe: 4 free params -> 3
   // after adding the constraint.
+  'curve_tangent': 1, // point_on_line(shared_point, virtual centre-to-centre
+  // line) - literally the same primitive call as 'point_on_line' below
+  // (just built from a virtual line through both centres rather than a
+  // real Line entity), so the cost is the same one scalar equation by
+  // construction, not an independent empirical probe.
   'equal_radius': 1, // the exact same equal_length call 'equal_length'
   // above already uses (two virtual centre->rim lines), just applied to
   // Circles/Arcs instead of Lines - same cost by construction.
@@ -256,6 +261,12 @@ const Map<String, int> dofCostByConstraintType = {
     if (start != null) ids.add(start);
     if (end != null) ids.add(end);
     return (type: 'tangent', pointIds: ids);
+  }
+  if (constraint is CurveTangentConstraintDto) {
+    return (
+      type: 'curve_tangent',
+      pointIds: [constraint.center1PointId, constraint.center2PointId, constraint.sharedPointId],
+    );
   }
   if (constraint is EqualRadiusConstraintDto) {
     return (
