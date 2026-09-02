@@ -73,13 +73,29 @@
 ///    using `SolveResultDto.solverReportedFailedConstraintIds` to find
 ///    which specific entities are implicated (see [describeConstraint]).
 ///
-/// A narrower, still-real gap this module cannot fully close even with
-/// that compensation: a literal duplicate Constraint (same two Points,
-/// same value, added twice) reads as over-constrained here even though
-/// py-slvs solves it without complaint (a consistent, merely
-/// rank-deficient system) - the real (2,3)-pebble game, generalised to
-/// weighted constraints, could tell "harmless duplicate" apart from
-/// genuine over-constraint; this counting approach cannot.
+/// A narrower gap this module used to have no way to close: a literal
+/// duplicate Constraint (same two Points, same value, added twice), or a
+/// Regular Polygon's own deliberately-redundant EqualRadius/Angle chain
+/// (see the backend `Polygon` docstring) plus one further genuinely-
+/// implied Constraint stacked on top (a Horizontal edge *and* a matching
+/// "across flats" LineDistance together - either alone removes a real
+/// remaining degree of freedom, but once both are present the second is
+/// fully implied by the first, so this per-type counter double-charges
+/// it) - both read as over-constrained here even though py-slvs solves
+/// them without complaint (a consistent, merely rank-deficient system;
+/// confirmed directly against the real solver for the Polygon case - see
+/// `backend/app/sketch/solver.py`'s own `_residual_verified_convergence`
+/// doc comment, which exists specifically to rescue this class of false
+/// positive on the *backend* side). The real (2,3)-pebble game,
+/// generalised to weighted constraints, could tell "harmless redundancy"
+/// apart from genuine over-constraint on purely structural grounds; this
+/// counting approach cannot - so [SketchRigidity.analyze]'s own
+/// `trustConvergedSolve` parameter closes the gap a different way
+/// instead: whenever the backend's own last solve is known to have
+/// actually converged, that numeric confirmation is strictly more
+/// trustworthy than this module's topological guess, so the guess is
+/// deferred to entirely rather than raced against it - see that
+/// parameter's own doc comment.
 ///
 /// FORK NOTE: [dofCostByConstraintType] must stay in sync with
 /// `backend/app/sketch/constraints.py`'s Constraint type list - cheap
@@ -342,12 +358,34 @@ class SketchRigidity {
   /// origin's) would only need to add its own target Point id(s) here,
   /// with the rest of the grounding algorithm - which only ever cares
   /// "does this cluster contain *any* fixed Point" - unchanged.
+  /// [trustConvergedSolve] (bug fix, on-device feedback: "a line to line
+  /// (across flats) dimension combined with a horizontal constraint on an
+  /// edge causes a red outline and the solver fails to solve or considers
+  /// over constrained... a typical method for fully constraining a hex or
+  /// other polygon") - pass `true` only when the backend's own most recent
+  /// solve genuinely reported `converged: true` for the *current* Sketch
+  /// state (`SketchController._lastSolveConverged`, refreshed after every
+  /// meaningful edit - see that field's own doc comment). This module's
+  /// own DOF-cost counting is a topological approximation that cannot tell
+  /// a Regular Polygon's own deliberately-redundant EqualRadius/Angle
+  /// chain plus one further genuinely-implied Constraint (a Horizontal
+  /// edge and a matching across-flats LineDistance together - see this
+  /// class's own header "KNOWN LIMITATIONS" for the exact math) apart from
+  /// a real conflict - it just double-charges both as independent DOF
+  /// removals and reports over-constrained. A backend solve that actually
+  /// converged is definitive proof no such conflict exists, numerically
+  /// stronger than this structural guess, so when it's available this
+  /// module defers to it entirely for the *over*-constrained verdict
+  /// (`fully`/`grounded` are unaffected - a converged solve says nothing
+  /// wrong about those) rather than raising a false alarm the backend has
+  /// already ruled out.
   factory SketchRigidity.analyze({
     required Iterable<String> pointIds,
     required Set<String> fixedPointIds,
     required Map<String, String> lineStartPointId,
     required Map<String, String> lineEndPointId,
     required Iterable<ConstraintDto> constraints,
+    bool trustConvergedSolve = false,
   }) {
     final parent = <String, String>{};
 
@@ -416,7 +454,7 @@ class SketchRigidity {
       if (!parent.containsKey(pointId)) continue;
       final root = find(pointId);
       final remaining = (rawDofByRoot[root] ?? 0) - (removedDofByRoot[root] ?? 0);
-      if (remaining < 0) {
+      if (remaining < 0 && !trustConvergedSolve) {
         over.add(pointId);
       } else if (remaining == 0 && (groundedByRoot[root] ?? false)) {
         fully.add(pointId);
