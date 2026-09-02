@@ -1,7 +1,7 @@
 # Builds the production dart:ffi shim (slvs_ffi_shim.cpp/.h) over the
 # vendored SolveSpace fork's slvs_static target.
 #
-# Two-step build, deliberately not a single `add_subdirectory(vendor)` -
+# Three-step build, deliberately not a single `add_subdirectory(vendor)` -
 # the vendored CMakeLists.txt (third-party source, kept unmodified for easy
 # rebasing - see the rollout plan's "ongoing cost" section) hardcodes
 # CMAKE_SOURCE_DIR in several places, assuming it is always the top-level
@@ -11,6 +11,15 @@
 # sketch.md's Track 1 verdict), so the host and Android builds share one
 # recipe:
 #
+#   0. Once per fresh vendor/ checkout (i.e. after `git submodule update
+#      --init`, not on every build), apply the small local patch that adds
+#      dragged[]-param support to System::solve() for live-clamp/soft-drag
+#      (see patches/0001-system-solve-dragged-params.patch for why this
+#      isn't committed directly into the submodule):
+#        git -C vendor apply ../patches/0001-system-solve-dragged-params.patch
+#      This is idempotent to check: `git -C vendor apply --check ...` (or
+#      `--reverse --check` to detect "already applied") before applying, so
+#      a build script can skip it on a second run against the same checkout.
 #   1. Configure/build vendor/ as its own standalone project:
 #        cmake -B <vendor-build> -S vendor -DBUILD_PYTHON=OFF -DENABLE_GUI=OFF \
 #              -DCMAKE_POLICY_VERSION_MINIMUM=3.5 [toolchain flags]

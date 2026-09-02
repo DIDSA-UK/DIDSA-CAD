@@ -1,0 +1,28 @@
+diff --git a/src/swig/slvs_swig.hpp b/src/swig/slvs_swig.hpp
+index 6cc7839..2247f15 100644
+--- a/src/swig/slvs_swig.hpp
++++ b/src/swig/slvs_swig.hpp
+@@ -41,8 +41,22 @@ public:
+         Dof = -1;
+     }
+ 
+-    int solve(Slvs_hGroup group=0, bool reportFailed=false, bool findFreeParams=false) {
++    // DIDSA-CAD live-clamp/soft-drag: dragged[0..3] are forwarded straight
++    // into Slvs_System.dragged - see slvs.h's own doc comment ("the solver
++    // will favor that parameter, and attempt to change it as little as
++    // possible even if that requires it to change other parameters more").
++    // Previously always left zeroed (no caller populated it), so every
++    // existing call site's behaviour is unchanged when dragged is omitted.
++    // This file is normally kept unmodified (see this project's own
++    // CMakeLists.txt header comment); this one addition is carried as
++    // client/native/slvs/patches/0001-system-solve-dragged-params.patch
++    // and applied to a fresh vendor/ checkout as part of the build recipe,
++    // rather than committed directly into this submodule.
++    int solve(Slvs_hGroup group=0, bool reportFailed=false, bool findFreeParams=false,
++              const std::vector<Slvs_hParam> &dragged=std::vector<Slvs_hParam>()) {
+         Slvs_System sys = {};
++        for(size_t i = 0; i < dragged.size() && i < 4; i++)
++            sys.dragged[i] = dragged[i];
+ #define SLVS_PREPARE(_name,_n,_ns) \
+         _name.clear();\
+         _name.reserve(_name##Map.size());\
