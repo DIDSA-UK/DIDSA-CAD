@@ -9498,6 +9498,13 @@ void main() {
     expect(grabbed, isTrue);
     localBackend.requestLog.clear();
     await localController.updatePointDrag(20, 20);
+    // The fallback PATCH is no longer awaited before applying (round-trip
+    // elimination, part 2 - see updatePointDrag's own fallback comment) -
+    // it fires via `unawaited(...)`, so one microtask turn is needed
+    // before it actually reaches the (fake) backend, same pattern already
+    // used elsewhere in this file for _maybeSolveDuringDrag's own fire-
+    // and-forget solve.
+    await Future<void>.delayed(Duration.zero);
 
     expect(
       localBackend.requestLog.any((r) => r.startsWith('PATCH') && r.contains('/points/$pointA')),

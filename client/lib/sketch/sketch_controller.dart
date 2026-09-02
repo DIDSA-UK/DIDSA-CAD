@@ -5137,12 +5137,21 @@ class SketchController extends ChangeNotifier {
   /// jumping to be exactly under the touch on the first move (see
   /// [beginPointDrag]'s doc comment for why that offset exists at all).
   ///
-  /// PATCHes the backend immediately rather than buffering until release,
-  /// so every other on-canvas reader (the entity itself, any dimension
-  /// overlay anchored to it) tracks the drag the same way it tracks any
-  /// other backend-confirmed position - no separate "ghost position"
-  /// concept. The dragged Point itself always shows the raw dragged
-  /// position, exactly under the touch; every *other* Point is periodically
+  /// Applies to local state immediately rather than buffering until
+  /// release, so every other on-canvas reader (the entity itself, any
+  /// dimension overlay anchored to it) tracks the drag the same way it
+  /// tracks any other confirmed position - no separate "ghost position"
+  /// concept. This no longer means an immediate backend PATCH, though (see
+  /// the local-only-drag/round-trip-elimination comment inside the method
+  /// body): [points] updates synchronously every frame either way, but the
+  /// backend itself only hears about it once, at drop, when the local
+  /// solver is available and this frame's solve succeeds, or via a fire-
+  /// and-forget PATCH otherwise. The dragged Point itself shows the raw
+  /// dragged position, exactly under the touch, *unless* the local solve
+  /// succeeds and a live Constraint genuinely requires it to sit somewhere
+  /// else - the soft-drag/live-clamp behaviour [solveSketchLocally] exists
+  /// to produce (see its own doc comment) - in which case it tracks that
+  /// clamped position instead. Every *other* Point is periodically
   /// re-solved into place as the drag continues (throttled - see
   /// [_maybeSolveDuringDrag]), rather than staying frozen until
   /// [endPointDrag]'s single final solve - the fix for constraint systems
@@ -5262,12 +5271,25 @@ class SketchController extends ChangeNotifier {
     }
     // Fallback: the native library isn't available on this platform/build,
     // or this specific frame's local solve threw or tripped one of
-    // [_trySolveDuringDragLocally]'s own guards - exactly the same network
-    // path this method always used before the optimization above existed,
-    // so a drag can freely flip between local-only and network-assisted
-    // frames without ever landing in a worse state than today's baseline.
-    try {
-      final updated = await _api.updatePoint(_sketchId!, pointId, newX, newY);
+    // [_trySolveDuringDragLocally]'s own guards - the same network PATCH
+    // this method always used, but no longer awaited before applying
+    // (round-trip elimination, part 2: on a platform with no local
+    // solver, every single drag frame used to block on this exact request
+    // before the Point even moved on screen). The backend never
+    // transforms this value, only accepts it - there's nothing here worth
+    // holding a frame on - so it's applied to [points] immediately and the
+    // PATCH itself fires in the background, reconciled only if it turns
+    // out to have actually failed. Same "rapid out-of-order responses are
+    // accepted silently" tradeoff [_maybeSolveDuringDrag]/[_solveDuringDrag]
+    // already make for every other unsequenced PATCH in this file - not a
+    // new risk, since [updatePointDrag] was already callable again before
+    // a prior call's own await resolved. [points[pointId]] is already
+    // exactly (newX, newY) from the local-only attempt above - it's never
+    // partially applied on a failed [_trySolveDuringDragLocally] call - so
+    // there is nothing left to (re)write here, only listeners to notify.
+    notifyListeners();
+    _maybeSolveDuringDrag([pointId], () => _draggingPointId == pointId);
+    unawaited(_api.updatePoint(_sketchId!, pointId, newX, newY).then((updated) {
       // [endPointDrag] clears _draggingPointId synchronously before it solves
       // and refreshes - if this PATCH straggles past that point (e.g. a
       // pointer-move fired right before pointer-up), applying it here would
@@ -5278,11 +5300,12 @@ class SketchController extends ChangeNotifier {
       if (_draggingPointId != pointId) return;
       points[pointId] = SketchPointView(id: updated.id, x: updated.x, y: updated.y);
       notifyListeners();
-      _maybeSolveDuringDrag([pointId], () => _draggingPointId == pointId);
-    } on ApiException catch (e) {
-      errorMessage = e.message;
-      notifyListeners();
-    }
+    }).catchError((Object error) {
+      if (error is ApiException) {
+        errorMessage = error.message;
+        notifyListeners();
+      }
+    }));
   }
 
   SlvsNativeBindings? _localSolverBindings;
@@ -5754,27 +5777,43 @@ class SketchController extends ChangeNotifier {
     if (_trySolveDuringDragLocally([line.startPointId, line.endPointId])) {
       return;
     }
-    // Fallback: same network path this method always used - see
-    // [updatePointDrag]'s own fallback comment for why flipping between
-    // local-only and network-assisted frames mid-drag is safe.
-    try {
-      final updatedStart =
-          await _api.updatePoint(_sketchId!, line.startPointId, originStartX + dx, originStartY + dy);
+    // Fallback: same network PATCHes this method always used, but no
+    // longer awaited before applying, fired concurrently rather than
+    // sequentially now that neither has to wait on the other - see
+    // [updatePointDrag]'s own fallback comment for the full "why" (round-
+    // trip elimination, part 2) and for why flipping between local-only
+    // and network-assisted frames mid-drag is safe. Both endpoints are
+    // already exactly (originStartX+dx, originStartY+dy)/(originEndX+dx,
+    // originEndY+dy) in [points] from the local-only attempt above (never
+    // partially applied on a failed [_trySolveDuringDragLocally] call), so
+    // there is nothing left to (re)write, only listeners to notify.
+    notifyListeners();
+    _maybeSolveDuringDrag(
+      [line.startPointId, line.endPointId],
+      () => _draggingLineId == lineId,
+    );
+    unawaited(_api.updatePoint(_sketchId!, line.startPointId, originStartX + dx, originStartY + dy).then((updated) {
+      // Same stale-completion guard as [updatePointDrag]'s own reconcile
+      // callback - see its doc comment.
       if (_draggingLineId != lineId) return;
-      points[line.startPointId] = SketchPointView(id: updatedStart.id, x: updatedStart.x, y: updatedStart.y);
-      final updatedEnd =
-          await _api.updatePoint(_sketchId!, line.endPointId, originEndX + dx, originEndY + dy);
+      points[line.startPointId] = SketchPointView(id: updated.id, x: updated.x, y: updated.y);
+      notifyListeners();
+    }).catchError((Object error) {
+      if (error is ApiException) {
+        errorMessage = error.message;
+        notifyListeners();
+      }
+    }));
+    unawaited(_api.updatePoint(_sketchId!, line.endPointId, originEndX + dx, originEndY + dy).then((updated) {
       if (_draggingLineId != lineId) return;
-      points[line.endPointId] = SketchPointView(id: updatedEnd.id, x: updatedEnd.x, y: updatedEnd.y);
+      points[line.endPointId] = SketchPointView(id: updated.id, x: updated.x, y: updated.y);
       notifyListeners();
-      _maybeSolveDuringDrag(
-        [line.startPointId, line.endPointId],
-        () => _draggingLineId == lineId,
-      );
-    } on ApiException catch (e) {
-      errorMessage = e.message;
-      notifyListeners();
-    }
+    }).catchError((Object error) {
+      if (error is ApiException) {
+        errorMessage = error.message;
+        notifyListeners();
+      }
+    }));
   }
 
   /// Ends the current Line drag (if any) and re-solves from the dropped
