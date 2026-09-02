@@ -4884,6 +4884,206 @@ class SketchController extends ChangeNotifier {
     };
   }
 
+  /// The still-intact EllipseArc [pointId] belongs to (as centre, major,
+  /// minor, start, or end Point), or null - same "every Point/Line it was
+  /// built from still present, live-checked" contract as
+  /// [_intactCircleForPoint]/[_intactArcForPoint]/[_intactEllipseForPoint].
+  /// No negative-tip Points to check here, unlike Ellipse - see the
+  /// backend `EllipseArc` docstring for why: its own natural drag handles
+  /// are start/end, so that machinery is pure unused overhead for a
+  /// partial ellipse.
+  SketchEllipseArcView? _intactEllipseArcForPoint(String pointId) {
+    for (final arc in ellipseArcs.values) {
+      final isMember = pointId == arc.centerPointId ||
+          pointId == arc.majorPointId ||
+          pointId == arc.minorPointId ||
+          pointId == arc.startPointId ||
+          pointId == arc.endPointId;
+      if (!isMember) continue;
+      final intact = points.containsKey(arc.centerPointId) &&
+          points.containsKey(arc.majorPointId) &&
+          points.containsKey(arc.minorPointId) &&
+          points.containsKey(arc.startPointId) &&
+          points.containsKey(arc.endPointId) &&
+          lines.containsKey(arc.majorAxisLineId) &&
+          lines.containsKey(arc.minorAxisLineId);
+      return intact ? arc : null;
+    }
+    return null;
+  }
+
+  /// The ellipse-curve point at parametric angle [angle] (backend's
+  /// `EllipseArc.local_angle` convention - 0 at the major axis, increasing
+  /// counter-clockwise in the ellipse's own rotated frame, matching
+  /// [_ellipseParametricAngle]) - that method's own inverse. Used by
+  /// [_closedFormEllipseArcGeometry] to re-anchor a curve Point back onto
+  /// the (possibly just-resized/rotated) ellipse at its own unchanged
+  /// angle.
+  (double, double) _ellipsePointAtParametricAngle(
+    double centerX,
+    double centerY,
+    double majorX,
+    double majorY,
+    double minorRadius,
+    double angle,
+  ) {
+    final majorRadius = math.sqrt(math.pow(majorX - centerX, 2) + math.pow(majorY - centerY, 2));
+    final rotation = math.atan2(majorY - centerY, majorX - centerX);
+    final u = majorRadius * math.cos(angle);
+    final v = minorRadius * math.sin(angle);
+    final cosR = math.cos(rotation), sinR = math.sin(rotation);
+    return (centerX + u * cosR - v * sinR, centerY + u * sinR + v * cosR);
+  }
+
+  /// [_closedFormEllipseGeometry]'s counterpart for EllipseArc - same
+  /// "provisional DistanceConstraint means the general solver won't
+  /// protect against collapse" root cause, same closed-form fix,
+  /// generalized to also carry the curve-tracking start/end Points along
+  /// (Ellipse itself has none).
+  ///
+  /// Dragging centre translates every Point (major/minor/start/end) by the
+  /// same delta - rotation and both radii untouched, exactly like
+  /// Ellipse's own centre branch. Dragging major or minor sets a new
+  /// radius/rotation (major) or magnitude-along-the-fixed-perpendicular
+  /// (minor) directly from the drag target, mirroring
+  /// [_closedFormEllipseGeometry]'s own two branches - except each is
+  /// clamped against the *other* axis's current radius rather than
+  /// letting them swap: unlike a plain Ellipse (see that method's own doc
+  /// comment), an EllipseArc's rotation also fixes where its own
+  /// parametric angle-zero sits, which start/end's own meaning depends
+  /// on, so relabeling which axis is "major" mid-drag isn't safe here -
+  /// this mirrors the same clamp the backend's own
+  /// `update_constraint_value` applies at confirm (see
+  /// `_clamp_ellipse_arc_axis_value` in `router.py`), just applied live
+  /// too so the drag preview never shows something the confirm would
+  /// silently correct out from under it. Either way, start/end are then
+  /// re-projected onto the (possibly now differently-shaped/rotated)
+  /// curve at their own unchanged parametric angle - computed from the
+  /// *old* shape before this drag's target is applied - so the sweep the
+  /// user already chose survives a major/minor edit exactly, the
+  /// elliptical analogue of how a Circle's own radius change leaves an
+  /// Arc's start/end angles untouched. Dragging start or end directly is
+  /// simpler still: the shape doesn't change at all, only that one
+  /// Point's own angle does, re-projected straight from the drag target.
+  Map<String, (double, double)>? _closedFormEllipseArcGeometry(
+    SketchEllipseArcView ellipseArc,
+    String draggedPointId,
+    double targetX,
+    double targetY,
+  ) {
+    final centerPoint = points[ellipseArc.centerPointId];
+    final majorPoint = points[ellipseArc.majorPointId];
+    final minorPoint = points[ellipseArc.minorPointId];
+    final startPoint = points[ellipseArc.startPointId];
+    final endPoint = points[ellipseArc.endPointId];
+    if (centerPoint == null || majorPoint == null || minorPoint == null || startPoint == null || endPoint == null) {
+      return null;
+    }
+    final cx = centerPoint.x;
+    final cy = centerPoint.y;
+
+    if (draggedPointId == ellipseArc.centerPointId) {
+      final dx = targetX - cx;
+      final dy = targetY - cy;
+      return {
+        ellipseArc.centerPointId: (targetX, targetY),
+        ellipseArc.majorPointId: (majorPoint.x + dx, majorPoint.y + dy),
+        ellipseArc.minorPointId: (minorPoint.x + dx, minorPoint.y + dy),
+        ellipseArc.startPointId: (startPoint.x + dx, startPoint.y + dy),
+        ellipseArc.endPointId: (endPoint.x + dx, endPoint.y + dy),
+      };
+    }
+
+    final oldMajorRadius = math.sqrt(math.pow(majorPoint.x - cx, 2) + math.pow(majorPoint.y - cy, 2));
+    final oldMinorRadius = math.sqrt(math.pow(minorPoint.x - cx, 2) + math.pow(minorPoint.y - cy, 2));
+
+    if (draggedPointId == ellipseArc.startPointId || draggedPointId == ellipseArc.endPointId) {
+      if (oldMinorRadius < 1e-9) return null;
+      final t = _ellipseParametricAngle(cx, cy, majorPoint.x, majorPoint.y, oldMinorRadius, targetX, targetY);
+      return {draggedPointId: _ellipsePointAtParametricAngle(cx, cy, majorPoint.x, majorPoint.y, oldMinorRadius, t)};
+    }
+
+    double? startAngle;
+    double? endAngle;
+    if (oldMinorRadius >= 1e-9) {
+      startAngle =
+          _ellipseParametricAngle(cx, cy, majorPoint.x, majorPoint.y, oldMinorRadius, startPoint.x, startPoint.y);
+      endAngle = _ellipseParametricAngle(cx, cy, majorPoint.x, majorPoint.y, oldMinorRadius, endPoint.x, endPoint.y);
+    }
+
+    final double newMajorAngle;
+    final double newMajorRadius;
+    final double newMinorRadius;
+    if (draggedPointId == ellipseArc.majorPointId) {
+      final dx = targetX - cx;
+      final dy = targetY - cy;
+      final rawMajorRadius = math.sqrt(dx * dx + dy * dy);
+      if (rawMajorRadius < 1e-9) return null;
+      newMajorAngle = math.atan2(dy, dx);
+      // Clamped, not swapped - see this method's own doc comment.
+      newMajorRadius = math.max(rawMajorRadius, oldMinorRadius);
+      newMinorRadius = oldMinorRadius;
+    } else if (draggedPointId == ellipseArc.minorPointId) {
+      if (oldMajorRadius < 1e-9) return null;
+      newMajorAngle = math.atan2(majorPoint.y - cy, majorPoint.x - cx);
+      final perpAngle = newMajorAngle + math.pi / 2;
+      final dx = targetX - cx;
+      final dy = targetY - cy;
+      final rawMinorRadius = (dx * math.cos(perpAngle) + dy * math.sin(perpAngle)).abs();
+      newMajorRadius = oldMajorRadius;
+      // Clamped, not swapped - see this method's own doc comment.
+      newMinorRadius = math.min(rawMinorRadius, oldMajorRadius);
+    } else {
+      return null;
+    }
+    if (newMinorRadius < 1e-9) return null;
+
+    final newMajorX = cx + newMajorRadius * math.cos(newMajorAngle);
+    final newMajorY = cy + newMajorRadius * math.sin(newMajorAngle);
+    final minorAngle = newMajorAngle + math.pi / 2;
+    final result = <String, (double, double)>{
+      ellipseArc.majorPointId: (newMajorX, newMajorY),
+      ellipseArc.minorPointId: (
+        cx + newMinorRadius * math.cos(minorAngle),
+        cy + newMinorRadius * math.sin(minorAngle),
+      ),
+    };
+    if (startAngle != null) {
+      result[ellipseArc.startPointId] =
+          _ellipsePointAtParametricAngle(cx, cy, newMajorX, newMajorY, newMinorRadius, startAngle);
+    }
+    if (endAngle != null) {
+      result[ellipseArc.endPointId] =
+          _ellipsePointAtParametricAngle(cx, cy, newMajorX, newMajorY, newMinorRadius, endAngle);
+    }
+    return result;
+  }
+
+  /// [_ellipseMajorRadiusConstraint]'s counterpart for EllipseArc - same
+  /// "identified by its two endpoint Points" lookup.
+  DistanceConstraintDto? _ellipseArcMajorRadiusConstraint(SketchEllipseArcView ellipseArc) {
+    for (final constraint in constraints.values) {
+      if (constraint is DistanceConstraintDto &&
+          constraint.pointAId == ellipseArc.centerPointId &&
+          constraint.pointBId == ellipseArc.majorPointId) {
+        return constraint;
+      }
+    }
+    return null;
+  }
+
+  /// [_ellipseArcMajorRadiusConstraint]'s counterpart for the minor axis.
+  DistanceConstraintDto? _ellipseArcMinorRadiusConstraint(SketchEllipseArcView ellipseArc) {
+    for (final constraint in constraints.values) {
+      if (constraint is DistanceConstraintDto &&
+          constraint.pointAId == ellipseArc.centerPointId &&
+          constraint.pointBId == ellipseArc.minorPointId) {
+        return constraint;
+      }
+    }
+    return null;
+  }
+
   /// The still-intact, axis-aligned Rectangle [pointId] is a corner or
   /// centre of, or null - same "every Point/Line it was built from still
   /// present, live-checked" contract as [_intactCircleForPoint]/
@@ -5043,6 +5243,7 @@ class SketchController extends ChangeNotifier {
     SketchCircleView? circle,
     SketchArcView? arc,
     SketchEllipseView? ellipse,
+    SketchEllipseArcView? ellipseArc,
     SketchRectangleView? rectangle,
     String draggedPointId,
     double targetX,
@@ -5082,6 +5283,36 @@ class SketchController extends ChangeNotifier {
       final minorConstraint = _ellipseMinorRadiusConstraint(ellipse);
       if (minorConstraint != null && !minorConstraint.provisional) {
         final minor = points[ellipse.minorPointId];
+        if (minor != null) {
+          final newMinor = math.sqrt(math.pow(minor.x - center.x, 2) + math.pow(minor.y - center.y, 2));
+          await _api.updateConstraintValue(_sketchId!, minorConstraint.id, newMinor);
+        }
+      }
+      return;
+    }
+    if (ellipseArc != null) {
+      // Unlike Ellipse's own settle above, dragged values here are already
+      // clamped (never swapped) by [_closedFormEllipseArcGeometry] itself -
+      // this just reads the (already-valid) settled positions back and
+      // pushes each confirmed dimension's own value to match, same pattern
+      // as every other closed-form shape here.
+      final positions = _closedFormEllipseArcGeometry(ellipseArc, draggedPointId, targetX, targetY);
+      if (positions == null) return;
+      await _applyClosedFormPositions(positions, sync: true);
+
+      final center = points[ellipseArc.centerPointId];
+      if (center == null) return;
+      final majorConstraint = _ellipseArcMajorRadiusConstraint(ellipseArc);
+      if (majorConstraint != null && !majorConstraint.provisional) {
+        final major = points[ellipseArc.majorPointId];
+        if (major != null) {
+          final newMajor = math.sqrt(math.pow(major.x - center.x, 2) + math.pow(major.y - center.y, 2));
+          await _api.updateConstraintValue(_sketchId!, majorConstraint.id, newMajor);
+        }
+      }
+      final minorConstraint = _ellipseArcMinorRadiusConstraint(ellipseArc);
+      if (minorConstraint != null && !minorConstraint.provisional) {
+        final minor = points[ellipseArc.minorPointId];
         if (minor != null) {
           final newMinor = math.sqrt(math.pow(minor.x - center.x, 2) + math.pow(minor.y - center.y, 2));
           await _api.updateConstraintValue(_sketchId!, minorConstraint.id, newMinor);
@@ -5194,6 +5425,7 @@ class SketchController extends ChangeNotifier {
         _intactCircleForPoint(pointId) == null &&
         _intactArcForPoint(pointId) == null &&
         _intactEllipseForPoint(pointId) == null &&
+        _intactEllipseArcForPoint(pointId) == null &&
         _intactRectangleForPoint(pointId) == null) {
       // Phase 3 (3.2): a Point in an over-constrained cluster already has a
       // redundant/conflicting Constraint pinning it - dragging it wouldn't
@@ -5333,11 +5565,19 @@ class SketchController extends ChangeNotifier {
     final intactEllipse = intactPolygon == null && intactSlot == null && intactCircle == null && intactArc == null
         ? _intactEllipseForPoint(pointId)
         : null;
-    final intactRectangle = intactPolygon == null &&
+    final intactEllipseArc = intactPolygon == null &&
             intactSlot == null &&
             intactCircle == null &&
             intactArc == null &&
             intactEllipse == null
+        ? _intactEllipseArcForPoint(pointId)
+        : null;
+    final intactRectangle = intactPolygon == null &&
+            intactSlot == null &&
+            intactCircle == null &&
+            intactArc == null &&
+            intactEllipse == null &&
+            intactEllipseArc == null
         ? _intactRectangleForPoint(pointId)
         : null;
     if (intactPolygon != null ||
@@ -5345,6 +5585,7 @@ class SketchController extends ChangeNotifier {
         intactCircle != null ||
         intactArc != null ||
         intactEllipse != null ||
+        intactEllipseArc != null ||
         intactRectangle != null) {
       final Map<String, (double, double)>? positions;
       if (intactPolygon != null) {
@@ -5357,6 +5598,8 @@ class SketchController extends ChangeNotifier {
         positions = _closedFormArcGeometry(intactArc, pointId, newX, newY);
       } else if (intactEllipse != null) {
         positions = _closedFormEllipseGeometry(intactEllipse, pointId, newX, newY);
+      } else if (intactEllipseArc != null) {
+        positions = _closedFormEllipseArcGeometry(intactEllipseArc, pointId, newX, newY);
       } else {
         positions = _closedFormRectangleGeometry(intactRectangle!, pointId, newX, newY);
       }
@@ -5696,11 +5939,19 @@ class SketchController extends ChangeNotifier {
     final intactEllipse = intactPolygon == null && intactSlot == null && intactCircle == null && intactArc == null
         ? _intactEllipseForPoint(pointId)
         : null;
-    final intactRectangle = intactPolygon == null &&
+    final intactEllipseArc = intactPolygon == null &&
             intactSlot == null &&
             intactCircle == null &&
             intactArc == null &&
             intactEllipse == null
+        ? _intactEllipseArcForPoint(pointId)
+        : null;
+    final intactRectangle = intactPolygon == null &&
+            intactSlot == null &&
+            intactCircle == null &&
+            intactArc == null &&
+            intactEllipse == null &&
+            intactEllipseArc == null
         ? _intactRectangleForPoint(pointId)
         : null;
     if (intactPolygon != null ||
@@ -5708,6 +5959,7 @@ class SketchController extends ChangeNotifier {
         intactCircle != null ||
         intactArc != null ||
         intactEllipse != null ||
+        intactEllipseArc != null ||
         intactRectangle != null) {
       await _runGuarded(() async {
         await _settleClosedFormShapeDrag(
@@ -5716,6 +5968,7 @@ class SketchController extends ChangeNotifier {
           intactCircle,
           intactArc,
           intactEllipse,
+          intactEllipseArc,
           intactRectangle,
           pointId,
           droppedPoint.x,
@@ -5723,7 +5976,7 @@ class SketchController extends ChangeNotifier {
         );
         _pushUndo(() async {
           await _settleClosedFormShapeDrag(intactPolygon, intactSlot, intactCircle, intactArc, intactEllipse,
-              intactRectangle, pointId, originX, originY);
+              intactEllipseArc, intactRectangle, pointId, originX, originY);
         });
         // Same fix as the plain-Point drag branch below (Prompt B item B4,
         // and its own follow-up: "no entity should be able to use the

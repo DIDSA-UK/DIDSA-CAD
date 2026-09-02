@@ -5893,6 +5893,225 @@ void main() {
     });
   });
 
+  group('EllipseArc closed-form drag (same on-device bug/fix as Ellipse - both of an EllipseArc\'s '
+      'own radius DistanceConstraints are provisional too - generalized to also carry the '
+      'curve-tracking start/end Points along, which a plain Ellipse has none of)', () {
+    Future<SketchEllipseArcView> placeArc() async {
+      controller.selectDrawTool(SketchTool.ellipseArc);
+      await controller.handleCanvasTap(20, 20); // center
+      await controller.handleCanvasTap(30, 20); // major point - radius 10
+      await controller.handleCanvasTap(25, 24); // minor radius 4
+      await controller.handleCanvasTap(20, 24); // start angle: local (0, 4) -> pi/2
+      await controller.handleCanvasTap(10, 20); // end angle: local (-10, 0) -> pi
+      return controller.ellipseArcs.values.single;
+    }
+
+    test('dragging the centre translates every Point (major/minor/start/end) by the same delta, '
+        'both radii and the rotation unchanged, with zero solver/network calls', () async {
+      final ellipseArc = await placeArc();
+      final majorBefore = controller.points[ellipseArc.majorPointId]!;
+      final minorBefore = controller.points[ellipseArc.minorPointId]!;
+      final startBefore = controller.points[ellipseArc.startPointId]!;
+      final endBefore = controller.points[ellipseArc.endPointId]!;
+
+      backend.requestLog.clear();
+      final center0 = controller.points[ellipseArc.centerPointId]!;
+      controller.cursorX = center0.x;
+      controller.cursorY = center0.y;
+      expect(controller.beginPointDrag(ellipseArc.centerPointId), isTrue);
+      await controller.updatePointDrag(center0.x + 5, center0.y + 5);
+
+      expect(backend.requestLog.any((r) => r.contains('/solve')), isFalse,
+          reason: 'the closed-form path never needs to solve anything');
+      final majorAfter = controller.points[ellipseArc.majorPointId]!;
+      final minorAfter = controller.points[ellipseArc.minorPointId]!;
+      final startAfter = controller.points[ellipseArc.startPointId]!;
+      final endAfter = controller.points[ellipseArc.endPointId]!;
+      expect(majorAfter.x, closeTo(majorBefore.x + 5, 1e-9));
+      expect(majorAfter.y, closeTo(majorBefore.y + 5, 1e-9));
+      expect(minorAfter.x, closeTo(minorBefore.x + 5, 1e-9));
+      expect(minorAfter.y, closeTo(minorBefore.y + 5, 1e-9));
+      expect(startAfter.x, closeTo(startBefore.x + 5, 1e-9));
+      expect(startAfter.y, closeTo(startBefore.y + 5, 1e-9));
+      expect(endAfter.x, closeTo(endBefore.x + 5, 1e-9));
+      expect(endAfter.y, closeTo(endBefore.y + 5, 1e-9));
+    });
+
+    test('dragging the major-axis Point resizes and rotates the ellipse, carries the minor radius '
+        'along at its old magnitude, and re-projects start/end onto the new curve at their own '
+        'unchanged parametric angle rather than leaving them off-curve', () async {
+      final ellipseArc = await placeArc();
+      final center = controller.points[ellipseArc.centerPointId]!;
+
+      backend.requestLog.clear();
+      final major0 = controller.points[ellipseArc.majorPointId]!;
+      controller.cursorX = major0.x;
+      controller.cursorY = major0.y;
+      expect(controller.beginPointDrag(ellipseArc.majorPointId), isTrue);
+      // Rotate the major axis to 90 degrees and stretch it to radius 20.
+      await controller.updatePointDrag(center.x, center.y + 20);
+
+      expect(backend.requestLog.any((r) => r.contains('/solve')), isFalse);
+      final major = controller.points[ellipseArc.majorPointId]!;
+      expect(major.x, closeTo(center.x, 1e-6));
+      expect(major.y, closeTo(center.y + 20, 1e-6));
+      final minor = controller.points[ellipseArc.minorPointId]!;
+      final minorRadius = math.sqrt(math.pow(minor.x - center.x, 2) + math.pow(minor.y - center.y, 2));
+      expect(minorRadius, closeTo(4, 1e-6), reason: 'minor radius must track its own old value, not collapse');
+      // Neither start nor end sits at a nameable world position after a
+      // 90-degree rotation + non-uniform stretch (their own local (u, v) is
+      // fixed, but the transform from local to world isn't a plain rotation
+      // once the two radii differ) - checked against the new curve's own
+      // implicit equation instead, in the new rotated frame (rotation is
+      // now pi/2, so world (x, y) -> local (u, v) is a -pi/2 rotation).
+      double localAngle(SketchPointView p) {
+        final localX = (p.x - center.x) * math.cos(-math.pi / 2) - (p.y - center.y) * math.sin(-math.pi / 2);
+        final localY = (p.x - center.x) * math.sin(-math.pi / 2) + (p.y - center.y) * math.cos(-math.pi / 2);
+        return math.atan2(localY / minorRadius, localX / 20);
+      }
+
+      expect(localAngle(controller.points[ellipseArc.startPointId]!), closeTo(math.pi / 2, 1e-6),
+          reason: 'start must keep its own pi/2 parametric angle, re-anchored onto the new curve');
+      // atan2's own branch cut: +pi and -pi are the same angle here, so
+      // compare the magnitude rather than the signed value.
+      expect(localAngle(controller.points[ellipseArc.endPointId]!).abs(), closeTo(math.pi, 1e-6),
+          reason: 'end must keep its own pi parametric angle, re-anchored onto the new curve');
+    });
+
+    test('dragging the minor-axis Point within the major radius rescales only the minor radius, '
+        'projected onto the perpendicular axis - the major axis is untouched', () async {
+      final ellipseArc = await placeArc();
+      final center = controller.points[ellipseArc.centerPointId]!;
+
+      backend.requestLog.clear();
+      final minor0 = controller.points[ellipseArc.minorPointId]!;
+      controller.cursorX = minor0.x;
+      controller.cursorY = minor0.y;
+      expect(controller.beginPointDrag(ellipseArc.minorPointId), isTrue);
+      await controller.updatePointDrag(center.x, center.y + 9); // minor radius 9, still under major (10)
+
+      expect(backend.requestLog.any((r) => r.contains('/solve')), isFalse);
+      final minor = controller.points[ellipseArc.minorPointId]!;
+      expect(minor.x, closeTo(center.x, 1e-6));
+      expect(minor.y, closeTo(center.y + 9, 1e-6));
+      final major = controller.points[ellipseArc.majorPointId]!;
+      expect(major.x, closeTo(30, 1e-6), reason: 'major axis must be untouched by a minor-axis drag');
+      expect(major.y, closeTo(20, 1e-6));
+    });
+
+    test('dragging the minor-axis Point past the major radius is clamped, not swapped - unlike a '
+        'plain Ellipse, an EllipseArc cannot let its axes exchange roles mid-drag', () async {
+      final ellipseArc = await placeArc();
+      final center = controller.points[ellipseArc.centerPointId]!;
+
+      final minor0 = controller.points[ellipseArc.minorPointId]!;
+      controller.cursorX = minor0.x;
+      controller.cursorY = minor0.y;
+      expect(controller.beginPointDrag(ellipseArc.minorPointId), isTrue);
+      await controller.updatePointDrag(center.x, center.y + 25); // far past the major radius (10)
+
+      final minor = controller.points[ellipseArc.minorPointId]!;
+      final minorRadius = math.sqrt(math.pow(minor.x - center.x, 2) + math.pow(minor.y - center.y, 2));
+      expect(minorRadius, closeTo(10, 1e-6), reason: 'clamped at the major radius, not left to exceed it');
+      final major = controller.points[ellipseArc.majorPointId]!;
+      expect(major.x, closeTo(30, 1e-6), reason: 'major must stay exactly where it was - never swapped');
+      expect(major.y, closeTo(20, 1e-6));
+    });
+
+    test('dragging the major-axis Point shorter than the current minor radius is clamped at the '
+        'minor radius, the symmetric case of the minor-past-major clamp above', () async {
+      final ellipseArc = await placeArc();
+      final center = controller.points[ellipseArc.centerPointId]!;
+
+      final major0 = controller.points[ellipseArc.majorPointId]!;
+      controller.cursorX = major0.x;
+      controller.cursorY = major0.y;
+      expect(controller.beginPointDrag(ellipseArc.majorPointId), isTrue);
+      await controller.updatePointDrag(center.x + 1, center.y); // far shorter than the minor radius (4)
+
+      final major = controller.points[ellipseArc.majorPointId]!;
+      final majorRadius = math.sqrt(math.pow(major.x - center.x, 2) + math.pow(major.y - center.y, 2));
+      expect(majorRadius, closeTo(4, 1e-6), reason: 'clamped at the minor radius, not left to go below it');
+    });
+
+    test('dragging the start Point re-projects it onto the curve at the drag target\'s own '
+        'parametric angle, leaving centre/major/minor/end untouched', () async {
+      final ellipseArc = await placeArc();
+      final center = controller.points[ellipseArc.centerPointId]!;
+      final majorBefore = controller.points[ellipseArc.majorPointId]!;
+      final minorBefore = controller.points[ellipseArc.minorPointId]!;
+      final endBefore = controller.points[ellipseArc.endPointId]!;
+
+      backend.requestLog.clear();
+      final start0 = controller.points[ellipseArc.startPointId]!;
+      controller.cursorX = start0.x;
+      controller.cursorY = start0.y;
+      expect(controller.beginPointDrag(ellipseArc.startPointId), isTrue);
+      // Dragged toward local angle 0 (straight along the major axis).
+      await controller.updatePointDrag(center.x + 30, center.y);
+
+      expect(backend.requestLog.any((r) => r.contains('/solve')), isFalse);
+      final start = controller.points[ellipseArc.startPointId]!;
+      expect(start.x, closeTo(center.x + 10, 1e-4), reason: 'projected onto the curve, not the raw drag target');
+      expect(start.y, closeTo(center.y, 1e-4));
+      final major = controller.points[ellipseArc.majorPointId]!;
+      final minor = controller.points[ellipseArc.minorPointId]!;
+      final end = controller.points[ellipseArc.endPointId]!;
+      expect(major.x, closeTo(majorBefore.x, 1e-9));
+      expect(major.y, closeTo(majorBefore.y, 1e-9));
+      expect(minor.x, closeTo(minorBefore.x, 1e-9));
+      expect(minor.y, closeTo(minorBefore.y, 1e-9));
+      expect(end.x, closeTo(endBefore.x, 1e-9));
+      expect(end.y, closeTo(endBefore.y, 1e-9));
+    });
+
+    test('dropping a minor-axis drag past the major radius PATCHes the already-clamped value, not '
+        'the raw dragged one, once the minor dimension is confirmed', () async {
+      final ellipseArc = await placeArc();
+      final center = controller.points[ellipseArc.centerPointId]!;
+      final minorConstraint = controller.constraints.values.whereType<DistanceConstraintDto>().firstWhere((c) =>
+          (c.pointAId == ellipseArc.centerPointId && c.pointBId == ellipseArc.minorPointId) ||
+          (c.pointAId == ellipseArc.minorPointId && c.pointBId == ellipseArc.centerPointId));
+      controller.constraints[minorConstraint.id] = DistanceConstraintDto(
+        id: minorConstraint.id,
+        pointAId: minorConstraint.pointAId,
+        pointBId: minorConstraint.pointBId,
+        distance: minorConstraint.distance,
+        provisional: false,
+      );
+
+      final minor0 = controller.points[ellipseArc.minorPointId]!;
+      controller.cursorX = minor0.x;
+      controller.cursorY = minor0.y;
+      expect(controller.beginPointDrag(ellipseArc.minorPointId), isTrue);
+      await controller.updatePointDrag(center.x, center.y + 25); // way past the major radius (10)
+      await controller.endPointDrag();
+
+      final reloaded = controller.constraints[minorConstraint.id] as DistanceConstraintDto;
+      expect(reloaded.distance, closeTo(10.0, 1e-6),
+          reason: 'PATCHed with the clamped value (the major radius), never the raw 25 overshoot');
+    });
+
+    test('once a defining Point is gone (no longer intact), dragging the major Point falls back to '
+        'the ordinary drag path instead of the closed-form one', () async {
+      final ellipseArc = await placeArc();
+      controller.points.remove(ellipseArc.startPointId);
+      final minorBefore = controller.points[ellipseArc.minorPointId]!;
+
+      final major0 = controller.points[ellipseArc.majorPointId]!;
+      controller.cursorX = major0.x;
+      controller.cursorY = major0.y;
+      expect(controller.beginPointDrag(ellipseArc.majorPointId), isTrue);
+      await controller.updatePointDrag(major0.x, major0.y + 20);
+
+      // The closed-form path (which would have rotated it instantly, per
+      // the test above) didn't run - the minor Point never moved.
+      final minorAfter = controller.points[ellipseArc.minorPointId]!;
+      expect(minorAfter.x, closeTo(minorBefore.x, 1e-9));
+      expect(minorAfter.y, closeTo(minorBefore.y, 1e-9));
+    });
+  });
+
   // --- Partial-ellipse (EllipseArc) tool -------------------------------------
 
   test('activeDrawGhost previews a plain circle while only the ellipse-arc center is placed', () async {
