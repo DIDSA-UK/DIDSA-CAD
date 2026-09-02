@@ -63,6 +63,30 @@ class LocalSolveResult {
 /// rectangle whose width/height/position are never actually pinned) in
 /// that specific case - a blanket override would silently reintroduce that
 /// false positive.
+///
+/// KNOWN GAP (found via this port's own Circle-soft-drag-generalization
+/// validation pass - see local_solver_test.dart's own Ellipse group,
+/// "major and centre both locked: dragging minor..."): solver.py carries a
+/// THIRD override block (search that file for "any(isinstance(entity,
+/// (Ellipse, EllipseArc))"), separate from both this one and
+/// `_residual_verified_convergence`, specifically because fixing/anchoring
+/// any Point of an Ellipse or EllipseArc is *always* reported redundant by
+/// this py-slvs build (a Jacobian-rank artifact of any DistanceConstraint
+/// whose both endpoints end up fixed, per that block's own doc comment) -
+/// gated on "does this Sketch contain an Ellipse/EllipseArc entity", not on
+/// Tangent/EqualRadius presence the way the override below is, and further
+/// narrowed by `_ellipse_owned_at_midpoint_constraint_ids`' id-based (not
+/// type-based) carve-out for that Ellipse's own two AtMidpointConstraints.
+/// Not yet ported here - would need this module to learn "is there an
+/// Ellipse/EllipseArc in this Sketch" and "which AtMidpointConstraint ids
+/// are that Ellipse's own", neither of which a flat ConstraintDto list
+/// alone carries; the caller (SketchController, which already has
+/// `ellipses`/`ellipseArcs`) would need to compute and pass both through.
+/// Until ported, dragging an Ellipse Point whose own confirmed-dimension
+/// solve legitimately needs this override falls back to the network solve
+/// exactly as it already does today (no regression - this was never
+/// reachable locally before soft-drag either), just missing the same local
+/// fast path Circle/Polygon/Arc already get for their own equivalent case.
 bool _isRedundancySafe(ConstraintDto c) => c is! AtMidpointConstraintDto;
 
 double _dist((double, double) a, (double, double) b) => math.sqrt(math.pow(b.$1 - a.$1, 2) + math.pow(b.$2 - a.$2, 2));

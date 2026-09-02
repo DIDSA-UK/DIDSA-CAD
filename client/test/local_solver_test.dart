@@ -935,4 +935,228 @@ void main() {
       expect(cross.abs(), lessThan(1e-3), reason: 'line1 really is still parallel to the centreline');
     });
   });
+
+  group(
+      'Arc soft-drag validation (follow-up to the Circle soft-drag spike): the production graph '
+      'from Sketch.add_arc (backend/app/sketch/models.py) - a confirmed DistanceConstraint(centre, '
+      'start, radius) plus EqualRadiusConstraint(centre-start, centre-end) tying the end Point to '
+      'the same radius. Unlike Circle/Polygon, start and end are NOT tied to each other\'s angle at '
+      'all (no sweep-angle Constraint exists) - each has its own fully independent angular freedom '
+      'around the centre, so this validates that decoupling holds under soft-drag too (dragging '
+      'start must never perturb end, or vice versa)', () {
+    const center = (0.0, 0.0), radius = 8.0;
+    Map<String, (double, double)> intactArc() => {
+          'center': center,
+          'start': (center.$1 + radius, center.$2),
+          'end': (center.$1, center.$2 + radius),
+        };
+    const lines = <String, (String, String)>{};
+    List<ConstraintDto> arcConstraints() => const [
+          DistanceConstraintDto(id: 'radius', pointAId: 'center', pointBId: 'start', distance: radius),
+          EqualRadiusConstraintDto(id: 'er', center1PointId: 'center', radius1PointId: 'start', center2PointId: 'center', radius2PointId: 'end'),
+        ];
+    double distOf((double, double) a, (double, double) b) => math.sqrt(math.pow(b.$1 - a.$1, 2) + math.pow(b.$2 - a.$2, 2));
+
+    test('free centre: dragging start translates the whole Arc (start and end both track), radius '
+        'preserved exactly', () {
+      final points = intactArc();
+      points['start'] = (center.$1 + radius + 0.6, center.$2 + 0.3); // a small, realistic nudge
+      final result = solveSketchLocally(
+        bindings: bindings,
+        points: points,
+        constraints: arcConstraints(),
+        lineEndpoints: (id) => _lineEndpoints(lines, id),
+        anchorPointIds: {'start'},
+      );
+      expect(result.converged, isTrue, reason: 'resultCode=${result.resultCode}');
+      final c = result.solvedPoints['center']!;
+      final s = result.solvedPoints['start']!;
+      final e = result.solvedPoints['end']!;
+      expect(distOf(c, s), closeTo(radius, 1e-4), reason: 'start radius must stay exact');
+      expect(distOf(c, e), closeTo(radius, 1e-4), reason: 'end radius must stay exact (EqualRadius)');
+      expect((s.$1 - points['start']!.$1).abs() + (s.$2 - points['start']!.$2).abs(), lessThan(0.5),
+          reason: 'start tracks close to the drag target');
+      expect(c.$1.abs() + c.$2.abs(), greaterThan(0.1), reason: 'unlike a hard pin, the free centre actually moves');
+    });
+
+    test('locked centre: dragging start slides only start around the circle - end (undragged, no '
+        'sweep-angle tie to start) stays exactly where it was', () {
+      final points = intactArc();
+      points['start'] = (center.$1 + radius + 0.6, center.$2 + 0.3);
+      final result = solveSketchLocally(
+        bindings: bindings,
+        points: points,
+        constraints: arcConstraints(),
+        lineEndpoints: (id) => _lineEndpoints(lines, id),
+        anchorPointIds: {'start'},
+        lockedPointIds: {'center'},
+      );
+      expect(result.converged, isTrue, reason: 'resultCode=${result.resultCode}');
+      final c = result.solvedPoints['center']!;
+      expect(c.$1, closeTo(center.$1, 1e-9));
+      expect(c.$2, closeTo(center.$2, 1e-9));
+      final s = result.solvedPoints['start']!;
+      expect(distOf(c, s), closeTo(radius, 1e-4));
+      final e = result.solvedPoints['end']!;
+      final originalEnd = intactArc()['end']!;
+      expect(e.$1, closeTo(originalEnd.$1, 1e-3), reason: 'end has no reason to move - nothing ties its angle to start');
+      expect(e.$2, closeTo(originalEnd.$2, 1e-3));
+      // Nearest point on the circle to the drag target.
+      final target = points['start']!;
+      final norm = math.sqrt(math.pow(target.$1 - center.$1, 2) + math.pow(target.$2 - center.$2, 2));
+      expect(s.$1, closeTo(center.$1 + (target.$1 - center.$1) / norm * radius, 1e-2));
+      expect(s.$2, closeTo(center.$2 + (target.$2 - center.$2) / norm * radius, 1e-2));
+    });
+
+    test('locked centre: dragging end slides only end - start (undragged) stays exactly where it '
+        'was, confirming the decoupling is symmetric', () {
+      final points = intactArc();
+      points['end'] = (center.$1 + 0.4, center.$2 + radius + 0.5);
+      final result = solveSketchLocally(
+        bindings: bindings,
+        points: points,
+        constraints: arcConstraints(),
+        lineEndpoints: (id) => _lineEndpoints(lines, id),
+        anchorPointIds: {'end'},
+        lockedPointIds: {'center'},
+      );
+      expect(result.converged, isTrue, reason: 'resultCode=${result.resultCode}');
+      final s = result.solvedPoints['start']!;
+      final originalStart = intactArc()['start']!;
+      expect(s.$1, closeTo(originalStart.$1, 1e-3));
+      expect(s.$2, closeTo(originalStart.$2, 1e-3));
+      final e = result.solvedPoints['end']!;
+      expect(distOf(result.solvedPoints['center']!, e), closeTo(radius, 1e-4));
+    });
+  });
+
+  group(
+      'Ellipse soft-drag validation (follow-up to the Circle soft-drag spike): the production '
+      'graph from Sketch.add_ellipse (backend/app/sketch/models.py) - two INDEPENDENTLY confirmable '
+      'DistanceConstraints (centre-major, centre-minor) + AtMidpointConstraint pinning each of '
+      'majorNeg/minorNeg as the exact mirror of major/minor through the centre + a '
+      'PerpendicularConstraint tying the major and minor axes together. Unlike Arc, major and minor '
+      'ARE coupled (Perpendicular) - dragging one should rotate the *other* along with it around a '
+      'locked centre, the opposite of Arc\'s decoupled start/end.', () {
+    const center = (0.0, 0.0), majorRadius = 10.0, minorRadius = 4.0;
+    Map<String, (double, double)> intactEllipse() => {
+          'center': center,
+          'major': (center.$1 + majorRadius, center.$2),
+          'majorNeg': (center.$1 - majorRadius, center.$2),
+          'minor': (center.$1, center.$2 + minorRadius),
+          'minorNeg': (center.$1, center.$2 - minorRadius),
+        };
+    const lines = {
+      'majorAxis': ('majorNeg', 'major'),
+      'minorAxis': ('minorNeg', 'minor'),
+    };
+    List<ConstraintDto> ellipseConstraints() => const [
+          DistanceConstraintDto(id: 'majorDist', pointAId: 'center', pointBId: 'major', distance: majorRadius),
+          DistanceConstraintDto(id: 'minorDist', pointAId: 'center', pointBId: 'minor', distance: minorRadius),
+          AtMidpointConstraintDto(id: 'majorMid', pointId: 'center', lineId: 'majorAxis'),
+          AtMidpointConstraintDto(id: 'minorMid', pointId: 'center', lineId: 'minorAxis'),
+          PerpendicularConstraintDto(id: 'perp', line1Id: 'majorAxis', line2Id: 'minorAxis'),
+        ];
+    double distOf((double, double) a, (double, double) b) => math.sqrt(math.pow(b.$1 - a.$1, 2) + math.pow(b.$2 - a.$2, 2));
+
+    test('free centre: dragging major translates the whole Ellipse (every Point tracks), both radii '
+        'and perpendicularity preserved exactly', () {
+      final points = intactEllipse();
+      points['major'] = (center.$1 + majorRadius + 0.5, center.$2 + 0.3);
+      final result = solveSketchLocally(
+        bindings: bindings,
+        points: points,
+        constraints: ellipseConstraints(),
+        lineEndpoints: (id) => _lineEndpoints(lines, id),
+        anchorPointIds: {'major'},
+      );
+      expect(result.converged, isTrue, reason: 'resultCode=${result.resultCode}');
+      final c = result.solvedPoints['center']!;
+      final maj = result.solvedPoints['major']!;
+      final min = result.solvedPoints['minor']!;
+      expect(distOf(c, maj), closeTo(majorRadius, 1e-4));
+      expect(distOf(c, min), closeTo(minorRadius, 1e-4));
+      final majDir = (maj.$1 - c.$1, maj.$2 - c.$2);
+      final minDir = (min.$1 - c.$1, min.$2 - c.$2);
+      expect(majDir.$1 * minDir.$1 + majDir.$2 * minDir.$2, closeTo(0.0, 1e-2), reason: 'still perpendicular');
+      expect((maj.$1 - points['major']!.$1).abs() + (maj.$2 - points['major']!.$2).abs(), lessThan(0.5),
+          reason: 'major tracks close to the drag target');
+      expect(c.$1.abs() + c.$2.abs(), greaterThan(0.1), reason: 'unlike a hard pin, the free centre actually moves');
+    });
+
+    test('locked centre: dragging major rotates the WHOLE frame - minor (undragged) rotates along '
+        'with it, unlike Arc\'s decoupled start/end, since Perpendicular ties them together', () {
+      final points = intactEllipse();
+      points['major'] = (center.$1 + majorRadius + 0.4, center.$2 + 0.6); // small CCW nudge
+      final result = solveSketchLocally(
+        bindings: bindings,
+        points: points,
+        constraints: ellipseConstraints(),
+        lineEndpoints: (id) => _lineEndpoints(lines, id),
+        anchorPointIds: {'major'},
+        lockedPointIds: {'center'},
+      );
+      expect(result.converged, isTrue, reason: 'resultCode=${result.resultCode}');
+      final c = result.solvedPoints['center']!;
+      expect(c.$1, closeTo(center.$1, 1e-9));
+      expect(c.$2, closeTo(center.$2, 1e-9));
+      final maj = result.solvedPoints['major']!;
+      final min = result.solvedPoints['minor']!;
+      expect(distOf(c, maj), closeTo(majorRadius, 1e-4));
+      expect(distOf(c, min), closeTo(minorRadius, 1e-4));
+      final majDir = (maj.$1 - c.$1, maj.$2 - c.$2);
+      final minDir = (min.$1 - c.$1, min.$2 - c.$2);
+      expect(majDir.$1 * minDir.$1 + majDir.$2 * minDir.$2, closeTo(0.0, 1e-2), reason: 'still perpendicular');
+      final majAngle = math.atan2(majDir.$2, majDir.$1);
+      final originalMinDir = (0.0, minorRadius); // intactEllipse's own minor direction
+      final originalMinAngle = math.atan2(originalMinDir.$2, originalMinDir.$1);
+      final minAngle = math.atan2(minDir.$2, minDir.$1);
+      var rotatedBy = (minAngle - originalMinAngle) * 180 / math.pi;
+      while (rotatedBy < -180) {
+        rotatedBy += 360;
+      }
+      while (rotatedBy > 180) {
+        rotatedBy -= 360;
+      }
+      expect(rotatedBy.abs(), greaterThan(0.5),
+          reason: 'minor genuinely rotated along with major, rather than staying frozen the way '
+              'Arc\'s undragged end does');
+      expect(majAngle, isNot(closeTo(0.0, 1e-2)), reason: 'sanity: major itself actually moved off its original angle');
+    });
+
+    test(
+        'major and centre both locked: dragging minor has only a 2-fold (perpendicular, +/-90deg) '
+        'ambiguity, not a continuous slide - a small, realistic nudge correctly snaps to the NEARBY '
+        'side, never flips to the far one (the exact class of wrong-root risk this whole soft-drag '
+        'mechanism was built to avoid for Tangent constraints) - BUT KNOWN GAP: solveSketchLocally '
+        'itself reports this as not-converged (resultCode 5), even though solvedPoints below prove '
+        'the underlying solve is numerically exact. See _isRedundancySafe\'s own doc comment in '
+        'local_sketch_solver.dart for the full explanation - solver.py carries a third, Ellipse/'
+        'EllipseArc-specific redundancy override this port hasn\'t picked up yet. No regression '
+        '(this path never ran locally before soft-drag either - see _trySolveDuringDragLocally\'s '
+        'existing network fallback), just a known-missing local fast path, documented here so a '
+        'future port of that override has a real fixture to flip this assertion against.', () {
+      final points = intactEllipse();
+      points['minor'] = (center.$1 + 0.3, center.$2 + minorRadius + 0.4); // small nudge, clearly still the +90 side
+      final result = solveSketchLocally(
+        bindings: bindings,
+        points: points,
+        constraints: ellipseConstraints(),
+        lineEndpoints: (id) => _lineEndpoints(lines, id),
+        anchorPointIds: {'minor'},
+        lockedPointIds: {'center', 'major'},
+      );
+      expect(result.converged, isFalse,
+          reason: 'documents the known gap above - resultCode=${result.resultCode}; flip this to '
+              'isTrue once solver.py\'s Ellipse/EllipseArc redundancy override is ported here');
+      final min = result.solvedPoints['minor']!;
+      expect(distOf(center, min), closeTo(minorRadius, 1e-4));
+      // The nearby valid position: (center.x, center.y + minorRadius), not
+      // the far side (center.x, center.y - minorRadius) - proves the
+      // *solve itself* is correct even though `converged` is (currently)
+      // conservatively false.
+      expect(min.$1, closeTo(center.$1, 1e-2));
+      expect(min.$2, closeTo(center.$2 + minorRadius, 1e-2), reason: 'must snap to the near +90deg side, not flip to -90deg');
+    });
+  });
 }
