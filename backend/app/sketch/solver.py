@@ -82,6 +82,24 @@ _REDUNDANCY_SAFE_CONSTRAINT_TYPES = (
     PointOnEllipseConstraint,
 )
 
+# CurveTangentConstraint is deliberately NOT in the allowlist above -
+# probed directly, once a real py-slvs became available: fixing all three
+# of one Arc's own defining Points (centre/start/shared) alongside a
+# CurveTangentConstraint tying it to a second Arc produces py-slvs's own
+# result_code 5, and the resulting position genuinely violates the second
+# Arc's own pre-existing radius DistanceConstraint by a wide margin (off by
+# ~0.6 units, nowhere near tolerance) - a real conflict this "solved
+# correctly despite a redundant constraint" allowlist must never rescue,
+# not the same shape every other entry here was confirmed to be. Grounding
+# fewer Points at once (e.g. just one Arc's centre and its shared Point,
+# leaving the other Arc's own centre genuinely free) converges cleanly with
+# result_code 0 - no rescue ever needed for that shape - so the type stays
+# excluded here rather than risk this class of false positive for anyone's
+# more heavily over-constrained sketch. (Its own residual formula is
+# independently confirmed correct - see _RESIDUAL_CHECKABLE_CONSTRAINT_
+# TYPES immediately below, a strictly different, per-constraint check this
+# allowlist's own coarser gate doesn't share.)
+
 # Constraint types `_residual_verified_convergence` (below) knows how to
 # check directly from solved Point positions - a closed allowlist, same
 # conservative shape as `_REDUNDANCY_SAFE_CONSTRAINT_TYPES` above (only
@@ -132,26 +150,19 @@ _RESIDUAL_CHECKABLE_CONSTRAINT_TYPES = (
     HorizontalConstraint,
     VerticalConstraint,
     ParallelConstraint,
+    # CurveTangentConstraint: confirmed empirically once a real py-slvs
+    # became available (see _REDUNDANCY_SAFE_CONSTRAINT_TYPES's own comment
+    # for the fixture) - not the same class of risk AtMidpointConstraint's
+    # own exclusion above documents, since this residual is the exact
+    # geometric condition CurveTangentConstraint's own add_to_solver
+    # enforces (a shared Point's perpendicular distance from the infinite
+    # line through both centres), not a weaker proxy for it - probed
+    # directly against both a genuinely-tangent configuration (residual
+    # ~1e-12, correctly verified True) and a deliberately-off one (residual
+    # >> tolerance, correctly verified False).
+    CurveTangentConstraint,
 )
 
-# CurveTangentConstraint is deliberately NOT in either allowlist above yet,
-# same "don't guess" conservatism AtMidpointConstraint's own exclusion
-# above documents - every existing entry in `_REDUNDANCY_SAFE_CONSTRAINT_
-# TYPES` was added only once empirically confirmed never to need py-slvs's
-# own redundancy detection (see e.g. PointOnEllipseConstraint's own comment:
-# "confirmed empirically... across 6 configurations"), which this sandbox
-# has no pythonocc-core/py-slvs install to do for a brand-new constraint
-# type. `_residual_verified_convergence`'s own formula for it is written
-# below (`elif isinstance(constraint, CurveTangentConstraint)`) and is
-# straightforward to verify - the shared Point's perpendicular distance
-# from the infinite line through both centres, exactly the collinearity
-# condition `add_to_solver` itself enforces - but it stays excluded from
-# `_RESIDUAL_CHECKABLE_CONSTRAINT_TYPES` until that's actually been run
-# against real py-slvs solves, not merely reasoned about. Excluding it from
-# both is always safe (a Sketch containing it simply never qualifies for
-# either rescue path, same as one containing AtMidpointConstraint already
-# doesn't - it just relies on py-slvs's own `result_code` unassisted,
-# nothing regresses by leaving it out).
 _RESIDUAL_TOLERANCE = 1e-4
 
 

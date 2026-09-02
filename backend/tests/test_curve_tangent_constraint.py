@@ -93,16 +93,34 @@ def test_add_curve_tangent_constraint_with_unknown_entity_raises():
 # --- Solver convergence ------------------------------------------------------
 
 
-def test_curve_tangent_constraint_pulls_the_second_centre_onto_the_tangent_line():
+def test_curve_tangent_constraint_pulls_a_displaced_centre_onto_the_tangent_line():
+    """Bug-fix round (found once a real py-slvs became available to actually
+    run this): the original version of this test fixed all three of arc1's
+    own defining Points (centre/start/shared) at once - which, combined
+    with arc2's own pre-existing radius DistanceConstraint (fixed at
+    creation time, from the *original*, off-tangent centre2 seed), is a
+    genuine conflict, not the "solved correctly despite an ambiguous
+    result_code" shape this module's sibling tests elsewhere rely on
+    (confirmed directly: the same Fixed-x3-on-one-Arc pattern alone,
+    without any CurveTangentConstraint, already produces result_code=5, and
+    even once "rescued" the resulting centre2 position violates arc2's own
+    radius by a wide margin). Only centre1 and the shared Point are grounded
+    here - centre2 keeps its own real freedom to satisfy tangency, exactly
+    like a user dragging just the one moved Point into place."""
     sketch = Sketch(id="s", plane=Plane.XY)
-    arc1, arc2, center1, center2, shared = _two_connected_arcs(sketch)
+    center1 = sketch.add_point(0.0, 0.0)
+    start1 = sketch.add_point(3.0, 0.0)
+    arc1 = sketch.add_arc(center1.id, start1.id, end_angle=math.pi / 2)
+    shared = sketch.points[arc1.end_point_id]
+    # Seed centre2 close to, but a few degrees off, the true tangent point
+    # (0, 5) - still at arc2's own fixed radius (2.0) from the shared Point,
+    # so the solve has real (but small) work to do pulling it onto the
+    # tangent line, without a large jump that risks a wrong-root converge.
+    seed_x, seed_y = 0.3, 3 + math.sqrt(4 - 0.3**2)
+    center2 = sketch.add_point(seed_x, seed_y)
+    arc2 = sketch.add_arc(center2.id, shared.id, end_angle=3 * math.pi / 2)
     sketch.add_curve_tangent_constraint(arc1.id, arc2.id, shared.id)
-    # Anchor arc1's own circle in place - center1 and its own start Point
-    # fully determine it - so the solve has exactly one meaningful thing
-    # left to do: move center2 (and, along with it, arc2's own end Point)
-    # into a tangent configuration.
     sketch.add_fixed_constraint(center1.id)
-    sketch.add_fixed_constraint(arc1.start_point_id)
     sketch.add_fixed_constraint(shared.id)
 
     result = solve_sketch(sketch)
