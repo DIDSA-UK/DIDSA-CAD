@@ -1837,6 +1837,30 @@ const double sketchIndicatorCandidateWidth = 8.0;
 final vm.Vector4 sketchIndicatorMidpointColor = vm.Vector4(0.298, 0.686, 0.314, 0.7);
 const double sketchIndicatorMidpointWidth = 7.0;
 
+/// Session N follow-up (embedded-view auto-constraint-inference glyph
+/// parity): [vm.Vector4] equivalents of `sketch_canvas.dart`'s
+/// `_lineInferenceColors` map (`Colors.amber`/`Colors.deepPurple`/
+/// `Colors.pink`/`Colors.teal`) for [LineInferenceKind.parallel]/
+/// [LineInferenceKind.perpendicular]/[LineInferenceKind.tangent]/
+/// [LineInferenceKind.pointOnCurve] (`LineInferenceKind.collinear` reuses
+/// the parallel color, same as 2D's own map). Horizontal/Vertical keep
+/// reusing [sketchGhostSnapColor]/[sketchIndicatorSnapColor] unchanged - see
+/// `sketch_screen.dart`'s `_lineInferenceGhostColor`/
+/// `_lineInferenceIndicatorColor`, which is where the [LineInferenceKind]
+/// switch actually lives (this file has no dependency on
+/// `sketch_controller.dart`). Ghost variants match [sketchGhostSnapColor]'s
+/// 0.85 alpha; indicator variants match [sketchIndicatorSnapColor]'s 1.0.
+final vm.Vector4 sketchGhostParallelColor = vm.Vector4(1.0, 0.757, 0.027, 0.85);
+final vm.Vector4 sketchGhostPerpendicularColor = vm.Vector4(0.404, 0.227, 0.718, 0.85);
+final vm.Vector4 sketchGhostTangentColor = vm.Vector4(0.914, 0.118, 0.388, 0.85);
+final vm.Vector4 sketchGhostPointOnCurveColor = vm.Vector4(0.0, 0.588, 0.533, 0.85);
+
+final vm.Vector4 sketchIndicatorParallelColor = vm.Vector4(1.0, 0.757, 0.027, 1.0);
+final vm.Vector4 sketchIndicatorPerpendicularColor = vm.Vector4(0.404, 0.227, 0.718, 1.0);
+final vm.Vector4 sketchIndicatorTangentColor = vm.Vector4(0.914, 0.118, 0.388, 1.0);
+final vm.Vector4 sketchIndicatorPointOnCurveColor = vm.Vector4(0.0, 0.588, 0.533, 1.0);
+const double sketchIndicatorInferenceWidth = 8.0;
+
 /// P20 follow-up: [DrawIndicatorMarker]'s GPU-facing [Node] - one
 /// near-zero-length, round-capped [PolylineGeometry] "fake dot" primitive
 /// per marker (the same trick [buildVertexMarkersNode] uses for committed

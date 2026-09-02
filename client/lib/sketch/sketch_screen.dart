@@ -2053,14 +2053,42 @@ class _SketchScreenState extends State<SketchScreen> {
     ];
   }
 
-  /// P20 follow-up: [PartViewport.drawGhostColor]'s data source - green
-  /// while [SketchController.activeLineSnapAxis] is set, mirroring
-  /// `sketch_canvas.dart`'s own Line horizontal/vertical auto-snap recolor.
-  /// Null (the default colour) for every other tool/state.
-  vm.Vector4? get _embeddedDrawGhostColor =>
-      _controller.activeDrawGhost is LineGhost && _controller.activeLineSnapAxis != null
-          ? sketchGhostSnapColor
-          : null;
+  /// P20 follow-up: [PartViewport.drawGhostColor]'s data source - now keyed
+  /// off [SketchController.activeLineInference] (Session N: the superset
+  /// that also covers parallel/perpendicular/tangent/point-on-curve/
+  /// collinear, not just [SketchController.activeLineSnapAxis]'s H/V) so
+  /// this embedded 3D preview gets the same live "this tap will auto-add a
+  /// relation" recolor `sketch_canvas.dart`'s 2D painter already gives the
+  /// flat view. Null (the default colour) for every other tool/state.
+  vm.Vector4? get _embeddedDrawGhostColor => _controller.activeDrawGhost is LineGhost
+      ? _lineInferenceGhostColor(_controller.activeLineInference?.kind)
+      : null;
+
+  /// [vm.Vector4] equivalent of `sketch_canvas.dart`'s `_lineInferenceColors`
+  /// map - kept as its own switch here (not a shared table) since
+  /// `sketch_geometry_3d.dart` has no dependency on `sketch_controller.dart`'s
+  /// [LineInferenceKind] and the two files' colour types don't unify without
+  /// a runtime conversion neither side otherwise needs.
+  vm.Vector4? _lineInferenceGhostColor(LineInferenceKind? kind) => switch (kind) {
+        null => null,
+        LineInferenceKind.horizontal || LineInferenceKind.vertical => sketchGhostSnapColor,
+        LineInferenceKind.parallel || LineInferenceKind.collinear => sketchGhostParallelColor,
+        LineInferenceKind.perpendicular => sketchGhostPerpendicularColor,
+        LineInferenceKind.tangent => sketchGhostTangentColor,
+        LineInferenceKind.pointOnCurve => sketchGhostPointOnCurveColor,
+      };
+
+  /// Indicator-marker counterpart of [_lineInferenceGhostColor] - same
+  /// per-kind colours, just at [sketchIndicatorSnapColor]'s full 1.0 alpha
+  /// instead of the ghost line's 0.85, mirroring the ghost/marker alpha
+  /// split every other embedded-indicator colour in this file already uses.
+  vm.Vector4 _lineInferenceIndicatorColor(LineInferenceKind kind) => switch (kind) {
+        LineInferenceKind.horizontal || LineInferenceKind.vertical => sketchIndicatorSnapColor,
+        LineInferenceKind.parallel || LineInferenceKind.collinear => sketchIndicatorParallelColor,
+        LineInferenceKind.perpendicular => sketchIndicatorPerpendicularColor,
+        LineInferenceKind.tangent => sketchIndicatorTangentColor,
+        LineInferenceKind.pointOnCurve => sketchIndicatorPointOnCurveColor,
+      };
 
   /// P20 follow-up: [PartViewport.drawGhostGuidePolylines]' data source -
   /// mirrors [_embeddedDrawGhostPolylines] exactly, just through
@@ -2180,6 +2208,24 @@ class _SketchScreenState extends State<SketchScreen> {
         point: sketchPointToWorld(basis, midpoint.$1, midpoint.$2),
         color: sketchIndicatorMidpointColor,
         width: sketchIndicatorMidpointWidth,
+      ));
+    }
+
+    // Session N follow-up: the embedded-view counterpart to
+    // `sketch_canvas.dart`'s `_paintLineInferenceMarker` - a ring at the
+    // live parallel/perpendicular/tangent/point-on-curve/collinear
+    // candidate's marker point, colored to match the recolored ghost line
+    // above (see [_lineInferenceIndicatorColor]). Horizontal/Vertical get no
+    // marker here either, matching 2D exactly - the ghost recolor alone is
+    // their entire cue.
+    final inference = _controller.activeLineInference;
+    if (inference != null &&
+        inference.kind != LineInferenceKind.horizontal &&
+        inference.kind != LineInferenceKind.vertical) {
+      markers.add(DrawIndicatorMarker(
+        point: sketchPointToWorld(basis, inference.markerX, inference.markerY),
+        color: _lineInferenceIndicatorColor(inference.kind),
+        width: sketchIndicatorInferenceWidth,
       ));
     }
 
