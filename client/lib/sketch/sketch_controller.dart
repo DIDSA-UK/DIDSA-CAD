@@ -3739,9 +3739,18 @@ class SketchController extends ChangeNotifier {
   /// test tangency against. Line/Circle/Arc/Ellipse are the only kinds
   /// offered - the only three with a backend PointOnLine/PointOnCircle/
   /// PointOnEllipse constraint (see [_pointOnCurveConstraintFor]).
+  ///
+  /// Falls back to [_pointOnLineExtensionTarget] - a Line's own *infinite*
+  /// extension beyond its drawn endpoints, not just the segment itself -
+  /// when nothing at all is found the ordinary way. Only when [_entityAt]
+  /// found nothing, deliberately: if some *other* entity (even one this
+  /// method doesn't itself offer a Constraint for, like a Spline or Text)
+  /// already won the ordinary hit-test, this leaves that alone rather than
+  /// second-guessing it with an extension match from a different Line
+  /// entirely.
   (SketchSelection, double, double)? _pointOnCurveTarget(double x, double y) {
     final hit = _entityAt(x, y, _curveInferenceHitRadius(pointOnCurveSnapPixelRadius));
-    if (hit == null) return null;
+    if (hit == null) return _pointOnLineExtensionTarget(x, y);
     if (hit.kind != SelectionKind.line &&
         hit.kind != SelectionKind.circle &&
         hit.kind != SelectionKind.arc &&
@@ -3751,6 +3760,58 @@ class SketchController extends ChangeNotifier {
     final onCurve = _nearestPointOnCurve(hit, x, y);
     if (onCurve == null) return null;
     return (hit, onCurve.$1, onCurve.$2);
+  }
+
+  /// [_pointOnCurveTarget]'s own fallback: is ([x], [y]) within
+  /// [pointOnCurveSnapPixelRadius] of some existing Line's *infinite*
+  /// extension - the same straight line its drawn segment sits on,
+  /// projected out past whichever endpoint is nearer - rather than the
+  /// segment itself (which [_entityAt]/[_nearestPointOnCurve] already
+  /// cover; this method only ever considers the projection parameter `t`
+  /// *outside* `[0, 1]`, to avoid the two disagreeing about a point that's
+  /// already on the drawn segment). [PointOnLineConstraintDto]'s own doc
+  /// comment already documents the backend constraint as pinning a Point
+  /// onto a Line's own infinite extension, not just its drawn segment - so
+  /// this is a detection-side widening only, no new Constraint semantics.
+  ///
+  /// Deliberately has no separate cap on *how far* past the endpoint an
+  /// extension match can reach, unlike the segment case's own implicit
+  /// bound (its own length): the perpendicular-distance-to-the-infinite-
+  /// line criterion this already reduces to is self-limiting in practice -
+  /// landing precisely on a distant Line's exact extension by accident
+  /// gets rapidly less likely the further out it is, while a genuinely
+  /// deliberate "continue this Line's own direction" placement, however
+  /// far along it, is exactly the "on extension of" cue real CAD tools
+  /// offer with no artificial distance ceiling either.
+  (SketchSelection, double, double)? _pointOnLineExtensionTarget(double x, double y) {
+    final radius = _curveInferenceHitRadius(pointOnCurveSnapPixelRadius);
+    SketchSelection? best;
+    var bestDistSq = double.infinity;
+    double bestX = 0, bestY = 0;
+    for (final line in lines.values) {
+      final a = points[line.startPointId];
+      final b = points[line.endPointId];
+      if (a == null || b == null) continue;
+      final abx = b.x - a.x;
+      final aby = b.y - a.y;
+      final lengthSquared = abx * abx + aby * aby;
+      if (lengthSquared < 1e-12) continue;
+      final t = ((x - a.x) * abx + (y - a.y) * aby) / lengthSquared;
+      if (t >= 0 && t <= 1) continue; // on the segment itself - not this method's concern.
+      final px = a.x + t * abx;
+      final py = a.y + t * aby;
+      final dx = x - px;
+      final dy = y - py;
+      final distSq = dx * dx + dy * dy;
+      if (distSq <= radius * radius && distSq < bestDistSq) {
+        bestDistSq = distSq;
+        best = SketchSelection(kind: SelectionKind.line, id: line.id);
+        bestX = px;
+        bestY = py;
+      }
+    }
+    if (best == null) return null;
+    return (best, bestX, bestY);
   }
 
   /// The existing Circle or Arc (if any) whose own centre Point is within

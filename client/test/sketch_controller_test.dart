@@ -3157,6 +3157,42 @@ void main() {
   });
 
   test(
+      "a Point dropped on an existing Line's infinite extension - not its drawn segment at all - "
+      'still adds a PointOnLineConstraint, since the backend constraint already pins to the infinite '
+      'line and this only widens detection to match', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    final targetLineId = controller.lines.keys.single;
+
+    controller.selectDrawTool(SketchTool.point);
+    // 5 units past the Line's own drawn end (10, 0), still exactly on its
+    // infinite extension.
+    await controller.handleCanvasTap(15, 0);
+
+    final created = controller.constraints.values.whereType<PointOnLineConstraintDto>().single;
+    expect(created.lineId, targetLineId);
+    final droppedPointId = controller.points.keys.last;
+    expect(created.pointId, droppedPointId);
+  });
+
+  test(
+      "a Point dropped past an existing Line's end but off to the side (not on its infinite "
+      "extension) adds no PointOnLineConstraint - proximity to the drawn segment's own endpoint "
+      "doesn't count as 'on the extension'", () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+
+    controller.selectDrawTool(SketchTool.point);
+    await controller.handleCanvasTap(15, 5); // past the end, but well off the Line's own direction
+
+    expect(controller.constraints.values.whereType<PointOnLineConstraintDto>(), isEmpty);
+  });
+
+  test(
       'the Point tool adds a PointOnCircleConstraint when dropped directly on an existing Circle\'s '
       'boundary, not just on one of its own Points', () async {
     controller.selectDrawTool(SketchTool.circle);
