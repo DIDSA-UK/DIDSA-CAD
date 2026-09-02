@@ -968,6 +968,43 @@ class _SketchScreenState extends State<SketchScreen> {
                       },
                     ),
                   ),
+                  // Session N (auto-constraint inference round): live
+                  // inference suppression toggle, same slot/shape as the
+                  // drag-mode FAB above - the two are mutually exclusive by
+                  // mode (draw vs. select) so sharing the corner is safe.
+                  // Product decision: this touch-first app has no keyboard
+                  // modifier to hold for a one-placement suppress, so a
+                  // sticky FAB toggle (same "stays on until tapped again"
+                  // shape as [dragModeEnabled]) is the whole mechanism -
+                  // suppresses every live auto-constraint kind while a
+                  // sketch drawing tool is active, Horizontal/Vertical
+                  // included (see [SketchController.inferenceSuppressed]'s
+                  // own doc comment), not just the newer parallel/
+                  // perpendicular/tangent/point-on-curve kinds.
+                  Positioned(
+                    left: 16,
+                    bottom: 72,
+                    child: AnimatedBuilder(
+                      animation: _controller,
+                      builder: (context, _) {
+                        if (_controller.mode != SketchMode.draw) {
+                          return const SizedBox.shrink();
+                        }
+                        final suppressed = _controller.inferenceSuppressed;
+                        final theme = Theme.of(context);
+                        return FloatingActionButton.small(
+                          heroTag: 'inference-suppress-fab',
+                          tooltip: suppressed
+                              ? 'Auto-inference off - tap to re-enable'
+                              : 'Auto-inference on - tap to suppress for this tool',
+                          backgroundColor: suppressed ? theme.colorScheme.surfaceContainerHighest : theme.colorScheme.primary,
+                          foregroundColor: suppressed ? theme.colorScheme.onSurfaceVariant : theme.colorScheme.onPrimary,
+                          onPressed: _controller.toggleInferenceSuppressed,
+                          child: Icon(suppressed ? Icons.link_off : Icons.link),
+                        );
+                      },
+                    ),
+                  ),
                   // Construction-method/dimension picker: flies up from the
                   // bottom whenever draw or dimension mode is active,
                   // non-modal so taps still reach the canvas underneath (see

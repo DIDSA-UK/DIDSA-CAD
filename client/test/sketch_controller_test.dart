@@ -2922,6 +2922,147 @@ void main() {
     expect(ghost.endY, 5);
   });
 
+  // --- Session N: live auto-constraint inference (parallel/perpendicular/
+  // tangent/point-on-curve), generalizing the Phase 6.1 H/V snap above -----
+
+  test('a Line drawn near-parallel to an existing Line reports/auto-adds a ParallelConstraint, live',
+      () async {
+    controller.selectDrawTool(SketchTool.line);
+    // ~30 degrees off horizontal - well outside the H/V snap threshold, so
+    // this is unambiguously a parallel candidate, not an axis one.
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 5.773502691896258);
+    controller.finishChain();
+    final targetLineId = controller.lines.keys.single;
+
+    await controller.handleCanvasTap(20, 0); // new chain start, well clear of the target Line
+    controller.moveCursorToSketchPoint(30, 5.773502691896258); // same direction, from the new anchor
+
+    final inference = controller.activeLineInference;
+    expect(inference?.kind, LineInferenceKind.parallel);
+    expect(inference?.target?.id, targetLineId);
+
+    await controller.handleCanvasTap(30, 5.773502691896258);
+
+    final created = controller.constraints.values.whereType<ParallelConstraintDto>().single;
+    final newLineId = controller.lines.keys.last;
+    expect({created.line1Id, created.line2Id}, {targetLineId, newLineId});
+  });
+
+  test('a Line drawn near-perpendicular to an existing Line reports/auto-adds a PerpendicularConstraint, '
+      'live', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 5.773502691896258); // ~30 degrees off horizontal
+    controller.finishChain();
+    final targetLineId = controller.lines.keys.single;
+
+    await controller.handleCanvasTap(20, 0);
+    // ~30 + 90 degrees: perpendicular to the target Line, not parallel to it.
+    controller.moveCursorToSketchPoint(15, 8.660254037844387);
+
+    final inference = controller.activeLineInference;
+    expect(inference?.kind, LineInferenceKind.perpendicular);
+    expect(inference?.target?.id, targetLineId);
+
+    await controller.handleCanvasTap(15, 8.660254037844387);
+
+    final created = controller.constraints.values.whereType<PerpendicularConstraintDto>().single;
+    final newLineId = controller.lines.keys.last;
+    expect({created.line1Id, created.line2Id}, {targetLineId, newLineId});
+  });
+
+  test('a Line drawn from an external point toward the true tangent direction to a Circle reports/'
+      'auto-adds a TangentConstraint, live', () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0); // center
+    await controller.handleCanvasTap(5, 0); // radius point: radius 5
+    final circleId = controller.circles.keys.single;
+
+    controller.selectDrawTool(SketchTool.line);
+    // Anchor at (5*sqrt(2), 0), an external point 5*sqrt(2) from the
+    // origin; the free end at (5/sqrt(2), 5/sqrt(2)) is the *exact* point
+    // where the true tangent line from that anchor touches the radius-5
+    // Circle (standard external-point tangent-line construction: tangent
+    // length = sqrt(d^2 - r^2) = sqrt(50 - 25) = 5, landing exactly on the
+    // boundary) - both close to the Circle's own curve *and* at the
+    // correct tangent angle, not just one or the other.
+    const anchorX = 7.0710678118654755;
+    const anchorY = 0.0;
+    const cursorX = 3.5355339059327378;
+    const cursorY = 3.5355339059327378;
+    await controller.handleCanvasTap(anchorX, anchorY);
+    controller.moveCursorToSketchPoint(cursorX, cursorY);
+
+    final inference = controller.activeLineInference;
+    expect(inference?.kind, LineInferenceKind.tangent);
+    expect(inference?.target?.id, circleId);
+
+    await controller.handleCanvasTap(cursorX, cursorY);
+
+    final created = controller.constraints.values.whereType<TangentConstraintDto>().single;
+    // The Circle never creates a Line of its own - the new one from the
+    // anchor to the tangent point is the only Line in the sketch.
+    final newLineId = controller.lines.keys.single;
+    expect(created.lineId, newLineId);
+  });
+
+  test(
+      "a Line endpoint landing on an existing Line's curve (not one of its Points) reports/auto-adds "
+      'a PointOnLineConstraint, live - and wins over the plain Vertical snap it also qualifies for', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 4); // ~21.8 degrees off horizontal
+    controller.finishChain();
+    final targetLineId = controller.lines.keys.single;
+
+    // (5, 2) sits exactly on the target Line's own segment (its midpoint).
+    // The new segment's anchor is placed straight below it, so this
+    // candidate is *also* a perfectly vertical one - point-on-curve must
+    // still win, per this feature's fixed priority order.
+    await controller.handleCanvasTap(5, -5);
+    controller.moveCursorToSketchPoint(5, 2);
+
+    final inference = controller.activeLineInference;
+    expect(inference?.kind, LineInferenceKind.pointOnCurve);
+    expect(inference?.target?.id, targetLineId);
+    expect(inference?.snappedX, 5);
+    expect(inference?.snappedY, 2);
+
+    await controller.handleCanvasTap(5, 2);
+
+    final created = controller.constraints.values.whereType<PointOnLineConstraintDto>().single;
+    final newLine = controller.lines.values.last;
+    expect(created.lineId, targetLineId);
+    expect(created.pointId, newLine.endPointId);
+  });
+
+  test('inferenceSuppressed turns off every live inference kind, H/V included, until toggled back on',
+      () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 5.773502691896258);
+    controller.finishChain();
+
+    await controller.handleCanvasTap(20, 0);
+    controller.moveCursorToSketchPoint(30, 5.773502691896258); // would be a parallel candidate
+
+    expect(controller.activeLineInference?.kind, LineInferenceKind.parallel);
+
+    controller.toggleInferenceSuppressed();
+    expect(controller.inferenceSuppressed, isTrue);
+    expect(controller.activeLineInference, isNull);
+    // The ghost preview also falls back to the raw, un-snapped cursor
+    // position while suppressed.
+    final ghost = controller.activeDrawGhost as LineGhost;
+    expect(ghost.endX, 30);
+    expect(ghost.endY, 5.773502691896258);
+
+    controller.toggleInferenceSuppressed();
+    expect(controller.inferenceSuppressed, isFalse);
+    expect(controller.activeLineInference?.kind, LineInferenceKind.parallel);
+  });
+
   // --- Phase 6.2.1: Arc tool -------------------------------------------------
 
   test('activeDrawGhost previews a plain circle while only the arc center is placed', () async {

@@ -840,8 +840,56 @@ enum LineConstructionMethod { endToEnd, midpoint }
 /// null when its angle is outside [SketchController.lineSnapAngleDegrees]
 /// of both. Drives both the dashed ghost preview (snapped to the axis
 /// rather than the raw cursor) and, on placement, which constraint (if
-/// any) [SketchController._applyLineSnapConstraint] auto-adds.
+/// any) [SketchController._applyLineInference] auto-adds (folded into
+/// [LineInferenceKind] alongside the newer inference kinds - see that
+/// enum's own doc comment).
 enum LineSnapAxis { horizontal, vertical }
+
+/// Session N (auto-constraint inference round): every relation the Line
+/// tool can now auto-apply from placement alone, live as you draw - not
+/// just [LineSnapAxis]'s Horizontal/Vertical, but a segment drawn near-
+/// parallel/perpendicular to an existing Line, or whose free end lands near
+/// an existing Circle/Arc/Ellipse's curve. [horizontal]/[vertical] mirror
+/// [LineSnapAxis] exactly (folded into this same enum so
+/// [SketchController.activeLineInference] can report one unified "what
+/// would placing right now auto-add" answer) - [LineSnapAxis] itself, and
+/// every existing H/V code path, is untouched.
+enum LineInferenceKind { horizontal, vertical, parallel, perpendicular, tangent, pointOnCurve }
+
+/// One live auto-constraint candidate for the Line tool's in-progress
+/// segment - see [SketchController._combinedLineInference], the
+/// generalization of [SketchController._lineSnapAxis] this feature adds.
+/// [target] is the existing entity being inferred against (null for
+/// [LineInferenceKind.horizontal]/[LineInferenceKind.vertical], which - like
+/// today's H/V snap - relate the segment to a fixed axis, not another
+/// entity). [snappedX]/[snappedY] is where the free end should be *drawn*
+/// (the ghost preview - never where the real endpoint Point actually gets
+/// created, exactly like [LineSnapAxis]: the real Point still lands at the
+/// raw cursor position and the solver pulls it onto the constraint after
+/// placement, see [SketchController._applyLineInference]'s own doc
+/// comment). [markerX]/[markerY] is a second, independent point - the most
+/// meaningful spot to draw this candidate's own glyph (the exact tangent
+/// point on a circle, the nearest point on a curve, an existing line's
+/// midpoint) - equal to [snappedX]/[snappedY] for [pointOnCurve], distinct
+/// for every other kind, and unused for [horizontal]/[vertical] (which
+/// only ever recolor the ghost line itself, no separate glyph).
+class LineInference {
+  final LineInferenceKind kind;
+  final SketchSelection? target;
+  final double snappedX;
+  final double snappedY;
+  final double markerX;
+  final double markerY;
+
+  const LineInference({
+    required this.kind,
+    this.target,
+    required this.snappedX,
+    required this.snappedY,
+    required this.markerX,
+    required this.markerY,
+  });
+}
 
 /// How a tap-to-place Circle is built while [SketchTool.circle] is active.
 /// [centerRadius] is the original center-then-radius-point placement;
@@ -1476,6 +1524,52 @@ class SketchController extends ChangeNotifier {
   /// snap - a few degrees either side of each axis, per the scope doc.
   static const double lineSnapAngleDegrees = 4.0;
 
+  /// Session N: the parallel/perpendicular counterpart to
+  /// [lineSnapAngleDegrees] - how many degrees off parallel (or off
+  /// perpendicular) to an existing Line the in-progress segment can be
+  /// before [_parallelOrPerpendicularInference] stops reporting a
+  /// candidate. Same value, same "a few degrees of slack" reasoning, but
+  /// kept as its own constant rather than reusing [lineSnapAngleDegrees]
+  /// directly - product decision was independent, per-kind tuning knobs
+  /// (angle-based inference reuses this same *value* today only because
+  /// it's the same kind of measurement, not because the two are meant to
+  /// always move together).
+  static const double parallelPerpendicularSnapAngleDegrees = 4.0;
+
+  /// Session N: how many degrees the in-progress segment's own direction
+  /// can be from the true tangent-line direction (computed from the fixed
+  /// anchor to a nearby Circle/Arc's centre - see [_tangentSnapPoint])
+  /// before [_tangentOrPointOnCurveInference] treats it as a tangent
+  /// candidate rather than falling back to a plain point-on-curve one.
+  /// Wider than [parallelPerpendicularSnapAngleDegrees] - tangency is a
+  /// harder target to land on by eye (a moving reference angle, not a
+  /// fixed axis or an on-screen line) than either of those, so it gets
+  /// more forgiveness.
+  static const double tangentSnapAngleDegrees = 6.0;
+
+  /// Session N: how close (in *screen* pixels, converted to sketch units
+  /// via the canvas's current zoom - see [_curveInferenceHitRadius], the
+  /// same [minTapHitRadiusPixels]/[hitRadiusForPixelsPerUnit] pattern, not
+  /// [snapRadius]'s flat sketch-unit one - proximity to a curve during
+  /// placement is a screen-space/visual judgement that should stay a
+  /// fixed pixel size regardless of zoom) the Line tool's free end must be
+  /// to an existing Circle/Arc's boundary before
+  /// [_tangentOrPointOnCurveInference] considers it a tangent candidate at
+  /// all (the angle check in [tangentSnapAngleDegrees] narrows it further
+  /// from there). Independent of [pointOnCurveSnapPixelRadius] - a
+  /// separate per-kind knob, per product decision, even though both start
+  /// at the same value.
+  static const double tangentSnapPixelRadius = 18.0;
+
+  /// Session N: the point-on-curve counterpart to
+  /// [tangentSnapPixelRadius] - how close the Line tool's free end must be
+  /// to an existing Line/Circle/Arc/Ellipse's curve (not one of its
+  /// defining Points - see [_existingPointIdNear], which already owns
+  /// that, tighter, case) before [_tangentOrPointOnCurveInference] snaps
+  /// the ghost onto it and would add a PointOnLine/PointOnCircle/
+  /// PointOnEllipse constraint on placement.
+  static const double pointOnCurveSnapPixelRadius = 18.0;
+
   /// The minimum tap hit target, in logical pixels, expressed as a radius.
   /// Entity hit-testing for a discrete tap (select, dimension-target
   /// picking) uses whichever is larger of this - converted to sketch units
@@ -1505,6 +1599,33 @@ class SketchController extends ChangeNotifier {
   double hitRadiusForPixelsPerUnit(double pixelsPerUnit) {
     if (pixelsPerUnit <= 0) return snapRadius;
     return math.max(snapRadius, minTapHitRadiusPixels / pixelsPerUnit);
+  }
+
+  /// Session N: the canvas's most recently reported
+  /// [ViewTransform.pixelsPerUnit], cached here purely so
+  /// [_curveInferenceHitRadius] - read every frame by the no-argument
+  /// [activeLineInference] getter, the same shape [activeLineSnapAxis]
+  /// already has - can convert its pixel-based radii into sketch units
+  /// without every cursor-movement entry point needing to thread a zoom
+  /// value through. Updated from [moveCursorAbsoluteScreen] (the one entry
+  /// point that's always handed a fresh [ViewTransform]); left stale
+  /// during a pan/zoom-free relative drag, same "not worth plumbing
+  /// further" tradeoff [moveCursorToSketchPoint] (the 3D-embedded case)
+  /// already accepts by never updating it at all. Starts at
+  /// `SketchViewport.basePixelsPerUnit`'s own default (zoom 1) so the very
+  /// first frame, before any real cursor move, still has a sane radius.
+  double _lastKnownPixelsPerUnit = 20.0;
+
+  /// Session N: [tangentSnapPixelRadius]/[pointOnCurveSnapPixelRadius]
+  /// converted to sketch units at the canvas's current zoom - the same
+  /// pixels-then-convert shape [hitRadiusForPixelsPerUnit] already
+  /// establishes for [minTapHitRadiusPixels], just fed by
+  /// [_lastKnownPixelsPerUnit] instead of a parameter, since
+  /// [_tangentOrPointOnCurveInference] is only ever called from
+  /// no-argument getters/methods.
+  double _curveInferenceHitRadius(double pixelRadius) {
+    if (_lastKnownPixelsPerUnit <= 0) return snapRadius;
+    return math.max(snapRadius, pixelRadius / _lastKnownPixelsPerUnit);
   }
 
   String? _sketchId;
@@ -3047,7 +3168,7 @@ class SketchController extends ChangeNotifier {
         if (startId == null) return null;
         final start = points[startId];
         if (start == null) return null;
-        final snapped = _snappedLineEnd(start.x, start.y, cursorX, cursorY);
+        final snapped = _snappedLineEndWithInference(start.x, start.y, cursorX, cursorY);
         return LineGhost(startX: start.x, startY: start.y, endX: snapped.$1, endY: snapped.$2);
       case LineConstructionMethod.midpoint:
         final midX = _midpointAnchorX;
@@ -3056,7 +3177,7 @@ class SketchController extends ChangeNotifier {
         // Mirrors the real Line _clickMidpointLineTool would create: the
         // cursor becomes one end, its mirror image through the anchor the
         // other.
-        final snapped = _snappedLineEnd(midX, midY, cursorX, cursorY);
+        final snapped = _snappedLineEndWithInference(midX, midY, cursorX, cursorY);
         return LineGhost(
           startX: 2 * midX - snapped.$1,
           startY: 2 * midY - snapped.$2,
@@ -3114,6 +3235,399 @@ class SketchController extends ChangeNotifier {
         if (midX == null || midY == null) return null;
         return _lineSnapAxis(midX, midY, cursorX, cursorY);
     }
+  }
+
+  /// Session N: [_combinedLineInference] for the Line tool's current
+  /// in-progress segment - exactly [activeLineSnapAxis]'s own shape
+  /// (recomputed fresh from the anchor + cursor on every read), extended
+  /// to also report the newer parallel/perpendicular/tangent/point-on-
+  /// curve candidates. The canvas reads this - not [activeLineSnapAxis]
+  /// directly - to color/decorate the live ghost preview, since this is
+  /// the superset that already folds H/V in at the bottom of the priority
+  /// order; [activeLineSnapAxis] itself stays exactly as it was, both for
+  /// its own existing test coverage and because [_combinedLineInference]
+  /// is built directly on top of it.
+  LineInference? get activeLineInference {
+    if (_mode != SketchMode.draw || _activeTool != SketchTool.line) return null;
+    switch (_lineMethod) {
+      case LineConstructionMethod.endToEnd:
+        final startId = _chainStartPointId;
+        if (startId == null) return null;
+        final start = points[startId];
+        if (start == null) return null;
+        return _combinedLineInference(start.x, start.y, cursorX, cursorY);
+      case LineConstructionMethod.midpoint:
+        final midX = _midpointAnchorX;
+        final midY = _midpointAnchorY;
+        if (midX == null || midY == null) return null;
+        return _combinedLineInference(midX, midY, cursorX, cursorY);
+    }
+  }
+
+  /// Session N: the single highest-priority auto-constraint candidate for
+  /// a Line from ([x0], [y0]) to the cursor at ([x1], [y1]) - the
+  /// generalization of [_lineSnapAxis] this feature adds. Fixed priority
+  /// order (product decision - no disambiguation picker): an
+  /// existing-Point merge wins outright and is never reported here at all
+  /// (it's handled upstream, structurally, by [_pointIdAtCursor]/
+  /// [_existingPointIdNear] reusing the same Point id rather than this
+  /// class ever creating a competing constraint - stronger than any
+  /// constraint this method could add, so a real candidate here would be
+  /// actively misleading); then tangent/point-on-curve; then parallel/
+  /// perpendicular; then Horizontal/Vertical last, via [_lineSnapAxis]
+  /// itself. Never more than one constraint auto-applied per placement.
+  /// Null while [inferenceSuppressed] is on (the FAB toggle suppresses
+  /// every kind here, H/V included - see that getter's own doc comment)
+  /// or once nothing at all qualifies.
+  LineInference? _combinedLineInference(double x0, double y0, double x1, double y1) {
+    if (_inferenceSuppressed) return null;
+    final dx = x1 - x0;
+    final dy = y1 - y0;
+    if (math.sqrt(dx * dx + dy * dy) < 1e-9) return null;
+    if (_existingPointIdNear(x1, y1) != null) return null;
+
+    final geometry = _tangentOrPointOnCurveInference(x0, y0, x1, y1) ?? _parallelOrPerpendicularInference(x0, y0, x1, y1);
+    if (geometry != null) return geometry;
+
+    final axis = _lineSnapAxis(x0, y0, x1, y1);
+    if (axis == null) return null;
+    final snapped = _snappedLineEnd(x0, y0, x1, y1);
+    return LineInference(
+      kind: axis == LineSnapAxis.horizontal ? LineInferenceKind.horizontal : LineInferenceKind.vertical,
+      snappedX: snapped.$1,
+      snappedY: snapped.$2,
+      markerX: snapped.$1,
+      markerY: snapped.$2,
+    );
+  }
+
+  /// [_snappedLineEnd] extended to also snap onto whichever
+  /// higher-priority [_combinedLineInference] candidate (if any) is
+  /// currently live - the ghost preview's own read of the same combined
+  /// result [activeLineInference] exposes, so the two never disagree.
+  /// Falls back to the raw cursor position (not [_snappedLineEnd]'s own
+  /// H/V-only snap) while [inferenceSuppressed] is on, since that toggle
+  /// is meant to suppress every kind of live snap, not just the new ones.
+  (double, double) _snappedLineEndWithInference(double x0, double y0, double x1, double y1) {
+    final inference = _combinedLineInference(x0, y0, x1, y1);
+    if (inference != null) return (inference.snappedX, inference.snappedY);
+    if (_inferenceSuppressed) return (x1, y1);
+    return _snappedLineEnd(x0, y0, x1, y1);
+  }
+
+  /// How many degrees apart two undirected angles (radians in, degrees
+  /// out) are - folded into `[0, 180]` first (a segment's direction and
+  /// its exact reverse are the same undirected line), so e.g. 179 degrees
+  /// apart is treated as 1 degree apart, matching how [_lineSnapAxis]
+  /// already only cares about a segment's *axis*, never which way along
+  /// it the cursor happens to be.
+  double _undirectedAngleDeltaDegrees(double a, double b) {
+    var diff = ((a - b) * 180 / math.pi).abs() % 360;
+    if (diff > 180) diff = 360 - diff;
+    if (diff > 90) diff = 180 - diff;
+    return diff;
+  }
+
+  /// How many degrees apart two *directed* angles (radians in, degrees
+  /// out) are, folded into `[0, 180]` - unlike
+  /// [_undirectedAngleDeltaDegrees], 179 degrees apart stays 179 degrees
+  /// apart. [_tangentSnapPoint] needs this directed version - the two true
+  /// tangent lines from an external point face specific, opposite-ish
+  /// directions relative to the cursor, not an undirected axis.
+  double _directedAngleDeltaDegrees(double a, double b) {
+    var diff = ((a - b) * 180 / math.pi) % 360;
+    if (diff > 180) diff -= 360;
+    if (diff < -180) diff += 360;
+    return diff.abs();
+  }
+
+  /// The centre/radius of [target] (a Circle or Arc selection) - Arc uses
+  /// its own circle (centre to its start Point), same radius definition
+  /// [_entityAt]'s own Arc branch already uses. Null for any other
+  /// [SelectionKind], or if [target]'s referenced entity/Points no longer
+  /// resolve.
+  (double, double, double)? _circleGeometryFor(SketchSelection target) {
+    switch (target.kind) {
+      case SelectionKind.circle:
+        final circle = circles[target.id];
+        if (circle == null) return null;
+        final center = points[circle.centerPointId];
+        final radiusPoint = points[circle.radiusPointId];
+        if (center == null || radiusPoint == null) return null;
+        final r = math.sqrt(math.pow(radiusPoint.x - center.x, 2) + math.pow(radiusPoint.y - center.y, 2));
+        return (center.x, center.y, r);
+      case SelectionKind.arc:
+        final arc = arcs[target.id];
+        if (arc == null) return null;
+        final center = points[arc.centerPointId];
+        final start = points[arc.startPointId];
+        if (center == null || start == null) return null;
+        final r = math.sqrt(math.pow(start.x - center.x, 2) + math.pow(start.y - center.y, 2));
+        return (center.x, center.y, r);
+      default:
+        return null;
+    }
+  }
+
+  /// The point on [target]'s own curve nearest ([x], [y]) - a Line's
+  /// nearest point on its segment (clamped to the two endpoints, same
+  /// projection [_distanceToSegment] itself computes but doesn't return),
+  /// a Circle/Arc's nearest point on its full circle (projected radially
+  /// from the centre - deliberately not clamped to an Arc's own sweep,
+  /// since [_tangentOrPointOnCurveInference] only ever calls this once
+  /// [_entityAt] has already confirmed ([x], [y]) is within its sweep), or
+  /// an Ellipse's nearest boundary point via
+  /// [_nearestPointOnEllipseBoundary]. Null for any other [SelectionKind]
+  /// (this sketcher's backend has no PointOnEllipseArc/PointOnSpline
+  /// constraint to apply even if one were found - see this feature's own
+  /// scope note on that gap) or if [target]'s geometry doesn't resolve.
+  (double, double)? _nearestPointOnCurve(SketchSelection target, double x, double y) {
+    switch (target.kind) {
+      case SelectionKind.line:
+        final line = lines[target.id];
+        if (line == null) return null;
+        final a = points[line.startPointId];
+        final b = points[line.endPointId];
+        if (a == null || b == null) return null;
+        final abx = b.x - a.x;
+        final aby = b.y - a.y;
+        final lengthSquared = abx * abx + aby * aby;
+        if (lengthSquared < 1e-12) return null;
+        final t = (((x - a.x) * abx + (y - a.y) * aby) / lengthSquared).clamp(0.0, 1.0);
+        return (a.x + t * abx, a.y + t * aby);
+      case SelectionKind.circle:
+      case SelectionKind.arc:
+        final circle = _circleGeometryFor(target);
+        if (circle == null) return null;
+        final (centerX, centerY, r) = circle;
+        final dx = x - centerX;
+        final dy = y - centerY;
+        final dist = math.sqrt(dx * dx + dy * dy);
+        if (dist < 1e-9) return null;
+        return (centerX + r * dx / dist, centerY + r * dy / dist);
+      case SelectionKind.ellipse:
+        final ellipse = ellipses[target.id];
+        if (ellipse == null) return null;
+        final center = points[ellipse.centerPointId];
+        final major = points[ellipse.majorPointId];
+        final minor = points[ellipse.minorPointId];
+        if (center == null || major == null || minor == null) return null;
+        final minorRadius = math.sqrt(math.pow(minor.x - center.x, 2) + math.pow(minor.y - center.y, 2));
+        return _nearestPointOnEllipseBoundary(x, y, center.x, center.y, major.x, major.y, minorRadius);
+      default:
+        return null;
+    }
+  }
+
+  /// The point on an Ellipse's boundary (centre at [centerX]/[centerY],
+  /// major-axis Point at [majorX]/[majorY], semi-minor radius
+  /// [minorRadius]) nearest ([x], [y]) - the same local-frame/normalized-
+  /// radial-position approach [_approxDistanceToEllipseBoundary] already
+  /// uses to measure the *distance*, just mapped back into world space
+  /// instead of reduced to a scalar, so hit-testing and this feature's own
+  /// point-on-curve snap agree pixel-for-pixel on where "the boundary"
+  /// actually is. Null under the exact same degenerate conditions that
+  /// method already documents.
+  (double, double)? _nearestPointOnEllipseBoundary(
+    double x,
+    double y,
+    double centerX,
+    double centerY,
+    double majorX,
+    double majorY,
+    double minorRadius,
+  ) {
+    final majorRadius = math.sqrt(math.pow(majorX - centerX, 2) + math.pow(majorY - centerY, 2));
+    if (majorRadius < 1e-9 || minorRadius < 1e-9) return null;
+    final rotation = math.atan2(majorY - centerY, majorX - centerX);
+    final dx = x - centerX;
+    final dy = y - centerY;
+    final cosR = math.cos(-rotation);
+    final sinR = math.sin(-rotation);
+    final localX = dx * cosR - dy * sinR;
+    final localY = dx * sinR + dy * cosR;
+    final normalized = math.sqrt(math.pow(localX / majorRadius, 2) + math.pow(localY / minorRadius, 2));
+    if (normalized < 1e-9) return null;
+    final boundaryLocalX = localX / normalized;
+    final boundaryLocalY = localY / normalized;
+    final cosF = math.cos(rotation);
+    final sinF = math.sin(rotation);
+    return (centerX + boundaryLocalX * cosF - boundaryLocalY * sinF, centerY + boundaryLocalX * sinF + boundaryLocalY * cosF);
+  }
+
+  /// Whether a Line from the fixed anchor ([x0], [y0]) toward the cursor
+  /// at ([x1], [y1]) is currently aimed close to one of the two true
+  /// tangent lines from ([x0], [y0]) to [target]'s circle (standard
+  /// external-point tangent-line construction: the tangent line's own
+  /// direction is the anchor-to-centre direction rotated by
+  /// `± asin(radius / distance-to-centre)`) - and if so, the free end's
+  /// snapped position along that exact tangent direction, preserving the
+  /// segment's current length (mirrors [_snappedLineEnd]'s own "only the
+  /// angle snaps, not the length" behaviour for H/V). Null if ([x0], [y0])
+  /// is inside or on [target]'s circle (no real external tangent line
+  /// exists to aim at) or the cursor's current direction isn't within
+  /// [tangentSnapAngleDegrees] of either tangent line.
+  (double, double)? _tangentSnapPoint(double x0, double y0, double x1, double y1, SketchSelection target) {
+    final circle = _circleGeometryFor(target);
+    if (circle == null) return null;
+    final (centerX, centerY, r) = circle;
+    final toCenterX = centerX - x0;
+    final toCenterY = centerY - y0;
+    final d = math.sqrt(toCenterX * toCenterX + toCenterY * toCenterY);
+    if (d <= r + 1e-9) return null;
+    final phi = math.atan2(toCenterY, toCenterX);
+    final theta = math.asin((r / d).clamp(-1.0, 1.0));
+    final cursorAngle = math.atan2(y1 - y0, x1 - x0);
+    final len = math.sqrt(math.pow(x1 - x0, 2) + math.pow(y1 - y0, 2));
+    for (final tangentAngle in [phi - theta, phi + theta]) {
+      if (_directedAngleDeltaDegrees(cursorAngle, tangentAngle) <= tangentSnapAngleDegrees) {
+        return (x0 + len * math.cos(tangentAngle), y0 + len * math.sin(tangentAngle));
+      }
+    }
+    return null;
+  }
+
+  /// The tangent point itself - where a tangent line at [tangentAngle]
+  /// radians from ([x0], [y0]) actually touches [target]'s circle (the
+  /// foot of the perpendicular from the centre onto that line) - distinct
+  /// from [_tangentSnapPoint]'s own returned position (the *free end*,
+  /// which preserves the segment's current length rather than stopping
+  /// exactly at the circle). Used only to place the tangent glyph the
+  /// canvas paints, at the geometrically exact spot the relation is really
+  /// about.
+  (double, double)? _tangentTouchPoint(double x0, double y0, double tangentAngle, SketchSelection target) {
+    final circle = _circleGeometryFor(target);
+    if (circle == null) return null;
+    final (centerX, centerY, _) = circle;
+    final dirX = math.cos(tangentAngle);
+    final dirY = math.sin(tangentAngle);
+    final projection = (centerX - x0) * dirX + (centerY - y0) * dirY;
+    return (x0 + projection * dirX, y0 + projection * dirY);
+  }
+
+  /// Session N: the tangent or point-on-curve candidate (whichever, if
+  /// either, applies) for a Line from ([x0], [y0]) to the cursor at
+  /// ([x1], [y1]) - the higher-priority half of
+  /// [_combinedLineInference]'s geometry tier. Finds the single
+  /// edge-like entity nearest the free end within
+  /// [_curveInferenceHitRadius] of [tangentSnapPixelRadius]/
+  /// [pointOnCurveSnapPixelRadius] (both the same value today, but kept as
+  /// independent per-kind constants - see their own doc comments) by
+  /// reusing [_entityAt] itself, so this candidate search never disagrees
+  /// with ordinary hit-testing/selection about what counts as "near".
+  /// Circle/Arc targets try tangency first (the more specific, more
+  /// deliberate-looking match - a segment whose direction happens to line
+  /// up with a true tangent line, not just any point near the boundary),
+  /// falling back to plain point-on-curve when the angle doesn't line up;
+  /// Line/Ellipse targets only ever offer point-on-curve (a Line has no
+  /// meaningful "tangent" relation in this sketcher's constraint set, and
+  /// the backend's TangentConstraint has no ellipse support - see this
+  /// feature's own scope note on that gap). Every other [SelectionKind]
+  /// (EllipseArc, Spline, Text, ...) has no backend point-on-curve
+  /// constraint to apply and is skipped.
+  LineInference? _tangentOrPointOnCurveInference(double x0, double y0, double x1, double y1) {
+    final radius = _curveInferenceHitRadius(math.max(tangentSnapPixelRadius, pointOnCurveSnapPixelRadius));
+    final hit = _entityAt(x1, y1, radius);
+    if (hit == null) return null;
+
+    if (hit.kind == SelectionKind.circle || hit.kind == SelectionKind.arc) {
+      final tangentRadius = _curveInferenceHitRadius(tangentSnapPixelRadius);
+      if (_entityAt(x1, y1, tangentRadius)?.sameAs(hit) == true) {
+        final tangentSnap = _tangentSnapPoint(x0, y0, x1, y1, hit);
+        if (tangentSnap != null) {
+          // The exact angle [_tangentSnapPoint] snapped to, recovered from
+          // its own returned position rather than threaded out as a
+          // separate return value - `tangentSnap == (x0 + len*cos(angle),
+          // y0 + len*sin(angle))`, so this atan2 is exactly that angle.
+          final tangentAngle = math.atan2(tangentSnap.$2 - y0, tangentSnap.$1 - x0);
+          final touch = _tangentTouchPoint(x0, y0, tangentAngle, hit) ?? tangentSnap;
+          return LineInference(
+            kind: LineInferenceKind.tangent,
+            target: hit,
+            snappedX: tangentSnap.$1,
+            snappedY: tangentSnap.$2,
+            markerX: touch.$1,
+            markerY: touch.$2,
+          );
+        }
+      }
+    }
+
+    if (hit.kind != SelectionKind.line &&
+        hit.kind != SelectionKind.circle &&
+        hit.kind != SelectionKind.arc &&
+        hit.kind != SelectionKind.ellipse) {
+      return null;
+    }
+    final pointOnCurveRadius = _curveInferenceHitRadius(pointOnCurveSnapPixelRadius);
+    if (_entityAt(x1, y1, pointOnCurveRadius)?.sameAs(hit) != true) return null;
+    final onCurve = _nearestPointOnCurve(hit, x1, y1);
+    if (onCurve == null) return null;
+    return LineInference(
+      kind: LineInferenceKind.pointOnCurve,
+      target: hit,
+      snappedX: onCurve.$1,
+      snappedY: onCurve.$2,
+      markerX: onCurve.$1,
+      markerY: onCurve.$2,
+    );
+  }
+
+  /// Session N: the parallel or perpendicular candidate (whichever, if
+  /// either, applies) for a Line from ([x0], [y0]) to the cursor at
+  /// ([x1], [y1]) - the lower-priority half of [_combinedLineInference]'s
+  /// geometry tier. Checks every existing Line's direction (not scoped to
+  /// ones spatially near the segment - the same "any matching angle
+  /// anywhere counts" reasoning [_lineSnapAxis] already applies to the
+  /// fixed horizontal/vertical axes, just against another Line's angle
+  /// instead of a fixed one), picks whichever is closest to exactly
+  /// parallel/perpendicular within [parallelPerpendicularSnapAngleDegrees],
+  /// and snaps the free end's direction to match exactly - same "only the
+  /// angle snaps, the length doesn't" shape as [_snappedLineEnd]'s own
+  /// horizontal/vertical case.
+  LineInference? _parallelOrPerpendicularInference(double x0, double y0, double x1, double y1) {
+    final segmentAngle = math.atan2(y1 - y0, x1 - x0);
+    final len = math.sqrt(math.pow(x1 - x0, 2) + math.pow(y1 - y0, 2));
+    LineInference? best;
+    var bestDelta = double.infinity;
+    for (final line in lines.values) {
+      final a = points[line.startPointId];
+      final b = points[line.endPointId];
+      if (a == null || b == null) continue;
+      final lineLengthSquared = math.pow(b.x - a.x, 2) + math.pow(b.y - a.y, 2);
+      if (lineLengthSquared < 1e-12) continue;
+      final lineAngle = math.atan2(b.y - a.y, b.x - a.x);
+      final undirectedDelta = _undirectedAngleDeltaDegrees(segmentAngle, lineAngle);
+      final parallelDelta = undirectedDelta;
+      final perpendicularDelta = (90 - undirectedDelta).abs();
+      final target = SketchSelection(kind: SelectionKind.line, id: line.id);
+      final marker = ((a.x + b.x) / 2, (a.y + b.y) / 2);
+      if (parallelDelta <= parallelPerpendicularSnapAngleDegrees && parallelDelta < bestDelta) {
+        bestDelta = parallelDelta;
+        final snapped = (x0 + len * math.cos(lineAngle), y0 + len * math.sin(lineAngle));
+        best = LineInference(
+          kind: LineInferenceKind.parallel,
+          target: target,
+          snappedX: snapped.$1,
+          snappedY: snapped.$2,
+          markerX: marker.$1,
+          markerY: marker.$2,
+        );
+      } else if (perpendicularDelta <= parallelPerpendicularSnapAngleDegrees && perpendicularDelta < bestDelta) {
+        bestDelta = perpendicularDelta;
+        final perpendicularAngle = lineAngle + math.pi / 2;
+        final snapped = (x0 + len * math.cos(perpendicularAngle), y0 + len * math.sin(perpendicularAngle));
+        best = LineInference(
+          kind: LineInferenceKind.perpendicular,
+          target: target,
+          snappedX: snapped.$1,
+          snappedY: snapped.$2,
+          markerX: marker.$1,
+          markerY: marker.$2,
+        );
+      }
+    }
+    return best;
   }
 
   DrawGhost? _circleDrawGhost() {
@@ -3912,6 +4426,24 @@ class SketchController extends ChangeNotifier {
       dropGrabbedEntity();
     }
     _dragModeEnabled = !_dragModeEnabled;
+    notifyListeners();
+  }
+
+  /// Session N: whether the Line tool's live auto-constraint inference
+  /// (Horizontal/Vertical included, not just the newer parallel/
+  /// perpendicular/tangent/point-on-curve kinds - see
+  /// [_combinedLineInference]) is suppressed for the *next* placement.
+  /// Sticky like [dragModeEnabled], not a hold-to-suppress modifier - this
+  /// is a touch-first app with no keyboard modifier to hold, so the FAB
+  /// toggle is the whole mechanism (product decision: a toggle FAB visible
+  /// only while a sketch drawing tool is active, mirrors
+  /// [dragModeEnabled]'s own FAB exactly, just gated on
+  /// [SketchMode.draw] instead of [SketchMode.select]).
+  bool _inferenceSuppressed = false;
+  bool get inferenceSuppressed => _inferenceSuppressed;
+
+  void toggleInferenceSuppressed() {
+    _inferenceSuppressed = !_inferenceSuppressed;
     notifyListeners();
   }
 
@@ -12588,6 +13120,7 @@ class SketchController extends ChangeNotifier {
     final coord = transform.screenToSketch(screenPosition.dx, screenPosition.dy);
     cursorX = coord.x;
     cursorY = coord.y;
+    _lastKnownPixelsPerUnit = transform.pixelsPerUnit;
     _trackArcSweep();
     _trackEllipseArcSweep();
     _updateShapeCenterReveal();
@@ -12805,10 +13338,11 @@ class SketchController extends ChangeNotifier {
     // Phase 6.1: captured from the start Point and the tap's cursor
     // position *before* the loop-closing case swaps in a fixed endpoint -
     // a closing edge's slope is dictated by the loop, not freely aimed, so
-    // it never auto-snaps.
+    // it never auto-snaps (Session N: same reasoning now covers every
+    // [_combinedLineInference] kind, not just H/V).
     final chainStart = points[_chainStartPointId!];
-    final snapAxis =
-        (!closingLoop && chainStart != null) ? _lineSnapAxis(chainStart.x, chainStart.y, cursorX, cursorY) : null;
+    final inference =
+        (!closingLoop && chainStart != null) ? _combinedLineInference(chainStart.x, chainStart.y, cursorX, cursorY) : null;
     await _runGuarded(() async {
       final endPointId =
           closingLoop ? _chainFirstPointId! : await _pointIdAtCursor(excludeId: _chainStartPointId);
@@ -12824,7 +13358,7 @@ class SketchController extends ChangeNotifier {
         await _api.deleteLine(_sketchId!, line.id);
         lines.remove(line.id);
       });
-      await _applyLineSnapConstraint(line.id, snapAxis);
+      await _applyLineInference(line.id, endPointId, inference);
 
       // One user action (this tap, now that the line is fully placed) = one
       // solve call - never on intermediate cursor movement.
@@ -12857,7 +13391,7 @@ class SketchController extends ChangeNotifier {
 
     final midX = _midpointAnchorX!;
     final midY = _midpointAnchorY!;
-    final snapAxis = _lineSnapAxis(midX, midY, cursorX, cursorY);
+    final inference = _combinedLineInference(midX, midY, cursorX, cursorY);
     await _runGuarded(() async {
       final endAId = await _pointIdAtCursor();
       final endA = points[endAId]!;
@@ -12879,7 +13413,7 @@ class SketchController extends ChangeNotifier {
         await _api.deleteLine(_sketchId!, line.id);
         lines.remove(line.id);
       });
-      await _applyLineSnapConstraint(line.id, snapAxis);
+      await _applyLineInference(line.id, endAId, inference);
 
       await _solveAndTrackDof();
       _midpointAnchorX = null;
@@ -12887,18 +13421,57 @@ class SketchController extends ChangeNotifier {
     });
   }
 
-  /// Phase 6.1: adds the Horizontal/Vertical constraint [axis] implies to
-  /// the just-created [lineId] (a no-op if [axis] is null, i.e. the
-  /// in-progress segment wasn't within [lineSnapAngleDegrees] of either
-  /// axis) - reuses the same backend calls
-  /// [addHorizontalConstraint]/[addVerticalConstraint] make from the
-  /// flyout, just triggered by placement instead of an explicit selection.
-  Future<void> _applyLineSnapConstraint(String lineId, LineSnapAxis? axis) async {
-    if (axis == null) return;
-    final constraint = axis == LineSnapAxis.horizontal
-        ? await _api.createHorizontalConstraint(_sketchId!, lineId)
-        : await _api.createVerticalConstraint(_sketchId!, lineId);
+  /// Session N: generalizes the old Phase 6.1 "adds the Horizontal/Vertical
+  /// constraint the snap axis implies" helper to every
+  /// [_combinedLineInference] kind - one real constraint against the
+  /// just-placed [lineId]/[endPointId] ([endPointId] only matters for
+  /// [LineInferenceKind.pointOnCurve], the only kind that constrains a
+  /// Point rather than the Line itself), reusing exactly the same [_api]
+  /// calls the flyout's own explicit-selection constraint buttons make
+  /// ([addParallelConstraint]/[addPerpendicularConstraint]/
+  /// [addPointOnLineConstraint] etc.) - just triggered by placement
+  /// instead of a selection. Like the old H/V-only version, this creates
+  /// the constraint against whatever position the real Point/Line already
+  /// landed at (the raw cursor position - see [LineInference]'s own doc
+  /// comment on [LineInference.snappedX]/[LineInference.snappedY] being
+  /// ghost-only), relying on [_solveAndTrackDof] to pull it onto the
+  /// constraint afterward, exactly as H/V always has. No-op when
+  /// [inference] is null.
+  Future<void> _applyLineInference(String lineId, String endPointId, LineInference? inference) async {
+    if (inference == null) return;
+    final constraint = await (switch (inference.kind) {
+      LineInferenceKind.horizontal => _api.createHorizontalConstraint(_sketchId!, lineId),
+      LineInferenceKind.vertical => _api.createVerticalConstraint(_sketchId!, lineId),
+      LineInferenceKind.parallel => _api.createParallelConstraint(_sketchId!, inference.target!.id, lineId),
+      LineInferenceKind.perpendicular => _api.createPerpendicularConstraint(_sketchId!, inference.target!.id, lineId),
+      LineInferenceKind.tangent => _api.createTangentConstraint(_sketchId!, inference.target!.id, lineId),
+      LineInferenceKind.pointOnCurve => _pointOnCurveConstraintFor(endPointId, inference.target!),
+    });
     _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
+  }
+
+  /// The Line/Circle/Arc/Ellipse-specific `create*` call
+  /// [LineInferenceKind.pointOnCurve] needs, dispatched on [target]'s own
+  /// [SelectionKind] - the same three backend constraint types
+  /// [addPointOnLineConstraint]/[addPointOnCircleConstraint]/
+  /// [addPointOnEllipseConstraint] already wire up for the flyout's
+  /// explicit-selection flow, Circle and Arc sharing the one
+  /// `point_on_circle` constraint type same as everywhere else in this
+  /// file. [target] is always one of those three kinds here -
+  /// [_tangentOrPointOnCurveInference] never reports any other kind for
+  /// [LineInferenceKind.pointOnCurve].
+  Future<ConstraintDto> _pointOnCurveConstraintFor(String pointId, SketchSelection target) {
+    switch (target.kind) {
+      case SelectionKind.line:
+        return _api.createPointOnLineConstraint(_sketchId!, pointId, target.id);
+      case SelectionKind.circle:
+      case SelectionKind.arc:
+        return _api.createPointOnCircleConstraint(_sketchId!, pointId, target.id);
+      case SelectionKind.ellipse:
+        return _api.createPointOnEllipseConstraint(_sketchId!, pointId, target.id);
+      default:
+        throw StateError('Unsupported point-on-curve target kind: ${target.kind}');
+    }
   }
 
   /// Circle tool's tap handling: first tap places the center Point, second

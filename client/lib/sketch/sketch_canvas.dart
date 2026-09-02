@@ -3300,6 +3300,23 @@ class _SketchPainter extends CustomPainter {
   /// background and a dark theme's canvas chrome around it.
   static const Color _snapCandidateColor = Colors.cyan;
 
+  /// Session N (auto-constraint inference round): per-[LineInferenceKind]
+  /// ghost/marker color. [LineInferenceKind.horizontal]/
+  /// [LineInferenceKind.vertical] stay exactly `Colors.green` - the
+  /// pre-existing Phase 6.1 cue this feature must not visually change -
+  /// each newly added kind gets its own distinct color, chosen to stay
+  /// clear of every color already in use elsewhere in this painter
+  /// ([_drawGhostColor], [_snapCandidateColor], selected/hover colors),
+  /// so a user can tell at a glance which relation is about to auto-apply.
+  static const Map<LineInferenceKind, Color> _lineInferenceColors = {
+    LineInferenceKind.horizontal: Colors.green,
+    LineInferenceKind.vertical: Colors.green,
+    LineInferenceKind.parallel: Colors.amber,
+    LineInferenceKind.perpendicular: Colors.deepPurple,
+    LineInferenceKind.tangent: Colors.pink,
+    LineInferenceKind.pointOnCurve: Colors.teal,
+  };
+
   /// Stage 15 item 4: highlights whichever existing Point (if any) the
   /// cursor is currently snapped onto while placing a new entity (see
   /// [SketchController.snapCandidatePointId]) - a filled circle at 2x a
@@ -3348,6 +3365,37 @@ class _SketchPainter extends CustomPainter {
     );
   }
 
+  /// Session N: the live glyph for whichever parallel/perpendicular/
+  /// tangent/point-on-curve candidate (if any)
+  /// [SketchController.activeLineInference] currently reports - a small
+  /// colored ring at [LineInference.markerX]/[LineInference.markerY] (the
+  /// exact tangent point, the nearest point on a curve, or an existing
+  /// Line's midpoint - see that field's own doc comment), matching this
+  /// painter's existing [_paintSnapCandidateHighlight]/
+  /// [_paintAutoCoincidentIndicator] ring styling so every "this tap will
+  /// auto-add a relation" cue in this sketcher reads as the same visual
+  /// language, just recolored per kind (see [_lineInferenceColors]).
+  /// Horizontal/Vertical candidates get no marker here - recoloring the
+  /// ghost line itself (see [_paintActiveDrawGhost]'s [LineGhost] case) is
+  /// the entire, unchanged pre-existing cue for those two.
+  void _paintLineInferenceMarker(Canvas canvas) {
+    final inference = controller.activeLineInference;
+    if (inference == null) return;
+    if (inference.kind == LineInferenceKind.horizontal || inference.kind == LineInferenceKind.vertical) return;
+    final color = _lineInferenceColors[inference.kind]!;
+    final screenPos = transform.sketchToScreen(inference.markerX, inference.markerY);
+    const markerRadius = _snapHighlightPointRadius * 1.5;
+    canvas.drawCircle(screenPos, markerRadius, Paint()..color = color.withValues(alpha: 0.35));
+    canvas.drawCircle(
+      screenPos,
+      markerRadius + 3,
+      Paint()
+        ..color = color
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5,
+    );
+  }
+
   void _paintActiveDrawGhost(Canvas canvas) {
     final ghost = controller.activeDrawGhost;
     if (ghost == null) return;
@@ -3357,13 +3405,16 @@ class _SketchPainter extends CustomPainter {
       ..style = PaintingStyle.stroke;
     switch (ghost) {
       case LineGhost g:
-        // Phase 6.1: same green used elsewhere for an active snap (e.g.
-        // [isHoveringChainStart]) - signals the tap will land exactly
-        // horizontal/vertical and auto-add that constraint.
-        final snapPaint = controller.activeLineSnapAxis == null
+        // Phase 6.1 (Session N: now [SketchController.activeLineInference],
+        // the superset that also covers parallel/perpendicular/tangent/
+        // point-on-curve - green for Horizontal/Vertical is unchanged, see
+        // [_lineInferenceColors]) - signals the tap will auto-add a
+        // constraint, colored by which one.
+        final inference = controller.activeLineInference;
+        final snapPaint = inference == null
             ? paint
             : (Paint()
-              ..color = Colors.green
+              ..color = _lineInferenceColors[inference.kind]!
               ..strokeWidth = 1.5
               ..style = PaintingStyle.stroke);
         _drawDashedLine(
@@ -4601,6 +4652,7 @@ class _SketchPainter extends CustomPainter {
     _paintSnapCandidateHighlight(canvas);
     _paintAutoCoincidentIndicator(canvas);
     _paintActiveDrawGhost(canvas);
+    _paintLineInferenceMarker(canvas);
     _paintOffsetPreviewGhosts(canvas);
     _paintPatternMirrorGhosts(canvas);
 
