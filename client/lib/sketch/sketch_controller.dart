@@ -4263,21 +4263,41 @@ class SketchController extends ChangeNotifier {
     return null;
   }
 
-  /// The still-*intact* Polygon [pointId] is a vertex of, or null.
-  /// "Intact" - every Line this Polygon's own [SketchApiClient.createPolygon]
-  /// call created is still present, unmodified - is what actually licenses
-  /// [_closedFormPolygonVertices]'s no-solver drag path below: the moment a
-  /// trim or an individual Line/Point delete breaks that (checked live
-  /// against [lines]/[points], not a stored flag, so it's picked up
-  /// automatically with no extra bookkeeping anywhere else in the app),
-  /// this returns null and dragging silently falls back to the ordinary,
-  /// general constraint-solver path - correct for what's left, since it's
-  /// no longer a rigid regular shape. [_polygonForVertex] (this method's
-  /// own, looser, longstanding vertex-membership-only check) is still used
-  /// unchanged by the *confirmed-dimension-edit* reinterpretation below -
-  /// this is a separate, additional check on top of it.
+  /// The still-*intact* Polygon [pointId] belongs to - as a vertex *or* as
+  /// its own centre - or null. "Intact" - every Line this Polygon's own
+  /// [SketchApiClient.createPolygon] call created is still present,
+  /// unmodified - is what actually licenses [_closedFormPolygonVertices]'s
+  /// no-solver drag path below: the moment a trim or an individual Line/
+  /// Point delete breaks that (checked live against [lines]/[points], not
+  /// a stored flag, so it's picked up automatically with no extra
+  /// bookkeeping anywhere else in the app), this returns null and dragging
+  /// silently falls back to the ordinary, general constraint-solver path -
+  /// correct for what's left, since it's no longer a rigid regular shape.
+  ///
+  /// Bug fix (on-device feedback: dragging a Polygon's centre "completely
+  /// broke, collapsed"): this used to delegate entirely to
+  /// [_polygonForVertex] (this method's own, looser, longstanding vertex-
+  /// membership-*only* check, still used unchanged by the *confirmed-
+  /// dimension-edit* reinterpretation elsewhere, where a centre drag has no
+  /// meaning), which never matches a centre Point id - so a centre drag
+  /// always fell through to the general solver path, never the closed-form
+  /// one, unlike Circle/Arc/Ellipse/Slot (each of which does handle its own
+  /// centre drag in closed form). Invisible while the radius dimension was
+  /// already confirmed (the general path still converges correctly there -
+  /// see the Circle/Polygon soft-drag validation work), but while it's
+  /// still provisional (the common case right after drawing one), the
+  /// solver skips that Constraint entirely by design, leaving every
+  /// vertex's own distance from the dragged centre with nothing pinning it
+  /// at all - free to collapse toward zero, the exact class of bug closed-
+  /// form dragging exists to prevent in the first place.
   SketchPolygonView? _intactPolygonForVertex(String pointId) {
-    final polygon = _polygonForVertex(pointId);
+    SketchPolygonView? polygon;
+    for (final candidate in polygons.values) {
+      if (pointId == candidate.centerPointId || candidate.vertexPointIds.contains(pointId)) {
+        polygon = candidate;
+        break;
+      }
+    }
     if (polygon == null) return null;
     if (!points.containsKey(polygon.centerPointId)) return null;
     for (final vertexId in polygon.vertexPointIds) {
@@ -4331,6 +4351,13 @@ class SketchController extends ChangeNotifier {
   /// [_trySolveDuringDragLocally]'s general path. Null only if [target]
   /// coincides with the centre (degenerate/zero radius) or [draggedVertexId]
   /// genuinely isn't one of [polygon]'s own vertices.
+  ///
+  /// [_closedFormCircleGeometry]'s own centre branch, mirrored exactly: a
+  /// centre drag translates every vertex by the same delta, radius and
+  /// orientation both untouched - see [_intactPolygonForVertex]'s own doc
+  /// comment for the bug this closes (a centre drag used to reach the
+  /// general solver path at all, with nothing protecting a still-
+  /// provisional radius from collapsing).
   Map<String, (double, double)>? _closedFormPolygonVertices(
     SketchPolygonView polygon,
     String draggedVertexId,
@@ -4339,6 +4366,16 @@ class SketchController extends ChangeNotifier {
   ) {
     final center = points[polygon.centerPointId];
     if (center == null) return null;
+    if (draggedVertexId == polygon.centerPointId) {
+      final dx = targetX - center.x;
+      final dy = targetY - center.y;
+      final result = <String, (double, double)>{polygon.centerPointId: (targetX, targetY)};
+      for (final vertexId in polygon.vertexPointIds) {
+        final p = points[vertexId];
+        if (p != null) result[vertexId] = (p.x + dx, p.y + dy);
+      }
+      return result;
+    }
     final index = polygon.vertexPointIds.indexOf(draggedVertexId);
     if (index == -1) return null;
     final dx = targetX - center.x;
@@ -4994,25 +5031,29 @@ class SketchController extends ChangeNotifier {
     final String centerId;
     final String rimId;
     // Bug fix (on-device feedback, see [_circleDragMode]'s own doc
-    // comment): true only for a Circle drag [_circleDragMode] resolved to
-    // [CircleDragMode.translate] - the confirmed dimension was respected by
-    // moving the whole Circle instead of resizing it, so (unlike every
-    // other branch below, which always means "the dimension needs to catch
-    // up with wherever this settled") the dimension-value update just below
-    // must be skipped entirely for this one case: the radius never changed.
-    var circleDragTranslatesOnly = false;
+    // comment): true whenever this drag is a pure translate (the confirmed
+    // dimension respected by moving the whole shape instead of resizing
+    // it) rather than a resize, so (unlike every other case below, which
+    // always means "the dimension needs to catch up with wherever this
+    // settled") the dimension-value update just below must be skipped
+    // entirely: the radius never changed. Originally Circle-only
+    // ([CircleDragMode.translate]); now also true for a Polygon centre
+    // drag, which is a translate for exactly the same reason - see
+    // [_closedFormPolygonVertices]'s own centre branch.
+    var dragTranslatesOnly = false;
     if (polygon != null) {
       positions = _closedFormPolygonVertices(polygon, draggedPointId, targetX, targetY);
       radiusConstraint = _polygonRadiusConstraint(polygon);
       centerId = polygon.centerPointId;
       rimId = polygon.vertexPointIds[0];
+      dragTranslatesOnly = draggedPointId == polygon.centerPointId;
     } else if (slot != null) {
       positions = _closedFormSlotGeometry(slot, draggedPointId, targetX, targetY);
       radiusConstraint = _slotRadiusConstraint(slot);
       centerId = slot.center1PointId;
       rimId = slot.aPointId;
     } else if (circle != null) {
-      circleDragTranslatesOnly = _circleDragMode(circle, draggedPointId) == CircleDragMode.translate;
+      dragTranslatesOnly = _circleDragMode(circle, draggedPointId) == CircleDragMode.translate;
       positions = _closedFormCircleDragPositions(circle, draggedPointId, targetX, targetY);
       radiusConstraint = _circleRadiusConstraint(circle);
       centerId = circle.centerPointId;
@@ -5026,12 +5067,13 @@ class SketchController extends ChangeNotifier {
     if (positions == null) return;
     await _applyClosedFormPositions(positions, sync: true);
 
-    if (radiusConstraint == null || radiusConstraint.provisional || circleDragTranslatesOnly) return;
+    if (radiusConstraint == null || radiusConstraint.provisional || dragTranslatesOnly) return;
     // Read back from [points] (just written by [_applyClosedFormPositions]
-    // above), not [positions] directly - a Polygon vertex drag's own
+    // above), not [positions] directly - a Polygon *vertex* drag's own
     // [_closedFormPolygonVertices] output never includes the centre (it
-    // doesn't move), so looking it up in [positions] would always miss and
-    // silently skip this whole dimension-value update.
+    // doesn't move) - a centre drag is handled entirely above, via
+    // [dragTranslatesOnly] - so looking it up in [positions] would always
+    // miss and silently skip this whole dimension-value update.
     final center = points[centerId];
     final rim = points[rimId];
     if (center == null || rim == null) return;
@@ -5112,6 +5154,16 @@ class SketchController extends ChangeNotifier {
     // starting a drag guaranteed to visibly do nothing.
     final intactCircle = _intactCircleForPoint(pointId);
     if (intactCircle != null && _circleDragMode(intactCircle, pointId) == CircleDragMode.blocked) {
+      return false;
+    }
+    // Same reasoning, for a Polygon's own centre specifically (see
+    // [_intactPolygonForVertex]'s own doc comment for the bug this closes):
+    // unlike a vertex drag (always a resize about whatever position the
+    // centre already holds - "somewhere to go" regardless of whether that
+    // centre is pinned), a centre drag is a translate, which has nowhere
+    // to go at all once the centre itself is fully pinned/grounded.
+    final intactPolygon = _intactPolygonForVertex(pointId);
+    if (intactPolygon != null && pointId == intactPolygon.centerPointId && isPointFullyPinned(pointId)) {
       return false;
     }
     final point = points[pointId]!;

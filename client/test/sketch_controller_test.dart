@@ -4984,6 +4984,103 @@ void main() {
     expect(maxLength - minLength, lessThan(1e-2), reason: 'EqualLength chain drifted: $lengths');
   });
 
+  group(
+      'Polygon centre drag (on-device feedback: "dragging the centre of a polygon completely broke, '
+      'collapsed") - bug fix: _intactPolygonForVertex used to delegate entirely to '
+      '_polygonForVertex, a vertex-membership-only check that never matches the centre Point id, so '
+      'a centre drag always fell through to the general solver path, never the closed-form one '
+      'every other shape\'s own centre drag already used. Invisible once the radius dimension was '
+      'confirmed, but with it still provisional (the common case right after drawing one) the '
+      'solver skips that Constraint entirely, leaving every vertex\'s own distance from the dragged '
+      'centre with nothing pinning it at all - free to collapse toward zero', () {
+    test('dragging the centre of a still-provisional (freshly drawn, undimensioned) Polygon '
+        'translates every vertex by the same delta instead of collapsing them toward the centre',
+        () async {
+      controller.selectDrawTool(SketchTool.polygon);
+      controller.setPolygonSides(5);
+      await controller.handleCanvasTap(20, 20); // centre, deliberately off the origin - stays free
+      await controller.handleCanvasTap(30, 20); // first vertex - radius 10
+      controller.exitToSelectMode();
+      final polygon = controller.polygons.values.single;
+      final radiusConstraint = controller.constraints.values.whereType<DistanceConstraintDto>().single;
+      expect(radiusConstraint.provisional, isTrue, reason: 'sanity check: never confirmed in this test');
+
+      final verticesBefore = {for (final id in polygon.vertexPointIds) id: controller.points[id]!};
+
+      controller.cursorX = 20;
+      controller.cursorY = 20;
+      expect(controller.beginPointDrag(polygon.centerPointId), isTrue);
+      await controller.updatePointDrag(25, 27); // dragged (5, 7)
+
+      final centreAfter = controller.points[polygon.centerPointId]!;
+      expect(centreAfter.x, closeTo(25.0, 1e-6));
+      expect(centreAfter.y, closeTo(27.0, 1e-6));
+      for (final id in polygon.vertexPointIds) {
+        final before = verticesBefore[id]!;
+        final after = controller.points[id]!;
+        expect(after.x, closeTo(before.x + 5.0, 1e-6), reason: '$id.x did not translate cleanly');
+        expect(after.y, closeTo(before.y + 7.0, 1e-6), reason: '$id.y did not translate cleanly');
+        final radius = math.sqrt(math.pow(after.x - centreAfter.x, 2) + math.pow(after.y - centreAfter.y, 2));
+        expect(radius, closeTo(10.0, 1e-6), reason: '$id collapsed or resized instead of translating');
+      }
+    });
+
+    test('dragging the centre of a Polygon with a confirmed radius dimension still translates '
+        'cleanly, and never touches the dimension\'s own value', () async {
+      controller.selectDrawTool(SketchTool.polygon);
+      controller.setPolygonSides(5);
+      await controller.handleCanvasTap(20, 20);
+      await controller.handleCanvasTap(30, 20); // radius 10
+      controller.exitToSelectMode();
+      final polygon = controller.polygons.values.single;
+      final radiusConstraintId = controller.constraints.values.whereType<DistanceConstraintDto>().single.id;
+      final radiusConstraint = controller.constraints[radiusConstraintId] as DistanceConstraintDto;
+      controller.constraints[radiusConstraintId] = DistanceConstraintDto(
+        id: radiusConstraint.id,
+        pointAId: radiusConstraint.pointAId,
+        pointBId: radiusConstraint.pointBId,
+        distance: radiusConstraint.distance,
+        provisional: false,
+      );
+
+      backend.requestLog.clear();
+      controller.cursorX = 20;
+      controller.cursorY = 20;
+      expect(controller.beginPointDrag(polygon.centerPointId), isTrue);
+      await controller.updatePointDrag(25, 27);
+      await controller.endPointDrag();
+
+      expect(
+        backend.requestLog.any((r) => r.contains('/constraints/$radiusConstraintId')),
+        isFalse,
+        reason: 'a pure centre translate must never PATCH the confirmed radius dimension',
+      );
+      final centreAfter = controller.points[polygon.centerPointId]!;
+      for (final id in polygon.vertexPointIds) {
+        final after = controller.points[id]!;
+        final radius = math.sqrt(math.pow(after.x - centreAfter.x, 2) + math.pow(after.y - centreAfter.y, 2));
+        expect(radius, closeTo(10.0, 1e-6));
+      }
+    });
+
+    test('dragging the centre is refused outright once it is itself fully pinned/grounded - there '
+        'is nowhere left for a translate to go', () async {
+      controller.selectDrawTool(SketchTool.polygon);
+      controller.setPolygonSides(5);
+      await controller.handleCanvasTap(0, 0); // centre placed exactly on the origin
+      await controller.handleCanvasTap(10, 0); // radius 10
+      controller.exitToSelectMode();
+      final polygon = controller.polygons.values.single;
+
+      controller.selectEntity(SketchSelection(kind: SelectionKind.point, id: controller.originPointId!));
+      controller.selectEntity(SketchSelection(kind: SelectionKind.point, id: polygon.centerPointId));
+      await controller.addCoincidentConstraint();
+
+      expect(controller.isPointFullyPinned(polygon.centerPointId), isTrue);
+      expect(controller.beginPointDrag(polygon.centerPointId), isFalse);
+    });
+  });
+
   group('On-device feedback: deleting a Point/Line that belongs to a Slot/Rectangle no longer leaves '
       'the owning entity behind, still referencing it server-side ("some points are not deleting '
       'because they are part of a slot but the slot has been deleted")', () {
