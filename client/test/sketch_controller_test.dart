@@ -2960,6 +2960,58 @@ void main() {
     expect({created.line1Id, created.line2Id}, {targetLineId, newLineId});
   });
 
+  test(
+      'a parallel candidate snaps toward the cursor even when the target Line was drawn in the '
+      'opposite direction (bug fix: "the detection flipped to go away from the cursor")', () async {
+    controller.selectDrawTool(SketchTool.line);
+    // Drawn end-to-start relative to the other parallel test above - the
+    // target Line's own stored direction (start->end) now points at ~210
+    // degrees, the exact opposite of the ~30 degree direction the second
+    // Line below is actually dragged toward.
+    await controller.handleCanvasTap(10, 5.773502691896258);
+    await controller.handleCanvasTap(0, 0);
+    controller.finishChain();
+    final targetLineId = controller.lines.keys.single;
+
+    await controller.handleCanvasTap(20, 0);
+    controller.moveCursorToSketchPoint(30, 5.773502691896258); // ~30 degrees from the new anchor
+
+    final inference = controller.activeLineInference;
+    expect(inference?.kind, LineInferenceKind.parallel);
+    expect(inference?.target?.id, targetLineId);
+    // The bug: snapping to the target Line's raw stored angle (~210
+    // degrees, not its ~30 degree reverse) would place the free end at
+    // (20 + 11.547*cos(210deg), 0 + 11.547*sin(210deg)) = (10, -5.77...) -
+    // behind and below the anchor, visibly flipped away from the cursor
+    // instead of toward it.
+    expect(inference?.snappedX, closeTo(30, 1e-9));
+    expect(inference?.snappedY, closeTo(5.773502691896258, 1e-9));
+
+    final ghost = controller.activeDrawGhost as LineGhost;
+    expect(ghost.endX, closeTo(30, 1e-9));
+    expect(ghost.endY, closeTo(5.773502691896258, 1e-9));
+  });
+
+  test(
+      'a perpendicular candidate snaps toward the cursor regardless of which of the two possible '
+      'perpendicular directions the target Line\'s own stored angle implies', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(10, 5.773502691896258);
+    await controller.handleCanvasTap(0, 0);
+    controller.finishChain();
+    final targetLineId = controller.lines.keys.single;
+
+    await controller.handleCanvasTap(20, 0);
+    // ~30 + 90 degrees, same as the other perpendicular test below.
+    controller.moveCursorToSketchPoint(15, 8.660254037844387);
+
+    final inference = controller.activeLineInference;
+    expect(inference?.kind, LineInferenceKind.perpendicular);
+    expect(inference?.target?.id, targetLineId);
+    expect(inference?.snappedX, closeTo(15, 1e-9));
+    expect(inference?.snappedY, closeTo(8.660254037844387, 1e-9));
+  });
+
   test('a Line drawn near-perpendicular to an existing Line reports/auto-adds a PerpendicularConstraint, '
       'live', () async {
     controller.selectDrawTool(SketchTool.line);
@@ -3016,6 +3068,13 @@ void main() {
     // anchor to the tangent point is the only Line in the sketch.
     final newLineId = controller.lines.keys.single;
     expect(created.lineId, newLineId);
+    // Regression: the free end lands exactly on the Circle's own boundary
+    // (that's what makes it a genuine tangent point), which would *also*
+    // match _pointOnCurveTarget's own generic check inside _pointIdAt -
+    // the Line tool's own two _pointIdAtCursor call sites must pass
+    // inferPointOnCurve: false so this doesn't also pick up a redundant/
+    // conflicting PointOnCircleConstraint alongside the Tangent one.
+    expect(controller.constraints.values.whereType<PointOnCircleConstraintDto>(), isEmpty);
   });
 
   test(
@@ -3072,6 +3131,367 @@ void main() {
     controller.toggleInferenceSuppressed();
     expect(controller.inferenceSuppressed, isFalse);
     expect(controller.activeLineInference?.kind, LineInferenceKind.parallel);
+  });
+
+  test(
+      'bug fix (on-device feedback: "when I drop a point on a line or on a circle I would expect an '
+      'inferred constraint with line or curve to be applied") - the Point tool adds a PointOnLineConstraint '
+      'when dropped directly on an existing Line\'s curve, not just on one of its own Points', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 4);
+    controller.finishChain();
+    final targetLineId = controller.lines.keys.single;
+
+    controller.selectDrawTool(SketchTool.point);
+    // On the Line's curve at t=0.3 - deliberately not its midpoint (5, 2),
+    // which [_nearestLineMidpointId] already snaps to via a different,
+    // higher-priority path ([_materializeMidpoint]) than the one this test
+    // means to exercise.
+    await controller.handleCanvasTap(3, 1.2);
+
+    final created = controller.constraints.values.whereType<PointOnLineConstraintDto>().single;
+    expect(created.lineId, targetLineId);
+    final droppedPointId = controller.points.keys.last;
+    expect(created.pointId, droppedPointId);
+  });
+
+  test(
+      "a Point dropped on an existing Line's infinite extension - not its drawn segment at all - "
+      'still adds a PointOnLineConstraint, since the backend constraint already pins to the infinite '
+      'line and this only widens detection to match', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    final targetLineId = controller.lines.keys.single;
+
+    controller.selectDrawTool(SketchTool.point);
+    // 5 units past the Line's own drawn end (10, 0), still exactly on its
+    // infinite extension.
+    await controller.handleCanvasTap(15, 0);
+
+    final created = controller.constraints.values.whereType<PointOnLineConstraintDto>().single;
+    expect(created.lineId, targetLineId);
+    final droppedPointId = controller.points.keys.last;
+    expect(created.pointId, droppedPointId);
+  });
+
+  test(
+      "a Point dropped past an existing Line's end but off to the side (not on its infinite "
+      "extension) adds no PointOnLineConstraint - proximity to the drawn segment's own endpoint "
+      "doesn't count as 'on the extension'", () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+
+    controller.selectDrawTool(SketchTool.point);
+    await controller.handleCanvasTap(15, 5); // past the end, but well off the Line's own direction
+
+    expect(controller.constraints.values.whereType<PointOnLineConstraintDto>(), isEmpty);
+  });
+
+  test(
+      'the Point tool adds a PointOnCircleConstraint when dropped directly on an existing Circle\'s '
+      'boundary, not just on one of its own Points', () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0); // radius 5
+    final circleId = controller.circles.keys.single;
+
+    controller.selectDrawTool(SketchTool.point);
+    // On the boundary but off every cardinal axis (see
+    // Sketch._add_cardinal_points), so this can't be mistaken for landing
+    // on one of the Circle's own existing Points.
+    await controller.handleCanvasTap(5 * math.cos(math.pi / 4), 5 * math.sin(math.pi / 4));
+
+    final created = controller.constraints.values.whereType<PointOnCircleConstraintDto>().single;
+    expect(created.circleOrArcId, circleId);
+    final droppedPointId = controller.points.keys.last;
+    expect(created.pointId, droppedPointId);
+  });
+
+  test(
+      'the Point tool still prefers an existing-Point coincidence over point-on-curve when dropped '
+      'near both at once', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 4);
+    controller.finishChain();
+
+    controller.selectDrawTool(SketchTool.point);
+    await controller.handleCanvasTap(0, 0); // the target Line's own start Point
+
+    expect(controller.constraints.values.whereType<PointOnLineConstraintDto>(), isEmpty);
+    expect(controller.constraints.values.whereType<CoincidentConstraintDto>(), isNotEmpty);
+  });
+
+  test(
+      'bug fix, generalized beyond the Point tool: a Circle\'s own centre Point tapped directly on an '
+      'existing Line\'s curve also adds a PointOnLineConstraint, via the shared _pointIdAt every '
+      'tap-to-place tool funnels through', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 4);
+    controller.finishChain();
+    final targetLineId = controller.lines.keys.single;
+
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(3, 1.2); // on the target Line's curve, not its midpoint (5, 2)
+    await controller.handleCanvasTap(8, 1.2); // radius point, off the Line
+
+    final circle = controller.circles.values.single;
+    final created = controller.constraints.values.whereType<PointOnLineConstraintDto>().single;
+    expect(created.lineId, targetLineId);
+    expect(created.pointId, circle.centerPointId);
+  });
+
+  test(
+      "bug fix, generalized beyond the Point tool: a Rectangle's own first corner Point tapped "
+      "directly on an existing Circle's boundary also adds a PointOnCircleConstraint", () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0); // radius 5
+    final circleId = controller.circles.keys.single;
+
+    controller.selectDrawTool(SketchTool.rectangle);
+    controller.setRectangleConstructionMethod(RectangleConstructionMethod.twoCorner);
+    // On the boundary but off every cardinal axis, same as the Point-tool
+    // circle test above.
+    await controller.handleCanvasTap(5 * math.cos(math.pi / 4), 5 * math.sin(math.pi / 4));
+    await controller.handleCanvasTap(20, 20); // opposite corner, well clear of the Circle
+
+    final rectangle = controller.rectangles.values.single;
+    final created = controller.constraints.values.whereType<PointOnCircleConstraintDto>().single;
+    expect(created.circleOrArcId, circleId);
+    expect(created.pointId, rectangle.cornerPointIds.first);
+  });
+
+  // --- Session N: concentric/collinear live inference -----------------------
+
+  test('placing a new Circle\'s centre near (but not on) an existing Circle\'s centre auto-adds a '
+      'ConcentricConstraint', () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0); // radius 5
+    final circle1Id = controller.circles.keys.single;
+
+    // 0.5 units off the first Circle's own centre - beyond snapRadius (0.2,
+    // which would instead literally merge the two centre Points into one,
+    // no Constraint needed) but within the wider, zoom-scaled concentric
+    // tolerance.
+    await controller.handleCanvasTap(0.5, 0);
+    await controller.handleCanvasTap(10, 0); // radius point, arbitrary
+    final circle2Id = controller.circles.keys.last;
+
+    final created = controller.constraints.values.whereType<ConcentricConstraintDto>().single;
+    expect({created.entity1Id, created.entity2Id}, {circle1Id, circle2Id});
+  });
+
+  test(
+      'placing a new Arc\'s centre near an existing Circle\'s centre auto-adds a ConcentricConstraint '
+      '(cross-type)', () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+    final circleId = controller.circles.keys.single;
+
+    controller.selectDrawTool(SketchTool.arc);
+    await controller.handleCanvasTap(0.5, 0); // centre, 0.5 units off the Circle's own
+    await controller.handleCanvasTap(10, 0); // start
+    await controller.handleCanvasTap(0, 10); // end
+
+    final arcId = controller.arcs.keys.single;
+    final created = controller.constraints.values.whereType<ConcentricConstraintDto>().single;
+    expect({created.entity1Id, created.entity2Id}, {circleId, arcId});
+  });
+
+  test(
+      "a new Circle's centre tapped exactly on an existing Circle's own centre merges into the same "
+      'Point instead - no separate ConcentricConstraint needed for something already structurally true',
+      () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+    final circle1 = controller.circles.values.single;
+
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0); // exactly the first Circle's own centre
+    await controller.handleCanvasTap(10, 0);
+    final circle2 = controller.circles.values.last;
+
+    expect(circle2.centerPointId, circle1.centerPointId);
+    expect(controller.constraints.values.whereType<ConcentricConstraintDto>(), isEmpty);
+  });
+
+  test(
+      'continuing a Line chain collinear with the connected previous segment reports/auto-adds a '
+      'CollinearConstraint, live, correctly scoped to the connected segment rather than an unrelated '
+      'Line at the same angle', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 5.773502691896258); // ~30 degrees off horizontal
+    controller.finishChain();
+    final segment1Id = controller.lines.keys.single;
+
+    // An unrelated Line at the same ~30 degree angle, nowhere connected to
+    // the chain below - if collinear detection weren't correctly scoped to
+    // the *connected* Line specifically, this could be mistaken for the
+    // intended target instead of segment1.
+    await controller.handleCanvasTap(100, 100);
+    await controller.handleCanvasTap(110, 105.773502691896258);
+    controller.finishChain();
+
+    // Resume the chain from segment1's own endpoint and continue straight.
+    await controller.handleCanvasTap(10, 5.773502691896258);
+    controller.moveCursorToSketchPoint(20, 2 * 5.773502691896258);
+
+    final inference = controller.activeLineInference;
+    expect(inference?.kind, LineInferenceKind.collinear);
+    expect(inference?.target?.id, segment1Id);
+
+    await controller.handleCanvasTap(20, 2 * 5.773502691896258);
+
+    final created = controller.constraints.values.whereType<CollinearConstraintDto>().single;
+    final newLineId = controller.lines.values.last.id;
+    expect({created.line1Id, created.line2Id}, {segment1Id, newLineId});
+  });
+
+  test(
+      'a Line continuing from a connected Point but at a non-collinear angle falls back to plain '
+      'parallel/perpendicular, not Collinear', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 5.773502691896258); // ~30 degrees
+    controller.finishChain();
+    final segment1Id = controller.lines.keys.single;
+
+    await controller.handleCanvasTap(10, 5.773502691896258); // resume from segment1's endpoint
+    // ~30 + 90 degrees from the anchor: perpendicular to segment1, not a
+    // straight continuation of it.
+    controller.moveCursorToSketchPoint(10 - 5.0, 5.773502691896258 + 8.660254037844387);
+
+    final inference = controller.activeLineInference;
+    expect(inference?.kind, LineInferenceKind.perpendicular);
+    expect(inference?.target?.id, segment1Id);
+  });
+
+  // --- Session N (#7): tangent-arc chain continuation ------------------------
+
+  test(
+      'toggling tangentArcMode on and continuing a Line chain from a connected Line\'s endpoint '
+      'previews an ArcGhost, tangent to that Line, instead of a LineGhost', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0); // horizontal - direction (1, 0) at its own end
+    controller.finishChain();
+
+    await controller.handleCanvasTap(10, 0); // resume from segment1's own endpoint
+    controller.toggleTangentArcMode();
+    expect(controller.tangentArcModeEnabled, isTrue);
+    controller.moveCursorToSketchPoint(20, 10);
+
+    final ghost = controller.activeDrawGhost;
+    expect(ghost, isA<ArcGhost>());
+    final arcGhost = ghost as ArcGhost;
+    // The unique circle through (10, 0) and (20, 10), tangent to (1, 0) at
+    // (10, 0), by construction (see _tangentArcCenterFrom's own doc
+    // comment): centre (10, 10), radius 10 - verified independently by
+    // hand (perpendicular check: (10,10)-(10,0) = (0,10), dot (1,0) = 0;
+    // equidistant check: both (10,0) and (20,10) are exactly 10 from
+    // (10, 10)).
+    expect(arcGhost.centerX, closeTo(10, 1e-9));
+    expect(arcGhost.centerY, closeTo(10, 1e-9));
+    expect(arcGhost.startX, closeTo(10, 1e-9));
+    expect(arcGhost.startY, closeTo(0, 1e-9));
+    expect(arcGhost.endX, closeTo(20, 1e-9));
+    expect(arcGhost.endY, closeTo(10, 1e-9));
+  });
+
+  test(
+      'committing a tangent-arc continuation from a Line creates an Arc tangent to it '
+      '(TangentConstraint) and continues the chain from the Arc\'s own new end', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    controller.finishChain();
+    final segment1Id = controller.lines.keys.single;
+
+    await controller.handleCanvasTap(10, 0);
+    controller.toggleTangentArcMode();
+    await controller.handleCanvasTap(20, 10);
+
+    final arc = controller.arcs.values.single;
+    final tangent = controller.constraints.values.whereType<TangentConstraintDto>().single;
+    expect(tangent.lineId, segment1Id);
+    final center = controller.points[arc.centerPointId]!;
+    expect(center.x, closeTo(10, 1e-9));
+    expect(center.y, closeTo(10, 1e-9));
+
+    // The Arc's own far end (not the shared Point with segment1) is
+    // exactly where the chain continues from next.
+    final sharedWithSegment1 = controller.lines[segment1Id]!.endPointId;
+    final arcFarEndId = arc.startPointId == sharedWithSegment1 ? arc.endPointId : arc.startPointId;
+
+    controller.toggleTangentArcMode();
+    expect(controller.tangentArcModeEnabled, isFalse);
+    await controller.handleCanvasTap(30, 30); // an ordinary follow-up Line segment
+    final segment2 = controller.lines.values.last;
+    expect(segment2.startPointId, arcFarEndId);
+  });
+
+  test(
+      'committing a tangent-arc continuation from an Arc creates a second Arc tied to it by a '
+      'CurveTangentConstraint at their shared Point', () async {
+    controller.selectDrawTool(SketchTool.arc);
+    await controller.handleCanvasTap(0, 0); // centre
+    await controller.handleCanvasTap(10, 0); // start
+    await controller.handleCanvasTap(0, 10); // end (quarter-circle, CCW)
+    final firstArc = controller.arcs.values.single;
+
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 10); // resume from the first Arc's own end Point
+    controller.toggleTangentArcMode();
+    controller.moveCursorToSketchPoint(-10, 20);
+    await controller.handleCanvasTap(-10, 20);
+
+    expect(controller.arcs.length, 2);
+    final created = controller.constraints.values.whereType<CurveTangentConstraintDto>().single;
+    expect({created.entity1Id, created.entity2Id}, {firstArc.id, controller.arcs.keys.last});
+    expect(created.sharedPointId, firstArc.endPointId);
+  });
+
+  test(
+      'tangentArcMode with no tangent source at the current chain Point (a fresh, unconnected '
+      'start) falls back to an ordinary LineGhost/straight Line', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0); // fresh chain start, connects to nothing
+    controller.toggleTangentArcMode();
+    controller.moveCursorToSketchPoint(10, 7);
+
+    expect(controller.activeDrawGhost, isA<LineGhost>());
+
+    await controller.handleCanvasTap(10, 7);
+    expect(controller.arcs, isEmpty);
+    expect(controller.lines.length, 1);
+  });
+
+  test('tangentArcMode never applies while closing the chain loop - closing always draws a straight '
+      'edge back to the chain\'s own first Point', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    await controller.handleCanvasTap(10, 10);
+    controller.toggleTangentArcMode();
+    // Hovering back over the chain's own first Point (0, 0) closes the
+    // loop - see isHoveringChainStart.
+    controller.moveCursorToSketchPoint(0, 0);
+    await controller.handleCanvasTap(0, 0);
+
+    expect(controller.arcs, isEmpty);
+    expect(controller.lines.length, 3);
+    expect(controller.chainInProgress, isFalse);
   });
 
   // --- Phase 6.2.1: Arc tool -------------------------------------------------

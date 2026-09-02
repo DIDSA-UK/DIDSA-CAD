@@ -853,8 +853,11 @@ enum LineSnapAxis { horizontal, vertical }
 /// [LineSnapAxis] exactly (folded into this same enum so
 /// [SketchController.activeLineInference] can report one unified "what
 /// would placing right now auto-add" answer) - [LineSnapAxis] itself, and
-/// every existing H/V code path, is untouched.
-enum LineInferenceKind { horizontal, vertical, parallel, perpendicular, tangent, pointOnCurve }
+/// every existing H/V code path, is untouched. [collinear] is [parallel]'s
+/// own stricter sibling - a chain continuing straight from a Line it's
+/// actually connected to, not just any matching-angle Line anywhere in the
+/// sketch (see [SketchController._collinearInference]).
+enum LineInferenceKind { horizontal, vertical, parallel, perpendicular, tangent, pointOnCurve, collinear }
 
 /// One live auto-constraint candidate for the Line tool's in-progress
 /// segment - see [SketchController._combinedLineInference], the
@@ -1543,6 +1546,14 @@ class SketchController extends ChangeNotifier {
   /// always move together).
   static const double parallelPerpendicularSnapAngleDegrees = 4.0;
 
+  /// Session N: [parallelPerpendicularSnapAngleDegrees]'s own collinear
+  /// counterpart - how many degrees off dead straight a chain continuation
+  /// can be from the Line it's actually connected to before
+  /// [_collinearInference] stops reporting a candidate. Kept independent
+  /// (product decision, per-kind tuning knobs) even though it starts at the
+  /// same value.
+  static const double collinearSnapAngleDegrees = 4.0;
+
   /// Session N: how many degrees the in-progress segment's own direction
   /// can be from the true tangent-line direction (computed from the fixed
   /// anchor to a nearby Circle/Arc's centre - see [_tangentSnapPoint])
@@ -1576,6 +1587,16 @@ class SketchController extends ChangeNotifier {
   /// the ghost onto it and would add a PointOnLine/PointOnCircle/
   /// PointOnEllipse constraint on placement.
   static const double pointOnCurveSnapPixelRadius = 18.0;
+
+  /// Session N: the concentric counterpart to [pointOnCurveSnapPixelRadius]
+  /// - how close a new Circle/Arc's centre placement must land to an
+  /// existing Circle/Arc's own centre Point (beyond [snapRadius], which
+  /// [_existingPointIdNear] already covers with a literal same-Point-id
+  /// merge - a tap that close is already perfectly concentric, structurally,
+  /// with no Constraint needed at all) before [_concentricTarget] offers a
+  /// ConcentricConstraint against a *distinct* new centre Point instead of a
+  /// genuinely unrelated one.
+  static const double concentricSnapPixelRadius = 18.0;
 
   /// The minimum tap hit target, in logical pixels, expressed as a radius.
   /// Entity hit-testing for a discrete tap (select, dimension-target
@@ -2171,8 +2192,18 @@ class SketchController extends ChangeNotifier {
   String? get circleCenterPointId => _circleCenterPointId;
   bool get circleInProgress => _circleCenterPointId != null;
 
+  /// Session N: the existing Circle/Arc (if any) [_concentricTarget] found
+  /// for this Circle's centre tap, captured at that tap and applied once
+  /// the Circle itself exists (see [_clickCircleTool]'s own two branches -
+  /// [_api.createConcentricConstraint] needs a real Circle id on both
+  /// sides, which doesn't exist yet at centre-placement time).
+  SketchSelection? _circleConcentricTarget;
+
   String? _arcCenterPointId;
   String? _arcStartPointId;
+
+  /// [_circleConcentricTarget]'s own Arc-tool counterpart.
+  SketchSelection? _arcConcentricTarget;
 
   /// The center/start Points of an Arc placed but not yet completed
   /// (waiting on the end-defining tap) - mirrors [circleCenterPointId],
@@ -3239,7 +3270,21 @@ class SketchController extends ChangeNotifier {
         if (startId == null) return null;
         final start = points[startId];
         if (start == null) return null;
-        final snapped = _snappedLineEndWithInference(start.x, start.y, cursorX, cursorY);
+        if (_tangentArcModeEnabled) {
+          final continuation = _tangentArcContinuation(startId, cursorX, cursorY);
+          if (continuation != null) {
+            final (_, centerX, centerY, anchorX, anchorY) = continuation;
+            return ArcGhost(
+              centerX: centerX,
+              centerY: centerY,
+              startX: anchorX,
+              startY: anchorY,
+              endX: cursorX,
+              endY: cursorY,
+            );
+          }
+        }
+        final snapped = _snappedLineEndWithInference(start.x, start.y, cursorX, cursorY, anchorPointId: startId);
         return LineGhost(startX: start.x, startY: start.y, endX: snapped.$1, endY: snapped.$2);
       case LineConstructionMethod.midpoint:
         final midX = _midpointAnchorX;
@@ -3326,7 +3371,7 @@ class SketchController extends ChangeNotifier {
         if (startId == null) return null;
         final start = points[startId];
         if (start == null) return null;
-        return _combinedLineInference(start.x, start.y, cursorX, cursorY);
+        return _combinedLineInference(start.x, start.y, cursorX, cursorY, anchorPointId: startId);
       case LineConstructionMethod.midpoint:
         final midX = _midpointAnchorX;
         final midY = _midpointAnchorY;
@@ -3345,11 +3390,22 @@ class SketchController extends ChangeNotifier {
   /// class ever creating a competing constraint - stronger than any
   /// constraint this method could add, so a real candidate here would be
   /// actively misleading); then tangent/point-on-curve; then Horizontal/
-  /// Vertical; then parallel/perpendicular last. Never more than one
-  /// constraint auto-applied per placement. Null while
+  /// Vertical; then collinear; then plain parallel/perpendicular last.
+  /// Never more than one constraint auto-applied per placement. Null while
   /// [inferenceSuppressed] is on (the FAB toggle suppresses every kind
   /// here, H/V included - see that getter's own doc comment) or once
   /// nothing at all qualifies.
+  ///
+  /// [anchorPointId] is the real, already-placed Point id at ([x0], [y0])
+  /// - only ever non-null for [LineConstructionMethod.endToEnd]'s chain
+  /// continuation (the anchor is a genuinely real Point there; the
+  /// midpoint method's own anchor is a construction aid that's never
+  /// itself a Point - see [_midpointAnchorX]'s own doc comment). Needed
+  /// only for [_collinearInference], which has to check which existing
+  /// Lines this exact Point id is an endpoint of - a coordinate-proximity
+  /// check wouldn't do, since collinear specifically means "continuing
+  /// *this* Line's own chain", not merely "some Line happens to end near
+  /// here".
   ///
   /// Horizontal/Vertical outranking parallel/perpendicular here (unlike
   /// tangent/point-on-curve, which outrank both) is a deliberate fix, not
@@ -3374,8 +3430,20 @@ class SketchController extends ChangeNotifier {
   /// independently-H/V one wouldn't. Tangent/point-on-curve don't have
   /// this problem (there's no meaningful sense in which a Point landing on
   /// a Circle/curve is "redundant" with the segment also looking near
-  /// axis-aligned), so they keep outranking H/V unconditionally.
-  LineInference? _combinedLineInference(double x0, double y0, double x1, double y1) {
+  /// axis-aligned), so they keep outranking H/V unconditionally. Collinear
+  /// inherits the exact same "outranked by H/V" reasoning as plain
+  /// parallel/perpendicular - a chain continuing straight in a direction
+  /// that also happens to be horizontal is exactly as common as any other
+  /// H/V-vs-parallel overlap, and an independent Horizontal/Vertical
+  /// Constraint on the new segment is just as robust a choice there as it
+  /// is for a bare Parallel.
+  LineInference? _combinedLineInference(
+    double x0,
+    double y0,
+    double x1,
+    double y1, {
+    String? anchorPointId,
+  }) {
     if (_inferenceSuppressed) return null;
     final dx = x1 - x0;
     final dy = y1 - y0;
@@ -3397,6 +3465,11 @@ class SketchController extends ChangeNotifier {
       );
     }
 
+    if (anchorPointId != null) {
+      final collinear = _collinearInference(anchorPointId, x0, y0, x1, y1);
+      if (collinear != null) return collinear;
+    }
+
     return _parallelOrPerpendicularInference(x0, y0, x1, y1);
   }
 
@@ -3407,8 +3480,14 @@ class SketchController extends ChangeNotifier {
   /// Falls back to the raw cursor position (not [_snappedLineEnd]'s own
   /// H/V-only snap) while [inferenceSuppressed] is on, since that toggle
   /// is meant to suppress every kind of live snap, not just the new ones.
-  (double, double) _snappedLineEndWithInference(double x0, double y0, double x1, double y1) {
-    final inference = _combinedLineInference(x0, y0, x1, y1);
+  (double, double) _snappedLineEndWithInference(
+    double x0,
+    double y0,
+    double x1,
+    double y1, {
+    String? anchorPointId,
+  }) {
+    final inference = _combinedLineInference(x0, y0, x1, y1, anchorPointId: anchorPointId);
     if (inference != null) return (inference.snappedX, inference.snappedY);
     if (_inferenceSuppressed) return (x1, y1);
     return _snappedLineEnd(x0, y0, x1, y1);
@@ -3604,6 +3683,114 @@ class SketchController extends ChangeNotifier {
     return (x0 + projection * dirX, y0 + projection * dirY);
   }
 
+  /// Session N (#7): the existing Line or Arc (if any) [anchorPointId] is
+  /// itself an endpoint of, plus that entity's own tangent direction at
+  /// that exact point (an arbitrary-sign direction vector - a tangent line
+  /// has no inherent "forward", see [_tangentArcCenterFrom]'s own doc
+  /// comment for why that's fine here) - what
+  /// [tangentArcModeEnabled] continues tangent *from*. A Line's own
+  /// direction is unambiguous; an Arc's tangent at a rim Point is
+  /// perpendicular to that Point's own radius vector, regardless of which
+  /// of the Arc's two endpoints [anchorPointId] happens to be or which way
+  /// its sweep runs (a circle's tangent line at a given point never
+  /// depends on that). Checks Lines before Arcs when (implausibly) both
+  /// share this exact Point - an arbitrary but consistent tie-break, not a
+  /// meaningful priority choice.
+  (SketchSelection, double, double)? _tangentContinuationSource(String anchorPointId) {
+    final anchor = points[anchorPointId];
+    if (anchor == null) return null;
+    for (final line in lines.values) {
+      final String otherId;
+      if (line.startPointId == anchorPointId) {
+        otherId = line.endPointId;
+      } else if (line.endPointId == anchorPointId) {
+        otherId = line.startPointId;
+      } else {
+        continue;
+      }
+      final other = points[otherId];
+      if (other == null) continue;
+      final dirX = anchor.x - other.x;
+      final dirY = anchor.y - other.y;
+      if (dirX * dirX + dirY * dirY < 1e-12) continue;
+      return (SketchSelection(kind: SelectionKind.line, id: line.id), dirX, dirY);
+    }
+    for (final arc in arcs.values) {
+      if (arc.startPointId != anchorPointId && arc.endPointId != anchorPointId) continue;
+      final center = points[arc.centerPointId];
+      if (center == null) continue;
+      final radiusX = anchor.x - center.x;
+      final radiusY = anchor.y - center.y;
+      if (radiusX * radiusX + radiusY * radiusY < 1e-12) continue;
+      // Perpendicular to the radius vector - a 90-degree rotation, either
+      // sign (see this method's own doc comment on why direction sign
+      // doesn't matter here).
+      return (SketchSelection(kind: SelectionKind.arc, id: arc.id), -radiusY, radiusX);
+    }
+    return null;
+  }
+
+  /// Session N (#7): the centre of the unique circle through both
+  /// ([px], [py]) and ([qx], [qy]) that's tangent to direction
+  /// ([tx], [ty]) at ([px], [py]) - the standard external tangent-arc
+  /// construction every "line then tangent arc" CAD tool uses. Solves the
+  /// two linear equations a centre [C] must satisfy: perpendicular to the
+  /// tangent direction at P (`(C-P)-T = 0`, i.e. `C-T = P-T`), and
+  /// equidistant from both P and Q (`|C-P| = |C-Q|`, expanded to
+  /// `C-(Q-P) = (Q-Q - P-P) / 2`) - two equations, two unknowns (`C.x`,
+  /// `C.y`), solved directly rather than iteratively. Neither equation
+  /// distinguishes [tx]/[ty] from its own negation, so the result is
+  /// identical regardless of which of the two directions along the
+  /// tangent line it's given - there is only ever one such circle for an
+  /// *undirected* tangent line, matching how [_tangentContinuationSource]
+  /// itself never picks a particular sign either.
+  ///
+  /// Null when the two equations are (near-)parallel - `det` near zero -
+  /// which happens exactly when Q sits (almost) exactly on the tangent
+  /// line through P itself: geometrically, continuing *exactly* straight
+  /// has no meaningful finite-radius tangent arc (the "circle" degenerates
+  /// to the line itself, infinite radius) - callers fall back to an
+  /// ordinary straight Line in that case, which is the correct behaviour
+  /// for that degenerate direction anyway.
+  (double, double)? _tangentArcCenterFrom(double px, double py, double tx, double ty, double qx, double qy) {
+    final a1 = tx;
+    final b1 = ty;
+    final c1 = px * tx + py * ty;
+    final a2 = qx - px;
+    final b2 = qy - py;
+    final c2 = ((qx * qx + qy * qy) - (px * px + py * py)) / 2;
+    final det = a1 * b2 - a2 * b1;
+    if (det.abs() < 1e-9) return null;
+    final centerX = (c1 * b2 - c2 * b1) / det;
+    final centerY = (a1 * c2 - a2 * c1) / det;
+    return (centerX, centerY);
+  }
+
+  /// Session N (#7): the tangent-Arc ghost/commit geometry for continuing
+  /// from [anchorPointId] toward the cursor at ([qx], [qy]), or null if
+  /// [tangentArcModeEnabled] doesn't apply here - no tangent source at
+  /// this exact Point ([_tangentContinuationSource]), or the cursor is
+  /// (near-)exactly along that source's own tangent direction
+  /// ([_tangentArcCenterFrom]'s own degenerate case, correctly left to an
+  /// ordinary Line instead). Returns the source entity (for the eventual
+  /// Tangent/CurveTangent Constraint), the computed Arc centre, and the
+  /// anchor's own coordinates (so callers building an [ArcGhost] don't
+  /// need to re-fetch the anchor Point separately).
+  (SketchSelection, double, double, double, double)? _tangentArcContinuation(
+    String anchorPointId,
+    double qx,
+    double qy,
+  ) {
+    final source = _tangentContinuationSource(anchorPointId);
+    if (source == null) return null;
+    final (target, tx, ty) = source;
+    final anchor = points[anchorPointId];
+    if (anchor == null) return null;
+    final center = _tangentArcCenterFrom(anchor.x, anchor.y, tx, ty, qx, qy);
+    if (center == null) return null;
+    return (target, center.$1, center.$2, anchor.x, anchor.y);
+  }
+
   /// Session N: the tangent or point-on-curve candidate (whichever, if
   /// either, applies) for a Line from ([x0], [y0]) to the cursor at
   /// ([x1], [y1]) - the higher-priority half of
@@ -3652,24 +3839,219 @@ class SketchController extends ChangeNotifier {
       }
     }
 
+    final pointOnCurve = _pointOnCurveTarget(x1, y1);
+    if (pointOnCurve == null) return null;
+    final (target, onCurveX, onCurveY) = pointOnCurve;
+    return LineInference(
+      kind: LineInferenceKind.pointOnCurve,
+      target: target,
+      snappedX: onCurveX,
+      snappedY: onCurveY,
+      markerX: onCurveX,
+      markerY: onCurveY,
+    );
+  }
+
+  /// The Line/Circle/Arc/Ellipse (if any) whose curve ([x], [y]) is within
+  /// [pointOnCurveSnapPixelRadius] of, and the nearest point on that curve
+  /// to snap onto - the standalone half of [_tangentOrPointOnCurveInference]
+  /// (which additionally tries tangency first, and only for a Circle/Arc,
+  /// before falling back to this), factored out so any single-point
+  /// placement can offer the same inference without needing a direction to
+  /// test tangency against. Line/Circle/Arc/Ellipse are the only kinds
+  /// offered - the only three with a backend PointOnLine/PointOnCircle/
+  /// PointOnEllipse constraint (see [_pointOnCurveConstraintFor]).
+  ///
+  /// Falls back to [_pointOnLineExtensionTarget] - a Line's own *infinite*
+  /// extension beyond its drawn endpoints, not just the segment itself -
+  /// when nothing at all is found the ordinary way. Only when [_entityAt]
+  /// found nothing, deliberately: if some *other* entity (even one this
+  /// method doesn't itself offer a Constraint for, like a Spline or Text)
+  /// already won the ordinary hit-test, this leaves that alone rather than
+  /// second-guessing it with an extension match from a different Line
+  /// entirely.
+  (SketchSelection, double, double)? _pointOnCurveTarget(double x, double y) {
+    final hit = _entityAt(x, y, _curveInferenceHitRadius(pointOnCurveSnapPixelRadius));
+    if (hit == null) return _pointOnLineExtensionTarget(x, y);
     if (hit.kind != SelectionKind.line &&
         hit.kind != SelectionKind.circle &&
         hit.kind != SelectionKind.arc &&
         hit.kind != SelectionKind.ellipse) {
       return null;
     }
-    final pointOnCurveRadius = _curveInferenceHitRadius(pointOnCurveSnapPixelRadius);
-    if (_entityAt(x1, y1, pointOnCurveRadius)?.sameAs(hit) != true) return null;
-    final onCurve = _nearestPointOnCurve(hit, x1, y1);
+    final onCurve = _nearestPointOnCurve(hit, x, y);
     if (onCurve == null) return null;
-    return LineInference(
-      kind: LineInferenceKind.pointOnCurve,
-      target: hit,
-      snappedX: onCurve.$1,
-      snappedY: onCurve.$2,
-      markerX: onCurve.$1,
-      markerY: onCurve.$2,
-    );
+    return (hit, onCurve.$1, onCurve.$2);
+  }
+
+  /// [_pointOnCurveTarget]'s own fallback: is ([x], [y]) within
+  /// [pointOnCurveSnapPixelRadius] of some existing Line's *infinite*
+  /// extension - the same straight line its drawn segment sits on,
+  /// projected out past whichever endpoint is nearer - rather than the
+  /// segment itself (which [_entityAt]/[_nearestPointOnCurve] already
+  /// cover; this method only ever considers the projection parameter `t`
+  /// *outside* `[0, 1]`, to avoid the two disagreeing about a point that's
+  /// already on the drawn segment). [PointOnLineConstraintDto]'s own doc
+  /// comment already documents the backend constraint as pinning a Point
+  /// onto a Line's own infinite extension, not just its drawn segment - so
+  /// this is a detection-side widening only, no new Constraint semantics.
+  ///
+  /// Deliberately has no separate cap on *how far* past the endpoint an
+  /// extension match can reach, unlike the segment case's own implicit
+  /// bound (its own length): the perpendicular-distance-to-the-infinite-
+  /// line criterion this already reduces to is self-limiting in practice -
+  /// landing precisely on a distant Line's exact extension by accident
+  /// gets rapidly less likely the further out it is, while a genuinely
+  /// deliberate "continue this Line's own direction" placement, however
+  /// far along it, is exactly the "on extension of" cue real CAD tools
+  /// offer with no artificial distance ceiling either.
+  (SketchSelection, double, double)? _pointOnLineExtensionTarget(double x, double y) {
+    final radius = _curveInferenceHitRadius(pointOnCurveSnapPixelRadius);
+    SketchSelection? best;
+    var bestDistSq = double.infinity;
+    double bestX = 0, bestY = 0;
+    for (final line in lines.values) {
+      final a = points[line.startPointId];
+      final b = points[line.endPointId];
+      if (a == null || b == null) continue;
+      final abx = b.x - a.x;
+      final aby = b.y - a.y;
+      final lengthSquared = abx * abx + aby * aby;
+      if (lengthSquared < 1e-12) continue;
+      final t = ((x - a.x) * abx + (y - a.y) * aby) / lengthSquared;
+      if (t >= 0 && t <= 1) continue; // on the segment itself - not this method's concern.
+      final px = a.x + t * abx;
+      final py = a.y + t * aby;
+      final dx = x - px;
+      final dy = y - py;
+      final distSq = dx * dx + dy * dy;
+      if (distSq <= radius * radius && distSq < bestDistSq) {
+        bestDistSq = distSq;
+        best = SketchSelection(kind: SelectionKind.line, id: line.id);
+        bestX = px;
+        bestY = py;
+      }
+    }
+    if (best == null) return null;
+    return (best, bestX, bestY);
+  }
+
+  /// The existing Circle or Arc (if any) whose own centre Point is within
+  /// [concentricSnapPixelRadius] of ([x], [y]) - the nearest one wins.
+  /// Deliberately its own linear scan over [circles]/[arcs] rather than a
+  /// generic [_entityAt] call - concentricity is a relationship between two
+  /// *centre Points* specifically (see backend `ConcentricConstraint`'s own
+  /// doc comment: "Ties two Circles'/Arcs' centres together"), not "near a
+  /// curve", so it needs the same "which existing Points are nearby" shape
+  /// [_existingPointIdNear] already has, just scoped to centre Points and at
+  /// this feature's own wider, zoom-scaled tolerance instead of that
+  /// method's flat [snapRadius]. Callers are expected to only consult this
+  /// once [_existingPointIdNear] has already come back null for the same
+  /// tap - a tap that close is already a literal centre-Point merge,
+  /// structurally concentric with no Constraint needed, and this method
+  /// does not re-check that itself.
+  SketchSelection? _concentricTarget(double x, double y) {
+    final radius = _curveInferenceHitRadius(concentricSnapPixelRadius);
+    SketchSelection? best;
+    var bestDistSq = double.infinity;
+    void consider(SelectionKind kind, String id, String centerPointId) {
+      final center = points[centerPointId];
+      if (center == null) return;
+      final dx = x - center.x;
+      final dy = y - center.y;
+      final distSq = dx * dx + dy * dy;
+      if (distSq <= radius * radius && distSq < bestDistSq) {
+        bestDistSq = distSq;
+        best = SketchSelection(kind: kind, id: id);
+      }
+    }
+
+    for (final circle in circles.values) {
+      consider(SelectionKind.circle, circle.id, circle.centerPointId);
+    }
+    for (final arc in arcs.values) {
+      consider(SelectionKind.arc, arc.id, arc.centerPointId);
+    }
+    return best;
+  }
+
+  /// Bug fix (on-device feedback: "when the sketcher picked up the
+  /// inverted parallel constraint, the detection flipped to go away from
+  /// the cursor"): a Line's stored direction (`atan2` from its
+  /// `startPointId` to its `endPointId`) is an arbitrary artifact of which
+  /// end the user happened to tap first when creating it - entirely
+  /// unrelated to which way *this* in-progress segment is being dragged.
+  /// [_undirectedAngleDeltaDegrees] correctly ignores that arbitrary sign
+  /// when just deciding *whether* a candidate is parallel/perpendicular
+  /// (a Line and its own reverse are the same undirected line), but the
+  /// actual snapped direction still has to pick a side - [axisAngle] and
+  /// [axisAngle] + 180 degrees are equally "parallel", only one of them
+  /// actually points toward where the cursor is headed
+  /// ([towardAngle]). Returns whichever of the two is closer.
+  double _closestDirectedAngle(double towardAngle, double axisAngle) {
+    final delta = _directedAngleDeltaDegrees(towardAngle, axisAngle);
+    final oppositeDelta = _directedAngleDeltaDegrees(towardAngle, axisAngle + math.pi);
+    return delta <= oppositeDelta ? axisAngle : axisAngle + math.pi;
+  }
+
+  /// Session N: the collinear candidate (if any) for a Line continuing
+  /// from the real, already-placed Point [anchorPointId] at ([x0], [y0])
+  /// toward the cursor at ([x1], [y1]) - checked ahead of the more general
+  /// [_parallelOrPerpendicularInference] in [_combinedLineInference]'s own
+  /// priority order, since it's that method's own [LineInferenceKind.parallel]
+  /// case made stricter: not just any Line anywhere in the sketch whose
+  /// angle happens to match, but specifically the one this chain is
+  /// actually continuing *from* (one of [anchorPointId]'s own two
+  /// endpoints). Uses [_undirectedAngleDeltaDegrees] against that Line's
+  /// own outward-from-the-anchor direction (so continuing straight through
+  /// *or* doubling back exactly over it both count - both are genuinely
+  /// the same infinite line, which is all a CollinearConstraint asserts),
+  /// within [collinearSnapAngleDegrees]. The snapped direction, like
+  /// [_parallelOrPerpendicularInference]'s own, is resolved via
+  /// [_closestDirectedAngle] against the segment's current direction so it
+  /// snaps toward the cursor, never away from it.
+  LineInference? _collinearInference(String anchorPointId, double x0, double y0, double x1, double y1) {
+    final segmentAngle = math.atan2(y1 - y0, x1 - x0);
+    final len = math.sqrt(math.pow(x1 - x0, 2) + math.pow(y1 - y0, 2));
+    LineInference? best;
+    var bestDelta = double.infinity;
+    for (final line in lines.values) {
+      final String otherId;
+      if (line.startPointId == anchorPointId) {
+        otherId = line.endPointId;
+      } else if (line.endPointId == anchorPointId) {
+        otherId = line.startPointId;
+      } else {
+        continue;
+      }
+      final other = points[otherId];
+      if (other == null) continue;
+      // Outward: from the connected Line's *other* end, through the
+      // anchor - the direction a straight continuation would head in.
+      final outwardX = x0 - other.x;
+      final outwardY = y0 - other.y;
+      if (outwardX * outwardX + outwardY * outwardY < 1e-12) continue;
+      final lineAngle = math.atan2(outwardY, outwardX);
+      final delta = _undirectedAngleDeltaDegrees(segmentAngle, lineAngle);
+      if (delta <= collinearSnapAngleDegrees && delta < bestDelta) {
+        bestDelta = delta;
+        final snapAngle = _closestDirectedAngle(segmentAngle, lineAngle);
+        final snapped = (x0 + len * math.cos(snapAngle), y0 + len * math.sin(snapAngle));
+        best = LineInference(
+          kind: LineInferenceKind.collinear,
+          target: SketchSelection(kind: SelectionKind.line, id: line.id),
+          snappedX: snapped.$1,
+          snappedY: snapped.$2,
+          // The shared Point itself - the most meaningful spot for a
+          // "these are the same line" glyph, unlike plain parallel's own
+          // target-line midpoint (there's no shared Point to point at
+          // there).
+          markerX: x0,
+          markerY: y0,
+        );
+      }
+    }
+    return best;
   }
 
   /// Session N: the parallel or perpendicular candidate (whichever, if
@@ -3683,7 +4065,10 @@ class SketchController extends ChangeNotifier {
   /// parallel/perpendicular within [parallelPerpendicularSnapAngleDegrees],
   /// and snaps the free end's direction to match exactly - same "only the
   /// angle snaps, the length doesn't" shape as [_snappedLineEnd]'s own
-  /// horizontal/vertical case.
+  /// horizontal/vertical case. The snapped direction is resolved via
+  /// [_closestDirectedAngle] against the segment's own current direction,
+  /// not the target Line's raw stored angle - see that method's own doc
+  /// comment for why.
   LineInference? _parallelOrPerpendicularInference(double x0, double y0, double x1, double y1) {
     final segmentAngle = math.atan2(y1 - y0, x1 - x0);
     final len = math.sqrt(math.pow(x1 - x0, 2) + math.pow(y1 - y0, 2));
@@ -3703,7 +4088,8 @@ class SketchController extends ChangeNotifier {
       final marker = ((a.x + b.x) / 2, (a.y + b.y) / 2);
       if (parallelDelta <= parallelPerpendicularSnapAngleDegrees && parallelDelta < bestDelta) {
         bestDelta = parallelDelta;
-        final snapped = (x0 + len * math.cos(lineAngle), y0 + len * math.sin(lineAngle));
+        final snapAngle = _closestDirectedAngle(segmentAngle, lineAngle);
+        final snapped = (x0 + len * math.cos(snapAngle), y0 + len * math.sin(snapAngle));
         best = LineInference(
           kind: LineInferenceKind.parallel,
           target: target,
@@ -3714,8 +4100,8 @@ class SketchController extends ChangeNotifier {
         );
       } else if (perpendicularDelta <= parallelPerpendicularSnapAngleDegrees && perpendicularDelta < bestDelta) {
         bestDelta = perpendicularDelta;
-        final perpendicularAngle = lineAngle + math.pi / 2;
-        final snapped = (x0 + len * math.cos(perpendicularAngle), y0 + len * math.sin(perpendicularAngle));
+        final snapAngle = _closestDirectedAngle(segmentAngle, lineAngle + math.pi / 2);
+        final snapped = (x0 + len * math.cos(snapAngle), y0 + len * math.sin(snapAngle));
         best = LineInference(
           kind: LineInferenceKind.perpendicular,
           target: target,
@@ -4543,6 +4929,31 @@ class SketchController extends ChangeNotifier {
 
   void toggleInferenceSuppressed() {
     _inferenceSuppressed = !_inferenceSuppressed;
+    notifyListeners();
+  }
+
+  /// Session N (#7): whether continuing a Line chain
+  /// ([LineConstructionMethod.endToEnd] only) draws a tangent Arc instead
+  /// of a straight Line for the *next* segment - and every one after that,
+  /// until toggled off again (sticky, same shape as [dragModeEnabled]/
+  /// [inferenceSuppressed]).
+  ///
+  /// Deliberately an explicit toggle, not an automatic "any non-straight
+  /// drag becomes an arc" inference: this sketcher's default is a sharp
+  /// corner at every chain vertex, and continuing to support that (a bent
+  /// polyline is extremely common) means a mere direction change can't by
+  /// itself switch entity types - SolidWorks's own real behaviour here is
+  /// also a deliberate toggle (drag back over the last point, or a
+  /// keyboard shortcut), never silent auto-detection, for exactly this
+  /// reason. Only ever has a visible effect where
+  /// [_tangentContinuationSource] finds something to actually continue
+  /// tangent *from* - toggled on with no such source (a fresh, unconnected
+  /// chain start), it draws an ordinary Line, same as if this were off.
+  bool _tangentArcModeEnabled = false;
+  bool get tangentArcModeEnabled => _tangentArcModeEnabled;
+
+  void toggleTangentArcMode() {
+    _tangentArcModeEnabled = !_tangentArcModeEnabled;
     notifyListeners();
   }
 
@@ -13960,6 +14371,18 @@ class SketchController extends ChangeNotifier {
   /// whatever it happens to land on would defeat that. If multiple
   /// existing Points are within range, the nearest one wins (see
   /// [_existingPointIdNear]).
+  ///
+  /// Bug fix (on-device feedback: "when I'm sketching and I drop a point
+  /// on a line or on a circle I would expect an inferred constraint with
+  /// line or curve to be applied"): dropping a standalone Point directly
+  /// on an existing Line/Circle/Arc/Ellipse's curve - not on one of its
+  /// own defining Points, which [_existingPointIdNear] already covers, and
+  /// not at a Line's own midpoint, which [_nearestLineMidpointId] already
+  /// covers - used to land a genuinely unconstrained Point there with no
+  /// relationship to what it visually touched at all. Falls back to
+  /// [_pointOnCurveTarget] (the same detection [_tangentOrPointOnCurveInference]
+  /// uses for the Line tool's own endpoint) once neither of those two
+  /// closer-priority snaps applies.
   Future<void> _clickPointTool() async {
     _selectionSet.clear();
     _ribbonVisible = false;
@@ -13969,6 +14392,17 @@ class SketchController extends ChangeNotifier {
       if (midpointLineId != null) {
         pointId = await _materializeMidpoint(midpointLineId);
       } else {
+        // Resolved *before* the new Point exists (not after, with an
+        // exclude-self id, the way the old single existing-Point check
+        // used to) - [_pointOnCurveTarget] goes through [_entityAt], which
+        // has no exclude-id of its own, so checking after creation let the
+        // brand new Point itself (sitting exactly at the query
+        // coordinates) win [_entityAt]'s own Point-first pass ahead of the
+        // Line/Circle/Arc/Ellipse curve it was actually dropped on - the
+        // on-device bug this whole block fixes.
+        final existingId = _existingPointIdNear(cursorX, cursorY);
+        final onCurveTarget = existingId == null ? _pointOnCurveTarget(cursorX, cursorY) : null;
+
         final point = await _api.createPoint(_sketchId!, cursorX, cursorY);
         points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
         _pushUndo(() async {
@@ -13977,11 +14411,14 @@ class SketchController extends ChangeNotifier {
         });
         pointId = point.id;
 
-        final existingId = _existingPointIdNear(cursorX, cursorY, excludeId: pointId);
         if (existingId != null) {
           final constraint = await _api.createCoincidentConstraint(_sketchId!, pointId, existingId);
           _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
           _autoCoincidentIndicatorPointId = pointId;
+        } else if (onCurveTarget != null) {
+          final (target, _, _) = onCurveTarget;
+          final constraint = await _pointOnCurveConstraintFor(pointId, target);
+          _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
         }
       }
       // A midpoint-snapped or auto-coincident placement adds a new
@@ -14010,17 +14447,38 @@ class SketchController extends ChangeNotifier {
     }
 
     final closingLoop = isHoveringChainStart;
+
+    // Session N (#7): tangent-arc continuation pre-empts the ordinary
+    // straight-Line path entirely once toggled on and a genuine tangent
+    // source applies - scoped to *not* closing the loop, since closing
+    // needs the free end to land exactly on the chain's own fixed first
+    // Point (see [isHoveringChainStart]), which the tangent-arc solve
+    // has no way to target (it always uses the live cursor as its own
+    // free point Q) - a deliberate scope limit for this pass, not a
+    // bug: closing a loop with a tangent arc falls back to an ordinary
+    // straight closing edge instead.
+    if (_tangentArcModeEnabled && !closingLoop) {
+      final continuation = _tangentArcContinuation(_chainStartPointId!, cursorX, cursorY);
+      if (continuation != null) {
+        await _commitTangentArcContinuation(continuation);
+        return;
+      }
+    }
+
     // Phase 6.1: captured from the start Point and the tap's cursor
     // position *before* the loop-closing case swaps in a fixed endpoint -
     // a closing edge's slope is dictated by the loop, not freely aimed, so
     // it never auto-snaps (Session N: same reasoning now covers every
     // [_combinedLineInference] kind, not just H/V).
     final chainStart = points[_chainStartPointId!];
-    final inference =
-        (!closingLoop && chainStart != null) ? _combinedLineInference(chainStart.x, chainStart.y, cursorX, cursorY) : null;
+    final inference = (!closingLoop && chainStart != null)
+        ? _combinedLineInference(chainStart.x, chainStart.y, cursorX, cursorY, anchorPointId: _chainStartPointId)
+        : null;
     await _runGuarded(() async {
       final endPointId =
-          closingLoop ? _chainFirstPointId! : await _pointIdAtCursor(excludeId: _chainStartPointId);
+          closingLoop
+              ? _chainFirstPointId!
+              : await _pointIdAtCursor(excludeId: _chainStartPointId, inferPointOnCurve: false);
 
       final line = await _api.createLine(_sketchId!, _chainStartPointId!, endPointId);
       lines[line.id] = SketchLineView(
@@ -14048,6 +14506,91 @@ class SketchController extends ChangeNotifier {
     });
   }
 
+  /// Session N (#7): commits the tangent-Arc [continuation]
+  /// [_tangentArcContinuation] already computed - a new centre Point (the
+  /// solved tangent-circle centre), a new end Point at the live cursor,
+  /// and the Arc itself between the chain's current start and that new
+  /// end, tied to [continuation]'s own source entity by whichever real
+  /// Constraint applies (a plain [TangentConstraint] against a Line
+  /// source, or the newer [CurveTangentConstraint] - "the shared Point is
+  /// collinear with both Arcs' centres" - against an Arc source). Mirrors
+  /// [_clickArcTool]'s own end-Point handling (a bare [_api.createPoint],
+  /// no coincidence-check) rather than [_pointIdAtCursor]'s generic
+  /// tap-to-place path - this end Point's position is solved geometry, not
+  /// a raw tap, the same reasoning that method's own third tap already
+  /// follows. Continues the chain from the new end Point afterward, same
+  /// as an ordinary Line continuation - further taps draw another tangent
+  /// Arc (if still toggled on and a source still applies) or an ordinary
+  /// Line (once toggled off, or once continuing from a Point with no
+  /// tangent source of its own - e.g. this Arc's own far end, which
+  /// nothing yet connects on its *other* side).
+  Future<void> _commitTangentArcContinuation(
+    (SketchSelection, double, double, double, double) continuation,
+  ) async {
+    final (source, centerX, centerY, anchorX, anchorY) = continuation;
+    final startId = _chainStartPointId!;
+    await _runGuarded(() async {
+      final center = await _api.createPoint(_sketchId!, centerX, centerY);
+      points[center.id] = SketchPointView(id: center.id, x: center.x, y: center.y);
+      _pushUndo(() async {
+        await _api.deletePoint(_sketchId!, center.id);
+        points.remove(center.id);
+      });
+      await _autoCoincideIfNear(center.id, center.x, center.y);
+
+      final endPoint = await _api.createPoint(_sketchId!, cursorX, cursorY);
+      points[endPoint.id] = SketchPointView(id: endPoint.id, x: endPoint.x, y: endPoint.y);
+      _pushUndo(() async {
+        await _api.deletePoint(_sketchId!, endPoint.id);
+        points.remove(endPoint.id);
+      });
+
+      // The backend's Arc always sweeps counter-clockwise from its own
+      // startPointId to endPointId (see the backend's app.sketch.models.Arc
+      // docstring, and _clickArcTool's own identical swap) - pick whichever
+      // of (anchor, new end) as (start, end) makes that sweep the shorter
+      // one, the correct default for a smooth tangent continuation. Unlike
+      // _clickArcTool's own live _arcSweepAccumulator (there is no
+      // continuous cursor-sweep history for a closed-form tangent arc,
+      // just the one commit), this reads the shorter-vs-longer choice
+      // directly off the two endpoints' angles around the solved centre.
+      final startAngle = math.atan2(anchorY - centerY, anchorX - centerX);
+      final endAngleRaw = math.atan2(cursorY - centerY, cursorX - centerX);
+      var sweep = endAngleRaw - startAngle;
+      while (sweep <= -math.pi) {
+        sweep += 2 * math.pi;
+      }
+      while (sweep > math.pi) {
+        sweep -= 2 * math.pi;
+      }
+      final sweptClockwise = sweep < 0;
+      final arcStartId = sweptClockwise ? endPoint.id : startId;
+      final arcEndId = sweptClockwise ? startId : endPoint.id;
+
+      final arc = await _api.createArc(_sketchId!, center.id, arcStartId, arcEndId);
+      arcs[arc.id] = SketchArcView(
+        id: arc.id,
+        centerPointId: arc.centerPointId,
+        startPointId: arc.startPointId,
+        endPointId: arc.endPointId,
+        construction: arc.construction,
+      );
+      _pushUndo(() async {
+        await _api.deleteArc(_sketchId!, arc.id);
+        arcs.remove(arc.id);
+      });
+
+      final tangentConstraint = source.kind == SelectionKind.line
+          ? await _api.createTangentConstraint(_sketchId!, arc.id, source.id)
+          : await _api.createCurveTangentConstraint(_sketchId!, arc.id, source.id, startId);
+      _pushUndo(() async => _api.deleteConstraint(_sketchId!, tangentConstraint.id));
+
+      await _solveAndTrackDof();
+
+      _chainStartPointId = endPoint.id;
+    });
+  }
+
   /// [LineConstructionMethod.midpoint]: the first tap picks the line's
   /// center (a construction aid only - never itself a real Point); the
   /// second tap places one end as a real Point, and the other end is a
@@ -14068,7 +14611,7 @@ class SketchController extends ChangeNotifier {
     final midY = _midpointAnchorY!;
     final inference = _combinedLineInference(midX, midY, cursorX, cursorY);
     await _runGuarded(() async {
-      final endAId = await _pointIdAtCursor();
+      final endAId = await _pointIdAtCursor(inferPointOnCurve: false);
       final endA = points[endAId]!;
       final mirrored = await _api.createPoint(_sketchId!, 2 * midX - endA.x, 2 * midY - endA.y);
       points[mirrored.id] = SketchPointView(id: mirrored.id, x: mirrored.x, y: mirrored.y);
@@ -14121,6 +14664,7 @@ class SketchController extends ChangeNotifier {
       LineInferenceKind.perpendicular => _api.createPerpendicularConstraint(_sketchId!, inference.target!.id, lineId),
       LineInferenceKind.tangent => _api.createTangentConstraint(_sketchId!, inference.target!.id, lineId),
       LineInferenceKind.pointOnCurve => _pointOnCurveConstraintFor(endPointId, inference.target!),
+      LineInferenceKind.collinear => _api.createCollinearConstraint(_sketchId!, inference.target!.id, lineId),
     });
     _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
   }
@@ -14161,6 +14705,14 @@ class SketchController extends ChangeNotifier {
       _selectionSet.clear();
       _ribbonVisible = false;
       await _runGuarded(() async {
+        // Resolved before the centre Point exists, same "an exclude-id-less
+        // check would otherwise match the brand new Point itself" ordering
+        // as [_pointOnCurveTarget]'s own callers - and only consulted when
+        // there's no existing-Point merge already covering this tap (see
+        // [_concentricTarget]'s own doc comment for why that case needs no
+        // Constraint at all).
+        _circleConcentricTarget =
+            _existingPointIdNear(cursorX, cursorY) == null ? _concentricTarget(cursorX, cursorY) : null;
         _circleCenterPointId = await _pointIdAtCursor();
       });
       return;
@@ -14172,6 +14724,7 @@ class SketchController extends ChangeNotifier {
       if (radius < 1e-9) {
         errorMessage = 'Cannot place a circle with zero radius';
         _circleCenterPointId = null;
+        _circleConcentricTarget = null;
         return;
       }
 
@@ -14195,10 +14748,17 @@ class SketchController extends ChangeNotifier {
         circles.remove(circle.id);
       });
 
+      final concentricTarget = _circleConcentricTarget;
+      if (concentricTarget != null) {
+        final constraint = await _api.createConcentricConstraint(_sketchId!, circle.id, concentricTarget.id);
+        _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
+      }
+
       // Same rule as a completed Line: one finished entity = one solve call.
       await _solveAndTrackDof();
 
       _circleCenterPointId = null;
+      _circleConcentricTarget = null;
     });
   }
 
@@ -14216,6 +14776,11 @@ class SketchController extends ChangeNotifier {
       _selectionSet.clear();
       _ribbonVisible = false;
       await _runGuarded(() async {
+        // See [_clickCircleTool]'s own identical capture for why this is
+        // resolved before the centre Point exists and only when no
+        // existing-Point merge already applies.
+        _arcConcentricTarget =
+            _existingPointIdNear(cursorX, cursorY) == null ? _concentricTarget(cursorX, cursorY) : null;
         _arcCenterPointId = await _pointIdAtCursor();
       });
       return;
@@ -14248,6 +14813,7 @@ class SketchController extends ChangeNotifier {
         errorMessage = 'Cannot place an arc end point directly on its own center';
         _arcCenterPointId = null;
         _arcStartPointId = null;
+        _arcConcentricTarget = null;
         _resetArcSweepTracking();
         return;
       }
@@ -14284,11 +14850,18 @@ class SketchController extends ChangeNotifier {
         arcs.remove(arc.id);
       });
 
+      final concentricTarget = _arcConcentricTarget;
+      if (concentricTarget != null) {
+        final constraint = await _api.createConcentricConstraint(_sketchId!, arc.id, concentricTarget.id);
+        _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
+      }
+
       // Same rule as a completed Circle: one finished entity = one solve call.
       await _solveAndTrackDof();
 
       _arcCenterPointId = null;
       _arcStartPointId = null;
+      _arcConcentricTarget = null;
       _resetArcSweepTracking();
     });
   }
@@ -15104,15 +15677,40 @@ class SketchController extends ChangeNotifier {
   /// never coincide with), otherwise a freshly created Point at the cursor.
   /// The single place every tap-to-place path goes through to place/reuse a
   /// Point, so origin-snapping applies uniformly to chain starts, chain
-  /// continuations, and both Circle taps.
-  Future<String> _pointIdAtCursor({String? excludeId}) =>
-      _pointIdAt(cursorX, cursorY, excludeId: excludeId);
+  /// continuations, and both Circle taps. [inferPointOnCurve] is for the
+  /// Line tool's own two call sites only - see [_pointIdAt]'s own doc
+  /// comment on that parameter.
+  Future<String> _pointIdAtCursor({String? excludeId, bool inferPointOnCurve = true}) =>
+      _pointIdAt(cursorX, cursorY, excludeId: excludeId, inferPointOnCurve: inferPointOnCurve);
 
   /// [_pointIdAtCursor]'s logic, generalized to an arbitrary sketch-space
   /// location - the Rectangle tool's computed (non-tapped) corners go
   /// through this directly, since they aren't necessarily at the cursor's
   /// current position.
-  Future<String> _pointIdAt(double x, double y, {String? excludeId}) async {
+  ///
+  /// Bug fix (on-device feedback: "when I'm sketching and I drop a point
+  /// on a line or on a circle I would expect an inferred constraint with
+  /// line or curve to be applied" - the same report [_clickPointTool]'s
+  /// own identical fix addresses, but for every *other* tool's defining
+  /// Points: a Circle's center, an Arc's endpoint, a Rectangle corner, a
+  /// Polygon vertex, ...): once neither an existing-Point merge nor a
+  /// Line-midpoint snap applies, falls back to [_pointOnCurveTarget]
+  /// before creating a genuinely unconstrained new Point. [inferPointOnCurve]
+  /// defaults to true for that reason - every one of this method's callers
+  /// wants it - except the Line tool's own two ([_clickEndToEndLineTool]'s
+  /// chain-continuation endpoint, [_clickMidpointLineTool]'s free end),
+  /// which pass false: those two already get point-on-curve (and tangent,
+  /// and parallel/perpendicular, and H/V) from [_combinedLineInference]'s
+  /// own richer, direction-aware analysis, called separately and applied
+  /// via [_applyLineInference] - checking again here would risk a second,
+  /// possibly conflicting PointOnLine/PointOnCircle/PointOnEllipse
+  /// Constraint alongside whatever that already decided (e.g. a genuine
+  /// TangentConstraint here, plus a redundant/contradictory
+  /// PointOnCircleConstraint from this method, on the very same Line and
+  /// Circle). A Line's own *chain-start* tap (the very first, with no
+  /// segment direction yet to reason about) has no such competing
+  /// mechanism, so it's deliberately left at this method's own default.
+  Future<String> _pointIdAt(double x, double y, {String? excludeId, bool inferPointOnCurve = true}) async {
     final existing = _existingPointIdNear(x, y, excludeId: excludeId);
     if (existing != null) {
       // Bug fix (on-device feedback: "no entity should be able to use the
@@ -15139,12 +15737,21 @@ class SketchController extends ChangeNotifier {
     if (midpointLineId != null) {
       return await _materializeMidpoint(midpointLineId);
     }
+    // Resolved before the new Point exists, same "an exclude-id-less
+    // _entityAt would otherwise match the brand new Point itself" reasoning
+    // as [_clickPointTool]'s own identical fix.
+    final onCurveTarget = inferPointOnCurve ? _pointOnCurveTarget(x, y) : null;
     final point = await _api.createPoint(_sketchId!, x, y);
     points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
     _pushUndo(() async {
       await _api.deletePoint(_sketchId!, point.id);
       points.remove(point.id);
     });
+    if (onCurveTarget != null) {
+      final (target, _, _) = onCurveTarget;
+      final constraint = await _pointOnCurveConstraintFor(point.id, target);
+      _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
+    }
     return point.id;
   }
 

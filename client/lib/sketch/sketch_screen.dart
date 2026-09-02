@@ -1004,21 +1004,30 @@ class _SketchScreenState extends State<SketchScreen> {
                     ),
                   ),
                   // Session N (auto-constraint inference round): live
-                  // inference suppression toggle, same slot/shape as the
-                  // drag-mode FAB above - the two are mutually exclusive by
-                  // mode (draw vs. select) so sharing the corner is safe.
-                  // Product decision: this touch-first app has no keyboard
-                  // modifier to hold for a one-placement suppress, so a
-                  // sticky FAB toggle (same "stays on until tapped again"
-                  // shape as [dragModeEnabled]) is the whole mechanism -
-                  // suppresses every live auto-constraint kind while a
-                  // sketch drawing tool is active, Horizontal/Vertical
-                  // included (see [SketchController.inferenceSuppressed]'s
-                  // own doc comment), not just the newer parallel/
-                  // perpendicular/tangent/point-on-curve kinds.
+                  // inference suppression toggle. Product decision: this
+                  // touch-first app has no keyboard modifier to hold for a
+                  // one-placement suppress, so a sticky FAB toggle (same
+                  // "stays on until tapped again" shape as
+                  // [dragModeEnabled]) is the whole mechanism - suppresses
+                  // every live auto-constraint kind while a sketch drawing
+                  // tool is active, Horizontal/Vertical included (see
+                  // [SketchController.inferenceSuppressed]'s own doc
+                  // comment), not just the newer parallel/perpendicular/
+                  // tangent/point-on-curve kinds.
+                  //
+                  // On-device feedback: was left:16/bottom:72 (sharing the
+                  // drag-mode FAB's corner, mode-gated so the two never show
+                  // at once) - partially hidden there. Moved to sit directly
+                  // below SketchCanvas's own "Zoom to fit" IconButton
+                  // (top:72/left:8 in sketch_canvas.dart) instead, same
+                  // left:8/64px-increment stacking convention that corner
+                  // already uses (see that button's own bug-fix comment for
+                  // the "Menu" FAB it clears at top:8) - both Positioned in
+                  // the same full-screen coordinate space, so top:136 here
+                  // lands immediately underneath it.
                   Positioned(
-                    left: 16,
-                    bottom: 72,
+                    left: 8,
+                    top: 136,
                     child: AnimatedBuilder(
                       animation: _controller,
                       builder: (context, _) {
