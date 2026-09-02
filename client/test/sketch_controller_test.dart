@@ -9709,7 +9709,7 @@ void main() {
 
     final onRim = 5 * math.sqrt(0.5);
     await controller.handleCanvasTap(onRim, onRim); // the Arc
-    await controller.handleCanvasTap(20, 5); // the Line
+    await controller.handleCanvasTap(20, 3); // the Line, well away from its midpoint's own snap zone
 
     expect(controller.selectionSet.map((s) => s.kind).toSet(), {SelectionKind.arc, SelectionKind.line});
     final options = controller.availableConstraintOptions;
@@ -9729,7 +9729,7 @@ void main() {
     final lineId = controller.lines.keys.single;
     controller.exitToSelectMode();
 
-    await controller.handleCanvasTap(20, 5); // the Line, tapped first this time
+    await controller.handleCanvasTap(20, 3); // the Line, tapped first this time, well away from its midpoint's own snap zone
     await controller.handleCanvasTap(5 * math.cos(math.pi / 4), 5 * math.sin(math.pi / 4)); // the Circle
 
     await controller.addTangentConstraint();
@@ -9869,8 +9869,8 @@ void main() {
     expect(controller.isImplicitEqualRadiusTie(crossTie), isTrue);
   });
 
-  test('canApplyConstraint is false for every wired type when a Circle and a Line are selected '
-      '(Tangent is offered but not wired)', () async {
+  test('canApplyConstraint is false for every wired type except Tangent when a Circle and a Line '
+      'are selected', () async {
     controller.selectDrawTool(SketchTool.circle);
     await controller.handleCanvasTap(0, 0);
     await controller.handleCanvasTap(5, 0);
@@ -9886,7 +9886,12 @@ void main() {
     await controller.handleCanvasTap(23, 10.1); // the line, away from its midpoint
 
     expect(controller.selectionSet.length, 2);
+    // Bug fix: Tangent used to be the one permanently `wired: false`
+    // placeholder here - now wired for real, so it's the one exception to
+    // this loop's own "nothing else applies" assertion.
+    expect(controller.canApplyConstraint(ConstraintOptionType.tangent), isTrue);
     for (final type in ConstraintOptionType.values) {
+      if (type == ConstraintOptionType.tangent) continue;
       expect(controller.canApplyConstraint(type), isFalse, reason: '$type');
     }
   });
