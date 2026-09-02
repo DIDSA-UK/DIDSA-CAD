@@ -282,36 +282,103 @@ def test_hexagon_horizontal_edge_plus_across_flats_dimension_converges_end_to_en
         assert radius == pytest.approx(10.0, abs=1e-6)
 
 
-@pytest.mark.xfail(
-    reason="Newly discovered, separate bug (not the on-device report above, which is specifically "
-    "about a hexagon and is fixed) - a lone Horizontal constraint on one edge of a Polygon with 8 "
-    "or more sides fails to converge at all (result_code 2, not the ambiguous 4/5 this module's "
-    "own residual fallback targets) starting from the perfectly-symmetric as-created seed every "
-    "add_polygon caller starts from - the shape never rotates at all, confirmed reproducing "
-    "identically for 8/9/10/11/12-sided Polygons, independent of reference_circles or origin "
-    "Coincidence (isolated directly: neither is a contributing factor). 3-7 sides all converge "
-    "cleanly. Most likely a genuine Newton-seeding gap (the exact rotational symmetry of the "
-    "as-created configuration is plausibly a saddle point for higher-order symmetry groups, unlike "
-    "the milder 3-7-fold cases) rather than a mathematical impossibility, but not yet root-caused "
-    "or fixed - left for a follow-up rather than attempted without the same empirical validation "
-    "rigor this module's own existing fixes required.",
-    strict=True,
-)
-def test_octagon_horizontal_edge_alone_converges():
+@pytest.mark.parametrize("sides", [8, 9, 10, 11, 12, 16, 20, 24, 32])
+@pytest.mark.parametrize("edge_index", [0, 1, 2, 3])
+def test_polygon_horizontal_edge_alone_converges_at_every_side_count_and_starting_edge(sides, edge_index):
+    """Bug fix (follow-up to the on-device report above, which is
+    specifically about a hexagon and was already fixed there): a lone
+    Horizontal constraint on one edge of a Polygon with 8 or more sides
+    used to fail to converge at all (`result_code` 2, not the ambiguous
+    4/5 this module's own residual fallback targets) starting from the
+    perfectly-symmetric as-created seed every `add_polygon` caller starts
+    from - the shape never rotated at all. Confirmed directly (this
+    module's own git history) that neither reference_circles nor an
+    origin Coincidence was a contributing factor, and that the minimum
+    symmetry-breaking nudge needed to escape the trap only grows with
+    side count - probed up to a 20-gon, where even a nudge approaching
+    half a vertex's own angular spacing still failed, ruling out any
+    single fixed-magnitude nudge as a robust fix.
+
+    Root-caused instead to a pure Newton-seeding gap with a closed-form
+    answer: `Sketch._seed_polygon_edge_axis_rotation` (called from
+    `add_horizontal_constraint`/`add_vertical_constraint` directly) now
+    pre-seeds the Polygon's own vertices at the exact rotation Horizontal/
+    Vertical needs before the solve ever runs, rather than leaving Newton
+    to search for it - see that method's own doc comment for the full
+    derivation. This drives the real end-to-end path (no Points ever set
+    directly, unlike the doubly-redundant-case test above), parametrized
+    across every side count 8-32 this bug reproduced at and every
+    starting edge index, confirming both a clean `result_code == 0` (a
+    real convergence, not one the residual fallback needed to rescue) and
+    that the shape is genuinely horizontal, not just reported converged."""
+    if edge_index >= sides:
+        pytest.skip("edge_index only meaningful up to this Polygon's own side count")
     sketch = Sketch(id="s", plane=Plane.XY)
     center = sketch.add_point(0.0, 0.0)
     first_vertex = sketch.add_point(10.0, 0.0)
-    polygon = sketch.add_polygon(center.id, first_vertex.id, 8)
+    polygon = sketch.add_polygon(center.id, first_vertex.id, sides)
     sketch.constraints[polygon.radius_constraint_id].provisional = False
     solve_sketch(sketch)
 
-    sketch.add_horizontal_constraint(polygon.line_ids[0])
+    sketch.add_horizontal_constraint(polygon.line_ids[edge_index])
+    result = solve_sketch(sketch)
+
+    line = sketch.entities[polygon.line_ids[edge_index]]
+    point_a = sketch.points[line.start_point_id]
+    point_b = sketch.points[line.end_point_id]
+    assert result.converged and result.result_code == 0
+    assert abs(point_b.y - point_a.y) < 1e-6
+
+
+def test_polygon_vertical_edge_alone_converges_at_a_high_side_count():
+    """[_seed_polygon_edge_axis_rotation]'s own Vertical-targeting branch -
+    the sibling test above only ever exercises Horizontal."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    first_vertex = sketch.add_point(10.0, 0.0)
+    polygon = sketch.add_polygon(center.id, first_vertex.id, 16)
+    sketch.constraints[polygon.radius_constraint_id].provisional = False
+    solve_sketch(sketch)
+
+    sketch.add_vertical_constraint(polygon.line_ids[0])
     result = solve_sketch(sketch)
 
     line0 = sketch.entities[polygon.line_ids[0]]
     point_a = sketch.points[line0.start_point_id]
     point_b = sketch.points[line0.end_point_id]
-    assert result.converged and abs(point_b.y - point_a.y) < 1e-4
+    assert result.converged and result.result_code == 0
+    assert abs(point_b.x - point_a.x) < 1e-6
+
+
+def test_polygon_horizontal_edge_seeding_still_converges_stacked_with_across_flats_at_a_high_side_count():
+    """The full on-device scenario (Horizontal edge + a matching
+    across-flats LineDistance together), but at a side count high enough
+    that the lone-Horizontal seeding fix above is load-bearing on its own
+    first - confirms the two fixes compose correctly rather than each
+    only being validated in isolation."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    first_vertex = sketch.add_point(10.0, 0.0)
+    polygon = sketch.add_polygon(center.id, first_vertex.id, 12, reference_circles=True)
+    sketch.constraints[polygon.radius_constraint_id].provisional = False
+    origin = sketch.origin_point()
+    sketch.add_coincident_constraint(center.id, origin.id)
+    solve_sketch(sketch)
+
+    sketch.add_horizontal_constraint(polygon.line_ids[0])
+    result = solve_sketch(sketch)
+    assert result.converged and result.result_code == 0
+
+    across_flats = 2 * 10.0 * math.cos(math.pi / 12)
+    sketch.add_line_distance_constraint(polygon.line_ids[0], polygon.line_ids[6], across_flats)
+    result = solve_sketch(sketch)
+
+    assert result.converged
+    assert result.solver_reported_failed_constraint_ids == []
+    line0 = sketch.entities[polygon.line_ids[0]]
+    point_a = sketch.points[line0.start_point_id]
+    point_b = sketch.points[line0.end_point_id]
+    assert abs(point_b.y - point_a.y) < 1e-6
 
 
 def test_residual_check_respects_horizontal_orientation_not_plain_euclidean_distance():

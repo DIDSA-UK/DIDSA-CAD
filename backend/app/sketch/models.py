@@ -4239,10 +4239,84 @@ class Sketch:
         self.constraints[constraint.id] = constraint
         return constraint
 
+    def _seed_polygon_edge_axis_rotation(self, line_id: str, *, vertical: bool) -> None:
+        """Pre-seeds a Regular Polygon's own vertices to the exact rotation
+        that makes `line_id` (one of its own `line_ids`) horizontal/
+        vertical, before a Horizontal/VerticalConstraint referencing it is
+        ever solved. A no-op if `line_id` isn't a Polygon's own edge.
+
+        Bug fix (on-device feedback: "user places polygon > applies
+        horizontal constraint to one side > polygon doesn't fully solve
+        and looks wrong"): confirmed directly against the real solver that
+        an 8-or-more-sided Polygon's own already-redundant EqualRadius/
+        Angle chain (see `Polygon`'s own docstring) makes the *exactly*
+        rotationally-symmetric seed `add_polygon` itself always leaves
+        behind a genuine saddle point for py-slvs's own Newton solve once
+        Horizontal/Vertical is added on top - `result_code` 2 (a real,
+        non-ambiguous failure, not the 4/5 this module's residual-
+        verification override already rescues), the shape never rotating
+        at all. A small symmetry-breaking nudge escapes it for a modest
+        side count (confirmed working up to ~11 sides, worse at higher
+        counts), but the minimum nudge needed to escape keeps growing with
+        side count - probed directly up to a 20-gon, where even a nudge
+        approaching half a vertex's own angular spacing still failed to
+        escape it, so no single fixed-magnitude nudge is a robust fix.
+
+        The actual fix needs no nudge or search at all: equal radii plus
+        equal central angles alone already pin everything about a Regular
+        Polygon except one remaining rotation (see `Polygon`'s own
+        docstring), so the exact rotation Horizontal/Vertical needs is
+        closed-form, not something Newton should ever have to find by
+        iteration - solved directly here and seeded onto every vertex
+        up front, the same "pre-seed the expected answer rather than trust
+        Newton's own initial guess" idea `router._reseed_distance_
+        constraint_free_point` already uses for a different degenerate-
+        seed class. Confirmed empirically across every side count 3-32 and
+        every starting edge index: converges in one clean pass
+        (`result_code == 0`) every time this way, alone or stacked with a
+        further across-flats LineDistanceConstraint (with or without
+        reference circles or the centre Coincident to the origin).
+        """
+        for polygon in self.polygons():
+            if line_id not in polygon.line_ids:
+                continue
+            edge_index = polygon.line_ids.index(line_id)
+            center = self.points.get(polygon.center_point_id)
+            v0 = self.points.get(polygon.vertex_point_ids[edge_index])
+            v1 = self.points.get(polygon.vertex_point_ids[(edge_index + 1) % polygon.sides])
+            if center is None or v0 is None or v1 is None:
+                return
+            a0 = math.atan2(v0.y - center.y, v0.x - center.x)
+            a1 = math.atan2(v1.y - center.y, v1.x - center.x)
+            # Vector-average mid-angle (not a naive (a0+a1)/2 - that breaks
+            # across the +-pi wraparound) - the direction from centre to
+            # this edge's own midpoint.
+            mid = math.atan2(math.sin(a0) + math.sin(a1), math.cos(a0) + math.cos(a1))
+            # A Horizontal edge needs its own midpoint radius pointing
+            # straight up or down (+-pi/2); Vertical needs it pointing
+            # straight left or right (0 or pi) - whichever of the two is
+            # nearer the current mid angle, preserving which side of the
+            # Polygon this edge already sits on rather than an arbitrary
+            # flip (same "preserve current side" reasoning
+            # `_reseed_distance_constraint_free_point` uses).
+            candidates = (0.0, math.pi) if vertical else (math.pi / 2, -math.pi / 2)
+            target = min(candidates, key=lambda c: abs(((mid - c + math.pi) % (2 * math.pi)) - math.pi))
+            theta = target - mid
+            cos_t, sin_t = math.cos(theta), math.sin(theta)
+            for vertex_id in polygon.vertex_point_ids:
+                vertex = self.points.get(vertex_id)
+                if vertex is None:
+                    continue
+                dx, dy = vertex.x - center.x, vertex.y - center.y
+                vertex.x = center.x + dx * cos_t - dy * sin_t
+                vertex.y = center.y + dx * sin_t + dy * cos_t
+            return
+
     def add_vertical_constraint(self, line_id: str) -> VerticalConstraint:
         line = self.entities.get(line_id)
         if not isinstance(line, Line):
             raise KeyError(line_id)
+        self._seed_polygon_edge_axis_rotation(line_id, vertical=True)
 
         constraint = VerticalConstraint(
             id=str(uuid.uuid4()),
@@ -4257,6 +4331,7 @@ class Sketch:
         line = self.entities.get(line_id)
         if not isinstance(line, Line):
             raise KeyError(line_id)
+        self._seed_polygon_edge_axis_rotation(line_id, vertical=False)
 
         constraint = HorizontalConstraint(
             id=str(uuid.uuid4()),
