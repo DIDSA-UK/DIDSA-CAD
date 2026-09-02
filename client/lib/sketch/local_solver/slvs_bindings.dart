@@ -105,6 +105,18 @@ typedef AddMidPointDart = int Function(ffi.Pointer<ffi.Void>, int, int, int, int
 typedef SolveNative = ffi.Int32 Function(ffi.Pointer<ffi.Void>, ffi.Uint32, ffi.Int32);
 typedef SolveDart = int Function(ffi.Pointer<ffi.Void>, int, int);
 
+/// "Soft-drag"/live-clamp solve - see slvs_ffi_shim.h's own doc comment for
+/// `slvs_solve_dragged`. Up to 4 param handles (`draggedCount` says how
+/// many of `dragged0..dragged3` are actually used - unused slots may be 0)
+/// the solver favors keeping close to their current value, rather than
+/// forcing them to stay exactly put (the older, hard-pinned-into-its-own-
+/// group semantics [solve] above still has for any param not passed here).
+/// Four fixed scalar params rather than an array+length pair, so this never
+/// needs a native pointer allocated on the Dart side.
+typedef SolveDraggedNative = ffi.Int32 Function(ffi.Pointer<ffi.Void>, ffi.Uint32, ffi.Int32, ffi.Int32, ffi.Uint32,
+    ffi.Uint32, ffi.Uint32, ffi.Uint32);
+typedef SolveDraggedDart = int Function(ffi.Pointer<ffi.Void>, int, int, int, int, int, int, int);
+
 typedef GetDofNative = ffi.Int32 Function(ffi.Pointer<ffi.Void>);
 typedef GetDofDart = int Function(ffi.Pointer<ffi.Void>);
 
@@ -150,6 +162,7 @@ class SlvsNativeBindings {
   final AddPointLineDistanceDart addPointLineDistance;
   final AddMidPointDart addMidPoint;
   final SolveDart solve;
+  final SolveDraggedDart solveDragged;
   final GetDofDart getDof;
   final GetFailedCountDart getFailedCount;
   final GetFailedAtDart getFailedAt;
@@ -191,6 +204,7 @@ class SlvsNativeBindings {
             'slvs_add_point_line_distance'),
         addMidPoint = lib.lookupFunction<AddMidPointNative, AddMidPointDart>('slvs_add_mid_point'),
         solve = lib.lookupFunction<SolveNative, SolveDart>('slvs_solve'),
+        solveDragged = lib.lookupFunction<SolveDraggedNative, SolveDraggedDart>('slvs_solve_dragged'),
         getDof = lib.lookupFunction<GetDofNative, GetDofDart>('slvs_get_dof'),
         getFailedCount = lib.lookupFunction<GetFailedCountNative, GetFailedCountDart>('slvs_get_failed_count'),
         getFailedAt = lib.lookupFunction<GetFailedAtNative, GetFailedAtDart>('slvs_get_failed_at'),

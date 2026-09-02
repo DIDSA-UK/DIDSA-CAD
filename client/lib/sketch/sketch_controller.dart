@@ -4120,8 +4120,14 @@ class SketchController extends ChangeNotifier {
   /// solve only ever updates the client's own [points] map, never PATCHes
   /// the backend (that's deliberate - no network round trip on the hot
   /// per-frame path), so without this the backend's own stored positions
-  /// for every point *except* the one actually dragged sit frozen at their
-  /// pre-drag values for the whole drag. [endPointDrag]'s final solve
+  /// for every reflowed point sit frozen at their pre-drag values for the
+  /// whole drag. Since soft-drag (see [solveSketchLocally]'s own doc
+  /// comment), this now also includes the dragged Point itself whenever its
+  /// own solved position differs from the raw value [updatePointDrag]
+  /// separately PATCHed it to moments earlier - the live-clamp/resistance
+  /// behaviour that mechanism exists to produce, not a bug: the backend
+  /// needs that corrected value synced too, same as every other reflowed
+  /// Point. [endPointDrag]'s final solve
   /// would then hand the backend a single, discontinuous jump ("everything
   /// at rest" straight to "the dropped shape") - exactly the condition a
   /// Newton solver has no protection against (see this session's own
@@ -5302,34 +5308,18 @@ class SketchController extends ChangeNotifier {
         lockedPointIds: _lockedPointIds,
       );
       final anchorSet = anchorPointIds.toSet();
-      // Safety check (on-device feedback investigation, Batch 7 - dragging
-      // an axis-aligned Line surfaced this): a pinned/anchored point is
-      // supposed to stay exactly where it was pinned - `point2d` puts it in
-      // `slvsFixedGroup`, whose parameters `bindings.solve` never varies.
-      // Confirmed (via a new test - "updateLineDrag also solves locally...")
-      // that a Horizontal/Vertical Constraint whose *both* endpoints are
-      // simultaneously anchored (e.g. dragging an already-axis-aligned Line,
-      // an ordinary and common case, not a contrived one) can still come
-      // back with the "fixed" point moved - a real gap in the native
-      // solver's own group handling, not yet root-caused at the FFI/SLVS
-      // level. When that happens, every *other* point's solved position is
-      // equally untrustworthy (each was computed relative to the anchor's
-      // now-wrong position), so nothing here is applied at all - same
-      // "never partially applied, caller falls back to the safe network
-      // path" contract this method already had for a load/solve failure,
-      // just extended to cover an internally-inconsistent success too, not
-      // only an outright one.
-      const anchorDriftTolerance = 1e-4;
-      for (final anchorId in anchorSet) {
-        final solved = result.solvedPoints[anchorId];
-        final input = pointXY[anchorId];
-        if (solved == null || input == null) continue;
-        final (sx, sy) = solved;
-        final (ix, iy) = input;
-        if ((sx - ix).abs() > anchorDriftTolerance || (sy - iy).abs() > anchorDriftTolerance) {
-          return false;
-        }
-      }
+      // No anchor-drift check here any more (there used to be one - see git
+      // history if you're looking for it): [solveSketchLocally] now
+      // soft-drags [anchorPointIds] via SolveSpace's own `dragged[]`
+      // mechanism (see that function's own doc comment) rather than
+      // hard-pinning them into the fixed group, so a solved anchor position
+      // that differs from its raw pre-solve seed is no longer a solver bug
+      // to reject - it's the intended "clamp to what the Constraints
+      // actually allow" behaviour this mechanism exists to produce (e.g.
+      // sliding along an Arc's own tangency, or snapping back to the
+      // nearest valid point once a confirmed dimension leaves no freedom in
+      // the dragged direction).
+      //
       // Blow-up guard (on-device feedback: dragging a Slot corner produced a
       // visibly broken shape - a cusp where a smooth tangent arc should be).
       // Root cause: [originPointId] pins the sketch origin into the fixed
@@ -5445,8 +5435,15 @@ class SketchController extends ChangeNotifier {
           if ((distOf(c.pointAId, c.pointBId) - c.distance).abs() > residualTolerance) return false;
         }
       }
+      // Writes every solved Point back, including the dragged one(s) - see
+      // [solveSketchLocally]'s own doc comment for why a soft-dragged
+      // Point's solved position can legitimately differ from the raw value
+      // [updatePointDrag] PATCHed it to moments earlier (the live-clamp
+      // behaviour that mechanism exists to produce), and this file's own
+      // [_dragReflowedPointIds] doc comment for why that clamped position
+      // needs syncing back to the backend too, same as any other reflowed
+      // Point.
       for (final entry in result.solvedPoints.entries) {
-        if (anchorSet.contains(entry.key)) continue;
         final (x, y) = entry.value;
         points[entry.key] = SketchPointView(id: entry.key, x: x, y: y);
         _dragReflowedPointIds.add(entry.key);

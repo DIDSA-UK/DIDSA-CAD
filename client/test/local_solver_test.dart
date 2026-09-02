@@ -68,10 +68,21 @@ void main() {
     expect(distance, closeTo(2500.0, 1e-6)); // 50.0^2
   });
 
-  test('anchor pinning keeps the anchored point fixed (drag-solve semantics)', () {
-    final points = {'a': (3.0, 4.0), 'b': (10.0, 0.0)};
+  test(
+      'soft-drag (live-clamp/dragged[] mechanism): dragging one Point of a confirmed-distance pair '
+      'whose *other* Point is genuinely free lets that other Point move to satisfy the Constraint, '
+      'rather than hard-pinning the dragged Point exactly where it was seeded even when that '
+      'violates the Constraint (the older, now-retired behaviour a prior version of this test '
+      'asserted directly - see the spike behind this mechanism: client/native/slvs/patches/0001-'
+      'system-solve-dragged-params.patch) - the "if it\'s not anchored, the shape should move" case', () {
+    // Mirrors the Circle scenario the soft-drag spike validated directly
+    // against the native System class: a=(0,0) starts as a valid centre for
+    // a radius-5 circle through b=(5,0); b is then dragged toward (8,3),
+    // off the circle - 'a' is a perfectly ordinary, undragged free Point
+    // (not locked/pinned), so it's free to move to keep the distance exact.
+    final points = {'a': (0.0, 0.0), 'b': (8.0, 3.0)};
     final constraints = <ConstraintDto>[
-      const DistanceConstraintDto(id: 'c1', pointAId: 'a', pointBId: 'b', distance: 50.0),
+      const DistanceConstraintDto(id: 'c1', pointAId: 'a', pointBId: 'b', distance: 5.0),
     ];
 
     final result = solveSketchLocally(
@@ -79,13 +90,52 @@ void main() {
       points: points,
       constraints: constraints,
       lineEndpoints: (id) => _lineEndpoints(const {}, id),
-      anchorPointIds: {'a'},
+      anchorPointIds: {'b'},
     );
 
     expect(result.converged, isTrue);
     final (ax, ay) = result.solvedPoints['a']!;
-    expect(ax, closeTo(3.0, 1e-9));
-    expect(ay, closeTo(4.0, 1e-9));
+    final (bx, by) = result.solvedPoints['b']!;
+    final dist = math.sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay));
+    expect(dist, closeTo(5.0, 1e-6), reason: 'the Constraint is never violated, unlike the old hard-pin behaviour');
+    expect((bx - 8.0).abs() + (by - 3.0).abs(), lessThan(0.5),
+        reason: 'the dragged Point still tracks close to where it was dragged to');
+    expect((ax - 0.0).abs() + (ay - 0.0).abs(), greaterThan(0.5),
+        reason: 'unlike a hard-pinned drag, the free Point actually moves to accommodate the drag - '
+            'this is the "if it\'s not anchored, the shape should move" behaviour');
+  });
+
+  test(
+      'soft-drag with the *other* Point locked (never movable): the dragged Point slides to the '
+      'nearest point still satisfying the Constraint instead of teleporting to an arbitrary root or '
+      'being forced exactly onto the (invalid) drag target - the "slides within the limits of the '
+      'dimensions and constraints" case', () {
+    final points = {'a': (0.0, 0.0), 'b': (8.0, 3.0)};
+    final constraints = <ConstraintDto>[
+      const DistanceConstraintDto(id: 'c1', pointAId: 'a', pointBId: 'b', distance: 5.0),
+    ];
+
+    final result = solveSketchLocally(
+      bindings: bindings,
+      points: points,
+      constraints: constraints,
+      lineEndpoints: (id) => _lineEndpoints(const {}, id),
+      anchorPointIds: {'b'},
+      lockedPointIds: {'a'},
+    );
+
+    expect(result.converged, isTrue);
+    final (ax, ay) = result.solvedPoints['a']!;
+    expect(ax, closeTo(0.0, 1e-9), reason: 'a is locked - never moved by this solve');
+    expect(ay, closeTo(0.0, 1e-9));
+    final (bx, by) = result.solvedPoints['b']!;
+    final dist = math.sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay));
+    expect(dist, closeTo(5.0, 1e-6));
+    // Nearest point on the radius-5 circle around the locked centre to the
+    // (8,3) drag target: (8,3) normalised, scaled to length 5.
+    final norm = math.sqrt(8.0 * 8.0 + 3.0 * 3.0);
+    expect(bx, closeTo(8.0 / norm * 5.0, 1e-3));
+    expect(by, closeTo(3.0 / norm * 5.0, 1e-3));
   });
 
   test('provisional DistanceConstraint contributes zero DOF-removal until confirmed', () {
@@ -409,9 +459,10 @@ void main() {
   test(
       'PointOnEllipseConstraintDto: the Trammel of Archimedes construction pulls a free Point onto '
       'a fixed Ellipse\'s own curve - mirrors backend test_solving_pulls_a_free_point_onto_a_fixed_'
-      'ellipse, ground truth captured from the same real py-slvs build via anchorPointIds (fixed-'
-      'group placement - no redundant equation, unlike FixedConstraint\'s own where_dragged, so this '
-      'isolates the construction itself)', () {
+      'ellipse, ground truth captured from the same real py-slvs build via lockedPointIds (true '
+      'fixed-group placement, never varied by the solve regardless of any Constraint - unlike '
+      'anchorPointIds\' own soft-drag semantics, which would let a Constraint pull these away from '
+      'their seed - so this isolates the construction itself)', () {
     const centerXY = (0.0, 0.0);
     const majorRadius = 8.0, minorRadius = 3.0;
     final points = {
@@ -436,7 +487,7 @@ void main() {
       points: points,
       constraints: constraints,
       lineEndpoints: (id) => _lineEndpoints(const {}, id),
-      anchorPointIds: {'center', 'major', 'minor'},
+      lockedPointIds: {'center', 'major', 'minor'},
     );
 
     expect(result.converged, isTrue);
@@ -513,6 +564,15 @@ void main() {
       points: points,
       constraints: constraints,
       lineEndpoints: (id) => _lineEndpoints(lines, id),
+      // Deliberately anchorPointIds (soft-drag), not lockedPointIds: unlike
+      // the PointOnEllipseConstraintDto test above (an exact analytic
+      // seed, genuinely wants zero give), this fixture's own
+      // majorXY/minorXY seed is only *approximately* perpendicular/on-
+      // radius (trig-derived, floating-point-inexact) - true rigid pinning
+      // leaves no slack to resolve that inexactness and fails to converge
+      // (resultCode 5, unhandled by any redundancy override this dispatch
+      // set qualifies for); the small give soft-drag allows is exactly
+      // what lets it settle.
       anchorPointIds: {'center', 'major', 'minor'},
     );
 

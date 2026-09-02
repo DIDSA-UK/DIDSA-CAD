@@ -222,6 +222,18 @@ int slvs_solve(SlvsSystemHandle handle, Slvs_hGroup group, int report_failed) {
     }
 }
 
+int slvs_solve_dragged(SlvsSystemHandle handle, Slvs_hGroup group, int report_failed, int dragged_count,
+                        Slvs_hParam dragged0, Slvs_hParam dragged1, Slvs_hParam dragged2, Slvs_hParam dragged3) {
+    try {
+        const Slvs_hParam all[4] = {dragged0, dragged1, dragged2, dragged3};
+        int n = dragged_count < 0 ? 0 : (dragged_count > 4 ? 4 : dragged_count);
+        std::vector<Slvs_hParam> d(all, all + n);
+        return sys(handle)->solve(group, report_failed != 0, false, d);
+    } catch (...) {
+        return -1;
+    }
+}
+
 int slvs_get_dof(SlvsSystemHandle handle) {
     try {
         return sys(handle)->Dof;

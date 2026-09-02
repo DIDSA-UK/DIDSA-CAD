@@ -9340,17 +9340,15 @@ void main() {
   });
 
   test(
-      'updateLineDrag falls back to the server round trip (never applies a partial/inconsistent '
-      'local result) when dragging an axis-aligned Line whose own Horizontal Constraint, combined '
-      'with a separate Constraint reaching out to a third free Point, confuses the native solver\'s '
-      'anchor pinning - on-device-investigation bug fix: found via the test above, generalized - a '
-      'Horizontal/Vertical Constraint between two simultaneously-anchored Points is fine on its own, '
-      'but combined with any other Constraint reaching from one of them to a free Point, the native '
-      'solver was found to sometimes move an "anchored" Point anyway, which would otherwise silently '
-      'teleport the dragged Line somewhere else - not yet root-caused at the FFI/SLVS level, so this '
-      'checks anchor points landed where they were pinned before trusting the rest of a local solve\'s '
-      'result at all, falling back to the safe network path if not',
-      () async {
+      'updateLineDrag soft-drags both of an axis-aligned Line\'s endpoints at once (Horizontal '
+      'Constraint) while a separate Constraint reaches out from one of them to a third, genuinely '
+      'free Point - the exact fixture that used to trip up the older hard-pin mechanism (a '
+      'Horizontal/Vertical Constraint between two simultaneously-anchored Points, combined with any '
+      'other Constraint reaching from one of them to a free Point, could come back with an "anchored" '
+      'Point moved by the native solver - see git history for the anchor-drift guard this used to be '
+      'named for, retired once soft-drag made "the anchor moved" an expected outcome rather than a '
+      'bug to detect) - now converges locally in one shot, both Constraints genuinely satisfied, no '
+      'server round trip needed', () async {
     final libraryPath = _findHostSlvsLibrary();
     if (libraryPath == null) {
       markTestSkipped('host didsa_slvs_ffi library not built - see client/native/slvs/CMakeLists.txt');
@@ -9414,11 +9412,24 @@ void main() {
     // falling back to the throttled server round trip instead - not left
     // silently un-reflowed, and *definitely* not left with the dragged
     // Line's endpoints moved somewhere other than where the drag put them.
-    expect(localBackend.requestLog.any((r) => r.contains('/solve')), isTrue);
-    expect(localController.points[line.startPointId]!.x, 10); // 5 + (20 - 15)
-    expect(localController.points[line.startPointId]!.y, 20); // 5 + (20 - 5)
-    expect(localController.points[line.endPointId]!.x, 20); // 15 + (20 - 15)
-    expect(localController.points[line.endPointId]!.y, 20); // 5 + (20 - 5)
+    // Converges locally - no fallback to the server round trip needed, now
+    // that a soft-dragged anchor moving to satisfy a Constraint is the
+    // intended outcome rather than something to reject.
+    expect(localBackend.requestLog.any((r) => r.contains('/solve')), isFalse);
+
+    final start = localController.points[line.startPointId]!;
+    final end = localController.points[line.endPointId]!;
+    final third = localController.points[thirdPointId]!;
+    expect(start.y, closeTo(end.y, 1e-6), reason: 'the Horizontal Constraint is still genuinely satisfied');
+    final dc1Distance =
+        math.sqrt(math.pow(third.x - start.x, 2) + math.pow(third.y - start.y, 2));
+    expect(dc1Distance, closeTo(25.0, 1e-3), reason: 'the DistanceConstraint reaching to the third Point holds too');
+    // Both endpoints still land close to where the drag put them (10, 20)/
+    // (20, 20) - soft-drag clamps, it doesn't ignore the drag.
+    expect(start.x, closeTo(10.0, 1.0));
+    expect(start.y, closeTo(20.0, 1.0));
+    expect(end.x, closeTo(20.0, 1.0));
+    expect(end.y, closeTo(20.0, 1.0));
   });
 
   test('endPointDrag clears draggingPointId and re-solves from the dropped position', () async {

@@ -431,6 +431,7 @@ LocalSolveResult _solveOnce({
   required List<ConstraintDto> constraints,
   required LineEndpoints lineEndpoints,
   required Set<String> pinnedPointIds,
+  Set<String> draggedPointIds = const {},
 }) {
   final sys = bindings.create();
   try {
@@ -444,6 +445,7 @@ LocalSolveResult _solveOnce({
       workplane: workplane,
       pointXY: (id) => points[id]!,
       pinnedPointIds: pinnedPointIds,
+      draggedPointIds: draggedPointIds,
     );
 
     final constraintIdByHandle = <int, String>{};
@@ -467,7 +469,17 @@ LocalSolveResult _solveOnce({
       builder.point2d(id);
     }
 
-    final resultCode = bindings.solve(sys, slvsSolveGroup, 1);
+    // Soft-drag (see NativeSolverBuilder.draggedParamHandles' own doc
+    // comment): once every Point is registered, [builder]'s dragged handle
+    // list is complete - a plain [bindings.solve] whenever nothing is
+    // actually being dragged (draggedPointIds empty, e.g. a settle-only
+    // solve with no live drag in progress), same as before this mechanism
+    // existed.
+    final dragged = builder.draggedParamHandles;
+    final resultCode = dragged.isEmpty
+        ? bindings.solve(sys, slvsSolveGroup, 1)
+        : bindings.solveDragged(sys, slvsSolveGroup, 1, dragged.length, dragged[0], dragged.length > 1 ? dragged[1] : 0,
+            dragged.length > 2 ? dragged[2] : 0, dragged.length > 3 ? dragged[3] : 0);
     var converged = resultCode == 0;
 
     // Solved positions read back *before* either redundancy override below
@@ -559,12 +571,32 @@ LocalSolveResult _solveOnce({
   }
 }
 
-/// Mirrors solver.py's `solve_sketch`: solves once with [anchorPointIds]
-/// (plus [originPointId] and [lockedPointIds], if any) pinned into the
-/// fixed group, and retries once with no anchors at all if that fails to
-/// converge - e.g. the dragged Point is Coincident with the fixed origin,
-/// or with another anchored Point, which the anchored attempt can never
-/// satisfy since neither side is free to move to match the other.
+/// Mirrors solver.py's `solve_sketch`, with one deliberate improvement over
+/// the backend's own current mechanism: solves once with [anchorPointIds]
+/// (the Point(s) currently being dragged) "soft-dragged" - kept genuinely
+/// free in the solve group, with their own params favored to stay close to
+/// wherever [points] already has them (SolveSpace's own `dragged[]` live-
+/// clamp primitive - see [NativeSolverBuilder.draggedParamHandles] and
+/// `slvs_ffi_shim.h`'s own doc comment for `slvs_solve_dragged`) - rather
+/// than the older, cruder hard-pin-into-the-fixed-group approach (still
+/// used for [originPointId]/[lockedPointIds], which this local solve
+/// genuinely must never move at all, unlike a merely-dragged Point).
+///
+/// A dragged Point's own solved position can therefore legitimately differ
+/// from its raw pre-solve seed once a Constraint requires it to (sliding
+/// along an Arc's own tangency, snapping back when a confirmed dimension
+/// leaves no freedom left in that direction, ...) - the entire point of
+/// this mechanism, replacing what used to be a hard, all-or-nothing
+/// contract ("the anchor never moves, or the whole solve is untrustworthy")
+/// with a live-clamped one ("the anchor moves only as much as the
+/// Constraints actually require"). See sketch_controller.dart's own
+/// `_trySolveDuringDragLocally` doc comment for why its old anchor-drift
+/// guard, built for the hard-pin era, had to be retired alongside this.
+///
+/// Retries once with no anchors dragged at all if the first attempt still
+/// fails to converge - e.g. the dragged Point is Coincident with the fixed
+/// origin, or with another locked Point, which even a soft drag bias can
+/// never satisfy since neither side is free to move to match the other.
 ///
 /// [lockedPointIds] mirrors solver.py's own `locked_point_ids` (an external
 /// reference, or a Point covered by a `FixedConstraintDto` - see
@@ -585,13 +617,14 @@ LocalSolveResult solveSketchLocally({
   Set<String> anchorPointIds = const {},
   Set<String> lockedPointIds = const {},
 }) {
-  final pinned = {...anchorPointIds, ...lockedPointIds, if (originPointId != null) originPointId};
+  final pinned = {...lockedPointIds, if (originPointId != null) originPointId};
   var result = _solveOnce(
     bindings: bindings,
     points: points,
     constraints: constraints,
     lineEndpoints: lineEndpoints,
     pinnedPointIds: pinned,
+    draggedPointIds: anchorPointIds,
   );
   if (anchorPointIds.isNotEmpty && !result.converged) {
     result = _solveOnce(
@@ -599,7 +632,7 @@ LocalSolveResult solveSketchLocally({
       points: points,
       constraints: constraints,
       lineEndpoints: lineEndpoints,
-      pinnedPointIds: {...lockedPointIds, if (originPointId != null) originPointId},
+      pinnedPointIds: pinned,
     );
   }
   return result;
