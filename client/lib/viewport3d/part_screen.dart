@@ -58,6 +58,7 @@ import 'reference_planes.dart';
 import 'render_mode.dart';
 import 'revolve_panel.dart';
 import 'rollback.dart';
+import 'scale_body_panel.dart';
 import 'selection_context_panel.dart';
 import 'selection_filter.dart';
 import 'selection_hit_test.dart' show SelectionEntityKind, SelectionEntityRef;
@@ -820,6 +821,7 @@ class _PartScreenState extends State<PartScreen> {
       !_mergeActive &&
       !_booleanActive &&
       !_deleteBodyActive &&
+      !_scaleBodyActive &&
       !_profilePickerActive &&
       !_pathPickerActive;
 
@@ -844,6 +846,7 @@ class _PartScreenState extends State<PartScreen> {
           !_mergeActive &&
           !_booleanActive &&
           !_deleteBodyActive &&
+          !_scaleBodyActive &&
           !_profilePickerActive &&
           !_pathPickerActive) ||
       // Pattern/Mirror scoping's Phase 6: the Build Tree multi-select
@@ -896,6 +899,7 @@ class _PartScreenState extends State<PartScreen> {
       _booleanActive ||
       _splitActive ||
       _deleteBodyActive ||
+      _scaleBodyActive ||
       _profilePickerActive ||
       _pathPickerActive ||
       _planeSelectionMode;
@@ -1967,6 +1971,78 @@ class _PartScreenState extends State<PartScreen> {
   /// further picking is expected once the panel is open, same "a stray tap
   /// is harmless" reasoning that field's own doc comment gives).
   static const _deleteBodySelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: false,
+    body: true,
+    sketchPoint: false,
+    sketchLine: false,
+    sketchCircle: false,
+    sketchArc: false,
+    sketchEllipse: false,
+    sketchSpline: false,
+    plane: false,
+  );
+
+  // --- Direct Editing family, second entry: Scale Body ------------------------
+  // Whole-body pick (v1 scope: exactly one Body, see docs/direct-editing-
+  // scope.md), plus one live-tunable numeric field (`factor`) - so unlike
+  // Delete Body above, this needs a debounced-PATCH cycle. Mirrors Fillet's
+  // debounce shape (`_scheduleFilletPreview`/`_ensureFilletFeatureExists`),
+  // not Merge's eager-create-with-nothing-further-to-tune shape - the Body
+  // itself is already known when the panel opens (ambient selection, like
+  // Delete Body), but the factor isn't, so no ScaleBodyFeature is created
+  // until [ScaleBodyPanel]'s own `initState` postFrameCallback fires its
+  // first `onFactorChanged` with the default factor of 1.0 (identity scale -
+  // see that panel's own doc comment for why this convention exists).
+  //
+  // Pattern 2 of docs/live-preview-pattern.md (whole-body pick only, no
+  // sub-shape re-picking of the Body being modified) - the live `_bodies`
+  // mesh refresh after each debounced PATCH IS the preview, same as
+  // Merge/Boolean/Mirror/Pattern; no preview-overlay mesh pair needed.
+
+  /// True while a Scale Body session (create or B4 edit) is live - mirrors
+  /// [_deleteBodyActive].
+  bool _scaleBodyActive = false;
+
+  /// The Body being scaled - mirrors [_deleteBodyBodyIds], just a single id
+  /// (v1 scope) rather than a list.
+  String? _scaleBodyBodyId;
+
+  /// The current factor value, kept live so [_scheduleScaleBodyPreview]
+  /// always has the latest even mid-debounce - mirrors
+  /// [_extrudeStartDistance]'s own "records immediately, debounce reads
+  /// it later" role.
+  double _scaleBodyFactor = 1.0;
+
+  Timer? _scaleBodyDebounce;
+
+  /// The ScaleBodyFeature created once the first valid factor is known -
+  /// mirrors [_previewExtrudeFeatureId]/[_previewFilletFeatureId] (created
+  /// lazily, on the first debounced resolve, not eagerly on open - unlike
+  /// [_previewDeleteBodyFeatureId]/[_previewMergeFeatureId], since Scale
+  /// has a real field to wait on).
+  String? _previewScaleBodyFeatureId;
+
+  /// B4: non-null while [ScaleBodyPanel] is editing an *already-existing*
+  /// ScaleBodyFeature - mirrors [_editingDeleteBodyFeatureId].
+  String? _editingScaleBodyFeatureId;
+
+  /// B4: the edited Feature's own stored `body_id`/`factor` from just
+  /// before editing started - mirrors [_deleteBodyEditSnapshot].
+  ({String bodyId, double factor})? _scaleBodyEditSnapshot;
+
+  /// [_selectedEntities]' value from just before the panel opened - mirrors
+  /// [_entitiesBeforeDeleteBody].
+  Set<SelectionEntityRef>? _entitiesBeforeScaleBody;
+
+  /// The pre-scale mesh [_cancelScaleBody] restores to on Cancel - mirrors
+  /// [_meshBeforeDeleteBody].
+  List<BodyMeshDto>? _meshBeforeScaleBody;
+
+  /// Locks [_selectionFilterOverrides] to Bodies only for the whole session -
+  /// mirrors [_deleteBodySelectionFilter] exactly.
+  static const _scaleBodySelectionFilter = SelectionFilterState(
     vertex: false,
     edge: false,
     face: false,
@@ -6560,6 +6636,12 @@ class _PartScreenState extends State<PartScreen> {
       // _cancelDeleteBody instead.
       final opened = _openDeleteBodyPanelForEdit(feature);
       if (!opened) await _endRollback();
+    } else if (feature.type == 'scale_body') {
+      // Direct Editing family (second entry): mirrors the delete_body
+      // branch just above exactly - rollback is ended by
+      // _confirmScaleBody/_cancelScaleBody instead.
+      final opened = _openScaleBodyPanelForEdit(feature);
+      if (!opened) await _endRollback();
     } else if (feature.type == 'boolean') {
       // Boolean family, Subtract/Common: mirrors the merge branch just
       // above exactly - rollback is ended by _confirmBoolean/_cancelBoolean
@@ -9189,6 +9271,186 @@ class _PartScreenState extends State<PartScreen> {
     await _endRollback();
   }
 
+  // --- Direct Editing family, second entry: Scale Body ------------------------
+  // See this file's own "Direct Editing family, second entry: Scale Body"
+  // state-field section header comment for the full reasoning.
+
+  /// [SelectionContextPanel.onScaleBody]'s callback - `contextActionsFor`
+  /// enables this button for exactly one Body, nothing else, selected.
+  /// Mirrors [_onDeleteBodyTapped]'s shape exactly.
+  void _onScaleBodyTapped() {
+    final bodyIds =
+        _selectedEntities.where((e) => e.kind == SelectionEntityKind.body).map((e) => e.bodyId).toList();
+    if (bodyIds.length != 1) return; // Defensive - contextActionsFor already guarantees this.
+    _openScaleBodyPanel(bodyIds.single);
+  }
+
+  /// Opens [ScaleBodyPanel] against [bodyId] - unlike [_openDeleteBodyPanel],
+  /// no ScaleBodyFeature is created here: [ScaleBodyPanel]'s own `initState`
+  /// postFrameCallback fires the first `onFactorChanged` (with the default
+  /// factor of 1.0), which reaches [_ensureScaleBodyFeatureExists] via
+  /// [_scheduleScaleBodyPreview] the same way every other debounced field
+  /// edit does - see this file's own state-field section header comment.
+  void _openScaleBodyPanel(String bodyId) {
+    setState(() {
+      _scaleBodyActive = true;
+      _scaleBodyBodyId = bodyId;
+      _scaleBodyFactor = 1.0;
+      _meshBeforeScaleBody = _bodies;
+      _entitiesBeforeScaleBody = _selectedEntities;
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _selectionFilterOverrides.push(_scaleBodySelectionFilter);
+    });
+  }
+
+  /// B4: opens [ScaleBodyPanel] to edit an *already-existing*
+  /// ScaleBodyFeature - mirrors [_openDeleteBodyPanelForEdit]'s shape (a
+  /// defensive `bool` return, since a real ScaleBodyFeature always has both
+  /// `body_id` and `factor`, but this stays defensive rather than assuming
+  /// - same reasoning every other `*PanelForEdit` in this file gives).
+  /// Unlike the fresh-open path above, [_previewScaleBodyFeatureId] is
+  /// seeded with [feature.id] itself immediately (there is already a valid
+  /// factor to show, no need to wait for the panel's own postFrameCallback
+  /// to create anything) so [_confirmScaleBody]/[_cancelScaleBody] never
+  /// mistake this for a fresh creation to delete on Cancel.
+  bool _openScaleBodyPanelForEdit(FeatureDto feature) {
+    final bodyId = feature.bodyId;
+    final factor = feature.factor;
+    if (bodyId == null || factor == null) return false;
+    setState(() {
+      _scaleBodyActive = true;
+      _editingScaleBodyFeatureId = feature.id;
+      _previewScaleBodyFeatureId = feature.id;
+      _scaleBodyBodyId = bodyId;
+      _scaleBodyFactor = factor;
+      _scaleBodyEditSnapshot = (bodyId: bodyId, factor: factor);
+      _meshBeforeScaleBody = _bodies;
+      _entitiesBeforeScaleBody = _selectedEntities;
+      _selectionMode = true;
+      _selectionFilterOverrides.push(_scaleBodySelectionFilter);
+    });
+    return true;
+  }
+
+  /// [ScaleBodyPanel.onFactorChanged] - records the latest value immediately
+  /// (so [_confirmScaleBody] always has it, even mid-debounce) and
+  /// (re)starts the 500ms debounce before actually hitting the backend -
+  /// mirrors [_onExtrudeValuesChanged].
+  void _onScaleBodyFactorChanged(double factor) {
+    _scaleBodyFactor = factor;
+    _scheduleScaleBodyPreview();
+  }
+
+  /// Mirrors [_scheduleExtrudePreview] exactly, just against
+  /// [_ensureScaleBodyFeatureExists] instead.
+  void _scheduleScaleBodyPreview() {
+    _scaleBodyDebounce?.cancel();
+    _scaleBodyDebounce = Timer(const Duration(milliseconds: 500), () {
+      final bodyId = _scaleBodyBodyId;
+      if (bodyId == null) return;
+      _runGuarded(() => _ensureScaleBodyFeatureExists(bodyId, _scaleBodyFactor));
+    });
+  }
+
+  /// Create-or-update - mirrors [_ensureExtrudeFeatureExists]'s exact
+  /// branching shape.
+  Future<void> _ensureScaleBodyFeatureExists(String bodyId, double factor) async {
+    final part = _part;
+    if (part == null) return;
+
+    final existingId = _previewScaleBodyFeatureId;
+    if (existingId == null) {
+      final created = await _api.createScaleBodyFeature(part.id, bodyId: bodyId, factor: factor);
+      _previewScaleBodyFeatureId = created.id;
+    } else {
+      await _api.updateScaleBodyFeature(part.id, existingId, bodyId: bodyId, factor: factor);
+    }
+    await _refreshMesh();
+  }
+
+  /// Keeps the just-created/edited ScaleBodyFeature, restores whatever was
+  /// selected before the panel opened, and rolls B4 rollback forward -
+  /// mirrors [_confirmExtrude]'s debounce-cancel-then-ensure-then-refresh
+  /// shape, simplified to Scale's single body_id/factor pair.
+  Future<void> _confirmScaleBody() async {
+    _scaleBodyDebounce?.cancel();
+    final bodyId = _scaleBodyBodyId;
+    final factor = _scaleBodyFactor;
+    await _runGuarded(() async {
+      if (bodyId != null) await _ensureScaleBodyFeatureExists(bodyId, factor);
+      await _refreshFeatures();
+    });
+    if (!mounted) return;
+    setState(() {
+      _featureTreeVisible = false;
+      _scaleBodyActive = false;
+      _scaleBodyBodyId = null;
+      _selectedEntities = _entitiesBeforeScaleBody ?? {};
+      _entitiesBeforeScaleBody = null;
+      _previewScaleBodyFeatureId = null;
+      _editingScaleBodyFeatureId = null;
+      _scaleBodyEditSnapshot = null;
+      _meshBeforeScaleBody = null;
+      _selectionFilterOverrides.pop();
+    });
+    await _endRollback();
+  }
+
+  /// Deletes the just-created preview ScaleBodyFeature (new-scale flow, if
+  /// any - a Cancel tapped before any valid factor was ever entered has
+  /// nothing to delete yet) or PATCHes [_scaleBodyEditSnapshot]'s stashed
+  /// original `body_id`/`factor` back (edit flow) - mirrors
+  /// [_cancelDeleteBody]'s structure exactly.
+  Future<void> _cancelScaleBody() async {
+    _scaleBodyDebounce?.cancel();
+    final part = _part;
+    final previewId = _previewScaleBodyFeatureId;
+    final meshBefore = _meshBeforeScaleBody;
+    final wasEditing = _editingScaleBodyFeatureId != null;
+    final editSnapshot = _scaleBodyEditSnapshot;
+    setState(() {
+      _featureTreeVisible = false;
+      _scaleBodyActive = false;
+      _scaleBodyBodyId = null;
+      _selectedEntities = _entitiesBeforeScaleBody ?? {};
+      _entitiesBeforeScaleBody = null;
+      _previewScaleBodyFeatureId = null;
+      _editingScaleBodyFeatureId = null;
+      _scaleBodyEditSnapshot = null;
+      _meshBeforeScaleBody = null;
+      _selectionFilterOverrides.pop();
+    });
+    if (part != null && previewId != null) {
+      if (wasEditing && editSnapshot != null) {
+        await _runGuarded(() async {
+          await _api.updateScaleBodyFeature(
+            part.id,
+            previewId,
+            bodyId: editSnapshot.bodyId,
+            factor: editSnapshot.factor,
+          );
+          await _refreshFeatures();
+        });
+      } else {
+        await _runGuarded(() async {
+          await _api.deleteFeature(part.id, previewId);
+          // Mirrors [_cancelMerge]'s own optimization: restore the pre-
+          // scale mesh directly (no network round-trip) when a snapshot
+          // was captured on open.
+          if (meshBefore != null) {
+            _bodies = meshBefore;
+          } else {
+            await _refreshMesh();
+          }
+          await _refreshFeatures();
+        });
+      }
+    }
+    await _endRollback();
+  }
+
   // --- Boolean family, Subtract/Common ----------------------------------------
   // See this file's own "Boolean family, Subtract/Common" state-field section
   // header comment for the full picking-shape reasoning.
@@ -11543,7 +11805,8 @@ class _PartScreenState extends State<PartScreen> {
                       _mirrorActive ||
                       _patternActive ||
                       _mergeActive ||
-                      _booleanActive,
+                      _booleanActive ||
+                      _scaleBodyActive,
                   // Prompt E: only one of _filletActive/_chamferActive is
                   // ever true at a time (see the Chamfer state section's own
                   // header comment), so a simple ternary - not a list -
@@ -11712,6 +11975,7 @@ class _PartScreenState extends State<PartScreen> {
                     !_booleanActive &&
                     !_splitActive &&
                     !_deleteBodyActive &&
+                    !_scaleBodyActive &&
                     !_profilePickerActive &&
                     !_pathPickerActive)
                   Positioned.fill(
@@ -11732,6 +11996,7 @@ class _PartScreenState extends State<PartScreen> {
                         onMirror: _onMirrorTapped,
                         onPattern: _onPatternTapped,
                         onDeleteBody: _onDeleteBodyTapped,
+                        onScaleBody: _onScaleBodyTapped,
                       ),
                       bodyNames: _selectionBodyNames,
                     ),
@@ -12016,6 +12281,23 @@ class _PartScreenState extends State<PartScreen> {
                       bodyCount: _deleteBodyBodyIds?.length ?? 0,
                       onConfirm: _confirmDeleteBody,
                       onCancel: _cancelDeleteBody,
+                    ),
+                  ),
+                // Direct Editing family (second entry): [ScaleBodyPanel]'s
+                // own `initState` postFrameCallback fires the first
+                // `onFactorChanged` - see this file's own "Direct Editing
+                // family, second entry: Scale Body" state-field section
+                // header comment.
+                if (_scaleBodyActive)
+                  Positioned.fill(
+                    key: const ValueKey('scale-body-panel-slot'),
+                    child: ScaleBodyPanel(
+                      key: ValueKey(_editingScaleBodyFeatureId ?? _scaleBodyBodyId),
+                      title: _editingScaleBodyFeatureId != null ? 'Edit Scale' : 'Scale',
+                      initialFactor: _scaleBodyFactor,
+                      onFactorChanged: _onScaleBodyFactorChanged,
+                      onConfirm: _confirmScaleBody,
+                      onCancel: _cancelScaleBody,
                     ),
                   ),
                 // [BooleanPanel] itself only ever handles the `confirming`
@@ -12629,7 +12911,8 @@ class _PartScreenState extends State<PartScreen> {
                         _patternActive ||
                         _mergeActive ||
                         _booleanActive ||
-                        _deleteBodyActive)
+                        _deleteBodyActive ||
+                        _scaleBodyActive)
                     ? 180
                     : 0,
               ),
@@ -12649,6 +12932,7 @@ class _PartScreenState extends State<PartScreen> {
                       !_mergeActive &&
                       !_booleanActive &&
                       !_deleteBodyActive &&
+                      !_scaleBodyActive &&
                       !_profilePickerActive &&
                       !_pathPickerActive &&
                       // On-device feedback ("the tooltip at the top of the

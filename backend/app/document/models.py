@@ -2111,6 +2111,38 @@ class DeleteBodyFeature(Feature):
 
 
 @dataclass
+class ScaleBodyFeature(Feature):
+    """Direct Editing family, second entry (see `docs/direct-editing-
+    scope.md`): uniformly scales `body_id` by `factor` about its own
+    current bounding-box centre (see `app.document.scale_body._bbox_
+    center` - recomputed fresh at every resolve, not a stored reference;
+    v1 has no user-pickable origin - see this feature's own scope doc).
+    `factor` must be > 0 (see `app.document.router._validate_scale_body_
+    factor`) - zero collapses to a point, a negative factor isn't a scale.
+    Modifies `body_id` in place (Fillet/Chamfer's "keep the same id"
+    pattern - see `FilletFeature`'s own docstring), unlike Mirror, which
+    always mints a brand-new Body. Non-uniform (independent X/Y/Z factors)
+    is deferred - see `app.document.scale_body`'s own module docstring for
+    why."""
+
+    id: str
+    body_id: str
+    factor: float = 1.0
+
+    @property
+    def type(self) -> str:
+        return "scale_body"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
+@dataclass
 class Part:
     """An independent solid-modeling history: an ordered list of Features.
 

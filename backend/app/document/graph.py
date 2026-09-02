@@ -59,6 +59,7 @@ from app.document.models import (
     RackFeature,
     RevolveFeature,
     RevolveMode,
+    ScaleBodyFeature,
     SketchFeature,
     SplitFeature,
     SurfaceFeature,
@@ -482,6 +483,12 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
             # delete the DeleteBodyFeature too, same reasoning as every
             # other reference kind in this function.
             depends_on = tuple({base_feature_id(bid) for bid in feature.body_ids})
+        elif isinstance(feature, ScaleBodyFeature):
+            # Direct Editing family, second entry: a `ScaleBodyFeature`
+            # modifies exactly one Body in place (Fillet/Chamfer's own
+            # single-Body-derived-dependency treatment, just via a single
+            # `body_id` field rather than a list of refs to dedupe).
+            depends_on = (base_feature_id(feature.body_id),)
         elif isinstance(feature, SplitFeature):
             depends_on = _split_dependencies(part, feature)
         elif isinstance(feature, PatternFeature):

@@ -54,6 +54,7 @@ from app.document.models import (
     GearFeature,
     GearType,
     ImportFeature,
+    ScaleBodyFeature,
     LoftFeature,
     LoftMode,
     MergeFeature,
@@ -1357,6 +1358,7 @@ def _apply_feature_to_bodies(
     from app.document.chamfer import resolve_chamfer_from_bodies
     from app.document.delete_body import apply_delete_body_to_bodies
     from app.document.fillet import resolve_fillet_from_bodies
+    from app.document.scale_body import resolve_scale_body_from_bodies
     from app.document.import_geometry import resolve_import
     from app.document.mirror import (
         effective_mirror_source_body_ids,
@@ -1549,6 +1551,23 @@ def _apply_feature_to_bodies(
         # docstring for the full skip-with-warning resilience convention
         # (identical to `apply_boolean_to_bodies`'s tool-body removal).
         apply_delete_body_to_bodies(bodies, feature)
+        return
+
+    if isinstance(feature, ScaleBodyFeature):
+        # Direct Editing family, second entry: modifies its Body in place
+        # (Fillet/Chamfer's own reassign-`bodies[body_id]` pattern) - see
+        # `app.document.scale_body.resolve_scale_body_from_bodies`'s own
+        # docstring for the rigid+scale transform. Same skip-with-warning
+        # resilience convention as Fillet/Chamfer above - the router's own
+        # create/update endpoints validate a Scale eagerly instead (see
+        # `resolve_scale_body`), so this fallback only ever matters for
+        # topology drift after the fact.
+        try:
+            body_id, scaled_shape = resolve_scale_body_from_bodies(bodies, feature)
+        except HTTPException:
+            logger.warning("Skipping ScaleBodyFeature %s: could not be resolved", feature.id)
+            return
+        bodies[body_id] = scaled_shape
         return
 
     if isinstance(feature, SplitFeature):

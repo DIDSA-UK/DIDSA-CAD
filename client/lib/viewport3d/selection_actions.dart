@@ -153,11 +153,20 @@ List<SelectionContextAction> contextActionsFor(
       // (see the removed-Boolean-family comment above) - every selected
       // Body is simply marked for deletion, symmetric like Mirror/Pattern,
       // so it's safe to offer directly from this table rather than only
-      // through a guided flow.
-      return const [
-        SelectionContextAction('Mirror', enabled: true),
-        SelectionContextAction('Pattern', enabled: true),
-        SelectionContextAction('Delete Body', enabled: true),
+      // through a guided flow. Scale (v1 scope - see docs/direct-editing-
+      // scope.md) only ever modifies a single Body at a time, so it's
+      // gated to exactly one Body selected, with a disabled-with-reason
+      // button otherwise - same "right kind of selection, wrong count"
+      // idiom the edge-selection `_allSameBody` guard further down uses.
+      return [
+        const SelectionContextAction('Mirror', enabled: true),
+        const SelectionContextAction('Pattern', enabled: true),
+        const SelectionContextAction('Delete Body', enabled: true),
+        SelectionContextAction(
+          'Scale',
+          enabled: bodies.length == 1,
+          disabledReason: bodies.length == 1 ? null : 'Select exactly one body to scale',
+        ),
       ];
     }
     return const [];

@@ -708,6 +708,36 @@ class DeleteBodyFeatureResponse(BaseModel):
     produces: Produces
 
 
+class ScaleBodyFeatureCreate(BaseModel):
+    """Direct Editing family (second entry): creates a `ScaleBodyFeature`
+    uniformly scaling `body_id` by `factor` (> 0 required - see `app.
+    document.router._validate_scale_body_factor`) about its own current
+    bounding-box centre. No user-pickable origin, no non-uniform X/Y/Z in
+    v1 - see `ScaleBodyFeature`'s own docstring."""
+
+    body_id: str
+    factor: float = 1.0
+
+
+class ScaleBodyFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `MergeFeatureUpdate`/`DeleteBodyFeatureUpdate`."""
+
+    body_id: str | None = None
+    factor: float | None = None
+
+
+class ScaleBodyFeatureResponse(BaseModel):
+    type: Literal["scale_body"] = "scale_body"
+    id: str
+    body_id: str
+    factor: float
+    locked: bool
+    # B1: see SketchFeatureResponse.produces above - always BODY for a
+    # ScaleBodyFeature.
+    produces: Produces
+
+
 class SplitToolRefSchema(BaseModel):
     """Boolean family, fourth/last entry: the wire counterpart to `app.
     document.models.SplitToolRef` - exactly one of `plane_ref`/`surface_
@@ -1913,6 +1943,7 @@ FeatureResponse = Union[
     MergeFeatureResponse,
     BooleanFeatureResponse,
     DeleteBodyFeatureResponse,
+    ScaleBodyFeatureResponse,
     SplitFeatureResponse,
     PatternFeatureResponse,
     ImportFeatureResponse,

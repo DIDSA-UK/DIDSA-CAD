@@ -131,6 +131,7 @@ from app.document.models import (
     RackType,
     RevolveFeature,
     RevolveMode,
+    ScaleBodyFeature,
     SketchFeature,
     SplitFeature,
     SplitToolRef,
@@ -141,6 +142,7 @@ from app.document.models import (
     SweepMode,
 )
 from app.document.revolve import resolve_revolve
+from app.document.scale_body import resolve_scale_body
 from app.document.schemas import (
     BevelGearFeatureCreate,
     BevelGearFeatureResponse,
@@ -172,6 +174,9 @@ from app.document.schemas import (
     DeleteBodyFeatureResponse,
     DeleteBodyFeatureUpdate,
     ExternalEdgeReferenceCreate,
+    ScaleBodyFeatureCreate,
+    ScaleBodyFeatureResponse,
+    ScaleBodyFeatureUpdate,
     ExternalEdgeReferenceResponse,
     ExternalVertexReferenceCreate,
     ExtrudeFeatureCreate,
@@ -685,6 +690,14 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
         return DeleteBodyFeatureResponse(
             id=feature.id,
             body_ids=feature.body_ids,
+            locked=part.is_locked(feature.id),
+            produces=feature.produces,
+        )
+    if isinstance(feature, ScaleBodyFeature):
+        return ScaleBodyFeatureResponse(
+            id=feature.id,
+            body_id=feature.body_id,
+            factor=feature.factor,
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
@@ -1232,6 +1245,27 @@ def _validate_delete_body_ids(part: Part, body_ids: list[str]) -> None:
                 status_code=400,
                 detail=f"body_ids entry {body_id!r} does not refer to a Body-producing Feature in this Part",
             )
+
+
+def _validate_scale_body_factor(part: Part, body_id: str, factor: float) -> None:
+    """Direct Editing family (second entry): `ScaleBodyFeature.factor` must
+    be strictly positive - zero collapses the Body to a point, a negative
+    factor isn't a scale at all (422, same structured-validation-error
+    shape `_validate_merge_body_ids`'s fewer-than-2 case uses). `body_id`
+    must resolve (via `base_feature_id`, same round-trip tolerance as
+    `_validate_delete_body_ids`) to a Feature that currently produces a
+    Body in this Part."""
+    if factor <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail="ScaleBodyFeature requires factor > 0 - zero or negative is not a scale",
+        )
+    source_feature = part.get_feature(base_feature_id(body_id))
+    if source_feature is None or source_feature.produces != Produces.BODY:
+        raise HTTPException(
+            status_code=400,
+            detail=f"body_id {body_id!r} does not refer to a Body-producing Feature in this Part",
+        )
 
 
 def _validate_boolean_body_ids(
@@ -3637,6 +3671,57 @@ def update_delete_body_feature(
     _validate_delete_body_ids(part, new_body_ids)
 
     feature.body_ids = new_body_ids
+    return _feature_response(part, feature)
+
+
+@router.post(
+    "/parts/{part_id}/scale-body-features", response_model=ScaleBodyFeatureResponse, status_code=201
+)
+def create_scale_body_feature(part_id: str, payload: ScaleBodyFeatureCreate) -> ScaleBodyFeatureResponse:
+    """Direct Editing family (second entry): mirrors `create_fillet_
+    feature`'s shape (fails closed on payload-shape validation, then
+    resolvability, before ever persisting an unresolvable Scale) rather
+    than `create_merge_feature`'s shape - a Scale has real per-instance
+    geometry of its own that can fail (a missing body_id, or a degenerate
+    transform), unlike Merge/Boolean/Delete Body."""
+    part = get_part_or_404(part_id)
+    _validate_scale_body_factor(part, payload.body_id, payload.factor)
+    feature = ScaleBodyFeature(id=str(uuid.uuid4()), body_id=payload.body_id, factor=payload.factor)
+    resolve_scale_body(part, feature)  # raises on an unresolvable/degenerate scale; result unused here
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_scale_body_feature_or_404(part: Part, feature_id: str) -> ScaleBodyFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, ScaleBodyFeature):
+        raise HTTPException(status_code=404, detail="Scale body feature not found")
+    return feature
+
+
+@router.patch(
+    "/parts/{part_id}/scale-body-features/{feature_id}", response_model=ScaleBodyFeatureResponse
+)
+def update_scale_body_feature(
+    part_id: str, feature_id: str, payload: ScaleBodyFeatureUpdate
+) -> ScaleBodyFeatureResponse:
+    """Same validate-before-mutate discipline as `update_fillet_feature`:
+    the merged (existing-plus-payload) values are checked against a scratch
+    Feature sharing the real one's id (`resolve_scale_body` excludes that
+    id from its own "current bodies" computation for exactly this reason)
+    before anything on the real, stored Feature is touched."""
+    part = get_part_or_404(part_id)
+    feature = _get_scale_body_feature_or_404(part, feature_id)
+
+    new_body_id = payload.body_id if payload.body_id is not None else feature.body_id
+    new_factor = payload.factor if payload.factor is not None else feature.factor
+    _validate_scale_body_factor(part, new_body_id, new_factor)
+
+    candidate = ScaleBodyFeature(id=feature.id, body_id=new_body_id, factor=new_factor)
+    resolve_scale_body(part, candidate)  # raises on an unresolvable/degenerate scale
+
+    feature.body_id = candidate.body_id
+    feature.factor = candidate.factor
     return _feature_response(part, feature)
 
 

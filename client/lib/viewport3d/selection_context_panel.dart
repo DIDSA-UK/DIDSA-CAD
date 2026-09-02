@@ -86,6 +86,12 @@ class SelectionContextPanel extends StatelessWidget {
   /// "never called for a disabled one" contract as [onMirror]/[onPattern].
   final VoidCallback? onDeleteBody;
 
+  /// Direct Editing family (second entry): fired when the user taps an
+  /// *enabled* Scale button (exactly one Body selected, nothing else - see
+  /// `selection_actions.dart`'s `contextActionsFor`) - same "never called
+  /// for a disabled one" contract as [onDeleteBody].
+  final VoidCallback? onScaleBody;
+
   const SelectionContextPanel({
     super.key,
     required this.selectedEntities,
@@ -101,6 +107,7 @@ class SelectionContextPanel extends StatelessWidget {
     this.onMirror,
     this.onPattern,
     this.onDeleteBody,
+    this.onScaleBody,
   });
 
   @override
@@ -178,6 +185,8 @@ class SelectionContextPanel extends StatelessWidget {
         return action.enabled ? onPattern : null;
       case 'Delete Body':
         return action.enabled ? onDeleteBody : null;
+      case 'Scale':
+        return action.enabled ? onScaleBody : null;
       default:
         return null;
     }

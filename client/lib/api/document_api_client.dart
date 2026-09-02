@@ -603,6 +603,19 @@ class FeatureDto {
   /// Split state-field section header comment).
   final SketchEntityRefDto? toolSketchLineRef;
 
+  /// Direct Editing family - only present on a `"scale_body"` Feature (and,
+  /// once it exists, `"move_body"`): the single Body (the backend's
+  /// `ScaleBodyFeature.body_id`) this Feature modifies in place. A bare
+  /// `String`, not a list - unlike [bodyIds]/[targetBodyIds]/[toolBodyIds],
+  /// every Direct Editing "whole body" Feature so far names exactly one.
+  final String? bodyId;
+
+  /// Direct Editing family, second entry - only present on a `"scale_body"`
+  /// Feature: the uniform scale factor applied to [bodyId] about its own
+  /// current bounding-box centre (v1 scope - see `docs/direct-editing-
+  /// scope.md`).
+  final double? factor;
+
   FeatureDto({
     required this.type,
     required this.id,
@@ -669,6 +682,8 @@ class FeatureDto {
     this.toolPlaneRef,
     this.toolSurfaceFeatureId,
     this.toolSketchLineRef,
+    this.bodyId,
+    this.factor,
   });
 
   factory FeatureDto.fromJson(Map<String, dynamic> json) => FeatureDto(
@@ -784,6 +799,8 @@ class FeatureDto {
             ? null
             : SketchEntityRefDto.fromJson(
                 (json['tool'] as Map<String, dynamic>)['sketch_line_ref'] as Map<String, dynamic>),
+        bodyId: json['body_id'] as String?,
+        factor: (json['factor'] as num?)?.toDouble(),
       );
 }
 
@@ -1996,6 +2013,45 @@ class DocumentApiClient {
               headers: _headers,
               body: jsonEncode({
                 if (bodyIds != null) 'body_ids': bodyIds,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Direct Editing family (second entry): creates a ScaleBodyFeature
+  /// uniformly scaling [bodyId] by [factor] (> 0 required - see the
+  /// backend's `_validate_scale_body_factor`) about its own current
+  /// bounding-box centre. Mirrors [createFilletFeature]'s shape, a single
+  /// numeric field just like `radius`.
+  Future<FeatureDto> createScaleBodyFeature(
+    String partId, {
+    required String bodyId,
+    required double factor,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/scale-body-features'),
+              headers: _headers,
+              body: jsonEncode({'body_id': bodyId, 'factor': factor}),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing ScaleBodyFeature - mirrors
+  /// [updateFilletFeature]'s own shape exactly.
+  Future<FeatureDto> updateScaleBodyFeature(
+    String partId,
+    String featureId, {
+    String? bodyId,
+    double? factor,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/scale-body-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (bodyId != null) 'body_id': bodyId,
+                if (factor != null) 'factor': factor,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

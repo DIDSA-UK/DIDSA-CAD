@@ -64,6 +64,7 @@ from app.document.models import (
     RackType,
     RevolveFeature,
     RevolveMode,
+    ScaleBodyFeature,
     SketchFeature,
     SpiralBevelHand,
     SplitFeature,
@@ -1006,6 +1007,13 @@ def _feature_to_dict(feature: Feature) -> dict:
             "id": feature.id,
             "body_ids": list(feature.body_ids),
         }
+    if isinstance(feature, ScaleBodyFeature):
+        return {
+            "type": "scale_body",
+            "id": feature.id,
+            "body_id": feature.body_id,
+            "factor": feature.factor,
+        }
     if isinstance(feature, SplitFeature):
         return {
             "type": "split",
@@ -1264,6 +1272,12 @@ def _feature_from_dict(data: dict) -> Feature:
         return DeleteBodyFeature(
             id=feature_id,
             body_ids=list(data.get("body_ids", [])),
+        )
+    if feature_type == "scale_body":
+        return ScaleBodyFeature(
+            id=feature_id,
+            body_id=_require(data, "body_id"),
+            factor=data.get("factor", 1.0),
         )
     if feature_type == "split":
         return SplitFeature(

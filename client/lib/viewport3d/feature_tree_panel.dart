@@ -52,6 +52,8 @@ String featureDisplayName(List<FeatureDto> features, int index) {
     'split' => 'Split',
     // Direct Editing family, first entry.
     'delete_body' => 'Delete Body',
+    // Direct Editing family, second entry.
+    'scale_body' => 'Scale',
     // Gear-tree UX: the gear-family Feature types (built straight from
     // parameters via their own dedicated design screen - GearDesignScreen/
     // BevelDesignScreen/GearChainDesignScreen - never through a Sketch, see
@@ -119,6 +121,8 @@ String _featureTypeAsset(String type) => switch (type) {
       // or splitting it, a different-enough operation to be worth its own
       // icon rather than reusing Merge/Boolean's or Split's.
       'delete_body' => 'assets/icons/feature/feature_delete_body.svg',
+      // Direct Editing family, second entry: its own distinct glyph.
+      'scale_body' => 'assets/icons/feature/feature_scale.svg',
       // Gear-tree UX: one shared "gear" category glyph for every gear-family
       // Feature type (spur/internal gear, rack, bevel gear, bevel pair, gear
       // chain, planetary set) - they're all built by the same family of
