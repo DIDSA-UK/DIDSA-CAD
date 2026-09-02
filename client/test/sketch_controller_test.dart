@@ -3232,6 +3232,115 @@ void main() {
     expect(created.pointId, rectangle.cornerPointIds.first);
   });
 
+  // --- Session N: concentric/collinear live inference -----------------------
+
+  test('placing a new Circle\'s centre near (but not on) an existing Circle\'s centre auto-adds a '
+      'ConcentricConstraint', () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0); // radius 5
+    final circle1Id = controller.circles.keys.single;
+
+    // 0.5 units off the first Circle's own centre - beyond snapRadius (0.2,
+    // which would instead literally merge the two centre Points into one,
+    // no Constraint needed) but within the wider, zoom-scaled concentric
+    // tolerance.
+    await controller.handleCanvasTap(0.5, 0);
+    await controller.handleCanvasTap(10, 0); // radius point, arbitrary
+    final circle2Id = controller.circles.keys.last;
+
+    final created = controller.constraints.values.whereType<ConcentricConstraintDto>().single;
+    expect({created.entity1Id, created.entity2Id}, {circle1Id, circle2Id});
+  });
+
+  test(
+      'placing a new Arc\'s centre near an existing Circle\'s centre auto-adds a ConcentricConstraint '
+      '(cross-type)', () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+    final circleId = controller.circles.keys.single;
+
+    controller.selectDrawTool(SketchTool.arc);
+    await controller.handleCanvasTap(0.5, 0); // centre, 0.5 units off the Circle's own
+    await controller.handleCanvasTap(10, 0); // start
+    await controller.handleCanvasTap(0, 10); // end
+
+    final arcId = controller.arcs.keys.single;
+    final created = controller.constraints.values.whereType<ConcentricConstraintDto>().single;
+    expect({created.entity1Id, created.entity2Id}, {circleId, arcId});
+  });
+
+  test(
+      "a new Circle's centre tapped exactly on an existing Circle's own centre merges into the same "
+      'Point instead - no separate ConcentricConstraint needed for something already structurally true',
+      () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0);
+    final circle1 = controller.circles.values.single;
+
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0); // exactly the first Circle's own centre
+    await controller.handleCanvasTap(10, 0);
+    final circle2 = controller.circles.values.last;
+
+    expect(circle2.centerPointId, circle1.centerPointId);
+    expect(controller.constraints.values.whereType<ConcentricConstraintDto>(), isEmpty);
+  });
+
+  test(
+      'continuing a Line chain collinear with the connected previous segment reports/auto-adds a '
+      'CollinearConstraint, live, correctly scoped to the connected segment rather than an unrelated '
+      'Line at the same angle', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 5.773502691896258); // ~30 degrees off horizontal
+    controller.finishChain();
+    final segment1Id = controller.lines.keys.single;
+
+    // An unrelated Line at the same ~30 degree angle, nowhere connected to
+    // the chain below - if collinear detection weren't correctly scoped to
+    // the *connected* Line specifically, this could be mistaken for the
+    // intended target instead of segment1.
+    await controller.handleCanvasTap(100, 100);
+    await controller.handleCanvasTap(110, 105.773502691896258);
+    controller.finishChain();
+
+    // Resume the chain from segment1's own endpoint and continue straight.
+    await controller.handleCanvasTap(10, 5.773502691896258);
+    controller.moveCursorToSketchPoint(20, 2 * 5.773502691896258);
+
+    final inference = controller.activeLineInference;
+    expect(inference?.kind, LineInferenceKind.collinear);
+    expect(inference?.target?.id, segment1Id);
+
+    await controller.handleCanvasTap(20, 2 * 5.773502691896258);
+
+    final created = controller.constraints.values.whereType<CollinearConstraintDto>().single;
+    final newLineId = controller.lines.values.last.id;
+    expect({created.line1Id, created.line2Id}, {segment1Id, newLineId});
+  });
+
+  test(
+      'a Line continuing from a connected Point but at a non-collinear angle falls back to plain '
+      'parallel/perpendicular, not Collinear', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 5.773502691896258); // ~30 degrees
+    controller.finishChain();
+    final segment1Id = controller.lines.keys.single;
+
+    await controller.handleCanvasTap(10, 5.773502691896258); // resume from segment1's endpoint
+    // ~30 + 90 degrees from the anchor: perpendicular to segment1, not a
+    // straight continuation of it.
+    controller.moveCursorToSketchPoint(10 - 5.0, 5.773502691896258 + 8.660254037844387);
+
+    final inference = controller.activeLineInference;
+    expect(inference?.kind, LineInferenceKind.perpendicular);
+    expect(inference?.target?.id, segment1Id);
+  });
+
   // --- Phase 6.2.1: Arc tool -------------------------------------------------
 
   test('activeDrawGhost previews a plain circle while only the arc center is placed', () async {

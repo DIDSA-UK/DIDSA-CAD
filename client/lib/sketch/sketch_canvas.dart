@@ -3315,6 +3315,7 @@ class _SketchPainter extends CustomPainter {
     LineInferenceKind.perpendicular: Colors.deepPurple,
     LineInferenceKind.tangent: Colors.pink,
     LineInferenceKind.pointOnCurve: Colors.teal,
+    LineInferenceKind.collinear: Colors.amber,
   };
 
   /// Stage 15 item 4: highlights whichever existing Point (if any) the
