@@ -3344,12 +3344,37 @@ class SketchController extends ChangeNotifier {
   /// [_existingPointIdNear] reusing the same Point id rather than this
   /// class ever creating a competing constraint - stronger than any
   /// constraint this method could add, so a real candidate here would be
-  /// actively misleading); then tangent/point-on-curve; then parallel/
-  /// perpendicular; then Horizontal/Vertical last, via [_lineSnapAxis]
-  /// itself. Never more than one constraint auto-applied per placement.
-  /// Null while [inferenceSuppressed] is on (the FAB toggle suppresses
-  /// every kind here, H/V included - see that getter's own doc comment)
-  /// or once nothing at all qualifies.
+  /// actively misleading); then tangent/point-on-curve; then Horizontal/
+  /// Vertical; then parallel/perpendicular last. Never more than one
+  /// constraint auto-applied per placement. Null while
+  /// [inferenceSuppressed] is on (the FAB toggle suppresses every kind
+  /// here, H/V included - see that getter's own doc comment) or once
+  /// nothing at all qualifies.
+  ///
+  /// Horizontal/Vertical outranking parallel/perpendicular here (unlike
+  /// tangent/point-on-curve, which outrank both) is a deliberate fix, not
+  /// the original design: any two Lines that are each individually H/V are
+  /// - trivially - also parallel to each other, which is by far the most
+  /// common way for a parallel/perpendicular candidate and an H/V one to
+  /// both apply to the same placement at once (drawing a rectangle's
+  /// second horizontal side, say). Confirmed by a real regression the
+  /// original "parallel/perpendicular above H/V" ordering caused: six
+  /// existing tests around the lineDistance-ghost-implies-Parallel feature
+  /// (`confirming a fresh lineDistance ghost also creates a real
+  /// ParallelConstraint...` and its siblings) draw two separately-Horizontal
+  /// Lines and expect exactly one ParallelConstraint, added later by that
+  /// unrelated feature when the dimension is confirmed - with parallel/
+  /// perpendicular ranked above H/V, placing the *second* Line already
+  /// added its own redundant ParallelConstraint against the first, so the
+  /// later feature's own `.single` lookup found two. Giving each
+  /// axis-aligned Line its own independent Horizontal/Vertical Constraint
+  /// is also simply more robust than tying it to another Line's own
+  /// orientation via Parallel - delete/alter that other Line's H/V later
+  /// and a merely-Parallel Line would drift with it, where an
+  /// independently-H/V one wouldn't. Tangent/point-on-curve don't have
+  /// this problem (there's no meaningful sense in which a Point landing on
+  /// a Circle/curve is "redundant" with the segment also looking near
+  /// axis-aligned), so they keep outranking H/V unconditionally.
   LineInference? _combinedLineInference(double x0, double y0, double x1, double y1) {
     if (_inferenceSuppressed) return null;
     final dx = x1 - x0;
@@ -3357,19 +3382,22 @@ class SketchController extends ChangeNotifier {
     if (math.sqrt(dx * dx + dy * dy) < 1e-9) return null;
     if (_existingPointIdNear(x1, y1) != null) return null;
 
-    final geometry = _tangentOrPointOnCurveInference(x0, y0, x1, y1) ?? _parallelOrPerpendicularInference(x0, y0, x1, y1);
-    if (geometry != null) return geometry;
+    final curveMatch = _tangentOrPointOnCurveInference(x0, y0, x1, y1);
+    if (curveMatch != null) return curveMatch;
 
     final axis = _lineSnapAxis(x0, y0, x1, y1);
-    if (axis == null) return null;
-    final snapped = _snappedLineEnd(x0, y0, x1, y1);
-    return LineInference(
-      kind: axis == LineSnapAxis.horizontal ? LineInferenceKind.horizontal : LineInferenceKind.vertical,
-      snappedX: snapped.$1,
-      snappedY: snapped.$2,
-      markerX: snapped.$1,
-      markerY: snapped.$2,
-    );
+    if (axis != null) {
+      final snapped = _snappedLineEnd(x0, y0, x1, y1);
+      return LineInference(
+        kind: axis == LineSnapAxis.horizontal ? LineInferenceKind.horizontal : LineInferenceKind.vertical,
+        snappedX: snapped.$1,
+        snappedY: snapped.$2,
+        markerX: snapped.$1,
+        markerY: snapped.$2,
+      );
+    }
+
+    return _parallelOrPerpendicularInference(x0, y0, x1, y1);
   }
 
   /// [_snappedLineEnd] extended to also snap onto whichever
