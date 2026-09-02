@@ -242,10 +242,11 @@ def wire_for_profile(sketch: Sketch, profile: Profile, basis: ResolvedPlane):
         major_radius = ellipse.major_radius(sketch.points)
         rotation = ellipse.rotation(sketch.points)
         axis = _ellipse_axis(basis, center.x, center.y, rotation)
-        # gp_Elips requires MajorRadius >= MinorRadius - already enforced at
-        # creation time (see Sketch.add_ellipse); either radius can drift
-        # past that once its own DistanceConstraint is edited post-creation,
-        # same as any other solver-tracked dimension.
+        # gp_Elips requires MajorRadius >= MinorRadius - Ellipse.major_
+        # radius/minor_radius derive which axis is actually longer from
+        # their live distances (see that method's own doc comment), so
+        # this holds no matter which of the two DistanceConstraints was
+        # last edited past the other's length, not just at creation time.
         edge = BRepBuilderAPI_MakeEdge(gp_Elips(axis, major_radius, ellipse.minor_radius(sketch.points))).Edge()
         return BRepBuilderAPI_MakeWire(edge).Wire()
 

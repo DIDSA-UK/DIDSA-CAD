@@ -1750,6 +1750,22 @@ def _signed_line_distance_value(sketch: Sketch, line1_start_id: str, line1_end_i
     )
 
 
+def _clamp_ellipse_arc_axis_value(sketch: Sketch, constraint_id: str, value: float) -> float:
+    """Unlike a plain Ellipse (see its own doc comment), an EllipseArc can't
+    let its major/minor axes swap roles when dragged past each other - its
+    `rotation`/`local_angle` fix where the arc's own parametric angle-zero
+    sits, which its `start_point_id`/`end_point_id` (and therefore what
+    "the arc" even traces) depend on. Cap the new value at the other
+    axis's current live radius instead, the same clamp `add_ellipse_arc`
+    already applies at creation."""
+    for arc in sketch.ellipse_arcs():
+        if constraint_id == arc.minor_constraint_id:
+            return min(value, arc.major_radius(sketch.points))
+        if constraint_id == arc.major_constraint_id:
+            return max(value, arc.minor_radius(sketch.points))
+    return value
+
+
 @router.patch("/sketches/{sketch_id}/constraints/{constraint_id}", response_model=SolveResultResponse)
 def update_constraint_value(
     sketch_id: str, constraint_id: str, payload: ConstraintValueUpdate
@@ -1757,14 +1773,15 @@ def update_constraint_value(
     sketch = _get_sketch_or_404(sketch_id)
     constraint = _get_constraint_or_404(sketch, constraint_id)
     if isinstance(constraint, DistanceConstraint):
+        value = _clamp_ellipse_arc_axis_value(sketch, constraint_id, payload.value)
         has_other_dimension = any(
             cid != constraint_id and _is_length_dimension(other) for cid, other in sketch.constraints.items()
         )
         if has_other_dimension:
-            _reseed_distance_constraint_free_point(sketch, constraint, payload.value)
+            _reseed_distance_constraint_free_point(sketch, constraint, value)
         else:
-            _scale_sketch_for_first_dimension(sketch, constraint, payload.value)
-        constraint.distance = payload.value
+            _scale_sketch_for_first_dimension(sketch, constraint, value)
+        constraint.distance = value
         # Any explicit value PATCH is the user confirming a size (this is
         # the same endpoint the ghost-confirm flow already calls) - clears
         # `provisional` without needing a separate confirm flag/endpoint.

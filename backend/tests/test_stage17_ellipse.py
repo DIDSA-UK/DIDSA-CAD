@@ -526,6 +526,31 @@ def test_update_ellipse_minor_radius_by_patching_its_distance_constraint_over_th
     assert updated["minor_radius"] == pytest.approx(5.0)
 
 
+def test_dragging_the_minor_point_past_the_major_radius_swaps_which_axis_is_major():
+    """major/minor aren't fixed identities - they're derived from which
+    axis is currently longer (see Ellipse._major_minor's own doc comment).
+    PATCHing the minor axis's DistanceConstraint past the major axis's
+    current radius must swap which one reports as major, not silently
+    break the major >= minor invariant OCCT's gp_Elips needs."""
+    sketch = _create_sketch()
+    center = _create_point(sketch["id"], 0.0, 0.0)
+    major = _create_point(sketch["id"], 9.0, 0.0)
+    ellipse = client.post(
+        f"/sketch/sketches/{sketch['id']}/ellipses",
+        json={"center_point_id": center["id"], "major_point_id": major["id"], "minor_radius": 3.0},
+    ).json()
+
+    response = client.patch(
+        f"/sketch/sketches/{sketch['id']}/constraints/{_minor_constraint_id(sketch['id'], ellipse['id'])}",
+        json={"value": 15.0},
+    )
+    assert response.status_code == 200
+
+    updated = client.get(f"/sketch/sketches/{sketch['id']}/ellipses/{ellipse['id']}").json()
+    assert updated["major_radius"] == pytest.approx(15.0)
+    assert updated["minor_radius"] == pytest.approx(9.0)
+
+
 def _minor_constraint_id(sketch_id: str, ellipse_id: str) -> str:
     constraints = client.get(f"/sketch/sketches/{sketch_id}/constraints").json()
     ellipse = client.get(f"/sketch/sketches/{sketch_id}/ellipses/{ellipse_id}").json()
