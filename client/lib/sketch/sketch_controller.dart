@@ -3672,6 +3672,25 @@ class SketchController extends ChangeNotifier {
     );
   }
 
+  /// Bug fix (on-device feedback: "when the sketcher picked up the
+  /// inverted parallel constraint, the detection flipped to go away from
+  /// the cursor"): a Line's stored direction (`atan2` from its
+  /// `startPointId` to its `endPointId`) is an arbitrary artifact of which
+  /// end the user happened to tap first when creating it - entirely
+  /// unrelated to which way *this* in-progress segment is being dragged.
+  /// [_undirectedAngleDeltaDegrees] correctly ignores that arbitrary sign
+  /// when just deciding *whether* a candidate is parallel/perpendicular
+  /// (a Line and its own reverse are the same undirected line), but the
+  /// actual snapped direction still has to pick a side - [axisAngle] and
+  /// [axisAngle] + 180 degrees are equally "parallel", only one of them
+  /// actually points toward where the cursor is headed
+  /// ([towardAngle]). Returns whichever of the two is closer.
+  double _closestDirectedAngle(double towardAngle, double axisAngle) {
+    final delta = _directedAngleDeltaDegrees(towardAngle, axisAngle);
+    final oppositeDelta = _directedAngleDeltaDegrees(towardAngle, axisAngle + math.pi);
+    return delta <= oppositeDelta ? axisAngle : axisAngle + math.pi;
+  }
+
   /// Session N: the parallel or perpendicular candidate (whichever, if
   /// either, applies) for a Line from ([x0], [y0]) to the cursor at
   /// ([x1], [y1]) - the lower-priority half of [_combinedLineInference]'s
@@ -3683,7 +3702,10 @@ class SketchController extends ChangeNotifier {
   /// parallel/perpendicular within [parallelPerpendicularSnapAngleDegrees],
   /// and snaps the free end's direction to match exactly - same "only the
   /// angle snaps, the length doesn't" shape as [_snappedLineEnd]'s own
-  /// horizontal/vertical case.
+  /// horizontal/vertical case. The snapped direction is resolved via
+  /// [_closestDirectedAngle] against the segment's own current direction,
+  /// not the target Line's raw stored angle - see that method's own doc
+  /// comment for why.
   LineInference? _parallelOrPerpendicularInference(double x0, double y0, double x1, double y1) {
     final segmentAngle = math.atan2(y1 - y0, x1 - x0);
     final len = math.sqrt(math.pow(x1 - x0, 2) + math.pow(y1 - y0, 2));
@@ -3703,7 +3725,8 @@ class SketchController extends ChangeNotifier {
       final marker = ((a.x + b.x) / 2, (a.y + b.y) / 2);
       if (parallelDelta <= parallelPerpendicularSnapAngleDegrees && parallelDelta < bestDelta) {
         bestDelta = parallelDelta;
-        final snapped = (x0 + len * math.cos(lineAngle), y0 + len * math.sin(lineAngle));
+        final snapAngle = _closestDirectedAngle(segmentAngle, lineAngle);
+        final snapped = (x0 + len * math.cos(snapAngle), y0 + len * math.sin(snapAngle));
         best = LineInference(
           kind: LineInferenceKind.parallel,
           target: target,
@@ -3714,8 +3737,8 @@ class SketchController extends ChangeNotifier {
         );
       } else if (perpendicularDelta <= parallelPerpendicularSnapAngleDegrees && perpendicularDelta < bestDelta) {
         bestDelta = perpendicularDelta;
-        final perpendicularAngle = lineAngle + math.pi / 2;
-        final snapped = (x0 + len * math.cos(perpendicularAngle), y0 + len * math.sin(perpendicularAngle));
+        final snapAngle = _closestDirectedAngle(segmentAngle, lineAngle + math.pi / 2);
+        final snapped = (x0 + len * math.cos(snapAngle), y0 + len * math.sin(snapAngle));
         best = LineInference(
           kind: LineInferenceKind.perpendicular,
           target: target,

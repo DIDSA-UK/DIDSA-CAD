@@ -2960,6 +2960,58 @@ void main() {
     expect({created.line1Id, created.line2Id}, {targetLineId, newLineId});
   });
 
+  test(
+      'a parallel candidate snaps toward the cursor even when the target Line was drawn in the '
+      'opposite direction (bug fix: "the detection flipped to go away from the cursor")', () async {
+    controller.selectDrawTool(SketchTool.line);
+    // Drawn end-to-start relative to the other parallel test above - the
+    // target Line's own stored direction (start->end) now points at ~210
+    // degrees, the exact opposite of the ~30 degree direction the second
+    // Line below is actually dragged toward.
+    await controller.handleCanvasTap(10, 5.773502691896258);
+    await controller.handleCanvasTap(0, 0);
+    controller.finishChain();
+    final targetLineId = controller.lines.keys.single;
+
+    await controller.handleCanvasTap(20, 0);
+    controller.moveCursorToSketchPoint(30, 5.773502691896258); // ~30 degrees from the new anchor
+
+    final inference = controller.activeLineInference;
+    expect(inference?.kind, LineInferenceKind.parallel);
+    expect(inference?.target?.id, targetLineId);
+    // The bug: snapping to the target Line's raw stored angle (~210
+    // degrees, not its ~30 degree reverse) would place the free end at
+    // (20 + 11.547*cos(210deg), 0 + 11.547*sin(210deg)) = (10, -5.77...) -
+    // behind and below the anchor, visibly flipped away from the cursor
+    // instead of toward it.
+    expect(inference?.snappedX, closeTo(30, 1e-9));
+    expect(inference?.snappedY, closeTo(5.773502691896258, 1e-9));
+
+    final ghost = controller.activeDrawGhost as LineGhost;
+    expect(ghost.endX, closeTo(30, 1e-9));
+    expect(ghost.endY, closeTo(5.773502691896258, 1e-9));
+  });
+
+  test(
+      'a perpendicular candidate snaps toward the cursor regardless of which of the two possible '
+      'perpendicular directions the target Line\'s own stored angle implies', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(10, 5.773502691896258);
+    await controller.handleCanvasTap(0, 0);
+    controller.finishChain();
+    final targetLineId = controller.lines.keys.single;
+
+    await controller.handleCanvasTap(20, 0);
+    // ~30 + 90 degrees, same as the other perpendicular test below.
+    controller.moveCursorToSketchPoint(15, 8.660254037844387);
+
+    final inference = controller.activeLineInference;
+    expect(inference?.kind, LineInferenceKind.perpendicular);
+    expect(inference?.target?.id, targetLineId);
+    expect(inference?.snappedX, closeTo(15, 1e-9));
+    expect(inference?.snappedY, closeTo(8.660254037844387, 1e-9));
+  });
+
   test('a Line drawn near-perpendicular to an existing Line reports/auto-adds a PerpendicularConstraint, '
       'live', () async {
     controller.selectDrawTool(SketchTool.line);
