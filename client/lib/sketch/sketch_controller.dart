@@ -14085,7 +14085,9 @@ class SketchController extends ChangeNotifier {
         (!closingLoop && chainStart != null) ? _combinedLineInference(chainStart.x, chainStart.y, cursorX, cursorY) : null;
     await _runGuarded(() async {
       final endPointId =
-          closingLoop ? _chainFirstPointId! : await _pointIdAtCursor(excludeId: _chainStartPointId);
+          closingLoop
+              ? _chainFirstPointId!
+              : await _pointIdAtCursor(excludeId: _chainStartPointId, inferPointOnCurve: false);
 
       final line = await _api.createLine(_sketchId!, _chainStartPointId!, endPointId);
       lines[line.id] = SketchLineView(
@@ -14133,7 +14135,7 @@ class SketchController extends ChangeNotifier {
     final midY = _midpointAnchorY!;
     final inference = _combinedLineInference(midX, midY, cursorX, cursorY);
     await _runGuarded(() async {
-      final endAId = await _pointIdAtCursor();
+      final endAId = await _pointIdAtCursor(inferPointOnCurve: false);
       final endA = points[endAId]!;
       final mirrored = await _api.createPoint(_sketchId!, 2 * midX - endA.x, 2 * midY - endA.y);
       points[mirrored.id] = SketchPointView(id: mirrored.id, x: mirrored.x, y: mirrored.y);
@@ -15169,15 +15171,40 @@ class SketchController extends ChangeNotifier {
   /// never coincide with), otherwise a freshly created Point at the cursor.
   /// The single place every tap-to-place path goes through to place/reuse a
   /// Point, so origin-snapping applies uniformly to chain starts, chain
-  /// continuations, and both Circle taps.
-  Future<String> _pointIdAtCursor({String? excludeId}) =>
-      _pointIdAt(cursorX, cursorY, excludeId: excludeId);
+  /// continuations, and both Circle taps. [inferPointOnCurve] is for the
+  /// Line tool's own two call sites only - see [_pointIdAt]'s own doc
+  /// comment on that parameter.
+  Future<String> _pointIdAtCursor({String? excludeId, bool inferPointOnCurve = true}) =>
+      _pointIdAt(cursorX, cursorY, excludeId: excludeId, inferPointOnCurve: inferPointOnCurve);
 
   /// [_pointIdAtCursor]'s logic, generalized to an arbitrary sketch-space
   /// location - the Rectangle tool's computed (non-tapped) corners go
   /// through this directly, since they aren't necessarily at the cursor's
   /// current position.
-  Future<String> _pointIdAt(double x, double y, {String? excludeId}) async {
+  ///
+  /// Bug fix (on-device feedback: "when I'm sketching and I drop a point
+  /// on a line or on a circle I would expect an inferred constraint with
+  /// line or curve to be applied" - the same report [_clickPointTool]'s
+  /// own identical fix addresses, but for every *other* tool's defining
+  /// Points: a Circle's center, an Arc's endpoint, a Rectangle corner, a
+  /// Polygon vertex, ...): once neither an existing-Point merge nor a
+  /// Line-midpoint snap applies, falls back to [_pointOnCurveTarget]
+  /// before creating a genuinely unconstrained new Point. [inferPointOnCurve]
+  /// defaults to true for that reason - every one of this method's callers
+  /// wants it - except the Line tool's own two ([_clickEndToEndLineTool]'s
+  /// chain-continuation endpoint, [_clickMidpointLineTool]'s free end),
+  /// which pass false: those two already get point-on-curve (and tangent,
+  /// and parallel/perpendicular, and H/V) from [_combinedLineInference]'s
+  /// own richer, direction-aware analysis, called separately and applied
+  /// via [_applyLineInference] - checking again here would risk a second,
+  /// possibly conflicting PointOnLine/PointOnCircle/PointOnEllipse
+  /// Constraint alongside whatever that already decided (e.g. a genuine
+  /// TangentConstraint here, plus a redundant/contradictory
+  /// PointOnCircleConstraint from this method, on the very same Line and
+  /// Circle). A Line's own *chain-start* tap (the very first, with no
+  /// segment direction yet to reason about) has no such competing
+  /// mechanism, so it's deliberately left at this method's own default.
+  Future<String> _pointIdAt(double x, double y, {String? excludeId, bool inferPointOnCurve = true}) async {
     final existing = _existingPointIdNear(x, y, excludeId: excludeId);
     if (existing != null) {
       // Bug fix (on-device feedback: "no entity should be able to use the
@@ -15204,12 +15231,21 @@ class SketchController extends ChangeNotifier {
     if (midpointLineId != null) {
       return await _materializeMidpoint(midpointLineId);
     }
+    // Resolved before the new Point exists, same "an exclude-id-less
+    // _entityAt would otherwise match the brand new Point itself" reasoning
+    // as [_clickPointTool]'s own identical fix.
+    final onCurveTarget = inferPointOnCurve ? _pointOnCurveTarget(x, y) : null;
     final point = await _api.createPoint(_sketchId!, x, y);
     points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
     _pushUndo(() async {
       await _api.deletePoint(_sketchId!, point.id);
       points.remove(point.id);
     });
+    if (onCurveTarget != null) {
+      final (target, _, _) = onCurveTarget;
+      final constraint = await _pointOnCurveConstraintFor(point.id, target);
+      _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
+    }
     return point.id;
   }
 

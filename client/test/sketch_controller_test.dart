@@ -3068,6 +3068,13 @@ void main() {
     // anchor to the tangent point is the only Line in the sketch.
     final newLineId = controller.lines.keys.single;
     expect(created.lineId, newLineId);
+    // Regression: the free end lands exactly on the Circle's own boundary
+    // (that's what makes it a genuine tangent point), which would *also*
+    // match _pointOnCurveTarget's own generic check inside _pointIdAt -
+    // the Line tool's own two _pointIdAtCursor call sites must pass
+    // inferPointOnCurve: false so this doesn't also pick up a redundant/
+    // conflicting PointOnCircleConstraint alongside the Tangent one.
+    expect(controller.constraints.values.whereType<PointOnCircleConstraintDto>(), isEmpty);
   });
 
   test(
@@ -3182,6 +3189,47 @@ void main() {
 
     expect(controller.constraints.values.whereType<PointOnLineConstraintDto>(), isEmpty);
     expect(controller.constraints.values.whereType<CoincidentConstraintDto>(), isNotEmpty);
+  });
+
+  test(
+      'bug fix, generalized beyond the Point tool: a Circle\'s own centre Point tapped directly on an '
+      'existing Line\'s curve also adds a PointOnLineConstraint, via the shared _pointIdAt every '
+      'tap-to-place tool funnels through', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 4);
+    controller.finishChain();
+    final targetLineId = controller.lines.keys.single;
+
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(3, 1.2); // on the target Line's curve, not its midpoint (5, 2)
+    await controller.handleCanvasTap(8, 1.2); // radius point, off the Line
+
+    final circle = controller.circles.values.single;
+    final created = controller.constraints.values.whereType<PointOnLineConstraintDto>().single;
+    expect(created.lineId, targetLineId);
+    expect(created.pointId, circle.centerPointId);
+  });
+
+  test(
+      "bug fix, generalized beyond the Point tool: a Rectangle's own first corner Point tapped "
+      "directly on an existing Circle's boundary also adds a PointOnCircleConstraint", () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0); // radius 5
+    final circleId = controller.circles.keys.single;
+
+    controller.selectDrawTool(SketchTool.rectangle);
+    controller.setRectangleConstructionMethod(RectangleConstructionMethod.twoCorner);
+    // On the boundary but off every cardinal axis, same as the Point-tool
+    // circle test above.
+    await controller.handleCanvasTap(5 * math.cos(math.pi / 4), 5 * math.sin(math.pi / 4));
+    await controller.handleCanvasTap(20, 20); // opposite corner, well clear of the Circle
+
+    final rectangle = controller.rectangles.values.single;
+    final created = controller.constraints.values.whereType<PointOnCircleConstraintDto>().single;
+    expect(created.circleOrArcId, circleId);
+    expect(created.pointId, rectangle.cornerPointIds.first);
   });
 
   // --- Phase 6.2.1: Arc tool -------------------------------------------------
