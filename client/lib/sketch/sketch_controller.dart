@@ -3652,24 +3652,40 @@ class SketchController extends ChangeNotifier {
       }
     }
 
+    final pointOnCurve = _pointOnCurveTarget(x1, y1);
+    if (pointOnCurve == null) return null;
+    final (target, onCurveX, onCurveY) = pointOnCurve;
+    return LineInference(
+      kind: LineInferenceKind.pointOnCurve,
+      target: target,
+      snappedX: onCurveX,
+      snappedY: onCurveY,
+      markerX: onCurveX,
+      markerY: onCurveY,
+    );
+  }
+
+  /// The Line/Circle/Arc/Ellipse (if any) whose curve ([x], [y]) is within
+  /// [pointOnCurveSnapPixelRadius] of, and the nearest point on that curve
+  /// to snap onto - the standalone half of [_tangentOrPointOnCurveInference]
+  /// (which additionally tries tangency first, and only for a Circle/Arc,
+  /// before falling back to this), factored out so any single-point
+  /// placement can offer the same inference without needing a direction to
+  /// test tangency against. Line/Circle/Arc/Ellipse are the only kinds
+  /// offered - the only three with a backend PointOnLine/PointOnCircle/
+  /// PointOnEllipse constraint (see [_pointOnCurveConstraintFor]).
+  (SketchSelection, double, double)? _pointOnCurveTarget(double x, double y) {
+    final hit = _entityAt(x, y, _curveInferenceHitRadius(pointOnCurveSnapPixelRadius));
+    if (hit == null) return null;
     if (hit.kind != SelectionKind.line &&
         hit.kind != SelectionKind.circle &&
         hit.kind != SelectionKind.arc &&
         hit.kind != SelectionKind.ellipse) {
       return null;
     }
-    final pointOnCurveRadius = _curveInferenceHitRadius(pointOnCurveSnapPixelRadius);
-    if (_entityAt(x1, y1, pointOnCurveRadius)?.sameAs(hit) != true) return null;
-    final onCurve = _nearestPointOnCurve(hit, x1, y1);
+    final onCurve = _nearestPointOnCurve(hit, x, y);
     if (onCurve == null) return null;
-    return LineInference(
-      kind: LineInferenceKind.pointOnCurve,
-      target: hit,
-      snappedX: onCurve.$1,
-      snappedY: onCurve.$2,
-      markerX: onCurve.$1,
-      markerY: onCurve.$2,
-    );
+    return (hit, onCurve.$1, onCurve.$2);
   }
 
   /// Bug fix (on-device feedback: "when the sketcher picked up the
@@ -13983,6 +13999,18 @@ class SketchController extends ChangeNotifier {
   /// whatever it happens to land on would defeat that. If multiple
   /// existing Points are within range, the nearest one wins (see
   /// [_existingPointIdNear]).
+  ///
+  /// Bug fix (on-device feedback: "when I'm sketching and I drop a point
+  /// on a line or on a circle I would expect an inferred constraint with
+  /// line or curve to be applied"): dropping a standalone Point directly
+  /// on an existing Line/Circle/Arc/Ellipse's curve - not on one of its
+  /// own defining Points, which [_existingPointIdNear] already covers, and
+  /// not at a Line's own midpoint, which [_nearestLineMidpointId] already
+  /// covers - used to land a genuinely unconstrained Point there with no
+  /// relationship to what it visually touched at all. Falls back to
+  /// [_pointOnCurveTarget] (the same detection [_tangentOrPointOnCurveInference]
+  /// uses for the Line tool's own endpoint) once neither of those two
+  /// closer-priority snaps applies.
   Future<void> _clickPointTool() async {
     _selectionSet.clear();
     _ribbonVisible = false;
@@ -13992,6 +14020,17 @@ class SketchController extends ChangeNotifier {
       if (midpointLineId != null) {
         pointId = await _materializeMidpoint(midpointLineId);
       } else {
+        // Resolved *before* the new Point exists (not after, with an
+        // exclude-self id, the way the old single existing-Point check
+        // used to) - [_pointOnCurveTarget] goes through [_entityAt], which
+        // has no exclude-id of its own, so checking after creation let the
+        // brand new Point itself (sitting exactly at the query
+        // coordinates) win [_entityAt]'s own Point-first pass ahead of the
+        // Line/Circle/Arc/Ellipse curve it was actually dropped on - the
+        // on-device bug this whole block fixes.
+        final existingId = _existingPointIdNear(cursorX, cursorY);
+        final onCurveTarget = existingId == null ? _pointOnCurveTarget(cursorX, cursorY) : null;
+
         final point = await _api.createPoint(_sketchId!, cursorX, cursorY);
         points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
         _pushUndo(() async {
@@ -14000,11 +14039,14 @@ class SketchController extends ChangeNotifier {
         });
         pointId = point.id;
 
-        final existingId = _existingPointIdNear(cursorX, cursorY, excludeId: pointId);
         if (existingId != null) {
           final constraint = await _api.createCoincidentConstraint(_sketchId!, pointId, existingId);
           _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
           _autoCoincidentIndicatorPointId = pointId;
+        } else if (onCurveTarget != null) {
+          final (target, _, _) = onCurveTarget;
+          final constraint = await _pointOnCurveConstraintFor(pointId, target);
+          _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
         }
       }
       // A midpoint-snapped or auto-coincident placement adds a new

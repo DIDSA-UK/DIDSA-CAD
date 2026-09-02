@@ -3126,6 +3126,64 @@ void main() {
     expect(controller.activeLineInference?.kind, LineInferenceKind.parallel);
   });
 
+  test(
+      'bug fix (on-device feedback: "when I drop a point on a line or on a circle I would expect an '
+      'inferred constraint with line or curve to be applied") - the Point tool adds a PointOnLineConstraint '
+      'when dropped directly on an existing Line\'s curve, not just on one of its own Points', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 4);
+    controller.finishChain();
+    final targetLineId = controller.lines.keys.single;
+
+    controller.selectDrawTool(SketchTool.point);
+    // On the Line's curve at t=0.3 - deliberately not its midpoint (5, 2),
+    // which [_nearestLineMidpointId] already snaps to via a different,
+    // higher-priority path ([_materializeMidpoint]) than the one this test
+    // means to exercise.
+    await controller.handleCanvasTap(3, 1.2);
+
+    final created = controller.constraints.values.whereType<PointOnLineConstraintDto>().single;
+    expect(created.lineId, targetLineId);
+    final droppedPointId = controller.points.keys.last;
+    expect(created.pointId, droppedPointId);
+  });
+
+  test(
+      'the Point tool adds a PointOnCircleConstraint when dropped directly on an existing Circle\'s '
+      'boundary, not just on one of its own Points', () async {
+    controller.selectDrawTool(SketchTool.circle);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(5, 0); // radius 5
+    final circleId = controller.circles.keys.single;
+
+    controller.selectDrawTool(SketchTool.point);
+    // On the boundary but off every cardinal axis (see
+    // Sketch._add_cardinal_points), so this can't be mistaken for landing
+    // on one of the Circle's own existing Points.
+    await controller.handleCanvasTap(5 * math.cos(math.pi / 4), 5 * math.sin(math.pi / 4));
+
+    final created = controller.constraints.values.whereType<PointOnCircleConstraintDto>().single;
+    expect(created.circleOrArcId, circleId);
+    final droppedPointId = controller.points.keys.last;
+    expect(created.pointId, droppedPointId);
+  });
+
+  test(
+      'the Point tool still prefers an existing-Point coincidence over point-on-curve when dropped '
+      'near both at once', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 4);
+    controller.finishChain();
+
+    controller.selectDrawTool(SketchTool.point);
+    await controller.handleCanvasTap(0, 0); // the target Line's own start Point
+
+    expect(controller.constraints.values.whereType<PointOnLineConstraintDto>(), isEmpty);
+    expect(controller.constraints.values.whereType<CoincidentConstraintDto>(), isNotEmpty);
+  });
+
   // --- Phase 6.2.1: Arc tool -------------------------------------------------
 
   test('activeDrawGhost previews a plain circle while only the arc center is placed', () async {
