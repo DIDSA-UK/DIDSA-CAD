@@ -9263,10 +9263,15 @@ void main() {
     // 50.0 DistanceConstraint satisfied, without any server round trip.
     await localController.updatePointDrag(30, 40);
 
-    // The dragged Point's own PATCH still happens (that part is unchanged -
-    // only the *other* Points' reflow is local now), but no /solve or
-    // /solve-and-refresh round trip should have fired.
-    expect(localBackend.requestLog.any((r) => r.contains('/solve')), isFalse);
+    // Round-trip elimination (on-device investigation: dragging still felt
+    // bad even with the reflow solved locally, because the dragged Point's
+    // own PATCH was still an awaited network round trip on every frame) -
+    // updatePointDrag now writes the dragged Point's own position straight
+    // into local state and tries the local solve for it too, so a
+    // successful local drag frame makes NO network request at all, not
+    // merely no /solve one.
+    expect(localBackend.requestLog, isEmpty,
+        reason: 'a successful local drag frame should touch the network not at all');
 
     final draggedPoint = localController.points[draggedId]!;
     final otherPoint = localController.points[otherId]!;
@@ -9329,7 +9334,12 @@ void main() {
     localBackend.requestLog.clear();
     await localController.updateLineDrag(20, 20);
 
-    expect(localBackend.requestLog.any((r) => r.contains('/solve')), isFalse);
+    // Round-trip elimination - see the point-drag test above's own doc
+    // comment. A successful local drag frame (both endpoints written
+    // straight into local state, no PATCH for either) touches the network
+    // not at all.
+    expect(localBackend.requestLog, isEmpty,
+        reason: 'a successful local drag frame should touch the network not at all');
 
     final draggedStart = localController.points[lineStartId]!;
     final third = localController.points[thirdPointId]!;
@@ -9400,22 +9410,16 @@ void main() {
     expect(grabbed, isTrue);
     localBackend.requestLog.clear();
     await localController.updateLineDrag(20, 20);
-    // The network fallback's own solve fires via `unawaited(...)` (see
-    // _maybeSolveDuringDrag) - a real pointer-move handler can't block on
-    // it either, so updateLineDrag itself doesn't await it - one microtask
-    // turn lets it actually reach the (fake) backend before asserting on
-    // requestLog below.
-    await Future<void>.delayed(Duration.zero);
 
-    // The local solve's anchor-drift safety check must have rejected its
-    // own result (see _trySolveDuringDragLocally's own doc comment),
-    // falling back to the throttled server round trip instead - not left
-    // silently un-reflowed, and *definitely* not left with the dragged
-    // Line's endpoints moved somewhere other than where the drag put them.
-    // Converges locally - no fallback to the server round trip needed, now
-    // that a soft-dragged anchor moving to satisfy a Constraint is the
-    // intended outcome rather than something to reject.
-    expect(localBackend.requestLog.any((r) => r.contains('/solve')), isFalse);
+    // Converges locally in one shot - no fallback to the server round trip
+    // needed, now that a soft-dragged anchor moving to satisfy a Constraint
+    // is the intended outcome rather than something to reject (see
+    // solveSketchLocally's own doc comment). Round-trip elimination (see
+    // the point-drag test above): both endpoints were also written
+    // straight into local state rather than PATCHed, so this touches the
+    // network not at all, not merely skipping /solve.
+    expect(localBackend.requestLog, isEmpty,
+        reason: 'a successful local drag frame should touch the network not at all');
 
     final start = localController.points[line.startPointId]!;
     final end = localController.points[line.endPointId]!;
@@ -9430,6 +9434,87 @@ void main() {
     expect(start.y, closeTo(20.0, 1.0));
     expect(end.x, closeTo(20.0, 1.0));
     expect(end.y, closeTo(20.0, 1.0));
+  });
+
+  test(
+      'updatePointDrag falls back to the network PATCH for the dragged Point itself, not just the '
+      'reflow, when the local solve genuinely cannot converge (round-trip elimination\'s own safety '
+      'net: a library IS available here, unlike the very first PATCH test in this group, but this '
+      'frame\'s local solve still fails - a genuine triangle-inequality violation, not something a '
+      'naive DOF count catches pre-drag, so even solveSketchLocally\'s own retry-without-anchor '
+      'can\'t save it either)', () async {
+    final libraryPath = _findHostSlvsLibrary();
+    if (libraryPath == null) {
+      markTestSkipped('host didsa_slvs_ffi library not built - see client/native/slvs/CMakeLists.txt');
+      return;
+    }
+    final bindings = SlvsNativeBindings(ffi.DynamicLibrary.open(libraryPath));
+    final localBackend = _FakeBackend();
+    final localClient = MockClient((request) async => localBackend.handle(request));
+    final localController =
+        SketchController(api: SketchApiClient(httpClient: localClient), localSolverBindings: bindings);
+    await localController.ensureSketch();
+
+    localController.selectDrawTool(SketchTool.point);
+    await localController.handleCanvasTap(5, 5); // point A - away from the origin
+    localController.exitToSelectMode();
+    final pointA = localController.points.keys.firstWhere((id) => id != localController.originPointId);
+    localController.selectDrawTool(SketchTool.point);
+    await localController.handleCanvasTap(0, 5); // point B - a second free Point
+    localController.exitToSelectMode();
+    final pointB =
+        localController.points.keys.firstWhere((id) => id != localController.originPointId && id != pointA);
+    // Not two duplicate Constraints on the same pair (beginPointDrag's own
+    // pre-drag rigidity check already refuses a grab for that - trivially
+    // detectable by equation count alone, without ever running a solve).
+    // This is a genuine *geometric* infeasibility instead - A and B both
+    // confirmed at distance 5 from the (fixed) origin, but also confirmed
+    // 100 apart from each other, violating the triangle inequality (two
+    // Points each within 5 of a shared centre can never be more than 10
+    // apart) - not visible to a naive DOF/equation count (3 equations, 4
+    // unknowns, structurally under-determined by 1), so the grab is
+    // allowed, and only the real numeric solve - both with and without the
+    // dragged Point's own soft-drag bias - fails to converge.
+    localController.constraints['c1'] = DistanceConstraintDto(
+      id: 'c1',
+      pointAId: localController.originPointId!,
+      pointBId: pointA,
+      distance: 5.0,
+    );
+    localController.constraints['c2'] = DistanceConstraintDto(
+      id: 'c2',
+      pointAId: localController.originPointId!,
+      pointBId: pointB,
+      distance: 5.0,
+    );
+    localController.constraints['c3'] = DistanceConstraintDto(
+      id: 'c3',
+      pointAId: pointA,
+      pointBId: pointB,
+      distance: 100.0,
+    );
+
+    final grabbed = localController.beginPointDrag(pointA);
+    expect(grabbed, isTrue);
+    localBackend.requestLog.clear();
+    await localController.updatePointDrag(20, 20);
+
+    expect(
+      localBackend.requestLog.any((r) => r.startsWith('PATCH') && r.contains('/points/$pointA')),
+      isTrue,
+      reason: 'the dragged Point\'s own position must still reach the backend via the network '
+          'fallback when the local solve can\'t converge - it is no longer PATCHed unconditionally '
+          'on every frame the way it was before round-trip elimination',
+    );
+    // The fallback path applies the raw (unconstrained) drag position
+    // exactly like it always did before this optimization existed - the
+    // geometric contradiction is this Point's problem to settle on drop,
+    // not something this frame's PATCH tries to resolve itself. Cursor
+    // origin is (0, 5) (point B's placement tap, the most recent one
+    // before the drag started), point origin is (5, 5) (point A's own
+    // position).
+    expect(localController.points[pointA]!.x, closeTo(25.0, 1e-6)); // 5 + (20 - 0)
+    expect(localController.points[pointA]!.y, closeTo(20.0, 1e-6)); // 5 + (20 - 5)
   });
 
   test('endPointDrag clears draggingPointId and re-solves from the dropped position', () async {

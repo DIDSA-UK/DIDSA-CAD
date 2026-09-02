@@ -5241,6 +5241,31 @@ class SketchController extends ChangeNotifier {
       return;
     }
 
+    // Local-only drag (round-trip elimination, following the soft-drag
+    // work: dragging still felt bad on-device even after that fix because
+    // *this* PATCH - the dragged Point's own raw position, not the reflow
+    // solve - was still an awaited network round trip on every single
+    // frame, unconditionally, for anything not on the closed-form path.
+    // Closed-form shapes never had this problem in the first place - see
+    // [_applyClosedFormPositions]'s own "sync: false" contract). Written
+    // straight into [points] with no network call at all, then handed to
+    // [_trySolveDuringDragLocally] the same way any other anchor already
+    // is - that function already writes the dragged Point's own (possibly
+    // soft-drag-clamped) solved position back into [points] itself (see
+    // its own doc comment), so there is nothing left for this method to do
+    // on success. Synchronous end to end (no `await` in between the write
+    // and the solve attempt), so there is no stale-completion race here
+    // the way the network PATCH below has.
+    points[pointId] = SketchPointView(id: pointId, x: newX, y: newY);
+    if (_trySolveDuringDragLocally([pointId])) {
+      return;
+    }
+    // Fallback: the native library isn't available on this platform/build,
+    // or this specific frame's local solve threw or tripped one of
+    // [_trySolveDuringDragLocally]'s own guards - exactly the same network
+    // path this method always used before the optimization above existed,
+    // so a drag can freely flip between local-only and network-assisted
+    // frames without ever landing in a worse state than today's baseline.
     try {
       final updated = await _api.updatePoint(_sketchId!, pointId, newX, newY);
       // [endPointDrag] clears _draggingPointId synchronously before it solves
@@ -5253,16 +5278,7 @@ class SketchController extends ChangeNotifier {
       if (_draggingPointId != pointId) return;
       points[pointId] = SketchPointView(id: updated.id, x: updated.x, y: updated.y);
       notifyListeners();
-      // Sketcher restructure Phase 1 (Milestone E): the mid-drag reflow of
-      // every *other* Point tries the in-process solver first - no network
-      // round trip, so no throttle needed. Falls back to the existing
-      // throttled server solve whenever the native library isn't
-      // available (only bundled on Android today) or the local solve
-      // throws for any reason, so this narrow landing can never produce
-      // worse behaviour than before it existed, only better when it works.
-      if (!_trySolveDuringDragLocally([pointId])) {
-        _maybeSolveDuringDrag([pointId], () => _draggingPointId == pointId);
-      }
+      _maybeSolveDuringDrag([pointId], () => _draggingPointId == pointId);
     } on ApiException catch (e) {
       errorMessage = e.message;
       notifyListeners();
@@ -5272,13 +5288,16 @@ class SketchController extends ChangeNotifier {
   SlvsNativeBindings? _localSolverBindings;
   bool _localSolverUnavailable = false;
 
-  /// Attempts the in-process local solve for [updatePointDrag]'s mid-drag
-  /// reflow - returns false (never partially applied) if the native
-  /// library isn't loadable or the solve itself throws, so the caller can
-  /// fall back to the server round trip unconditionally. Deliberately
-  /// scoped to the single-Point-drag path only (sketcher restructure plan
-  /// Phase 1 item 4's "land behind one narrow, real interaction path
-  /// first") - [updateLineDrag]'s own mid-drag solve is untouched.
+  /// Attempts the in-process local solve for [updatePointDrag]'s/
+  /// [updateLineDrag]'s mid-drag reflow - returns false (never partially
+  /// applied) if the native library isn't loadable or the solve itself
+  /// throws, so the caller can fall back to the server round trip
+  /// unconditionally. [anchorPointIds] must already be seeded in [points]
+  /// with the caller's own raw drag target *before* this is called (both
+  /// callers now write it directly, no network round trip) - this is what
+  /// [solveSketchLocally] soft-drags, and (on success) what gets written
+  /// back into [points], possibly softly clamped - see that function's own
+  /// doc comment.
   bool _trySolveDuringDragLocally(List<String> anchorPointIds) {
     var bindings = _localSolverBindings;
     if (bindings == null && !_localSolverUnavailable) {
@@ -5723,6 +5742,21 @@ class SketchController extends ChangeNotifier {
     if (line == null) return;
     final dx = x - originCursorX;
     final dy = y - originCursorY;
+    // Local-only drag - see [updatePointDrag]'s own doc comment for the
+    // full "why" (round-trip elimination: this used to PATCH both
+    // endpoints over the network, sequentially, awaited, on every single
+    // frame - twice the round trips [updatePointDrag] itself had). Both
+    // endpoints written straight into [points] with no network call, then
+    // handed to [_trySolveDuringDragLocally] as both anchors at once,
+    // mirroring [updatePointDrag]'s own single-Point call exactly.
+    points[line.startPointId] = SketchPointView(id: line.startPointId, x: originStartX + dx, y: originStartY + dy);
+    points[line.endPointId] = SketchPointView(id: line.endPointId, x: originEndX + dx, y: originEndY + dy);
+    if (_trySolveDuringDragLocally([line.startPointId, line.endPointId])) {
+      return;
+    }
+    // Fallback: same network path this method always used - see
+    // [updatePointDrag]'s own fallback comment for why flipping between
+    // local-only and network-assisted frames mid-drag is safe.
     try {
       final updatedStart =
           await _api.updatePoint(_sketchId!, line.startPointId, originStartX + dx, originStartY + dy);
@@ -5733,19 +5767,10 @@ class SketchController extends ChangeNotifier {
       if (_draggingLineId != lineId) return;
       points[line.endPointId] = SketchPointView(id: updatedEnd.id, x: updatedEnd.x, y: updatedEnd.y);
       notifyListeners();
-      // Sketcher restructure plan Phase 1 item 4 ("land behind one narrow,
-      // real interaction path first... before widening"): [updatePointDrag]
-      // already tries the in-process solver first, falling back to the
-      // throttled server round trip - this was the one documented gap
-      // ("[updateLineDrag]'s own mid-drag solve is untouched"), now closed
-      // the same way, with both endpoints anchored (mirrors
-      // [_trySolveDuringDragLocally]'s single-Point-drag call exactly).
-      if (!_trySolveDuringDragLocally([line.startPointId, line.endPointId])) {
-        _maybeSolveDuringDrag(
-          [line.startPointId, line.endPointId],
-          () => _draggingLineId == lineId,
-        );
-      }
+      _maybeSolveDuringDrag(
+        [line.startPointId, line.endPointId],
+        () => _draggingLineId == lineId,
+      );
     } on ApiException catch (e) {
       errorMessage = e.message;
       notifyListeners();
