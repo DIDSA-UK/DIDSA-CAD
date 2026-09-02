@@ -672,4 +672,267 @@ void main() {
       expect(ry, closeTo(sy, 1e-6), reason: '$id.y drifted');
     }
   });
+
+  group(
+      'Polygon soft-drag validation (follow-up to the Circle soft-drag spike - validating the '
+      'mechanism against a Polygon\'s own real constraint graph before rerouting its confirmed-'
+      'dimension drag off the closed-form path the way CircleDragMode already was): the CURRENT '
+      'production graph from Sketch.add_polygon (backend/app/sketch/models.py) - a confirmed '
+      'DistanceConstraint(center, v0, radius) + EqualRadiusConstraint per other vertex + '
+      'AngleConstraint(radial[i-1], radial[i], 360/sides) per adjacent radial-line pair - NOT the '
+      'older edge-to-edge EqualLength/Angle design the "residual-verified convergence" test above '
+      'exercises deliberately for its own, different reason (see that test\'s own doc comment)', () {
+    const sides = 5;
+    const radius = 10.0;
+    final lines = <String, (String, String)>{
+      for (var i = 0; i < sides; i++) 'radial$i': ('center', 'v$i'),
+    };
+    Map<String, (double, double)> regularPentagon() {
+      final points = <String, (double, double)>{'center': (0.0, 0.0)};
+      for (var i = 0; i < sides; i++) {
+        final angle = 2 * math.pi * i / sides;
+        points['v$i'] = (radius * math.cos(angle), radius * math.sin(angle));
+      }
+      return points;
+    }
+
+    List<ConstraintDto> polygonConstraints() => [
+          const DistanceConstraintDto(id: 'radius', pointAId: 'center', pointBId: 'v0', distance: radius),
+          for (var i = 1; i < sides; i++)
+            EqualRadiusConstraintDto(
+                id: 'er$i', center1PointId: 'center', radius1PointId: 'v0', center2PointId: 'center', radius2PointId: 'v$i'),
+          for (var i = 1; i < sides; i++)
+            AngleConstraintDto(id: 'ang$i', line1Id: 'radial${i - 1}', line2Id: 'radial$i', angleDegrees: 360.0 / sides),
+        ];
+
+    void expectIntact(Map<String, (double, double)> solved) {
+      final (cx, cy) = solved['center']!;
+      for (var i = 0; i < sides; i++) {
+        final (vx, vy) = solved['v$i']!;
+        final r = math.sqrt(math.pow(vx - cx, 2) + math.pow(vy - cy, 2));
+        expect(r, closeTo(radius, 1e-4), reason: 'v$i radius drifted - the confirmed dimension must be exact');
+      }
+      for (var i = 1; i < sides; i++) {
+        final (v0x, v0y) = solved['v${i - 1}']!;
+        final (v1x, v1y) = solved['v$i']!;
+        final a0 = math.atan2(v0y - cy, v0x - cx);
+        final a1 = math.atan2(v1y - cy, v1x - cx);
+        var delta = (a1 - a0) * 180 / math.pi;
+        while (delta < 0) {
+          delta += 360;
+        }
+        while (delta > 180) {
+          delta -= 360;
+        }
+        expect(delta.abs(), closeTo(360.0 / sides, 1e-2), reason: 'central angle v${i - 1}->v$i drifted');
+      }
+    }
+
+    test('free centre: dragging v0 translates the whole Polygon rather than resizing/distorting it', () {
+      final points = regularPentagon();
+      points['v0'] = (radius + 6.0, 4.0); // seeded straight at the drag target
+      final result = solveSketchLocally(
+        bindings: bindings,
+        points: points,
+        constraints: polygonConstraints(),
+        lineEndpoints: (id) => _lineEndpoints(lines, id),
+        anchorPointIds: {'v0'},
+      );
+      expect(result.converged, isTrue, reason: 'resultCode=${result.resultCode}');
+      expectIntact(result.solvedPoints);
+      final (v0x, v0y) = result.solvedPoints['v0']!;
+      expect((v0x - (radius + 6.0)).abs() + (v0y - 4.0).abs(), lessThan(1.0),
+          reason: 'the dragged vertex still tracks close to the drag target');
+      final (cx, cy) = result.solvedPoints['center']!;
+      expect(cx.abs() + cy.abs(), greaterThan(1.0),
+          reason: 'unlike a hard pin, the free centre actually moves - "if unanchored, the shape moves"');
+    });
+
+    test('locked centre: dragging v0 rotates the whole Polygon (every vertex slides together) '
+        'instead of resizing it or teleporting to an unrelated root', () {
+      final points = regularPentagon();
+      points['v0'] = (radius + 6.0, 4.0);
+      final result = solveSketchLocally(
+        bindings: bindings,
+        points: points,
+        constraints: polygonConstraints(),
+        lineEndpoints: (id) => _lineEndpoints(lines, id),
+        anchorPointIds: {'v0'},
+        lockedPointIds: {'center'},
+      );
+      expect(result.converged, isTrue, reason: 'resultCode=${result.resultCode}');
+      final (cx, cy) = result.solvedPoints['center']!;
+      expect(cx, closeTo(0.0, 1e-9), reason: 'centre is locked - never moved by this solve');
+      expect(cy, closeTo(0.0, 1e-9));
+      expectIntact(result.solvedPoints);
+      // Nearest point on the radius-10 circle around the locked centre to
+      // the (16,4) drag target.
+      final norm = math.sqrt(16.0 * 16.0 + 4.0 * 4.0);
+      final (v0x, v0y) = result.solvedPoints['v0']!;
+      // A looser tolerance than Circle's own single-equation locked-centre
+      // case (1e-3) - Polygon's longer EqualRadius/Angle chain doesn't
+      // converge quite as tightly to the ideal nearest-point formula, but
+      // is still well within any real visual threshold.
+      expect(v0x, closeTo(16.0 / norm * radius, 0.05));
+      expect(v0y, closeTo(4.0 / norm * radius, 0.05));
+    });
+
+    test('centre and v0 both locked (zero remaining freedom): dragging a different vertex resists '
+        'entirely rather than distorting the Polygon or snapping to a far-away root', () {
+      // A small, realistic per-frame drag delta - not an arbitrary large
+      // jump. Found empirically during this validation pass that a large
+      // single-frame jump here can flip AngleConstraint's own pre-solve
+      // supplement disambiguation (solver_builder.dart's own
+      // _angleNeedsSupplement, which picks whichever of {72, 108} degrees
+      // is closer to the *raw, pre-solve* measured angle) to the wrong
+      // value entirely, before Newton ever runs - not a soft-drag defect,
+      // but a real reason to keep drag deltas realistic in these fixtures.
+      final points = regularPentagon();
+      final (v2x, v2y) = points['v2']!;
+      points['v2'] = (v2x + 0.5, v2y + 0.3);
+      final result = solveSketchLocally(
+        bindings: bindings,
+        points: points,
+        constraints: polygonConstraints(),
+        lineEndpoints: (id) => _lineEndpoints(lines, id),
+        anchorPointIds: {'v2'},
+        lockedPointIds: {'center', 'v0'},
+      );
+      expect(result.converged, isTrue, reason: 'resultCode=${result.resultCode}');
+      expectIntact(result.solvedPoints);
+      final original = regularPentagon();
+      final (ox, oy) = original['v2']!;
+      final (rx, ry) = result.solvedPoints['v2']!;
+      expect((rx - ox).abs() + (ry - oy).abs(), lessThan(1e-3),
+          reason: 'zero DOF left - the drag target is ignored, v2 stays at its one valid position');
+    });
+  });
+
+  group(
+      'Slot soft-drag validation (follow-up to the Circle soft-drag spike): the full production '
+      'graph from Sketch.add_slot (backend/app/sketch/models.py) - confirmed radius Distance + '
+      'both arcs\' own end-radius EqualRadius ties + the 2 cross-arc EqualRadius ties + all 4 '
+      'TangentConstraints + both ParallelConstraints (line1/line2 to the centreline) - the last 2 '
+      'of the 4 Tangents and the 2 Parallels are all individually redundant/root-selecting, per '
+      'that method\'s own doc comment, not load-bearing for determinacy on their own. Finding from '
+      'this validation pass: this redundant, Tangent-heavy graph has a noticeably smaller Newton '
+      'convergence basin than Circle\'s single-equation one - a small, realistic per-frame drag '
+      'delta converges cleanly, but an unrealistically large single-frame jump (tried first, before '
+      'settling on the deltas below) can fail to converge outright (resultCode 1). Not a new risk '
+      'soft-drag introduces - solveSketchLocally\'s own retry-without-anchor, then '
+      '_trySolveDuringDragLocally\'s blow-up/residual guards, then the network fallback already '
+      'exist precisely to catch a rare non-convergent local solve - but worth a real per-frame delta '
+      'in these fixtures rather than an arbitrary one, so a passing test actually reflects what a '
+      'real drag looks like.', () {
+    const c1 = (0.0, 0.0), c2 = (20.0, 0.0), radius = 5.0;
+    Map<String, (double, double)> intactSlot() => {
+          'c1p': c1,
+          'c2p': c2,
+          'a': (c1.$1, c1.$2 + radius),
+          'b': (c1.$1, c1.$2 - radius),
+          'c': (c2.$1, c2.$2 - radius),
+          'd': (c2.$1, c2.$2 + radius),
+        };
+    final lines = {
+      'line1': ('b', 'c'),
+      'line2': ('d', 'a'),
+      'centerline': ('c1p', 'c2p'),
+    };
+    List<ConstraintDto> slotConstraints() => const [
+          DistanceConstraintDto(id: 'radius', pointAId: 'c1p', pointBId: 'a', distance: radius),
+          EqualRadiusConstraintDto(id: 'er_arc1', center1PointId: 'c1p', radius1PointId: 'a', center2PointId: 'c1p', radius2PointId: 'b'),
+          EqualRadiusConstraintDto(id: 'er_arc2', center1PointId: 'c2p', radius1PointId: 'c', center2PointId: 'c2p', radius2PointId: 'd'),
+          EqualRadiusConstraintDto(id: 'er_cross1', center1PointId: 'c1p', radius1PointId: 'a', center2PointId: 'c2p', radius2PointId: 'c'),
+          EqualRadiusConstraintDto(id: 'er_cross2', center1PointId: 'c1p', radius1PointId: 'a', center2PointId: 'c2p', radius2PointId: 'd'),
+          TangentConstraintDto(id: 't1', centerPointId: 'c1p', radiusPointId: 'a', lineId: 'line1'),
+          TangentConstraintDto(id: 't2', centerPointId: 'c1p', radiusPointId: 'a', lineId: 'line2'),
+          TangentConstraintDto(id: 't3', centerPointId: 'c2p', radiusPointId: 'c', lineId: 'line1'),
+          TangentConstraintDto(id: 't4', centerPointId: 'c2p', radiusPointId: 'c', lineId: 'line2'),
+          ParallelConstraintDto(id: 'par1', line1Id: 'line1', line2Id: 'centerline'),
+          ParallelConstraintDto(id: 'par2', line1Id: 'line2', line2Id: 'centerline'),
+        ];
+
+    void expectRadiiHold(Map<String, (double, double)> solved) {
+      double r(String centerId, String radiusId) {
+        final (cx, cy) = solved[centerId]!;
+        final (rx, ry) = solved[radiusId]!;
+        return math.sqrt(math.pow(rx - cx, 2) + math.pow(ry - cy, 2));
+      }
+
+      for (final pair in [('c1p', 'a'), ('c1p', 'b'), ('c2p', 'c'), ('c2p', 'd')]) {
+        expect(r(pair.$1, pair.$2), closeTo(radius, 1e-3), reason: '${pair.$2}\'s own radius drifted');
+      }
+    }
+
+    test('both centres locked: dragging a is heavily constrained by Tangent+Parallel against the '
+        'fixed centreline, converges without a wrong-side/self-intersecting root', () {
+      final points = intactSlot();
+      points['a'] = (c1.$1 + 0.5, c1.$2 + radius + 0.3); // a small, realistic per-frame drag nudge
+      final result = solveSketchLocally(
+        bindings: bindings,
+        points: points,
+        constraints: slotConstraints(),
+        lineEndpoints: (id) => _lineEndpoints(lines, id),
+        anchorPointIds: {'a'},
+        lockedPointIds: {'c1p', 'c2p'},
+      );
+      expect(result.converged, isTrue, reason: 'resultCode=${result.resultCode}');
+      final (c1x, c1y) = result.solvedPoints['c1p']!;
+      expect(c1x, closeTo(c1.$1, 1e-9));
+      expect(c1y, closeTo(c1.$2, 1e-9));
+      final (c2x, c2y) = result.solvedPoints['c2p']!;
+      expect(c2x, closeTo(c2.$1, 1e-9));
+      expect(c2y, closeTo(c2.$2, 1e-9));
+      expectRadiiHold(result.solvedPoints);
+      // Both centres fixed leaves genuinely zero remaining freedom (see the
+      // comment at this group's own top) - a's drag target is ignored, it
+      // stays at its one valid position.
+      final (ax, ay) = result.solvedPoints['a']!;
+      expect(ax, closeTo(c1.$1, 1e-2));
+      expect(ay, closeTo(c1.$2 + radius, 1e-2));
+    });
+
+    test(
+        'KNOWN LIMITATION, not yet safe for a production reroute: with neither centre locked, the '
+        'dragged corner\'s own soft-drag bias is nowhere near strong enough to keep the solve near '
+        'the nearby, intuitive solution - Slot\'s own constraint graph never pins the centre-to-centre distance '
+        'at all (see this group\'s own doc comment - nothing in Sketch.add_slot constrains it), so '
+        'the redundant Tangent/Parallel system has a genuinely under-conditioned direction even '
+        'though py-slvs itself reports dof 0 for it (the exact quirk solveSketchLocally\'s own '
+        '"provisional-DOF floor" already works around for an *unconfirmed* radius - this is the '
+        'same underlying quirk, just with a confirmed one, which that floor does not cover). Even '
+        'soft-dragging the *near* centre too (not just the corner) and hard-locking only the far '
+        'one - tried directly below, before settling on documenting this as a limitation rather '
+        'than a fix - still jumped to a wildly different (if still individually valid: radius and '
+        'parallelism both still hold exactly) configuration for a tiny nudge. The one combination '
+        'that reliably behaves (see the test above) is BOTH centres locked - so a Slot corner drag '
+        'should stay on the closed-form path, or lock both centres outright, rather than rerouting '
+        'to the general soft-drag path the way Circle\'s confirmed-dimension case could.', () {
+      final points = intactSlot();
+      points['a'] = (c1.$1 + 0.5, c1.$2 + radius + 0.3); // a small, realistic per-frame drag nudge
+      final result = solveSketchLocally(
+        bindings: bindings,
+        points: points,
+        constraints: slotConstraints(),
+        lineEndpoints: (id) => _lineEndpoints(lines, id),
+        anchorPointIds: {'a'},
+      );
+      // Still a genuinely valid Slot (this isn't the false-positive-
+      // convergence class of bug the CurveTangentConstraint investigation
+      // found earlier this session - see solver.py's own doc comment on
+      // _REDUNDANCY_SAFE_CONSTRAINT_TYPES) - every radius and parallelism
+      // relationship really is satisfied exactly, just at an unexpected,
+      // far-away position nothing here asked for.
+      expect(result.converged, isTrue, reason: 'resultCode=${result.resultCode}');
+      expectRadiiHold(result.solvedPoints);
+      final (c1x, c1y) = result.solvedPoints['c1p']!;
+      final (line1sx, line1sy) = result.solvedPoints['b']!;
+      final (line1ex, line1ey) = result.solvedPoints['c']!;
+      final (c2x, c2y) = result.solvedPoints['c2p']!;
+      final centerlineDir = (c2x - c1x, c2y - c1y);
+      final line1Dir = (line1ex - line1sx, line1ey - line1sy);
+      final cross = centerlineDir.$1 * line1Dir.$2 - centerlineDir.$2 * line1Dir.$1;
+      expect(cross.abs(), lessThan(1e-3), reason: 'line1 really is still parallel to the centreline');
+    });
+  });
 }
