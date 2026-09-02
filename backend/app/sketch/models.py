@@ -13,6 +13,7 @@ from app.sketch.constraints import (
     CollinearConstraint,
     ConcentricConstraint,
     Constraint,
+    CurveTangentConstraint,
     DistanceConstraint,
     EqualLengthConstraint,
     EqualRadiusConstraint,
@@ -299,13 +300,16 @@ class Ellipse(SketchEntity):
     (`perpendicular_constraint_id`) keeps the minor axis exactly
     perpendicular to the major axis under drag.
 
-    `major_radius`/`minor_radius` must always satisfy major >= minor
-    (OCCT's own `gp_Elips` requirement, enforced at creation time - see
-    `Sketch.add_ellipse`). Both are edited the same way Circle/Arc's own
-    radius is: PATCHing the underlying DistanceConstraint
-    (`major_constraint_id`/`minor_constraint_id`) via
-    `app.sketch.router.update_constraint_value`, not a field on the
-    Ellipse itself.
+    `major_point_id`/`minor_point_id` are just the two perpendicular axis
+    handles - which one is actually "major" is never trusted from the id,
+    it's derived fresh from their live distances every time (see
+    `major_radius`/`minor_radius`/`rotation` below), so dragging one past
+    the other's length swaps which axis reports as major rather than
+    breaking OCCT's own `gp_Elips` requirement that major >= minor. Both
+    are edited the same way Circle/Arc's own radius is: PATCHing the
+    underlying DistanceConstraint (`major_constraint_id`/
+    `minor_constraint_id`) via `app.sketch.router.update_constraint_value`,
+    not a field on the Ellipse itself.
 
     Does NOT override `endpoint_point_ids()`, for the same reason Circle
     doesn't: an Ellipse is always its own standalone closed profile, never
@@ -339,15 +343,27 @@ class Ellipse(SketchEntity):
     def type(self) -> str:
         return "ellipse"
 
-    def major_radius(self, points: dict[str, Point]) -> float:
+    def _major_minor(self, points: dict[str, Point]) -> tuple[Point, float, float]:
+        """(bigger_point, bigger_radius, smaller_radius) - major/minor are
+        derived by comparing `major_point_id`/`minor_point_id`'s live
+        distances from centre, not by trusting which id is which, so
+        either Point can end up as the larger one after a drag."""
         center = points[self.center_point_id]
         major = points[self.major_point_id]
-        return math.hypot(major.x - center.x, major.y - center.y)
+        minor = points[self.minor_point_id]
+        major_dist = math.hypot(major.x - center.x, major.y - center.y)
+        minor_dist = math.hypot(minor.x - center.x, minor.y - center.y)
+        if major_dist >= minor_dist:
+            return major, major_dist, minor_dist
+        return minor, minor_dist, major_dist
+
+    def major_radius(self, points: dict[str, Point]) -> float:
+        _, radius, _ = self._major_minor(points)
+        return radius
 
     def minor_radius(self, points: dict[str, Point]) -> float:
-        center = points[self.center_point_id]
-        minor = points[self.minor_point_id]
-        return math.hypot(minor.x - center.x, minor.y - center.y)
+        _, _, radius = self._major_minor(points)
+        return radius
 
     def rotation(self, points: dict[str, Point]) -> float:
         """The major axis's direction from center, in radians from the +x
@@ -355,8 +371,8 @@ class Ellipse(SketchEntity):
         to orient the ellipse's OCCT `gp_Elips` (via its X reference
         direction), and the client uses to rotate its own rendering."""
         center = points[self.center_point_id]
-        major = points[self.major_point_id]
-        return math.atan2(major.y - center.y, major.x - center.x)
+        bigger, _, _ = self._major_minor(points)
+        return math.atan2(bigger.y - center.y, bigger.x - center.x)
 
 
 @dataclass
@@ -4423,6 +4439,40 @@ class Sketch:
             line_id=line_id,
             line_start_id=line.start_point_id,
             line_end_id=line.end_point_id,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
+
+    def add_curve_tangent_constraint(
+        self, entity1_id: str, entity2_id: str, shared_point_id: str
+    ) -> CurveTangentConstraint:
+        """Two Arcs meeting smoothly at [shared_point_id] - only Arcs can
+        use this (a Circle has no endpoint Point to share, see
+        `CurveTangentConstraint`'s own docstring). [shared_point_id] must be
+        the *same* Point id used as one of each Arc's own start/end Points
+        (an explicit-reference check, same "explicit references over
+        implicit geometric inference" convention `_isPointOnLine`-style
+        combos elsewhere in this codebase already use) - a Point that's
+        merely coincident-but-distinct from each Arc's own endpoint doesn't
+        qualify."""
+        entity1 = self.entities.get(entity1_id)
+        entity2 = self.entities.get(entity2_id)
+        if not isinstance(entity1, Arc):
+            raise KeyError(entity1_id)
+        if not isinstance(entity2, Arc):
+            raise KeyError(entity2_id)
+        if shared_point_id not in (entity1.start_point_id, entity1.end_point_id):
+            raise ValueError(f"{shared_point_id} is not an endpoint of arc {entity1_id}")
+        if shared_point_id not in (entity2.start_point_id, entity2.end_point_id):
+            raise ValueError(f"{shared_point_id} is not an endpoint of arc {entity2_id}")
+
+        constraint = CurveTangentConstraint(
+            id=str(uuid.uuid4()),
+            entity1_id=entity1_id,
+            entity2_id=entity2_id,
+            center1_point_id=entity1.center_point_id,
+            center2_point_id=entity2.center_point_id,
+            shared_point_id=shared_point_id,
         )
         self.constraints[constraint.id] = constraint
         return constraint

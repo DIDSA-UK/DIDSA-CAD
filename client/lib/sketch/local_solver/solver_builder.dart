@@ -58,11 +58,32 @@ class NativeSolverBuilder implements SolverBuilder {
   final PointLookup _pointXY;
 
   /// Point ids pinned into the fixed group rather than the solve group -
-  /// the sketch's own origin (if present) plus any per-call anchor ids
-  /// (drag-solve semantics). See [point2d]'s own doc comment.
+  /// the sketch's own origin (if present) plus any Point this local solve
+  /// has no business moving under any circumstance (an external reference,
+  /// a `FixedConstraintDto` target). See [point2d]'s own doc comment.
   final Set<String> _pinnedPointIds;
 
+  /// Point ids currently being dragged - stay in the ordinary solve group
+  /// (never [_pinnedPointIds]) but their own u/v params are marked via
+  /// SolveSpace's `dragged[]` mechanism (see [draggedParamHandles]) once
+  /// [point2d] registers them, so the solver favors leaving them close to
+  /// their current (raw, live-drag-target) value without forcing it - the
+  /// "soft-drag"/live-clamp this port's own governing plan calls for,
+  /// replacing the older, cruder approach of just hard-pinning a dragged
+  /// Point into [_pinnedPointIds] (which forced it to stay exactly where it
+  /// was seeded even when that violated a Constraint - the class of bug the
+  /// spike behind this mechanism was built to fix).
+  final Set<String> _draggedPointIds;
+
   final Map<String, int> _pointHandles = {};
+
+  /// The u/v param handles of every [_draggedPointIds] member [point2d] has
+  /// registered so far, in encounter order - what a caller passes to
+  /// [SlvsNativeBindings.solveDragged]'s own fixed 4-param ceiling (matching
+  /// Slvs_System.dragged's own `[4]`). Capped at 4 entries (2 Points' worth)
+  /// here too, same ceiling, rather than silently truncated later at the
+  /// FFI call site.
+  final List<int> draggedParamHandles = [];
   final Map<(int, int), int> _lineHandles = {};
   final Map<(int, int, int, int), int> _cubicHandles = {};
   int? _horizontalRefLine;
@@ -74,11 +95,13 @@ class NativeSolverBuilder implements SolverBuilder {
     required int workplane,
     required PointLookup pointXY,
     required Set<String> pinnedPointIds,
+    Set<String> draggedPointIds = const {},
   })  : _b = bindings,
         _sys = sys,
         _workplane = workplane,
         _pointXY = pointXY,
-        _pinnedPointIds = pinnedPointIds;
+        _pinnedPointIds = pinnedPointIds,
+        _draggedPointIds = draggedPointIds;
 
   /// Ids of every Point this builder has actually registered a solver
   /// entity for - mirrors `_PySlvsBuilder.solved_point_ids()`.
@@ -90,9 +113,17 @@ class NativeSolverBuilder implements SolverBuilder {
   int point2d(String pointId) {
     return _pointHandles.putIfAbsent(pointId, () {
       final (x, y) = _pointXY(pointId);
+      // A Point is never both pinned and dragged - [_pinnedPointIds] is
+      // reserved for geometry this solve must never move at all (the
+      // sketch's own origin, a locked/external-reference Point), which a
+      // soft-drag bias would be meaningless for anyway (the fixed group's
+      // params aren't varied by the solve regardless of dragged[]).
       final group = _pinnedPointIds.contains(pointId) ? slvsFixedGroup : slvsSolveGroup;
       final pu = _b.addParamV(_sys, x, group);
       final pv = _b.addParamV(_sys, y, group);
+      if (group == slvsSolveGroup && _draggedPointIds.contains(pointId) && draggedParamHandles.length + 2 <= 4) {
+        draggedParamHandles..add(pu)..add(pv);
+      }
       return _b.addPoint2d(_sys, _workplane, pu, pv, group);
     });
   }

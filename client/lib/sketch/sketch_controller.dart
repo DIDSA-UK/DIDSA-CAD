@@ -840,8 +840,56 @@ enum LineConstructionMethod { endToEnd, midpoint }
 /// null when its angle is outside [SketchController.lineSnapAngleDegrees]
 /// of both. Drives both the dashed ghost preview (snapped to the axis
 /// rather than the raw cursor) and, on placement, which constraint (if
-/// any) [SketchController._applyLineSnapConstraint] auto-adds.
+/// any) [SketchController._applyLineInference] auto-adds (folded into
+/// [LineInferenceKind] alongside the newer inference kinds - see that
+/// enum's own doc comment).
 enum LineSnapAxis { horizontal, vertical }
+
+/// Session N (auto-constraint inference round): every relation the Line
+/// tool can now auto-apply from placement alone, live as you draw - not
+/// just [LineSnapAxis]'s Horizontal/Vertical, but a segment drawn near-
+/// parallel/perpendicular to an existing Line, or whose free end lands near
+/// an existing Circle/Arc/Ellipse's curve. [horizontal]/[vertical] mirror
+/// [LineSnapAxis] exactly (folded into this same enum so
+/// [SketchController.activeLineInference] can report one unified "what
+/// would placing right now auto-add" answer) - [LineSnapAxis] itself, and
+/// every existing H/V code path, is untouched.
+enum LineInferenceKind { horizontal, vertical, parallel, perpendicular, tangent, pointOnCurve }
+
+/// One live auto-constraint candidate for the Line tool's in-progress
+/// segment - see [SketchController._combinedLineInference], the
+/// generalization of [SketchController._lineSnapAxis] this feature adds.
+/// [target] is the existing entity being inferred against (null for
+/// [LineInferenceKind.horizontal]/[LineInferenceKind.vertical], which - like
+/// today's H/V snap - relate the segment to a fixed axis, not another
+/// entity). [snappedX]/[snappedY] is where the free end should be *drawn*
+/// (the ghost preview - never where the real endpoint Point actually gets
+/// created, exactly like [LineSnapAxis]: the real Point still lands at the
+/// raw cursor position and the solver pulls it onto the constraint after
+/// placement, see [SketchController._applyLineInference]'s own doc
+/// comment). [markerX]/[markerY] is a second, independent point - the most
+/// meaningful spot to draw this candidate's own glyph (the exact tangent
+/// point on a circle, the nearest point on a curve, an existing line's
+/// midpoint) - equal to [snappedX]/[snappedY] for [pointOnCurve], distinct
+/// for every other kind, and unused for [horizontal]/[vertical] (which
+/// only ever recolor the ghost line itself, no separate glyph).
+class LineInference {
+  final LineInferenceKind kind;
+  final SketchSelection? target;
+  final double snappedX;
+  final double snappedY;
+  final double markerX;
+  final double markerY;
+
+  const LineInference({
+    required this.kind,
+    this.target,
+    required this.snappedX,
+    required this.snappedY,
+    required this.markerX,
+    required this.markerY,
+  });
+}
 
 /// How a tap-to-place Circle is built while [SketchTool.circle] is active.
 /// [centerRadius] is the original center-then-radius-point placement;
@@ -1388,6 +1436,13 @@ class ConstraintOption {
 /// [SketchController._buildLinePairGhosts].
 enum GhostKind { length, linear, vertical, horizontal, radius, diameter, lineDistance, angle }
 
+/// Bug fix (on-device feedback: dragging a Circle with an already-confirmed
+/// driving dimension used to silently overwrite that dimension's value
+/// instead of respecting it) - see [SketchController._circleDragMode]'s own
+/// doc comment for what each of these three outcomes means and when each
+/// applies.
+enum CircleDragMode { resize, translate, blocked }
+
 /// A client-side-only preview of a dimension that doesn't exist as a real
 /// Constraint yet (or whose existing value hasn't been confirmed for
 /// editing yet) - Stage 13 item 5. Nothing here is sent to the backend
@@ -1476,6 +1531,52 @@ class SketchController extends ChangeNotifier {
   /// snap - a few degrees either side of each axis, per the scope doc.
   static const double lineSnapAngleDegrees = 4.0;
 
+  /// Session N: the parallel/perpendicular counterpart to
+  /// [lineSnapAngleDegrees] - how many degrees off parallel (or off
+  /// perpendicular) to an existing Line the in-progress segment can be
+  /// before [_parallelOrPerpendicularInference] stops reporting a
+  /// candidate. Same value, same "a few degrees of slack" reasoning, but
+  /// kept as its own constant rather than reusing [lineSnapAngleDegrees]
+  /// directly - product decision was independent, per-kind tuning knobs
+  /// (angle-based inference reuses this same *value* today only because
+  /// it's the same kind of measurement, not because the two are meant to
+  /// always move together).
+  static const double parallelPerpendicularSnapAngleDegrees = 4.0;
+
+  /// Session N: how many degrees the in-progress segment's own direction
+  /// can be from the true tangent-line direction (computed from the fixed
+  /// anchor to a nearby Circle/Arc's centre - see [_tangentSnapPoint])
+  /// before [_tangentOrPointOnCurveInference] treats it as a tangent
+  /// candidate rather than falling back to a plain point-on-curve one.
+  /// Wider than [parallelPerpendicularSnapAngleDegrees] - tangency is a
+  /// harder target to land on by eye (a moving reference angle, not a
+  /// fixed axis or an on-screen line) than either of those, so it gets
+  /// more forgiveness.
+  static const double tangentSnapAngleDegrees = 6.0;
+
+  /// Session N: how close (in *screen* pixels, converted to sketch units
+  /// via the canvas's current zoom - see [_curveInferenceHitRadius], the
+  /// same [minTapHitRadiusPixels]/[hitRadiusForPixelsPerUnit] pattern, not
+  /// [snapRadius]'s flat sketch-unit one - proximity to a curve during
+  /// placement is a screen-space/visual judgement that should stay a
+  /// fixed pixel size regardless of zoom) the Line tool's free end must be
+  /// to an existing Circle/Arc's boundary before
+  /// [_tangentOrPointOnCurveInference] considers it a tangent candidate at
+  /// all (the angle check in [tangentSnapAngleDegrees] narrows it further
+  /// from there). Independent of [pointOnCurveSnapPixelRadius] - a
+  /// separate per-kind knob, per product decision, even though both start
+  /// at the same value.
+  static const double tangentSnapPixelRadius = 18.0;
+
+  /// Session N: the point-on-curve counterpart to
+  /// [tangentSnapPixelRadius] - how close the Line tool's free end must be
+  /// to an existing Line/Circle/Arc/Ellipse's curve (not one of its
+  /// defining Points - see [_existingPointIdNear], which already owns
+  /// that, tighter, case) before [_tangentOrPointOnCurveInference] snaps
+  /// the ghost onto it and would add a PointOnLine/PointOnCircle/
+  /// PointOnEllipse constraint on placement.
+  static const double pointOnCurveSnapPixelRadius = 18.0;
+
   /// The minimum tap hit target, in logical pixels, expressed as a radius.
   /// Entity hit-testing for a discrete tap (select, dimension-target
   /// picking) uses whichever is larger of this - converted to sketch units
@@ -1505,6 +1606,33 @@ class SketchController extends ChangeNotifier {
   double hitRadiusForPixelsPerUnit(double pixelsPerUnit) {
     if (pixelsPerUnit <= 0) return snapRadius;
     return math.max(snapRadius, minTapHitRadiusPixels / pixelsPerUnit);
+  }
+
+  /// Session N: the canvas's most recently reported
+  /// [ViewTransform.pixelsPerUnit], cached here purely so
+  /// [_curveInferenceHitRadius] - read every frame by the no-argument
+  /// [activeLineInference] getter, the same shape [activeLineSnapAxis]
+  /// already has - can convert its pixel-based radii into sketch units
+  /// without every cursor-movement entry point needing to thread a zoom
+  /// value through. Updated from [moveCursorAbsoluteScreen] (the one entry
+  /// point that's always handed a fresh [ViewTransform]); left stale
+  /// during a pan/zoom-free relative drag, same "not worth plumbing
+  /// further" tradeoff [moveCursorToSketchPoint] (the 3D-embedded case)
+  /// already accepts by never updating it at all. Starts at
+  /// `SketchViewport.basePixelsPerUnit`'s own default (zoom 1) so the very
+  /// first frame, before any real cursor move, still has a sane radius.
+  double _lastKnownPixelsPerUnit = 20.0;
+
+  /// Session N: [tangentSnapPixelRadius]/[pointOnCurveSnapPixelRadius]
+  /// converted to sketch units at the canvas's current zoom - the same
+  /// pixels-then-convert shape [hitRadiusForPixelsPerUnit] already
+  /// establishes for [minTapHitRadiusPixels], just fed by
+  /// [_lastKnownPixelsPerUnit] instead of a parameter, since
+  /// [_tangentOrPointOnCurveInference] is only ever called from
+  /// no-argument getters/methods.
+  double _curveInferenceHitRadius(double pixelRadius) {
+    if (_lastKnownPixelsPerUnit <= 0) return snapRadius;
+    return math.max(snapRadius, pixelRadius / _lastKnownPixelsPerUnit);
   }
 
   String? _sketchId;
@@ -2174,6 +2302,19 @@ class SketchController extends ChangeNotifier {
 
   String? _ellipseCenterPointId;
   String? _ellipseMajorPointId;
+  /// Whether [_ellipseMajorPointId] reused an already-existing Point
+  /// (rather than being freshly created for this placement) - captured at
+  /// tap-2 time, before [_pointIdAtCursor] resolves it, since afterwards
+  /// there is no way to tell the two cases apart from the id alone. Used by
+  /// [_clickEllipseTool]'s own axis-swap fix (see [_resolveEllipseAxes]'s
+  /// doc comment): relocating a *freshly created* major Point to the real
+  /// (longer) axis is always safe - nothing else in the Sketch references
+  /// it yet - but relocating a *reused* one could silently drag along
+  /// whatever other Line/Circle/entity already relies on its exact
+  /// position, an unrelated side effect purely from this Ellipse's own
+  /// internal axis relabeling. The swap falls back to the old clamped
+  /// behaviour whenever this is true, same as the origin case.
+  bool _ellipseMajorPointIsReused = false;
 
   /// The center/major-axis Points of an Ellipse placed but not yet
   /// completed (waiting on the minor-radius-defining tap) - mirrors
@@ -2725,17 +2866,68 @@ class SketchController extends ChangeNotifier {
     final major = points[majorId];
     if (major == null) return null;
 
-    final majorRadius = math.sqrt(math.pow(major.x - center.x, 2) + math.pow(major.y - center.y, 2));
-    if (majorRadius < 1e-9) return null;
-    final rawMinorRadius = _perpendicularDistanceToLine(cursorX, cursorY, center.x, center.y, major.x, major.y);
-    if (rawMinorRadius == null || rawMinorRadius < 1e-9) return null;
+    final axes = _resolveEllipseAxes(center.x, center.y, major.x, major.y, cursorX, cursorY);
+    if (axes == null) return null;
+    final (majorX, majorY, minorRadius) = axes;
     return EllipseGhost(
       centerX: center.x,
       centerY: center.y,
-      majorX: major.x,
-      majorY: major.y,
-      minorRadius: math.min(rawMinorRadius, majorRadius),
+      majorX: majorX,
+      majorY: majorY,
+      minorRadius: minorRadius,
     );
+  }
+
+  /// Bug fix (on-device feedback: "when placing an elipse, it's impossible
+  /// for the second axis to be larger than the first axis - either axis
+  /// should be able to be major or minor"): the tapped major-axis Point
+  /// (`placedMajorX`/`placedMajorY`) always used to stay "major" no matter
+  /// what, with the third tap's own perpendicular distance silently
+  /// clamped down via `math.min` if it would have exceeded it - order-
+  /// based labeling, not length-based. Returns the axis that should
+  /// actually be treated as major (by length, not tap order) - unchanged
+  /// (`placedMajorX`/`placedMajorY`, `rawMinorRadius`) when the placed axis
+  /// is still the longer one, or the *perpendicular* axis (recomputed as a
+  /// real point position, not just a swapped scalar - callers that create/
+  /// move a real Point need the position, not only the value) when the
+  /// cursor's own perpendicular distance turns out to be longer, with the
+  /// originally-placed axis's own length becoming the new minor radius.
+  /// `major ≥ minor` still holds either way - required downstream by
+  /// OCCT's own `gp_Elips` (see the backend `Ellipse`/`add_ellipse`
+  /// docstrings) - this only changes *which* axis satisfies it. Null if
+  /// degenerate (placed axis or the perpendicular one is ~0).
+  (double majorX, double majorY, double minorRadius)? _resolveEllipseAxes(
+    double centerX,
+    double centerY,
+    double placedMajorX,
+    double placedMajorY,
+    double cursorXArg,
+    double cursorYArg,
+  ) {
+    final placedDx = placedMajorX - centerX;
+    final placedDy = placedMajorY - centerY;
+    final placedRadius = math.sqrt(placedDx * placedDx + placedDy * placedDy);
+    if (placedRadius < 1e-9) return null;
+    final rawMinorRadius =
+        _perpendicularDistanceToLine(cursorXArg, cursorYArg, centerX, centerY, placedMajorX, placedMajorY);
+    if (rawMinorRadius == null || rawMinorRadius < 1e-9) return null;
+    if (rawMinorRadius <= placedRadius) {
+      return (placedMajorX, placedMajorY, rawMinorRadius);
+    }
+    // Swap: the perpendicular axis is actually the longer one - it becomes
+    // the new major axis (the tapped Point's own axis becomes minor
+    // instead). Recomputed as the actual perpendicular *projection* of the
+    // cursor (not the raw cursor position itself), matching how
+    // rawMinorRadius above was already derived via perpendicular
+    // projection, not raw cursor-to-centre distance.
+    final placedDirX = placedDx / placedRadius;
+    final placedDirY = placedDy / placedRadius;
+    final perpDirX = -placedDirY;
+    final perpDirY = placedDirX;
+    final cursorDx = cursorXArg - centerX;
+    final cursorDy = cursorYArg - centerY;
+    final perpComponent = cursorDx * perpDirX + cursorDy * perpDirY;
+    return (centerX + perpDirX * perpComponent, centerY + perpDirY * perpComponent, placedRadius);
   }
 
   /// Ellipse-arc's tap sequence is center, then major-axis point, then
@@ -3047,7 +3239,7 @@ class SketchController extends ChangeNotifier {
         if (startId == null) return null;
         final start = points[startId];
         if (start == null) return null;
-        final snapped = _snappedLineEnd(start.x, start.y, cursorX, cursorY);
+        final snapped = _snappedLineEndWithInference(start.x, start.y, cursorX, cursorY);
         return LineGhost(startX: start.x, startY: start.y, endX: snapped.$1, endY: snapped.$2);
       case LineConstructionMethod.midpoint:
         final midX = _midpointAnchorX;
@@ -3056,7 +3248,7 @@ class SketchController extends ChangeNotifier {
         // Mirrors the real Line _clickMidpointLineTool would create: the
         // cursor becomes one end, its mirror image through the anchor the
         // other.
-        final snapped = _snappedLineEnd(midX, midY, cursorX, cursorY);
+        final snapped = _snappedLineEndWithInference(midX, midY, cursorX, cursorY);
         return LineGhost(
           startX: 2 * midX - snapped.$1,
           startY: 2 * midY - snapped.$2,
@@ -3114,6 +3306,427 @@ class SketchController extends ChangeNotifier {
         if (midX == null || midY == null) return null;
         return _lineSnapAxis(midX, midY, cursorX, cursorY);
     }
+  }
+
+  /// Session N: [_combinedLineInference] for the Line tool's current
+  /// in-progress segment - exactly [activeLineSnapAxis]'s own shape
+  /// (recomputed fresh from the anchor + cursor on every read), extended
+  /// to also report the newer parallel/perpendicular/tangent/point-on-
+  /// curve candidates. The canvas reads this - not [activeLineSnapAxis]
+  /// directly - to color/decorate the live ghost preview, since this is
+  /// the superset that already folds H/V in at the bottom of the priority
+  /// order; [activeLineSnapAxis] itself stays exactly as it was, both for
+  /// its own existing test coverage and because [_combinedLineInference]
+  /// is built directly on top of it.
+  LineInference? get activeLineInference {
+    if (_mode != SketchMode.draw || _activeTool != SketchTool.line) return null;
+    switch (_lineMethod) {
+      case LineConstructionMethod.endToEnd:
+        final startId = _chainStartPointId;
+        if (startId == null) return null;
+        final start = points[startId];
+        if (start == null) return null;
+        return _combinedLineInference(start.x, start.y, cursorX, cursorY);
+      case LineConstructionMethod.midpoint:
+        final midX = _midpointAnchorX;
+        final midY = _midpointAnchorY;
+        if (midX == null || midY == null) return null;
+        return _combinedLineInference(midX, midY, cursorX, cursorY);
+    }
+  }
+
+  /// Session N: the single highest-priority auto-constraint candidate for
+  /// a Line from ([x0], [y0]) to the cursor at ([x1], [y1]) - the
+  /// generalization of [_lineSnapAxis] this feature adds. Fixed priority
+  /// order (product decision - no disambiguation picker): an
+  /// existing-Point merge wins outright and is never reported here at all
+  /// (it's handled upstream, structurally, by [_pointIdAtCursor]/
+  /// [_existingPointIdNear] reusing the same Point id rather than this
+  /// class ever creating a competing constraint - stronger than any
+  /// constraint this method could add, so a real candidate here would be
+  /// actively misleading); then tangent/point-on-curve; then Horizontal/
+  /// Vertical; then parallel/perpendicular last. Never more than one
+  /// constraint auto-applied per placement. Null while
+  /// [inferenceSuppressed] is on (the FAB toggle suppresses every kind
+  /// here, H/V included - see that getter's own doc comment) or once
+  /// nothing at all qualifies.
+  ///
+  /// Horizontal/Vertical outranking parallel/perpendicular here (unlike
+  /// tangent/point-on-curve, which outrank both) is a deliberate fix, not
+  /// the original design: any two Lines that are each individually H/V are
+  /// - trivially - also parallel to each other, which is by far the most
+  /// common way for a parallel/perpendicular candidate and an H/V one to
+  /// both apply to the same placement at once (drawing a rectangle's
+  /// second horizontal side, say). Confirmed by a real regression the
+  /// original "parallel/perpendicular above H/V" ordering caused: six
+  /// existing tests around the lineDistance-ghost-implies-Parallel feature
+  /// (`confirming a fresh lineDistance ghost also creates a real
+  /// ParallelConstraint...` and its siblings) draw two separately-Horizontal
+  /// Lines and expect exactly one ParallelConstraint, added later by that
+  /// unrelated feature when the dimension is confirmed - with parallel/
+  /// perpendicular ranked above H/V, placing the *second* Line already
+  /// added its own redundant ParallelConstraint against the first, so the
+  /// later feature's own `.single` lookup found two. Giving each
+  /// axis-aligned Line its own independent Horizontal/Vertical Constraint
+  /// is also simply more robust than tying it to another Line's own
+  /// orientation via Parallel - delete/alter that other Line's H/V later
+  /// and a merely-Parallel Line would drift with it, where an
+  /// independently-H/V one wouldn't. Tangent/point-on-curve don't have
+  /// this problem (there's no meaningful sense in which a Point landing on
+  /// a Circle/curve is "redundant" with the segment also looking near
+  /// axis-aligned), so they keep outranking H/V unconditionally.
+  LineInference? _combinedLineInference(double x0, double y0, double x1, double y1) {
+    if (_inferenceSuppressed) return null;
+    final dx = x1 - x0;
+    final dy = y1 - y0;
+    if (math.sqrt(dx * dx + dy * dy) < 1e-9) return null;
+    if (_existingPointIdNear(x1, y1) != null) return null;
+
+    final curveMatch = _tangentOrPointOnCurveInference(x0, y0, x1, y1);
+    if (curveMatch != null) return curveMatch;
+
+    final axis = _lineSnapAxis(x0, y0, x1, y1);
+    if (axis != null) {
+      final snapped = _snappedLineEnd(x0, y0, x1, y1);
+      return LineInference(
+        kind: axis == LineSnapAxis.horizontal ? LineInferenceKind.horizontal : LineInferenceKind.vertical,
+        snappedX: snapped.$1,
+        snappedY: snapped.$2,
+        markerX: snapped.$1,
+        markerY: snapped.$2,
+      );
+    }
+
+    return _parallelOrPerpendicularInference(x0, y0, x1, y1);
+  }
+
+  /// [_snappedLineEnd] extended to also snap onto whichever
+  /// higher-priority [_combinedLineInference] candidate (if any) is
+  /// currently live - the ghost preview's own read of the same combined
+  /// result [activeLineInference] exposes, so the two never disagree.
+  /// Falls back to the raw cursor position (not [_snappedLineEnd]'s own
+  /// H/V-only snap) while [inferenceSuppressed] is on, since that toggle
+  /// is meant to suppress every kind of live snap, not just the new ones.
+  (double, double) _snappedLineEndWithInference(double x0, double y0, double x1, double y1) {
+    final inference = _combinedLineInference(x0, y0, x1, y1);
+    if (inference != null) return (inference.snappedX, inference.snappedY);
+    if (_inferenceSuppressed) return (x1, y1);
+    return _snappedLineEnd(x0, y0, x1, y1);
+  }
+
+  /// How many degrees apart two undirected angles (radians in, degrees
+  /// out) are - folded into `[0, 180]` first (a segment's direction and
+  /// its exact reverse are the same undirected line), so e.g. 179 degrees
+  /// apart is treated as 1 degree apart, matching how [_lineSnapAxis]
+  /// already only cares about a segment's *axis*, never which way along
+  /// it the cursor happens to be.
+  double _undirectedAngleDeltaDegrees(double a, double b) {
+    var diff = ((a - b) * 180 / math.pi).abs() % 360;
+    if (diff > 180) diff = 360 - diff;
+    if (diff > 90) diff = 180 - diff;
+    return diff;
+  }
+
+  /// How many degrees apart two *directed* angles (radians in, degrees
+  /// out) are, folded into `[0, 180]` - unlike
+  /// [_undirectedAngleDeltaDegrees], 179 degrees apart stays 179 degrees
+  /// apart. [_tangentSnapPoint] needs this directed version - the two true
+  /// tangent lines from an external point face specific, opposite-ish
+  /// directions relative to the cursor, not an undirected axis.
+  double _directedAngleDeltaDegrees(double a, double b) {
+    var diff = ((a - b) * 180 / math.pi) % 360;
+    if (diff > 180) diff -= 360;
+    if (diff < -180) diff += 360;
+    return diff.abs();
+  }
+
+  /// The centre/radius of [target] (a Circle or Arc selection) - Arc uses
+  /// its own circle (centre to its start Point), same radius definition
+  /// [_entityAt]'s own Arc branch already uses. Null for any other
+  /// [SelectionKind], or if [target]'s referenced entity/Points no longer
+  /// resolve.
+  (double, double, double)? _circleGeometryFor(SketchSelection target) {
+    switch (target.kind) {
+      case SelectionKind.circle:
+        final circle = circles[target.id];
+        if (circle == null) return null;
+        final center = points[circle.centerPointId];
+        final radiusPoint = points[circle.radiusPointId];
+        if (center == null || radiusPoint == null) return null;
+        final r = math.sqrt(math.pow(radiusPoint.x - center.x, 2) + math.pow(radiusPoint.y - center.y, 2));
+        return (center.x, center.y, r);
+      case SelectionKind.arc:
+        final arc = arcs[target.id];
+        if (arc == null) return null;
+        final center = points[arc.centerPointId];
+        final start = points[arc.startPointId];
+        if (center == null || start == null) return null;
+        final r = math.sqrt(math.pow(start.x - center.x, 2) + math.pow(start.y - center.y, 2));
+        return (center.x, center.y, r);
+      default:
+        return null;
+    }
+  }
+
+  /// The point on [target]'s own curve nearest ([x], [y]) - a Line's
+  /// nearest point on its segment (clamped to the two endpoints, same
+  /// projection [_distanceToSegment] itself computes but doesn't return),
+  /// a Circle/Arc's nearest point on its full circle (projected radially
+  /// from the centre - deliberately not clamped to an Arc's own sweep,
+  /// since [_tangentOrPointOnCurveInference] only ever calls this once
+  /// [_entityAt] has already confirmed ([x], [y]) is within its sweep), or
+  /// an Ellipse's nearest boundary point via
+  /// [_nearestPointOnEllipseBoundary]. Null for any other [SelectionKind]
+  /// (this sketcher's backend has no PointOnEllipseArc/PointOnSpline
+  /// constraint to apply even if one were found - see this feature's own
+  /// scope note on that gap) or if [target]'s geometry doesn't resolve.
+  (double, double)? _nearestPointOnCurve(SketchSelection target, double x, double y) {
+    switch (target.kind) {
+      case SelectionKind.line:
+        final line = lines[target.id];
+        if (line == null) return null;
+        final a = points[line.startPointId];
+        final b = points[line.endPointId];
+        if (a == null || b == null) return null;
+        final abx = b.x - a.x;
+        final aby = b.y - a.y;
+        final lengthSquared = abx * abx + aby * aby;
+        if (lengthSquared < 1e-12) return null;
+        final t = (((x - a.x) * abx + (y - a.y) * aby) / lengthSquared).clamp(0.0, 1.0);
+        return (a.x + t * abx, a.y + t * aby);
+      case SelectionKind.circle:
+      case SelectionKind.arc:
+        final circle = _circleGeometryFor(target);
+        if (circle == null) return null;
+        final (centerX, centerY, r) = circle;
+        final dx = x - centerX;
+        final dy = y - centerY;
+        final dist = math.sqrt(dx * dx + dy * dy);
+        if (dist < 1e-9) return null;
+        return (centerX + r * dx / dist, centerY + r * dy / dist);
+      case SelectionKind.ellipse:
+        final ellipse = ellipses[target.id];
+        if (ellipse == null) return null;
+        final center = points[ellipse.centerPointId];
+        final major = points[ellipse.majorPointId];
+        final minor = points[ellipse.minorPointId];
+        if (center == null || major == null || minor == null) return null;
+        final minorRadius = math.sqrt(math.pow(minor.x - center.x, 2) + math.pow(minor.y - center.y, 2));
+        return _nearestPointOnEllipseBoundary(x, y, center.x, center.y, major.x, major.y, minorRadius);
+      default:
+        return null;
+    }
+  }
+
+  /// The point on an Ellipse's boundary (centre at [centerX]/[centerY],
+  /// major-axis Point at [majorX]/[majorY], semi-minor radius
+  /// [minorRadius]) nearest ([x], [y]) - the same local-frame/normalized-
+  /// radial-position approach [_approxDistanceToEllipseBoundary] already
+  /// uses to measure the *distance*, just mapped back into world space
+  /// instead of reduced to a scalar, so hit-testing and this feature's own
+  /// point-on-curve snap agree pixel-for-pixel on where "the boundary"
+  /// actually is. Null under the exact same degenerate conditions that
+  /// method already documents.
+  (double, double)? _nearestPointOnEllipseBoundary(
+    double x,
+    double y,
+    double centerX,
+    double centerY,
+    double majorX,
+    double majorY,
+    double minorRadius,
+  ) {
+    final majorRadius = math.sqrt(math.pow(majorX - centerX, 2) + math.pow(majorY - centerY, 2));
+    if (majorRadius < 1e-9 || minorRadius < 1e-9) return null;
+    final rotation = math.atan2(majorY - centerY, majorX - centerX);
+    final dx = x - centerX;
+    final dy = y - centerY;
+    final cosR = math.cos(-rotation);
+    final sinR = math.sin(-rotation);
+    final localX = dx * cosR - dy * sinR;
+    final localY = dx * sinR + dy * cosR;
+    final normalized = math.sqrt(math.pow(localX / majorRadius, 2) + math.pow(localY / minorRadius, 2));
+    if (normalized < 1e-9) return null;
+    final boundaryLocalX = localX / normalized;
+    final boundaryLocalY = localY / normalized;
+    final cosF = math.cos(rotation);
+    final sinF = math.sin(rotation);
+    return (centerX + boundaryLocalX * cosF - boundaryLocalY * sinF, centerY + boundaryLocalX * sinF + boundaryLocalY * cosF);
+  }
+
+  /// Whether a Line from the fixed anchor ([x0], [y0]) toward the cursor
+  /// at ([x1], [y1]) is currently aimed close to one of the two true
+  /// tangent lines from ([x0], [y0]) to [target]'s circle (standard
+  /// external-point tangent-line construction: the tangent line's own
+  /// direction is the anchor-to-centre direction rotated by
+  /// `± asin(radius / distance-to-centre)`) - and if so, the free end's
+  /// snapped position along that exact tangent direction, preserving the
+  /// segment's current length (mirrors [_snappedLineEnd]'s own "only the
+  /// angle snaps, not the length" behaviour for H/V). Null if ([x0], [y0])
+  /// is inside or on [target]'s circle (no real external tangent line
+  /// exists to aim at) or the cursor's current direction isn't within
+  /// [tangentSnapAngleDegrees] of either tangent line.
+  (double, double)? _tangentSnapPoint(double x0, double y0, double x1, double y1, SketchSelection target) {
+    final circle = _circleGeometryFor(target);
+    if (circle == null) return null;
+    final (centerX, centerY, r) = circle;
+    final toCenterX = centerX - x0;
+    final toCenterY = centerY - y0;
+    final d = math.sqrt(toCenterX * toCenterX + toCenterY * toCenterY);
+    if (d <= r + 1e-9) return null;
+    final phi = math.atan2(toCenterY, toCenterX);
+    final theta = math.asin((r / d).clamp(-1.0, 1.0));
+    final cursorAngle = math.atan2(y1 - y0, x1 - x0);
+    final len = math.sqrt(math.pow(x1 - x0, 2) + math.pow(y1 - y0, 2));
+    for (final tangentAngle in [phi - theta, phi + theta]) {
+      if (_directedAngleDeltaDegrees(cursorAngle, tangentAngle) <= tangentSnapAngleDegrees) {
+        return (x0 + len * math.cos(tangentAngle), y0 + len * math.sin(tangentAngle));
+      }
+    }
+    return null;
+  }
+
+  /// The tangent point itself - where a tangent line at [tangentAngle]
+  /// radians from ([x0], [y0]) actually touches [target]'s circle (the
+  /// foot of the perpendicular from the centre onto that line) - distinct
+  /// from [_tangentSnapPoint]'s own returned position (the *free end*,
+  /// which preserves the segment's current length rather than stopping
+  /// exactly at the circle). Used only to place the tangent glyph the
+  /// canvas paints, at the geometrically exact spot the relation is really
+  /// about.
+  (double, double)? _tangentTouchPoint(double x0, double y0, double tangentAngle, SketchSelection target) {
+    final circle = _circleGeometryFor(target);
+    if (circle == null) return null;
+    final (centerX, centerY, _) = circle;
+    final dirX = math.cos(tangentAngle);
+    final dirY = math.sin(tangentAngle);
+    final projection = (centerX - x0) * dirX + (centerY - y0) * dirY;
+    return (x0 + projection * dirX, y0 + projection * dirY);
+  }
+
+  /// Session N: the tangent or point-on-curve candidate (whichever, if
+  /// either, applies) for a Line from ([x0], [y0]) to the cursor at
+  /// ([x1], [y1]) - the higher-priority half of
+  /// [_combinedLineInference]'s geometry tier. Finds the single
+  /// edge-like entity nearest the free end within
+  /// [_curveInferenceHitRadius] of [tangentSnapPixelRadius]/
+  /// [pointOnCurveSnapPixelRadius] (both the same value today, but kept as
+  /// independent per-kind constants - see their own doc comments) by
+  /// reusing [_entityAt] itself, so this candidate search never disagrees
+  /// with ordinary hit-testing/selection about what counts as "near".
+  /// Circle/Arc targets try tangency first (the more specific, more
+  /// deliberate-looking match - a segment whose direction happens to line
+  /// up with a true tangent line, not just any point near the boundary),
+  /// falling back to plain point-on-curve when the angle doesn't line up;
+  /// Line/Ellipse targets only ever offer point-on-curve (a Line has no
+  /// meaningful "tangent" relation in this sketcher's constraint set, and
+  /// the backend's TangentConstraint has no ellipse support - see this
+  /// feature's own scope note on that gap). Every other [SelectionKind]
+  /// (EllipseArc, Spline, Text, ...) has no backend point-on-curve
+  /// constraint to apply and is skipped.
+  LineInference? _tangentOrPointOnCurveInference(double x0, double y0, double x1, double y1) {
+    final radius = _curveInferenceHitRadius(math.max(tangentSnapPixelRadius, pointOnCurveSnapPixelRadius));
+    final hit = _entityAt(x1, y1, radius);
+    if (hit == null) return null;
+
+    if (hit.kind == SelectionKind.circle || hit.kind == SelectionKind.arc) {
+      final tangentRadius = _curveInferenceHitRadius(tangentSnapPixelRadius);
+      if (_entityAt(x1, y1, tangentRadius)?.sameAs(hit) == true) {
+        final tangentSnap = _tangentSnapPoint(x0, y0, x1, y1, hit);
+        if (tangentSnap != null) {
+          // The exact angle [_tangentSnapPoint] snapped to, recovered from
+          // its own returned position rather than threaded out as a
+          // separate return value - `tangentSnap == (x0 + len*cos(angle),
+          // y0 + len*sin(angle))`, so this atan2 is exactly that angle.
+          final tangentAngle = math.atan2(tangentSnap.$2 - y0, tangentSnap.$1 - x0);
+          final touch = _tangentTouchPoint(x0, y0, tangentAngle, hit) ?? tangentSnap;
+          return LineInference(
+            kind: LineInferenceKind.tangent,
+            target: hit,
+            snappedX: tangentSnap.$1,
+            snappedY: tangentSnap.$2,
+            markerX: touch.$1,
+            markerY: touch.$2,
+          );
+        }
+      }
+    }
+
+    if (hit.kind != SelectionKind.line &&
+        hit.kind != SelectionKind.circle &&
+        hit.kind != SelectionKind.arc &&
+        hit.kind != SelectionKind.ellipse) {
+      return null;
+    }
+    final pointOnCurveRadius = _curveInferenceHitRadius(pointOnCurveSnapPixelRadius);
+    if (_entityAt(x1, y1, pointOnCurveRadius)?.sameAs(hit) != true) return null;
+    final onCurve = _nearestPointOnCurve(hit, x1, y1);
+    if (onCurve == null) return null;
+    return LineInference(
+      kind: LineInferenceKind.pointOnCurve,
+      target: hit,
+      snappedX: onCurve.$1,
+      snappedY: onCurve.$2,
+      markerX: onCurve.$1,
+      markerY: onCurve.$2,
+    );
+  }
+
+  /// Session N: the parallel or perpendicular candidate (whichever, if
+  /// either, applies) for a Line from ([x0], [y0]) to the cursor at
+  /// ([x1], [y1]) - the lower-priority half of [_combinedLineInference]'s
+  /// geometry tier. Checks every existing Line's direction (not scoped to
+  /// ones spatially near the segment - the same "any matching angle
+  /// anywhere counts" reasoning [_lineSnapAxis] already applies to the
+  /// fixed horizontal/vertical axes, just against another Line's angle
+  /// instead of a fixed one), picks whichever is closest to exactly
+  /// parallel/perpendicular within [parallelPerpendicularSnapAngleDegrees],
+  /// and snaps the free end's direction to match exactly - same "only the
+  /// angle snaps, the length doesn't" shape as [_snappedLineEnd]'s own
+  /// horizontal/vertical case.
+  LineInference? _parallelOrPerpendicularInference(double x0, double y0, double x1, double y1) {
+    final segmentAngle = math.atan2(y1 - y0, x1 - x0);
+    final len = math.sqrt(math.pow(x1 - x0, 2) + math.pow(y1 - y0, 2));
+    LineInference? best;
+    var bestDelta = double.infinity;
+    for (final line in lines.values) {
+      final a = points[line.startPointId];
+      final b = points[line.endPointId];
+      if (a == null || b == null) continue;
+      final lineLengthSquared = math.pow(b.x - a.x, 2) + math.pow(b.y - a.y, 2);
+      if (lineLengthSquared < 1e-12) continue;
+      final lineAngle = math.atan2(b.y - a.y, b.x - a.x);
+      final undirectedDelta = _undirectedAngleDeltaDegrees(segmentAngle, lineAngle);
+      final parallelDelta = undirectedDelta;
+      final perpendicularDelta = (90 - undirectedDelta).abs();
+      final target = SketchSelection(kind: SelectionKind.line, id: line.id);
+      final marker = ((a.x + b.x) / 2, (a.y + b.y) / 2);
+      if (parallelDelta <= parallelPerpendicularSnapAngleDegrees && parallelDelta < bestDelta) {
+        bestDelta = parallelDelta;
+        final snapped = (x0 + len * math.cos(lineAngle), y0 + len * math.sin(lineAngle));
+        best = LineInference(
+          kind: LineInferenceKind.parallel,
+          target: target,
+          snappedX: snapped.$1,
+          snappedY: snapped.$2,
+          markerX: marker.$1,
+          markerY: marker.$2,
+        );
+      } else if (perpendicularDelta <= parallelPerpendicularSnapAngleDegrees && perpendicularDelta < bestDelta) {
+        bestDelta = perpendicularDelta;
+        final perpendicularAngle = lineAngle + math.pi / 2;
+        final snapped = (x0 + len * math.cos(perpendicularAngle), y0 + len * math.sin(perpendicularAngle));
+        best = LineInference(
+          kind: LineInferenceKind.perpendicular,
+          target: target,
+          snappedX: snapped.$1,
+          snappedY: snapped.$2,
+          markerX: marker.$1,
+          markerY: marker.$2,
+        );
+      }
+    }
+    return best;
   }
 
   DrawGhost? _circleDrawGhost() {
@@ -3915,6 +4528,24 @@ class SketchController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Session N: whether the Line tool's live auto-constraint inference
+  /// (Horizontal/Vertical included, not just the newer parallel/
+  /// perpendicular/tangent/point-on-curve kinds - see
+  /// [_combinedLineInference]) is suppressed for the *next* placement.
+  /// Sticky like [dragModeEnabled], not a hold-to-suppress modifier - this
+  /// is a touch-first app with no keyboard modifier to hold, so the FAB
+  /// toggle is the whole mechanism (product decision: a toggle FAB visible
+  /// only while a sketch drawing tool is active, mirrors
+  /// [dragModeEnabled]'s own FAB exactly, just gated on
+  /// [SketchMode.draw] instead of [SketchMode.select]).
+  bool _inferenceSuppressed = false;
+  bool get inferenceSuppressed => _inferenceSuppressed;
+
+  void toggleInferenceSuppressed() {
+    _inferenceSuppressed = !_inferenceSuppressed;
+    notifyListeners();
+  }
+
   /// New work package item 8's original double-click-drag target resolver:
   /// a directly-hit Point as-is, or - for a Line/Circle, neither of which
   /// is itself a Point - whichever of its constituent Points sits nearer
@@ -4113,8 +4744,14 @@ class SketchController extends ChangeNotifier {
   /// solve only ever updates the client's own [points] map, never PATCHes
   /// the backend (that's deliberate - no network round trip on the hot
   /// per-frame path), so without this the backend's own stored positions
-  /// for every point *except* the one actually dragged sit frozen at their
-  /// pre-drag values for the whole drag. [endPointDrag]'s final solve
+  /// for every reflowed point sit frozen at their pre-drag values for the
+  /// whole drag. Since soft-drag (see [solveSketchLocally]'s own doc
+  /// comment), this now also includes the dragged Point itself whenever its
+  /// own solved position differs from the raw value [updatePointDrag]
+  /// separately PATCHed it to moments earlier - the live-clamp/resistance
+  /// behaviour that mechanism exists to produce, not a bug: the backend
+  /// needs that corrected value synced too, same as every other reflowed
+  /// Point. [endPointDrag]'s final solve
   /// would then hand the backend a single, discontinuous jump ("everything
   /// at rest" straight to "the dropped shape") - exactly the condition a
   /// Newton solver has no protection against (see this session's own
@@ -4250,21 +4887,41 @@ class SketchController extends ChangeNotifier {
     return null;
   }
 
-  /// The still-*intact* Polygon [pointId] is a vertex of, or null.
-  /// "Intact" - every Line this Polygon's own [SketchApiClient.createPolygon]
-  /// call created is still present, unmodified - is what actually licenses
-  /// [_closedFormPolygonVertices]'s no-solver drag path below: the moment a
-  /// trim or an individual Line/Point delete breaks that (checked live
-  /// against [lines]/[points], not a stored flag, so it's picked up
-  /// automatically with no extra bookkeeping anywhere else in the app),
-  /// this returns null and dragging silently falls back to the ordinary,
-  /// general constraint-solver path - correct for what's left, since it's
-  /// no longer a rigid regular shape. [_polygonForVertex] (this method's
-  /// own, looser, longstanding vertex-membership-only check) is still used
-  /// unchanged by the *confirmed-dimension-edit* reinterpretation below -
-  /// this is a separate, additional check on top of it.
+  /// The still-*intact* Polygon [pointId] belongs to - as a vertex *or* as
+  /// its own centre - or null. "Intact" - every Line this Polygon's own
+  /// [SketchApiClient.createPolygon] call created is still present,
+  /// unmodified - is what actually licenses [_closedFormPolygonVertices]'s
+  /// no-solver drag path below: the moment a trim or an individual Line/
+  /// Point delete breaks that (checked live against [lines]/[points], not
+  /// a stored flag, so it's picked up automatically with no extra
+  /// bookkeeping anywhere else in the app), this returns null and dragging
+  /// silently falls back to the ordinary, general constraint-solver path -
+  /// correct for what's left, since it's no longer a rigid regular shape.
+  ///
+  /// Bug fix (on-device feedback: dragging a Polygon's centre "completely
+  /// broke, collapsed"): this used to delegate entirely to
+  /// [_polygonForVertex] (this method's own, looser, longstanding vertex-
+  /// membership-*only* check, still used unchanged by the *confirmed-
+  /// dimension-edit* reinterpretation elsewhere, where a centre drag has no
+  /// meaning), which never matches a centre Point id - so a centre drag
+  /// always fell through to the general solver path, never the closed-form
+  /// one, unlike Circle/Arc/Ellipse/Slot (each of which does handle its own
+  /// centre drag in closed form). Invisible while the radius dimension was
+  /// already confirmed (the general path still converges correctly there -
+  /// see the Circle/Polygon soft-drag validation work), but while it's
+  /// still provisional (the common case right after drawing one), the
+  /// solver skips that Constraint entirely by design, leaving every
+  /// vertex's own distance from the dragged centre with nothing pinning it
+  /// at all - free to collapse toward zero, the exact class of bug closed-
+  /// form dragging exists to prevent in the first place.
   SketchPolygonView? _intactPolygonForVertex(String pointId) {
-    final polygon = _polygonForVertex(pointId);
+    SketchPolygonView? polygon;
+    for (final candidate in polygons.values) {
+      if (pointId == candidate.centerPointId || candidate.vertexPointIds.contains(pointId)) {
+        polygon = candidate;
+        break;
+      }
+    }
     if (polygon == null) return null;
     if (!points.containsKey(polygon.centerPointId)) return null;
     for (final vertexId in polygon.vertexPointIds) {
@@ -4318,6 +4975,13 @@ class SketchController extends ChangeNotifier {
   /// [_trySolveDuringDragLocally]'s general path. Null only if [target]
   /// coincides with the centre (degenerate/zero radius) or [draggedVertexId]
   /// genuinely isn't one of [polygon]'s own vertices.
+  ///
+  /// [_closedFormCircleGeometry]'s own centre branch, mirrored exactly: a
+  /// centre drag translates every vertex by the same delta, radius and
+  /// orientation both untouched - see [_intactPolygonForVertex]'s own doc
+  /// comment for the bug this closes (a centre drag used to reach the
+  /// general solver path at all, with nothing protecting a still-
+  /// provisional radius from collapsing).
   Map<String, (double, double)>? _closedFormPolygonVertices(
     SketchPolygonView polygon,
     String draggedVertexId,
@@ -4326,6 +4990,16 @@ class SketchController extends ChangeNotifier {
   ) {
     final center = points[polygon.centerPointId];
     if (center == null) return null;
+    if (draggedVertexId == polygon.centerPointId) {
+      final dx = targetX - center.x;
+      final dy = targetY - center.y;
+      final result = <String, (double, double)>{polygon.centerPointId: (targetX, targetY)};
+      for (final vertexId in polygon.vertexPointIds) {
+        final p = points[vertexId];
+        if (p != null) result[vertexId] = (p.x + dx, p.y + dy);
+      }
+      return result;
+    }
     final index = polygon.vertexPointIds.indexOf(draggedVertexId);
     if (index == -1) return null;
     final dx = targetX - center.x;
@@ -4499,6 +5173,77 @@ class SketchController extends ChangeNotifier {
       }
     }
     return result;
+  }
+
+  /// Bug fix (on-device feedback: "a circle size can be changed by dragging
+  /// when it has a dimension that should be driving it - when dropped, the
+  /// dimension changes instead of the circle returning to the dimension
+  /// driven size"): [_closedFormCircleGeometry] above resizes unconditionally
+  /// whenever the Circle is still "intact", with no regard for whether its
+  /// own radius/diameter `DistanceConstraint` has already been *confirmed*
+  /// (a real, user-set driving dimension) rather than merely `provisional`
+  /// (the just-drawn, not-yet-dimensioned case that closed-form dragging was
+  /// actually built for - see that method's own doc comment). A confirmed
+  /// dimension must stay authoritative until the user edits its value
+  /// directly (the ghost/inline-text-box flow), not get silently overwritten
+  /// by wherever the shape was last dragged to.
+  ///
+  /// [resize] is the pre-existing, still-correct behaviour: no confirmed
+  /// dimension exists yet, so there is nothing to protect and free-form
+  /// dragging is exactly the intended "feel out the size" gesture. Also used
+  /// for a centre-Point drag regardless of confirmation state, since that
+  /// never resizes anything in the first place (it's already a pure
+  /// translate - see [_closedFormCircleGeometry]'s own centre branch).
+  ///
+  /// [translate] is the fix: dragging any *other* Point (radius Point or a
+  /// cardinal) while a real dimension is confirmed moves the *whole* Circle
+  /// rigidly instead - the confirmed radius is respected exactly, and
+  /// [_settleClosedFormShapeDrag] skips its own dimension-value-update step
+  /// for this case (see [circleDragTranslatesOnly]).
+  ///
+  /// [blocked] is the one case with nowhere left to go at all: the Circle's
+  /// own centre is itself fully pinned (see [isPointFullyPinned]), so
+  /// neither resizing (forbidden - the dimension is driving) nor
+  /// translating (forbidden - the centre can't move either) is possible.
+  /// [beginPointDrag] refuses the grab outright for this case, the same
+  /// "there's nowhere for this drag to go" precedent it already applies to
+  /// an ordinary (non-closed-form) fully-pinned Point.
+  CircleDragMode _circleDragMode(SketchCircleView circle, String draggedPointId) {
+    if (draggedPointId == circle.centerPointId) return CircleDragMode.resize;
+    final radiusConstraint = _circleRadiusConstraint(circle);
+    if (radiusConstraint == null || radiusConstraint.provisional) return CircleDragMode.resize;
+    return isPointFullyPinned(circle.centerPointId) ? CircleDragMode.blocked : CircleDragMode.translate;
+  }
+
+  /// [_closedFormCircleGeometry]'s own drag-target-position computation,
+  /// wrapped with [_circleDragMode]'s dispatch - the single call site both
+  /// [updatePointDrag] (live preview) and [_settleClosedFormShapeDrag] (drop/
+  /// undo) use, so the two can never disagree about which of resize/
+  /// translate/blocked a given drag is. [translate] is implemented by
+  /// reusing [_closedFormCircleGeometry]'s own centre-drag branch outright -
+  /// computing the delta from [draggedPointId]'s own current position to the
+  /// [targetX]/[targetY] it's being dragged toward, then asking for the
+  /// geometry as if the centre itself had moved by that same delta, which is
+  /// exactly a rigid translate of the whole Circle.
+  Map<String, (double, double)>? _closedFormCircleDragPositions(
+    SketchCircleView circle,
+    String draggedPointId,
+    double targetX,
+    double targetY,
+  ) {
+    switch (_circleDragMode(circle, draggedPointId)) {
+      case CircleDragMode.blocked:
+        return null;
+      case CircleDragMode.resize:
+        return _closedFormCircleGeometry(circle, draggedPointId, targetX, targetY);
+      case CircleDragMode.translate:
+        final dragged = points[draggedPointId];
+        final center = points[circle.centerPointId];
+        if (dragged == null || center == null) return null;
+        final dx = targetX - dragged.x;
+        final dy = targetY - dragged.y;
+        return _closedFormCircleGeometry(circle, circle.centerPointId, center.x + dx, center.y + dy);
+    }
   }
 
   /// The still-intact Arc [pointId] belongs to (as centre, start, or end
@@ -4699,6 +5444,206 @@ class SketchController extends ChangeNotifier {
     };
   }
 
+  /// The still-intact EllipseArc [pointId] belongs to (as centre, major,
+  /// minor, start, or end Point), or null - same "every Point/Line it was
+  /// built from still present, live-checked" contract as
+  /// [_intactCircleForPoint]/[_intactArcForPoint]/[_intactEllipseForPoint].
+  /// No negative-tip Points to check here, unlike Ellipse - see the
+  /// backend `EllipseArc` docstring for why: its own natural drag handles
+  /// are start/end, so that machinery is pure unused overhead for a
+  /// partial ellipse.
+  SketchEllipseArcView? _intactEllipseArcForPoint(String pointId) {
+    for (final arc in ellipseArcs.values) {
+      final isMember = pointId == arc.centerPointId ||
+          pointId == arc.majorPointId ||
+          pointId == arc.minorPointId ||
+          pointId == arc.startPointId ||
+          pointId == arc.endPointId;
+      if (!isMember) continue;
+      final intact = points.containsKey(arc.centerPointId) &&
+          points.containsKey(arc.majorPointId) &&
+          points.containsKey(arc.minorPointId) &&
+          points.containsKey(arc.startPointId) &&
+          points.containsKey(arc.endPointId) &&
+          lines.containsKey(arc.majorAxisLineId) &&
+          lines.containsKey(arc.minorAxisLineId);
+      return intact ? arc : null;
+    }
+    return null;
+  }
+
+  /// The ellipse-curve point at parametric angle [angle] (backend's
+  /// `EllipseArc.local_angle` convention - 0 at the major axis, increasing
+  /// counter-clockwise in the ellipse's own rotated frame, matching
+  /// [_ellipseParametricAngle]) - that method's own inverse. Used by
+  /// [_closedFormEllipseArcGeometry] to re-anchor a curve Point back onto
+  /// the (possibly just-resized/rotated) ellipse at its own unchanged
+  /// angle.
+  (double, double) _ellipsePointAtParametricAngle(
+    double centerX,
+    double centerY,
+    double majorX,
+    double majorY,
+    double minorRadius,
+    double angle,
+  ) {
+    final majorRadius = math.sqrt(math.pow(majorX - centerX, 2) + math.pow(majorY - centerY, 2));
+    final rotation = math.atan2(majorY - centerY, majorX - centerX);
+    final u = majorRadius * math.cos(angle);
+    final v = minorRadius * math.sin(angle);
+    final cosR = math.cos(rotation), sinR = math.sin(rotation);
+    return (centerX + u * cosR - v * sinR, centerY + u * sinR + v * cosR);
+  }
+
+  /// [_closedFormEllipseGeometry]'s counterpart for EllipseArc - same
+  /// "provisional DistanceConstraint means the general solver won't
+  /// protect against collapse" root cause, same closed-form fix,
+  /// generalized to also carry the curve-tracking start/end Points along
+  /// (Ellipse itself has none).
+  ///
+  /// Dragging centre translates every Point (major/minor/start/end) by the
+  /// same delta - rotation and both radii untouched, exactly like
+  /// Ellipse's own centre branch. Dragging major or minor sets a new
+  /// radius/rotation (major) or magnitude-along-the-fixed-perpendicular
+  /// (minor) directly from the drag target, mirroring
+  /// [_closedFormEllipseGeometry]'s own two branches - except each is
+  /// clamped against the *other* axis's current radius rather than
+  /// letting them swap: unlike a plain Ellipse (see that method's own doc
+  /// comment), an EllipseArc's rotation also fixes where its own
+  /// parametric angle-zero sits, which start/end's own meaning depends
+  /// on, so relabeling which axis is "major" mid-drag isn't safe here -
+  /// this mirrors the same clamp the backend's own
+  /// `update_constraint_value` applies at confirm (see
+  /// `_clamp_ellipse_arc_axis_value` in `router.py`), just applied live
+  /// too so the drag preview never shows something the confirm would
+  /// silently correct out from under it. Either way, start/end are then
+  /// re-projected onto the (possibly now differently-shaped/rotated)
+  /// curve at their own unchanged parametric angle - computed from the
+  /// *old* shape before this drag's target is applied - so the sweep the
+  /// user already chose survives a major/minor edit exactly, the
+  /// elliptical analogue of how a Circle's own radius change leaves an
+  /// Arc's start/end angles untouched. Dragging start or end directly is
+  /// simpler still: the shape doesn't change at all, only that one
+  /// Point's own angle does, re-projected straight from the drag target.
+  Map<String, (double, double)>? _closedFormEllipseArcGeometry(
+    SketchEllipseArcView ellipseArc,
+    String draggedPointId,
+    double targetX,
+    double targetY,
+  ) {
+    final centerPoint = points[ellipseArc.centerPointId];
+    final majorPoint = points[ellipseArc.majorPointId];
+    final minorPoint = points[ellipseArc.minorPointId];
+    final startPoint = points[ellipseArc.startPointId];
+    final endPoint = points[ellipseArc.endPointId];
+    if (centerPoint == null || majorPoint == null || minorPoint == null || startPoint == null || endPoint == null) {
+      return null;
+    }
+    final cx = centerPoint.x;
+    final cy = centerPoint.y;
+
+    if (draggedPointId == ellipseArc.centerPointId) {
+      final dx = targetX - cx;
+      final dy = targetY - cy;
+      return {
+        ellipseArc.centerPointId: (targetX, targetY),
+        ellipseArc.majorPointId: (majorPoint.x + dx, majorPoint.y + dy),
+        ellipseArc.minorPointId: (minorPoint.x + dx, minorPoint.y + dy),
+        ellipseArc.startPointId: (startPoint.x + dx, startPoint.y + dy),
+        ellipseArc.endPointId: (endPoint.x + dx, endPoint.y + dy),
+      };
+    }
+
+    final oldMajorRadius = math.sqrt(math.pow(majorPoint.x - cx, 2) + math.pow(majorPoint.y - cy, 2));
+    final oldMinorRadius = math.sqrt(math.pow(minorPoint.x - cx, 2) + math.pow(minorPoint.y - cy, 2));
+
+    if (draggedPointId == ellipseArc.startPointId || draggedPointId == ellipseArc.endPointId) {
+      if (oldMinorRadius < 1e-9) return null;
+      final t = _ellipseParametricAngle(cx, cy, majorPoint.x, majorPoint.y, oldMinorRadius, targetX, targetY);
+      return {draggedPointId: _ellipsePointAtParametricAngle(cx, cy, majorPoint.x, majorPoint.y, oldMinorRadius, t)};
+    }
+
+    double? startAngle;
+    double? endAngle;
+    if (oldMinorRadius >= 1e-9) {
+      startAngle =
+          _ellipseParametricAngle(cx, cy, majorPoint.x, majorPoint.y, oldMinorRadius, startPoint.x, startPoint.y);
+      endAngle = _ellipseParametricAngle(cx, cy, majorPoint.x, majorPoint.y, oldMinorRadius, endPoint.x, endPoint.y);
+    }
+
+    final double newMajorAngle;
+    final double newMajorRadius;
+    final double newMinorRadius;
+    if (draggedPointId == ellipseArc.majorPointId) {
+      final dx = targetX - cx;
+      final dy = targetY - cy;
+      final rawMajorRadius = math.sqrt(dx * dx + dy * dy);
+      if (rawMajorRadius < 1e-9) return null;
+      newMajorAngle = math.atan2(dy, dx);
+      // Clamped, not swapped - see this method's own doc comment.
+      newMajorRadius = math.max(rawMajorRadius, oldMinorRadius);
+      newMinorRadius = oldMinorRadius;
+    } else if (draggedPointId == ellipseArc.minorPointId) {
+      if (oldMajorRadius < 1e-9) return null;
+      newMajorAngle = math.atan2(majorPoint.y - cy, majorPoint.x - cx);
+      final perpAngle = newMajorAngle + math.pi / 2;
+      final dx = targetX - cx;
+      final dy = targetY - cy;
+      final rawMinorRadius = (dx * math.cos(perpAngle) + dy * math.sin(perpAngle)).abs();
+      newMajorRadius = oldMajorRadius;
+      // Clamped, not swapped - see this method's own doc comment.
+      newMinorRadius = math.min(rawMinorRadius, oldMajorRadius);
+    } else {
+      return null;
+    }
+    if (newMinorRadius < 1e-9) return null;
+
+    final newMajorX = cx + newMajorRadius * math.cos(newMajorAngle);
+    final newMajorY = cy + newMajorRadius * math.sin(newMajorAngle);
+    final minorAngle = newMajorAngle + math.pi / 2;
+    final result = <String, (double, double)>{
+      ellipseArc.majorPointId: (newMajorX, newMajorY),
+      ellipseArc.minorPointId: (
+        cx + newMinorRadius * math.cos(minorAngle),
+        cy + newMinorRadius * math.sin(minorAngle),
+      ),
+    };
+    if (startAngle != null) {
+      result[ellipseArc.startPointId] =
+          _ellipsePointAtParametricAngle(cx, cy, newMajorX, newMajorY, newMinorRadius, startAngle);
+    }
+    if (endAngle != null) {
+      result[ellipseArc.endPointId] =
+          _ellipsePointAtParametricAngle(cx, cy, newMajorX, newMajorY, newMinorRadius, endAngle);
+    }
+    return result;
+  }
+
+  /// [_ellipseMajorRadiusConstraint]'s counterpart for EllipseArc - same
+  /// "identified by its two endpoint Points" lookup.
+  DistanceConstraintDto? _ellipseArcMajorRadiusConstraint(SketchEllipseArcView ellipseArc) {
+    for (final constraint in constraints.values) {
+      if (constraint is DistanceConstraintDto &&
+          constraint.pointAId == ellipseArc.centerPointId &&
+          constraint.pointBId == ellipseArc.majorPointId) {
+        return constraint;
+      }
+    }
+    return null;
+  }
+
+  /// [_ellipseArcMajorRadiusConstraint]'s counterpart for the minor axis.
+  DistanceConstraintDto? _ellipseArcMinorRadiusConstraint(SketchEllipseArcView ellipseArc) {
+    for (final constraint in constraints.values) {
+      if (constraint is DistanceConstraintDto &&
+          constraint.pointAId == ellipseArc.centerPointId &&
+          constraint.pointBId == ellipseArc.minorPointId) {
+        return constraint;
+      }
+    }
+    return null;
+  }
+
   /// The still-intact, axis-aligned Rectangle [pointId] is a corner or
   /// centre of, or null - same "every Point/Line it was built from still
   /// present, live-checked" contract as [_intactCircleForPoint]/
@@ -4858,6 +5803,7 @@ class SketchController extends ChangeNotifier {
     SketchCircleView? circle,
     SketchArcView? arc,
     SketchEllipseView? ellipse,
+    SketchEllipseArcView? ellipseArc,
     SketchRectangleView? rectangle,
     String draggedPointId,
     double targetX,
@@ -4904,23 +5850,66 @@ class SketchController extends ChangeNotifier {
       }
       return;
     }
+    if (ellipseArc != null) {
+      // Unlike Ellipse's own settle above, dragged values here are already
+      // clamped (never swapped) by [_closedFormEllipseArcGeometry] itself -
+      // this just reads the (already-valid) settled positions back and
+      // pushes each confirmed dimension's own value to match, same pattern
+      // as every other closed-form shape here.
+      final positions = _closedFormEllipseArcGeometry(ellipseArc, draggedPointId, targetX, targetY);
+      if (positions == null) return;
+      await _applyClosedFormPositions(positions, sync: true);
+
+      final center = points[ellipseArc.centerPointId];
+      if (center == null) return;
+      final majorConstraint = _ellipseArcMajorRadiusConstraint(ellipseArc);
+      if (majorConstraint != null && !majorConstraint.provisional) {
+        final major = points[ellipseArc.majorPointId];
+        if (major != null) {
+          final newMajor = math.sqrt(math.pow(major.x - center.x, 2) + math.pow(major.y - center.y, 2));
+          await _api.updateConstraintValue(_sketchId!, majorConstraint.id, newMajor);
+        }
+      }
+      final minorConstraint = _ellipseArcMinorRadiusConstraint(ellipseArc);
+      if (minorConstraint != null && !minorConstraint.provisional) {
+        final minor = points[ellipseArc.minorPointId];
+        if (minor != null) {
+          final newMinor = math.sqrt(math.pow(minor.x - center.x, 2) + math.pow(minor.y - center.y, 2));
+          await _api.updateConstraintValue(_sketchId!, minorConstraint.id, newMinor);
+        }
+      }
+      return;
+    }
 
     final Map<String, (double, double)>? positions;
     final DistanceConstraintDto? radiusConstraint;
     final String centerId;
     final String rimId;
+    // Bug fix (on-device feedback, see [_circleDragMode]'s own doc
+    // comment): true whenever this drag is a pure translate (the confirmed
+    // dimension respected by moving the whole shape instead of resizing
+    // it) rather than a resize, so (unlike every other case below, which
+    // always means "the dimension needs to catch up with wherever this
+    // settled") the dimension-value update just below must be skipped
+    // entirely: the radius never changed. Originally Circle-only
+    // ([CircleDragMode.translate]); now also true for a Polygon centre
+    // drag, which is a translate for exactly the same reason - see
+    // [_closedFormPolygonVertices]'s own centre branch.
+    var dragTranslatesOnly = false;
     if (polygon != null) {
       positions = _closedFormPolygonVertices(polygon, draggedPointId, targetX, targetY);
       radiusConstraint = _polygonRadiusConstraint(polygon);
       centerId = polygon.centerPointId;
       rimId = polygon.vertexPointIds[0];
+      dragTranslatesOnly = draggedPointId == polygon.centerPointId;
     } else if (slot != null) {
       positions = _closedFormSlotGeometry(slot, draggedPointId, targetX, targetY);
       radiusConstraint = _slotRadiusConstraint(slot);
       centerId = slot.center1PointId;
       rimId = slot.aPointId;
     } else if (circle != null) {
-      positions = _closedFormCircleGeometry(circle, draggedPointId, targetX, targetY);
+      dragTranslatesOnly = _circleDragMode(circle, draggedPointId) == CircleDragMode.translate;
+      positions = _closedFormCircleDragPositions(circle, draggedPointId, targetX, targetY);
       radiusConstraint = _circleRadiusConstraint(circle);
       centerId = circle.centerPointId;
       rimId = circle.radiusPointId;
@@ -4933,12 +5922,13 @@ class SketchController extends ChangeNotifier {
     if (positions == null) return;
     await _applyClosedFormPositions(positions, sync: true);
 
-    if (radiusConstraint == null || radiusConstraint.provisional) return;
+    if (radiusConstraint == null || radiusConstraint.provisional || dragTranslatesOnly) return;
     // Read back from [points] (just written by [_applyClosedFormPositions]
-    // above), not [positions] directly - a Polygon vertex drag's own
+    // above), not [positions] directly - a Polygon *vertex* drag's own
     // [_closedFormPolygonVertices] output never includes the centre (it
-    // doesn't move), so looking it up in [positions] would always miss and
-    // silently skip this whole dimension-value update.
+    // doesn't move) - a centre drag is handled entirely above, via
+    // [dragTranslatesOnly] - so looking it up in [positions] would always
+    // miss and silently skip this whole dimension-value update.
     final center = points[centerId];
     final rim = points[rimId];
     if (center == null || rim == null) return;
@@ -4995,6 +5985,7 @@ class SketchController extends ChangeNotifier {
         _intactCircleForPoint(pointId) == null &&
         _intactArcForPoint(pointId) == null &&
         _intactEllipseForPoint(pointId) == null &&
+        _intactEllipseArcForPoint(pointId) == null &&
         _intactRectangleForPoint(pointId) == null) {
       // Phase 3 (3.2): a Point in an over-constrained cluster already has a
       // redundant/conflicting Constraint pinning it - dragging it wouldn't
@@ -5009,6 +6000,27 @@ class SketchController extends ChangeNotifier {
       // left to move into either, same reasoning as the over-constrained
       // case above but for the opposite ("done", not "broken") reason.
       if (isPointFullyPinned(pointId)) return false;
+    }
+    // Bug fix (on-device feedback, see [_circleDragMode]'s own doc
+    // comment): the intact-shape exemption just above is deliberately blind
+    // to [isPointFullyPinned] ("a formula always has somewhere to go") -
+    // true for a resize or a translate, but not for [CircleDragMode.blocked]
+    // (a confirmed dimension protects the radius, and the centre itself has
+    // nowhere left to move either) - refuse the grab outright rather than
+    // starting a drag guaranteed to visibly do nothing.
+    final intactCircle = _intactCircleForPoint(pointId);
+    if (intactCircle != null && _circleDragMode(intactCircle, pointId) == CircleDragMode.blocked) {
+      return false;
+    }
+    // Same reasoning, for a Polygon's own centre specifically (see
+    // [_intactPolygonForVertex]'s own doc comment for the bug this closes):
+    // unlike a vertex drag (always a resize about whatever position the
+    // centre already holds - "somewhere to go" regardless of whether that
+    // centre is pinned), a centre drag is a translate, which has nowhere
+    // to go at all once the centre itself is fully pinned/grounded.
+    final intactPolygon = _intactPolygonForVertex(pointId);
+    if (intactPolygon != null && pointId == intactPolygon.centerPointId && isPointFullyPinned(pointId)) {
+      return false;
     }
     final point = points[pointId]!;
     _draggingPointId = pointId;
@@ -5033,12 +6045,21 @@ class SketchController extends ChangeNotifier {
   /// jumping to be exactly under the touch on the first move (see
   /// [beginPointDrag]'s doc comment for why that offset exists at all).
   ///
-  /// PATCHes the backend immediately rather than buffering until release,
-  /// so every other on-canvas reader (the entity itself, any dimension
-  /// overlay anchored to it) tracks the drag the same way it tracks any
-  /// other backend-confirmed position - no separate "ghost position"
-  /// concept. The dragged Point itself always shows the raw dragged
-  /// position, exactly under the touch; every *other* Point is periodically
+  /// Applies to local state immediately rather than buffering until
+  /// release, so every other on-canvas reader (the entity itself, any
+  /// dimension overlay anchored to it) tracks the drag the same way it
+  /// tracks any other confirmed position - no separate "ghost position"
+  /// concept. This no longer means an immediate backend PATCH, though (see
+  /// the local-only-drag/round-trip-elimination comment inside the method
+  /// body): [points] updates synchronously every frame either way, but the
+  /// backend itself only hears about it once, at drop, when the local
+  /// solver is available and this frame's solve succeeds, or via a fire-
+  /// and-forget PATCH otherwise. The dragged Point itself shows the raw
+  /// dragged position, exactly under the touch, *unless* the local solve
+  /// succeeds and a live Constraint genuinely requires it to sit somewhere
+  /// else - the soft-drag/live-clamp behaviour [solveSketchLocally] exists
+  /// to produce (see its own doc comment) - in which case it tracks that
+  /// clamped position instead. Every *other* Point is periodically
   /// re-solved into place as the drag continues (throttled - see
   /// [_maybeSolveDuringDrag]), rather than staying frozen until
   /// [endPointDrag]'s single final solve - the fix for constraint systems
@@ -5104,11 +6125,19 @@ class SketchController extends ChangeNotifier {
     final intactEllipse = intactPolygon == null && intactSlot == null && intactCircle == null && intactArc == null
         ? _intactEllipseForPoint(pointId)
         : null;
-    final intactRectangle = intactPolygon == null &&
+    final intactEllipseArc = intactPolygon == null &&
             intactSlot == null &&
             intactCircle == null &&
             intactArc == null &&
             intactEllipse == null
+        ? _intactEllipseArcForPoint(pointId)
+        : null;
+    final intactRectangle = intactPolygon == null &&
+            intactSlot == null &&
+            intactCircle == null &&
+            intactArc == null &&
+            intactEllipse == null &&
+            intactEllipseArc == null
         ? _intactRectangleForPoint(pointId)
         : null;
     if (intactPolygon != null ||
@@ -5116,6 +6145,7 @@ class SketchController extends ChangeNotifier {
         intactCircle != null ||
         intactArc != null ||
         intactEllipse != null ||
+        intactEllipseArc != null ||
         intactRectangle != null) {
       final Map<String, (double, double)>? positions;
       if (intactPolygon != null) {
@@ -5123,11 +6153,13 @@ class SketchController extends ChangeNotifier {
       } else if (intactSlot != null) {
         positions = _closedFormSlotGeometry(intactSlot, pointId, newX, newY);
       } else if (intactCircle != null) {
-        positions = _closedFormCircleGeometry(intactCircle, pointId, newX, newY);
+        positions = _closedFormCircleDragPositions(intactCircle, pointId, newX, newY);
       } else if (intactArc != null) {
         positions = _closedFormArcGeometry(intactArc, pointId, newX, newY);
       } else if (intactEllipse != null) {
         positions = _closedFormEllipseGeometry(intactEllipse, pointId, newX, newY);
+      } else if (intactEllipseArc != null) {
+        positions = _closedFormEllipseArcGeometry(intactEllipseArc, pointId, newX, newY);
       } else {
         positions = _closedFormRectangleGeometry(intactRectangle!, pointId, newX, newY);
       }
@@ -5137,8 +6169,46 @@ class SketchController extends ChangeNotifier {
       return;
     }
 
-    try {
-      final updated = await _api.updatePoint(_sketchId!, pointId, newX, newY);
+    // Local-only drag (round-trip elimination, following the soft-drag
+    // work: dragging still felt bad on-device even after that fix because
+    // *this* PATCH - the dragged Point's own raw position, not the reflow
+    // solve - was still an awaited network round trip on every single
+    // frame, unconditionally, for anything not on the closed-form path.
+    // Closed-form shapes never had this problem in the first place - see
+    // [_applyClosedFormPositions]'s own "sync: false" contract). Written
+    // straight into [points] with no network call at all, then handed to
+    // [_trySolveDuringDragLocally] the same way any other anchor already
+    // is - that function already writes the dragged Point's own (possibly
+    // soft-drag-clamped) solved position back into [points] itself (see
+    // its own doc comment), so there is nothing left for this method to do
+    // on success. Synchronous end to end (no `await` in between the write
+    // and the solve attempt), so there is no stale-completion race here
+    // the way the network PATCH below has.
+    points[pointId] = SketchPointView(id: pointId, x: newX, y: newY);
+    if (_trySolveDuringDragLocally([pointId])) {
+      return;
+    }
+    // Fallback: the native library isn't available on this platform/build,
+    // or this specific frame's local solve threw or tripped one of
+    // [_trySolveDuringDragLocally]'s own guards - the same network PATCH
+    // this method always used, but no longer awaited before applying
+    // (round-trip elimination, part 2: on a platform with no local
+    // solver, every single drag frame used to block on this exact request
+    // before the Point even moved on screen). The backend never
+    // transforms this value, only accepts it - there's nothing here worth
+    // holding a frame on - so it's applied to [points] immediately and the
+    // PATCH itself fires in the background, reconciled only if it turns
+    // out to have actually failed. Same "rapid out-of-order responses are
+    // accepted silently" tradeoff [_maybeSolveDuringDrag]/[_solveDuringDrag]
+    // already make for every other unsequenced PATCH in this file - not a
+    // new risk, since [updatePointDrag] was already callable again before
+    // a prior call's own await resolved. [points[pointId]] is already
+    // exactly (newX, newY) from the local-only attempt above - it's never
+    // partially applied on a failed [_trySolveDuringDragLocally] call - so
+    // there is nothing left to (re)write here, only listeners to notify.
+    notifyListeners();
+    _maybeSolveDuringDrag([pointId], () => _draggingPointId == pointId);
+    unawaited(_api.updatePoint(_sketchId!, pointId, newX, newY).then((updated) {
       // [endPointDrag] clears _draggingPointId synchronously before it solves
       // and refreshes - if this PATCH straggles past that point (e.g. a
       // pointer-move fired right before pointer-up), applying it here would
@@ -5149,32 +6219,27 @@ class SketchController extends ChangeNotifier {
       if (_draggingPointId != pointId) return;
       points[pointId] = SketchPointView(id: updated.id, x: updated.x, y: updated.y);
       notifyListeners();
-      // Sketcher restructure Phase 1 (Milestone E): the mid-drag reflow of
-      // every *other* Point tries the in-process solver first - no network
-      // round trip, so no throttle needed. Falls back to the existing
-      // throttled server solve whenever the native library isn't
-      // available (only bundled on Android today) or the local solve
-      // throws for any reason, so this narrow landing can never produce
-      // worse behaviour than before it existed, only better when it works.
-      if (!_trySolveDuringDragLocally([pointId])) {
-        _maybeSolveDuringDrag([pointId], () => _draggingPointId == pointId);
+    }).catchError((Object error) {
+      if (error is ApiException) {
+        errorMessage = error.message;
+        notifyListeners();
       }
-    } on ApiException catch (e) {
-      errorMessage = e.message;
-      notifyListeners();
-    }
+    }));
   }
 
   SlvsNativeBindings? _localSolverBindings;
   bool _localSolverUnavailable = false;
 
-  /// Attempts the in-process local solve for [updatePointDrag]'s mid-drag
-  /// reflow - returns false (never partially applied) if the native
-  /// library isn't loadable or the solve itself throws, so the caller can
-  /// fall back to the server round trip unconditionally. Deliberately
-  /// scoped to the single-Point-drag path only (sketcher restructure plan
-  /// Phase 1 item 4's "land behind one narrow, real interaction path
-  /// first") - [updateLineDrag]'s own mid-drag solve is untouched.
+  /// Attempts the in-process local solve for [updatePointDrag]'s/
+  /// [updateLineDrag]'s mid-drag reflow - returns false (never partially
+  /// applied) if the native library isn't loadable or the solve itself
+  /// throws, so the caller can fall back to the server round trip
+  /// unconditionally. [anchorPointIds] must already be seeded in [points]
+  /// with the caller's own raw drag target *before* this is called (both
+  /// callers now write it directly, no network round trip) - this is what
+  /// [solveSketchLocally] soft-drags, and (on success) what gets written
+  /// back into [points], possibly softly clamped - see that function's own
+  /// doc comment.
   bool _trySolveDuringDragLocally(List<String> anchorPointIds) {
     var bindings = _localSolverBindings;
     if (bindings == null && !_localSolverUnavailable) {
@@ -5204,34 +6269,18 @@ class SketchController extends ChangeNotifier {
         lockedPointIds: _lockedPointIds,
       );
       final anchorSet = anchorPointIds.toSet();
-      // Safety check (on-device feedback investigation, Batch 7 - dragging
-      // an axis-aligned Line surfaced this): a pinned/anchored point is
-      // supposed to stay exactly where it was pinned - `point2d` puts it in
-      // `slvsFixedGroup`, whose parameters `bindings.solve` never varies.
-      // Confirmed (via a new test - "updateLineDrag also solves locally...")
-      // that a Horizontal/Vertical Constraint whose *both* endpoints are
-      // simultaneously anchored (e.g. dragging an already-axis-aligned Line,
-      // an ordinary and common case, not a contrived one) can still come
-      // back with the "fixed" point moved - a real gap in the native
-      // solver's own group handling, not yet root-caused at the FFI/SLVS
-      // level. When that happens, every *other* point's solved position is
-      // equally untrustworthy (each was computed relative to the anchor's
-      // now-wrong position), so nothing here is applied at all - same
-      // "never partially applied, caller falls back to the safe network
-      // path" contract this method already had for a load/solve failure,
-      // just extended to cover an internally-inconsistent success too, not
-      // only an outright one.
-      const anchorDriftTolerance = 1e-4;
-      for (final anchorId in anchorSet) {
-        final solved = result.solvedPoints[anchorId];
-        final input = pointXY[anchorId];
-        if (solved == null || input == null) continue;
-        final (sx, sy) = solved;
-        final (ix, iy) = input;
-        if ((sx - ix).abs() > anchorDriftTolerance || (sy - iy).abs() > anchorDriftTolerance) {
-          return false;
-        }
-      }
+      // No anchor-drift check here any more (there used to be one - see git
+      // history if you're looking for it): [solveSketchLocally] now
+      // soft-drags [anchorPointIds] via SolveSpace's own `dragged[]`
+      // mechanism (see that function's own doc comment) rather than
+      // hard-pinning them into the fixed group, so a solved anchor position
+      // that differs from its raw pre-solve seed is no longer a solver bug
+      // to reject - it's the intended "clamp to what the Constraints
+      // actually allow" behaviour this mechanism exists to produce (e.g.
+      // sliding along an Arc's own tangency, or snapping back to the
+      // nearest valid point once a confirmed dimension leaves no freedom in
+      // the dragged direction).
+      //
       // Blow-up guard (on-device feedback: dragging a Slot corner produced a
       // visibly broken shape - a cusp where a smooth tangent arc should be).
       // Root cause: [originPointId] pins the sketch origin into the fixed
@@ -5347,8 +6396,15 @@ class SketchController extends ChangeNotifier {
           if ((distOf(c.pointAId, c.pointBId) - c.distance).abs() > residualTolerance) return false;
         }
       }
+      // Writes every solved Point back, including the dragged one(s) - see
+      // [solveSketchLocally]'s own doc comment for why a soft-dragged
+      // Point's solved position can legitimately differ from the raw value
+      // [updatePointDrag] PATCHed it to moments earlier (the live-clamp
+      // behaviour that mechanism exists to produce), and this file's own
+      // [_dragReflowedPointIds] doc comment for why that clamped position
+      // needs syncing back to the backend too, same as any other reflowed
+      // Point.
       for (final entry in result.solvedPoints.entries) {
-        if (anchorSet.contains(entry.key)) continue;
         final (x, y) = entry.value;
         points[entry.key] = SketchPointView(id: entry.key, x: x, y: y);
         _dragReflowedPointIds.add(entry.key);
@@ -5443,11 +6499,19 @@ class SketchController extends ChangeNotifier {
     final intactEllipse = intactPolygon == null && intactSlot == null && intactCircle == null && intactArc == null
         ? _intactEllipseForPoint(pointId)
         : null;
-    final intactRectangle = intactPolygon == null &&
+    final intactEllipseArc = intactPolygon == null &&
             intactSlot == null &&
             intactCircle == null &&
             intactArc == null &&
             intactEllipse == null
+        ? _intactEllipseArcForPoint(pointId)
+        : null;
+    final intactRectangle = intactPolygon == null &&
+            intactSlot == null &&
+            intactCircle == null &&
+            intactArc == null &&
+            intactEllipse == null &&
+            intactEllipseArc == null
         ? _intactRectangleForPoint(pointId)
         : null;
     if (intactPolygon != null ||
@@ -5455,6 +6519,7 @@ class SketchController extends ChangeNotifier {
         intactCircle != null ||
         intactArc != null ||
         intactEllipse != null ||
+        intactEllipseArc != null ||
         intactRectangle != null) {
       await _runGuarded(() async {
         await _settleClosedFormShapeDrag(
@@ -5463,6 +6528,7 @@ class SketchController extends ChangeNotifier {
           intactCircle,
           intactArc,
           intactEllipse,
+          intactEllipseArc,
           intactRectangle,
           pointId,
           droppedPoint.x,
@@ -5470,7 +6536,7 @@ class SketchController extends ChangeNotifier {
         );
         _pushUndo(() async {
           await _settleClosedFormShapeDrag(intactPolygon, intactSlot, intactCircle, intactArc, intactEllipse,
-              intactRectangle, pointId, originX, originY);
+              intactEllipseArc, intactRectangle, pointId, originX, originY);
         });
         // Same fix as the plain-Point drag branch below (Prompt B item B4,
         // and its own follow-up: "no entity should be able to use the
@@ -5628,33 +6694,55 @@ class SketchController extends ChangeNotifier {
     if (line == null) return;
     final dx = x - originCursorX;
     final dy = y - originCursorY;
-    try {
-      final updatedStart =
-          await _api.updatePoint(_sketchId!, line.startPointId, originStartX + dx, originStartY + dy);
-      if (_draggingLineId != lineId) return;
-      points[line.startPointId] = SketchPointView(id: updatedStart.id, x: updatedStart.x, y: updatedStart.y);
-      final updatedEnd =
-          await _api.updatePoint(_sketchId!, line.endPointId, originEndX + dx, originEndY + dy);
-      if (_draggingLineId != lineId) return;
-      points[line.endPointId] = SketchPointView(id: updatedEnd.id, x: updatedEnd.x, y: updatedEnd.y);
-      notifyListeners();
-      // Sketcher restructure plan Phase 1 item 4 ("land behind one narrow,
-      // real interaction path first... before widening"): [updatePointDrag]
-      // already tries the in-process solver first, falling back to the
-      // throttled server round trip - this was the one documented gap
-      // ("[updateLineDrag]'s own mid-drag solve is untouched"), now closed
-      // the same way, with both endpoints anchored (mirrors
-      // [_trySolveDuringDragLocally]'s single-Point-drag call exactly).
-      if (!_trySolveDuringDragLocally([line.startPointId, line.endPointId])) {
-        _maybeSolveDuringDrag(
-          [line.startPointId, line.endPointId],
-          () => _draggingLineId == lineId,
-        );
-      }
-    } on ApiException catch (e) {
-      errorMessage = e.message;
-      notifyListeners();
+    // Local-only drag - see [updatePointDrag]'s own doc comment for the
+    // full "why" (round-trip elimination: this used to PATCH both
+    // endpoints over the network, sequentially, awaited, on every single
+    // frame - twice the round trips [updatePointDrag] itself had). Both
+    // endpoints written straight into [points] with no network call, then
+    // handed to [_trySolveDuringDragLocally] as both anchors at once,
+    // mirroring [updatePointDrag]'s own single-Point call exactly.
+    points[line.startPointId] = SketchPointView(id: line.startPointId, x: originStartX + dx, y: originStartY + dy);
+    points[line.endPointId] = SketchPointView(id: line.endPointId, x: originEndX + dx, y: originEndY + dy);
+    if (_trySolveDuringDragLocally([line.startPointId, line.endPointId])) {
+      return;
     }
+    // Fallback: same network PATCHes this method always used, but no
+    // longer awaited before applying, fired concurrently rather than
+    // sequentially now that neither has to wait on the other - see
+    // [updatePointDrag]'s own fallback comment for the full "why" (round-
+    // trip elimination, part 2) and for why flipping between local-only
+    // and network-assisted frames mid-drag is safe. Both endpoints are
+    // already exactly (originStartX+dx, originStartY+dy)/(originEndX+dx,
+    // originEndY+dy) in [points] from the local-only attempt above (never
+    // partially applied on a failed [_trySolveDuringDragLocally] call), so
+    // there is nothing left to (re)write, only listeners to notify.
+    notifyListeners();
+    _maybeSolveDuringDrag(
+      [line.startPointId, line.endPointId],
+      () => _draggingLineId == lineId,
+    );
+    unawaited(_api.updatePoint(_sketchId!, line.startPointId, originStartX + dx, originStartY + dy).then((updated) {
+      // Same stale-completion guard as [updatePointDrag]'s own reconcile
+      // callback - see its doc comment.
+      if (_draggingLineId != lineId) return;
+      points[line.startPointId] = SketchPointView(id: updated.id, x: updated.x, y: updated.y);
+      notifyListeners();
+    }).catchError((Object error) {
+      if (error is ApiException) {
+        errorMessage = error.message;
+        notifyListeners();
+      }
+    }));
+    unawaited(_api.updatePoint(_sketchId!, line.endPointId, originEndX + dx, originEndY + dy).then((updated) {
+      if (_draggingLineId != lineId) return;
+      points[line.endPointId] = SketchPointView(id: updated.id, x: updated.x, y: updated.y);
+      notifyListeners();
+    }).catchError((Object error) {
+      if (error is ApiException) {
+        errorMessage = error.message;
+        notifyListeners();
+      }
+    }));
   }
 
   /// Ends the current Line drag (if any) and re-solves from the dropped
@@ -8807,6 +9895,24 @@ class SketchController extends ChangeNotifier {
     });
   }
 
+  /// Bug fix (on-device feedback: Tangent was the last constraint-picker
+  /// button left permanently `wired: false`): the Point id shared between
+  /// [arc1Id]'s and [arc2Id]'s own start/end Points - the *same* Point id,
+  /// not merely coincident-but-distinct (mirrors [_isPointOnLine]'s own
+  /// "explicit references over implicit geometric inference" convention,
+  /// and matches backend `Sketch.add_curve_tangent_constraint`'s own
+  /// validation exactly) - or null if the two Arcs don't share one. Gates,
+  /// and supplies the actual argument for, the curve+curve Tangent combo.
+  String? _sharedArcEndpoint(String arc1Id, String arc2Id) {
+    final arc1 = arcs[arc1Id];
+    final arc2 = arcs[arc2Id];
+    if (arc1 == null || arc2 == null) return null;
+    for (final pointId in [arc1.startPointId, arc1.endPointId]) {
+      if (pointId == arc2.startPointId || pointId == arc2.endPointId) return pointId;
+    }
+    return null;
+  }
+
   /// Stage 13 item 6 (extended by Stage 16 item 7): which constraint-type
   /// buttons the flyout should offer for the current [selectionSet], per the
   /// prompt's selection-set table. Coincident/Parallel/Perpendicular/
@@ -8897,14 +10003,38 @@ class SketchController extends ChangeNotifier {
     // of Circle/Arc (both Circles, both Arcs, or one of each), not just two
     // Circles.
     if (kinds.every((k) => k == SelectionKind.circle || k == SelectionKind.arc)) {
-      return const [
-        ConstraintOption(type: ConstraintOptionType.concentric, label: 'Concentric', wired: true),
-        ConstraintOption(type: ConstraintOptionType.equalRadius, label: 'Equal radius', wired: true),
+      final options = [
+        const ConstraintOption(type: ConstraintOptionType.concentric, label: 'Concentric', wired: true),
+        const ConstraintOption(type: ConstraintOptionType.equalRadius, label: 'Equal radius', wired: true),
       ];
+      // Bug fix (on-device feedback: Tangent was the one remaining
+      // constraint-picker button left permanently `wired: false` - see
+      // this option's own git history): a curve+curve Tangent only makes
+      // sense for two Arcs that already share an endpoint Point (a Circle
+      // has none to share - see backend CurveTangentConstraint's own doc
+      // comment for why the shared-Point condition, not any Line-style
+      // perpendicular-distance trick, is what "tangent" even means for two
+      // curves) - added alongside Concentric/Equal radius, not instead of
+      // them, since all three are independently meaningful for the same
+      // pair.
+      if (sel[0].kind == SelectionKind.arc &&
+          sel[1].kind == SelectionKind.arc &&
+          _sharedArcEndpoint(sel[0].id, sel[1].id) != null) {
+        options.add(const ConstraintOption(type: ConstraintOptionType.tangent, label: 'Tangent', wired: true));
+      }
+      return options;
     }
 
-    if (kinds.contains(SelectionKind.circle) && kinds.contains(SelectionKind.line)) {
-      return const [ConstraintOption(type: ConstraintOptionType.tangent, label: 'Tangent', wired: false)];
+    // Bug fix (on-device feedback): widened from Circle-only to Circle/Arc,
+    // and flipped from the last permanently `wired: false` placeholder to a
+    // real, enabled action - the backend's TangentConstraint (see its own
+    // doc comment) pins a perpendicular centre-to-line distance and has
+    // never required the two to already touch, so this is offered for any
+    // Line + Circle/Arc pair, connected or not - unlike the Arc+Arc case
+    // above, which only exists at all for a shared endpoint.
+    if (kinds.contains(SelectionKind.line) &&
+        (kinds.contains(SelectionKind.circle) || kinds.contains(SelectionKind.arc))) {
+      return const [ConstraintOption(type: ConstraintOptionType.tangent, label: 'Tangent', wired: true)];
     }
 
     if (kinds.length == 1 && kinds.single == SelectionKind.point) {
@@ -8986,6 +10116,9 @@ class SketchController extends ChangeNotifier {
         break;
       case ConstraintOptionType.pointOnEllipse:
         await addPointOnEllipseConstraint();
+        break;
+      case ConstraintOptionType.tangent:
+        await addTangentConstraint();
         break;
       default:
         break;
@@ -11870,13 +13003,32 @@ class SketchController extends ChangeNotifier {
       final startA = points[lineA.startPointId];
       final endA = points[lineA.endPointId];
       final startB = points[lineB.startPointId];
-      final endB = points[lineB.endPointId];
-      if (startA == null || endA == null || startB == null || endB == null) return null;
-      final midAX = (startA.x + endA.x) / 2;
-      final midAY = (startA.y + endA.y) / 2;
-      final midBX = (startB.x + endB.x) / 2;
-      final midBY = (startB.y + endB.y) / 2;
-      return math.sqrt(math.pow(midBX - midAX, 2) + math.pow(midBY - midAY, 2));
+      if (startA == null || endA == null || startB == null) return null;
+      // Bug fix (on-device feedback: a vertical dimension between two
+      // parallel Lines showed a bogus midpoint-to-midpoint value, e.g.
+      // 63.72 instead of the real 50 vertical gap - re-derived here as the
+      // perpendicular distance from Line B's start Point to the infinite
+      // line through Line A, matching exactly what `confirmGhostValue`'s
+      // own `lineDistance` branch actually creates (a `LineDistanceConstraint`,
+      // backend's SLVS_C_PT_LINE_DISTANCE anchored the same way - see
+      // `_signed_point_line_distance`'s own doc comment in
+      // app.sketch.solver/app.sketch.models) - not the raw distance between
+      // the two Lines' midpoints, which only matches the perpendicular gap
+      // when both midpoints happen to line up exactly perpendicular to the
+      // Lines' shared direction. For two Lines that are actually parallel
+      // (the only case this ghost is ever offered for - see
+      // `_buildLinePairGhosts`), the perpendicular distance is the same
+      // everywhere along their length, so this is exactly the "vertical"/
+      // "horizontal" gap the user expects when the parallel pair happens to
+      // be axis-aligned.
+      final dx = endA.x - startA.x;
+      final dy = endA.y - startA.y;
+      final length = math.sqrt(dx * dx + dy * dy);
+      if (length < 1e-12) {
+        return math.sqrt(math.pow(startB.x - startA.x, 2) + math.pow(startB.y - startA.y, 2));
+      }
+      final cross = (startB.x - startA.x) * dy - (startB.y - startA.y) * dx;
+      return (cross / length).abs();
     }
     if (ghost.kind == GhostKind.angle) {
       final lineA = lines[ghost.lineAId];
@@ -12288,6 +13440,61 @@ class SketchController extends ChangeNotifier {
     );
   }
 
+  /// The "Line + Circle/Arc" half of Tangent - order-agnostic (the user may
+  /// select either one first), same shape [_createPointAndEntityConstraint]
+  /// already uses for an analogous kind-not-click-order pairing, just with
+  /// [SketchApiClient.createTangentConstraint]'s own fixed circleOrArcId-
+  /// then-lineId argument order.
+  Future<void> _createLineTangentConstraint() async {
+    if (_selectionSet.length != 2 || _busy || _sketchId == null) return;
+    final lineSel = _selectionSet.where((s) => s.kind == SelectionKind.line);
+    final curveSel =
+        _selectionSet.where((s) => s.kind == SelectionKind.circle || s.kind == SelectionKind.arc);
+    if (lineSel.length != 1 || curveSel.length != 1) return;
+    final lineId = lineSel.first.id;
+    final curveId = curveSel.first.id;
+    await _runGuarded(() async {
+      final constraint = await _api.createTangentConstraint(_sketchId!, curveId, lineId);
+      _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
+      await _solveAndTrackDof();
+      _selectionSet.clear();
+      _ribbonVisible = false;
+    });
+  }
+
+  /// The "two Arcs sharing an endpoint" half of Tangent - see
+  /// [_sharedArcEndpoint]/[SketchApiClient.createCurveTangentConstraint].
+  Future<void> _createCurveTangentConstraint() async {
+    if (_selectionSet.length != 2 || _busy || _sketchId == null) return;
+    final a = _selectionSet[0];
+    final b = _selectionSet[1];
+    if (a.kind != SelectionKind.arc || b.kind != SelectionKind.arc) return;
+    final shared = _sharedArcEndpoint(a.id, b.id);
+    if (shared == null) return;
+    await _runGuarded(() async {
+      final constraint = await _api.createCurveTangentConstraint(_sketchId!, a.id, b.id, shared);
+      _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
+      await _solveAndTrackDof();
+      _selectionSet.clear();
+      _ribbonVisible = false;
+    });
+  }
+
+  /// Dispatches Tangent's own two backend shapes based on the current
+  /// selection - see [availableConstraintOptions]'s own doc comments for
+  /// exactly which two selection combinations this button is ever offered
+  /// for (a Line + Circle/Arc pair, or two Arcs sharing an endpoint).
+  Future<void> addTangentConstraint() async {
+    if (!canApplyConstraint(ConstraintOptionType.tangent)) return;
+    if (_selectionSet.length == 2 &&
+        _selectionSet[0].kind == SelectionKind.arc &&
+        _selectionSet[1].kind == SelectionKind.arc) {
+      await _createCurveTangentConstraint();
+      return;
+    }
+    await _createLineTangentConstraint();
+  }
+
   Future<void> addParallelConstraint() async {
     if (!canApplyConstraint(ConstraintOptionType.parallel)) return;
     await _createSelectionSetConstraint(_api.createParallelConstraint);
@@ -12588,6 +13795,7 @@ class SketchController extends ChangeNotifier {
     final coord = transform.screenToSketch(screenPosition.dx, screenPosition.dy);
     cursorX = coord.x;
     cursorY = coord.y;
+    _lastKnownPixelsPerUnit = transform.pixelsPerUnit;
     _trackArcSweep();
     _trackEllipseArcSweep();
     _updateShapeCenterReveal();
@@ -12805,10 +14013,11 @@ class SketchController extends ChangeNotifier {
     // Phase 6.1: captured from the start Point and the tap's cursor
     // position *before* the loop-closing case swaps in a fixed endpoint -
     // a closing edge's slope is dictated by the loop, not freely aimed, so
-    // it never auto-snaps.
+    // it never auto-snaps (Session N: same reasoning now covers every
+    // [_combinedLineInference] kind, not just H/V).
     final chainStart = points[_chainStartPointId!];
-    final snapAxis =
-        (!closingLoop && chainStart != null) ? _lineSnapAxis(chainStart.x, chainStart.y, cursorX, cursorY) : null;
+    final inference =
+        (!closingLoop && chainStart != null) ? _combinedLineInference(chainStart.x, chainStart.y, cursorX, cursorY) : null;
     await _runGuarded(() async {
       final endPointId =
           closingLoop ? _chainFirstPointId! : await _pointIdAtCursor(excludeId: _chainStartPointId);
@@ -12824,7 +14033,7 @@ class SketchController extends ChangeNotifier {
         await _api.deleteLine(_sketchId!, line.id);
         lines.remove(line.id);
       });
-      await _applyLineSnapConstraint(line.id, snapAxis);
+      await _applyLineInference(line.id, endPointId, inference);
 
       // One user action (this tap, now that the line is fully placed) = one
       // solve call - never on intermediate cursor movement.
@@ -12857,7 +14066,7 @@ class SketchController extends ChangeNotifier {
 
     final midX = _midpointAnchorX!;
     final midY = _midpointAnchorY!;
-    final snapAxis = _lineSnapAxis(midX, midY, cursorX, cursorY);
+    final inference = _combinedLineInference(midX, midY, cursorX, cursorY);
     await _runGuarded(() async {
       final endAId = await _pointIdAtCursor();
       final endA = points[endAId]!;
@@ -12879,7 +14088,7 @@ class SketchController extends ChangeNotifier {
         await _api.deleteLine(_sketchId!, line.id);
         lines.remove(line.id);
       });
-      await _applyLineSnapConstraint(line.id, snapAxis);
+      await _applyLineInference(line.id, endAId, inference);
 
       await _solveAndTrackDof();
       _midpointAnchorX = null;
@@ -12887,18 +14096,57 @@ class SketchController extends ChangeNotifier {
     });
   }
 
-  /// Phase 6.1: adds the Horizontal/Vertical constraint [axis] implies to
-  /// the just-created [lineId] (a no-op if [axis] is null, i.e. the
-  /// in-progress segment wasn't within [lineSnapAngleDegrees] of either
-  /// axis) - reuses the same backend calls
-  /// [addHorizontalConstraint]/[addVerticalConstraint] make from the
-  /// flyout, just triggered by placement instead of an explicit selection.
-  Future<void> _applyLineSnapConstraint(String lineId, LineSnapAxis? axis) async {
-    if (axis == null) return;
-    final constraint = axis == LineSnapAxis.horizontal
-        ? await _api.createHorizontalConstraint(_sketchId!, lineId)
-        : await _api.createVerticalConstraint(_sketchId!, lineId);
+  /// Session N: generalizes the old Phase 6.1 "adds the Horizontal/Vertical
+  /// constraint the snap axis implies" helper to every
+  /// [_combinedLineInference] kind - one real constraint against the
+  /// just-placed [lineId]/[endPointId] ([endPointId] only matters for
+  /// [LineInferenceKind.pointOnCurve], the only kind that constrains a
+  /// Point rather than the Line itself), reusing exactly the same [_api]
+  /// calls the flyout's own explicit-selection constraint buttons make
+  /// ([addParallelConstraint]/[addPerpendicularConstraint]/
+  /// [addPointOnLineConstraint] etc.) - just triggered by placement
+  /// instead of a selection. Like the old H/V-only version, this creates
+  /// the constraint against whatever position the real Point/Line already
+  /// landed at (the raw cursor position - see [LineInference]'s own doc
+  /// comment on [LineInference.snappedX]/[LineInference.snappedY] being
+  /// ghost-only), relying on [_solveAndTrackDof] to pull it onto the
+  /// constraint afterward, exactly as H/V always has. No-op when
+  /// [inference] is null.
+  Future<void> _applyLineInference(String lineId, String endPointId, LineInference? inference) async {
+    if (inference == null) return;
+    final constraint = await (switch (inference.kind) {
+      LineInferenceKind.horizontal => _api.createHorizontalConstraint(_sketchId!, lineId),
+      LineInferenceKind.vertical => _api.createVerticalConstraint(_sketchId!, lineId),
+      LineInferenceKind.parallel => _api.createParallelConstraint(_sketchId!, inference.target!.id, lineId),
+      LineInferenceKind.perpendicular => _api.createPerpendicularConstraint(_sketchId!, inference.target!.id, lineId),
+      LineInferenceKind.tangent => _api.createTangentConstraint(_sketchId!, inference.target!.id, lineId),
+      LineInferenceKind.pointOnCurve => _pointOnCurveConstraintFor(endPointId, inference.target!),
+    });
     _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
+  }
+
+  /// The Line/Circle/Arc/Ellipse-specific `create*` call
+  /// [LineInferenceKind.pointOnCurve] needs, dispatched on [target]'s own
+  /// [SelectionKind] - the same three backend constraint types
+  /// [addPointOnLineConstraint]/[addPointOnCircleConstraint]/
+  /// [addPointOnEllipseConstraint] already wire up for the flyout's
+  /// explicit-selection flow, Circle and Arc sharing the one
+  /// `point_on_circle` constraint type same as everywhere else in this
+  /// file. [target] is always one of those three kinds here -
+  /// [_tangentOrPointOnCurveInference] never reports any other kind for
+  /// [LineInferenceKind.pointOnCurve].
+  Future<ConstraintDto> _pointOnCurveConstraintFor(String pointId, SketchSelection target) {
+    switch (target.kind) {
+      case SelectionKind.line:
+        return _api.createPointOnLineConstraint(_sketchId!, pointId, target.id);
+      case SelectionKind.circle:
+      case SelectionKind.arc:
+        return _api.createPointOnCircleConstraint(_sketchId!, pointId, target.id);
+      case SelectionKind.ellipse:
+        return _api.createPointOnEllipseConstraint(_sketchId!, pointId, target.id);
+      default:
+        throw StateError('Unsupported point-on-curve target kind: ${target.kind}');
+    }
   }
 
   /// Circle tool's tap handling: first tap places the center Point, second
@@ -13302,6 +14550,9 @@ class SketchController extends ChangeNotifier {
 
     if (_ellipseMajorPointId == null) {
       await _runGuarded(() async {
+        // Captured before resolving - see _ellipseMajorPointIsReused's own
+        // doc comment for why this has to happen now, not at tap-3 time.
+        _ellipseMajorPointIsReused = _existingPointIdNear(cursorX, cursorY, excludeId: _ellipseCenterPointId) != null;
         _ellipseMajorPointId = await _pointIdAtCursor(excludeId: _ellipseCenterPointId);
       });
       return;
@@ -13312,10 +14563,40 @@ class SketchController extends ChangeNotifier {
     await _runGuarded(() async {
       final center = points[centerId]!;
       final major = points[majorId]!;
-      final majorRadius = math.sqrt(math.pow(major.x - center.x, 2) + math.pow(major.y - center.y, 2));
-      final rawMinorRadius = _perpendicularDistanceToLine(cursorX, cursorY, center.x, center.y, major.x, major.y);
-      final minorRadius = rawMinorRadius == null ? null : math.min(rawMinorRadius, majorRadius);
-      if (minorRadius == null || minorRadius < 1e-9) {
+      final axes = _resolveEllipseAxes(center.x, center.y, major.x, major.y, cursorX, cursorY);
+      if (axes == null) {
+        errorMessage = 'Cannot place an ellipse with a zero-length major axis or zero minor radius';
+        _ellipseCenterPointId = null;
+        _ellipseMajorPointId = null;
+        return;
+      }
+      var (majorX, majorY, minorRadius) = axes;
+      // Swap (see [_resolveEllipseAxes]'s own doc comment): the already-
+      // placed majorId Point itself needs to move to the real major axis
+      // position, since [_api.createEllipse] takes a Point id for the
+      // major axis, not a raw position - the backend derives the major
+      // radius/rotation from wherever that Point actually sits. Only when
+      // that Point was *freshly created* for this placement, though (see
+      // [_ellipseMajorPointIsReused]'s own doc comment) - relocating a
+      // reused, already-existing Point could silently drag along whatever
+      // other Line/Circle/entity relies on its exact position (or, for the
+      // origin specifically, violates the CoincidentConstraint tying a
+      // fresh-but-origin-pinned Point to it - see [_pointIdAt]'s own "never
+      // reuse the origin's own id" fix), an unrelated side effect purely
+      // from this Ellipse's own internal axis relabeling. Falls back to
+      // the old clamped-not-swapped behaviour for a reused Point instead
+      // of attempting an unsafe move.
+      if ((majorX != major.x || majorY != major.y) && !_ellipseMajorPointIsReused) {
+        final updated = await _api.updatePoint(_sketchId!, majorId, majorX, majorY);
+        points[majorId] = SketchPointView(id: updated.id, x: updated.x, y: updated.y);
+      } else if (_ellipseMajorPointIsReused) {
+        majorX = major.x;
+        majorY = major.y;
+        final rawMinorRadius = _perpendicularDistanceToLine(cursorX, cursorY, center.x, center.y, major.x, major.y);
+        final majorRadius = math.sqrt(math.pow(major.x - center.x, 2) + math.pow(major.y - center.y, 2));
+        minorRadius = rawMinorRadius == null ? majorRadius : math.min(rawMinorRadius, majorRadius);
+      }
+      if (minorRadius < 1e-9) {
         errorMessage = 'Cannot place an ellipse with a zero-length major axis or zero minor radius';
         _ellipseCenterPointId = null;
         _ellipseMajorPointId = null;
@@ -14615,6 +15896,14 @@ class SketchController extends ChangeNotifier {
           final labelItem =
               _pairMidpointLabel(c.center1PointId, c.center2PointId, '=R', entry.key, isSelected, labelOffset);
           if (labelItem != null) items.add(labelItem);
+        case CurveTangentConstraintDto c:
+          // Anchored at the shared Point itself (unlike Concentric/Equal
+          // Radius's own midpoint-between-centres glyph) - that's the one
+          // location this constraint is actually about, and a midpoint
+          // between two Arcs' centres can land somewhere with no visual
+          // relation to either curve.
+          final labelItem = _pointGlyphLabel(c.sharedPointId, 'Tan.', entry.key, isSelected, labelOffset);
+          if (labelItem != null) items.add(labelItem);
         case ParallelConstraintDto c:
           if (isImplicitLineDistanceParallel(c.line1Id, c.line2Id)) break;
           final labelItem =
@@ -14632,6 +15921,18 @@ class SketchController extends ChangeNotifier {
         case CollinearConstraintDto c:
           final labelItem =
               _lineMidpointPairLabel(c.line1Id, c.line2Id, 'Collin.', entry.key, isSelected, labelOffset);
+          if (labelItem != null) items.add(labelItem);
+        case TangentConstraintDto c:
+          // Pre-existing gap fix (found while wiring Tangent's own
+          // context-flyout button): this had no overlay case at all, even
+          // though a Slot's own internal corner tangency has always used
+          // this DTO - simple center-anchored glyph, same "no real
+          // dimension value to show" shape Collinear/Parallel/Perpendicular
+          // above already use, just anchored at the one Point this
+          // constraint's own centre-to-line distance is actually about
+          // (its perpendicular foot on the Line has no stable identity to
+          // anchor at instead).
+          final labelItem = _pointGlyphLabel(c.centerPointId, 'Tan.', entry.key, isSelected, labelOffset);
           if (labelItem != null) items.add(labelItem);
         case PointLineDistanceConstraintDto c:
           final point = points[c.pointId];

@@ -505,6 +505,74 @@ def test_get_ellipse_arc_round_trip():
     assert response.json() == created
 
 
+def _minor_constraint_id(sketch_id: str, ellipse_arc_id: str) -> str:
+    constraints = client.get(f"/sketch/sketches/{sketch_id}/constraints").json()
+    arc = client.get(f"/sketch/sketches/{sketch_id}/ellipse-arcs/{ellipse_arc_id}").json()
+    for constraint in constraints:
+        if (
+            constraint["type"] == "distance"
+            and {constraint["point_a_id"], constraint["point_b_id"]} == {arc["center_point_id"], arc["minor_point_id"]}
+        ):
+            return constraint["id"]
+    raise AssertionError("minor radius DistanceConstraint not found")
+
+
+def _major_constraint_id(sketch_id: str, ellipse_arc_id: str) -> str:
+    constraints = client.get(f"/sketch/sketches/{sketch_id}/constraints").json()
+    arc = client.get(f"/sketch/sketches/{sketch_id}/ellipse-arcs/{ellipse_arc_id}").json()
+    for constraint in constraints:
+        if (
+            constraint["type"] == "distance"
+            and {constraint["point_a_id"], constraint["point_b_id"]} == {arc["center_point_id"], arc["major_point_id"]}
+        ):
+            return constraint["id"]
+    raise AssertionError("major radius DistanceConstraint not found")
+
+
+def test_dragging_the_minor_point_past_the_major_radius_is_clamped_not_swapped():
+    """Unlike a plain Ellipse (see Ellipse._major_minor's own doc comment
+    in models.py), an EllipseArc's major axis fixes where its own
+    parametric angle-zero sits - and therefore what start_point_id/
+    end_point_id even mean - so swapping which axis is "major" mid-drag
+    isn't safe here. PATCHing the minor axis's DistanceConstraint past the
+    major axis's current radius must clamp to the major radius instead,
+    the same cap `add_ellipse_arc` already applies at creation."""
+    sketch = _create_sketch()
+    center = _create_point(sketch["id"], 0.0, 0.0)
+    major = _create_point(sketch["id"], 9.0, 0.0)
+    arc = client.post(
+        f"/sketch/sketches/{sketch['id']}/ellipse-arcs",
+        json={
+            "center_point_id": center["id"],
+            "major_point_id": major["id"],
+            "minor_radius": 3.0,
+            "start_angle": 0.0,
+            "end_angle": 2.0,
+        },
+    ).json()
+    # Confirm the major dimension at its own current value first - see
+    # test_stage17_ellipse.py's own identical fix for why: both of a
+    # freshly-created EllipseArc's DistanceConstraints start provisional,
+    # so without this the minor-axis PATCH below would hit
+    # update_constraint_value's "sketch's first real dimension" whole-
+    # sketch-scale path instead of the ordinary single-point reseed,
+    # confounding this test's actual target (the clamp).
+    client.patch(
+        f"/sketch/sketches/{sketch['id']}/constraints/{_major_constraint_id(sketch['id'], arc['id'])}",
+        json={"value": 9.0},
+    )
+
+    response = client.patch(
+        f"/sketch/sketches/{sketch['id']}/constraints/{_minor_constraint_id(sketch['id'], arc['id'])}",
+        json={"value": 15.0},
+    )
+    assert response.status_code == 200
+
+    updated = client.get(f"/sketch/sketches/{sketch['id']}/ellipse-arcs/{arc['id']}").json()
+    assert updated["major_radius"] == pytest.approx(9.0)
+    assert updated["minor_radius"] == pytest.approx(9.0)
+
+
 def test_get_ellipse_arc_not_found():
     sketch = _create_sketch()
     response = client.get(f"/sketch/sketches/{sketch['id']}/ellipse-arcs/does-not-exist")

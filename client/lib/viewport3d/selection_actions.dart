@@ -68,6 +68,31 @@ typedef PointOnArcChecker = bool Function(
   String pointEntityId,
 );
 
+/// Bug fix (on-device feedback: "create plane"/"new sketch on face" are
+/// offered for a curved face, which can't actually be used with either -
+/// both require a planar face"): whether the Body face named by
+/// [bodyId]/[faceId] is planar - threaded in the same "no geometry of its
+/// own to consult" shape [PointOnLineChecker]/[PointOnArcChecker] already
+/// use, backed by [MeshDto.faceIsPlanar] (see that field's own doc
+/// comment). Null (no checker given - every existing test/fixture that
+/// predates this fix) defaults to treating the face as planar, unlike
+/// [PointOnLineChecker]'s own `?? false` default - this preserves every
+/// pre-existing single-face test's expectation of an unconditionally
+/// enabled Create Plane/New Sketch on Face, since the *absence* of a real
+/// answer here means "not known", not "known to be curved".
+typedef FacePlanarityChecker = bool Function(String bodyId, int faceId);
+
+/// Bug fix (on-device feedback: "chamfer and fillet are offered when a
+/// surface face is selected... presumably there is a stale assumption
+/// that faces are part of solid bodies"): whether the Body named by
+/// [bodyId] is a real solid (as opposed to a `SurfaceFeature`'s own
+/// non-solid shell - see `BodyMeshDto.isSurface`) - `BRepFilletAPI_
+/// MakeFillet`/`BRepFilletAPI_MakeChamfer` (see [_allSameBody]'s own doc
+/// comment) both operate on solid topology, so a face belonging to a bare
+/// Surface can never actually support either. Same "null means not known,
+/// defaults permissive" contract as [FacePlanarityChecker].
+typedef FaceSolidityChecker = bool Function(String bodyId);
+
 /// The Item 6 composition table: which operations are offered for a given
 /// selection, based on which [SelectionEntityKind]s it contains (and, for
 /// C2's two new combos, exact count and - for the sketch-entity one - the
@@ -78,6 +103,8 @@ List<SelectionContextAction> contextActionsFor(
   Set<SelectionEntityRef> selection, {
   PointOnLineChecker? isPointOnLine,
   PointOnArcChecker? isPointOnArc,
+  FacePlanarityChecker? isFacePlanar,
+  FaceSolidityChecker? isSolidBody,
 }) {
   if (selection.isEmpty) return const [];
 
@@ -228,11 +255,23 @@ List<SelectionContextAction> contextActionsFor(
     // Fillet/Chamfer entirely, requiring the user to hunt down and select
     // its individual boundary edges by hand first.
     if (faces.length == 1) {
-      return const [
-        SelectionContextAction('Create Plane', enabled: true),
-        SelectionContextAction('New Sketch on Face', enabled: true),
-        SelectionContextAction('Chamfer', enabled: true),
-        SelectionContextAction('Fillet', enabled: true),
+      // Bug fix (on-device feedback, see [FacePlanarityChecker]/
+      // [FaceSolidityChecker]'s own doc comments): a curved face can't
+      // back either Create Plane or New Sketch on Face (both resolve to
+      // the same OFFSET_FACE construction, which requires a planar face -
+      // see app.document.create_plane's `_resolve_planar_face`), and a
+      // face belonging to a bare Surface (not a solid Body) can't back
+      // Chamfer or Fillet - so each pair is only offered once its own
+      // precondition actually holds, rather than unconditionally as
+      // before.
+      final face = faces.single;
+      final planar = isFacePlanar?.call(face.bodyId, face.id) ?? true;
+      final solid = isSolidBody?.call(face.bodyId) ?? true;
+      return [
+        if (planar) const SelectionContextAction('Create Plane', enabled: true),
+        if (planar) const SelectionContextAction('New Sketch on Face', enabled: true),
+        if (solid) const SelectionContextAction('Chamfer', enabled: true),
+        if (solid) const SelectionContextAction('Fillet', enabled: true),
       ];
     }
     // On-device feedback (bug fix): a lone reference plane or existing

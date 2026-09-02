@@ -19,6 +19,7 @@ from app.sketch.constraints import (
     AtMidpointConstraint,
     CoincidentConstraint,
     CollinearConstraint,
+    CurveTangentConstraint,
     DistanceConstraint,
     EqualLengthConstraint,
     EqualRadiusConstraint,
@@ -81,6 +82,24 @@ _REDUNDANCY_SAFE_CONSTRAINT_TYPES = (
     PointOnEllipseConstraint,
 )
 
+# CurveTangentConstraint is deliberately NOT in the allowlist above -
+# probed directly, once a real py-slvs became available: fixing all three
+# of one Arc's own defining Points (centre/start/shared) alongside a
+# CurveTangentConstraint tying it to a second Arc produces py-slvs's own
+# result_code 5, and the resulting position genuinely violates the second
+# Arc's own pre-existing radius DistanceConstraint by a wide margin (off by
+# ~0.6 units, nowhere near tolerance) - a real conflict this "solved
+# correctly despite a redundant constraint" allowlist must never rescue,
+# not the same shape every other entry here was confirmed to be. Grounding
+# fewer Points at once (e.g. just one Arc's centre and its shared Point,
+# leaving the other Arc's own centre genuinely free) converges cleanly with
+# result_code 0 - no rescue ever needed for that shape - so the type stays
+# excluded here rather than risk this class of false positive for anyone's
+# more heavily over-constrained sketch. (Its own residual formula is
+# independently confirmed correct - see _RESIDUAL_CHECKABLE_CONSTRAINT_
+# TYPES immediately below, a strictly different, per-constraint check this
+# allowlist's own coarser gate doesn't share.)
+
 # Constraint types `_residual_verified_convergence` (below) knows how to
 # check directly from solved Point positions - a closed allowlist, same
 # conservative shape as `_REDUNDANCY_SAFE_CONSTRAINT_TYPES` above (only
@@ -131,6 +150,17 @@ _RESIDUAL_CHECKABLE_CONSTRAINT_TYPES = (
     HorizontalConstraint,
     VerticalConstraint,
     ParallelConstraint,
+    # CurveTangentConstraint: confirmed empirically once a real py-slvs
+    # became available (see _REDUNDANCY_SAFE_CONSTRAINT_TYPES's own comment
+    # for the fixture) - not the same class of risk AtMidpointConstraint's
+    # own exclusion above documents, since this residual is the exact
+    # geometric condition CurveTangentConstraint's own add_to_solver
+    # enforces (a shared Point's perpendicular distance from the infinite
+    # line through both centres), not a weaker proxy for it - probed
+    # directly against both a genuinely-tangent configuration (residual
+    # ~1e-12, correctly verified True) and a deliberately-off one (residual
+    # >> tolerance, correctly verified False).
+    CurveTangentConstraint,
 )
 
 _RESIDUAL_TOLERANCE = 1e-4
@@ -317,6 +347,23 @@ def _residual_verified_convergence(sketch: Sketch) -> bool | None:
                 points[constraint.line_end_id],
             )
             if abs(actual_distance - radius) > tolerance:
+                return False
+        elif isinstance(constraint, CurveTangentConstraint):
+            # See this module's own `_RESIDUAL_CHECKABLE_CONSTRAINT_TYPES`
+            # doc comment for why this branch exists but the type isn't
+            # actually in that allowlist yet - written and correct, just
+            # not turned on until confirmed against a real py-slvs solve.
+            center1 = points[constraint.center1_point_id]
+            center2 = points[constraint.center2_point_id]
+            shared = points[constraint.shared_point_id]
+            if _distance(center1, center2) < 1e-9:
+                # Degenerate (concentric) centres - "the line through both
+                # centres" isn't well-defined, and genuine tangency at a
+                # shared Point isn't a coherent concept for concentric
+                # curves anyway, so this can never count as verified.
+                return False
+            actual_distance = _point_line_distance(shared, center1, center2)
+            if actual_distance > tolerance:
                 return False
         elif isinstance(constraint, LineDistanceConstraint):
             # Signed, not `_point_line_distance`'s unsigned sibling -

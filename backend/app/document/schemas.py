@@ -1932,6 +1932,13 @@ class MeshVertexData(BaseModel):
     # Defaults to [] for the same backward-compatibility reason as the ids
     # above.
     face_edge_ids: list[list[int]] = []
+    # Bug fix (on-device feedback: "create plane"/"new sketch on face" are
+    # offered for a curved face, which can't actually be used with either -
+    # see app.document.mesh_data.MeshData's own `face_is_planar` doc
+    # comment): per-face planarity, same dense one-entry-per-face shape as
+    # `face_edge_ids` above. Defaults to [] for the same backward-
+    # compatibility reason as every other id list here.
+    face_is_planar: list[bool] = []
 
 
 class BodyMeshResponse(BaseModel):

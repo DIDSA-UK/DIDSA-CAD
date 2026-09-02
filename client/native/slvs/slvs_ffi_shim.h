@@ -107,6 +107,29 @@ DIDSA_SLVS_API Slvs_hConstraint slvs_add_mid_point(SlvsSystemHandle sys, Slvs_hE
 // unexpected C++ exception was caught at this boundary.
 DIDSA_SLVS_API int slvs_solve(SlvsSystemHandle sys, Slvs_hGroup group, int report_failed);
 
+// Same as slvs_solve, but marks up to 4 params (dragged0..dragged3, of
+// which only the first dragged_count are actually used - dragged_count
+// outside [0,4] is clamped to that range rather than treated as an error)
+// via SolveSpace's own live-clamp mechanism - Slvs_System.dragged (see
+// slvs.h's own doc comment: "the solver will favor that parameter, and
+// attempt to change it as little as possible even if that requires it to
+// change other parameters more"). This is this project's "soft-drag"
+// primitive: unlike hard-pinning a Point into its own fixed group (which
+// forces it to stay exactly where it was seeded, even when that violates a
+// Constraint), a dragged param stays genuinely free to move - the solver
+// only prefers to leave it alone. Four fixed scalar params rather than an
+// array+length pair (dart:ffi can call this with no pointer allocation on
+// the Dart side, at the cost of a fixed small ceiling matching
+// Slvs_System.dragged's own [4] - the same ceiling either shape would have).
+// Requires the vendor build to include client/native/slvs/patches/0001-
+// system-solve-dragged-params.patch (see that file, and this shim's own
+// build recipe in CMakeLists.txt) - without it, System::solve has no
+// `dragged` parameter to forward into and this function cannot be
+// implemented.
+DIDSA_SLVS_API int slvs_solve_dragged(SlvsSystemHandle sys, Slvs_hGroup group, int report_failed,
+                                       int dragged_count, Slvs_hParam dragged0, Slvs_hParam dragged1,
+                                       Slvs_hParam dragged2, Slvs_hParam dragged3);
+
 DIDSA_SLVS_API int slvs_get_dof(SlvsSystemHandle sys);
 DIDSA_SLVS_API int slvs_get_failed_count(SlvsSystemHandle sys);
 DIDSA_SLVS_API Slvs_hConstraint slvs_get_failed_at(SlvsSystemHandle sys, int index);

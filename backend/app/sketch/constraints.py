@@ -571,6 +571,52 @@ class TangentConstraint(Constraint):
 
 
 @dataclass
+class CurveTangentConstraint(Constraint):
+    """Forces two Arcs that already share an endpoint Point (drawn as a
+    connected chain, e.g. an S-curve, or a Slot-style corner - see
+    Sketch.add_curve_tangent_constraint's own validation) to meet smoothly
+    there, rather than merely touching at an arbitrary angle.
+
+    Only Arcs can use this - a Circle has no endpoint Point to share (see
+    TangentConstraint above for the Circle/Arc-vs-Line case, which needs no
+    shared point at all: it pins the perpendicular centre-to-line distance
+    regardless of whether the two entities touch).
+
+    Two circles/arcs are tangent at a shared point P exactly when P and
+    both centres are collinear (P sits where the two curves' tangent lines
+    - each perpendicular to its own centre-to-P radius - coincide, which
+    only happens when both radii point the same direction from P, i.e.
+    along the same line). Expressed via SolverBuilder.point_on_line against
+    a virtual line through both centres - no new solver primitive, same
+    "avoid the native arc entity" reasoning TangentConstraint's own doc
+    comment already gives, and no radius-equality term needed: whatever
+    each Arc's own already-solved radius is, collinearity alone is the
+    complete tangency condition.
+    """
+
+    id: str
+    entity1_id: str
+    entity2_id: str
+    center1_point_id: str
+    center2_point_id: str
+    shared_point_id: str
+
+    @property
+    def type(self) -> str:
+        return "curve_tangent"
+
+    def point_ids(self) -> tuple[str, str, str]:
+        return (self.center1_point_id, self.center2_point_id, self.shared_point_id)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        center1 = builder.point2d(self.center1_point_id)
+        center2 = builder.point2d(self.center2_point_id)
+        centers_line = builder.line_segment(center1, center2)
+        shared = builder.point2d(self.shared_point_id)
+        return builder.point_on_line(shared, centers_line)
+
+
+@dataclass
 class EqualRadiusConstraint(Constraint):
     """Forces two Circles/Arcs to share the same radius - e.g. a Slot's two
     end-cap Arcs.

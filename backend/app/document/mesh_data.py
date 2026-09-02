@@ -115,6 +115,14 @@ class MeshData:
     # sorted list of the same dense edge ids `edge_ids` uses (degenerate
     # edges never appear, same skip `_extract_edges` already applies).
     face_edge_ids: list[list[int]] = field(default_factory=list)
+    # Bug fix (on-device feedback: "create plane"/"new sketch on face" are
+    # offered for a curved face, which can't actually be used with either -
+    # both require a planar face, see app.document.create_plane's own
+    # `_resolve_planar_face`): per-face planarity, dense one entry per face
+    # in the same `face_ids`/`face_edge_ids` order, so the client can gate
+    # its own face-selection context menu on this instead of only finding
+    # out via a rejected `non_planar_reference` request after the fact.
+    face_is_planar: list[bool] = field(default_factory=list)
 
 
 def synthesize_wireframe_edges_from_triangles(mesh: MeshData) -> tuple[list[float], list[int]]:
