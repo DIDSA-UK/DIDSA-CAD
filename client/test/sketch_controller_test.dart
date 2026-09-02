@@ -5354,8 +5354,8 @@ void main() {
     expect(circle.edgeY, 2);
   });
 
-  test('activeDrawGhost previews the ellipse outline (clamped minor radius) once center and major '
-      'point are both placed', () async {
+  test('activeDrawGhost previews the ellipse outline once centre and major point are both placed',
+      () async {
     controller.selectDrawTool(SketchTool.ellipse);
     await controller.handleCanvasTap(0, 0); // center
     await controller.handleCanvasTap(10, 0); // major point - major radius 10
@@ -5373,13 +5373,34 @@ void main() {
     expect(ellipse.majorX, 10);
     expect(ellipse.majorY, 0);
     expect(ellipse.minorRadius, closeTo(4, 1e-9));
+  });
 
-    // Clamped: a cursor further from the axis than the major radius (10)
-    // never previews a minor radius exceeding it.
+  test(
+      'activeDrawGhost swaps which axis previews as major once the perpendicular (candidate minor) '
+      'distance exceeds the placed axis\'s own length, rather than clamping it down (on-device '
+      'feedback: "it\'s impossible for the second axis to be larger than the first axis - either '
+      'axis should be able to be major or minor")', () async {
+    controller.selectDrawTool(SketchTool.ellipse);
+    await controller.handleCanvasTap(0, 0); // center
+    await controller.handleCanvasTap(10, 0); // major point - major radius 10
+
+    // Perpendicular distance from (5, 50) to the y=0 major axis is 50,
+    // well past the placed axis's own length (10) - the perpendicular
+    // axis becomes the new major one instead of clamping to 10.
     controller.cursorX = 5;
     controller.cursorY = 50;
-    final clamped = controller.activeDrawGhost as EllipseGhost;
-    expect(clamped.minorRadius, closeTo(10, 1e-9));
+    final ghost = controller.activeDrawGhost as EllipseGhost;
+    expect(ghost.centerX, 0);
+    expect(ghost.centerY, 0);
+    // The new major axis is the *perpendicular projection* of the cursor
+    // (matching how the un-swapped minor radius was always a perpendicular
+    // projection, not a raw cursor distance) - straight up the Y axis from
+    // this cursor position, at length 50.
+    expect(ghost.majorX, closeTo(0, 1e-9));
+    expect(ghost.majorY, closeTo(50, 1e-9));
+    // The originally-placed axis's own length (10) becomes the new minor
+    // radius - major >= minor still holds, just via the other axis.
+    expect(ghost.minorRadius, closeTo(10, 1e-9));
   });
 
   test('the ellipse tool places center, major point, then minor radius across three taps, creating '
@@ -5416,6 +5437,79 @@ void main() {
     // the CoincidentConstraint tying the new centre Point to the origin
     // (see SketchController._pointIdAt's own doc comment).
     expect(controller.constraints.length, 6);
+  });
+
+  test(
+      'placing an ellipse whose third tap ends up perpendicular-further from the axis than the '
+      'second tap relocates the already-placed major Point to the real (longer) major axis instead '
+      'of clamping the minor radius down to match it (on-device feedback: "either axis should be '
+      'able to be major or minor")', () async {
+    controller.selectDrawTool(SketchTool.ellipse);
+    await controller.handleCanvasTap(20, 0); // centre, away from the origin
+    await controller.handleCanvasTap(30, 0); // major point - major radius 10
+    final placedMajorId = controller.ellipseMajorPointId!;
+    await controller.handleCanvasTap(25, 50); // perpendicular distance from the axis: 50
+
+    expect(controller.errorMessage, isNull);
+    expect(controller.ellipses.length, 1);
+    final ellipse = controller.ellipses.values.single;
+    expect(ellipse.majorPointId, placedMajorId, reason: 'the same Point relocates, rather than a new one appearing');
+    expect(ellipse.minorRadius, closeTo(10, 1e-6), reason: 'the originally-placed axis (10) becomes the new minor radius');
+    expect(controller.points[ellipse.majorPointId]!.x, closeTo(20, 1e-6));
+    expect(controller.points[ellipse.majorPointId]!.y, closeTo(50, 1e-6));
+    final major = controller.points[ellipse.majorPointId]!;
+    final center = controller.points[ellipse.centerPointId]!;
+    final majorRadius = math.sqrt(math.pow(major.x - center.x, 2) + math.pow(major.y - center.y, 2));
+    expect(majorRadius, greaterThan(ellipse.minorRadius), reason: 'major >= minor still holds, via the swapped axis');
+  });
+
+  test(
+      'the major-axis tap landing on the origin (or any other already-existing Point) falls back to '
+      'the old clamped (not swapped) behaviour, rather than relocating a Point something else might '
+      'depend on for a purely internal axis-relabeling decision', () async {
+    controller.selectDrawTool(SketchTool.ellipse);
+    await controller.handleCanvasTap(10, 0); // centre, away from the origin
+    await controller.handleCanvasTap(0, 0); // major point - snaps near the origin
+    // Never literally the origin's own id (see _pointIdAt's own "never
+    // reuse the origin's own id" fix) - a fresh Point coincident with it
+    // instead - but still correctly flagged as "reused", not fresh, since
+    // relocating it would violate that very CoincidentConstraint.
+    expect(controller.ellipseMajorPointId, isNot(controller.originPointId));
+    await controller.handleCanvasTap(5, 50); // perpendicular distance far exceeds the major radius (10)
+
+    expect(controller.errorMessage, isNull);
+    final ellipse = controller.ellipses.values.single;
+    expect(controller.points[ellipse.majorPointId]!.x, closeTo(0, 1e-9), reason: 'the reused Point never moved');
+    expect(controller.points[ellipse.majorPointId]!.y, closeTo(0, 1e-9));
+    expect(ellipse.minorRadius, closeTo(10, 1e-6), reason: 'clamped to the (unmoved) major radius, old behaviour');
+  });
+
+  test(
+      'the same fallback applies to an ordinary reused Point, not just the origin - tapping the '
+      'major axis exactly onto an existing Line\'s own endpoint must never silently drag that Line '
+      'along for the ride just because this Ellipse\'s own axes get relabeled', () async {
+    controller.selectDrawTool(SketchTool.line);
+    await controller.handleCanvasTap(30, 0);
+    await controller.handleCanvasTap(30, 30); // an unrelated Line, one endpoint at (30, 0)
+    controller.finishChain();
+    controller.exitToSelectMode();
+    final line = controller.lines.values.single;
+    final sharedPointId = controller.points[line.startPointId]!.x == 30 && controller.points[line.startPointId]!.y == 0
+        ? line.startPointId
+        : line.endPointId;
+
+    controller.selectDrawTool(SketchTool.ellipse);
+    await controller.handleCanvasTap(20, 0); // centre
+    await controller.handleCanvasTap(30, 0); // major point - lands exactly on the Line's own endpoint
+    expect(controller.ellipseMajorPointId, sharedPointId, reason: 'sanity check: the tap really did reuse it');
+    await controller.handleCanvasTap(25, 50); // perpendicular distance far exceeds the major radius (10)
+
+    expect(controller.errorMessage, isNull);
+    final ellipse = controller.ellipses.values.single;
+    expect(ellipse.majorPointId, sharedPointId);
+    expect(controller.points[sharedPointId]!.x, closeTo(30, 1e-9), reason: 'the shared Line endpoint never moved');
+    expect(controller.points[sharedPointId]!.y, closeTo(0, 1e-9));
+    expect(ellipse.minorRadius, closeTo(10, 1e-6), reason: 'clamped, not swapped, to protect the shared Point');
   });
 
   test('tapping an Ellipse in select mode, away from its defining Points, recognizes SelectionKind.ellipse',

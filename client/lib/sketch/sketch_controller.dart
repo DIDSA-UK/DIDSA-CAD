@@ -2181,6 +2181,19 @@ class SketchController extends ChangeNotifier {
 
   String? _ellipseCenterPointId;
   String? _ellipseMajorPointId;
+  /// Whether [_ellipseMajorPointId] reused an already-existing Point
+  /// (rather than being freshly created for this placement) - captured at
+  /// tap-2 time, before [_pointIdAtCursor] resolves it, since afterwards
+  /// there is no way to tell the two cases apart from the id alone. Used by
+  /// [_clickEllipseTool]'s own axis-swap fix (see [_resolveEllipseAxes]'s
+  /// doc comment): relocating a *freshly created* major Point to the real
+  /// (longer) axis is always safe - nothing else in the Sketch references
+  /// it yet - but relocating a *reused* one could silently drag along
+  /// whatever other Line/Circle/entity already relies on its exact
+  /// position, an unrelated side effect purely from this Ellipse's own
+  /// internal axis relabeling. The swap falls back to the old clamped
+  /// behaviour whenever this is true, same as the origin case.
+  bool _ellipseMajorPointIsReused = false;
 
   /// The center/major-axis Points of an Ellipse placed but not yet
   /// completed (waiting on the minor-radius-defining tap) - mirrors
@@ -2732,17 +2745,68 @@ class SketchController extends ChangeNotifier {
     final major = points[majorId];
     if (major == null) return null;
 
-    final majorRadius = math.sqrt(math.pow(major.x - center.x, 2) + math.pow(major.y - center.y, 2));
-    if (majorRadius < 1e-9) return null;
-    final rawMinorRadius = _perpendicularDistanceToLine(cursorX, cursorY, center.x, center.y, major.x, major.y);
-    if (rawMinorRadius == null || rawMinorRadius < 1e-9) return null;
+    final axes = _resolveEllipseAxes(center.x, center.y, major.x, major.y, cursorX, cursorY);
+    if (axes == null) return null;
+    final (majorX, majorY, minorRadius) = axes;
     return EllipseGhost(
       centerX: center.x,
       centerY: center.y,
-      majorX: major.x,
-      majorY: major.y,
-      minorRadius: math.min(rawMinorRadius, majorRadius),
+      majorX: majorX,
+      majorY: majorY,
+      minorRadius: minorRadius,
     );
+  }
+
+  /// Bug fix (on-device feedback: "when placing an elipse, it's impossible
+  /// for the second axis to be larger than the first axis - either axis
+  /// should be able to be major or minor"): the tapped major-axis Point
+  /// (`placedMajorX`/`placedMajorY`) always used to stay "major" no matter
+  /// what, with the third tap's own perpendicular distance silently
+  /// clamped down via `math.min` if it would have exceeded it - order-
+  /// based labeling, not length-based. Returns the axis that should
+  /// actually be treated as major (by length, not tap order) - unchanged
+  /// (`placedMajorX`/`placedMajorY`, `rawMinorRadius`) when the placed axis
+  /// is still the longer one, or the *perpendicular* axis (recomputed as a
+  /// real point position, not just a swapped scalar - callers that create/
+  /// move a real Point need the position, not only the value) when the
+  /// cursor's own perpendicular distance turns out to be longer, with the
+  /// originally-placed axis's own length becoming the new minor radius.
+  /// `major ≥ minor` still holds either way - required downstream by
+  /// OCCT's own `gp_Elips` (see the backend `Ellipse`/`add_ellipse`
+  /// docstrings) - this only changes *which* axis satisfies it. Null if
+  /// degenerate (placed axis or the perpendicular one is ~0).
+  (double majorX, double majorY, double minorRadius)? _resolveEllipseAxes(
+    double centerX,
+    double centerY,
+    double placedMajorX,
+    double placedMajorY,
+    double cursorXArg,
+    double cursorYArg,
+  ) {
+    final placedDx = placedMajorX - centerX;
+    final placedDy = placedMajorY - centerY;
+    final placedRadius = math.sqrt(placedDx * placedDx + placedDy * placedDy);
+    if (placedRadius < 1e-9) return null;
+    final rawMinorRadius =
+        _perpendicularDistanceToLine(cursorXArg, cursorYArg, centerX, centerY, placedMajorX, placedMajorY);
+    if (rawMinorRadius == null || rawMinorRadius < 1e-9) return null;
+    if (rawMinorRadius <= placedRadius) {
+      return (placedMajorX, placedMajorY, rawMinorRadius);
+    }
+    // Swap: the perpendicular axis is actually the longer one - it becomes
+    // the new major axis (the tapped Point's own axis becomes minor
+    // instead). Recomputed as the actual perpendicular *projection* of the
+    // cursor (not the raw cursor position itself), matching how
+    // rawMinorRadius above was already derived via perpendicular
+    // projection, not raw cursor-to-centre distance.
+    final placedDirX = placedDx / placedRadius;
+    final placedDirY = placedDy / placedRadius;
+    final perpDirX = -placedDirY;
+    final perpDirY = placedDirX;
+    final cursorDx = cursorXArg - centerX;
+    final cursorDy = cursorYArg - centerY;
+    final perpComponent = cursorDx * perpDirX + cursorDy * perpDirY;
+    return (centerX + perpDirX * perpComponent, centerY + perpDirY * perpComponent, placedRadius);
   }
 
   /// Ellipse-arc's tap sequence is center, then major-axis point, then
@@ -13632,6 +13696,9 @@ class SketchController extends ChangeNotifier {
 
     if (_ellipseMajorPointId == null) {
       await _runGuarded(() async {
+        // Captured before resolving - see _ellipseMajorPointIsReused's own
+        // doc comment for why this has to happen now, not at tap-3 time.
+        _ellipseMajorPointIsReused = _existingPointIdNear(cursorX, cursorY, excludeId: _ellipseCenterPointId) != null;
         _ellipseMajorPointId = await _pointIdAtCursor(excludeId: _ellipseCenterPointId);
       });
       return;
@@ -13642,10 +13709,40 @@ class SketchController extends ChangeNotifier {
     await _runGuarded(() async {
       final center = points[centerId]!;
       final major = points[majorId]!;
-      final majorRadius = math.sqrt(math.pow(major.x - center.x, 2) + math.pow(major.y - center.y, 2));
-      final rawMinorRadius = _perpendicularDistanceToLine(cursorX, cursorY, center.x, center.y, major.x, major.y);
-      final minorRadius = rawMinorRadius == null ? null : math.min(rawMinorRadius, majorRadius);
-      if (minorRadius == null || minorRadius < 1e-9) {
+      final axes = _resolveEllipseAxes(center.x, center.y, major.x, major.y, cursorX, cursorY);
+      if (axes == null) {
+        errorMessage = 'Cannot place an ellipse with a zero-length major axis or zero minor radius';
+        _ellipseCenterPointId = null;
+        _ellipseMajorPointId = null;
+        return;
+      }
+      var (majorX, majorY, minorRadius) = axes;
+      // Swap (see [_resolveEllipseAxes]'s own doc comment): the already-
+      // placed majorId Point itself needs to move to the real major axis
+      // position, since [_api.createEllipse] takes a Point id for the
+      // major axis, not a raw position - the backend derives the major
+      // radius/rotation from wherever that Point actually sits. Only when
+      // that Point was *freshly created* for this placement, though (see
+      // [_ellipseMajorPointIsReused]'s own doc comment) - relocating a
+      // reused, already-existing Point could silently drag along whatever
+      // other Line/Circle/entity relies on its exact position (or, for the
+      // origin specifically, violates the CoincidentConstraint tying a
+      // fresh-but-origin-pinned Point to it - see [_pointIdAt]'s own "never
+      // reuse the origin's own id" fix), an unrelated side effect purely
+      // from this Ellipse's own internal axis relabeling. Falls back to
+      // the old clamped-not-swapped behaviour for a reused Point instead
+      // of attempting an unsafe move.
+      if ((majorX != major.x || majorY != major.y) && !_ellipseMajorPointIsReused) {
+        final updated = await _api.updatePoint(_sketchId!, majorId, majorX, majorY);
+        points[majorId] = SketchPointView(id: updated.id, x: updated.x, y: updated.y);
+      } else if (_ellipseMajorPointIsReused) {
+        majorX = major.x;
+        majorY = major.y;
+        final rawMinorRadius = _perpendicularDistanceToLine(cursorX, cursorY, center.x, center.y, major.x, major.y);
+        final majorRadius = math.sqrt(math.pow(major.x - center.x, 2) + math.pow(major.y - center.y, 2));
+        minorRadius = rawMinorRadius == null ? majorRadius : math.min(rawMinorRadius, majorRadius);
+      }
+      if (minorRadius < 1e-9) {
         errorMessage = 'Cannot place an ellipse with a zero-length major axis or zero minor radius';
         _ellipseCenterPointId = null;
         _ellipseMajorPointId = null;
