@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:image/image.dart' as img;
 import 'package:speech_to_text/speech_to_text.dart';
@@ -1335,6 +1336,12 @@ class _ChatBubble extends StatelessWidget {
 
   const _ChatBubble({required this.message});
 
+  Future<void> _copyToClipboard(BuildContext context) async {
+    await Clipboard.setData(ClipboardData(text: message.text));
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Copied to clipboard'), duration: Duration(seconds: 2)));
+  }
+
   @override
   Widget build(BuildContext context) {
     final isUser = message.role == AiMessageRole.user;
@@ -1366,7 +1373,21 @@ class _ChatBubble extends StatelessWidget {
               ),
               const SizedBox(height: 6),
             ],
-            Text(message.text),
+            // Selectable (rather than a plain Text) so the raw text - JSON
+            // plans especially - can be selected and copied manually too,
+            // not just via the button below.
+            SelectableText(message.text),
+            Align(
+              alignment: Alignment.centerRight,
+              child: IconButton(
+                icon: const Icon(Icons.copy, size: 16),
+                tooltip: 'Copy to clipboard',
+                visualDensity: VisualDensity.compact,
+                constraints: const BoxConstraints(),
+                padding: const EdgeInsets.only(top: 6),
+                onPressed: () => _copyToClipboard(context),
+              ),
+            ),
           ],
         ),
       ),
