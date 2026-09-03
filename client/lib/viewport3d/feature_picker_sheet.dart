@@ -24,6 +24,17 @@ enum FeaturePickerAction {
   common,
   // Boolean family, fourth/last entry.
   split,
+  // Direct Editing family - all five were previously ambient-entry-only
+  // (`selection_actions.dart`'s `contextActionsFor`, reachable only once a
+  // Body/face was already selected) with no guided "Add" FAB entry at all;
+  // each now starts the same picking flow that entry point already has
+  // (`part_screen.dart`'s own `_start*Picker` functions), just reachable
+  // from here first too.
+  deleteBody,
+  scaleBody,
+  moveBody,
+  deleteFace,
+  moveFace,
 }
 
 /// Shows the fly-up bottom sheet listing every feature type the "Add" FAB's
@@ -37,21 +48,27 @@ enum FeaturePickerAction {
 /// (Extrude Surface - its own section, split out from Reference, since it's
 /// also reachable via a long-press-on-Sketch entry of the same name - see
 /// `feature_context_menu.dart`'s `showSurface` - and reads oddly grouped
-/// alongside a pure reference Plane), Modify (Fillet/Chamfer), and Repeat
-/// (Mirror/Pattern - not titled "Pattern" itself, since that collided with
-/// the "Pattern" entry it contains - see that section's own doc comment). A
-/// Combine section (Merge/Subtract/Common/Split) holds all four as real,
-/// enabled entries - see [_CombineSection].
+/// alongside a pure reference Plane), and Direct Edit (Delete Body/Scale
+/// Body/Move Body/Delete Face/Move Face - all five previously ambient-
+/// entry-only, with no guided "Add" FAB entry at all before this) on the
+/// left; Modify (Fillet/Chamfer), Repeat (Mirror/Pattern - not titled
+/// "Pattern" itself, since that collided with the "Pattern" entry it
+/// contains - see that section's own doc comment), and Combine (Merge/
+/// Subtract/Common/Split, all four real/enabled - see [_CombineSection]) on
+/// the right.
 ///
 /// On-device feedback: every section now starts collapsed (`initiallyExpanded:
-/// false`, previously only Combine did) - with six sections, opening the
+/// false`, previously only Combine did) - with several sections, opening the
 /// sheet already fully expanded showed more rows than fit most viewports at
 /// once. Bug fix: laid out as two independently-scrolling columns (a `Row`
 /// of two `Expanded` `SingleChildScrollView`s, left: Sketch-based/Reference/
-/// Surfacing, right: Modify/Repeat/Combine) rather than one long vertical
-/// list - expanding a section in one column no longer pushes the other
-/// column's rows off-screen or resets its scroll position. The two-column
-/// area gets a bounded height (a fraction of the screen) so each column's
+/// Surfacing/Direct Edit, right: Modify/Repeat/Combine) rather than one long
+/// vertical list - expanding a section in one column no longer pushes the
+/// other column's rows off-screen or resets its scroll position; Direct Edit
+/// joined the left column specifically to keep both columns' own row counts
+/// roughly balanced (right already had Modify/Repeat/Combine's own 8 rows
+/// across 3 sections). The two-column area gets a bounded height (a fraction
+/// of the screen) so each column's
 /// own [SingleChildScrollView] has something concrete to scroll within.
 Future<FeaturePickerAction?> showFeaturePickerSheet(BuildContext context) {
   return showModalBottomSheet<FeaturePickerAction>(
@@ -130,6 +147,48 @@ Future<FeaturePickerAction?> showFeaturePickerSheet(BuildContext context) {
                                 icon: 'assets/icons/feature/feature_surface.svg',
                                 label: 'Extrude Surface',
                                 action: FeaturePickerAction.surface,
+                              ),
+                            ],
+                          ),
+                          _FeatureSection(
+                            // Direct Editing family (docs/direct-editing-
+                            // scope.md): all five were ambient-entry-only
+                            // before this - selectable only by picking a
+                            // Body/face in the viewport first, with no
+                            // discoverable path from this "Add" FAB sheet at
+                            // all. Each entry here starts the exact same
+                            // picking flow `selection_actions.dart`'s
+                            // `contextActionsFor` buttons already trigger
+                            // (`part_screen.dart`'s own `_start*Picker`
+                            // functions) - same icons `feature_tree_panel.dart`
+                            // already uses for these Features' own tree rows.
+                            title: 'Direct Edit',
+                            initiallyExpanded: false,
+                            entries: [
+                              _FeatureEntry(
+                                icon: 'assets/icons/feature/feature_delete_body.svg',
+                                label: 'Delete Body',
+                                action: FeaturePickerAction.deleteBody,
+                              ),
+                              _FeatureEntry(
+                                icon: 'assets/icons/feature/feature_scale.svg',
+                                label: 'Scale Body',
+                                action: FeaturePickerAction.scaleBody,
+                              ),
+                              _FeatureEntry(
+                                icon: 'assets/icons/feature/feature_move_body.svg',
+                                label: 'Move/Copy Body',
+                                action: FeaturePickerAction.moveBody,
+                              ),
+                              _FeatureEntry(
+                                icon: 'assets/icons/feature/feature_delete_face.svg',
+                                label: 'Delete Face',
+                                action: FeaturePickerAction.deleteFace,
+                              ),
+                              _FeatureEntry(
+                                icon: 'assets/icons/feature/feature_move_face.svg',
+                                label: 'Move Face',
+                                action: FeaturePickerAction.moveFace,
                               ),
                             ],
                           ),

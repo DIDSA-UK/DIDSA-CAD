@@ -3321,4 +3321,112 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  // Direct Editing family: all five (Delete Body, Scale Body, Move Body,
+  // Delete Face, Move Face) were ambient-entry-only before this - reachable
+  // only by selecting a Body/face in the viewport first, with no path from
+  // the "Add" FAB's Feature picker at all. This group covers the new guided
+  // entries reaching the same state the ambient path already does - Delete
+  // Body/Scale Body/Move Body open their own picking-step [PickerRibbon]
+  // (mirrors `tapAddFeatureExtrude`'s own "Add > Feature > section > entry"
+  // navigation, generalized to the "Direct Edit" section), Delete Face/Move
+  // Face open their own panel directly with zero faces yet (mirrors
+  // [_startFilletPicker]'s identical shape) - none of these need a real
+  // Body/face in the fake backend, since reaching a picking state (not
+  // actually completing one) is as far as this suite's own viewport-tap
+  // simulation goes for every other guided "Add" FAB entry in this file
+  // (Merge/Boolean/Split/Pattern's own guided body-picking steps have no
+  // simulated-viewport-tap coverage here either).
+  group('Direct Editing family - guided "Add" FAB entries', () {
+    Future<void> tapAddFeatureDirectEdit(WidgetTester tester, String entryLabel) async {
+      await tester.tap(
+        find.byWidgetPredicate((w) => w is FloatingActionButton && w.heroTag == 'add-fab'),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('Feature'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.ensureVisible(find.text('Direct Edit'));
+      await tester.tap(find.text('Direct Edit'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.ensureVisible(find.text(entryLabel));
+      await tester.tap(find.text(entryLabel));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+    }
+
+    Future<void> pumpPartScreen(WidgetTester tester) async {
+      final documentApi = DocumentApiClient(
+        httpClient: MockClient((request) async => _FakeDocumentBackend().handle(request)),
+      );
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+    }
+
+    testWidgets('Delete Body opens a picking ribbon requiring 1+ Bodies', (tester) async {
+      await pumpPartScreen(tester);
+      await tapAddFeatureDirectEdit(tester, 'Delete Body');
+
+      expect(find.text('Select body/bodies to delete'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('Scale Body opens a single-tap-auto-advance picking ribbon', (tester) async {
+      await pumpPartScreen(tester);
+      await tapAddFeatureDirectEdit(tester, 'Scale Body');
+
+      expect(find.text('Select a body to scale'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('Move/Copy Body opens a single-tap-auto-advance picking ribbon', (tester) async {
+      await pumpPartScreen(tester);
+      await tapAddFeatureDirectEdit(tester, 'Move/Copy Body');
+
+      expect(find.text('Select a body to move'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('Delete Face opens the real panel directly with zero faces picked', (tester) async {
+      await pumpPartScreen(tester);
+      await tapAddFeatureDirectEdit(tester, 'Delete Face');
+
+      expect(find.text('Delete Face'), findsWidgets);
+      expect(find.text('Tap one or more faces of the same body to delete'), findsOneWidget);
+      expect(
+        tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Delete')).onPressed,
+        isNull,
+      );
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('Move Face opens the real panel directly with zero faces picked', (tester) async {
+      await pumpPartScreen(tester);
+      await tapAddFeatureDirectEdit(tester, 'Move Face');
+
+      expect(find.text('Tap one or more faces of the same body to move'), findsOneWidget);
+      expect(
+        tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed,
+        isNull,
+      );
+      expect(tester.takeException(), isNull);
+      // [MoveFacePanel]'s own `initState` postFrameCallback fires
+      // `onOffsetChanged` for the default offset, which schedules a 500ms
+      // debounce (a no-op here - _ensureMoveFaceFeatureExists skips a still-
+      // empty face_refs) - let it settle before the test ends, or the
+      // pending-timer invariant check fails (mirrors every other debounce-
+      // triggering test in this file's own `milliseconds: 600` convention).
+      await tester.pump(const Duration(milliseconds: 600));
+    });
+  });
 }
