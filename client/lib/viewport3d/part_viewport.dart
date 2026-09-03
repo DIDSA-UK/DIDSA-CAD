@@ -688,6 +688,23 @@ class PartViewport extends StatefulWidget {
   /// is true.
   final void Function(Rect sketchRect)? onMarqueeSelect;
 
+  /// Bug report ("if one body is entirely inside another body, it cannot be
+  /// selected" - user-requested SOLIDWORKS-style "Select Other"): fired once
+  /// a click-then-click-and-hold gesture (see [PartViewportState]'s own
+  /// `_selectOtherHoldTimer` machinery) fires while over existing geometry.
+  /// Carries every candidate [hitTestAllCandidates] found at that screen
+  /// position, nearest first - the caller ([PartScreen]) owns showing the
+  /// disambiguation list and feeding a chosen entity back through
+  /// [onSelectionToggle], the same callback every other pick already uses.
+  final void Function(List<HoverHit> candidates)? onSelectOtherRequested;
+
+  /// Bug report follow-up: lets [PartScreen]'s Select Other list force a
+  /// live 3D highlight on whichever candidate the user is currently
+  /// hovering/focusing in that list, independent of any real pointer hover -
+  /// consulted by [PartViewportState._syncHoverNode] ahead of the ordinary
+  /// [PartViewportState._hoverHit] whenever non-null.
+  final SelectionEntityRef? highlightOverride;
+
   /// Prompt A2: which entity kinds [_recomputeHover] considers - [PartScreen]
   /// owns this (its View submenu toggles write it, plus any future
   /// push/pop override - see `OverrideStack`), same controlled-widget
@@ -855,6 +872,8 @@ class PartViewport extends StatefulWidget {
     this.onSelectionToggle,
     this.onClearSelection,
     this.onMarqueeSelect,
+    this.onSelectOtherRequested,
+    this.highlightOverride,
     this.selectionFilter = SelectionFilterState.defaults,
     this.isPerspective = false,
     this.farClip,
@@ -1036,6 +1055,41 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// null only in the instant between the long-press firing and the first
   /// subsequent pointer-move.
   Offset? _marqueeCurrentScreen;
+
+  /// Bug report ("if one body is entirely inside another body, it cannot be
+  /// selected"): "Select Other" is triggered by click, then click-and-hold
+  /// (a second pointer-down landing back on roughly the same spot shortly
+  /// after the first tap's pointer-up, then held rather than released) -
+  /// mirrors [_marqueeLongPressDuration]'s own "hold this long to escalate a
+  /// tap into something else" shape, reusing its value.
+  static const Duration _selectOtherHoldDuration = _marqueeLongPressDuration;
+
+  /// How soon after a first tap's pointer-up a second pointer-down must
+  /// land, and how close to that same screen spot, to count as "the second
+  /// click" of the click-then-click-and-hold gesture rather than an
+  /// unrelated new tap - loosely matches typical platform double-tap
+  /// timing/travel tolerances.
+  static const Duration _selectOtherDoubleClickWindow = Duration(milliseconds: 350);
+  static const double _selectOtherDoubleClickRadius = 16.0;
+
+  /// The most recent qualifying tap's pointer-up position/time - null once
+  /// too much time (or a non-tap gesture) has passed, so a later
+  /// pointer-down is never mistaken for "the second click" of a stale tap.
+  Offset? _lastTapUpScreen;
+  DateTime? _lastTapUpTime;
+
+  /// The pending Select Other hold timer, non-null only between a
+  /// qualifying second pointer-down and either it firing or being cancelled
+  /// (too much travel, or the pointer lifting first) - mirrors
+  /// [_marqueeLongPressTimer]'s own lifecycle exactly.
+  Timer? _selectOtherHoldTimer;
+  Offset? _selectOtherDownScreen;
+
+  /// True for the remainder of the current gesture once the hold timer has
+  /// actually fired - suppresses the ordinary tap-commit in [_onPointerEnd]
+  /// when that same pointer finally lifts, so opening the Select Other list
+  /// never also toggles a normal selection.
+  bool _selectOtherFired = false;
 
   /// Stage 23 Item 2: the cursor's current screen position while
   /// [PartViewport.selectionMode] is true - null whenever selection mode is
@@ -1269,6 +1323,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // not fire after this State is torn down - it would call setState on a
     // disposed Element.
     _marqueeLongPressTimer?.cancel();
+    // Bug report ("Select Other"): same reasoning for its own hold timer.
+    _selectOtherHoldTimer?.cancel();
     super.dispose();
   }
 
@@ -1385,6 +1441,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           _cancelMarqueeLongPress();
           _marqueeActive = false;
           _marqueeCurrentScreen = null;
+          // Bug report ("Select Other"): same "don't leave it mid-flight"
+          // reasoning for its own hold timer.
+          _cancelSelectOtherHold();
         }
         _syncHoverNode();
       });
@@ -1424,6 +1483,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         _syncSelectedEntityNodes();
         _syncHoverNode();
       });
+    }
+    if (widget.highlightOverride != oldWidget.highlightOverride) {
+      // Bug report ("Select Other"): re-syncs the forced highlight as the
+      // user hovers/focuses a different row in the list.
+      setState(_syncHoverNode);
     }
     if (widget.bodies != oldWidget.bodies && widget.selectionMode) {
       // The mesh's entity ids are only stable within one response (see
@@ -2376,10 +2440,20 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       // selecting is recognised for pinch-zoom/two-finger-pan below,
       // exactly like orbit mode already gets for free.
       _handlePointerDown(event);
+      _selectOtherFired = false;
       // P25: a second finger joining cancels any pending long-press -
       // becomes a pinch/pan gesture instead, never a marquee.
       if (_activeTouches.length > 1) {
         _cancelMarqueeLongPress();
+        _cancelSelectOtherHold();
+      } else if (_isSecondClickOfSelectOtherGesture(event.localPosition) &&
+          _hasEntityNearScreenPoint(event.localPosition)) {
+        // Bug report ("Select Other"): the second click of a
+        // click-then-click-and-hold landed back on existing geometry -
+        // arm the hold timer instead of the marquee's (which only ever
+        // arms over empty space, so the two can never both fire for the
+        // same gesture).
+        _maybeStartSelectOtherHold(event.localPosition);
       } else {
         _maybeStartMarqueeLongPress(event.localPosition);
       }
@@ -2405,6 +2479,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         final down = _marqueeDownScreen;
         if (down != null && (event.localPosition - down).distance > _tapTravelThreshold) {
           _cancelMarqueeLongPress();
+        }
+      }
+      if (_selectOtherHoldTimer != null) {
+        final down = _selectOtherDownScreen;
+        if (down != null && (event.localPosition - down).distance > _tapTravelThreshold) {
+          _cancelSelectOtherHold();
         }
       }
       _selectionGestureTravel += event.delta.distance;
@@ -2464,6 +2544,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       // fire if its pointer lifts first - mirrors sketch_canvas.dart's own
       // _cancelLongPress call at the same point.
       _cancelMarqueeLongPress();
+      // Bug report ("Select Other"): same "lifting first cancels the
+      // pending hold" rule as the marquee's own long-press just above.
+      _cancelSelectOtherHold();
       // Fix 4: tap-to-select - a pointer-up that stayed within the tap
       // travel threshold commits the current hover, the same logic the
       // removed "Select" button used to call. A drag that moved the cursor
@@ -2471,14 +2554,31 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       // nor does the tail end of a pinch (fingers lifting one at a time),
       // per [_hadMultiTouch] below, mirroring orbit mode's own
       // _handlePointerEnd exactly.
+      //
+      // Bug report ("Select Other"): also suppressed once [_selectOtherFired]
+      // - this same still-down pointer already opened the Select Other list
+      // mid-gesture, so its eventual lift must not also toggle a normal
+      // selection.
       final wasTap = event is PointerUpEvent &&
           !_hadMultiTouch &&
+          !_selectOtherFired &&
           _selectionGestureTravel < _tapTravelThreshold;
       if (event.kind != PointerDeviceKind.mouse) {
         _activeTouches.remove(event.pointer);
         if (_activeTouches.isEmpty) _hadMultiTouch = false;
       }
-      if (wasTap) _commitSelection();
+      if (wasTap) {
+        _commitSelection();
+        // Bug report ("Select Other"): records this tap's own release as a
+        // candidate "first click" for the *next* gesture's click-then-hold
+        // check - see [_isSecondClickOfSelectOtherGesture].
+        _lastTapUpScreen = event.localPosition;
+        _lastTapUpTime = DateTime.now();
+      } else {
+        _lastTapUpScreen = null;
+        _lastTapUpTime = null;
+      }
+      _selectOtherFired = false;
       // C3: a two-finger pinch-zoom/pan (_applyPinchPan) can still move the
       // camera while selecting - resync the edge overlay's towards-camera
       // bias the same as the orbit-mode path below does.
@@ -2758,6 +2858,65 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final (anchorX, anchorY) = worldPointToSketch(basis, anchorHit.$1);
     final (currentX, currentY) = worldPointToSketch(basis, currentHit.$1);
     widget.onMarqueeSelect?.call(Rect.fromPoints(Offset(anchorX, anchorY), Offset(currentX, currentY)));
+  }
+
+  // ---- Bug report: "Select Other" (click, then click-and-hold) -----------
+
+  /// True when [downScreen] qualifies as the second click of a
+  /// click-then-click-and-hold gesture - a fresh pointer-down landing close
+  /// enough, soon enough, after the most recent qualifying tap's release
+  /// (see [_lastTapUpScreen]/[_lastTapUpTime], set in [_onPointerEnd]).
+  bool _isSecondClickOfSelectOtherGesture(Offset downScreen) {
+    final lastUp = _lastTapUpScreen;
+    final lastUpTime = _lastTapUpTime;
+    if (lastUp == null || lastUpTime == null) return false;
+    if (DateTime.now().difference(lastUpTime) > _selectOtherDoubleClickWindow) return false;
+    return (downScreen - lastUp).distance <= _selectOtherDoubleClickRadius;
+  }
+
+  /// Starts the hold timer when the second click of the gesture lands on
+  /// existing geometry - mirrors [_maybeStartMarqueeLongPress]'s own timer
+  /// shape exactly, just keyed on "there IS something here" rather than
+  /// marquee's "there's genuinely nothing here" (the two conditions are
+  /// mutually exclusive, so the two timers can never both be pending for
+  /// the same gesture).
+  void _maybeStartSelectOtherHold(Offset downScreen) {
+    _selectOtherDownScreen = downScreen;
+    _selectOtherHoldTimer?.cancel();
+    _selectOtherHoldTimer = Timer(_selectOtherHoldDuration, () => _fireSelectOther(downScreen));
+  }
+
+  /// Cancels a pending (not yet fired) hold timer - mirrors
+  /// [_cancelMarqueeLongPress].
+  void _cancelSelectOtherHold() {
+    _selectOtherHoldTimer?.cancel();
+    _selectOtherHoldTimer = null;
+    _selectOtherDownScreen = null;
+  }
+
+  /// Fires once [_selectOtherHoldDuration] elapses without the pointer
+  /// travelling far enough to cancel (see [_onPointerMove]'s own
+  /// selectionMode branch) - collects every candidate at [downScreen] via
+  /// [hitTestAllCandidates] and hands them to
+  /// [PartViewport.onSelectOtherRequested], the same way [_startMarquee]
+  /// switches its own gesture over once its timer fires.
+  void _fireSelectOther(Offset downScreen) {
+    _selectOtherHoldTimer = null;
+    _selectOtherFired = true;
+    final camera = _camera.cameraFor(_viewportSize);
+    final ray = camera.screenPointToRay(downScreen, _viewportSize);
+    final candidates = (widget.bodies.isEmpty && widget.sketchGeometries.isEmpty)
+        ? const <HoverHit>[]
+        : hitTestAllCandidates(
+            ray: ray,
+            viewportSize: _viewportSize,
+            bodies: widget.bodies,
+            sketchGeometries: widget.sketchGeometries,
+            filter: widget.selectionFilter,
+            orthographicHalfHeight: _orthographicHalfHeightOf(camera),
+          );
+    if (candidates.isEmpty) return;
+    widget.onSelectOtherRequested?.call(candidates);
   }
 
   // ---- P16: draw-cursor mode's own cursor/raycast/commit dispatch --------
@@ -3261,12 +3420,28 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// highlight geometry depending on [_hoverHit]'s kind (Item 3: "hovered
   /// face = subtle tint; hovered edge = colour change + thickness increase;
   /// hovered vertex = small filled circle").
+  ///
+  /// Bug report ("Select Other"): [PartViewport.highlightOverride], when
+  /// non-null, wins over the real pointer-driven [_hoverHit] - lets
+  /// [PartScreen]'s Select Other list dynamically highlight whichever
+  /// candidate row the user is hovering/focusing, exactly like SOLIDWORKS'
+  /// own "Select Other" popup does, without needing a live pointer hover at
+  /// that entity's own screen position (which, for a candidate the list
+  /// exists to reach in the first place, there usually isn't one).
   void _syncHoverNode() {
     final scene = _scene;
     if (scene == null) return;
     if (_hoverNode != null) {
       scene.remove(_hoverNode!);
       _hoverNode = null;
+    }
+    final overrideEntity = widget.highlightOverride;
+    if (overrideEntity != null) {
+      final node = _buildEntityHighlightNode(overrideEntity, _hoverColor);
+      if (node == null) return;
+      scene.add(node);
+      _hoverNode = node;
+      return;
     }
     final hit = _hoverHit;
     if (hit == null) return;
