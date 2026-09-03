@@ -1058,24 +1058,26 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
 
   /// Bug report ("if one body is entirely inside another body, it cannot be
   /// selected"): "Select Other" is triggered by click, then click-and-hold
-  /// (a second pointer-down landing back on roughly the same spot shortly
-  /// after the first tap's pointer-up, then held rather than released) -
-  /// mirrors [_marqueeLongPressDuration]'s own "hold this long to escalate a
-  /// tap into something else" shape, reusing its value.
+  /// (a second pointer-down shortly after the first tap's pointer-up, then
+  /// held rather than released) - mirrors [_marqueeLongPressDuration]'s own
+  /// "hold this long to escalate a tap into something else" shape, reusing
+  /// its value.
   static const Duration _selectOtherHoldDuration = _marqueeLongPressDuration;
 
   /// How soon after a first tap's pointer-up a second pointer-down must
-  /// land, and how close to that same screen spot, to count as "the second
-  /// click" of the click-then-click-and-hold gesture rather than an
-  /// unrelated new tap - loosely matches typical platform double-tap
-  /// timing/travel tolerances.
+  /// land to count as "the second click" of the click-then-click-and-hold
+  /// gesture rather than an unrelated new tap - loosely matches typical
+  /// platform double-tap timing tolerances.
+  ///
+  /// On-device feedback ("double tap+hold seems to trigger single
+  /// tap+hold which starts a selection box"): deliberately timing-only, no
+  /// screen-position check - see [_isSecondClickOfSelectOtherGesture]'s own
+  /// doc comment for why comparing tap positions was the actual bug.
   static const Duration _selectOtherDoubleClickWindow = Duration(milliseconds: 350);
-  static const double _selectOtherDoubleClickRadius = 16.0;
 
-  /// The most recent qualifying tap's pointer-up position/time - null once
-  /// too much time (or a non-tap gesture) has passed, so a later
-  /// pointer-down is never mistaken for "the second click" of a stale tap.
-  Offset? _lastTapUpScreen;
+  /// The most recent qualifying tap's release time - null once too much
+  /// time (or a non-tap gesture) has passed, so a later pointer-down is
+  /// never mistaken for "the second click" of a stale tap.
   DateTime? _lastTapUpTime;
 
   /// The pending Select Other hold timer, non-null only between a
@@ -2446,13 +2448,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       if (_activeTouches.length > 1) {
         _cancelMarqueeLongPress();
         _cancelSelectOtherHold();
-      } else if (_isSecondClickOfSelectOtherGesture(event.localPosition) &&
-          _hasEntityNearScreenPoint(event.localPosition)) {
+      } else if (_isSecondClickOfSelectOtherGesture() && _hoverHit != null) {
         // Bug report ("Select Other"): the second click of a
-        // click-then-click-and-hold landed back on existing geometry -
-        // arm the hold timer instead of the marquee's (which only ever
-        // arms over empty space, so the two can never both fire for the
-        // same gesture).
+        // click-then-click-and-hold, with the cursor already over existing
+        // geometry ([_hoverHit], not a fresh hit-test at the tap's own
+        // position - see [_isSecondClickOfSelectOtherGesture]'s own doc
+        // comment for why) - arm the hold timer instead of the marquee's
+        // (which only ever arms over empty space, so the two can never
+        // both fire for the same gesture).
         _maybeStartSelectOtherHold(event.localPosition);
       } else {
         _maybeStartMarqueeLongPress(event.localPosition);
@@ -2569,13 +2572,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       }
       if (wasTap) {
         _commitSelection();
-        // Bug report ("Select Other"): records this tap's own release as a
-        // candidate "first click" for the *next* gesture's click-then-hold
-        // check - see [_isSecondClickOfSelectOtherGesture].
-        _lastTapUpScreen = event.localPosition;
+        // Bug report ("Select Other"): records this tap's own release time
+        // as a candidate "first click" for the *next* gesture's
+        // click-then-hold check - see
+        // [_isSecondClickOfSelectOtherGesture]'s own doc comment for why
+        // this is timing-only, with no screen position recorded alongside
+        // it.
         _lastTapUpTime = DateTime.now();
       } else {
-        _lastTapUpScreen = null;
         _lastTapUpTime = null;
       }
       _selectOtherFired = false;
@@ -2862,28 +2866,48 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
 
   // ---- Bug report: "Select Other" (click, then click-and-hold) -----------
 
-  /// True when [downScreen] qualifies as the second click of a
-  /// click-then-click-and-hold gesture - a fresh pointer-down landing close
-  /// enough, soon enough, after the most recent qualifying tap's release
-  /// (see [_lastTapUpScreen]/[_lastTapUpTime], set in [_onPointerEnd]).
-  bool _isSecondClickOfSelectOtherGesture(Offset downScreen) {
-    final lastUp = _lastTapUpScreen;
+  /// True when a fresh pointer-down qualifies as the second click of a
+  /// click-then-click-and-hold gesture - soon enough after the most recent
+  /// qualifying tap's release (see [_lastTapUpTime], set in
+  /// [_onPointerEnd]).
+  ///
+  /// On-device feedback ("double tap+hold seems to trigger single
+  /// tap+hold which starts a selection box"): originally also required the
+  /// new pointer-down to land within a small screen-space radius of the
+  /// first tap's own release position - wrong test. In this widget's touch
+  /// model, [_cursorPosition] (the actual selection target - see
+  /// [_handleSelectionPointerMove]'s "drag moves cursor relatively" doc
+  /// comment) is *not* the same point a finger physically taps: a touch
+  /// tap only ever *commits whatever the cursor is already over*, dragged
+  /// there by earlier gestures - two taps of the same click-then-hold
+  /// gesture can land at very different screen positions while the cursor
+  /// itself never moves at all. Position is simply the wrong signal here;
+  /// timing alone (this method) plus "is the cursor actually over
+  /// something" (checked separately at the call site via [_hoverHit], not
+  /// a fresh hit-test at the tap's own position) is what actually matches
+  /// user intent on both touch and mouse.
+  bool _isSecondClickOfSelectOtherGesture() {
     final lastUpTime = _lastTapUpTime;
-    if (lastUp == null || lastUpTime == null) return false;
-    if (DateTime.now().difference(lastUpTime) > _selectOtherDoubleClickWindow) return false;
-    return (downScreen - lastUp).distance <= _selectOtherDoubleClickRadius;
+    if (lastUpTime == null) return false;
+    return DateTime.now().difference(lastUpTime) <= _selectOtherDoubleClickWindow;
   }
 
-  /// Starts the hold timer when the second click of the gesture lands on
-  /// existing geometry - mirrors [_maybeStartMarqueeLongPress]'s own timer
-  /// shape exactly, just keyed on "there IS something here" rather than
-  /// marquee's "there's genuinely nothing here" (the two conditions are
-  /// mutually exclusive, so the two timers can never both be pending for
-  /// the same gesture).
+  /// Starts the hold timer when the second click of the gesture lands while
+  /// the cursor is already over existing geometry - mirrors
+  /// [_maybeStartMarqueeLongPress]'s own timer shape exactly, just keyed on
+  /// "there IS something here" rather than marquee's "there's genuinely
+  /// nothing here" (the two conditions are mutually exclusive, so the two
+  /// timers can never both be pending for the same gesture).
+  ///
+  /// [downScreen] (the physical pointer-down position) is kept only to
+  /// detect the pointer dragging away far enough to cancel the hold (see
+  /// [_onPointerMove]'s own selectionMode branch) - never used as the
+  /// candidate-collection point itself (see [_fireSelectOther]'s own doc
+  /// comment).
   void _maybeStartSelectOtherHold(Offset downScreen) {
     _selectOtherDownScreen = downScreen;
     _selectOtherHoldTimer?.cancel();
-    _selectOtherHoldTimer = Timer(_selectOtherHoldDuration, () => _fireSelectOther(downScreen));
+    _selectOtherHoldTimer = Timer(_selectOtherHoldDuration, _fireSelectOther);
   }
 
   /// Cancels a pending (not yet fired) hold timer - mirrors
@@ -2896,15 +2920,20 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
 
   /// Fires once [_selectOtherHoldDuration] elapses without the pointer
   /// travelling far enough to cancel (see [_onPointerMove]'s own
-  /// selectionMode branch) - collects every candidate at [downScreen] via
-  /// [hitTestAllCandidates] and hands them to
-  /// [PartViewport.onSelectOtherRequested], the same way [_startMarquee]
-  /// switches its own gesture over once its timer fires.
-  void _fireSelectOther(Offset downScreen) {
+  /// selectionMode branch) - collects every candidate at the current
+  /// [_cursorPosition] (the same point [_commitSelection] would otherwise
+  /// commit a plain tap against - see [_isSecondClickOfSelectOtherGesture]'s
+  /// own doc comment for why this is the right point and the physical
+  /// pointer-down position is not) via [hitTestAllCandidates], and hands
+  /// them to [PartViewport.onSelectOtherRequested], the same way
+  /// [_startMarquee] switches its own gesture over once its timer fires.
+  void _fireSelectOther() {
     _selectOtherHoldTimer = null;
     _selectOtherFired = true;
+    final cursor = _cursorPosition;
+    if (cursor == null) return;
     final camera = _camera.cameraFor(_viewportSize);
-    final ray = camera.screenPointToRay(downScreen, _viewportSize);
+    final ray = camera.screenPointToRay(cursor, _viewportSize);
     final candidates = (widget.bodies.isEmpty && widget.sketchGeometries.isEmpty)
         ? const <HoverHit>[]
         : hitTestAllCandidates(

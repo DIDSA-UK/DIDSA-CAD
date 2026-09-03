@@ -37,7 +37,7 @@ Future<void> showSelectOtherSheet(
   onHighlight(null);
 }
 
-class _SelectOtherSheet extends StatelessWidget {
+class _SelectOtherSheet extends StatefulWidget {
   final List<HoverHit> candidates;
   final Map<String, String> bodyNames;
   final void Function(SelectionEntityRef entity) onSelect;
@@ -49,6 +49,25 @@ class _SelectOtherSheet extends StatelessWidget {
     required this.onSelect,
     required this.onHighlight,
   });
+
+  @override
+  State<_SelectOtherSheet> createState() => _SelectOtherSheetState();
+}
+
+class _SelectOtherSheetState extends State<_SelectOtherSheet> {
+  // On-device feedback ("when the list is open, press and hold on the list
+  // item should highlight the object, single tap should select it and
+  // close the list"): tracked locally (as well as fed up through
+  // [SelectOtherSheet.onHighlight]) purely so the pressed row itself can
+  // show a visible tint - on a touch device there is no cursor sitting
+  // over the row the way a mouse hover would show one, so the row needs
+  // its own feedback that something is being previewed.
+  SelectionEntityRef? _previewedEntity;
+
+  void _setPreview(SelectionEntityRef? entity) {
+    setState(() => _previewedEntity = entity);
+    widget.onHighlight(entity);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -70,20 +89,33 @@ class _SelectOtherSheet extends StatelessWidget {
           Flexible(
             child: ListView.builder(
               shrinkWrap: true,
-              itemCount: candidates.length,
+              itemCount: widget.candidates.length,
               itemBuilder: (context, index) {
-                final entity = candidates[index].entity;
-                return MouseRegion(
-                  onEnter: (_) => onHighlight(entity),
-                  onExit: (_) => onHighlight(null),
-                  child: ListTile(
-                    dense: true,
-                    leading: _iconFor(entity.kind),
-                    title: Text(_titleFor(entity)),
-                    onTap: () {
-                      Navigator.of(context).pop();
-                      onSelect(entity);
-                    },
+                final entity = widget.candidates[index].entity;
+                // On-device feedback: single tap selects and closes the
+                // sheet immediately - a long-press (touch) or hover
+                // (mouse) only *previews* the highlight, never selects on
+                // its own, so browsing the list can never accidentally
+                // commit a choice.
+                return GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onLongPressStart: (_) => _setPreview(entity),
+                  onLongPressMoveUpdate: (_) => _setPreview(entity),
+                  onLongPressEnd: (_) => _setPreview(null),
+                  onLongPressCancel: () => _setPreview(null),
+                  onTap: () {
+                    widget.onSelect(entity);
+                    Navigator.of(context).pop();
+                  },
+                  child: MouseRegion(
+                    onEnter: (_) => _setPreview(entity),
+                    onExit: (_) => _setPreview(null),
+                    child: ListTile(
+                      dense: true,
+                      tileColor: _previewedEntity == entity ? Theme.of(context).colorScheme.primaryContainer : null,
+                      leading: _iconFor(entity.kind),
+                      title: Text(_titleFor(entity)),
+                    ),
                   ),
                 );
               },
@@ -165,7 +197,7 @@ class _SelectOtherSheet extends StatelessWidget {
   String _titleFor(SelectionEntityRef entity) {
     if (entity.kind == SelectionEntityKind.body) {
       final id = entity.bodyId;
-      return bodyNames[id] ?? 'Body ${id.length > 8 ? id.substring(0, 8) : id}';
+      return widget.bodyNames[id] ?? 'Body ${id.length > 8 ? id.substring(0, 8) : id}';
     }
     if (entity.kind == SelectionEntityKind.sketchPoint ||
         entity.kind == SelectionEntityKind.sketchLine ||
