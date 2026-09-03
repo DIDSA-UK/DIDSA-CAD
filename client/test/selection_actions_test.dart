@@ -307,11 +307,11 @@ void main() {
 
   group('Pattern/Mirror scoping Phase 1/2/6: contextActionsFor Mirror/Pattern', () {
     test('a lone Body offers a real, enabled Mirror and a real, enabled Pattern, plus Delete '
-        'Body and (single-Body-only v1 scope) a real, enabled Scale (Direct Editing family - no '
-        'target-vs-tool ambiguity, unlike the still-removed Merge/Subtract/Common/Split, so it '
-        'is safe to offer directly from this ambient table; the guided "Add > Feature > '
-        'Combine" entries, and each Feature\'s own long-press context menu, remain the only '
-        'entry points for Merge/Subtract/Common/Split)', () {
+        'Body and (single-Body-only v1 scope) a real, enabled Scale and Move Body (Direct '
+        'Editing family - no target-vs-tool ambiguity, unlike the still-removed Merge/Subtract/'
+        'Common/Split, so it is safe to offer directly from this ambient table; the guided '
+        '"Add > Feature > Combine" entries, and each Feature\'s own long-press context menu, '
+        'remain the only entry points for Merge/Subtract/Common/Split)', () {
       const body = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b1');
       final actions = contextActionsFor({body});
       expect(actions, [
@@ -319,6 +319,7 @@ void main() {
         const SelectionContextAction('Pattern', enabled: true),
         const SelectionContextAction('Delete Body', enabled: true),
         const SelectionContextAction('Scale', enabled: true),
+        const SelectionContextAction('Move Body', enabled: true),
       ]);
     });
 
@@ -326,8 +327,8 @@ void main() {
         'Phase 6: two or more Bodies together still offer Mirror and Pattern (Pattern widened '
         'from exactly-one-Body to 1+, mirroring Mirror), plus Delete Body for the whole '
         'selection - no Merge/Subtract/Common ambient entry either, same reasoning as the '
-        'lone-Body case above; Scale is disabled with a reason for 2+ Bodies (v1 is single-Body '
-        'only)', () {
+        'lone-Body case above; Scale and Move Body are each disabled with a reason for 2+ '
+        'Bodies (v1 is single-Body only for both)', () {
       const bodyA = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b1');
       const bodyB = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b2');
       const bodyC = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b3');
@@ -341,6 +342,10 @@ void main() {
           const SelectionContextAction(
             'Scale',
             disabledReason: 'Select exactly one body to scale',
+          ),
+          const SelectionContextAction(
+            'Move Body',
+            disabledReason: 'Select exactly one body to move',
           ),
         ]);
       }

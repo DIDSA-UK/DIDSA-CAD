@@ -60,6 +60,7 @@ from app.document.models import (
     MergeFeature,
     MergeMode,
     MirrorFeature,
+    MoveBodyFeature,
     Part,
     PatternFeature,
     PlanetaryGearFeature,
@@ -1358,6 +1359,7 @@ def _apply_feature_to_bodies(
     from app.document.chamfer import resolve_chamfer_from_bodies
     from app.document.delete_body import apply_delete_body_to_bodies
     from app.document.fillet import resolve_fillet_from_bodies
+    from app.document.move_body import resolve_move_body_from_bodies
     from app.document.scale_body import resolve_scale_body_from_bodies
     from app.document.import_geometry import resolve_import
     from app.document.mirror import (
@@ -1568,6 +1570,31 @@ def _apply_feature_to_bodies(
             logger.warning("Skipping ScaleBodyFeature %s: could not be resolved", feature.id)
             return
         bodies[body_id] = scaled_shape
+        return
+
+    if isinstance(feature, MoveBodyFeature):
+        # Direct Editing family, third entry ("Move/Copy Body"): see
+        # `app.document.move_body.resolve_move_body_from_bodies`'s own
+        # docstring for the rotate-then-translate transform. Same skip-
+        # with-warning resilience convention as Fillet/Chamfer/Scale Body
+        # above. `feature.copy` is the one Direct Editing branch that
+        # genuinely differs from the in-place-reassign template: `True`
+        # mints a brand-new Body under this Feature's own id (mirrors
+        # Mirror's own single-source `_register_solids` registration),
+        # leaving `feature.body_id` itself untouched; `False` (default)
+        # reassigns `bodies[body_id]` in place, identical to Fillet/
+        # Chamfer/Scale Body.
+        try:
+            body_id, moved_shape = resolve_move_body_from_bodies(
+                part, bodies, feature, excluded_feature_ids
+            )
+        except HTTPException:
+            logger.warning("Skipping MoveBodyFeature %s: could not be resolved", feature.id)
+            return
+        if feature.copy:
+            _register_solids(bodies, feature.id, moved_shape)
+        else:
+            bodies[body_id] = moved_shape
         return
 
     if isinstance(feature, SplitFeature):

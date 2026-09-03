@@ -616,6 +616,24 @@ class FeatureDto {
   /// scope.md`).
   final double? factor;
 
+  /// Direct Editing family, third entry ("Move/Copy Body") - only present
+  /// on a `"move_body"` Feature: the world-space translation applied to
+  /// [bodyId], as a `[dx, dy, dz]` triple. The backend's own `rotation_
+  /// axis`/`rotation_angle_degrees` fields are deliberately not
+  /// represented here yet - the v1 client never sets them (see
+  /// `MoveBodyPanel`'s own doc comment), and omitting them from every
+  /// PATCH this client sends already preserves whatever a Feature already
+  /// has server-side (the router's own "omitted keeps current" convention),
+  /// so there is nothing for this DTO to round-trip for them until a
+  /// rotation-picking panel UI actually exists to read/write them.
+  final List<double>? delta;
+
+  /// Direct Editing family, third entry - only present on a `"move_body"`
+  /// Feature: `false` (default) modifies [bodyId] in place, `true` mints a
+  /// brand-new Body instead. Named distinctly from [consumeToolBodies] -
+  /// same "false vs true" shape, different Feature type and meaning.
+  final bool? moveBodyCopy;
+
   FeatureDto({
     required this.type,
     required this.id,
@@ -684,6 +702,8 @@ class FeatureDto {
     this.toolSketchLineRef,
     this.bodyId,
     this.factor,
+    this.delta,
+    this.moveBodyCopy,
   });
 
   factory FeatureDto.fromJson(Map<String, dynamic> json) => FeatureDto(
@@ -801,6 +821,8 @@ class FeatureDto {
                 (json['tool'] as Map<String, dynamic>)['sketch_line_ref'] as Map<String, dynamic>),
         bodyId: json['body_id'] as String?,
         factor: (json['factor'] as num?)?.toDouble(),
+        delta: (json['delta'] as List?)?.map((v) => (v as num).toDouble()).toList(),
+        moveBodyCopy: json['copy'] as bool?,
       );
 }
 
@@ -2052,6 +2074,51 @@ class DocumentApiClient {
               body: jsonEncode({
                 if (bodyId != null) 'body_id': bodyId,
                 if (factor != null) 'factor': factor,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Direct Editing family (third entry, "Move/Copy Body"): creates a
+  /// MoveBodyFeature translating [bodyId] by [delta] (a `[dx, dy, dz]`
+  /// triple). [copy] (default `false`) mirrors [consumeToolBodies]'s
+  /// plain-bool convention. Rotation is not yet exposed here - see
+  /// `FeatureDto.delta`'s own doc comment for why.
+  Future<FeatureDto> createMoveBodyFeature(
+    String partId, {
+    required String bodyId,
+    required List<double> delta,
+    bool copy = false,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/move-body-features'),
+              headers: _headers,
+              body: jsonEncode({'body_id': bodyId, 'delta': delta, 'copy': copy}),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing MoveBodyFeature - mirrors
+  /// [updateScaleBodyFeature]'s own shape exactly. Omitting [delta]/[copy]
+  /// (both null) - or any other field this client doesn't send, like a
+  /// server-side `rotation_axis` - keeps its current value, per the
+  /// backend's own "omitted keeps current" convention.
+  Future<FeatureDto> updateMoveBodyFeature(
+    String partId,
+    String featureId, {
+    String? bodyId,
+    List<double>? delta,
+    bool? copy,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/move-body-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (bodyId != null) 'body_id': bodyId,
+                if (delta != null) 'delta': delta,
+                if (copy != null) 'copy': copy,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

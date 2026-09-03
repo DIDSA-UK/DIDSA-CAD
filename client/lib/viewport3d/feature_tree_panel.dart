@@ -54,6 +54,8 @@ String featureDisplayName(List<FeatureDto> features, int index) {
     'delete_body' => 'Delete Body',
     // Direct Editing family, second entry.
     'scale_body' => 'Scale',
+    // Direct Editing family, third entry ("Move/Copy Body").
+    'move_body' => feature.moveBodyCopy == true ? 'Copy Body' : 'Move Body',
     // Gear-tree UX: the gear-family Feature types (built straight from
     // parameters via their own dedicated design screen - GearDesignScreen/
     // BevelDesignScreen/GearChainDesignScreen - never through a Sketch, see
@@ -123,6 +125,12 @@ String _featureTypeAsset(String type) => switch (type) {
       'delete_body' => 'assets/icons/feature/feature_delete_body.svg',
       // Direct Editing family, second entry: its own distinct glyph.
       'scale_body' => 'assets/icons/feature/feature_scale.svg',
+      // Direct Editing family, third entry ("Move/Copy Body"): its own
+      // distinct glyph - Move and Copy share one icon (the tree row's own
+      // text label, see `featureDisplayName` above, already distinguishes
+      // them), the same "one glyph, distinct labels" convention the
+      // Boolean family/gear family already establish.
+      'move_body' => 'assets/icons/feature/feature_move_body.svg',
       // Gear-tree UX: one shared "gear" category glyph for every gear-family
       // Feature type (spur/internal gear, rack, bevel gear, bevel pair, gear
       // chain, planetary set) - they're all built by the same family of

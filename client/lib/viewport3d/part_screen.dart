@@ -57,6 +57,7 @@ import 'plane_context_sheet.dart';
 import 'reference_planes.dart';
 import 'render_mode.dart';
 import 'revolve_panel.dart';
+import 'move_body_panel.dart';
 import 'rollback.dart';
 import 'scale_body_panel.dart';
 import 'selection_context_panel.dart';
@@ -822,6 +823,7 @@ class _PartScreenState extends State<PartScreen> {
       !_booleanActive &&
       !_deleteBodyActive &&
       !_scaleBodyActive &&
+      !_moveBodyActive &&
       !_profilePickerActive &&
       !_pathPickerActive;
 
@@ -847,6 +849,7 @@ class _PartScreenState extends State<PartScreen> {
           !_booleanActive &&
           !_deleteBodyActive &&
           !_scaleBodyActive &&
+          !_moveBodyActive &&
           !_profilePickerActive &&
           !_pathPickerActive) ||
       // Pattern/Mirror scoping's Phase 6: the Build Tree multi-select
@@ -900,6 +903,7 @@ class _PartScreenState extends State<PartScreen> {
       _splitActive ||
       _deleteBodyActive ||
       _scaleBodyActive ||
+      _moveBodyActive ||
       _profilePickerActive ||
       _pathPickerActive ||
       _planeSelectionMode;
@@ -2043,6 +2047,74 @@ class _PartScreenState extends State<PartScreen> {
   /// Locks [_selectionFilterOverrides] to Bodies only for the whole session -
   /// mirrors [_deleteBodySelectionFilter] exactly.
   static const _scaleBodySelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: false,
+    body: true,
+    sketchPoint: false,
+    sketchLine: false,
+    sketchCircle: false,
+    sketchArc: false,
+    sketchEllipse: false,
+    sketchSpline: false,
+    plane: false,
+  );
+
+  // --- Direct Editing family, third entry: Move Body ("Move/Copy Body") -------
+  // Same shape as Scale Body above (whole-body pick, ambient-only entry,
+  // debounced-PATCH live field(s)), just three delta fields plus a Move/
+  // Copy toggle instead of one factor field. v1 client scope: translate +
+  // copy only - no rotation-axis-picking UI yet (the backend already fully
+  // supports it - see MoveBodyPanel's own doc comment for why the picking-
+  // flow UI is deliberately deferred rather than risked in this same pass).
+
+  /// True while a Move Body session (create or B4 edit) is live - mirrors
+  /// [_scaleBodyActive].
+  bool _moveBodyActive = false;
+
+  /// The Body being moved - mirrors [_scaleBodyBodyId].
+  String? _moveBodyBodyId;
+
+  /// The current delta, kept live so [_scheduleMoveBodyPreview] always has
+  /// the latest even mid-debounce - mirrors [_scaleBodyFactor].
+  (double, double, double) _moveBodyDelta = (0.0, 0.0, 0.0);
+
+  /// Move (`false`, default) vs Copy (`true`) - mirrors
+  /// [_booleanConsumeToolBodies]'s own plain-bool, live-toggle role.
+  bool _moveBodyCopy = false;
+
+  Timer? _moveBodyDebounce;
+
+  /// The MoveBodyFeature created once the first valid delta is known -
+  /// mirrors [_previewScaleBodyFeatureId] (created lazily, on the first
+  /// debounced resolve, not eagerly on open - [MoveBodyPanel]'s own
+  /// `initState` postFrameCallback fires the first `onDeltaChanged` with
+  /// the default all-zero delta, same convention [ScaleBodyPanel] uses).
+  String? _previewMoveBodyFeatureId;
+
+  /// B4: non-null while [MoveBodyPanel] is editing an *already-existing*
+  /// MoveBodyFeature - mirrors [_editingScaleBodyFeatureId].
+  String? _editingMoveBodyFeatureId;
+
+  /// B4: the edited Feature's own stored `body_id`/`delta`/`copy` from just
+  /// before editing started - mirrors [_scaleBodyEditSnapshot]. Does not
+  /// snapshot `rotation_axis`/`rotation_angle_degrees` - this client never
+  /// touches either (see [MoveBodyPanel]'s own doc comment), so Cancel's
+  /// own PATCH (which never sends them either) already leaves them
+  /// untouched without needing to restore anything here.
+  ({String bodyId, (double, double, double) delta, bool copy})? _moveBodyEditSnapshot;
+
+  /// [_selectedEntities]' value from just before the panel opened - mirrors
+  /// [_entitiesBeforeScaleBody].
+  Set<SelectionEntityRef>? _entitiesBeforeMoveBody;
+
+  /// The pre-move mesh [_cancelMoveBody] restores to on Cancel - mirrors
+  /// [_meshBeforeScaleBody].
+  List<BodyMeshDto>? _meshBeforeMoveBody;
+
+  /// Locks [_selectionFilterOverrides] to Bodies only for the whole session -
+  /// mirrors [_scaleBodySelectionFilter] exactly.
+  static const _moveBodySelectionFilter = SelectionFilterState(
     vertex: false,
     edge: false,
     face: false,
@@ -6642,6 +6714,12 @@ class _PartScreenState extends State<PartScreen> {
       // _confirmScaleBody/_cancelScaleBody instead.
       final opened = _openScaleBodyPanelForEdit(feature);
       if (!opened) await _endRollback();
+    } else if (feature.type == 'move_body') {
+      // Direct Editing family (third entry, "Move/Copy Body"): mirrors the
+      // scale_body branch just above exactly - rollback is ended by
+      // _confirmMoveBody/_cancelMoveBody instead.
+      final opened = _openMoveBodyPanelForEdit(feature);
+      if (!opened) await _endRollback();
     } else if (feature.type == 'boolean') {
       // Boolean family, Subtract/Common: mirrors the merge branch just
       // above exactly - rollback is ended by _confirmBoolean/_cancelBoolean
@@ -9451,6 +9529,209 @@ class _PartScreenState extends State<PartScreen> {
     await _endRollback();
   }
 
+  // --- Direct Editing family, third entry: Move Body ("Move/Copy Body") -------
+  // See this file's own "Direct Editing family, third entry: Move Body"
+  // state-field section header comment for the full reasoning.
+
+  /// [SelectionContextPanel.onMoveBody]'s callback - `contextActionsFor`
+  /// enables this button for exactly one Body, nothing else, selected.
+  /// Mirrors [_onScaleBodyTapped]'s shape exactly.
+  void _onMoveBodyTapped() {
+    final bodyIds =
+        _selectedEntities.where((e) => e.kind == SelectionEntityKind.body).map((e) => e.bodyId).toList();
+    if (bodyIds.length != 1) return; // Defensive - contextActionsFor already guarantees this.
+    _openMoveBodyPanel(bodyIds.single);
+  }
+
+  /// Opens [MoveBodyPanel] against [bodyId] - mirrors [_openScaleBodyPanel]
+  /// exactly: no MoveBodyFeature is created here, [MoveBodyPanel]'s own
+  /// `initState` postFrameCallback fires the first `onDeltaChanged` (with
+  /// the default all-zero delta), which reaches
+  /// [_ensureMoveBodyFeatureExists] via [_scheduleMoveBodyPreview] the same
+  /// way every other debounced field edit does.
+  void _openMoveBodyPanel(String bodyId) {
+    setState(() {
+      _moveBodyActive = true;
+      _moveBodyBodyId = bodyId;
+      _moveBodyDelta = (0.0, 0.0, 0.0);
+      _moveBodyCopy = false;
+      _meshBeforeMoveBody = _bodies;
+      _entitiesBeforeMoveBody = _selectedEntities;
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _selectionFilterOverrides.push(_moveBodySelectionFilter);
+    });
+  }
+
+  /// B4: opens [MoveBodyPanel] to edit an *already-existing*
+  /// MoveBodyFeature - mirrors [_openScaleBodyPanelForEdit]'s shape (a
+  /// defensive `bool` return, since a real MoveBodyFeature always has a
+  /// `body_id`/`delta`/`copy`, but this stays defensive rather than
+  /// assuming). [_previewMoveBodyFeatureId] is seeded with [feature.id]
+  /// itself immediately, same reasoning as [_openScaleBodyPanelForEdit].
+  /// [feature.delta] defaults to all-zero if the Feature predates this
+  /// field existing on the wire (defensive, mirrors every other DTO-to-
+  /// panel seed in this file that tolerates an older/partial payload).
+  bool _openMoveBodyPanelForEdit(FeatureDto feature) {
+    final bodyId = feature.bodyId;
+    if (bodyId == null) return false;
+    final rawDelta = feature.delta;
+    final delta = rawDelta != null && rawDelta.length == 3
+        ? (rawDelta[0], rawDelta[1], rawDelta[2])
+        : (0.0, 0.0, 0.0);
+    setState(() {
+      _moveBodyActive = true;
+      _editingMoveBodyFeatureId = feature.id;
+      _previewMoveBodyFeatureId = feature.id;
+      _moveBodyBodyId = bodyId;
+      _moveBodyDelta = delta;
+      _moveBodyCopy = feature.moveBodyCopy ?? false;
+      _moveBodyEditSnapshot = (bodyId: bodyId, delta: delta, copy: _moveBodyCopy);
+      _meshBeforeMoveBody = _bodies;
+      _entitiesBeforeMoveBody = _selectedEntities;
+      _selectionMode = true;
+      _selectionFilterOverrides.push(_moveBodySelectionFilter);
+    });
+    return true;
+  }
+
+  /// [MoveBodyPanel.onDeltaChanged] - records the latest value immediately
+  /// (so [_confirmMoveBody] always has it, even mid-debounce) and
+  /// (re)starts the 500ms debounce before actually hitting the backend -
+  /// mirrors [_onScaleBodyFactorChanged].
+  void _onMoveBodyDeltaChanged(double dx, double dy, double dz) {
+    _moveBodyDelta = (dx, dy, dz);
+    _scheduleMoveBodyPreview();
+  }
+
+  /// [MoveBodyPanel.onCopyChanged] - same immediate-record-then-debounce
+  /// shape as [_onMoveBodyDeltaChanged], just for the Move/Copy toggle
+  /// instead of a text field.
+  void _onMoveBodyCopyChanged(bool copy) {
+    setState(() => _moveBodyCopy = copy);
+    _scheduleMoveBodyPreview();
+  }
+
+  /// Mirrors [_scheduleScaleBodyPreview] exactly, just against
+  /// [_ensureMoveBodyFeatureExists] instead.
+  void _scheduleMoveBodyPreview() {
+    _moveBodyDebounce?.cancel();
+    _moveBodyDebounce = Timer(const Duration(milliseconds: 500), () {
+      final bodyId = _moveBodyBodyId;
+      if (bodyId == null) return;
+      _runGuarded(() => _ensureMoveBodyFeatureExists(bodyId, _moveBodyDelta, _moveBodyCopy));
+    });
+  }
+
+  /// Create-or-update - mirrors [_ensureScaleBodyFeatureExists]'s exact
+  /// branching shape.
+  Future<void> _ensureMoveBodyFeatureExists(
+    String bodyId,
+    (double, double, double) delta,
+    bool copy,
+  ) async {
+    final part = _part;
+    if (part == null) return;
+
+    final (dx, dy, dz) = delta;
+    final existingId = _previewMoveBodyFeatureId;
+    if (existingId == null) {
+      final created = await _api.createMoveBodyFeature(
+        part.id,
+        bodyId: bodyId,
+        delta: [dx, dy, dz],
+        copy: copy,
+      );
+      _previewMoveBodyFeatureId = created.id;
+    } else {
+      await _api.updateMoveBodyFeature(part.id, existingId, bodyId: bodyId, delta: [dx, dy, dz], copy: copy);
+    }
+    await _refreshMesh();
+  }
+
+  /// Keeps the just-created/edited MoveBodyFeature, restores whatever was
+  /// selected before the panel opened, and rolls B4 rollback forward -
+  /// mirrors [_confirmScaleBody]'s shape exactly.
+  Future<void> _confirmMoveBody() async {
+    _moveBodyDebounce?.cancel();
+    final bodyId = _moveBodyBodyId;
+    final delta = _moveBodyDelta;
+    final copy = _moveBodyCopy;
+    await _runGuarded(() async {
+      if (bodyId != null) await _ensureMoveBodyFeatureExists(bodyId, delta, copy);
+      await _refreshFeatures();
+    });
+    if (!mounted) return;
+    setState(() {
+      _featureTreeVisible = false;
+      _moveBodyActive = false;
+      _moveBodyBodyId = null;
+      _selectedEntities = _entitiesBeforeMoveBody ?? {};
+      _entitiesBeforeMoveBody = null;
+      _previewMoveBodyFeatureId = null;
+      _editingMoveBodyFeatureId = null;
+      _moveBodyEditSnapshot = null;
+      _meshBeforeMoveBody = null;
+      _selectionFilterOverrides.pop();
+    });
+    await _endRollback();
+  }
+
+  /// Deletes the just-created preview MoveBodyFeature (new-move flow, if
+  /// any) or PATCHes [_moveBodyEditSnapshot]'s stashed original `body_id`/
+  /// `delta`/`copy` back (edit flow) - mirrors [_cancelScaleBody]'s
+  /// structure exactly.
+  Future<void> _cancelMoveBody() async {
+    _moveBodyDebounce?.cancel();
+    final part = _part;
+    final previewId = _previewMoveBodyFeatureId;
+    final meshBefore = _meshBeforeMoveBody;
+    final wasEditing = _editingMoveBodyFeatureId != null;
+    final editSnapshot = _moveBodyEditSnapshot;
+    setState(() {
+      _featureTreeVisible = false;
+      _moveBodyActive = false;
+      _moveBodyBodyId = null;
+      _selectedEntities = _entitiesBeforeMoveBody ?? {};
+      _entitiesBeforeMoveBody = null;
+      _previewMoveBodyFeatureId = null;
+      _editingMoveBodyFeatureId = null;
+      _moveBodyEditSnapshot = null;
+      _meshBeforeMoveBody = null;
+      _selectionFilterOverrides.pop();
+    });
+    if (part != null && previewId != null) {
+      if (wasEditing && editSnapshot != null) {
+        await _runGuarded(() async {
+          final (dx, dy, dz) = editSnapshot.delta;
+          await _api.updateMoveBodyFeature(
+            part.id,
+            previewId,
+            bodyId: editSnapshot.bodyId,
+            delta: [dx, dy, dz],
+            copy: editSnapshot.copy,
+          );
+          await _refreshFeatures();
+        });
+      } else {
+        await _runGuarded(() async {
+          await _api.deleteFeature(part.id, previewId);
+          // Mirrors [_cancelScaleBody]'s own optimization: restore the
+          // pre-move mesh directly (no network round-trip) when a snapshot
+          // was captured on open.
+          if (meshBefore != null) {
+            _bodies = meshBefore;
+          } else {
+            await _refreshMesh();
+          }
+          await _refreshFeatures();
+        });
+      }
+    }
+    await _endRollback();
+  }
+
   // --- Boolean family, Subtract/Common ----------------------------------------
   // See this file's own "Boolean family, Subtract/Common" state-field section
   // header comment for the full picking-shape reasoning.
@@ -11806,7 +12087,8 @@ class _PartScreenState extends State<PartScreen> {
                       _patternActive ||
                       _mergeActive ||
                       _booleanActive ||
-                      _scaleBodyActive,
+                      _scaleBodyActive ||
+                      _moveBodyActive,
                   // Prompt E: only one of _filletActive/_chamferActive is
                   // ever true at a time (see the Chamfer state section's own
                   // header comment), so a simple ternary - not a list -
@@ -11976,6 +12258,7 @@ class _PartScreenState extends State<PartScreen> {
                     !_splitActive &&
                     !_deleteBodyActive &&
                     !_scaleBodyActive &&
+                    !_moveBodyActive &&
                     !_profilePickerActive &&
                     !_pathPickerActive)
                   Positioned.fill(
@@ -11997,6 +12280,7 @@ class _PartScreenState extends State<PartScreen> {
                         onPattern: _onPatternTapped,
                         onDeleteBody: _onDeleteBodyTapped,
                         onScaleBody: _onScaleBodyTapped,
+                        onMoveBody: _onMoveBodyTapped,
                       ),
                       bodyNames: _selectionBodyNames,
                     ),
@@ -12298,6 +12582,26 @@ class _PartScreenState extends State<PartScreen> {
                       onFactorChanged: _onScaleBodyFactorChanged,
                       onConfirm: _confirmScaleBody,
                       onCancel: _cancelScaleBody,
+                    ),
+                  ),
+                // Direct Editing family (third entry, "Move/Copy Body"):
+                // mirrors [ScaleBodyPanel]'s slot shape immediately above -
+                // [MoveBodyPanel]'s own `initState` postFrameCallback fires
+                // the first `onDeltaChanged`.
+                if (_moveBodyActive)
+                  Positioned.fill(
+                    key: const ValueKey('move-body-panel-slot'),
+                    child: MoveBodyPanel(
+                      key: ValueKey(_editingMoveBodyFeatureId ?? _moveBodyBodyId),
+                      title: _editingMoveBodyFeatureId != null ? 'Edit Move Body' : 'Move Body',
+                      initialDeltaX: _moveBodyDelta.$1,
+                      initialDeltaY: _moveBodyDelta.$2,
+                      initialDeltaZ: _moveBodyDelta.$3,
+                      onDeltaChanged: _onMoveBodyDeltaChanged,
+                      copy: _moveBodyCopy,
+                      onCopyChanged: _onMoveBodyCopyChanged,
+                      onConfirm: _confirmMoveBody,
+                      onCancel: _cancelMoveBody,
                     ),
                   ),
                 // [BooleanPanel] itself only ever handles the `confirming`
@@ -12912,7 +13216,8 @@ class _PartScreenState extends State<PartScreen> {
                         _mergeActive ||
                         _booleanActive ||
                         _deleteBodyActive ||
-                        _scaleBodyActive)
+                        _scaleBodyActive ||
+                        _moveBodyActive)
                     ? 180
                     : 0,
               ),
@@ -12933,6 +13238,7 @@ class _PartScreenState extends State<PartScreen> {
                       !_booleanActive &&
                       !_deleteBodyActive &&
                       !_scaleBodyActive &&
+                      !_moveBodyActive &&
                       !_profilePickerActive &&
                       !_pathPickerActive &&
                       // On-device feedback ("the tooltip at the top of the

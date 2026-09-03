@@ -92,6 +92,12 @@ class SelectionContextPanel extends StatelessWidget {
   /// for a disabled one" contract as [onDeleteBody].
   final VoidCallback? onScaleBody;
 
+  /// Direct Editing family (third entry, "Move/Copy Body"): fired when the
+  /// user taps an *enabled* Move Body button (exactly one Body selected,
+  /// nothing else - see `selection_actions.dart`'s `contextActionsFor`) -
+  /// same "never called for a disabled one" contract as [onScaleBody].
+  final VoidCallback? onMoveBody;
+
   const SelectionContextPanel({
     super.key,
     required this.selectedEntities,
@@ -108,6 +114,7 @@ class SelectionContextPanel extends StatelessWidget {
     this.onPattern,
     this.onDeleteBody,
     this.onScaleBody,
+    this.onMoveBody,
   });
 
   @override
@@ -187,6 +194,8 @@ class SelectionContextPanel extends StatelessWidget {
         return action.enabled ? onDeleteBody : null;
       case 'Scale':
         return action.enabled ? onScaleBody : null;
+      case 'Move Body':
+        return action.enabled ? onMoveBody : null;
       default:
         return null;
     }

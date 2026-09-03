@@ -2143,6 +2143,49 @@ class ScaleBodyFeature(Feature):
 
 
 @dataclass
+class MoveBodyFeature(Feature):
+    """Direct Editing family, third entry (see `docs/direct-editing-
+    scope.md`) - "Move/Copy Body", SolidWorks/Fusion 360's own naming for
+    this single command (not two separate ones - see this package's own
+    scope doc §1.3/1.4 for why translate+rotate+copy are one Feature, not
+    three): translates `body_id` by `delta` (world-space XYZ) and/or
+    rotates it `rotation_angle_degrees` around `rotation_axis` (a
+    `PatternAxisRef`, reused verbatim from the Pattern/Mirror family - see
+    that type's own docstring), composed rotate-then-translate (see
+    `app.document.move_body`'s own module docstring for why: the axis
+    reference is resolved once, against the Body's position *before* any
+    translation moves it, matching SolidWorks' own composition order).
+    `rotation_axis=None` (or `rotation_angle_degrees=0`) means no rotation
+    at all - translate-only is the common case.
+
+    `copy=False` (default) modifies `body_id` in place (Fillet/Chamfer's
+    "keep the same id" pattern - see `FilletFeature`'s own docstring);
+    `copy=True` instead mints a brand-new Body under this Feature's own
+    `id` (mirrors a Mirror with a single source - `_register_solids`'s
+    own un-suffixed-if-single-result convention), leaving `body_id` itself
+    untouched."""
+
+    id: str
+    body_id: str
+    delta: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    rotation_axis: PatternAxisRef | None = None
+    rotation_angle_degrees: float = 0.0
+    copy: bool = False
+
+    @property
+    def type(self) -> str:
+        return "move_body"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
+@dataclass
 class Part:
     """An independent solid-modeling history: an ordered list of Features.
 

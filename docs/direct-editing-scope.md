@@ -17,14 +17,27 @@ dated narrative log if you want the "why" behind a specific decision.
    Removes 1+ named Bodies entirely. No "keep" mode - selecting the Bodies
    to delete IS the interaction (a client-side "select inverse" convenience
    is a UI affordance, not a second Feature type). **Implemented.**
-2. **Scale Body** - `ScaleBodyFeature`. Uniform (and optionally non-uniform
-   X/Y/Z) scale of a single Body about a point (default: its own
-   bounding-box centre). Not yet implemented.
+2. **Scale Body** - `ScaleBodyFeature`. Uniform scale of a single Body about
+   its own bounding-box centre (non-uniform X/Y/Z deferred - see
+   `app.document.scale_body`'s own module docstring). **Implemented.**
 3. **Move/Copy Body** - `MoveBodyFeature`. Translate (delta X/Y/Z) and/or
    rotate (about a picked-edge/face/axis reference, reusing
    `PatternAxisRef`) a single Body; a `copy: bool` toggle mints a new Body
    instead of modifying in place - SolidWorks/Fusion 360 both name this one
-   command "Move/Copy Body", not two. Not yet implemented.
+   command "Move/Copy Body", not two. **Backend implemented in full**
+   (translate + rotate + copy, all wired through `resolve_move_body`/the
+   REST endpoints). **Client v1 scope is translate + copy only** -
+   `MoveBodyPanel` has no rotation-axis-picking UI yet. Picking a rotation
+   axis in the viewport needs its own mid-panel picking-step (the same
+   shape Mirror's plane-picking stage already has: swap the selection
+   filter mid-session, add a dedicated "tap an edge/face/line to define the
+   axis" moment) - deliberately deferred as a fast follow rather than
+   risked in the same pass as the panel's first ship. The backend accepting
+   `rotation_axis`/`rotation_angle_degrees` already, and the client simply
+   never setting them (and never sending them on PATCH, which the router's
+   own "omitted keeps current" convention already preserves correctly),
+   means this is a pure client-side addition when it happens - no backend
+   change needed.
 4. **Delete Face** - `DeleteFaceFeature`. Removes a single planar face from
    a Body and heals the opening closed. Not yet implemented - needs an OCCT
    healing-approach spike (see "Move Face / Delete Face technical risk"

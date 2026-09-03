@@ -117,6 +117,7 @@ from app.document.models import (
     MergeFeature,
     MergeMode,
     MirrorFeature,
+    MoveBodyFeature,
     Part,
     PatternAxisRef,
     PatternDirectionRef,
@@ -142,6 +143,7 @@ from app.document.models import (
     SweepMode,
 )
 from app.document.revolve import resolve_revolve
+from app.document.move_body import resolve_move_body
 from app.document.scale_body import resolve_scale_body
 from app.document.schemas import (
     BevelGearFeatureCreate,
@@ -174,6 +176,9 @@ from app.document.schemas import (
     DeleteBodyFeatureResponse,
     DeleteBodyFeatureUpdate,
     ExternalEdgeReferenceCreate,
+    MoveBodyFeatureCreate,
+    MoveBodyFeatureResponse,
+    MoveBodyFeatureUpdate,
     ScaleBodyFeatureCreate,
     ScaleBodyFeatureResponse,
     ScaleBodyFeatureUpdate,
@@ -698,6 +703,19 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             id=feature.id,
             body_id=feature.body_id,
             factor=feature.factor,
+            locked=part.is_locked(feature.id),
+            produces=feature.produces,
+        )
+    if isinstance(feature, MoveBodyFeature):
+        return MoveBodyFeatureResponse(
+            id=feature.id,
+            body_id=feature.body_id,
+            delta=feature.delta,
+            rotation_axis=_pattern_axis_ref_to_schema(feature.rotation_axis)
+            if feature.rotation_axis
+            else None,
+            rotation_angle_degrees=feature.rotation_angle_degrees,
+            copy=feature.copy,
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
@@ -1266,6 +1284,26 @@ def _validate_scale_body_factor(part: Part, body_id: str, factor: float) -> None
             status_code=400,
             detail=f"body_id {body_id!r} does not refer to a Body-producing Feature in this Part",
         )
+
+
+def _validate_move_body_payload(
+    part: Part, body_id: str, rotation_axis: PatternAxisRef | None
+) -> None:
+    """Direct Editing family (third entry, "Move/Copy Body"): `body_id`
+    must resolve (via `base_feature_id`, same round-trip tolerance as
+    `_validate_scale_body_factor`) to a Feature that currently produces a
+    Body in this Part; `rotation_axis`, if supplied, must have exactly one
+    of `edge_ref`/`face_ref`/`sketch_line_ref` set - reuses `_validate_
+    pattern_axis_ref` verbatim (already shared with Circular Pattern's own
+    `axis` field)."""
+    source_feature = part.get_feature(base_feature_id(body_id))
+    if source_feature is None or source_feature.produces != Produces.BODY:
+        raise HTTPException(
+            status_code=400,
+            detail=f"body_id {body_id!r} does not refer to a Body-producing Feature in this Part",
+        )
+    if rotation_axis is not None:
+        _validate_pattern_axis_ref(rotation_axis, field_name="rotation_axis")
 
 
 def _validate_boolean_body_ids(
@@ -3722,6 +3760,89 @@ def update_scale_body_feature(
 
     feature.body_id = candidate.body_id
     feature.factor = candidate.factor
+    return _feature_response(part, feature)
+
+
+@router.post(
+    "/parts/{part_id}/move-body-features", response_model=MoveBodyFeatureResponse, status_code=201
+)
+def create_move_body_feature(part_id: str, payload: MoveBodyFeatureCreate) -> MoveBodyFeatureResponse:
+    """Direct Editing family (third entry, "Move/Copy Body"): mirrors
+    `create_scale_body_feature`'s shape (fails closed on payload-shape
+    validation, then resolvability, before ever persisting an unresolvable
+    Move/Copy)."""
+    part = get_part_or_404(part_id)
+    rotation_axis = (
+        _pattern_axis_ref_to_domain(payload.rotation_axis) if payload.rotation_axis is not None else None
+    )
+    _validate_move_body_payload(part, payload.body_id, rotation_axis)
+    feature = MoveBodyFeature(
+        id=str(uuid.uuid4()),
+        body_id=payload.body_id,
+        delta=payload.delta,
+        rotation_axis=rotation_axis,
+        rotation_angle_degrees=payload.rotation_angle_degrees,
+        copy=payload.copy,
+    )
+    resolve_move_body(part, feature)  # raises on an unresolvable/degenerate move; result unused here
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_move_body_feature_or_404(part: Part, feature_id: str) -> MoveBodyFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, MoveBodyFeature):
+        raise HTTPException(status_code=404, detail="Move body feature not found")
+    return feature
+
+
+@router.patch(
+    "/parts/{part_id}/move-body-features/{feature_id}", response_model=MoveBodyFeatureResponse
+)
+def update_move_body_feature(
+    part_id: str, feature_id: str, payload: MoveBodyFeatureUpdate
+) -> MoveBodyFeatureResponse:
+    """Same validate-before-mutate discipline as `update_scale_body_
+    feature`: the merged (existing-plus-payload) values are checked against
+    a scratch Feature sharing the real one's id before anything on the
+    real, stored Feature is touched. `rotation_axis`/`copy` follow this
+    file's own established "payload value if not None, else current" rule
+    (see `update_pattern_feature`'s own `axis` field for the identical
+    can-legitimately-be-None-but-omitted-still-means-keep-current
+    convention already accepted in this codebase)."""
+    part = get_part_or_404(part_id)
+    feature = _get_move_body_feature_or_404(part, feature_id)
+
+    new_body_id = payload.body_id if payload.body_id is not None else feature.body_id
+    new_delta = payload.delta if payload.delta is not None else feature.delta
+    new_rotation_axis = (
+        _pattern_axis_ref_to_domain(payload.rotation_axis)
+        if payload.rotation_axis is not None
+        else feature.rotation_axis
+    )
+    new_rotation_angle_degrees = (
+        payload.rotation_angle_degrees
+        if payload.rotation_angle_degrees is not None
+        else feature.rotation_angle_degrees
+    )
+    new_copy = payload.copy if payload.copy is not None else feature.copy
+    _validate_move_body_payload(part, new_body_id, new_rotation_axis)
+
+    candidate = MoveBodyFeature(
+        id=feature.id,
+        body_id=new_body_id,
+        delta=new_delta,
+        rotation_axis=new_rotation_axis,
+        rotation_angle_degrees=new_rotation_angle_degrees,
+        copy=new_copy,
+    )
+    resolve_move_body(part, candidate)  # raises on an unresolvable/degenerate move
+
+    feature.body_id = candidate.body_id
+    feature.delta = candidate.delta
+    feature.rotation_axis = candidate.rotation_axis
+    feature.rotation_angle_degrees = candidate.rotation_angle_degrees
+    feature.copy = candidate.copy
     return _feature_response(part, feature)
 
 

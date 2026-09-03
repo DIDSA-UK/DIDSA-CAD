@@ -51,6 +51,7 @@ from app.document.models import (
     MergeFeature,
     MergeMode,
     MirrorFeature,
+    MoveBodyFeature,
     Part,
     PatternAxisRef,
     PatternDirectionRef,
@@ -1014,6 +1015,18 @@ def _feature_to_dict(feature: Feature) -> dict:
             "body_id": feature.body_id,
             "factor": feature.factor,
         }
+    if isinstance(feature, MoveBodyFeature):
+        return {
+            "type": "move_body",
+            "id": feature.id,
+            "body_id": feature.body_id,
+            "delta": list(feature.delta),
+            "rotation_axis": _pattern_axis_ref_to_dict(feature.rotation_axis)
+            if feature.rotation_axis
+            else None,
+            "rotation_angle_degrees": feature.rotation_angle_degrees,
+            "copy": feature.copy,
+        }
     if isinstance(feature, SplitFeature):
         return {
             "type": "split",
@@ -1278,6 +1291,18 @@ def _feature_from_dict(data: dict) -> Feature:
             id=feature_id,
             body_id=_require(data, "body_id"),
             factor=data.get("factor", 1.0),
+        )
+    if feature_type == "move_body":
+        raw_delta = data.get("delta", [0.0, 0.0, 0.0])
+        return MoveBodyFeature(
+            id=feature_id,
+            body_id=_require(data, "body_id"),
+            delta=(raw_delta[0], raw_delta[1], raw_delta[2]),
+            rotation_axis=_pattern_axis_ref_from_dict(data["rotation_axis"])
+            if data.get("rotation_axis")
+            else None,
+            rotation_angle_degrees=data.get("rotation_angle_degrees", 0.0),
+            copy=data.get("copy", False),
         )
     if feature_type == "split":
         return SplitFeature(

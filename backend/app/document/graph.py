@@ -49,6 +49,7 @@ from app.document.models import (
     LoftMode,
     MergeFeature,
     MirrorFeature,
+    MoveBodyFeature,
     Part,
     PatternAxisRef,
     PatternDirectionRef,
@@ -489,6 +490,19 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
             # single-Body-derived-dependency treatment, just via a single
             # `body_id` field rather than a list of refs to dedupe).
             depends_on = (base_feature_id(feature.body_id),)
+        elif isinstance(feature, MoveBodyFeature):
+            # Direct Editing family, third entry ("Move/Copy Body"): the
+            # owning Feature of `body_id` (identical single-Body treatment
+            # to ScaleBodyFeature just above), plus whatever `rotation_axis`
+            # itself depends on (`_pattern_axis_dependency` - already shared
+            # with PatternFeature's own `axis` field, since `PatternAxisRef`
+            # is reused verbatim), deduplicated via a `set` in case they
+            # happen to coincide.
+            deps = {base_feature_id(feature.body_id)}
+            axis_dep = _pattern_axis_dependency(part, feature.rotation_axis)
+            if axis_dep is not None:
+                deps.add(axis_dep)
+            depends_on = tuple(deps)
         elif isinstance(feature, SplitFeature):
             depends_on = _split_dependencies(part, feature)
         elif isinstance(feature, PatternFeature):

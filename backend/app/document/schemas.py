@@ -738,6 +738,49 @@ class ScaleBodyFeatureResponse(BaseModel):
     produces: Produces
 
 
+class MoveBodyFeatureCreate(BaseModel):
+    """Direct Editing family (third entry, "Move/Copy Body"): creates a
+    `MoveBodyFeature` translating `body_id` by `delta` and/or rotating it
+    `rotation_angle_degrees` around `rotation_axis` (reuses
+    `PatternAxisRefSchema` verbatim - see `app.document.router._validate_
+    pattern_axis_ref` for the same "exactly one of edge_ref/face_ref/
+    sketch_line_ref" check Circular Pattern's own `axis` already gets).
+    `rotation_axis=None` (the default) means no rotation - translate-only
+    is the common case. `copy` (default `False`) mirrors `BooleanFeature.
+    consume_tool_bodies`'s plain-bool convention."""
+
+    body_id: str
+    delta: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    rotation_axis: PatternAxisRefSchema | None = None
+    rotation_angle_degrees: float = 0.0
+    copy: bool = False
+
+
+class MoveBodyFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `ScaleBodyFeatureUpdate`."""
+
+    body_id: str | None = None
+    delta: tuple[float, float, float] | None = None
+    rotation_axis: PatternAxisRefSchema | None = None
+    rotation_angle_degrees: float | None = None
+    copy: bool | None = None
+
+
+class MoveBodyFeatureResponse(BaseModel):
+    type: Literal["move_body"] = "move_body"
+    id: str
+    body_id: str
+    delta: tuple[float, float, float]
+    rotation_axis: PatternAxisRefSchema | None
+    rotation_angle_degrees: float
+    copy: bool
+    locked: bool
+    # B1: see SketchFeatureResponse.produces above - always BODY for a
+    # MoveBodyFeature.
+    produces: Produces
+
+
 class SplitToolRefSchema(BaseModel):
     """Boolean family, fourth/last entry: the wire counterpart to `app.
     document.models.SplitToolRef` - exactly one of `plane_ref`/`surface_
@@ -1944,6 +1987,7 @@ FeatureResponse = Union[
     BooleanFeatureResponse,
     DeleteBodyFeatureResponse,
     ScaleBodyFeatureResponse,
+    MoveBodyFeatureResponse,
     SplitFeatureResponse,
     PatternFeatureResponse,
     ImportFeatureResponse,

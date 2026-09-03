@@ -167,6 +167,11 @@ List<SelectionContextAction> contextActionsFor(
           enabled: bodies.length == 1,
           disabledReason: bodies.length == 1 ? null : 'Select exactly one body to scale',
         ),
+        SelectionContextAction(
+          'Move Body',
+          enabled: bodies.length == 1,
+          disabledReason: bodies.length == 1 ? null : 'Select exactly one body to move',
+        ),
       ];
     }
     return const [];
