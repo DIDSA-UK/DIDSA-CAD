@@ -74,6 +74,34 @@ Face (cheapest/most-precedented first) - followed exactly; Delete Face's
 spike (and the real bug it caught) directly informed Move Face's own
 validation.
 
+### Known gaps vs. full-featured CAD packages (not currently scoped)
+
+All 5 features above are shipped in full (backend + client), including the
+V2 multi-face/non-planar pass. Compared to SolidWorks/Fusion 360-style
+direct-edit toolsets, three gaps remain, deliberately left open rather than
+scoped into this family - flagged here so a future pass doesn't have to
+rediscover them:
+
+- **Move Face has no Rotate mode.** `MoveFaceFeature` supports Offset
+  (along each face's own normal), Delta (explicit XYZ translation), and
+  Direction (translation along a picked edge/axis) - all translations.
+  SolidWorks/Fusion's own "Move Face" also offers rotating a face about an
+  axis (e.g. for a draft-angle-style repair), which this family has no
+  equivalent for. Of the three gaps here, this is the one most likely to
+  matter for real dent/draft-repair workflows if it's ever prioritized.
+- **Scale Body is uniform-only.** `ScaleBodyFeature` scales a single Body
+  uniformly about its own bounding-box centre - no independent X/Y/Z
+  scaling. Flagged as deferred in `app.document.scale_body`'s own module
+  docstring since before v1 shipped; never picked back up.
+- **No Replace Face.** Swapping one face for an entirely different
+  surface/another Body's face (rather than moving or deleting the existing
+  one) has no equivalent Feature type in this family.
+
+Not gaps, despite reading like ones at first glance: Delete Face's
+removal-and-heal (`BRepAlgoAPI_Defeaturing`) already covers what other
+packages call "Delete Face" (with automatic patching); Move Face's Offset
+mode already covers "Offset Face".
+
 ### How the backend was actually verified
 
 This sandbox has no pythonocc-core/fastapi by default (see every resolver
