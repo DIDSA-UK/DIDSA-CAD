@@ -288,20 +288,23 @@ List<SelectionContextAction> contextActionsFor(
       final face = faces.single;
       final planar = isFacePlanar?.call(face.bodyId, face.id) ?? true;
       final solid = isSolidBody?.call(face.bodyId) ?? true;
-      // Direct Editing family (fourth/fifth entries): Delete Face/Move
-      // Face are both v1-scoped to planar faces of a solid Body only (see
-      // docs/direct-editing-scope.md) - same `planar && solid` gate as
-      // Create Plane/Chamfer combined, since both preconditions apply here
-      // together (Chamfer/Fillet only need `solid`, Create Plane/New
-      // Sketch only need `planar`).
-      final planarSolidFace = planar && solid;
+      // Direct Editing family V2 (fourth/fifth entries): Delete Face/Move
+      // Face are no longer planar-only (`BRepOffset_MakeOffset`/
+      // `BRepAlgoAPI_Defeaturing` both now accept planar/cylindrical/
+      // conical faces alike - see docs/direct-editing-scope.md) - same
+      // `solid`-only gate Chamfer/Fillet already use, not `planar && solid`
+      // any more. Anything narrower (spherical/toroidal/free-form) is still
+      // rejected, but only by the backend's own `unsupported_surface_type`
+      // 422 - this client has no cheap per-face surface-type check to
+      // pre-empt it with (would need the mesh response to grow a new
+      // per-face field beyond today's plain [FacePlanarityChecker]).
       return [
         if (planar) const SelectionContextAction('Create Plane', enabled: true),
         if (planar) const SelectionContextAction('New Sketch on Face', enabled: true),
         if (solid) const SelectionContextAction('Chamfer', enabled: true),
         if (solid) const SelectionContextAction('Fillet', enabled: true),
-        if (planarSolidFace) const SelectionContextAction('Delete Face', enabled: true),
-        if (planarSolidFace) const SelectionContextAction('Move Face', enabled: true),
+        if (solid) const SelectionContextAction('Delete Face', enabled: true),
+        if (solid) const SelectionContextAction('Move Face', enabled: true),
       ];
     }
     // On-device feedback (bug fix): a lone reference plane or existing
@@ -316,6 +319,41 @@ List<SelectionContextAction> contextActionsFor(
       SelectionContextAction('Create Plane', enabled: true),
       SelectionContextAction('New Sketch', enabled: true),
     ];
+  }
+
+  // Direct Editing family V2 (docs/direct-editing-scope.md's multi-face
+  // pass): two or more Body faces, nothing else, offers Delete Face/Move
+  // Face applied to the whole set at once (backend: one shared mode/value
+  // across `face_refs` - see `MoveFaceFeature`/`DeleteFaceFeature`'s own
+  // docstrings). Both require every face to belong to the same solid Body
+  // (mirrors the edge-selection Chamfer/Fillet `_allSameBody` gate exactly
+  // - `mixed_body_selection` is the backend's own rejection for this) -
+  // shown disabled with a reason otherwise, same "explain, don't omit"
+  // idiom. Checked before the exactly-two-plane-like Midplane bucket right
+  // below, but doesn't take over it outright: an exactly-two-face selection
+  // still offers Midplane too (its own `_faces_not_parallel` backend check
+  // has nothing to do with Delete Face/Move Face's own same-Body
+  // constraint, so both are valid to show together). A single-face
+  // selection (`faces.length == 1`) never reaches here - the branch above
+  // already returned for it.
+  if (faces.isNotEmpty && faces.length == selection.length) {
+    final actions = <SelectionContextAction>[];
+    if (faces.length == 2) {
+      actions.add(const SelectionContextAction('Create Plane (Midplane)', enabled: true));
+    }
+    if (faces.length >= 2) {
+      final sameBody = _allSameBody(faces);
+      final allSolid = faces.every((f) => isSolidBody?.call(f.bodyId) ?? true);
+      final enabled = sameBody && allSolid;
+      final reason = !sameBody
+          ? 'Selected faces must all belong to the same Body'
+          : !allSolid
+              ? 'Selected faces must belong to a solid Body'
+              : null;
+      actions.add(SelectionContextAction('Delete Face', enabled: enabled, disabledReason: reason));
+      actions.add(SelectionContextAction('Move Face', enabled: enabled, disabledReason: reason));
+    }
+    if (actions.isNotEmpty) return actions;
   }
 
   // C3/C5: exactly two plane-like entities (any mix of Body faces, fixed
