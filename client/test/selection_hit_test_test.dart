@@ -1115,6 +1115,50 @@ void main() {
       );
       expect(hit?.entity.kind, SelectionEntityKind.face);
     });
+
+    test(
+        'bug report ("if a sweep path line exists entirely within a body it cannot be selected"): with no '
+        'activeSketchFeatureId, a sketch-only filter (no face/body of its own) still exempts a Sketch Point '
+        'the filter itself solicits - matches e.g. the Sweep path picker, which never sets '
+        'activeSketchFeatureId at all', () {
+      final hit = hitTestBodies(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
+        bodies: [occludingFaceOnly()],
+        sketchGeometries: sketchBehindFace,
+        filter: const SelectionFilterState(
+          vertex: false,
+          edge: false,
+          face: false,
+          body: false,
+          sketchPoint: true,
+        ),
+        facesOccludeOtherHits: true,
+      );
+      expect(hit?.entity.kind, SelectionEntityKind.sketchPoint);
+      expect(hit?.entity.sketchFeatureId, 'sketch-feature-1');
+    });
+
+    test(
+        'bug report follow-up: a filter that also accepts a Body/face pick (e.g. Split\'s curve-or-face '
+        'picker) keeps occluding a farther sketch entity behind the nearer face - the sketch-only exemption '
+        'above only applies when the filter offers no Body/face outcome to fall back to', () {
+      final hit = hitTestBodies(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
+        bodies: [occludingFaceOnly()],
+        sketchGeometries: sketchBehindFace,
+        filter: const SelectionFilterState(
+          vertex: false,
+          edge: false,
+          face: true,
+          body: false,
+          sketchPoint: true,
+        ),
+        facesOccludeOtherHits: true,
+      );
+      expect(hit?.entity.kind, SelectionEntityKind.face);
+    });
   });
 
   group('Prompt C1: hitTestBodies with sketchGeometries', () {

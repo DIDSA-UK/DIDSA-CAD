@@ -64,7 +64,8 @@ import 'rollback.dart';
 import 'scale_body_panel.dart';
 import 'selection_context_panel.dart';
 import 'selection_filter.dart';
-import 'selection_hit_test.dart' show SelectionEntityKind, SelectionEntityRef;
+import 'select_other_sheet.dart';
+import 'selection_hit_test.dart' show HoverHit, SelectionEntityKind, SelectionEntityRef;
 import 'selection_list_drawer.dart';
 import 'sketch_geometry_3d.dart';
 import 'sketch_orientation_indicator.dart';
@@ -915,6 +916,33 @@ class _PartScreenState extends State<PartScreen> {
       _profilePickerActive ||
       _pathPickerActive ||
       _planeSelectionMode;
+
+  /// Bug report ("Select Other"): whichever candidate row the open Select
+  /// Other sheet is currently hovered/focused on, if any - fed straight
+  /// into [PartViewport.highlightOverride] so it lights up live in the 3D
+  /// view, mirroring SOLIDWORKS' own "Select Other" popup. Null whenever
+  /// the sheet isn't open (see [_handleSelectOtherRequested]).
+  SelectionEntityRef? _selectOtherHighlight;
+
+  /// Bug report ("if one body is entirely inside another body, it cannot be
+  /// selected"): fired by [PartViewport.onSelectOtherRequested] once the
+  /// user's click-then-click-and-hold gesture fires over existing geometry.
+  /// Available generally - inside any tool's picker and in plain default
+  /// viewing alike - since it's wired at the shared [PartViewport] gesture
+  /// layer, not per-tool. Tapping a row in the sheet routes through the
+  /// exact same [_toggleSelectedEntity] every other pick already uses, so
+  /// every tool-specific special-case in there (Fillet face->edges, Sweep
+  /// path picking, etc.) still applies exactly as if the entity had been
+  /// picked directly.
+  void _handleSelectOtherRequested(List<HoverHit> candidates) {
+    showSelectOtherSheet(
+      context,
+      candidates: candidates,
+      bodyNames: _bodyNames,
+      onSelect: _toggleSelectedEntity,
+      onHighlight: (entity) => setState(() => _selectOtherHighlight = entity),
+    );
+  }
 
   /// Item 4: "Unselected entity tap -> add; already-selected -> remove
   /// (toggle)" - passed to [PartViewport.onSelectionToggle], fired by a tap
@@ -13430,6 +13458,8 @@ class _PartScreenState extends State<PartScreen> {
                   selectedEntities: _selectedEntities,
                   onSelectionToggle: _toggleSelectedEntity,
                   onClearSelection: _clearSelectedEntities,
+                  onSelectOtherRequested: _handleSelectOtherRequested,
+                  highlightOverride: _selectOtherHighlight,
                   selectionFilter: _selectionFilter,
                   isPerspective: _isPerspective,
                   farClip: _farClip,

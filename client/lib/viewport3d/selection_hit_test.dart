@@ -1262,13 +1262,64 @@ HoverHit? hitTestBodies({
   if (facesOccludeOtherHits && bestFace != null) {
     bool isActiveSketchEntity(HoverHit hit) =>
         activeSketchFeatureId.isNotEmpty && hit.entity.sketchFeatureId == activeSketchFeatureId;
+    // Bug fix (bug report: "if a sweep path line exists entirely within a
+    // body it cannot be selected"): [isActiveSketchEntity] above only
+    // exempts the one Sketch actively being edited (`sketch_screen.dart`'s
+    // embedded 2D-in-3D editor) - every picker in the main modeling screen
+    // (`part_screen.dart`'s Sweep path/Loft guide curve picker, neither of
+    // which ever set [activeSketchFeatureId]) still had *any* sketch curve
+    // dropped the moment a Body's face sat nearer along the ray, even
+    // though neither picker's own filter accepts a Body/face pick at all -
+    // there is no Body/face outcome for the ray to "correctly" fall back to
+    // there, so occluding the curve just loses the pick outright.
+    //
+    // Scoped to `!filter.face && !filter.body` (not just "the hit's own
+    // kind passed its own filter check", which - confirmed against this
+    // file's own existing occlusion tests, e.g. "with no
+    // activeSketchFeatureId, a Sketch Point behind the nearest face is
+    // occluded like a Body vertex would be - no regression" - is too broad:
+    // ordinary default browsing, and pickers like Split/Revolve that accept
+    // *either* a sketch curve or a Body/face in the same filter, still need
+    // a nearer Body's face to keep winning that pixel over a farther sketch
+    // entity, exactly as before this fix). Real Body topology
+    // ([SelectionEntityKind.vertex]/[edge]) is untouched either way, so a
+    // genuinely hidden mesh edge/vertex (e.g. Fillet's edge picker) stays
+    // occluded exactly as before.
+    bool isSketchOnlyFilterKind(HoverHit hit) {
+      if (filter.face || filter.body) return false;
+      switch (hit.entity.kind) {
+        case SelectionEntityKind.sketchPoint:
+          return filter.sketchPoint;
+        case SelectionEntityKind.sketchLine:
+          return filter.sketchLine;
+        case SelectionEntityKind.sketchCircle:
+          return filter.sketchCircle;
+        case SelectionEntityKind.sketchArc:
+          return filter.sketchArc;
+        case SelectionEntityKind.sketchEllipse:
+          return filter.sketchEllipse;
+        case SelectionEntityKind.sketchEllipseArc:
+          return filter.sketchEllipseArc;
+        case SelectionEntityKind.sketchSpline:
+          return filter.sketchSpline;
+        case SelectionEntityKind.sketchText:
+          return filter.sketchText;
+        case SelectionEntityKind.sketchPatternMirrorInstance:
+          return filter.sketchPatternMirrorInstance;
+        default:
+          return false;
+      }
+    }
+
+    bool isExemptFromFaceOcclusion(HoverHit hit) => isActiveSketchEntity(hit) || isSketchOnlyFilterKind(hit);
+
     if (bestVertex != null &&
-        !isActiveSketchEntity(bestVertex) &&
+        !isExemptFromFaceOcclusion(bestVertex) &&
         bestVertex.rayT > bestFace.rayT + kFaceOcclusionEpsilon) {
       bestVertex = null;
     }
     if (bestEdge != null &&
-        !isActiveSketchEntity(bestEdge) &&
+        !isExemptFromFaceOcclusion(bestEdge) &&
         bestEdge.rayT > bestFace.rayT + kFaceOcclusionEpsilon) {
       bestEdge = null;
     }
@@ -1286,4 +1337,216 @@ HoverHit? hitTestBodies({
   }
   if (!filter.face) return null;
   return taggedWithBody(bestFace, bestFaceBodyId!);
+}
+
+/// Every valid-per-[filter] hit-test candidate at [ray]'s screen position,
+/// nearest to farthest - the "Select Other" counterpart to [hitTestBodies]
+/// (bug report: "if one body is entirely inside another body, it cannot be
+/// selected"). [hitTestBodies] only ever keeps the single nearest Body/face
+/// along the ray (its own `bestFace`), so a fully-enclosed Body's own faces
+/// can never win there, from any camera angle - a fundamentally different
+/// gap from the face-occlusion fix above (that only ever drops an
+/// otherwise-good, farther candidate; this one never even considers a
+/// second, equally-valid Body). Mirrors [hitTestBodies]'s own per-body loop,
+/// except it keeps every Body the ray crosses (not just the nearest one),
+/// each represented by its own nearest-face intersection, so a "Select
+/// Other" list can offer all of them - the same nested/enclosed-Body case
+/// [hitTestBodies] structurally cannot reach.
+///
+/// Vertex/edge (mesh and sketch) candidates are still each resolved to a
+/// single nearest winner exactly like [hitTestBodies] - multi-body
+/// occlusion, not multi-vertex/edge occlusion, is the reported gap, and a
+/// caller wanting the same face-occlusion treatment those get in
+/// [hitTestBodies] should call that first and only fall back to this one
+/// when disambiguation is actually needed (e.g. the user's own
+/// double-click-and-hold gesture).
+List<HoverHit> hitTestAllCandidates({
+  required vm.Ray ray,
+  required Size viewportSize,
+  required List<BodyMeshDto> bodies,
+  Map<String, SketchGeometry3D> sketchGeometries = const {},
+  double radiusPixels = kSelectionHitRadiusPixels,
+  double vertexRadiusPixels = kVertexSelectionHitRadiusPixels,
+  SelectionFilterState filter = SelectionFilterState.defaults,
+  double? orthographicHalfHeight,
+}) {
+  HoverHit taggedWithBody(HoverHit hit, String bodyId) => HoverHit(
+        entity: SelectionEntityRef(kind: hit.entity.kind, bodyId: bodyId, id: hit.entity.id),
+        rayT: hit.rayT,
+        pixelDistance: hit.pixelDistance,
+      );
+
+  HoverHit? bestVertex;
+  HoverHit? bestEdge;
+  final bodyFaceHits = <String, HoverHit>{};
+
+  for (final body in bodies) {
+    final mesh = body.mesh;
+    if (filter.vertex) {
+      final hit = hitTestVertices(
+        ray,
+        viewportSize,
+        topologyVerticesFromMesh(mesh),
+        mesh.topologyVertexIds,
+        radiusPixels: vertexRadiusPixels,
+        orthographicHalfHeight: orthographicHalfHeight,
+      );
+      if (hit != null && (bestVertex == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestVertex.pixelDistance!, bestVertex.rayT))) {
+        bestVertex = taggedWithBody(hit, body.bodyId);
+      }
+    }
+    if (filter.edge) {
+      final hit = hitTestEdges(
+        ray,
+        viewportSize,
+        edgeSegmentsFromMesh(mesh),
+        mesh.edgeIds,
+        radiusPixels: radiusPixels,
+        orthographicHalfHeight: orthographicHalfHeight,
+      );
+      if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
+        bestEdge = taggedWithBody(hit, body.bodyId);
+      }
+    }
+    if (filter.face || filter.body) {
+      final hit = hitTestFaces(ray, trianglesFromMesh(mesh), mesh.faceIds);
+      if (hit != null) {
+        bodyFaceHits[body.bodyId] = hit;
+      }
+    }
+  }
+
+  for (final entry in sketchGeometries.entries) {
+    final geometry = entry.value;
+    if (filter.sketchPoint) {
+      final hit = hitTestSketchPoints(
+        ray,
+        viewportSize,
+        entry.key,
+        geometry.points,
+        geometry.pointIds,
+        radiusPixels: vertexRadiusPixels,
+        orthographicHalfHeight: orthographicHalfHeight,
+      );
+      if (hit != null && (bestVertex == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestVertex.pixelDistance!, bestVertex.rayT))) {
+        bestVertex = hit;
+      }
+    }
+    if (filter.sketchLine) {
+      final hit = hitTestSketchLines(
+        ray,
+        viewportSize,
+        entry.key,
+        geometry.lineSegments,
+        geometry.lineIds,
+        radiusPixels: radiusPixels,
+        orthographicHalfHeight: orthographicHalfHeight,
+      );
+      if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
+        bestEdge = hit;
+      }
+    }
+    if (filter.sketchCircle) {
+      final hit = hitTestSketchCircles(
+        ray,
+        viewportSize,
+        entry.key,
+        geometry.circlePolygons,
+        geometry.circleIds,
+        radiusPixels: radiusPixels,
+        orthographicHalfHeight: orthographicHalfHeight,
+      );
+      if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
+        bestEdge = hit;
+      }
+    }
+    if (filter.sketchArc) {
+      final hit = hitTestSketchArcs(
+        ray,
+        viewportSize,
+        entry.key,
+        geometry.arcPolylines,
+        geometry.arcIds,
+        radiusPixels: radiusPixels,
+        orthographicHalfHeight: orthographicHalfHeight,
+      );
+      if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
+        bestEdge = hit;
+      }
+    }
+    if (filter.sketchEllipse) {
+      final hit = hitTestSketchEllipses(
+        ray,
+        viewportSize,
+        entry.key,
+        geometry.ellipsePolygons,
+        geometry.ellipseIds,
+        radiusPixels: radiusPixels,
+        orthographicHalfHeight: orthographicHalfHeight,
+      );
+      if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
+        bestEdge = hit;
+      }
+    }
+    if (filter.sketchEllipseArc) {
+      final hit = hitTestSketchEllipseArcs(
+        ray,
+        viewportSize,
+        entry.key,
+        geometry.ellipseArcPolylines,
+        geometry.ellipseArcIds,
+        radiusPixels: radiusPixels,
+        orthographicHalfHeight: orthographicHalfHeight,
+      );
+      if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
+        bestEdge = hit;
+      }
+    }
+    if (filter.sketchSpline) {
+      final hit = hitTestSketchSplines(
+        ray,
+        viewportSize,
+        entry.key,
+        geometry.splinePolylines,
+        geometry.splineIds,
+        radiusPixels: radiusPixels,
+        orthographicHalfHeight: orthographicHalfHeight,
+      );
+      if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
+        bestEdge = hit;
+      }
+    }
+    if (filter.sketchText) {
+      final hit = hitTestSketchTexts(
+        ray,
+        viewportSize,
+        entry.key,
+        geometry.textPolygons,
+        geometry.textIds,
+        radiusPixels: radiusPixels,
+        orthographicHalfHeight: orthographicHalfHeight,
+      );
+      if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
+        bestEdge = hit;
+      }
+    }
+  }
+
+  final candidates = <HoverHit>[];
+  if (bestVertex != null) candidates.add(bestVertex);
+  if (bestEdge != null) candidates.add(bestEdge);
+  for (final entry in bodyFaceHits.entries) {
+    final hit = entry.value;
+    if (filter.body) {
+      candidates.add(HoverHit(
+        entity: SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: entry.key),
+        rayT: hit.rayT,
+      ));
+    } else if (filter.face) {
+      candidates.add(taggedWithBody(hit, entry.key));
+    }
+  }
+
+  candidates.sort((a, b) => a.rayT.compareTo(b.rayT));
+  return candidates;
 }
