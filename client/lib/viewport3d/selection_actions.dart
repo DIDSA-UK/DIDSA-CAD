@@ -148,9 +148,30 @@ List<SelectionContextAction> contextActionsFor(
       // for an already-existing Feature, its own long-press context menu -
       // see `feature_context_menu.dart`) are the only entry points for
       // all four now.
-      return const [
-        SelectionContextAction('Mirror', enabled: true),
-        SelectionContextAction('Pattern', enabled: true),
+      // Direct Editing family (docs/direct-editing-scope.md): Delete Body
+      // has no target-vs-tool ambiguity the way Merge/Subtract/Common do
+      // (see the removed-Boolean-family comment above) - every selected
+      // Body is simply marked for deletion, symmetric like Mirror/Pattern,
+      // so it's safe to offer directly from this table rather than only
+      // through a guided flow. Scale (v1 scope - see docs/direct-editing-
+      // scope.md) only ever modifies a single Body at a time, so it's
+      // gated to exactly one Body selected, with a disabled-with-reason
+      // button otherwise - same "right kind of selection, wrong count"
+      // idiom the edge-selection `_allSameBody` guard further down uses.
+      return [
+        const SelectionContextAction('Mirror', enabled: true),
+        const SelectionContextAction('Pattern', enabled: true),
+        const SelectionContextAction('Delete Body', enabled: true),
+        SelectionContextAction(
+          'Scale',
+          enabled: bodies.length == 1,
+          disabledReason: bodies.length == 1 ? null : 'Select exactly one body to scale',
+        ),
+        SelectionContextAction(
+          'Move Body',
+          enabled: bodies.length == 1,
+          disabledReason: bodies.length == 1 ? null : 'Select exactly one body to move',
+        ),
       ];
     }
     return const [];
@@ -267,11 +288,20 @@ List<SelectionContextAction> contextActionsFor(
       final face = faces.single;
       final planar = isFacePlanar?.call(face.bodyId, face.id) ?? true;
       final solid = isSolidBody?.call(face.bodyId) ?? true;
+      // Direct Editing family (fourth/fifth entries): Delete Face/Move
+      // Face are both v1-scoped to planar faces of a solid Body only (see
+      // docs/direct-editing-scope.md) - same `planar && solid` gate as
+      // Create Plane/Chamfer combined, since both preconditions apply here
+      // together (Chamfer/Fillet only need `solid`, Create Plane/New
+      // Sketch only need `planar`).
+      final planarSolidFace = planar && solid;
       return [
         if (planar) const SelectionContextAction('Create Plane', enabled: true),
         if (planar) const SelectionContextAction('New Sketch on Face', enabled: true),
         if (solid) const SelectionContextAction('Chamfer', enabled: true),
         if (solid) const SelectionContextAction('Fillet', enabled: true),
+        if (planarSolidFace) const SelectionContextAction('Delete Face', enabled: true),
+        if (planarSolidFace) const SelectionContextAction('Move Face', enabled: true),
       ];
     }
     // On-device feedback (bug fix): a lone reference plane or existing

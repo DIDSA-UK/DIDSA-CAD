@@ -29,6 +29,8 @@ from app.document.models import (
     BooleanOperation,
     ChamferFeature,
     CreatePlaneFeature,
+    DeleteBodyFeature,
+    DeleteFaceFeature,
     Document,
     ExtrudeFeature,
     ExtrudeType,
@@ -50,6 +52,8 @@ from app.document.models import (
     MergeFeature,
     MergeMode,
     MirrorFeature,
+    MoveBodyFeature,
+    MoveFaceFeature,
     Part,
     PatternAxisRef,
     PatternDirectionRef,
@@ -63,6 +67,7 @@ from app.document.models import (
     RackType,
     RevolveFeature,
     RevolveMode,
+    ScaleBodyFeature,
     SketchFeature,
     SpiralBevelHand,
     SplitFeature,
@@ -999,6 +1004,49 @@ def _feature_to_dict(feature: Feature) -> dict:
             "tool_body_ids": list(feature.tool_body_ids),
             "consume_tool_bodies": feature.consume_tool_bodies,
         }
+    if isinstance(feature, DeleteBodyFeature):
+        return {
+            "type": "delete_body",
+            "id": feature.id,
+            "body_ids": list(feature.body_ids),
+        }
+    if isinstance(feature, ScaleBodyFeature):
+        return {
+            "type": "scale_body",
+            "id": feature.id,
+            "body_id": feature.body_id,
+            "factor": feature.factor,
+        }
+    if isinstance(feature, MoveBodyFeature):
+        return {
+            "type": "move_body",
+            "id": feature.id,
+            "body_id": feature.body_id,
+            "delta": list(feature.delta),
+            "rotation_axis": _pattern_axis_ref_to_dict(feature.rotation_axis)
+            if feature.rotation_axis
+            else None,
+            "rotation_angle_degrees": feature.rotation_angle_degrees,
+            "make_copy": feature.make_copy,
+        }
+    if isinstance(feature, DeleteFaceFeature):
+        return {
+            "type": "delete_face",
+            "id": feature.id,
+            "face_ref": _subshape_ref_to_dict(feature.face_ref),
+        }
+    if isinstance(feature, MoveFaceFeature):
+        return {
+            "type": "move_face",
+            "id": feature.id,
+            "face_ref": _subshape_ref_to_dict(feature.face_ref),
+            "offset_distance": feature.offset_distance,
+            "delta": list(feature.delta) if feature.delta is not None else None,
+            "direction_ref": _pattern_direction_ref_to_dict(feature.direction_ref)
+            if feature.direction_ref
+            else None,
+            "direction_distance": feature.direction_distance,
+        }
     if isinstance(feature, SplitFeature):
         return {
             "type": "split",
@@ -1252,6 +1300,46 @@ def _feature_from_dict(data: dict) -> Feature:
             target_body_ids=list(data.get("target_body_ids", [])),
             tool_body_ids=list(data.get("tool_body_ids", [])),
             consume_tool_bodies=data.get("consume_tool_bodies", True),
+        )
+    if feature_type == "delete_body":
+        return DeleteBodyFeature(
+            id=feature_id,
+            body_ids=list(data.get("body_ids", [])),
+        )
+    if feature_type == "scale_body":
+        return ScaleBodyFeature(
+            id=feature_id,
+            body_id=_require(data, "body_id"),
+            factor=data.get("factor", 1.0),
+        )
+    if feature_type == "move_body":
+        raw_delta = data.get("delta", [0.0, 0.0, 0.0])
+        return MoveBodyFeature(
+            id=feature_id,
+            body_id=_require(data, "body_id"),
+            delta=(raw_delta[0], raw_delta[1], raw_delta[2]),
+            rotation_axis=_pattern_axis_ref_from_dict(data["rotation_axis"])
+            if data.get("rotation_axis")
+            else None,
+            rotation_angle_degrees=data.get("rotation_angle_degrees", 0.0),
+            make_copy=data.get("make_copy", False),
+        )
+    if feature_type == "delete_face":
+        return DeleteFaceFeature(
+            id=feature_id,
+            face_ref=_subshape_ref_from_dict(_require(data, "face_ref")),
+        )
+    if feature_type == "move_face":
+        raw_delta = data.get("delta")
+        return MoveFaceFeature(
+            id=feature_id,
+            face_ref=_subshape_ref_from_dict(_require(data, "face_ref")),
+            offset_distance=data.get("offset_distance"),
+            delta=(raw_delta[0], raw_delta[1], raw_delta[2]) if raw_delta is not None else None,
+            direction_ref=_pattern_direction_ref_from_dict(data["direction_ref"])
+            if data.get("direction_ref")
+            else None,
+            direction_distance=data.get("direction_distance"),
         )
     if feature_type == "split":
         return SplitFeature(

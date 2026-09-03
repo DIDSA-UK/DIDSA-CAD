@@ -682,6 +682,62 @@ class BooleanFeatureResponse(BaseModel):
     produces: Produces
 
 
+class DeleteBodyFeatureCreate(BaseModel):
+    """Direct Editing family (first entry): creates a `DeleteBodyFeature`
+    removing every Body named in `body_ids` (1+ required - see `app.
+    document.router._validate_delete_body_ids`). No "keep" mode - see
+    `DeleteBodyFeature`'s own docstring."""
+
+    body_ids: list[str]
+
+
+class DeleteBodyFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `MergeFeatureUpdate`/`BooleanFeatureUpdate`."""
+
+    body_ids: list[str] | None = None
+
+
+class DeleteBodyFeatureResponse(BaseModel):
+    type: Literal["delete_body"] = "delete_body"
+    id: str
+    body_ids: list[str]
+    locked: bool
+    # B1: see SketchFeatureResponse.produces above - always NONE for a
+    # DeleteBodyFeature (it removes geometry, never contributes any).
+    produces: Produces
+
+
+class ScaleBodyFeatureCreate(BaseModel):
+    """Direct Editing family (second entry): creates a `ScaleBodyFeature`
+    uniformly scaling `body_id` by `factor` (> 0 required - see `app.
+    document.router._validate_scale_body_factor`) about its own current
+    bounding-box centre. No user-pickable origin, no non-uniform X/Y/Z in
+    v1 - see `ScaleBodyFeature`'s own docstring."""
+
+    body_id: str
+    factor: float = 1.0
+
+
+class ScaleBodyFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `MergeFeatureUpdate`/`DeleteBodyFeatureUpdate`."""
+
+    body_id: str | None = None
+    factor: float | None = None
+
+
+class ScaleBodyFeatureResponse(BaseModel):
+    type: Literal["scale_body"] = "scale_body"
+    id: str
+    body_id: str
+    factor: float
+    locked: bool
+    # B1: see SketchFeatureResponse.produces above - always BODY for a
+    # ScaleBodyFeature.
+    produces: Produces
+
+
 class SplitToolRefSchema(BaseModel):
     """Boolean family, fourth/last entry: the wire counterpart to `app.
     document.models.SplitToolRef` - exactly one of `plane_ref`/`surface_
@@ -753,6 +809,125 @@ class PatternAxisRefSchema(BaseModel):
     edge_ref: SubShapeRefSchema | None = None
     face_ref: SubShapeRefSchema | None = None
     sketch_line_ref: SketchEntityRefSchema | None = None
+
+
+class MoveBodyFeatureCreate(BaseModel):
+    """Direct Editing family (third entry, "Move/Copy Body"): creates a
+    `MoveBodyFeature` translating `body_id` by `delta` and/or rotating it
+    `rotation_angle_degrees` around `rotation_axis` (reuses
+    `PatternAxisRefSchema` verbatim - see `app.document.router._validate_
+    pattern_axis_ref` for the same "exactly one of edge_ref/face_ref/
+    sketch_line_ref" check Circular Pattern's own `axis` already gets).
+    `rotation_axis=None` (the default) means no rotation - translate-only
+    is the common case. `make_copy` (default `False`) mirrors
+    `BooleanFeature.consume_tool_bodies`'s plain-bool convention. Named
+    `make_copy`, not `copy` - `copy` collides with `pydantic.BaseModel.
+    copy()`, which `flutter analyze`-equivalent tooling for this backend
+    (a runtime `UserWarning` from Pydantic itself) flags immediately; see
+    `MoveBodyFeature`'s own domain-dataclass docstring for the full
+    "every layer uses the same name" reasoning."""
+
+    body_id: str
+    delta: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    rotation_axis: PatternAxisRefSchema | None = None
+    rotation_angle_degrees: float = 0.0
+    make_copy: bool = False
+
+
+class MoveBodyFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `ScaleBodyFeatureUpdate`."""
+
+    body_id: str | None = None
+    delta: tuple[float, float, float] | None = None
+    rotation_axis: PatternAxisRefSchema | None = None
+    rotation_angle_degrees: float | None = None
+    make_copy: bool | None = None
+
+
+class MoveBodyFeatureResponse(BaseModel):
+    type: Literal["move_body"] = "move_body"
+    id: str
+    body_id: str
+    delta: tuple[float, float, float]
+    rotation_axis: PatternAxisRefSchema | None
+    rotation_angle_degrees: float
+    make_copy: bool
+    locked: bool
+    # B1: see SketchFeatureResponse.produces above - always BODY for a
+    # MoveBodyFeature.
+    produces: Produces
+
+
+class DeleteFaceFeatureCreate(BaseModel):
+    """Direct Editing family (fourth entry): creates a `DeleteFaceFeature`
+    removing the single planar face named by `face_ref` and healing the
+    opening closed - see `app.document.delete_face`'s own module docstring
+    for the OCCT technique and fail-closed contract."""
+
+    face_ref: SubShapeRefSchema
+
+
+class DeleteFaceFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `ScaleBodyFeatureUpdate`."""
+
+    face_ref: SubShapeRefSchema | None = None
+
+
+class DeleteFaceFeatureResponse(BaseModel):
+    type: Literal["delete_face"] = "delete_face"
+    id: str
+    face_ref: SubShapeRefSchema
+    locked: bool
+    # B1: see SketchFeatureResponse.produces above - always BODY for a
+    # DeleteFaceFeature.
+    produces: Produces
+
+
+class MoveFaceFeatureCreate(BaseModel):
+    """Direct Editing family (fifth/last entry): creates a `MoveFaceFeature`
+    moving the single planar face named by `face_ref` via exactly one of
+    `offset_distance`/`delta`/(`direction_ref`+`direction_distance`) -
+    matching `MoveFaceFeature`'s own "exactly one of three modes"
+    convention (see that dataclass's own docstring); enforced by
+    `app.document.router._validate_move_face_payload`, not here."""
+
+    face_ref: SubShapeRefSchema
+    offset_distance: float | None = None
+    delta: tuple[float, float, float] | None = None
+    direction_ref: PatternDirectionRefSchema | None = None
+    direction_distance: float | None = None
+
+
+class MoveFaceFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `ScaleBodyFeatureUpdate` - note that switching between the three modes
+    via PATCH means supplying the new mode's field(s) *and* nulling out
+    every other mode's own field(s) in the same request (the router
+    doesn't clear a field just because a different mode's field was
+    supplied), mirroring how `SplitFeatureUpdate.tool` is always replaced
+    as a whole, never partially merged."""
+
+    face_ref: SubShapeRefSchema | None = None
+    offset_distance: float | None = None
+    delta: tuple[float, float, float] | None = None
+    direction_ref: PatternDirectionRefSchema | None = None
+    direction_distance: float | None = None
+
+
+class MoveFaceFeatureResponse(BaseModel):
+    type: Literal["move_face"] = "move_face"
+    id: str
+    face_ref: SubShapeRefSchema
+    offset_distance: float | None
+    delta: tuple[float, float, float] | None
+    direction_ref: PatternDirectionRefSchema | None
+    direction_distance: float | None
+    locked: bool
+    # B1: see SketchFeatureResponse.produces above - always BODY for a
+    # MoveFaceFeature.
+    produces: Produces
 
 
 class SurfaceFeatureCreate(BaseModel):
@@ -1886,6 +2061,11 @@ FeatureResponse = Union[
     MirrorFeatureResponse,
     MergeFeatureResponse,
     BooleanFeatureResponse,
+    DeleteBodyFeatureResponse,
+    DeleteFaceFeatureResponse,
+    ScaleBodyFeatureResponse,
+    MoveBodyFeatureResponse,
+    MoveFaceFeatureResponse,
     SplitFeatureResponse,
     PatternFeatureResponse,
     ImportFeatureResponse,

@@ -45,6 +45,8 @@ from app.document.models import (
     BevelPairFeature,
     BooleanFeature,
     ChamferFeature,
+    DeleteBodyFeature,
+    DeleteFaceFeature,
     ExtrudeFeature,
     ExtrudeType,
     Feature,
@@ -53,11 +55,14 @@ from app.document.models import (
     GearFeature,
     GearType,
     ImportFeature,
+    ScaleBodyFeature,
     LoftFeature,
     LoftMode,
     MergeFeature,
     MergeMode,
     MirrorFeature,
+    MoveBodyFeature,
+    MoveFaceFeature,
     Part,
     PatternFeature,
     PlanetaryGearFeature,
@@ -1354,7 +1359,12 @@ def _apply_feature_to_bodies(
     into one compound before a single `_register_solids` call)."""
     from app.document.boolean import apply_boolean_to_bodies
     from app.document.chamfer import resolve_chamfer_from_bodies
+    from app.document.delete_body import apply_delete_body_to_bodies
+    from app.document.delete_face import resolve_delete_face_from_bodies
     from app.document.fillet import resolve_fillet_from_bodies
+    from app.document.move_body import resolve_move_body_from_bodies
+    from app.document.move_face import resolve_move_face_from_bodies
+    from app.document.scale_body import resolve_scale_body_from_bodies
     from app.document.import_geometry import resolve_import
     from app.document.mirror import (
         effective_mirror_source_body_ids,
@@ -1538,6 +1548,91 @@ def _apply_feature_to_bodies(
         # for the full fold/consume-vs-keep semantics; it mutates `bodies`
         # in place, the same convention `_apply_boss_or_cut` uses.
         apply_boolean_to_bodies(bodies, feature)
+        return
+
+    if isinstance(feature, DeleteBodyFeature):
+        # Direct Editing family, first entry: unlike every Boolean-family
+        # branch above, this has no OCCT geometry of its own to construct -
+        # see `app.document.delete_body.apply_delete_body_to_bodies`'s own
+        # docstring for the full skip-with-warning resilience convention
+        # (identical to `apply_boolean_to_bodies`'s tool-body removal).
+        apply_delete_body_to_bodies(bodies, feature)
+        return
+
+    if isinstance(feature, ScaleBodyFeature):
+        # Direct Editing family, second entry: modifies its Body in place
+        # (Fillet/Chamfer's own reassign-`bodies[body_id]` pattern) - see
+        # `app.document.scale_body.resolve_scale_body_from_bodies`'s own
+        # docstring for the rigid+scale transform. Same skip-with-warning
+        # resilience convention as Fillet/Chamfer above - the router's own
+        # create/update endpoints validate a Scale eagerly instead (see
+        # `resolve_scale_body`), so this fallback only ever matters for
+        # topology drift after the fact.
+        try:
+            body_id, scaled_shape = resolve_scale_body_from_bodies(bodies, feature)
+        except HTTPException:
+            logger.warning("Skipping ScaleBodyFeature %s: could not be resolved", feature.id)
+            return
+        bodies[body_id] = scaled_shape
+        return
+
+    if isinstance(feature, MoveBodyFeature):
+        # Direct Editing family, third entry ("Move/Copy Body"): see
+        # `app.document.move_body.resolve_move_body_from_bodies`'s own
+        # docstring for the rotate-then-translate transform. Same skip-
+        # with-warning resilience convention as Fillet/Chamfer/Scale Body
+        # above. `feature.make_copy` is the one Direct Editing branch that
+        # genuinely differs from the in-place-reassign template: `True`
+        # mints a brand-new Body under this Feature's own id (mirrors
+        # Mirror's own single-source `_register_solids` registration),
+        # leaving `feature.body_id` itself untouched; `False` (default)
+        # reassigns `bodies[body_id]` in place, identical to Fillet/
+        # Chamfer/Scale Body.
+        try:
+            body_id, moved_shape = resolve_move_body_from_bodies(
+                part, bodies, feature, excluded_feature_ids
+            )
+        except HTTPException:
+            logger.warning("Skipping MoveBodyFeature %s: could not be resolved", feature.id)
+            return
+        if feature.make_copy:
+            _register_solids(bodies, feature.id, moved_shape)
+        else:
+            bodies[body_id] = moved_shape
+        return
+
+    if isinstance(feature, DeleteFaceFeature):
+        # Direct Editing family, fourth entry: modifies its Body in place -
+        # see `app.document.delete_face.resolve_delete_face_from_bodies`'s
+        # own docstring for the BRepAlgoAPI_Defeaturing technique and its
+        # fail-closed contract. Same skip-with-warning resilience
+        # convention as Fillet/Chamfer/Scale Body/Move Body above.
+        try:
+            body_id, healed_shape = resolve_delete_face_from_bodies(bodies, feature)
+        except HTTPException:
+            logger.warning("Skipping DeleteFaceFeature %s: could not be resolved", feature.id)
+            return
+        bodies[body_id] = healed_shape
+        return
+
+    if isinstance(feature, MoveFaceFeature):
+        # Direct Editing family, fifth/last entry: modifies its Body in
+        # place - see `app.document.move_face.resolve_move_face_from_
+        # bodies`'s own docstring for the extrude-and-boolean technique.
+        # Same skip-with-warning resilience convention as every other
+        # Direct Editing branch above. Needs `part`/`excluded_feature_ids`
+        # (unlike Fillet/Chamfer/Scale Body's simpler two-argument
+        # resolvers) only because `direction_ref` resolution needs them,
+        # mirroring the MoveBodyFeature branch's identical shape just
+        # above.
+        try:
+            body_id, moved_face_shape = resolve_move_face_from_bodies(
+                part, bodies, feature, excluded_feature_ids
+            )
+        except HTTPException:
+            logger.warning("Skipping MoveFaceFeature %s: could not be resolved", feature.id)
+            return
+        bodies[body_id] = moved_face_shape
         return
 
     if isinstance(feature, SplitFeature):

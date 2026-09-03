@@ -38,6 +38,8 @@ from app.document.models import (
     BooleanFeature,
     ChamferFeature,
     CreatePlaneFeature,
+    DeleteBodyFeature,
+    DeleteFaceFeature,
     ExtrudeFeature,
     ExtrudeType,
     Feature,
@@ -48,6 +50,8 @@ from app.document.models import (
     LoftMode,
     MergeFeature,
     MirrorFeature,
+    MoveBodyFeature,
+    MoveFaceFeature,
     Part,
     PatternAxisRef,
     PatternDirectionRef,
@@ -58,6 +62,7 @@ from app.document.models import (
     RackFeature,
     RevolveFeature,
     RevolveMode,
+    ScaleBodyFeature,
     SketchFeature,
     SplitFeature,
     SurfaceFeature,
@@ -474,6 +479,48 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
             depends_on = tuple(
                 {base_feature_id(bid) for bid in (*feature.target_body_ids, *feature.tool_body_ids)}
             )
+        elif isinstance(feature, DeleteBodyFeature):
+            # Direct Editing family: identical `body_ids`-derived treatment
+            # to MergeFeature just above - deleting the Extrude/Revolve/etc.
+            # that created a Body a DeleteBodyFeature removes must cascade-
+            # delete the DeleteBodyFeature too, same reasoning as every
+            # other reference kind in this function.
+            depends_on = tuple({base_feature_id(bid) for bid in feature.body_ids})
+        elif isinstance(feature, ScaleBodyFeature):
+            # Direct Editing family, second entry: a `ScaleBodyFeature`
+            # modifies exactly one Body in place (Fillet/Chamfer's own
+            # single-Body-derived-dependency treatment, just via a single
+            # `body_id` field rather than a list of refs to dedupe).
+            depends_on = (base_feature_id(feature.body_id),)
+        elif isinstance(feature, MoveBodyFeature):
+            # Direct Editing family, third entry ("Move/Copy Body"): the
+            # owning Feature of `body_id` (identical single-Body treatment
+            # to ScaleBodyFeature just above), plus whatever `rotation_axis`
+            # itself depends on (`_pattern_axis_dependency` - already shared
+            # with PatternFeature's own `axis` field, since `PatternAxisRef`
+            # is reused verbatim), deduplicated via a `set` in case they
+            # happen to coincide.
+            deps = {base_feature_id(feature.body_id)}
+            axis_dep = _pattern_axis_dependency(part, feature.rotation_axis)
+            if axis_dep is not None:
+                deps.add(axis_dep)
+            depends_on = tuple(deps)
+        elif isinstance(feature, DeleteFaceFeature):
+            # Direct Editing family, fourth entry: identical single-Body
+            # treatment to ScaleBodyFeature/MoveBodyFeature above, just via
+            # `face_ref.body_id` instead of a bare `body_id` field.
+            depends_on = (base_feature_id(feature.face_ref.body_id),)
+        elif isinstance(feature, MoveFaceFeature):
+            # Direct Editing family, fifth/last entry: the owning Feature
+            # of `face_ref.body_id`, plus whatever `direction_ref` itself
+            # depends on (`_pattern_direction_dependency` - already shared
+            # with PatternFeature's own `direction_1`/`direction_2`
+            # fields), deduplicated via a `set` in case they coincide.
+            deps = {base_feature_id(feature.face_ref.body_id)}
+            direction_dep = _pattern_direction_dependency(part, feature.direction_ref)
+            if direction_dep is not None:
+                deps.add(direction_dep)
+            depends_on = tuple(deps)
         elif isinstance(feature, SplitFeature):
             depends_on = _split_dependencies(part, feature)
         elif isinstance(feature, PatternFeature):

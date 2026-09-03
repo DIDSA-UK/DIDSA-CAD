@@ -603,6 +603,54 @@ class FeatureDto {
   /// Split state-field section header comment).
   final SketchEntityRefDto? toolSketchLineRef;
 
+  /// Direct Editing family - only present on a `"scale_body"` Feature (and,
+  /// once it exists, `"move_body"`): the single Body (the backend's
+  /// `ScaleBodyFeature.body_id`) this Feature modifies in place. A bare
+  /// `String`, not a list - unlike [bodyIds]/[targetBodyIds]/[toolBodyIds],
+  /// every Direct Editing "whole body" Feature so far names exactly one.
+  final String? bodyId;
+
+  /// Direct Editing family, second entry - only present on a `"scale_body"`
+  /// Feature: the uniform scale factor applied to [bodyId] about its own
+  /// current bounding-box centre (v1 scope - see `docs/direct-editing-
+  /// scope.md`).
+  final double? factor;
+
+  /// Direct Editing family, third entry ("Move/Copy Body") - only present
+  /// on a `"move_body"` Feature: the world-space translation applied to
+  /// [bodyId], as a `[dx, dy, dz]` triple. The backend's own `rotation_
+  /// axis`/`rotation_angle_degrees` fields are deliberately not
+  /// represented here yet - the v1 client never sets them (see
+  /// `MoveBodyPanel`'s own doc comment), and omitting them from every
+  /// PATCH this client sends already preserves whatever a Feature already
+  /// has server-side (the router's own "omitted keeps current" convention),
+  /// so there is nothing for this DTO to round-trip for them until a
+  /// rotation-picking panel UI actually exists to read/write them.
+  final List<double>? delta;
+
+  /// Direct Editing family, third entry - only present on a `"move_body"`
+  /// Feature: `false` (default) modifies [bodyId] in place, `true` mints a
+  /// brand-new Body instead. Named distinctly from [consumeToolBodies] -
+  /// same "false vs true" shape, different Feature type and meaning.
+  final bool? moveBodyCopy;
+
+  /// Direct Editing family, fourth/fifth entries - only present on a
+  /// `"delete_face"` or `"move_face"` Feature: the single Body face this
+  /// Feature targets. A bare [SubShapeRefDto], not a [PlaneRefDto] - a
+  /// Direct Editing face reference is always a real Body face, never a
+  /// fixed plane or another Plane Feature, unlike [faceRefs]' own entries.
+  final SubShapeRefDto? faceRef;
+
+  /// Direct Editing family, fifth entry - only present on a `"move_face"`
+  /// Feature using its offset-along-normal mode (v1 client scope - see
+  /// `docs/direct-editing-scope.md`; the backend's own `delta`/
+  /// `direction_ref`+`direction_distance` modes have no client-side field
+  /// yet, same "backend-ready, client not wired" treatment [rotation_axis]
+  /// gets on `"move_body"`). Named distinctly from [offset] - that field is
+  /// `CreatePlaneFeature`'s own OFFSET_FACE distance, an unrelated Feature
+  /// type and wire key (`offset`, not `offset_distance`).
+  final double? offsetDistance;
+
   FeatureDto({
     required this.type,
     required this.id,
@@ -669,6 +717,12 @@ class FeatureDto {
     this.toolPlaneRef,
     this.toolSurfaceFeatureId,
     this.toolSketchLineRef,
+    this.bodyId,
+    this.factor,
+    this.delta,
+    this.moveBodyCopy,
+    this.faceRef,
+    this.offsetDistance,
   });
 
   factory FeatureDto.fromJson(Map<String, dynamic> json) => FeatureDto(
@@ -784,6 +838,17 @@ class FeatureDto {
             ? null
             : SketchEntityRefDto.fromJson(
                 (json['tool'] as Map<String, dynamic>)['sketch_line_ref'] as Map<String, dynamic>),
+        bodyId: json['body_id'] as String?,
+        factor: (json['factor'] as num?)?.toDouble(),
+        delta: (json['delta'] as List?)?.map((v) => (v as num).toDouble()).toList(),
+        // Wire key is `make_copy`, not `copy` - see `moveBodyCopy`'s own
+        // doc comment for why the backend's own field was renamed away
+        // from `copy` (a pydantic.BaseModel.copy() collision).
+        moveBodyCopy: json['make_copy'] as bool?,
+        faceRef: json['face_ref'] == null
+            ? null
+            : SubShapeRefDto.fromJson(json['face_ref'] as Map<String, dynamic>),
+        offsetDistance: (json['offset_distance'] as num?)?.toDouble(),
       );
 }
 
@@ -1960,6 +2025,209 @@ class DocumentApiClient {
               headers: _headers,
               body: jsonEncode({
                 if (bodyIds != null) 'body_ids': bodyIds,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Direct Editing family (first entry): creates a DeleteBodyFeature
+  /// removing every Body named in [bodyIds] (1+ required - see the
+  /// backend's `_validate_delete_body_ids`) entirely. Mirrors
+  /// [createMergeFeature]'s own shape exactly, just a lower floor (deleting
+  /// a single Body is the common case, unlike merging one).
+  Future<FeatureDto> createDeleteBodyFeature(
+    String partId, {
+    required List<String> bodyIds,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/delete-body-features'),
+              headers: _headers,
+              body: jsonEncode({'body_ids': bodyIds}),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing DeleteBodyFeature - mirrors
+  /// [updateMergeFeature]'s own shape exactly.
+  Future<FeatureDto> updateDeleteBodyFeature(
+    String partId,
+    String featureId, {
+    List<String>? bodyIds,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/delete-body-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (bodyIds != null) 'body_ids': bodyIds,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Direct Editing family (second entry): creates a ScaleBodyFeature
+  /// uniformly scaling [bodyId] by [factor] (> 0 required - see the
+  /// backend's `_validate_scale_body_factor`) about its own current
+  /// bounding-box centre. Mirrors [createFilletFeature]'s shape, a single
+  /// numeric field just like `radius`.
+  Future<FeatureDto> createScaleBodyFeature(
+    String partId, {
+    required String bodyId,
+    required double factor,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/scale-body-features'),
+              headers: _headers,
+              body: jsonEncode({'body_id': bodyId, 'factor': factor}),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing ScaleBodyFeature - mirrors
+  /// [updateFilletFeature]'s own shape exactly.
+  Future<FeatureDto> updateScaleBodyFeature(
+    String partId,
+    String featureId, {
+    String? bodyId,
+    double? factor,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/scale-body-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (bodyId != null) 'body_id': bodyId,
+                if (factor != null) 'factor': factor,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Direct Editing family (third entry, "Move/Copy Body"): creates a
+  /// MoveBodyFeature translating [bodyId] by [delta] (a `[dx, dy, dz]`
+  /// triple). [copy] (default `false`) mirrors [consumeToolBodies]'s
+  /// plain-bool convention. Rotation is not yet exposed here - see
+  /// `FeatureDto.delta`'s own doc comment for why.
+  Future<FeatureDto> createMoveBodyFeature(
+    String partId, {
+    required String bodyId,
+    required List<double> delta,
+    bool copy = false,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/move-body-features'),
+              headers: _headers,
+              // Wire key is `make_copy` - see `FeatureDto.moveBodyCopy`'s own
+              // doc comment for why (a pydantic.BaseModel.copy() collision
+              // on the backend's own schema).
+              body: jsonEncode({'body_id': bodyId, 'delta': delta, 'make_copy': copy}),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing MoveBodyFeature - mirrors
+  /// [updateScaleBodyFeature]'s own shape exactly. Omitting [delta]/[copy]
+  /// (both null) - or any other field this client doesn't send, like a
+  /// server-side `rotation_axis` - keeps its current value, per the
+  /// backend's own "omitted keeps current" convention.
+  Future<FeatureDto> updateMoveBodyFeature(
+    String partId,
+    String featureId, {
+    String? bodyId,
+    List<double>? delta,
+    bool? copy,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/move-body-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (bodyId != null) 'body_id': bodyId,
+                if (delta != null) 'delta': delta,
+                if (copy != null) 'make_copy': copy,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Direct Editing family (fourth entry): creates a DeleteFaceFeature
+  /// removing [faceRef] and healing the opening closed - see the backend's
+  /// `app.document.delete_face` for the fail-closed contract
+  /// (`delete_face_failed`/`non_planar_reference`/`missing_reference` on
+  /// failure).
+  Future<FeatureDto> createDeleteFaceFeature(
+    String partId, {
+    required SubShapeRefDto faceRef,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/delete-face-features'),
+              headers: _headers,
+              body: jsonEncode({'face_ref': faceRef.toJson()}),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing DeleteFaceFeature - mirrors
+  /// [updateFilletFeature]'s own shape exactly.
+  Future<FeatureDto> updateDeleteFaceFeature(
+    String partId,
+    String featureId, {
+    SubShapeRefDto? faceRef,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/delete-face-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (faceRef != null) 'face_ref': faceRef.toJson(),
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Direct Editing family (fifth/last entry): creates a MoveFaceFeature
+  /// offsetting [faceRef] by [offsetDistance] along its own outward normal
+  /// - v1 client scope (see `docs/direct-editing-scope.md`; the backend's
+  /// own `delta`/`direction_ref`+`direction_distance` modes have no
+  /// client-side entry point yet). See the backend's `app.document.
+  /// move_face` for the fail-closed contract (`move_face_failed`/
+  /// `non_planar_reference`/`missing_reference` on failure).
+  Future<FeatureDto> createMoveFaceFeature(
+    String partId, {
+    required SubShapeRefDto faceRef,
+    required double offsetDistance,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/move-face-features'),
+              headers: _headers,
+              body: jsonEncode({'face_ref': faceRef.toJson(), 'offset_distance': offsetDistance}),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing MoveFaceFeature - mirrors
+  /// [updateScaleBodyFeature]'s own shape exactly. Always sends
+  /// [offsetDistance] when supplied (never `delta`/`direction_ref` - this
+  /// client only ever uses offset mode), which the backend's own mode-
+  /// switching update logic accepts as "stay in/switch to offset mode".
+  Future<FeatureDto> updateMoveFaceFeature(
+    String partId,
+    String featureId, {
+    SubShapeRefDto? faceRef,
+    double? offsetDistance,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/move-face-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (faceRef != null) 'face_ref': faceRef.toJson(),
+                if (offsetDistance != null) 'offset_distance': offsetDistance,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
