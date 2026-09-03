@@ -1,10 +1,13 @@
+import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:image/image.dart' as img;
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 
 import '../api/document_api_client.dart';
@@ -14,6 +17,7 @@ import '../viewport3d/part_screen.dart';
 import 'ai_existing_part_summary.dart';
 import 'ai_plan.dart';
 import 'ai_plan_detection.dart';
+import 'ai_plan_export.dart';
 import 'ai_plan_summary.dart';
 import 'ai_plan_translator.dart';
 import 'ai_provider.dart';
@@ -921,6 +925,132 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     });
   }
 
+  /// External-LLM hand-off (outbound leg, `ai_plan_export.dart`): packages
+  /// the same system prompt/schema the in-app assistant already sends
+  /// (`buildAiScopingSystemPrompt`, identical to `_send()`'s own call) plus
+  /// the conversation so far, then lets the user either copy it or hand it
+  /// off via the OS share sheet - the same `path_provider`/`share_plus`
+  /// temp-file pattern `mesh_viewer_screen.dart`'s own mesh export already
+  /// established, so the user can send it straight to an installed chat
+  /// app, AirDrop it, or save it to Files.
+  Future<void> _shareExternalHandoff() async {
+    final systemPrompt = buildAiScopingSystemPrompt(
+      assistantInstructionsOverride: AiSystemPromptPreferences.override,
+      enabledAddOns: AiSystemPromptPreferences.enabledAddOns,
+      existingPartSummary: _existingPartSummary,
+    );
+    final package = buildExternalHandoffPackage(systemPrompt: systemPrompt, transcript: _transcript);
+    if (!mounted) return;
+
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Share with external AI'),
+        content: const Text(
+          'Send this conversation to another AI chat app (Claude, ChatGPT, Gemini, '
+          'etc.) to use its own usage limits, then bring the finished plan back with '
+          '"Import plan".',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.of(context).pop('copy'), child: const Text('Copy text')),
+          FilledButton(onPressed: () => Navigator.of(context).pop('share'), child: const Text('Share / Save file')),
+        ],
+      ),
+    );
+    if (choice == null) return;
+
+    if (choice == 'copy') {
+      await Clipboard.setData(ClipboardData(text: package));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Copied to clipboard')));
+      return;
+    }
+
+    try {
+      final tempDir = await getTemporaryDirectory();
+      final path = '${tempDir.path}/didsa-cad-ai-handoff.md';
+      await File(path).writeAsString(package);
+      if (!mounted) return;
+      await Share.shareXFiles([XFile(path)], subject: 'DIDSA-CAD AI Modelling hand-off');
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not share: $error')));
+    }
+  }
+
+  /// External-LLM hand-off (inbound leg): reads a plan JSON back in from a
+  /// file - either a bare `.json` (parsed directly, for a precise error if
+  /// it's malformed/truncated) or an `.md`/`.txt` export from a web LLM that
+  /// wrapped the JSON in a fenced code block or surrounding prose (handled
+  /// by the same `detectPlanInAssistantText` fallback the in-app chat
+  /// response path already uses, `ai_plan_detection.dart`). On success this
+  /// jumps straight to Review & Generate, exactly like a plan detected from
+  /// a live chat turn - the same pre-flight validation gate
+  /// (`PlanTranslator.execute`) runs before Generate does anything real
+  /// either way. Unlike `_loadPreset`'s silent `catch (_) { return; }`, a
+  /// failed import shows the real parse error - the file_picker call itself
+  /// mirrors `_attachImage`'s pattern.
+  Future<void> _importPlanFromFile() async {
+    final result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['json', 'md', 'txt']);
+    if (result == null) return;
+    final path = result.files.single.path;
+    if (path == null) {
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Could not import plan'),
+          content: Text('Could not access "${result.files.single.name}" - no local file path was returned.'),
+          actions: [TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('OK'))],
+        ),
+      );
+      return;
+    }
+
+    final text = await File(path).readAsString();
+    AiGenerationPlan? plan;
+    String? parseError;
+    try {
+      final decoded = jsonDecode(text.trim());
+      if (decoded is Map<String, dynamic> && decoded['steps'] is List) {
+        plan = AiGenerationPlan.fromJson(decoded);
+      }
+    } catch (e) {
+      parseError = e.toString();
+    }
+    plan ??= detectPlanInAssistantText(text);
+
+    if (plan == null) {
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Could not import plan'),
+          content: Text(
+            parseError == null
+                ? 'No valid plan JSON was found in this file.'
+                : 'No valid plan JSON was found in this file: $parseError',
+          ),
+          actions: [TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('OK'))],
+        ),
+      );
+      return;
+    }
+
+    final importedPlan = plan;
+    if (!mounted) return;
+    setState(() {
+      _transcript = [..._transcript, AiChatMessage(role: AiMessageRole.assistant, text: text)];
+      _proposedPlan = importedPlan;
+      _stepStatuses = null;
+      _preflightResults = null;
+      _finishedOutcome = null;
+      _generateError = null;
+      _generatedPartId = null;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final isFreshConversation = _transcript.isEmpty && _proposedPlan == null;
@@ -930,6 +1060,14 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         actions: [
           if (isFreshConversation)
             IconButton(icon: const Icon(Icons.folder_open_outlined), tooltip: 'Load preset', onPressed: _loadPreset),
+          if (_proposedPlan == null) ...[
+            IconButton(icon: const Icon(Icons.ios_share), tooltip: 'Share with external AI', onPressed: _shareExternalHandoff),
+            IconButton(
+              icon: const Icon(Icons.upload_file_outlined),
+              tooltip: 'Import plan from file',
+              onPressed: _importPlanFromFile,
+            ),
+          ],
         ],
       ),
       body: SafeArea(
@@ -1335,6 +1473,12 @@ class _ChatBubble extends StatelessWidget {
 
   const _ChatBubble({required this.message});
 
+  Future<void> _copyToClipboard(BuildContext context) async {
+    await Clipboard.setData(ClipboardData(text: message.text));
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Copied to clipboard'), duration: Duration(seconds: 2)));
+  }
+
   @override
   Widget build(BuildContext context) {
     final isUser = message.role == AiMessageRole.user;
@@ -1366,7 +1510,21 @@ class _ChatBubble extends StatelessWidget {
               ),
               const SizedBox(height: 6),
             ],
-            Text(message.text),
+            // Selectable (rather than a plain Text) so the raw text - JSON
+            // plans especially - can be selected and copied manually too,
+            // not just via the button below.
+            SelectableText(message.text),
+            Align(
+              alignment: Alignment.centerRight,
+              child: IconButton(
+                icon: const Icon(Icons.copy, size: 16),
+                tooltip: 'Copy to clipboard',
+                visualDensity: VisualDensity.compact,
+                constraints: const BoxConstraints(),
+                padding: const EdgeInsets.only(top: 6),
+                onPressed: () => _copyToClipboard(context),
+              ),
+            ),
           ],
         ),
       ),

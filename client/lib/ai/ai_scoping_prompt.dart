@@ -218,6 +218,27 @@ missing `target_body_ids` on a cut step fails validation with
 and blocks the whole plan, even if every other step is fine. This is the
 single most common way a plan otherwise fails right at the last step, so
 double-check every cut/cut-mode step has it before finalizing your plan.
+
+`profile_refs` (extrude/revolve/sweep, all optional) narrows which profile
+in the Sketch a step builds from - each entry is the local_id of a Line/
+Circle/Arc/Ellipse/Polygon/Slot/Rectangle step that anchors one profile. It
+can only ever name an OUTER profile loop. If a Sketch has one closed loop
+nested entirely inside another (e.g. two concentric circles for a tube's
+outer/inner wall), the inner loop is automatically treated as a HOLE of the
+outer loop's own profile the instant that Sketch is used as a boss profile
+- for extrude, revolve, and sweep alike - so a single boss step already
+produces the hollow result (its validation will say "includes N hole(s)").
+Never add a second cut step whose profile_refs (or default profile) would
+need to reference that same inner/hole loop again to "remove" it - it is
+not an independently selectable profile, and validation always rejects it
+with `invalid_profile_ref`, no matter how the step is worded. This is
+different from adding a hole afterward through an already-built solid via
+a genuinely separate Sketch (its own single closed loop, a different plane
+or position) - that legitimately needs its own real cut step with
+target_body_ids, exactly like the flange-hole follow-up example below. The
+difference is entirely about whether the hole loop lives in the same
+Sketch as the boss profile (never a second cut step) or a different one (a
+real cut step).
 - fillet: {local_id, kind:"fillet", edges: <edge selector, see below>,
   radius}
 - chamfer: {local_id, kind:"chamfer", edges: <edge selector, see below>,
@@ -553,7 +574,44 @@ turn's plan - same coordinates, same local_ids - because each plan is
 still built from nothing; the hole's centre, 30,20, is the true middle of
 the 60x40 block, re-derived from the same numbers already used above, not
 a fresh guess; note f3's `target_body_ids: ["f1"]` - every cut step must
-name the body it cuts into, never left empty)''';
+name the body it cuts into, never left empty)
+
+Example 5 - a hollow tube via Sweep, using two concentric circles in one
+profile Sketch rather than a separate cut step:
+
+User: "A 100mm-long tube following a straight path, 20mm outer diameter,
+14mm inner diameter."
+
+Assistant (final message, nothing else in it):
+```json
+{
+  "version": 1,
+  "steps": [
+    { "local_id": "skp", "kind": "sketch", "plane": "XY" },
+    { "local_id": "pp1", "kind": "sketch_point", "sketch_feature_id": "skp", "x": 0, "y": 0 },
+    { "local_id": "pp2", "kind": "sketch_point", "sketch_feature_id": "skp", "x": 100, "y": 0 },
+    { "local_id": "path1", "kind": "sketch_line", "sketch_feature_id": "skp",
+      "start_point_id": "pp1", "end_point_id": "pp2" },
+    { "local_id": "skc", "kind": "sketch", "plane": "YZ" },
+    { "local_id": "pc", "kind": "sketch_point", "sketch_feature_id": "skc", "x": 0, "y": 0 },
+    { "local_id": "c_outer", "kind": "sketch_circle", "sketch_feature_id": "skc",
+      "center_point_id": "pc", "radius": 10 },
+    { "local_id": "c_inner", "kind": "sketch_circle", "sketch_feature_id": "skc",
+      "center_point_id": "pc", "radius": 7 },
+    { "local_id": "f1", "kind": "sweep", "sketch_feature_id": "skc",
+      "path_refs": ["path1"], "mode": "boss" }
+  ]
+}
+```
+(c_outer and c_inner are two concentric circles in the SAME profile Sketch -
+c_inner, nested entirely inside c_outer, is automatically the tube's hole
+the moment f1 sweeps c_outer's profile: one sweep step is the whole hollow
+tube, hole included, exactly like the "profile_refs" section above
+describes. There is no second sweep/cut step for c_inner - referencing it
+again would fail `invalid_profile_ref`, since it was never an
+independently selectable profile to begin with. The same "one boss step,
+two nested circles, no second cut" pattern applies just as well to a bent
+path (more path_refs entries) or to Extrude/Revolve instead of Sweep.)''';
 
 /// Locked: `ai_plan_detection.dart`'s `detectPlanInAssistantText` depends
 /// structurally on the model actually honouring this instruction - never
