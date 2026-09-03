@@ -38,39 +38,69 @@ dated narrative log if you want the "why" behind a specific decision.
    own "omitted keeps current" convention already preserves correctly),
    means this is a pure client-side addition when it happens - no backend
    change needed.
-4. **Delete Face** - `DeleteFaceFeature`. Removes a single planar face from
-   a Body and heals the opening closed, via OCCT `BRepAlgoAPI_Defeaturing`
-   (see `app.document.delete_face`'s own module docstring for the real
-   spike findings, including a serious "succeeds with no warning but
-   produces the wrong geometry" case only found by testing every face of a
-   real chamfered box, not just one). **Backend implemented in full and
-   verified against a real pythonocc-core run** (all 7 tests in
-   `test_feature_delete_face.py` pass). **Client implemented** - ambient
-   entry only (a single planar face of a solid Body selected), no re-
-   picking a different face mid-session (simpler than Fillet's own
-   continuous-re-pick Pattern 3 shape from `docs/live-preview-pattern.md` -
-   deferred as a fast follow, not risked in this pass); `DeleteFacePanel`
-   mirrors `DeleteBodyPanel`'s minimal shape exactly.
-5. **Move Face** - `MoveFaceFeature`. Moves a single planar face (offset
-   along its normal / explicit delta XYZ / along a picked edge's direction,
-   reusing `PatternDirectionRef`) via extrude-the-face-profile +
-   `BRepAlgoAPI_Fuse`/`Cut` (see `app.document.move_face`'s own module
-   docstring). **Backend implemented in full and verified against a real
-   pythonocc-core run** (all 14 tests in `test_feature_move_face.py` pass,
-   including all three modes, overshoot rejection, and mode-switching on
-   update). **Client v1 scope is offset-along-normal mode only** -
-   `MoveFacePanel` has a single numeric field, mirroring `ScaleBodyPanel`'s
-   own debounced-live-preview shape; the backend's own `delta`/
-   `direction_ref`+`direction_distance` modes have no client entry point
-   yet (same "backend-ready, client not wired" treatment `rotation_axis`
-   gets on Move Body) - a pure client-side addition when it happens, no
-   backend change needed. Also ambient-entry-only, face fixed once picked,
-   same reasoning as Delete Face above.
+4. **Delete Face** - `DeleteFaceFeature`. Removes 1+ faces (a single shared
+   Body, planar/cylindrical/conical) and heals the opening(s) closed, via
+   OCCT `BRepAlgoAPI_Defeaturing` (one `AddFaceToRemove` call per face
+   before one `Build()` - see `app.document.delete_face`'s own module
+   docstring for the real spike findings, including a serious "succeeds
+   with no warning but produces the wrong geometry" case only found by
+   testing every face of a real chamfered box, not just one). **Backend V2
+   implemented in full and verified against a real pythonocc-core run**
+   (`test_feature_delete_face.py`). **Client V2 implemented** - mirrors
+   Fillet's own continuous-re-pick Pattern 3 shape from
+   `docs/live-preview-pattern.md` in full (preview-overlay mesh, self-
+   exclusion rollback, generic accumulate-toggle over `_selectedEntities`);
+   `DeleteFacePanel` shows a live face count and gates Confirm on 1+ faces.
+5. **Move Face** - `MoveFaceFeature`. Moves 1+ faces (offset along each
+   face's own normal, via `BRepOffset_MakeOffset` - the only mode that
+   supports 2+ faces/non-planar faces at once) or a single planar face
+   (explicit delta XYZ / along a picked edge's direction, reusing
+   `PatternDirectionRef`, via v1's original extrude-the-face-profile +
+   `BRepAlgoAPI_Fuse`/`Cut` technique - unchanged, since `BRepOffset_
+   MakeOffset` cannot replicate a delta/direction vector's tangential
+   component; see `app.document.move_face`'s own module docstring).
+   **Backend V2 implemented in full and verified against a real
+   pythonocc-core run** (`test_feature_move_face.py`, including all three
+   modes, multi-face offset, non-planar offset, and the mixed-mode/
+   mixed-body rejections). **Client V2 implemented** - `MoveFacePanel`
+   mirrors Fillet's own re-pick shape for Offset mode (faces accumulate
+   freely, one shared offset value); Delta/Direction modes stay single-
+   face (replace-not-accumulate on a face tap, and the mode toggle itself
+   disables those two segments once 2+ faces are picked) - matching the
+   backend's own per-mode face-count contract.
 
 Build order: Delete Body -> Scale Body -> Move Body -> Delete Face -> Move
 Face (cheapest/most-precedented first) - followed exactly; Delete Face's
 spike (and the real bug it caught) directly informed Move Face's own
 validation.
+
+### Known gaps vs. full-featured CAD packages (not currently scoped)
+
+All 5 features above are shipped in full (backend + client), including the
+V2 multi-face/non-planar pass. Compared to SolidWorks/Fusion 360-style
+direct-edit toolsets, three gaps remain, deliberately left open rather than
+scoped into this family - flagged here so a future pass doesn't have to
+rediscover them:
+
+- **Move Face has no Rotate mode.** `MoveFaceFeature` supports Offset
+  (along each face's own normal), Delta (explicit XYZ translation), and
+  Direction (translation along a picked edge/axis) - all translations.
+  SolidWorks/Fusion's own "Move Face" also offers rotating a face about an
+  axis (e.g. for a draft-angle-style repair), which this family has no
+  equivalent for. Of the three gaps here, this is the one most likely to
+  matter for real dent/draft-repair workflows if it's ever prioritized.
+- **Scale Body is uniform-only.** `ScaleBodyFeature` scales a single Body
+  uniformly about its own bounding-box centre - no independent X/Y/Z
+  scaling. Flagged as deferred in `app.document.scale_body`'s own module
+  docstring since before v1 shipped; never picked back up.
+- **No Replace Face.** Swapping one face for an entirely different
+  surface/another Body's face (rather than moving or deleting the existing
+  one) has no equivalent Feature type in this family.
+
+Not gaps, despite reading like ones at first glance: Delete Face's
+removal-and-heal (`BRepAlgoAPI_Defeaturing`) already covers what other
+packages call "Delete Face" (with automatic patching); Move Face's Offset
+mode already covers "Offset Face".
 
 ### How the backend was actually verified
 
@@ -100,6 +130,13 @@ All 5 backends were run against the full existing backend test suite
 plus each new feature's own dedicated test file, all passing for real.
 
 ### Move Face V2 (gated on v1 shipping and passing)
+
+**Status: shipped.** Both spikes below (and the Delete Face V2 spike
+further down) were followed by full backend and client implementation -
+see items 4/5 in the Scope section above for the shipped shape. The spike
+narrative is kept as-is below since it's still the accurate record of how
+each design decision (dual-technique split, `unify` step, structured 422
+types, client re-pick UI shape) was actually reached.
 
 v1 scope for Move Face/Delete Face is deliberately narrow: planar faces
 only, single face per Feature instance, fail closed with a structured 422
@@ -283,6 +320,77 @@ generically or compute/display the resulting radius change separately if
 a radius-specific readout is wanted. No change to V1's own client scope
 (planar-only) is implied by this - purely a V2 client-UI note for
 whenever that work starts.
+
+### Delete Face V2 spike findings (2026-09-03) - multi-face and non-planar removal
+
+Delete Face had no V2 spike at all before this - v1's own spike (this
+module's own docstring, `app.document.delete_face`) only ever called
+`BRepAlgoAPI_Defeaturing.AddFaceToRemove` once per `Build()`, and only
+ever removed a Fillet-generated blend face or a Chamfer's own planar
+face, never two faces at once and never an arbitrary primitive non-planar
+face. This throwaway spike (real pythonocc-core, same bootstrapped env)
+closes those two gaps plus the first V2 spike's own flagged-but-untested
+unify-vs-Fillet/Chamfer risk, before any Delete Face V2 code is written.
+
+**Multi-face removal in one `Build()` call - confirmed working.**
+`AddFaceToRemove`'s own name (not `SetFaceToRemove`) turned out to mean
+exactly what it implies: calling it twice before one `Build()` removes
+both faces in a single, correctly-healed pass. Removing both of a box's
+two independently-filleted edges' own blend faces at once restored the
+*exact* original sharp box (`IsDone=True, HasWarnings=False`, 6 faces,
+volume 1000.0000 - bit-for-bit the same numbers a single-face removal
+already produced). The "no natural heal" case - removing both top faces
+of two independent bosses on the same box, with nothing for OCCT to heal
+into - correctly reports `HasWarnings=True` (the same documented signal
+v1's own single-face silent-no-op case uses), with the returned shape's
+own volume unchanged from before removal (2066.0000, the pre-removal
+volume exactly) - i.e. the existing `not IsDone() or HasWarnings()`
+fail-closed check already in `delete_face.py` catches the multi-face
+no-heal case with zero changes needed to that check itself.
+
+**Arbitrary (non-fillet-blend) non-planar face removal - confirmed
+working, with the same documented fail-closed signal.** Removing a plain
+box's own through-hole cylindrical wall (not a fillet blend) restored the
+exact original solid box (`HasWarnings=False`, 6 faces, volume 1000.0000)
+- the technique isn't fillet-blend-specific, a genuinely arbitrary
+primitive cylindrical face works too. A conical boss's own side wall, with
+no natural heal available (same "nothing to heal into" shape as the
+multi-boss case above), correctly reports `HasWarnings=True` with the
+volume unchanged from the pre-removal shape (1054.4543, matching the
+original box-plus-cone-frustum volume exactly) - the existing
+`HasWarnings()` signal generalizes to non-planar faces without any new
+detection logic.
+
+**Unify vs. Fillet/Chamfer tangent surfaces - confirmed safe, but only
+once tested against the actual combined-risk topology.** A first attempt
+(a boss placed fully *inside* a box's own top face, away from its edges)
+was inconclusive - that topology's own Boolean output never fragmented
+the box's own top face into separate coincident pieces in the first
+place, so unify was correctly a no-op there but proved nothing about the
+real risk. Rebuilding with the *actual* risk topology (a boss flush with
+the box's own corner/edges - the same shape the first V2 spike's own
+coincident-plane finding used) plus a Fillet on one of the boss's own top
+edges, right next to the fragmented coincident-plane joint, gave a
+conclusive answer: pre-unify, 12 faces (1 cylindrical fillet blend + 11
+planar, matching the un-filleted case's own 11); post-unify, 10 faces (the
+same 2-face reduction the pure boss/base case already showed, 11 -> 9,
+plus the fillet blend carried through unchanged) - **still exactly 1
+cylindrical face, unchanged volume, still valid, and `TopExp_Explorer`
+still matches `topexp.MapShapes` face-for-face** both before and after.
+`ShapeUpgrade_UnifySameDomain` correctly distinguishes the curved fillet
+surface from the coincident planar patches it's tangent to and merges
+only the latter - it does not incorrectly fold a Fillet/Chamfer's own
+blend face into an adjacent planar one.
+
+**Conclusion**: nothing found in this spike narrows Delete Face V2's
+scope below the full "multi-face + non-planar" the user asked for - both
+confirmed working with the existing fail-closed contract (`HasWarnings()`)
+generalizing cleanly, and the shared `unify` step confirmed safe against
+the specific tangent-surface risk the first V2 spike flagged but never
+tested. Delete Face V2 can proceed on the same technique (`BRepAlgoAPI_
+Defeaturing`, one `AddFaceToRemove` call per face in `face_refs`, one
+`Build()`) v1 already uses, just without the single-face/planar-only
+restrictions.
 
 ## Architecture this family reuses (no new mechanism needed)
 

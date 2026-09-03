@@ -2193,20 +2193,30 @@ class MoveBodyFeature(Feature):
 @dataclass
 class DeleteFaceFeature(Feature):
     """Direct Editing family, fourth entry (see `docs/direct-editing-
-    scope.md`): removes the single planar face named by `face_ref` from
-    its Body and heals the resulting opening closed, via OCCT
-    `BRepAlgoAPI_Defeaturing` (see `app.document.delete_face`'s own module
-    docstring for why this specific tool, and its own fail-closed
-    contract). Modifies `face_ref.body_id` in place (Fillet/Chamfer's
-    "keep the same id" pattern). v1 scope: planar faces only, single face
-    only - a face whose removal has no well-defined single healed result
-    (most commonly: a face of a primitive box/cylinder with no adjacent
-    fillet/chamfer/pocket geometry to naturally close the gap) fails
-    closed with a structured 422 rather than silently returning an
-    unmodified or invalid Body."""
+    scope.md`): removes every face named in `face_refs` (1+ entries, all
+    sharing one Body - see `app.document.delete_face._delete_face_mixed_
+    body_selection`, mirrors `FilletFeature.edge_refs`' own constraint)
+    from its Body in one pass, healing the resulting opening(s) closed,
+    via OCCT `BRepAlgoAPI_Defeaturing` (see `app.document.delete_face`'s
+    own module docstring for why this specific tool, and its own fail-
+    closed contract). Modifies the shared `body_id` in place (Fillet/
+    Chamfer's "keep the same id" pattern).
+
+    V2 (see `docs/direct-editing-scope.md`'s own "Delete Face V2 spike
+    findings" section): accepts planar, cylindrical, and conical faces
+    (anything else - spherical, toroidal, free-form/B-spline - is
+    rejected), and 2+ faces removed together in one `Build()` call -
+    confirmed via a real pythonocc-core spike that `AddFaceToRemove`
+    genuinely supports both, not just the single-planar-face case v1
+    originally spiked. A face selection with no well-defined single healed
+    result (most commonly: a face of a primitive box/cylinder with no
+    adjacent fillet/chamfer/pocket geometry to naturally close the gap, or
+    two faces whose *combined* removal has nothing to heal into even
+    though either alone might) fails closed with a structured 422 rather
+    than silently returning an unmodified or invalid Body."""
 
     id: str
-    face_ref: SubShapeRef  # shape_type must be FACE
+    face_refs: list[SubShapeRef] = field(default_factory=list)  # every entry's shape_type must be FACE
 
     @property
     def type(self) -> str:
@@ -2224,36 +2234,51 @@ class DeleteFaceFeature(Feature):
 @dataclass
 class MoveFaceFeature(Feature):
     """Direct Editing family, fifth (last) entry (see `docs/direct-
-    editing-scope.md`) - the highest-technical-risk member of this
-    family: moves the single planar face named by `face_ref` by exactly
-    one of three mutually-exclusive modes (payload shape validated by
-    `app.document.router._validate_move_face_payload`, same "exactly one
-    of N fields" convention `SplitToolRef`/`PatternAxisRef` already
-    establish):
-    - `offset_distance`: along the face's own outward normal (positive =
-      outward/adds material, negative = inward/removes material).
+    editing-scope.md`) - moves every face named in `face_refs` (all of
+    which must belong to the same Body - see `app.document.move_face.
+    _move_face_mixed_body_selection`, mirrors `FilletFeature.edge_refs`'
+    own single-Body constraint) by exactly one of three mutually-exclusive
+    modes (payload shape validated by `app.document.router._validate_
+    move_face_payload`, same "exactly one of N fields" convention
+    `SplitToolRef`/`PatternAxisRef` already establish):
+    - `offset_distance`: along each face's own outward normal (positive =
+      outward/adds material, negative = inward/removes material), applied
+      identically to every face in `face_refs` (one shared value, mirrors
+      `FilletFeature.radius`'s own "list of refs, one shared param"
+      convention). V2 (see `docs/direct-editing-scope.md`'s own "Move Face
+      V2" section): supports non-planar (cylindrical/conical) faces and
+      2+ faces at once, via OCCT's own `BRepOffset_MakeOffset` (a genuine
+      per-face variable-offset engine - see `app.document.move_face`'s own
+      module docstring for why this mode specifically moved off v1's
+      original prism-sweep technique and the other two modes below did
+      not).
     - `delta`: an explicit world-space XYZ translation - permissive by
       design (not restricted to the face's own normal direction); only
       its component along the face's outward normal actually determines
-      whether material is added or removed (see `app.document.move_face`'s
-      own module docstring), any tangential component shears the swept
-      region between the face's old and new position.
+      whether material is added or removed, any tangential component
+      shears the swept region between the face's old and new position.
+      **v1 scope only, unchanged**: exactly one face in `face_refs`, must
+      be planar - a shear has no generalizable meaning for a curved face
+      (confirmed degenerate/zero-volume via a real spike, not merely "a
+      different-looking result" - see `app.document.move_face`'s own
+      module docstring).
     - `direction_ref` + `direction_distance`: along a picked edge's
       direction (`PatternDirectionRef`, reused verbatim from the Pattern/
       Mirror family), with the sign of `direction_distance` acting as the
       client's own "Flip direction" control (mirrors Extrude's own
-      flip-via-sign convention, not a separate boolean field).
+      flip-via-sign convention, not a separate boolean field). **v1 scope
+      only, unchanged** - same single-planar-face restriction as `delta`,
+      same reason.
 
-    Modifies `face_ref.body_id` in place (Fillet/Chamfer's "keep the same
-    id" pattern). v1 scope: planar faces only, single face only, no
-    guaranteed healing across an offset large enough to consume a
-    neighbouring face - fails closed with a structured 422 (`move_face_
-    failed`) rather than producing invalid/wrong geometry; see
-    `docs/direct-editing-scope.md`'s own "Move Face V2" section for what's
-    explicitly deferred."""
+    Modifies the shared `body_id` in place (Fillet/Chamfer's "keep the
+    same id" pattern). No guaranteed healing across an offset large enough
+    to consume a neighbouring face for `delta`/`direction_ref` modes -
+    fails closed with a structured 422 (`move_face_failed`) rather than
+    producing invalid/wrong geometry; `offset_distance` mode *does*
+    guarantee this (confirmed via spike, see the module docstring)."""
 
     id: str
-    face_ref: SubShapeRef  # shape_type must be FACE
+    face_refs: list[SubShapeRef] = field(default_factory=list)  # every entry's shape_type must be FACE
     offset_distance: float | None = None
     delta: tuple[float, float, float] | None = None
     direction_ref: PatternDirectionRef | None = None

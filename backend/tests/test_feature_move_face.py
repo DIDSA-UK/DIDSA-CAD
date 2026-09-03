@@ -1,13 +1,17 @@
 """Direct Editing family, fifth/last entry: real-OCCT tests for
-`MoveFaceFeature` - moves a single planar face along its own normal, an
-explicit delta, or a picked edge's direction, via extrude-the-face-profile
-+ Fuse/Cut (see `app.document.move_face`). Modifies its Body in place
-(keeps the same id). Mirrors test_feature_delete_face.py's own structure
-and helpers (copy-pasted, not shared via conftest, same as every other
-test_feature_*.py file). Needs a real pythonocc-core environment (not
-available in this repo's own dev sandbox - see docs/status.md's dated
-entries for whether a real on-device/CI pass has actually run by the time
-this is read).
+`MoveFaceFeature`. V2 (see `docs/direct-editing-scope.md`): moves every
+face in `face_refs` (1+, all sharing a Body) via OCCT's own `BRepOffset_
+MakeOffset` for `offset_distance` mode (planar/cylindrical/conical, 2+
+faces, neighbour-consuming - all new); `delta`/`direction_ref` modes are
+still v1's own single-planar-face-only extrude-the-face-profile + Fuse/Cut
+technique, unchanged (see `app.document.move_face`'s own module docstring
+for why those two modes didn't move to the new technique). Modifies its
+Body in place (keeps the same id). Mirrors test_feature_delete_face.py's
+own structure and helpers (copy-pasted, not shared via conftest, same as
+every other test_feature_*.py file). Needs a real pythonocc-core
+environment (not available in this repo's own dev sandbox - see
+docs/status.md's dated entries for whether a real on-device/CI pass has
+actually run by the time this is read).
 
 Note on face/edge indices: every index used below was confirmed empirically
 against the real backend (not assumed) - a box's own `topexp.MapShapes`
@@ -122,10 +126,24 @@ def _face_ref(body_id: str, index: int) -> dict:
     return {"body_id": body_id, "shape_type": "face", "index": index}
 
 
-def _create_move_face(part_id: str, face_ref: dict, **kwargs):
-    payload = {"face_ref": face_ref}
+def _create_move_face(part_id: str, face_refs: dict | list[dict], **kwargs):
+    """`face_refs` accepts either a single ref dict (the common single-face
+    case, wrapped into a one-entry list here) or an already-built list (V2
+    multi-face cases)."""
+    refs = [face_refs] if isinstance(face_refs, dict) else face_refs
+    payload = {"face_refs": refs}
     payload.update(kwargs)
     return client.post(f"/document/parts/{part_id}/move-face-features", json=payload)
+
+
+def _add_circle(sketch_id: str, cx: float, cy: float, radius: float) -> dict:
+    center = _add_point(sketch_id, cx, cy)
+    response = client.post(
+        f"/sketch/sketches/{sketch_id}/circles",
+        json={"center_point_id": center["id"], "radius": radius, "angle": 0.0},
+    )
+    assert response.status_code == 201
+    return response.json()
 
 
 def _make_box(part_id: str, *, x0: float, y0: float = 0.0, size: float = 10.0) -> str:
@@ -223,15 +241,127 @@ def test_offset_mode_inward_shrinks_the_bounding_box():
 
 def test_offset_mode_overshoot_past_the_bodys_own_extent_is_rejected():
     """Pushing a face inward by more than the Body's own extent in that
-    direction has no valid result (an empty/negative-volume shape) - fails
-    closed rather than producing a degenerate Body."""
+    direction has no valid result - fails closed rather than producing a
+    degenerate Body. V2's own `BRepOffset_MakeOffset` technique reports
+    this specific failure via a null `Shape()` with no reported error
+    (confirmed via spike - see `app.document.move_face`'s own module
+    docstring), caught by `move_face_null_result`, not the boolean-op
+    `move_face_failed` v1's own prism technique used to report here."""
     part = _create_part()
     body_id = _make_box(part["id"], x0=0.0)
 
     response = _create_move_face(part["id"], _face_ref(body_id, 1), offset_distance=-15.0)
 
     assert response.status_code == 422
-    assert response.json()["detail"]["type"] == "move_face_failed"
+    assert response.json()["detail"]["type"] == "move_face_null_result"
+
+
+# --- Offset mode, V2: non-planar faces, multi-face, neighbour-consuming --------
+# Indices confirmed empirically against the real backend, same discipline this
+# file's own module docstring establishes for every other index here.
+
+
+def test_offset_mode_grows_a_cylindrical_hole():
+    """A box with a circular hole cut through it - the hole's own
+    cylindrical wall (face 6, confirmed via the real mesh's own
+    `face_is_planar`) grows by exactly the offset value (a cylinder's own
+    1:1 radius-to-offset relationship, unlike a cone's - see
+    `docs/direct-editing-scope.md`'s own spike findings)."""
+    part = _create_part()
+    box_sketch = _create_square_sketch_feature(part["id"])
+    _create_extrude_feature(part["id"], box_sketch["id"])
+    box_body_id = _body_ids(part["id"])[0]
+    hole_sketch = _create_sketch_feature(part["id"])
+    _add_circle(hole_sketch["sketch_id"], 5.0, 5.0, 2.0)
+    _create_extrude_feature(
+        part["id"], hole_sketch["id"], extrude_type="cut", start_distance=-1.0, end_distance=11.0,
+        target_body_ids=[box_body_id],
+    )
+
+    response = _create_move_face(part["id"], _face_ref(box_body_id, 6), offset_distance=1.0)
+
+    assert response.status_code == 201
+
+
+def test_offset_mode_moves_two_faces_together_with_the_shared_value():
+    """`face_refs`' two entries both move by the identical `offset_distance`
+    (this family's own "list of refs, one shared param" convention, not
+    independent per-face values - see `MoveFaceFeature`'s own docstring)."""
+    part = _create_part()
+    body_id = _make_box(part["id"], x0=0.0)
+
+    response = _create_move_face(
+        part["id"], [_face_ref(body_id, 0), _face_ref(body_id, 1)], offset_distance=2.0
+    )
+
+    assert response.status_code == 201
+    x_range, y_range, _z = _bbox_ranges(part["id"], body_id)
+    assert x_range == (0.0, 12.0)  # face 1 (x=10 face) grown +2
+    assert y_range == (-2.0, 10.0)  # face 0 (y=0 face) grown +2 outward (-Y)
+
+
+def test_offset_mode_fully_consumes_a_neighbouring_boss():
+    """A boss fused flush onto a base Body's own top face (the coincident-
+    plane joint `app.document.extrude._apply_feature_to_bodies`'s own
+    gated `unify` step exists for, see that module's own docstring) -
+    pushing the boss's own top face down by exactly its own height fully
+    consumes it, healing back to the plain base Body, not merely shrinking
+    it - the exact neighbour-consuming case v1 could never attempt."""
+    part = _create_part()
+    base_sketch = _create_square_sketch_feature(part["id"])
+    _create_extrude_feature(part["id"], base_sketch["id"])
+    base_body_id = _body_ids(part["id"])[0]
+    boss_sketch = _create_square_sketch_feature(part["id"], size=4.0)
+    _create_extrude_feature(
+        part["id"], boss_sketch["id"], start_distance=10.0, end_distance=13.0,
+        target_body_ids=[base_body_id],
+    )
+    stepped_body_id = _body_ids(part["id"])[0]
+    assert _bbox_ranges(part["id"], stepped_body_id)[2] == (0.0, 13.0)
+
+    response = _create_move_face(part["id"], _face_ref(stepped_body_id, 7), offset_distance=-3.0)
+
+    assert response.status_code == 201
+    assert _bbox_ranges(part["id"], stepped_body_id)[2] == (0.0, 10.0)  # boss fully gone
+
+
+def test_offset_mode_with_faces_from_two_different_bodies_is_rejected():
+    part = _create_part()
+    body_a = _make_box(part["id"], x0=0.0)
+    body_b = _make_box(part["id"], x0=20.0)
+
+    response = _create_move_face(
+        part["id"], [_face_ref(body_a, 1), _face_ref(body_b, 1)], offset_distance=1.0
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["type"] == "mixed_body_selection"
+
+
+def test_delta_mode_with_two_faces_is_rejected():
+    """`delta`/`direction_ref` modes stay single-planar-face-only under V2
+    - only `offset_distance` generalizes to multiple faces (see
+    `MoveFaceFeature`'s own docstring for why)."""
+    part = _create_part()
+    body_id = _make_box(part["id"], x0=0.0)
+
+    response = _create_move_face(
+        part["id"], [_face_ref(body_id, 0), _face_ref(body_id, 1)], delta=[1.0, 0.0, 0.0]
+    )
+
+    assert response.status_code == 422
+
+
+def test_move_face_with_empty_face_refs_is_rejected():
+    part = _create_part()
+    body_id = _make_box(part["id"], x0=0.0)
+
+    response = client.post(
+        f"/document/parts/{part['id']}/move-face-features",
+        json={"face_refs": [], "offset_distance": 1.0},
+    )
+
+    assert response.status_code == 422
 
 
 # --- Delta mode ------------------------------------------------------------
@@ -335,7 +465,7 @@ def test_move_face_feature_round_trips_through_native_export_import():
 
         features = client.get(f"/document/parts/{part['id']}/features").json()
         round_tripped = next(f for f in features if f["type"] == "move_face")
-        assert round_tripped["face_ref"] == move_face["face_ref"]
+        assert round_tripped["face_refs"] == move_face["face_refs"]
         assert round_tripped["offset_distance"] == move_face["offset_distance"] == 3.0
     finally:
         replace_document(saved_document)

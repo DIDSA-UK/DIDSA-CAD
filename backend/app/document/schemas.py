@@ -861,24 +861,25 @@ class MoveBodyFeatureResponse(BaseModel):
 
 class DeleteFaceFeatureCreate(BaseModel):
     """Direct Editing family (fourth entry): creates a `DeleteFaceFeature`
-    removing the single planar face named by `face_ref` and healing the
-    opening closed - see `app.document.delete_face`'s own module docstring
-    for the OCCT technique and fail-closed contract."""
+    removing every face named in `face_refs` (1+ entries, all belonging to
+    the same Body) and healing the opening(s) closed - see `app.document.
+    delete_face`'s own module docstring for the OCCT technique and
+    fail-closed contract."""
 
-    face_ref: SubShapeRefSchema
+    face_refs: list[SubShapeRefSchema] = []
 
 
 class DeleteFaceFeatureUpdate(BaseModel):
     """Partial update, same omitted-vs-current-value convention as
     `ScaleBodyFeatureUpdate`."""
 
-    face_ref: SubShapeRefSchema | None = None
+    face_refs: list[SubShapeRefSchema] | None = None
 
 
 class DeleteFaceFeatureResponse(BaseModel):
     type: Literal["delete_face"] = "delete_face"
     id: str
-    face_ref: SubShapeRefSchema
+    face_refs: list[SubShapeRefSchema]
     locked: bool
     # B1: see SketchFeatureResponse.produces above - always BODY for a
     # DeleteFaceFeature.
@@ -887,13 +888,16 @@ class DeleteFaceFeatureResponse(BaseModel):
 
 class MoveFaceFeatureCreate(BaseModel):
     """Direct Editing family (fifth/last entry): creates a `MoveFaceFeature`
-    moving the single planar face named by `face_ref` via exactly one of
-    `offset_distance`/`delta`/(`direction_ref`+`direction_distance`) -
-    matching `MoveFaceFeature`'s own "exactly one of three modes"
-    convention (see that dataclass's own docstring); enforced by
-    `app.document.router._validate_move_face_payload`, not here."""
+    moving every face named in `face_refs` (1+ entries, all belonging to
+    the same Body) via exactly one of `offset_distance`/`delta`/
+    (`direction_ref`+`direction_distance`) - matching `MoveFaceFeature`'s
+    own "exactly one of three modes" convention (see that dataclass's own
+    docstring); enforced by `app.document.router._validate_move_face_
+    payload`, not here. V2: `delta`/`direction_ref`+`direction_distance`
+    still require exactly one entry in `face_refs` (also enforced there,
+    not here) - see `MoveFaceFeature`'s own docstring for why."""
 
-    face_ref: SubShapeRefSchema
+    face_refs: list[SubShapeRefSchema] = []
     offset_distance: float | None = None
     delta: tuple[float, float, float] | None = None
     direction_ref: PatternDirectionRefSchema | None = None
@@ -909,7 +913,7 @@ class MoveFaceFeatureUpdate(BaseModel):
     supplied), mirroring how `SplitFeatureUpdate.tool` is always replaced
     as a whole, never partially merged."""
 
-    face_ref: SubShapeRefSchema | None = None
+    face_refs: list[SubShapeRefSchema] | None = None
     offset_distance: float | None = None
     delta: tuple[float, float, float] | None = None
     direction_ref: PatternDirectionRefSchema | None = None
@@ -919,7 +923,7 @@ class MoveFaceFeatureUpdate(BaseModel):
 class MoveFaceFeatureResponse(BaseModel):
     type: Literal["move_face"] = "move_face"
     id: str
-    face_ref: SubShapeRefSchema
+    face_refs: list[SubShapeRefSchema]
     offset_distance: float | None
     delta: tuple[float, float, float] | None
     direction_ref: PatternDirectionRefSchema | None

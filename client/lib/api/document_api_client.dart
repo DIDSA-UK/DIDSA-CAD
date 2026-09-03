@@ -657,11 +657,14 @@ class FeatureDto {
   final double? rotationAngleDegrees;
 
   /// Direct Editing family, fourth/fifth entries - only present on a
-  /// `"delete_face"` or `"move_face"` Feature: the single Body face this
-  /// Feature targets. A bare [SubShapeRefDto], not a [PlaneRefDto] - a
-  /// Direct Editing face reference is always a real Body face, never a
-  /// fixed plane or another Plane Feature, unlike [faceRefs]' own entries.
-  final SubShapeRefDto? faceRef;
+  /// `"delete_face"` or `"move_face"` Feature: every Body face this
+  /// Feature targets (1+, V2 - see `docs/direct-editing-scope.md`). A
+  /// plain [List<SubShapeRefDto>], not [PlaneRefDto]s - a Direct Editing
+  /// face reference is always a real Body face, never a fixed plane or
+  /// another Plane Feature, unlike [faceRefs] itself (`CreatePlaneFeature`'s
+  /// own field - an unrelated Feature type, different DTO type, same wire
+  /// key `face_refs`, hence this field's own distinct Dart name).
+  final List<SubShapeRefDto> directEditFaceRefs;
 
   /// Direct Editing family, fifth entry - only present on a `"move_face"`
   /// Feature using its offset-along-normal mode - exactly one of this,
@@ -745,7 +748,7 @@ class FeatureDto {
     this.moveBodyCopy,
     this.rotationAxis,
     this.rotationAngleDegrees,
-    this.faceRef,
+    this.directEditFaceRefs = const [],
     this.offsetDistance,
     this.directionDistance,
   });
@@ -874,9 +877,20 @@ class FeatureDto {
             ? null
             : PatternAxisRefDto.fromJson(json['rotation_axis'] as Map<String, dynamic>),
         rotationAngleDegrees: (json['rotation_angle_degrees'] as num?)?.toDouble(),
-        faceRef: json['face_ref'] == null
-            ? null
-            : SubShapeRefDto.fromJson(json['face_ref'] as Map<String, dynamic>),
+        // `type`-guarded, unlike every other field here: `create_plane`'s
+        // own `faceRefs` (above, List<PlaneRefDto>) uses the identical wire
+        // key `face_refs` for an unrelated, incompatibly-shaped list - a
+        // move_face/delete_face response never has that key confused with
+        // this one in practice (the two Feature types are never the same
+        // response), but parsing this key unconditionally would crash
+        // SubShapeRefDto.fromJson's own required-field casts on a real
+        // create_plane response's own PlaneRef-shaped entries.
+        directEditFaceRefs: (json['type'] == 'move_face' || json['type'] == 'delete_face')
+            ? (json['face_refs'] as List?)
+                    ?.map((r) => SubShapeRefDto.fromJson(r as Map<String, dynamic>))
+                    .toList() ??
+                const []
+            : const [],
         offsetDistance: (json['offset_distance'] as num?)?.toDouble(),
         directionDistance: (json['direction_distance'] as num?)?.toDouble(),
       );
@@ -2199,20 +2213,21 @@ class DocumentApiClient {
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
 
-  /// Direct Editing family (fourth entry): creates a DeleteFaceFeature
-  /// removing [faceRef] and healing the opening closed - see the backend's
-  /// `app.document.delete_face` for the fail-closed contract
-  /// (`delete_face_failed`/`non_planar_reference`/`missing_reference` on
-  /// failure).
+  /// Direct Editing family (fourth entry), V2: creates a DeleteFaceFeature
+  /// removing every face in [faceRefs] (1+, all sharing one Body) and
+  /// healing the opening(s) closed - see the backend's `app.document.
+  /// delete_face` for the fail-closed contract (`delete_face_failed`/
+  /// `mixed_body_selection`/`unsupported_surface_type`/`missing_reference`
+  /// on failure).
   Future<FeatureDto> createDeleteFaceFeature(
     String partId, {
-    required SubShapeRefDto faceRef,
+    required List<SubShapeRefDto> faceRefs,
   }) =>
       _send(
         () => _httpClient.post(
               _uri('/document/parts/$partId/delete-face-features'),
               headers: _headers,
-              body: jsonEncode({'face_ref': faceRef.toJson()}),
+              body: jsonEncode({'face_refs': faceRefs.map((r) => r.toJson()).toList()}),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
@@ -2222,34 +2237,38 @@ class DocumentApiClient {
   Future<FeatureDto> updateDeleteFaceFeature(
     String partId,
     String featureId, {
-    SubShapeRefDto? faceRef,
+    List<SubShapeRefDto>? faceRefs,
   }) =>
       _send(
         () => _httpClient.patch(
               _uri('/document/parts/$partId/delete-face-features/$featureId'),
               headers: _headers,
               body: jsonEncode({
-                if (faceRef != null) 'face_ref': faceRef.toJson(),
+                if (faceRefs != null) 'face_refs': faceRefs.map((r) => r.toJson()).toList(),
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
 
-  /// Direct Editing family (fifth/last entry): creates a MoveFaceFeature
-  /// moving [faceRef] via exactly one of [offsetDistance] (along its own
-  /// outward normal), [delta] (an explicit `[dx, dy, dz]` world-space
-  /// translation), or [directionRef]+[directionDistance] (along a picked
-  /// edge's direction, [directionDistance]'s sign acting as "Flip
-  /// direction" - mirrors Extrude's flip-via-sign convention). Callers
-  /// supply exactly one of the three - matches the backend's own
-  /// `MoveFaceFeatureCreate` "exactly one of three modes" contract
-  /// (`app.document.router._validate_move_face_payload`), not enforced
-  /// here. See the backend's `app.document.move_face` for the fail-closed
-  /// contract (`move_face_failed`/`non_planar_reference`/
-  /// `missing_reference` on failure).
+  /// Direct Editing family (fifth/last entry), V2: creates a MoveFaceFeature
+  /// moving every face in [faceRefs] via exactly one of [offsetDistance]
+  /// (along each face's own outward normal, via `BRepOffset_MakeOffset` -
+  /// the only mode [faceRefs] may hold more than one entry for), [delta]
+  /// (an explicit `[dx, dy, dz]` world-space translation), or
+  /// [directionRef]+[directionDistance] (along a picked edge's direction,
+  /// [directionDistance]'s sign acting as "Flip direction" - mirrors
+  /// Extrude's flip-via-sign convention) - the latter two require exactly
+  /// one entry in [faceRefs] (v1's unchanged single-planar-face technique).
+  /// Callers supply exactly one of the three mode fields - matches the
+  /// backend's own `MoveFaceFeatureCreate` "exactly one of three modes"
+  /// contract (`app.document.router._validate_move_face_payload`), not
+  /// enforced here. See the backend's `app.document.move_face` for the
+  /// fail-closed contract (`move_face_failed`/`move_face_null_result`/
+  /// `unsupported_surface_type`/`mixed_body_selection`/`missing_reference`
+  /// on failure).
   Future<FeatureDto> createMoveFaceFeature(
     String partId, {
-    required SubShapeRefDto faceRef,
+    required List<SubShapeRefDto> faceRefs,
     double? offsetDistance,
     List<double>? delta,
     PatternDirectionRefDto? directionRef,
@@ -2260,7 +2279,7 @@ class DocumentApiClient {
               _uri('/document/parts/$partId/move-face-features'),
               headers: _headers,
               body: jsonEncode({
-                'face_ref': faceRef.toJson(),
+                'face_refs': faceRefs.map((r) => r.toJson()).toList(),
                 if (offsetDistance != null) 'offset_distance': offsetDistance,
                 if (delta != null) 'delta': delta,
                 if (directionRef != null) 'direction_ref': directionRef.toJson(),
@@ -2271,7 +2290,7 @@ class DocumentApiClient {
       );
 
   /// Partial update for an existing MoveFaceFeature - mirrors
-  /// [updateScaleBodyFeature]'s own shape for [faceRef] (omitted keeps its
+  /// [updateScaleBodyFeature]'s own shape for [faceRefs] (omitted keeps its
   /// current value), but **always** sends all four of [offsetDistance]/
   /// [delta]/[directionRef]/[directionDistance] (as an explicit JSON `null`
   /// for whichever three don't apply), never omits them. This is
@@ -2286,7 +2305,7 @@ class DocumentApiClient {
   Future<FeatureDto> updateMoveFaceFeature(
     String partId,
     String featureId, {
-    SubShapeRefDto? faceRef,
+    List<SubShapeRefDto>? faceRefs,
     double? offsetDistance,
     List<double>? delta,
     PatternDirectionRefDto? directionRef,
@@ -2297,7 +2316,8 @@ class DocumentApiClient {
               _uri('/document/parts/$partId/move-face-features/$featureId'),
               headers: _headers,
               body: jsonEncode({
-                if (faceRef != null) 'face_ref': faceRef.toJson(),
+                if (faceRefs != null)
+                  'face_refs': faceRefs.map((r) => r.toJson()).toList(),
                 'offset_distance': offsetDistance,
                 'delta': delta,
                 'direction_ref': directionRef?.toJson(),

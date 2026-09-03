@@ -732,14 +732,14 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
     if isinstance(feature, DeleteFaceFeature):
         return DeleteFaceFeatureResponse(
             id=feature.id,
-            face_ref=_subshape_ref_to_schema(feature.face_ref),
+            face_refs=[_subshape_ref_to_schema(r) for r in feature.face_refs],
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
     if isinstance(feature, MoveFaceFeature):
         return MoveFaceFeatureResponse(
             id=feature.id,
-            face_ref=_subshape_ref_to_schema(feature.face_ref),
+            face_refs=[_subshape_ref_to_schema(r) for r in feature.face_refs],
             offset_distance=feature.offset_distance,
             delta=feature.delta,
             direction_ref=_pattern_direction_ref_to_schema(feature.direction_ref)
@@ -1349,22 +1349,48 @@ def _validate_face_ref(ref: SubShapeRef, field_name: str = "face_ref") -> None:
         raise HTTPException(status_code=422, detail=f"{field_name} must have shape_type=FACE")
 
 
+def _validate_face_refs(face_refs: list[SubShapeRef], field_name: str = "face_refs") -> None:
+    """Direct Editing family (fifth/last entry), V2: `face_refs` must name
+    at least one face (422, mirroring `_validate_fillet_edge_refs`'s own
+    "at least one" check) and every named ref must actually be a face
+    (422, mirroring `_validate_face_ref`'s own singular check) - payload-
+    shape checks only. Whether they all resolve, all belong to the same
+    Body, and (for `delta`/`direction_ref` modes) number exactly one, is a
+    referential/geometric or mode-specific check made by `_validate_move_
+    face_payload`/`app.document.move_face.resolve_move_face` instead."""
+    if not face_refs:
+        raise HTTPException(
+            status_code=422,
+            detail=f"MoveFaceFeature requires at least one {field_name} entry",
+        )
+    for ref in face_refs:
+        _validate_face_ref(ref, field_name)
+
+
 def _validate_move_face_payload(
-    face_ref: SubShapeRef,
+    face_refs: list[SubShapeRef],
     offset_distance: float | None,
     delta: tuple[float, float, float] | None,
     direction_ref: PatternDirectionRef | None,
     direction_distance: float | None,
 ) -> None:
-    """Direct Editing family (fifth/last entry): `face_ref` must be a face
-    (see `_validate_face_ref`); exactly one of the three mutually-exclusive
-    modes must be set - `offset_distance`, `delta`, or
+    """Direct Editing family (fifth/last entry): `face_refs` must all be
+    faces (see `_validate_face_refs`); exactly one of the three mutually-
+    exclusive modes must be set - `offset_distance`, `delta`, or
     (`direction_ref` + `direction_distance` together, not either alone) -
     matching `MoveFaceFeature`'s own docstring. Each mode's own distance/
     delta must be non-zero - a zero-magnitude move is not a meaningful
     Move Face, the same "no trivial no-op value" philosophy `_validate_
-    fillet_radius`'s `> 0` check already establishes for Fillet."""
-    _validate_face_ref(face_ref)
+    fillet_radius`'s `> 0` check already establishes for Fillet.
+
+    V2: `offset_distance` alone accepts 2+ entries in `face_refs` (applied
+    identically to every face - see `MoveFaceFeature`'s own docstring);
+    `delta`/`direction_ref`+`direction_distance` still require exactly one
+    - a payload-shape check here, ahead of the resolver's own geometric
+    "must be planar" check, so a multi-face delta/direction request is
+    reported as this specific, unambiguous error rather than whichever
+    face happens to resolve first raising a generic one."""
+    _validate_face_refs(face_refs)
     modes_set = sum(
         (
             offset_distance is not None,
@@ -1380,8 +1406,11 @@ def _validate_move_face_payload(
         )
     if offset_distance is not None and offset_distance == 0.0:
         raise HTTPException(status_code=422, detail="offset_distance must be non-zero")
-    if delta is not None and delta == (0.0, 0.0, 0.0):
-        raise HTTPException(status_code=422, detail="delta must be non-zero")
+    if delta is not None:
+        if delta == (0.0, 0.0, 0.0):
+            raise HTTPException(status_code=422, detail="delta must be non-zero")
+        if len(face_refs) != 1:
+            raise HTTPException(status_code=422, detail="delta mode requires exactly one face_refs entry")
     if direction_ref is not None or direction_distance is not None:
         if direction_ref is None or direction_distance is None:
             raise HTTPException(
@@ -1390,6 +1419,10 @@ def _validate_move_face_payload(
             )
         if direction_distance == 0.0:
             raise HTTPException(status_code=422, detail="direction_distance must be non-zero")
+        if len(face_refs) != 1:
+            raise HTTPException(
+                status_code=422, detail="direction_ref mode requires exactly one face_refs entry"
+            )
         _validate_pattern_direction_ref(direction_ref, "direction_ref")
 
 
@@ -3946,9 +3979,9 @@ def create_delete_face_feature(
     (an ill-defined removal - see `app.document.delete_face`'s own
     fail-closed contract)."""
     part = get_part_or_404(part_id)
-    face_ref = _subshape_ref_to_domain(payload.face_ref)
-    _validate_face_ref(face_ref)
-    feature = DeleteFaceFeature(id=str(uuid.uuid4()), face_ref=face_ref)
+    face_refs = [_subshape_ref_to_domain(r) for r in payload.face_refs]
+    _validate_face_refs(face_refs)
+    feature = DeleteFaceFeature(id=str(uuid.uuid4()), face_refs=face_refs)
     resolve_delete_face(part, feature)  # raises on an unresolvable/ill-defined removal
     part.add_feature(feature)
     return _feature_response(part, feature)
@@ -3975,15 +4008,17 @@ def update_delete_face_feature(
     part = get_part_or_404(part_id)
     feature = _get_delete_face_feature_or_404(part, feature_id)
 
-    new_face_ref = (
-        _subshape_ref_to_domain(payload.face_ref) if payload.face_ref is not None else feature.face_ref
+    new_face_refs = (
+        [_subshape_ref_to_domain(r) for r in payload.face_refs]
+        if payload.face_refs is not None
+        else feature.face_refs
     )
-    _validate_face_ref(new_face_ref)
+    _validate_face_refs(new_face_refs)
 
-    candidate = DeleteFaceFeature(id=feature.id, face_ref=new_face_ref)
+    candidate = DeleteFaceFeature(id=feature.id, face_refs=new_face_refs)
     resolve_delete_face(part, candidate)  # raises on an unresolvable/ill-defined removal
 
-    feature.face_ref = candidate.face_ref
+    feature.face_refs = candidate.face_refs
     return _feature_response(part, feature)
 
 
@@ -3997,18 +4032,18 @@ def create_move_face_feature(part_id: str, payload: MoveFaceFeatureCreate) -> Mo
     highest technical-risk member of this family, see `app.document.
     move_face`'s own module docstring for the OCCT technique."""
     part = get_part_or_404(part_id)
-    face_ref = _subshape_ref_to_domain(payload.face_ref)
+    face_refs = [_subshape_ref_to_domain(r) for r in payload.face_refs]
     direction_ref = (
         _pattern_direction_ref_to_domain(payload.direction_ref)
         if payload.direction_ref is not None
         else None
     )
     _validate_move_face_payload(
-        face_ref, payload.offset_distance, payload.delta, direction_ref, payload.direction_distance
+        face_refs, payload.offset_distance, payload.delta, direction_ref, payload.direction_distance
     )
     feature = MoveFaceFeature(
         id=str(uuid.uuid4()),
-        face_ref=face_ref,
+        face_refs=face_refs,
         offset_distance=payload.offset_distance,
         delta=payload.delta,
         direction_ref=direction_ref,
@@ -4039,13 +4074,15 @@ def update_move_face_feature(
     switches to that mode wholesale, clearing the other two modes' own
     fields, matching `MoveFaceFeatureUpdate`'s own docstring (mirrors
     `SplitFeatureUpdate.tool` always being replaced as a whole). Supplying
-    no mode field at all (e.g. a `face_ref`-only PATCH) keeps the
+    no mode field at all (e.g. a `face_refs`-only PATCH) keeps the
     Feature's current mode entirely."""
     part = get_part_or_404(part_id)
     feature = _get_move_face_feature_or_404(part, feature_id)
 
-    new_face_ref = (
-        _subshape_ref_to_domain(payload.face_ref) if payload.face_ref is not None else feature.face_ref
+    new_face_refs = (
+        [_subshape_ref_to_domain(r) for r in payload.face_refs]
+        if payload.face_refs is not None
+        else feature.face_refs
     )
 
     if payload.offset_distance is not None:
@@ -4078,12 +4115,12 @@ def update_move_face_feature(
         new_direction_distance = feature.direction_distance
 
     _validate_move_face_payload(
-        new_face_ref, new_offset_distance, new_delta, new_direction_ref, new_direction_distance
+        new_face_refs, new_offset_distance, new_delta, new_direction_ref, new_direction_distance
     )
 
     candidate = MoveFaceFeature(
         id=feature.id,
-        face_ref=new_face_ref,
+        face_refs=new_face_refs,
         offset_distance=new_offset_distance,
         delta=new_delta,
         direction_ref=new_direction_ref,
@@ -4091,7 +4128,7 @@ def update_move_face_feature(
     )
     resolve_move_face(part, candidate)  # raises on an unresolvable/degenerate move
 
-    feature.face_ref = candidate.face_ref
+    feature.face_refs = candidate.face_refs
     feature.offset_distance = candidate.offset_distance
     feature.delta = candidate.delta
     feature.direction_ref = candidate.direction_ref

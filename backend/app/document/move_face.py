@@ -1,41 +1,94 @@
 """OCCT geometry construction for MoveFaceFeature (Direct Editing family,
-fifth/last entry - see `docs/direct-editing-scope.md`) - moves a single
-planar face along its own normal, an explicit delta, or a picked edge's
-direction, and heals the adjacent faces by construction.
+fifth/last entry - see `docs/direct-editing-scope.md`) - moves every face
+named in `face_refs` (1+, all sharing one Body) by one of three mutually-
+exclusive modes, and heals the adjacent faces by construction. **Two
+different OCCT techniques, one per mode group** - not one shared technique
+generalized, because the two groups' own movement models are genuinely
+different operations, confirmed via two separate real-pythonocc-core
+spikes (see `docs/direct-editing-scope.md`'s "Spike findings (2026-09-03)"
+section and its follow-up addenda for the full numbers):
 
-Technique: extrude the target face's own profile along the movement vector
-into a solid prism (`BRepPrimAPI_MakePrism` - the same primitive `app.
-document.split` already uses for its own oversized-block cutting tools),
-then fuse it into the Body (if the vector points outward, adding material)
-or cut it out of the Body (if it points inward, removing material) via
-`BRepAlgoAPI_Fuse`/`BRepAlgoAPI_Cut` - both already heavily used elsewhere
-in this codebase. This is NOT a "true" synchronous-modeling face-offset
-solver (OCCT/pythonocc-core has none, per this package's own scope doc) -
-it works because, for a *single planar face* being pushed in *any* direction
-with a nonzero component along its own outward normal, "the material swept
-between the face's old and new position" is exactly this prism, and fusing/
-cutting it in is geometrically identical to what a real face-offset solver
-would produce for this specific, narrow case. Confirmed via a real
-pythonocc-core spike: pushing one face of a box outward/inward (both purely
-along its normal and with an arbitrary sheared/tangential delta) produces
-the exact expected volume and a valid result each time.
+- **`offset_distance` mode**: OCCT's own per-face variable-offset engine,
+  `BRepOffset_MakeOffset` (`Initialize` with a global offset of `0.0` so
+  every untouched face of the Body stays put, then one `SetOffsetOnFace`
+  call per face in `face_refs` - all with the identical, shared
+  `offset_distance` value, per this family's own "list of refs, one
+  shared param" convention - then one `MakeOffsetShape()` call). This is
+  a genuine, general-purpose face-offset solver (unlike the technique
+  below) - confirmed working for non-planar (cylindrical/conical) faces,
+  2+ faces moved simultaneously in one call, and offsets large enough to
+  fully consume a neighbouring feature while still healing correctly -
+  all v1 never attempted. Requires the target Body's own coincident/
+  coplanar faces (most commonly, wherever a Boss lands flush on an
+  existing face) to already be merged via `ShapeUpgrade_UnifySameDomain`
+  - confirmed reliably failing (a silent null `Shape()`, no exception, no
+  reported error - see the fail-closed contract below) on that exact
+  topology otherwise, even for a trivially small offset nowhere near
+  large enough to be a genuine "neighbour-consuming" case. This is why
+  `app.document.extrude._apply_feature_to_bodies`'s own `unify` step
+  exists and defaults on for the real (non-coarse) body-computation path
+  - `Initialize`'s own join type must be `GeomAbs_Intersection`, not the
+  default `GeomAbs_Arc` (confirmed failing outright on a plain box in the
+  same spike).
+- **`delta`/`direction_ref`+`direction_distance` modes**: v1's own
+  original technique, unchanged - extrude the target face's own profile
+  along the movement vector into a solid prism (`BRepPrimAPI_MakePrism` -
+  the same primitive `app.document.split` already uses for its own
+  oversized-block cutting tools), then fuse it into the Body (vector
+  points outward, adding material) or cut it out (points inward, removing
+  material) via `BRepAlgoAPI_Fuse`/`BRepAlgoAPI_Cut`. This is NOT a "true"
+  synchronous-modeling face-offset solver - it works because, for a
+  *single planar face* being pushed in *any* direction with a nonzero
+  component along its own outward normal, "the material swept between the
+  face's old and new position" is exactly this prism, geometrically
+  identical to what a real face-offset solver would produce for this
+  specific, narrow case. **Deliberately not generalized to non-planar
+  faces or multiple faces** - `BRepOffset_MakeOffset.SetOffsetOnFace`
+  only ever takes a scalar offset along a face's own local normal, so it
+  cannot replicate a `delta`/`direction_ref` vector's own tangential
+  (shearing) component at all; and the prism-sweep technique's own
+  construction genuinely breaks down for a non-planar face given such a
+  vector - confirmed via a real pythonocc-core spike: sweeping a
+  cylindrical face's own profile along a vector with both a radial and an
+  axial (tangential-to-the-cylinder) component produces a *valid but
+  zero-volume* result, not merely "a different-looking" one. `face_refs`
+  is restricted to exactly one entry for these two modes (checked by the
+  router's own `_validate_move_face_payload`, ahead of this module ever
+  running, plus a defensive re-check here) - a genuinely different,
+  narrower scope than `offset_distance` mode's own V2 support, not an
+  oversight.
 
 The movement vector's sign relative to the face's own *outward* normal
 (accounting for `TopoDS_Face.Orientation()` - a `REVERSED` face's own
 `BRepAdaptor_Surface` plane normal points the wrong way and must be
-flipped) decides Fuse (material added) vs. Cut (material removed) - a
-vector with (near-)zero component along that normal is rejected as
-degenerate (nothing for this technique to meaningfully do - see `_move_
-face_failed`).
+flipped) decides Fuse (material added) vs. Cut (material removed) for the
+`delta`/`direction_ref` technique - a vector with (near-)zero component
+along that normal is rejected as degenerate (nothing for this technique to
+meaningfully do - see `_move_face_failed`). `offset_distance` mode's own
+sign convention is `BRepOffset_MakeOffset`'s own, already outward-normal-
+relative by construction - confirmed matching the exact same sign
+convention via spike, so `MoveFaceFeature.offset_distance`'s documented
+positive-is-outward meaning needs no per-mode special-casing.
 
-v1 scope (planar faces, single face - see `MoveFaceFeature`'s own
-docstring): this module makes no attempt to detect "this offset is large
-enough to consume a neighbouring face" ahead of time - `BRepAlgoAPI_Fuse`/
-`BRepAlgoAPI_Cut` either produce a valid result or don't
-(`BRepCheck_Analyzer`/an empty-or-negative-volume result both fail closed),
-so an offset that goes wrong surfaces as the same structured 422 a
-geometrically-impossible Fillet radius already does, not a distinct
-predictive check.
+Fail-closed contract, `offset_distance` mode: `BRepOffset_MakeOffset`'s
+own `IsDone()`/lack of a reported `Error()` are confirmed (via spike) NOT
+sufficient success signals on their own - an offset large enough to fully
+consume *and overshoot past* a neighbouring feature reports `IsDone=True,
+Error=BRepOffset_NoError` yet returns a null `Shape()`. This module checks
+`Shape() is not None and not Shape().IsNull()` in addition to `IsDone()`,
+mirroring `delete_face.py`'s own "don't trust the obvious success signal
+alone" discipline for a different underlying reason.
+
+Fail-closed contract, `delta`/`direction_ref` modes, unchanged from v1:
+this module makes no attempt to detect "this offset is large enough to
+consume a neighbouring face" ahead of time for this technique -
+`BRepAlgoAPI_Fuse`/`BRepAlgoAPI_Cut` either produce a valid result or
+don't (`BRepCheck_Analyzer`/an empty-or-negative-volume result both fail
+closed), so an offset that goes wrong surfaces as the same structured 422
+a geometrically-impossible Fillet radius already does, not a distinct
+predictive check - `offset_distance` mode's own neighbour-consuming
+support is a real capability difference between the two techniques, not
+just an unimplemented check on this side.
 
 This module needs `compute_part_bodies`/`resolve_subshape_from_bodies` from
 extrude.py at module level, so (mirroring app.document.chamfer/fillet's own
@@ -48,13 +101,14 @@ from OCC.Core.BRepAdaptor import BRepAdaptor_Surface
 from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
 from OCC.Core.BRepCheck import BRepCheck_Analyzer
 from OCC.Core.BRepGProp import brepgprop
+from OCC.Core.BRepOffset import BRepOffset_MakeOffset, BRepOffset_Skin
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakePrism
-from OCC.Core.GeomAbs import GeomAbs_Plane
+from OCC.Core.GeomAbs import GeomAbs_Cone, GeomAbs_Cylinder, GeomAbs_Intersection, GeomAbs_Plane
 from OCC.Core.gp import gp_Vec
 from OCC.Core.GProp import GProp_GProps
 from OCC.Core.TopAbs import TopAbs_FACE, TopAbs_REVERSED
 from OCC.Core.TopExp import TopExp_Explorer
-from OCC.Core.TopoDS import TopoDS_Shape, topods
+from OCC.Core.TopoDS import TopoDS_Face, TopoDS_Shape, topods
 
 from app.document.extrude import compute_part_bodies, resolve_subshape_from_bodies
 from app.document.models import MoveFaceFeature, Part, SubShapeType
@@ -62,27 +116,86 @@ from app.document.pattern import direction_vector
 
 # Below this fraction of the movement vector's own magnitude, its component
 # along the face's outward normal is treated as "no meaningful perpendicular
-# movement" - see `_movement_vector`'s own doc comment.
+# movement" - see `_movement_vector`'s own doc comment. `delta`/
+# `direction_ref` modes only.
 _MIN_NORMAL_COMPONENT_RATIO = 1e-6
+
+# `BRepOffset_MakeOffset.Initialize`'s own coincidence tolerance - the exact
+# value confirmed working across every case in both V2 spikes (planar,
+# cylindrical, conical, multi-face, neighbour-consuming). `offset_distance`
+# mode only.
+_OFFSET_TOLERANCE = 1e-6
+
+_OFFSET_SUPPORTED_SURFACE_TYPES = (GeomAbs_Plane, GeomAbs_Cylinder, GeomAbs_Cone)
 
 
 def _move_face_not_found(body_id: str) -> HTTPException:
     return HTTPException(status_code=422, detail={"type": "missing_reference", "body_id": body_id})
 
 
+def _move_face_mixed_body_selection(body_ids: set[str]) -> HTTPException:
+    """V2: every entry in `face_refs` must resolve to the same Body -
+    mirrors `app.document.fillet._mixed_body_selection`'s identical
+    constraint on `edge_refs`, same reasoning (this module's own
+    techniques, like `BRepFilletAPI_MakeFillet`, each operate on one solid
+    at a time)."""
+    return HTTPException(
+        status_code=422,
+        detail={"type": "mixed_body_selection", "body_ids": sorted(body_ids)},
+    )
+
+
 def _move_face_non_planar(body_id: str) -> HTTPException:
+    """`delta`/`direction_ref` modes only - these two still require a
+    single planar face, exactly as v1 did (see this module's own top
+    docstring for why that restriction doesn't lift for these two modes
+    even under V2)."""
     return HTTPException(
         status_code=422, detail={"type": "non_planar_reference", "body_id": body_id}
     )
 
 
+def _move_face_unsupported_surface_type(body_id: str) -> HTTPException:
+    """`offset_distance` mode only - V2 accepts planar, cylindrical, and
+    conical faces (confirmed via spike); anything else (spherical,
+    toroidal, free-form/B-spline, ...) is rejected here. A distinct type
+    from `non_planar_reference` above - that one means "must be planar,
+    full stop" (still true for the other two modes); this one means "not
+    one of the three surface types this mode's own technique has been
+    confirmed to handle"."""
+    return HTTPException(
+        status_code=422, detail={"type": "unsupported_surface_type", "body_id": body_id}
+    )
+
+
+def _move_face_mode_requires_single_face(body_id: str) -> HTTPException:
+    """`delta`/`direction_ref` modes only - defensive re-check of the
+    router's own `_validate_move_face_payload` payload-shape rule
+    (`face_refs` must have exactly one entry for these two modes); see
+    this module's own top docstring for why they can't generalize to
+    multiple faces the way `offset_distance` mode does."""
+    return HTTPException(
+        status_code=422, detail={"type": "move_face_mode_requires_single_face", "body_id": body_id}
+    )
+
+
 def _move_face_failed(body_id: str) -> HTTPException:
     """The movement vector had no meaningful component along the face's
-    own outward normal, or the resulting Fuse/Cut didn't complete/produced
-    a degenerate result - see this module's own top-level docstring. 422,
-    matching every other structured geometry-failure error in this
-    codebase."""
+    own outward normal (`delta`/`direction_ref` modes), or the resulting
+    geometry didn't complete/produced a degenerate result (either
+    technique) - see this module's own top-level docstring. 422, matching
+    every other structured geometry-failure error in this codebase."""
     return HTTPException(status_code=422, detail={"type": "move_face_failed", "body_id": body_id})
+
+
+def _move_face_null_result(body_id: str) -> HTTPException:
+    """`offset_distance` mode only - `BRepOffset_MakeOffset` reported
+    `IsDone()` with no error, yet `Shape()` was null (confirmed via spike:
+    the signature of an offset large enough to fully consume *and
+    overshoot past* a neighbouring feature). Distinct from `move_face_
+    failed` since `IsDone()`/`BRepCheck_Analyzer` genuinely don't apply
+    here - there is no shape to check."""
+    return HTTPException(status_code=422, detail={"type": "move_face_null_result", "body_id": body_id})
 
 
 def _face_count(shape: TopoDS_Shape) -> int:
@@ -100,11 +213,13 @@ def _volume(shape: TopoDS_Shape) -> float:
     return props.Mass()
 
 
-def _outward_normal(face) -> gp_Vec:
+def _outward_normal(face: TopoDS_Face) -> gp_Vec:
     """`face`'s own plane normal, corrected for `Orientation()` - a
     `REVERSED` face's raw `BRepAdaptor_Surface` normal points *into* the
     solid, not out of it (confirmed via the real pythonocc-core spike this
-    module's own docstring references)."""
+    module's own docstring references). `delta`/`direction_ref` modes
+    only - `offset_distance` mode's own `BRepOffset_MakeOffset` handles
+    its per-face outward-normal convention internally."""
     plane = BRepAdaptor_Surface(face, True).Plane()
     direction = plane.Axis().Direction()
     normal = gp_Vec(direction.X(), direction.Y(), direction.Z())
@@ -119,12 +234,12 @@ def _movement_vector(
     feature: MoveFaceFeature,
     excluded_feature_ids: frozenset[str],
     outward_normal: gp_Vec,
+    body_id: str,
 ) -> gp_Vec:
-    """The world-space vector `feature` moves its face by, for exactly one
-    of its three mutually-exclusive modes (payload shape already validated
-    by the router's own `_validate_move_face_payload`)."""
-    if feature.offset_distance is not None:
-        return outward_normal.Scaled(feature.offset_distance)
+    """The world-space vector `feature` moves its single face by, for
+    `delta`/`direction_ref` mode (the only two modes that still call this
+    - `offset_distance` mode's own signed scalar goes straight to
+    `SetOffsetOnFace`, no vector construction needed)."""
     if feature.delta is not None:
         dx, dy, dz = feature.delta
         return gp_Vec(dx, dy, dz)
@@ -135,7 +250,48 @@ def _movement_vector(
     # (mirrors every other "exactly one of N fields" ref type in this
     # codebase - SplitToolRef, PatternAxisRef - which likewise never check
     # this branch defensively beyond that validation).
-    raise _move_face_failed(feature.face_ref.body_id)
+    raise _move_face_failed(body_id)
+
+
+def _resolve_move_face_offset(
+    body_id: str,
+    source: TopoDS_Shape,
+    faces: list[TopoDS_Face],
+    offset_distance: float,
+) -> TopoDS_Shape:
+    """`offset_distance` mode's own technique - see this module's top
+    docstring. `offset_distance` is applied identically to every face in
+    `faces` (this family's own "list of refs, one shared param"
+    convention, matching `FilletFeature.radius`)."""
+    for face in faces:
+        if BRepAdaptor_Surface(face, True).GetType() not in _OFFSET_SUPPORTED_SURFACE_TYPES:
+            raise _move_face_unsupported_surface_type(body_id)
+
+    offset_maker = BRepOffset_MakeOffset()
+    offset_maker.Initialize(
+        source,
+        0.0,
+        _OFFSET_TOLERANCE,
+        BRepOffset_Skin,
+        False,
+        False,
+        GeomAbs_Intersection,
+        False,
+        False,
+    )
+    for face in faces:
+        offset_maker.SetOffsetOnFace(face, offset_distance)
+    offset_maker.MakeOffsetShape()
+    result = offset_maker.Shape()
+
+    if not offset_maker.IsDone() or result is None or result.IsNull():
+        raise _move_face_null_result(body_id)
+    if not BRepCheck_Analyzer(result).IsValid():
+        raise _move_face_failed(body_id)
+    if _face_count(result) == 0 or _volume(result) <= 0.0:
+        raise _move_face_failed(body_id)
+
+    return result
 
 
 def resolve_move_face_from_bodies(
@@ -152,19 +308,38 @@ def resolve_move_face_from_bodies(
     two-argument shape) only because `direction_ref` resolution
     (`direction_vector`) needs them, mirroring `resolve_move_body_from_
     bodies`'s identical four-argument shape for the same reason."""
-    body_id = feature.face_ref.body_id
+    body_ids = {ref.body_id for ref in feature.face_refs}
+    if len(body_ids) != 1:
+        raise _move_face_mixed_body_selection(body_ids)
+    body_id = next(iter(body_ids))
     source = bodies.get(body_id)
     if source is None:
         raise _move_face_not_found(body_id)
-    if feature.face_ref.shape_type != SubShapeType.FACE:
-        raise _move_face_not_found(body_id)
 
-    face = topods.Face(resolve_subshape_from_bodies(bodies, feature.face_ref))
+    faces: list[TopoDS_Face] = []
+    for ref in feature.face_refs:
+        if ref.shape_type != SubShapeType.FACE:
+            raise _move_face_not_found(body_id)
+        faces.append(topods.Face(resolve_subshape_from_bodies(bodies, ref)))
+
+    if feature.offset_distance is not None:
+        result = _resolve_move_face_offset(body_id, source, faces, feature.offset_distance)
+        return body_id, result
+
+    # delta / direction_ref modes - v1's own unchanged technique, single
+    # planar face only (see this module's own top docstring). The router's
+    # own `_validate_move_face_payload` already enforces this payload
+    # shape; this is a defensive re-check, mirroring every other
+    # resolver's own "router validates shape, this validates
+    # resolvability" split.
+    if len(faces) != 1:
+        raise _move_face_mode_requires_single_face(body_id)
+    face = faces[0]
     if BRepAdaptor_Surface(face, True).GetType() != GeomAbs_Plane:
         raise _move_face_non_planar(body_id)
 
     outward_normal = _outward_normal(face)
-    vec = _movement_vector(part, bodies, feature, excluded_feature_ids, outward_normal)
+    vec = _movement_vector(part, bodies, feature, excluded_feature_ids, outward_normal, body_id)
 
     magnitude = vec.Magnitude()
     if magnitude < 1e-9:

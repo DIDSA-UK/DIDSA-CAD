@@ -40,7 +40,7 @@ void main() {
     test(
       'C2: exactly one face alone offers a real, enabled Create Plane (offset-from-face), plus '
       'on-device feedback\'s New Sketch on Face, Chamfer, and Fillet shortcuts, plus (Direct '
-      'Editing family) Delete Face and Move Face - both require planar+solid together',
+      'Editing family) Delete Face and Move Face - both require solid only',
       () {
         final actions = contextActionsFor({_face0});
         expect(actions, [
@@ -55,12 +55,15 @@ void main() {
     );
 
     test(
-      'Bug fix: a lone curved face offers only Chamfer/Fillet, not Create Plane/New Sketch on Face',
+      'V2: a lone curved face offers Chamfer/Fillet/Delete Face/Move Face (all solid-only), not '
+      'Create Plane/New Sketch on Face (planar-only)',
       () {
         final actions = contextActionsFor({_face0}, isFacePlanar: (bodyId, faceId) => false);
         expect(actions, [
           const SelectionContextAction('Chamfer', enabled: true),
           const SelectionContextAction('Fillet', enabled: true),
+          const SelectionContextAction('Delete Face', enabled: true),
+          const SelectionContextAction('Move Face', enabled: true),
         ]);
       },
     );
@@ -85,18 +88,60 @@ void main() {
       expect(actions, isEmpty);
     });
 
-    test('C3: exactly two faces alone offers a real, enabled Create Plane (Midplane)', () {
-      const face1 = SelectionEntityRef(kind: SelectionEntityKind.face, id: 1);
-      final actions = contextActionsFor({_face0, face1});
-      expect(actions, [const SelectionContextAction('Create Plane (Midplane)', enabled: true)]);
-    });
+    test(
+      'C3/V2: exactly two faces (same Body) offers a real, enabled Create Plane (Midplane) '
+      'alongside Delete Face/Move Face',
+      () {
+        const face1 = SelectionEntityRef(kind: SelectionEntityKind.face, id: 1);
+        final actions = contextActionsFor({_face0, face1});
+        expect(actions, [
+          const SelectionContextAction('Create Plane (Midplane)', enabled: true),
+          const SelectionContextAction('Delete Face', enabled: true),
+          const SelectionContextAction('Move Face', enabled: true),
+        ]);
+      },
+    );
 
-    test('three faces alone still offers only the disabled scaffolded Create Plane', () {
+    test('V2: three faces (same Body) offers a real, enabled Delete Face/Move Face', () {
       const face1 = SelectionEntityRef(kind: SelectionEntityKind.face, id: 1);
       const face2 = SelectionEntityRef(kind: SelectionEntityKind.face, id: 2);
       final actions = contextActionsFor({_face0, face1, face2});
-      expect(actions, [const SelectionContextAction('Create Plane')]);
-      expect(actions.single.enabled, isFalse);
+      expect(actions, [
+        const SelectionContextAction('Delete Face', enabled: true),
+        const SelectionContextAction('Move Face', enabled: true),
+      ]);
+    });
+
+    test('V2: two faces spanning different Bodies offers Delete Face/Move Face disabled, with a reason', () {
+      const face1 = SelectionEntityRef(kind: SelectionEntityKind.face, id: 1, bodyId: 'body-2');
+      final actions = contextActionsFor({_face0, face1});
+      expect(actions, [
+        const SelectionContextAction('Create Plane (Midplane)', enabled: true),
+        const SelectionContextAction(
+          'Delete Face',
+          disabledReason: 'Selected faces must all belong to the same Body',
+        ),
+        const SelectionContextAction(
+          'Move Face',
+          disabledReason: 'Selected faces must all belong to the same Body',
+        ),
+      ]);
+    });
+
+    test('V2: two faces on the same Body but a non-solid Surface offers Delete Face/Move Face disabled', () {
+      const face1 = SelectionEntityRef(kind: SelectionEntityKind.face, id: 1);
+      final actions = contextActionsFor({_face0, face1}, isSolidBody: (bodyId) => false);
+      expect(actions, [
+        const SelectionContextAction('Create Plane (Midplane)', enabled: true),
+        const SelectionContextAction(
+          'Delete Face',
+          disabledReason: 'Selected faces must belong to a solid Body',
+        ),
+        const SelectionContextAction(
+          'Move Face',
+          disabledReason: 'Selected faces must belong to a solid Body',
+        ),
+      ]);
     });
 
     test('vertices only offers Create Plane', () {

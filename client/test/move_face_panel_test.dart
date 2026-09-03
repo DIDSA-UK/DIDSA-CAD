@@ -18,6 +18,7 @@ void main() {
   Widget buildPanel({
     MoveFaceMode mode = MoveFaceMode.offset,
     void Function(MoveFaceMode)? onModeChanged,
+    int faceCount = 1,
     double initialOffset = 1.0,
     void Function(double)? onOffsetChanged,
     double initialDeltaX = 0.0,
@@ -35,6 +36,7 @@ void main() {
         body: MoveFacePanel(
           mode: mode,
           onModeChanged: onModeChanged ?? (_) {},
+          faceCount: faceCount,
           initialOffset: initialOffset,
           onOffsetChanged: onOffsetChanged,
           initialDeltaX: initialDeltaX,
@@ -57,7 +59,7 @@ void main() {
     testWidgets('defaults to Offset mode, showing exactly one field', (tester) async {
       await tester.pumpWidget(buildPanel());
       expect(find.byType(TextField), findsOneWidget);
-      expect(find.widgetWithText(TextField, 'Offset'), findsOneWidget);
+      expect(find.widgetWithText(TextField, 'Offset (along surface normal)'), findsOneWidget);
     });
 
     testWidgets('tapping Delta XYZ fires onModeChanged and shows three fields', (tester) async {
@@ -239,6 +241,62 @@ void main() {
     });
   });
 
+  group('MoveFacePanel V2 multi-face gating', () {
+    testWidgets('zero faces disables Confirm even in Offset mode with a valid offset', (tester) async {
+      await tester.pumpWidget(buildPanel(faceCount: 0, initialOffset: 3.0));
+      expect(
+        tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed,
+        isNull,
+      );
+    });
+
+    testWidgets('two faces disables Confirm in Delta mode even with a valid delta', (tester) async {
+      await tester.pumpWidget(buildPanel(faceCount: 2, mode: MoveFaceMode.delta));
+      expect(
+        tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed,
+        isNull,
+      );
+    });
+
+    testWidgets('two faces disables Confirm in Direction mode even with a picked reference',
+        (tester) async {
+      await tester.pumpWidget(buildPanel(faceCount: 2, mode: MoveFaceMode.direction, hasDirection: true));
+      expect(
+        tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed,
+        isNull,
+      );
+    });
+
+    testWidgets('two faces keeps Confirm enabled in Offset mode', (tester) async {
+      await tester.pumpWidget(buildPanel(faceCount: 2, initialOffset: 3.0));
+      expect(
+        tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed,
+        isNotNull,
+      );
+    });
+
+    testWidgets('the Delta XYZ segment is disabled once two faces are picked', (tester) async {
+      await tester.pumpWidget(buildPanel(faceCount: 2));
+      final segmentedButton =
+          tester.widget<SegmentedButton<MoveFaceMode>>(find.byType(SegmentedButton<MoveFaceMode>));
+      final deltaSegment =
+          segmentedButton.segments.firstWhere((s) => s.value == MoveFaceMode.delta);
+      expect(deltaSegment.enabled, isFalse);
+      final offsetSegment =
+          segmentedButton.segments.firstWhere((s) => s.value == MoveFaceMode.offset);
+      expect(offsetSegment.enabled, isTrue);
+    });
+
+    testWidgets('shows a live face-count summary', (tester) async {
+      await tester.pumpWidget(buildPanel(faceCount: 3));
+      expect(find.text('Moving 3 faces'), findsOneWidget);
+      await tester.pumpWidget(buildPanel(faceCount: 1));
+      expect(find.text('Moving 1 face'), findsOneWidget);
+      await tester.pumpWidget(buildPanel(faceCount: 0));
+      expect(find.text('Tap one or more faces of the same body to move'), findsOneWidget);
+    });
+  });
+
   group('MoveFacePanel title', () {
     testWidgets('defaults to "Move Face"', (tester) async {
       await tester.pumpWidget(buildPanel());
@@ -256,6 +314,7 @@ void main() {
             body: MoveFacePanel(
               mode: MoveFaceMode.offset,
               onModeChanged: (_) {},
+              faceCount: 1,
               initialOffset: 1.0,
               onSetDirectionFixedAxis: (_) {},
               onConfirm: () {},

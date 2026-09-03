@@ -61,6 +61,14 @@ class MoveFacePanel extends StatefulWidget {
   final MoveFaceMode mode;
   final void Function(MoveFaceMode mode) onModeChanged;
 
+  /// The live count of faces currently picked (`_currentMoveFaceRefs().
+  /// length` in `part_screen.dart`) - mirrors [DeleteFacePanel.faceCount].
+  /// Delta/Direction modes only ever accept exactly one face (V2's
+  /// `BRepOffset_MakeOffset` technique is Offset-mode-only - see
+  /// `MoveFaceFeature`'s own backend docstring), so [faceCount] also gates
+  /// which segments of the mode toggle are enabled and [_canConfirm].
+  final int faceCount;
+
   final double initialOffset;
 
   /// Fired on every valid offset edit - same live-preview-drives-a-
@@ -109,6 +117,7 @@ class MoveFacePanel extends StatefulWidget {
     this.tooltip,
     required this.mode,
     required this.onModeChanged,
+    required this.faceCount,
     required this.initialOffset,
     this.onOffsetChanged,
     this.initialDeltaX = 0.0,
@@ -194,11 +203,15 @@ class _MoveFacePanelState extends State<MoveFacePanel> {
   static String _formatNumber(double value) =>
       value == value.roundToDouble() ? value.toStringAsFixed(0) : value.toString();
 
-  bool get _canConfirm => switch (widget.mode) {
-        MoveFaceMode.offset => _offset != null,
-        MoveFaceMode.delta => _delta != null,
-        MoveFaceMode.direction => widget.hasDirection && _directionDistance != null,
-      };
+  bool get _canConfirm {
+    if (widget.faceCount == 0) return false;
+    if (widget.mode != MoveFaceMode.offset && widget.faceCount != 1) return false;
+    return switch (widget.mode) {
+      MoveFaceMode.offset => _offset != null,
+      MoveFaceMode.delta => _delta != null,
+      MoveFaceMode.direction => widget.hasDirection && _directionDistance != null,
+    };
+  }
 
   void _emitOffsetChange() {
     final value = double.tryParse(_offsetController.text);
@@ -268,18 +281,30 @@ class _MoveFacePanelState extends State<MoveFacePanel> {
         child: Text(axis.toUpperCase()),
       );
 
+  /// V2 UX polish: the label/hint deliberately say "along the surface
+  /// normal", not "radius" or a bare "Offset" - `BRepOffset_MakeOffset`
+  /// applies [_offset] along *each* picked face's own local normal, and for
+  /// a conical face that is not the same thing as its radius growing by
+  /// [_offset] (radial growth = offset / cos(half-angle) - see
+  /// `docs/direct-editing-scope.md`'s "Spike findings addendum" for the
+  /// derivation). A per-face computed-radius readout would need the mesh
+  /// response to carry each face's own surface type/geometry, which it
+  /// doesn't yet - out of scope for this pass; the generic wording here is
+  /// the cheap fix that avoids the field visibly lying for a cone.
   Widget _offsetSection(BuildContext context) => Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           TextField(
             controller: _offsetController,
             keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
-            decoration: const InputDecoration(labelText: 'Offset'),
+            decoration: const InputDecoration(labelText: 'Offset (along surface normal)'),
             onChanged: (_) => _emitOffsetChange(),
           ),
           const SizedBox(height: 8),
           Text(
-            _offset == null ? 'Enter a non-zero offset' : 'Offset: ${_formatNumber(_offset!)}',
+            _offset == null
+                ? 'Enter a non-zero offset'
+                : 'Offset: ${_formatNumber(_offset!)} along each face\'s own normal',
             style: TextStyle(
               color: _offset == null
                   ? Theme.of(context).colorScheme.error
@@ -371,9 +396,26 @@ class _MoveFacePanelState extends State<MoveFacePanel> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          Text(
+            widget.faceCount == 0
+                ? 'Tap one or more faces of the same body to move'
+                : 'Moving ${widget.faceCount} ${widget.faceCount == 1 ? 'face' : 'faces'}',
+            style: TextStyle(
+              color: widget.faceCount == 0
+                  ? Theme.of(context).colorScheme.error
+                  : Theme.of(context).colorScheme.onSurfaceVariant,
+              fontSize: 12,
+            ),
+          ),
+          const SizedBox(height: 8),
           SegmentedButton<MoveFaceMode>(
             segments: [
-              for (final mode in MoveFaceMode.values) ButtonSegment(value: mode, label: Text(mode.label)),
+              for (final mode in MoveFaceMode.values)
+                ButtonSegment(
+                  value: mode,
+                  label: Text(mode.label),
+                  enabled: mode == MoveFaceMode.offset || widget.faceCount == 1,
+                ),
             ],
             selected: {widget.mode},
             onSelectionChanged: (selection) => widget.onModeChanged(selection.first),

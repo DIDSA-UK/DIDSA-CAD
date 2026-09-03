@@ -1093,13 +1093,27 @@ class _PartScreenState extends State<PartScreen> {
     // not-accumulate shape, restricted to edge/sketchLine only - no `face`,
     // matching [_patternDirectionSelectionFilter]'s own restriction for the
     // identical reason: a direction, unlike an axis, has no legitimate
-    // cylindrical-face source). [_moveFaceRef] (the face being moved) is
-    // already fixed by this point, never re-picked - see
-    // [_moveFaceSelectionFilter]'s own doc comment.
+    // cylindrical-face source; a *face* tap in Direction/Delta mode is the
+    // next branch down instead).
     if (_moveFaceActive &&
         _moveFaceMode == MoveFaceMode.direction &&
         (entity.kind == SelectionEntityKind.edge || entity.kind == SelectionEntityKind.sketchLine)) {
       _setMoveFaceDirectionFromEntity(entity);
+      return;
+    }
+    // V2: a face tap while [MoveFacePanel] is open in Delta or Direction
+    // mode replaces whatever single face (if any) is currently picked -
+    // unlike Offset mode (whose `BRepOffset_MakeOffset` technique composes
+    // freely across any number of faces sharing one offset value, so a face
+    // tap there simply falls through to the generic accumulate-toggle at
+    // the bottom of this method, exactly like Fillet's own edge_refs), v1's
+    // unchanged extrude-then-Fuse/Cut technique behind Delta/Direction only
+    // ever supports one planar face at a time (`MoveFaceFeature`'s own
+    // backend docstring) - mirrors [_setMoveBodyRotationAxis]'s single-slot
+    // replace-or-clear shape, applied to `face` instead of `edge`/
+    // `sketchLine`/`face`.
+    if (_moveFaceActive && _moveFaceMode != MoveFaceMode.offset && entity.kind == SelectionEntityKind.face) {
+      _setMoveFaceSingleFace(entity);
       return;
     }
     // Boolean family, Subtract/Common: a Body tap during `pickingTools` that
@@ -1185,6 +1199,13 @@ class _PartScreenState extends State<PartScreen> {
     if (_revolveActive) _scheduleRevolvePreview();
     if (_sweepActive) _scheduleSweepPreview();
     if (_loftActive) _scheduleLoftPreview();
+    // V2: a face tap while Delete Face is active, or while Move Face is
+    // active in Offset mode (Delta/Direction's own face tap is intercepted
+    // above instead, never reaching this generic toggle), reschedules the
+    // same debounced live-preview re-solve every other multi-pick flow
+    // above already does.
+    if (_deleteFaceActive) _scheduleDeleteFacePreview();
+    if (_moveFaceActive) _scheduleMoveFacePreview();
   }
 
   /// Pattern/Mirror scoping Phase 1: [_toggleSelectedEntity]'s plane-like-kind
@@ -2200,48 +2221,54 @@ class _PartScreenState extends State<PartScreen> {
   );
 
   // --- Direct Editing family, fourth entry: Delete Face ------------------------
-  // Whole-face pick, ambient-only entry, no live-tunable parameter - mirrors
-  // Delete Body's own shape exactly (eager-create on open), just keyed on a
-  // single SubShapeRefDto (`faceRef`) instead of a list of Body ids. v1
-  // client scope: the face is fixed once picked, no re-picking a different
-  // face mid-session (see docs/direct-editing-scope.md for why this stays
-  // simpler than Fillet's own continuous-re-pick Pattern 3 shape from
-  // docs/live-preview-pattern.md - deferred as a fast follow, not risked in
-  // this same pass).
+  // V2 (multi-face, non-planar): whole-face *multi*-pick, ambient-only
+  // entry, no live-tunable parameter - now mirrors Fillet's own continuous
+  // re-pick Pattern 3 shape from docs/live-preview-pattern.md (preview-
+  // overlay mesh, self-exclusion rollback, generic accumulate-toggle) instead
+  // of v1's simpler single-fixed-face/eager-create-then-show-directly shape,
+  // now that a face can be added to/removed from `face_refs` throughout the
+  // session the same way Fillet's `edge_refs` already can.
 
   /// True while a Delete Face session (create or B4 edit) is live - mirrors
-  /// [_deleteBodyActive].
+  /// [_filletActive].
   bool _deleteFaceActive = false;
 
-  /// The face being deleted - mirrors [_deleteBodyBodyIds], just a single
-  /// [SubShapeRefDto] (v1 scope) rather than a list of Body ids.
-  SubShapeRefDto? _deleteFaceRef;
-
-  /// The DeleteFaceFeature created as soon as the panel opens - mirrors
-  /// [_previewDeleteBodyFeatureId].
+  /// The DeleteFaceFeature created (or, in edit mode, already existing) for
+  /// the panel session - mirrors [_previewFilletFeatureId].
   String? _previewDeleteFaceFeatureId;
 
   /// B4: non-null while [DeleteFacePanel] is editing an *already-existing*
-  /// DeleteFaceFeature - mirrors [_editingDeleteBodyFeatureId].
+  /// DeleteFaceFeature - mirrors [_editingFilletFeatureId].
   String? _editingDeleteFaceFeatureId;
 
-  /// B4: the edited Feature's own stored `face_ref` from just before
-  /// editing started - mirrors [_deleteBodyEditSnapshot].
-  ({SubShapeRefDto faceRef})? _deleteFaceEditSnapshot;
+  /// B4: the edited Feature's own stored `face_refs` from just before
+  /// editing started - mirrors [_filletEditSnapshot].
+  ({List<SubShapeRefDto> faceRefs})? _deleteFaceEditSnapshot;
 
   /// [_selectedEntities]' value from just before the panel opened - mirrors
-  /// [_entitiesBeforeDeleteBody].
+  /// [_entitiesBeforeFillet].
   Set<SelectionEntityRef>? _entitiesBeforeDeleteFace;
 
   /// The pre-delete mesh [_cancelDeleteFace] restores to on Cancel - mirrors
-  /// [_meshBeforeDeleteBody].
+  /// [_meshBeforeScaleBody] (used only for the new-Feature Cancel path's own
+  /// no-round-trip optimization, same as every other panel that has one).
   List<BodyMeshDto>? _meshBeforeDeleteFace;
 
+  /// On-device feedback: the Body id the live preview-overlay mesh targets -
+  /// mirrors [_filletPreviewBodyId] exactly.
+  String? _deleteFacePreviewBodyId;
+
+  /// On-device feedback: the *actual current effect* of the in-progress
+  /// Delete Face, fetched separately from [_bodies] (which must stay the
+  /// stable, pre-delete mesh for the whole live-edit session) - mirrors
+  /// [_filletPreviewMesh] exactly; see that field's own doc comment for the
+  /// full reasoning.
+  MeshDto? _deleteFacePreviewMesh;
+
   /// Locks [_selectionFilterOverrides] to faces only for the whole session -
-  /// mirrors [_deleteBodySelectionFilter] exactly, just `face: true`
-  /// instead of `body: true` (kept live even though no further picking is
-  /// expected once the panel is open, same "a stray tap is harmless"
-  /// reasoning that field's own doc comment gives).
+  /// mirrors [_filletSelectionFilter], restricted to `face: true` only since
+  /// Delete Face (unlike Move Face's own Direction mode) never needs an
+  /// edge/Sketch-Line pick.
   static const _deleteFaceSelectionFilter = SelectionFilterState(
     vertex: false,
     edge: false,
@@ -2257,22 +2284,19 @@ class _PartScreenState extends State<PartScreen> {
   );
 
   // --- Direct Editing family, fifth/last entry: Move Face ----------------------
-  // Whole-face pick (fixed once picked, v1 scope), plus one live-tunable
-  // numeric field (`offsetDistance`, along the face's own outward normal
-  // only - v1 client scope, see docs/direct-editing-scope.md) - mirrors
-  // Scale Body's own debounced-PATCH shape exactly, just keyed on a
-  // SubShapeRefDto instead of a bodyId.
+  // V2 (multi-face, non-planar, Offset mode only): whole-face *multi*-pick in
+  // Offset mode (mirrors Fillet's own continuous re-pick Pattern 3 shape -
+  // `BRepOffset_MakeOffset`'s per-face scalar-normal technique composes
+  // freely across any number of faces sharing the one offset value), still
+  // single-fixed-face in Delta/Direction mode (v1's own extrude-then-Fuse/Cut
+  // technique remains, unchanged and unable to generalize past one planar
+  // face - see `MoveFaceFeature`'s own backend docstring), plus one live-
+  // tunable set of fields per mode - mirrors Scale Body's own debounced-PATCH
+  // shape, now keyed on a `List<SubShapeRefDto>` instead of a single ref.
 
   /// True while a Move Face session (create or B4 edit) is live - mirrors
-  /// [_scaleBodyActive].
+  /// [_filletActive].
   bool _moveFaceActive = false;
-
-  /// The face being moved - mirrors [_deleteFaceRef]. Fixed once picked
-  /// (via the ambient selection this session opened from), for the whole
-  /// session - no re-picking a different face mid-session, per this
-  /// family's own "ambient-entry-only" v1/v2-shared decision (see
-  /// `docs/direct-editing-scope.md`).
-  SubShapeRefDto? _moveFaceRef;
 
   /// Which of `MoveFaceFeature`'s three mutually-exclusive modes this
   /// session is currently configuring - mirrors [PatternMode]'s own
@@ -2320,14 +2344,14 @@ class _PartScreenState extends State<PartScreen> {
   /// MoveFaceFeature - mirrors [_editingScaleBodyFeatureId].
   String? _editingMoveFaceFeatureId;
 
-  /// B4: the edited Feature's own stored `face_ref` and whichever mode's
+  /// B4: the edited Feature's own stored `face_refs` and whichever mode's
   /// own value(s) it was in, from just before editing started - mirrors
-  /// [_scaleBodyEditSnapshot], widened with [mode] since (unlike v1) this
+  /// [_filletEditSnapshot], widened with [mode] since (unlike v1) this
   /// session can switch modes mid-edit and Cancel must restore the
   /// Feature's own *original* mode, not just whatever mode the session
   /// happened to be in when Cancel was tapped.
   ({
-    SubShapeRefDto faceRef,
+    List<SubShapeRefDto> faceRefs,
     MoveFaceMode mode,
     double offsetDistance,
     (double, double, double) delta,
@@ -2336,25 +2360,38 @@ class _PartScreenState extends State<PartScreen> {
   })? _moveFaceEditSnapshot;
 
   /// [_selectedEntities]' value from just before the panel opened - mirrors
-  /// [_entitiesBeforeScaleBody].
+  /// [_entitiesBeforeFillet].
   Set<SelectionEntityRef>? _entitiesBeforeMoveFace;
 
   /// The pre-move mesh [_cancelMoveFace] restores to on Cancel - mirrors
-  /// [_meshBeforeScaleBody].
+  /// [_meshBeforeScaleBody] (used only for the new-Feature Cancel path's own
+  /// no-round-trip optimization).
   List<BodyMeshDto>? _meshBeforeMoveFace;
 
-  /// Locks [_selectionFilterOverrides] to Body edges and Sketch Lines
-  /// (Direction mode's own possible sources) for the whole session -
-  /// mirrors [_patternDirectionSelectionFilter] exactly, including leaving
-  /// `face` off: [_moveFaceRef] is fixed once, at panel-open time
-  /// (`_openMoveFacePanel`/`_openMoveFacePanelForEdit`, from the ambient
-  /// selection already active beforehand), and never re-picked
-  /// mid-session (see [_moveFaceRef]'s own doc comment), so there is
-  /// nothing for a live `face` hit-test to do during the session itself.
+  /// On-device feedback: the Body id the live preview-overlay mesh targets -
+  /// mirrors [_filletPreviewBodyId] exactly.
+  String? _moveFacePreviewBodyId;
+
+  /// On-device feedback: the *actual current effect* of the in-progress
+  /// Move Face, fetched separately from [_bodies] (which must stay the
+  /// stable, pre-move mesh for the whole live-edit session) - mirrors
+  /// [_filletPreviewMesh] exactly; see that field's own doc comment for the
+  /// full reasoning.
+  MeshDto? _moveFacePreviewMesh;
+
+  /// Locks [_selectionFilterOverrides] to faces (the multi-pick target,
+  /// live in Offset mode - see [_setMoveFaceSingleFace] for why Delta/
+  /// Direction stay single-face despite the filter allowing more taps
+  /// through) plus Body edges and Sketch Lines (Direction mode's own
+  /// possible reference sources) for the whole session - a single shared
+  /// filter across all three modes, rather than swapping it per mode on
+  /// every [_onMoveFaceModeChanged] call, to avoid override-stack churn;
+  /// mode-appropriate handling of a face/edge/sketchLine tap is entirely
+  /// [_toggleSelectedEntity]'s own job (see its Move Face branches).
   static const _moveFaceSelectionFilter = SelectionFilterState(
     vertex: false,
     edge: true,
-    face: false,
+    face: true,
     body: false,
     sketchPoint: false,
     sketchLine: true,
@@ -6958,20 +6995,17 @@ class _PartScreenState extends State<PartScreen> {
       final opened = _openMoveBodyPanelForEdit(feature);
       if (!opened) await _endRollback();
     } else if (feature.type == 'delete_face') {
-      // Direct Editing family (fourth entry): mirrors the delete_body
-      // branch above exactly - rollback is ended by _confirmDeleteFace/
-      // _cancelDeleteFace instead.
-      final opened = _openDeleteFacePanelForEdit(feature);
+      // Direct Editing family (fourth entry), V2: rollback is ended by
+      // _confirmDeleteFace/_cancelDeleteFace instead, same "stays engaged
+      // for the panel's whole lifetime" reasoning as the fillet branch
+      // above (now that Delete Face has its own self-exclusion rollback).
+      final opened = await _openDeleteFacePanelForEdit(feature);
       if (!opened) await _endRollback();
     } else if (feature.type == 'move_face') {
-      // Direct Editing family (fifth/last entry): mirrors the scale_body
-      // branch above exactly - rollback is ended by _confirmMoveFace/
-      // _cancelMoveFace instead. May also decline to open (v1 client
-      // scope: only offset-mode MoveFaceFeatures have a panel - see
-      // _openMoveFacePanelForEdit's own doc comment), in which case this
-      // falls through to the same defensive _endRollback() as any other
-      // opened=false case.
-      final opened = _openMoveFacePanelForEdit(feature);
+      // Direct Editing family (fifth/last entry), V2: mirrors the
+      // delete_face branch above exactly - rollback is ended by
+      // _confirmMoveFace/_cancelMoveFace instead.
+      final opened = await _openMoveFacePanelForEdit(feature);
       if (!opened) await _endRollback();
     } else if (feature.type == 'boolean') {
       // Boolean family, Subtract/Common: mirrors the merge branch just
@@ -10068,44 +10102,42 @@ class _PartScreenState extends State<PartScreen> {
   // state-field section header comment for the full reasoning.
 
   /// [SelectionContextPanel.onDeleteFace]'s callback - `contextActionsFor`
-  /// enables this button for exactly one planar face of a solid Body,
-  /// nothing else, selected. Mirrors [_onDeleteBodyTapped]'s shape exactly.
+  /// enables this button for one or more faces of the same solid Body,
+  /// nothing else, selected. Mirrors [_onFilletTapped]'s ambient-entry shape
+  /// (minus the face-boundary-loop convenience, which has no Delete Face
+  /// equivalent).
   void _onDeleteFaceTapped() {
     final faces = _selectedEntities.where((e) => e.kind == SelectionEntityKind.face).toList();
-    if (faces.length != 1) return; // Defensive - contextActionsFor already guarantees this.
-    final face = faces.single;
-    _openDeleteFacePanel(SubShapeRefDto(bodyId: face.bodyId, shapeType: 'face', index: face.id));
+    if (faces.isEmpty) return; // Defensive - contextActionsFor already guarantees this.
+    _openDeleteFacePanel(faceEntities: faces);
   }
 
   /// Opens [DeleteFacePanel] and immediately creates the preview
-  /// DeleteFaceFeature - mirrors [_openDeleteBodyPanel]'s own eager-create
-  /// shape (there is no field for a later debounce to wait on). If
-  /// creation fails (e.g. an ill-defined removal - see `app.document.
-  /// delete_face`'s own fail-closed contract), closes the panel back out
-  /// rather than leaving it stuck open with nothing to edit - mirrors
-  /// [_openFilletPanel]'s identical failure handling.
-  Future<void> _openDeleteFacePanel(SubShapeRefDto faceRef) async {
+  /// DeleteFaceFeature against [faceEntities] - mirrors [_openFilletPanel]'s
+  /// eager-create shape (this entry point is ambient-only, always reached
+  /// with 1+ faces already selected - unlike Fillet's own "Add" FAB, Delete
+  /// Face has no empty-selection guided entry to also support). If creation
+  /// fails (e.g. `mixed_body_selection`/`unsupported_surface_type` - see
+  /// `app.document.delete_face`'s own fail-closed contract), closes the
+  /// panel back out rather than leaving it stuck open with nothing to edit -
+  /// mirrors [_openFilletPanel]'s identical failure handling.
+  Future<void> _openDeleteFacePanel({required List<SelectionEntityRef> faceEntities}) async {
     final part = _part;
     if (part == null) return;
     setState(() {
       _deleteFaceActive = true;
-      _deleteFaceRef = faceRef;
-      _meshBeforeDeleteFace = _bodies;
       _entitiesBeforeDeleteFace = _selectedEntities;
+      _selectedEntities = faceEntities.toSet();
+      _meshBeforeDeleteFace = _bodies;
       _selectionMode = true;
       _toolbarOpen = false;
       _featureTreeVisible = false;
       _selectionFilterOverrides.push(_deleteFaceSelectionFilter);
     });
-    await _runGuarded(() async {
-      final created = await _api.createDeleteFaceFeature(part.id, faceRef: faceRef);
-      _previewDeleteFaceFeatureId = created.id;
-      await _refreshMesh();
-    });
+    await _runGuarded(() => _ensureDeleteFaceFeatureExists(_currentDeleteFaceRefs()));
     if (_previewDeleteFaceFeatureId == null && mounted) {
       setState(() {
         _deleteFaceActive = false;
-        _deleteFaceRef = null;
         _selectedEntities = _entitiesBeforeDeleteFace ?? {};
         _entitiesBeforeDeleteFace = null;
         _meshBeforeDeleteFace = null;
@@ -10115,36 +10147,130 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   /// B4: opens [DeleteFacePanel] to edit an *already-existing*
-  /// DeleteFaceFeature - mirrors [_openDeleteBodyPanelForEdit]'s shape (a
-  /// defensive `bool` return, since a real DeleteFaceFeature always has a
-  /// `face_ref`, but this stays defensive rather than assuming).
-  bool _openDeleteFacePanelForEdit(FeatureDto feature) {
-    final faceRef = feature.faceRef;
-    if (faceRef == null) return false;
+  /// DeleteFaceFeature - mirrors [_openFilletPanelForEdit]'s shape
+  /// (self-exclusion via [_beginRollback], seeding [_selectedEntities] with
+  /// the Feature's own current `face_refs`) exactly, plus a defensive
+  /// `bool` return (a real DeleteFaceFeature always has a non-empty
+  /// `face_refs`, but this stays defensive rather than assuming, same as
+  /// every other DTO-to-panel seed in this file).
+  Future<bool> _openDeleteFacePanelForEdit(FeatureDto feature) async {
+    final faceRefs = feature.directEditFaceRefs;
+    if (faceRefs.isEmpty) return false;
     setState(() {
       _deleteFaceActive = true;
       _editingDeleteFaceFeatureId = feature.id;
       _previewDeleteFaceFeatureId = feature.id;
-      _deleteFaceRef = faceRef;
-      _deleteFaceEditSnapshot = (faceRef: faceRef);
-      _meshBeforeDeleteFace = _bodies;
+      _deleteFaceEditSnapshot = (faceRefs: faceRefs);
       _entitiesBeforeDeleteFace = _selectedEntities;
+      _selectedEntities = {
+        for (final ref in faceRefs)
+          SelectionEntityRef(kind: SelectionEntityKind.face, bodyId: ref.bodyId, id: ref.index),
+      };
+      _meshBeforeDeleteFace = _bodies;
       _selectionMode = true;
       _selectionFilterOverrides.push(_deleteFaceSelectionFilter);
     });
+    await _beginRollback({feature.id});
     return true;
+  }
+
+  /// [_selectedEntities]' faces while [_deleteFaceActive] - mirrors
+  /// [_currentFilletEdgeRefs] exactly, just over `face` instead of `edge`.
+  List<SubShapeRefDto> _currentDeleteFaceRefs() => [
+        for (final entity in _selectedEntities)
+          if (entity.kind == SelectionEntityKind.face)
+            SubShapeRefDto(bodyId: entity.bodyId, shapeType: 'face', index: entity.id),
+      ];
+
+  /// The Body id [_refreshDeleteFacePreviewMesh] should fetch a preview for
+  /// - mirrors [_currentFilletBodyId] exactly.
+  String? _currentDeleteFaceBodyId() {
+    for (final entity in _selectedEntities) {
+      if (entity.kind == SelectionEntityKind.face) return entity.bodyId;
+    }
+    return null;
+  }
+
+  /// Shared by [_openDeleteFacePanel]'s own initial attempt and every face
+  /// pick/removal thereafter ([_toggleSelectedEntity]'s own Delete Face
+  /// branch) - mirrors [_scheduleFilletPreview]'s role, just with no
+  /// separate live-tunable field of its own to debounce (a face pick is
+  /// already instantaneous, no text field involved), so this calls
+  /// [_ensureDeleteFaceFeatureExists] directly rather than through a Timer.
+  void _scheduleDeleteFacePreview() {
+    _runGuarded(() => _ensureDeleteFaceFeatureExists(_currentDeleteFaceRefs()));
+  }
+
+  /// Create-or-update - mirrors [_ensureFilletFeatureExists]'s exact
+  /// branching shape (including the self-exclusion-on-create fix and the
+  /// concurrent [_refreshDeleteFacePreviewMesh] fetch), keyed on
+  /// [faceRefs] instead of a radius + edge list. Skips the request entirely
+  /// once [faceRefs] is empty, same "no edges/faces picked yet is a normal
+  /// state, not an error" reasoning [_ensureFilletFeatureExists]'s own doc
+  /// comment gives.
+  Future<void> _ensureDeleteFaceFeatureExists(List<SubShapeRefDto> faceRefs) async {
+    final part = _part;
+    if (part == null || faceRefs.isEmpty) return;
+    final existingId = _previewDeleteFaceFeatureId;
+    if (existingId == null) {
+      final feature = await _api.createDeleteFaceFeature(part.id, faceRefs: faceRefs);
+      _previewDeleteFaceFeatureId = feature.id;
+      // See [_ensureFilletFeatureExists]'s own doc comment for why this is
+      // required, not optional, the moment a Feature that live-edits picks
+      // of the Body it's modifying is actually created.
+      setState(() => _rollbackExcludedFeatureIds.add(feature.id));
+      await _refreshFeatures();
+      await Future.wait([_refreshMesh(), _refreshDeleteFacePreviewMesh()]);
+    } else {
+      await _api.updateDeleteFaceFeature(part.id, existingId, faceRefs: faceRefs);
+      await _refreshFeatures();
+      await Future.wait([_refreshMesh(), _refreshDeleteFacePreviewMesh()]);
+    }
+  }
+
+  /// On-device feedback: fetches the *actual* current effect of the
+  /// in-progress Delete Face - mirrors [_refreshFilletPreviewMesh] exactly.
+  Future<void> _refreshDeleteFacePreviewMesh() async {
+    final part = _part;
+    final featureId = _previewDeleteFaceFeatureId;
+    final bodyId = _currentDeleteFaceBodyId();
+    if (part == null || featureId == null || bodyId == null) {
+      if (!mounted) return;
+      setState(() {
+        _deleteFacePreviewBodyId = null;
+        _deleteFacePreviewMesh = null;
+      });
+      return;
+    }
+    final response = await _api.getPartMesh(
+      part.id,
+      hiddenFeatureIds: _hiddenFeatureIds.toList(),
+      rollbackExcludedFeatureIds: _rollbackExcludedFeatureIds.where((id) => id != featureId).toList(),
+      meshQuality: _meshQuality,
+    );
+    if (!mounted) return;
+    BodyMeshDto? match;
+    for (final body in response) {
+      if (body.bodyId == bodyId) {
+        match = body;
+        break;
+      }
+    }
+    setState(() {
+      _deleteFacePreviewBodyId = bodyId;
+      _deleteFacePreviewMesh = match?.mesh;
+    });
   }
 
   /// Keeps the just-created/edited DeleteFaceFeature, restores whatever was
   /// selected before the panel opened, and rolls B4 rollback forward -
-  /// mirrors [_confirmDeleteBody]'s shape exactly.
+  /// mirrors [_confirmFillet]'s shape exactly.
   Future<void> _confirmDeleteFace() async {
     await _runGuarded(_refreshFeatures);
     if (!mounted) return;
     setState(() {
       _featureTreeVisible = false;
       _deleteFaceActive = false;
-      _deleteFaceRef = null;
       _selectedEntities = _entitiesBeforeDeleteFace ?? {};
       _entitiesBeforeDeleteFace = null;
       _previewDeleteFaceFeatureId = null;
@@ -10152,13 +10278,15 @@ class _PartScreenState extends State<PartScreen> {
       _deleteFaceEditSnapshot = null;
       _meshBeforeDeleteFace = null;
       _selectionFilterOverrides.pop();
+      _deleteFacePreviewBodyId = null;
+      _deleteFacePreviewMesh = null;
     });
     await _endRollback();
   }
 
   /// Deletes the just-created preview DeleteFaceFeature (new-delete flow)
-  /// or PATCHes [_deleteFaceEditSnapshot]'s stashed original `face_ref`
-  /// back (edit flow) - mirrors [_cancelDeleteBody]'s structure exactly.
+  /// or PATCHes [_deleteFaceEditSnapshot]'s stashed original `face_refs`
+  /// back (edit flow) - mirrors [_cancelFillet]'s structure exactly.
   Future<void> _cancelDeleteFace() async {
     final part = _part;
     final previewId = _previewDeleteFaceFeatureId;
@@ -10168,7 +10296,6 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _featureTreeVisible = false;
       _deleteFaceActive = false;
-      _deleteFaceRef = null;
       _selectedEntities = _entitiesBeforeDeleteFace ?? {};
       _entitiesBeforeDeleteFace = null;
       _previewDeleteFaceFeatureId = null;
@@ -10176,12 +10303,15 @@ class _PartScreenState extends State<PartScreen> {
       _deleteFaceEditSnapshot = null;
       _meshBeforeDeleteFace = null;
       _selectionFilterOverrides.pop();
+      _deleteFacePreviewBodyId = null;
+      _deleteFacePreviewMesh = null;
     });
     if (part != null && previewId != null) {
       if (wasEditing && editSnapshot != null) {
         await _runGuarded(() async {
-          await _api.updateDeleteFaceFeature(part.id, previewId, faceRef: editSnapshot.faceRef);
+          await _api.updateDeleteFaceFeature(part.id, previewId, faceRefs: editSnapshot.faceRefs);
           await _refreshFeatures();
+          await _refreshMesh();
         });
       } else {
         await _runGuarded(() async {
@@ -10203,25 +10333,28 @@ class _PartScreenState extends State<PartScreen> {
   // state-field section header comment for the full reasoning.
 
   /// [SelectionContextPanel.onMoveFace]'s callback - `contextActionsFor`
-  /// enables this button for exactly one planar face of a solid Body,
-  /// nothing else, selected. Mirrors [_onScaleBodyTapped]'s shape exactly.
+  /// enables this button for one or more faces of the same solid Body,
+  /// nothing else, selected. Mirrors [_onDeleteFaceTapped]'s shape exactly.
   void _onMoveFaceTapped() {
     final faces = _selectedEntities.where((e) => e.kind == SelectionEntityKind.face).toList();
-    if (faces.length != 1) return; // Defensive - contextActionsFor already guarantees this.
-    final face = faces.single;
-    _openMoveFacePanel(SubShapeRefDto(bodyId: face.bodyId, shapeType: 'face', index: face.id));
+    if (faces.isEmpty) return; // Defensive - contextActionsFor already guarantees this.
+    _openMoveFacePanel(faceEntities: faces);
   }
 
-  /// Opens [MoveFacePanel] against [faceRef] - mirrors [_openScaleBodyPanel]
-  /// exactly: no MoveFaceFeature is created here, [MoveFacePanel]'s own
-  /// `initState` postFrameCallback fires the first `onOffsetChanged` (with
-  /// the default offset of 1.0), which reaches [_ensureMoveFaceFeatureExists]
-  /// via [_scheduleMoveFacePreview] the same way every other debounced
-  /// field edit does.
-  void _openMoveFacePanel(SubShapeRefDto faceRef) {
+  /// Opens [MoveFacePanel] against [faceEntities] - mirrors
+  /// [_openScaleBodyPanel]'s own "no Feature created here" shape:
+  /// [MoveFacePanel]'s own `initState` postFrameCallback fires the first
+  /// `onOffsetChanged` (with the default offset of 1.0), which reaches
+  /// [_ensureMoveFaceFeatureExists] via [_scheduleMoveFacePreview] the same
+  /// way every other debounced field edit does. Always opens in Offset mode
+  /// - the only mode [faceEntities] may hold more than one entry for (see
+  /// [MoveFacePanel.faceCount]'s own doc comment) - regardless of how many
+  /// faces were ambient-selected.
+  void _openMoveFacePanel({required List<SelectionEntityRef> faceEntities}) {
     setState(() {
       _moveFaceActive = true;
-      _moveFaceRef = faceRef;
+      _entitiesBeforeMoveFace = _selectedEntities;
+      _selectedEntities = faceEntities.toSet();
       _moveFaceMode = MoveFaceMode.offset;
       _moveFaceOffset = 1.0;
       _moveFaceDelta = (0.0, 0.0, 0.0);
@@ -10229,7 +10362,6 @@ class _PartScreenState extends State<PartScreen> {
       _moveFaceDirection = null;
       _moveFaceDirectionDistance = 1.0;
       _meshBeforeMoveFace = _bodies;
-      _entitiesBeforeMoveFace = _selectedEntities;
       _selectionMode = true;
       _toolbarOpen = false;
       _featureTreeVisible = false;
@@ -10238,12 +10370,14 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   /// B4: opens [MoveFacePanel] to edit an *already-existing* MoveFaceFeature
-  /// - mirrors [_openScaleBodyPanelForEdit]'s shape, widened to open for a
-  /// Feature currently in any of the three modes (reconstructing whichever
-  /// one it's actually in), not offset-only as before.
-  bool _openMoveFacePanelForEdit(FeatureDto feature) {
-    final faceRef = feature.faceRef;
-    if (faceRef == null) return false;
+  /// - mirrors [_openFilletPanelForEdit]'s shape (self-exclusion via
+  /// [_beginRollback], seeding [_selectedEntities] with the Feature's own
+  /// current `face_refs` plus, if Direction mode, its own reference edge/
+  /// Sketch-Line entity), widened to open for a Feature currently in any of
+  /// the three modes (reconstructing whichever one it's actually in).
+  Future<bool> _openMoveFacePanelForEdit(FeatureDto feature) async {
+    final faceRefs = feature.directEditFaceRefs;
+    if (faceRefs.isEmpty) return false;
 
     final MoveFaceMode mode;
     final rawDelta = feature.delta;
@@ -10271,7 +10405,6 @@ class _PartScreenState extends State<PartScreen> {
       _moveFaceActive = true;
       _editingMoveFaceFeatureId = feature.id;
       _previewMoveFaceFeatureId = feature.id;
-      _moveFaceRef = faceRef;
       _moveFaceMode = mode;
       _moveFaceOffset = offsetDistance;
       _moveFaceDelta = delta;
@@ -10279,18 +10412,24 @@ class _PartScreenState extends State<PartScreen> {
       _moveFaceDirectionEntity = directionEntity;
       _moveFaceDirectionDistance = directionDistance;
       _moveFaceEditSnapshot = (
-        faceRef: faceRef,
+        faceRefs: faceRefs,
         mode: mode,
         offsetDistance: offsetDistance,
         delta: delta,
         direction: direction,
         directionDistance: directionDistance,
       );
-      _meshBeforeMoveFace = _bodies;
       _entitiesBeforeMoveFace = _selectedEntities;
+      _selectedEntities = {
+        for (final ref in faceRefs)
+          SelectionEntityRef(kind: SelectionEntityKind.face, bodyId: ref.bodyId, id: ref.index),
+        if (directionEntity != null) directionEntity,
+      };
+      _meshBeforeMoveFace = _bodies;
       _selectionMode = true;
       _selectionFilterOverrides.push(_moveFaceSelectionFilter);
     });
+    await _beginRollback({feature.id});
     return true;
   }
 
@@ -10298,9 +10437,24 @@ class _PartScreenState extends State<PartScreen> {
   /// sections is live, then reschedules the preview against whichever
   /// mode's own current value(s) are already held (each mode's own field
   /// state survives a switch away and back, mirrors [MoveFacePanel]'s own
-  /// "fields exist regardless of the active mode" doc comment).
+  /// "fields exist regardless of the active mode" doc comment). Switching
+  /// away from Offset mode with 2+ faces picked trims the face selection
+  /// down to just the first one - mirrors [_setPatternMode]'s own "drop
+  /// whatever no longer applies to the new mode" cleanup, since Delta/
+  /// Direction only ever accept exactly one face (see
+  /// [MoveFacePanel.faceCount]'s own doc comment).
   void _onMoveFaceModeChanged(MoveFaceMode mode) {
-    setState(() => _moveFaceMode = mode);
+    setState(() {
+      _moveFaceMode = mode;
+      if (mode != MoveFaceMode.offset) {
+        final faceEntities = _selectedEntities.where((e) => e.kind == SelectionEntityKind.face).toList();
+        if (faceEntities.length > 1) {
+          final keep = faceEntities.first;
+          _selectedEntities =
+              _selectedEntities.where((e) => e.kind != SelectionEntityKind.face || e == keep).toSet();
+        }
+      }
+    });
     _scheduleMoveFacePreview();
   }
 
@@ -10364,20 +10518,65 @@ class _PartScreenState extends State<PartScreen> {
     _scheduleMoveFacePreview();
   }
 
-  /// Mirrors [_scheduleScaleBodyPreview] exactly, just against
-  /// [_ensureMoveFaceFeatureExists] instead, and branching on
-  /// [_moveFaceMode] to only require the active mode's own value(s) to be
-  /// ready before scheduling.
+  /// [_toggleSelectedEntity]'s face special case for a live [MoveFacePanel]
+  /// session in Delta or Direction mode - replaces whatever single face (if
+  /// any) is currently picked with [entity], unless [entity] was already
+  /// the one picked, in which case it's cleared instead - mirrors
+  /// [_setMoveBodyRotationAxis]'s identical single-slot replace-or-clear
+  /// shape, applied to the face pick itself. Offset mode's own face taps
+  /// never reach this - see [_toggleSelectedEntity]'s own doc comment on
+  /// that branch.
+  void _setMoveFaceSingleFace(SelectionEntityRef entity) {
+    final currentFaces = _selectedEntities.where((e) => e.kind == SelectionEntityKind.face).toList();
+    final alreadyPicked = currentFaces.length == 1 && currentFaces.single == entity;
+    setState(() {
+      final next = Set<SelectionEntityRef>.of(_selectedEntities)
+        ..removeWhere((e) => e.kind == SelectionEntityKind.face);
+      if (!alreadyPicked) next.add(entity);
+      _selectedEntities = next;
+    });
+    _scheduleMoveFacePreview();
+  }
+
+  /// [_selectedEntities]' faces while [_moveFaceActive] - mirrors
+  /// [_currentDeleteFaceRefs]/[_currentFilletEdgeRefs] exactly. Offset mode
+  /// may hold 2+ entries; Delta/Direction hold at most one, enforced by
+  /// [_setMoveFaceSingleFace] and [_onMoveFaceModeChanged]'s own trim.
+  List<SubShapeRefDto> _currentMoveFaceRefs() => [
+        for (final entity in _selectedEntities)
+          if (entity.kind == SelectionEntityKind.face)
+            SubShapeRefDto(bodyId: entity.bodyId, shapeType: 'face', index: entity.id),
+      ];
+
+  /// The Body id [_refreshMoveFacePreviewMesh] should fetch a preview for -
+  /// mirrors [_currentDeleteFaceBodyId]/[_currentFilletBodyId] exactly.
+  String? _currentMoveFaceBodyId() {
+    for (final entity in _selectedEntities) {
+      if (entity.kind == SelectionEntityKind.face) return entity.bodyId;
+    }
+    return null;
+  }
+
+  /// Shared by every field/mode change ([_onMoveFaceOffsetChanged]/
+  /// [_onMoveFaceDeltaChanged]/[_onMoveFaceDirectionDistanceChanged]/
+  /// [_onMoveFaceModeChanged]) and every face/direction pick change
+  /// ([_toggleSelectedEntity]/[_setMoveFaceSingleFace]/
+  /// [_setMoveFaceDirectionFromEntity]/[_setMoveFaceDirectionFixedAxis]) -
+  /// mirrors [_scheduleFilletPreview]'s debounce shape, plus
+  /// [_moveFaceMode] deciding whether there's anything resolvable yet to
+  /// bother scheduling for (Direction mode's own reference is a second
+  /// required pick beyond the face(s) themselves - mirrors PatternPanel's
+  /// own "no axis, no preview" gate; an empty face selection is instead
+  /// handled by [_ensureMoveFaceFeatureExists]'s own skip, same reasoning
+  /// [_ensureDeleteFaceFeatureExists]'s doc comment gives).
   void _scheduleMoveFacePreview() {
     _moveFaceDebounce?.cancel();
-    final faceRef = _moveFaceRef;
-    if (faceRef == null) return;
     if (_moveFaceMode == MoveFaceMode.direction && _moveFaceDirection == null) {
-      return; // Nothing resolvable yet - mirrors PatternPanel's own "no axis, no preview" gate.
+      return;
     }
     _moveFaceDebounce = Timer(const Duration(milliseconds: 500), () {
       _runGuarded(() => _ensureMoveFaceFeatureExists(
-            faceRef,
+            _currentMoveFaceRefs(),
             _moveFaceMode,
             _moveFaceOffset,
             _moveFaceDelta,
@@ -10387,15 +10586,18 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
-  /// Create-or-update - mirrors [_ensureScaleBodyFeatureExists]'s exact
-  /// branching shape, plus [mode] deciding which one of
-  /// [offsetDistance]/[delta]/[direction]+[directionDistance] is actually
-  /// sent (the other two always travel as explicit nulls - see
+  /// Create-or-update - mirrors [_ensureDeleteFaceFeatureExists]'s exact
+  /// branching shape (self-exclusion-on-create, concurrent
+  /// [_refreshMoveFacePreviewMesh] fetch), plus [mode] deciding which one
+  /// of [offsetDistance]/[delta]/[direction]+[directionDistance] is
+  /// actually sent (the other two always travel as explicit nulls - see
   /// [DocumentApiClient.updateMoveFaceFeature]'s own doc comment for why
   /// that's required, not optional, for a PATCH-driven mode switch to
-  /// actually take effect server-side).
+  /// actually take effect server-side). Skips the request entirely once
+  /// [faceRefs] is empty, same reasoning [_ensureDeleteFaceFeatureExists]'s
+  /// own doc comment gives.
   Future<void> _ensureMoveFaceFeatureExists(
-    SubShapeRefDto faceRef,
+    List<SubShapeRefDto> faceRefs,
     MoveFaceMode mode,
     double offsetDistance,
     (double, double, double) delta,
@@ -10403,48 +10605,90 @@ class _PartScreenState extends State<PartScreen> {
     double directionDistance,
   ) async {
     final part = _part;
-    if (part == null) return;
+    if (part == null || faceRefs.isEmpty) return;
 
     final (dx, dy, dz) = delta;
     final existingId = _previewMoveFaceFeatureId;
     if (existingId == null) {
       final created = await _api.createMoveFaceFeature(
         part.id,
-        faceRef: faceRef,
+        faceRefs: faceRefs,
         offsetDistance: mode == MoveFaceMode.offset ? offsetDistance : null,
         delta: mode == MoveFaceMode.delta ? [dx, dy, dz] : null,
         directionRef: mode == MoveFaceMode.direction ? direction : null,
         directionDistance: mode == MoveFaceMode.direction ? directionDistance : null,
       );
       _previewMoveFaceFeatureId = created.id;
+      // See [_ensureFilletFeatureExists]'s own doc comment for why this is
+      // required, not optional, the moment a Feature that live-edits picks
+      // of the Body it's modifying is actually created.
+      setState(() => _rollbackExcludedFeatureIds.add(created.id));
+      await _refreshFeatures();
+      await Future.wait([_refreshMesh(), _refreshMoveFacePreviewMesh()]);
     } else {
       await _api.updateMoveFaceFeature(
         part.id,
         existingId,
-        faceRef: faceRef,
+        faceRefs: faceRefs,
         offsetDistance: mode == MoveFaceMode.offset ? offsetDistance : null,
         delta: mode == MoveFaceMode.delta ? [dx, dy, dz] : null,
         directionRef: mode == MoveFaceMode.direction ? direction : null,
         directionDistance: mode == MoveFaceMode.direction ? directionDistance : null,
       );
+      await _refreshFeatures();
+      await Future.wait([_refreshMesh(), _refreshMoveFacePreviewMesh()]);
     }
-    await _refreshMesh();
+  }
+
+  /// On-device feedback: fetches the *actual* current effect of the
+  /// in-progress Move Face - mirrors [_refreshDeleteFacePreviewMesh]/
+  /// [_refreshFilletPreviewMesh] exactly.
+  Future<void> _refreshMoveFacePreviewMesh() async {
+    final part = _part;
+    final featureId = _previewMoveFaceFeatureId;
+    final bodyId = _currentMoveFaceBodyId();
+    if (part == null || featureId == null || bodyId == null) {
+      if (!mounted) return;
+      setState(() {
+        _moveFacePreviewBodyId = null;
+        _moveFacePreviewMesh = null;
+      });
+      return;
+    }
+    final response = await _api.getPartMesh(
+      part.id,
+      hiddenFeatureIds: _hiddenFeatureIds.toList(),
+      rollbackExcludedFeatureIds: _rollbackExcludedFeatureIds.where((id) => id != featureId).toList(),
+      meshQuality: _meshQuality,
+    );
+    if (!mounted) return;
+    BodyMeshDto? match;
+    for (final body in response) {
+      if (body.bodyId == bodyId) {
+        match = body;
+        break;
+      }
+    }
+    setState(() {
+      _moveFacePreviewBodyId = bodyId;
+      _moveFacePreviewMesh = match?.mesh;
+    });
   }
 
   /// Keeps the just-created/edited MoveFaceFeature, restores whatever was
   /// selected before the panel opened, and rolls B4 rollback forward -
-  /// mirrors [_confirmScaleBody]'s shape exactly.
+  /// mirrors [_confirmDeleteFace]/[_confirmFillet]'s shape exactly.
   Future<void> _confirmMoveFace() async {
     _moveFaceDebounce?.cancel();
-    final faceRef = _moveFaceRef;
+    final faceRefs = _currentMoveFaceRefs();
     final mode = _moveFaceMode;
     final offset = _moveFaceOffset;
     final delta = _moveFaceDelta;
     final direction = _moveFaceDirection;
     final directionDistance = _moveFaceDirectionDistance;
     await _runGuarded(() async {
-      if (faceRef != null) {
-        await _ensureMoveFaceFeatureExists(faceRef, mode, offset, delta, direction, directionDistance);
+      if (faceRefs.isNotEmpty) {
+        await _ensureMoveFaceFeatureExists(faceRefs, mode, offset, delta, direction, directionDistance);
       }
       await _refreshFeatures();
     });
@@ -10452,7 +10696,6 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _featureTreeVisible = false;
       _moveFaceActive = false;
-      _moveFaceRef = null;
       _moveFaceDirectionEntity = null;
       _moveFaceDirection = null;
       _selectedEntities = _entitiesBeforeMoveFace ?? {};
@@ -10462,14 +10705,16 @@ class _PartScreenState extends State<PartScreen> {
       _moveFaceEditSnapshot = null;
       _meshBeforeMoveFace = null;
       _selectionFilterOverrides.pop();
+      _moveFacePreviewBodyId = null;
+      _moveFacePreviewMesh = null;
     });
     await _endRollback();
   }
 
   /// Deletes the just-created preview MoveFaceFeature (new-move flow, if
-  /// any) or PATCHes [_moveFaceEditSnapshot]'s stashed original `face_ref`
+  /// any) or PATCHes [_moveFaceEditSnapshot]'s stashed original `face_refs`
   /// and whichever mode it was in back (edit flow) - mirrors
-  /// [_cancelScaleBody]'s structure exactly.
+  /// [_cancelDeleteFace]/[_cancelFillet]'s structure exactly.
   Future<void> _cancelMoveFace() async {
     _moveFaceDebounce?.cancel();
     final part = _part;
@@ -10480,7 +10725,6 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _featureTreeVisible = false;
       _moveFaceActive = false;
-      _moveFaceRef = null;
       _moveFaceDirectionEntity = null;
       _moveFaceDirection = null;
       _selectedEntities = _entitiesBeforeMoveFace ?? {};
@@ -10490,6 +10734,8 @@ class _PartScreenState extends State<PartScreen> {
       _moveFaceEditSnapshot = null;
       _meshBeforeMoveFace = null;
       _selectionFilterOverrides.pop();
+      _moveFacePreviewBodyId = null;
+      _moveFacePreviewMesh = null;
     });
     if (part != null && previewId != null) {
       if (wasEditing && editSnapshot != null) {
@@ -10497,7 +10743,7 @@ class _PartScreenState extends State<PartScreen> {
           await _api.updateMoveFaceFeature(
             part.id,
             previewId,
-            faceRef: editSnapshot.faceRef,
+            faceRefs: editSnapshot.faceRefs,
             offsetDistance: editSnapshot.mode == MoveFaceMode.offset ? editSnapshot.offsetDistance : null,
             delta: editSnapshot.mode == MoveFaceMode.delta
                 ? [editSnapshot.delta.$1, editSnapshot.delta.$2, editSnapshot.delta.$3]
@@ -10507,6 +10753,7 @@ class _PartScreenState extends State<PartScreen> {
                 editSnapshot.mode == MoveFaceMode.direction ? editSnapshot.directionDistance : null,
           );
           await _refreshFeatures();
+          await _refreshMesh();
         });
       } else {
         await _runGuarded(() async {
@@ -12873,6 +13120,15 @@ class _PartScreenState extends State<PartScreen> {
                   // from - the Part.produces_displayable_geometry bug that
                   // used to hide it from `/mesh` entirely for a Sketch+
                   // Surface-only Part).
+                  // V2: _moveFaceActive no longer belongs in this `||` -
+                  // Move Face used to show its live effect directly through
+                  // [_bodies] itself (no re-picking possible, so no
+                  // self-exclusion needed), but now that faces can be
+                  // added to/removed from `face_refs` mid-session, [_bodies]
+                  // must stay the stable, pre-move mesh the same way
+                  // Fillet's own [_bodies] does - its live effect now flows
+                  // through the [previewOverlayBodyId]/[previewOverlayMesh]
+                  // pair below instead, same as Delete Face's.
                   isPreviewMesh: _extrudeSketchFeature != null ||
                       _revolveSketchFeature != null ||
                       _sweepSketchFeature != null ||
@@ -12882,16 +13138,28 @@ class _PartScreenState extends State<PartScreen> {
                       _mergeActive ||
                       _booleanActive ||
                       _scaleBodyActive ||
-                      _moveBodyActive ||
-                      _moveFaceActive,
-                  // Prompt E: only one of _filletActive/_chamferActive is
-                  // ever true at a time (see the Chamfer state section's own
-                  // header comment), so a simple ternary - not a list -
-                  // picks whichever flow's preview overlay is currently
-                  // live; see `docs/live-preview-pattern.md` if a third
-                  // concurrent live-edit flow is ever added.
-                  previewOverlayBodyId: _filletActive ? _filletPreviewBodyId : _chamferPreviewBodyId,
-                  previewOverlayMesh: _filletActive ? _filletPreviewMesh : _chamferPreviewMesh,
+                      _moveBodyActive,
+                  // Prompt E/V2: only one of _filletActive/_chamferActive/
+                  // _deleteFaceActive/_moveFaceActive is ever true at a time
+                  // (see each section's own state-field header comment), so
+                  // a chained ternary - not a list - picks whichever flow's
+                  // preview overlay is currently live; see
+                  // `docs/live-preview-pattern.md` if a concurrent live-edit
+                  // flow combination is ever actually needed.
+                  previewOverlayBodyId: _filletActive
+                      ? _filletPreviewBodyId
+                      : _chamferActive
+                          ? _chamferPreviewBodyId
+                          : _deleteFaceActive
+                              ? _deleteFacePreviewBodyId
+                              : _moveFacePreviewBodyId,
+                  previewOverlayMesh: _filletActive
+                      ? _filletPreviewMesh
+                      : _chamferActive
+                          ? _chamferPreviewMesh
+                          : _deleteFaceActive
+                              ? _deleteFacePreviewMesh
+                              : _moveFacePreviewMesh,
                   // `docs/lod-strategy/01-design.md` SS5 chunk 5: [_effectiveCoarseOverlayMeshes]
                   // is [_coarseOverlayMeshes] as-is - genuinely-pending Bodies
                   // and pinned-Feature Bodies render identically, only their
@@ -13407,36 +13675,34 @@ class _PartScreenState extends State<PartScreen> {
                       onCancel: _cancelMoveBody,
                     ),
                   ),
-                // Direct Editing family (fourth entry): [DeleteFacePanel]
-                // has no picking step of its own - always opens straight
-                // into this confirm/summary state, mirroring
-                // [DeleteBodyPanel]'s own slot shape.
+                // Direct Editing family (fourth entry), V2: [DeleteFacePanel]
+                // now mirrors [FilletPanel]'s own slot shape - the viewport
+                // (not the panel) does the live face picking, the panel just
+                // shows a live count plus Confirm/Cancel.
                 if (_deleteFaceActive)
                   Positioned.fill(
                     key: const ValueKey('delete-face-panel-slot'),
                     child: DeleteFacePanel(
-                      key: ValueKey(
-                        _editingDeleteFaceFeatureId ??
-                            '${_deleteFaceRef?.bodyId}#${_deleteFaceRef?.index}',
-                      ),
+                      key: ValueKey(_editingDeleteFaceFeatureId ?? _previewDeleteFaceFeatureId),
                       title: _editingDeleteFaceFeatureId != null ? 'Edit Delete Face' : 'Delete Face',
+                      faceCount: _currentDeleteFaceRefs().length,
                       onConfirm: _confirmDeleteFace,
                       onCancel: _cancelDeleteFace,
                     ),
                   ),
-                // Direct Editing family (fifth/last entry): [MoveFacePanel]'s
+                // Direct Editing family (fifth/last entry), V2: [MoveFacePanel]'s
                 // own `initState` postFrameCallback fires the first
-                // `onOffsetChanged` - mirrors [ScaleBodyPanel]'s slot shape.
+                // `onOffsetChanged` - mirrors [ScaleBodyPanel]'s slot shape,
+                // plus the live face count Offset mode's multi-pick needs.
                 if (_moveFaceActive)
                   Positioned.fill(
                     key: const ValueKey('move-face-panel-slot'),
                     child: MoveFacePanel(
-                      key: ValueKey(
-                        _editingMoveFaceFeatureId ?? '${_moveFaceRef?.bodyId}#${_moveFaceRef?.index}',
-                      ),
+                      key: ValueKey(_editingMoveFaceFeatureId ?? _previewMoveFaceFeatureId),
                       title: _editingMoveFaceFeatureId != null ? 'Edit Move Face' : 'Move Face',
                       mode: _moveFaceMode,
                       onModeChanged: _onMoveFaceModeChanged,
+                      faceCount: _currentMoveFaceRefs().length,
                       initialOffset: _moveFaceOffset,
                       onOffsetChanged: _onMoveFaceOffsetChanged,
                       initialDeltaX: _moveFaceDelta.$1,

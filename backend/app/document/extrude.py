@@ -21,10 +21,12 @@ from OCC.Core.BRepBuilderAPI import (
     BRepBuilderAPI_MakeWire,
     BRepBuilderAPI_Transform,
 )
+from OCC.Core.BRepCheck import BRepCheck_Analyzer
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakePrism
 from OCC.Core.Geom import Geom_BezierCurve
 from OCC.Core.GeomAbs import GeomAbs_Circle
 from OCC.Core.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Elips, gp_Pnt, gp_Trsf, gp_Vec
+from OCC.Core.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
 from OCC.Core.TColgp import TColgp_Array1OfPnt
 from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED, TopAbs_SOLID, TopAbs_VERTEX
 from OCC.Core.TopExp import TopExp_Explorer, topexp
@@ -1305,7 +1307,7 @@ def cached_feature_warnings(part: Part, feature_id: str) -> list[str]:
     return _feature_warnings_cache.get(part.id, {}).get(feature_id, [])
 
 
-def _apply_feature_to_bodies(
+def _apply_feature_to_bodies_impl(
     feature: Feature,
     part: Part,
     bodies: dict[str, TopoDS_Shape],
@@ -2081,6 +2083,72 @@ def _apply_feature_to_bodies(
     _apply_boss_or_cut(bodies, feature.id, feature_index, is_cut, target_body_ids, solid)
 
 
+def _unify_same_domain(shape: TopoDS_Shape) -> TopoDS_Shape:
+    """Merges coincident/coplanar faces left behind by a Fuse/Cut (most
+    commonly: a Boss landing flush on an existing face) - see the Move Face
+    V2 spike findings in `docs/direct-editing-scope.md` for why this
+    exists: `BRepOffset_MakeOffset` (Move Face V2's own per-face variable-
+    offset engine) reliably fails on that exact topology otherwise, even
+    for an offset nowhere near large enough to be a genuine "neighbor-
+    consuming" case. Confirmed via three separate real-pythonocc-core
+    spikes (the same section) that `TopExp_Explorer`'s own face-visitation
+    order (what `mesh.py`'s `tessellate_shape` uses for the client's own
+    `face_id`) still matches `topexp.MapShapes`'s order (what
+    `resolve_subshape_from_bodies` uses to resolve a `SubShapeRef.index`)
+    after this runs, including with a Fillet/Chamfer blend face present -
+    confirmed *not* to merge a curved blend face into an adjacent
+    coincident planar one, only genuinely coincident/coplanar faces.
+
+    Falls back to `shape` itself, unmodified, if the unify pass produces a
+    null or invalid result (not observed in any of the spike's own real
+    test cases, but this is new-to-the-codebase machinery running against
+    arbitrary real Part geometry, not just the primitives spiked - fail
+    open to the pre-unify shape rather than losing a Body or crashing
+    `/mesh` over a `SubShapeRef`-numbering optimization)."""
+    unify = ShapeUpgrade_UnifySameDomain(shape, True, True, True)
+    unify.Build()
+    unified = unify.Shape()
+    if unified is None or unified.IsNull() or not BRepCheck_Analyzer(unified).IsValid():
+        return shape
+    return unified
+
+
+def _apply_feature_to_bodies(
+    feature: Feature,
+    part: Part,
+    bodies: dict[str, TopoDS_Shape],
+    feature_index: dict[str, int],
+    excluded_feature_ids: frozenset[str],
+    unify: bool = True,
+) -> None:
+    """Thin wrapper around `_apply_feature_to_bodies_impl` (the real per-
+    Feature-type dispatch, see its own docstring) that additionally runs
+    every Body this call actually touched through `_unify_same_domain`
+    when `unify` is true - the real `compute_part_bodies` path always
+    passes `unify=True`; `compute_part_bodies_coarse` passes `unify=False`
+    (its own output is never persisted and never resolved against a
+    `SubShapeRef`, so paying the unify cost there is pure waste - see that
+    function's own docstring).
+
+    "Touched" is determined by a before/after key-and-identity diff on
+    `bodies` around the `_impl` call, not by threading a return value
+    through every one of that function's own many mutation points
+    (Boss/Cut/Fillet/Chamfer/Mirror/Pattern/Boolean/Split/Direct-Editing-
+    family/...) - each already reassigns `bodies[some_id]` to a fresh
+    shape object rather than mutating one in place, so identity
+    (`is not`) reliably distinguishes "this key's shape actually changed
+    this call" from "this key already existed, untouched, from an earlier
+    step" without needing to understand any one branch's own internals."""
+    before = dict(bodies)
+    _apply_feature_to_bodies_impl(feature, part, bodies, feature_index, excluded_feature_ids)
+    if not unify:
+        return
+    for body_id, shape in list(bodies.items()):
+        if before.get(body_id) is shape:
+            continue
+        bodies[body_id] = _unify_same_domain(shape)
+
+
 def compute_part_bodies(
     part: Part, excluded_feature_ids: frozenset[str] = frozenset()
 ) -> dict[str, TopoDS_Shape]:
@@ -2324,7 +2392,7 @@ def compute_part_bodies_coarse(
             )
             continue
 
-        _apply_feature_to_bodies(feature, part, bodies, feature_index, excluded_feature_ids)
+        _apply_feature_to_bodies(feature, part, bodies, feature_index, excluded_feature_ids, unify=False)
 
     return bodies
 
