@@ -2193,20 +2193,30 @@ class MoveBodyFeature(Feature):
 @dataclass
 class DeleteFaceFeature(Feature):
     """Direct Editing family, fourth entry (see `docs/direct-editing-
-    scope.md`): removes the single planar face named by `face_ref` from
-    its Body and heals the resulting opening closed, via OCCT
-    `BRepAlgoAPI_Defeaturing` (see `app.document.delete_face`'s own module
-    docstring for why this specific tool, and its own fail-closed
-    contract). Modifies `face_ref.body_id` in place (Fillet/Chamfer's
-    "keep the same id" pattern). v1 scope: planar faces only, single face
-    only - a face whose removal has no well-defined single healed result
-    (most commonly: a face of a primitive box/cylinder with no adjacent
-    fillet/chamfer/pocket geometry to naturally close the gap) fails
-    closed with a structured 422 rather than silently returning an
-    unmodified or invalid Body."""
+    scope.md`): removes every face named in `face_refs` (1+ entries, all
+    sharing one Body - see `app.document.delete_face._delete_face_mixed_
+    body_selection`, mirrors `FilletFeature.edge_refs`' own constraint)
+    from its Body in one pass, healing the resulting opening(s) closed,
+    via OCCT `BRepAlgoAPI_Defeaturing` (see `app.document.delete_face`'s
+    own module docstring for why this specific tool, and its own fail-
+    closed contract). Modifies the shared `body_id` in place (Fillet/
+    Chamfer's "keep the same id" pattern).
+
+    V2 (see `docs/direct-editing-scope.md`'s own "Delete Face V2 spike
+    findings" section): accepts planar, cylindrical, and conical faces
+    (anything else - spherical, toroidal, free-form/B-spline - is
+    rejected), and 2+ faces removed together in one `Build()` call -
+    confirmed via a real pythonocc-core spike that `AddFaceToRemove`
+    genuinely supports both, not just the single-planar-face case v1
+    originally spiked. A face selection with no well-defined single healed
+    result (most commonly: a face of a primitive box/cylinder with no
+    adjacent fillet/chamfer/pocket geometry to naturally close the gap, or
+    two faces whose *combined* removal has nothing to heal into even
+    though either alone might) fails closed with a structured 422 rather
+    than silently returning an unmodified or invalid Body."""
 
     id: str
-    face_ref: SubShapeRef  # shape_type must be FACE
+    face_refs: list[SubShapeRef] = field(default_factory=list)  # every entry's shape_type must be FACE
 
     @property
     def type(self) -> str:

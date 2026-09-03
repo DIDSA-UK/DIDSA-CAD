@@ -732,7 +732,7 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
     if isinstance(feature, DeleteFaceFeature):
         return DeleteFaceFeatureResponse(
             id=feature.id,
-            face_ref=_subshape_ref_to_schema(feature.face_ref),
+            face_refs=[_subshape_ref_to_schema(r) for r in feature.face_refs],
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
@@ -3979,9 +3979,9 @@ def create_delete_face_feature(
     (an ill-defined removal - see `app.document.delete_face`'s own
     fail-closed contract)."""
     part = get_part_or_404(part_id)
-    face_ref = _subshape_ref_to_domain(payload.face_ref)
-    _validate_face_ref(face_ref)
-    feature = DeleteFaceFeature(id=str(uuid.uuid4()), face_ref=face_ref)
+    face_refs = [_subshape_ref_to_domain(r) for r in payload.face_refs]
+    _validate_face_refs(face_refs)
+    feature = DeleteFaceFeature(id=str(uuid.uuid4()), face_refs=face_refs)
     resolve_delete_face(part, feature)  # raises on an unresolvable/ill-defined removal
     part.add_feature(feature)
     return _feature_response(part, feature)
@@ -4008,15 +4008,17 @@ def update_delete_face_feature(
     part = get_part_or_404(part_id)
     feature = _get_delete_face_feature_or_404(part, feature_id)
 
-    new_face_ref = (
-        _subshape_ref_to_domain(payload.face_ref) if payload.face_ref is not None else feature.face_ref
+    new_face_refs = (
+        [_subshape_ref_to_domain(r) for r in payload.face_refs]
+        if payload.face_refs is not None
+        else feature.face_refs
     )
-    _validate_face_ref(new_face_ref)
+    _validate_face_refs(new_face_refs)
 
-    candidate = DeleteFaceFeature(id=feature.id, face_ref=new_face_ref)
+    candidate = DeleteFaceFeature(id=feature.id, face_refs=new_face_refs)
     resolve_delete_face(part, candidate)  # raises on an unresolvable/ill-defined removal
 
-    feature.face_ref = candidate.face_ref
+    feature.face_refs = candidate.face_refs
     return _feature_response(part, feature)
 
 

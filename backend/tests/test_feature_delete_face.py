@@ -1,9 +1,12 @@
 """Direct Editing family, fourth entry: real-OCCT tests for
-`DeleteFaceFeature` - removes a single planar face from its Body and heals
-the opening closed via `BRepAlgoAPI_Defeaturing` (see
-`app.document.delete_face`). Modifies its Body in place (keeps the same
-id). Mirrors test_feature_scale_body.py's own structure and helpers
-(copy-pasted, not shared via conftest, same as every other
+`DeleteFaceFeature`. V2 (see `docs/direct-editing-scope.md`): removes
+every face in `face_refs` (1+, all sharing a Body) in one pass, healing
+the resulting opening(s) closed via `BRepAlgoAPI_Defeaturing` (see
+`app.document.delete_face`) - both multi-face-in-one-call and non-planar
+(cylindrical/conical) removal confirmed via a real spike to be the exact
+same technique v1 already used, not a new one. Modifies its Body in place
+(keeps the same id). Mirrors test_feature_scale_body.py's own structure
+and helpers (copy-pasted, not shared via conftest, same as every other
 test_feature_*.py file). Needs a real pythonocc-core environment (not
 available in this repo's own dev sandbox - see docs/status.md's dated
 entries for whether a real on-device/CI pass has actually run by the time
@@ -127,8 +130,22 @@ def _face_ref(body_id: str, index: int) -> dict:
     return {"body_id": body_id, "shape_type": "face", "index": index}
 
 
-def _create_delete_face(part_id: str, face_ref: dict):
-    return client.post(f"/document/parts/{part_id}/delete-face-features", json={"face_ref": face_ref})
+def _create_delete_face(part_id: str, face_refs: dict | list[dict]):
+    """`face_refs` accepts either a single ref dict (the common single-face
+    case, wrapped into a one-entry list here) or an already-built list (V2
+    multi-face cases)."""
+    refs = [face_refs] if isinstance(face_refs, dict) else face_refs
+    return client.post(f"/document/parts/{part_id}/delete-face-features", json={"face_refs": refs})
+
+
+def _add_circle(sketch_id: str, cx: float, cy: float, radius: float) -> dict:
+    center = _add_point(sketch_id, cx, cy)
+    response = client.post(
+        f"/sketch/sketches/{sketch_id}/circles",
+        json={"center_point_id": center["id"], "radius": radius, "angle": 0.0},
+    )
+    assert response.status_code == 201
+    return response.json()
 
 
 def _make_box(part_id: str, *, x0: float, y0: float = 0.0, size: float = 10.0) -> str:
@@ -201,7 +218,7 @@ def test_deleting_a_chamfer_face_heals_the_box_back_to_its_original_shape():
 
     assert response.status_code == 201
     assert response.json()["type"] == "delete_face"
-    assert response.json()["face_ref"]["index"] == 2
+    assert response.json()["face_refs"][0]["index"] == 2
 
     # Delete Face modifies the Body in place - same id, no new Body minted.
     assert _body_ids(part["id"]) == [body_id]
@@ -221,11 +238,85 @@ def test_update_delete_face_changes_which_face_is_removed():
 
     response = client.patch(
         f"/document/parts/{part['id']}/delete-face-features/{feature['id']}",
-        json={"face_ref": _face_ref(body_id, 2)},
+        json={"face_refs": [_face_ref(body_id, 2)]},
     )
 
     assert response.status_code == 200
     assert _face_count(part["id"], body_id) == 6
+
+
+# --- V2: multi-face and non-planar removal --------------------------------------
+# Indices confirmed empirically against the real backend, same discipline this
+# file's own module docstring establishes for the chamfer-face case above.
+
+
+def test_removing_two_fillet_blend_faces_at_once_heals_back_to_the_original_box():
+    """`face_refs`' two entries are both removed in one `Build()` call -
+    confirmed via a real pythonocc-core spike that this restores the exact
+    original sharp box, bit-for-bit the same numbers a single-face removal
+    already produces (see `app.document.delete_face`'s own module
+    docstring)."""
+    part = _create_part()
+    body_id = _make_box(part["id"], x0=0.0)
+    edge0 = _edge_ref(body_id, 0)
+    edge_far = _edge_ref(body_id, 6)
+    fillet = client.post(
+        f"/document/parts/{part['id']}/fillet-features",
+        json={"edge_refs": [edge0, edge_far], "radius": 1.0},
+    )
+    assert fillet.status_code == 201
+    assert _face_count(part["id"], body_id) == 8  # 6 box faces + 2 blend faces
+
+    response = _create_delete_face(part["id"], [_face_ref(body_id, 2), _face_ref(body_id, 5)])
+
+    assert response.status_code == 201
+    assert _face_count(part["id"], body_id) == 6
+    for axis_range in _bbox_ranges(part["id"], body_id):
+        assert axis_range == (0.0, 10.0)
+
+
+def test_removing_a_cylindrical_hole_wall_heals_the_box_back_to_solid():
+    """A non-fillet-blend, genuinely arbitrary non-planar face - confirmed
+    via spike that the same technique v1 used for planar faces already
+    handles this, not just Fillet-generated blend faces."""
+    part = _create_part()
+    box_sketch = _create_square_sketch_feature(part["id"])
+    _create_extrude_feature(part["id"], box_sketch["id"])
+    body_id = _body_ids(part["id"])[0]
+    hole_sketch = _create_sketch_feature(part["id"])
+    _add_circle(hole_sketch["sketch_id"], 5.0, 5.0, 2.0)
+    _create_extrude_feature(
+        part["id"], hole_sketch["id"], extrude_type="cut", start_distance=-1.0, end_distance=11.0,
+        target_body_ids=[body_id],
+    )
+    assert _face_count(part["id"], body_id) == 7  # 6 box faces + 1 cylindrical wall
+
+    response = _create_delete_face(part["id"], _face_ref(body_id, 6))
+
+    assert response.status_code == 201
+    assert _face_count(part["id"], body_id) == 6
+    for axis_range in _bbox_ranges(part["id"], body_id):
+        assert axis_range == (0.0, 10.0)
+
+
+def test_delete_face_with_faces_from_two_different_bodies_is_rejected():
+    part = _create_part()
+    body_a = _make_box(part["id"], x0=0.0)
+    body_b = _make_box(part["id"], x0=20.0)
+
+    response = _create_delete_face(part["id"], [_face_ref(body_a, 0), _face_ref(body_b, 0)])
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["type"] == "mixed_body_selection"
+
+
+def test_delete_face_with_empty_face_refs_is_rejected():
+    part = _create_part()
+    _make_box(part["id"], x0=0.0)
+
+    response = client.post(f"/document/parts/{part['id']}/delete-face-features", json={"face_refs": []})
+
+    assert response.status_code == 422
 
 
 # --- native_format round-trip -------------------------------------------------
@@ -253,7 +344,7 @@ def test_delete_face_feature_round_trips_through_native_export_import():
 
         features = client.get(f"/document/parts/{part['id']}/features").json()
         round_tripped = next(f for f in features if f["type"] == "delete_face")
-        assert round_tripped["face_ref"] == delete_face["face_ref"]
+        assert round_tripped["face_refs"] == delete_face["face_refs"]
     finally:
         replace_document(saved_document)
         replace_all_sketches(saved_sketches)

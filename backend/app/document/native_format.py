@@ -1033,7 +1033,7 @@ def _feature_to_dict(feature: Feature) -> dict:
         return {
             "type": "delete_face",
             "id": feature.id,
-            "face_ref": _subshape_ref_to_dict(feature.face_ref),
+            "face_refs": [_subshape_ref_to_dict(r) for r in feature.face_refs],
         }
     if isinstance(feature, MoveFaceFeature):
         return {
@@ -1327,7 +1327,7 @@ def _feature_from_dict(data: dict) -> Feature:
     if feature_type == "delete_face":
         return DeleteFaceFeature(
             id=feature_id,
-            face_ref=_subshape_ref_from_dict(_require(data, "face_ref")),
+            face_refs=[_subshape_ref_from_dict(r) for r in data.get("face_refs", [])],
         )
     if feature_type == "move_face":
         raw_delta = data.get("delta")

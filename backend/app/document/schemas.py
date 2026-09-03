@@ -861,24 +861,25 @@ class MoveBodyFeatureResponse(BaseModel):
 
 class DeleteFaceFeatureCreate(BaseModel):
     """Direct Editing family (fourth entry): creates a `DeleteFaceFeature`
-    removing the single planar face named by `face_ref` and healing the
-    opening closed - see `app.document.delete_face`'s own module docstring
-    for the OCCT technique and fail-closed contract."""
+    removing every face named in `face_refs` (1+ entries, all belonging to
+    the same Body) and healing the opening(s) closed - see `app.document.
+    delete_face`'s own module docstring for the OCCT technique and
+    fail-closed contract."""
 
-    face_ref: SubShapeRefSchema
+    face_refs: list[SubShapeRefSchema] = []
 
 
 class DeleteFaceFeatureUpdate(BaseModel):
     """Partial update, same omitted-vs-current-value convention as
     `ScaleBodyFeatureUpdate`."""
 
-    face_ref: SubShapeRefSchema | None = None
+    face_refs: list[SubShapeRefSchema] | None = None
 
 
 class DeleteFaceFeatureResponse(BaseModel):
     type: Literal["delete_face"] = "delete_face"
     id: str
-    face_ref: SubShapeRefSchema
+    face_refs: list[SubShapeRefSchema]
     locked: bool
     # B1: see SketchFeatureResponse.produces above - always BODY for a
     # DeleteFaceFeature.
