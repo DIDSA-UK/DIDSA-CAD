@@ -1069,6 +1069,39 @@ class _PartScreenState extends State<PartScreen> {
       _setPatternAxisFromEntity(entity);
       return;
     }
+    // Direct Editing family, third entry: an edge, face, or Sketch Line tap
+    // while [MoveBodyPanel] is open sets (or clears, if it's the already-
+    // picked one) the optional rotation axis - mirrors the Circular Pattern
+    // axis case directly above exactly (same [PatternAxisRefDto] type, same
+    // replace-not-accumulate shape). [_moveBodyBodyId] is already fixed by
+    // this point (set at panel-open time, never re-picked - see
+    // [_moveBodySelectionFilter]'s own doc comment for why `body` hit-
+    // testing isn't even enabled during this session), so there is no
+    // "which entity kind is the target Body vs. the axis" ambiguity to
+    // resolve here the way Mirror's two-step session has.
+    if (_moveBodyActive &&
+        (entity.kind == SelectionEntityKind.edge ||
+            entity.kind == SelectionEntityKind.face ||
+            entity.kind == SelectionEntityKind.sketchLine)) {
+      _setMoveBodyRotationAxis(entity);
+      return;
+    }
+    // Direct Editing family, fifth/last entry: an edge or Sketch Line tap
+    // while [MoveFacePanel] is open in Direction mode sets (or clears, if
+    // it's the already-picked one) that mode's own reference - mirrors the
+    // Move Body rotation-axis case directly above exactly (same replace-
+    // not-accumulate shape, restricted to edge/sketchLine only - no `face`,
+    // matching [_patternDirectionSelectionFilter]'s own restriction for the
+    // identical reason: a direction, unlike an axis, has no legitimate
+    // cylindrical-face source). [_moveFaceRef] (the face being moved) is
+    // already fixed by this point, never re-picked - see
+    // [_moveFaceSelectionFilter]'s own doc comment.
+    if (_moveFaceActive &&
+        _moveFaceMode == MoveFaceMode.direction &&
+        (entity.kind == SelectionEntityKind.edge || entity.kind == SelectionEntityKind.sketchLine)) {
+      _setMoveFaceDirectionFromEntity(entity);
+      return;
+    }
     // Boolean family, Subtract/Common: a Body tap during `pickingTools` that
     // lands on one of the already-confirmed target Bodies is ignored
     // outright (not toggled) - see this file's own "Boolean family,
@@ -2104,13 +2137,35 @@ class _PartScreenState extends State<PartScreen> {
   /// MoveBodyFeature - mirrors [_editingScaleBodyFeatureId].
   String? _editingMoveBodyFeatureId;
 
-  /// B4: the edited Feature's own stored `body_id`/`delta`/`copy` from just
-  /// before editing started - mirrors [_scaleBodyEditSnapshot]. Does not
-  /// snapshot `rotation_axis`/`rotation_angle_degrees` - this client never
-  /// touches either (see [MoveBodyPanel]'s own doc comment), so Cancel's
-  /// own PATCH (which never sends them either) already leaves them
-  /// untouched without needing to restore anything here.
-  ({String bodyId, (double, double, double) delta, bool copy})? _moveBodyEditSnapshot;
+  /// The rotation axis's current pick, as a viewport entity (for the
+  /// replace-or-clear-if-already-picked tap handler,
+  /// [_setMoveBodyRotationAxis]) - mirrors [_patternAxisEntity]. Null means
+  /// no rotation axis picked yet (translate-only, the common case).
+  SelectionEntityRef? _moveBodyRotationAxisEntity;
+
+  /// The rotation axis's current pick, as the wire DTO - mirrors
+  /// [_patternAxis]. Kept in sync with [_moveBodyRotationAxisEntity] by
+  /// [_setMoveBodyRotationAxis] via [_patternAxisRefDtoFor] (a generic
+  /// `PatternAxisRefDto` conversion, not Pattern-specific despite the
+  /// name - reused verbatim).
+  PatternAxisRefDto? _moveBodyRotationAxis;
+
+  /// The current rotation angle in degrees, kept live so
+  /// [_scheduleMoveBodyPreview] always has the latest even mid-debounce -
+  /// mirrors [_moveBodyDelta]. `0.0` (the default) means no visible
+  /// rotation even if [_moveBodyRotationAxis] is set.
+  double _moveBodyRotationAngle = 0.0;
+
+  /// B4: the edited Feature's own stored `body_id`/`delta`/`copy`/
+  /// `rotation_axis`/`rotation_angle_degrees` from just before editing
+  /// started - mirrors [_scaleBodyEditSnapshot].
+  ({
+    String bodyId,
+    (double, double, double) delta,
+    bool copy,
+    PatternAxisRefDto? rotationAxis,
+    double rotationAngleDegrees,
+  })? _moveBodyEditSnapshot;
 
   /// [_selectedEntities]' value from just before the panel opened - mirrors
   /// [_entitiesBeforeScaleBody].
@@ -2120,15 +2175,23 @@ class _PartScreenState extends State<PartScreen> {
   /// [_meshBeforeScaleBody].
   List<BodyMeshDto>? _meshBeforeMoveBody;
 
-  /// Locks [_selectionFilterOverrides] to Bodies only for the whole session -
-  /// mirrors [_scaleBodySelectionFilter] exactly.
+  /// Locks [_selectionFilterOverrides] to Body edges, Body faces, and
+  /// Sketch Lines (the optional rotation axis's own possible sources) for
+  /// the whole session - mirrors [_patternAxisSelectionFilter] exactly,
+  /// including leaving `body` off: [_moveBodyBodyId] is fixed once, at
+  /// panel-open time (`_openMoveBodyPanel`/`_openMoveBodyPanelForEdit`),
+  /// and never re-picked mid-session, so there is no need to keep body
+  /// hit-testing enabled (which would also be unusable simultaneously with
+  /// face hit-testing here regardless - `hitTestBodies` treats `filter.
+  /// body`/`filter.face` as mutually exclusive, per [_patternAxisSelection
+  /// Filter]'s own doc comment).
   static const _moveBodySelectionFilter = SelectionFilterState(
     vertex: false,
-    edge: false,
-    face: false,
-    body: true,
+    edge: true,
+    face: true,
+    body: false,
     sketchPoint: false,
-    sketchLine: false,
+    sketchLine: true,
     sketchCircle: false,
     sketchArc: false,
     sketchEllipse: false,
@@ -2204,32 +2267,73 @@ class _PartScreenState extends State<PartScreen> {
   /// [_scaleBodyActive].
   bool _moveFaceActive = false;
 
-  /// The face being moved - mirrors [_deleteFaceRef].
+  /// The face being moved - mirrors [_deleteFaceRef]. Fixed once picked
+  /// (via the ambient selection this session opened from), for the whole
+  /// session - no re-picking a different face mid-session, per this
+  /// family's own "ambient-entry-only" v1/v2-shared decision (see
+  /// `docs/direct-editing-scope.md`).
   SubShapeRefDto? _moveFaceRef;
 
-  /// The current offset value, kept live so [_scheduleMoveFacePreview]
-  /// always has the latest even mid-debounce - mirrors [_scaleBodyFactor].
+  /// Which of `MoveFaceFeature`'s three mutually-exclusive modes this
+  /// session is currently configuring - mirrors [PatternMode]'s own
+  /// live-toggle role (switchable freely, both while creating and while
+  /// editing - unlike [PatternMode], `MoveFaceFeatureUpdate` has no
+  /// backend restriction against revising this via PATCH).
+  MoveFaceMode _moveFaceMode = MoveFaceMode.offset;
+
+  /// The current offset value (Offset mode), kept live so
+  /// [_scheduleMoveFacePreview] always has the latest even mid-debounce -
+  /// mirrors [_scaleBodyFactor].
   double _moveFaceOffset = 1.0;
+
+  /// The current delta (Delta mode) - mirrors [_moveBodyDelta].
+  (double, double, double) _moveFaceDelta = (0.0, 0.0, 0.0);
+
+  /// Direction mode's reference, as a viewport entity (for the replace-or-
+  /// clear-if-already-picked tap handler, [_setMoveFaceDirectionFromEntity])
+  /// - null both before anything is picked and whenever the current
+  /// direction is a fixed world axis instead (an [_axisButton] tap sets
+  /// [_moveFaceDirection] directly via [_setMoveFaceDirectionFixedAxis],
+  /// with no viewport entity of its own - mirrors [PatternPanel]'s own
+  /// `_patternDirection1EdgeEntity`/`_setPatternFixedAxis` shape).
+  SelectionEntityRef? _moveFaceDirectionEntity;
+
+  /// Direction mode's reference, as the wire DTO - mirrors
+  /// [_patternDirection1].
+  PatternDirectionRefDto? _moveFaceDirection;
+
+  /// Direction mode's signed distance along [_moveFaceDirection] - mirrors
+  /// [_moveFaceOffset]'s own live-value role.
+  double _moveFaceDirectionDistance = 1.0;
 
   Timer? _moveFaceDebounce;
 
-  /// The MoveFaceFeature created once the first valid offset is known -
-  /// mirrors [_previewScaleBodyFeatureId] (created lazily, on the first
-  /// debounced resolve, not eagerly on open - [MoveFacePanel]'s own
-  /// `initState` postFrameCallback fires the first `onOffsetChanged` with
-  /// the default offset of 1.0, same convention [ScaleBodyPanel] uses).
+  /// The MoveFaceFeature created once the first valid value for the
+  /// active mode is known - mirrors [_previewScaleBodyFeatureId] (created
+  /// lazily, on the first debounced resolve, not eagerly on open -
+  /// [MoveFacePanel]'s own `initState` postFrameCallback fires the
+  /// initially-active mode's own `onXChanged` once, same convention
+  /// [ScaleBodyPanel] uses).
   String? _previewMoveFaceFeatureId;
 
   /// B4: non-null while [MoveFacePanel] is editing an *already-existing*
   /// MoveFaceFeature - mirrors [_editingScaleBodyFeatureId].
   String? _editingMoveFaceFeatureId;
 
-  /// B4: the edited Feature's own stored `face_ref`/`offset_distance` from
-  /// just before editing started - mirrors [_scaleBodyEditSnapshot]. Only
-  /// ever populated from an existing Feature whose current mode actually
-  /// *is* offset (see [_openMoveFacePanelForEdit]) - v1 client scope never
-  /// creates/edits a delta- or direction-mode MoveFaceFeature at all.
-  ({SubShapeRefDto faceRef, double offsetDistance})? _moveFaceEditSnapshot;
+  /// B4: the edited Feature's own stored `face_ref` and whichever mode's
+  /// own value(s) it was in, from just before editing started - mirrors
+  /// [_scaleBodyEditSnapshot], widened with [mode] since (unlike v1) this
+  /// session can switch modes mid-edit and Cancel must restore the
+  /// Feature's own *original* mode, not just whatever mode the session
+  /// happened to be in when Cancel was tapped.
+  ({
+    SubShapeRefDto faceRef,
+    MoveFaceMode mode,
+    double offsetDistance,
+    (double, double, double) delta,
+    PatternDirectionRefDto? direction,
+    double directionDistance,
+  })? _moveFaceEditSnapshot;
 
   /// [_selectedEntities]' value from just before the panel opened - mirrors
   /// [_entitiesBeforeScaleBody].
@@ -2239,15 +2343,21 @@ class _PartScreenState extends State<PartScreen> {
   /// [_meshBeforeScaleBody].
   List<BodyMeshDto>? _meshBeforeMoveFace;
 
-  /// Locks [_selectionFilterOverrides] to faces only for the whole session -
-  /// mirrors [_deleteFaceSelectionFilter] exactly.
+  /// Locks [_selectionFilterOverrides] to Body edges and Sketch Lines
+  /// (Direction mode's own possible sources) for the whole session -
+  /// mirrors [_patternDirectionSelectionFilter] exactly, including leaving
+  /// `face` off: [_moveFaceRef] is fixed once, at panel-open time
+  /// (`_openMoveFacePanel`/`_openMoveFacePanelForEdit`, from the ambient
+  /// selection already active beforehand), and never re-picked
+  /// mid-session (see [_moveFaceRef]'s own doc comment), so there is
+  /// nothing for a live `face` hit-test to do during the session itself.
   static const _moveFaceSelectionFilter = SelectionFilterState(
     vertex: false,
-    edge: false,
-    face: true,
+    edge: true,
+    face: false,
     body: false,
     sketchPoint: false,
-    sketchLine: false,
+    sketchLine: true,
     sketchCircle: false,
     sketchArc: false,
     sketchEllipse: false,
@@ -9698,6 +9808,9 @@ class _PartScreenState extends State<PartScreen> {
       _moveBodyBodyId = bodyId;
       _moveBodyDelta = (0.0, 0.0, 0.0);
       _moveBodyCopy = false;
+      _moveBodyRotationAxisEntity = null;
+      _moveBodyRotationAxis = null;
+      _moveBodyRotationAngle = 0.0;
       _meshBeforeMoveBody = _bodies;
       _entitiesBeforeMoveBody = _selectedEntities;
       _selectionMode = true;
@@ -9723,6 +9836,7 @@ class _PartScreenState extends State<PartScreen> {
     final delta = rawDelta != null && rawDelta.length == 3
         ? (rawDelta[0], rawDelta[1], rawDelta[2])
         : (0.0, 0.0, 0.0);
+    final rotationAxis = feature.rotationAxis;
     setState(() {
       _moveBodyActive = true;
       _editingMoveBodyFeatureId = feature.id;
@@ -9730,7 +9844,17 @@ class _PartScreenState extends State<PartScreen> {
       _moveBodyBodyId = bodyId;
       _moveBodyDelta = delta;
       _moveBodyCopy = feature.moveBodyCopy ?? false;
-      _moveBodyEditSnapshot = (bodyId: bodyId, delta: delta, copy: _moveBodyCopy);
+      _moveBodyRotationAxis = rotationAxis;
+      _moveBodyRotationAxisEntity =
+          rotationAxis == null ? null : _patternAxisEntityFor(rotationAxis);
+      _moveBodyRotationAngle = feature.rotationAngleDegrees ?? 0.0;
+      _moveBodyEditSnapshot = (
+        bodyId: bodyId,
+        delta: delta,
+        copy: _moveBodyCopy,
+        rotationAxis: rotationAxis,
+        rotationAngleDegrees: _moveBodyRotationAngle,
+      );
       _meshBeforeMoveBody = _bodies;
       _entitiesBeforeMoveBody = _selectedEntities;
       _selectionMode = true;
@@ -9756,6 +9880,35 @@ class _PartScreenState extends State<PartScreen> {
     _scheduleMoveBodyPreview();
   }
 
+  /// [MoveBodyPanel.onRotationAngleChanged] - same immediate-record-then-
+  /// debounce shape as [_onMoveBodyDeltaChanged].
+  void _onMoveBodyRotationAngleChanged(double angleDegrees) {
+    _moveBodyRotationAngle = angleDegrees;
+    _scheduleMoveBodyPreview();
+  }
+
+  /// [_toggleSelectedEntity]'s edge/face/sketchLine special case for a live
+  /// [MoveBodyPanel] session - replaces whatever rotation axis entity (if
+  /// any) is currently picked with [entity], unless [entity] was already
+  /// the one picked, in which case it's cleared instead (tap the current
+  /// pick again to deselect it, back to translate-only) - mirrors
+  /// [_setPatternAxisFromEntity]'s identical single-slot replace-or-clear
+  /// shape exactly, reusing the same generic [_patternAxisRefDtoFor]
+  /// conversion (not Pattern-specific despite the name).
+  void _setMoveBodyRotationAxis(SelectionEntityRef entity) {
+    setState(() {
+      final next = Set<SelectionEntityRef>.of(_selectedEntities);
+      final alreadyPicked = _moveBodyRotationAxisEntity == entity;
+      if (_moveBodyRotationAxisEntity != null) next.remove(_moveBodyRotationAxisEntity);
+      final newEntity = alreadyPicked ? null : entity;
+      if (newEntity != null) next.add(newEntity);
+      _selectedEntities = next;
+      _moveBodyRotationAxisEntity = newEntity;
+      _moveBodyRotationAxis = _patternAxisRefDtoFor(newEntity);
+    });
+    _scheduleMoveBodyPreview();
+  }
+
   /// Mirrors [_scheduleScaleBodyPreview] exactly, just against
   /// [_ensureMoveBodyFeatureExists] instead.
   void _scheduleMoveBodyPreview() {
@@ -9763,7 +9916,13 @@ class _PartScreenState extends State<PartScreen> {
     _moveBodyDebounce = Timer(const Duration(milliseconds: 500), () {
       final bodyId = _moveBodyBodyId;
       if (bodyId == null) return;
-      _runGuarded(() => _ensureMoveBodyFeatureExists(bodyId, _moveBodyDelta, _moveBodyCopy));
+      _runGuarded(() => _ensureMoveBodyFeatureExists(
+            bodyId,
+            _moveBodyDelta,
+            _moveBodyCopy,
+            _moveBodyRotationAxis,
+            _moveBodyRotationAngle,
+          ));
     });
   }
 
@@ -9773,6 +9932,8 @@ class _PartScreenState extends State<PartScreen> {
     String bodyId,
     (double, double, double) delta,
     bool copy,
+    PatternAxisRefDto? rotationAxis,
+    double rotationAngleDegrees,
   ) async {
     final part = _part;
     if (part == null) return;
@@ -9784,11 +9945,21 @@ class _PartScreenState extends State<PartScreen> {
         part.id,
         bodyId: bodyId,
         delta: [dx, dy, dz],
+        rotationAxis: rotationAxis,
+        rotationAngleDegrees: rotationAngleDegrees,
         copy: copy,
       );
       _previewMoveBodyFeatureId = created.id;
     } else {
-      await _api.updateMoveBodyFeature(part.id, existingId, bodyId: bodyId, delta: [dx, dy, dz], copy: copy);
+      await _api.updateMoveBodyFeature(
+        part.id,
+        existingId,
+        bodyId: bodyId,
+        delta: [dx, dy, dz],
+        rotationAxis: rotationAxis,
+        rotationAngleDegrees: rotationAngleDegrees,
+        copy: copy,
+      );
     }
     await _refreshMesh();
   }
@@ -9801,8 +9972,12 @@ class _PartScreenState extends State<PartScreen> {
     final bodyId = _moveBodyBodyId;
     final delta = _moveBodyDelta;
     final copy = _moveBodyCopy;
+    final rotationAxis = _moveBodyRotationAxis;
+    final rotationAngle = _moveBodyRotationAngle;
     await _runGuarded(() async {
-      if (bodyId != null) await _ensureMoveBodyFeatureExists(bodyId, delta, copy);
+      if (bodyId != null) {
+        await _ensureMoveBodyFeatureExists(bodyId, delta, copy, rotationAxis, rotationAngle);
+      }
       await _refreshFeatures();
     });
     if (!mounted) return;
@@ -9810,6 +9985,9 @@ class _PartScreenState extends State<PartScreen> {
       _featureTreeVisible = false;
       _moveBodyActive = false;
       _moveBodyBodyId = null;
+      _moveBodyRotationAxisEntity = null;
+      _moveBodyRotationAxis = null;
+      _moveBodyRotationAngle = 0.0;
       _selectedEntities = _entitiesBeforeMoveBody ?? {};
       _entitiesBeforeMoveBody = null;
       _previewMoveBodyFeatureId = null;
@@ -9823,8 +10001,13 @@ class _PartScreenState extends State<PartScreen> {
 
   /// Deletes the just-created preview MoveBodyFeature (new-move flow, if
   /// any) or PATCHes [_moveBodyEditSnapshot]'s stashed original `body_id`/
-  /// `delta`/`copy` back (edit flow) - mirrors [_cancelScaleBody]'s
-  /// structure exactly.
+  /// `delta`/`copy`/`rotation_axis`/`rotation_angle_degrees` back (edit
+  /// flow) - mirrors [_cancelScaleBody]'s structure exactly. One known gap,
+  /// same root cause [updateMoveBodyFeature]'s own doc comment already
+  /// flags: if the *original* Feature had no rotation axis at all and the
+  /// session picked one before Cancel, this restore PATCH cannot clear it
+  /// back to "no rotation" (only setting [editSnapshot.rotationAngleDegrees]
+  /// back to its original value, which is what actually matters visually).
   Future<void> _cancelMoveBody() async {
     _moveBodyDebounce?.cancel();
     final part = _part;
@@ -9836,6 +10019,9 @@ class _PartScreenState extends State<PartScreen> {
       _featureTreeVisible = false;
       _moveBodyActive = false;
       _moveBodyBodyId = null;
+      _moveBodyRotationAxisEntity = null;
+      _moveBodyRotationAxis = null;
+      _moveBodyRotationAngle = 0.0;
       _selectedEntities = _entitiesBeforeMoveBody ?? {};
       _entitiesBeforeMoveBody = null;
       _previewMoveBodyFeatureId = null;
@@ -9853,6 +10039,8 @@ class _PartScreenState extends State<PartScreen> {
             previewId,
             bodyId: editSnapshot.bodyId,
             delta: [dx, dy, dz],
+            rotationAxis: editSnapshot.rotationAxis,
+            rotationAngleDegrees: editSnapshot.rotationAngleDegrees,
             copy: editSnapshot.copy,
           );
           await _refreshFeatures();
@@ -10034,7 +10222,12 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _moveFaceActive = true;
       _moveFaceRef = faceRef;
+      _moveFaceMode = MoveFaceMode.offset;
       _moveFaceOffset = 1.0;
+      _moveFaceDelta = (0.0, 0.0, 0.0);
+      _moveFaceDirectionEntity = null;
+      _moveFaceDirection = null;
+      _moveFaceDirectionDistance = 1.0;
       _meshBeforeMoveFace = _bodies;
       _entitiesBeforeMoveFace = _selectedEntities;
       _selectionMode = true;
@@ -10045,32 +10238,70 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   /// B4: opens [MoveFacePanel] to edit an *already-existing* MoveFaceFeature
-  /// - mirrors [_openScaleBodyPanelForEdit]'s shape. Only opens for a
-  /// Feature whose current mode actually *is* offset (`feature.
-  /// offsetDistance != null`) - v1 client scope has no delta/direction-mode
-  /// UI to show one of those in instead (see this file's own "Direct
-  /// Editing family, fifth/last entry: Move Face" state-field section
-  /// header comment), so a non-offset-mode MoveFaceFeature falls through to
-  /// [_onFeatureTap]'s own defensive `if (!opened) await _endRollback()`
-  /// fallback rather than opening a panel that would silently misrepresent
-  /// it.
+  /// - mirrors [_openScaleBodyPanelForEdit]'s shape, widened to open for a
+  /// Feature currently in any of the three modes (reconstructing whichever
+  /// one it's actually in), not offset-only as before.
   bool _openMoveFacePanelForEdit(FeatureDto feature) {
     final faceRef = feature.faceRef;
-    final offsetDistance = feature.offsetDistance;
-    if (faceRef == null || offsetDistance == null) return false;
+    if (faceRef == null) return false;
+
+    final MoveFaceMode mode;
+    final rawDelta = feature.delta;
+    final direction = feature.directionRef;
+    if (feature.offsetDistance != null) {
+      mode = MoveFaceMode.offset;
+    } else if (rawDelta != null && rawDelta.length == 3) {
+      mode = MoveFaceMode.delta;
+    } else if (direction != null || feature.directionDistance != null) {
+      mode = MoveFaceMode.direction;
+    } else {
+      // Defensive - a real MoveFaceFeature always has exactly one mode set
+      // (`_validate_move_face_payload`'s own backend contract), but this
+      // stays defensive rather than assuming, same as every other DTO-to-
+      // panel seed in this file.
+      return false;
+    }
+    final offsetDistance = feature.offsetDistance ?? 1.0;
+    final delta =
+        rawDelta != null && rawDelta.length == 3 ? (rawDelta[0], rawDelta[1], rawDelta[2]) : (0.0, 0.0, 0.0);
+    final directionDistance = feature.directionDistance ?? 1.0;
+    final directionEntity = direction == null ? null : _patternEdgeEntityFor(direction);
+
     setState(() {
       _moveFaceActive = true;
       _editingMoveFaceFeatureId = feature.id;
       _previewMoveFaceFeatureId = feature.id;
       _moveFaceRef = faceRef;
+      _moveFaceMode = mode;
       _moveFaceOffset = offsetDistance;
-      _moveFaceEditSnapshot = (faceRef: faceRef, offsetDistance: offsetDistance);
+      _moveFaceDelta = delta;
+      _moveFaceDirection = direction;
+      _moveFaceDirectionEntity = directionEntity;
+      _moveFaceDirectionDistance = directionDistance;
+      _moveFaceEditSnapshot = (
+        faceRef: faceRef,
+        mode: mode,
+        offsetDistance: offsetDistance,
+        delta: delta,
+        direction: direction,
+        directionDistance: directionDistance,
+      );
       _meshBeforeMoveFace = _bodies;
       _entitiesBeforeMoveFace = _selectedEntities;
       _selectionMode = true;
       _selectionFilterOverrides.push(_moveFaceSelectionFilter);
     });
     return true;
+  }
+
+  /// [MoveFacePanel.onModeChanged] - switches which of the three mode
+  /// sections is live, then reschedules the preview against whichever
+  /// mode's own current value(s) are already held (each mode's own field
+  /// state survives a switch away and back, mirrors [MoveFacePanel]'s own
+  /// "fields exist regardless of the active mode" doc comment).
+  void _onMoveFaceModeChanged(MoveFaceMode mode) {
+    setState(() => _moveFaceMode = mode);
+    _scheduleMoveFacePreview();
   }
 
   /// [MoveFacePanel.onOffsetChanged] - records the latest value immediately
@@ -10082,33 +10313,120 @@ class _PartScreenState extends State<PartScreen> {
     _scheduleMoveFacePreview();
   }
 
+  /// [MoveFacePanel.onDeltaChanged] - mirrors [_onMoveBodyDeltaChanged].
+  void _onMoveFaceDeltaChanged(double dx, double dy, double dz) {
+    _moveFaceDelta = (dx, dy, dz);
+    _scheduleMoveFacePreview();
+  }
+
+  /// [MoveFacePanel.onDirectionDistanceChanged] - mirrors
+  /// [_onMoveFaceOffsetChanged].
+  void _onMoveFaceDirectionDistanceChanged(double distance) {
+    _moveFaceDirectionDistance = distance;
+    _scheduleMoveFacePreview();
+  }
+
+  /// [_toggleSelectedEntity]'s edge/sketchLine special case for a live
+  /// [MoveFacePanel] session in Direction mode - replaces whatever
+  /// direction entity (if any) is currently picked with [entity], unless
+  /// [entity] was already the one picked, in which case it's cleared
+  /// instead - mirrors [_setMoveBodyRotationAxis]/[_setPatternAxisFromEntity]'s
+  /// identical single-slot replace-or-clear shape, reusing the same
+  /// generic [_patternDirectionRefDtoFor] conversion (not Pattern-specific
+  /// despite the name).
+  void _setMoveFaceDirectionFromEntity(SelectionEntityRef entity) {
+    setState(() {
+      final next = Set<SelectionEntityRef>.of(_selectedEntities);
+      final alreadyPicked = _moveFaceDirectionEntity == entity;
+      if (_moveFaceDirectionEntity != null) next.remove(_moveFaceDirectionEntity);
+      final newEntity = alreadyPicked ? null : entity;
+      if (newEntity != null) next.add(newEntity);
+      _selectedEntities = next;
+      _moveFaceDirectionEntity = newEntity;
+      _moveFaceDirection = _patternDirectionRefDtoFor(newEntity);
+    });
+    _scheduleMoveFacePreview();
+  }
+
+  /// [MoveFacePanel.onSetDirectionFixedAxis] - sets Direction mode's
+  /// reference to a fixed world axis directly (no viewport pick involved),
+  /// clearing whatever edge/Sketch-Line entity it previously held (and its
+  /// viewport highlight, if any) - mirrors [_setPatternFixedAxis]'s
+  /// identical shape.
+  void _setMoveFaceDirectionFixedAxis(String axis) {
+    setState(() {
+      final next = Set<SelectionEntityRef>.of(_selectedEntities);
+      if (_moveFaceDirectionEntity != null) next.remove(_moveFaceDirectionEntity);
+      _selectedEntities = next;
+      _moveFaceDirectionEntity = null;
+      _moveFaceDirection = PatternDirectionRefDto(fixedAxis: axis);
+    });
+    _scheduleMoveFacePreview();
+  }
+
   /// Mirrors [_scheduleScaleBodyPreview] exactly, just against
-  /// [_ensureMoveFaceFeatureExists] instead.
+  /// [_ensureMoveFaceFeatureExists] instead, and branching on
+  /// [_moveFaceMode] to only require the active mode's own value(s) to be
+  /// ready before scheduling.
   void _scheduleMoveFacePreview() {
     _moveFaceDebounce?.cancel();
+    final faceRef = _moveFaceRef;
+    if (faceRef == null) return;
+    if (_moveFaceMode == MoveFaceMode.direction && _moveFaceDirection == null) {
+      return; // Nothing resolvable yet - mirrors PatternPanel's own "no axis, no preview" gate.
+    }
     _moveFaceDebounce = Timer(const Duration(milliseconds: 500), () {
-      final faceRef = _moveFaceRef;
-      if (faceRef == null) return;
-      _runGuarded(() => _ensureMoveFaceFeatureExists(faceRef, _moveFaceOffset));
+      _runGuarded(() => _ensureMoveFaceFeatureExists(
+            faceRef,
+            _moveFaceMode,
+            _moveFaceOffset,
+            _moveFaceDelta,
+            _moveFaceDirection,
+            _moveFaceDirectionDistance,
+          ));
     });
   }
 
   /// Create-or-update - mirrors [_ensureScaleBodyFeatureExists]'s exact
-  /// branching shape.
-  Future<void> _ensureMoveFaceFeatureExists(SubShapeRefDto faceRef, double offset) async {
+  /// branching shape, plus [mode] deciding which one of
+  /// [offsetDistance]/[delta]/[direction]+[directionDistance] is actually
+  /// sent (the other two always travel as explicit nulls - see
+  /// [DocumentApiClient.updateMoveFaceFeature]'s own doc comment for why
+  /// that's required, not optional, for a PATCH-driven mode switch to
+  /// actually take effect server-side).
+  Future<void> _ensureMoveFaceFeatureExists(
+    SubShapeRefDto faceRef,
+    MoveFaceMode mode,
+    double offsetDistance,
+    (double, double, double) delta,
+    PatternDirectionRefDto? direction,
+    double directionDistance,
+  ) async {
     final part = _part;
     if (part == null) return;
 
+    final (dx, dy, dz) = delta;
     final existingId = _previewMoveFaceFeatureId;
     if (existingId == null) {
       final created = await _api.createMoveFaceFeature(
         part.id,
         faceRef: faceRef,
-        offsetDistance: offset,
+        offsetDistance: mode == MoveFaceMode.offset ? offsetDistance : null,
+        delta: mode == MoveFaceMode.delta ? [dx, dy, dz] : null,
+        directionRef: mode == MoveFaceMode.direction ? direction : null,
+        directionDistance: mode == MoveFaceMode.direction ? directionDistance : null,
       );
       _previewMoveFaceFeatureId = created.id;
     } else {
-      await _api.updateMoveFaceFeature(part.id, existingId, faceRef: faceRef, offsetDistance: offset);
+      await _api.updateMoveFaceFeature(
+        part.id,
+        existingId,
+        faceRef: faceRef,
+        offsetDistance: mode == MoveFaceMode.offset ? offsetDistance : null,
+        delta: mode == MoveFaceMode.delta ? [dx, dy, dz] : null,
+        directionRef: mode == MoveFaceMode.direction ? direction : null,
+        directionDistance: mode == MoveFaceMode.direction ? directionDistance : null,
+      );
     }
     await _refreshMesh();
   }
@@ -10119,9 +10437,15 @@ class _PartScreenState extends State<PartScreen> {
   Future<void> _confirmMoveFace() async {
     _moveFaceDebounce?.cancel();
     final faceRef = _moveFaceRef;
+    final mode = _moveFaceMode;
     final offset = _moveFaceOffset;
+    final delta = _moveFaceDelta;
+    final direction = _moveFaceDirection;
+    final directionDistance = _moveFaceDirectionDistance;
     await _runGuarded(() async {
-      if (faceRef != null) await _ensureMoveFaceFeatureExists(faceRef, offset);
+      if (faceRef != null) {
+        await _ensureMoveFaceFeatureExists(faceRef, mode, offset, delta, direction, directionDistance);
+      }
       await _refreshFeatures();
     });
     if (!mounted) return;
@@ -10129,6 +10453,8 @@ class _PartScreenState extends State<PartScreen> {
       _featureTreeVisible = false;
       _moveFaceActive = false;
       _moveFaceRef = null;
+      _moveFaceDirectionEntity = null;
+      _moveFaceDirection = null;
       _selectedEntities = _entitiesBeforeMoveFace ?? {};
       _entitiesBeforeMoveFace = null;
       _previewMoveFaceFeatureId = null;
@@ -10141,9 +10467,9 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   /// Deletes the just-created preview MoveFaceFeature (new-move flow, if
-  /// any) or PATCHes [_moveFaceEditSnapshot]'s stashed original `face_ref`/
-  /// `offset_distance` back (edit flow) - mirrors [_cancelScaleBody]'s
-  /// structure exactly.
+  /// any) or PATCHes [_moveFaceEditSnapshot]'s stashed original `face_ref`
+  /// and whichever mode it was in back (edit flow) - mirrors
+  /// [_cancelScaleBody]'s structure exactly.
   Future<void> _cancelMoveFace() async {
     _moveFaceDebounce?.cancel();
     final part = _part;
@@ -10155,6 +10481,8 @@ class _PartScreenState extends State<PartScreen> {
       _featureTreeVisible = false;
       _moveFaceActive = false;
       _moveFaceRef = null;
+      _moveFaceDirectionEntity = null;
+      _moveFaceDirection = null;
       _selectedEntities = _entitiesBeforeMoveFace ?? {};
       _entitiesBeforeMoveFace = null;
       _previewMoveFaceFeatureId = null;
@@ -10170,7 +10498,13 @@ class _PartScreenState extends State<PartScreen> {
             part.id,
             previewId,
             faceRef: editSnapshot.faceRef,
-            offsetDistance: editSnapshot.offsetDistance,
+            offsetDistance: editSnapshot.mode == MoveFaceMode.offset ? editSnapshot.offsetDistance : null,
+            delta: editSnapshot.mode == MoveFaceMode.delta
+                ? [editSnapshot.delta.$1, editSnapshot.delta.$2, editSnapshot.delta.$3]
+                : null,
+            directionRef: editSnapshot.mode == MoveFaceMode.direction ? editSnapshot.direction : null,
+            directionDistance:
+                editSnapshot.mode == MoveFaceMode.direction ? editSnapshot.directionDistance : null,
           );
           await _refreshFeatures();
         });
@@ -13065,6 +13399,10 @@ class _PartScreenState extends State<PartScreen> {
                       onDeltaChanged: _onMoveBodyDeltaChanged,
                       copy: _moveBodyCopy,
                       onCopyChanged: _onMoveBodyCopyChanged,
+                      hasRotationAxis: _moveBodyRotationAxis != null,
+                      rotationAxisSummary: _patternAxisSummary(_moveBodyRotationAxis),
+                      initialRotationAngleDegrees: _moveBodyRotationAngle,
+                      onRotationAngleChanged: _onMoveBodyRotationAngleChanged,
                       onConfirm: _confirmMoveBody,
                       onCancel: _cancelMoveBody,
                     ),
@@ -13097,8 +13435,19 @@ class _PartScreenState extends State<PartScreen> {
                         _editingMoveFaceFeatureId ?? '${_moveFaceRef?.bodyId}#${_moveFaceRef?.index}',
                       ),
                       title: _editingMoveFaceFeatureId != null ? 'Edit Move Face' : 'Move Face',
+                      mode: _moveFaceMode,
+                      onModeChanged: _onMoveFaceModeChanged,
                       initialOffset: _moveFaceOffset,
                       onOffsetChanged: _onMoveFaceOffsetChanged,
+                      initialDeltaX: _moveFaceDelta.$1,
+                      initialDeltaY: _moveFaceDelta.$2,
+                      initialDeltaZ: _moveFaceDelta.$3,
+                      onDeltaChanged: _onMoveFaceDeltaChanged,
+                      hasDirection: _moveFaceDirection != null,
+                      directionSummary: _patternDirectionSummary(_moveFaceDirection),
+                      onSetDirectionFixedAxis: _setMoveFaceDirectionFixedAxis,
+                      initialDirectionDistance: _moveFaceDirectionDistance,
+                      onDirectionDistanceChanged: _onMoveFaceDirectionDistanceChanged,
                       onConfirm: _confirmMoveFace,
                       onCancel: _cancelMoveFace,
                     ),

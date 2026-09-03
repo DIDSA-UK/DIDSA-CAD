@@ -536,13 +536,25 @@ class FeatureDto {
   /// Feature persisted before its own type gained a `warnings` field.
   final List<String> warnings;
 
-  /// Only present on a `"surface"` Feature - which direction it extrudes
+  /// Present on a `"surface"` Feature - which direction it extrudes
   /// [sketchFeatureId]'s wire along (a Body edge, a Sketch Line, or a fixed
   /// world axis - reuses [PatternDirectionRefDto] verbatim, same type
   /// [direction1]/[direction2] already use). Null (the default) extrudes
   /// normal to the backing Sketch's own host plane, matching an `"extrude"`
-  /// Feature's own implicit direction.
+  /// Feature's own implicit direction. Also reused, unchanged, on a
+  /// `"move_face"` Feature using its direction-of-edge mode (paired with
+  /// [directionDistance] below) - both wire keys (`direction_ref`) are
+  /// identical, and a [FeatureDto] instance is only ever one Feature type
+  /// at a time, so no separate field is needed.
   final PatternDirectionRefDto? directionRef;
+
+  /// Direct Editing family, fifth entry - only present on a `"move_face"`
+  /// Feature using its direction-of-edge mode: the signed distance to move
+  /// along [directionRef]'s own direction - the sign is this mode's own
+  /// "Flip direction" control (mirrors Extrude's flip-via-sign convention,
+  /// not a separate boolean field - see `MoveFaceFeature.direction_ref`'s
+  /// own backend docstring).
+  final double? directionDistance;
 
   /// Boolean family, first entry - only present on a `"merge"` Feature:
   /// which Bodies (2+ ids, the backend's `MergeFeature.body_ids`) are fused
@@ -618,14 +630,10 @@ class FeatureDto {
 
   /// Direct Editing family, third entry ("Move/Copy Body") - only present
   /// on a `"move_body"` Feature: the world-space translation applied to
-  /// [bodyId], as a `[dx, dy, dz]` triple. The backend's own `rotation_
-  /// axis`/`rotation_angle_degrees` fields are deliberately not
-  /// represented here yet - the v1 client never sets them (see
-  /// `MoveBodyPanel`'s own doc comment), and omitting them from every
-  /// PATCH this client sends already preserves whatever a Feature already
-  /// has server-side (the router's own "omitted keeps current" convention),
-  /// so there is nothing for this DTO to round-trip for them until a
-  /// rotation-picking panel UI actually exists to read/write them.
+  /// [bodyId], as a `[dx, dy, dz]` triple. Also reused, unchanged, on a
+  /// `"move_face"` Feature using its delta mode (both wire keys are
+  /// literally `delta`, and a [FeatureDto] instance is only ever one
+  /// Feature type at a time, so no separate field is needed).
   final List<double>? delta;
 
   /// Direct Editing family, third entry - only present on a `"move_body"`
@@ -633,6 +641,20 @@ class FeatureDto {
   /// brand-new Body instead. Named distinctly from [consumeToolBodies] -
   /// same "false vs true" shape, different Feature type and meaning.
   final bool? moveBodyCopy;
+
+  /// Direct Editing family, third entry - only present on a `"move_body"`
+  /// Feature: the axis rotated around (a Body edge, a cylindrical Body
+  /// face, or a Sketch Line - reuses [PatternAxisRefDto] verbatim, same
+  /// type [axis] already uses for Circular Pattern). Null means no
+  /// rotation - translate-only is the common case. Named distinctly from
+  /// [axis] - that field's wire key is `axis` (Pattern's own), this one's
+  /// is `rotation_axis`, an unrelated Feature type and wire key.
+  final PatternAxisRefDto? rotationAxis;
+
+  /// Direct Editing family, third entry - only present on a `"move_body"`
+  /// Feature: the sweep angle in degrees rotated around [rotationAxis].
+  /// Meaningless (defaults to `0.0`) while [rotationAxis] is null.
+  final double? rotationAngleDegrees;
 
   /// Direct Editing family, fourth/fifth entries - only present on a
   /// `"delete_face"` or `"move_face"` Feature: the single Body face this
@@ -642,11 +664,11 @@ class FeatureDto {
   final SubShapeRefDto? faceRef;
 
   /// Direct Editing family, fifth entry - only present on a `"move_face"`
-  /// Feature using its offset-along-normal mode (v1 client scope - see
-  /// `docs/direct-editing-scope.md`; the backend's own `delta`/
-  /// `direction_ref`+`direction_distance` modes have no client-side field
-  /// yet, same "backend-ready, client not wired" treatment [rotation_axis]
-  /// gets on `"move_body"`). Named distinctly from [offset] - that field is
+  /// Feature using its offset-along-normal mode - exactly one of this,
+  /// [delta], or [directionRef]+[directionDistance] is set on any given
+  /// `"move_face"` Feature (mirrors the backend's own "exactly one of
+  /// three modes" `MoveFaceFeature` convention). Named distinctly from
+  /// [offset] - that field is
   /// `CreatePlaneFeature`'s own OFFSET_FACE distance, an unrelated Feature
   /// type and wire key (`offset`, not `offset_distance`).
   final double? offsetDistance;
@@ -721,8 +743,11 @@ class FeatureDto {
     this.factor,
     this.delta,
     this.moveBodyCopy,
+    this.rotationAxis,
+    this.rotationAngleDegrees,
     this.faceRef,
     this.offsetDistance,
+    this.directionDistance,
   });
 
   factory FeatureDto.fromJson(Map<String, dynamic> json) => FeatureDto(
@@ -845,10 +870,15 @@ class FeatureDto {
         // doc comment for why the backend's own field was renamed away
         // from `copy` (a pydantic.BaseModel.copy() collision).
         moveBodyCopy: json['make_copy'] as bool?,
+        rotationAxis: json['rotation_axis'] == null
+            ? null
+            : PatternAxisRefDto.fromJson(json['rotation_axis'] as Map<String, dynamic>),
+        rotationAngleDegrees: (json['rotation_angle_degrees'] as num?)?.toDouble(),
         faceRef: json['face_ref'] == null
             ? null
             : SubShapeRefDto.fromJson(json['face_ref'] as Map<String, dynamic>),
         offsetDistance: (json['offset_distance'] as num?)?.toDouble(),
+        directionDistance: (json['direction_distance'] as num?)?.toDouble(),
       );
 }
 
@@ -2107,13 +2137,16 @@ class DocumentApiClient {
 
   /// Direct Editing family (third entry, "Move/Copy Body"): creates a
   /// MoveBodyFeature translating [bodyId] by [delta] (a `[dx, dy, dz]`
-  /// triple). [copy] (default `false`) mirrors [consumeToolBodies]'s
-  /// plain-bool convention. Rotation is not yet exposed here - see
-  /// `FeatureDto.delta`'s own doc comment for why.
+  /// triple) and/or rotating it [rotationAngleDegrees] around
+  /// [rotationAxis] (null - the default - means no rotation, translate-only
+  /// being the common case). [copy] (default `false`) mirrors
+  /// [consumeToolBodies]'s plain-bool convention.
   Future<FeatureDto> createMoveBodyFeature(
     String partId, {
     required String bodyId,
     required List<double> delta,
+    PatternAxisRefDto? rotationAxis,
+    double rotationAngleDegrees = 0.0,
     bool copy = false,
   }) =>
       _send(
@@ -2123,21 +2156,32 @@ class DocumentApiClient {
               // Wire key is `make_copy` - see `FeatureDto.moveBodyCopy`'s own
               // doc comment for why (a pydantic.BaseModel.copy() collision
               // on the backend's own schema).
-              body: jsonEncode({'body_id': bodyId, 'delta': delta, 'make_copy': copy}),
+              body: jsonEncode({
+                'body_id': bodyId,
+                'delta': delta,
+                if (rotationAxis != null) 'rotation_axis': rotationAxis.toJson(),
+                'rotation_angle_degrees': rotationAngleDegrees,
+                'make_copy': copy,
+              }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Partial update for an existing MoveBodyFeature - mirrors
-  /// [updateScaleBodyFeature]'s own shape exactly. Omitting [delta]/[copy]
-  /// (both null) - or any other field this client doesn't send, like a
-  /// server-side `rotation_axis` - keeps its current value, per the
-  /// backend's own "omitted keeps current" convention.
+  /// [updateScaleBodyFeature]'s own shape exactly. Omitting a field (null)
+  /// keeps its current value, per the backend's own "omitted keeps current"
+  /// convention - so clearing an already-picked [rotationAxis] back to "no
+  /// rotation" isn't expressible via this method alone (matches every other
+  /// "clear a picked reference" gap this client already has elsewhere;
+  /// [rotationAngleDegrees] can still be set to `0.0` explicitly, which is
+  /// what actually matters for "no visible rotation").
   Future<FeatureDto> updateMoveBodyFeature(
     String partId,
     String featureId, {
     String? bodyId,
     List<double>? delta,
+    PatternAxisRefDto? rotationAxis,
+    double? rotationAngleDegrees,
     bool? copy,
   }) =>
       _send(
@@ -2147,6 +2191,8 @@ class DocumentApiClient {
               body: jsonEncode({
                 if (bodyId != null) 'body_id': bodyId,
                 if (delta != null) 'delta': delta,
+                if (rotationAxis != null) 'rotation_axis': rotationAxis.toJson(),
+                if (rotationAngleDegrees != null) 'rotation_angle_degrees': rotationAngleDegrees,
                 if (copy != null) 'make_copy': copy,
               }),
             ),
@@ -2190,36 +2236,61 @@ class DocumentApiClient {
       );
 
   /// Direct Editing family (fifth/last entry): creates a MoveFaceFeature
-  /// offsetting [faceRef] by [offsetDistance] along its own outward normal
-  /// - v1 client scope (see `docs/direct-editing-scope.md`; the backend's
-  /// own `delta`/`direction_ref`+`direction_distance` modes have no
-  /// client-side entry point yet). See the backend's `app.document.
-  /// move_face` for the fail-closed contract (`move_face_failed`/
-  /// `non_planar_reference`/`missing_reference` on failure).
+  /// moving [faceRef] via exactly one of [offsetDistance] (along its own
+  /// outward normal), [delta] (an explicit `[dx, dy, dz]` world-space
+  /// translation), or [directionRef]+[directionDistance] (along a picked
+  /// edge's direction, [directionDistance]'s sign acting as "Flip
+  /// direction" - mirrors Extrude's flip-via-sign convention). Callers
+  /// supply exactly one of the three - matches the backend's own
+  /// `MoveFaceFeatureCreate` "exactly one of three modes" contract
+  /// (`app.document.router._validate_move_face_payload`), not enforced
+  /// here. See the backend's `app.document.move_face` for the fail-closed
+  /// contract (`move_face_failed`/`non_planar_reference`/
+  /// `missing_reference` on failure).
   Future<FeatureDto> createMoveFaceFeature(
     String partId, {
     required SubShapeRefDto faceRef,
-    required double offsetDistance,
+    double? offsetDistance,
+    List<double>? delta,
+    PatternDirectionRefDto? directionRef,
+    double? directionDistance,
   }) =>
       _send(
         () => _httpClient.post(
               _uri('/document/parts/$partId/move-face-features'),
               headers: _headers,
-              body: jsonEncode({'face_ref': faceRef.toJson(), 'offset_distance': offsetDistance}),
+              body: jsonEncode({
+                'face_ref': faceRef.toJson(),
+                if (offsetDistance != null) 'offset_distance': offsetDistance,
+                if (delta != null) 'delta': delta,
+                if (directionRef != null) 'direction_ref': directionRef.toJson(),
+                if (directionDistance != null) 'direction_distance': directionDistance,
+              }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Partial update for an existing MoveFaceFeature - mirrors
-  /// [updateScaleBodyFeature]'s own shape exactly. Always sends
-  /// [offsetDistance] when supplied (never `delta`/`direction_ref` - this
-  /// client only ever uses offset mode), which the backend's own mode-
-  /// switching update logic accepts as "stay in/switch to offset mode".
+  /// [updateScaleBodyFeature]'s own shape for [faceRef] (omitted keeps its
+  /// current value), but **always** sends all four of [offsetDistance]/
+  /// [delta]/[directionRef]/[directionDistance] (as an explicit JSON `null`
+  /// for whichever three don't apply), never omits them. This is
+  /// deliberate, not an oversight: `MoveFaceFeatureUpdate`'s own backend
+  /// docstring warns that switching modes via PATCH requires the new
+  /// mode's field(s) *and* an explicit null for every other mode's own
+  /// field(s) in the same request - the router does not clear a field just
+  /// because a different mode's field was supplied. Safe to always resend
+  /// full mode state this way since every caller in this client already
+  /// tracks its one current mode and re-sends it in full on every
+  /// debounced tick regardless.
   Future<FeatureDto> updateMoveFaceFeature(
     String partId,
     String featureId, {
     SubShapeRefDto? faceRef,
     double? offsetDistance,
+    List<double>? delta,
+    PatternDirectionRefDto? directionRef,
+    double? directionDistance,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -2227,7 +2298,10 @@ class DocumentApiClient {
               headers: _headers,
               body: jsonEncode({
                 if (faceRef != null) 'face_ref': faceRef.toJson(),
-                if (offsetDistance != null) 'offset_distance': offsetDistance,
+                'offset_distance': offsetDistance,
+                'delta': delta,
+                'direction_ref': directionRef?.toJson(),
+                'direction_distance': directionDistance,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

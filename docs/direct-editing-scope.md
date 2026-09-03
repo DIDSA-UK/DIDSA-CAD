@@ -110,6 +110,180 @@ simultaneous moves (`face_refs: list[SubShapeRef]` instead of a single
 `face_ref`), and neighbor-consuming offsets - reusing v1's resolver
 approach and panel, not starting over.
 
+### Spike findings (2026-09-03) - throwaway pythonocc-core spike, no shipped code
+
+v1's gate ("v1 implemented and its test suite green") is satisfied, so this
+session ran the throwaway OCCT spike V2 was gated on - same methodology as
+Delete Face/Move Face v1's own spikes (build real geometry, poke every
+boundary condition, don't trust a single hand-picked "it worked" case). No
+production code changed; this is resolver-design input only, same as the
+Gear Design workstreams' own "investigate/prototype only" spike entries in
+`docs/status.md`.
+
+**The headline finding: v1's own technique (extrude-the-face-profile +
+`BRepAlgoAPI_Fuse`/`Cut`, see `app.document.move_face`'s own module
+docstring) does NOT generalize to V2 and should not be extended - it's a
+prism-sweep, which only coincides with a true face offset for a *planar*
+face pushed along a straight vector.** V2 instead needs OCCT's own
+dedicated variable-offset engine, `BRepOffset_MakeOffset` (the lower-level
+class `BRepOffsetAPI_MakeOffsetShape` wraps for the whole-shape case) -
+not previously used anywhere in this codebase:
+
+```python
+mo = BRepOffset_MakeOffset()
+mo.Initialize(shape, 0.0, tol, BRepOffset_Skin, False, False,
+              GeomAbs_Intersection, False, False)  # global offset 0.0 - untouched faces stay put
+for face, offset in face_offsets:                  # one or many faces
+    mo.SetOffsetOnFace(face, offset)                # signed along the face's own outward normal
+mo.MakeOffsetShape()
+result = mo.Shape()
+```
+
+Confirmed working, in one `MakeOffsetShape()` call each:
+
+- **Non-planar faces**: a cylindrical face's own `SetOffsetOnFace` grows/
+  shrinks its radius by exactly the offset value (`r=5` -> `r=6` for
+  offset `+1.0`, volume matches `π·r²·h` exactly) - the *same* signed-
+  along-outward-normal convention v1's planar `offset_distance` already
+  uses, so `MoveFaceFeature`'s existing sign convention needs no change
+  for V2 to reuse it on a cylindrical `face_ref`. Conical faces weren't
+  spiked (no OCCT-level reason to expect different behaviour from
+  cylindrical, since both are single-parameter analytic surfaces to this
+  algorithm, but not confirmed).
+- **Multi-face simultaneous moves**: calling `SetOffsetOnFace` once per
+  face before a single `MakeOffsetShape()` naturally does the whole
+  `face_refs: list[SubShapeRef]` job in one resolver call - confirmed with
+  two unrelated faces of the same Body offset by different amounts in one
+  pass, including one offset large enough to fully consume a third
+  feature (below). This replaces v1's "one face, one Fuse/Cut" loop shape
+  entirely rather than just repeating it per face - a materially simpler
+  resolver than the "loop v1's own technique N times" approach the scope
+  doc originally implied.
+- **Neighbor-consuming offsets**: pushing a small boss's own top face
+  inward by *exactly* its own height produces a valid, correctly-healed
+  result indistinguishable from the boss never having existed (confirmed
+  via bounding box and face count) - genuinely "consuming" the neighbor
+  feature, not just failing safely. Pushing further still (past zero,
+  i.e. asking for negative remaining material) fails closed correctly.
+
+**Two gotchas, both required reading before implementing, mirroring the
+fail-closed rigor v1's own spike already established:**
+
+1. **`IsDone() == True` and `Error() == BRepOffset_NoError` are NOT
+   sufficient success signals - `Shape()` can silently return `None` even
+   when both report success.** Confirmed reproducibly: an offset large
+   enough to fully consume *and overshoot past* a neighboring feature
+   reports `IsDone=True, Error=0` (no exception, no warning value) yet
+   `Shape()` is `None`. `resolve_move_face_v2_from_bodies` (or whatever
+   V2's resolver is named) must fail closed on
+   `shape is None or shape.IsNull()` in addition to `IsDone()`, the same
+   "don't trust the obvious success signal alone" shape `delete_face.py`'s
+   own bounding-box-growth check already established for a different
+   reason.
+2. **The technique reliably fails - same silent-`None`-`Shape()` signature
+   as above - on a coincident-plane boss/step joint built via
+   `BRepAlgoAPI_Fuse`, even for a trivially small, nowhere-near-consuming
+   offset - *unless* the input shape is first run through
+   `ShapeUpgrade_UnifySameDomain` to merge the coincident/coplanar faces
+   the Fuse left behind.** This is not an edge case: every Boss feature in
+   this codebase (`extrude.py`'s own `_apply_feature_to_bodies`) builds
+   exactly this kind of coincident-plane joint via `BRepAlgoAPI_Fuse`
+   whenever a boss lands flush on an existing face, so most real multi-
+   feature Parts would hit this without the unify step. With
+   `ShapeUpgrade_UnifySameDomain` run first, every case above (including
+   the full-consumption case) works correctly.
+
+   This surfaces a real, **unresolved** resolver-design question, not a
+   detail to paper over during implementation: `SubShapeRef.index` is a
+   `topexp.MapShapes` enumeration index captured at reference-creation
+   time against a Body's shape as `compute_part_bodies` currently produces
+   it (see `SubShapeRef`'s own docstring in `models.py`) - unifying same-
+   domain faces changes both the face *count* and *order* (11 faces -> 9
+   in the spike's own boss/base test), so resolving a `face_ref` captured
+   pre-unify against a post-unify shape is not guaranteed to hit the same
+   face, or any face at all. Running the unify lazily inside V2's own
+   resolver (only when it needs to offset a face) would desync V2's own
+   `face_ref`s from the indices the client captured them against. Making
+   `compute_part_bodies` unify same-domain faces unconditionally for every
+   Feature (not just V2's) would fix that desync going forward, but is a
+   change to the shared accumulator every existing Feature type
+   (Fillet's `edge_refs`, Create Plane's `face_ref`, Pattern's axis refs,
+   v1 Delete Face/Move Face's own `face_ref`) resolves sub-shapes against
+   - any `SubShapeRef` already stored in an existing saved Part was
+   captured against the *current*, non-unified numbering, and unifying by
+   default could silently invalidate it. This needs a real design pass
+   (most likely: unify once, at Body-creation/mesh-generation time, before
+   any `SubShapeRef` is ever captured against a Body - not as a
+   V2-resolver-local step) before V2 implementation starts, not something
+   to improvise mid-implementation.
+
+**Not spiked / still genuinely open**: conical faces specifically (see
+above); the exact structured-422 failure-type names/messages V2 should use
+for its two new failure modes; whether `GeomAbs_Intersection` (required -
+the default `GeomAbs_Arc` join type failed outright on a plain box in this
+same spike) has its own failure modes on more complex real Part topology
+than the box/boss/cylinder primitives tested here.
+
+### Spike findings addendum (2026-09-03) - follow-up spike: FACE-order equivalence and conical faces
+
+Same-session follow-up, closing the two questions the spike above left
+open before any go/no-go decision on the unify-related compat break. Still
+throwaway/no shipped code - a second confirmatory pass, not implementation.
+
+**FACE-order equivalence - confirmed safe.** The open risk was whether
+`TopExp_Explorer(shape, TopAbs_FACE)` iteration order (`mesh.py`'s
+`tessellate_shape`, which assigns the client's own `face_id`) still
+coincides with `topexp.MapShapes(shape, TopAbs_FACE, ...)` order
+(`resolve_subshape_from_bodies`'s own `SubShapeRef.index` resolution)
+*after* a `ShapeUpgrade_UnifySameDomain` pass, not just before. Tested
+against four representative multi-feature bodies - a single boss on a
+box (the original spike's own case, 11 faces -> 9 post-unify), two bosses
+at different heights on one box (16 faces, unchanged by unify - no
+coincident planes between the two bosses themselves), a box with a
+through-hole *and* a boss (12 faces, likewise unchanged), and an
+asymmetric three-level staircase (16 faces -> 10 post-unify) - by directly
+diffing the two orderings face-by-face (via `TopoDS_Face.IsSame`, not just
+comparing counts) both before and after unify. **The two orderings matched
+exactly in all four cases, both pre- and post-unify, with zero exceptions**
+- unify does not introduce any new divergence between what the client's
+`face_id` numbering means and what `SubShapeRef.index` resolves to. This
+directly de-risks the `_apply_feature_to_bodies` unify insertion point the
+first spike's own backend exploration identified: gating it with a
+`unify: bool` parameter (`False` from `compute_part_bodies_coarse`) remains
+the right shape, and this addendum finds no additional numbering hazard
+beyond the already-known `SubShapeRef`-index compat-break question itself
+(still open - see above, this addendum doesn't resolve *that*, only rules
+out a second, distinct risk stacking on top of it).
+
+**Conical faces - confirmed working, with one real UX nuance for a future
+client to account for (not a blocker).** Repeated the first spike's
+cylindrical-face `SetOffsetOnFace` test against a real truncated cone
+(`BRepPrimAPI_MakeCone`, base radius 5, top radius 2, height 10) - every
+offset tried (`+0.5`, `+1.0`, `-0.5`, `-1.0`) produced a valid result,
+still a genuine cone (confirmed via `BRepAdaptor_Surface.GetType() ==
+GeomAbs_Cone` on the result's own side face, not just "some curved face"),
+volume changing correctly in the expected direction (positive = grows,
+negative = shrinks) for both. The nuance: **a cone's radius growth is not
+equal to the offset value**, unlike a cylinder's exact 1:1 relationship
+(confirmed again here as a direct side-by-side reference: cylinder r=5,
+offset `+1.0` -> r=6 exactly, volume 1130.97 matching `π·6²·10` to 4
+decimal places). A cone's own surface normal has both a radial and an
+axial component (it's not purely radial the way a cylinder's is), so
+offsetting *along the true surface normal* - the geometrically correct
+operation `BRepOffset_MakeOffset` actually performs - moves the base
+radius by `offset / cos(θ)`, where `θ = atan(Δr / Δh)` is the cone's own
+half-angle from its axis (confirmed numerically: `offset=+0.5` grew the
+base radius from `5.0` to `5.522`, and `0.5 / cos(atan(0.3)) = 0.522`
+exactly, matching `θ = atan((5-2)/10) = atan(0.3)` for this cone). This is
+correct, expected OCCT behaviour for a *true* face offset, not a bug - but
+it means a future client "offset a conical face by X" UI cannot promise
+"the radius grows by exactly X" the way it legitimately can for a
+cylindrical face, and should either say "offset along the surface normal"
+generically or compute/display the resulting radius change separately if
+a radius-specific readout is wanted. No change to V1's own client scope
+(planar-only) is implied by this - purely a V2 client-UI note for
+whenever that work starts.
+
 ## Architecture this family reuses (no new mechanism needed)
 
 - **In-place modify pattern** (Fillet/Chamfer, `fillet.py`/`chamfer.py`):
