@@ -284,6 +284,77 @@ a radius-specific readout is wanted. No change to V1's own client scope
 (planar-only) is implied by this - purely a V2 client-UI note for
 whenever that work starts.
 
+### Delete Face V2 spike findings (2026-09-03) - multi-face and non-planar removal
+
+Delete Face had no V2 spike at all before this - v1's own spike (this
+module's own docstring, `app.document.delete_face`) only ever called
+`BRepAlgoAPI_Defeaturing.AddFaceToRemove` once per `Build()`, and only
+ever removed a Fillet-generated blend face or a Chamfer's own planar
+face, never two faces at once and never an arbitrary primitive non-planar
+face. This throwaway spike (real pythonocc-core, same bootstrapped env)
+closes those two gaps plus the first V2 spike's own flagged-but-untested
+unify-vs-Fillet/Chamfer risk, before any Delete Face V2 code is written.
+
+**Multi-face removal in one `Build()` call - confirmed working.**
+`AddFaceToRemove`'s own name (not `SetFaceToRemove`) turned out to mean
+exactly what it implies: calling it twice before one `Build()` removes
+both faces in a single, correctly-healed pass. Removing both of a box's
+two independently-filleted edges' own blend faces at once restored the
+*exact* original sharp box (`IsDone=True, HasWarnings=False`, 6 faces,
+volume 1000.0000 - bit-for-bit the same numbers a single-face removal
+already produced). The "no natural heal" case - removing both top faces
+of two independent bosses on the same box, with nothing for OCCT to heal
+into - correctly reports `HasWarnings=True` (the same documented signal
+v1's own single-face silent-no-op case uses), with the returned shape's
+own volume unchanged from before removal (2066.0000, the pre-removal
+volume exactly) - i.e. the existing `not IsDone() or HasWarnings()`
+fail-closed check already in `delete_face.py` catches the multi-face
+no-heal case with zero changes needed to that check itself.
+
+**Arbitrary (non-fillet-blend) non-planar face removal - confirmed
+working, with the same documented fail-closed signal.** Removing a plain
+box's own through-hole cylindrical wall (not a fillet blend) restored the
+exact original solid box (`HasWarnings=False`, 6 faces, volume 1000.0000)
+- the technique isn't fillet-blend-specific, a genuinely arbitrary
+primitive cylindrical face works too. A conical boss's own side wall, with
+no natural heal available (same "nothing to heal into" shape as the
+multi-boss case above), correctly reports `HasWarnings=True` with the
+volume unchanged from the pre-removal shape (1054.4543, matching the
+original box-plus-cone-frustum volume exactly) - the existing
+`HasWarnings()` signal generalizes to non-planar faces without any new
+detection logic.
+
+**Unify vs. Fillet/Chamfer tangent surfaces - confirmed safe, but only
+once tested against the actual combined-risk topology.** A first attempt
+(a boss placed fully *inside* a box's own top face, away from its edges)
+was inconclusive - that topology's own Boolean output never fragmented
+the box's own top face into separate coincident pieces in the first
+place, so unify was correctly a no-op there but proved nothing about the
+real risk. Rebuilding with the *actual* risk topology (a boss flush with
+the box's own corner/edges - the same shape the first V2 spike's own
+coincident-plane finding used) plus a Fillet on one of the boss's own top
+edges, right next to the fragmented coincident-plane joint, gave a
+conclusive answer: pre-unify, 12 faces (1 cylindrical fillet blend + 11
+planar, matching the un-filleted case's own 11); post-unify, 10 faces (the
+same 2-face reduction the pure boss/base case already showed, 11 -> 9,
+plus the fillet blend carried through unchanged) - **still exactly 1
+cylindrical face, unchanged volume, still valid, and `TopExp_Explorer`
+still matches `topexp.MapShapes` face-for-face** both before and after.
+`ShapeUpgrade_UnifySameDomain` correctly distinguishes the curved fillet
+surface from the coincident planar patches it's tangent to and merges
+only the latter - it does not incorrectly fold a Fillet/Chamfer's own
+blend face into an adjacent planar one.
+
+**Conclusion**: nothing found in this spike narrows Delete Face V2's
+scope below the full "multi-face + non-planar" the user asked for - both
+confirmed working with the existing fail-closed contract (`HasWarnings()`)
+generalizing cleanly, and the shared `unify` step confirmed safe against
+the specific tangent-surface risk the first V2 spike flagged but never
+tested. Delete Face V2 can proceed on the same technique (`BRepAlgoAPI_
+Defeaturing`, one `AddFaceToRemove` call per face in `face_refs`, one
+`Build()`) v1 already uses, just without the single-face/planar-only
+restrictions.
+
 ## Architecture this family reuses (no new mechanism needed)
 
 - **In-place modify pattern** (Fillet/Chamfer, `fillet.py`/`chamfer.py`):
