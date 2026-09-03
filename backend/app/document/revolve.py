@@ -32,6 +32,7 @@ from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape
 from app.document.create_plane import resolve_sketch_basis
 from app.document.extrude import (
     EXTRUDABLE_STATUSES,
+    EdgeProvenanceEntry,
     _edge_provenance_from_builder,
     _profile_boundary_shapes,
     _record_feature_edge_provenance,
@@ -184,7 +185,7 @@ def resolve_revolve_from_bodies(
     profiles = select_profiles(candidates, feature.profile_refs)
 
     solids = []
-    provenance_by_profile: list[dict[str, dict[str, int]] | None] = []
+    provenance_by_profile: list[dict[str, dict[str, EdgeProvenanceEntry]] | None] = []
     for profile in profiles:
         face = face_for_profile(sketch, profile, basis)
         revol_maker = BRepPrimAPI_MakeRevol(face, axis, angle_radians)

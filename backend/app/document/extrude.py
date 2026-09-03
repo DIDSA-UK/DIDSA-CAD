@@ -540,7 +540,17 @@ def _rounded_point(pnt: gp_Pnt) -> tuple[float, float, float]:
     return (round(pnt.X(), 6), round(pnt.Y(), 6), round(pnt.Z(), 6))
 
 
-def _edge_vertex_key_set(edge: TopoDS_Edge) -> frozenset[tuple[float, float, float]]:
+def edge_vertex_key_set(edge: TopoDS_Edge) -> frozenset[tuple[float, float, float]]:
+    """The rounded real-world coordinates of `edge`'s two endpoints, as a
+    frozenset - a shape-independent identity for a straight lateral edge
+    (two different `TopoDS_Shape` objects built from the same underlying
+    geometry, e.g. a Body before and after a later Fillet/Chamfer modifies
+    an *unrelated* part of it, agree on this even though `topexp.MapShapes`'
+    own per-shape edge *index* for that same edge is not guaranteed to -
+    see `app.document.ai_plan_edges._resolve_provenance_selector`'s own
+    doc comment for why that distinction matters. No leading underscore -
+    used across module boundaries (`app.document.ai_plan_edges`), unlike
+    `_rounded_point` above, which stays module-private."""
     v1, v2 = TopoDS_Vertex(), TopoDS_Vertex()
     topexp.Vertices(edge, v1, v2)
     return frozenset({_rounded_point(BRep_Tool.Pnt(v1)), _rounded_point(BRep_Tool.Pnt(v2))})
@@ -553,11 +563,11 @@ def _far_edge_in_lateral_face(lateral_face, queried_edge: TopoDS_Edge) -> TopoDS
     confirmed by that workstream's own spike as a purely topological (no
     vector-direction math) way to pick the "far" counterpart, which
     generalizes to Revolve's curved lateral faces too."""
-    queried_keys = _edge_vertex_key_set(queried_edge)
+    queried_keys = edge_vertex_key_set(queried_edge)
     explorer = TopExp_Explorer(lateral_face, TopAbs_EDGE)
     while explorer.More():
         candidate = topods.Edge(explorer.Current())
-        if _edge_vertex_key_set(candidate).isdisjoint(queried_keys):
+        if edge_vertex_key_set(candidate).isdisjoint(queried_keys):
             return candidate
         explorer.Next()
     return None
@@ -572,45 +582,77 @@ def _edge_index(edge_map: TopTools_IndexedMapOfShape, edge: TopoDS_Edge) -> int 
     return (index - 1) if index > 0 else None
 
 
+EdgeProvenanceEntry = tuple[int, frozenset[tuple[float, float, float]]]
+
+
 def _edge_provenance_from_builder(
     builder, point_to_vertex: dict[str, TopoDS_Vertex], line_to_edge: dict[str, TopoDS_Edge], final_shape: TopoDS_Shape
-) -> dict[str, dict[str, int]] | None:
+) -> dict[str, dict[str, EdgeProvenanceEntry]] | None:
     """Workstream 12: `{"points": {...}, "lines_near": {...}, "lines_far":
-    {...}}`, each mapping a real sketch entity id to a 0-based real edge
-    index into `final_shape`'s own `topexp.MapShapes` scheme (the same one
-    `app.document.ai_plan_edges` already uses) - built by querying
-    `.Generated()`/`.Modified()` on `builder` (the exact live object that
-    just constructed `final_shape` - see this module's own spike findings,
-    `docs/ai-modelling/12-provenance-edge-selectors.md`, for why `.
-    Generated()` returns nothing for a shape not literally the one the
-    builder was given). Returns `None` if nothing at all resolved (every
-    point/line failed to match - not expected in practice, defensive
-    only)."""
+    {...}}`, each mapping a real sketch entity id to an `EdgeProvenanceEntry`
+    - a 0-based real edge index into `final_shape`'s own `topexp.MapShapes`
+    scheme (the same one `app.document.ai_plan_edges` already uses), paired
+    with that same edge's own `edge_vertex_key_set` real-world-coordinate
+    identity - built by querying `.Generated()`/`.Modified()` on `builder`
+    (the exact live object that just constructed `final_shape` - see this
+    module's own spike findings, `docs/ai-modelling/12-provenance-edge-
+    selectors.md`, for why `.Generated()` returns nothing for a shape not
+    literally the one the builder was given). Returns `None` if nothing at
+    all resolved (every point/line failed to match - not expected in
+    practice, defensive only).
+
+    Bug fix (on-device feedback, "fillets consistently failing to find
+    their target edges"): the coordinate half of each entry exists because
+    the index half is only ever valid against `final_shape` itself - the
+    *pristine*, just-built Extrude/Revolve/Sweep body, computed once and
+    cached (`_record_feature_edge_provenance` below) for reuse by every
+    later Fillet/Chamfer step that targets the same Body via `edges.of`.
+    `app.document.ai_plan_edges._resolve_provenance_selector` needs to
+    resolve against that Body's *current* shape, which for the second (and
+    every later) Fillet/Chamfer step in a chain is no longer `final_shape`
+    at all - it's already been rebuilt by the prior Fillet/Chamfer's own
+    `BRepFilletAPI_MakeFillet`/`BRepFilletAPI_MakeChamfer`. Confirmed by an
+    on-device spike that `topexp.MapShapes`' own edge-index ordering is not
+    preserved by that rebuild even for edges the prior operation never
+    touched (an untouched corner's own lateral edge silently moved from
+    index 13 to a real-but-unrelated edge on re-resolution) - so a caller
+    trusting the cached index verbatim against a Body a prior Fillet/
+    Chamfer already modified can silently target the wrong edge (or, if the
+    wrong edge can't take the requested radius, fail with a confusing
+    `fillet_failed`/`chamfer_failed`) instead of the intended corner. Real-
+    world coordinates, unlike a `topexp.MapShapes` index, are stable across
+    that rebuild for any edge the prior operation didn't itself touch (the
+    same spike confirmed the original edge is still findable, just at a
+    different index) - so the resolver re-locates the edge by this anchor
+    against the Body's own live topology at resolution time instead of
+    trusting the index directly, falling back to the index only as the
+    initial candidate to check as a cheap fast path."""
     edge_map = TopTools_IndexedMapOfShape()
     topexp.MapShapes(final_shape, TopAbs_EDGE, edge_map)
 
-    points: dict[str, int] = {}
+    points: dict[str, EdgeProvenanceEntry] = {}
     for point_id, vertex in point_to_vertex.items():
         for generated in builder.Generated(vertex):
             if generated.ShapeType() == TopAbs_EDGE:
-                index = _edge_index(edge_map, topods.Edge(generated))
+                edge = topods.Edge(generated)
+                index = _edge_index(edge_map, edge)
                 if index is not None:
-                    points[point_id] = index
+                    points[point_id] = (index, edge_vertex_key_set(edge))
             break
 
-    lines_near: dict[str, int] = {}
-    lines_far: dict[str, int] = {}
+    lines_near: dict[str, EdgeProvenanceEntry] = {}
+    lines_far: dict[str, EdgeProvenanceEntry] = {}
     for line_id, edge in line_to_edge.items():
         near_index = _edge_index(edge_map, edge)
         if near_index is not None:
-            lines_near[line_id] = near_index
+            lines_near[line_id] = (near_index, edge_vertex_key_set(edge))
         for generated in builder.Generated(edge):
             if generated.ShapeType() == TopAbs_FACE:
                 far_edge = _far_edge_in_lateral_face(generated, edge)
                 if far_edge is not None:
                     far_index = _edge_index(edge_map, far_edge)
                     if far_index is not None:
-                        lines_far[line_id] = far_index
+                        lines_far[line_id] = (far_index, edge_vertex_key_set(far_edge))
             break
 
     if not points and not lines_near and not lines_far:
@@ -628,7 +670,7 @@ def _edge_provenance_from_builder(
 # snapshots) - see that cache's own docstring for the full "piggyback on
 # body_cache's invalidation for free" reasoning, which applies identically
 # here even though the two caches serve different consumers.
-_feature_edge_provenance_cache: dict[str, dict[str, dict[str, dict[str, int]]]] = {}
+_feature_edge_provenance_cache: dict[str, dict[str, dict[str, dict[str, EdgeProvenanceEntry]]]] = {}
 
 
 def clear_feature_edge_provenance_cache() -> None:
@@ -639,7 +681,7 @@ def clear_feature_edge_provenance_cache() -> None:
 
 
 def _record_feature_edge_provenance(
-    part: Part, feature_id: str, provenance: dict[str, dict[str, int]], excluded_feature_ids: frozenset[str]
+    part: Part, feature_id: str, provenance: dict[str, dict[str, EdgeProvenanceEntry]], excluded_feature_ids: frozenset[str]
 ) -> None:
     """Mirrors `_record_feature_warnings` exactly, including its own
     `excluded_feature_ids` guard (see that function's own doc comment) - a
@@ -651,7 +693,7 @@ def _record_feature_edge_provenance(
     _feature_edge_provenance_cache.setdefault(part.id, {})[feature_id] = provenance
 
 
-def cached_feature_edge_provenance(part: Part, feature_id: str) -> dict[str, dict[str, int]] | None:
+def cached_feature_edge_provenance(part: Part, feature_id: str) -> dict[str, dict[str, EdgeProvenanceEntry]] | None:
     """The edge-index provenance most recently recorded for `feature_id`,
     or `None` if never recorded - no matching profile shape, a
     MultiProfile/fused/cut/`target_body_ids`-non-empty case (see each
@@ -659,13 +701,18 @@ def cached_feature_edge_provenance(part: Part, feature_id: str) -> dict[str, dic
     case" comment), or this Feature's step genuinely hasn't run since the
     last `clear_feature_edge_provenance_cache()`. Callers should call
     `compute_part_bodies(part)` first, same as `cached_feature_warnings`
-    already documents."""
+    already documents. Each entry's index is only valid against the exact
+    pristine shape this Feature's own construction last produced - a caller
+    resolving against a Body a later Fillet/Chamfer has since modified must
+    re-locate the edge by the entry's own coordinate anchor instead of
+    trusting the index directly (see `_edge_provenance_from_builder`'s own
+    doc comment)."""
     return _feature_edge_provenance_cache.get(part.id, {}).get(feature_id)
 
 
 def _prism_for_profile(
     sketch: Sketch, profile: Profile, feature: ExtrudeFeature, basis: ResolvedPlane
-) -> tuple[TopoDS_Shape, dict[str, dict[str, int]] | None]:
+) -> tuple[TopoDS_Shape, dict[str, dict[str, EdgeProvenanceEntry]] | None]:
     """One profile's face, moved to `feature.start_distance` along the
     Sketch plane's normal and swept the remaining span to
     `feature.end_distance` - the single-profile half of what used to be

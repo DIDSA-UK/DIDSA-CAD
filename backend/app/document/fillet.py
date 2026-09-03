@@ -38,6 +38,25 @@ def _fillet_failed(body_id: str) -> HTTPException:
     return HTTPException(status_code=422, detail={"type": "fillet_failed", "body_id": body_id})
 
 
+def _build_fillet(fillet_maker: BRepFilletAPI_MakeFillet, body_id: str) -> None:
+    """Bug fix (on-device feedback, "Server returned 500" on Generate):
+    `BRepFilletAPI_MakeFillet.Build()` does not *always* fail gracefully
+    into `IsDone() == False` the way `_fillet_failed`'s own doc comment
+    above already assumed it does - confirmed on-device that a genuinely
+    unsuitable edge selection can instead raise a raw OCCT `Standard_
+    Failure` (surfacing to Python as a plain `RuntimeError` through
+    pythonocc-core's own SWIG binding) straight out of `Build()`, which
+    would otherwise propagate uncaught into a generic 500 - exactly the
+    "not a malformed reference" geometric-failure class `_fillet_failed`
+    exists to report structurally instead. Never suppresses anything other
+    than `Build()` itself misbehaving - `IsDone() == False` is still
+    checked normally by the caller afterward for the ordinary case."""
+    try:
+        fillet_maker.Build()
+    except RuntimeError as exc:
+        raise _fillet_failed(body_id) from exc
+
+
 def resolve_fillet_from_bodies(
     bodies: dict[str, TopoDS_Shape],
     feature: FilletFeature,
@@ -68,7 +87,7 @@ def resolve_fillet_from_bodies(
     fillet_maker = BRepFilletAPI_MakeFillet(bodies[body_id])
     for edge in edges:
         fillet_maker.Add(feature.radius, edge)
-    fillet_maker.Build()
+    _build_fillet(fillet_maker, body_id)
     if not fillet_maker.IsDone():
         raise _fillet_failed(body_id)
     return body_id, fillet_maker.Shape()

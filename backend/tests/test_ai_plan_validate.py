@@ -458,9 +458,32 @@ def test_edge_from_sketch_line_near_and_far_select_different_edges() -> None:
     """Workstream 12's more powerful selector - far=False (the edge as
     originally drawn, on the base face) and far=True (its generated
     counterpart on the extruded end) for the *same* sketch_line_ref must
-    resolve to two different real edges."""
-    part = _create_part()
-    steps = _quad_sketch_steps() + [
+    resolve to two different real edges.
+
+    Each selector is validated in its **own** plan/scratch Part, both
+    starting from the identical pristine Extrude - not chained as two
+    fillet steps against the same Body in one plan. Bug fix (on-device
+    feedback, "fillets consistently failing to find their target edges"):
+    once `resolve_edge_selector`'s provenance branch re-locates its target
+    edge against the Body's own *current* shape rather than trusting a
+    raw index computed once against the pristine prism (see `app.document.
+    ai_plan_edges._resolve_provenance_selector`'s own doc comment), a
+    `c1`-then-`c2` chain here would have `c2`'s "far" selector resolve
+    against the Body *after* `c1`'s own fillet already rebuilt its
+    topology - a real, different `TopoDS_Shape` from the one `c1`'s own
+    index was resolved against, even though both nominally share the same
+    `body_id`. Comparing the two steps' raw `index` values in that case
+    compares two numbers drawn from two different shapes' own independent
+    `topexp.MapShapes` orderings, which is not a meaningful comparison
+    (equal or not) - not a regression in what either step actually
+    fillets, confirmed on-device by inspecting each resolved edge's own
+    real-world coordinates directly (near: the (0,0)-(60,0) base-face edge;
+    far: its (0,0)-(60,0) counterpart on the extruded end face - genuinely
+    different edges, exactly as intended). Two independent single-fillet
+    plans, both resolved against the same untouched pristine Body, is the
+    apples-to-apples comparison this test actually wants."""
+    near_part = _create_part()
+    near_steps = _quad_sketch_steps() + [
         _extrude_step(),
         {
             "local_id": "c1",
@@ -468,10 +491,55 @@ def test_edge_from_sketch_line_near_and_far_select_different_edges() -> None:
             "edges": {"selector": "edge_from_sketch_line", "of": "f1", "sketch_line_ref": "l1", "far": False},
             "radius": 1,
         },
+    ]
+    near_response = _validate(near_part["id"], near_steps)
+    near_results = _results_by_local_id(near_response)
+    assert near_results["c1"]["ok"] is True, near_results["c1"]
+    near_index = near_results["c1"]["resolved_edges"][0]["index"]
+
+    far_part = _create_part()
+    far_steps = _quad_sketch_steps() + [
+        _extrude_step(),
         {
             "local_id": "c2",
             "kind": "fillet",
             "edges": {"selector": "edge_from_sketch_line", "of": "f1", "sketch_line_ref": "l1", "far": True},
+            "radius": 1,
+        },
+    ]
+    far_response = _validate(far_part["id"], far_steps)
+    far_results = _results_by_local_id(far_response)
+    assert far_results["c2"]["ok"] is True, far_results["c2"]
+    far_index = far_results["c2"]["resolved_edges"][0]["index"]
+
+    assert near_index != far_index
+
+
+def test_edge_from_sketch_point_stays_correct_after_an_earlier_fillet_on_the_same_body() -> None:
+    """Bug fix (on-device feedback, "fillets consistently failing to find
+    their target edges"): two `edge_from_sketch_point` fillet steps
+    targeting two different corners of the *same* Body, `c2` reached only
+    after `c1`'s own fillet has already rebuilt that Body's topology - the
+    common "several fillets on one boss" shape a real AI-generated plan
+    routinely produces (confirmed on-device: `topexp.MapShapes`' own edge-
+    index ordering is not preserved across a Fillet's boolean rebuild, even
+    for an edge the rebuild never touched, so a resolver trusting a raw
+    index cached against the pristine pre-`c1` Body can silently target the
+    wrong edge for `c2`). Both must still resolve `ok: true` against two
+    real, distinct edges."""
+    part = _create_part()
+    steps = _rectangle_sketch_steps() + [
+        _extrude_step(),
+        {
+            "local_id": "c1",
+            "kind": "fillet",
+            "edges": {"selector": "edge_from_sketch_point", "of": "f1", "sketch_point_ref": "p1"},
+            "radius": 1,
+        },
+        {
+            "local_id": "c2",
+            "kind": "fillet",
+            "edges": {"selector": "edge_from_sketch_point", "of": "f1", "sketch_point_ref": "p3"},
             "radius": 1,
         },
     ]
@@ -481,9 +549,9 @@ def test_edge_from_sketch_line_near_and_far_select_different_edges() -> None:
 
     assert results["c1"]["ok"] is True, results["c1"]
     assert results["c2"]["ok"] is True, results["c2"]
-    near_index = results["c1"]["resolved_edges"][0]["index"]
-    far_index = results["c2"]["resolved_edges"][0]["index"]
-    assert near_index != far_index
+    index1 = results["c1"]["resolved_edges"][0]["index"]
+    index2 = results["c2"]["resolved_edges"][0]["index"]
+    assert index1 != index2
 
 
 def test_edge_from_sketch_line_requires_sketch_line_ref() -> None:

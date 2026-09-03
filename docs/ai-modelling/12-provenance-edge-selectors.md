@@ -433,3 +433,110 @@ before any spike script ran, to confirm the environment itself wasn't a
 confound: **1941 passed, 0 failed** (25m19s wall-clock) - clean, so
 nothing in the spike findings above is attributable to the environment
 build itself.
+
+## Bug fix (2026-09-03): edge-index staleness across chained Fillet/Chamfer steps on the same Body
+
+On-device feedback: "Fillets are consistently failing to find their
+target edges" - reported against a real multi-fillet plan (an 8-line
+notched-boss profile, four `edge_from_sketch_point` Fillet steps
+targeting four different corners of the same Extrude, at two different
+radii), plus a `Server returned 500: Internal Server Error` on Generate.
+This is exactly the "fillet then provenance-select again" gap this doc's
+own "Not done this session" section (above) had already named as missing
+test coverage, not a new kind of gap - it just hadn't been exercised for
+real yet.
+
+**Root cause, confirmed on-device (real `pythonocc-core`, not
+inferred)**: `_record_feature_edge_provenance` caches each entry's edge
+*index* against the *pristine* shape the owning Extrude/Revolve/Sweep
+Feature's own construction last produced. `ai_plan_edges.
+_resolve_provenance_selector` then returned that index verbatim as the
+resolved `SubShapeRef.index` - correct for the *first* Fillet/Chamfer
+step against a given Body (`body` at that point still *is* the pristine
+shape), but never re-checked against the Body a caller actually passed
+in. A `resolve_edge_selector` call for a *second* (or later) Fillet/
+Chamfer step targeting the same `edges.of` Body receives `body` *after*
+the prior Fillet/Chamfer has already rebuilt it - a real, different
+`TopoDS_Shape`. A spike script confirmed `topexp.MapShapes`' own edge-
+index ordering is **not** preserved across that rebuild, even for an edge
+the prior Fillet/Chamfer never touched at all: on a real 8-corner test
+profile, an untouched corner's own lateral edge (200mm long, easily
+identifiable) sat at index 13 in the pristine Body and at a real, valid,
+but completely unrelated 4.24mm edge once two earlier corners were
+filleted - same index number, different edge entirely. Reusing the stale
+index silently targets the wrong edge (the actually-intended edge is
+still present in the Body, confirmed findable by real-world coordinate,
+just at a different index) - explaining both symptoms: a wrong-but-
+plausible-looking edge sometimes takes the requested radius anyway
+(silently rounds the wrong corner), sometimes can't (a confusing
+`fillet_failed`/`chamfer_failed`), and - confirmed separately, see below -
+sometimes `BRepFilletAPI_MakeFillet.Build()` raises a raw exception
+instead of failing gracefully into `IsDone() == false` for a
+sufficiently-wrong edge selection.
+
+**Fix, two parts**:
+
+1. **`app.document.extrude._edge_provenance_from_builder`** now records
+   each entry as `(index, anchor)` rather than a bare index -  `anchor` is
+   `edge_vertex_key_set(edge)` (new, exported - rounded real-world
+   coordinates of the edge's two endpoints, as a `frozenset`), the exact
+   coordinate-identity technique `_far_edge_in_lateral_face` already used
+   internally for a different purpose. `app.document.ai_plan_edges.
+   _resolve_provenance_selector` now takes the caller's real, current
+   `body` and re-locates the edge inside *that* Body's own live topology
+   by `anchor` match - checking the cached index first as a fast path
+   (valid, and the common case, whenever `body` genuinely still is the
+   pristine shape), falling back to a full linear scan over `body`'s own
+   edges otherwise. Fails closed with the existing `edge_selector_no_
+   matching_edges` (never a silent guess) if no edge of `body` carries
+   that anchor at all - e.g. the targeted corner was itself later
+   filleted away. Confirmed on-device: re-running the original four-
+   fillet repro plan post-fix resolves four distinct, geometrically
+   correct edges (verified against real-world coordinates directly, not
+   just "some index"), each successive step's index shifting to reflect
+   the Body's actual current topology.
+2. **`app.document.fillet`/`app.document.chamfer`**: `BRepFilletAPI_
+   MakeFillet`/`MakeChamfer.Build()` can raise a raw `RuntimeError`
+   (pythonocc-core's own SWIG wrapping of an OCCT `Standard_Failure`) for
+   a sufficiently invalid edge selection, confirmed on-device with a
+   deliberately foreign edge - bypassing `IsDone() == false` entirely,
+   contrary to `_fillet_failed`/`_chamfer_failed`'s own pre-existing doc
+   comments ("not an uncaught OCCT exception surfacing as a 500"), which
+   had stated that intent without the code actually guaranteeing it.
+   `_build_fillet`/`_build_chamfer` now wrap `.Build()` in a `try`/`except
+   RuntimeError`, converting it to the same structured 422
+   `fillet_failed`/`chamfer_failed` the graceful `IsDone() == false` path
+   already raises - independent hardening of part 1 above (any geometric
+   edge case that reaches `.Build()`, not just a stale-index one, is now
+   guaranteed a structured 422 instead of risking a generic 500).
+
+**Client-side**: unrelated second on-device report, same session -
+`client/lib/ai/ai_provider.dart`'s `aiProviderRequestTimeout` (a flat,
+non-streaming HTTP timeout on every LLM completion call) was firing at
+60s while the model was, by the user's own observation, still actively
+generating a large structured plan. Raised to 300s - see that constant's
+own updated doc comment for the full reasoning (mirrors `ApiConfig.
+documentRequestTimeout`'s own "raise it, document why, once real usage
+shows the allowance is insufficient" history).
+
+**Tests** (`backend/tests/test_ai_plan_validate.py`): added
+`test_edge_from_sketch_point_stays_correct_after_an_earlier_fillet_on_
+the_same_body` - the "fillet then provenance-select again" case this
+doc's own "Not done this session" section had named as missing coverage,
+now closed. `test_edge_from_sketch_line_near_and_far_select_different_
+edges` needed updating alongside the fix, not because it was wrong before
+- chaining its own `far=False` then `far=True` Fillet steps against the
+same Body means the second step now (correctly) resolves against the
+Body *after* the first step's own Fillet already rebuilt it, so the two
+steps' raw `index` values are no longer numbers drawn from the same
+`topexp.MapShapes` ordering and stop being a meaningful comparison
+(equal or not) - confirmed on-device that both selectors still resolve
+to the correct, genuinely different real edges (by inspecting each
+edge's own real-world coordinates directly); the test now validates each
+selector independently against its own pristine-Body plan instead, an
+apples-to-apples comparison that stays valid under the fix.
+`test_ai_plan_validate.py` alone: 34 passed (33 baseline, minus the one
+updated, plus the one new). Full `pytest -n auto`, freshly-bootstrapped
+environment: **2048 passed, 0 failed** (14m23s wall-clock) - confirms
+zero regressions anywhere in the repository, not just the directly-
+touched modules.
