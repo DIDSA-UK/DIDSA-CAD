@@ -46,8 +46,28 @@ jobs:
           tags: didsa-cad-backend:test
           load: true
 
+      # Speed: `--dist=worksteal` (vs. the previous default `load`) cut local
+      # wall-clock 24:11 -> 15:48 for the same 2049 tests, measured directly
+      # (not assumed) - this suite's duration is dominated by a handful of
+      # genuinely expensive real-geometry tests (spiral bevel pair meshing-
+      # phase searches, some 200s+ each - see `test_bevel_pair_feature.py`),
+      # and `load`'s eager one-at-a-time dispatch left the tail badly
+      # imbalanced when a worker got unlucky and picked up several of them
+      # back to back while other workers sat idle; `worksteal` actively
+      # rebalances a worker's remaining queue instead of only reassigning
+      # once a worker goes completely empty. Pure scheduler change, zero
+      # effect on which tests run or what they assert.
+      #
+      # Correctness: `test_planetary_gear_jobs.py`'s own job-concurrency-
+      # singleton tests (real `ProcessPoolExecutor` worker-count/cancel-
+      # timing assertions) are flaky under any parallel xdist run - confirmed
+      # by a real CI failure-then-pass-on-retry with an identical commit, and
+      # by this exact file passing 8/8 cleanly every time it's run serially,
+      # both this session. Split out into its own serial invocation so CI
+      # stops reporting spurious failures for unrelated PRs - costs ~20s,
+      # not worth trading away for parallelism on a file only 8 tests long.
       - name: Run backend tests inside container
         run: |
           docker run --rm --platform ${{ matrix.platform }} \
             didsa-cad-backend:test \
-            python -m pytest tests/ -v -n auto
+            bash -c "python -m pytest tests/ -v -n auto --dist=worksteal --ignore=tests/test_planetary_gear_jobs.py && python -m pytest tests/test_planetary_gear_jobs.py -v"
