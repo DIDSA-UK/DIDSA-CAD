@@ -64,10 +64,20 @@ dated narrative log if you want the "why" behind a specific decision.
    modes, multi-face offset, non-planar offset, and the mixed-mode/
    mixed-body rejections). **Client V2 implemented** - `MoveFacePanel`
    mirrors Fillet's own re-pick shape for Offset mode (faces accumulate
-   freely, one shared offset value); Delta/Direction modes stay single-
-   face (replace-not-accumulate on a face tap, and the mode toggle itself
-   disables those two segments once 2+ faces are picked) - matching the
-   backend's own per-mode face-count contract.
+   freely, one shared offset value); Direction mode stays single-face
+   (replace-not-accumulate on a face tap, and the mode toggle itself
+   disables that segment once 2+ faces are picked) - matching the
+   backend's own per-mode face-count contract. On-device feedback ("delta
+   x,y,z function is duplicated in the direction tab... remove the
+   dedicated delta x,y,z tab"): the client's own `MoveFaceMode` enum no
+   longer offers `delta` mode at all - Direction mode's fixed X/Y/Z axis
+   buttons already cover the common single-axis case with a clearer UI.
+   The backend's `delta` field/mode is untouched and still fully
+   supported (a real, if now client-unreachable, capability - true
+   diagonal moves on 2+ axes at once, which Direction mode's own
+   single-axis-at-a-time shape can't express); `_openMoveFacePanelForEdit`
+   declines to open a pre-existing `delta`-mode Feature rather than try to
+   represent it through a mode the panel no longer has a segment for.
 
 Build order: Delete Body -> Scale Body -> Move Body -> Delete Face -> Move
 Face (cheapest/most-precedented first) - followed exactly; Delete Face's
@@ -78,17 +88,34 @@ validation.
 
 All 5 features above are shipped in full (backend + client), including the
 V2 multi-face/non-planar pass. Compared to SolidWorks/Fusion 360-style
-direct-edit toolsets, three gaps remain, deliberately left open rather than
+direct-edit toolsets, four gaps remain, deliberately left open rather than
 scoped into this family - flagged here so a future pass doesn't have to
 rediscover them:
 
+- **Move Face's Delta/Direction modes can't reposition a non-planar
+  (cylindrical/conical) face - confirmed by real on-device testing.**
+  Repositioning a hole (translating its whole cylindrical face somewhere
+  else) fails with `non_planar_reference` in both modes - this is the
+  direct, working-as-designed consequence of the modes' own single-planar-
+  face restriction (see item 5's own entry above and `app.document.
+  move_face`'s module docstring), not a bug. It's also not something
+  Offset mode covers instead - Offset only grows/shrinks a hole's radius
+  in place, it doesn't reposition it. Truly moving a hole is a genuinely
+  different geometric operation from either existing technique (something
+  closer to "un-cut the original hole, re-cut it at the new location"),
+  confirmed via spike to need its own real technique investigation, not a
+  quick extension of what's here - scoped as a real gap, not attempted in
+  this pass.
 - **Move Face has no Rotate mode.** `MoveFaceFeature` supports Offset
-  (along each face's own normal), Delta (explicit XYZ translation), and
-  Direction (translation along a picked edge/axis) - all translations.
-  SolidWorks/Fusion's own "Move Face" also offers rotating a face about an
-  axis (e.g. for a draft-angle-style repair), which this family has no
-  equivalent for. Of the three gaps here, this is the one most likely to
-  matter for real dent/draft-repair workflows if it's ever prioritized.
+  (along each face's own normal) and Direction (translation along a
+  picked edge/axis, or the backend's own `delta` mode - explicit XYZ
+  translation, still fully supported server-side but no longer offered by
+  this client's own mode picker, see item 5's entry above) - all
+  translations. SolidWorks/Fusion's own "Move Face" also offers rotating a
+  face about an axis (e.g. for a draft-angle-style repair), which this
+  family has no equivalent for. Of the gaps here, this is the one most
+  likely to matter for real dent/draft-repair workflows if it's ever
+  prioritized.
 - **Scale Body is uniform-only.** `ScaleBodyFeature` scales a single Body
   uniformly about its own bounding-box centre - no independent X/Y/Z
   scaling. Flagged as deferred in `app.document.scale_body`'s own module

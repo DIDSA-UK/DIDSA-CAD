@@ -3,21 +3,34 @@ import 'package:flutter/material.dart';
 import 'resizable_tool_panel.dart';
 
 /// Direct Editing family, fifth/last entry - which of `MoveFaceFeature`'s
-/// three mutually-exclusive modes this panel is currently configuring.
-/// Mirrors [PatternMode]'s own `apiValue`/`fromApiValue` str-enum
-/// convention, matching the backend's field-presence-based mode
-/// discriminant (there is no single `move_face_mode` wire field - exactly
-/// one of `offset_distance`/`delta`/`direction_ref`+`direction_distance`
-/// being set on the wire IS the mode, per `MoveFaceFeature`'s own
-/// docstring).
+/// client-offered modes this panel is currently configuring. Mirrors
+/// [PatternMode]'s own `apiValue`/`fromApiValue` str-enum convention,
+/// matching the backend's field-presence-based mode discriminant (there is
+/// no single `move_face_mode` wire field - exactly one of `offset_distance`/
+/// `delta`/`direction_ref`+`direction_distance` being set on the wire IS the
+/// mode, per `MoveFaceFeature`'s own docstring).
+///
+/// On-device feedback ("delta x,y,z function is duplicated in the direction
+/// tab where x,y,z are selectable as directions - remove the dedicated
+/// delta x,y,z tab"): the backend's own `delta` mode (an arbitrary
+/// `[dx, dy, dz]` in one field) still exists and is still fully supported
+/// server-side - only this client's own mode picker no longer offers it,
+/// since [MoveFaceMode.direction]'s fixed X/Y/Z axis buttons already cover
+/// the common case (move a fixed distance along one world axis) with a
+/// clearer UI (one number, a Flip button) than three simultaneous fields.
+/// The one real capability this drops from the client: a true diagonal
+/// move (nonzero on 2+ axes at once) in a single Feature - Direction mode
+/// only ever moves along one axis (or one picked edge/Sketch Line) at a
+/// time. [_openMoveFacePanelForEdit] in `part_screen.dart` declines to open
+/// for a pre-existing `delta`-mode Feature accordingly (rather than trying
+/// to represent it through a mode this panel no longer has a segment for) -
+/// see that function's own doc comment.
 enum MoveFaceMode {
   offset,
-  delta,
   direction;
 
   String get label => switch (this) {
         MoveFaceMode.offset => 'Offset',
-        MoveFaceMode.delta => 'Delta XYZ',
         MoveFaceMode.direction => 'Direction',
       };
 }
@@ -25,18 +38,12 @@ enum MoveFaceMode {
 /// Direct Editing family, fifth/last entry: the bottom-sheet-style panel
 /// [PartScreen] opens once a single planar face is selected and "Move
 /// Face" is chosen (see `selection_actions.dart`'s `contextActionsFor`
-/// single-planar-face branch). [mode] picks between the backend's three
-/// mutually-exclusive modes, mirroring [PatternPanel]'s own Rectangular/
-/// Circular `SegmentedButton` toggle:
+/// single-planar-face branch). [mode] picks between the two modes this
+/// client offers, mirroring [PatternPanel]'s own Rectangular/Circular
+/// `SegmentedButton` toggle:
 /// - **Offset**: a single field, along the face's own outward normal -
 ///   mirrors [ScaleBodyPanel]'s own single-field shape (this panel's
 ///   original v1 client scope).
-/// - **Delta**: three independent `TextField`s (Delta X/Y/Z), mirroring
-///   [MoveBodyPanel]'s own translate fields exactly - zero is valid on
-///   each axis, no vector-level "not all zero" check here either (an
-///   all-zero delta simply fails the same way any other degenerate move
-///   already does server-side, `move_face_failed`, rather than this panel
-///   duplicating that check).
 /// - **Direction**: a picked reference (a Body edge, a Sketch Line, or a
 ///   fixed world X/Y/Z axis - reuses [PatternDirectionRefDto] verbatim,
 ///   same type [PatternPanel]'s own Direction 1/2 already use) plus a
@@ -63,7 +70,7 @@ class MoveFacePanel extends StatefulWidget {
 
   /// The live count of faces currently picked (`_currentMoveFaceRefs().
   /// length` in `part_screen.dart`) - mirrors [DeleteFacePanel.faceCount].
-  /// Delta/Direction modes only ever accept exactly one face (V2's
+  /// Direction mode only ever accepts exactly one face (V2's
   /// `BRepOffset_MakeOffset` technique is Offset-mode-only - see
   /// `MoveFaceFeature`'s own backend docstring), so [faceCount] also gates
   /// which segments of the mode toggle are enabled and [_canConfirm].
@@ -80,14 +87,6 @@ class MoveFacePanel extends StatefulWidget {
   /// just allowing negative values too (an offset can push either
   /// direction along the face's own normal).
   final void Function(double offset)? onOffsetChanged;
-
-  final double initialDeltaX;
-  final double initialDeltaY;
-  final double initialDeltaZ;
-
-  /// Fired on every valid delta edit (all three fields parse as numbers) -
-  /// mirrors [MoveBodyPanel.onDeltaChanged] exactly.
-  final void Function(double dx, double dy, double dz)? onDeltaChanged;
 
   /// Whether Direction mode's reference has been picked yet (an edge/
   /// Sketch-Line tap, or a fixed X/Y/Z axis button) - mirrors
@@ -120,10 +119,6 @@ class MoveFacePanel extends StatefulWidget {
     required this.faceCount,
     required this.initialOffset,
     this.onOffsetChanged,
-    this.initialDeltaX = 0.0,
-    this.initialDeltaY = 0.0,
-    this.initialDeltaZ = 0.0,
-    this.onDeltaChanged,
     this.hasDirection = false,
     this.directionSummary,
     required this.onSetDirectionFixedAxis,
@@ -139,9 +134,6 @@ class MoveFacePanel extends StatefulWidget {
 
 class _MoveFacePanelState extends State<MoveFacePanel> {
   late final TextEditingController _offsetController;
-  late final TextEditingController _xController;
-  late final TextEditingController _yController;
-  late final TextEditingController _zController;
   late final TextEditingController _directionDistanceController;
 
   /// Null once the offset field no longer parses as a non-zero number -
@@ -149,11 +141,6 @@ class _MoveFacePanelState extends State<MoveFacePanel> {
   /// pattern, just allowing negative values (see [MoveFacePanel.
   /// onOffsetChanged]'s own doc comment).
   double? _offset;
-
-  /// Null once any of the three delta fields no longer parses as a number -
-  /// mirrors [MoveBodyPanel]'s own `_delta` null-on-invalid-input pattern
-  /// exactly (zero is valid on each axis).
-  (double, double, double)? _delta;
 
   /// Null once the direction-distance field no longer parses as a non-zero
   /// number - mirrors [_offset]'s own "must be non-zero" contract.
@@ -164,26 +151,20 @@ class _MoveFacePanelState extends State<MoveFacePanel> {
     super.initState();
     _offsetController = TextEditingController(text: _formatNumber(widget.initialOffset));
     _offset = widget.initialOffset != 0 ? widget.initialOffset : null;
-    _xController = TextEditingController(text: _formatNumber(widget.initialDeltaX));
-    _yController = TextEditingController(text: _formatNumber(widget.initialDeltaY));
-    _zController = TextEditingController(text: _formatNumber(widget.initialDeltaZ));
-    _delta = (widget.initialDeltaX, widget.initialDeltaY, widget.initialDeltaZ);
     _directionDistanceController =
         TextEditingController(text: _formatNumber(widget.initialDirectionDistance));
     _directionDistance = widget.initialDirectionDistance != 0 ? widget.initialDirectionDistance : null;
     // Without this, the live preview underneath this panel doesn't appear
     // until the user actually edits a field - mirrors every other panel's
     // identical fix. Only the initially-active mode's own callback fires -
-    // the other two modes' fields exist (so switching modes mid-session
-    // doesn't lose whatever was typed into them) but aren't live until
-    // [widget.mode] actually selects them.
+    // the other mode's fields exist (so switching modes mid-session doesn't
+    // lose whatever was typed into them) but aren't live until [widget.mode]
+    // actually selects them.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       switch (widget.mode) {
         case MoveFaceMode.offset:
           if (_offset != null) widget.onOffsetChanged?.call(_offset!);
-        case MoveFaceMode.delta:
-          widget.onDeltaChanged?.call(widget.initialDeltaX, widget.initialDeltaY, widget.initialDeltaZ);
         case MoveFaceMode.direction:
           if (_directionDistance != null) widget.onDirectionDistanceChanged?.call(_directionDistance!);
       }
@@ -193,9 +174,6 @@ class _MoveFacePanelState extends State<MoveFacePanel> {
   @override
   void dispose() {
     _offsetController.dispose();
-    _xController.dispose();
-    _yController.dispose();
-    _zController.dispose();
     _directionDistanceController.dispose();
     super.dispose();
   }
@@ -208,7 +186,6 @@ class _MoveFacePanelState extends State<MoveFacePanel> {
     if (widget.mode != MoveFaceMode.offset && widget.faceCount != 1) return false;
     return switch (widget.mode) {
       MoveFaceMode.offset => _offset != null,
-      MoveFaceMode.delta => _delta != null,
       MoveFaceMode.direction => widget.hasDirection && _directionDistance != null,
     };
   }
@@ -218,15 +195,6 @@ class _MoveFacePanelState extends State<MoveFacePanel> {
     final offset = (value != null && value != 0) ? value : null;
     setState(() => _offset = offset);
     if (offset != null) widget.onOffsetChanged?.call(offset);
-  }
-
-  void _emitDeltaChange() {
-    final x = double.tryParse(_xController.text);
-    final y = double.tryParse(_yController.text);
-    final z = double.tryParse(_zController.text);
-    setState(() => _delta = (x != null && y != null && z != null) ? (x, y, z) : null);
-    if (x == null || y == null || z == null) return;
-    widget.onDeltaChanged?.call(x, y, z);
   }
 
   void _emitDirectionDistanceChange() {
@@ -244,17 +212,6 @@ class _MoveFacePanelState extends State<MoveFacePanel> {
     if (value == null) return;
     _directionDistanceController.text = _formatNumber(-value);
     _emitDirectionDistanceChange();
-  }
-
-  Widget _deltaField(TextEditingController controller, String label) {
-    return Expanded(
-      child: TextField(
-        controller: controller,
-        keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
-        decoration: InputDecoration(labelText: label),
-        onChanged: (_) => _emitDeltaChange(),
-      ),
-    );
   }
 
   /// Mirrors [PatternPanel._pickAffordanceButton] - tapping this doesn't
@@ -307,31 +264,6 @@ class _MoveFacePanelState extends State<MoveFacePanel> {
                 : 'Offset: ${_formatNumber(_offset!)} along each face\'s own normal',
             style: TextStyle(
               color: _offset == null
-                  ? Theme.of(context).colorScheme.error
-                  : Theme.of(context).colorScheme.onSurfaceVariant,
-              fontSize: 12,
-            ),
-          ),
-        ],
-      );
-
-  Widget _deltaSection(BuildContext context) => Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            children: [
-              _deltaField(_xController, 'Delta X'),
-              const SizedBox(width: 8),
-              _deltaField(_yController, 'Delta Y'),
-              const SizedBox(width: 8),
-              _deltaField(_zController, 'Delta Z'),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text(
-            _delta == null ? 'Enter a valid X/Y/Z delta' : 'Delta: $_delta',
-            style: TextStyle(
-              color: _delta == null
                   ? Theme.of(context).colorScheme.error
                   : Theme.of(context).colorScheme.onSurfaceVariant,
               fontSize: 12,
@@ -423,7 +355,6 @@ class _MoveFacePanelState extends State<MoveFacePanel> {
           const SizedBox(height: 12),
           switch (widget.mode) {
             MoveFaceMode.offset => _offsetSection(context),
-            MoveFaceMode.delta => _deltaSection(context),
             MoveFaceMode.direction => _directionSection(context),
           },
           const SizedBox(height: 12),
