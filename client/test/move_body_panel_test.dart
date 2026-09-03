@@ -6,7 +6,8 @@ import 'package:didsa_cad_client/viewport3d/move_body_panel.dart';
 /// Direct Editing family, third entry: unit-level coverage for
 /// [MoveBodyPanel]'s Confirm-enablement rule - all three delta fields must
 /// parse as numbers (0 is valid, unlike Fillet's `> 0` radius rule), plus
-/// the Move/Copy toggle. No `flutter_scene` dependency anywhere in
+/// the Move/Copy toggle, plus (once a rotation axis is picked) the optional
+/// rotation-angle field. No `flutter_scene` dependency anywhere in
 /// `move_body_panel.dart`'s import chain, so this is a real, runnable
 /// widget test in this sandbox.
 void main() {
@@ -17,6 +18,10 @@ void main() {
     bool copy = false,
     void Function(double, double, double)? onDeltaChanged,
     void Function(bool)? onCopyChanged,
+    bool hasRotationAxis = false,
+    String? rotationAxisSummary,
+    double initialRotationAngleDegrees = 0.0,
+    void Function(double)? onRotationAngleChanged,
   }) {
     return MaterialApp(
       home: Scaffold(
@@ -27,6 +32,10 @@ void main() {
           onDeltaChanged: onDeltaChanged,
           copy: copy,
           onCopyChanged: onCopyChanged ?? (_) {},
+          hasRotationAxis: hasRotationAxis,
+          rotationAxisSummary: rotationAxisSummary,
+          initialRotationAngleDegrees: initialRotationAngleDegrees,
+          onRotationAngleChanged: onRotationAngleChanged,
           onConfirm: () {},
           onCancel: () {},
         ),
@@ -43,9 +52,9 @@ void main() {
       );
     });
 
-    testWidgets('shows three numeric delta fields', (tester) async {
+    testWidgets('shows three delta fields plus one rotation-angle field', (tester) async {
       await tester.pumpWidget(buildPanel());
-      expect(find.byType(TextField), findsNWidgets(3));
+      expect(find.byType(TextField), findsNWidgets(4));
     });
 
     testWidgets('clearing a delta field to an invalid value disables Confirm live', (tester) async {
@@ -93,6 +102,74 @@ void main() {
     });
   });
 
+  group('MoveBodyPanel rotation', () {
+    testWidgets('rotation angle field is disabled with no axis picked', (tester) async {
+      await tester.pumpWidget(buildPanel());
+      final field = tester.widget<TextField>(find.byType(TextField).at(3));
+      expect(field.enabled, isFalse);
+    });
+
+    testWidgets('rotation angle field is enabled once an axis is picked', (tester) async {
+      await tester.pumpWidget(buildPanel(hasRotationAxis: true));
+      final field = tester.widget<TextField>(find.byType(TextField).at(3));
+      expect(field.enabled, isTrue);
+    });
+
+    testWidgets('shows the pick prompt with no axis, the summary once picked', (tester) async {
+      await tester.pumpWidget(buildPanel());
+      expect(
+        find.text('Tap an edge, cylindrical face, or Sketch Line to pick a rotation axis'),
+        findsOneWidget,
+      );
+
+      await tester.pumpWidget(buildPanel(hasRotationAxis: true, rotationAxisSummary: 'Edge selected'));
+      expect(find.text('Edge selected'), findsOneWidget);
+    });
+
+    testWidgets('a non-zero angle survives the axis being cleared afterward, and disables Confirm',
+        (tester) async {
+      // The angle field is disabled while no axis is picked (confirmed
+      // above), so the only realistic way to reach "non-zero angle, no
+      // axis" is: pick an axis, type an angle, then the axis gets cleared
+      // (e.g. the user taps the picked entity again to deselect it) - the
+      // angle field itself is local widget state, independent of
+      // widget.hasRotationAxis, so it isn't reset when that happens.
+      await tester.pumpWidget(buildPanel(hasRotationAxis: true));
+      await tester.enterText(find.byType(TextField).at(3), '45');
+      await tester.pump();
+      expect(
+        tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed,
+        isNotNull,
+      );
+
+      await tester.pumpWidget(buildPanel(hasRotationAxis: false));
+      expect(
+        tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed,
+        isNull,
+      );
+    });
+
+    testWidgets('a non-zero angle with an axis picked keeps Confirm enabled', (tester) async {
+      await tester.pumpWidget(buildPanel(hasRotationAxis: true));
+      await tester.enterText(find.byType(TextField).at(3), '45');
+      await tester.pump();
+      expect(
+        tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed,
+        isNotNull,
+      );
+    });
+
+    testWidgets('entering a valid angle fires onRotationAngleChanged', (tester) async {
+      double? lastAngle;
+      await tester.pumpWidget(
+        buildPanel(hasRotationAxis: true, onRotationAngleChanged: (a) => lastAngle = a),
+      );
+      await tester.enterText(find.byType(TextField).at(3), '90');
+      await tester.pump();
+      expect(lastAngle, 90.0);
+    });
+  });
+
   group('MoveBodyPanel title', () {
     testWidgets('defaults to "Move Body"', (tester) async {
       await tester.pumpWidget(buildPanel());
@@ -116,6 +193,12 @@ void main() {
           ),
         ),
       );
+      // The rotation section adds enough content that Cancel/Confirm can
+      // sit below ResizableToolPanel's own scrollable viewport at the
+      // default height fraction - ensureVisible scrolls it into view first,
+      // same fix pattern `pattern_panel_test.dart` already established for
+      // its own taller panel.
+      await tester.ensureVisible(find.widgetWithText(TextButton, 'Cancel'));
       await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
       expect(cancelled, isTrue);
     });
