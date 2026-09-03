@@ -224,6 +224,66 @@ the default `GeomAbs_Arc` join type failed outright on a plain box in this
 same spike) has its own failure modes on more complex real Part topology
 than the box/boss/cylinder primitives tested here.
 
+### Spike findings addendum (2026-09-03) - follow-up spike: FACE-order equivalence and conical faces
+
+Same-session follow-up, closing the two questions the spike above left
+open before any go/no-go decision on the unify-related compat break. Still
+throwaway/no shipped code - a second confirmatory pass, not implementation.
+
+**FACE-order equivalence - confirmed safe.** The open risk was whether
+`TopExp_Explorer(shape, TopAbs_FACE)` iteration order (`mesh.py`'s
+`tessellate_shape`, which assigns the client's own `face_id`) still
+coincides with `topexp.MapShapes(shape, TopAbs_FACE, ...)` order
+(`resolve_subshape_from_bodies`'s own `SubShapeRef.index` resolution)
+*after* a `ShapeUpgrade_UnifySameDomain` pass, not just before. Tested
+against four representative multi-feature bodies - a single boss on a
+box (the original spike's own case, 11 faces -> 9 post-unify), two bosses
+at different heights on one box (16 faces, unchanged by unify - no
+coincident planes between the two bosses themselves), a box with a
+through-hole *and* a boss (12 faces, likewise unchanged), and an
+asymmetric three-level staircase (16 faces -> 10 post-unify) - by directly
+diffing the two orderings face-by-face (via `TopoDS_Face.IsSame`, not just
+comparing counts) both before and after unify. **The two orderings matched
+exactly in all four cases, both pre- and post-unify, with zero exceptions**
+- unify does not introduce any new divergence between what the client's
+`face_id` numbering means and what `SubShapeRef.index` resolves to. This
+directly de-risks the `_apply_feature_to_bodies` unify insertion point the
+first spike's own backend exploration identified: gating it with a
+`unify: bool` parameter (`False` from `compute_part_bodies_coarse`) remains
+the right shape, and this addendum finds no additional numbering hazard
+beyond the already-known `SubShapeRef`-index compat-break question itself
+(still open - see above, this addendum doesn't resolve *that*, only rules
+out a second, distinct risk stacking on top of it).
+
+**Conical faces - confirmed working, with one real UX nuance for a future
+client to account for (not a blocker).** Repeated the first spike's
+cylindrical-face `SetOffsetOnFace` test against a real truncated cone
+(`BRepPrimAPI_MakeCone`, base radius 5, top radius 2, height 10) - every
+offset tried (`+0.5`, `+1.0`, `-0.5`, `-1.0`) produced a valid result,
+still a genuine cone (confirmed via `BRepAdaptor_Surface.GetType() ==
+GeomAbs_Cone` on the result's own side face, not just "some curved face"),
+volume changing correctly in the expected direction (positive = grows,
+negative = shrinks) for both. The nuance: **a cone's radius growth is not
+equal to the offset value**, unlike a cylinder's exact 1:1 relationship
+(confirmed again here as a direct side-by-side reference: cylinder r=5,
+offset `+1.0` -> r=6 exactly, volume 1130.97 matching `π·6²·10` to 4
+decimal places). A cone's own surface normal has both a radial and an
+axial component (it's not purely radial the way a cylinder's is), so
+offsetting *along the true surface normal* - the geometrically correct
+operation `BRepOffset_MakeOffset` actually performs - moves the base
+radius by `offset / cos(θ)`, where `θ = atan(Δr / Δh)` is the cone's own
+half-angle from its axis (confirmed numerically: `offset=+0.5` grew the
+base radius from `5.0` to `5.522`, and `0.5 / cos(atan(0.3)) = 0.522`
+exactly, matching `θ = atan((5-2)/10) = atan(0.3)` for this cone). This is
+correct, expected OCCT behaviour for a *true* face offset, not a bug - but
+it means a future client "offset a conical face by X" UI cannot promise
+"the radius grows by exactly X" the way it legitimately can for a
+cylindrical face, and should either say "offset along the surface normal"
+generically or compute/display the resulting radius change separately if
+a radius-specific readout is wanted. No change to V1's own client scope
+(planar-only) is implied by this - purely a V2 client-UI note for
+whenever that work starts.
+
 ## Architecture this family reuses (no new mechanism needed)
 
 - **In-place modify pattern** (Fillet/Chamfer, `fillet.py`/`chamfer.py`):
