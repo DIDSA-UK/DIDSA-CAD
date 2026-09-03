@@ -1266,19 +1266,27 @@ HoverHit? hitTestBodies({
     // body it cannot be selected"): [isActiveSketchEntity] above only
     // exempts the one Sketch actively being edited (`sketch_screen.dart`'s
     // embedded 2D-in-3D editor) - every picker in the main modeling screen
-    // (`part_screen.dart`'s Sweep path/Loft guide curve/Revolve axis/Split
-    // curve/profile pickers, none of which ever set
-    // [activeSketchFeatureId]) still had *any* sketch curve dropped the
-    // moment a Body's face sat nearer along the ray, even when the active
-    // [filter] doesn't accept Body/face picks at all. A hit only ever
-    // reaches [bestVertex]/[bestEdge] as a sketch kind because its own
-    // `filter.sketchX` gate above was already true, so exempting it here
-    // can't loosen the filter - it only stops an unrelated Body from
-    // vetoing a candidate the filter already approved. Real Body topology
-    // ([SelectionEntityKind.vertex]/[edge]) is untouched, so a genuinely
-    // hidden mesh edge/vertex (e.g. Fillet's edge picker) stays occluded
-    // exactly as before.
-    bool isFilteredSketchEntity(HoverHit hit) {
+    // (`part_screen.dart`'s Sweep path/Loft guide curve picker, neither of
+    // which ever set [activeSketchFeatureId]) still had *any* sketch curve
+    // dropped the moment a Body's face sat nearer along the ray, even
+    // though neither picker's own filter accepts a Body/face pick at all -
+    // there is no Body/face outcome for the ray to "correctly" fall back to
+    // there, so occluding the curve just loses the pick outright.
+    //
+    // Scoped to `!filter.face && !filter.body` (not just "the hit's own
+    // kind passed its own filter check", which - confirmed against this
+    // file's own existing occlusion tests, e.g. "with no
+    // activeSketchFeatureId, a Sketch Point behind the nearest face is
+    // occluded like a Body vertex would be - no regression" - is too broad:
+    // ordinary default browsing, and pickers like Split/Revolve that accept
+    // *either* a sketch curve or a Body/face in the same filter, still need
+    // a nearer Body's face to keep winning that pixel over a farther sketch
+    // entity, exactly as before this fix). Real Body topology
+    // ([SelectionEntityKind.vertex]/[edge]) is untouched either way, so a
+    // genuinely hidden mesh edge/vertex (e.g. Fillet's edge picker) stays
+    // occluded exactly as before.
+    bool isSketchOnlyFilterKind(HoverHit hit) {
+      if (filter.face || filter.body) return false;
       switch (hit.entity.kind) {
         case SelectionEntityKind.sketchPoint:
           return filter.sketchPoint;
@@ -1303,7 +1311,7 @@ HoverHit? hitTestBodies({
       }
     }
 
-    bool isExemptFromFaceOcclusion(HoverHit hit) => isActiveSketchEntity(hit) || isFilteredSketchEntity(hit);
+    bool isExemptFromFaceOcclusion(HoverHit hit) => isActiveSketchEntity(hit) || isSketchOnlyFilterKind(hit);
 
     if (bestVertex != null &&
         !isExemptFromFaceOcclusion(bestVertex) &&
