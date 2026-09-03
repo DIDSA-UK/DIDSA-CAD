@@ -39,7 +39,8 @@ void main() {
 
     test(
       'C2: exactly one face alone offers a real, enabled Create Plane (offset-from-face), plus '
-      'on-device feedback\'s New Sketch on Face, Chamfer, and Fillet shortcuts',
+      'on-device feedback\'s New Sketch on Face, Chamfer, and Fillet shortcuts, plus (Direct '
+      'Editing family) Delete Face and Move Face - both require planar+solid together',
       () {
         final actions = contextActionsFor({_face0});
         expect(actions, [
@@ -47,6 +48,8 @@ void main() {
           const SelectionContextAction('New Sketch on Face', enabled: true),
           const SelectionContextAction('Chamfer', enabled: true),
           const SelectionContextAction('Fillet', enabled: true),
+          const SelectionContextAction('Delete Face', enabled: true),
+          const SelectionContextAction('Move Face', enabled: true),
         ]);
       },
     );

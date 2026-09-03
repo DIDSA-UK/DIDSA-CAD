@@ -45,7 +45,12 @@ dated narrative log if you want the "why" behind a specific decision.
    produces the wrong geometry" case only found by testing every face of a
    real chamfered box, not just one). **Backend implemented in full and
    verified against a real pythonocc-core run** (all 7 tests in
-   `test_feature_delete_face.py` pass). Client not yet wired.
+   `test_feature_delete_face.py` pass). **Client implemented** - ambient
+   entry only (a single planar face of a solid Body selected), no re-
+   picking a different face mid-session (simpler than Fillet's own
+   continuous-re-pick Pattern 3 shape from `docs/live-preview-pattern.md` -
+   deferred as a fast follow, not risked in this pass); `DeleteFacePanel`
+   mirrors `DeleteBodyPanel`'s minimal shape exactly.
 5. **Move Face** - `MoveFaceFeature`. Moves a single planar face (offset
    along its normal / explicit delta XYZ / along a picked edge's direction,
    reusing `PatternDirectionRef`) via extrude-the-face-profile +
@@ -53,7 +58,14 @@ dated narrative log if you want the "why" behind a specific decision.
    docstring). **Backend implemented in full and verified against a real
    pythonocc-core run** (all 14 tests in `test_feature_move_face.py` pass,
    including all three modes, overshoot rejection, and mode-switching on
-   update). Client not yet wired.
+   update). **Client v1 scope is offset-along-normal mode only** -
+   `MoveFacePanel` has a single numeric field, mirroring `ScaleBodyPanel`'s
+   own debounced-live-preview shape; the backend's own `delta`/
+   `direction_ref`+`direction_distance` modes have no client entry point
+   yet (same "backend-ready, client not wired" treatment `rotation_axis`
+   gets on Move Body) - a pure client-side addition when it happens, no
+   backend change needed. Also ambient-entry-only, face fixed once picked,
+   same reasoning as Delete Face above.
 
 Build order: Delete Body -> Scale Body -> Move Body -> Delete Face -> Move
 Face (cheapest/most-precedented first) - followed exactly; Delete Face's
@@ -84,7 +96,7 @@ missed:
   that module's own docstring for the full reasoning and the real numbers.
 
 All 5 backends were run against the full existing backend test suite
-(1469+ pre-existing tests, non-gear-family subset) with zero regressions,
+(2026 pre-existing tests, gear family included) with zero regressions,
 plus each new feature's own dedicated test file, all passing for real.
 
 ### Move Face V2 (gated on v1 shipping and passing)
@@ -127,9 +139,21 @@ approach and panel, not starting over.
     Merge's own eager-create-once-2+-Bodies-confirmed), **Scale Body**,
     **Move Body**.
   - Pattern 3 (stable-pick-body + preview-overlay, self-exclusion
-    load-bearing): **Delete Face**, **Move Face** - re-pick a face of the
-    same Body being modified, exactly the case that doc's own decision tree
-    predicts.
+    load-bearing) is what that doc's own decision tree predicts for
+    **Delete Face**/**Move Face** (re-picking a sub-shape of the same Body
+    being modified) - but the *shipped* v1 client deliberately doesn't
+    build that full continuous-re-pick machinery: the face is fixed once
+    picked, with no mid-session re-pick loop at all, so there's no "stable
+    pick body" to keep stable. Both instead follow the simpler Pattern-2-
+    shaped lifecycle (`DeleteFacePanel` mirrors `DeleteBodyPanel`'s eager-
+    create shape, `MoveFacePanel` mirrors `ScaleBodyPanel`'s debounced-
+    single-field shape) keyed on a `SubShapeRef` instead of a body id. The
+    backend's own self-exclusion (`resolve_delete_face`/`resolve_move_face`
+    excluding their own feature id) still matters for correct PATCH re-
+    validation regardless of what the client does. A continuous re-pick
+    loop (the real Pattern 3 shape) is a fast-follow if ever needed, not a
+    gap in this pass - deliberately deferred rather than risked in the
+    same pass as these two panels' first ship.
 - **No drag gizmo exists in this codebase anywhere.** All direction/
   position input is numeric fields + tap-to-pick geometry in the viewport,
   e.g. Extrude's distance field + `IconButton(Icons.swap_vert)` flip

@@ -98,6 +98,17 @@ class SelectionContextPanel extends StatelessWidget {
   /// same "never called for a disabled one" contract as [onScaleBody].
   final VoidCallback? onMoveBody;
 
+  /// Direct Editing family (fourth entry): fired when the user taps an
+  /// *enabled* Delete Face button (a single planar face of a solid Body
+  /// selected, nothing else - see `selection_actions.dart`'s
+  /// `contextActionsFor`) - same "never called for a disabled one"
+  /// contract as [onChamfer]/[onFillet].
+  final VoidCallback? onDeleteFace;
+
+  /// Direct Editing family (fifth/last entry): fired when the user taps an
+  /// *enabled* Move Face button - same gating/contract as [onDeleteFace].
+  final VoidCallback? onMoveFace;
+
   const SelectionContextPanel({
     super.key,
     required this.selectedEntities,
@@ -115,6 +126,8 @@ class SelectionContextPanel extends StatelessWidget {
     this.onDeleteBody,
     this.onScaleBody,
     this.onMoveBody,
+    this.onDeleteFace,
+    this.onMoveFace,
   });
 
   @override
@@ -196,6 +209,10 @@ class SelectionContextPanel extends StatelessWidget {
         return action.enabled ? onScaleBody : null;
       case 'Move Body':
         return action.enabled ? onMoveBody : null;
+      case 'Delete Face':
+        return action.enabled ? onDeleteFace : null;
+      case 'Move Face':
+        return action.enabled ? onMoveFace : null;
       default:
         return null;
     }

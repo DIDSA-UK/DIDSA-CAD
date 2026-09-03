@@ -288,11 +288,20 @@ List<SelectionContextAction> contextActionsFor(
       final face = faces.single;
       final planar = isFacePlanar?.call(face.bodyId, face.id) ?? true;
       final solid = isSolidBody?.call(face.bodyId) ?? true;
+      // Direct Editing family (fourth/fifth entries): Delete Face/Move
+      // Face are both v1-scoped to planar faces of a solid Body only (see
+      // docs/direct-editing-scope.md) - same `planar && solid` gate as
+      // Create Plane/Chamfer combined, since both preconditions apply here
+      // together (Chamfer/Fillet only need `solid`, Create Plane/New
+      // Sketch only need `planar`).
+      final planarSolidFace = planar && solid;
       return [
         if (planar) const SelectionContextAction('Create Plane', enabled: true),
         if (planar) const SelectionContextAction('New Sketch on Face', enabled: true),
         if (solid) const SelectionContextAction('Chamfer', enabled: true),
         if (solid) const SelectionContextAction('Fillet', enabled: true),
+        if (planarSolidFace) const SelectionContextAction('Delete Face', enabled: true),
+        if (planarSolidFace) const SelectionContextAction('Move Face', enabled: true),
       ];
     }
     // On-device feedback (bug fix): a lone reference plane or existing
