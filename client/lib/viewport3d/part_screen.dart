@@ -1116,6 +1116,23 @@ class _PartScreenState extends State<PartScreen> {
       _setMoveFaceSingleFace(entity);
       return;
     }
+    // Direct Editing family, guided "Add" FAB entries: a Body tap during
+    // [_scaleBodyPicking]/[_moveBodyPicking] both captures it and opens the
+    // real panel immediately - Scale Body/Move Body only ever take exactly
+    // one target Body, so there's no multi-select-then-confirm step the way
+    // Delete Body's own [_deleteBodyPicking] needs (that one has no special
+    // case here at all - a Body tap during it just falls through to the
+    // generic accumulate-toggle below, same as Merge's own `pickingBodies`)
+    // - mirrors [_SplitStep.pickingTarget]'s own single-tap-auto-advance
+    // shape exactly.
+    if (_scaleBodyPicking && entity.kind == SelectionEntityKind.body) {
+      _confirmScaleBodyPickerSelection(entity.bodyId);
+      return;
+    }
+    if (_moveBodyPicking && entity.kind == SelectionEntityKind.body) {
+      _confirmMoveBodyPickerSelection(entity.bodyId);
+      return;
+    }
     // Boolean family, Subtract/Common: a Body tap during `pickingTools` that
     // lands on one of the already-confirmed target Bodies is ignored
     // outright (not toggled) - see this file's own "Boolean family,
@@ -1992,20 +2009,33 @@ class _PartScreenState extends State<PartScreen> {
   );
 
   // --- Direct Editing family, first entry: Delete Body ------------------------
-  // Simpler still than Merge above: no guided "Add" FAB entry, no picking step
-  // at all - always triggered ambient (`SelectionContextPanel.onDeleteBody`,
-  // see `_onDeleteBodyTapped`), from a Body-only selection that already names
-  // every Body to delete, so `_deleteBodyActive` is a plain bool rather than a
-  // step enum (there is no `pickingBodies` phase for it to be null through).
-  // Mirrors Merge's own "eager create, no further parameter to debounce"
-  // shape exactly (see `docs/direct-editing-scope.md`'s own Pattern
-  // classification) - opening the panel immediately creates the preview
-  // DeleteBodyFeature, [DeleteBodyPanel] itself only ever shows the resulting
-  // summary/Confirm/Cancel.
+  // Ambient-triggered (`SelectionContextPanel.onDeleteBody`, see
+  // `_onDeleteBodyTapped`), from a Body-only selection that already names
+  // every Body to delete - mirrors Merge's own "eager create, no further
+  // parameter to debounce" shape exactly (see `docs/direct-editing-scope.md`'s
+  // own Pattern classification) - opening the panel immediately creates the
+  // preview DeleteBodyFeature, [DeleteBodyPanel] itself only ever shows the
+  // resulting summary/Confirm/Cancel. Also reachable from the guided "Add"
+  // FAB's Feature picker (`_startDeleteBodyPicker`) - unlike the ambient
+  // entry, that path has no pre-existing selection to work from, so it needs
+  // its own `pickingBodies`-style step first (mirrors [_MergeStep.
+  // pickingBodies]'s own multi-select-then-confirm shape via [_deleteBodyPicking]
+  // - a plain bool rather than a step enum, since `_deleteBodyActive` already
+  // covers "is any Delete Body session live at all" for both the picking
+  // step and the real panel).
 
-  /// True while a Delete Body session (create or B4 edit) is live - mirrors
-  /// [_mergeActive], just a plain bool since there is no picking step.
+  /// True while a Delete Body session (create, guided-picker, or B4 edit) is
+  /// live - mirrors [_mergeActive].
   bool _deleteBodyActive = false;
+
+  /// True for the guided "Add" FAB entry's own `pickingBodies`-equivalent
+  /// step only - [_deleteBodyActive] is already true throughout (see this
+  /// section's own header comment), so this just picks which widget renders
+  /// ([PickerRibbon] vs [DeleteBodyPanel]) and gates [_toggleSelectedEntity]'s
+  /// generic accumulate-toggle scheduling nothing extra (Delete Body needs no
+  /// live preview during picking - mirrors [DeleteBodyPanel]'s own "no
+  /// live-tunable parameter" shape).
+  bool _deleteBodyPicking = false;
 
   /// The Bodies being deleted, captured the moment the panel opens (either
   /// from the ambient selection, or - for B4 editing - from the
@@ -2067,9 +2097,18 @@ class _PartScreenState extends State<PartScreen> {
   // mesh refresh after each debounced PATCH IS the preview, same as
   // Merge/Boolean/Mirror/Pattern; no preview-overlay mesh pair needed.
 
-  /// True while a Scale Body session (create or B4 edit) is live - mirrors
-  /// [_deleteBodyActive].
+  /// True while a Scale Body session (create, guided-picker, or B4 edit) is
+  /// live - mirrors [_deleteBodyActive].
   bool _scaleBodyActive = false;
+
+  /// True for the guided "Add" FAB entry's own single-Body-tap-auto-advances
+  /// picking step (`_startScaleBodyPicker`) - unlike Delete Body's own
+  /// [_deleteBodyPicking] (which needs a confirm step, 1+ Bodies), Scale
+  /// Body only ever takes exactly one, so the first Body tap both captures
+  /// it and opens the real panel - mirrors [_SplitStep.pickingTarget]'s own
+  /// single-tap-auto-advance shape (see [_toggleSelectedEntity]'s own Scale
+  /// Body branch).
+  bool _scaleBodyPicking = false;
 
   /// The Body being scaled - mirrors [_deleteBodyBodyIds], just a single id
   /// (v1 scope) rather than a list.
@@ -2123,16 +2162,26 @@ class _PartScreenState extends State<PartScreen> {
   );
 
   // --- Direct Editing family, third entry: Move Body ("Move/Copy Body") -------
-  // Same shape as Scale Body above (whole-body pick, ambient-only entry,
-  // debounced-PATCH live field(s)), just three delta fields plus a Move/
-  // Copy toggle instead of one factor field. v1 client scope: translate +
-  // copy only - no rotation-axis-picking UI yet (the backend already fully
-  // supports it - see MoveBodyPanel's own doc comment for why the picking-
-  // flow UI is deliberately deferred rather than risked in this same pass).
+  // Same shape as Scale Body above (whole-body pick, ambient entry plus a
+  // guided "Add" FAB entry, debounced-PATCH live field(s)), just three
+  // delta fields plus a Move/Copy toggle instead of one factor field. v1
+  // client scope: translate + copy only - no rotation-axis-picking UI yet
+  // (the backend already fully supports it - see MoveBodyPanel's own doc
+  // comment for why the picking-flow UI is deliberately deferred rather
+  // than risked in this same pass).
 
-  /// True while a Move Body session (create or B4 edit) is live - mirrors
-  /// [_scaleBodyActive].
+  /// True while a Move Body session (create, guided-picker, or B4 edit) is
+  /// live - mirrors [_scaleBodyActive].
   bool _moveBodyActive = false;
+
+  /// True for the guided "Add" FAB entry's own single-Body-tap-auto-advances
+  /// picking step (`_startMoveBodyPicker`) - mirrors [_scaleBodyPicking]
+  /// exactly. Needs its own body-only filter ([_moveBodyBodyPickerSelectionFilter],
+  /// below) distinct from [_moveBodySelectionFilter] - that one is for the
+  /// *optional rotation axis* pick once the target Body is already fixed
+  /// (`edge`/`face`/`sketchLine`, no `body` at all), not for picking the
+  /// target Body itself.
+  bool _moveBodyPicking = false;
 
   /// The Body being moved - mirrors [_scaleBodyBodyId].
   String? _moveBodyBodyId;
@@ -2220,14 +2269,38 @@ class _PartScreenState extends State<PartScreen> {
     plane: false,
   );
 
+  /// Locks [_selectionFilterOverrides] to Bodies only for
+  /// [_startMoveBodyPicker]'s own picking step - mirrors
+  /// [_scaleBodySelectionFilter]/[_deleteBodySelectionFilter] exactly (all
+  /// three are byte-for-byte identical `body`-only filters; kept as its own
+  /// named constant rather than reusing one of those since it's semantically
+  /// "Move Body's target-Body picker", not "Scale Body's own session
+  /// filter").
+  static const _moveBodyBodyPickerSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: false,
+    body: true,
+    sketchPoint: false,
+    sketchLine: false,
+    sketchCircle: false,
+    sketchArc: false,
+    sketchEllipse: false,
+    sketchSpline: false,
+    plane: false,
+  );
+
   // --- Direct Editing family, fourth entry: Delete Face ------------------------
-  // V2 (multi-face, non-planar): whole-face *multi*-pick, ambient-only
-  // entry, no live-tunable parameter - now mirrors Fillet's own continuous
-  // re-pick Pattern 3 shape from docs/live-preview-pattern.md (preview-
-  // overlay mesh, self-exclusion rollback, generic accumulate-toggle) instead
-  // of v1's simpler single-fixed-face/eager-create-then-show-directly shape,
-  // now that a face can be added to/removed from `face_refs` throughout the
-  // session the same way Fillet's `edge_refs` already can.
+  // V2 (multi-face, non-planar): whole-face *multi*-pick, ambient entry plus
+  // a guided "Add" FAB entry (`_startDeleteFacePicker`), no live-tunable
+  // parameter - now mirrors Fillet's own continuous re-pick Pattern 3 shape
+  // from docs/live-preview-pattern.md (preview-overlay mesh, self-exclusion
+  // rollback, generic accumulate-toggle) instead of v1's simpler single-
+  // fixed-face/eager-create-then-show-directly shape, now that a face can be
+  // added to/removed from `face_refs` throughout the session the same way
+  // Fillet's `edge_refs` already can - which is also exactly what makes the
+  // guided "Add" FAB entry trivial to support: it just opens with zero faces,
+  // mirroring [_startFilletPicker] exactly.
 
   /// True while a Delete Face session (create or B4 edit) is live - mirrors
   /// [_filletActive].
@@ -6422,6 +6495,16 @@ class _PartScreenState extends State<PartScreen> {
         _startBooleanPicker(BooleanOperation.common);
       case FeaturePickerAction.split:
         _startSplitPicker();
+      case FeaturePickerAction.deleteBody:
+        _startDeleteBodyPicker();
+      case FeaturePickerAction.scaleBody:
+        _startScaleBodyPicker();
+      case FeaturePickerAction.moveBody:
+        _startMoveBodyPicker();
+      case FeaturePickerAction.deleteFace:
+        _startDeleteFacePicker();
+      case FeaturePickerAction.moveFace:
+        _startMoveFacePicker();
     }
   }
 
@@ -9497,6 +9580,50 @@ class _PartScreenState extends State<PartScreen> {
   // See this file's own "Direct Editing family, first entry: Delete Body"
   // state-field section header comment for the full reasoning.
 
+  /// [FeaturePickerAction.deleteBody]'s guided "Add" FAB entry - starts the
+  /// [_deleteBodyPicking] step with an empty selection and a Body-only
+  /// filter; [_confirmDeleteBodyPickerSelection] opens the real panel once
+  /// 1+ Bodies are picked. Mirrors [_startMergePicker]'s own shape exactly,
+  /// minus every Merge-specific field reset this Feature has no concept of.
+  void _startDeleteBodyPicker() {
+    setState(() {
+      _deleteBodyPicking = true;
+      _deleteBodyActive = true;
+      _entitiesBeforeDeleteBody = _selectedEntities;
+      _selectedEntities = {};
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _selectionFilterOverrides.push(_deleteBodySelectionFilter);
+    });
+  }
+
+  /// The number of Bodies picked so far during [_deleteBodyPicking] - drives
+  /// the ribbon text and gates its confirm button. Mirrors
+  /// [_mergePickedBodyCount] exactly, just gated on 1+ instead of 2+.
+  int _deleteBodyPickedCount() =>
+      _selectedEntities.where((e) => e.kind == SelectionEntityKind.body).length;
+
+  /// Confirms [_deleteBodyPicking] (the ribbon's checkmark) - hands the
+  /// picked Bodies to [_openDeleteBodyPanel] exactly as if they'd come from
+  /// an ambient [SelectionContextPanel] selection. Pops the picking step's
+  /// own filter push first - [_openDeleteBodyPanel] pushes its own copy of
+  /// the identical [_deleteBodySelectionFilter], so without this pop the
+  /// stack would carry two copies of it for the rest of the session and
+  /// [_confirmDeleteBody]/[_cancelDeleteBody] would only ever pop one back
+  /// off, permanently corrupting every later selection filter.
+  void _confirmDeleteBodyPickerSelection() {
+    final bodyIds =
+        _selectedEntities.where((e) => e.kind == SelectionEntityKind.body).map((e) => e.bodyId).toList();
+    if (bodyIds.isEmpty) return; // Defensive - the confirm button is disabled until then.
+    setState(() {
+      _deleteBodyPicking = false;
+      _deleteBodyActive = false; // _openDeleteBodyPanel sets this true again itself.
+      _selectionFilterOverrides.pop();
+    });
+    _openDeleteBodyPanel(bodyIds);
+  }
+
   /// [SelectionContextPanel.onDeleteBody]'s callback - `contextActionsFor`
   /// enables this button for 1+ Bodies, nothing else, selected. Mirrors
   /// [_onMirrorTapped]'s shape exactly - those Bodies are already exactly
@@ -9579,6 +9706,7 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _featureTreeVisible = false;
       _deleteBodyActive = false;
+      _deleteBodyPicking = false;
       _deleteBodyBodyIds = null;
       _selectedEntities = _entitiesBeforeDeleteBody ?? {};
       _entitiesBeforeDeleteBody = null;
@@ -9603,6 +9731,7 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _featureTreeVisible = false;
       _deleteBodyActive = false;
+      _deleteBodyPicking = false;
       _deleteBodyBodyIds = null;
       _selectedEntities = _entitiesBeforeDeleteBody ?? {};
       _entitiesBeforeDeleteBody = null;
@@ -9639,6 +9768,39 @@ class _PartScreenState extends State<PartScreen> {
   // --- Direct Editing family, second entry: Scale Body ------------------------
   // See this file's own "Direct Editing family, second entry: Scale Body"
   // state-field section header comment for the full reasoning.
+
+  /// [FeaturePickerAction.scaleBody]'s guided "Add" FAB entry - starts the
+  /// [_scaleBodyPicking] step with an empty selection and a Body-only
+  /// filter; [_toggleSelectedEntity]'s own Scale Body branch calls
+  /// [_confirmScaleBodyPickerSelection] the instant a Body is tapped.
+  /// Mirrors [_startSplitPicker]'s own single-target shape exactly.
+  void _startScaleBodyPicker() {
+    setState(() {
+      _scaleBodyPicking = true;
+      _scaleBodyActive = true;
+      _entitiesBeforeScaleBody = _selectedEntities;
+      _selectedEntities = {};
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _selectionFilterOverrides.push(_scaleBodySelectionFilter);
+    });
+  }
+
+  /// [_toggleSelectedEntity]'s own Scale Body branch calls this the instant
+  /// a Body is tapped during [_scaleBodyPicking] - pops the picking step's
+  /// own filter push (see [_confirmDeleteBodyPickerSelection]'s doc comment
+  /// for why this is required, not optional) and opens the real panel
+  /// against [bodyId], exactly as if it had come from an ambient
+  /// [SelectionContextPanel] selection.
+  void _confirmScaleBodyPickerSelection(String bodyId) {
+    setState(() {
+      _scaleBodyPicking = false;
+      _scaleBodyActive = false; // _openScaleBodyPanel sets this true again itself.
+      _selectionFilterOverrides.pop();
+    });
+    _openScaleBodyPanel(bodyId);
+  }
 
   /// [SelectionContextPanel.onScaleBody]'s callback - `contextActionsFor`
   /// enables this button for exactly one Body, nothing else, selected.
@@ -9751,6 +9913,7 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _featureTreeVisible = false;
       _scaleBodyActive = false;
+      _scaleBodyPicking = false;
       _scaleBodyBodyId = null;
       _selectedEntities = _entitiesBeforeScaleBody ?? {};
       _entitiesBeforeScaleBody = null;
@@ -9778,6 +9941,7 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _featureTreeVisible = false;
       _scaleBodyActive = false;
+      _scaleBodyPicking = false;
       _scaleBodyBodyId = null;
       _selectedEntities = _entitiesBeforeScaleBody ?? {};
       _entitiesBeforeScaleBody = null;
@@ -9819,6 +9983,41 @@ class _PartScreenState extends State<PartScreen> {
   // --- Direct Editing family, third entry: Move Body ("Move/Copy Body") -------
   // See this file's own "Direct Editing family, third entry: Move Body"
   // state-field section header comment for the full reasoning.
+
+  /// [FeaturePickerAction.moveBody]'s guided "Add" FAB entry - starts the
+  /// [_moveBodyPicking] step with an empty selection and
+  /// [_moveBodyBodyPickerSelectionFilter] (Body-only - not
+  /// [_moveBodySelectionFilter], which is for the *optional rotation axis*
+  /// once the target Body is already fixed); [_toggleSelectedEntity]'s own
+  /// Move Body branch calls [_confirmMoveBodyPickerSelection] the instant a
+  /// Body is tapped. Mirrors [_startScaleBodyPicker]'s own shape exactly.
+  void _startMoveBodyPicker() {
+    setState(() {
+      _moveBodyPicking = true;
+      _moveBodyActive = true;
+      _entitiesBeforeMoveBody = _selectedEntities;
+      _selectedEntities = {};
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _selectionFilterOverrides.push(_moveBodyBodyPickerSelectionFilter);
+    });
+  }
+
+  /// [_toggleSelectedEntity]'s own Move Body branch calls this the instant a
+  /// Body is tapped during [_moveBodyPicking] - pops the picking step's own
+  /// filter push (see [_confirmDeleteBodyPickerSelection]'s doc comment for
+  /// why this is required, not optional) and opens the real panel against
+  /// [bodyId], exactly as if it had come from an ambient
+  /// [SelectionContextPanel] selection.
+  void _confirmMoveBodyPickerSelection(String bodyId) {
+    setState(() {
+      _moveBodyPicking = false;
+      _moveBodyActive = false; // _openMoveBodyPanel sets this true again itself.
+      _selectionFilterOverrides.pop();
+    });
+    _openMoveBodyPanel(bodyId);
+  }
 
   /// [SelectionContextPanel.onMoveBody]'s callback - `contextActionsFor`
   /// enables this button for exactly one Body, nothing else, selected.
@@ -10018,6 +10217,7 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _featureTreeVisible = false;
       _moveBodyActive = false;
+      _moveBodyPicking = false;
       _moveBodyBodyId = null;
       _moveBodyRotationAxisEntity = null;
       _moveBodyRotationAxis = null;
@@ -10052,6 +10252,7 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _featureTreeVisible = false;
       _moveBodyActive = false;
+      _moveBodyPicking = false;
       _moveBodyBodyId = null;
       _moveBodyRotationAxisEntity = null;
       _moveBodyRotationAxis = null;
@@ -10112,15 +10313,30 @@ class _PartScreenState extends State<PartScreen> {
     _openDeleteFacePanel(faceEntities: faces);
   }
 
+  /// [FeaturePickerAction.deleteFace]'s guided "Add" FAB entry - opens
+  /// [DeleteFacePanel] with zero faces yet, exactly like [_startFilletPicker]
+  /// opens [FilletPanel] with zero edges: the panel flies up immediately
+  /// (showing "Tap one or more faces...", Confirm disabled - see
+  /// [DeleteFacePanel.faceCount]'s own doc comment) and every subsequent
+  /// face tap ([_toggleSelectedEntity]'s generic accumulate-toggle) reaches
+  /// [_ensureDeleteFaceFeatureExists] via [_scheduleDeleteFacePreview] the
+  /// same way it already does for the ambient-entry path.
+  void _startDeleteFacePicker() {
+    _openDeleteFacePanel(faceEntities: const []);
+  }
+
   /// Opens [DeleteFacePanel] and immediately creates the preview
   /// DeleteFaceFeature against [faceEntities] - mirrors [_openFilletPanel]'s
-  /// eager-create shape (this entry point is ambient-only, always reached
-  /// with 1+ faces already selected - unlike Fillet's own "Add" FAB, Delete
-  /// Face has no empty-selection guided entry to also support). If creation
-  /// fails (e.g. `mixed_body_selection`/`unsupported_surface_type` - see
-  /// `app.document.delete_face`'s own fail-closed contract), closes the
-  /// panel back out rather than leaving it stuck open with nothing to edit -
-  /// mirrors [_openFilletPanel]'s identical failure handling.
+  /// eager-create shape, skipping the attempt entirely (and staying open)
+  /// when [faceEntities] is empty (the guided "Add" FAB's own
+  /// [_startDeleteFacePicker] entry) - there's nothing valid to create yet,
+  /// same "no edges/faces picked yet is a normal state, not an error"
+  /// reasoning [_ensureFilletFeatureExists]'s own doc comment gives. If
+  /// creation fails for a non-empty [faceEntities] (e.g. `mixed_body_
+  /// selection`/`unsupported_surface_type` - see `app.document.delete_face`'s
+  /// own fail-closed contract), closes the panel back out rather than
+  /// leaving it stuck open with nothing to edit - mirrors [_openFilletPanel]'s
+  /// identical failure handling.
   Future<void> _openDeleteFacePanel({required List<SelectionEntityRef> faceEntities}) async {
     final part = _part;
     if (part == null) return;
@@ -10134,6 +10350,7 @@ class _PartScreenState extends State<PartScreen> {
       _featureTreeVisible = false;
       _selectionFilterOverrides.push(_deleteFaceSelectionFilter);
     });
+    if (faceEntities.isEmpty) return;
     await _runGuarded(() => _ensureDeleteFaceFeatureExists(_currentDeleteFaceRefs()));
     if (_previewDeleteFaceFeatureId == null && mounted) {
       setState(() {
@@ -10339,6 +10556,17 @@ class _PartScreenState extends State<PartScreen> {
     final faces = _selectedEntities.where((e) => e.kind == SelectionEntityKind.face).toList();
     if (faces.isEmpty) return; // Defensive - contextActionsFor already guarantees this.
     _openMoveFacePanel(faceEntities: faces);
+  }
+
+  /// [FeaturePickerAction.moveFace]'s guided "Add" FAB entry - opens
+  /// [MoveFacePanel] with zero faces yet, in Offset mode (the only mode that
+  /// accepts 2+ faces, so the natural default here) - mirrors
+  /// [_startDeleteFacePicker] exactly: [_openMoveFacePanel] already handles
+  /// an empty [faceEntities] safely ([_ensureMoveFaceFeatureExists] no-ops
+  /// until 1+ faces are picked, same as the ambient-entry path), so no
+  /// further change is needed there.
+  void _startMoveFacePicker() {
+    _openMoveFacePanel(faceEntities: const []);
   }
 
   /// Opens [MoveFacePanel] against [faceEntities] - mirrors
@@ -13622,8 +13850,12 @@ class _PartScreenState extends State<PartScreen> {
                 // Direct Editing family (first entry): [DeleteBodyPanel]
                 // has no picking step of its own - always opens straight
                 // into this confirm/summary state, mirroring [MergePanel]'s
-                // own slot shape immediately above.
-                if (_deleteBodyActive)
+                // own slot shape immediately above. Guarded on
+                // `!_deleteBodyPicking` too now - the guided "Add" FAB
+                // entry's own [PickerRibbon] (below) owns the screen for
+                // that step instead, exactly like `_mergeStep == confirming`
+                // (not `pickingBodies`) gates [MergePanel] itself.
+                if (_deleteBodyActive && !_deleteBodyPicking)
                   Positioned.fill(
                     key: const ValueKey('delete-body-panel-slot'),
                     child: DeleteBodyPanel(
@@ -13638,8 +13870,10 @@ class _PartScreenState extends State<PartScreen> {
                 // own `initState` postFrameCallback fires the first
                 // `onFactorChanged` - see this file's own "Direct Editing
                 // family, second entry: Scale Body" state-field section
-                // header comment.
-                if (_scaleBodyActive)
+                // header comment. Guarded on `!_scaleBodyPicking` too - the
+                // guided "Add" FAB entry's own [PickerRibbon] (below) owns
+                // the screen while a target Body is still being picked.
+                if (_scaleBodyActive && !_scaleBodyPicking)
                   Positioned.fill(
                     key: const ValueKey('scale-body-panel-slot'),
                     child: ScaleBodyPanel(
@@ -13654,8 +13888,9 @@ class _PartScreenState extends State<PartScreen> {
                 // Direct Editing family (third entry, "Move/Copy Body"):
                 // mirrors [ScaleBodyPanel]'s slot shape immediately above -
                 // [MoveBodyPanel]'s own `initState` postFrameCallback fires
-                // the first `onDeltaChanged`.
-                if (_moveBodyActive)
+                // the first `onDeltaChanged`. Guarded on `!_moveBodyPicking`
+                // too, same reasoning as [ScaleBodyPanel]'s own guard above.
+                if (_moveBodyActive && !_moveBodyPicking)
                   Positioned.fill(
                     key: const ValueKey('move-body-panel-slot'),
                     child: MoveBodyPanel(
@@ -14172,6 +14407,24 @@ class _PartScreenState extends State<PartScreen> {
                       onConfirm: _busy || _mergePickedBodyCount() < 2 ? null : _confirmMergeBodySelection,
                     ),
                   ),
+                // Direct Editing family (first entry) guided "Add" FAB entry
+                // (`_startDeleteBodyPicker`): shown for the whole
+                // [_deleteBodyPicking] step - mirrors [_MergeStep.pickingBodies]'s
+                // own identical [PickerRibbon] just above, gated on 1+
+                // instead of 2+ (matches the Boolean `pickingTargets` ribbon's
+                // own gate just below).
+                if (_deleteBodyPicking)
+                  Positioned.fill(
+                    child: PickerRibbon(
+                      title: 'Delete Body',
+                      tooltip: _deleteBodyPickedCount() == 0
+                          ? 'Select body/bodies to delete'
+                          : '${_deleteBodyPickedCount()} body(s) selected - tap checkmark to confirm',
+                      onCancel: _cancelDeleteBody,
+                      showConfirm: true,
+                      onConfirm: _busy || _deleteBodyPickedCount() == 0 ? null : _confirmDeleteBodyPickerSelection,
+                    ),
+                  ),
                 // Boolean family, Subtract/Common guided "Add" FAB entries
                 // (`_startBooleanPicker`): shown for the whole
                 // `pickingTargets` step - mirrors [_MergeStep.pickingBodies]'s
@@ -14236,6 +14489,29 @@ class _PartScreenState extends State<PartScreen> {
                       title: 'Split',
                       tooltip: 'Select body to split',
                       onCancel: _cancelSplit,
+                    ),
+                  ),
+                // Direct Editing family (second/third entries) guided "Add"
+                // FAB entries (`_startScaleBodyPicker`/`_startMoveBodyPicker`):
+                // mirrors [_SplitStep.pickingTarget]'s own single-tap-auto-
+                // advance ribbon immediately above exactly (no confirm
+                // button - a single Body tap both captures it and opens the
+                // real panel, see `_toggleSelectedEntity`'s own Scale Body/
+                // Move Body branches).
+                if (_scaleBodyPicking)
+                  Positioned.fill(
+                    child: PickerRibbon(
+                      title: 'Scale',
+                      tooltip: 'Select a body to scale',
+                      onCancel: _cancelScaleBody,
+                    ),
+                  ),
+                if (_moveBodyPicking)
+                  Positioned.fill(
+                    child: PickerRibbon(
+                      title: 'Move Body',
+                      tooltip: 'Select a body to move',
+                      onCancel: _cancelMoveBody,
                     ),
                   ),
                 // The second half of the same flow - `pickingTool` picks the
