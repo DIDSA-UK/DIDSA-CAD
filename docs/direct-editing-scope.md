@@ -38,34 +38,36 @@ dated narrative log if you want the "why" behind a specific decision.
    own "omitted keeps current" convention already preserves correctly),
    means this is a pure client-side addition when it happens - no backend
    change needed.
-4. **Delete Face** - `DeleteFaceFeature`. Removes a single planar face from
-   a Body and heals the opening closed, via OCCT `BRepAlgoAPI_Defeaturing`
-   (see `app.document.delete_face`'s own module docstring for the real
-   spike findings, including a serious "succeeds with no warning but
-   produces the wrong geometry" case only found by testing every face of a
-   real chamfered box, not just one). **Backend implemented in full and
-   verified against a real pythonocc-core run** (all 7 tests in
-   `test_feature_delete_face.py` pass). **Client implemented** - ambient
-   entry only (a single planar face of a solid Body selected), no re-
-   picking a different face mid-session (simpler than Fillet's own
-   continuous-re-pick Pattern 3 shape from `docs/live-preview-pattern.md` -
-   deferred as a fast follow, not risked in this pass); `DeleteFacePanel`
-   mirrors `DeleteBodyPanel`'s minimal shape exactly.
-5. **Move Face** - `MoveFaceFeature`. Moves a single planar face (offset
-   along its normal / explicit delta XYZ / along a picked edge's direction,
-   reusing `PatternDirectionRef`) via extrude-the-face-profile +
-   `BRepAlgoAPI_Fuse`/`Cut` (see `app.document.move_face`'s own module
-   docstring). **Backend implemented in full and verified against a real
-   pythonocc-core run** (all 14 tests in `test_feature_move_face.py` pass,
-   including all three modes, overshoot rejection, and mode-switching on
-   update). **Client v1 scope is offset-along-normal mode only** -
-   `MoveFacePanel` has a single numeric field, mirroring `ScaleBodyPanel`'s
-   own debounced-live-preview shape; the backend's own `delta`/
-   `direction_ref`+`direction_distance` modes have no client entry point
-   yet (same "backend-ready, client not wired" treatment `rotation_axis`
-   gets on Move Body) - a pure client-side addition when it happens, no
-   backend change needed. Also ambient-entry-only, face fixed once picked,
-   same reasoning as Delete Face above.
+4. **Delete Face** - `DeleteFaceFeature`. Removes 1+ faces (a single shared
+   Body, planar/cylindrical/conical) and heals the opening(s) closed, via
+   OCCT `BRepAlgoAPI_Defeaturing` (one `AddFaceToRemove` call per face
+   before one `Build()` - see `app.document.delete_face`'s own module
+   docstring for the real spike findings, including a serious "succeeds
+   with no warning but produces the wrong geometry" case only found by
+   testing every face of a real chamfered box, not just one). **Backend V2
+   implemented in full and verified against a real pythonocc-core run**
+   (`test_feature_delete_face.py`). **Client V2 implemented** - mirrors
+   Fillet's own continuous-re-pick Pattern 3 shape from
+   `docs/live-preview-pattern.md` in full (preview-overlay mesh, self-
+   exclusion rollback, generic accumulate-toggle over `_selectedEntities`);
+   `DeleteFacePanel` shows a live face count and gates Confirm on 1+ faces.
+5. **Move Face** - `MoveFaceFeature`. Moves 1+ faces (offset along each
+   face's own normal, via `BRepOffset_MakeOffset` - the only mode that
+   supports 2+ faces/non-planar faces at once) or a single planar face
+   (explicit delta XYZ / along a picked edge's direction, reusing
+   `PatternDirectionRef`, via v1's original extrude-the-face-profile +
+   `BRepAlgoAPI_Fuse`/`Cut` technique - unchanged, since `BRepOffset_
+   MakeOffset` cannot replicate a delta/direction vector's tangential
+   component; see `app.document.move_face`'s own module docstring).
+   **Backend V2 implemented in full and verified against a real
+   pythonocc-core run** (`test_feature_move_face.py`, including all three
+   modes, multi-face offset, non-planar offset, and the mixed-mode/
+   mixed-body rejections). **Client V2 implemented** - `MoveFacePanel`
+   mirrors Fillet's own re-pick shape for Offset mode (faces accumulate
+   freely, one shared offset value); Delta/Direction modes stay single-
+   face (replace-not-accumulate on a face tap, and the mode toggle itself
+   disables those two segments once 2+ faces are picked) - matching the
+   backend's own per-mode face-count contract.
 
 Build order: Delete Body -> Scale Body -> Move Body -> Delete Face -> Move
 Face (cheapest/most-precedented first) - followed exactly; Delete Face's
@@ -100,6 +102,13 @@ All 5 backends were run against the full existing backend test suite
 plus each new feature's own dedicated test file, all passing for real.
 
 ### Move Face V2 (gated on v1 shipping and passing)
+
+**Status: shipped.** Both spikes below (and the Delete Face V2 spike
+further down) were followed by full backend and client implementation -
+see items 4/5 in the Scope section above for the shipped shape. The spike
+narrative is kept as-is below since it's still the accurate record of how
+each design decision (dual-technique split, `unify` step, structured 422
+types, client re-pick UI shape) was actually reached.
 
 v1 scope for Move Face/Delete Face is deliberately narrow: planar faces
 only, single face per Feature instance, fail closed with a structured 422

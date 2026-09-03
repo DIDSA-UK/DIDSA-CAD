@@ -59,7 +59,7 @@ void main() {
     testWidgets('defaults to Offset mode, showing exactly one field', (tester) async {
       await tester.pumpWidget(buildPanel());
       expect(find.byType(TextField), findsOneWidget);
-      expect(find.widgetWithText(TextField, 'Offset'), findsOneWidget);
+      expect(find.widgetWithText(TextField, 'Offset (along surface normal)'), findsOneWidget);
     });
 
     testWidgets('tapping Delta XYZ fires onModeChanged and shows three fields', (tester) async {

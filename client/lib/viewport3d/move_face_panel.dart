@@ -281,18 +281,30 @@ class _MoveFacePanelState extends State<MoveFacePanel> {
         child: Text(axis.toUpperCase()),
       );
 
+  /// V2 UX polish: the label/hint deliberately say "along the surface
+  /// normal", not "radius" or a bare "Offset" - `BRepOffset_MakeOffset`
+  /// applies [_offset] along *each* picked face's own local normal, and for
+  /// a conical face that is not the same thing as its radius growing by
+  /// [_offset] (radial growth = offset / cos(half-angle) - see
+  /// `docs/direct-editing-scope.md`'s "Spike findings addendum" for the
+  /// derivation). A per-face computed-radius readout would need the mesh
+  /// response to carry each face's own surface type/geometry, which it
+  /// doesn't yet - out of scope for this pass; the generic wording here is
+  /// the cheap fix that avoids the field visibly lying for a cone.
   Widget _offsetSection(BuildContext context) => Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           TextField(
             controller: _offsetController,
             keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
-            decoration: const InputDecoration(labelText: 'Offset'),
+            decoration: const InputDecoration(labelText: 'Offset (along surface normal)'),
             onChanged: (_) => _emitOffsetChange(),
           ),
           const SizedBox(height: 8),
           Text(
-            _offset == null ? 'Enter a non-zero offset' : 'Offset: ${_formatNumber(_offset!)}',
+            _offset == null
+                ? 'Enter a non-zero offset'
+                : 'Offset: ${_formatNumber(_offset!)} along each face\'s own normal',
             style: TextStyle(
               color: _offset == null
                   ? Theme.of(context).colorScheme.error
