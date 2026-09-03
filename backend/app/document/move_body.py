@@ -18,9 +18,10 @@ Reuses `app.document.pattern._axis_from_ref` verbatim for `rotation_axis`
 resolution - the exact same `PatternAxisRef` type Circular Pattern already
 resolves to a world-space `gp_Ax1`, no new axis-resolution logic needed.
 
-`copy=False` (default) modifies `body_id` in place (Fillet/Chamfer's "keep
-the same id" pattern - see `fillet.py`'s own docstring); `copy=True` is
-handled by the caller (`app.document.extrude._apply_feature_to_bodies`),
+`make_copy=False` (default) modifies `body_id` in place (Fillet/Chamfer's
+"keep the same id" pattern - see `fillet.py`'s own docstring);
+`make_copy=True` is handled by the caller (`app.document.extrude.
+_apply_feature_to_bodies`),
 which registers the returned shape under a brand-new id instead of
 reassigning `body_id` - this module always returns `(body_id, new_shape)`
 regardless, the same tuple shape Fillet/Chamfer/Scale Body return.
@@ -66,7 +67,7 @@ def resolve_move_body_from_bodies(
     excluded_feature_ids: frozenset[str],
 ) -> tuple[str, TopoDS_Shape]:
     """The Body id `feature` modifies (always `feature.body_id`, regardless
-    of `feature.copy` - see this module's own top-level docstring for who
+    of `feature.make_copy` - see this module's own top-level docstring for who
     decides what to do with that id) and its post-move shape, resolved
     against `bodies` - an already-in-progress `app.document.extrude.
     compute_part_bodies` accumulator, never a fresh recompute (same reason
@@ -105,10 +106,10 @@ def resolve_move_body(
 ) -> tuple[str, TopoDS_Shape]:
     """Fresh entry point for the router's create/update validation - mirrors
     `resolve_fillet`'s own self-exclusion shape exactly. Correct for both
-    `copy=False` (modifies `body_id` in place, so re-resolving against its
-    own prior output would double-apply it) and `copy=True` (this Feature's
-    own `id` isn't `body_id`, so excluding it is a no-op for the source
-    Body's own resolution - harmless, and keeps this one code path uniform
-    for both modes rather than branching)."""
+    `make_copy=False` (modifies `body_id` in place, so re-resolving against
+    its own prior output would double-apply it) and `make_copy=True` (this
+    Feature's own `id` isn't `body_id`, so excluding it is a no-op for the
+    source Body's own resolution - harmless, and keeps this one code path
+    uniform for both modes rather than branching)."""
     bodies = compute_part_bodies(part, excluded_feature_ids | {feature.id})
     return resolve_move_body_from_bodies(part, bodies, feature, excluded_feature_ids | {feature.id})

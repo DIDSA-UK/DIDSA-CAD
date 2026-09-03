@@ -39,17 +39,53 @@ dated narrative log if you want the "why" behind a specific decision.
    means this is a pure client-side addition when it happens - no backend
    change needed.
 4. **Delete Face** - `DeleteFaceFeature`. Removes a single planar face from
-   a Body and heals the opening closed. Not yet implemented - needs an OCCT
-   healing-approach spike (see "Move Face / Delete Face technical risk"
-   below) before it can be built for real.
+   a Body and heals the opening closed, via OCCT `BRepAlgoAPI_Defeaturing`
+   (see `app.document.delete_face`'s own module docstring for the real
+   spike findings, including a serious "succeeds with no warning but
+   produces the wrong geometry" case only found by testing every face of a
+   real chamfered box, not just one). **Backend implemented in full and
+   verified against a real pythonocc-core run** (all 7 tests in
+   `test_feature_delete_face.py` pass). Client not yet wired.
 5. **Move Face** - `MoveFaceFeature`. Moves a single planar face (offset
-   along its normal / explicit delta XYZ / along a picked edge's direction
-   with a flip toggle, reusing `PatternDirectionRef`) and heals adjacent
-   faces. Highest technical risk in the family - ships last, benefiting from
-   Delete Face's healing spike. Not yet implemented.
+   along its normal / explicit delta XYZ / along a picked edge's direction,
+   reusing `PatternDirectionRef`) via extrude-the-face-profile +
+   `BRepAlgoAPI_Fuse`/`Cut` (see `app.document.move_face`'s own module
+   docstring). **Backend implemented in full and verified against a real
+   pythonocc-core run** (all 14 tests in `test_feature_move_face.py` pass,
+   including all three modes, overshoot rejection, and mode-switching on
+   update). Client not yet wired.
 
 Build order: Delete Body -> Scale Body -> Move Body -> Delete Face -> Move
-Face (cheapest/most-precedented first).
+Face (cheapest/most-precedented first) - followed exactly; Delete Face's
+spike (and the real bug it caught) directly informed Move Face's own
+validation.
+
+### How the backend was actually verified
+
+This sandbox has no pythonocc-core/fastapi by default (see every resolver
+module's own "needs a real pythonocc-core environment" docstring note) -
+but for this feature family, a real conda-forge environment (pythonocc-core
+7.9.3 novtk + fastapi/pytest/httpx/py-slvs, matching `environment.yml`
+exactly) was bootstrapped via `micromamba` to spike, implement, and run the
+*actual* test suite before shipping, not just pattern-match against
+precedent. This caught two real bugs pattern-matching alone would have
+missed:
+- `MoveBodyFeature`/`MoveBodyFeatureCreate`'s `copy` field collided with
+  `pydantic.BaseModel.copy()` (a runtime `UserWarning`, silently shadowing
+  the inherited method) - renamed to `make_copy` everywhere (dataclass,
+  schemas, router, native_format, client wire key).
+- `BRepAlgoAPI_Defeaturing` (Delete Face's own OCCT tool) reports
+  `IsDone=True, HasWarnings=False` - genuinely no warning - for removing
+  the *wrong* face of a chamfered box, yet silently returns a Body
+  stretched several units past its own original bounding box, not healed
+  back correctly. Only found by testing every face of a real chamfered box
+  in turn, not one hand-picked "it worked" case. `delete_face.py` now adds
+  its own bounding-box-growth sanity check on top of `HasWarnings()` - see
+  that module's own docstring for the full reasoning and the real numbers.
+
+All 5 backends were run against the full existing backend test suite
+(1469+ pre-existing tests, non-gear-family subset) with zero regressions,
+plus each new feature's own dedicated test file, all passing for real.
 
 ### Move Face V2 (gated on v1 shipping and passing)
 
@@ -108,20 +144,33 @@ approach and panel, not starting over.
   those *don't* appear in the ambient table) - every one is safe to offer
   directly from `contextActionsFor`.
 
-## Move Face / Delete Face technical risk
+## Move Face / Delete Face technical risk (resolved)
 
 OCCT/pythonocc-core has no single high-level "synchronous move-face-and-
-heal-neighbors" solver the way SolidWorks' Direct Editing tab does. Before
-writing `move_face.py`/`delete_face.py` for real, run a short throwaway
-pythonocc-core spike on a simple test solid (a box) to confirm the actual
-working approach. The most promising candidate - because it reuses an API
-family (`BRepAlgoAPI_Cut`/`BRepAlgoAPI_Fuse`) already used heavily in this
-codebase and has a direct precedent (`split.py`'s own documented "build an
-oversized block, boolean it in" technique, not `BRepAlgoAPI_Splitter`) - is:
-build a solid representing the material added/removed by the face's
-movement (or removal) and boolean it into the target Body.
-`BRepOffsetAPI_MakeOffsetShape`'s per-face-offset/remove-face modes are a
-secondary candidate to check. Do not commit to exact OCCT class/method
-names until the spike confirms them - do Delete Face's spike first (it's
-the simpler of the two: pure removal, no directional offset to reason
-about), and let its findings inform Move Face's own implementation.
+heal-neighbors" solver the way SolidWorks' Direct Editing tab does - this
+was the real risk this section originally flagged before either resolver
+was written. A real pythonocc-core spike (see "How the backend was
+actually verified" above) found two different, working techniques rather
+than one shared one:
+
+- **Delete Face**: `BRepAlgoAPI_Defeaturing` - not this codebase's own
+  invention, OCCT's own dedicated tool for removing a feature face and
+  healing the surrounding topology (originally built for defeaturing
+  imported/dumb-solid CAD models, which is the same problem). The
+  originally-guessed "oversized block, boolean it in" idiom
+  (`BRepOffsetAPI_MakeOffsetShape`/`split.py`'s own technique) turned out
+  not to fit - it has no natural way to *heal* a Body after removing one of
+  its faces, only to divide a Body along a cutting tool. See
+  `app.document.delete_face`'s own module docstring for the fail-closed
+  contract this required (`HasWarnings()` plus a bounding-box sanity check
+  - `IsDone()` alone is not enough, confirmed by real testing).
+- **Move Face**: the originally-guessed "oversized block, boolean it in"
+  idiom *does* fit here - extrude the target face's own profile along the
+  movement vector into a prism (`BRepPrimAPI_MakePrism`, the same
+  primitive `split.py` already uses), then `BRepAlgoAPI_Fuse`/`Cut` it into
+  the Body depending on the movement vector's sign relative to the face's
+  own outward normal. Confirmed working for offset-along-normal, arbitrary
+  delta (including a sheared/tangential component), and direction-of-edge
+  modes, plus a degenerate-direction rejection and an overshoot-past-the-
+  Body's-own-extent rejection - see `app.document.move_face`'s own module
+  docstring.

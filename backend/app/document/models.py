@@ -2158,23 +2158,110 @@ class MoveBodyFeature(Feature):
     `rotation_axis=None` (or `rotation_angle_degrees=0`) means no rotation
     at all - translate-only is the common case.
 
-    `copy=False` (default) modifies `body_id` in place (Fillet/Chamfer's
-    "keep the same id" pattern - see `FilletFeature`'s own docstring);
-    `copy=True` instead mints a brand-new Body under this Feature's own
-    `id` (mirrors a Mirror with a single source - `_register_solids`'s
-    own un-suffixed-if-single-result convention), leaving `body_id` itself
-    untouched."""
+    `make_copy=False` (default) modifies `body_id` in place (Fillet/
+    Chamfer's "keep the same id" pattern - see `FilletFeature`'s own
+    docstring); `make_copy=True` instead mints a brand-new Body under this
+    Feature's own `id` (mirrors a Mirror with a single source -
+    `_register_solids`'s own un-suffixed-if-single-result convention),
+    leaving `body_id` itself untouched. Named `make_copy`, not `copy` -
+    `copy` collides with `pydantic.BaseModel.copy()` on this dataclass's
+    own wire-schema counterpart (`MoveBodyFeatureCreate`/`Update`/
+    `Response` in `app.document.schemas`), so every layer (this dataclass,
+    the schemas, the wire JSON key, the client) uses `make_copy`
+    consistently rather than diverging names across layers."""
 
     id: str
     body_id: str
     delta: tuple[float, float, float] = (0.0, 0.0, 0.0)
     rotation_axis: PatternAxisRef | None = None
     rotation_angle_degrees: float = 0.0
-    copy: bool = False
+    make_copy: bool = False
 
     @property
     def type(self) -> str:
         return "move_body"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
+@dataclass
+class DeleteFaceFeature(Feature):
+    """Direct Editing family, fourth entry (see `docs/direct-editing-
+    scope.md`): removes the single planar face named by `face_ref` from
+    its Body and heals the resulting opening closed, via OCCT
+    `BRepAlgoAPI_Defeaturing` (see `app.document.delete_face`'s own module
+    docstring for why this specific tool, and its own fail-closed
+    contract). Modifies `face_ref.body_id` in place (Fillet/Chamfer's
+    "keep the same id" pattern). v1 scope: planar faces only, single face
+    only - a face whose removal has no well-defined single healed result
+    (most commonly: a face of a primitive box/cylinder with no adjacent
+    fillet/chamfer/pocket geometry to naturally close the gap) fails
+    closed with a structured 422 rather than silently returning an
+    unmodified or invalid Body."""
+
+    id: str
+    face_ref: SubShapeRef  # shape_type must be FACE
+
+    @property
+    def type(self) -> str:
+        return "delete_face"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
+@dataclass
+class MoveFaceFeature(Feature):
+    """Direct Editing family, fifth (last) entry (see `docs/direct-
+    editing-scope.md`) - the highest-technical-risk member of this
+    family: moves the single planar face named by `face_ref` by exactly
+    one of three mutually-exclusive modes (payload shape validated by
+    `app.document.router._validate_move_face_payload`, same "exactly one
+    of N fields" convention `SplitToolRef`/`PatternAxisRef` already
+    establish):
+    - `offset_distance`: along the face's own outward normal (positive =
+      outward/adds material, negative = inward/removes material).
+    - `delta`: an explicit world-space XYZ translation - permissive by
+      design (not restricted to the face's own normal direction); only
+      its component along the face's outward normal actually determines
+      whether material is added or removed (see `app.document.move_face`'s
+      own module docstring), any tangential component shears the swept
+      region between the face's old and new position.
+    - `direction_ref` + `direction_distance`: along a picked edge's
+      direction (`PatternDirectionRef`, reused verbatim from the Pattern/
+      Mirror family), with the sign of `direction_distance` acting as the
+      client's own "Flip direction" control (mirrors Extrude's own
+      flip-via-sign convention, not a separate boolean field).
+
+    Modifies `face_ref.body_id` in place (Fillet/Chamfer's "keep the same
+    id" pattern). v1 scope: planar faces only, single face only, no
+    guaranteed healing across an offset large enough to consume a
+    neighbouring face - fails closed with a structured 422 (`move_face_
+    failed`) rather than producing invalid/wrong geometry; see
+    `docs/direct-editing-scope.md`'s own "Move Face V2" section for what's
+    explicitly deferred."""
+
+    id: str
+    face_ref: SubShapeRef  # shape_type must be FACE
+    offset_distance: float | None = None
+    delta: tuple[float, float, float] | None = None
+    direction_ref: PatternDirectionRef | None = None
+    direction_distance: float | None = None
+
+    @property
+    def type(self) -> str:
+        return "move_face"
 
     @property
     def produces_solid_geometry(self) -> bool:

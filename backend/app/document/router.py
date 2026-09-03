@@ -96,6 +96,7 @@ from app.document.models import (
     ChamferFeature,
     CreatePlaneFeature,
     DeleteBodyFeature,
+    DeleteFaceFeature,
     Document,
     ExtrudeFeature,
     ExtrudeType,
@@ -118,6 +119,7 @@ from app.document.models import (
     MergeMode,
     MirrorFeature,
     MoveBodyFeature,
+    MoveFaceFeature,
     Part,
     PatternAxisRef,
     PatternDirectionRef,
@@ -143,7 +145,9 @@ from app.document.models import (
     SweepMode,
 )
 from app.document.revolve import resolve_revolve
+from app.document.delete_face import resolve_delete_face
 from app.document.move_body import resolve_move_body
+from app.document.move_face import resolve_move_face
 from app.document.scale_body import resolve_scale_body
 from app.document.schemas import (
     BevelGearFeatureCreate,
@@ -175,10 +179,16 @@ from app.document.schemas import (
     DeleteBodyFeatureCreate,
     DeleteBodyFeatureResponse,
     DeleteBodyFeatureUpdate,
+    DeleteFaceFeatureCreate,
+    DeleteFaceFeatureResponse,
+    DeleteFaceFeatureUpdate,
     ExternalEdgeReferenceCreate,
     MoveBodyFeatureCreate,
     MoveBodyFeatureResponse,
     MoveBodyFeatureUpdate,
+    MoveFaceFeatureCreate,
+    MoveFaceFeatureResponse,
+    MoveFaceFeatureUpdate,
     ScaleBodyFeatureCreate,
     ScaleBodyFeatureResponse,
     ScaleBodyFeatureUpdate,
@@ -715,7 +725,27 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             if feature.rotation_axis
             else None,
             rotation_angle_degrees=feature.rotation_angle_degrees,
-            copy=feature.copy,
+            make_copy=feature.make_copy,
+            locked=part.is_locked(feature.id),
+            produces=feature.produces,
+        )
+    if isinstance(feature, DeleteFaceFeature):
+        return DeleteFaceFeatureResponse(
+            id=feature.id,
+            face_ref=_subshape_ref_to_schema(feature.face_ref),
+            locked=part.is_locked(feature.id),
+            produces=feature.produces,
+        )
+    if isinstance(feature, MoveFaceFeature):
+        return MoveFaceFeatureResponse(
+            id=feature.id,
+            face_ref=_subshape_ref_to_schema(feature.face_ref),
+            offset_distance=feature.offset_distance,
+            delta=feature.delta,
+            direction_ref=_pattern_direction_ref_to_schema(feature.direction_ref)
+            if feature.direction_ref
+            else None,
+            direction_distance=feature.direction_distance,
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
@@ -1304,6 +1334,63 @@ def _validate_move_body_payload(
         )
     if rotation_axis is not None:
         _validate_pattern_axis_ref(rotation_axis, field_name="rotation_axis")
+
+
+def _validate_face_ref(ref: SubShapeRef, field_name: str = "face_ref") -> None:
+    """Direct Editing family (fourth/fifth entries): `ref` must actually be
+    a face (422, mirroring `_validate_fillet_edge_refs`'s own `shape_type
+    == EDGE` check) - a payload-shape check; whether it resolves, and
+    whether it's planar, is a referential/geometric check made by `app.
+    document.delete_face.resolve_delete_face`/`app.document.move_face.
+    resolve_move_face` instead (the same "payload shape in the router,
+    resolution in the OCCT module" split every other structured Feature
+    error in this codebase already uses)."""
+    if ref.shape_type != SubShapeType.FACE:
+        raise HTTPException(status_code=422, detail=f"{field_name} must have shape_type=FACE")
+
+
+def _validate_move_face_payload(
+    face_ref: SubShapeRef,
+    offset_distance: float | None,
+    delta: tuple[float, float, float] | None,
+    direction_ref: PatternDirectionRef | None,
+    direction_distance: float | None,
+) -> None:
+    """Direct Editing family (fifth/last entry): `face_ref` must be a face
+    (see `_validate_face_ref`); exactly one of the three mutually-exclusive
+    modes must be set - `offset_distance`, `delta`, or
+    (`direction_ref` + `direction_distance` together, not either alone) -
+    matching `MoveFaceFeature`'s own docstring. Each mode's own distance/
+    delta must be non-zero - a zero-magnitude move is not a meaningful
+    Move Face, the same "no trivial no-op value" philosophy `_validate_
+    fillet_radius`'s `> 0` check already establishes for Fillet."""
+    _validate_face_ref(face_ref)
+    modes_set = sum(
+        (
+            offset_distance is not None,
+            delta is not None,
+            direction_ref is not None or direction_distance is not None,
+        )
+    )
+    if modes_set != 1:
+        raise HTTPException(
+            status_code=422,
+            detail="MoveFaceFeature requires exactly one of offset_distance, delta, or "
+            "direction_ref+direction_distance",
+        )
+    if offset_distance is not None and offset_distance == 0.0:
+        raise HTTPException(status_code=422, detail="offset_distance must be non-zero")
+    if delta is not None and delta == (0.0, 0.0, 0.0):
+        raise HTTPException(status_code=422, detail="delta must be non-zero")
+    if direction_ref is not None or direction_distance is not None:
+        if direction_ref is None or direction_distance is None:
+            raise HTTPException(
+                status_code=422,
+                detail="direction_ref and direction_distance must be supplied together",
+            )
+        if direction_distance == 0.0:
+            raise HTTPException(status_code=422, detail="direction_distance must be non-zero")
+        _validate_pattern_direction_ref(direction_ref, "direction_ref")
 
 
 def _validate_boolean_body_ids(
@@ -3782,7 +3869,7 @@ def create_move_body_feature(part_id: str, payload: MoveBodyFeatureCreate) -> Mo
         delta=payload.delta,
         rotation_axis=rotation_axis,
         rotation_angle_degrees=payload.rotation_angle_degrees,
-        copy=payload.copy,
+        make_copy=payload.make_copy,
     )
     resolve_move_body(part, feature)  # raises on an unresolvable/degenerate move; result unused here
     part.add_feature(feature)
@@ -3805,7 +3892,7 @@ def update_move_body_feature(
     """Same validate-before-mutate discipline as `update_scale_body_
     feature`: the merged (existing-plus-payload) values are checked against
     a scratch Feature sharing the real one's id before anything on the
-    real, stored Feature is touched. `rotation_axis`/`copy` follow this
+    real, stored Feature is touched. `rotation_axis`/`make_copy` follow this
     file's own established "payload value if not None, else current" rule
     (see `update_pattern_feature`'s own `axis` field for the identical
     can-legitimately-be-None-but-omitted-still-means-keep-current
@@ -3825,7 +3912,7 @@ def update_move_body_feature(
         if payload.rotation_angle_degrees is not None
         else feature.rotation_angle_degrees
     )
-    new_copy = payload.copy if payload.copy is not None else feature.copy
+    new_make_copy = payload.make_copy if payload.make_copy is not None else feature.make_copy
     _validate_move_body_payload(part, new_body_id, new_rotation_axis)
 
     candidate = MoveBodyFeature(
@@ -3834,7 +3921,7 @@ def update_move_body_feature(
         delta=new_delta,
         rotation_axis=new_rotation_axis,
         rotation_angle_degrees=new_rotation_angle_degrees,
-        copy=new_copy,
+        make_copy=new_make_copy,
     )
     resolve_move_body(part, candidate)  # raises on an unresolvable/degenerate move
 
@@ -3842,7 +3929,173 @@ def update_move_body_feature(
     feature.delta = candidate.delta
     feature.rotation_axis = candidate.rotation_axis
     feature.rotation_angle_degrees = candidate.rotation_angle_degrees
-    feature.copy = candidate.copy
+    feature.make_copy = candidate.make_copy
+    return _feature_response(part, feature)
+
+
+@router.post(
+    "/parts/{part_id}/delete-face-features", response_model=DeleteFaceFeatureResponse, status_code=201
+)
+def create_delete_face_feature(
+    part_id: str, payload: DeleteFaceFeatureCreate
+) -> DeleteFaceFeatureResponse:
+    """Direct Editing family (fourth entry): mirrors `create_fillet_
+    feature`'s shape (fails closed on payload-shape validation, then
+    resolvability, before ever persisting an unresolvable removal) - a
+    Delete Face has real per-instance geometry of its own that can fail
+    (an ill-defined removal - see `app.document.delete_face`'s own
+    fail-closed contract)."""
+    part = get_part_or_404(part_id)
+    face_ref = _subshape_ref_to_domain(payload.face_ref)
+    _validate_face_ref(face_ref)
+    feature = DeleteFaceFeature(id=str(uuid.uuid4()), face_ref=face_ref)
+    resolve_delete_face(part, feature)  # raises on an unresolvable/ill-defined removal
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_delete_face_feature_or_404(part: Part, feature_id: str) -> DeleteFaceFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, DeleteFaceFeature):
+        raise HTTPException(status_code=404, detail="Delete face feature not found")
+    return feature
+
+
+@router.patch(
+    "/parts/{part_id}/delete-face-features/{feature_id}", response_model=DeleteFaceFeatureResponse
+)
+def update_delete_face_feature(
+    part_id: str, feature_id: str, payload: DeleteFaceFeatureUpdate
+) -> DeleteFaceFeatureResponse:
+    """Same validate-before-mutate discipline as `update_fillet_feature`:
+    the merged (existing-plus-payload) value is checked against a scratch
+    Feature sharing the real one's id (`resolve_delete_face` excludes that
+    id from its own "current bodies" computation for exactly this reason)
+    before anything on the real, stored Feature is touched."""
+    part = get_part_or_404(part_id)
+    feature = _get_delete_face_feature_or_404(part, feature_id)
+
+    new_face_ref = (
+        _subshape_ref_to_domain(payload.face_ref) if payload.face_ref is not None else feature.face_ref
+    )
+    _validate_face_ref(new_face_ref)
+
+    candidate = DeleteFaceFeature(id=feature.id, face_ref=new_face_ref)
+    resolve_delete_face(part, candidate)  # raises on an unresolvable/ill-defined removal
+
+    feature.face_ref = candidate.face_ref
+    return _feature_response(part, feature)
+
+
+@router.post(
+    "/parts/{part_id}/move-face-features", response_model=MoveFaceFeatureResponse, status_code=201
+)
+def create_move_face_feature(part_id: str, payload: MoveFaceFeatureCreate) -> MoveFaceFeatureResponse:
+    """Direct Editing family (fifth/last entry): mirrors `create_fillet_
+    feature`'s shape (fails closed on payload-shape validation, then
+    resolvability, before ever persisting an unresolvable move) - the
+    highest technical-risk member of this family, see `app.document.
+    move_face`'s own module docstring for the OCCT technique."""
+    part = get_part_or_404(part_id)
+    face_ref = _subshape_ref_to_domain(payload.face_ref)
+    direction_ref = (
+        _pattern_direction_ref_to_domain(payload.direction_ref)
+        if payload.direction_ref is not None
+        else None
+    )
+    _validate_move_face_payload(
+        face_ref, payload.offset_distance, payload.delta, direction_ref, payload.direction_distance
+    )
+    feature = MoveFaceFeature(
+        id=str(uuid.uuid4()),
+        face_ref=face_ref,
+        offset_distance=payload.offset_distance,
+        delta=payload.delta,
+        direction_ref=direction_ref,
+        direction_distance=payload.direction_distance,
+    )
+    resolve_move_face(part, feature)  # raises on an unresolvable/degenerate move; result unused here
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_move_face_feature_or_404(part: Part, feature_id: str) -> MoveFaceFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, MoveFaceFeature):
+        raise HTTPException(status_code=404, detail="Move face feature not found")
+    return feature
+
+
+@router.patch(
+    "/parts/{part_id}/move-face-features/{feature_id}", response_model=MoveFaceFeatureResponse
+)
+def update_move_face_feature(
+    part_id: str, feature_id: str, payload: MoveFaceFeatureUpdate
+) -> MoveFaceFeatureResponse:
+    """Same validate-before-mutate discipline as `update_fillet_feature`.
+    Unlike every other Direct Editing Update endpoint, the three mode
+    fields (`offset_distance`/`delta`/`direction_ref`+`direction_distance`)
+    are not merged independently - supplying any field belonging to a mode
+    switches to that mode wholesale, clearing the other two modes' own
+    fields, matching `MoveFaceFeatureUpdate`'s own docstring (mirrors
+    `SplitFeatureUpdate.tool` always being replaced as a whole). Supplying
+    no mode field at all (e.g. a `face_ref`-only PATCH) keeps the
+    Feature's current mode entirely."""
+    part = get_part_or_404(part_id)
+    feature = _get_move_face_feature_or_404(part, feature_id)
+
+    new_face_ref = (
+        _subshape_ref_to_domain(payload.face_ref) if payload.face_ref is not None else feature.face_ref
+    )
+
+    if payload.offset_distance is not None:
+        new_offset_distance: float | None = payload.offset_distance
+        new_delta: tuple[float, float, float] | None = None
+        new_direction_ref = None
+        new_direction_distance: float | None = None
+    elif payload.delta is not None:
+        new_offset_distance = None
+        new_delta = payload.delta
+        new_direction_ref = None
+        new_direction_distance = None
+    elif payload.direction_ref is not None or payload.direction_distance is not None:
+        new_offset_distance = None
+        new_delta = None
+        new_direction_ref = (
+            _pattern_direction_ref_to_domain(payload.direction_ref)
+            if payload.direction_ref is not None
+            else feature.direction_ref
+        )
+        new_direction_distance = (
+            payload.direction_distance
+            if payload.direction_distance is not None
+            else feature.direction_distance
+        )
+    else:
+        new_offset_distance = feature.offset_distance
+        new_delta = feature.delta
+        new_direction_ref = feature.direction_ref
+        new_direction_distance = feature.direction_distance
+
+    _validate_move_face_payload(
+        new_face_ref, new_offset_distance, new_delta, new_direction_ref, new_direction_distance
+    )
+
+    candidate = MoveFaceFeature(
+        id=feature.id,
+        face_ref=new_face_ref,
+        offset_distance=new_offset_distance,
+        delta=new_delta,
+        direction_ref=new_direction_ref,
+        direction_distance=new_direction_distance,
+    )
+    resolve_move_face(part, candidate)  # raises on an unresolvable/degenerate move
+
+    feature.face_ref = candidate.face_ref
+    feature.offset_distance = candidate.offset_distance
+    feature.delta = candidate.delta
+    feature.direction_ref = candidate.direction_ref
+    feature.direction_distance = candidate.direction_distance
     return _feature_response(part, feature)
 
 

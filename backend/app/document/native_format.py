@@ -30,6 +30,7 @@ from app.document.models import (
     ChamferFeature,
     CreatePlaneFeature,
     DeleteBodyFeature,
+    DeleteFaceFeature,
     Document,
     ExtrudeFeature,
     ExtrudeType,
@@ -52,6 +53,7 @@ from app.document.models import (
     MergeMode,
     MirrorFeature,
     MoveBodyFeature,
+    MoveFaceFeature,
     Part,
     PatternAxisRef,
     PatternDirectionRef,
@@ -1025,7 +1027,25 @@ def _feature_to_dict(feature: Feature) -> dict:
             if feature.rotation_axis
             else None,
             "rotation_angle_degrees": feature.rotation_angle_degrees,
-            "copy": feature.copy,
+            "make_copy": feature.make_copy,
+        }
+    if isinstance(feature, DeleteFaceFeature):
+        return {
+            "type": "delete_face",
+            "id": feature.id,
+            "face_ref": _subshape_ref_to_dict(feature.face_ref),
+        }
+    if isinstance(feature, MoveFaceFeature):
+        return {
+            "type": "move_face",
+            "id": feature.id,
+            "face_ref": _subshape_ref_to_dict(feature.face_ref),
+            "offset_distance": feature.offset_distance,
+            "delta": list(feature.delta) if feature.delta is not None else None,
+            "direction_ref": _pattern_direction_ref_to_dict(feature.direction_ref)
+            if feature.direction_ref
+            else None,
+            "direction_distance": feature.direction_distance,
         }
     if isinstance(feature, SplitFeature):
         return {
@@ -1302,7 +1322,24 @@ def _feature_from_dict(data: dict) -> Feature:
             if data.get("rotation_axis")
             else None,
             rotation_angle_degrees=data.get("rotation_angle_degrees", 0.0),
-            copy=data.get("copy", False),
+            make_copy=data.get("make_copy", False),
+        )
+    if feature_type == "delete_face":
+        return DeleteFaceFeature(
+            id=feature_id,
+            face_ref=_subshape_ref_from_dict(_require(data, "face_ref")),
+        )
+    if feature_type == "move_face":
+        raw_delta = data.get("delta")
+        return MoveFaceFeature(
+            id=feature_id,
+            face_ref=_subshape_ref_from_dict(_require(data, "face_ref")),
+            offset_distance=data.get("offset_distance"),
+            delta=(raw_delta[0], raw_delta[1], raw_delta[2]) if raw_delta is not None else None,
+            direction_ref=_pattern_direction_ref_from_dict(data["direction_ref"])
+            if data.get("direction_ref")
+            else None,
+            direction_distance=data.get("direction_distance"),
         )
     if feature_type == "split":
         return SplitFeature(

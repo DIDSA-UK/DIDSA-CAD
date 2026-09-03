@@ -2,8 +2,8 @@
 for `MoveBodyFeature` - translates/rotates a single Body, via two
 independent, sequential `BRepBuilderAPI_Transform` calls (see
 `app.document.move_body`). Modifies its Body in place (keeps the same id)
-when `copy=False` (default); mints a brand-new Body under this Feature's
-own id when `copy=True`. Mirrors test_feature_scale_body.py's own
+when `make_copy=False` (default); mints a brand-new Body under this
+Feature's own id when `make_copy=True`. Mirrors test_feature_scale_body.py's own
 structure and helpers (copy-pasted, not shared via conftest, same as every
 other test_feature_*.py file). Needs a real pythonocc-core environment (not
 available in this repo's own dev sandbox - see docs/status.md's dated
@@ -162,7 +162,7 @@ def test_translating_a_box_by_a_delta_shifts_its_bounding_box():
     assert response.json()["type"] == "move_body"
     assert response.json()["body_id"] == body_id
     assert response.json()["delta"] == [5.0, -2.0, 3.0]
-    assert response.json()["copy"] is False
+    assert response.json()["make_copy"] is False
 
     # Move modifies the Body in place - same id, no new Body minted.
     assert _body_ids(part["id"]) == [body_id]
@@ -209,10 +209,10 @@ def test_copy_mode_mints_a_new_body_and_leaves_the_original_untouched():
     part = _create_part()
     body_id = _make_box(part["id"], x0=0.0)
 
-    response = _create_move_body(part["id"], body_id, delta=[20.0, 0.0, 0.0], copy=True)
+    response = _create_move_body(part["id"], body_id, delta=[20.0, 0.0, 0.0], make_copy=True)
 
     assert response.status_code == 201
-    assert response.json()["copy"] is True
+    assert response.json()["make_copy"] is True
 
     body_ids = set(_body_ids(part["id"]))
     assert body_id in body_ids  # original untouched

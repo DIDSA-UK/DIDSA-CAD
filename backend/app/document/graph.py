@@ -39,6 +39,7 @@ from app.document.models import (
     ChamferFeature,
     CreatePlaneFeature,
     DeleteBodyFeature,
+    DeleteFaceFeature,
     ExtrudeFeature,
     ExtrudeType,
     Feature,
@@ -50,6 +51,7 @@ from app.document.models import (
     MergeFeature,
     MirrorFeature,
     MoveBodyFeature,
+    MoveFaceFeature,
     Part,
     PatternAxisRef,
     PatternDirectionRef,
@@ -502,6 +504,22 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
             axis_dep = _pattern_axis_dependency(part, feature.rotation_axis)
             if axis_dep is not None:
                 deps.add(axis_dep)
+            depends_on = tuple(deps)
+        elif isinstance(feature, DeleteFaceFeature):
+            # Direct Editing family, fourth entry: identical single-Body
+            # treatment to ScaleBodyFeature/MoveBodyFeature above, just via
+            # `face_ref.body_id` instead of a bare `body_id` field.
+            depends_on = (base_feature_id(feature.face_ref.body_id),)
+        elif isinstance(feature, MoveFaceFeature):
+            # Direct Editing family, fifth/last entry: the owning Feature
+            # of `face_ref.body_id`, plus whatever `direction_ref` itself
+            # depends on (`_pattern_direction_dependency` - already shared
+            # with PatternFeature's own `direction_1`/`direction_2`
+            # fields), deduplicated via a `set` in case they coincide.
+            deps = {base_feature_id(feature.face_ref.body_id)}
+            direction_dep = _pattern_direction_dependency(part, feature.direction_ref)
+            if direction_dep is not None:
+                deps.add(direction_dep)
             depends_on = tuple(deps)
         elif isinstance(feature, SplitFeature):
             depends_on = _split_dependencies(part, feature)
