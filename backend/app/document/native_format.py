@@ -1039,7 +1039,7 @@ def _feature_to_dict(feature: Feature) -> dict:
         return {
             "type": "move_face",
             "id": feature.id,
-            "face_ref": _subshape_ref_to_dict(feature.face_ref),
+            "face_refs": [_subshape_ref_to_dict(r) for r in feature.face_refs],
             "offset_distance": feature.offset_distance,
             "delta": list(feature.delta) if feature.delta is not None else None,
             "direction_ref": _pattern_direction_ref_to_dict(feature.direction_ref)
@@ -1333,7 +1333,7 @@ def _feature_from_dict(data: dict) -> Feature:
         raw_delta = data.get("delta")
         return MoveFaceFeature(
             id=feature_id,
-            face_ref=_subshape_ref_from_dict(_require(data, "face_ref")),
+            face_refs=[_subshape_ref_from_dict(r) for r in data.get("face_refs", [])],
             offset_distance=data.get("offset_distance"),
             delta=(raw_delta[0], raw_delta[1], raw_delta[2]) if raw_delta is not None else None,
             direction_ref=_pattern_direction_ref_from_dict(data["direction_ref"])

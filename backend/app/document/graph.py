@@ -511,12 +511,16 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
             # `face_ref.body_id` instead of a bare `body_id` field.
             depends_on = (base_feature_id(feature.face_ref.body_id),)
         elif isinstance(feature, MoveFaceFeature):
-            # Direct Editing family, fifth/last entry: the owning Feature
-            # of `face_ref.body_id`, plus whatever `direction_ref` itself
-            # depends on (`_pattern_direction_dependency` - already shared
-            # with PatternFeature's own `direction_1`/`direction_2`
+            # Direct Editing family, fifth/last entry, V2: the owning
+            # Feature of every `face_refs` entry's own `body_id` (mirrors
+            # FilletFeature/ChamferFeature's own `edge_refs` treatment
+            # just above - in practice always exactly one distinct id,
+            # since every entry must share the same Body, but computed the
+            # identical way regardless), plus whatever `direction_ref`
+            # itself depends on (`_pattern_direction_dependency` - already
+            # shared with PatternFeature's own `direction_1`/`direction_2`
             # fields), deduplicated via a `set` in case they coincide.
-            deps = {base_feature_id(feature.face_ref.body_id)}
+            deps = {base_feature_id(ref.body_id) for ref in feature.face_refs}
             direction_dep = _pattern_direction_dependency(part, feature.direction_ref)
             if direction_dep is not None:
                 deps.add(direction_dep)
