@@ -32,6 +32,18 @@ def _chamfer_failed(body_id: str) -> HTTPException:
     return HTTPException(status_code=422, detail={"type": "chamfer_failed", "body_id": body_id})
 
 
+def _build_chamfer(chamfer_maker: BRepFilletAPI_MakeChamfer, body_id: str) -> None:
+    """Mirrors `app.document.fillet._build_fillet` exactly, substituting
+    `_chamfer_failed` - see that function's own doc comment for the full
+    on-device-confirmed reasoning (`BRepFilletAPI_MakeChamfer.Build()` can
+    raise a raw `RuntimeError` for a genuinely unsuitable edge selection
+    rather than always failing gracefully into `IsDone() == False`)."""
+    try:
+        chamfer_maker.Build()
+    except RuntimeError as exc:
+        raise _chamfer_failed(body_id) from exc
+
+
 def resolve_chamfer_from_bodies(
     bodies: dict[str, TopoDS_Shape],
     feature: ChamferFeature,
@@ -53,7 +65,7 @@ def resolve_chamfer_from_bodies(
     chamfer_maker = BRepFilletAPI_MakeChamfer(bodies[body_id])
     for edge in edges:
         chamfer_maker.Add(feature.distance, edge)
-    chamfer_maker.Build()
+    _build_chamfer(chamfer_maker, body_id)
     if not chamfer_maker.IsDone():
         raise _chamfer_failed(body_id)
     return body_id, chamfer_maker.Shape()

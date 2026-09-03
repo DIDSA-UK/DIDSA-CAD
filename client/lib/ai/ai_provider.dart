@@ -77,7 +77,21 @@ class AiProviderException implements Exception {
 /// much longer than the CAD backend's own calls (`ApiConfig.requestTimeout`
 /// is 15s), especially against a local/Ollama model with no dedicated GPU,
 /// so this is deliberately generous rather than matched to that constant.
-const Duration aiProviderRequestTimeout = Duration(seconds: 60);
+///
+/// Bug fix (on-device feedback): 60s, this constant's original value, was
+/// still too short in practice - a full structured-plan turn (`01`'s own
+/// `sendScopingTurn`, `_maxResponseTokens = 8192` on the Anthropic side)
+/// is a large completion by LLM standards, and a user reported the 60s
+/// timeout firing while the model was, by their own observation, still
+/// actively generating - not stalled. Raised to 300s, the same "raise it,
+/// document why, once real usage shows the existing allowance is
+/// insufficient" pattern `ApiConfig.documentRequestTimeout`
+/// (`client/lib/config.dart`, 90s -> 180s) and `spiralBevelPairRequestTimeout`
+/// (a dedicated 720s) already established for a slow-but-bounded backend
+/// call, applied here for the identical reason on the provider side - a
+/// non-streaming `POST`, so the whole completion must land inside one
+/// window with no partial-progress signal to extend it by.
+const Duration aiProviderRequestTimeout = Duration(seconds: 300);
 
 /// The provider-agnostic interface every AI Modelling consumer (the scoping-
 /// conversation UI, the translator) talks to - never a concrete provider

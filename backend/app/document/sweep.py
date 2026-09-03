@@ -40,6 +40,7 @@ from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Edge, TopoDS_Shape, TopoDS_W
 from app.document.create_plane import resolve_sketch_basis
 from app.document.extrude import (
     EXTRUDABLE_STATUSES,
+    EdgeProvenanceEntry,
     _edge_provenance_from_builder,
     _ellipse_axis,
     _profile_boundary_shapes,
@@ -529,7 +530,7 @@ def resolve_sweep_from_bodies(
     profiles = select_profiles(candidates, feature.profile_refs)
 
     solids = []
-    provenance_by_profile: list[dict[str, dict[str, int]] | None] = []
+    provenance_by_profile: list[dict[str, dict[str, EdgeProvenanceEntry]] | None] = []
     for profile in profiles:
         outer_wire = wire_for_profile(sketch, profile, basis)
         solid, pipe_maker = _sweep_wire(path_wire, outer_wire)

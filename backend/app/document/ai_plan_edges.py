@@ -44,7 +44,7 @@ from OCC.Core.TopoDS import TopoDS_Shape, TopoDS_Vertex, topods
 from OCC.Core.TopTools import TopTools_IndexedMapOfShape
 
 from app.document.ai_plan_schemas import CardinalDirection, EdgeSelectorKind
-from app.document.extrude import cached_feature_edge_provenance
+from app.document.extrude import cached_feature_edge_provenance, edge_vertex_key_set
 from app.document.models import Part, SubShapeRef, SubShapeType
 
 # ~2.6 degrees off pure alignment - tight enough to reject a merely-close
@@ -173,6 +173,7 @@ _PROVENANCE_SELECTOR_KINDS = frozenset(
 
 
 def _resolve_provenance_selector(
+    body: TopoDS_Shape,
     part: Part,
     feature_id: str,
     body_id: str,
@@ -183,21 +184,54 @@ def _resolve_provenance_selector(
     """Workstream 12: looks `sketch_entity_id` up in `feature_id`'s own
     cached edge-provenance (`app.document.extrude.cached_feature_edge_
     provenance`) under `provenance_key` ("points"/"lines_near"/
-    "lines_far") - a plain dict lookup, never a geometric guess. Fails
-    closed with the same `edge_selector_no_matching_edges` the four
-    heuristics already use (never a silent empty selection) whenever the
-    provenance cache has nothing for this Feature at all (no matching
-    profile shape when it last ran, a MultiProfile/fused/cut/
+    "lines_far"). Fails closed with the same `edge_selector_no_matching_
+    edges` the four heuristics already use (never a silent empty selection)
+    whenever the provenance cache has nothing for this Feature at all (no
+    matching profile shape when it last ran, a MultiProfile/fused/cut/
     target_body_ids-non-empty case, or - the one guaranteed-permanent case,
     not just a v1 gap - `feature_id` names a Fillet/Chamfer, whose own
-    edges have no sketch lineage at all to trace back to) or has nothing
-    for this specific sketch entity (e.g. a full-360 Revolve's own
-    disclosed radial-edge gap for `lines_far`)."""
+    edges have no sketch lineage at all to trace back to), has nothing for
+    this specific sketch entity (e.g. a full-360 Revolve's own disclosed
+    radial-edge gap for `lines_far`), or (below) the cached entry's own
+    coordinate anchor no longer matches any edge of `body`.
+
+    Bug fix (on-device feedback, "fillets consistently failing to find
+    their target edges"): the cached entry's own index is only valid
+    against the *pristine* shape `feature_id`'s Extrude/Revolve/Sweep
+    construction produced - never against `body`, whenever `body` is the
+    result of a *prior* Fillet/Chamfer step already having modified that
+    same Body (the common "several fillets on one boss" case a real plan
+    routinely produces). An on-device spike confirmed `topexp.MapShapes`'
+    own edge-index ordering is not preserved by a Fillet/Chamfer's boolean
+    rebuild, even for an edge the rebuild never touched - so this always
+    re-locates the edge inside `body`'s own current topology by real-world
+    coordinate (`app.document.extrude.edge_vertex_key_set`, stable across
+    that rebuild for any edge it didn't itself touch), checking the cached
+    index first as a cheap fast path (valid, and by far the common case,
+    whenever `body` still *is* the pristine shape - the first Fillet/
+    Chamfer step against a given Body, or any provenance selector used
+    against a fresh Extrude/Revolve/Sweep result directly) before falling
+    back to a full scan. Never returns the cached index un-checked."""
     provenance = cached_feature_edge_provenance(part, feature_id)
-    index = None if provenance is None else provenance.get(provenance_key, {}).get(sketch_entity_id)
-    if index is None:
+    entry = None if provenance is None else provenance.get(provenance_key, {}).get(sketch_entity_id)
+    if entry is None:
         raise _no_matching_edges(body_id, selector)
-    return [SubShapeRef(body_id=body_id, shape_type=SubShapeType.EDGE, index=index)]
+    cached_index, anchor = entry
+
+    edge_map = TopTools_IndexedMapOfShape()
+    topexp.MapShapes(body, TopAbs_EDGE, edge_map)
+
+    if 0 <= cached_index < edge_map.Size():
+        candidate = topods.Edge(edge_map.FindKey(cached_index + 1))
+        if edge_vertex_key_set(candidate) == anchor:
+            return [SubShapeRef(body_id=body_id, shape_type=SubShapeType.EDGE, index=cached_index)]
+
+    for i in range(1, edge_map.Size() + 1):
+        candidate = topods.Edge(edge_map.FindKey(i))
+        if edge_vertex_key_set(candidate) == anchor:
+            return [SubShapeRef(body_id=body_id, shape_type=SubShapeType.EDGE, index=i - 1)]
+
+    raise _no_matching_edges(body_id, selector)
 
 
 def resolve_edge_selector(
@@ -232,10 +266,10 @@ def resolve_edge_selector(
         assert part is not None and feature_id is not None
         if selector == EdgeSelectorKind.EDGE_FROM_SKETCH_POINT:
             assert sketch_point_id is not None
-            return _resolve_provenance_selector(part, feature_id, body_id, selector, "points", sketch_point_id)
+            return _resolve_provenance_selector(body, part, feature_id, body_id, selector, "points", sketch_point_id)
         assert sketch_line_id is not None
         provenance_key = "lines_far" if far else "lines_near"
-        return _resolve_provenance_selector(part, feature_id, body_id, selector, provenance_key, sketch_line_id)
+        return _resolve_provenance_selector(body, part, feature_id, body_id, selector, provenance_key, sketch_line_id)
 
     edge_map = TopTools_IndexedMapOfShape()
     topexp.MapShapes(body, TopAbs_EDGE, edge_map)
