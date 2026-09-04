@@ -881,6 +881,7 @@ void main() {
   group('PlanTranslator.execute - Loft (the square-to-round bug report)', () {
     test('a loft between two sketches posts a real LoftFeature with both sections resolved', () async {
       final paths = <String>[];
+      var sketchCount = 0;
       final mock = MockClient((request) async {
         paths.add('${request.method} ${request.url.path}');
         if (request.url.path == '/document/parts/part-1/ai-plan/validate') {
@@ -901,8 +902,9 @@ void main() {
           });
         }
         if (request.url.path == '/document/parts/part-1/features/sketch') {
-          final sketchId = request.body.contains('"XY"') ? 'sketch-1' : 'sketch-2';
-          final featId = sketchId == 'sketch-1' ? 'feat-sk1' : 'feat-sk2';
+          sketchCount++;
+          final sketchId = 'sketch-$sketchCount';
+          final featId = 'feat-sk$sketchCount';
           return jsonResponse({'type': 'sketch', 'id': featId, 'locked': false, 'sketch_id': sketchId});
         }
         if (request.url.path == '/sketch/sketches/sketch-1/points' || request.url.path == '/sketch/sketches/sketch-2/points') {
