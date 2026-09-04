@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'ai_prompt_addons.dart';
 import 'ai_scoping_prompt.dart';
 import 'ai_system_prompt_preferences.dart';
+import 'ai_tool_groups.dart';
 
 /// AI Modelling: lets the user see and edit the scoping conversation's
 /// system prompt, and toggle manufacturing-process add-on blocks - reached
@@ -27,6 +28,7 @@ class AiSystemPromptSettingsScreen extends StatefulWidget {
 class _AiSystemPromptSettingsScreenState extends State<AiSystemPromptSettingsScreen> {
   final _instructionsController = TextEditingController();
   Set<String> _enabledAddOns = {};
+  Set<String> _disabledToolGroups = {};
   bool _loaded = false;
   bool _saved = false;
 
@@ -42,6 +44,7 @@ class _AiSystemPromptSettingsScreenState extends State<AiSystemPromptSettingsScr
     setState(() {
       _instructionsController.text = AiSystemPromptPreferences.override ?? defaultAssistantInstructions;
       _enabledAddOns = Set<String>.from(AiSystemPromptPreferences.enabledAddOns);
+      _disabledToolGroups = Set<String>.from(AiSystemPromptPreferences.disabledToolGroups);
       _loaded = true;
     });
   }
@@ -83,6 +86,19 @@ class _AiSystemPromptSettingsScreenState extends State<AiSystemPromptSettingsScr
         _enabledAddOns.add(id);
       } else {
         _enabledAddOns.remove(id);
+      }
+      _saved = true;
+    });
+  }
+
+  Future<void> _toggleToolGroup(String id, bool enabled) async {
+    await AiSystemPromptPreferences.setToolGroupEnabled(id, enabled);
+    if (!mounted) return;
+    setState(() {
+      if (enabled) {
+        _disabledToolGroups.remove(id);
+      } else {
+        _disabledToolGroups.add(id);
       }
       _saved = true;
     });
@@ -154,13 +170,36 @@ class _AiSystemPromptSettingsScreenState extends State<AiSystemPromptSettingsScr
                     onChanged: (enabled) => _toggleAddOn(entry.key, enabled),
                   ),
                 const SizedBox(height: 24),
+                Text('Tools', style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 4),
+                Text(
+                  "Which of this tool's features the AI is allowed to build a plan with. Turning "
+                  "one off shrinks the prompt (fewer tokens per message) and tells the AI to leave "
+                  "it out - if you then ask for something that needs it, the AI will say so and "
+                  "point you at the manual tool instead of refusing outright or silently building "
+                  "something else. Sketching and Extrude are always on - almost everything needs "
+                  "them.",
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 8),
+                for (final entry in aiToolGroups.entries)
+                  SwitchListTile(
+                    key: Key('aiToolGroup_${entry.key}'),
+                    title: Text(entry.value.label),
+                    value: !_disabledToolGroups.contains(entry.key),
+                    onChanged: (enabled) => _toggleToolGroup(entry.key, enabled),
+                  ),
+                const SizedBox(height: 24),
                 ExpansionTile(
                   title: const Text('Locked prompt content (not editable)'),
                   subtitle: const Text('Vocabulary reference, units, worked examples, reply format'),
                   children: [
                     Padding(
                       padding: const EdgeInsets.all(12),
-                      child: SelectableText(lockedSystemPromptContent, style: Theme.of(context).textTheme.bodySmall),
+                      child: SelectableText(
+                        lockedSystemPromptContent(disabledToolGroups: _disabledToolGroups),
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
                     ),
                   ],
                 ),

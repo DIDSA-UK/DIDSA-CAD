@@ -57,19 +57,26 @@ from fastapi import HTTPException
 
 from app.document.ai_plan_edges import resolve_edge_selector
 from app.document.ai_plan_schemas import (
+    BooleanStep,
     ChamferStep,
     CreatePlaneStep,
+    DeleteBodyStep,
     EdgeSelectorKind,
     ExtrudeStep,
     FilletStep,
     GearRequestStep,
+    LoftSectionStep,
+    LoftStep,
+    MergeStep,
     MirrorPlaneStep,
     MirrorStep,
+    MoveBodyStep,
     PatternAxisStep,
     PatternDirectionStep,
     PatternStep,
     PlanStep,
     RevolveStep,
+    ScaleBodyStep,
     SketchArcStep,
     SketchCircleStep,
     SketchEllipseStep,
@@ -87,15 +94,23 @@ from app.document.chamfer import resolve_chamfer
 from app.document.create_plane import resolve_create_plane
 from app.document.extrude import EXTRUDABLE_STATUSES, compute_part_bodies, resolve_feature_tool_shape, select_profiles
 from app.document.fillet import resolve_fillet
+from app.document.loft import resolve_loft
 from app.document.mirror import resolve_mirror
 from app.document.models import (
+    BooleanFeature,
     ChamferFeature,
     CreatePlaneFeature,
+    DeleteBodyFeature,
     ExtrudeFeature,
     ExtrudeType,
     Feature,
     FilletFeature,
+    LoftFeature,
+    LoftMode,
+    LoftSection,
+    MergeFeature,
     MirrorFeature,
+    MoveBodyFeature,
     Part,
     PatternAxisRef,
     PatternDirectionRef,
@@ -106,13 +121,16 @@ from app.document.models import (
     Produces,
     RevolveFeature,
     RevolveMode,
+    ScaleBodyFeature,
     SketchFeature,
     SweepFeature,
     SweepMode,
 )
+from app.document.move_body import resolve_move_body
 from app.document.native_format import sketch_from_dict, sketch_to_dict
 from app.document.pattern import resolve_pattern
 from app.document.revolve import resolve_revolve
+from app.document.scale_body import resolve_scale_body
 from app.document.sweep import resolve_sweep
 from app.sketch.models import SketchEntityRef, SketchEntityType
 from app.sketch.profile import ProfileStatus, detect_profile
@@ -133,7 +151,23 @@ _EXISTING_ID_PREFIX = "existing:"
 # reference may resolve to. `gear_request` is included (a routed gear
 # request does produce a real Body once the translator runs it for real)
 # but is never itself dry-run-resolvable here - see `_lookup_body`.
-_BODY_PRODUCING_KINDS = frozenset({"extrude", "revolve", "sweep", "pattern", "mirror", "gear_request"})
+# `delete_body` is deliberately excluded - `DeleteBodyFeature.produces ==
+# Produces.NONE`, it removes geometry rather than contributing any.
+_BODY_PRODUCING_KINDS = frozenset(
+    {
+        "extrude",
+        "revolve",
+        "sweep",
+        "pattern",
+        "mirror",
+        "gear_request",
+        "loft",
+        "merge",
+        "boolean",
+        "scale_body",
+        "move_body",
+    }
+)
 
 # The entity kinds `select_profiles`/Sweep's own `path_refs` gate accept -
 # mirrors `app.document.extrude.select_profiles`'s own accepted
@@ -184,10 +218,18 @@ class _Resolved:
 
 
 class _PlanValidator:
-    def __init__(self, part: Part):
+    def __init__(self, part: Part, disabled_kinds: frozenset[str] = frozenset()):
         self.part = Part(id=part.id, name=part.name, features=list(part.features))
         self.resolved: dict[str, _Resolved] = {}
         self.failed: set[str] = set()
+        # AI Settings -> Tools toggle enforcement: every `kind` the client
+        # has currently turned off. Checked once in `_run_step`, before any
+        # `_HANDLERS` dispatch - see `PlanValidateRequest.disabled_kinds`'s
+        # own doc comment for why this exists (a prompt-only toggle is not
+        # enforcement; this is the one place both the standalone Validate
+        # call and `PlanTranslator.execute`'s own internal pre-flight
+        # validate share).
+        self.disabled_kinds = disabled_kinds
         self._scratch_sketch_ids: list[str] = []
         # Existing-Part editing: every real Feature already in the Part
         # being edited, by id - built once here rather than re-scanning
@@ -236,6 +278,8 @@ class _PlanValidator:
                 # step can never invent a brand-new local_id that collides
                 # with it.
                 raise _StepError({"type": "reserved_local_id_prefix", "local_id": step.local_id})
+            if step.kind in self.disabled_kinds:
+                raise _StepError({"type": "kind_disabled", "kind": step.kind})
             _HANDLERS[step.kind](self, step)
         except (HTTPException, _StepError) as exc:
             self.failed.add(step.local_id)
@@ -341,8 +385,8 @@ class _PlanValidator:
         raise _StepError({"type": "ambiguous_body", "body_id": base_id, "candidates": matches})
 
 
-def validate_ai_plan(part: Part, steps: list[PlanStep]) -> list[StepResult]:
-    return _PlanValidator(part).run(steps)
+def validate_ai_plan(part: Part, steps: list[PlanStep], disabled_kinds: frozenset[str] = frozenset()) -> list[StepResult]:
+    return _PlanValidator(part, disabled_kinds).run(steps)
 
 
 # --- Dimension-driven sketches (docs/ai-modelling/08-dimension-driven-
@@ -676,6 +720,128 @@ def _handle_sweep(v: _PlanValidator, step: SweepStep) -> None:
     v.resolved[step.local_id] = _Resolved(kind="sweep", feature_id=feature.id, hole_count=hole_count)
 
 
+def _loft_section_point_ref(
+    v: _PlanValidator, sk: _Resolved, local_id: str | None, field: str
+) -> SketchEntityRef | None:
+    if local_id is None:
+        return None
+    point = v._lookup(local_id, frozenset({"sketch_point"}), field)
+    if point.owning_sketch_id != sk.sketch_id:
+        raise _StepError({"type": "profile_ref_wrong_sketch", "field": field, "local_id": local_id})
+    return SketchEntityRef(sketch_id=point.owning_sketch_id, entity_type=SketchEntityType.POINT, entity_id=point.point_id)
+
+
+def _resolve_loft_section(v: _PlanValidator, section: LoftSectionStep, index: int) -> LoftSection:
+    sk = v._lookup(section.sketch_feature_id, frozenset({"sketch"}), f"sections[{index}].sketch_feature_id")
+    profile_refs = _profile_refs(v, sk.sketch_id, section.profile_refs, f"sections[{index}].profile_refs")
+    reference_point = _loft_section_point_ref(v, sk, section.reference_point, f"sections[{index}].reference_point")
+    alignment_point = _loft_section_point_ref(v, sk, section.alignment_point, f"sections[{index}].alignment_point")
+    return LoftSection(
+        sketch_feature_id=sk.feature_id,
+        profile_refs=profile_refs,
+        reference_point=reference_point,
+        alignment_point=alignment_point,
+    )
+
+
+def _handle_loft(v: _PlanValidator, step: LoftStep) -> None:
+    if len(step.sections) < 2:
+        raise _StepError({"type": "invalid_step_payload", "message": "loft requires at least 2 sections"})
+    sections = [_resolve_loft_section(v, s, i) for i, s in enumerate(step.sections)]
+    target_body_ids = [v._lookup_body(t, "target_body_ids").feature_id for t in step.target_body_ids]
+    if step.mode == LoftMode.CUT and not target_body_ids:
+        raise _StepError({"type": "invalid_step_payload", "message": "cut requires at least one target_body_ids entry"})
+    if step.thickness == 0:
+        raise _StepError({"type": "invalid_step_payload", "message": "thickness must not be 0"})
+    guide_curve_refs = [
+        v._entity_ref(resolved, _ENTITY_TYPE_FOR_KIND[resolved.kind])
+        for resolved in (v._lookup(local_id, _PATH_ELIGIBLE_KINDS, "guide_curve_refs") for local_id in step.guide_curve_refs)
+    ]
+
+    feature = LoftFeature(
+        id=str(uuid.uuid4()),
+        sections=sections,
+        mode=step.mode,
+        ruled=step.ruled,
+        target_body_ids=target_body_ids,
+        thickness=step.thickness,
+        guide_curve_refs=guide_curve_refs,
+    )
+    resolve_loft(v.part, feature)  # raises a structured HTTPException on failure; result (solid+warnings) unused here
+    v.part.add_feature(feature)
+    v.resolved[step.local_id] = _Resolved(kind="loft", feature_id=feature.id)
+
+
+# --- Direct Editing / Boolean ---------------------------------------------
+
+
+def _handle_merge(v: _PlanValidator, step: MergeStep) -> None:
+    from app.document.router import _validate_merge_body_ids
+
+    body_ids = [v._lookup_body(b, "body_ids").feature_id for b in step.body_ids]
+    _validate_merge_body_ids(v.part, body_ids)
+    feature = MergeFeature(id=str(uuid.uuid4()), body_ids=body_ids)
+    v.part.add_feature(feature)
+    v.resolved[step.local_id] = _Resolved(kind="merge", feature_id=feature.id)
+
+
+def _handle_boolean(v: _PlanValidator, step: BooleanStep) -> None:
+    from app.document.router import _validate_boolean_body_ids
+
+    target_body_ids = [v._lookup_body(t, "target_body_ids").feature_id for t in step.target_body_ids]
+    tool_body_ids = [v._lookup_body(t, "tool_body_ids").feature_id for t in step.tool_body_ids]
+    _validate_boolean_body_ids(v.part, target_body_ids, tool_body_ids)
+    feature = BooleanFeature(
+        id=str(uuid.uuid4()),
+        operation=step.operation,
+        target_body_ids=target_body_ids,
+        tool_body_ids=tool_body_ids,
+        consume_tool_bodies=step.consume_tool_bodies,
+    )
+    v.part.add_feature(feature)
+    v.resolved[step.local_id] = _Resolved(kind="boolean", feature_id=feature.id)
+
+
+def _handle_delete_body(v: _PlanValidator, step: DeleteBodyStep) -> None:
+    from app.document.router import _validate_delete_body_ids
+
+    body_ids = [v._lookup_body(b, "body_ids").feature_id for b in step.body_ids]
+    _validate_delete_body_ids(v.part, body_ids)
+    feature = DeleteBodyFeature(id=str(uuid.uuid4()), body_ids=body_ids)
+    v.part.add_feature(feature)
+    v.resolved[step.local_id] = _Resolved(kind="delete_body", feature_id=feature.id)
+
+
+def _handle_scale_body(v: _PlanValidator, step: ScaleBodyStep) -> None:
+    from app.document.router import _validate_scale_body_factor
+
+    body_id = v._lookup_body(step.body_id, "body_id").feature_id
+    _validate_scale_body_factor(v.part, body_id, step.factor)
+    feature = ScaleBodyFeature(id=str(uuid.uuid4()), body_id=body_id, factor=step.factor)
+    resolve_scale_body(v.part, feature)  # raises on an unresolvable/degenerate scale
+    v.part.add_feature(feature)
+    v.resolved[step.local_id] = _Resolved(kind="scale_body", feature_id=feature.id)
+
+
+def _handle_move_body(v: _PlanValidator, step: MoveBodyStep) -> None:
+    from app.document.router import _validate_move_body_payload
+
+    body_id = v._lookup_body(step.body_id, "body_id").feature_id
+    rotation_axis = _axis_ref(v, step.rotation_axis, "rotation_axis")
+    _validate_move_body_payload(v.part, body_id, rotation_axis)
+    feature = MoveBodyFeature(
+        id=str(uuid.uuid4()),
+        body_id=body_id,
+        delta=step.delta,
+        rotation_axis=rotation_axis,
+        rotation_angle_degrees=step.rotation_angle_degrees,
+        make_copy=step.make_copy,
+    )
+    resolve_move_body(v.part, feature)  # raises on an unresolvable/degenerate move
+    v.part.add_feature(feature)
+    v.resolved[step.local_id] = _Resolved(kind="move_body", feature_id=feature.id)
+
+
 # --- Fillet / Chamfer ----------------------------------------------------
 
 
@@ -880,4 +1046,10 @@ _HANDLERS = {
     "mirror": _handle_mirror,
     "create_plane": _handle_create_plane,
     "gear_request": _handle_gear_request,
+    "loft": _handle_loft,
+    "merge": _handle_merge,
+    "boolean": _handle_boolean,
+    "delete_body": _handle_delete_body,
+    "scale_body": _handle_scale_body,
+    "move_body": _handle_move_body,
 }

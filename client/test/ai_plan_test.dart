@@ -139,4 +139,105 @@ void main() {
     expect(extrude.targetBodyIds, isEmpty);
     expect(extrude.profileRefs, isEmpty);
   });
+
+  /// The reported square-to-round bug's own shape: a loft between two
+  /// sections on different sketches.
+  test('loft parses 2+ sections and round-trips every field', () {
+    final json = {
+      'version': 1,
+      'steps': [
+        {
+          'local_id': 'lf1',
+          'kind': 'loft',
+          'sections': [
+            {'sketch_feature_id': 'sk1', 'profile_refs': ['r1']},
+            {'sketch_feature_id': 'sk2', 'profile_refs': ['c1']},
+          ],
+          'mode': 'boss',
+          'ruled': true,
+        },
+      ],
+    };
+
+    final loft = AiGenerationPlan.fromJson(json).steps.single as AiLoftStep;
+    expect(loft.sections, hasLength(2));
+    expect(loft.sections[0].sketchFeatureId, 'sk1');
+    expect(loft.sections[0].profileRefs, ['r1']);
+    expect(loft.sections[1].sketchFeatureId, 'sk2');
+    expect(loft.mode, AiLoftMode.boss);
+    expect(loft.ruled, isTrue);
+    expect(loft.targetBodyIds, isEmpty);
+    expect(loft.thickness, isNull);
+    expect(loft.guideCurveRefs, isEmpty);
+
+    final roundTripped = AiGenerationPlan.fromJson({'version': 1, 'steps': [loft.toJson()]}).steps.single as AiLoftStep;
+    expect(roundTripped.sections, hasLength(2));
+    expect(roundTripped.mode, AiLoftMode.boss);
+    expect(roundTripped.ruled, isTrue);
+  });
+
+  test('direct-editing/boolean steps parse and round-trip', () {
+    final merge = AiGenerationPlan.fromJson({
+      'version': 1,
+      'steps': [
+        {'local_id': 'm1', 'kind': 'merge', 'body_ids': ['f1', 'f2']},
+      ],
+    }).steps.single as AiMergeStep;
+    expect(merge.bodyIds, ['f1', 'f2']);
+
+    final boolean = AiGenerationPlan.fromJson({
+      'version': 1,
+      'steps': [
+        {
+          'local_id': 'b1',
+          'kind': 'boolean',
+          'operation': 'subtract',
+          'target_body_ids': ['f1'],
+          'tool_body_ids': ['f2'],
+        },
+      ],
+    }).steps.single as AiBooleanStep;
+    expect(boolean.operation, AiBooleanOperation.subtract);
+    expect(boolean.consumeToolBodies, isTrue);
+
+    final deleteBody = AiGenerationPlan.fromJson({
+      'version': 1,
+      'steps': [
+        {'local_id': 'd1', 'kind': 'delete_body', 'body_ids': ['f1']},
+      ],
+    }).steps.single as AiDeleteBodyStep;
+    expect(deleteBody.bodyIds, ['f1']);
+
+    final scaleBody = AiGenerationPlan.fromJson({
+      'version': 1,
+      'steps': [
+        {'local_id': 's1', 'kind': 'scale_body', 'body_id': 'f1', 'factor': 2.0},
+      ],
+    }).steps.single as AiScaleBodyStep;
+    expect(scaleBody.factor, 2.0);
+
+    final moveBody = AiGenerationPlan.fromJson({
+      'version': 1,
+      'steps': [
+        {
+          'local_id': 'mv1',
+          'kind': 'move_body',
+          'body_id': 'f1',
+          'delta': [10.0, 0.0, 0.0],
+          'rotation_axis': {'sketch_line_ref': 'l1'},
+          'rotation_angle_degrees': 90.0,
+          'make_copy': true,
+        },
+      ],
+    }).steps.single as AiMoveBodyStep;
+    expect(moveBody.delta, [10.0, 0.0, 0.0]);
+    expect(moveBody.rotationAxis?.sketchLineRef, 'l1');
+    expect(moveBody.rotationAngleDegrees, 90.0);
+    expect(moveBody.makeCopy, isTrue);
+
+    for (final step in [merge, boolean, deleteBody, scaleBody, moveBody]) {
+      final roundTripped = AiPlanStep.fromJson(step.toJson());
+      expect(roundTripped.runtimeType, step.runtimeType);
+    }
+  });
 }

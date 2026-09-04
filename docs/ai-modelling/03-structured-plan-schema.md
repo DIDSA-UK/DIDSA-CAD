@@ -294,11 +294,16 @@ needs real OCCT, rather than rediscovering it.
 ## Excluded on purpose
 
 Restated from `00-conventions.md` for this file's own completeness:
-Spline, Text, Loft, GearChain, Planetary, BevelGear, BevelPair, Import are
-not `kind` values in v1's schema at all. A future workstream extending
-this schema (e.g. adding Loft once there's a real user need) follows the
-same pattern: a new `kind`, new fields mirroring that Feature's own
-`createXFeature` signature, no change to the schema's shape.
+Spline, Text, GearChain, Planetary, BevelGear, BevelPair, Split, Surface,
+DeleteFace, MoveFace, Import are not `kind` values in v1's schema at all.
+
+`loft`, `merge`, `boolean`, `delete_body`, `scale_body`, and `move_body`
+were added later following exactly the pattern this section originally
+anticipated: a new `kind` per Feature type, new fields mirroring that
+Feature's own `createXFeature` signature, no change to the schema's own
+shape (`PlanStep`'s discriminated union just grew six more members). A
+future workstream extending this schema further (e.g. Split/Surface, once
+there's a real user need) follows the identical pattern.
 
 ## Spike findings (2026-08-06)
 

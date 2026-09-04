@@ -6266,7 +6266,7 @@ def validate_ai_plan(part_id: str, payload: PlanValidateRequest) -> PlanValidate
     above), not part of the client-direct AI call itself (see
     docs/ai-modelling/00-conventions.md)."""
     part = get_part_or_404(part_id)
-    results = validate_ai_plan_steps(part, payload.steps)
+    results = validate_ai_plan_steps(part, payload.steps, frozenset(payload.disabled_kinds))
     return PlanValidateResponse(results=results)
 
 

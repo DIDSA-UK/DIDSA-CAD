@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:didsa_cad_client/ai/ai_plan_detection.dart';
 import 'package:didsa_cad_client/ai/ai_prompt_addons.dart';
 import 'package:didsa_cad_client/ai/ai_scoping_prompt.dart';
+import 'package:didsa_cad_client/ai/ai_tool_groups.dart';
 
 /// AI Modelling: [buildAiScopingSystemPrompt] assembly - the locked/editable
 /// split (`ai_system_prompt_settings_screen.dart`'s own doc comment) is a
@@ -46,6 +47,28 @@ void main() {
     for (final addOn in aiPromptAddOns.values) {
       expect(prompt, isNot(contains(addOn.text)));
     }
+  });
+
+  test('with nothing disabled, every tool group\'s vocabulary is present and no "turned off" block appears', () {
+    final prompt = buildAiScopingSystemPrompt();
+    for (final group in aiToolGroups.values) {
+      expect(prompt, contains(group.vocabularyText));
+    }
+    expect(prompt, isNot(contains('Tools currently turned off')));
+  });
+
+  test('a disabled tool group\'s vocabulary is absent and it is named in the "turned off" block', () {
+    final prompt = buildAiScopingSystemPrompt(disabledToolGroups: {'loft', 'fillet_chamfer'});
+
+    expect(prompt, isNot(contains(loftVocabularyText)));
+    expect(prompt, isNot(contains(filletChamferVocabularyText)));
+    expect(prompt, contains('Tools currently turned off in this app'));
+    expect(prompt, contains(aiToolGroups['loft']!.label));
+    expect(prompt, contains(aiToolGroups['fillet_chamfer']!.label));
+    // Every other group's text is untouched.
+    expect(prompt, contains(revolveVocabularyText));
+    expect(prompt, contains(mirrorVocabularyText));
+    expect(prompt, contains(directEditingBooleanVocabularyText));
   });
 
   test('an existingPartSummary appends the locked "Editing an existing Part" block, echoing the summary verbatim',

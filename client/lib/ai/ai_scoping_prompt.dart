@@ -24,6 +24,7 @@
 library;
 
 import 'ai_prompt_addons.dart';
+import 'ai_tool_groups.dart';
 
 const String _assistantInstructionsIntro = '''
 You are a CAD modelling assistant for DIDSA-CAD, a parametric 3D CAD tool.
@@ -98,7 +99,15 @@ String _defaultAssistantInstructionsFor(bool hasExistingPart) => [
       _assistantInstructionsRest,
     ].join('\n\n');
 
-const String _vocabularyReference = '''
+/// Template for the vocabulary reference: contains `{{OPTIONAL_...}}`
+/// placeholders (see [_vocabularyReference] below) for every tool-group-
+/// gated section (AI Settings -> Tools, `ai_tool_groups.dart`) - substituted
+/// with that group's own text when enabled, or with nothing when disabled.
+/// Everything else here (plan shape, sketch entities, plane mapping,
+/// literal-value dimensioning, Extrude, reference kind-checking, permanent
+/// limitations) is core: always present regardless of any toggle, since
+/// Extrude alone is the floor almost every plan needs.
+const String _vocabularyTemplate = '''
 ## Plan shape
 
 Every plan is one JSON object: {"version": 1, "steps": [ ... ]}. Every step
@@ -201,13 +210,7 @@ convenient.
 - extrude: {local_id, kind:"extrude", sketch_feature_id,
   extrude_type:"boss"|"cut", start_distance, end_distance,
   target_body_ids?, profile_refs?}
-- revolve: {local_id, kind:"revolve", sketch_feature_id, axis_ref (a
-  sketch_line local_id), angle (0-360), mode:"boss"|"cut",
-  target_body_ids?, profile_refs?}
-- sweep: {local_id, kind:"sweep", sketch_feature_id, path_refs (at least
-  one local_id, ordered), mode:"boss"|"cut", target_body_ids?,
-  profile_refs?}
-
+{{OPTIONAL_REVOLVE_SWEEP_LOFT_BULLETS}}
 `target_body_ids` is genuinely optional (may be omitted or left `[]`) ONLY
 for "boss"/non-cut steps. Whenever `extrude_type`/`mode` is "cut", you MUST
 give at least one `target_body_ids` entry naming the earlier extrude/
@@ -239,10 +242,133 @@ target_body_ids, exactly like the flange-hole follow-up example below. The
 difference is entirely about whether the hole loop lives in the same
 Sketch as the boss profile (never a second cut step) or a different one (a
 real cut step).
-- fillet: {local_id, kind:"fillet", edges: <edge selector, see below>,
-  radius}
-- chamfer: {local_id, kind:"chamfer", edges: <edge selector, see below>,
-  distance}
+{{OPTIONAL_DIRECT_EDITING_BOOLEAN_BULLETS}}
+{{OPTIONAL_PATTERN_BULLET}}
+{{OPTIONAL_MIRROR_BULLET}}
+{{OPTIONAL_CREATE_PLANE_BULLET}}
+{{OPTIONAL_GEAR_ROUTING_SECTION}}
+{{OPTIONAL_FILLET_CHAMFER_SECTION}}
+## Reference kind-checking
+
+Every reference must point at the right KIND of earlier step, not just any
+earlier local_id that happens to exist:
+- Every "sketch_feature_id" field (on every sketch_* step, and on
+  extrude/revolve/sweep) must name a "sketch" step - never a
+  sketch_rectangle, sketch_point, or anything else.
+- "profile_refs" (extrude/revolve/sweep) and "path_refs" (sweep) must each
+  name a sketch_line, sketch_circle, sketch_arc, or sketch_ellipse step -
+  never a bare sketch step, and never a sketch_rectangle/sketch_polygon/
+  sketch_slot step directly (name one of its own boundary Lines instead if
+  you need to anchor a profile explicitly - usually you don't, since
+  leaving profile_refs empty uses every outer profile of the Sketch).
+- "axis_ref" (revolve) must name a sketch_line step specifically - never
+  a sketch_circle/sketch_arc/etc.
+- "of" (fillet/chamfer), "target_body_ids", "source_body_ids", and
+  "tool_feature_id" must each name a step that produces a Body: extrude,
+  revolve, sweep, loft, pattern, mirror, merge, boolean, scale_body,
+  move_body, or gear_request - never a sketch, create_plane, delete_body,
+  fillet, or chamfer step (delete_body produces nothing at all - it can
+  never be referenced by a later step).
+- "line_ref"/"sketch_line_ref" fields must name a sketch_line step;
+  "point_ref"/"point_refs" must name sketch_point step(s);
+  "plane_feature_id" fields (on sketch, create_plane, mirror_plane) must
+  name a create_plane step.
+- Every loft "sections[].sketch_feature_id" must name a "sketch" step
+  (exactly like "sketch_feature_id" elsewhere) - each section may name a
+  DIFFERENT sketch step. "sections[].profile_refs"/"guide_curve_refs" (loft)
+  follow the same entity-kind rule as "profile_refs" above.
+- "body_ids"/"body_id"/"target_body_ids"/"tool_body_ids" (merge, boolean,
+  delete_body, scale_body, move_body) follow the identical Body-producing-
+  step rule as "target_body_ids"/"source_body_ids" above.
+A plan that gets this wrong (e.g. an extrude's sketch_feature_id pointing
+at a sketch_rectangle step instead of the sketch step that owns it) fails
+validation before anything is built - get the kind right the first time,
+not just any earlier local_id.
+
+## Permanent limitations
+
+Only the kinds listed above (and anything named in "Tools currently turned
+off in this app" below, if present) exist. In particular, this tool has no
+Spline, no Text, and no multi-Part assembly - you are only ever working
+within a single Part at a time (see "Editing an existing Part" below if one
+has been provided for this conversation). If a request genuinely needs one
+of these (a hand-drawn freeform curve, a lettered label, an assembly of
+several parts), say so plainly and propose the closest approximation this
+tool can actually build (e.g. "I can approximate that curve with a few Arc
+segments - would that work?") rather than emitting a plan that references a
+kind that does not exist.{{OPTIONAL_DISABLED_TOOLS_BLOCK}}''';
+
+/// `RevolveStep` vocabulary (`ai_tool_groups.dart`'s `'revolve'` group) -
+/// public so that file can reference it without duplicating the text.
+const String revolveVocabularyText = '''
+- revolve: {local_id, kind:"revolve", sketch_feature_id, axis_ref (a
+  sketch_line local_id), angle (0-360), mode:"boss"|"cut",
+  target_body_ids?, profile_refs?}''';
+
+/// `SweepStep` vocabulary (`ai_tool_groups.dart`'s `'sweep'` group).
+const String sweepVocabularyText = '''
+- sweep: {local_id, kind:"sweep", sketch_feature_id, path_refs (at least
+  one local_id, ordered), mode:"boss"|"cut", target_body_ids?,
+  profile_refs?}''';
+
+/// `LoftStep` vocabulary (`ai_tool_groups.dart`'s `'loft'` group).
+const String loftVocabularyText = '''
+- loft: {local_id, kind:"loft", sections: [ {sketch_feature_id,
+  profile_refs?, reference_point?, alignment_point?}, ... ] (2+ entries
+  required), mode:"boss"|"cut", ruled?, target_body_ids?, thickness?,
+  guide_curve_refs?}
+  Lofts a solid through 2+ ordered cross-sections, in order from first to
+  last. Each section names its own "sketch_feature_id" - sections may live
+  on DIFFERENT sketches/planes, which is exactly what makes a transition
+  between very different profiles possible (e.g. a square base blending
+  into a round top - "square-to-round": sketch the square on one plane,
+  sketch the circle on a second, parallel plane, then loft between the two
+  sketch steps' local_ids). "ruled" (default false) picks a straight-line
+  blend between sections instead of a smooth spline blend - only matters
+  with 3+ sections. "mode"/"target_body_ids" follow the identical Boss/Cut
+  convention extrude/revolve/sweep already use above. "thickness"/
+  "guide_curve_refs" are advanced and rarely needed: a nonzero "thickness"
+  (mm) thickens an open-profile loft into a thin shell instead of lofting
+  directly into a solid; "guide_curve_refs" (an ordered, connected chain of
+  sketch_line/sketch_arc/sketch_ellipse local_ids) rail-guides the blend
+  between sections instead of a plain interpolation. Leave both out unless
+  the user specifically describes a thin shell or a non-obvious blend path.''';
+
+/// `MergeStep`/`BooleanStep`/`DeleteBodyStep`/`ScaleBodyStep`/`MoveBodyStep`
+/// vocabulary (`ai_tool_groups.dart`'s `'direct_editing_boolean'` group).
+const String directEditingBooleanVocabularyText = '''
+- merge: {local_id, kind:"merge", body_ids: [...]} (2+ entries required) -
+  fuses every named Body into one.
+- boolean: {local_id, kind:"boolean", operation:"subtract"|"common",
+  target_body_ids: [...], tool_body_ids: [...], consume_tool_bodies?}
+  (1+ entries in each list, the two lists disjoint) - subtracts/intersects
+  already-built Bodies against each other.
+- delete_body: {local_id, kind:"delete_body", body_ids: [...]} (1+ entries
+  required) - removes the named Bodies entirely. Produces nothing - never
+  name a delete_body step's own local_id as a later target_body_ids/
+  source_body_ids/tool_feature_id/edges.of reference.
+- scale_body: {local_id, kind:"scale_body", body_id, factor?} (factor > 0,
+  default 1.0) - uniformly scales one Body about its own bounding-box
+  centre.
+- move_body: {local_id, kind:"move_body", body_id, delta?, rotation_axis?,
+  rotation_angle_degrees?, make_copy?} - translates body_id by delta (an
+  [x, y, z] triple in mm) and/or rotates it rotation_angle_degrees around
+  rotation_axis ({"sketch_line_ref": <local_id>} - the same shape a
+  Circular Pattern's own axis already uses). make_copy (default false)
+  modifies body_id in place; true mints a brand-new Body instead, leaving
+  the original intact.
+
+Merge/Boolean operate on Bodies that are ALREADY fully built (by an
+earlier extrude/revolve/sweep/loft/pattern/mirror/etc. step) - reach for
+these when the user describes combining or subtracting two separate,
+already-described solids. This is different from a Cut-mode extrude/
+revolve/sweep/loft, which removes material using a 2D profile you are
+building right now in the same step - reach for that instead whenever the
+cutting shape is naturally described as a sketch profile (a hole, a
+pocket, a slot) rather than as its own separate solid Body.''';
+
+/// `PatternStep` vocabulary (`ai_tool_groups.dart`'s `'pattern'` group).
+const String patternVocabularyText = '''
 - pattern: {local_id, kind:"pattern", source_body_ids: [...],
   pattern_type:"rectangular"|"circular", direction_1?, count_1?,
   spacing_1?, reverse_1?, direction_2?, count_2?, spacing_2?, reverse_2?,
@@ -253,16 +379,26 @@ real cut step).
   used for circular patterns) is different - a Circular pattern rotates
   around a real pivot point, not just a direction, so it must always be
   {"sketch_line_ref": <local_id>} - never a fixed_axis (there is no fixed-
-  world-axis option for this field at all).
+  world-axis option for this field at all).''';
+
+/// `MirrorStep` vocabulary (`ai_tool_groups.dart`'s `'mirror'` group).
+const String mirrorVocabularyText = '''
 - mirror: {local_id, kind:"mirror", source_body_ids: [...], mirror_plane:
   {"fixed_plane":"XY"|"XZ"|"YZ"} or {"plane_feature_id": <local_id>},
-  merge:"keep_separate"|"fuse_into_one", tool_feature_id?}
+  merge:"keep_separate"|"fuse_into_one", tool_feature_id?}''';
+
+/// `CreatePlaneStep` vocabulary (`ai_tool_groups.dart`'s `'create_plane'`
+/// group).
+const String createPlaneVocabularyText = '''
 - create_plane: {local_id, kind:"create_plane",
   plane_type:"normal_to_line_at_point"|"three_points", line_ref?,
   point_ref?, point_refs?} - normal_to_line_at_point needs line_ref +
   point_ref; three_points needs point_refs with exactly 3 entries. No
-  other plane_type exists in this tool.
+  other plane_type exists in this tool.''';
 
+/// `GearRequestStep` vocabulary (`ai_tool_groups.dart`'s `'gear_routing'`
+/// group).
+const String gearRoutingVocabularyText = '''
 ## Gear routing
 
 - gear_request: {local_id, kind:"gear_request", ...gear parameters}. Use
@@ -273,7 +409,18 @@ real cut step).
   parameters the user has given (gear type, module, tooth count, pressure
   angle, face width, etc.) as extra fields directly on this one step - you
   do not need to (and should not) emit sketch/extrude steps to build a
-  gear yourself.
+  gear yourself.''';
+
+/// `FilletStep`/`ChamferStep` vocabulary (`ai_tool_groups.dart`'s
+/// `'fillet_chamfer'` group) - includes the "Rounded corners drawn IN a
+/// Sketch" guidance, since it explicitly contrasts with (and recommends)
+/// the Fillet/Chamfer feature and would read as wrong advice if shown while
+/// that feature is turned off.
+const String filletChamferVocabularyText = '''
+- fillet: {local_id, kind:"fillet", edges: <edge selector, see below>,
+  radius}
+- chamfer: {local_id, kind:"chamfer", edges: <edge selector, see below>,
+  distance}
 
 ## Fillet/Chamfer edge selection
 
@@ -384,48 +531,58 @@ around the circle and not bulge out the wrong side of the path? If you are
 not confident of the direction, prefer end_angle (an absolute angle from
 center, easier to reason about directly than a second point) or reconsider
 whether a Fillet feature on a downstream Body would avoid this arithmetic
-entirely.
+entirely.''';
 
-## Reference kind-checking
+/// Assembles [_vocabularyTemplate] with every tool-group placeholder
+/// substituted: enabled groups (`ai_tool_groups.dart`'s `aiToolGroups`) get
+/// their own `vocabularyText`; disabled groups get nothing, plus a name in
+/// the dynamic "Tools currently turned off" block appended at the very end.
+/// Import cycle note: this file and `ai_tool_groups.dart` import each
+/// other (that file reads this file's `*VocabularyText` constants; this
+/// function reads that file's `aiToolGroups` map) - safe in Dart, since
+/// neither top-level `const` depends on the other's value: `aiToolGroups`
+/// is a `const` built purely from already-defined string constants here,
+/// and this is a plain function evaluated only at call time, well after
+/// every top-level `const` in both files is already initialized.
+String _vocabularyReference({required Set<String> disabledToolGroups}) {
+  String group(String id, String text) => disabledToolGroups.contains(id) ? '' : text;
+  final disabledEntries = [
+    for (final id in disabledToolGroups)
+      if (aiToolGroups.containsKey(id)) aiToolGroups[id]!,
+  ];
+  final disabledBlock = disabledEntries.isEmpty
+      ? ''
+      : '''
 
-Every reference must point at the right KIND of earlier step, not just any
-earlier local_id that happens to exist:
-- Every "sketch_feature_id" field (on every sketch_* step, and on
-  extrude/revolve/sweep) must name a "sketch" step - never a
-  sketch_rectangle, sketch_point, or anything else.
-- "profile_refs" (extrude/revolve/sweep) and "path_refs" (sweep) must each
-  name a sketch_line, sketch_circle, sketch_arc, or sketch_ellipse step -
-  never a bare sketch step, and never a sketch_rectangle/sketch_polygon/
-  sketch_slot step directly (name one of its own boundary Lines instead if
-  you need to anchor a profile explicitly - usually you don't, since
-  leaving profile_refs empty uses every outer profile of the Sketch).
-- "axis_ref" (revolve) must name a sketch_line step specifically - never
-  a sketch_circle/sketch_arc/etc.
-- "of" (fillet/chamfer), "target_body_ids", "source_body_ids", and
-  "tool_feature_id" must each name a step that produces a Body: extrude,
-  revolve, sweep, pattern, mirror, or gear_request - never a sketch,
-  create_plane, fillet, or chamfer step.
-- "line_ref"/"sketch_line_ref" fields must name a sketch_line step;
-  "point_ref"/"point_refs" must name sketch_point step(s);
-  "plane_feature_id" fields (on sketch, create_plane, mirror_plane) must
-  name a create_plane step.
-A plan that gets this wrong (e.g. an extrude's sketch_feature_id pointing
-at a sketch_rectangle step instead of the sketch step that owns it) fails
-validation before anything is built - get the kind right the first time,
-not just any earlier local_id.
 
-## What you cannot generate
+## Tools currently turned off in this app
 
-Only the kinds listed above exist. In particular, this tool has no Spline,
-no Text, no Loft, and no multi-Part assembly - you are only ever working
-within a single Part at a time (see "Editing an existing Part" below if one
-has been provided for this conversation). If a request genuinely needs one
-of these (a hand-drawn freeform
-curve, a lettered label, a lofted transition between very different
-profiles, an assembly of several parts), say so plainly and propose the
-closest approximation this tool can actually build (e.g. "I can
-approximate that curve with a few Arc segments - would that work?") rather
-than emitting a plan that references a kind that does not exist.''';
+The following tools exist in this app but are turned off in AI Settings
+right now, so you cannot use them to build a plan: ${disabledEntries.map((g) => '${g.label} (add it yourself via ${g.manualToolHint})').join('; ')}.
+If the user's request genuinely needs one of these, say so plainly and
+tell them they can either turn it on in AI Settings -> Tools, or add it
+themselves afterward once Generate has built the rest of the part - never
+claim the capability does not exist in this tool, and never silently
+substitute a workaround for it.''';
+  return _vocabularyTemplate
+      .replaceFirst(
+        '{{OPTIONAL_REVOLVE_SWEEP_LOFT_BULLETS}}',
+        [group('revolve', revolveVocabularyText), group('sweep', sweepVocabularyText), group('loft', loftVocabularyText)]
+            .where((s) => s.isNotEmpty)
+            .join('\n'),
+      )
+      .replaceFirst('{{OPTIONAL_DIRECT_EDITING_BOOLEAN_BULLETS}}', group('direct_editing_boolean', directEditingBooleanVocabularyText))
+      .replaceFirst('{{OPTIONAL_PATTERN_BULLET}}', group('pattern', patternVocabularyText))
+      .replaceFirst('{{OPTIONAL_MIRROR_BULLET}}', group('mirror', mirrorVocabularyText))
+      .replaceFirst('{{OPTIONAL_CREATE_PLANE_BULLET}}', group('create_plane', createPlaneVocabularyText))
+      .replaceFirst('{{OPTIONAL_GEAR_ROUTING_SECTION}}', group('gear_routing', gearRoutingVocabularyText))
+      .replaceFirst('{{OPTIONAL_FILLET_CHAMFER_SECTION}}', group('fillet_chamfer', filletChamferVocabularyText))
+      .replaceFirst('{{OPTIONAL_DISABLED_TOOLS_BLOCK}}', disabledBlock)
+      // Collapse any run of 3+ blank lines a removed section leaves behind
+      // down to a single blank line, so a disabled group doesn't leave
+      // conspicuous empty gaps in the assembled prompt.
+      .replaceAll(RegExp(r'\n{3,}'), '\n\n');
+}
 
 const String _unitsConvention = '''
 ## Units
@@ -707,6 +864,7 @@ $existingPartSummary''';
 String buildAiScopingSystemPrompt({
   String? assistantInstructionsOverride,
   Set<String> enabledAddOns = const {},
+  Set<String> disabledToolGroups = const {},
   String? existingPartSummary,
 }) {
   final hasExistingPart = existingPartSummary != null && existingPartSummary.trim().isNotEmpty;
@@ -717,7 +875,7 @@ String buildAiScopingSystemPrompt({
   final addOnBlocks = [for (final id in enabledAddOns) if (aiPromptAddOns.containsKey(id)) aiPromptAddOns[id]!.text];
   return [
     assistantInstructions,
-    _vocabularyReference,
+    _vocabularyReference(disabledToolGroups: disabledToolGroups),
     _unitsConvention,
     _fewShotExamples,
     ...addOnBlocks,
@@ -734,6 +892,12 @@ String get defaultAssistantInstructions => _defaultAssistantInstructions;
 
 /// Public read access to the always-locked prompt content, shown read-only
 /// in AI System Prompt Settings so a user can see the LLM's schema contract
-/// without being able to edit it.
-String get lockedSystemPromptContent =>
-    [_vocabularyReference, _unitsConvention, _fewShotExamples, _planTerminationFooter].join('\n\n');
+/// without being able to edit it. Takes [disabledToolGroups] so that
+/// preview reflects the tools the user has actually turned off, rather than
+/// showing stale vocabulary a toggle just removed.
+String lockedSystemPromptContent({Set<String> disabledToolGroups = const {}}) => [
+      _vocabularyReference(disabledToolGroups: disabledToolGroups),
+      _unitsConvention,
+      _fewShotExamples,
+      _planTerminationFooter,
+    ].join('\n\n');

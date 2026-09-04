@@ -94,6 +94,31 @@ enum AiMergeMode {
       AiMergeMode.values.firstWhere((e) => e.wireValue == value, orElse: () => throw FormatException('Unknown MergeMode: $value'));
 }
 
+/// `app.document.models.LoftMode` - `LoftStep.mode`. Same "own enum"
+/// reasoning as [AiRevolveMode]/[AiSweepMode] despite identical wire values.
+enum AiLoftMode {
+  boss('boss'),
+  cut('cut');
+
+  final String wireValue;
+  const AiLoftMode(this.wireValue);
+
+  static AiLoftMode fromWire(String value) =>
+      AiLoftMode.values.firstWhere((e) => e.wireValue == value, orElse: () => throw FormatException('Unknown LoftMode: $value'));
+}
+
+/// `app.document.models.BooleanOperation` - `BooleanStep.operation`.
+enum AiBooleanOperation {
+  subtract('subtract'),
+  common('common');
+
+  final String wireValue;
+  const AiBooleanOperation(this.wireValue);
+
+  static AiBooleanOperation fromWire(String value) => AiBooleanOperation.values
+      .firstWhere((e) => e.wireValue == value, orElse: () => throw FormatException('Unknown BooleanOperation: $value'));
+}
+
 /// `app.document.models.FixedAxis` - `PatternDirectionStep.fixed_axis`
 /// (`PatternAxisStep` has no `fixed_axis` field - see its own doc comment).
 enum AiFixedAxis {
@@ -275,6 +300,38 @@ class AiMirrorPlaneStep {
       };
 }
 
+/// `LoftSectionStep` (`ai_plan_schemas.py`) - one cross-section of an
+/// [AiLoftStep]. May name a different [sketchFeatureId] per section - a
+/// Loft between two independent Sketches (e.g. a square-to-round
+/// transition) is exactly what this enables.
+class AiLoftSectionStep {
+  final String sketchFeatureId;
+  final List<String> profileRefs;
+  final String? referencePoint;
+  final String? alignmentPoint;
+
+  const AiLoftSectionStep({
+    required this.sketchFeatureId,
+    this.profileRefs = const [],
+    this.referencePoint,
+    this.alignmentPoint,
+  });
+
+  factory AiLoftSectionStep.fromJson(Map<String, dynamic> json) => AiLoftSectionStep(
+        sketchFeatureId: json['sketch_feature_id'] as String,
+        profileRefs: _asStringList(json['profile_refs']),
+        referencePoint: json['reference_point'] as String?,
+        alignmentPoint: json['alignment_point'] as String?,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'sketch_feature_id': sketchFeatureId,
+        'profile_refs': profileRefs,
+        if (referencePoint != null) 'reference_point': referencePoint,
+        if (alignmentPoint != null) 'alignment_point': alignmentPoint,
+      };
+}
+
 /// One step of an [AiGenerationPlan] - every concrete subtype below mirrors
 /// one Pydantic model in `ai_plan_schemas.py` field-for-field. [localId] is
 /// plan-local only (never a real backend id - see that file's own module
@@ -326,6 +383,18 @@ sealed class AiPlanStep {
         return AiCreatePlaneStep.fromJson(json);
       case 'gear_request':
         return AiGearRequestStep.fromJson(json);
+      case 'loft':
+        return AiLoftStep.fromJson(json);
+      case 'merge':
+        return AiMergeStep.fromJson(json);
+      case 'boolean':
+        return AiBooleanStep.fromJson(json);
+      case 'delete_body':
+        return AiDeleteBodyStep.fromJson(json);
+      case 'scale_body':
+        return AiScaleBodyStep.fromJson(json);
+      case 'move_body':
+        return AiMoveBodyStep.fromJson(json);
       default:
         throw FormatException('Unknown plan step kind: $kind');
     }
@@ -791,6 +860,51 @@ class AiSweepStep extends AiPlanStep {
       };
 }
 
+/// `LoftStep` - lofts a solid through 2+ ordered [sections], each possibly
+/// anchored to a different Sketch (see [AiLoftSectionStep]'s own doc
+/// comment). [targetBodyIds]/[mode] follow the identical Boss/Cut
+/// convention [AiExtrudeStep]/[AiRevolveStep]/[AiSweepStep] already use.
+class AiLoftStep extends AiPlanStep {
+  final List<AiLoftSectionStep> sections;
+  final AiLoftMode mode;
+  final bool ruled;
+  final List<String> targetBodyIds;
+  final double? thickness;
+  final List<String> guideCurveRefs;
+
+  const AiLoftStep({
+    required super.localId,
+    required this.sections,
+    required this.mode,
+    this.ruled = false,
+    this.targetBodyIds = const [],
+    this.thickness,
+    this.guideCurveRefs = const [],
+  }) : super(kind: 'loft');
+
+  factory AiLoftStep.fromJson(Map<String, dynamic> json) => AiLoftStep(
+        localId: json['local_id'] as String,
+        sections: (json['sections'] as List).map((s) => AiLoftSectionStep.fromJson(s as Map<String, dynamic>)).toList(),
+        mode: AiLoftMode.fromWire(json['mode'] as String),
+        ruled: json['ruled'] as bool? ?? false,
+        targetBodyIds: _asStringList(json['target_body_ids']),
+        thickness: _asDoubleOrNull(json['thickness']),
+        guideCurveRefs: _asStringList(json['guide_curve_refs']),
+      );
+
+  @override
+  Map<String, dynamic> toJson() => {
+        'local_id': localId,
+        'kind': kind,
+        'sections': sections.map((s) => s.toJson()).toList(),
+        'mode': mode.wireValue,
+        'ruled': ruled,
+        'target_body_ids': targetBodyIds,
+        if (thickness != null) 'thickness': thickness,
+        'guide_curve_refs': guideCurveRefs,
+      };
+}
+
 class AiFilletStep extends AiPlanStep {
   final AiEdgeSelector edges;
   final double radius;
@@ -971,6 +1085,136 @@ class AiCreatePlaneStep extends AiPlanStep {
         if (lineRef != null) 'line_ref': lineRef,
         if (pointRef != null) 'point_ref': pointRef,
         'point_refs': pointRefs,
+      };
+}
+
+/// `MergeStep` - fuses every Body named in [bodyIds] (2+ required) into one.
+class AiMergeStep extends AiPlanStep {
+  final List<String> bodyIds;
+
+  const AiMergeStep({required super.localId, required this.bodyIds}) : super(kind: 'merge');
+
+  factory AiMergeStep.fromJson(Map<String, dynamic> json) => AiMergeStep(
+        localId: json['local_id'] as String,
+        bodyIds: _asStringList(json['body_ids']),
+      );
+
+  @override
+  Map<String, dynamic> toJson() => {'local_id': localId, 'kind': kind, 'body_ids': bodyIds};
+}
+
+/// `BooleanStep` - Subtract/Common between [targetBodyIds] and [toolBodyIds]
+/// (both already-built, independent Bodies - unlike a Cut-mode Extrude/
+/// Revolve/Sweep/Loft, which cuts using a profile being built right now).
+class AiBooleanStep extends AiPlanStep {
+  final AiBooleanOperation operation;
+  final List<String> targetBodyIds;
+  final List<String> toolBodyIds;
+  final bool consumeToolBodies;
+
+  const AiBooleanStep({
+    required super.localId,
+    required this.operation,
+    required this.targetBodyIds,
+    required this.toolBodyIds,
+    this.consumeToolBodies = true,
+  }) : super(kind: 'boolean');
+
+  factory AiBooleanStep.fromJson(Map<String, dynamic> json) => AiBooleanStep(
+        localId: json['local_id'] as String,
+        operation: AiBooleanOperation.fromWire(json['operation'] as String),
+        targetBodyIds: _asStringList(json['target_body_ids']),
+        toolBodyIds: _asStringList(json['tool_body_ids']),
+        consumeToolBodies: json['consume_tool_bodies'] as bool? ?? true,
+      );
+
+  @override
+  Map<String, dynamic> toJson() => {
+        'local_id': localId,
+        'kind': kind,
+        'operation': operation.wireValue,
+        'target_body_ids': targetBodyIds,
+        'tool_body_ids': toolBodyIds,
+        'consume_tool_bodies': consumeToolBodies,
+      };
+}
+
+/// `DeleteBodyStep` - removes every Body named in [bodyIds] (1+ required)
+/// entirely. Produces no Body of its own - never a valid `target_body_ids`/
+/// `source_body_ids`/`edges.of` reference for a later step.
+class AiDeleteBodyStep extends AiPlanStep {
+  final List<String> bodyIds;
+
+  const AiDeleteBodyStep({required super.localId, required this.bodyIds}) : super(kind: 'delete_body');
+
+  factory AiDeleteBodyStep.fromJson(Map<String, dynamic> json) => AiDeleteBodyStep(
+        localId: json['local_id'] as String,
+        bodyIds: _asStringList(json['body_ids']),
+      );
+
+  @override
+  Map<String, dynamic> toJson() => {'local_id': localId, 'kind': kind, 'body_ids': bodyIds};
+}
+
+/// `ScaleBodyStep` - uniformly scales [bodyId] by [factor] (> 0) about its
+/// own bounding-box centre.
+class AiScaleBodyStep extends AiPlanStep {
+  final String bodyId;
+  final double factor;
+
+  const AiScaleBodyStep({required super.localId, required this.bodyId, this.factor = 1.0}) : super(kind: 'scale_body');
+
+  factory AiScaleBodyStep.fromJson(Map<String, dynamic> json) => AiScaleBodyStep(
+        localId: json['local_id'] as String,
+        bodyId: json['body_id'] as String,
+        factor: json['factor'] == null ? 1.0 : _asDouble(json['factor']),
+      );
+
+  @override
+  Map<String, dynamic> toJson() => {'local_id': localId, 'kind': kind, 'body_id': bodyId, 'factor': factor};
+}
+
+/// `MoveBodyStep` ("Move/Copy Body") - translates [bodyId] by [delta] and/or
+/// rotates it [rotationAngleDegrees] around [rotationAxis]. [makeCopy]
+/// (default false) modifies [bodyId] in place; true mints a new Body instead.
+class AiMoveBodyStep extends AiPlanStep {
+  final String bodyId;
+  final List<double> delta;
+  final AiPatternAxisStep? rotationAxis;
+  final double rotationAngleDegrees;
+  final bool makeCopy;
+
+  const AiMoveBodyStep({
+    required super.localId,
+    required this.bodyId,
+    this.delta = const [0.0, 0.0, 0.0],
+    this.rotationAxis,
+    this.rotationAngleDegrees = 0.0,
+    this.makeCopy = false,
+  }) : super(kind: 'move_body');
+
+  factory AiMoveBodyStep.fromJson(Map<String, dynamic> json) => AiMoveBodyStep(
+        localId: json['local_id'] as String,
+        bodyId: json['body_id'] as String,
+        delta: json['delta'] == null
+            ? const [0.0, 0.0, 0.0]
+            : (json['delta'] as List).map((e) => (e as num).toDouble()).toList(),
+        rotationAxis: json['rotation_axis'] == null
+            ? null
+            : AiPatternAxisStep.fromJson(json['rotation_axis'] as Map<String, dynamic>),
+        rotationAngleDegrees: json['rotation_angle_degrees'] == null ? 0.0 : _asDouble(json['rotation_angle_degrees']),
+        makeCopy: json['make_copy'] as bool? ?? false,
+      );
+
+  @override
+  Map<String, dynamic> toJson() => {
+        'local_id': localId,
+        'kind': kind,
+        'body_id': bodyId,
+        'delta': delta,
+        if (rotationAxis != null) 'rotation_axis': rotationAxis!.toJson(),
+        'rotation_angle_degrees': rotationAngleDegrees,
+        'make_copy': makeCopy,
       };
 }
 

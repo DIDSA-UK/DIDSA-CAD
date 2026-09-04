@@ -878,6 +878,292 @@ void main() {
     });
   });
 
+  group('PlanTranslator.execute - Loft (the square-to-round bug report)', () {
+    test('a loft between two sketches posts a real LoftFeature with both sections resolved', () async {
+      final paths = <String>[];
+      final mock = MockClient((request) async {
+        paths.add('${request.method} ${request.url.path}');
+        if (request.url.path == '/document/parts/part-1/ai-plan/validate') {
+          return jsonResponse({
+            'results': [
+              {'local_id': 'sk1', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'p1', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'p2', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'p3', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'p4', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'r1', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'sk2', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'pc', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'pr', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'c1', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'lf1', 'ok': true, 'warnings': [], 'error': null},
+            ],
+          });
+        }
+        if (request.url.path == '/document/parts/part-1/features/sketch') {
+          final sketchId = request.body.contains('"XY"') ? 'sketch-1' : 'sketch-2';
+          final featId = sketchId == 'sketch-1' ? 'feat-sk1' : 'feat-sk2';
+          return jsonResponse({'type': 'sketch', 'id': featId, 'locked': false, 'sketch_id': sketchId});
+        }
+        if (request.url.path == '/sketch/sketches/sketch-1/points' || request.url.path == '/sketch/sketches/sketch-2/points') {
+          final sketchNum = request.url.path.contains('sketch-1') ? 1 : 2;
+          final body = decodeBody(request);
+          return jsonResponse({'id': 'point-$sketchNum-${body['x']}-${body['y']}', 'x': body['x'], 'y': body['y']});
+        }
+        if (request.url.path == '/sketch/sketches/sketch-1/rectangles') {
+          return jsonResponse({
+            'id': 'rect-1',
+            'corner_point_ids': ['point-1-0-0', 'point-1-60-0', 'point-1-60-40', 'point-1-0-40'],
+            'line_ids': ['line-1', 'line-2', 'line-3', 'line-4'],
+            'axis_aligned': true,
+          });
+        }
+        if (request.url.path == '/sketch/sketches/sketch-2/circles') {
+          final body = decodeBody(request);
+          return jsonResponse({
+            'id': 'circ-1',
+            'center_point_id': body['center_point_id'],
+            'radius_point_id': body['radius_point_id'],
+            'radius_constraint_id': 'rc-1',
+            'radius': 20.0,
+          });
+        }
+        if (request.url.path == '/sketch/sketches/sketch-2/constraints/rc-1/value') {
+          return jsonResponse({'ok': true});
+        }
+        if (request.url.path == '/document/parts/part-1/loft-features') {
+          return jsonResponse({
+            'type': 'loft',
+            'id': 'feat-loft1',
+            'locked': false,
+            'sections': decodeBody(request)['sections'],
+            'mode': 'boss',
+            'ruled': false,
+            'target_body_ids': <String>[],
+          });
+        }
+        return http.Response('not found', 404);
+      });
+
+      final plan = AiGenerationPlan.fromJson({
+        'version': 1,
+        'steps': [
+          {'local_id': 'sk1', 'kind': 'sketch', 'plane': 'XY'},
+          {'local_id': 'p1', 'kind': 'sketch_point', 'sketch_feature_id': 'sk1', 'x': 0, 'y': 0},
+          {'local_id': 'p2', 'kind': 'sketch_point', 'sketch_feature_id': 'sk1', 'x': 60, 'y': 0},
+          {'local_id': 'p3', 'kind': 'sketch_point', 'sketch_feature_id': 'sk1', 'x': 60, 'y': 40},
+          {'local_id': 'p4', 'kind': 'sketch_point', 'sketch_feature_id': 'sk1', 'x': 0, 'y': 40},
+          {
+            'local_id': 'r1',
+            'kind': 'sketch_rectangle',
+            'sketch_feature_id': 'sk1',
+            'corner_point_ids': ['p1', 'p2', 'p3', 'p4'],
+          },
+          {'local_id': 'sk2', 'kind': 'sketch', 'plane': 'XY'},
+          {'local_id': 'pc', 'kind': 'sketch_point', 'sketch_feature_id': 'sk2', 'x': 30, 'y': 20},
+          {'local_id': 'pr', 'kind': 'sketch_point', 'sketch_feature_id': 'sk2', 'x': 50, 'y': 20},
+          {
+            'local_id': 'c1',
+            'kind': 'sketch_circle',
+            'sketch_feature_id': 'sk2',
+            'center_point_id': 'pc',
+            'radius_point_id': 'pr',
+          },
+          {
+            'local_id': 'lf1',
+            'kind': 'loft',
+            'sections': [
+              {'sketch_feature_id': 'sk1', 'profile_refs': ['r1']},
+              {'sketch_feature_id': 'sk2', 'profile_refs': ['c1']},
+            ],
+            'mode': 'boss',
+          },
+        ],
+      });
+
+      final translator = PlanTranslator(
+        documentApi: DocumentApiClient(httpClient: mock),
+        sketchApi: SketchApiClient(httpClient: mock),
+      );
+      final result = await translator.execute(plan: plan, partId: 'part-1');
+
+      expect(result.outcome, PlanTranslationOutcome.success);
+      expect(result.localIdToRealId['lf1'], 'feat-loft1');
+      expect(paths, contains('POST /document/parts/part-1/loft-features'));
+    });
+  });
+
+  group('PlanTranslator.execute - Direct Editing / Boolean', () {
+    test('merge, boolean, delete_body, scale_body, and move_body each post to their own real endpoint', () async {
+      final paths = <String>[];
+      final mock = MockClient((request) async {
+        paths.add('${request.method} ${request.url.path}');
+        if (request.url.path == '/document/parts/part-1/ai-plan/validate') {
+          return jsonResponse({
+            'results': [
+              {'local_id': 'sk1', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'f1', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'f2', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'm1', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'b1', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'd1', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 's1', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'mv1', 'ok': true, 'warnings': [], 'error': null},
+            ],
+          });
+        }
+        if (request.url.path == '/document/parts/part-1/features/sketch') {
+          return jsonResponse({'type': 'sketch', 'id': 'feat-sk1', 'locked': false, 'sketch_id': 'sketch-1'});
+        }
+        if (request.url.path == '/document/parts/part-1/extrude-features') {
+          final id = decodeBody(request)['start_distance'] == 0 && paths.where((p) => p.contains('extrude')).length <= 1
+              ? 'feat-f1'
+              : 'feat-f2';
+          return jsonResponse({
+            'type': 'extrude',
+            'id': id,
+            'locked': false,
+            'sketch_feature_id': 'feat-sk1',
+            'extrude_type': 'boss',
+            'start_distance': 0.0,
+            'end_distance': 10.0,
+            'target_body_ids': <String>[],
+          });
+        }
+        if (request.url.path == '/document/parts/part-1/merge-features') {
+          return jsonResponse({'type': 'merge', 'id': 'feat-merge1', 'locked': false, 'body_ids': decodeBody(request)['body_ids']});
+        }
+        if (request.url.path == '/document/parts/part-1/boolean-features') {
+          final body = decodeBody(request);
+          return jsonResponse({
+            'type': 'boolean',
+            'id': 'feat-bool1',
+            'locked': false,
+            'operation': body['operation'],
+            'target_body_ids': body['target_body_ids'],
+            'tool_body_ids': body['tool_body_ids'],
+            'consume_tool_bodies': body['consume_tool_bodies'],
+          });
+        }
+        if (request.url.path == '/document/parts/part-1/delete-body-features') {
+          return jsonResponse({'type': 'delete_body', 'id': 'feat-del1', 'locked': false, 'body_ids': decodeBody(request)['body_ids']});
+        }
+        if (request.url.path == '/document/parts/part-1/scale-body-features') {
+          final body = decodeBody(request);
+          return jsonResponse({'type': 'scale_body', 'id': 'feat-scale1', 'locked': false, 'body_id': body['body_id'], 'factor': body['factor']});
+        }
+        if (request.url.path == '/document/parts/part-1/move-body-features') {
+          final body = decodeBody(request);
+          return jsonResponse({
+            'type': 'move_body',
+            'id': 'feat-move1',
+            'locked': false,
+            'body_id': body['body_id'],
+            'delta': body['delta'],
+            'rotation_axis': null,
+            'rotation_angle_degrees': body['rotation_angle_degrees'],
+            'make_copy': body['make_copy'],
+          });
+        }
+        return http.Response('not found', 404);
+      });
+
+      final plan = AiGenerationPlan.fromJson({
+        'version': 1,
+        'steps': [
+          {'local_id': 'sk1', 'kind': 'sketch', 'plane': 'XY'},
+          {
+            'local_id': 'f1',
+            'kind': 'extrude',
+            'sketch_feature_id': 'sk1',
+            'extrude_type': 'boss',
+            'start_distance': 0,
+            'end_distance': 10,
+          },
+          {
+            'local_id': 'f2',
+            'kind': 'extrude',
+            'sketch_feature_id': 'sk1',
+            'extrude_type': 'boss',
+            'start_distance': 20,
+            'end_distance': 30,
+          },
+          {'local_id': 'm1', 'kind': 'merge', 'body_ids': ['f1', 'f2']},
+          {
+            'local_id': 'b1',
+            'kind': 'boolean',
+            'operation': 'subtract',
+            'target_body_ids': ['f1'],
+            'tool_body_ids': ['f2'],
+          },
+          {'local_id': 'd1', 'kind': 'delete_body', 'body_ids': ['f1']},
+          {'local_id': 's1', 'kind': 'scale_body', 'body_id': 'f1', 'factor': 2.0},
+          {'local_id': 'mv1', 'kind': 'move_body', 'body_id': 'f1', 'delta': [10.0, 0.0, 0.0]},
+        ],
+      });
+
+      final translator = PlanTranslator(
+        documentApi: DocumentApiClient(httpClient: mock),
+        sketchApi: SketchApiClient(httpClient: mock),
+      );
+      final result = await translator.execute(plan: plan, partId: 'part-1');
+
+      expect(result.outcome, PlanTranslationOutcome.success);
+      expect(paths, contains('POST /document/parts/part-1/merge-features'));
+      expect(paths, contains('POST /document/parts/part-1/boolean-features'));
+      expect(paths, contains('POST /document/parts/part-1/delete-body-features'));
+      expect(paths, contains('POST /document/parts/part-1/scale-body-features'));
+      expect(paths, contains('POST /document/parts/part-1/move-body-features'));
+    });
+  });
+
+  group('PlanTranslator.execute - tool-toggle enforcement (disabledKinds)', () {
+    test('disabledKinds is merged into the validate request body', () async {
+      Map<String, dynamic>? validateBody;
+      final mock = MockClient((request) async {
+        if (request.url.path == '/document/parts/part-1/ai-plan/validate') {
+          validateBody = decodeBody(request);
+          return jsonResponse({
+            'results': [
+              {
+                'local_id': 'lf1',
+                'ok': false,
+                'warnings': [],
+                'error': {'type': 'kind_disabled', 'kind': 'loft'},
+              },
+            ],
+          });
+        }
+        return http.Response('not found', 404);
+      });
+
+      final plan = AiGenerationPlan.fromJson({
+        'version': 1,
+        'steps': [
+          {
+            'local_id': 'lf1',
+            'kind': 'loft',
+            'sections': [
+              {'sketch_feature_id': 'sk1'},
+              {'sketch_feature_id': 'sk2'},
+            ],
+            'mode': 'boss',
+          },
+        ],
+      });
+
+      final translator = PlanTranslator(
+        documentApi: DocumentApiClient(httpClient: mock),
+        sketchApi: SketchApiClient(httpClient: mock),
+      );
+      final result = await translator.execute(plan: plan, partId: 'part-1', disabledKinds: {'loft'});
+
+      expect(result.outcome, PlanTranslationOutcome.validationFailed);
+      expect(validateBody?['disabled_kinds'], ['loft']);
+      expect(result.preflightResults.single.error?['type'], 'kind_disabled');
+    });
+  });
+
   group('PlanTranslator.undo', () {
     test('deletes every created Feature in reverse order via cascade delete', () async {
       final cascadeDeletedPaths = <String>[];

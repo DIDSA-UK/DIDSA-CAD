@@ -183,6 +183,12 @@ const Set<String> _featureProducingKinds = {
   'pattern',
   'mirror',
   'create_plane',
+  'loft',
+  'merge',
+  'boolean',
+  'delete_body',
+  'scale_body',
+  'move_body',
 };
 
 const Map<Type, String> _entityTypeForStepType = {
@@ -232,9 +238,10 @@ class PlanTranslator {
     required AiGenerationPlan plan,
     required String partId,
     List<FeatureDto> existingFeatures = const [],
+    Set<String> disabledKinds = const {},
     void Function(int index, TranslationStepStatus status)? onStepStatusChanged,
   }) async {
-    final validation = await documentApi.validateAiPlan(partId, plan.toJson());
+    final validation = await documentApi.validateAiPlan(partId, plan.toJson(), disabledKinds: disabledKinds);
     if (validation.results.any((r) => !r.ok)) {
       return PlanTranslationResult.validationFailed(validation.results);
     }
@@ -636,6 +643,71 @@ class PlanTranslator {
           lineRef: lineRef,
           pointRef: pointRef,
           pointRefs: pointRefs,
+        );
+        return feature.id;
+
+      case AiLoftStep():
+        final feature = await documentApi.createLoftFeature(
+          partId,
+          sections: [
+            for (final s in step.sections)
+              LoftSectionDto(
+                sketchFeatureId: _resolveId(s.sketchFeatureId, ids),
+                profileRefs: _entityRefs(plan, ids, sketchIds, s.profileRefs),
+                referencePoint: s.referencePoint == null ? null : _entityRef(plan, ids, sketchIds, s.referencePoint!),
+                alignmentPoint: s.alignmentPoint == null ? null : _entityRef(plan, ids, sketchIds, s.alignmentPoint!),
+              ),
+          ],
+          mode: step.mode.wireValue,
+          ruled: step.ruled,
+          targetBodyIds: [for (final t in step.targetBodyIds) _resolveId(t, ids)],
+          thickness: step.thickness,
+          guideCurveRefs: _entityRefs(plan, ids, sketchIds, step.guideCurveRefs),
+        );
+        return feature.id;
+
+      case AiMergeStep():
+        final feature = await documentApi.createMergeFeature(
+          partId,
+          bodyIds: [for (final b in step.bodyIds) _resolveId(b, ids)],
+        );
+        return feature.id;
+
+      case AiBooleanStep():
+        final feature = await documentApi.createBooleanFeature(
+          partId,
+          operation: step.operation == AiBooleanOperation.subtract ? BooleanOperation.subtract : BooleanOperation.common,
+          targetBodyIds: [for (final t in step.targetBodyIds) _resolveId(t, ids)],
+          toolBodyIds: [for (final t in step.toolBodyIds) _resolveId(t, ids)],
+          consumeToolBodies: step.consumeToolBodies,
+        );
+        return feature.id;
+
+      case AiDeleteBodyStep():
+        final feature = await documentApi.createDeleteBodyFeature(
+          partId,
+          bodyIds: [for (final b in step.bodyIds) _resolveId(b, ids)],
+        );
+        return feature.id;
+
+      case AiScaleBodyStep():
+        final feature = await documentApi.createScaleBodyFeature(
+          partId,
+          bodyId: _resolveId(step.bodyId, ids),
+          factor: step.factor,
+        );
+        return feature.id;
+
+      case AiMoveBodyStep():
+        final feature = await documentApi.createMoveBodyFeature(
+          partId,
+          bodyId: _resolveId(step.bodyId, ids),
+          delta: step.delta,
+          rotationAxis: step.rotationAxis == null
+              ? null
+              : PatternAxisRefDto(sketchLineRef: _entityRef(plan, ids, sketchIds, step.rotationAxis!.sketchLineRef)),
+          rotationAngleDegrees: step.rotationAngleDegrees,
+          copy: step.makeCopy,
         );
         return feature.id;
 

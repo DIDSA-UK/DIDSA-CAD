@@ -409,6 +409,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       final systemPrompt = buildAiScopingSystemPrompt(
         assistantInstructionsOverride: AiSystemPromptPreferences.override,
         enabledAddOns: AiSystemPromptPreferences.enabledAddOns,
+        disabledToolGroups: AiSystemPromptPreferences.disabledToolGroups,
         existingPartSummary: _existingPartSummary,
       );
       final result = await provider.sendScopingTurn(_transcript, systemPrompt: systemPrompt);
@@ -683,6 +684,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         plan: plan,
         partId: partId,
         existingFeatures: _existingFeatures ?? const [],
+        disabledKinds: AiSystemPromptPreferences.disabledKinds,
         onStepStatusChanged: (index, status) {
           if (!mounted) return;
           setState(() => _stepStatuses![index] = status);
@@ -937,6 +939,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     final systemPrompt = buildAiScopingSystemPrompt(
       assistantInstructionsOverride: AiSystemPromptPreferences.override,
       enabledAddOns: AiSystemPromptPreferences.enabledAddOns,
+      disabledToolGroups: AiSystemPromptPreferences.disabledToolGroups,
       existingPartSummary: _existingPartSummary,
     );
     final package = buildExternalHandoffPackage(systemPrompt: systemPrompt, transcript: _transcript);

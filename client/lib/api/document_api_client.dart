@@ -3061,11 +3061,26 @@ class DocumentApiClient {
   /// `AiGenerationPlan` parameter so this file never has to import `ai/` -
   /// the caller (workstream 2's `AiModellingScreen`) does the one call to
   /// `.toJson()`.
-  Future<AiPlanValidateResultDto> validateAiPlan(String partId, Map<String, dynamic> planJson) => _send(
+  /// [disabledKinds] (AI Settings -> Tools toggle enforcement): plan-step
+  /// `kind` strings currently turned off - merged into the request as
+  /// `disabled_kinds` so the backend rejects any step of that kind with a
+  /// structured `kind_disabled` error, rather than relying on the system
+  /// prompt alone to keep the LLM from proposing it. Empty (the default)
+  /// disables nothing, identical to every caller before this parameter
+  /// existed.
+  Future<AiPlanValidateResultDto> validateAiPlan(
+    String partId,
+    Map<String, dynamic> planJson, {
+    Set<String> disabledKinds = const {},
+  }) =>
+      _send(
         () => _httpClient.post(
               _uri('/document/parts/$partId/ai-plan/validate'),
               headers: _headers,
-              body: jsonEncode(planJson),
+              body: jsonEncode({
+                ...planJson,
+                if (disabledKinds.isNotEmpty) 'disabled_kinds': disabledKinds.toList(),
+              }),
             ),
         (body) => AiPlanValidateResultDto.fromJson(body as Map<String, dynamic>),
       );
