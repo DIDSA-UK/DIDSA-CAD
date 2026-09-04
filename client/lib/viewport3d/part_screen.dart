@@ -46,6 +46,7 @@ import 'fillet_panel.dart';
 import 'import_format_dialog.dart';
 import 'loft_panel.dart';
 import 'merge_panel.dart';
+import 'measurement_panel.dart';
 import 'mesh_geometry.dart';
 import 'mirror_panel.dart';
 import 'override_stack.dart';
@@ -830,7 +831,8 @@ class _PartScreenState extends State<PartScreen> {
       !_deleteFaceActive &&
       !_moveFaceActive &&
       !_profilePickerActive &&
-      !_pathPickerActive;
+      !_pathPickerActive &&
+      !_measureActive;
 
   /// Whether [FeatureTreePanel] is actually on screen right now - true
   /// [_featureTreeVisible] alone is not enough, since that flag stays
@@ -858,7 +860,8 @@ class _PartScreenState extends State<PartScreen> {
           !_deleteFaceActive &&
           !_moveFaceActive &&
           !_profilePickerActive &&
-          !_pathPickerActive) ||
+          !_pathPickerActive &&
+          !_measureActive) ||
       // Pattern/Mirror scoping's Phase 6: the Build Tree multi-select
       // Feature picker overrides every other visibility rule above - it's
       // opened from inside an already-active Mirror/Pattern panel, which
@@ -882,6 +885,21 @@ class _PartScreenState extends State<PartScreen> {
   /// the toggle would be both redundant and misleadingly implying a choice
   /// that isn't actually available).
   bool get _selectionModeFabVisible => !_featureTreePanelVisible && !_confirmingSketchOrientation;
+
+  /// The Measure FAB - available whenever nothing else is mid-flow, plus
+  /// always while Measure itself is active (so it stays tappable to turn
+  /// back off). Unlike [_selectionModeFabVisible] (a pure gesture-mode
+  /// toggle that stays meaningful during *any* other tool's own picking
+  /// session), Measure hides itself while another tool ([_anyToolPanelOpen])
+  /// is open rather than force-closing it - every other tool's own Cancel
+  /// path does real async cleanup (deleting a preview Feature, reverting a
+  /// PATCH, popping its filter override), and there's no existing
+  /// precedent in this app for a second tool's FAB reaching in and
+  /// triggering that teardown on another tool's behalf.
+  bool get _measureFabVisible =>
+      !_featureTreePanelVisible &&
+      !_confirmingSketchOrientation &&
+      (_measureActive || !_anyToolPanelOpen);
 
   /// Bug fix ("XYZ triad hidden behind any open tool panel",
   /// `docs/roadmap.md`): every tool panel (`ExtrudePanel`, `CreatePlanePanel`,
@@ -915,7 +933,8 @@ class _PartScreenState extends State<PartScreen> {
       _moveFaceActive ||
       _profilePickerActive ||
       _pathPickerActive ||
-      _planeSelectionMode;
+      _planeSelectionMode ||
+      _measureActive;
 
   /// Bug report ("Select Other"): whichever candidate row the open Select
   /// Other sheet is currently hovered/focused on, if any - fed straight
@@ -963,6 +982,25 @@ class _PartScreenState extends State<PartScreen> {
   /// the debounced live-preview re-solve while [_filletActive], same
   /// reasoning as the [_extrudeActive] case just above.
   void _toggleSelectedEntity(SelectionEntityRef entity) {
+    // Measure: caps the selection at 2 entities. Toggling an already-
+    // selected entity removes it (same as the generic toggle below). A 3rd
+    // distinct tap starts fresh with just the newly-tapped entity, rather
+    // than holding an ill-defined 3-entity selection the backend's own
+    // `1 <= len(refs) <= 2` validation would reject anyway. Checked first,
+    // same "special case ahead of the generic toggle" convention every
+    // other tool branch below already uses.
+    if (_measureActive) {
+      setState(() {
+        final next = Set<SelectionEntityRef>.of(_selectedEntities);
+        if (!next.remove(entity)) {
+          if (next.length >= 2) next.clear();
+          next.add(entity);
+        }
+        _selectedEntities = next;
+      });
+      _scheduleMeasureQuery();
+      return;
+    }
     if (_filletActive && entity.kind == SelectionEntityKind.face) {
       _toggleFilletFaceEdges(entity);
       return;
@@ -1787,6 +1825,139 @@ class _PartScreenState extends State<PartScreen> {
     sketchCircle: false,
     plane: false,
   );
+
+  // --- Measure tool ----------------------------------------------------------
+  // A stateless, read-only geometry query - unlike every other tool in this
+  // file, opening/closing it never creates, edits, or deletes anything (no
+  // Feature, no undo/redo entry), so there is no create-eagerly/PATCH-on-
+  // edit/Confirm-vs-Cancel machinery to mirror from Fillet - just a toggle,
+  // a capped-at-2 selection, and a query fired on every selection change.
+
+  /// True while [MeasurementPanel] is open - toggled by the always-available
+  /// Measure FAB (mirrors the Select/Orbit-mode FAB's own "plain toggle, no
+  /// guided multi-step entry" shape, not Fillet's "Add FAB opens the panel
+  /// immediately" one, since Measure has nothing to create on open).
+  bool _measureActive = false;
+
+  /// [_selectedEntities]'s value from just before Measure was opened -
+  /// restored on close, same purpose [_entitiesBeforeFillet] serves.
+  Set<SelectionEntityRef>? _entitiesBeforeMeasure;
+
+  /// The latest computed result for [_selectedEntities], or null while
+  /// nothing is selected yet / the query is still in flight / it failed.
+  MeasurementResultDto? _measurementResult;
+
+  bool _measurementLoading = false;
+
+  /// Set when [_scheduleMeasureQuery]'s request fails - surfaced verbatim in
+  /// [MeasurementPanel] rather than routed through [_errorMessage]/
+  /// [_runGuarded]'s busy-overlay machinery, since a failed measurement
+  /// (e.g. a stale reference) shouldn't block the rest of the UI the way a
+  /// failed mutating operation does.
+  String? _measurementError;
+
+  /// Discards a [_scheduleMeasureQuery] response that's no longer the
+  /// latest one in flight - replaces the `Timer`-based debounce every other
+  /// live-preview tool ([_filletDebounce], etc.) needs, since Measure has no
+  /// mutating PATCH to avoid racing against, just a "don't let a stale
+  /// response overwrite a newer one" ordering concern a monotonic token
+  /// handles more simply than a cancel-and-restart `Timer`.
+  int _measureRequestToken = 0;
+
+  /// Vertex/edge/face only, mirroring [_filletSelectionFilter]'s shape -
+  /// Measure has no face-tap special case (unlike Fillet's whole-boundary-
+  /// loop convenience), so `vertex` stays on here where Fillet turns it off.
+  static const _measureSelectionFilter = SelectionFilterState(
+    vertex: true,
+    edge: true,
+    face: true,
+    body: false,
+    sketchPoint: false,
+    sketchLine: false,
+    sketchCircle: false,
+    plane: false,
+  );
+
+  /// The Measure FAB's callback.
+  void _toggleMeasure() {
+    if (_measureActive) {
+      _closeMeasure();
+    } else {
+      _openMeasure();
+    }
+  }
+
+  void _openMeasure() {
+    setState(() {
+      _measureActive = true;
+      _entitiesBeforeMeasure = _selectedEntities;
+      _selectedEntities = {};
+      _measurementResult = null;
+      _measurementError = null;
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _selectionFilterOverrides.push(_measureSelectionFilter);
+    });
+  }
+
+  void _closeMeasure() {
+    setState(() {
+      _measureActive = false;
+      _selectedEntities = _entitiesBeforeMeasure ?? {};
+      _entitiesBeforeMeasure = null;
+      _measurementResult = null;
+      _measurementError = null;
+      _measurementLoading = false;
+      _selectionFilterOverrides.pop();
+    });
+  }
+
+  static String _subShapeTypeFor(SelectionEntityKind kind) => switch (kind) {
+        SelectionEntityKind.vertex => 'vertex',
+        SelectionEntityKind.edge => 'edge',
+        SelectionEntityKind.face => 'face',
+        _ => throw ArgumentError('Measure only supports vertex/edge/face entities, got $kind'),
+      };
+
+  /// Fires on every selection change while [_measureActive] - cheap and
+  /// stateless (no Feature is created/mutated, unlike Fillet's debounced
+  /// live-preview PATCH), so no `Timer`-based debounce; [_measureRequestToken]
+  /// guards against a fast double-tap's two in-flight requests resolving
+  /// out of order instead.
+  Future<void> _scheduleMeasureQuery() async {
+    final part = _part;
+    if (part == null || _selectedEntities.isEmpty) {
+      setState(() {
+        _measurementResult = null;
+        _measurementError = null;
+        _measurementLoading = false;
+      });
+      return;
+    }
+    final refs = [
+      for (final entity in _selectedEntities)
+        SubShapeRefDto(bodyId: entity.bodyId, shapeType: _subShapeTypeFor(entity.kind), index: entity.id),
+    ];
+    final token = ++_measureRequestToken;
+    setState(() => _measurementLoading = true);
+    try {
+      final result = await _api.measure(part.id, refs);
+      if (!mounted || token != _measureRequestToken) return;
+      setState(() {
+        _measurementResult = result;
+        _measurementError = null;
+        _measurementLoading = false;
+      });
+    } on ApiException catch (e) {
+      if (!mounted || token != _measureRequestToken) return;
+      setState(() {
+        _measurementResult = null;
+        _measurementError = e.message;
+        _measurementLoading = false;
+      });
+    }
+  }
 
   // --- Pattern/Mirror scoping Phase 1: Mirror -------------------------------
   // See docs/pattern-mirror-scope.md §2.1/§4. Mirror's own shape differs from
@@ -13468,6 +13639,27 @@ class _PartScreenState extends State<PartScreen> {
                       ),
                     ),
                   ),
+                // Measure tool: an always-available toggle FAB, same
+                // top-right stack as the selection-mode FAB directly above -
+                // `top: 104` is that FAB's own `top: 56` plus its 40px
+                // `FloatingActionButton.small` height plus the 8px gap this
+                // Column's other FABs already use.
+                if (_measureFabVisible)
+                  Positioned(
+                    top: 104,
+                    right: 8,
+                    child: SafeArea(
+                      bottom: false,
+                      child: FloatingActionButton.small(
+                        heroTag: 'measure-fab',
+                        tooltip: _measureActive ? 'Exit measure' : 'Measure',
+                        backgroundColor:
+                            _measureActive ? Theme.of(context).colorScheme.primaryContainer : null,
+                        onPressed: _busy ? null : _toggleMeasure,
+                        child: const SvgIcon('assets/icons/viewport/viewport_measure.svg'),
+                      ),
+                    ),
+                  ),
                 // Stage 23 Item 1: a subtle tinted border around the
                 // viewport while in Selection mode - an overlay rather than
                 // a decoration on PartViewport itself, so its own layout
@@ -13766,6 +13958,17 @@ class _PartScreenState extends State<PartScreen> {
                       onRadiusChanged: _onFilletRadiusChanged,
                       onConfirm: _confirmFillet,
                       onCancel: _cancelFillet,
+                    ),
+                  ),
+                if (_measureActive)
+                  Positioned.fill(
+                    key: const ValueKey('measure-panel-slot'),
+                    child: MeasurementPanel(
+                      result: _measurementResult,
+                      loading: _measurementLoading,
+                      error: _measurementError,
+                      selectedCount: _selectedEntities.length,
+                      onDone: _closeMeasure,
                     ),
                   ),
                 if (_chamferActive)

@@ -164,6 +164,59 @@ class SubShapeRefSchema(BaseModel):
     index: int
 
 
+class MeasureRequest(BaseModel):
+    """Measure tool: the wire payload for POST /parts/{part_id}/measure - 1
+    or 2 [SubShapeRefSchema]s (an already-picked vertex/edge/face). Order is
+    cosmetic only (which ref becomes point_a/shape1 vs point_b/shape2 in the
+    response) - every named result (axis_distance, normal_distance) is
+    symmetric in its two inputs, so swapping refs never changes what's
+    reported, just which point is labelled A vs B."""
+
+    refs: list[SubShapeRefSchema]
+
+
+class AxisSchema(BaseModel):
+    """A `gp_Ax1` (origin + direction), for a circular edge's or
+    cylindrical face's own fitted axis."""
+
+    origin: tuple[float, float, float]
+    direction: tuple[float, float, float]
+
+
+class MeasurementResultSchema(BaseModel):
+    """The response to a Measure query - one flat, mostly-optional schema
+    (matching this file's existing convention for a multi-shaped response,
+    e.g. FeatureResponse) rather than a tagged union, since which fields are
+    populated already fully describes what was measured. Single-entity
+    fields (point/length/area/radius/diameter/center/axis/normal/
+    point_on_face) are set by a 1-ref request; two-entity fields (distance/
+    point_a/point_b/delta are always set, axis_distance/axes_parallel/
+    normal_distance/faces_parallel only when detected) are set by a 2-ref
+    request. See `app.document.measure.MeasurementResult`, this schema's
+    plain-dataclass domain counterpart."""
+
+    # Single-entity fields.
+    point: tuple[float, float, float] | None = None
+    length: float | None = None
+    area: float | None = None
+    radius: float | None = None
+    diameter: float | None = None
+    center: tuple[float, float, float] | None = None
+    axis: AxisSchema | None = None
+    normal: tuple[float, float, float] | None = None
+    point_on_face: tuple[float, float, float] | None = None
+    # Two-entity fields - distance/point_a/point_b/delta always set for a
+    # 2-ref request; the rest only when the specific relationship holds.
+    distance: float | None = None
+    point_a: tuple[float, float, float] | None = None
+    point_b: tuple[float, float, float] | None = None
+    delta: tuple[float, float, float] | None = None
+    axis_distance: float | None = None
+    axes_parallel: bool | None = None
+    normal_distance: float | None = None
+    faces_parallel: bool | None = None
+
+
 class ExternalVertexReferenceCreate(BaseModel):
     """Sketcher-roadmap Phase 4.3 v1: the payload for the new materialize-
     a-body-vertex-as-a-Point endpoint - the wire counterpart to
