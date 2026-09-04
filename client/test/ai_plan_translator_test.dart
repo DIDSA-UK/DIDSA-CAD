@@ -930,8 +930,8 @@ void main() {
             'radius': 20.0,
           });
         }
-        if (request.url.path == '/sketch/sketches/sketch-2/constraints/rc-1/value') {
-          return jsonResponse({'ok': true});
+        if (request.method == 'PATCH' && request.url.path == '/sketch/sketches/sketch-2/constraints/rc-1') {
+          return jsonResponse({'converged': true, 'dof': 0, 'detail': 'ok'});
         }
         if (request.url.path == '/document/parts/part-1/loft-features') {
           return jsonResponse({
