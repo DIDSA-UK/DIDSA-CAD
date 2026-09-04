@@ -66,11 +66,14 @@ def test_point_to_plane_distance_is_independent_of_footprint_overlap():
     plane's own representative point sits laterally, unlike a generic
     closest-point distance (which would include lateral offset via
     Pythagoras whenever the two faces' footprints don't overlap)."""
-    plane_a = BRepBuilderAPI_MakeFace(gp_Pln(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), -5, 5, -5, 5, 1e-6).Face()
+    # Note: the `gp_Pln` overload of `BRepBuilderAPI_MakeFace` takes only
+    # (plane, UMin, UMax, VMin, VMax) - no trailing tolerance argument (that
+    # parameter only exists on the `Geom_Surface` overload).
+    plane_a = BRepBuilderAPI_MakeFace(gp_Pln(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), -5, 5, -5, 5).Face()
     # Offset both along Z (7 units) and laterally along X (20 units, well
     # outside plane_a's own -5..5 bounds) - a generic min-distance would see
     # sqrt(7**2 + 20**2), not 7.
-    plane_b = BRepBuilderAPI_MakeFace(gp_Pln(gp_Pnt(20, 0, 7), gp_Dir(0, 0, 1)), -5, 5, -5, 5, 1e-6).Face()
+    plane_b = BRepBuilderAPI_MakeFace(gp_Pln(gp_Pnt(20, 0, 7), gp_Dir(0, 0, 1)), -5, 5, -5, 5).Face()
     normal_a = gp_Vec(0, 0, 1)
     distance = _point_to_plane_distance(plane_a, plane_b, normal_a)
     assert distance == pytest.approx(7.0)

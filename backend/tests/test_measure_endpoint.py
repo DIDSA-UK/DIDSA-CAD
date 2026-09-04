@@ -47,7 +47,9 @@ def test_measuring_a_face_of_a_10_unit_cube_reports_area_and_unit_normal():
     response = _measure(part["id"], [_face_ref(body_id, 0)])
     assert response.status_code == 200
     body = response.json()
-    assert body["area"] == 100.0
+    # Surface-integral area (unlike a straight edge's length) picks up a
+    # tiny floating-point residual from GProp's quadrature - approx, not ==.
+    assert body["area"] == pytest.approx(100.0)
     assert body["normal"] is not None
     nx, ny, nz = body["normal"]
     magnitude_squared = nx * nx + ny * ny + nz * nz
