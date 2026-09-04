@@ -104,48 +104,122 @@ that motivated this pass.
 Two restrictions carry over/are new:
 - Every face in the group must still be planar/cylindrical/conical (same
   surface-type set Offset mode already uses).
-- The group must contain **at least one planar face**, to anchor the
-  Fuse-vs-Cut sign decision (`_outward_normal` on that one reference face,
-  the only sign-detection method confirmed reliable via spike - point-
-  classification and per-face voting were both tried and rejected, see
-  `app.document.move_face`'s own module docstring). A group of only
-  curved faces (e.g. just the 4 fillet blends, no cap) is rejected with
-  `move_face_group_requires_planar_reference`.
+- The group must contain **at least one planar face** for *this*
+  technique - it anchors the Fuse-vs-Cut sign decision (`_outward_normal`
+  on that one reference face, the only sign-detection method confirmed
+  reliable via spike for a *swept* group - point-classification and
+  per-face voting were both tried and rejected, see `app.document.
+  move_face`'s own module docstring). A group with **no** planar face is
+  no longer rejected outright as of V4 (below) - it dispatches to a
+  different technique instead.
 
-Explicitly still NOT supported (a deliberate scope boundary, not a bug):
-repositioning a *lone* non-planar face by an arbitrary vector - e.g.
-sliding a hole to a new X/Y position by picking only its own cylindrical
-wall. See the gap entry immediately below for why.
+### Move Face V4 (shipped) - reposition a lone coaxial hole/boss
+
+Real-world driver (the other half of the same on-device feedback V3's own
+section above quotes): "when the cylindrical face of a hole is selected,
+translate should move the position of the hole." V3 explicitly left this
+out of scope - repositioning a lone non-planar face has no planar
+reference for the sweep technique's own sign decision, and sweeping a
+curved face's own generatrix sideways produces a degenerate prism
+regardless. V4 closes this with a **third, narrower technique** used
+specifically when the picked group contains no planar face (by
+construction, every face in it is already confirmed cylindrical/conical):
+reconstruct the feature's own canonical solid-of-revolution directly from
+the picked face(s)' analytic geometry (`BRepAdaptor_Surface.Cylinder()`/
+`.Cone()`), once at the original position and once at the target, then
+`BRepAlgoAPI_Fuse`/`Cut` it in and out of the Body - the same "auxiliary
+volume, then a boolean op" category every technique in this module
+already uses (confirmed via web research this session: even the published
+general "push-pull direct modeling on Open CASCADE" academic technique,
+Zou & Zhao, arXiv:1811.04036, reduces to this same category in the end),
+just built from the feature's own reconstructed geometry rather than a
+literal sweep of the picked faces' own trimmed profile.
+
+This is genuinely a third technique, not an extension of V3's sweep - no
+OCCT class does "translate this existing face in place, heal the
+neighbours" as one call (confirmed: `BRepFeat`/`LocOpe`/`BRepTools_
+ReShape`/`GeomAPI_IntSS` are all unused anywhere in this codebase, and the
+first two's own installed classes only ever *add* a new sketch-driven
+feature, never relocate an existing one).
+
+Two structured checks gate this technique, both confirmed necessary via
+spike:
+- **Axis coincidence** (`_axes_coincide`): every face's own fitted
+  cylinder/cone axis must coincide with the group's own shared reference
+  axis (parallel direction, near-zero perpendicular line distance) - a
+  real wall+tip pair of the same hole agrees to *exactly* 0.0 on both
+  measures in this kernel, while two genuinely different holes disagree
+  by orders of magnitude more than the tolerance - a mismatched group
+  (e.g. two different holes picked together) fails closed with
+  `move_face_group_axis_mismatch`.
+- **Coaxial-chain completeness** (`_coaxial_group_is_complete`): every
+  coaxial cylindrical/conical neighbour of a picked face - found by
+  walking the Body's own edge-to-face adjacency, **not** by point-
+  classification (confirmed via spike a point probed just past a group's
+  own axial extent can't distinguish a through-hole's own legitimately
+  open end from a hidden void because a real neighbour, e.g. a blind
+  hole's own conical tip, was left out of `face_refs` - both report
+  `TopAbs_OUT`) - must already be in the group, or the request fails
+  closed with `move_face_group_incomplete_coaxial_chain` rather than
+  silently leaving an internal cavity (confirmed via spike: reconstructing
+  from an incomplete group produces a `BRepCheck_Analyzer`-valid result
+  with a genuine hidden cavity, passing every other existing check). A
+  planar or non-coaxial neighbour (a flat end cap, a fillet blend at a
+  boss/hole's own base) is a legitimate natural boundary and does not
+  force inclusion.
+
+Fuse-vs-Cut order is not the sign-relative-to-one-normal decision the
+sweep technique uses (there's no single reference face's own normal
+here). Confirmed via spike that a naive *fixed* Fuse-then-Cut order is
+actively wrong for a boss (fusing an already-solid boss's own
+reconstructed primitive back onto itself is a no-op, so a fixed order
+would leave the original boss in place *and* cut a spurious hole at the
+target, rather than relocating it) - instead, a point at the group's own
+axial-extent midpoint is classified against the *original* Body via
+`BRepClass3d_SolidClassifier` (new to this codebase): `TopAbs_IN` (boss:
+Cut original, then Fuse target) vs. `TopAbs_OUT` (hole: Fuse original,
+then Cut target). Confirmed correct on a real base+boss fixture:
+reconstructed volume matches the pre-move volume exactly, and the boss is
+genuinely relocated (presence-probed at both the old and new position),
+not duplicated or destroyed.
+
+A previously-undocumented OCCT gotcha, confirmed via spike by direct point
+evaluation against a hand-built cone: a cone's `BRepAdaptor_Surface` `V`
+parameter is a **slant distance along the generatrix**, not an axial
+coordinate the way a cylinder's is. Conflating the two, or reusing the
+*different*, unrelated `1/cos(theta)` relationship the Offset-mode
+cone-growth nuance above uses, gave a confirmed-wrong ~7% volume error in
+this session's own first attempt. The correct conversion: true axial
+offset at `V` is `V * cos(theta)`, true radius at `V` is `ref_radius + V *
+sin(theta)`.
+
+Shipped with real tests (`test_feature_move_face.py`'s own "V4: lone
+coaxial curved-face group reposition" section): a through-hole, a blind
+hole with a flat bottom, a boss, a stepped counterbore (2 coaxial
+cylindrical faces of different diameter), and a chamfered hole (wall +
+the chamfer's own cone face - a real, HTTP-achievable stand-in for a
+drill-point-style coaxial tip, used to exercise both the completeness
+check's rejection and its acceptance path). Client: no new code needed -
+V3's own client work already generalized face-picking to 1+ faces in
+every mode with no surface-type restriction, so a user picking a hole's
+wall then its coaxial tip face already accumulates both and already sees
+"Move Face" offered (confirmed by reading `part_screen.dart`/
+`selection_actions.dart`'s own current state, not re-verified on-device).
+
+Repositioning a lone *planar* face by an arbitrary vector remains
+unsupported either way - a flat face alone has no hole/boss geometry to
+reconstruct, and still has no planar-face-group sweep partner to fall
+back to either.
 
 ### Known gaps vs. full-featured CAD packages (not currently scoped)
 
-All 5 features above are shipped in full (backend + client), including the
-V2 multi-face/non-planar pass and the V3 multi-face-group pass for Move
-Face's Delta/Direction modes (see above). Compared to SolidWorks/Fusion
-360-style direct-edit toolsets, four gaps remain, deliberately left open
-rather than scoped into this family - flagged here so a future pass
-doesn't have to rediscover them:
+All 5 features above are shipped in full (backend + client), including
+the V2 multi-face/non-planar pass, the V3 multi-face-group pass, and the
+V4 coaxial-reposition pass for Move Face's Delta/Direction modes (see
+above). Compared to SolidWorks/Fusion 360-style direct-edit toolsets,
+three gaps remain, deliberately left open rather than scoped into this
+family - flagged here so a future pass doesn't have to rediscover them:
 
-- **Move Face's Delta/Direction modes still can't reposition a *lone*
-  non-planar (cylindrical/conical) face - confirmed by real on-device
-  testing and reconfirmed via spike under V3.** Repositioning a hole
-  (translating its whole cylindrical face somewhere else, with no planar
-  face selected alongside it) fails with `move_face_group_requires_
-  planar_reference` if no planar face is in the group, or - if it is -
-  with `move_face_failed`: sweeping a lone curved face's own generatrix
-  sideways (any tangential component relative to its own axis) produces a
-  degenerate, ~zero-volume prism, confirmed via spike down to magnitudes
-  as small as 0.01 units - this is fundamental to `BRepPrimAPI_MakePrism`'s
-  own construction for curved faces, not a boolean-step artifact fixable
-  by V3's own generalization. It's also not something Offset mode covers
-  instead - Offset only grows/shrinks a hole's radius in place, it doesn't
-  reposition it. Truly moving a hole is a genuinely different geometric
-  operation (something closer to "un-cut the original hole, re-cut it at
-  the new location"), confirmed via spike to need its own real technique
-  investigation, not a quick extension of what's here - scoped as a real
-  gap, not attempted in this pass. (Extending a boss/pin along its *own*
-  axis already works today with the existing single-planar-face technique
-  - select just its flat cap, not the cylindrical side wall.)
 - **Move Face has no Rotate mode.** `MoveFaceFeature` supports Offset
   (along each face's own normal) and Direction (translation along a
   picked edge/axis, or the backend's own `delta` mode - explicit XYZ

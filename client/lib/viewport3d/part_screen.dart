@@ -10565,9 +10565,11 @@ class _PartScreenState extends State<PartScreen> {
   /// `onOffsetChanged` (with the default offset of 1.0), which reaches
   /// [_ensureMoveFaceFeatureExists] via [_scheduleMoveFacePreview] the same
   /// way every other debounced field edit does. Always opens in Offset mode
-  /// - the only mode [faceEntities] may hold more than one entry for (see
-  /// [MoveFacePanel.faceCount]'s own doc comment) - regardless of how many
-  /// faces were ambient-selected.
+  /// regardless of how many faces were ambient-selected - just the more
+  /// common starting point (V3/V4: every mode now accepts 1+ faces, see
+  /// [MoveFacePanel.faceCount]'s own doc comment, so this is no longer a
+  /// capability restriction - the user can switch to Direction mode
+  /// immediately afterward with the same faces still picked).
   void _openMoveFacePanel({required List<SelectionEntityRef> faceEntities}) {
     setState(() {
       _moveFaceActive = true;
