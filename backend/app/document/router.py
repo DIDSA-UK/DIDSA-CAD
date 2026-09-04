@@ -33,6 +33,7 @@ from app.document.extrude import (
     select_profiles,
 )
 from app.document.fillet import resolve_fillet
+from app.document.measure import MeasurementResult, measure as compute_measurement
 from app.document.gear import resolve_gear, resolve_gear_coarse, resolve_gear_profile_shift
 from app.document.gear_math import (
     GearGeometryError,
@@ -189,6 +190,9 @@ from app.document.schemas import (
     MoveFaceFeatureCreate,
     MoveFaceFeatureResponse,
     MoveFaceFeatureUpdate,
+    AxisSchema,
+    MeasureRequest,
+    MeasurementResultSchema,
     ScaleBodyFeatureCreate,
     ScaleBodyFeatureResponse,
     ScaleBodyFeatureUpdate,
@@ -3172,6 +3176,55 @@ def update_create_plane_feature(
     feature.vertex_ref = candidate.vertex_ref
     feature.point_refs = candidate.point_refs
     return _feature_response(part, feature)
+
+
+def _measurement_result_to_schema(result: MeasurementResult) -> MeasurementResultSchema:
+    axis = (
+        AxisSchema(origin=result.axis_origin, direction=result.axis_direction)
+        if result.axis_origin is not None and result.axis_direction is not None
+        else None
+    )
+    return MeasurementResultSchema(
+        point=result.point,
+        length=result.length,
+        area=result.area,
+        radius=result.radius,
+        diameter=result.diameter,
+        center=result.center,
+        axis=axis,
+        normal=result.normal,
+        point_on_face=result.point_on_face,
+        distance=result.distance,
+        point_a=result.point_a,
+        point_b=result.point_b,
+        delta=result.delta,
+        axis_distance=result.axis_distance,
+        axes_parallel=result.axes_parallel,
+        normal_distance=result.normal_distance,
+        faces_parallel=result.faces_parallel,
+    )
+
+
+@router.post("/parts/{part_id}/measure", response_model=MeasurementResultSchema)
+def measure_entities(part_id: str, payload: MeasureRequest) -> MeasurementResultSchema:
+    """Measure tool: a stateless, read-only geometry query over 1-2
+    already-picked sub-shapes - unlike every `*-features` endpoint in this
+    router, this never constructs or persists a `Feature`, so there is
+    nothing to validate-then-add and no 201 (default 200, matching
+    `preview_loft_feature_coarse`'s own compute-only-endpoint convention -
+    nothing was created). `1 <= len(refs) <= 2` is this endpoint's only
+    payload-shape validation; `app.document.measure.measure` raises the
+    existing `missing_reference` 422 (via `resolve_subshape_from_bodies`) if
+    a ref no longer resolves, or the new `measure_failed` 422 if the
+    two-entity distance algorithm can't converge on a degenerate pair."""
+    part = get_part_or_404(part_id)
+    if not 1 <= len(payload.refs) <= 2:
+        raise HTTPException(
+            status_code=422, detail={"type": "invalid_measure_selection", "count": len(payload.refs)}
+        )
+    refs = [_subshape_ref_to_domain(ref) for ref in payload.refs]
+    result = compute_measurement(part, refs)
+    return _measurement_result_to_schema(result)
 
 
 @router.post(

@@ -40,6 +40,94 @@ class SubShapeRefDto {
   Map<String, dynamic> toJson() => {'body_id': bodyId, 'shape_type': shapeType, 'index': index};
 }
 
+/// Measure tool: the wire counterpart to the backend's `AxisSchema` - a
+/// circular edge's or cylindrical face's own fitted axis (origin + unit
+/// direction), only ever set on [MeasurementResultDto.axis].
+class AxisDto {
+  final List<double> origin;
+  final List<double> direction;
+
+  const AxisDto({required this.origin, required this.direction});
+
+  factory AxisDto.fromJson(Map<String, dynamic> json) => AxisDto(
+        origin: (json['origin'] as List).map((v) => (v as num).toDouble()).toList(),
+        direction: (json['direction'] as List).map((v) => (v as num).toDouble()).toList(),
+      );
+}
+
+/// Measure tool: the wire counterpart to the backend's
+/// `MeasurementResultSchema` - the response to `DocumentApiClient.measure`.
+/// One flat, mostly-null shape (matching the backend schema's own
+/// convention, e.g. [FeatureDto]) rather than a per-measurement-kind
+/// subclass - which fields are non-null already fully describes what was
+/// measured. See `app.document.measure.MeasurementResult` (backend) for
+/// which fields are populated for which selection.
+class MeasurementResultDto {
+  // Single-entity fields.
+  final List<double>? point;
+  final double? length;
+  final double? area;
+  final double? radius;
+  final double? diameter;
+  final List<double>? center;
+  final AxisDto? axis;
+  final List<double>? normal;
+  final List<double>? pointOnFace;
+  // Two-entity fields - distance/pointA/pointB/delta are always set for a
+  // 2-entity request; the rest only when the specific relationship holds.
+  final double? distance;
+  final List<double>? pointA;
+  final List<double>? pointB;
+  final List<double>? delta;
+  final double? axisDistance;
+  final bool? axesParallel;
+  final double? normalDistance;
+  final bool? facesParallel;
+
+  const MeasurementResultDto({
+    this.point,
+    this.length,
+    this.area,
+    this.radius,
+    this.diameter,
+    this.center,
+    this.axis,
+    this.normal,
+    this.pointOnFace,
+    this.distance,
+    this.pointA,
+    this.pointB,
+    this.delta,
+    this.axisDistance,
+    this.axesParallel,
+    this.normalDistance,
+    this.facesParallel,
+  });
+
+  static List<double>? _vec(dynamic json) =>
+      json == null ? null : (json as List).map((v) => (v as num).toDouble()).toList();
+
+  factory MeasurementResultDto.fromJson(Map<String, dynamic> json) => MeasurementResultDto(
+        point: _vec(json['point']),
+        length: (json['length'] as num?)?.toDouble(),
+        area: (json['area'] as num?)?.toDouble(),
+        radius: (json['radius'] as num?)?.toDouble(),
+        diameter: (json['diameter'] as num?)?.toDouble(),
+        center: _vec(json['center']),
+        axis: json['axis'] == null ? null : AxisDto.fromJson(json['axis'] as Map<String, dynamic>),
+        normal: _vec(json['normal']),
+        pointOnFace: _vec(json['point_on_face']),
+        distance: (json['distance'] as num?)?.toDouble(),
+        pointA: _vec(json['point_a']),
+        pointB: _vec(json['point_b']),
+        delta: _vec(json['delta']),
+        axisDistance: (json['axis_distance'] as num?)?.toDouble(),
+        axesParallel: json['axes_parallel'] as bool?,
+        normalDistance: (json['normal_distance'] as num?)?.toDouble(),
+        facesParallel: json['faces_parallel'] as bool?,
+      );
+}
+
 /// C2: the wire counterpart to the backend's `SketchEntityRefSchema` (C1's
 /// `SketchEntityRef`) - `{sketch_id, entity_type, entity_id}`. Note
 /// [sketchId] is the real `app.sketch.models.Sketch` id, not a Feature id -
@@ -1909,6 +1997,21 @@ class DocumentApiClient {
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Measure tool: a stateless, read-only geometry query over 1-2
+  /// already-picked entities - POST /parts/{id}/measure. Unlike every
+  /// create*Feature call in this file, this never persists anything (no
+  /// Feature is created) and has no matching update/delete counterpart -
+  /// it's called fresh on every selection change (see
+  /// `PartScreen._scheduleMeasureQuery`).
+  Future<MeasurementResultDto> measure(String partId, List<SubShapeRefDto> refs) => _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/measure'),
+              headers: _headers,
+              body: jsonEncode({'refs': refs.map((r) => r.toJson()).toList()}),
+            ),
+        (body) => MeasurementResultDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Partial update for an existing FilletFeature - either/both of
