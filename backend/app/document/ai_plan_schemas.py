@@ -27,8 +27,10 @@ from typing import Annotated, Literal, Union
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.document.models import (
+    BooleanOperation,
     ExtrudeType,
     FixedAxis,
+    LoftMode,
     MergeMode,
     PatternType,
     PlaneType,
@@ -391,6 +393,72 @@ class GearRequestStep(BaseModel):
     kind: Literal["gear_request"] = "gear_request"
 
 
+class LoftSectionStep(BaseModel):
+    """Mirrors `LoftSectionSchema`/`LoftSection` with plan-local `local_id`s
+    in place of real refs - each section may name a different `sketch`
+    step, exactly like `SweepStep.path_refs` may span multiple sketches -
+    this is what makes a square-to-round transition between two independent
+    Sketches possible at all."""
+
+    sketch_feature_id: str
+    profile_refs: list[str] = []
+    reference_point: str | None = None
+    alignment_point: str | None = None
+
+
+class LoftStep(BaseModel):
+    local_id: str
+    kind: Literal["loft"] = "loft"
+    sections: list[LoftSectionStep]
+    mode: LoftMode
+    ruled: bool = False
+    target_body_ids: list[str] = []
+    thickness: float | None = None
+    # local_ids of earlier Line/Arc/Ellipse steps (Spline excluded - out of
+    # v1 generation scope, same restriction SweepStep.path_refs already has).
+    guide_curve_refs: list[str] = []
+
+
+class MergeStep(BaseModel):
+    local_id: str
+    kind: Literal["merge"] = "merge"
+    body_ids: list[str]
+
+
+class BooleanStep(BaseModel):
+    local_id: str
+    kind: Literal["boolean"] = "boolean"
+    operation: BooleanOperation
+    target_body_ids: list[str]
+    tool_body_ids: list[str]
+    consume_tool_bodies: bool = True
+
+
+class DeleteBodyStep(BaseModel):
+    local_id: str
+    kind: Literal["delete_body"] = "delete_body"
+    body_ids: list[str]
+
+
+class ScaleBodyStep(BaseModel):
+    local_id: str
+    kind: Literal["scale_body"] = "scale_body"
+    body_id: str
+    factor: float = 1.0
+
+
+class MoveBodyStep(BaseModel):
+    local_id: str
+    kind: Literal["move_body"] = "move_body"
+    body_id: str
+    delta: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    # Reuses PatternAxisStep verbatim - identical shape/purpose to Pattern's
+    # own `axis` field (a plan-local sketch_line reference).
+    rotation_axis: PatternAxisStep | None = None
+    rotation_angle_degrees: float = 0.0
+    make_copy: bool = False
+
+
 PlanStep = Annotated[
     Union[
         SketchStep,
@@ -411,6 +479,12 @@ PlanStep = Annotated[
         MirrorStep,
         CreatePlaneStep,
         GearRequestStep,
+        LoftStep,
+        MergeStep,
+        BooleanStep,
+        DeleteBodyStep,
+        ScaleBodyStep,
+        MoveBodyStep,
     ],
     Field(discriminator="kind"),
 ]
@@ -419,6 +493,13 @@ PlanStep = Annotated[
 class PlanValidateRequest(BaseModel):
     version: Literal[1] = 1
     steps: list[PlanStep]
+    # Tool-toggle enforcement (AI Settings -> Tools): plan-step `kind`
+    # strings the client has currently turned off. A step whose kind
+    # appears here fails with `{"type": "kind_disabled", "kind": ...}`
+    # before it is ever dispatched - see `_PlanValidator._run_step`. Empty
+    # (the default) disables nothing, identical to every caller before this
+    # field existed.
+    disabled_kinds: list[str] = []
 
 
 class StepResult(BaseModel):

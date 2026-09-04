@@ -111,16 +111,35 @@ entities" section already established for a different bulk-geometry case);
 Text (no clear use case for AI-authored text labels here).
 
 **Feature types the LLM can generate**: SketchFeature, ExtrudeFeature,
-RevolveFeature, SweepFeature, FilletFeature, ChamferFeature,
-PatternFeature, MirrorFeature, CreatePlaneFeature.
+RevolveFeature, SweepFeature, LoftFeature, FilletFeature, ChamferFeature,
+PatternFeature, MirrorFeature, CreatePlaneFeature, MergeFeature,
+BooleanFeature, DeleteBodyFeature, ScaleBodyFeature, MoveBodyFeature.
+
+LoftFeature was excluded at first pass (see below for why it was added
+back) and MergeFeature/BooleanFeature/DeleteBodyFeature/ScaleBodyFeature/
+MoveBodyFeature simply postdate the original v1 scoping pass and were
+never revisited until now — none of the six were a deliberate, permanent
+exclusion the way the ones below are.
 
 **Feature types deliberately excluded from v1 generation**: GearFeature/
 RackFeature (routed to the existing Gear Design screens instead — see
-below, not generated as raw Feature-tree steps), LoftFeature/
-GearChainFeature/PlanetaryGearFeature/BevelGearFeature/BevelPairFeature
-(all high-complexity, multi-body, or gear-adjacent — out of reach for a
-first structured-plan schema), ImportFeature (there is no file for the
-LLM to import).
+below, not generated as raw Feature-tree steps), GearChainFeature/
+PlanetaryGearFeature/BevelGearFeature/BevelPairFeature (all high-
+complexity, multi-body, or gear-adjacent — out of reach for a first
+structured-plan schema), SplitFeature/SurfaceFeature/DeleteFaceFeature/
+MoveFaceFeature (face-level or multi-body-splitting complexity, deferred
+alongside the gear-adjacent set above), ImportFeature (there is no file
+for the LLM to import).
+
+**AI Settings → Tools toggles**: every Feature type above except Sketch/
+Extrude can be individually turned off per-user (`client/lib/ai/
+ai_tool_groups.dart`), shrinking the system prompt and having the LLM
+actively decline and point at the manual UI tool instead of proposing a
+plan that uses it — enforced structurally by `PlanValidateRequest.
+disabled_kinds` (`ai_plan_schemas.py`), not just by prompt wording. This is
+orthogonal to the "deliberately excluded" list above: a toggled-off tool
+still exists in this schema and can be turned back on; an excluded one
+does not exist in the schema at all.
 
 **Gear-request routing**: when the scoping conversation's system prompt
 (workstream 2) recognizes gear intent, the LLM is instructed to emit a

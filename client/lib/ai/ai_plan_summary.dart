@@ -136,6 +136,28 @@ String _summarizeStep(AiGenerationPlan plan, AiPlanStep step) {
       if (step.parameters.isEmpty) return 'Gear request';
       final params = step.parameters.entries.map((e) => '${e.key}=${e.value}').join(', ');
       return 'Gear request: $params';
+
+    case AiLoftStep():
+      final cutSuffix = step.mode == AiLoftMode.cut ? _cutTargetSuffix(step.targetBodyIds) : '';
+      return 'Loft through ${step.sections.length} sections (${step.mode.wireValue}$cutSuffix)';
+
+    case AiMergeStep():
+      return 'Merge ${step.bodyIds.join(', ')}';
+
+    case AiBooleanStep():
+      return '${step.operation == AiBooleanOperation.subtract ? 'Subtract' : 'Common'} '
+          '${step.toolBodyIds.join(', ')} ${step.operation == AiBooleanOperation.subtract ? 'from' : 'with'} '
+          '${step.targetBodyIds.join(', ')}';
+
+    case AiDeleteBodyStep():
+      return 'Delete Body ${step.bodyIds.join(', ')}';
+
+    case AiScaleBodyStep():
+      return 'Scale ${step.bodyId} ×${_fmt(step.factor)}';
+
+    case AiMoveBodyStep():
+      final copySuffix = step.makeCopy ? ' (copy)' : '';
+      return 'Move$copySuffix ${step.bodyId}';
   }
 }
 
