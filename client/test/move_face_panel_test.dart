@@ -195,7 +195,7 @@ void main() {
     });
   });
 
-  group('MoveFacePanel V2 multi-face gating', () {
+  group('MoveFacePanel multi-face gating (V2 Offset, V3 Direction)', () {
     testWidgets('zero faces disables Confirm even in Offset mode with a valid offset', (tester) async {
       await tester.pumpWidget(buildPanel(faceCount: 0, initialOffset: 3.0));
       expect(
@@ -204,12 +204,12 @@ void main() {
       );
     });
 
-    testWidgets('two faces disables Confirm in Direction mode even with a picked reference',
+    testWidgets('two faces keeps Confirm enabled in Direction mode with a picked reference',
         (tester) async {
       await tester.pumpWidget(buildPanel(faceCount: 2, mode: MoveFaceMode.direction, hasDirection: true));
       expect(
         tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed,
-        isNull,
+        isNotNull,
       );
     });
 
@@ -221,13 +221,13 @@ void main() {
       );
     });
 
-    testWidgets('the Direction segment is disabled once two faces are picked', (tester) async {
+    testWidgets('both segments stay enabled once two faces are picked (V3)', (tester) async {
       await tester.pumpWidget(buildPanel(faceCount: 2));
       final segmentedButton =
           tester.widget<SegmentedButton<MoveFaceMode>>(find.byType(SegmentedButton<MoveFaceMode>));
       final directionSegment =
           segmentedButton.segments.firstWhere((s) => s.value == MoveFaceMode.direction);
-      expect(directionSegment.enabled, isFalse);
+      expect(directionSegment.enabled, isTrue);
       final offsetSegment =
           segmentedButton.segments.firstWhere((s) => s.value == MoveFaceMode.offset);
       expect(offsetSegment.enabled, isTrue);

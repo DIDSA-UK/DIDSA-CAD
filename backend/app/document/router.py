@@ -1383,13 +1383,16 @@ def _validate_move_face_payload(
     Move Face, the same "no trivial no-op value" philosophy `_validate_
     fillet_radius`'s `> 0` check already establishes for Fillet.
 
-    V2: `offset_distance` alone accepts 2+ entries in `face_refs` (applied
-    identically to every face - see `MoveFaceFeature`'s own docstring);
-    `delta`/`direction_ref`+`direction_distance` still require exactly one
-    - a payload-shape check here, ahead of the resolver's own geometric
-    "must be planar" check, so a multi-face delta/direction request is
-    reported as this specific, unambiguous error rather than whichever
-    face happens to resolve first raising a generic one."""
+    V3 (on-device feedback: imported/non-sketch geometry needs to move a
+    connected multi-face group - e.g. a flat cap plus its own blend
+    fillets - not just a single face): all three modes now accept 1+
+    entries in `face_refs`, applied as one rigid group (`delta`/
+    `direction_ref`+`direction_distance`) or identically to every face
+    (`offset_distance`, unchanged V2 behaviour) - see `MoveFaceFeature`'s
+    own docstring and `app.document.move_face`'s module docstring for the
+    resolver's own geometric requirements on that group (confirmed via
+    spike: at least one planar face to anchor the Fuse-vs-Cut sign
+    decision, every face plane/cylinder/cone)."""
     _validate_face_refs(face_refs)
     modes_set = sum(
         (
@@ -1409,8 +1412,6 @@ def _validate_move_face_payload(
     if delta is not None:
         if delta == (0.0, 0.0, 0.0):
             raise HTTPException(status_code=422, detail="delta must be non-zero")
-        if len(face_refs) != 1:
-            raise HTTPException(status_code=422, detail="delta mode requires exactly one face_refs entry")
     if direction_ref is not None or direction_distance is not None:
         if direction_ref is None or direction_distance is None:
             raise HTTPException(
@@ -1419,10 +1420,6 @@ def _validate_move_face_payload(
             )
         if direction_distance == 0.0:
             raise HTTPException(status_code=422, detail="direction_distance must be non-zero")
-        if len(face_refs) != 1:
-            raise HTTPException(
-                status_code=422, detail="direction_ref mode requires exactly one face_refs entry"
-            )
         _validate_pattern_direction_ref(direction_ref, "direction_ref")
 
 

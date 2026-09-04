@@ -70,10 +70,10 @@ class MoveFacePanel extends StatefulWidget {
 
   /// The live count of faces currently picked (`_currentMoveFaceRefs().
   /// length` in `part_screen.dart`) - mirrors [DeleteFacePanel.faceCount].
-  /// Direction mode only ever accepts exactly one face (V2's
-  /// `BRepOffset_MakeOffset` technique is Offset-mode-only - see
-  /// `MoveFaceFeature`'s own backend docstring), so [faceCount] also gates
-  /// which segments of the mode toggle are enabled and [_canConfirm].
+  /// V3: both modes now accept 1+ faces (Direction/Delta sweep the whole
+  /// group as one rigid `TopoDS_Compound` - see `MoveFaceFeature`'s own
+  /// backend docstring), so [faceCount] only gates the "at least one face
+  /// picked" half of [_canConfirm], not a mode-specific face-count cap.
   final int faceCount;
 
   final double initialOffset;
@@ -183,7 +183,6 @@ class _MoveFacePanelState extends State<MoveFacePanel> {
 
   bool get _canConfirm {
     if (widget.faceCount == 0) return false;
-    if (widget.mode != MoveFaceMode.offset && widget.faceCount != 1) return false;
     return switch (widget.mode) {
       MoveFaceMode.offset => _offset != null,
       MoveFaceMode.direction => widget.hasDirection && _directionDistance != null,
@@ -346,7 +345,6 @@ class _MoveFacePanelState extends State<MoveFacePanel> {
                 ButtonSegment(
                   value: mode,
                   label: Text(mode.label),
-                  enabled: mode == MoveFaceMode.offset || widget.faceCount == 1,
                 ),
             ],
             selected: {widget.mode},

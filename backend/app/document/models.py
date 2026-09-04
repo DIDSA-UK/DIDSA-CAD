@@ -2253,22 +2253,34 @@ class MoveFaceFeature(Feature):
       original prism-sweep technique and the other two modes below did
       not).
     - `delta`: an explicit world-space XYZ translation - permissive by
-      design (not restricted to the face's own normal direction); only
-      its component along the face's outward normal actually determines
-      whether material is added or removed, any tangential component
-      shears the swept region between the face's old and new position.
-      **v1 scope only, unchanged**: exactly one face in `face_refs`, must
-      be planar - a shear has no generalizable meaning for a curved face
-      (confirmed degenerate/zero-volume via a real spike, not merely "a
-      different-looking result" - see `app.document.move_face`'s own
-      module docstring).
+      design (not restricted to a face's own normal direction); only its
+      component along the group's own reference face's outward normal
+      actually determines whether material is added or removed, any
+      tangential component shears the swept region between the group's
+      old and new position. **V3** (see `docs/direct-editing-scope.md`'s
+      own "Move Face V3" section): `face_refs` now accepts 1+ *connected*
+      faces, swept together as one rigid group - e.g. a flat cap plus its
+      own blend fillets, so a filleted feature can be translated as a
+      whole (imported/non-sketch geometry's own motivating case - it has
+      no Sketch to fall back to editing). Every face must be planar,
+      cylindrical, or conical, and the group must contain at least one
+      planar face (it anchors the Fuse-vs-Cut sign decision - a curved
+      face's own "outward" is only ever locally defined, confirmed via
+      spike that per-face voting across a group's curved members is
+      unreliable). Still does **not** support repositioning a lone curved
+      face by an arbitrary vector (e.g. relocating a hole's own X/Y
+      position) - confirmed via spike that sweeping a curved face with
+      *any* tangential (sideways) component relative to its own local
+      generatrix is geometrically degenerate, not merely unimplemented;
+      see `app.document.move_face`'s own module docstring for the full
+      reasoning.
     - `direction_ref` + `direction_distance`: along a picked edge's
       direction (`PatternDirectionRef`, reused verbatim from the Pattern/
       Mirror family), with the sign of `direction_distance` acting as the
       client's own "Flip direction" control (mirrors Extrude's own
-      flip-via-sign convention, not a separate boolean field). **v1 scope
-      only, unchanged** - same single-planar-face restriction as `delta`,
-      same reason.
+      flip-via-sign convention, not a separate boolean field). **V3** -
+      same multi-face-group support/restrictions as `delta` above, same
+      reasoning.
 
     Modifies the shared `body_id` in place (Fillet/Chamfer's "keep the
     same id" pattern). No guaranteed healing across an offset large enough

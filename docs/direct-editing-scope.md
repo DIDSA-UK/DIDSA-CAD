@@ -84,28 +84,68 @@ Face (cheapest/most-precedented first) - followed exactly; Delete Face's
 spike (and the real bug it caught) directly informed Move Face's own
 validation.
 
+### Move Face V3 (shipped) - multi-face rigid group for Delta/Direction
+
+Real-world driver (user test report): Direct Editing is the *only* way to
+modify non-sketched geometry (e.g. an imported STEP file with no Sketch
+history behind it) - so Move Face's Delta/Direction modes being stuck at
+"exactly one planar face" was a real limitation, not just a UI quirk. V3
+generalizes both modes from a single `TopoDS_Face` to a rigid group of 1+
+connected faces (`face_refs`, same convention Offset mode already uses),
+reusing v1's own extrude-the-face(s)-then-Fuse/Cut technique via
+`BRepPrimAPI_MakePrism` on a `TopoDS_Compound` of the whole group instead
+of one face. Confirmed via spike and shipped with real tests
+(`test_feature_move_face.py`'s own "V3: multi-face rigid group" section):
+a flat face plus its own fillets (e.g. a box's top cap plus the 4
+quarter-cylinder blends from filleting its own top edge loop) can be swept
+together to grow or shrink a filleted part's height - the concrete example
+that motivated this pass.
+
+Two restrictions carry over/are new:
+- Every face in the group must still be planar/cylindrical/conical (same
+  surface-type set Offset mode already uses).
+- The group must contain **at least one planar face**, to anchor the
+  Fuse-vs-Cut sign decision (`_outward_normal` on that one reference face,
+  the only sign-detection method confirmed reliable via spike - point-
+  classification and per-face voting were both tried and rejected, see
+  `app.document.move_face`'s own module docstring). A group of only
+  curved faces (e.g. just the 4 fillet blends, no cap) is rejected with
+  `move_face_group_requires_planar_reference`.
+
+Explicitly still NOT supported (a deliberate scope boundary, not a bug):
+repositioning a *lone* non-planar face by an arbitrary vector - e.g.
+sliding a hole to a new X/Y position by picking only its own cylindrical
+wall. See the gap entry immediately below for why.
+
 ### Known gaps vs. full-featured CAD packages (not currently scoped)
 
 All 5 features above are shipped in full (backend + client), including the
-V2 multi-face/non-planar pass. Compared to SolidWorks/Fusion 360-style
-direct-edit toolsets, four gaps remain, deliberately left open rather than
-scoped into this family - flagged here so a future pass doesn't have to
-rediscover them:
+V2 multi-face/non-planar pass and the V3 multi-face-group pass for Move
+Face's Delta/Direction modes (see above). Compared to SolidWorks/Fusion
+360-style direct-edit toolsets, four gaps remain, deliberately left open
+rather than scoped into this family - flagged here so a future pass
+doesn't have to rediscover them:
 
-- **Move Face's Delta/Direction modes can't reposition a non-planar
-  (cylindrical/conical) face - confirmed by real on-device testing.**
-  Repositioning a hole (translating its whole cylindrical face somewhere
-  else) fails with `non_planar_reference` in both modes - this is the
-  direct, working-as-designed consequence of the modes' own single-planar-
-  face restriction (see item 5's own entry above and `app.document.
-  move_face`'s module docstring), not a bug. It's also not something
-  Offset mode covers instead - Offset only grows/shrinks a hole's radius
-  in place, it doesn't reposition it. Truly moving a hole is a genuinely
-  different geometric operation from either existing technique (something
-  closer to "un-cut the original hole, re-cut it at the new location"),
-  confirmed via spike to need its own real technique investigation, not a
-  quick extension of what's here - scoped as a real gap, not attempted in
-  this pass.
+- **Move Face's Delta/Direction modes still can't reposition a *lone*
+  non-planar (cylindrical/conical) face - confirmed by real on-device
+  testing and reconfirmed via spike under V3.** Repositioning a hole
+  (translating its whole cylindrical face somewhere else, with no planar
+  face selected alongside it) fails with `move_face_group_requires_
+  planar_reference` if no planar face is in the group, or - if it is -
+  with `move_face_failed`: sweeping a lone curved face's own generatrix
+  sideways (any tangential component relative to its own axis) produces a
+  degenerate, ~zero-volume prism, confirmed via spike down to magnitudes
+  as small as 0.01 units - this is fundamental to `BRepPrimAPI_MakePrism`'s
+  own construction for curved faces, not a boolean-step artifact fixable
+  by V3's own generalization. It's also not something Offset mode covers
+  instead - Offset only grows/shrinks a hole's radius in place, it doesn't
+  reposition it. Truly moving a hole is a genuinely different geometric
+  operation (something closer to "un-cut the original hole, re-cut it at
+  the new location"), confirmed via spike to need its own real technique
+  investigation, not a quick extension of what's here - scoped as a real
+  gap, not attempted in this pass. (Extending a boss/pin along its *own*
+  axis already works today with the existing single-planar-face technique
+  - select just its flat cap, not the cylindrical side wall.)
 - **Move Face has no Rotate mode.** `MoveFaceFeature` supports Offset
   (along each face's own normal) and Direction (translation along a
   picked edge/axis, or the backend's own `delta` mode - explicit XYZ

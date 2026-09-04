@@ -1101,23 +1101,13 @@ class _PartScreenState extends State<PartScreen> {
       _setMoveFaceDirectionFromEntity(entity);
       return;
     }
-    // V2: a face tap while [MoveFacePanel] is open in Direction mode
-    // replaces whatever single face (if any) is currently picked - unlike
-    // Offset mode (whose `BRepOffset_MakeOffset` technique composes freely
-    // across any number of faces sharing one offset value, so a face tap
-    // there simply falls through to the generic accumulate-toggle at the
-    // bottom of this method, exactly like Fillet's own edge_refs), v1's
-    // unchanged extrude-then-Fuse/Cut technique behind Direction mode only
-    // ever supports one planar face at a time (`MoveFaceFeature`'s own
-    // backend docstring - the backend's own `delta` mode shares this same
-    // restriction, but this client no longer offers that mode at all, see
-    // [MoveFaceMode]'s own doc comment) - mirrors [_setMoveBodyRotationAxis]'s
-    // single-slot replace-or-clear shape, applied to `face` instead of
-    // `edge`/`sketchLine`/`face`.
-    if (_moveFaceActive && _moveFaceMode != MoveFaceMode.offset && entity.kind == SelectionEntityKind.face) {
-      _setMoveFaceSingleFace(entity);
-      return;
-    }
+    // V3: a face tap while [MoveFacePanel] is open in Direction mode (like
+    // Offset mode already did) falls through to the generic accumulate-
+    // toggle at the bottom of this method, exactly like Fillet's own
+    // edge_refs - both modes now sweep a rigid group of 1+ faces together
+    // (`BRepPrimAPI_MakePrism` on the whole group's own `TopoDS_Compound`,
+    // see `MoveFaceFeature`'s own backend docstring), so there's no longer
+    // a single-face special case to apply here.
     // Direct Editing family, guided "Add" FAB entries: a Body tap during
     // [_scaleBodyPicking]/[_moveBodyPicking] both captures it and opens the
     // real panel immediately - Scale Body/Move Body only ever take exactly
@@ -2454,14 +2444,13 @@ class _PartScreenState extends State<PartScreen> {
   MeshDto? _moveFacePreviewMesh;
 
   /// Locks [_selectionFilterOverrides] to faces (the multi-pick target,
-  /// live in Offset mode - see [_setMoveFaceSingleFace] for why Delta/
-  /// Direction stay single-face despite the filter allowing more taps
-  /// through) plus Body edges and Sketch Lines (Direction mode's own
-  /// possible reference sources) for the whole session - a single shared
-  /// filter across all three modes, rather than swapping it per mode on
-  /// every [_onMoveFaceModeChanged] call, to avoid override-stack churn;
-  /// mode-appropriate handling of a face/edge/sketchLine tap is entirely
-  /// [_toggleSelectedEntity]'s own job (see its Move Face branches).
+  /// V3: every mode accumulates 1+ faces the same way) plus Body edges and
+  /// Sketch Lines (Direction mode's own possible reference sources) for
+  /// the whole session - a single shared filter across both modes, rather
+  /// than swapping it per mode on every [_onMoveFaceModeChanged] call, to
+  /// avoid override-stack churn; mode-appropriate handling of a
+  /// face/edge/sketchLine tap is entirely [_toggleSelectedEntity]'s own
+  /// job (see its Move Face branches).
   static const _moveFaceSelectionFilter = SelectionFilterState(
     vertex: false,
     edge: true,
@@ -10665,24 +10654,11 @@ class _PartScreenState extends State<PartScreen> {
   /// sections is live, then reschedules the preview against whichever
   /// mode's own current value(s) are already held (each mode's own field
   /// state survives a switch away and back, mirrors [MoveFacePanel]'s own
-  /// "fields exist regardless of the active mode" doc comment). Switching
-  /// away from Offset mode with 2+ faces picked trims the face selection
-  /// down to just the first one - mirrors [_setPatternMode]'s own "drop
-  /// whatever no longer applies to the new mode" cleanup, since Delta/
-  /// Direction only ever accept exactly one face (see
-  /// [MoveFacePanel.faceCount]'s own doc comment).
+  /// "fields exist regardless of the active mode" doc comment). V3: both
+  /// modes now accept the same 1+ face group, so switching modes no longer
+  /// needs to trim the face selection.
   void _onMoveFaceModeChanged(MoveFaceMode mode) {
-    setState(() {
-      _moveFaceMode = mode;
-      if (mode != MoveFaceMode.offset) {
-        final faceEntities = _selectedEntities.where((e) => e.kind == SelectionEntityKind.face).toList();
-        if (faceEntities.length > 1) {
-          final keep = faceEntities.first;
-          _selectedEntities =
-              _selectedEntities.where((e) => e.kind != SelectionEntityKind.face || e == keep).toSet();
-        }
-      }
-    });
+    setState(() => _moveFaceMode = mode);
     _scheduleMoveFacePreview();
   }
 
@@ -10740,30 +10716,10 @@ class _PartScreenState extends State<PartScreen> {
     _scheduleMoveFacePreview();
   }
 
-  /// [_toggleSelectedEntity]'s face special case for a live [MoveFacePanel]
-  /// session in Direction mode - replaces whatever single face (if any) is
-  /// currently picked with [entity], unless [entity] was already
-  /// the one picked, in which case it's cleared instead - mirrors
-  /// [_setMoveBodyRotationAxis]'s identical single-slot replace-or-clear
-  /// shape, applied to the face pick itself. Offset mode's own face taps
-  /// never reach this - see [_toggleSelectedEntity]'s own doc comment on
-  /// that branch.
-  void _setMoveFaceSingleFace(SelectionEntityRef entity) {
-    final currentFaces = _selectedEntities.where((e) => e.kind == SelectionEntityKind.face).toList();
-    final alreadyPicked = currentFaces.length == 1 && currentFaces.single == entity;
-    setState(() {
-      final next = Set<SelectionEntityRef>.of(_selectedEntities)
-        ..removeWhere((e) => e.kind == SelectionEntityKind.face);
-      if (!alreadyPicked) next.add(entity);
-      _selectedEntities = next;
-    });
-    _scheduleMoveFacePreview();
-  }
-
   /// [_selectedEntities]' faces while [_moveFaceActive] - mirrors
-  /// [_currentDeleteFaceRefs]/[_currentFilletEdgeRefs] exactly. Offset mode
-  /// may hold 2+ entries; Direction mode holds at most one, enforced by
-  /// [_setMoveFaceSingleFace] and [_onMoveFaceModeChanged]'s own trim.
+  /// [_currentDeleteFaceRefs]/[_currentFilletEdgeRefs] exactly. V3: every
+  /// mode may hold 1+ entries, accumulated via the generic toggle at the
+  /// bottom of [_toggleSelectedEntity] like any other multi-pick tool.
   List<SubShapeRefDto> _currentMoveFaceRefs() => [
         for (final entity in _selectedEntities)
           if (entity.kind == SelectionEntityKind.face)
