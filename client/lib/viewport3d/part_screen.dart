@@ -1121,29 +1121,21 @@ class _PartScreenState extends State<PartScreen> {
     // not-accumulate shape, restricted to edge/sketchLine only - no `face`,
     // matching [_patternDirectionSelectionFilter]'s own restriction for the
     // identical reason: a direction, unlike an axis, has no legitimate
-    // cylindrical-face source; a *face* tap in Direction/Delta mode is the
-    // next branch down instead).
+    // cylindrical-face source; a *face* tap in Direction mode is the next
+    // branch down instead).
     if (_moveFaceActive &&
         _moveFaceMode == MoveFaceMode.direction &&
         (entity.kind == SelectionEntityKind.edge || entity.kind == SelectionEntityKind.sketchLine)) {
       _setMoveFaceDirectionFromEntity(entity);
       return;
     }
-    // V2: a face tap while [MoveFacePanel] is open in Delta or Direction
-    // mode replaces whatever single face (if any) is currently picked -
-    // unlike Offset mode (whose `BRepOffset_MakeOffset` technique composes
-    // freely across any number of faces sharing one offset value, so a face
-    // tap there simply falls through to the generic accumulate-toggle at
-    // the bottom of this method, exactly like Fillet's own edge_refs), v1's
-    // unchanged extrude-then-Fuse/Cut technique behind Delta/Direction only
-    // ever supports one planar face at a time (`MoveFaceFeature`'s own
-    // backend docstring) - mirrors [_setMoveBodyRotationAxis]'s single-slot
-    // replace-or-clear shape, applied to `face` instead of `edge`/
-    // `sketchLine`/`face`.
-    if (_moveFaceActive && _moveFaceMode != MoveFaceMode.offset && entity.kind == SelectionEntityKind.face) {
-      _setMoveFaceSingleFace(entity);
-      return;
-    }
+    // V3: a face tap while [MoveFacePanel] is open in Direction mode (like
+    // Offset mode already did) falls through to the generic accumulate-
+    // toggle at the bottom of this method, exactly like Fillet's own
+    // edge_refs - both modes now sweep a rigid group of 1+ faces together
+    // (`BRepPrimAPI_MakePrism` on the whole group's own `TopoDS_Compound`,
+    // see `MoveFaceFeature`'s own backend docstring), so there's no longer
+    // a single-face special case to apply here.
     // Direct Editing family, guided "Add" FAB entries: a Body tap during
     // [_scaleBodyPicking]/[_moveBodyPicking] both captures it and opens the
     // real panel immediately - Scale Body/Move Body only ever take exactly
@@ -1245,7 +1237,7 @@ class _PartScreenState extends State<PartScreen> {
     if (_sweepActive) _scheduleSweepPreview();
     if (_loftActive) _scheduleLoftPreview();
     // V2: a face tap while Delete Face is active, or while Move Face is
-    // active in Offset mode (Delta/Direction's own face tap is intercepted
+    // active in Offset mode (Direction mode's own face tap is intercepted
     // above instead, never reaching this generic toggle), reschedules the
     // same debounced live-preview re-solve every other multi-pick flow
     // above already does.
@@ -2389,11 +2381,14 @@ class _PartScreenState extends State<PartScreen> {
   // Offset mode (mirrors Fillet's own continuous re-pick Pattern 3 shape -
   // `BRepOffset_MakeOffset`'s per-face scalar-normal technique composes
   // freely across any number of faces sharing the one offset value), still
-  // single-fixed-face in Delta/Direction mode (v1's own extrude-then-Fuse/Cut
+  // single-fixed-face in Direction mode (v1's own extrude-then-Fuse/Cut
   // technique remains, unchanged and unable to generalize past one planar
-  // face - see `MoveFaceFeature`'s own backend docstring), plus one live-
-  // tunable set of fields per mode - mirrors Scale Body's own debounced-PATCH
-  // shape, now keyed on a `List<SubShapeRefDto>` instead of a single ref.
+  // face - see `MoveFaceFeature`'s own backend docstring; the backend's own
+  // `delta` mode shares this same technique/restriction but this client no
+  // longer offers it at all - see [MoveFaceMode]'s own doc comment), plus
+  // one live-tunable set of fields per mode - mirrors Scale Body's own
+  // debounced-PATCH shape, now keyed on a `List<SubShapeRefDto>` instead of
+  // a single ref.
 
   /// True while a Move Face session (create or B4 edit) is live - mirrors
   /// [_filletActive].
@@ -2410,9 +2405,6 @@ class _PartScreenState extends State<PartScreen> {
   /// [_scheduleMoveFacePreview] always has the latest even mid-debounce -
   /// mirrors [_scaleBodyFactor].
   double _moveFaceOffset = 1.0;
-
-  /// The current delta (Delta mode) - mirrors [_moveBodyDelta].
-  (double, double, double) _moveFaceDelta = (0.0, 0.0, 0.0);
 
   /// Direction mode's reference, as a viewport entity (for the replace-or-
   /// clear-if-already-picked tap handler, [_setMoveFaceDirectionFromEntity])
@@ -2455,7 +2447,6 @@ class _PartScreenState extends State<PartScreen> {
     List<SubShapeRefDto> faceRefs,
     MoveFaceMode mode,
     double offsetDistance,
-    (double, double, double) delta,
     PatternDirectionRefDto? direction,
     double directionDistance,
   })? _moveFaceEditSnapshot;
@@ -2481,14 +2472,13 @@ class _PartScreenState extends State<PartScreen> {
   MeshDto? _moveFacePreviewMesh;
 
   /// Locks [_selectionFilterOverrides] to faces (the multi-pick target,
-  /// live in Offset mode - see [_setMoveFaceSingleFace] for why Delta/
-  /// Direction stay single-face despite the filter allowing more taps
-  /// through) plus Body edges and Sketch Lines (Direction mode's own
-  /// possible reference sources) for the whole session - a single shared
-  /// filter across all three modes, rather than swapping it per mode on
-  /// every [_onMoveFaceModeChanged] call, to avoid override-stack churn;
-  /// mode-appropriate handling of a face/edge/sketchLine tap is entirely
-  /// [_toggleSelectedEntity]'s own job (see its Move Face branches).
+  /// V3: every mode accumulates 1+ faces the same way) plus Body edges and
+  /// Sketch Lines (Direction mode's own possible reference sources) for
+  /// the whole session - a single shared filter across both modes, rather
+  /// than swapping it per mode on every [_onMoveFaceModeChanged] call, to
+  /// avoid override-stack churn; mode-appropriate handling of a
+  /// face/edge/sketchLine tap is entirely [_toggleSelectedEntity]'s own
+  /// job (see its Move Face branches).
   static const _moveFaceSelectionFilter = SelectionFilterState(
     vertex: false,
     edge: true,
@@ -10603,9 +10593,11 @@ class _PartScreenState extends State<PartScreen> {
   /// `onOffsetChanged` (with the default offset of 1.0), which reaches
   /// [_ensureMoveFaceFeatureExists] via [_scheduleMoveFacePreview] the same
   /// way every other debounced field edit does. Always opens in Offset mode
-  /// - the only mode [faceEntities] may hold more than one entry for (see
-  /// [MoveFacePanel.faceCount]'s own doc comment) - regardless of how many
-  /// faces were ambient-selected.
+  /// regardless of how many faces were ambient-selected - just the more
+  /// common starting point (V3/V4: every mode now accepts 1+ faces, see
+  /// [MoveFacePanel.faceCount]'s own doc comment, so this is no longer a
+  /// capability restriction - the user can switch to Direction mode
+  /// immediately afterward with the same faces still picked).
   void _openMoveFacePanel({required List<SelectionEntityRef> faceEntities}) {
     setState(() {
       _moveFaceActive = true;
@@ -10613,7 +10605,6 @@ class _PartScreenState extends State<PartScreen> {
       _selectedEntities = faceEntities.toSet();
       _moveFaceMode = MoveFaceMode.offset;
       _moveFaceOffset = 1.0;
-      _moveFaceDelta = (0.0, 0.0, 0.0);
       _moveFaceDirectionEntity = null;
       _moveFaceDirection = null;
       _moveFaceDirectionDistance = 1.0;
@@ -10629,19 +10620,23 @@ class _PartScreenState extends State<PartScreen> {
   /// - mirrors [_openFilletPanelForEdit]'s shape (self-exclusion via
   /// [_beginRollback], seeding [_selectedEntities] with the Feature's own
   /// current `face_refs` plus, if Direction mode, its own reference edge/
-  /// Sketch-Line entity), widened to open for a Feature currently in any of
-  /// the three modes (reconstructing whichever one it's actually in).
+  /// Sketch-Line entity), widened to open for a Feature currently in either
+  /// of the two modes this panel still offers (reconstructing whichever one
+  /// it's actually in). Declines to open (returns `false`, same as every
+  /// other malformed/unrepresentable DTO this file seeds a panel from) for
+  /// a Feature already in `delta` mode - the backend still fully supports
+  /// it, but [MoveFaceMode] no longer has a segment for it (see that enum's
+  /// own doc comment for why) and there's no faithful way to represent an
+  /// arbitrary 3-axis delta through Direction mode's single-axis shape.
   Future<bool> _openMoveFacePanelForEdit(FeatureDto feature) async {
     final faceRefs = feature.directEditFaceRefs;
     if (faceRefs.isEmpty) return false;
+    if (feature.delta != null) return false;
 
     final MoveFaceMode mode;
-    final rawDelta = feature.delta;
     final direction = feature.directionRef;
     if (feature.offsetDistance != null) {
       mode = MoveFaceMode.offset;
-    } else if (rawDelta != null && rawDelta.length == 3) {
-      mode = MoveFaceMode.delta;
     } else if (direction != null || feature.directionDistance != null) {
       mode = MoveFaceMode.direction;
     } else {
@@ -10652,8 +10647,6 @@ class _PartScreenState extends State<PartScreen> {
       return false;
     }
     final offsetDistance = feature.offsetDistance ?? 1.0;
-    final delta =
-        rawDelta != null && rawDelta.length == 3 ? (rawDelta[0], rawDelta[1], rawDelta[2]) : (0.0, 0.0, 0.0);
     final directionDistance = feature.directionDistance ?? 1.0;
     final directionEntity = direction == null ? null : _patternEdgeEntityFor(direction);
 
@@ -10663,7 +10656,6 @@ class _PartScreenState extends State<PartScreen> {
       _previewMoveFaceFeatureId = feature.id;
       _moveFaceMode = mode;
       _moveFaceOffset = offsetDistance;
-      _moveFaceDelta = delta;
       _moveFaceDirection = direction;
       _moveFaceDirectionEntity = directionEntity;
       _moveFaceDirectionDistance = directionDistance;
@@ -10671,7 +10663,6 @@ class _PartScreenState extends State<PartScreen> {
         faceRefs: faceRefs,
         mode: mode,
         offsetDistance: offsetDistance,
-        delta: delta,
         direction: direction,
         directionDistance: directionDistance,
       );
@@ -10693,24 +10684,11 @@ class _PartScreenState extends State<PartScreen> {
   /// sections is live, then reschedules the preview against whichever
   /// mode's own current value(s) are already held (each mode's own field
   /// state survives a switch away and back, mirrors [MoveFacePanel]'s own
-  /// "fields exist regardless of the active mode" doc comment). Switching
-  /// away from Offset mode with 2+ faces picked trims the face selection
-  /// down to just the first one - mirrors [_setPatternMode]'s own "drop
-  /// whatever no longer applies to the new mode" cleanup, since Delta/
-  /// Direction only ever accept exactly one face (see
-  /// [MoveFacePanel.faceCount]'s own doc comment).
+  /// "fields exist regardless of the active mode" doc comment). V3: both
+  /// modes now accept the same 1+ face group, so switching modes no longer
+  /// needs to trim the face selection.
   void _onMoveFaceModeChanged(MoveFaceMode mode) {
-    setState(() {
-      _moveFaceMode = mode;
-      if (mode != MoveFaceMode.offset) {
-        final faceEntities = _selectedEntities.where((e) => e.kind == SelectionEntityKind.face).toList();
-        if (faceEntities.length > 1) {
-          final keep = faceEntities.first;
-          _selectedEntities =
-              _selectedEntities.where((e) => e.kind != SelectionEntityKind.face || e == keep).toSet();
-        }
-      }
-    });
+    setState(() => _moveFaceMode = mode);
     _scheduleMoveFacePreview();
   }
 
@@ -10720,12 +10698,6 @@ class _PartScreenState extends State<PartScreen> {
   /// mirrors [_onScaleBodyFactorChanged].
   void _onMoveFaceOffsetChanged(double offset) {
     _moveFaceOffset = offset;
-    _scheduleMoveFacePreview();
-  }
-
-  /// [MoveFacePanel.onDeltaChanged] - mirrors [_onMoveBodyDeltaChanged].
-  void _onMoveFaceDeltaChanged(double dx, double dy, double dz) {
-    _moveFaceDelta = (dx, dy, dz);
     _scheduleMoveFacePreview();
   }
 
@@ -10774,30 +10746,10 @@ class _PartScreenState extends State<PartScreen> {
     _scheduleMoveFacePreview();
   }
 
-  /// [_toggleSelectedEntity]'s face special case for a live [MoveFacePanel]
-  /// session in Delta or Direction mode - replaces whatever single face (if
-  /// any) is currently picked with [entity], unless [entity] was already
-  /// the one picked, in which case it's cleared instead - mirrors
-  /// [_setMoveBodyRotationAxis]'s identical single-slot replace-or-clear
-  /// shape, applied to the face pick itself. Offset mode's own face taps
-  /// never reach this - see [_toggleSelectedEntity]'s own doc comment on
-  /// that branch.
-  void _setMoveFaceSingleFace(SelectionEntityRef entity) {
-    final currentFaces = _selectedEntities.where((e) => e.kind == SelectionEntityKind.face).toList();
-    final alreadyPicked = currentFaces.length == 1 && currentFaces.single == entity;
-    setState(() {
-      final next = Set<SelectionEntityRef>.of(_selectedEntities)
-        ..removeWhere((e) => e.kind == SelectionEntityKind.face);
-      if (!alreadyPicked) next.add(entity);
-      _selectedEntities = next;
-    });
-    _scheduleMoveFacePreview();
-  }
-
   /// [_selectedEntities]' faces while [_moveFaceActive] - mirrors
-  /// [_currentDeleteFaceRefs]/[_currentFilletEdgeRefs] exactly. Offset mode
-  /// may hold 2+ entries; Delta/Direction hold at most one, enforced by
-  /// [_setMoveFaceSingleFace] and [_onMoveFaceModeChanged]'s own trim.
+  /// [_currentDeleteFaceRefs]/[_currentFilletEdgeRefs] exactly. V3: every
+  /// mode may hold 1+ entries, accumulated via the generic toggle at the
+  /// bottom of [_toggleSelectedEntity] like any other multi-pick tool.
   List<SubShapeRefDto> _currentMoveFaceRefs() => [
         for (final entity in _selectedEntities)
           if (entity.kind == SelectionEntityKind.face)
@@ -10814,17 +10766,17 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   /// Shared by every field/mode change ([_onMoveFaceOffsetChanged]/
-  /// [_onMoveFaceDeltaChanged]/[_onMoveFaceDirectionDistanceChanged]/
-  /// [_onMoveFaceModeChanged]) and every face/direction pick change
-  /// ([_toggleSelectedEntity]/[_setMoveFaceSingleFace]/
-  /// [_setMoveFaceDirectionFromEntity]/[_setMoveFaceDirectionFixedAxis]) -
-  /// mirrors [_scheduleFilletPreview]'s debounce shape, plus
-  /// [_moveFaceMode] deciding whether there's anything resolvable yet to
-  /// bother scheduling for (Direction mode's own reference is a second
-  /// required pick beyond the face(s) themselves - mirrors PatternPanel's
-  /// own "no axis, no preview" gate; an empty face selection is instead
-  /// handled by [_ensureMoveFaceFeatureExists]'s own skip, same reasoning
-  /// [_ensureDeleteFaceFeatureExists]'s doc comment gives).
+  /// [_onMoveFaceDirectionDistanceChanged]/[_onMoveFaceModeChanged]) and
+  /// every face/direction pick change ([_toggleSelectedEntity]/
+  /// [_setMoveFaceSingleFace]/[_setMoveFaceDirectionFromEntity]/
+  /// [_setMoveFaceDirectionFixedAxis]) - mirrors [_scheduleFilletPreview]'s
+  /// debounce shape, plus [_moveFaceMode] deciding whether there's anything
+  /// resolvable yet to bother scheduling for (Direction mode's own
+  /// reference is a second required pick beyond the face(s) themselves -
+  /// mirrors PatternPanel's own "no axis, no preview" gate; an empty face
+  /// selection is instead handled by [_ensureMoveFaceFeatureExists]'s own
+  /// skip, same reasoning [_ensureDeleteFaceFeatureExists]'s doc comment
+  /// gives).
   void _scheduleMoveFacePreview() {
     _moveFaceDebounce?.cancel();
     if (_moveFaceMode == MoveFaceMode.direction && _moveFaceDirection == null) {
@@ -10835,7 +10787,6 @@ class _PartScreenState extends State<PartScreen> {
             _currentMoveFaceRefs(),
             _moveFaceMode,
             _moveFaceOffset,
-            _moveFaceDelta,
             _moveFaceDirection,
             _moveFaceDirectionDistance,
           ));
@@ -10845,32 +10796,34 @@ class _PartScreenState extends State<PartScreen> {
   /// Create-or-update - mirrors [_ensureDeleteFaceFeatureExists]'s exact
   /// branching shape (self-exclusion-on-create, concurrent
   /// [_refreshMoveFacePreviewMesh] fetch), plus [mode] deciding which one
-  /// of [offsetDistance]/[delta]/[direction]+[directionDistance] is
-  /// actually sent (the other two always travel as explicit nulls - see
+  /// of [offsetDistance]/[direction]+[directionDistance] is actually sent
+  /// (the other travels as an explicit null, `delta` always does - see
   /// [DocumentApiClient.updateMoveFaceFeature]'s own doc comment for why
   /// that's required, not optional, for a PATCH-driven mode switch to
-  /// actually take effect server-side). Skips the request entirely once
-  /// [faceRefs] is empty, same reasoning [_ensureDeleteFaceFeatureExists]'s
-  /// own doc comment gives.
+  /// actually take effect server-side; this client never sets `delta`
+  /// itself any more, see [MoveFaceMode]'s own doc comment, but still
+  /// nulls it explicitly in case an in-progress PATCH session is editing a
+  /// Feature some other caller left in `delta` mode - defensive only,
+  /// [_openMoveFacePanelForEdit] already declines to open one of those at
+  /// all). Skips the request entirely once [faceRefs] is empty, same
+  /// reasoning [_ensureDeleteFaceFeatureExists]'s own doc comment gives.
   Future<void> _ensureMoveFaceFeatureExists(
     List<SubShapeRefDto> faceRefs,
     MoveFaceMode mode,
     double offsetDistance,
-    (double, double, double) delta,
     PatternDirectionRefDto? direction,
     double directionDistance,
   ) async {
     final part = _part;
     if (part == null || faceRefs.isEmpty) return;
 
-    final (dx, dy, dz) = delta;
     final existingId = _previewMoveFaceFeatureId;
     if (existingId == null) {
       final created = await _api.createMoveFaceFeature(
         part.id,
         faceRefs: faceRefs,
         offsetDistance: mode == MoveFaceMode.offset ? offsetDistance : null,
-        delta: mode == MoveFaceMode.delta ? [dx, dy, dz] : null,
+        delta: null,
         directionRef: mode == MoveFaceMode.direction ? direction : null,
         directionDistance: mode == MoveFaceMode.direction ? directionDistance : null,
       );
@@ -10887,7 +10840,7 @@ class _PartScreenState extends State<PartScreen> {
         existingId,
         faceRefs: faceRefs,
         offsetDistance: mode == MoveFaceMode.offset ? offsetDistance : null,
-        delta: mode == MoveFaceMode.delta ? [dx, dy, dz] : null,
+        delta: null,
         directionRef: mode == MoveFaceMode.direction ? direction : null,
         directionDistance: mode == MoveFaceMode.direction ? directionDistance : null,
       );
@@ -10939,12 +10892,11 @@ class _PartScreenState extends State<PartScreen> {
     final faceRefs = _currentMoveFaceRefs();
     final mode = _moveFaceMode;
     final offset = _moveFaceOffset;
-    final delta = _moveFaceDelta;
     final direction = _moveFaceDirection;
     final directionDistance = _moveFaceDirectionDistance;
     await _runGuarded(() async {
       if (faceRefs.isNotEmpty) {
-        await _ensureMoveFaceFeatureExists(faceRefs, mode, offset, delta, direction, directionDistance);
+        await _ensureMoveFaceFeatureExists(faceRefs, mode, offset, direction, directionDistance);
       }
       await _refreshFeatures();
     });
@@ -11001,9 +10953,7 @@ class _PartScreenState extends State<PartScreen> {
             previewId,
             faceRefs: editSnapshot.faceRefs,
             offsetDistance: editSnapshot.mode == MoveFaceMode.offset ? editSnapshot.offsetDistance : null,
-            delta: editSnapshot.mode == MoveFaceMode.delta
-                ? [editSnapshot.delta.$1, editSnapshot.delta.$2, editSnapshot.delta.$3]
-                : null,
+            delta: null,
             directionRef: editSnapshot.mode == MoveFaceMode.direction ? editSnapshot.direction : null,
             directionDistance:
                 editSnapshot.mode == MoveFaceMode.direction ? editSnapshot.directionDistance : null,
@@ -13970,10 +13920,6 @@ class _PartScreenState extends State<PartScreen> {
                       faceCount: _currentMoveFaceRefs().length,
                       initialOffset: _moveFaceOffset,
                       onOffsetChanged: _onMoveFaceOffsetChanged,
-                      initialDeltaX: _moveFaceDelta.$1,
-                      initialDeltaY: _moveFaceDelta.$2,
-                      initialDeltaZ: _moveFaceDelta.$3,
-                      onDeltaChanged: _onMoveFaceDeltaChanged,
                       hasDirection: _moveFaceDirection != null,
                       directionSummary: _patternDirectionSummary(_moveFaceDirection),
                       onSetDirectionFixedAxis: _setMoveFaceDirectionFixedAxis,

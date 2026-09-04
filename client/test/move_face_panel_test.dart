@@ -4,16 +4,18 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:didsa_cad_client/viewport3d/move_face_panel.dart';
 
 /// Direct Editing family, fifth/last entry: unit-level coverage for
-/// [MoveFacePanel]'s three mutually-exclusive modes - Offset's Confirm-
+/// [MoveFacePanel]'s two mutually-exclusive modes - Offset's Confirm-
 /// enablement rule (requires a valid, non-zero numeric offset, mirroring
-/// `scale_body_panel_test.dart`'s own coverage of [ScaleBodyPanel]'s
-/// factor rule, except negative values are valid too), Delta's (all three
-/// fields must parse, zero is valid on each axis, mirrors
-/// `move_body_panel_test.dart`'s own delta coverage), and Direction's
-/// (a reference must be picked *and* a non-zero distance entered), plus
-/// mode switching and the Flip button. No `flutter_scene` dependency
-/// anywhere in `move_face_panel.dart`'s import chain, so this is a real,
-/// runnable widget test in this sandbox.
+/// `scale_body_panel_test.dart`'s own coverage of [ScaleBodyPanel]'s factor
+/// rule, except negative values are valid too) and Direction's (a
+/// reference must be picked *and* a non-zero distance entered), plus mode
+/// switching and the Flip button. On-device feedback ("delta x,y,z
+/// function is duplicated in the direction tab... remove the dedicated
+/// delta x,y,z tab"): [MoveFaceMode.delta] no longer exists on the client
+/// at all - see that enum's own doc comment - so there is no Delta-mode
+/// coverage here any more. No `flutter_scene` dependency anywhere in
+/// `move_face_panel.dart`'s import chain, so this is a real, runnable
+/// widget test in this sandbox.
 void main() {
   Widget buildPanel({
     MoveFaceMode mode = MoveFaceMode.offset,
@@ -21,10 +23,6 @@ void main() {
     int faceCount = 1,
     double initialOffset = 1.0,
     void Function(double)? onOffsetChanged,
-    double initialDeltaX = 0.0,
-    double initialDeltaY = 0.0,
-    double initialDeltaZ = 0.0,
-    void Function(double, double, double)? onDeltaChanged,
     bool hasDirection = false,
     String? directionSummary,
     void Function(String)? onSetDirectionFixedAxis,
@@ -39,10 +37,6 @@ void main() {
           faceCount: faceCount,
           initialOffset: initialOffset,
           onOffsetChanged: onOffsetChanged,
-          initialDeltaX: initialDeltaX,
-          initialDeltaY: initialDeltaY,
-          initialDeltaZ: initialDeltaZ,
-          onDeltaChanged: onDeltaChanged,
           hasDirection: hasDirection,
           directionSummary: directionSummary,
           onSetDirectionFixedAxis: onSetDirectionFixedAxis ?? (_) {},
@@ -62,20 +56,21 @@ void main() {
       expect(find.widgetWithText(TextField, 'Offset (along surface normal)'), findsOneWidget);
     });
 
-    testWidgets('tapping Delta XYZ fires onModeChanged and shows three fields', (tester) async {
+    testWidgets('has exactly two mode segments (Offset, Direction)', (tester) async {
+      await tester.pumpWidget(buildPanel());
+      final segmentedButton =
+          tester.widget<SegmentedButton<MoveFaceMode>>(find.byType(SegmentedButton<MoveFaceMode>));
+      expect(segmentedButton.segments.map((s) => s.value), [MoveFaceMode.offset, MoveFaceMode.direction]);
+    });
+
+    testWidgets('tapping Direction fires onModeChanged and shows the direction fields', (tester) async {
       MoveFaceMode? lastMode;
       await tester.pumpWidget(buildPanel(onModeChanged: (m) => lastMode = m));
 
-      await tester.tap(find.text('Delta XYZ'));
+      await tester.tap(find.text('Direction'));
       await tester.pump();
-      expect(lastMode, MoveFaceMode.delta);
+      expect(lastMode, MoveFaceMode.direction);
 
-      await tester.pumpWidget(buildPanel(mode: MoveFaceMode.delta));
-      expect(find.byType(TextField), findsNWidgets(3));
-    });
-
-    testWidgets('Direction mode shows the pick prompt, axis buttons, and a distance field',
-        (tester) async {
       await tester.pumpWidget(buildPanel(mode: MoveFaceMode.direction));
       expect(
         find.text('Tap an edge or Sketch Line, or pick a fixed axis'),
@@ -143,47 +138,6 @@ void main() {
     });
   });
 
-  group('MoveFacePanel Delta mode Confirm enablement', () {
-    testWidgets('the default zero delta is enabled (0 is a valid delta component)', (tester) async {
-      await tester.pumpWidget(buildPanel(mode: MoveFaceMode.delta));
-      expect(
-        tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed,
-        isNotNull,
-      );
-    });
-
-    testWidgets('clearing a delta field to an invalid value disables Confirm live', (tester) async {
-      await tester.pumpWidget(buildPanel(mode: MoveFaceMode.delta));
-
-      await tester.enterText(find.byType(TextField).first, 'not-a-number');
-      await tester.pump();
-
-      expect(
-        tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed,
-        isNull,
-      );
-    });
-
-    testWidgets('entering a valid delta fires onDeltaChanged with all three values', (tester) async {
-      double? lastX, lastY, lastZ;
-      await tester.pumpWidget(buildPanel(
-        mode: MoveFaceMode.delta,
-        onDeltaChanged: (x, y, z) {
-          lastX = x;
-          lastY = y;
-          lastZ = z;
-        },
-      ));
-
-      await tester.enterText(find.byType(TextField).at(0), '5');
-      await tester.pump();
-
-      expect(lastX, 5.0);
-      expect(lastY, 0.0);
-      expect(lastZ, 0.0);
-    });
-  });
-
   group('MoveFacePanel Direction mode Confirm enablement', () {
     testWidgets('no reference picked disables Confirm even with a valid distance', (tester) async {
       await tester.pumpWidget(buildPanel(mode: MoveFaceMode.direction));
@@ -241,7 +195,7 @@ void main() {
     });
   });
 
-  group('MoveFacePanel V2 multi-face gating', () {
+  group('MoveFacePanel multi-face gating (V2 Offset, V3 Direction)', () {
     testWidgets('zero faces disables Confirm even in Offset mode with a valid offset', (tester) async {
       await tester.pumpWidget(buildPanel(faceCount: 0, initialOffset: 3.0));
       expect(
@@ -250,20 +204,12 @@ void main() {
       );
     });
 
-    testWidgets('two faces disables Confirm in Delta mode even with a valid delta', (tester) async {
-      await tester.pumpWidget(buildPanel(faceCount: 2, mode: MoveFaceMode.delta));
-      expect(
-        tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed,
-        isNull,
-      );
-    });
-
-    testWidgets('two faces disables Confirm in Direction mode even with a picked reference',
+    testWidgets('two faces keeps Confirm enabled in Direction mode with a picked reference',
         (tester) async {
       await tester.pumpWidget(buildPanel(faceCount: 2, mode: MoveFaceMode.direction, hasDirection: true));
       expect(
         tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed,
-        isNull,
+        isNotNull,
       );
     });
 
@@ -275,13 +221,13 @@ void main() {
       );
     });
 
-    testWidgets('the Delta XYZ segment is disabled once two faces are picked', (tester) async {
+    testWidgets('both segments stay enabled once two faces are picked (V3)', (tester) async {
       await tester.pumpWidget(buildPanel(faceCount: 2));
       final segmentedButton =
           tester.widget<SegmentedButton<MoveFaceMode>>(find.byType(SegmentedButton<MoveFaceMode>));
-      final deltaSegment =
-          segmentedButton.segments.firstWhere((s) => s.value == MoveFaceMode.delta);
-      expect(deltaSegment.enabled, isFalse);
+      final directionSegment =
+          segmentedButton.segments.firstWhere((s) => s.value == MoveFaceMode.direction);
+      expect(directionSegment.enabled, isTrue);
       final offsetSegment =
           segmentedButton.segments.firstWhere((s) => s.value == MoveFaceMode.offset);
       expect(offsetSegment.enabled, isTrue);

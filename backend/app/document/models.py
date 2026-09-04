@@ -2253,22 +2253,44 @@ class MoveFaceFeature(Feature):
       original prism-sweep technique and the other two modes below did
       not).
     - `delta`: an explicit world-space XYZ translation - permissive by
-      design (not restricted to the face's own normal direction); only
-      its component along the face's outward normal actually determines
-      whether material is added or removed, any tangential component
-      shears the swept region between the face's old and new position.
-      **v1 scope only, unchanged**: exactly one face in `face_refs`, must
-      be planar - a shear has no generalizable meaning for a curved face
-      (confirmed degenerate/zero-volume via a real spike, not merely "a
-      different-looking result" - see `app.document.move_face`'s own
-      module docstring).
+      design (not restricted to a face's own normal direction); only its
+      component along the group's own reference face's outward normal
+      actually determines whether material is added or removed, any
+      tangential component shears the swept region between the group's
+      old and new position. **V3** (see `docs/direct-editing-scope.md`'s
+      own "Move Face V3" section): `face_refs` now accepts 1+ *connected*
+      faces, swept together as one rigid group - e.g. a flat cap plus its
+      own blend fillets, so a filleted feature can be translated as a
+      whole (imported/non-sketch geometry's own motivating case - it has
+      no Sketch to fall back to editing). Every face must be planar,
+      cylindrical, or conical, and the group must contain at least one
+      planar face (it anchors the Fuse-vs-Cut sign decision - a curved
+      face's own "outward" is only ever locally defined, confirmed via
+      spike that per-face voting across a group's curved members is
+      unreliable) - **unless** it's a lone coaxial cylindrical/conical
+      group (**V4**, see `docs/direct-editing-scope.md`'s own "Move Face
+      V4" section): a hole or boss's own wall (optionally plus its own
+      coaxial tip/counterbore faces) can be repositioned by reconstructing
+      its canonical solid-of-revolution at the original and target
+      positions and Fuse/Cut-ing it in and out - genuinely different
+      geometry from the sweep-the-picked-profile technique above (see
+      `app.document.move_face`'s own module docstring for the full
+      reasoning), not an extension of it. Every coaxial cylindrical/
+      conical neighbour of a picked face (e.g. a blind hole's own conical
+      tip) must also be in `face_refs`, or the request fails closed
+      (`move_face_group_incomplete_coaxial_chain`) rather than silently
+      leaving an internal cavity; a group of 2+ faces whose own fitted
+      axes don't coincide fails closed too
+      (`move_face_group_axis_mismatch`). Repositioning a lone *planar*
+      face by an arbitrary vector remains unsupported either way (a flat
+      face alone has no "hole/boss" geometry to reconstruct).
     - `direction_ref` + `direction_distance`: along a picked edge's
       direction (`PatternDirectionRef`, reused verbatim from the Pattern/
       Mirror family), with the sign of `direction_distance` acting as the
       client's own "Flip direction" control (mirrors Extrude's own
-      flip-via-sign convention, not a separate boolean field). **v1 scope
-      only, unchanged** - same single-planar-face restriction as `delta`,
-      same reason.
+      flip-via-sign convention, not a separate boolean field). **V3**/
+      **V4** - same multi-face-group support/restrictions as `delta`
+      above, same reasoning.
 
     Modifies the shared `body_id` in place (Fillet/Chamfer's "keep the
     same id" pattern). No guaranteed healing across an offset large enough
