@@ -17,6 +17,33 @@ operation that introduces the defect - see that module's own
 correct_torus` for why body-count/mesh-only checks are not sufficient here
 (a wrong-but-single-body result is a real, previously-seen failure mode).
 
+Root-caused directly against a real OCCT kernel (pythonocc-core 7.9.3), this
+turned out NOT to be a Fillet/Chamfer- or Ellipse-specific defect: the full
+staged repro below (and the raw-Sweep-only isolation control) both pass
+cleanly, because a single Merge of two independently-computed bodies never
+hits the actual trigger. The real defect is in `BRepAlgoAPI_Fuse` itself -
+confirmed to silently produce a corrupted (nonzero-but-wrong-volume, or
+zero-solid) result when one of its operand shapes (built via
+`BRepOffsetAPI_MakePipeShell`, i.e. any Sweep - reproduced here with the
+rectangle-around-ellipse shape, and separately against a plain circular
+torus matching a prior investigation's finding) has already been used as an
+operand in an *earlier, separate* `BRepAlgoAPI_Fuse` call in the same
+process, even when the second call's own inputs are otherwise completely
+independent and correct in isolation. Confirmed deterministic; confirmed
+NOT fixed by `SetFuzzyValue`, `SetRunParallel(False)`, `ShapeFix_Shape`,
+`BRepBuilderAPI_Sewing` + `ShapeUpgrade_ShapeDivideClosed`, deep-copying the
+operand, or a BREP serialization round-trip - only ever avoided by never
+reusing an already-fused shape as a fresh Boolean operand. Cross-checked
+against an independent Monte Carlo point-classification volume estimate
+(`BRepClass3d_SolidClassifier`, not sharing any code path with the BOP
+algorithms under suspicion) to confirm which of `BRepAlgoAPI_Fuse`'s and
+`BRepAlgoAPI_Common`'s often-differing outputs was actually wrong in a given
+case - both can independently misbehave, so neither is a safe oracle for
+the other. `test_safe_fuse_rejects_a_reused_swept_operand_instead_of_
+returning_wrong_volume` below exercises `extrude._safe_fuse`'s own
+hardening (added in response to this finding) directly against the
+confirmed corrupting sequence.
+
 Needs a real pythonocc-core environment - see `backend/environment.yml`.
 """
 
@@ -455,3 +482,67 @@ def test_native_torus_filleted_and_chamfered_merges_correctly_against_its_own_co
         "not Sweep, would be implicated"
     )
     assert merged_volume == pytest.approx(expected_union_volume, rel=1e-4)
+
+
+def test_safe_fuse_rejects_a_reused_swept_operand_instead_of_returning_wrong_volume():
+    """Direct unit test of `extrude._safe_fuse`'s own hardening, exercising
+    the exact confirmed-corrupting sequence this investigation root-caused:
+    a `BRepOffsetAPI_MakePipeShell`-built shape that has already served as
+    an operand in one `BRepAlgoAPI_Fuse` call silently corrupts a *second,
+    separate* `BRepAlgoAPI_Fuse` call that reuses it - even though the
+    second call's own inputs are individually correct (confirmed directly
+    against a real OCCT kernel: an isolated, freshly-built copy of the exact
+    same second call succeeds with the correct volume). Both the first and
+    second calls here individually report `IsDone() == True` and a nonzero
+    solid count, so neither of `_safe_fuse`'s pre-existing checks would have
+    caught this - only the volume-conservation check added in response to
+    this finding does (the corrupted result's volume is below the larger
+    operand's own volume, which is geometrically impossible for a genuine
+    union). This test would fail (return silently-wrong geometry) against
+    the pre-hardening `_safe_fuse`."""
+    from fastapi import HTTPException
+    from OCC.Core.BRepBuilderAPI import (
+        BRepBuilderAPI_MakeEdge,
+        BRepBuilderAPI_MakePolygon,
+        BRepBuilderAPI_MakeWire,
+        BRepBuilderAPI_Transform,
+    )
+    from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_MakePipeShell
+    from OCC.Core.gp import gp_Ax2, gp_Dir, gp_Elips, gp_Pnt, gp_Trsf, gp_Vec
+
+    from app.document.extrude import _safe_fuse
+
+    center = gp_Pnt(-5.0, 0.0, 0.0)
+    axis = gp_Ax2(center, gp_Dir(0, 1, 0), gp_Dir(1, 0, 0))
+    ellipse_edge = BRepBuilderAPI_MakeEdge(gp_Elips(axis, 5.0, 3.0)).Edge()
+    path_wire = BRepBuilderAPI_MakeWire(ellipse_edge).Wire()
+    polygon = BRepBuilderAPI_MakePolygon()
+    for x, y, z in [(0, 0, 0), (2, 0, 0), (2, 2, 0), (0, 2, 0)]:
+        polygon.Add(gp_Pnt(x, y, z))
+    polygon.Close()
+    pipe = BRepOffsetAPI_MakePipeShell(path_wire)
+    pipe.Add(polygon.Wire())
+    pipe.Build()
+    assert pipe.MakeSolid()
+    raw = pipe.Shape()
+
+    def translated(shape, vec):
+        trsf = gp_Trsf()
+        trsf.SetTranslation(gp_Vec(*vec))
+        return BRepBuilderAPI_Transform(shape, trsf, True).Shape()
+
+    # First Fuse call: uses `raw` as an operand (this is what "poisons" it).
+    first_copy = translated(raw, (0.0, 0.0, 0.25))
+    _safe_fuse(raw, first_copy, "merge_fuse", ["body-a", "body-b"])
+
+    # Second, separate Fuse call reusing the exact same `raw` object as an
+    # operand - individually correct in isolation (confirmed: an
+    # independently-built copy of this exact call succeeds with volume
+    # ~151.22, single solid), but corrupted here because `raw` was already
+    # used above. `_safe_fuse` must now reject this rather than return the
+    # corrupted (too-small) volume.
+    second_copy = translated(raw, (0.0, 0.0, 0.5))
+    with pytest.raises(HTTPException) as exc_info:
+        _safe_fuse(raw, second_copy, "merge_fuse", ["body-c", "body-d"])
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail["type"] == "boolean_op_failed"
