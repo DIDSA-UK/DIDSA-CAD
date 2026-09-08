@@ -162,7 +162,11 @@ def test_create_loft_surface_feature_with_a_hollow_section_is_rejected():
     response = _create_loft_surface(part["id"], [_section(bottom), _section(top)])
 
     assert response.status_code == 422
-    assert response.json()["detail"]["type"] == "invalid_loft_surface_section"
+    # Propagated verbatim from loft.py's own reused _resolve_closed_section
+    # (its own "a profile with holes is not supported (v1 scope)" guard) -
+    # LoftSurfaceFeature deliberately reuses that helper unmodified rather
+    # than rewrapping its errors under a loft-surface-specific type string.
+    assert response.json()["detail"]["type"] == "invalid_loft_section"
 
 
 # --- Geometry --------------------------------------------------------------

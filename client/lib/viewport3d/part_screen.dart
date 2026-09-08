@@ -5809,7 +5809,7 @@ class _PartScreenState extends State<PartScreen> {
     final surfaceFeatureId = feature.surfaceFeatureId;
     final thickness = feature.thickness;
     final sourceFeature = surfaceFeatureId == null ? null : _featureById(surfaceFeatureId);
-    if (sourceFeature == null || thickness == null) return false;
+    if (surfaceFeatureId == null || sourceFeature == null || thickness == null) return false;
     setState(() {
       _thickenSourceFeature = sourceFeature;
       _editingThickenFeatureId = feature.id;
