@@ -705,6 +705,20 @@ class PartViewport extends StatefulWidget {
   /// [PartViewportState._hoverHit] whenever non-null.
   final SelectionEntityRef? highlightOverride;
 
+  /// Bug report ("Select Other": "when the list is open, all dynamic
+  /// highlighting should be off so when the user long presses one of the
+  /// list options it's unambiguous"): true for as long as [PartScreen]'s
+  /// Select Other sheet is open. [highlightOverride] above is null between
+  /// list-row presses (before the first press, and again the instant a
+  /// press ends), and [PartViewportState._syncHoverNode] used to fall back
+  /// to the ordinary, pointer-driven [PartViewportState._hoverHit] whenever
+  /// [highlightOverride] was null - so the *original* tap's own hover
+  /// target kept glowing in the background the whole time the sheet was
+  /// open, competing with whichever row the user was actually pressing.
+  /// Setting this true suppresses that fallback entirely while the sheet is
+  /// up, so nothing is highlighted except an explicit [highlightOverride].
+  final bool suppressHoverFallback;
+
   /// Prompt A2: which entity kinds [_recomputeHover] considers - [PartScreen]
   /// owns this (its View submenu toggles write it, plus any future
   /// push/pop override - see `OverrideStack`), same controlled-widget
@@ -874,6 +888,7 @@ class PartViewport extends StatefulWidget {
     this.onMarqueeSelect,
     this.onSelectOtherRequested,
     this.highlightOverride,
+    this.suppressHoverFallback = false,
     this.selectionFilter = SelectionFilterState.defaults,
     this.isPerspective = false,
     this.farClip,
@@ -1079,6 +1094,19 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// time (or a non-tap gesture) has passed, so a later pointer-down is
   /// never mistaken for "the second click" of a stale tap.
   DateTime? _lastTapUpTime;
+
+  /// Bug report ("Select Other": "the first tap in the double tap and hold
+  /// sequence appears to register as a tap and selects or deselects an
+  /// entity - this should not happen in case the user is building a
+  /// selection stack"): rather than delaying every tap's commit to see
+  /// whether a hold follows (adding latency to the overwhelmingly common
+  /// case, a plain single tap), the first tap still commits immediately as
+  /// before - this just remembers *what* it toggled, so [_fireSelectOther]
+  /// can undo exactly that toggle if this same gesture turns out to be a
+  /// click-then-hold after all. Null whenever the most recent tap didn't
+  /// go through [_commitSelection]'s own toggle branch (nothing to undo),
+  /// or once that undo has already happened.
+  SelectionEntityRef? _lastTapToggledEntity;
 
   /// The pending Select Other hold timer, non-null only between a
   /// qualifying second pointer-down and either it firing or being cancelled
@@ -1486,9 +1514,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         _syncHoverNode();
       });
     }
-    if (widget.highlightOverride != oldWidget.highlightOverride) {
+    if (widget.highlightOverride != oldWidget.highlightOverride ||
+        widget.suppressHoverFallback != oldWidget.suppressHoverFallback) {
       // Bug report ("Select Other"): re-syncs the forced highlight as the
-      // user hovers/focuses a different row in the list.
+      // user hovers/focuses a different row in the list, and also the
+      // instant the sheet opens/closes (so the stale [_hoverHit] highlight
+      // is cleared/restored immediately, not just on the next real pointer
+      // event).
       setState(_syncHoverNode);
     }
     if (widget.bodies != oldWidget.bodies && widget.selectionMode) {
@@ -2571,7 +2603,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         if (_activeTouches.isEmpty) _hadMultiTouch = false;
       }
       if (wasTap) {
-        _commitSelection();
+        // Bug report ("Select Other"): remembers what this tap toggled (if
+        // anything) so a click-then-hold that grows out of it can undo the
+        // toggle instead - see [_lastTapToggledEntity]'s own doc comment.
+        _lastTapToggledEntity = _commitSelection();
         // Bug report ("Select Other"): records this tap's own release time
         // as a candidate "first click" for the *next* gesture's
         // click-then-hold check - see
@@ -2581,6 +2616,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         _lastTapUpTime = DateTime.now();
       } else {
         _lastTapUpTime = null;
+        _lastTapToggledEntity = null;
       }
       _selectOtherFired = false;
       // C3: a two-finger pinch-zoom/pan (_applyPinchPan) can still move the
@@ -2755,21 +2791,29 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// valid in this mode too, since [PartViewport.selectionMode] and
   /// [PartViewport.drawCursorMode] share the one field - see that field's
   /// own doc comment) the exact same way [_commitDrawCursor] already does.
-  void _commitSelection() {
+  /// Returns the entity this call actually toggled via
+  /// [PartViewport.onSelectionToggle], or `null` if it did something else
+  /// instead (a constraint-overlay tap, or clearing selection because the
+  /// cursor wasn't over anything) - [_onPointerEnd] records this for a
+  /// plain tap (see [_lastTapToggledEntity]'s own doc comment) so a
+  /// click-then-hold Select Other gesture that grows out of that same tap
+  /// can undo it.
+  SelectionEntityRef? _commitSelection() {
     if (widget.onConstraintOverlayItemTap != null) {
       final basis = widget.sketchPlaneBasis;
       final cursor = _cursorPosition;
       final hitId = (basis != null && cursor != null)
           ? constraintOverlayItemAt(_camera.cameraFor(_viewportSize), _viewportSize, basis, widget.constraintOverlayItems, cursor)
           : null;
-      if (hitId != null && widget.onConstraintOverlayItemTap!(hitId)) return;
+      if (hitId != null && widget.onConstraintOverlayItemTap!(hitId)) return null;
     }
     final hit = _hoverHit;
     if (hit == null) {
       widget.onClearSelection?.call();
-    } else {
-      widget.onSelectionToggle?.call(hit.entity);
+      return null;
     }
+    widget.onSelectionToggle?.call(hit.entity);
+    return hit.entity;
   }
 
   // ---- P25: marquee-select (long-press-then-drag, selection mode only) ---
@@ -2927,6 +2971,17 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// pointer-down position is not) via [hitTestAllCandidates], and hands
   /// them to [PartViewport.onSelectOtherRequested], the same way
   /// [_startMarquee] switches its own gesture over once its timer fires.
+  ///
+  /// Bug report ("Select Other": the first tap of the sequence shouldn't
+  /// commit a selection change): now that the gesture has genuinely
+  /// resolved into Select Other, undoes whatever the first tap toggled
+  /// (see [_lastTapToggledEntity]'s own doc comment) by toggling it a
+  /// second time - a toggle is its own inverse, so this exactly restores
+  /// the selection to how it stood before this whole gesture began. Only
+  /// done once [candidates] is confirmed non-empty (a hold that finds
+  /// nothing to disambiguate never opens the sheet at all - see the early
+  /// return below - and the first tap's toggle should stand unchanged in
+  /// that case).
   void _fireSelectOther() {
     _selectOtherHoldTimer = null;
     _selectOtherFired = true;
@@ -2945,6 +3000,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             orthographicHalfHeight: _orthographicHalfHeightOf(camera),
           );
     if (candidates.isEmpty) return;
+    final toUndo = _lastTapToggledEntity;
+    _lastTapToggledEntity = null;
+    if (toUndo != null) {
+      widget.onSelectionToggle?.call(toUndo);
+    }
     widget.onSelectOtherRequested?.call(candidates);
   }
 
@@ -3472,6 +3532,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       _hoverNode = node;
       return;
     }
+    // Bug report ("Select Other"): [widget.suppressHoverFallback] - never
+    // fall back to the stale, pointer-driven [_hoverHit] while the sheet is
+    // open (see that field's own doc comment for why falling back here was
+    // ambiguous).
+    if (widget.suppressHoverFallback) return;
     final hit = _hoverHit;
     if (hit == null) return;
     final node = _buildEntityHighlightNode(hit.entity, _hoverColor);

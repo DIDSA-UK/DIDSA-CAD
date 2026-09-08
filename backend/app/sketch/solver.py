@@ -19,6 +19,7 @@ from app.sketch.constraints import (
     AtMidpointConstraint,
     CoincidentConstraint,
     CollinearConstraint,
+    ConcentricConstraint,
     CurveTangentConstraint,
     DistanceConstraint,
     EqualLengthConstraint,
@@ -161,6 +162,43 @@ _RESIDUAL_CHECKABLE_CONSTRAINT_TYPES = (
     # ~1e-12, correctly verified True) and a deliberately-off one (residual
     # >> tolerance, correctly verified False).
     CurveTangentConstraint,
+    # Bug fix (on-device feedback: a sketch with an ordinary Horizontal/
+    # Vertical/Collinear-dimensioned profile - e.g. a stepped rectangle -
+    # showed red/over-constrained even though it's genuinely solvable):
+    # CoincidentConstraint/CollinearConstraint/PointOnLineConstraint/
+    # PerpendicularConstraint/ConcentricConstraint were entirely missing
+    # from this allowlist, even though the first four are some of the most
+    # common Constraint types a hand-drawn profile ever uses (consecutive
+    # Lines joined by Coincident rather than a shared Point id; a Collinear
+    # tying two segments into one straight run) - their mere presence
+    # disqualified the whole Sketch from residual verification the exact
+    # same way Horizontal/Vertical's own absence used to (see that bug
+    # fix's own comment above), even when the actual redundancy being
+    # rescued was entirely within an already-checkable subset.
+    #
+    # Each is directly, unambiguously residual-checkable - not the same
+    # class of risk AtMidpointConstraint's own exclusion above documents:
+    # CoincidentConstraint/ConcentricConstraint's residual (two Points at
+    # the same position) directly *is* the exact quantity the constraint
+    # asserts, with no weaker-proxy family-of-solutions escape route the
+    # way AtMidpoint's "any rectangle's diagonals cross at its own centre"
+    # trap had. PerpendicularConstraint is the direct sibling of the
+    # already-listed ParallelConstraint (dot product instead of cross
+    # product, same zero-length-treated-as-trivially-satisfied shape).
+    # PointOnLineConstraint/CollinearConstraint both reduce to the same
+    # point-to-infinite-line residual TangentConstraint/LineDistance
+    # Constraint above already trust (CollinearConstraint's own docstring:
+    # "pinning both of Line 2's endpoints onto Line 1"); CollinearConstraint
+    # guards a near-zero-length Line 1 the same way CurveTangentConstraint's
+    # own degenerate-concentric-centres branch already guards its own
+    # undefined case, rather than treating an undefined "line through Line
+    # 1" as trivially satisfied. Confirmed empirically against a real
+    # py-slvs solve for all five - see test_residual_verified_convergence.py.
+    CoincidentConstraint,
+    ConcentricConstraint,
+    PerpendicularConstraint,
+    PointOnLineConstraint,
+    CollinearConstraint,
 )
 
 _RESIDUAL_TOLERANCE = 1e-4
@@ -223,6 +261,22 @@ def _lines_parallel(line1_start: Point, line1_end: Point, line2_start: Point, li
     # threshold works regardless of the Sketch's own size.
     sin_angle = abs(dir1[0] * dir2[1] - dir1[1] * dir2[0]) / (len1 * len2)
     return sin_angle <= 1e-4
+
+
+def _lines_perpendicular(line1_start: Point, line1_end: Point, line2_start: Point, line2_end: Point) -> bool:
+    """`PerpendicularConstraint`'s own residual check - the direct sibling of
+    `_lines_parallel` just above (same scale-invariant, zero-length-treated-
+    as-trivially-satisfied shape), just checking `dot(dir1, dir2) ~= 0`
+    (cos of the angle between the two directions) instead of the cross
+    product `_lines_parallel` checks."""
+    dir1 = (line1_end.x - line1_start.x, line1_end.y - line1_start.y)
+    dir2 = (line2_end.x - line2_start.x, line2_end.y - line2_start.y)
+    len1 = math.hypot(*dir1)
+    len2 = math.hypot(*dir2)
+    if len1 < 1e-9 or len2 < 1e-9:
+        return True
+    cos_angle = abs(dir1[0] * dir2[0] + dir1[1] * dir2[1]) / (len1 * len2)
+    return cos_angle <= 1e-4
 
 
 def _angle_between_degrees(line1_start: Point, line1_end: Point, line2_start: Point, line2_end: Point) -> float:
@@ -393,6 +447,49 @@ def _residual_verified_convergence(sketch: Sketch) -> bool | None:
                 points[constraint.line2_start_id],
                 points[constraint.line2_end_id],
             ):
+                return False
+        elif isinstance(constraint, PerpendicularConstraint):
+            if not _lines_perpendicular(
+                points[constraint.line1_start_id],
+                points[constraint.line1_end_id],
+                points[constraint.line2_start_id],
+                points[constraint.line2_end_id],
+            ):
+                return False
+        elif isinstance(constraint, CoincidentConstraint):
+            if _distance(points[constraint.point_a_id], points[constraint.point_b_id]) > tolerance:
+                return False
+        elif isinstance(constraint, ConcentricConstraint):
+            # Same primitive as CoincidentConstraint just above, applied to
+            # two Circles'/Arcs' centre Points instead of two free Points -
+            # see ConcentricConstraint's own docstring ("expressed via
+            # SolverBuilder.coincident directly on the two centre Points").
+            if _distance(points[constraint.center1_point_id], points[constraint.center2_point_id]) > tolerance:
+                return False
+        elif isinstance(constraint, PointOnLineConstraint):
+            if _point_line_distance(
+                points[constraint.point_id],
+                points[constraint.line_start_id],
+                points[constraint.line_end_id],
+            ) > tolerance:
+                return False
+        elif isinstance(constraint, CollinearConstraint):
+            # Both of Line 2's endpoints on the infinite line through Line
+            # 1's own endpoints (see CollinearConstraint's own docstring) -
+            # same primitive PointOnLineConstraint's own branch above checks,
+            # applied twice. A near-zero-length Line 1 has no well-defined
+            # "line through its endpoints" to check against - same
+            # conservative "can't verify, so don't" guard
+            # CurveTangentConstraint's own degenerate-concentric-centres
+            # branch above already uses, rather than treating an undefined
+            # line as trivially satisfied.
+            line1_start = points[constraint.line1_start_id]
+            line1_end = points[constraint.line1_end_id]
+            if _distance(line1_start, line1_end) < 1e-9:
+                return False
+            if _point_line_distance(points[constraint.line2_start_id], line1_start, line1_end) > tolerance:
+                return False
+            if _point_line_distance(points[constraint.line2_end_id], line1_start, line1_end) > tolerance:
                 return False
 
     return True

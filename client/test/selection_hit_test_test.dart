@@ -368,6 +368,87 @@ void main() {
     });
   });
 
+  // Bug report ("Select Other": "a face on the back side of a cube" never
+  // offered) - unlike hitTestFaces (nearest triangle only, globally),
+  // hitTestAllFaces must surface every distinct face id the ray crosses.
+  group('hitTestAllFaces', () {
+    test('a ray straight through a box hits both its near and far face', () {
+      final near = (vm.Vector3(-1, -1, 5), vm.Vector3(1, -1, 5), vm.Vector3(0, 1, 5));
+      final far = (vm.Vector3(-1, -1, 10), vm.Vector3(1, -1, 10), vm.Vector3(0, 1, 10));
+      final hits = hitTestAllFaces(straightDownZ, [near, far], [1, 2]);
+      expect(hits.map((h) => h.entity.id), [1, 2]);
+    });
+
+    test('several triangles sharing one face id collapse to a single nearest candidate for that id', () {
+      final t1 = (vm.Vector3(-1, -1, 5), vm.Vector3(1, -1, 5), vm.Vector3(0, 1, 5));
+      final t2 = (vm.Vector3(-1, -1, 6), vm.Vector3(1, -1, 6), vm.Vector3(0, 1, 6));
+      final hits = hitTestAllFaces(straightDownZ, [t2, t1], [9, 9]);
+      expect(hits, hasLength(1));
+      expect(hits.single.entity.id, 9);
+      expect(hits.single.rayT, 5);
+    });
+
+    test('a ray that misses every triangle returns an empty list', () {
+      final triangle = (vm.Vector3(-1, -1, 10), vm.Vector3(1, -1, 10), vm.Vector3(0, 1, 10));
+      final missRay = vm.Ray.originDirection(vm.Vector3(5, 5, 0), vm.Vector3(0, 0, 1));
+      expect(hitTestAllFaces(missRay, [triangle], [4]), isEmpty);
+    });
+  });
+
+  group('hitTestAllCandidates: back face of a body', () {
+    // A single Body whose ray crosses two distinct faces - the "solid
+    // cube" case from the bug report, minus the other four faces (not
+    // needed to prove the near/far pair both surface).
+    BodyMeshDto boxAlongRay() => BodyMeshDto(
+          bodyId: 'box',
+          source: 'computed',
+          mesh: MeshDto(
+            vertices: const [
+              [-1, -1, 5],
+              [1, -1, 5],
+              [0, 1, 5],
+              [-1, -1, 10],
+              [1, -1, 10],
+              [0, 1, 10],
+            ],
+            normals: const [],
+            triangleIndices: const [
+              [0, 1, 2],
+              [3, 4, 5],
+            ],
+            faceIds: const [1, 2],
+          ),
+        );
+
+    test('both the near and far face are offered as candidates', () {
+      final candidates = hitTestAllCandidates(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
+        bodies: [boxAlongRay()],
+        filter: const SelectionFilterState(vertex: false, edge: false, face: true, body: false),
+      );
+      expect(
+        candidates.map((c) => c.entity),
+        [
+          const SelectionEntityRef(kind: SelectionEntityKind.face, bodyId: 'box', id: 1),
+          const SelectionEntityRef(kind: SelectionEntityKind.face, bodyId: 'box', id: 2),
+        ],
+      );
+    });
+
+    test('body-mode still offers just one candidate for the whole body', () {
+      final candidates = hitTestAllCandidates(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
+        bodies: [boxAlongRay()],
+        filter: const SelectionFilterState(vertex: false, edge: false, face: false, body: true),
+      );
+      expect(candidates.map((c) => c.entity), [
+        const SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'box'),
+      ]);
+    });
+  });
+
   group('topologyVerticesFromMesh / trianglesFromMesh', () {
     test('parses topologyVertices into Vector3s in order', () {
       final mesh = MeshDto(

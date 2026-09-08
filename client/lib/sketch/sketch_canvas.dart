@@ -779,7 +779,12 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
       // Scrolling "down" (positive dy) zooms out, matching common map/CAD
       // tool conventions.
       final scaleFactor = event.scrollDelta.dy > 0 ? 0.9 : 1 / 0.9;
-      setState(() => _viewport.zoomAtScreenPoint(event.localPosition, scaleFactor, size));
+      setState(() => _viewport.zoomAtScreenPoint(
+            event.localPosition,
+            scaleFactor,
+            size,
+            contentBoundingBox: widget.controller.geometryBoundingBox,
+          ));
     }
   }
 
@@ -801,6 +806,7 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
         targetScreen: afterCentroid,
         scaleFactor: scaleFactor,
         size: size,
+        contentBoundingBox: widget.controller.geometryBoundingBox,
       );
     });
   }

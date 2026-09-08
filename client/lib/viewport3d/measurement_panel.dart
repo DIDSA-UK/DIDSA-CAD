@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../api/document_api_client.dart';
 import 'resizable_tool_panel.dart';
+import 'selection_hit_test.dart';
+import 'svg_icon.dart';
 
 /// Measure tool: the bottom-sheet-style panel [PartScreen] opens while
 /// [PartScreen._measureActive] - structural clone of [FilletPanel] built on
@@ -14,10 +16,19 @@ class MeasurementPanel extends StatelessWidget {
   final bool loading;
   final String? error;
 
-  /// How many entities are currently selected (0, 1, or 2) - drives the
-  /// guided-entry [ResizableToolPanel.tooltip], same "guide the user
-  /// through picking" convention [FilletPanel.tooltip] already uses.
-  final int selectedCount;
+  /// The vertex/edge/face entities currently selected for measurement (0,
+  /// 1, or 2 - [PartScreen._measureSelectionFilter] only ever allows those
+  /// three kinds). Bug report ("the list of selected entities should be
+  /// visible in the measure tool so the user can see what's selected"):
+  /// this used to arrive as a bare `selectedCount` int, so the panel could
+  /// say *how many* things were picked but never *which* ones - listed
+  /// below the guided-entry tooltip, same small per-row shape
+  /// [SelectionListDrawer]/`showSelectOtherSheet` already use elsewhere.
+  final Set<SelectionEntityRef> selectedEntities;
+
+  /// Resolves a Body/Surface id to its display name for [_titleFor] - same
+  /// `PartScreen._selectionBodyNames` map [SelectionListDrawer] is fed.
+  final Map<String, String> bodyNames;
 
   final VoidCallback onDone;
 
@@ -26,11 +37,12 @@ class MeasurementPanel extends StatelessWidget {
     required this.result,
     required this.loading,
     required this.error,
-    required this.selectedCount,
+    required this.selectedEntities,
+    required this.bodyNames,
     required this.onDone,
   });
 
-  String? get _tooltip => switch (selectedCount) {
+  String? get _tooltip => switch (selectedEntities.length) {
         0 => 'Select a vertex, edge, or face to measure',
         1 => 'Select a second entity to compare, or view this measurement alone',
         _ => null,
@@ -45,6 +57,7 @@ class MeasurementPanel extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          if (selectedEntities.isNotEmpty) ..._selectionRows(context),
           if (loading) const Padding(padding: EdgeInsets.only(bottom: 8), child: LinearProgressIndicator()),
           if (error != null)
             Padding(
@@ -65,6 +78,50 @@ class MeasurementPanel extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  List<Widget> _selectionRows(BuildContext context) => [
+        for (final entity in selectedEntities)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 2),
+            child: Row(
+              children: [
+                SizedBox(width: 18, height: 18, child: _iconFor(entity.kind)),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    _titleFor(entity),
+                    style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 13),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        const SizedBox(height: 8),
+      ];
+
+  // Small private copy of SelectionListDrawer's/showSelectOtherSheet's own
+  // `_iconFor`/`_labelFor`/`_titleFor` - same "lean subset, never shown
+  // side by side" precedent select_other_sheet.dart's own copy already
+  // documents, narrowed further here since Measure only ever selects
+  // vertex/edge/face entities.
+  Widget _iconFor(SelectionEntityKind kind) => switch (kind) {
+        SelectionEntityKind.face => const SvgIcon('assets/icons/viewport/selection_face.svg'),
+        SelectionEntityKind.edge => const SvgIcon('assets/icons/viewport/selection_edge.svg'),
+        SelectionEntityKind.vertex => const SvgIcon('assets/icons/viewport/selection_vertex.svg'),
+        _ => const SizedBox.shrink(),
+      };
+
+  String _labelFor(SelectionEntityKind kind) => switch (kind) {
+        SelectionEntityKind.face => 'Face',
+        SelectionEntityKind.edge => 'Edge',
+        SelectionEntityKind.vertex => 'Vertex',
+        _ => 'Entity',
+      };
+
+  String _titleFor(SelectionEntityRef entity) {
+    final bodyName = bodyNames[entity.bodyId] ?? 'Body';
+    return '$bodyName - ${_labelFor(entity.kind)} #${entity.id}';
   }
 
   /// Named two-entity results ([MeasurementResultDto.axisDistance]/

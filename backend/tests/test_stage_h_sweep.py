@@ -17,12 +17,16 @@ double-check once this runs somewhere with a real OCCT kernel.
 
 import math
 
+import pytest
 from fastapi.testclient import TestClient
 from OCC.Core.BRepAdaptor import BRepAdaptor_Curve
+from OCC.Core.BRepGProp import brepgprop
 from OCC.Core.BRepTools import BRepTools_WireExplorer
 from OCC.Core.GeomAbs import GeomAbs_Circle
+from OCC.Core.GProp import GProp_GProps
 from OCC.Core.TopAbs import TopAbs_FORWARD
 
+from app.document.extrude import compute_part_bodies
 from app.document.sweep import resolve_path_wire
 from app.document.store import get_part_or_404
 from app.main import app
@@ -97,6 +101,20 @@ def _create_annular_profile_sketch_feature(
     _add_circle(feature["sketch_id"], center, outer_edge)
     _add_circle(feature["sketch_id"], center, inner_edge)
     return feature
+
+
+def _create_circular_path_sketch_feature(
+    part_id: str, *, cx: float = 10.0, cz: float = 10.0, radius: float = 10.0
+) -> tuple[dict, dict]:
+    """A single-Sketch closed circular path on the XZ plane, built from one
+    real Circle entity - a genuinely seamless single edge, unlike a full
+    circle built from 2+ chained Arcs (real, if tangent-continuous, vertex
+    at the join). Returns `(feature, circle)`."""
+    feature = _create_sketch_feature(part_id, "XZ")
+    center = _add_point(feature["sketch_id"], cx, cz)
+    edge = _add_point(feature["sketch_id"], cx + radius, cz)
+    circle = _add_circle(feature["sketch_id"], center, edge)
+    return feature, circle
 
 
 def _create_profile_sketch_feature(part_id: str, *, size: float = 2.0) -> dict:
@@ -247,6 +265,22 @@ def _mesh(part_id: str) -> list[dict]:
     return client.get(f"/document/parts/{part_id}/mesh").json()
 
 
+def _body_ids(part_id: str) -> list[str]:
+    return [entry["body_id"] for entry in _mesh(part_id)]
+
+
+def _occt_volume(part_id: str, body_id: str) -> float:
+    """Real OCCT volume (`GProp_GProps`/`brepgprop.VolumeProperties`), not
+    just a bounding box - see `_body_ids`'/`_mesh`'s own tests above, none
+    of which distinguish a genuinely correct hollow solid from a fragmented
+    or partially-hollowed one by shape alone."""
+    part = get_part_or_404(part_id)
+    bodies = compute_part_bodies(part)
+    props = GProp_GProps()
+    brepgprop.VolumeProperties(bodies[body_id], props)
+    return props.Mass()
+
+
 # --- Success -------------------------------------------------------------------
 
 
@@ -323,6 +357,40 @@ def test_boss_sweep_of_an_annular_pipe_wall_profile_succeeds():
 
     mesh = _mesh(part["id"])
     assert len(mesh) == 1
+
+
+def test_boss_sweep_of_an_annular_profile_along_a_circular_path_produces_one_correct_torus():
+    """Bug fix, root-caused directly against a real OCCT kernel: sweeping
+    an annular (hollow) Profile along a closed path built from 2+ Arc
+    segments fragmented into 3 disconnected Bodies from a single Sweep -
+    confirmed to be specifically about the path wire's own real (if
+    tangent-continuous) seam vertex where the arcs join, which made
+    `BRepOffsetAPI_MakePipeShell.MakeSolid()` cap the "opened" pipe with
+    two flat planar end faces instead of a seamless closure, so cutting
+    two independently-capped tubes together (outer minus inner - see
+    `resolve_sweep_from_bodies`'s own hollow-Profile handling) fragmented
+    instead of cleanly hollowing out. A Circle path segment - a single,
+    genuinely seamless edge - sidesteps this entirely; confirmed here
+    against the exact analytical torus volume
+    (`2 * pi^2 * pathRadius * (outerRadius^2 - innerRadius^2)`), not just a
+    body count, since a wrong-but-single-body result (the earlier `_sweep_
+    wire` two-independent-sweeps-plus-Cut structure was also seen to
+    produce, e.g., a hole that isn't fully cut through) would otherwise
+    pass a body-count-only check."""
+    part = _create_part()
+    profile = _create_annular_profile_sketch_feature(part["id"], outer_radius=2.0, inner_radius=1.0)
+    path_feature, circle = _create_circular_path_sketch_feature(part["id"], radius=10.0)
+
+    response = _create_sweep(
+        part["id"], profile["id"], [_path_ref(path_feature["sketch_id"], circle["id"], entity_type="circle")]
+    )
+    assert response.status_code == 201
+
+    body_ids = _body_ids(part["id"])
+    assert len(body_ids) == 1
+
+    expected_volume = 2 * math.pi**2 * 10.0 * (2.0**2 - 1.0**2)
+    assert _occt_volume(part["id"], body_ids[0]) == pytest.approx(expected_volume, rel=1e-6)
 
 
 def test_boss_sweep_along_a_single_arc_segment_succeeds():

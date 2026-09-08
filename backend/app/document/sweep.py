@@ -33,7 +33,7 @@ from OCC.Core.BRepBuilderAPI import (
 )
 from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_MakePipeShell
 from OCC.Core.Geom import Geom_BezierCurve
-from OCC.Core.gp import gp_Circ, gp_Elips, gp_Pnt
+from OCC.Core.gp import gp_Ax2, gp_Circ, gp_Elips, gp_Pnt
 from OCC.Core.TColgp import TColgp_Array1OfPnt
 from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Edge, TopoDS_Shape, TopoDS_Wire
 
@@ -43,9 +43,11 @@ from app.document.extrude import (
     EdgeProvenanceEntry,
     _edge_provenance_from_builder,
     _ellipse_axis,
+    _explode_solids,
     _profile_boundary_shapes,
     _record_feature_edge_provenance,
     arc_axis,
+    basis_normal,
     basis_point_to_world,
     compute_part_bodies,
     select_profiles,
@@ -54,7 +56,7 @@ from app.document.extrude import (
 from app.document.graph import sketch_feature_id_for_sketch
 from app.document.models import Part, SketchFeature, SweepFeature
 from app.document.plane_geometry import is_mirrored_basis
-from app.sketch.models import Arc, Ellipse, Line, SketchEntityRef, SketchEntityType, Spline
+from app.sketch.models import Arc, Circle, Ellipse, Line, SketchEntityRef, SketchEntityType, Spline
 from app.sketch.profile import ProfileStatus, detect_profile
 from app.sketch.store import get_sketch_or_404, resolve_sketch_entity
 
@@ -76,10 +78,10 @@ _PATH_POINT_TOLERANCE = 1e-6
 def _invalid_path_ref(ref: SketchEntityRef) -> HTTPException:
     """The structured `invalid_path_ref` error for a `path_refs` entry that
     cannot be used as a Sweep path segment - covers every way this can
-    fail: the entity doesn't exist, exists but isn't a Line/Arc/Ellipse/
-    Spline, is a degenerate (zero-length/zero-span) entity, or is an
-    Ellipse (always closed, see `_PathSegment.closed`'s own doc comment)
-    appearing anywhere other than alone as the entire path. Mirrors
+    fail: the entity doesn't exist, exists but isn't a Line/Arc/Circle/
+    Ellipse/Spline, is a degenerate (zero-length/zero-span) entity, or is a
+    Circle/Ellipse (always closed, see `_PathSegment.closed`'s own doc
+    comment) appearing anywhere other than alone as the entire path. Mirrors
     `app.document.revolve._invalid_axis_ref`'s envelope shape exactly (422,
     a structured `detail` dict).
 
@@ -87,7 +89,16 @@ def _invalid_path_ref(ref: SketchEntityRef) -> HTTPException:
     select the arc but it doesn't allow confirming"; "ellipses and splines
     should also be valid targets for sweep paths"): Line was the only
     path-capable entity type until this fix - see `_resolve_path_segment`'s
-    own doc comment for how the other three are now resolved."""
+    own doc comment for how the others are now resolved.
+
+    Bug fix (root-caused against a real OCCT kernel: a hollow Profile swept
+    along a closed path built from 2+ Arcs fragmented into multiple
+    disconnected Bodies): Circle is now also a valid, standalone closed
+    path entity - a single genuinely seamless edge, unlike a full circle
+    built from 2+ Arc segments glued at a real (if tangent-continuous)
+    vertex, which is what triggered that fragmentation - see the Circle
+    branch of `_resolve_path_segment`'s own doc comment for the full
+    root-cause writeup."""
     return HTTPException(
         status_code=422,
         detail={
@@ -255,6 +266,7 @@ def _resolve_path_segment(
     if ref.entity_type not in (
         SketchEntityType.LINE,
         SketchEntityType.ARC,
+        SketchEntityType.CIRCLE,
         SketchEntityType.ELLIPSE,
         SketchEntityType.SPLINE,
     ):
@@ -318,6 +330,35 @@ def _resolve_path_segment(
             raise _invalid_path_ref(ref)
         return _PathSegment(start=start_world, end=end_world, edges=edges)
 
+    if ref.entity_type == SketchEntityType.CIRCLE and isinstance(entity, Circle):
+        # Bug fix (root-caused directly against a real OCCT kernel: sweeping
+        # a hollow/annular Profile along a closed path built from 2+ Arc
+        # segments produced 3 disconnected Bodies from one Sweep instead of
+        # one clean torus - the *outer* and *inner* wires, per this
+        # function's own hollow-Profile handling below, are each swept via
+        # an independent `BRepOffsetAPI_MakePipeShell`, and a path wire
+        # with a real vertex at the arc-to-arc seam - even one that's
+        # perfectly tangent-continuous there, so not a genuine corner at
+        # all - was found to make `.MakeSolid()` cap the "opened" pipe with
+        # two flat planar end faces instead of a seamless seam-free closure;
+        # cutting two independently, differently-capped tubes together
+        # (`BRepAlgoAPI_Cut` below) then fragments instead of cleanly
+        # hollowing out. Confirmed empirically: the *identical* profile/path
+        # radii built as one genuinely seamless single-edge `gp_Circ` wire -
+        # exactly what this branch now builds - produces a real 1-face
+        # torus and a clean single-solid Cut with the exact analytically-
+        # expected volume, every time.) Always closed/standalone, same
+        # shape as the Ellipse branch below - a full circle has no
+        # endpoints to connect to another segment, so this only ever
+        # appears alone as the entire path (enforced generically by
+        # `resolve_path_wire`'s own `_PathSegment.closed` handling, not
+        # re-checked per entity type here).
+        center = sketch.points[entity.center_point_id]
+        radius = entity.radius(sketch.points)
+        axis = gp_Ax2(basis_point_to_world(basis, center.x, center.y), basis_normal(basis))
+        edge = BRepBuilderAPI_MakeEdge(gp_Circ(axis, radius)).Edge()
+        return _PathSegment(start=None, end=None, edges=[edge], closed=True)
+
     if ref.entity_type == SketchEntityType.ELLIPSE and isinstance(entity, Ellipse):
         # Always closed/standalone (see the Ellipse class's own doc
         # comment) - no connection endpoints, handled by
@@ -340,15 +381,19 @@ def resolve_path_wire(
     excluded_feature_ids: frozenset[str],
 ) -> TopoDS_Wire:
     """Resolves `path_refs` (an ordered, possibly cross-Sketch, possibly
-    mixed-type list of Line/Arc/Ellipse/Spline references - see
+    mixed-type list of Line/Arc/Circle/Ellipse/Spline references - see
     `SweepFeature`'s own docstring) into a single OCCT wire, via
     `_resolve_path_segment` per entry.
 
-    A lone Ellipse (the only closed/standalone path-capable entity - see
-    `_PathSegment.closed`'s own doc comment) is handled first, as its own
-    complete closed wire; an Ellipse mixed with anything else, or more
-    than one, is rejected via `invalid_path_ref` (a closed curve has
-    nothing to connect to).
+    A lone Circle or Ellipse (the only closed/standalone path-capable
+    entities - see `_PathSegment.closed`'s own doc comment) is handled
+    first, as its own complete closed wire; either mixed with anything
+    else, or more than one, is rejected via `invalid_path_ref` (a closed
+    curve has nothing to connect to). Prefer a Circle over 2+ chained Arcs
+    for a full-circle path where possible - see the Circle branch of
+    `_resolve_path_segment`'s own doc comment for why a multi-Arc circle's
+    real (if tangent-continuous) seam vertex is a genuine correctness risk
+    for a hollow Profile, not just a style preference.
 
     Otherwise, chain order/connectivity is validated exactly as before
     this was generalized beyond Line: `path_refs[0]` seeds the chain with
@@ -539,7 +584,26 @@ def resolve_sweep_from_bodies(
         for inner_loop in profile.inner_loops:
             inner_wire = wire_for_profile(sketch, inner_loop, basis)
             inner_solid, _inner_pipe_maker = _sweep_wire(path_wire, inner_wire)
-            solid = BRepAlgoAPI_Cut(solid, inner_solid).Shape()
+            # Bug fix (root-caused against a real OCCT kernel while
+            # investigating a body silently losing material after Merge):
+            # neither `IsDone()` nor a raw OCCT `RuntimeError` is
+            # sufficient on its own here - confirmed empirically that this
+            # Cut can report `IsDone() == True` while still producing a
+            # shape with zero `TopAbs_SOLID`s (the outer solid's own hole
+            # ends up fully consuming it), which is never a legitimate
+            # outcome for "outer minus a strictly-smaller hole" the way a
+            # general-purpose Cut's own "the tool can legitimately consume
+            # the whole target" case is (see `_register_solids`'s own doc
+            # comment) - so this checks all three.
+            try:
+                cut_op = BRepAlgoAPI_Cut(solid, inner_solid)
+            except RuntimeError as exc:
+                raise _sweep_failed() from exc
+            if not cut_op.IsDone():
+                raise _sweep_failed()
+            solid = cut_op.Shape()
+            if not _explode_solids(solid):
+                raise _sweep_failed()
             # Workstream 12: the boolean Cut above rebuilds topology from
             # scratch - the provenance indices computed against the
             # pre-Cut outer solid no longer correspond to real edges in

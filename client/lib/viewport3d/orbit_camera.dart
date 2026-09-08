@@ -102,6 +102,50 @@ class OrbitCamera {
   double nearClip = defaultNearClip;
   double farClip = defaultFarClip;
 
+  /// A hard floor under [effectiveNearClip] purely to keep the near plane
+  /// from ever reaching exactly zero (or negative) as [distance] shrinks
+  /// towards it - well below any real machining/CAD feature size, so it
+  /// never itself becomes the limiting factor for how close a user can
+  /// meaningfully zoom.
+  static const double _minAbsoluteNearClip = 1e-4;
+
+  /// Bug fix (on-device feedback: "when zooming very close to a body and
+  /// the body gets too close to the camera, the body gets clipped... in
+  /// CAD software this is not normal behaviour and the engineer may want
+  /// to inspect very small details"): [nearClip] above is a *static* value,
+  /// scaled once from the whole body's own bounding-sphere radius by
+  /// [setZoomBoundsForRadius] - it has no idea how close the *camera*
+  /// currently is, only how big the *body* is. On any body larger than
+  /// roughly a metre this leaves the near plane sitting a millimetre or
+  /// more out even once [distance] itself has been zoomed in much closer
+  /// than that (confirmed by the numbers: [minDistance] is derived from
+  /// the *same* [nearClip], so the zoom-in limit already allows getting
+  /// far closer than [nearClip] itself ever shrinks to on its own) - a
+  /// small local feature (a fillet, a thin wall) within that fixed
+  /// distance of the camera gets clipped, with no way to get closer to
+  /// inspect it, regardless of how far in the user has already zoomed.
+  ///
+  /// This is what [cameraFor] actually feeds the renderer instead of the
+  /// raw [nearClip] field: whichever is *smaller* of [nearClip] itself and
+  /// `distance / _nearFarRatio` - the same safe 1:10000 ratio [nearClip]
+  /// is already derived with, just recomputed continuously against the
+  /// camera's own current distance rather than frozen at whatever
+  /// [setZoomBoundsForRadius] last saw. Taking the smaller of the two
+  /// (never the larger) means this can only ever *tighten* the near plane
+  /// relative to today's behaviour, never loosen it - so a normal,
+  /// zoomed-out view is completely unaffected, and only genuinely close-up
+  /// zooming benefits. [farClip] is deliberately left untouched: it
+  /// already has its own manual-override escape hatch
+  /// ([PartViewport.farClip]/[PartViewport.onFarClipChanged]), and letting
+  /// distant geometry drop out of view once the user has zoomed in
+  /// extremely close on one small feature is the same trade-off every
+  /// mainstream CAD tool makes (a fixed-precision depth buffer cannot
+  /// simultaneously resolve sub-millimetre detail up close *and* keep a
+  /// multi-metre assembly in the same depth range without z-fighting) -
+  /// this only ever narrows the *near* side of that window.
+  double get effectiveNearClip =>
+      math.max(math.min(nearClip, distance / _nearFarRatio), _minAbsoluteNearClip);
+
   /// Radians/pixel for a mouse drag or 1:1-scaled touch drag - matches the
   /// "real device px -> visible angle" feel [SketchViewport] aims for with
   /// its own per-pixel sensitivity constants.
@@ -244,7 +288,7 @@ class OrbitCamera {
         position: position,
         target: target,
         up: _up,
-        fovNear: nearClip,
+        fovNear: effectiveNearClip,
         fovFar: farClip,
       );
     }

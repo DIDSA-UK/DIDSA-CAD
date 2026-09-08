@@ -839,6 +839,55 @@ HoverHit? hitTestFaces(
   return HoverHit(entity: SelectionEntityRef(kind: SelectionEntityKind.face, id: bestId), rayT: bestT);
 }
 
+/// Every distinct face of [triangles] (ids parallel in [ids]) actually
+/// intersected by [ray], nearest-triangle-per-face-id only, sorted nearest
+/// to farthest - the "Select Other" counterpart to [hitTestFaces], which
+/// only ever keeps the single globally-nearest triangle.
+///
+/// Bug report ("Select Other": "a face on the back side of a cube" never
+/// offered): [hitTestFaces] discards every farther intersection outright,
+/// so a ray straight through a solid body - which always crosses at least
+/// two faces, the near side and the far side, and can cross several more
+/// for a non-convex body - could only ever surface the one nearest face.
+/// [hitTestAllCandidates] used to call [hitTestFaces] once per Body and
+/// keep only that single result, so even the "Select Other" disambiguation
+/// list this function exists for never saw the back face at all. This
+/// keeps every triangle intersection, then collapses them down to one
+/// candidate per unique face id (a face is almost always built from many
+/// triangles - the ray can cross several of the same face without that
+/// counting as "two different faces") by keeping each face id's own
+/// nearest hit.
+List<HoverHit> hitTestAllFaces(
+  vm.Ray ray,
+  List<(vm.Vector3, vm.Vector3, vm.Vector3)> triangles,
+  List<int> ids,
+) {
+  final direction = ray.direction.normalized();
+  final nearestTByFaceId = <int, double>{};
+  for (var i = 0; i < triangles.length; i++) {
+    final triangle = triangles[i];
+    final t = _rayTriangleIntersectionT(
+      ray.origin,
+      direction,
+      triangle.$1,
+      triangle.$2,
+      triangle.$3,
+    );
+    if (t == null) continue;
+    final faceId = ids[i];
+    final existing = nearestTByFaceId[faceId];
+    if (existing == null || t < existing) {
+      nearestTByFaceId[faceId] = t;
+    }
+  }
+  final hits = [
+    for (final entry in nearestTByFaceId.entries)
+      HoverHit(entity: SelectionEntityRef(kind: SelectionEntityKind.face, id: entry.key), rayT: entry.value),
+  ];
+  hits.sort((a, b) => a.rayT.compareTo(b.rayT));
+  return hits;
+}
+
 /// [mesh.topologyVertices] as [vm.Vector3]s, parallel to
 /// [MeshDto.topologyVertexIds] - the pure parsing step [hitTestMeshEntities]
 /// needs before calling [hitTestVertices].
@@ -1349,16 +1398,22 @@ HoverHit? hitTestBodies({
 /// otherwise-good, farther candidate; this one never even considers a
 /// second, equally-valid Body). Mirrors [hitTestBodies]'s own per-body loop,
 /// except it keeps every Body the ray crosses (not just the nearest one),
-/// each represented by its own nearest-face intersection, so a "Select
-/// Other" list can offer all of them - the same nested/enclosed-Body case
-/// [hitTestBodies] structurally cannot reach.
+/// so a "Select Other" list can offer all of them - the same nested/
+/// enclosed-Body case [hitTestBodies] structurally cannot reach.
+///
+/// Bug report ("Select Other": "a face on the back side of a cube" never
+/// offered) - unlike [hitTestBodies], the per-Body face candidate here
+/// isn't a single nearest hit either: [hitTestAllFaces] keeps every
+/// distinct face the ray crosses within that one Body (near side, far
+/// side, and any face in between for a non-convex shape), each its own
+/// candidate.
 ///
 /// Vertex/edge (mesh and sketch) candidates are still each resolved to a
-/// single nearest winner exactly like [hitTestBodies] - multi-body
-/// occlusion, not multi-vertex/edge occlusion, is the reported gap, and a
-/// caller wanting the same face-occlusion treatment those get in
-/// [hitTestBodies] should call that first and only fall back to this one
-/// when disambiguation is actually needed (e.g. the user's own
+/// single nearest winner exactly like [hitTestBodies] - multi-body/
+/// multi-face occlusion is the reported gap, not multi-vertex/edge
+/// occlusion, and a caller wanting the same face-occlusion treatment those
+/// get in [hitTestBodies] should call that first and only fall back to
+/// this one when disambiguation is actually needed (e.g. the user's own
 /// double-click-and-hold gesture).
 List<HoverHit> hitTestAllCandidates({
   required vm.Ray ray,
@@ -1378,7 +1433,10 @@ List<HoverHit> hitTestAllCandidates({
 
   HoverHit? bestVertex;
   HoverHit? bestEdge;
-  final bodyFaceHits = <String, HoverHit>{};
+  // Bug report ("Select Other": a back face never offered) - every face
+  // along the ray within this Body, nearest first (see [hitTestAllFaces]),
+  // not just the single nearest one [hitTestFaces] alone would keep.
+  final bodyFaceHits = <String, List<HoverHit>>{};
 
   for (final body in bodies) {
     final mesh = body.mesh;
@@ -1409,9 +1467,9 @@ List<HoverHit> hitTestAllCandidates({
       }
     }
     if (filter.face || filter.body) {
-      final hit = hitTestFaces(ray, trianglesFromMesh(mesh), mesh.faceIds);
-      if (hit != null) {
-        bodyFaceHits[body.bodyId] = hit;
+      final hits = hitTestAllFaces(ray, trianglesFromMesh(mesh), mesh.faceIds);
+      if (hits.isNotEmpty) {
+        bodyFaceHits[body.bodyId] = hits;
       }
     }
   }
@@ -1536,14 +1594,20 @@ List<HoverHit> hitTestAllCandidates({
   if (bestVertex != null) candidates.add(bestVertex);
   if (bestEdge != null) candidates.add(bestEdge);
   for (final entry in bodyFaceHits.entries) {
-    final hit = entry.value;
     if (filter.body) {
+      // A Body only needs one representative candidate - its own nearest
+      // face hit (the list is already sorted nearest-first).
       candidates.add(HoverHit(
         entity: SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: entry.key),
-        rayT: hit.rayT,
+        rayT: entry.value.first.rayT,
       ));
     } else if (filter.face) {
-      candidates.add(taggedWithBody(hit, entry.key));
+      // Bug report ("Select Other"): every face this Body's ray crossing
+      // found - not just the nearest - so a back/far face becomes its own
+      // selectable candidate.
+      for (final hit in entry.value) {
+        candidates.add(taggedWithBody(hit, entry.key));
+      }
     }
   }
 
