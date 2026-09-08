@@ -110,6 +110,45 @@ void main() {
     expect(viewport.zoom, 1.5);
   });
 
+  // Bug fix (on-device feedback: "zoom is clamped so the user cannot see
+  // the whole sketch - auto fit works but as soon as the user tries to
+  // change the zoom level, it goes to the clamped value"): a sketch large
+  // enough that zoomToFit must go below minZoomFor to show it all used to
+  // snap straight back up to minZoomFor on the very next manual zoom -
+  // see effectiveMinZoomFor's own doc comment.
+  test('a manual zoom after zoomToFit never clamps tighter than the fit needed, on a large sketch', () {
+    final viewport = SketchViewport();
+    // Large enough (relative to a 400x300 canvas) that its own fit zoom is
+    // well below minZoomFor(size).
+    const box = Rect.fromLTRB(0, 0, 5000, 3750);
+
+    viewport.zoomToFit(box, size);
+    final fitZoom = viewport.zoom;
+    expect(fitZoom, lessThan(viewport.minZoomFor(size)));
+
+    // A small manual zoom-in, with the sketch's own bounding box supplied
+    // (as the real canvas now always does) must not jump back up to the
+    // flat minZoomFor floor - it should still land near the fit zoom.
+    viewport.applyAnchoredZoomPan(
+      anchorScreen: const Offset(200, 150),
+      targetScreen: const Offset(200, 150),
+      scaleFactor: 1.01,
+      size: size,
+      contentBoundingBox: box,
+    );
+
+    expect(viewport.zoom, closeTo(fitZoom * 1.01, 1e-9));
+    expect(viewport.zoom, lessThan(viewport.minZoomFor(size)));
+  });
+
+  test('effectiveMinZoomFor never raises the floor above minZoomFor for a small sketch', () {
+    final viewport = SketchViewport();
+    const smallBox = Rect.fromLTRB(0, 0, 10, 10);
+
+    expect(viewport.effectiveMinZoomFor(size, smallBox), viewport.minZoomFor(size));
+    expect(viewport.effectiveMinZoomFor(size, null), viewport.minZoomFor(size));
+  });
+
   test('reset returns to default zoom and pan', () {
     final viewport = SketchViewport();
     viewport.zoomAtScreenPoint(const Offset(50, 50), 3, size);

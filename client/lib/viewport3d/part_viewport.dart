@@ -705,6 +705,20 @@ class PartViewport extends StatefulWidget {
   /// [PartViewportState._hoverHit] whenever non-null.
   final SelectionEntityRef? highlightOverride;
 
+  /// Bug report ("Select Other": "when the list is open, all dynamic
+  /// highlighting should be off so when the user long presses one of the
+  /// list options it's unambiguous"): true for as long as [PartScreen]'s
+  /// Select Other sheet is open. [highlightOverride] above is null between
+  /// list-row presses (before the first press, and again the instant a
+  /// press ends), and [PartViewportState._syncHoverNode] used to fall back
+  /// to the ordinary, pointer-driven [PartViewportState._hoverHit] whenever
+  /// [highlightOverride] was null - so the *original* tap's own hover
+  /// target kept glowing in the background the whole time the sheet was
+  /// open, competing with whichever row the user was actually pressing.
+  /// Setting this true suppresses that fallback entirely while the sheet is
+  /// up, so nothing is highlighted except an explicit [highlightOverride].
+  final bool suppressHoverFallback;
+
   /// Prompt A2: which entity kinds [_recomputeHover] considers - [PartScreen]
   /// owns this (its View submenu toggles write it, plus any future
   /// push/pop override - see `OverrideStack`), same controlled-widget
@@ -874,6 +888,7 @@ class PartViewport extends StatefulWidget {
     this.onMarqueeSelect,
     this.onSelectOtherRequested,
     this.highlightOverride,
+    this.suppressHoverFallback = false,
     this.selectionFilter = SelectionFilterState.defaults,
     this.isPerspective = false,
     this.farClip,
@@ -1486,9 +1501,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         _syncHoverNode();
       });
     }
-    if (widget.highlightOverride != oldWidget.highlightOverride) {
+    if (widget.highlightOverride != oldWidget.highlightOverride ||
+        widget.suppressHoverFallback != oldWidget.suppressHoverFallback) {
       // Bug report ("Select Other"): re-syncs the forced highlight as the
-      // user hovers/focuses a different row in the list.
+      // user hovers/focuses a different row in the list, and also the
+      // instant the sheet opens/closes (so the stale [_hoverHit] highlight
+      // is cleared/restored immediately, not just on the next real pointer
+      // event).
       setState(_syncHoverNode);
     }
     if (widget.bodies != oldWidget.bodies && widget.selectionMode) {
@@ -3472,6 +3491,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       _hoverNode = node;
       return;
     }
+    // Bug report ("Select Other"): [widget.suppressHoverFallback] - never
+    // fall back to the stale, pointer-driven [_hoverHit] while the sheet is
+    // open (see that field's own doc comment for why falling back here was
+    // ambiguous).
+    if (widget.suppressHoverFallback) return;
     final hit = _hoverHit;
     if (hit == null) return;
     final node = _buildEntityHighlightNode(hit.entity, _hoverColor);

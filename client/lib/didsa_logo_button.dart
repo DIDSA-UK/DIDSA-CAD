@@ -12,7 +12,7 @@ class DidsaLogoButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: () => launchUrl(Uri.parse('https://www.didsa.uk'), mode: LaunchMode.externalApplication),
+      onTap: () => launchUrl(Uri.parse('https://didsa.uk/didsa-design-tools/'), mode: LaunchMode.externalApplication),
       child: Image.asset(
         'assets/images/didsa_logo_dark.png',
         height: 32,

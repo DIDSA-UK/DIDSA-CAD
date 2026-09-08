@@ -943,6 +943,13 @@ class _PartScreenState extends State<PartScreen> {
   /// the sheet isn't open (see [_handleSelectOtherRequested]).
   SelectionEntityRef? _selectOtherHighlight;
 
+  /// Bug report ("Select Other": "all dynamic highlighting should be off"
+  /// while the list is open): true for the lifetime of the
+  /// [showSelectOtherSheet] call below, fed into
+  /// [PartViewport.suppressHoverFallback] - see that field's own doc
+  /// comment for the ambiguous stale-highlight bug this fixes.
+  bool _selectOtherSheetOpen = false;
+
   /// Bug report ("if one body is entirely inside another body, it cannot be
   /// selected"): fired by [PartViewport.onSelectOtherRequested] once the
   /// user's click-then-click-and-hold gesture fires over existing geometry.
@@ -953,14 +960,16 @@ class _PartScreenState extends State<PartScreen> {
   /// every tool-specific special-case in there (Fillet face->edges, Sweep
   /// path picking, etc.) still applies exactly as if the entity had been
   /// picked directly.
-  void _handleSelectOtherRequested(List<HoverHit> candidates) {
-    showSelectOtherSheet(
+  void _handleSelectOtherRequested(List<HoverHit> candidates) async {
+    setState(() => _selectOtherSheetOpen = true);
+    await showSelectOtherSheet(
       context,
       candidates: candidates,
       bodyNames: _bodyNames,
       onSelect: _toggleSelectedEntity,
       onHighlight: (entity) => setState(() => _selectOtherHighlight = entity),
     );
+    if (mounted) setState(() => _selectOtherSheetOpen = false);
   }
 
   /// Item 4: "Unselected entity tap -> add; already-selected -> remove
@@ -13581,6 +13590,7 @@ class _PartScreenState extends State<PartScreen> {
                   onClearSelection: _clearSelectedEntities,
                   onSelectOtherRequested: _handleSelectOtherRequested,
                   highlightOverride: _selectOtherHighlight,
+                  suppressHoverFallback: _selectOtherSheetOpen,
                   selectionFilter: _selectionFilter,
                   isPerspective: _isPerspective,
                   farClip: _farClip,
@@ -13967,7 +13977,8 @@ class _PartScreenState extends State<PartScreen> {
                       result: _measurementResult,
                       loading: _measurementLoading,
                       error: _measurementError,
-                      selectedCount: _selectedEntities.length,
+                      selectedEntities: _selectedEntities,
+                      bodyNames: _selectionBodyNames,
                       onDone: _closeMeasure,
                     ),
                   ),
@@ -14788,7 +14799,19 @@ class _PartScreenState extends State<PartScreen> {
                         _scaleBodyActive ||
                         _moveBodyActive ||
                         _deleteFaceActive ||
-                        _moveFaceActive)
+                        _moveFaceActive ||
+                        // Bug fix (on-device feedback: "the fab sits on top of
+                        // the tool bar obscuring part of the measure tool
+                        // bar"): MeasurementPanel is the same bottom-docked
+                        // ResizableToolPanel shell as every other tool panel
+                        // in this list, but was missing from it, so this "Add"
+                        // FAB column stayed pinned at the Scaffold's default
+                        // bottom-right (Scaffold always paints
+                        // floatingActionButton after the whole body Stack -
+                        // see this Padding's own sibling comments above) and
+                        // sat on top of the Measure panel instead of clearing
+                        // it like every other tool.
+                        _measureActive)
                     ? 180
                     : 0,
               ),
