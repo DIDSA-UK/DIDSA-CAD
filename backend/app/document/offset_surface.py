@@ -75,9 +75,10 @@ def _resolve_offset_source_shape(
     offsets - a `TopoDS_Face` for `face_ref` (resolved from `bodies_so_far`
     the same way `app.document.move_face`/`app.document.fillet` already
     resolve a `SubShapeRef`), or the referenced surface Feature's own live
-    shell for `surface_feature_id` (required to be a single `TopAbs_SHELL`
-    - a Compound-of-shells source is rejected outright, see `_invalid_
-    offset_source`)."""
+    shape for `surface_feature_id` (required to be a single `TopAbs_FACE` -
+    e.g. a `PlanarSurfaceFeature` - or a single `TopAbs_SHELL` - e.g. a
+    Revolve/Loft/Swept/Ruled Surface - a Compound-of-shells source is
+    rejected outright, see `_invalid_offset_source`)."""
     source = feature.source
     if source.face_ref is not None:
         if source.face_ref.shape_type != SubShapeType.FACE:
@@ -95,10 +96,10 @@ def _resolve_offset_source_shape(
         raise _invalid_surface_feature_ref(
             source.surface_feature_id, "could not be resolved to a live shape"
         )
-    if shape.ShapeType() != TopAbs_SHELL:
+    if shape.ShapeType() not in (TopAbs_FACE, TopAbs_SHELL):
         raise _invalid_offset_source(
-            "the given surface Feature is not a single connected shell (a Compound-of-shells "
-            "source is ambiguous per-shell - v1 scope)"
+            "the given surface Feature is not a single Face or connected Shell (a "
+            "Compound-of-shells source is ambiguous per-shell - v1 scope)"
         )
     return shape
 
