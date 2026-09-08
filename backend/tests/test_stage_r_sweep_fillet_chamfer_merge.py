@@ -39,12 +39,29 @@ found and fixed:
    band of overlap depths - fixed by converting both operands to Bezier
    patches (`ShapeUpgrade_ShapeConvertToBezier`) before fusing.
 3. A two-tier "cheap fast path, expensive fallback only when needed" design
-   for combining fixes (1) and (2) was tried and found unsafe: the fast
-   path's own Fuse call, merely by executing, corrupts a *second* Fuse call
-   made afterward against different (Bezier-converted) operands - confirmed
-   there is no cheap-input-detection shortcut around this either. The only
-   pattern confirmed reliable is `_safe_fuse` making exactly one Fuse call
-   per invocation, always through the Bezier conversion.
+   for combining fixes (1) and (2) was tried and found unsafe: a plain
+   Fuse call's own execution, merely by running, corrupts a *second* Fuse
+   call made afterward against different (Bezier-converted) operands.
+4. `_safe_fuse` therefore only ever makes one Fuse call per invocation, but
+   *unconditionally* running every operand through Bezier conversion first
+   was itself found unsafe two different ways: (a) converting an operand
+   that is itself an earlier `BRepAlgoAPI_Fuse` *result* - inevitable in any
+   multi-body Boss-fuse/Merge/Mirror-Pattern chain - reproduces the same
+   "next Fuse call fails outright" corruption as (3), so the accumulator
+   across such a chain is deliberately never re-converted (`_safe_fuse`'s
+   own `convert_a` parameter); (b) converting a *plain* shape that never
+   needed it at all (e.g. an ordinary box) silently replaces its native
+   `Geom_Plane` faces with degree-1 Bezier surfaces that are still flat but
+   no longer report as `GeomAbs_Plane` - breaking `mesh.py`'s own
+   `face_is_planar` reporting and `move_face.py`'s planar-offset logic that
+   depends on it. The fix for (b) - checking each operand for an actual
+   `GeomAbs_BSplineSurface` face (`_needs_bezier_preparation`) before ever
+   converting it - had already been tried once, using the wrong enum
+   (`GeomAbs_SurfaceOfExtrusion`, a more obviously-named but incorrect
+   guess for what `BRepOffsetAPI_MakePipeShell` actually produces), which
+   is why it was wrongly dismissed as unworkable earlier in this
+   investigation - always check an assumption like this against the real
+   enum value, not the name that sounds right.
 
 Cross-checked throughout against two oracles independent of the
 `BRepAlgoAPI_*` algorithms under suspicion: `BRepClass3d_SolidClassifier`-
@@ -55,7 +72,7 @@ suite), and this file's own `_common_volume` helper, which - like
 same Bezier conversion, or it inherits defect (2) and becomes an unreliable
 oracle for the very thing it's meant to verify.
 
-A fourth, much narrower and still-unresolved failure remains: two copies of
+A fifth, much narrower and still-unresolved failure remains: two copies of
 the same Sweep body overlapping by a very small fraction of their own size
 (near-total coincidence, not near-tangency) can still produce a zero or
 negative-volume result even after all of the above fixes -
