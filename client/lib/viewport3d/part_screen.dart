@@ -4406,6 +4406,20 @@ class _PartScreenState extends State<PartScreen> {
   /// while [_loftSketchPickerActive].
   Set<String> _pickableLoftSketchIds = {};
 
+  /// True while the Feature tree is acting as a multi-select picker for
+  /// surface-producing Features (`produces == 'surface'`) - the Phase-0
+  /// tree-picker predicate a later phase wires into Thicken/Knit/Solid-
+  /// from-Surfaces/Offset-Surface panels. Mirrors [_loftSketchPickerActive]'s
+  /// declaration site; unused (never set true) until that later phase lands.
+  bool _surfaceFeaturePickerActive = false;
+
+  /// Every Feature id whose `produces == 'surface'`, unfiltered - mirrors
+  /// [_pickableLoftSketchIds]'s shape. Doubles as
+  /// [FeatureTreePanel.pickableFeaturePickerIds] while
+  /// [_surfaceFeaturePickerActive].
+  Set<String> get _pickableSurfaceFeatureIds =>
+      {for (final f in _features) if (f.produces == 'surface') f.id};
+
   /// The sections picked so far this picker session, in tap order - empty
   /// before the first pick, and again once [_confirmLoftSectionPicker] has
   /// handed them off to [_openLoftPanel]. Tapping an already-picked Sketch
@@ -13842,15 +13856,29 @@ class _PartScreenState extends State<PartScreen> {
                     // see the Loft state block's own top comment for why a
                     // 2+ ordered pick needs this mode instead of
                     // isSketchPickerMode's single-tap-finalizes shape.
-                    isFeaturePickerMode: _sourceFeaturePickerTarget != null || _loftSketchPickerActive,
-                    pickableFeaturePickerIds:
-                        _loftSketchPickerActive ? _pickableLoftSketchIds : _sourceFeaturePickerPickableIds,
-                    selectedFeaturePickerIds: _loftSketchPickerActive
-                        ? {for (final f in _loftPendingSections) f.id}
-                        : _selectedSourceFeatureIds,
-                    onFeaturePickerToggle:
-                        _loftSketchPickerActive ? _toggleLoftSectionPick : _toggleSourceFeaturePick,
-                    featurePickerLabel: _loftSketchPickerActive ? 'Select sketches to loft' : 'Select source Features',
+                    isFeaturePickerMode: _sourceFeaturePickerTarget != null ||
+                        _loftSketchPickerActive ||
+                        _surfaceFeaturePickerActive,
+                    pickableFeaturePickerIds: _surfaceFeaturePickerActive
+                        ? _pickableSurfaceFeatureIds
+                        : _loftSketchPickerActive
+                            ? _pickableLoftSketchIds
+                            : _sourceFeaturePickerPickableIds,
+                    selectedFeaturePickerIds: _surfaceFeaturePickerActive
+                        ? const <String>{}
+                        : _loftSketchPickerActive
+                            ? {for (final f in _loftPendingSections) f.id}
+                            : _selectedSourceFeatureIds,
+                    onFeaturePickerToggle: _surfaceFeaturePickerActive
+                        ? (FeatureDto _) {}
+                        : _loftSketchPickerActive
+                            ? _toggleLoftSectionPick
+                            : _toggleSourceFeaturePick,
+                    featurePickerLabel: _surfaceFeaturePickerActive
+                        ? 'Select surfaces'
+                        : _loftSketchPickerActive
+                            ? 'Select sketches to loft'
+                            : 'Select source Features',
                     bodyIds: _computedBodyIds,
                     bodyNames: _bodyNames,
                     onBodyTap: _onBodyTap,

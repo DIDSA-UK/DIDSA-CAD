@@ -1544,7 +1544,7 @@ class LoftFeatureCreate(BaseModel):
     `app.document.router._validate_loft_sections`) via `BRepOffsetAPI_
     ThruSections`. Boss/Cut + `target_body_ids` follow `SweepFeatureCreate`'s
     exact convention. `thickness`, if set (see `app.document.router.
-    _validate_loft_thickness`), switches every section from a closed Profile
+    _validate_thickness_nonzero`), switches every section from a closed Profile
     to a single open chain and thickens the resulting lofted shell by this
     signed value instead of lofting directly into a solid - see
     `LoftFeature`'s own docstring. `guide_curve_refs`, if set (see

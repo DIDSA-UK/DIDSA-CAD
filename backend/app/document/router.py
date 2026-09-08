@@ -2052,7 +2052,7 @@ def _validate_loft_sections(sections: list[LoftSection]) -> None:
         )
 
 
-def _validate_loft_thickness(thickness: float | None) -> None:
+def _validate_thickness_nonzero(thickness: float | None) -> None:
     """A `LoftFeatureCreate`/`Update.thickness`, if provided at all, must be
     nonzero - zero has no meaningful "thicken by nothing into a solid"
     interpretation (a plain-400 convention, mirroring `_validate_fillet_
@@ -3546,7 +3546,7 @@ def create_loft_feature(part_id: str, payload: LoftFeatureCreate) -> LoftFeature
     sections = [_loft_section_to_domain(section) for section in payload.sections]
     guide_curve_refs = [_sketch_entity_ref_to_domain(ref) for ref in payload.guide_curve_refs]
     _validate_loft_sections(sections)
-    _validate_loft_thickness(payload.thickness)
+    _validate_thickness_nonzero(payload.thickness)
     _validate_loft_guide_curve_refs(guide_curve_refs)
     _validate_target_body_ids(part, payload.mode == LoftMode.CUT, payload.target_body_ids)
     feature = LoftFeature(
@@ -3579,7 +3579,7 @@ def preview_loft_feature_coarse(
     sections = [_loft_section_to_domain(section) for section in payload.sections]
     guide_curve_refs = [_sketch_entity_ref_to_domain(ref) for ref in payload.guide_curve_refs]
     _validate_loft_sections(sections)
-    _validate_loft_thickness(payload.thickness)
+    _validate_thickness_nonzero(payload.thickness)
     _validate_loft_guide_curve_refs(guide_curve_refs)
     _validate_target_body_ids(part, payload.mode == LoftMode.CUT, payload.target_body_ids)
     feature = LoftFeature(
@@ -3628,7 +3628,7 @@ def update_loft_feature(part_id: str, feature_id: str, payload: LoftFeatureUpdat
         else feature.guide_curve_refs
     )
     _validate_loft_sections(new_sections)
-    _validate_loft_thickness(new_thickness)
+    _validate_thickness_nonzero(new_thickness)
     _validate_loft_guide_curve_refs(new_guide_curve_refs)
     _validate_target_body_ids(part, new_mode == LoftMode.CUT, new_target_body_ids)
 
@@ -6401,16 +6401,19 @@ def get_part_mesh(
         ]
 
     bodies = compute_part_bodies(part, frozenset(rollback_excluded_feature_ids))
-    return [
-        BodyMeshResponse(
-            body_id=body_id,
-            source="computed",
-            mesh=_mesh_vertex_data(tessellate_shape(shape, mesh_quality)),
-            hidden=base_feature_id(body_id) in hidden,
-            is_surface=isinstance(part.get_feature(base_feature_id(body_id)), SurfaceFeature),
+    responses = []
+    for body_id, shape in bodies.items():
+        owning_feature = part.get_feature(base_feature_id(body_id))
+        responses.append(
+            BodyMeshResponse(
+                body_id=body_id,
+                source="computed",
+                mesh=_mesh_vertex_data(tessellate_shape(shape, mesh_quality)),
+                hidden=base_feature_id(body_id) in hidden,
+                is_surface=owning_feature is not None and owning_feature.produces == Produces.SURFACE,
+            )
         )
-        for body_id, shape in bodies.items()
-    ]
+    return responses
 
 
 @router.get("/export/native")

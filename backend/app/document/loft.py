@@ -613,6 +613,36 @@ def _wires_from_resolved(resolved: list) -> list[TopoDS_Wire]:
     return wires
 
 
+def thicken_shell_to_solid(shell: TopoDS_Shape, thickness: float) -> TopoDS_Shape:
+    """Thickens an open shell into a solid via OCCT's standard
+    BRepOffsetAPI_MakeThickSolid idiom, including the volume-sign fixup
+    a real on-device/CI run found necessary: MakeThickSolidBySimple's own
+    output solid can come back with inverted (inward-pointing) face
+    orientation depending on the input shell's own winding -
+    BRepGProp's volume integral is signed by face orientation, so this
+    surfaces as a *negative* Mass() for an otherwise perfectly valid solid
+    (confirmed via a real 10x8x1 thin loft: OCCT returned -80.0, not 80.0).
+    `.Reversed()` flips every face's orientation (and, transitively, the
+    sign BRepGProp reports) without changing the solid's actual shape at
+    all - the standard OCCT fix for exactly this, applied unconditionally
+    based on a real volume check rather than assumed to always be needed
+    (a shell that happens to come out right-side-up already has this be a
+    no-op check, not a blind flip). Raises `ValueError` if the thicken
+    operation itself does not complete."""
+    thicken = BRepOffsetAPI_MakeThickSolid()
+    thicken.MakeThickSolidBySimple(shell, thickness)
+    thicken.Build()
+    if not thicken.IsDone():
+        raise ValueError("could not thicken the given surface by the given thickness")
+    solid = thicken.Shape()
+
+    volume_props = GProp_GProps()
+    brepgprop.VolumeProperties(solid, volume_props)
+    if volume_props.Mass() < 0:
+        solid = solid.Reversed()
+    return solid
+
+
 def resolve_loft_from_bodies(
     feature: LoftFeature,
     part: Part,
@@ -642,7 +672,7 @@ def resolve_loft_from_bodies(
     picking which side of the shell the material is added to) - the
     standard OCCT idiom for turning an open lofted surface into a genuine
     thin-walled solid, matching what every mainstream CAD tool calls
-    "Thicken". The router (`_validate_loft_thickness`) already rejects a
+    "Thicken". The router (`_validate_thickness_nonzero`) already rejects a
     zero `thickness` before this is ever reached."""
     if len(feature.sections) < 2:
         raise _invalid_loft_section(0, "a Loft needs at least 2 sections")
@@ -683,29 +713,10 @@ def resolve_loft_from_bodies(
         raise _loft_failed("could not loft a surface between the given open sections")
     shell = loft_maker.Shape()
 
-    thicken = BRepOffsetAPI_MakeThickSolid()
-    thicken.MakeThickSolidBySimple(shell, feature.thickness)
-    thicken.Build()
-    if not thicken.IsDone():
-        raise _loft_failed("could not thicken the lofted surface by the given thickness")
-    solid = thicken.Shape()
-
-    # Bug fix (real on-device/CI finding, not anticipated up front):
-    # MakeThickSolidBySimple's own output solid can come back with inverted
-    # (inward-pointing) face orientation depending on the input shell's own
-    # winding - BRepGProp's volume integral is signed by face orientation,
-    # so this surfaces as a *negative* Mass() for an otherwise perfectly
-    # valid solid (confirmed via a real 10x8x1 thin loft: OCCT returned
-    # -80.0, not 80.0). `.Reversed()` flips every face's orientation
-    # (and, transitively, the sign BRepGProp reports) without changing the
-    # solid's actual shape at all - the standard OCCT fix for exactly this,
-    # applied unconditionally based on a real volume check rather than
-    # assumed to always be needed (a shell that happens to come out right-
-    # side-up already has this be a no-op check, not a blind flip).
-    volume_props = GProp_GProps()
-    brepgprop.VolumeProperties(solid, volume_props)
-    if volume_props.Mass() < 0:
-        solid = solid.Reversed()
+    try:
+        solid = thicken_shell_to_solid(shell, feature.thickness)
+    except ValueError:
+        raise _loft_failed("could not thicken the lofted surface by the given thickness") from None
 
     warnings = _mid_section_warnings(solid, resolved[0].basis, resolved[-1].basis)
     return solid, warnings
