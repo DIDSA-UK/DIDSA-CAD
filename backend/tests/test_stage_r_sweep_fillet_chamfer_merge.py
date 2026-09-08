@@ -66,6 +66,7 @@ from fastapi.testclient import TestClient
 from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Common
 from OCC.Core.BRepGProp import brepgprop
 from OCC.Core.GProp import GProp_GProps
+from OCC.Core.ShapeUpgrade import ShapeUpgrade_ShapeConvertToBezier
 from OCC.Core.TopAbs import TopAbs_SOLID
 from OCC.Core.TopExp import TopExp_Explorer
 
@@ -206,10 +207,33 @@ def _common_volume(part_id: str, body_id_a: str, body_id_b: str) -> float:
     solids (not through `_safe_fuse`): the volume of their intersection, so
     the expected union volume can be derived from the inclusion-exclusion
     identity `vol(a) + vol(b) - vol(a & b)` without relying on Merge/Fuse
-    itself to get it right."""
+    itself to get it right.
+
+    Runs both operands through the same `ShapeUpgrade_ShapeConvertToBezier`
+    conversion `extrude._prepare_for_boolean` uses (duplicated here rather
+    than imported, since this is the test's own independent oracle, not the
+    thing under test) before calling `BRepAlgoAPI_Common` - a bare
+    `BRepAlgoAPI_Common` on the raw `GeomAbs_SurfaceOfExtrusion` faces a
+    Sweep produces is exposed to the exact same classic-BOP misclassification
+    `extrude._safe_fuse` itself was found to need this conversion for (see
+    that module's own `_boolean_op_failed` doc comment) - confirmed directly
+    against this investigation's repro: a bare `BRepAlgoAPI_Common` here
+    returned 0 for two solids with a real, substantial (Monte-Carlo-verified)
+    overlap. Without this conversion, this "independent" oracle isn't
+    actually independent of the bug being tested for."""
     part = get_part_or_404(part_id)
     bodies = compute_part_bodies(part)
-    common = BRepAlgoAPI_Common(bodies[body_id_a], bodies[body_id_b])
+
+    def to_bezier(shape):
+        converter = ShapeUpgrade_ShapeConvertToBezier(shape)
+        converter.SetSurfaceConversion(True)
+        converter.Set3dConversion(True)
+        converter.Set2dConversion(True)
+        converter.SetExtrusionMode(True)
+        converter.Perform()
+        return converter.Result()
+
+    common = BRepAlgoAPI_Common(to_bezier(bodies[body_id_a]), to_bezier(bodies[body_id_b]))
     assert common.IsDone()
     props = GProp_GProps()
     brepgprop.VolumeProperties(common.Shape(), props)
@@ -305,7 +329,7 @@ def test_sweep_ellipse_fillet_chamfer_copy_merge_preserves_both_bodies_volume():
     # Stage 3: Move/Copy Body - an overlapping translated copy (the exact
     # repro shape: "use move/copy body to create copy of 1st body that
     # overlaps 1st body").
-    move_response = _create_move_body(part["id"], body_id, delta=[5.0, 0.0, 0.0], make_copy=True)
+    move_response = _create_move_body(part["id"], body_id, delta=[0.0, 0.0, 0.25], make_copy=True)
     assert move_response.status_code == 201
     body_ids_after_copy = _body_ids(part["id"])
     assert len(body_ids_after_copy) == 2
@@ -361,7 +385,7 @@ def test_two_raw_swept_ellipse_stadium_tubes_merge_correctly():
     body_id = _body_ids(part["id"])[0]
     vol_raw = _occt_volume(part["id"], body_id)
 
-    move_response = _create_move_body(part["id"], body_id, delta=[5.0, 0.0, 0.0], make_copy=True)
+    move_response = _create_move_body(part["id"], body_id, delta=[0.0, 0.0, 0.25], make_copy=True)
     assert move_response.status_code == 201
     body_ids_after_copy = _body_ids(part["id"])
     copy_id = next(bid for bid in body_ids_after_copy if bid != body_id)

@@ -28,7 +28,7 @@ from OCC.Core.Geom import Geom_BezierCurve
 from OCC.Core.GeomAbs import GeomAbs_Circle
 from OCC.Core.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Elips, gp_Pnt, gp_Trsf, gp_Vec
 from OCC.Core.GProp import GProp_GProps
-from OCC.Core.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
+from OCC.Core.ShapeUpgrade import ShapeUpgrade_ShapeConvertToBezier, ShapeUpgrade_UnifySameDomain
 from OCC.Core.TColgp import TColgp_Array1OfPnt
 from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED, TopAbs_SOLID, TopAbs_VERTEX
 from OCC.Core.TopExp import TopExp_Explorer, topexp
@@ -979,42 +979,63 @@ def _boolean_op_failed(op: str, body_ids: list[str]) -> HTTPException:
     (the same class of failure `fillet.py`'s/`chamfer.py`'s own
     `_build_fillet`/`_build_chamfer` already guard against - see their own
     doc comments), reported `IsDone() == False`, produced a shape with zero
-    `TopAbs_SOLID`s despite reporting success, or produced a *nonzero*
-    result whose volume is less than one of its own operands' own volume,
-    which is geometrically impossible for a legitimate union (fusing two
-    solids can only ever remove double-counted overlap volume, never eat
-    into either operand's own unshared material).
+    `TopAbs_SOLID`s despite reporting success, or produced a result whose
+    volume is less than one of its own operands' own volume (including
+    negative, from a badly self-intersecting fragment set) - geometrically
+    impossible for a legitimate union, since fusing two solids can only
+    ever remove double-counted overlap volume, never eat into either
+    operand's own unshared material.
 
     Root-caused directly against a real OCCT kernel (pythonocc-core 7.9.3)
     while investigating a Sweep+Fillet+Chamfer body silently losing material
-    after Merge: `BRepAlgoAPI_Fuse` can silently return a corrupted result
-    when one of its operand shapes (built via `BRepOffsetAPI_MakePipeShell`,
-    i.e. any Sweep) has previously been used as an operand in an earlier,
-    separate `BRepAlgoAPI_Fuse` call in the same process - reproduced
-    deterministically, and confirmed NOT fixed by `SetFuzzyValue`,
-    `SetRunParallel(False)`, `ShapeFix_Shape`, `BRepBuilderAPI_Sewing` +
-    `ShapeUpgrade_ShapeDivideClosed`, deep-copying the operand, or
-    re-serializing it through a BREP round-trip (all tried directly against
-    a reduced repro - none decontaminate an already-used operand, pointing
-    at process-global state inside OCCT's classic BOP implementation, not
-    data cached on the shape itself). The actual fix is
-    `SetNonDestructive(True)` below (a documented OCCT flag controlling
-    whether a Boolean operation is allowed to modify its own argument
-    shapes in place) - confirmed to resolve every instance of this specific
-    failure mode found during investigation, including a clean 60-point
-    scan of the real repro shape.
+    after Merge - two genuinely distinct defects, both confirmed against the
+    *actual* production Sweep-around-an-Ellipse geometry (an earlier,
+    hand-built approximation of that geometry turned out not to be
+    faithful enough to reproduce the second one - always verify a fix
+    against the real shape, not a stand-in, before trusting it):
 
-    A second, distinct and much narrower failure mode was also found and is
-    NOT fixed by `SetNonDestructive`: two shapes translated by an exact
-    tangency-inducing offset (e.g. a circular-profile torus offset by
-    exactly its own tube radius) can produce zero solids even as the very
-    first Boolean operation ever run on otherwise-fresh shapes - a
-    near-tangent/degenerate intersection classification limitation, not a
-    reuse issue. This is the residual case `_safe_fuse`'s own volume/solid
-    checks below exist to catch and report as a clean 422 rather than let
-    through as silently-wrong geometry - a structured error, not an
-    uncaught exception surfacing as a 500, and critically not a
-    silently-wrong result standing in for a real fuse."""
+    1. `BRepAlgoAPI_Fuse` can silently return a corrupted result when one of
+       its operand shapes (built via `BRepOffsetAPI_MakePipeShell`, i.e. any
+       Sweep) has previously been used as an operand in an earlier, separate
+       `BRepAlgoAPI_Fuse` call in the same process - confirmed NOT fixed by
+       `SetFuzzyValue`, `SetRunParallel(False)`, `ShapeFix_Shape`,
+       `BRepBuilderAPI_Sewing` + `ShapeUpgrade_ShapeDivideClosed`,
+       deep-copying the operand, or a BREP round-trip (none decontaminate an
+       already-used operand, pointing at process-global state inside OCCT's
+       classic BOP implementation, not data cached on the shape itself).
+       Fixed by `SetNonDestructive(True)` (a documented OCCT flag
+       controlling whether a Boolean operation may modify its own argument
+       shapes in place) - see `_run_fuse`.
+
+    2. Independent of (1) - reproducible with fresh, never-reused operands -
+       `BRepAlgoAPI_Fuse`/`BRepAlgoAPI_Common` can badly misclassify two
+       overlapping `MakePipeShell`-built solids over a wide, unpredictable
+       band of overlap depths (confirmed against real geometry: correct at
+       a 0.02-0.05 unit overlap's neighbours but zero-solid or negative-
+       volume garbage at the overlap itself, then correct again from ~0.1
+       upward on the same shape) - not a knife-edge coincidence, and not
+       fixed by `SetFuzzyValue` at any tried tolerance either. Root-caused
+       to the classic BOP algorithm's handling of `GeomAbs_
+       SurfaceOfExtrusion` (the surface type `BRepOffsetAPI_MakePipeShell`
+       produces when sweeping a straight profile edge along a curved,
+       non-circular path - see `sweep.py`) - confirmed fixed, matching an
+       independent Monte Carlo point-classification volume estimate to
+       within noise, by converting each operand's surfaces to Bezier
+       patches (`ShapeUpgrade_ShapeConvertToBezier`) before fusing - see
+       `_prepare_for_boolean`. This conversion is expensive (seconds, not
+       milliseconds - roughly 100-1000x a plain Fuse), so `_safe_fuse` only
+       pays for it as a fallback when the fast path's own result already
+       looks wrong, not on every call.
+
+    A third, much narrower and still-unresolved failure remains even after
+    both fixes: two copies of the same Sweep body overlapping by a very
+    small fraction of their own size (near-total coincidence, not near-
+    tangency) can still produce a zero or negative-volume result even
+    through the Bezier-converted fallback. This is the residual case
+    `_safe_fuse`'s own volume/solid checks exist to catch and report as a
+    clean 422 rather than let through as silently-wrong geometry - a
+    structured error, not an uncaught exception surfacing as a 500, and
+    critically not a silently-wrong result standing in for a real fuse."""
     return HTTPException(status_code=422, detail={"type": "boolean_op_failed", "op": op, "body_ids": sorted(body_ids)})
 
 
@@ -1032,44 +1053,90 @@ def _volume(shape: TopoDS_Shape) -> float:
 _FUSE_VOLUME_TOLERANCE = 1e-4
 
 
+def _fuse_result_is_sane(shape: TopoDS_Shape, vol_a: float, vol_b: float) -> bool:
+    """A fused result is only ever trustworthy if it has at least one real
+    solid and a volume no smaller than either operand's own (see
+    `_boolean_op_failed`'s own doc comment for exactly what this is
+    guarding against, and why `IsDone()` alone isn't enough)."""
+    if not _explode_solids(shape):
+        return False
+    return _volume(shape) >= max(vol_a, vol_b) * (1 - _FUSE_VOLUME_TOLERANCE)
+
+
+def _run_fuse(a: TopoDS_Shape, b: TopoDS_Shape) -> BRepAlgoAPI_Fuse:
+    """The actual `BRepAlgoAPI_Fuse(a, b)` call, always with
+    `SetNonDestructive(True)` - see `_boolean_op_failed`'s own doc comment,
+    fix (1), for why the bare constructor form is unsafe here."""
+    fuse = BRepAlgoAPI_Fuse()
+    fuse.SetNonDestructive(True)
+    arguments = TopTools_ListOfShape()
+    arguments.Append(a)
+    tools = TopTools_ListOfShape()
+    tools.Append(b)
+    fuse.SetArguments(arguments)
+    fuse.SetTools(tools)
+    fuse.Build()
+    return fuse
+
+
+def _prepare_for_boolean(shape: TopoDS_Shape) -> TopoDS_Shape:
+    """Converts every one of `shape`'s surfaces to a Bezier patchwork - see
+    `_boolean_op_failed`'s own doc comment, fix (2), for why this (and not
+    sewing/`ShapeUpgrade_ShapeDivideClosed`/tolerance tuning, all tried and
+    confirmed not to fix this) is the real fix for the classic BOP
+    algorithm's mishandling of `GeomAbs_SurfaceOfExtrusion` faces. Only
+    ever called from `_safe_fuse`'s own fallback path, never unconditionally
+    - expensive relative to a plain Fuse (confirmed: roughly 100-1000x),
+    so this cost is only paid once the fast path's own result already
+    looks wrong."""
+    converter = ShapeUpgrade_ShapeConvertToBezier(shape)
+    converter.SetSurfaceConversion(True)
+    converter.Set3dConversion(True)
+    converter.Set2dConversion(True)
+    converter.SetExtrusionMode(True)
+    converter.Perform()
+    return converter.Result()
+
+
 def _safe_fuse(a: TopoDS_Shape, b: TopoDS_Shape, op: str, body_ids: list[str]) -> TopoDS_Shape:
-    """`BRepAlgoAPI_Fuse(a, b).Shape()`, hardened - see `_boolean_op_failed`'s
-    own doc comment for exactly what this catches and why `IsDone()` alone
-    isn't enough, and why `SetNonDestructive(True)` (rather than the bare
-    `BRepAlgoAPI_Fuse(a, b)` constructor form) is used here: without it, a
-    shape that was previously fused elsewhere in this same process can
-    silently corrupt this call's result even though both `a` and `b` are
-    individually valid - `SetNonDestructive` tells OCCT not to modify its
-    own argument shapes in place, which is exactly the confirmed fix (see
-    `backend/tests/test_stage_r_sweep_fillet_chamfer_merge.py`'s own
-    `test_safe_fuse_rejects_a_reused_swept_operand_instead_of_returning_
-    wrong_volume` for a direct regression test of this). Only ever used for
-    a genuine Fuse (Boss's own multi-target fuse, Merge, Mirror/Pattern's
+    """`BRepAlgoAPI_Fuse(a, b).Shape()`, hardened against both confirmed
+    failure modes - see `_boolean_op_failed`'s own doc comment for exactly
+    what each check below is guarding against. Only ever used for a genuine
+    Fuse (Boss's own multi-target fuse, Merge, Mirror/Pattern's
     `FUSE_INTO_ONE`) - unlike Cut, fusing two non-empty solids together can
     never legitimately produce zero solids or a result smaller than either
-    operand, so both checks below are safe here without the "a Cut may
-    legitimately consume its whole target" carve-out `_register_solids`'s
-    own doc comment documents for Cut specifically."""
+    operand, so `_fuse_result_is_sane`'s checks are safe here without the "a
+    Cut may legitimately consume its whole target" carve-out
+    `_register_solids`'s own doc comment documents for Cut specifically.
+
+    Two-tier: the fast path (`_run_fuse` alone) is a plain
+    `SetNonDestructive` Fuse, correct and cheap for the vast majority of
+    real inputs; only when its own result fails `_fuse_result_is_sane` does
+    this retry with both operands pre-converted via `_prepare_for_boolean`
+    (expensive - seconds, not milliseconds) before giving up and reporting
+    `boolean_op_failed`. Never runs `_prepare_for_boolean` speculatively -
+    that cost is only paid on the (expected to be rare) inputs that
+    actually need it."""
+    vol_a, vol_b = _volume(a), _volume(b)
     try:
-        fuse = BRepAlgoAPI_Fuse()
-        fuse.SetNonDestructive(True)
-        arguments = TopTools_ListOfShape()
-        arguments.Append(a)
-        tools = TopTools_ListOfShape()
-        tools.Append(b)
-        fuse.SetArguments(arguments)
-        fuse.SetTools(tools)
-        fuse.Build()
+        fuse = _run_fuse(a, b)
     except RuntimeError as exc:
         raise _boolean_op_failed(op, body_ids) from exc
-    if not fuse.IsDone():
+    if fuse.IsDone():
+        shape = fuse.Shape()
+        if _fuse_result_is_sane(shape, vol_a, vol_b):
+            return shape
+
+    try:
+        fallback = _run_fuse(_prepare_for_boolean(a), _prepare_for_boolean(b))
+    except RuntimeError as exc:
+        raise _boolean_op_failed(op, body_ids) from exc
+    if not fallback.IsDone():
         raise _boolean_op_failed(op, body_ids)
-    shape = fuse.Shape()
-    if not _explode_solids(shape):
+    fallback_shape = fallback.Shape()
+    if not _fuse_result_is_sane(fallback_shape, vol_a, vol_b):
         raise _boolean_op_failed(op, body_ids)
-    if _volume(shape) < max(_volume(a), _volume(b)) * (1 - _FUSE_VOLUME_TOLERANCE):
-        raise _boolean_op_failed(op, body_ids)
-    return shape
+    return fallback_shape
 
 
 def _apply_boss_or_cut(
@@ -2206,13 +2273,22 @@ def _unify_same_domain(shape: TopoDS_Shape) -> TopoDS_Shape:
     coincident planar one, only genuinely coincident/coplanar faces.
 
     Falls back to `shape` itself, unmodified, if the unify pass produces a
-    null or invalid result (not observed in any of the spike's own real
-    test cases, but this is new-to-the-codebase machinery running against
-    arbitrary real Part geometry, not just the primitives spiked - fail
-    open to the pre-unify shape rather than losing a Body or crashing
-    `/mesh` over a `SubShapeRef`-numbering optimization)."""
+    null or invalid result, or if `Build()` itself raises a raw OCCT
+    `RuntimeError` (confirmed reachable: a `Geom_RectangularTrimmedSurface`
+    with an out-of-range V parameter, seen on a `_safe_fuse` fallback result
+    whose operands were converted via `_prepare_for_boolean` - the same
+    class of "OCCT's own `Build()` doesn't always fail gracefully into a
+    null/invalid result" failure `fillet.py`'s/`chamfer.py`'s own
+    `_build_fillet`/`_build_chamfer` already guard against for their own
+    Build() calls). Either way this is new-to-the-codebase machinery
+    running against arbitrary real Part geometry, not just the primitives
+    spiked - fail open to the pre-unify shape rather than losing a Body or
+    crashing `/mesh` over a `SubShapeRef`-numbering optimization."""
     unify = ShapeUpgrade_UnifySameDomain(shape, True, True, True)
-    unify.Build()
+    try:
+        unify.Build()
+    except RuntimeError:
+        return shape
     unified = unify.Shape()
     if unified is None or unified.IsNull() or not BRepCheck_Analyzer(unified).IsValid():
         return shape
