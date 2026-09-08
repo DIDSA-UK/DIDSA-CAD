@@ -22,10 +22,12 @@ from OCC.Core.BRepBuilderAPI import (
     BRepBuilderAPI_Transform,
 )
 from OCC.Core.BRepCheck import BRepCheck_Analyzer
+from OCC.Core.BRepGProp import brepgprop
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakePrism
 from OCC.Core.Geom import Geom_BezierCurve
 from OCC.Core.GeomAbs import GeomAbs_Circle
 from OCC.Core.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Elips, gp_Pnt, gp_Trsf, gp_Vec
+from OCC.Core.GProp import GProp_GProps
 from OCC.Core.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
 from OCC.Core.TColgp import TColgp_Array1OfPnt
 from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED, TopAbs_SOLID, TopAbs_VERTEX
@@ -976,16 +978,44 @@ def _boolean_op_failed(op: str, body_ids: list[str]) -> HTTPException:
     """A `BRepAlgoAPI_Fuse` call either raised a raw OCCT `RuntimeError`
     (the same class of failure `fillet.py`'s/`chamfer.py`'s own
     `_build_fillet`/`_build_chamfer` already guard against - see their own
-    doc comments), reported `IsDone() == False`, or - confirmed empirically
-    against a real OCCT kernel while investigating a body silently losing
-    material after Merge - produced a shape with zero `TopAbs_SOLID`s
-    despite reporting success (two independently-swept closed-curved-path
-    tubes fused together; `IsDone()` alone does not catch this case, so
-    `_safe_fuse` below also checks the result actually contains solid
-    material). All three are geometric failures, not malformed references
-    - a structured 422, not an uncaught exception surfacing as a 500, and
-    critically not a silently-wrong result standing in for a real fuse."""
+    doc comments), reported `IsDone() == False`, produced a shape with zero
+    `TopAbs_SOLID`s despite reporting success, or - a second, distinct
+    failure mode confirmed while investigating a Sweep+Fillet+Chamfer body
+    silently losing material after Merge - produced a *nonzero* result
+    whose volume is less than one of its own operands' own volume, which is
+    geometrically impossible for a legitimate union (fusing two solids can
+    only ever remove double-counted overlap volume, never eat into either
+    operand's own unshared material). Root-caused directly against a real
+    OCCT kernel (pythonocc-core 7.9.3): `BRepAlgoAPI_Fuse` can silently
+    return a corrupted result when one of its operand shapes (built via
+    `BRepOffsetAPI_MakePipeShell`, i.e. any Sweep) has previously been used
+    as an operand in an earlier, separate `BRepAlgoAPI_Fuse` call in the
+    same process - confirmed deterministic, confirmed NOT fixed by
+    `SetFuzzyValue`, `SetRunParallel(False)`, `ShapeFix_Shape`,
+    `BRepBuilderAPI_Sewing`, or re-serializing the shape through a BREP
+    round-trip (all tried directly against a reduced repro) - only ever
+    avoided by never reusing an already-fused shape as a fresh operand.
+    `IsDone()`/zero-solid checks alone do not catch this "succeeds with a
+    plausible-looking but wrong volume" case, so `_safe_fuse` below also
+    checks the result's volume against both operands'. All are geometric
+    failures, not malformed references - a structured 422, not an uncaught
+    exception surfacing as a 500, and critically not a silently-wrong
+    result standing in for a real fuse."""
     return HTTPException(status_code=422, detail={"type": "boolean_op_failed", "op": op, "body_ids": sorted(body_ids)})
+
+
+def _volume(shape: TopoDS_Shape) -> float:
+    """Real OCCT volume (`GProp_GProps`/`brepgprop.VolumeProperties`) - the
+    same pattern `test_stage_h_sweep.py`'s own `_occt_volume` test helper
+    already established, promoted into production code here because
+    `_safe_fuse`'s own volume-conservation check (see `_boolean_op_failed`'s
+    doc comment) needs it at runtime, not just in tests."""
+    props = GProp_GProps()
+    brepgprop.VolumeProperties(shape, props)
+    return props.Mass()
+
+
+_FUSE_VOLUME_TOLERANCE = 1e-4
 
 
 def _safe_fuse(a: TopoDS_Shape, b: TopoDS_Shape, op: str, body_ids: list[str]) -> TopoDS_Shape:
@@ -993,10 +1023,11 @@ def _safe_fuse(a: TopoDS_Shape, b: TopoDS_Shape, op: str, body_ids: list[str]) -
     own doc comment for exactly what this catches and why `IsDone()` alone
     isn't enough. Only ever used for a genuine Fuse (Boss's own multi-target
     fuse, Merge, Mirror/Pattern's `FUSE_INTO_ONE`) - unlike Cut, fusing two
-    non-empty solids together can never legitimately produce zero solids,
-    so the empty-result check is safe here without the "a Cut may
-    legitimately consume its whole target" carve-out `_register_solids`'s
-    own doc comment documents for Cut specifically."""
+    non-empty solids together can never legitimately produce zero solids or
+    a result smaller than either operand, so both checks below are safe
+    here without the "a Cut may legitimately consume its whole target"
+    carve-out `_register_solids`'s own doc comment documents for Cut
+    specifically."""
     try:
         fuse = BRepAlgoAPI_Fuse(a, b)
     except RuntimeError as exc:
@@ -1005,6 +1036,8 @@ def _safe_fuse(a: TopoDS_Shape, b: TopoDS_Shape, op: str, body_ids: list[str]) -
         raise _boolean_op_failed(op, body_ids)
     shape = fuse.Shape()
     if not _explode_solids(shape):
+        raise _boolean_op_failed(op, body_ids)
+    if _volume(shape) < max(_volume(a), _volume(b)) * (1 - _FUSE_VOLUME_TOLERANCE):
         raise _boolean_op_failed(op, body_ids)
     return shape
 
