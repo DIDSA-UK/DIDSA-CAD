@@ -972,6 +972,43 @@ def _register_solids(bodies: dict[str, TopoDS_Shape], base_id: str, shape: TopoD
             bodies[f"{base_id}#{i}"] = solid
 
 
+def _boolean_op_failed(op: str, body_ids: list[str]) -> HTTPException:
+    """A `BRepAlgoAPI_Fuse` call either raised a raw OCCT `RuntimeError`
+    (the same class of failure `fillet.py`'s/`chamfer.py`'s own
+    `_build_fillet`/`_build_chamfer` already guard against - see their own
+    doc comments), reported `IsDone() == False`, or - confirmed empirically
+    against a real OCCT kernel while investigating a body silently losing
+    material after Merge - produced a shape with zero `TopAbs_SOLID`s
+    despite reporting success (two independently-swept closed-curved-path
+    tubes fused together; `IsDone()` alone does not catch this case, so
+    `_safe_fuse` below also checks the result actually contains solid
+    material). All three are geometric failures, not malformed references
+    - a structured 422, not an uncaught exception surfacing as a 500, and
+    critically not a silently-wrong result standing in for a real fuse."""
+    return HTTPException(status_code=422, detail={"type": "boolean_op_failed", "op": op, "body_ids": sorted(body_ids)})
+
+
+def _safe_fuse(a: TopoDS_Shape, b: TopoDS_Shape, op: str, body_ids: list[str]) -> TopoDS_Shape:
+    """`BRepAlgoAPI_Fuse(a, b).Shape()`, hardened - see `_boolean_op_failed`'s
+    own doc comment for exactly what this catches and why `IsDone()` alone
+    isn't enough. Only ever used for a genuine Fuse (Boss's own multi-target
+    fuse, Merge, Mirror/Pattern's `FUSE_INTO_ONE`) - unlike Cut, fusing two
+    non-empty solids together can never legitimately produce zero solids,
+    so the empty-result check is safe here without the "a Cut may
+    legitimately consume its whole target" carve-out `_register_solids`'s
+    own doc comment documents for Cut specifically."""
+    try:
+        fuse = BRepAlgoAPI_Fuse(a, b)
+    except RuntimeError as exc:
+        raise _boolean_op_failed(op, body_ids) from exc
+    if not fuse.IsDone():
+        raise _boolean_op_failed(op, body_ids)
+    shape = fuse.Shape()
+    if not _explode_solids(shape):
+        raise _boolean_op_failed(op, body_ids)
+    return shape
+
+
 def _apply_boss_or_cut(
     bodies: dict[str, TopoDS_Shape],
     feature_id: str,
@@ -1010,7 +1047,7 @@ def _apply_boss_or_cut(
 
         merged = solid
         for target_id in target_ids:
-            merged = BRepAlgoAPI_Fuse(merged, bodies[target_id]).Shape()
+            merged = _safe_fuse(merged, bodies[target_id], "boss_fuse", target_ids)
 
         survivor_id = min(target_ids, key=lambda tid: feature_index[base_feature_id(tid)])
         for target_id in target_ids:
@@ -1025,7 +1062,13 @@ def _apply_boss_or_cut(
                     target_id,
                 )
                 continue
-            cut_result = BRepAlgoAPI_Cut(bodies[target_id], solid).Shape()
+            try:
+                cut_op = BRepAlgoAPI_Cut(bodies[target_id], solid)
+            except RuntimeError as exc:
+                raise _boolean_op_failed("cut", [target_id]) from exc
+            if not cut_op.IsDone():
+                raise _boolean_op_failed("cut", [target_id])
+            cut_result = cut_op.Shape()
             del bodies[target_id]
             _register_solids(bodies, target_id, cut_result)
 
@@ -1062,9 +1105,9 @@ def _fuse_realized_instances(
     already proved every source Body it names resolved successfully."""
     merged: TopoDS_Shape | None = None
     for shape in realized_shapes:
-        merged = shape if merged is None else BRepAlgoAPI_Fuse(merged, shape).Shape()
+        merged = shape if merged is None else _safe_fuse(merged, shape, "merge_fuse", base_ids)
     for base_id in base_ids:
-        merged = bodies[base_id] if merged is None else BRepAlgoAPI_Fuse(merged, bodies[base_id]).Shape()
+        merged = bodies[base_id] if merged is None else _safe_fuse(merged, bodies[base_id], "merge_fuse", base_ids)
 
     survivor_id = min(base_ids, key=lambda bid: feature_index[base_feature_id(bid)])
     for base_id in base_ids:

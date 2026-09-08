@@ -1993,7 +1993,13 @@ def _validate_surface_payload(
 
 
 _SWEEP_PATH_ENTITY_TYPES = frozenset(
-    {SketchEntityType.LINE, SketchEntityType.ARC, SketchEntityType.ELLIPSE, SketchEntityType.SPLINE}
+    {
+        SketchEntityType.LINE,
+        SketchEntityType.ARC,
+        SketchEntityType.CIRCLE,
+        SketchEntityType.ELLIPSE,
+        SketchEntityType.SPLINE,
+    }
 )
 
 
@@ -2001,14 +2007,14 @@ def _validate_sweep_path_refs(path_refs: list[SketchEntityRef]) -> None:
     """A SweepFeature must name at least one `path_refs` entry (422,
     mirroring Cut's own "at least one target_body_ids entry" check in
     `_validate_target_body_ids`) and every named ref must be a Line/Arc/
-    Ellipse/Spline (422, mirroring `_validate_fillet_edge_refs`'s own
-    `shape_type == EDGE` check) - these are payload-shape checks. Whether
-    the named entities actually resolve, chain into one connected path
-    (open or closed), or - for a closed/standalone Ellipse - stand alone,
-    is a referential/geometric check made by `app.document.sweep.resolve_
-    sweep` instead (the same "payload shape in the router, resolution in
-    the OCCT module" split every other structured Feature error in this
-    codebase already uses).
+    Circle/Ellipse/Spline (422, mirroring `_validate_fillet_edge_refs`'s
+    own `shape_type == EDGE` check) - these are payload-shape checks.
+    Whether the named entities actually resolve, chain into one connected
+    path (open or closed), or - for a closed/standalone Circle/Ellipse -
+    stand alone, is a referential/geometric check made by
+    `app.document.sweep.resolve_sweep` instead (the same "payload shape in
+    the router, resolution in the OCCT module" split every other
+    structured Feature error in this codebase already uses).
 
     On-device feedback ("unable to select an arc as the sweep path...
     ellipses and splines should also be valid targets"): this used to

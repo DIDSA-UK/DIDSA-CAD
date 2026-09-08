@@ -1029,19 +1029,27 @@ class _PartScreenState extends State<PartScreen> {
       _toggleProfileLoop(entity);
       return;
     }
-    // A sketchLine/Arc/Ellipse/Spline tap while the path picker is open
-    // extends/undoes the Sweep path being built - see [_togglePathPick].
-    // On-device feedback ("unable to select an arc as the sweep path...
-    // ellipses and splines should also be valid targets"): used to only
-    // route sketchLine here - Circle stays excluded (see
-    // [_pathPickerSelectionFilter]'s own doc comment; unlike Ellipse, a
-    // Circle has no chain-connection precedent anywhere else in this
-    // file, and wasn't asked for). Checked before the Revolve axis
-    // special-case below for the same reason the profile-picker check
-    // above is - the two modes are never active at the same time.
+    // A sketchLine/Arc/Circle/Ellipse/Spline tap while the path picker is
+    // open extends/undoes the Sweep path being built - see
+    // [_togglePathPick]. On-device feedback ("unable to select an arc as
+    // the sweep path... ellipses and splines should also be valid
+    // targets"): used to only route sketchLine here. Bug fix (root-caused
+    // against a real OCCT kernel: a hollow Profile swept along a closed
+    // path built from 2+ Arcs fragmented into disconnected Bodies from a
+    // single Sweep, traced to a real seam vertex at the arc-to-arc join -
+    // see `backend/app/document/sweep.py`'s own Circle branch of
+    // `_resolve_path_segment`): Circle now joins Ellipse as a valid,
+    // standalone closed path entity - a single genuinely seamless edge,
+    // sidestepping that seam-vertex problem entirely for the common
+    // "sweep a ring along a circular path" case; previously excluded only
+    // because it wasn't yet asked for (see [_pathPickerSelectionFilter]'s
+    // own doc comment). Checked before the Revolve axis special-case below
+    // for the same reason the profile-picker check above is - the two
+    // modes are never active at the same time.
     if (_pathPickerActive &&
         (entity.kind == SelectionEntityKind.sketchLine ||
             entity.kind == SelectionEntityKind.sketchArc ||
+            entity.kind == SelectionEntityKind.sketchCircle ||
             entity.kind == SelectionEntityKind.sketchEllipse ||
             entity.kind == SelectionEntityKind.sketchSpline)) {
       _togglePathPick(entity);
@@ -3638,15 +3646,15 @@ class _PartScreenState extends State<PartScreen> {
   Set<SelectionEntityRef>? _entitiesBeforePathPicker;
 
   /// Restricts the picker session to `sketchLine`/`sketchArc`/
-  /// `sketchEllipse`/`sketchSpline` hits - Point/Circle are never valid
-  /// path segments (a Circle, like Ellipse, is always closed/standalone,
-  /// but wasn't asked for - see [_togglePathPick]'s own doc comment for
-  /// why Ellipse gets the standalone-only treatment Circle doesn't), and
-  /// unlike the profile picker's own filter, `body` stays off too -
-  /// target-body picking only happens later, once [SweepPanel] itself is
-  /// open. `sketchArc`/`sketchEllipse`/`sketchSpline` are left at their
-  /// own `true` defaults (see [SelectionFilterState]'s own doc comment) -
-  /// only `sketchCircle` needs an explicit override.
+  /// `sketchCircle`/`sketchEllipse`/`sketchSpline` hits - Point is never a
+  /// valid path segment, and unlike the profile picker's own filter,
+  /// `body` stays off too - target-body picking only happens later, once
+  /// [SweepPanel] itself is open. Bug fix (see [_togglePathPick]'s own doc
+  /// comment): `sketchCircle` now joins `sketchArc`/`sketchEllipse`/
+  /// `sketchSpline` at its own `true` default (see [SelectionFilterState]'s
+  /// own doc comment) - Circle, like Ellipse, is always closed/standalone,
+  /// and was previously excluded here only because it wasn't yet asked
+  /// for, not because it couldn't work.
   static const _pathPickerSelectionFilter = SelectionFilterState(
     vertex: false,
     edge: false,
@@ -3654,7 +3662,6 @@ class _PartScreenState extends State<PartScreen> {
     body: false,
     sketchPoint: false,
     sketchLine: true,
-    sketchCircle: false,
     plane: false,
   );
 
@@ -3689,8 +3696,10 @@ class _PartScreenState extends State<PartScreen> {
   /// picked segment's own endpoints stay resolvable even if its Sketch gets
   /// hidden mid-pick) - null if that Sketch/entity can no longer be
   /// resolved, or if [kind] is a closed/standalone kind with no endpoints
-  /// (Ellipse - see [_togglePathPick]'s own doc comment; never called with
-  /// Circle, [_pathPickerSelectionFilter] excludes it).
+  /// (Circle or Ellipse - see [_togglePathPick]'s own doc comment; a
+  /// standalone-only entity is never actually chained, so this is never
+  /// called with one in a valid flow, but stays defensive - matching
+  /// [_pathIsClosed]'s own explicit early-return for both).
   ///
   /// On-device feedback ("unable to select an arc as the sweep path...
   /// ellipses and splines should also be valid targets"): generalizes the
@@ -3743,6 +3752,7 @@ class _PartScreenState extends State<PartScreen> {
   /// `app.sketch.models`) expects for `SketchEntityRefDto.entityType`.
   String _pathEntityTypeString(SelectionEntityKind kind) => switch (kind) {
         SelectionEntityKind.sketchArc => 'arc',
+        SelectionEntityKind.sketchCircle => 'circle',
         SelectionEntityKind.sketchEllipse => 'ellipse',
         SelectionEntityKind.sketchSpline => 'spline',
         _ => 'line',
@@ -3812,6 +3822,7 @@ class _PartScreenState extends State<PartScreen> {
   /// Spline pick highlights correctly, not just Line picks).
   SelectionEntityKind _pathSelectionKindFor(String entityType) => switch (entityType) {
         'arc' => SelectionEntityKind.sketchArc,
+        'circle' => SelectionEntityKind.sketchCircle,
         'ellipse' => SelectionEntityKind.sketchEllipse,
         'spline' => SelectionEntityKind.sketchSpline,
         _ => SelectionEntityKind.sketchLine,
@@ -3851,9 +3862,15 @@ class _PartScreenState extends State<PartScreen> {
     final isSameAsLast = _pathPickerRefs.isNotEmpty &&
         _pathPickerRefs.last.sketchId == ref.sketchId &&
         _pathPickerRefs.last.entityId == ref.entityId;
-    final currentIsEllipseOnly = _pathPickerRefs.length == 1 && _pathPickerRefs.single.entityType == 'ellipse';
-    if (_pathPickerRefs.isNotEmpty && !isSameAsLast && (entityType == 'ellipse' || currentIsEllipseOnly)) {
-      _showSnack('An Ellipse path must stand alone - clear the current pick first');
+    // Bug fix: Circle joins Ellipse as a standalone-only entity type - see
+    // [_pathPickerSelectionFilter]'s own doc comment.
+    const standaloneOnlyTypes = {'circle', 'ellipse'};
+    final currentIsStandaloneOnly =
+        _pathPickerRefs.length == 1 && standaloneOnlyTypes.contains(_pathPickerRefs.single.entityType);
+    if (_pathPickerRefs.isNotEmpty &&
+        !isSameAsLast &&
+        (standaloneOnlyTypes.contains(entityType) || currentIsStandaloneOnly)) {
+      _showSnack('A Circle or Ellipse path must stand alone - clear the current pick first');
       return;
     }
 
@@ -3905,10 +3922,11 @@ class _PartScreenState extends State<PartScreen> {
   /// [SweepPanel]'s own `pathIsClosed` (via [_sweepPathIsClosed]) so the two
   /// never disagree about the same path.
   bool _pathIsClosed(List<SketchEntityRefDto> refs) {
-    // A standalone Ellipse (see [_togglePathPick]'s own doc comment) is
-    // always closed, but has no endpoints for [_tracePathPoints] to trace -
-    // checked explicitly rather than falling through to it.
-    if (refs.length == 1 && refs.single.entityType == 'ellipse') return true;
+    // A standalone Circle or Ellipse (see [_togglePathPick]'s own doc
+    // comment) is always closed, but has no endpoints for
+    // [_tracePathPoints] to trace - checked explicitly rather than falling
+    // through to it.
+    if (refs.length == 1 && (refs.single.entityType == 'circle' || refs.single.entityType == 'ellipse')) return true;
     final points = _tracePathPoints(refs);
     return points != null && points.length > 2 && _pathPointsCoincide(points.first, points.last);
   }
@@ -3920,7 +3938,7 @@ class _PartScreenState extends State<PartScreen> {
   /// The top banner's live status text - segment count plus open/closed,
   /// mirroring [SweepPanel]'s own path summary line.
   String _pathPickerBannerText() {
-    if (_pathPickerRefs.isEmpty) return 'Tap a line, arc, ellipse or spline to start the path';
+    if (_pathPickerRefs.isEmpty) return 'Tap a line, arc, circle, ellipse or spline to start the path';
     final isClosed = _pathIsClosed(_pathPickerRefs);
     final count = _pathPickerRefs.length;
     return '$count segment${count == 1 ? '' : 's'} picked'
