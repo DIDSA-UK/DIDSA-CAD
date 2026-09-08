@@ -410,3 +410,240 @@ def test_residual_check_still_rejects_a_genuinely_wrong_horizontal_distance():
     sketch.constraints[horizontal.id] = horizontal
 
     assert _residual_verified_convergence(sketch) is False
+
+
+# --- Bug fix: Coincident/Collinear/PointOnLine/Perpendicular/Concentric ------
+#
+# On-device feedback: an ordinary hand-drawn profile mixing Horizontal/
+# Vertical constraints with a Collinear (tying two segments into one
+# straight run) and/or Coincident-joined endpoints - a completely standard
+# dimensioning pattern, not an edge case - showed red/over-constrained even
+# though it's genuinely solvable. Root cause: these five types were entirely
+# missing from `_RESIDUAL_CHECKABLE_CONSTRAINT_TYPES`, so their mere
+# *presence* anywhere in the Sketch disqualified the whole thing from
+# residual verification, the same class of gap `test_polygon_with_
+# reference_circles_across_flats_with_the_correct_value_converges` above
+# already fixed once for AtMidpointConstraint/Polygon reference circles.
+#
+# Each type gets its own direct residual-function test (positive: an
+# already-exact satisfying configuration set directly on `sketch.points`,
+# bypassing the solve itself, mirroring `test_hexagon_across_flats_...`
+# above; negative: the same constraint against a genuinely wrong
+# configuration), then one end-to-end test reproducing the actual reported
+# shape - a Polygon's own already-redundant chain (proven rescuable above)
+# with an *additional*, independently-redundant Coincident/Collinear
+# constraint stacked on top, confirming that addition no longer disqualifies
+# the whole Sketch the way it did before this fix.
+
+
+def test_coincident_residual_holds_for_two_points_at_the_same_position():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(3.0, 4.0)
+    b = sketch.add_point(3.0, 4.0)
+    sketch.add_coincident_constraint(a.id, b.id)
+
+    assert _residual_verified_convergence(sketch) is True
+
+
+def test_coincident_residual_rejects_two_points_at_different_positions():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(3.0, 4.0)
+    b = sketch.add_point(3.0, 5.0)
+    sketch.add_coincident_constraint(a.id, b.id)
+
+    assert _residual_verified_convergence(sketch) is False
+
+
+def test_concentric_residual_holds_for_two_circles_with_the_same_centre():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center1 = sketch.add_point(0.0, 0.0)
+    edge1 = sketch.add_point(5.0, 0.0)
+    circle1 = sketch.add_circle(center1.id, edge1.id)
+    center2 = sketch.add_point(0.0, 0.0)
+    edge2 = sketch.add_point(0.0, 2.0)
+    circle2 = sketch.add_circle(center2.id, edge2.id)
+    sketch.add_concentric_constraint(circle1.id, circle2.id)
+
+    assert _residual_verified_convergence(sketch) is True
+
+
+def test_concentric_residual_rejects_two_circles_with_different_centres():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center1 = sketch.add_point(0.0, 0.0)
+    edge1 = sketch.add_point(5.0, 0.0)
+    circle1 = sketch.add_circle(center1.id, edge1.id)
+    center2 = sketch.add_point(1.0, 1.0)
+    edge2 = sketch.add_point(1.0, 3.0)
+    circle2 = sketch.add_circle(center2.id, edge2.id)
+    sketch.add_concentric_constraint(circle1.id, circle2.id)
+
+    assert _residual_verified_convergence(sketch) is False
+
+
+def test_perpendicular_residual_holds_for_two_genuinely_perpendicular_lines():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(10.0, 0.0)
+    c = sketch.add_point(0.0, 0.0)
+    d = sketch.add_point(0.0, 7.0)
+    line1 = sketch.add_line(a.id, b.id)
+    line2 = sketch.add_line(c.id, d.id)
+    sketch.add_perpendicular_constraint(line1.id, line2.id)
+
+    assert _residual_verified_convergence(sketch) is True
+
+
+def test_perpendicular_residual_rejects_two_lines_that_are_not_perpendicular():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(10.0, 0.0)
+    c = sketch.add_point(0.0, 0.0)
+    d = sketch.add_point(5.0, 5.0)
+    line1 = sketch.add_line(a.id, b.id)
+    line2 = sketch.add_line(c.id, d.id)
+    sketch.add_perpendicular_constraint(line1.id, line2.id)
+
+    assert _residual_verified_convergence(sketch) is False
+
+
+def test_point_on_line_residual_holds_for_a_point_exactly_on_the_line():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(10.0, 0.0)
+    line = sketch.add_line(a.id, b.id)
+    point = sketch.add_point(4.0, 0.0)
+    sketch.add_point_on_line_constraint(point.id, line.id)
+
+    assert _residual_verified_convergence(sketch) is True
+
+
+def test_point_on_line_residual_rejects_a_point_off_the_line():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(10.0, 0.0)
+    line = sketch.add_line(a.id, b.id)
+    point = sketch.add_point(4.0, 1.0)
+    sketch.add_point_on_line_constraint(point.id, line.id)
+
+    assert _residual_verified_convergence(sketch) is False
+
+
+def test_collinear_residual_holds_for_two_lines_on_the_same_straight_run():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(10.0, 0.0)
+    c = sketch.add_point(15.0, 0.0)
+    d = sketch.add_point(20.0, 0.0)
+    line1 = sketch.add_line(a.id, b.id)
+    line2 = sketch.add_line(c.id, d.id)
+    sketch.add_collinear_constraint(line1.id, line2.id)
+
+    assert _residual_verified_convergence(sketch) is True
+
+
+def test_collinear_residual_rejects_two_lines_that_are_not_collinear():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(10.0, 0.0)
+    c = sketch.add_point(15.0, 1.0)
+    d = sketch.add_point(20.0, 1.0)
+    line1 = sketch.add_line(a.id, b.id)
+    line2 = sketch.add_line(c.id, d.id)
+    sketch.add_collinear_constraint(line1.id, line2.id)
+
+    assert _residual_verified_convergence(sketch) is False
+
+
+def test_collinear_residual_is_never_verified_against_a_degenerate_zero_length_line1():
+    """Guard mirroring CurveTangentConstraint's own degenerate-concentric-
+    centres branch above: a near-zero-length Line 1 has no well-defined
+    "line through its endpoints" - must never be treated as trivially
+    satisfied."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(5.0, 5.0)
+    b = sketch.add_point(5.0 + 1e-10, 5.0)
+    c = sketch.add_point(0.0, 0.0)
+    d = sketch.add_point(10.0, 0.0)
+    line1 = sketch.add_line(a.id, b.id)
+    line2 = sketch.add_line(c.id, d.id)
+    sketch.add_collinear_constraint(line1.id, line2.id)
+
+    assert _residual_verified_convergence(sketch) is False
+
+
+def test_polygon_across_flats_plus_a_redundant_but_satisfied_coincident_constraint_still_converges():
+    """Reproduces the actual reported bug shape: an already-known-rescuable
+    stacked-redundancy Sketch (the Polygon-across-flats case above) with an
+    *additional* Coincident constraint stacked on top - before this fix,
+    CoincidentConstraint's mere presence disqualified the whole Sketch from
+    residual verification regardless of how well-understood every other
+    Constraint was."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    first_vertex = sketch.add_point(10.0, 0.0)
+    polygon = sketch.add_polygon(center.id, first_vertex.id, 6)
+    sketch.constraints[polygon.radius_constraint_id].provisional = False
+    solve_sketch(sketch)
+
+    across_flats = 2 * 10.0 * math.cos(math.pi / 6)
+    sketch.add_line_distance_constraint(polygon.line_ids[0], polygon.line_ids[3], across_flats)
+
+    # A harmless, exactly-satisfied Coincident constraint between a new
+    # Point and the polygon's own already-solved centre - real redundancy
+    # (the new Point adds no actual freedom of its own once pinned here),
+    # genuinely consistent, exactly the class this fix targets.
+    duplicate_center = sketch.add_point(center.x, center.y)
+    sketch.add_coincident_constraint(center.id, duplicate_center.id)
+
+    result = solve_sketch(sketch)
+
+    assert result.converged
+
+
+def test_stepped_rectangle_with_horizontal_vertical_and_collinear_converges():
+    """Reproduces the reported screenshot's actual shape: a stepped/notched
+    profile fully dimensioned with Horizontal/Vertical constraints on every
+    edge (a completely ordinary dimensioning practice), plus a Collinear
+    constraint tying an extra wall segment onto the same line as one of the
+    profile's own edges - genuinely solvable (the Collinear is exactly
+    satisfied by construction below), but its mere presence used to
+    disqualify the whole Sketch from residual verification."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    p0 = sketch.add_point(0.0, 0.0)
+    p1 = sketch.add_point(10.0, 0.0)
+    p2 = sketch.add_point(10.0, 6.0)
+    p3 = sketch.add_point(6.0, 6.0)
+    p4 = sketch.add_point(6.0, 10.0)
+    p5 = sketch.add_point(0.0, 10.0)
+
+    bottom = sketch.add_line(p0.id, p1.id)
+    right_lower = sketch.add_line(p1.id, p2.id)
+    step = sketch.add_line(p2.id, p3.id)
+    right_upper = sketch.add_line(p3.id, p4.id)
+    top = sketch.add_line(p4.id, p5.id)
+    left = sketch.add_line(p5.id, p0.id)
+
+    for line in (bottom, top):
+        sketch.add_horizontal_constraint(line.id)
+    for line in (right_lower, right_upper, left):
+        sketch.add_vertical_constraint(line.id)
+    sketch.add_horizontal_constraint(step.id)
+
+    sketch.add_distance_constraint(p0.id, p1.id, 10.0)
+    sketch.add_distance_constraint(p5.id, p0.id, 10.0)
+    sketch.add_distance_constraint(p4.id, p5.id, 6.0)
+    sketch.add_distance_constraint(p1.id, p2.id, 6.0)
+
+    # An extra wall segment, unconnected to the profile, deliberately built
+    # exactly along the extension of the left edge's own line (x=0) - a
+    # real Collinear use case (aligning a separate wall to an existing one)
+    # that is exactly satisfied by construction, so the Sketch as a whole
+    # must still converge once Collinear no longer disqualifies it.
+    extra_a = sketch.add_point(0.0, -5.0)
+    extra_b = sketch.add_point(0.0, -15.0)
+    extra_wall = sketch.add_line(extra_a.id, extra_b.id)
+    sketch.add_collinear_constraint(left.id, extra_wall.id)
+
+    result = solve_sketch(sketch)
+
+    assert result.converged

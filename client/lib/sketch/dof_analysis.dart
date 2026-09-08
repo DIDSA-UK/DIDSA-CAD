@@ -86,7 +86,20 @@
 /// confirmed directly against the real solver for the Polygon case - see
 /// `backend/app/sketch/solver.py`'s own `_residual_verified_convergence`
 /// doc comment, which exists specifically to rescue this class of false
-/// positive on the *backend* side). The real (2,3)-pebble game,
+/// positive on the *backend* side). Bug fix (on-device feedback: an
+/// ordinary Horizontal/Vertical/Collinear-dimensioned profile - e.g. a
+/// stepped rectangle - read red even though it was genuinely solvable):
+/// that backend rescue path originally only recognised 9 constraint
+/// types, and required *every* constraint in the Sketch to be one of them
+/// before it would vouch for anything - so a Coincident/Collinear/
+/// PointOnLine/Perpendicular/Concentric constraint anywhere (Coincident
+/// and Collinear especially, both extremely common in a hand-drawn
+/// profile) disqualified the whole Sketch from rescue even when the
+/// actual redundancy was entirely within an already-checkable subset.
+/// `_RESIDUAL_CHECKABLE_CONSTRAINT_TYPES` now also covers those five -
+/// see that constant's own doc comment for the per-type safety reasoning
+/// (and why `AtMidpointConstraint` stays deliberately excluded).
+/// The real (2,3)-pebble game,
 /// generalised to weighted constraints, could tell "harmless redundancy"
 /// apart from genuine over-constraint on purely structural grounds; this
 /// counting approach cannot - so [SketchRigidity.analyze]'s own
