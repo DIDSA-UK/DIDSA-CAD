@@ -21,6 +21,15 @@ enum FeaturePickerAction {
   sweptSurface,
   loftSurface,
   ruledSurface,
+  // Phase 2 surfacing package: Knit Surfaces/Offset Surface join the same
+  // "Surfacing" section (both surface-producing); Thicken/Solid from
+  // Surfaces get their own new "From Surfaces" section below it instead
+  // (both solid-producing/surface-consuming - see that section's own doc
+  // comment for why they don't belong in "Surfacing" itself).
+  knitSurface,
+  offsetSurface,
+  thicken,
+  solidFromSurfaces,
   fillet,
   chamfer,
   mirror,
@@ -189,6 +198,46 @@ Future<FeaturePickerAction?> showFeaturePickerSheet(BuildContext context) {
                                 icon: 'assets/icons/feature/feature_ruled_surface.svg',
                                 label: 'Ruled Surface',
                                 action: FeaturePickerAction.ruledSurface,
+                              ),
+                              // Phase 2 surfacing package: both surface-
+                              // producing (Knit sews 2+ surfaces into one,
+                              // Offset Surface offsets a face/surface into a
+                              // brand-new one), so both join this section
+                              // rather than the new "From Surfaces" one
+                              // below (see that section's own doc comment).
+                              _FeatureEntry(
+                                icon: 'assets/icons/feature/feature_knit.svg',
+                                label: 'Knit Surfaces',
+                                action: FeaturePickerAction.knitSurface,
+                              ),
+                              _FeatureEntry(
+                                icon: 'assets/icons/feature/feature_offset_surface.svg',
+                                label: 'Offset Surface',
+                                action: FeaturePickerAction.offsetSurface,
+                              ),
+                            ],
+                          ),
+                          _FeatureSection(
+                            // Phase 2 surfacing package: Thicken/Solid from
+                            // Surfaces are solid-producing/surface-consuming
+                            // (the mirror image of "Surfacing" above, which
+                            // means "produces a Surface") - a new, small
+                            // section directly below it rather than folded
+                            // into it, per this work package's own plan
+                            // (mixing the two would blur "Surfacing"'s
+                            // established "produces a Surface" meaning).
+                            title: 'From Surfaces',
+                            initiallyExpanded: false,
+                            entries: [
+                              _FeatureEntry(
+                                icon: 'assets/icons/feature/feature_thicken.svg',
+                                label: 'Thicken',
+                                action: FeaturePickerAction.thicken,
+                              ),
+                              _FeatureEntry(
+                                icon: 'assets/icons/feature/feature_solid_from_surfaces.svg',
+                                label: 'Solid from Surfaces',
+                                action: FeaturePickerAction.solidFromSurfaces,
                               ),
                             ],
                           ),

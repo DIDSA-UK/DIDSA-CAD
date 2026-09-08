@@ -43,6 +43,11 @@ String featureDisplayName(List<FeatureDto> features, int index) {
     'swept_surface' => 'Swept Surface',
     'loft_surface' => 'Loft Surface',
     'ruled_surface' => 'Ruled Surface',
+    // Phase 2 surfacing package: four new surface-consuming tools.
+    'thicken' => 'Thicken',
+    'knit_surface' => 'Knit Surface',
+    'solid_from_surfaces' => 'Solid from Surfaces',
+    'offset_surface' => 'Offset Surface',
     'import' => 'Import',
     'mirror' => 'Mirror',
     'pattern' => 'Pattern',
@@ -122,6 +127,13 @@ String _featureTypeAsset(String type) => switch (type) {
       'swept_surface' => 'assets/icons/feature/feature_sweep.svg',
       'loft_surface' => 'assets/icons/feature/feature_loft.svg',
       'ruled_surface' => 'assets/icons/feature/feature_ruled_surface.svg',
+      // Phase 2 surfacing package: four new surface-consuming tools, each
+      // its own distinct glyph (no solid-tool analog to borrow - see this
+      // package's own plan for each icon's concept).
+      'thicken' => 'assets/icons/feature/feature_thicken.svg',
+      'knit_surface' => 'assets/icons/feature/feature_knit.svg',
+      'solid_from_surfaces' => 'assets/icons/feature/feature_solid_from_surfaces.svg',
+      'offset_surface' => 'assets/icons/feature/feature_offset_surface.svg',
       'import' => 'assets/icons/feature/parttoolbar_import.svg',
       'mirror' => 'assets/icons/feature/feature_mirror.svg',
       'pattern' => 'assets/icons/feature/feature_pattern.svg',

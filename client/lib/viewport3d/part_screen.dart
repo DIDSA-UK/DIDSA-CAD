@@ -44,12 +44,14 @@ import 'feature_tree_panel.dart';
 import 'export_format_dialog.dart';
 import 'fillet_panel.dart';
 import 'import_format_dialog.dart';
+import 'knit_surface_panel.dart';
 import 'loft_panel.dart';
 import 'loft_surface_panel.dart';
 import 'merge_panel.dart';
 import 'measurement_panel.dart';
 import 'mesh_geometry.dart';
 import 'mirror_panel.dart';
+import 'offset_surface_panel.dart';
 import 'override_stack.dart';
 import 'part_toolbar.dart';
 import 'part_viewport.dart';
@@ -58,6 +60,8 @@ import 'pending_job_store.dart';
 import 'picker_ribbon.dart';
 import 'planar_surface_panel.dart';
 import 'plane_context_sheet.dart';
+import 'solid_from_surfaces_panel.dart';
+import 'thicken_panel.dart';
 import 'reference_planes.dart';
 import 'render_mode.dart';
 import 'revolve_panel.dart';
@@ -138,6 +142,14 @@ const _bodyProducingFeatureTypes = {
   // `SplitFeature`'s own docstring), same "eligible source" reasoning as
   // `merge`/`boolean` just above.
   'split',
+  // Phase 2 surfacing package: Thicken and Solid from Surfaces both always
+  // mint a brand-new, standalone solid Body (no Boss/Cut, no `target_
+  // body_ids` at all - see each backend Feature's own docstring), so both
+  // are eligible Mirror/Pattern sources the same way every other type in
+  // this set already is. Knit Surfaces/Offset Surface deliberately do NOT
+  // join this set - they produce Surfaces, not Bodies.
+  'thicken',
+  'solid_from_surfaces',
 };
 
 /// Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
@@ -852,6 +864,10 @@ class _PartScreenState extends State<PartScreen> {
       !_sweptSurfaceActive &&
       !_loftSurfaceActive &&
       !_ruledSurfaceActive &&
+      !_thickenActive &&
+      !_knitSurfaceActive &&
+      !_solidFromSurfacesActive &&
+      !_offsetSurfaceActive &&
       !_mirrorActive &&
       !_patternActive &&
       !_mergeActive &&
@@ -886,6 +902,10 @@ class _PartScreenState extends State<PartScreen> {
           !_sweptSurfaceActive &&
           !_loftSurfaceActive &&
           !_ruledSurfaceActive &&
+      !_thickenActive &&
+      !_knitSurfaceActive &&
+      !_solidFromSurfacesActive &&
+      !_offsetSurfaceActive &&
           !_mirrorActive &&
           !_patternActive &&
           !_mergeActive &&
@@ -962,6 +982,10 @@ class _PartScreenState extends State<PartScreen> {
       _sweptSurfaceActive ||
       _loftSurfaceActive ||
       _ruledSurfaceActive ||
+      _thickenActive ||
+      _knitSurfaceActive ||
+      _solidFromSurfacesActive ||
+      _offsetSurfaceActive ||
       _mirrorActive ||
       _patternActive ||
       _mergeActive ||
@@ -1236,6 +1260,19 @@ class _PartScreenState extends State<PartScreen> {
         _moveFaceMode == MoveFaceMode.direction &&
         (entity.kind == SelectionEntityKind.edge || entity.kind == SelectionEntityKind.sketchLine)) {
       _setMoveFaceDirectionFromEntity(entity);
+      return;
+    }
+    // Phase 2 surfacing package, last of the four: a face tap while
+    // [OffsetSurfacePanel] is open in `face` mode sets (replacing any
+    // already-picked one) that mode's own single source face - mirrors the
+    // Move Face Direction case just above exactly (same replace-not-
+    // accumulate shape), except restricted to `face` only (never edge/
+    // sketchLine - Offset Surface has no direction concept, only a single
+    // face or surface source).
+    if (_offsetSurfaceActive &&
+        _offsetSurfaceKind == OffsetSurfaceSourceKind.face &&
+        entity.kind == SelectionEntityKind.face) {
+      _setOffsetSurfaceFaceRef(entity);
       return;
     }
     // V3: a face tap while [MoveFacePanel] is open in Direction mode (like
@@ -4497,17 +4534,17 @@ class _PartScreenState extends State<PartScreen> {
   /// while [_loftSketchPickerActive].
   Set<String> _pickableLoftSketchIds = {};
 
-  /// True while the Feature tree is acting as a multi-select picker for
-  /// surface-producing Features (`produces == 'surface'`) - the Phase-0
-  /// tree-picker predicate a later phase wires into Thicken/Knit/Solid-
-  /// from-Surfaces/Offset-Surface panels. Mirrors [_loftSketchPickerActive]'s
-  /// declaration site; unused (never set true) until that later phase lands.
-  bool _surfaceFeaturePickerActive = false;
-
-  /// Every Feature id whose `produces == 'surface'`, unfiltered - mirrors
-  /// [_pickableLoftSketchIds]'s shape. Doubles as
-  /// [FeatureTreePanel.pickableFeaturePickerIds] while
-  /// [_surfaceFeaturePickerActive].
+  /// Every Feature id whose `produces == 'surface'`, unfiltered - the
+  /// Phase-0 `produces`-based tree-picker predicate, now shared by all four
+  /// Phase 2 surfacing tools' own pickers (see each tool's own state block:
+  /// [_thickenSourcePickerActive]/[_knitSurfacePickerActive]/
+  /// [_solidFromSurfacesPickerActive]/[_offsetSurfaceSourcePickerActive]) -
+  /// mirrors [_pickableLoftSketchIds]'s shape. Doubles as
+  /// [FeatureTreePanel.pickableFeaturePickerIds] while any of those is
+  /// active - unlike [_pickableLoftSketchIds], one shared getter rather than
+  /// four duplicated fields, since (unlike Loft's own eligibility-untested
+  /// Sketch set) this predicate is identical for every one of these four
+  /// tools and never needs a per-tool override.
   Set<String> get _pickableSurfaceFeatureIds =>
       {for (final f in _features) if (f.produces == 'surface') f.id};
 
@@ -5651,6 +5688,801 @@ class _PartScreenState extends State<PartScreen> {
         }
         await _refreshFeatures();
       });
+    }
+    await _endRollback();
+  }
+
+  /// Shared by every Phase 2 surfacing tool's own read-only source summary
+  /// (Thicken's [ThickenPanel.sourceSummary], Offset Surface's "From
+  /// Surface" summary) - the same display name [FeatureTreePanel]'s own
+  /// row shows for [feature], computed the same way [featureDisplayName]
+  /// always is (position among same-type Features up to and including its
+  /// own index in [_features]).
+  String _surfaceFeatureDisplayName(FeatureDto feature) =>
+      featureDisplayName(_features, _features.indexWhere((f) => f.id == feature.id));
+
+  // --- Phase 2 surfacing package: Thicken -------------------------------
+  // Single-pick-from-tree (via the Phase-0 `produces == 'surface'`
+  // predicate, see `_pickableSurfaceFeatureIds`) then a single signed-
+  // thickness field - mirrors [ScaleBodyPanel]'s own "one picked target,
+  // one live-preview-driving numeric field" shape (read-only source summary
+  // in place of that panel's target-Body summary). Always mints a brand-
+  // new, standalone solid Body (no Boss/Cut - see the backend
+  // `ThickenFeature`'s own docstring).
+
+  /// True while the Feature tree is acting as Thicken's own single-pick
+  /// source picker - unlike [_loftSketchPickerActive]'s multi-select shape,
+  /// [_onThickenSourcePicked] fires (and closes the picker) the instant an
+  /// eligible row is tapped, mirroring [isSketchPickerMode]'s own single-
+  /// tap-finalizes shape, just implemented via `isFeaturePickerMode` (a
+  /// Thicken source is any `produces == 'surface'` Feature, not only a
+  /// Sketch, so `isSketchPickerMode`'s own hardcoded Sketch-only gate
+  /// doesn't fit).
+  bool _thickenSourcePickerActive = false;
+
+  /// The surface-producing Feature currently backing [ThickenPanel] - null
+  /// while the picker is still live/nothing has been picked yet.
+  FeatureDto? _thickenSourceFeature;
+
+  double _thickenThickness = 1.0;
+
+  /// Mirrors [_previewScaleBodyFeatureId].
+  String? _previewThickenFeatureId;
+
+  /// Mirrors [_meshBeforeScaleBody].
+  List<BodyMeshDto>? _meshBeforeThicken;
+
+  /// B4: non-null while [ThickenPanel] is editing an *already-existing*
+  /// ThickenFeature - mirrors [_editingScaleBodyFeatureId].
+  String? _editingThickenFeatureId;
+
+  /// Mirrors [_scaleBodyEditSnapshot] - the edited Feature's own stored
+  /// values from just before editing started, restored on Cancel.
+  ({String surfaceFeatureId, double thickness})? _thickenEditSnapshot;
+
+  Timer? _thickenDebounce;
+
+  /// Mirrors [_scaleBodyBodyId != null]-style activity check, just against
+  /// [_thickenSourceFeature] instead of a bare body id.
+  bool get _thickenActive => _thickenSourceFeature != null;
+
+  /// The "Add" FAB's Thicken entry - if a surface-producing Feature is
+  /// already selected in the tree, skips straight to the panel (mirrors
+  /// [_revolveSurfaceSelectedFeature]'s own "already selected" fast path);
+  /// otherwise starts the picker.
+  void _thickenSelectedFeature() {
+    final featureId = _selectedFeatureId;
+    final feature = featureId == null ? null : _featureById(featureId);
+    if (feature != null && feature.produces == 'surface') {
+      _openThickenPanel(feature);
+      return;
+    }
+    _startThickenSourcePicker();
+  }
+
+  void _startThickenSourcePicker() {
+    setState(() {
+      _thickenSourcePickerActive = true;
+      _featureTreeVisible = true;
+      _toolbarOpen = false;
+      _planeSelectionModeStack.pop();
+    });
+  }
+
+  /// [FeatureTreePanel.onFeaturePickerToggle] while [_thickenSourcePickerActive]
+  /// - commits immediately (no accumulation), mirrors [_onPlanarSurfaceSketchPicked]'s
+  /// own single-pick-then-open-panel shape.
+  void _onThickenSourcePicked(FeatureDto feature) {
+    setState(() {
+      _thickenSourcePickerActive = false;
+      _featureTreeVisible = false;
+    });
+    _openThickenPanel(feature);
+  }
+
+  void _cancelThickenSourcePicker() {
+    setState(() {
+      _thickenSourcePickerActive = false;
+      _featureTreeVisible = false;
+    });
+  }
+
+  /// Opens [ThickenPanel] for a brand-new ThickenFeature - mirrors
+  /// [_openScaleBodyPanel]'s shape (no eager create here; the panel's own
+  /// `initState` postFrameCallback fires the first `onThicknessChanged`,
+  /// which reaches [_ensureThickenFeatureExists] via
+  /// [_scheduleThickenPreview] the same way every other debounced field
+  /// edit does).
+  void _openThickenPanel(FeatureDto sourceFeature) {
+    setState(() {
+      _thickenSourceFeature = sourceFeature;
+      _previewThickenFeatureId = null;
+      _thickenThickness = 1.0;
+      _meshBeforeThicken = _bodies;
+      _featureTreeVisible = false;
+    });
+  }
+
+  /// B4: opens [ThickenPanel] to edit an *already-existing* ThickenFeature -
+  /// mirrors [_openScaleBodyPanelForEdit]'s shape.
+  bool _openThickenPanelForEdit(FeatureDto feature) {
+    final surfaceFeatureId = feature.surfaceFeatureId;
+    final thickness = feature.thickness;
+    final sourceFeature = surfaceFeatureId == null ? null : _featureById(surfaceFeatureId);
+    if (sourceFeature == null || thickness == null) return false;
+    setState(() {
+      _thickenSourceFeature = sourceFeature;
+      _editingThickenFeatureId = feature.id;
+      _previewThickenFeatureId = feature.id;
+      _thickenThickness = thickness;
+      _thickenEditSnapshot = (surfaceFeatureId: surfaceFeatureId, thickness: thickness);
+      _meshBeforeThicken = _bodies;
+    });
+    return true;
+  }
+
+  /// [ThickenPanel.onThicknessChanged] - mirrors [_onScaleBodyFactorChanged].
+  void _onThickenThicknessChanged(double thickness) {
+    _thickenThickness = thickness;
+    _scheduleThickenPreview();
+  }
+
+  /// Mirrors [_scheduleScaleBodyPreview] exactly.
+  void _scheduleThickenPreview() {
+    _thickenDebounce?.cancel();
+    _thickenDebounce = Timer(const Duration(milliseconds: 500), () {
+      final sourceFeature = _thickenSourceFeature;
+      if (sourceFeature == null) return;
+      _runGuarded(() => _ensureThickenFeatureExists(sourceFeature.id, _thickenThickness));
+    });
+  }
+
+  /// Create-or-update - mirrors [_ensureScaleBodyFeatureExists]'s exact
+  /// branching shape.
+  Future<void> _ensureThickenFeatureExists(String surfaceFeatureId, double thickness) async {
+    final part = _part;
+    if (part == null) return;
+    final existingId = _previewThickenFeatureId;
+    if (existingId == null) {
+      final created =
+          await _api.createThickenFeature(part.id, surfaceFeatureId: surfaceFeatureId, thickness: thickness);
+      _previewThickenFeatureId = created.id;
+    } else {
+      await _api.updateThickenFeature(part.id, existingId,
+          surfaceFeatureId: surfaceFeatureId, thickness: thickness);
+    }
+    await _refreshMesh();
+  }
+
+  /// Mirrors [_confirmScaleBody]'s shape exactly.
+  Future<void> _confirmThicken() async {
+    _thickenDebounce?.cancel();
+    final sourceFeature = _thickenSourceFeature;
+    final thickness = _thickenThickness;
+    await _runGuarded(() async {
+      if (sourceFeature != null) await _ensureThickenFeatureExists(sourceFeature.id, thickness);
+      await _refreshFeatures();
+    });
+    if (!mounted) return;
+    setState(() {
+      _featureTreeVisible = false;
+      _thickenSourceFeature = null;
+      _previewThickenFeatureId = null;
+      _editingThickenFeatureId = null;
+      _thickenEditSnapshot = null;
+      _meshBeforeThicken = null;
+    });
+    await _endRollback();
+  }
+
+  /// Mirrors [_cancelScaleBody]'s structure exactly.
+  Future<void> _cancelThicken() async {
+    _thickenDebounce?.cancel();
+    final part = _part;
+    final previewId = _previewThickenFeatureId;
+    final meshBefore = _meshBeforeThicken;
+    final wasEditing = _editingThickenFeatureId != null;
+    final editSnapshot = _thickenEditSnapshot;
+    setState(() {
+      _featureTreeVisible = false;
+      _thickenSourceFeature = null;
+      _previewThickenFeatureId = null;
+      _editingThickenFeatureId = null;
+      _thickenEditSnapshot = null;
+      _meshBeforeThicken = null;
+    });
+    if (part != null && previewId != null) {
+      if (wasEditing && editSnapshot != null) {
+        await _runGuarded(() async {
+          await _api.updateThickenFeature(part.id, previewId,
+              surfaceFeatureId: editSnapshot.surfaceFeatureId, thickness: editSnapshot.thickness);
+          await _refreshMesh();
+          await _refreshFeatures();
+        });
+      } else if (!wasEditing) {
+        await _runGuarded(() async {
+          await _api.deleteFeature(part.id, previewId);
+          if (meshBefore != null) {
+            _bodies = meshBefore;
+          } else {
+            await _refreshMesh();
+          }
+          await _refreshFeatures();
+        });
+      }
+    }
+    await _endRollback();
+  }
+
+  // --- Phase 2 surfacing package: Knit Surfaces -------------------------
+  // Multi-pick-then-confirm from the tree (same `produces == 'surface'`
+  // predicate as Thicken), mirrors [_loftSketchPickerActive]'s own section-
+  // picking mechanics exactly, then eager-create-on-confirm (mirrors
+  // [PlanarSurfacePanel]'s "create once, eagerly, nothing to edit
+  // afterward" shape - `Sewing.Perform()` takes no further parameter).
+
+  bool _knitSurfacePickerActive = false;
+
+  /// The surfaces picked so far this picker session, in tap order - mirrors
+  /// [_loftPendingSections].
+  List<FeatureDto> _knitSurfacePendingSurfaces = [];
+
+  /// The surfaces actually being knit via [KnitSurfacePanel] (2+), or empty
+  /// when the panel is closed - mirrors [_loftSections].
+  List<FeatureDto> _knitSurfaceSurfaces = [];
+
+  String? _previewKnitSurfaceFeatureId;
+  List<BodyMeshDto>? _meshBeforeKnitSurface;
+  String? _editingKnitSurfaceFeatureId;
+
+  bool get _knitSurfaceActive => _knitSurfaceSurfaces.length >= 2;
+
+  void _startKnitSurfacePicker() {
+    setState(() {
+      _knitSurfacePickerActive = true;
+      _featureTreeVisible = true;
+      _toolbarOpen = false;
+      _planeSelectionModeStack.pop();
+      _knitSurfacePendingSurfaces = [];
+    });
+  }
+
+  /// Mirrors [_toggleLoftSectionPick] exactly.
+  void _toggleKnitSurfacePick(FeatureDto feature) {
+    setState(() {
+      final index = _knitSurfacePendingSurfaces.indexWhere((f) => f.id == feature.id);
+      if (index >= 0) {
+        _knitSurfacePendingSurfaces.removeAt(index);
+      } else {
+        _knitSurfacePendingSurfaces.add(feature);
+      }
+    });
+  }
+
+  /// The Knit Surfaces picker's own "confirm" FAB - mirrors
+  /// [_confirmLoftSectionPicker]'s shape, closing the picker and opening
+  /// [KnitSurfacePanel] (which immediately, eagerly creates the
+  /// KnitSurfaceFeature - see [_ensureKnitSurfaceFeatureExists]).
+  void _confirmKnitSurfacePicker() {
+    final surfaces = _knitSurfacePendingSurfaces;
+    setState(() {
+      _knitSurfacePickerActive = false;
+      _featureTreeVisible = false;
+      _knitSurfacePendingSurfaces = [];
+    });
+    _openKnitSurfacePanel(surfaces);
+  }
+
+  void _cancelKnitSurfacePicker() {
+    setState(() {
+      _knitSurfacePickerActive = false;
+      _featureTreeVisible = false;
+      _knitSurfacePendingSurfaces = [];
+    });
+  }
+
+  void _openKnitSurfacePanel(List<FeatureDto> surfaces) {
+    setState(() {
+      _knitSurfaceSurfaces = surfaces;
+      _previewKnitSurfaceFeatureId = null;
+      _meshBeforeKnitSurface = _bodies;
+    });
+    _runGuarded(_ensureKnitSurfaceFeatureExists);
+  }
+
+  /// B4: opens [KnitSurfacePanel] to edit an *already-existing*
+  /// KnitSurfaceFeature - mirrors [_openPlanarSurfacePanelForEdit]'s shape.
+  bool _openKnitSurfacePanelForEdit(FeatureDto feature) {
+    final surfaces = [
+      for (final id in feature.surfaceFeatureIds) _featureById(id),
+    ];
+    if (surfaces.length < 2 || surfaces.any((f) => f == null)) return false;
+    setState(() {
+      _knitSurfaceSurfaces = surfaces.cast<FeatureDto>();
+      _editingKnitSurfaceFeatureId = feature.id;
+      _previewKnitSurfaceFeatureId = feature.id;
+      _meshBeforeKnitSurface = _bodies;
+    });
+    return true;
+  }
+
+  /// Creates the KnitSurfaceFeature on the first call (no fields ever
+  /// change after that) - mirrors [_ensurePlanarSurfaceFeatureExists]'s
+  /// shape.
+  Future<void> _ensureKnitSurfaceFeatureExists() async {
+    final part = _part;
+    if (part == null || _knitSurfaceSurfaces.length < 2 || _previewKnitSurfaceFeatureId != null) return;
+    final created = await _api.createKnitSurfaceFeature(part.id,
+        surfaceFeatureIds: [for (final f in _knitSurfaceSurfaces) f.id]);
+    _previewKnitSurfaceFeatureId = created.id;
+    if (!mounted) return;
+    setState(() {});
+    await _refreshMesh();
+  }
+
+  /// Mirrors [_confirmPlanarSurface] exactly, minus the auto-hide-source-
+  /// Sketch step (a Knit's sources are other Features, not a Sketch this
+  /// session itself just consumed).
+  Future<void> _confirmKnitSurface() async {
+    await _runGuarded(() async {
+      await _ensureKnitSurfaceFeatureExists();
+      await _refreshFeatures();
+    });
+    if (!mounted) return;
+    setState(() {
+      _featureTreeVisible = false;
+      _knitSurfaceSurfaces = [];
+      _previewKnitSurfaceFeatureId = null;
+      _meshBeforeKnitSurface = null;
+      _editingKnitSurfaceFeatureId = null;
+    });
+    await _endRollback();
+  }
+
+  /// Mirrors [_cancelPlanarSurface] exactly.
+  Future<void> _cancelKnitSurface() async {
+    final part = _part;
+    final previewId = _previewKnitSurfaceFeatureId;
+    final meshBefore = _meshBeforeKnitSurface;
+    final wasEditing = _editingKnitSurfaceFeatureId != null;
+    setState(() {
+      _featureTreeVisible = false;
+      _knitSurfaceSurfaces = [];
+      _previewKnitSurfaceFeatureId = null;
+      _meshBeforeKnitSurface = null;
+      _editingKnitSurfaceFeatureId = null;
+    });
+    if (part != null && previewId != null && !wasEditing) {
+      await _runGuarded(() async {
+        await _api.deleteFeature(part.id, previewId);
+        if (meshBefore != null) {
+          _bodies = meshBefore;
+        } else {
+          await _refreshMesh();
+        }
+        await _refreshFeatures();
+      });
+    }
+    await _endRollback();
+  }
+
+  // --- Phase 2 surfacing package: Solid from Surfaces --------------------
+  // Identical pick mechanics to Knit Surfaces (see that section's own top
+  // comment) - kept as its own fully-duplicated state block rather than a
+  // shared helper: this file's established convention is one state block
+  // per tool (every Phase 1 tool duplicated its own picker fields even
+  // where the mechanics were identical, e.g. Loft Surface/Ruled Surface
+  // both duplicating Loft's own section-picking shape verbatim), and a
+  // shared `_pickSurfacesFlow`-style helper would need to thread the
+  // target Feature type/API call/copy through every one of these methods
+  // anyway - simple duplication reads more clearly here than that
+  // indirection would.
+
+  bool _solidFromSurfacesPickerActive = false;
+  List<FeatureDto> _solidFromSurfacesPendingSurfaces = [];
+  List<FeatureDto> _solidFromSurfacesSurfaces = [];
+  String? _previewSolidFromSurfacesFeatureId;
+  List<BodyMeshDto>? _meshBeforeSolidFromSurfaces;
+  String? _editingSolidFromSurfacesFeatureId;
+
+  bool get _solidFromSurfacesActive => _solidFromSurfacesSurfaces.length >= 2;
+
+  void _startSolidFromSurfacesPicker() {
+    setState(() {
+      _solidFromSurfacesPickerActive = true;
+      _featureTreeVisible = true;
+      _toolbarOpen = false;
+      _planeSelectionModeStack.pop();
+      _solidFromSurfacesPendingSurfaces = [];
+    });
+  }
+
+  void _toggleSolidFromSurfacesPick(FeatureDto feature) {
+    setState(() {
+      final index = _solidFromSurfacesPendingSurfaces.indexWhere((f) => f.id == feature.id);
+      if (index >= 0) {
+        _solidFromSurfacesPendingSurfaces.removeAt(index);
+      } else {
+        _solidFromSurfacesPendingSurfaces.add(feature);
+      }
+    });
+  }
+
+  void _confirmSolidFromSurfacesPicker() {
+    final surfaces = _solidFromSurfacesPendingSurfaces;
+    setState(() {
+      _solidFromSurfacesPickerActive = false;
+      _featureTreeVisible = false;
+      _solidFromSurfacesPendingSurfaces = [];
+    });
+    _openSolidFromSurfacesPanel(surfaces);
+  }
+
+  void _cancelSolidFromSurfacesPicker() {
+    setState(() {
+      _solidFromSurfacesPickerActive = false;
+      _featureTreeVisible = false;
+      _solidFromSurfacesPendingSurfaces = [];
+    });
+  }
+
+  void _openSolidFromSurfacesPanel(List<FeatureDto> surfaces) {
+    setState(() {
+      _solidFromSurfacesSurfaces = surfaces;
+      _previewSolidFromSurfacesFeatureId = null;
+      _meshBeforeSolidFromSurfaces = _bodies;
+    });
+    _runGuarded(_ensureSolidFromSurfacesFeatureExists);
+  }
+
+  bool _openSolidFromSurfacesPanelForEdit(FeatureDto feature) {
+    final surfaces = [
+      for (final id in feature.surfaceFeatureIds) _featureById(id),
+    ];
+    if (surfaces.length < 2 || surfaces.any((f) => f == null)) return false;
+    setState(() {
+      _solidFromSurfacesSurfaces = surfaces.cast<FeatureDto>();
+      _editingSolidFromSurfacesFeatureId = feature.id;
+      _previewSolidFromSurfacesFeatureId = feature.id;
+      _meshBeforeSolidFromSurfaces = _bodies;
+    });
+    return true;
+  }
+
+  /// Mirrors [_ensureKnitSurfaceFeatureExists] exactly, minus the "no
+  /// further parameter" caveat's relevance (also true here - a Solid from
+  /// Surfaces has none either).
+  Future<void> _ensureSolidFromSurfacesFeatureExists() async {
+    final part = _part;
+    if (part == null ||
+        _solidFromSurfacesSurfaces.length < 2 ||
+        _previewSolidFromSurfacesFeatureId != null) {
+      return;
+    }
+    final created = await _api.createSolidFromSurfacesFeature(part.id,
+        surfaceFeatureIds: [for (final f in _solidFromSurfacesSurfaces) f.id]);
+    _previewSolidFromSurfacesFeatureId = created.id;
+    if (!mounted) return;
+    setState(() {});
+    await _refreshMesh();
+  }
+
+  Future<void> _confirmSolidFromSurfaces() async {
+    await _runGuarded(() async {
+      await _ensureSolidFromSurfacesFeatureExists();
+      await _refreshFeatures();
+    });
+    if (!mounted) return;
+    setState(() {
+      _featureTreeVisible = false;
+      _solidFromSurfacesSurfaces = [];
+      _previewSolidFromSurfacesFeatureId = null;
+      _meshBeforeSolidFromSurfaces = null;
+      _editingSolidFromSurfacesFeatureId = null;
+    });
+    await _endRollback();
+  }
+
+  Future<void> _cancelSolidFromSurfaces() async {
+    final part = _part;
+    final previewId = _previewSolidFromSurfacesFeatureId;
+    final meshBefore = _meshBeforeSolidFromSurfaces;
+    final wasEditing = _editingSolidFromSurfacesFeatureId != null;
+    setState(() {
+      _featureTreeVisible = false;
+      _solidFromSurfacesSurfaces = [];
+      _previewSolidFromSurfacesFeatureId = null;
+      _meshBeforeSolidFromSurfaces = null;
+      _editingSolidFromSurfacesFeatureId = null;
+    });
+    if (part != null && previewId != null && !wasEditing) {
+      await _runGuarded(() async {
+        await _api.deleteFeature(part.id, previewId);
+        if (meshBefore != null) {
+          _bodies = meshBefore;
+        } else {
+          await _refreshMesh();
+        }
+        await _refreshFeatures();
+      });
+    }
+    await _endRollback();
+  }
+
+  // --- Phase 2 surfacing package: Offset Surface, last of the four -------
+  // A small "From Face"/"From Surface" toggle (mirrors [SplitPanel]'s own
+  // multi-kind-tool-picker precedent) - "From Face" reuses the ambient
+  // viewport face-tap flow [MoveFacePanel]'s own Offset mode already uses
+  // (a single face, replace-not-accumulate - see [_toggleSelectedEntity]'s
+  // own Offset Surface branch), "From Surface" uses the same single-pick-
+  // from-tree mechanism as Thicken's own source picker.
+
+  /// Plain `bool`, not a getter off some other field - mirrors
+  /// [_moveFaceActive]'s own shape, since (unlike Thicken/Knit/Solid from
+  /// Surfaces) this panel opens *before* any source is resolved at all (a
+  /// fresh "From Face" session has nothing else to derive activity from).
+  bool _offsetSurfaceActive = false;
+
+  OffsetSurfaceSourceKind _offsetSurfaceKind = OffsetSurfaceSourceKind.face;
+
+  /// "From Face" mode's own single pick - mirrors [_currentMoveFaceRefs]'
+  /// shape, just a single nullable ref (replace-not-accumulate) rather than
+  /// a list, since Offset Surface only ever offsets exactly one face.
+  SubShapeRefDto? _offsetSurfaceFaceRef;
+
+  /// True while the Feature tree is acting as "From Surface" mode's own
+  /// single-pick source picker - mirrors [_thickenSourcePickerActive]
+  /// exactly.
+  bool _offsetSurfaceSourcePickerActive = false;
+
+  /// "From Surface" mode's own single pick.
+  FeatureDto? _offsetSurfaceSourceFeature;
+
+  double _offsetSurfaceDistance = 1.0;
+
+  String? _previewOffsetSurfaceFeatureId;
+  List<BodyMeshDto>? _meshBeforeOffsetSurface;
+
+  /// Mirrors [_entitiesBeforeScaleBody] - stashed/restored around the
+  /// viewport face-tap session.
+  Set<SelectionEntityRef>? _entitiesBeforeOffsetSurface;
+
+  String? _editingOffsetSurfaceFeatureId;
+
+  Timer? _offsetSurfaceDebounce;
+
+  /// Mirrors [_thickenEditSnapshot]'s shape.
+  ({OffsetSourceRefDto source, double distance})? _offsetSurfaceEditSnapshot;
+
+  /// Locks [_selectionFilterOverrides] to faces only for the whole session -
+  /// unlike [_moveFaceSelectionFilter] there's no Direction-mode edge/
+  /// Sketch-Line concern here, and a tree pick (for "From Surface" mode)
+  /// doesn't go through this filter at all, only ambient viewport taps do,
+  /// so this stays pushed regardless of [_offsetSurfaceKind].
+  static const _offsetSurfaceSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: true,
+    body: false,
+    sketchPoint: false,
+    sketchLine: false,
+    sketchCircle: false,
+    plane: false,
+  );
+
+  /// The "Add" FAB's Offset Surface entry - opens the panel directly (no
+  /// upfront selection needed, mirrors [_startScaleBodyPicker]'s "open, then
+  /// pick" shape rather than "pick, then open").
+  void _startOffsetSurfacePicker() {
+    setState(() {
+      _offsetSurfaceActive = true;
+      _offsetSurfaceKind = OffsetSurfaceSourceKind.face;
+      _offsetSurfaceFaceRef = null;
+      _offsetSurfaceSourceFeature = null;
+      _offsetSurfaceDistance = 1.0;
+      _previewOffsetSurfaceFeatureId = null;
+      _meshBeforeOffsetSurface = _bodies;
+      _entitiesBeforeOffsetSurface = _selectedEntities;
+      _selectedEntities = {};
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _selectionFilterOverrides.push(_offsetSurfaceSelectionFilter);
+    });
+  }
+
+  /// [OffsetSurfacePanel.onKindChanged] - switching kind doesn't clear
+  /// whatever was already picked in the other kind (mirrors
+  /// [_onMoveFaceModeChanged]'s own "fields exist but aren't live until
+  /// selected" convention), just re-schedules the preview against whichever
+  /// source is now live.
+  void _onOffsetSurfaceKindChanged(OffsetSurfaceSourceKind kind) {
+    setState(() => _offsetSurfaceKind = kind);
+    _scheduleOffsetSurfacePreview();
+  }
+
+  void _startOffsetSurfaceSourcePicker() {
+    setState(() {
+      _offsetSurfaceSourcePickerActive = true;
+      _featureTreeVisible = true;
+    });
+  }
+
+  void _onOffsetSurfaceSourcePicked(FeatureDto feature) {
+    setState(() {
+      _offsetSurfaceSourcePickerActive = false;
+      _featureTreeVisible = false;
+      _offsetSurfaceSourceFeature = feature;
+    });
+    _scheduleOffsetSurfacePreview();
+  }
+
+  void _cancelOffsetSurfaceSourcePicker() {
+    setState(() {
+      _offsetSurfaceSourcePickerActive = false;
+      _featureTreeVisible = false;
+    });
+  }
+
+  /// [_toggleSelectedEntity]'s own Offset Surface branch calls this the
+  /// instant a face is tapped while [_offsetSurfaceActive] and in `face`
+  /// mode - mirrors [_setMoveFaceDirectionFromEntity]'s own replace-not-
+  /// accumulate shape (Offset Surface only ever offsets exactly one face,
+  /// unlike Move Face's own 1+ accumulate-toggle).
+  void _setOffsetSurfaceFaceRef(SelectionEntityRef entity) {
+    setState(() {
+      _selectedEntities = {entity};
+      _offsetSurfaceFaceRef = SubShapeRefDto(bodyId: entity.bodyId, shapeType: 'face', index: entity.id);
+    });
+    _scheduleOffsetSurfacePreview();
+  }
+
+  /// A short human-readable summary of the current source pick for
+  /// [OffsetSurfacePanel.sourceSummary] - mirrors [SplitPanel.toolSummary]'s
+  /// own "caller decides the summary copy" split.
+  String? _offsetSurfaceSourceSummary() {
+    if (_offsetSurfaceKind == OffsetSurfaceSourceKind.face) {
+      return _offsetSurfaceFaceRef != null ? 'Face selected' : null;
+    }
+    final sourceFeature = _offsetSurfaceSourceFeature;
+    return sourceFeature != null ? _surfaceFeatureDisplayName(sourceFeature) : null;
+  }
+
+  OffsetSourceRefDto? _currentOffsetSurfaceSource() {
+    if (_offsetSurfaceKind == OffsetSurfaceSourceKind.face) {
+      final faceRef = _offsetSurfaceFaceRef;
+      return faceRef == null ? null : OffsetSourceRefDto(faceRef: faceRef);
+    }
+    final sourceFeature = _offsetSurfaceSourceFeature;
+    return sourceFeature == null ? null : OffsetSourceRefDto(surfaceFeatureId: sourceFeature.id);
+  }
+
+  void _onOffsetSurfaceDistanceChanged(double distance) {
+    _offsetSurfaceDistance = distance;
+    _scheduleOffsetSurfacePreview();
+  }
+
+  /// Mirrors [_scheduleScaleBodyPreview], plus a "no source yet" gate (the
+  /// backend has nothing to offset without one) - mirrors
+  /// [_scheduleMoveFacePreview]'s own "nothing resolvable yet" early return.
+  void _scheduleOffsetSurfacePreview() {
+    _offsetSurfaceDebounce?.cancel();
+    final source = _currentOffsetSurfaceSource();
+    if (source == null) return;
+    _offsetSurfaceDebounce = Timer(const Duration(milliseconds: 500), () {
+      _runGuarded(() => _ensureOffsetSurfaceFeatureExists(source, _offsetSurfaceDistance));
+    });
+  }
+
+  /// Create-or-update - mirrors [_ensureScaleBodyFeatureExists]'s exact
+  /// branching shape.
+  Future<void> _ensureOffsetSurfaceFeatureExists(OffsetSourceRefDto source, double distance) async {
+    final part = _part;
+    if (part == null) return;
+    final existingId = _previewOffsetSurfaceFeatureId;
+    if (existingId == null) {
+      final created = await _api.createOffsetSurfaceFeature(part.id, source: source, distance: distance);
+      _previewOffsetSurfaceFeatureId = created.id;
+    } else {
+      await _api.updateOffsetSurfaceFeature(part.id, existingId, source: source, distance: distance);
+    }
+    await _refreshMesh();
+  }
+
+  /// B4: opens [OffsetSurfacePanel] to edit an *already-existing*
+  /// OffsetSurfaceFeature - mirrors [_openScaleBodyPanelForEdit]'s shape.
+  bool _openOffsetSurfacePanelForEdit(FeatureDto feature) {
+    final source = feature.offsetSource;
+    final distance = feature.distance;
+    if (source == null || distance == null) return false;
+    final faceRef = source.faceRef;
+    final surfaceFeatureId = source.surfaceFeatureId;
+    final sourceFeature = surfaceFeatureId == null ? null : _featureById(surfaceFeatureId);
+    if (faceRef == null && sourceFeature == null) return false;
+    setState(() {
+      _offsetSurfaceActive = true;
+      _editingOffsetSurfaceFeatureId = feature.id;
+      _previewOffsetSurfaceFeatureId = feature.id;
+      _offsetSurfaceKind = faceRef != null ? OffsetSurfaceSourceKind.face : OffsetSurfaceSourceKind.surface;
+      _offsetSurfaceFaceRef = faceRef;
+      _offsetSurfaceSourceFeature = sourceFeature;
+      _offsetSurfaceDistance = distance;
+      _offsetSurfaceEditSnapshot = (source: source, distance: distance);
+      _meshBeforeOffsetSurface = _bodies;
+      _entitiesBeforeOffsetSurface = _selectedEntities;
+      _selectedEntities = {};
+      _selectionMode = true;
+      _selectionFilterOverrides.push(_offsetSurfaceSelectionFilter);
+    });
+    return true;
+  }
+
+  /// Mirrors [_confirmScaleBody]'s shape exactly.
+  Future<void> _confirmOffsetSurface() async {
+    _offsetSurfaceDebounce?.cancel();
+    final source = _currentOffsetSurfaceSource();
+    final distance = _offsetSurfaceDistance;
+    await _runGuarded(() async {
+      if (source != null) await _ensureOffsetSurfaceFeatureExists(source, distance);
+      await _refreshFeatures();
+    });
+    if (!mounted) return;
+    setState(() {
+      _featureTreeVisible = false;
+      _offsetSurfaceActive = false;
+      _offsetSurfaceFaceRef = null;
+      _offsetSurfaceSourceFeature = null;
+      _selectedEntities = _entitiesBeforeOffsetSurface ?? {};
+      _entitiesBeforeOffsetSurface = null;
+      _previewOffsetSurfaceFeatureId = null;
+      _editingOffsetSurfaceFeatureId = null;
+      _offsetSurfaceEditSnapshot = null;
+      _meshBeforeOffsetSurface = null;
+      _selectionFilterOverrides.pop();
+    });
+    await _endRollback();
+  }
+
+  /// Mirrors [_cancelScaleBody]'s structure exactly.
+  Future<void> _cancelOffsetSurface() async {
+    _offsetSurfaceDebounce?.cancel();
+    final part = _part;
+    final previewId = _previewOffsetSurfaceFeatureId;
+    final meshBefore = _meshBeforeOffsetSurface;
+    final wasEditing = _editingOffsetSurfaceFeatureId != null;
+    final editSnapshot = _offsetSurfaceEditSnapshot;
+    setState(() {
+      _featureTreeVisible = false;
+      _offsetSurfaceActive = false;
+      _offsetSurfaceFaceRef = null;
+      _offsetSurfaceSourceFeature = null;
+      _selectedEntities = _entitiesBeforeOffsetSurface ?? {};
+      _entitiesBeforeOffsetSurface = null;
+      _previewOffsetSurfaceFeatureId = null;
+      _editingOffsetSurfaceFeatureId = null;
+      _offsetSurfaceEditSnapshot = null;
+      _meshBeforeOffsetSurface = null;
+      _selectionFilterOverrides.pop();
+    });
+    if (part != null && previewId != null) {
+      if (wasEditing && editSnapshot != null) {
+        await _runGuarded(() async {
+          await _api.updateOffsetSurfaceFeature(part.id, previewId,
+              source: editSnapshot.source, distance: editSnapshot.distance);
+          await _refreshMesh();
+          await _refreshFeatures();
+        });
+      } else if (!wasEditing) {
+        await _runGuarded(() async {
+          await _api.deleteFeature(part.id, previewId);
+          if (meshBefore != null) {
+            _bodies = meshBefore;
+          } else {
+            await _refreshMesh();
+          }
+          await _refreshFeatures();
+        });
+      }
     }
     await _endRollback();
   }
@@ -7361,6 +8193,14 @@ class _PartScreenState extends State<PartScreen> {
         _loftSurfaceSelectedFeature();
       case FeaturePickerAction.ruledSurface:
         _ruledSurfaceSelectedFeature();
+      case FeaturePickerAction.thicken:
+        _thickenSelectedFeature();
+      case FeaturePickerAction.knitSurface:
+        _startKnitSurfacePicker();
+      case FeaturePickerAction.solidFromSurfaces:
+        _startSolidFromSurfacesPicker();
+      case FeaturePickerAction.offsetSurface:
+        _startOffsetSurfacePicker();
       case FeaturePickerAction.mirror:
         _startMirrorPicker();
       case FeaturePickerAction.pattern:
@@ -7938,6 +8778,20 @@ class _PartScreenState extends State<PartScreen> {
     } else if (feature.type == 'ruled_surface') {
       // Mirrors the loft branch above exactly.
       final opened = _openRuledSurfacePanelForEdit(feature);
+      if (!opened) await _endRollback();
+    } else if (feature.type == 'thicken') {
+      // Phase 2 surfacing package: rollback is ended by _confirmThicken/
+      // _cancelThicken instead - mirrors the extrude branch above exactly.
+      final opened = _openThickenPanelForEdit(feature);
+      if (!opened) await _endRollback();
+    } else if (feature.type == 'knit_surface') {
+      final opened = _openKnitSurfacePanelForEdit(feature);
+      if (!opened) await _endRollback();
+    } else if (feature.type == 'solid_from_surfaces') {
+      final opened = _openSolidFromSurfacesPanelForEdit(feature);
+      if (!opened) await _endRollback();
+    } else if (feature.type == 'offset_surface') {
+      final opened = _openOffsetSurfacePanelForEdit(feature);
       if (!opened) await _endRollback();
     } else if (feature.type == 'mirror') {
       // Pattern/Mirror scoping Phase 1: rollback is ended by
@@ -15025,6 +15879,10 @@ class _PartScreenState extends State<PartScreen> {
                       _sweptSurfaceActive ||
                       _loftSurfaceActive ||
                       _ruledSurfaceActive ||
+      _thickenActive ||
+      _knitSurfaceActive ||
+      _solidFromSurfacesActive ||
+      _offsetSurfaceActive ||
                       _mirrorActive ||
                       _patternActive ||
                       _mergeActive ||
@@ -15300,6 +16158,14 @@ class _PartScreenState extends State<PartScreen> {
                         _cancelLoftSurfaceSketchPicker();
                       } else if (_ruledSurfaceSketchPickerActive) {
                         _cancelRuledSurfaceSketchPicker();
+                      } else if (_thickenSourcePickerActive) {
+                        _cancelThickenSourcePicker();
+                      } else if (_knitSurfacePickerActive) {
+                        _cancelKnitSurfacePicker();
+                      } else if (_solidFromSurfacesPickerActive) {
+                        _cancelSolidFromSurfacesPicker();
+                      } else if (_offsetSurfaceSourcePickerActive) {
+                        _cancelOffsetSurfaceSourcePicker();
                       } else if (_sourceFeaturePickerTarget != null) {
                         _cancelSourceFeaturePicker();
                       } else {
@@ -15362,10 +16228,26 @@ class _PartScreenState extends State<PartScreen> {
                     // Loft's own choice exactly.
                     isFeaturePickerMode: _sourceFeaturePickerTarget != null ||
                         _loftSketchPickerActive ||
-                        _surfaceFeaturePickerActive ||
                         _loftSurfaceSketchPickerActive ||
-                        _ruledSurfaceSketchPickerActive,
-                    pickableFeaturePickerIds: _surfaceFeaturePickerActive
+                        _ruledSurfaceSketchPickerActive ||
+                        // Phase 2 surfacing package: Thicken/Offset Surface
+                        // use this same mode as a single-pick-commits-
+                        // immediately picker (their own onFeaturePickerToggle
+                        // below never accumulates - it acts the instant a
+                        // row is tapped, mirroring isSketchPickerMode's own
+                        // single-tap-finalizes shape, just over any
+                        // `produces == 'surface'` Feature rather than only
+                        // Sketches); Knit/Solid from Surfaces use it as a
+                        // genuine multi-pick-then-confirm picker, same shape
+                        // as Loft's own section picker.
+                        _thickenSourcePickerActive ||
+                        _knitSurfacePickerActive ||
+                        _solidFromSurfacesPickerActive ||
+                        _offsetSurfaceSourcePickerActive,
+                    pickableFeaturePickerIds: _thickenSourcePickerActive ||
+                            _knitSurfacePickerActive ||
+                            _solidFromSurfacesPickerActive ||
+                            _offsetSurfaceSourcePickerActive
                         ? _pickableSurfaceFeatureIds
                         : _loftSketchPickerActive
                             ? _pickableLoftSketchIds
@@ -15374,31 +16256,47 @@ class _PartScreenState extends State<PartScreen> {
                                 : _ruledSurfaceSketchPickerActive
                                     ? _pickableRuledSurfaceSketchIds
                                     : _sourceFeaturePickerPickableIds,
-                    selectedFeaturePickerIds: _surfaceFeaturePickerActive
+                    selectedFeaturePickerIds: _thickenSourcePickerActive || _offsetSurfaceSourcePickerActive
                         ? const <String>{}
-                        : _loftSketchPickerActive
-                            ? {for (final f in _loftPendingSections) f.id}
-                            : _loftSurfaceSketchPickerActive
-                                ? {for (final f in _loftSurfacePendingSections) f.id}
-                                : _ruledSurfaceSketchPickerActive
-                                    ? {for (final f in _ruledSurfacePendingSections) f.id}
-                                    : _selectedSourceFeatureIds,
-                    onFeaturePickerToggle: _surfaceFeaturePickerActive
-                        ? (FeatureDto _) {}
-                        : _loftSketchPickerActive
-                            ? _toggleLoftSectionPick
-                            : _loftSurfaceSketchPickerActive
-                                ? _toggleLoftSurfaceSectionPick
-                                : _ruledSurfaceSketchPickerActive
-                                    ? _toggleRuledSurfaceSectionPick
-                                    : _toggleSourceFeaturePick,
-                    featurePickerLabel: _surfaceFeaturePickerActive
-                        ? 'Select surfaces'
-                        : _loftSketchPickerActive
-                            ? 'Select sketches to loft'
-                            : _loftSurfaceSketchPickerActive
-                                ? 'Select sketches to loft'
-                                : _ruledSurfaceSketchPickerActive
+                        : _knitSurfacePickerActive
+                            ? {for (final f in _knitSurfacePendingSurfaces) f.id}
+                            : _solidFromSurfacesPickerActive
+                                ? {for (final f in _solidFromSurfacesPendingSurfaces) f.id}
+                                : _loftSketchPickerActive
+                                    ? {for (final f in _loftPendingSections) f.id}
+                                    : _loftSurfaceSketchPickerActive
+                                        ? {for (final f in _loftSurfacePendingSections) f.id}
+                                        : _ruledSurfaceSketchPickerActive
+                                            ? {for (final f in _ruledSurfacePendingSections) f.id}
+                                            : _selectedSourceFeatureIds,
+                    onFeaturePickerToggle: _thickenSourcePickerActive
+                        ? _onThickenSourcePicked
+                        : _offsetSurfaceSourcePickerActive
+                            ? _onOffsetSurfaceSourcePicked
+                            : _knitSurfacePickerActive
+                                ? _toggleKnitSurfacePick
+                                : _solidFromSurfacesPickerActive
+                                    ? _toggleSolidFromSurfacesPick
+                                    : _loftSketchPickerActive
+                                        ? _toggleLoftSectionPick
+                                        : _loftSurfaceSketchPickerActive
+                                            ? _toggleLoftSurfaceSectionPick
+                                            : _ruledSurfaceSketchPickerActive
+                                                ? _toggleRuledSurfaceSectionPick
+                                                : _toggleSourceFeaturePick,
+                    featurePickerLabel: _thickenSourcePickerActive
+                        ? 'Select a surface to thicken'
+                        : _offsetSurfaceSourcePickerActive
+                            ? 'Select a surface to offset'
+                            : _knitSurfacePickerActive
+                                ? 'Select surfaces to knit'
+                                : _solidFromSurfacesPickerActive
+                                    ? 'Select surfaces to combine into a solid'
+                                    : _loftSketchPickerActive
+                                        ? 'Select sketches to loft'
+                                        : _loftSurfaceSketchPickerActive
+                                            ? 'Select sketches to loft'
+                                            : _ruledSurfaceSketchPickerActive
                                     ? 'Select 2 sketches'
                                     : 'Select source Features',
                     bodyIds: _computedBodyIds,
@@ -15976,6 +16874,66 @@ class _PartScreenState extends State<PartScreen> {
                       onCancel: _cancelRuledSurface,
                     ),
                   ),
+                // Phase 2 surfacing package: four new surface-consuming
+                // tools, in the same build order as the plan's own backend
+                // sequence (Thicken -> Knit -> Solid from Surfaces -> Offset
+                // Surface).
+                if (_thickenActive)
+                  Positioned.fill(
+                    key: const ValueKey('thicken-panel-slot'),
+                    child: ThickenPanel(
+                      key: ValueKey(_editingThickenFeatureId ?? _thickenSourceFeature!.id),
+                      title: _editingThickenFeatureId != null ? 'Edit Thicken' : 'Thicken',
+                      sourceSummary: _surfaceFeatureDisplayName(_thickenSourceFeature!),
+                      initialThickness: _thickenThickness,
+                      onThicknessChanged: _onThickenThicknessChanged,
+                      onConfirm: _confirmThicken,
+                      onCancel: _cancelThicken,
+                    ),
+                  ),
+                if (_knitSurfaceActive)
+                  Positioned.fill(
+                    key: const ValueKey('knit-surface-panel-slot'),
+                    child: KnitSurfacePanel(
+                      key: ValueKey(
+                          _editingKnitSurfaceFeatureId ?? _knitSurfaceSurfaces.map((f) => f.id).join('-')),
+                      title: _editingKnitSurfaceFeatureId != null ? 'Edit Knit Surfaces' : 'Knit Surfaces',
+                      surfaceCount: _knitSurfaceSurfaces.length,
+                      onConfirm: _confirmKnitSurface,
+                      onCancel: _cancelKnitSurface,
+                    ),
+                  ),
+                if (_solidFromSurfacesActive)
+                  Positioned.fill(
+                    key: const ValueKey('solid-from-surfaces-panel-slot'),
+                    child: SolidFromSurfacesPanel(
+                      key: ValueKey(_editingSolidFromSurfacesFeatureId ??
+                          _solidFromSurfacesSurfaces.map((f) => f.id).join('-')),
+                      title: _editingSolidFromSurfacesFeatureId != null
+                          ? 'Edit Solid from Surfaces'
+                          : 'Solid from Surfaces',
+                      surfaceCount: _solidFromSurfacesSurfaces.length,
+                      onConfirm: _confirmSolidFromSurfaces,
+                      onCancel: _cancelSolidFromSurfaces,
+                    ),
+                  ),
+                if (_offsetSurfaceActive)
+                  Positioned.fill(
+                    key: const ValueKey('offset-surface-panel-slot'),
+                    child: OffsetSurfacePanel(
+                      key: ValueKey(_editingOffsetSurfaceFeatureId ?? 'offset-surface-new'),
+                      title: _editingOffsetSurfaceFeatureId != null ? 'Edit Offset Surface' : 'Offset Surface',
+                      kind: _offsetSurfaceKind,
+                      onKindChanged: _onOffsetSurfaceKindChanged,
+                      sourceSummary: _offsetSurfaceSourceSummary(),
+                      hasSource: _offsetSurfaceFaceRef != null || _offsetSurfaceSourceFeature != null,
+                      onPickSurface: _startOffsetSurfaceSourcePicker,
+                      initialDistance: _offsetSurfaceDistance,
+                      onDistanceChanged: _onOffsetSurfaceDistanceChanged,
+                      onConfirm: _confirmOffsetSurface,
+                      onCancel: _cancelOffsetSurface,
+                    ),
+                  ),
                 // On-device feedback ("the tooltip at the top of the screen
                 // blocks the FABs to recentre and to switch between select/
                 // orbit"): this used to be a separate full-width banner
@@ -16437,6 +17395,10 @@ class _PartScreenState extends State<PartScreen> {
                         _sweptSurfaceActive ||
                         _loftSurfaceActive ||
                         _ruledSurfaceActive ||
+      _thickenActive ||
+      _knitSurfaceActive ||
+      _solidFromSurfacesActive ||
+      _offsetSurfaceActive ||
                         _mirrorActive ||
                         _patternActive ||
                         _mergeActive ||
@@ -16477,6 +17439,10 @@ class _PartScreenState extends State<PartScreen> {
                       !_sweptSurfaceActive &&
                       !_loftSurfaceActive &&
                       !_ruledSurfaceActive &&
+      !_thickenActive &&
+      !_knitSurfaceActive &&
+      !_solidFromSurfacesActive &&
+      !_offsetSurfaceActive &&
                       !_mirrorActive &&
                       !_patternActive &&
                       !_mergeActive &&
@@ -16557,6 +17523,31 @@ class _PartScreenState extends State<PartScreen> {
                       onPressed: _busy || _loftSurfacePendingSections.length < 2
                           ? null
                           : _confirmLoftSurfaceSectionPicker,
+                      child: const Icon(Icons.check),
+                    ),
+                  // Phase 2 surfacing package: mirrors the Loft confirm FAB
+                  // above exactly - disabled below 2 picked surfaces (the
+                  // backend's own `_validate_knit_surface_payload` rejects
+                  // fewer).
+                  if (_knitSurfacePickerActive)
+                    FloatingActionButton(
+                      heroTag: 'confirm-knit-surface-picker-fab',
+                      tooltip: 'Confirm surfaces to knit',
+                      onPressed: _busy || _knitSurfacePendingSurfaces.length < 2
+                          ? null
+                          : _confirmKnitSurfacePicker,
+                      child: const Icon(Icons.check),
+                    ),
+                  // Mirrors the Knit confirm FAB just above exactly - same
+                  // "2+ required" gate (the backend's own `_validate_solid_
+                  // from_surfaces_payload`).
+                  if (_solidFromSurfacesPickerActive)
+                    FloatingActionButton(
+                      heroTag: 'confirm-solid-from-surfaces-picker-fab',
+                      tooltip: 'Confirm surfaces to combine',
+                      onPressed: _busy || _solidFromSurfacesPendingSurfaces.length < 2
+                          ? null
+                          : _confirmSolidFromSurfacesPicker,
                       child: const Icon(Icons.check),
                     ),
                 ],
