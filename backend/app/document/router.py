@@ -71,6 +71,11 @@ from app.document.bevel_math import (
 )
 from app.document.rack import resolve_rack
 from app.document.loft import resolve_loft, resolve_loft_coarse
+from app.document.loft_surface import resolve_loft_surface
+from app.document.planar_surface import resolve_planar_surface
+from app.document.revolve_surface import resolve_revolve_surface
+from app.document.ruled_surface import resolve_ruled_surface
+from app.document.swept_surface import resolve_swept_surface
 from app.document.gear_chain import resolve_gear_chain, resolve_gear_chain_coarse
 from app.document.planetary_gear import resolve_planetary, resolve_planetary_coarse
 from app.document.graph import (
@@ -116,6 +121,7 @@ from app.document.models import (
     LoftFeature,
     LoftMode,
     LoftSection,
+    LoftSurfaceFeature,
     MergeFeature,
     MergeMode,
     MirrorFeature,
@@ -126,6 +132,7 @@ from app.document.models import (
     PatternDirectionRef,
     PatternFeature,
     PatternType,
+    PlanarSurfaceFeature,
     PlanetaryGearFeature,
     PlaneRef,
     PlaneType,
@@ -135,6 +142,8 @@ from app.document.models import (
     RackType,
     RevolveFeature,
     RevolveMode,
+    RevolveSurfaceFeature,
+    RuledSurfaceFeature,
     ScaleBodyFeature,
     SketchFeature,
     SplitFeature,
@@ -144,6 +153,7 @@ from app.document.models import (
     SurfaceFeature,
     SweepFeature,
     SweepMode,
+    SweptSurfaceFeature,
 )
 from app.document.revolve import resolve_revolve
 from app.document.delete_face import resolve_delete_face
@@ -234,6 +244,9 @@ from app.document.schemas import (
     LoftFeatureResponse,
     LoftFeatureUpdate,
     LoftSectionSchema,
+    LoftSurfaceFeatureCreate,
+    LoftSurfaceFeatureResponse,
+    LoftSurfaceFeatureUpdate,
     MergeFeatureCreate,
     MergeFeatureResponse,
     MergeFeatureUpdate,
@@ -249,6 +262,9 @@ from app.document.schemas import (
     PatternFeatureCreate,
     PatternFeatureResponse,
     PatternFeatureUpdate,
+    PlanarSurfaceFeatureCreate,
+    PlanarSurfaceFeatureResponse,
+    PlanarSurfaceFeatureUpdate,
     PlanetaryGearFeatureCreate,
     PlanetaryGearFeatureResponse,
     PlanetaryGearFeatureUpdate,
@@ -260,6 +276,13 @@ from app.document.schemas import (
     RevolveFeatureCreate,
     RevolveFeatureResponse,
     RevolveFeatureUpdate,
+    RevolveSurfaceFeatureCreate,
+    RevolveSurfaceFeatureResponse,
+    RevolveSurfaceFeatureUpdate,
+    RuledSurfaceFeatureCreate,
+    RuledSurfaceFeatureResponse,
+    RuledSurfaceFeatureUpdate,
+    RuledSurfaceSectionSchema,
     SketchEntityRefSchema,
     SketchFeatureCreate,
     SketchFeatureResponse,
@@ -274,6 +297,9 @@ from app.document.schemas import (
     SweepFeatureCreate,
     SweepFeatureResponse,
     SweepFeatureUpdate,
+    SweptSurfaceFeatureCreate,
+    SweptSurfaceFeatureResponse,
+    SweptSurfaceFeatureUpdate,
 )
 from app.document.split import CONNECTABLE_CURVE_ENTITY_TYPES, resolve_split
 from app.document.sweep import resolve_sweep
@@ -636,6 +662,40 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
+    if isinstance(feature, PlanarSurfaceFeature):
+        return PlanarSurfaceFeatureResponse(
+            id=feature.id,
+            sketch_feature_id=feature.sketch_feature_id,
+            profile_refs=[_sketch_entity_ref_to_schema(ref) for ref in feature.profile_refs],
+            locked=part.is_locked(feature.id),
+            produces=feature.produces,
+        )
+    if isinstance(feature, RevolveSurfaceFeature):
+        return RevolveSurfaceFeatureResponse(
+            id=feature.id,
+            sketch_feature_id=feature.sketch_feature_id,
+            axis_ref=_sketch_entity_ref_to_schema(feature.axis_ref),
+            angle=feature.angle,
+            profile_refs=[_sketch_entity_ref_to_schema(ref) for ref in feature.profile_refs],
+            locked=part.is_locked(feature.id),
+            produces=feature.produces,
+        )
+    if isinstance(feature, SweptSurfaceFeature):
+        return SweptSurfaceFeatureResponse(
+            id=feature.id,
+            sketch_feature_id=feature.sketch_feature_id,
+            path_refs=[_sketch_entity_ref_to_schema(ref) for ref in feature.path_refs],
+            profile_refs=[_sketch_entity_ref_to_schema(ref) for ref in feature.profile_refs],
+            locked=part.is_locked(feature.id),
+            produces=feature.produces,
+        )
+    if isinstance(feature, RuledSurfaceFeature):
+        return RuledSurfaceFeatureResponse(
+            id=feature.id,
+            sections=[_ruled_surface_section_to_schema(section) for section in feature.sections],
+            locked=part.is_locked(feature.id),
+            produces=feature.produces,
+        )
     if isinstance(feature, CreatePlaneFeature):
         return _create_plane_feature_response(part, feature)
     if isinstance(feature, FilletFeature):
@@ -820,6 +880,8 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
         return _bevel_pair_feature_response(part, feature)
     if isinstance(feature, LoftFeature):
         return _loft_feature_response(part, feature)
+    if isinstance(feature, LoftSurfaceFeature):
+        return _loft_surface_feature_response(part, feature)
     if isinstance(feature, GearChainFeature):
         return _gear_chain_feature_response(part, feature)
     if isinstance(feature, PlanetaryGearFeature):
@@ -1092,6 +1154,51 @@ def _loft_feature_response(part: Part, feature: LoftFeature, warnings: list[str]
         locked=part.is_locked(feature.id),
         produces=feature.produces,
         warnings=warnings,
+    )
+
+
+def _loft_surface_feature_response(
+    part: Part, feature: LoftSurfaceFeature, warnings: list[str] | None = None
+) -> LoftSurfaceFeatureResponse:
+    """Phase 1 surfacing package: mirrors `_loft_feature_response`'s own
+    "warnings only known at create/update time, otherwise re-derived from
+    `cached_feature_warnings`" convention exactly - see that function's own
+    doc comment for the full reasoning."""
+    if warnings is None:
+        try:
+            compute_part_bodies(part)
+            warnings = cached_feature_warnings(part, feature.id)
+        except HTTPException:
+            logger.warning("LoftSurfaceFeature %s could not be resolved for its response", feature.id)
+            warnings = []
+    return LoftSurfaceFeatureResponse(
+        id=feature.id,
+        sections=[_loft_section_to_schema(section) for section in feature.sections],
+        ruled=feature.ruled,
+        guide_curve_refs=[_sketch_entity_ref_to_schema(ref) for ref in feature.guide_curve_refs],
+        locked=part.is_locked(feature.id),
+        produces=feature.produces,
+        warnings=warnings,
+    )
+
+
+def _ruled_surface_section_to_domain(schema: RuledSurfaceSectionSchema) -> LoftSection:
+    """Phase 1 surfacing package: builds the real domain `LoftSection` for a
+    Ruled Surface's own narrower section schema - `reference_point`/
+    `alignment_point` are always `None` (`RuledSurfaceSectionSchema` doesn't
+    even expose them - see that schema's own docstring)."""
+    return LoftSection(
+        sketch_feature_id=schema.sketch_feature_id,
+        profile_refs=[_sketch_entity_ref_to_domain(ref) for ref in schema.profile_refs],
+        reference_point=None,
+        alignment_point=None,
+    )
+
+
+def _ruled_surface_section_to_schema(section: LoftSection) -> RuledSurfaceSectionSchema:
+    return RuledSurfaceSectionSchema(
+        sketch_feature_id=section.sketch_feature_id,
+        profile_refs=[_sketch_entity_ref_to_schema(ref) for ref in section.profile_refs],
     )
 
 
@@ -2033,6 +2140,45 @@ def _validate_sweep_path_refs(path_refs: list[SketchEntityRef]) -> None:
                 status_code=422,
                 detail="path_refs entries must have entity_type one of line, arc, ellipse, spline",
             )
+
+
+def _validate_swept_surface_path_refs(path_refs: list[SketchEntityRef]) -> None:
+    """Phase 1 surfacing package: mirrors `_validate_sweep_path_refs`
+    exactly, own error message naming `SweptSurfaceFeature` instead of
+    `SweepFeature` so a client can tell which tool's payload failed."""
+    if not path_refs:
+        raise HTTPException(
+            status_code=422,
+            detail="SweptSurfaceFeature requires at least one path_refs entry",
+        )
+    for ref in path_refs:
+        if ref.entity_type not in _SWEEP_PATH_ENTITY_TYPES:
+            raise HTTPException(
+                status_code=422,
+                detail="path_refs entries must have entity_type one of line, arc, ellipse, spline",
+            )
+
+
+def _validate_loft_surface_sections(sections: list[LoftSection]) -> None:
+    """Phase 1 surfacing package: mirrors `_validate_loft_sections` exactly,
+    own error message naming `LoftSurfaceFeature`."""
+    if len(sections) < 2:
+        raise HTTPException(
+            status_code=422,
+            detail="LoftSurfaceFeature requires at least 2 sections",
+        )
+
+
+def _validate_ruled_surface_sections(sections: list[LoftSection]) -> None:
+    """Phase 1 surfacing package: unlike `_validate_loft_sections`'s own "at
+    least 2" rule, a Ruled Surface requires *exactly* 2 - its whole point is
+    the narrower, exactly-2-pick UX (see `RuledSurfaceFeature`'s own
+    docstring)."""
+    if len(sections) != 2:
+        raise HTTPException(
+            status_code=422,
+            detail="RuledSurfaceFeature requires exactly 2 sections",
+        )
 
 
 def _validate_loft_sections(sections: list[LoftSection]) -> None:
@@ -3036,6 +3182,333 @@ def update_surface_feature(
     feature.end_distance = new_end
     feature.direction_ref = new_direction_ref
     feature.profile_refs = new_profile_refs
+    return _feature_response(part, feature)
+
+
+# --- Phase 1 surfacing package: Planar/Revolve/Swept/Loft/Ruled Surface ------
+
+
+def _validate_planar_surface_payload(part: Part, sketch_feature_id: str) -> None:
+    """Planar Surface reuses the same strict closed-profile gate Extrude/
+    Revolve/Sweep/Swept Surface already use - see `_require_closed_sketch_
+    feature`'s own docstring. No open-chain fallback (unlike SurfaceFeature/
+    RevolveSurfaceFeature) - `BRepBuilderAPI_MakeFace` needs a genuinely
+    closed wire."""
+    _require_closed_sketch_feature(part, sketch_feature_id)
+
+
+@router.post(
+    "/parts/{part_id}/planar-surface-features", response_model=PlanarSurfaceFeatureResponse, status_code=201
+)
+def create_planar_surface_feature(part_id: str, payload: PlanarSurfaceFeatureCreate) -> PlanarSurfaceFeatureResponse:
+    """Phase 1 surfacing package: creates a `PlanarSurfaceFeature` - unlike
+    `SurfaceFeature`, eagerly resolves (`app.document.planar_surface.
+    resolve_planar_surface`) before persisting, matching this package's own
+    dominant fail-closed convention (see `app.document.models.
+    PlanarSurfaceFeature`'s own docstring)."""
+    part = get_part_or_404(part_id)
+    _validate_planar_surface_payload(part, payload.sketch_feature_id)
+    profile_refs = [_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs]
+    feature = PlanarSurfaceFeature(
+        id=str(uuid.uuid4()),
+        sketch_feature_id=payload.sketch_feature_id,
+        profile_refs=profile_refs,
+    )
+    resolve_planar_surface(part, feature)  # raises on an unresolvable/invalid profile
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_planar_surface_feature_or_404(part: Part, feature_id: str) -> PlanarSurfaceFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, PlanarSurfaceFeature):
+        raise HTTPException(status_code=404, detail="Planar surface feature not found")
+    return feature
+
+
+@router.patch(
+    "/parts/{part_id}/planar-surface-features/{feature_id}", response_model=PlanarSurfaceFeatureResponse
+)
+def update_planar_surface_feature(
+    part_id: str, feature_id: str, payload: PlanarSurfaceFeatureUpdate
+) -> PlanarSurfaceFeatureResponse:
+    """Same validate-before-mutate discipline as `update_surface_feature`."""
+    part = get_part_or_404(part_id)
+    feature = _get_planar_surface_feature_or_404(part, feature_id)
+
+    new_sketch_feature_id = (
+        payload.sketch_feature_id if payload.sketch_feature_id is not None else feature.sketch_feature_id
+    )
+    new_profile_refs = (
+        [_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs]
+        if payload.profile_refs is not None
+        else feature.profile_refs
+    )
+    _validate_planar_surface_payload(part, new_sketch_feature_id)
+
+    candidate = PlanarSurfaceFeature(
+        id=feature.id, sketch_feature_id=new_sketch_feature_id, profile_refs=new_profile_refs
+    )
+    resolve_planar_surface(part, candidate)  # raises on an unresolvable/invalid profile
+
+    feature.sketch_feature_id = candidate.sketch_feature_id
+    feature.profile_refs = candidate.profile_refs
+    return _feature_response(part, feature)
+
+
+@router.post(
+    "/parts/{part_id}/revolve-surface-features", response_model=RevolveSurfaceFeatureResponse, status_code=201
+)
+def create_revolve_surface_feature(
+    part_id: str, payload: RevolveSurfaceFeatureCreate
+) -> RevolveSurfaceFeatureResponse:
+    """Mirrors `create_revolve_feature`'s shape, minus `mode`/`target_body_
+    ids` (a standalone-only Feature - see `app.document.models.
+    RevolveSurfaceFeature`'s own docstring). Unlike `RevolveFeature`, the
+    backing Sketch is not required to already have a closed profile - a
+    single open wire is also valid (mirrors `SurfaceFeature`'s own
+    tolerance), so this validates `sketch_feature_id` resolves to a real
+    SketchFeature only, rather than `_require_closed_sketch_feature`."""
+    part = get_part_or_404(part_id)
+    sketch_feature = part.get_feature(payload.sketch_feature_id)
+    if not isinstance(sketch_feature, SketchFeature):
+        raise HTTPException(
+            status_code=400, detail="sketch_feature_id does not refer to a SketchFeature in this Part"
+        )
+    _validate_revolve_angle(payload.angle)
+    feature = RevolveSurfaceFeature(
+        id=str(uuid.uuid4()),
+        sketch_feature_id=payload.sketch_feature_id,
+        axis_ref=_sketch_entity_ref_to_domain(payload.axis_ref),
+        angle=payload.angle,
+        profile_refs=[_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs],
+    )
+    resolve_revolve_surface(part, feature)  # raises on an unresolvable reference or unusable sketch
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_revolve_surface_feature_or_404(part: Part, feature_id: str) -> RevolveSurfaceFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, RevolveSurfaceFeature):
+        raise HTTPException(status_code=404, detail="Revolve surface feature not found")
+    return feature
+
+
+@router.patch(
+    "/parts/{part_id}/revolve-surface-features/{feature_id}", response_model=RevolveSurfaceFeatureResponse
+)
+def update_revolve_surface_feature(
+    part_id: str, feature_id: str, payload: RevolveSurfaceFeatureUpdate
+) -> RevolveSurfaceFeatureResponse:
+    """Same validate-before-mutate discipline as `update_revolve_feature` -
+    `sketch_feature_id` is never revised."""
+    part = get_part_or_404(part_id)
+    feature = _get_revolve_surface_feature_or_404(part, feature_id)
+
+    new_axis_ref = (
+        _sketch_entity_ref_to_domain(payload.axis_ref) if payload.axis_ref is not None else feature.axis_ref
+    )
+    new_angle = payload.angle if payload.angle is not None else feature.angle
+    new_profile_refs = (
+        [_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs]
+        if payload.profile_refs is not None
+        else feature.profile_refs
+    )
+    _validate_revolve_angle(new_angle)
+
+    candidate = RevolveSurfaceFeature(
+        id=feature.id,
+        sketch_feature_id=feature.sketch_feature_id,
+        axis_ref=new_axis_ref,
+        angle=new_angle,
+        profile_refs=new_profile_refs,
+    )
+    resolve_revolve_surface(part, candidate)  # raises on an unresolvable reference or unusable sketch
+
+    feature.axis_ref = candidate.axis_ref
+    feature.angle = candidate.angle
+    feature.profile_refs = candidate.profile_refs
+    return _feature_response(part, feature)
+
+
+@router.post(
+    "/parts/{part_id}/swept-surface-features", response_model=SweptSurfaceFeatureResponse, status_code=201
+)
+def create_swept_surface_feature(part_id: str, payload: SweptSurfaceFeatureCreate) -> SweptSurfaceFeatureResponse:
+    """Mirrors `create_sweep_feature`'s shape, minus `mode`/`target_body_
+    ids` - strict closed-profile requirement (`_require_closed_sketch_
+    feature`), same as Extrude/Revolve/Sweep (see `app.document.models.
+    SweptSurfaceFeature`'s own docstring for why, unlike Revolve Surface,
+    there is no open-chain fallback here)."""
+    part = get_part_or_404(part_id)
+    _require_closed_sketch_feature(part, payload.sketch_feature_id)
+    path_refs = [_sketch_entity_ref_to_domain(ref) for ref in payload.path_refs]
+    _validate_swept_surface_path_refs(path_refs)
+    feature = SweptSurfaceFeature(
+        id=str(uuid.uuid4()),
+        sketch_feature_id=payload.sketch_feature_id,
+        path_refs=path_refs,
+        profile_refs=[_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs],
+    )
+    resolve_swept_surface(part, feature)  # raises on an unresolvable reference or unusable path/profile
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_swept_surface_feature_or_404(part: Part, feature_id: str) -> SweptSurfaceFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, SweptSurfaceFeature):
+        raise HTTPException(status_code=404, detail="Swept surface feature not found")
+    return feature
+
+
+@router.patch(
+    "/parts/{part_id}/swept-surface-features/{feature_id}", response_model=SweptSurfaceFeatureResponse
+)
+def update_swept_surface_feature(
+    part_id: str, feature_id: str, payload: SweptSurfaceFeatureUpdate
+) -> SweptSurfaceFeatureResponse:
+    """Same validate-before-mutate discipline as `update_sweep_feature` -
+    `sketch_feature_id` is never revised."""
+    part = get_part_or_404(part_id)
+    feature = _get_swept_surface_feature_or_404(part, feature_id)
+
+    new_path_refs = (
+        [_sketch_entity_ref_to_domain(ref) for ref in payload.path_refs]
+        if payload.path_refs is not None
+        else feature.path_refs
+    )
+    new_profile_refs = (
+        [_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs]
+        if payload.profile_refs is not None
+        else feature.profile_refs
+    )
+    _validate_swept_surface_path_refs(new_path_refs)
+
+    candidate = SweptSurfaceFeature(
+        id=feature.id,
+        sketch_feature_id=feature.sketch_feature_id,
+        path_refs=new_path_refs,
+        profile_refs=new_profile_refs,
+    )
+    resolve_swept_surface(part, candidate)  # raises on an unresolvable reference or unusable path/profile
+
+    feature.path_refs = candidate.path_refs
+    feature.profile_refs = candidate.profile_refs
+    return _feature_response(part, feature)
+
+
+@router.post(
+    "/parts/{part_id}/loft-surface-features", response_model=LoftSurfaceFeatureResponse, status_code=201
+)
+def create_loft_surface_feature(part_id: str, payload: LoftSurfaceFeatureCreate) -> LoftSurfaceFeatureResponse:
+    """Mirrors `create_loft_feature`'s shape, minus `mode`/`target_body_
+    ids`/`thickness` - see `app.document.models.LoftSurfaceFeature`'s own
+    docstring for the closed-vs-open probing dispatch this eager resolve
+    exercises."""
+    part = get_part_or_404(part_id)
+    sections = [_loft_section_to_domain(section) for section in payload.sections]
+    guide_curve_refs = [_sketch_entity_ref_to_domain(ref) for ref in payload.guide_curve_refs]
+    _validate_loft_surface_sections(sections)
+    _validate_loft_guide_curve_refs(guide_curve_refs)
+    feature = LoftSurfaceFeature(
+        id=str(uuid.uuid4()), sections=sections, ruled=payload.ruled, guide_curve_refs=guide_curve_refs
+    )
+    _, warnings = resolve_loft_surface(part, feature)  # raises on an unresolvable/invalid loft
+    part.add_feature(feature)
+    return _loft_surface_feature_response(part, feature, warnings)
+
+
+def _get_loft_surface_feature_or_404(part: Part, feature_id: str) -> LoftSurfaceFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, LoftSurfaceFeature):
+        raise HTTPException(status_code=404, detail="Loft surface feature not found")
+    return feature
+
+
+@router.patch(
+    "/parts/{part_id}/loft-surface-features/{feature_id}", response_model=LoftSurfaceFeatureResponse
+)
+def update_loft_surface_feature(
+    part_id: str, feature_id: str, payload: LoftSurfaceFeatureUpdate
+) -> LoftSurfaceFeatureResponse:
+    """Same validate-before-mutate discipline as `update_loft_feature`."""
+    part = get_part_or_404(part_id)
+    feature = _get_loft_surface_feature_or_404(part, feature_id)
+
+    new_sections = (
+        [_loft_section_to_domain(section) for section in payload.sections]
+        if payload.sections is not None
+        else feature.sections
+    )
+    new_ruled = payload.ruled if payload.ruled is not None else feature.ruled
+    new_guide_curve_refs = (
+        [_sketch_entity_ref_to_domain(ref) for ref in payload.guide_curve_refs]
+        if payload.guide_curve_refs is not None
+        else feature.guide_curve_refs
+    )
+    _validate_loft_surface_sections(new_sections)
+    _validate_loft_guide_curve_refs(new_guide_curve_refs)
+
+    candidate = LoftSurfaceFeature(
+        id=feature.id, sections=new_sections, ruled=new_ruled, guide_curve_refs=new_guide_curve_refs
+    )
+    _, warnings = resolve_loft_surface(part, candidate)  # raises on an unresolvable/invalid loft
+
+    feature.sections = candidate.sections
+    feature.ruled = candidate.ruled
+    feature.guide_curve_refs = candidate.guide_curve_refs
+    return _loft_surface_feature_response(part, feature, warnings)
+
+
+@router.post(
+    "/parts/{part_id}/ruled-surface-features", response_model=RuledSurfaceFeatureResponse, status_code=201
+)
+def create_ruled_surface_feature(part_id: str, payload: RuledSurfaceFeatureCreate) -> RuledSurfaceFeatureResponse:
+    """A thin, UX-only wrapper around Loft Surface's own construction (see
+    `app.document.models.RuledSurfaceFeature`'s own docstring) - exactly 2
+    sections, `reference_point`/`alignment_point` always `None` (the router
+    constructs the real domain `LoftSection` with those two fields always
+    unset - `RuledSurfaceSectionSchema` doesn't even expose them)."""
+    part = get_part_or_404(part_id)
+    sections = [_ruled_surface_section_to_domain(section) for section in payload.sections]
+    _validate_ruled_surface_sections(sections)
+    feature = RuledSurfaceFeature(id=str(uuid.uuid4()), sections=sections)
+    resolve_ruled_surface(part, feature)  # raises on an unresolvable/invalid section pair
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_ruled_surface_feature_or_404(part: Part, feature_id: str) -> RuledSurfaceFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, RuledSurfaceFeature):
+        raise HTTPException(status_code=404, detail="Ruled surface feature not found")
+    return feature
+
+
+@router.patch(
+    "/parts/{part_id}/ruled-surface-features/{feature_id}", response_model=RuledSurfaceFeatureResponse
+)
+def update_ruled_surface_feature(
+    part_id: str, feature_id: str, payload: RuledSurfaceFeatureUpdate
+) -> RuledSurfaceFeatureResponse:
+    """Same validate-before-mutate discipline as every other Phase 1
+    surfacing endpoint above."""
+    part = get_part_or_404(part_id)
+    feature = _get_ruled_surface_feature_or_404(part, feature_id)
+
+    new_sections = (
+        [_ruled_surface_section_to_domain(section) for section in payload.sections]
+        if payload.sections is not None
+        else feature.sections
+    )
+    _validate_ruled_surface_sections(new_sections)
+
+    candidate = RuledSurfaceFeature(id=feature.id, sections=new_sections)
+    resolve_ruled_surface(part, candidate)  # raises on an unresolvable/invalid section pair
+
+    feature.sections = candidate.sections
     return _feature_response(part, feature)
 
 

@@ -48,6 +48,7 @@ from app.document.models import (
     GearFeature,
     LoftFeature,
     LoftMode,
+    LoftSurfaceFeature,
     MergeFeature,
     MirrorFeature,
     MoveBodyFeature,
@@ -56,18 +57,22 @@ from app.document.models import (
     PatternAxisRef,
     PatternDirectionRef,
     PatternFeature,
+    PlanarSurfaceFeature,
     PlanetaryGearFeature,
     PlaneRef,
     PlaneType,
     RackFeature,
     RevolveFeature,
     RevolveMode,
+    RevolveSurfaceFeature,
+    RuledSurfaceFeature,
     ScaleBodyFeature,
     SketchFeature,
     SplitFeature,
     SurfaceFeature,
     SweepFeature,
     SweepMode,
+    SweptSurfaceFeature,
 )
 from app.sketch.store import all_sketches
 
@@ -471,6 +476,20 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
             depends_on = _sweep_dependencies(part, feature)
         elif isinstance(feature, SurfaceFeature):
             depends_on = _surface_dependencies(part, feature)
+        elif isinstance(feature, PlanarSurfaceFeature):
+            # Phase 1 surfacing package: the simplest of the five new
+            # dependency edges this package adds - just the backing
+            # SketchFeature, no target_body_ids/direction_ref (a
+            # PlanarSurfaceFeature has neither - see its own docstring).
+            depends_on = (feature.sketch_feature_id,)
+        elif isinstance(feature, RevolveSurfaceFeature):
+            depends_on = _revolve_surface_dependencies(part, feature)
+        elif isinstance(feature, SweptSurfaceFeature):
+            depends_on = _swept_surface_dependencies(part, feature)
+        elif isinstance(feature, LoftSurfaceFeature):
+            depends_on = _loft_surface_dependencies(part, feature)
+        elif isinstance(feature, RuledSurfaceFeature):
+            depends_on = _ruled_surface_dependencies(part, feature)
         elif isinstance(feature, MirrorFeature):
             depends_on = _mirror_dependencies(feature)
         elif isinstance(feature, MergeFeature):
@@ -599,6 +618,63 @@ def _surface_dependencies(part: Part, feature: SurfaceFeature) -> tuple[str, ...
     direction_dep = _pattern_direction_dependency(part, feature.direction_ref)
     if direction_dep is not None:
         deps.add(direction_dep)
+    return tuple(deps)
+
+
+def _revolve_surface_dependencies(part: Part, feature: RevolveSurfaceFeature) -> tuple[str, ...]:
+    """Phase 1 surfacing package: `build_feature_graph`'s `RevolveSurface
+    Feature` dependency-edge logic - mirrors `_revolve_dependencies`
+    exactly, minus the `target_body_ids` line (a standalone-only Feature,
+    no Boss/Cut - see its own docstring): the Profile's own SketchFeature
+    plus the `axis_ref`'s own SketchFeature (possibly a different Sketch,
+    same as `RevolveFeature.axis_ref`)."""
+    deps: set[str] = {feature.sketch_feature_id}
+    axis_sketch_feature_id = sketch_feature_id_for_sketch(part, feature.axis_ref.sketch_id)
+    if axis_sketch_feature_id is not None:
+        deps.add(axis_sketch_feature_id)
+    return tuple(deps)
+
+
+def _swept_surface_dependencies(part: Part, feature: SweptSurfaceFeature) -> tuple[str, ...]:
+    """Phase 1 surfacing package: `build_feature_graph`'s `SweptSurface
+    Feature` dependency-edge logic - mirrors `_sweep_dependencies` exactly,
+    minus the `target_body_ids` line: the Profile's own SketchFeature plus
+    every distinct Sketch named across `path_refs`."""
+    deps: set[str] = {feature.sketch_feature_id}
+    for ref in feature.path_refs:
+        path_sketch_feature_id = sketch_feature_id_for_sketch(part, ref.sketch_id)
+        if path_sketch_feature_id is not None:
+            deps.add(path_sketch_feature_id)
+    return tuple(deps)
+
+
+def _loft_surface_dependencies(part: Part, feature: LoftSurfaceFeature) -> tuple[str, ...]:
+    """Phase 1 surfacing package: `build_feature_graph`'s `LoftSurface
+    Feature` dependency-edge logic - mirrors `_loft_dependencies` exactly,
+    minus the `target_body_ids` line: every distinct Sketch named across
+    `sections` plus every distinct Sketch named across `guide_curve_refs`."""
+    deps: set[str] = set()
+    for section in feature.sections:
+        sketch_feature_id = section.sketch_feature_id
+        if part.get_feature(sketch_feature_id) is not None:
+            deps.add(sketch_feature_id)
+    for ref in feature.guide_curve_refs:
+        guide_sketch_feature_id = sketch_feature_id_for_sketch(part, ref.sketch_id)
+        if guide_sketch_feature_id is not None:
+            deps.add(guide_sketch_feature_id)
+    return tuple(deps)
+
+
+def _ruled_surface_dependencies(part: Part, feature: RuledSurfaceFeature) -> tuple[str, ...]:
+    """Phase 1 surfacing package: `build_feature_graph`'s `RuledSurface
+    Feature` dependency-edge logic - the owning SketchFeature of each of the
+    (exactly 2, enforced by the router) `sections` entries, same treatment
+    `_loft_surface_dependencies` gives `LoftSurfaceFeature.sections`."""
+    deps: set[str] = set()
+    for section in feature.sections:
+        sketch_feature_id = section.sketch_feature_id
+        if part.get_feature(sketch_feature_id) is not None:
+            deps.add(sketch_feature_id)
     return tuple(deps)
 
 

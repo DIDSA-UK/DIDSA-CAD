@@ -1,0 +1,157 @@
+"""OCCT geometry construction for `SweptSurfaceFeature` - the Swept-Surface
+counterpart of `app.document.sweep`'s own `SweepFeature` construction:
+reuses `app.document.sweep.resolve_path_wire` verbatim for path resolution,
+but builds an open shell via `BRepOffsetAPI_MakePipeShell` (never calling
+`.MakeSolid()`, the step that caps a pipe's ends into a solid - see `app.
+document.sweep._sweep_wire`'s own setup, this module diverges only at that
+one call) instead of a solid.
+
+Unlike `RevolveSurfaceFeature`/`SurfaceFeature`, this requires a genuinely
+closed Profile up front - the same strict `EXTRUDABLE_STATUSES` gate `app.
+document.router._require_closed_sketch_feature` already enforces for
+Extrude/Revolve/Sweep - since `BRepOffsetAPI_MakePipeShell.Add` needs a real
+wire to sweep, and an "open profile swept into an open shell" has no
+established meaning the way a closed-profile-into-open-shell (this
+Feature's whole point) does.
+
+v1 scope (mirrors `app.document.loft._resolve_closed_section`'s own
+identical guard): a profile with inner loops (holes) is rejected outright -
+`SweepFeature`'s own hollow-profile handling boolean-cuts two independently
+swept *solids* together, which has no shell equivalent (there is no
+"subtract one open shell from another" operation)."""
+
+import logging
+
+from fastapi import HTTPException
+from OCC.Core.BRep import BRep_Builder
+from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_RightCorner
+from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_MakePipeShell
+from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape, TopoDS_Wire
+
+from app.document.create_plane import resolve_sketch_basis
+from app.document.extrude import (
+    EXTRUDABLE_STATUSES,
+    compute_part_bodies,
+    select_profiles,
+    wire_for_profile,
+)
+from app.document.models import Part, SketchFeature, SweptSurfaceFeature
+from app.document.sweep import resolve_path_wire
+from app.sketch.profile import ProfileStatus, detect_profile
+from app.sketch.store import get_sketch_or_404
+
+logger = logging.getLogger(__name__)
+
+
+def _swept_surface_failed() -> HTTPException:
+    """`BRepOffsetAPI_MakePipeShell.IsDone()` returned false - mirrors
+    `app.document.sweep._sweep_failed`'s own convention, its own distinct
+    `type` string (never `sweep_failed` - a different tool's error)."""
+    return HTTPException(status_code=422, detail={"type": "swept_surface_failed"})
+
+
+def _swept_surface_holes_unsupported() -> HTTPException:
+    """v1 scope: a Swept Surface profile with inner loops (holes) has no
+    shell equivalent for `SweepFeature`'s own hollow-profile boolean-cut
+    technique (there is no "subtract one open shell from another"
+    operation) - mirrors `app.document.loft._resolve_closed_section`'s own
+    "profile with holes is not supported (v1 scope)" guard, its own
+    distinct `type` string."""
+    return HTTPException(
+        status_code=422,
+        detail={
+            "type": "swept_surface_holes_unsupported",
+            "detail": "a profile with holes is not supported as a Swept Surface profile (v1 scope)",
+        },
+    )
+
+
+def _shell_for_wire(path_wire: TopoDS_Wire, wire: TopoDS_Wire) -> TopoDS_Shape:
+    """Sweeps `wire` along `path_wire` into an open shell - mirrors `app.
+    document.sweep._sweep_wire`'s own setup exactly, diverging only at the
+    point a solid-vs-shell result is decided: no `.MakeSolid()` call here."""
+    pipe_maker = BRepOffsetAPI_MakePipeShell(path_wire)
+    pipe_maker.SetTransitionMode(BRepBuilderAPI_RightCorner)
+    pipe_maker.Add(wire)
+    pipe_maker.Build()
+    if not pipe_maker.IsDone():
+        raise _swept_surface_failed()
+    return pipe_maker.Shape()
+
+
+def resolve_swept_surface_from_bodies(
+    feature: SweptSurfaceFeature,
+    sketch_feature: SketchFeature,
+    part: Part,
+    bodies_so_far: dict[str, TopoDS_Shape],
+    excluded_feature_ids: frozenset[str],
+) -> TopoDS_Shape | None:
+    """The real OCCT shell(s) for one `SweptSurfaceFeature`, or `None` if
+    its backing Sketch no longer has a closed profile - callers skip rather
+    than error in that case, mirroring `app.document.surface.resolve_
+    surface_from_bodies`'s identical tolerance. A profile with holes always
+    raises `swept_surface_holes_unsupported` rather than being tolerated -
+    that is a structural v1-scope limitation, not topology drift."""
+    sketch = get_sketch_or_404(sketch_feature.sketch_id)
+    result = detect_profile(sketch)
+    # Sketcher-roadmap Phase 7 (2D Pattern/Mirror): see extrude.py's
+    # identical call site for why this re-expansion is needed here too.
+    sketch = sketch.expand_pattern_and_mirror_instances()
+    if result.status not in EXTRUDABLE_STATUSES:
+        logger.warning(
+            "Skipping SweptSurfaceFeature %s: sketch %s has no closed profile (status=%s)",
+            feature.id,
+            sketch.id,
+            result.status.value,
+        )
+        return None
+
+    basis = resolve_sketch_basis(part, sketch_feature, bodies_so_far, excluded_feature_ids)
+    path_wire = resolve_path_wire(part, feature.path_refs, bodies_so_far, excluded_feature_ids)
+
+    if result.status == ProfileStatus.CLOSED_LOOP:
+        assert result.profile is not None
+        candidates = [result.profile]
+    else:
+        candidates = result.loops
+    profiles = select_profiles(candidates, feature.profile_refs)
+
+    for profile in profiles:
+        if profile.inner_loops:
+            raise _swept_surface_holes_unsupported()
+
+    shells = [_shell_for_wire(path_wire, wire_for_profile(sketch, profile, basis)) for profile in profiles]
+    if len(shells) == 1:
+        return shells[0]
+    builder = BRep_Builder()
+    compound = TopoDS_Compound()
+    builder.MakeCompound(compound)
+    for shell in shells:
+        builder.Add(compound, shell)
+    return compound
+
+
+def resolve_swept_surface(
+    part: Part, feature: SweptSurfaceFeature, excluded_feature_ids: frozenset[str] = frozenset()
+) -> TopoDS_Shape:
+    """Fresh entry point for the router's create/update validation - mirrors
+    `app.document.sweep.resolve_sweep`'s own self-exclusion convention
+    exactly. Unlike `resolve_swept_surface_from_bodies`, this always raises
+    rather than returning `None` - a brand-new/edited Feature with nothing
+    usable to sweep is a real validation failure at create/update time, not
+    topology drift to be tolerated later."""
+    sketch_feature = part.get_feature(feature.sketch_feature_id)
+    if not isinstance(sketch_feature, SketchFeature):
+        raise HTTPException(
+            status_code=400,
+            detail="sketch_feature_id does not refer to a SketchFeature in this Part",
+        )
+    all_excluded = excluded_feature_ids | {feature.id}
+    bodies = compute_part_bodies(part, all_excluded)
+    shape = resolve_swept_surface_from_bodies(feature, sketch_feature, part, bodies, all_excluded)
+    if shape is None:
+        raise HTTPException(
+            status_code=422,
+            detail={"type": "swept_surface_failed", "detail": "sketch has no closed profile to sweep"},
+        )
+    return shape

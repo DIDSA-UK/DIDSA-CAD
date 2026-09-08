@@ -974,6 +974,138 @@ class SurfaceFeature(Feature):
         return Produces.SURFACE
 
 
+@dataclass
+class PlanarSurfaceFeature(Feature):
+    """Phase 1 surfacing package: the simplest of five new surface-producing
+    tools (Revolve/Swept/Loft/Ruled Surface are the other four) - a flat
+    face straight from the closed Profile of the SketchFeature referenced by
+    `sketch_feature_id`, via `app.document.extrude.face_for_profile`
+    verbatim (already handles inner-loop holes) - no prism/revolve/sweep
+    transform of any kind, unlike every other geometry-producing Feature in
+    this codebase.
+
+    Unlike `SurfaceFeature`, there is no open-chain fallback - a genuinely
+    closed profile is required at create time (see `app.document.router.
+    _require_closed_sketch_feature`, the same strict gate Extrude/Revolve/
+    Sweep already use) - `BRepBuilderAPI_MakeFace` needs a real closed wire
+    to build a face from. `profile_refs` mirrors `ExtrudeFeature.profile_
+    refs` exactly - a MultiProfile Sketch produces one face per selected
+    outer profile, combined into a `TopoDS_Compound` when more than one is
+    selected.
+
+    Unlike `SurfaceFeature` (which resolves lazily), this Feature - like the
+    other four in this package - resolves eagerly at create/update time (see
+    `app.document.planar_surface.resolve_planar_surface`), matching this
+    codebase's dominant fail-closed convention (Revolve/Loft/Sweep/Fillet/
+    Chamfer/Mirror/Pattern/Merge/Boolean/Split all do this already)."""
+
+    id: str
+    sketch_feature_id: str
+    profile_refs: list[SketchEntityRef] = field(default_factory=list)
+
+    @property
+    def type(self) -> str:
+        return "planar_surface"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return False
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.SURFACE
+
+
+@dataclass
+class RevolveSurfaceFeature(Feature):
+    """Phase 1 surfacing package: the Revolve-Surface counterpart of
+    `SurfaceFeature` - revolves the Sketch wire referenced by `sketch_
+    feature_id` (closed profile or, mirroring `SurfaceFeature`'s own
+    tolerance, a single open chain) around `axis_ref` (a Sketch Line
+    reference, same restriction `RevolveFeature.axis_ref` already has) by
+    `angle` degrees, via OCCT `BRepPrimAPI_MakeRevol` applied directly to
+    the wire rather than to a face (see `app.document.revolve_surface.
+    resolve_revolve_surface_from_bodies`) - revolve-of-a-wire produces a
+    `TopoDS_Shell`, revolve-of-a-face (`RevolveFeature`'s own construction)
+    produces a `TopoDS_Solid`. No Boss/Cut, no `target_body_ids` - always a
+    brand-new, standalone Surface, same as `SurfaceFeature`.
+
+    `profile_refs` mirrors `RevolveFeature.profile_refs` exactly - only
+    meaningful on the closed-profile path, inert (ignored) when the backing
+    Sketch resolves to a single open wire instead, same as `SurfaceFeature.
+    profile_refs`'s identical scoping.
+
+    Resolves eagerly at create/update time (see `app.document.revolve_
+    surface.resolve_revolve_surface`) - see `PlanarSurfaceFeature`'s own
+    docstring for why this differs from `SurfaceFeature`'s own lazy-only
+    convention."""
+
+    id: str
+    sketch_feature_id: str
+    axis_ref: SketchEntityRef
+    angle: float
+    profile_refs: list[SketchEntityRef] = field(default_factory=list)
+
+    @property
+    def type(self) -> str:
+        return "revolve_surface"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return False
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.SURFACE
+
+
+@dataclass
+class SweptSurfaceFeature(Feature):
+    """Phase 1 surfacing package: the Swept-Surface counterpart of
+    `SweepFeature` - sweeps the closed Profile of the SketchFeature
+    referenced by `sketch_feature_id` along `path_refs` (an ordered,
+    possibly cross-Sketch chain of Line/Arc/Circle/Ellipse/Spline
+    references, identical shape to `SweepFeature.path_refs`) via OCCT
+    `BRepOffsetAPI_MakePipeShell`, deliberately never calling `.MakeSolid()`
+    (the step that caps a pipe's ends into a solid - see `app.document.
+    swept_surface.resolve_swept_surface_from_bodies`) so the result is an
+    open `TopoDS_Shell` instead of a solid. No Boss/Cut, no `target_body_
+    ids` - always a brand-new, standalone Surface, same as `SurfaceFeature`.
+
+    Unlike `RevolveSurfaceFeature`, there is no open-chain fallback here - a
+    genuinely closed profile is required at create time (same strict
+    `_require_closed_sketch_feature` gate `PlanarSurfaceFeature` uses) -
+    `BRepOffsetAPI_MakePipeShell.Add` needs a real wire to sweep, and an
+    "open profile swept into an open shell" has no established meaning.
+
+    v1 scope: a profile with inner loops (holes) is rejected outright
+    (`swept_surface_holes_unsupported`, mirroring `app.document.loft`'s own
+    "profile with holes is not supported (v1 scope)" guard) -
+    `SweepFeature`'s own hollow-profile handling boolean-cuts two
+    independently swept *solids* together, which has no shell equivalent.
+
+    Resolves eagerly at create/update time (see `app.document.swept_surface.
+    resolve_swept_surface`) - see `PlanarSurfaceFeature`'s own docstring for
+    why this differs from `SurfaceFeature`'s own lazy-only convention."""
+
+    id: str
+    sketch_feature_id: str
+    path_refs: list[SketchEntityRef]
+    profile_refs: list[SketchEntityRef] = field(default_factory=list)
+
+    @property
+    def type(self) -> str:
+        return "swept_surface"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return False
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.SURFACE
+
+
 class PatternType(str, Enum):
     """Pattern/Mirror scoping's Phase 4 (`docs/pattern-mirror-scope.md`
     §2.3/§4): which construction method a `PatternFeature` uses - mirrors
@@ -1587,6 +1719,90 @@ class LoftFeature(Feature):
     @property
     def produces(self) -> Produces:
         return Produces.BODY
+
+
+@dataclass
+class LoftSurfaceFeature(Feature):
+    """Phase 1 surfacing package: the Loft-Surface counterpart of
+    `LoftFeature` - lofts between 2+ ordered `sections` (reusing `LoftSection`
+    verbatim, see that dataclass's own docstring) via `BRepOffsetAPI_
+    ThruSections(isSolid=False, ...)`, always into an open `TopoDS_Shell` -
+    unlike `LoftFeature`, there is no `thickness` field to switch between a
+    closed-profile and an open-chain path (`app.document.loft_surface`'s own
+    dispatcher instead *probes*: try every section as a closed Profile
+    first, fall back to every section as a single open chain only if that
+    fails - see that module's own docstring), and no thicken-into-a-solid
+    step at all - a user wanting a solid chains the Thicken tool (Phase 2)
+    onto this Feature's own output afterward. No Boss/Cut, no `target_body_
+    ids` - always a brand-new, standalone Surface, same as `SurfaceFeature`.
+
+    `ruled`/`guide_curve_refs` mirror `LoftFeature`'s own fields exactly -
+    see that dataclass's own docstring for what each does.
+
+    Resolves eagerly at create/update time (see `app.document.loft_surface.
+    resolve_loft_surface`), following `LoftFeature`'s own "always raise,
+    never return None" contract rather than `SurfaceFeature`'s lazy-tolerant
+    one - see `PlanarSurfaceFeature`'s own docstring for the general "why
+    this differs from SurfaceFeature" reasoning."""
+
+    id: str
+    sections: list[LoftSection]
+    ruled: bool = False
+    guide_curve_refs: list[SketchEntityRef] = field(default_factory=list)
+
+    @property
+    def type(self) -> str:
+        return "loft_surface"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return False
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.SURFACE
+
+
+@dataclass
+class RuledSurfaceFeature(Feature):
+    """Phase 1 surfacing package: a standalone tool (its own tree entry/
+    icon, exactly 2 curves, no reference-point/alignment/guide-curve UI) that
+    shares `LoftSurfaceFeature`'s construction underneath - at exactly 2
+    sections, `ruled=True` vs `False` produces an identical result (per
+    `LoftFeature`'s own docstring: a spline fit through 2 points degenerates
+    to a straight line), so the value this tool adds is purely UX: an
+    exactly-2-pick tree entry with none of Loft Surface's other knobs.
+
+    `sections` reuses `LoftSection` verbatim, but the router always
+    constructs each entry with `reference_point`/`alignment_point` both
+    `None` (the create/update payload schema doesn't even expose those two
+    fields for a Ruled Surface's own section shape - see `schemas.
+    RuledSurfaceSectionSchema`). `app.document.ruled_surface.resolve_ruled_
+    surface_from_bodies` is a thin delegating wrapper, not a reimplementation
+    - it builds a scratch `LoftSurfaceFeature(sections=feature.sections,
+    ruled=True, guide_curve_refs=[])` sharing this Feature's own id and calls
+    `app.document.loft_surface.resolve_loft_surface_from_bodies` directly,
+    discarding its own non-blocking self-intersection warnings (not
+    meaningful for a 2-section ruled surface).
+
+    Resolves eagerly at create/update time (see `app.document.ruled_surface.
+    resolve_ruled_surface`) - see `PlanarSurfaceFeature`'s own docstring for
+    the general "why this differs from SurfaceFeature" reasoning."""
+
+    id: str
+    sections: list[LoftSection]
+
+    @property
+    def type(self) -> str:
+        return "ruled_surface"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return False
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.SURFACE
 
 
 @dataclass(frozen=True)
