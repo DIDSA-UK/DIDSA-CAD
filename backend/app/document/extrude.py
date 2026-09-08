@@ -59,6 +59,7 @@ from app.document.models import (
     GearFeature,
     GearType,
     ImportFeature,
+    KnitSurfaceFeature,
     ScaleBodyFeature,
     LoftFeature,
     LoftMode,
@@ -68,6 +69,7 @@ from app.document.models import (
     MirrorFeature,
     MoveBodyFeature,
     MoveFaceFeature,
+    OffsetSurfaceFeature,
     Part,
     PatternFeature,
     PlanarSurfaceFeature,
@@ -80,6 +82,7 @@ from app.document.models import (
     RevolveSurfaceFeature,
     RuledSurfaceFeature,
     SketchFeature,
+    SolidFromSurfacesFeature,
     SplitFeature,
     SubShapeRef,
     SubShapeType,
@@ -87,6 +90,7 @@ from app.document.models import (
     SweepFeature,
     SweepMode,
     SweptSurfaceFeature,
+    ThickenFeature,
 )
 from app.sketch.models import (
     Arc,
@@ -1905,6 +1909,67 @@ def _apply_feature_to_bodies_impl(
             shape = resolve_ruled_surface_from_bodies(feature, part, bodies, excluded_feature_ids)
         except HTTPException:
             logger.warning("Skipping RuledSurfaceFeature %s: could not be resolved", feature.id)
+            return
+        bodies[feature.id] = shape
+        return
+
+    if isinstance(feature, ThickenFeature):
+        # Phase 2 surfacing package: mirrors LoftSurfaceFeature's own
+        # tolerance shape just above - a blanket HTTPException catch (an
+        # invalid/stale surface_feature_id reference, or a genuine thicken
+        # failure, are both tolerated here the same "skip, don't fail
+        # /mesh" way every other Phase 1/2 surfacing branch already is).
+        # Unlike the seven shell-producing tools, a Thicken solid DOES have
+        # a TopAbs_SOLID for _register_solids' own TopExp_Explorer walk to
+        # find, so it's registered the same way LoftFeature's own solid is.
+        from app.document.thicken import resolve_thicken_from_bodies
+
+        try:
+            solid = resolve_thicken_from_bodies(feature, part, bodies, excluded_feature_ids)
+        except HTTPException:
+            logger.warning("Skipping ThickenFeature %s: could not be resolved", feature.id)
+            return
+        _register_solids(bodies, feature.id, solid)
+        return
+
+    if isinstance(feature, KnitSurfaceFeature):
+        # Phase 2 surfacing package: mirrors SurfaceFeature's own
+        # registration - a sewn Shell/Compound has no TopAbs_SOLID for
+        # _register_solids' own TopExp_Explorer walk to find.
+        from app.document.knit_surface import resolve_knit_surface_from_bodies
+
+        try:
+            shape = resolve_knit_surface_from_bodies(feature, part, bodies, excluded_feature_ids)
+        except HTTPException:
+            logger.warning("Skipping KnitSurfaceFeature %s: could not be resolved", feature.id)
+            return
+        bodies[feature.id] = shape
+        return
+
+    if isinstance(feature, SolidFromSurfacesFeature):
+        # Phase 2 surfacing package: a genuine TopoDS_Solid (unlike Knit
+        # Surfaces just above), registered via _register_solids the same
+        # way ThickenFeature's own solid is.
+        from app.document.solid_from_surfaces import resolve_solid_from_surfaces_from_bodies
+
+        try:
+            solid = resolve_solid_from_surfaces_from_bodies(feature, part, bodies, excluded_feature_ids)
+        except HTTPException:
+            logger.warning("Skipping SolidFromSurfacesFeature %s: could not be resolved", feature.id)
+            return
+        _register_solids(bodies, feature.id, solid)
+        return
+
+    if isinstance(feature, OffsetSurfaceFeature):
+        # Phase 2 surfacing package, last of the four: mirrors KnitSurface
+        # Feature's own registration - a bare offset Face/Shell has no
+        # TopAbs_SOLID either.
+        from app.document.offset_surface import resolve_offset_surface_from_bodies
+
+        try:
+            shape = resolve_offset_surface_from_bodies(feature, part, bodies, excluded_feature_ids)
+        except HTTPException:
+            logger.warning("Skipping OffsetSurfaceFeature %s: could not be resolved", feature.id)
             return
         bodies[feature.id] = shape
         return

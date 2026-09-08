@@ -46,6 +46,7 @@ from app.document.models import (
     FilletFeature,
     GearChainFeature,
     GearFeature,
+    KnitSurfaceFeature,
     LoftFeature,
     LoftMode,
     LoftSurfaceFeature,
@@ -53,6 +54,7 @@ from app.document.models import (
     MirrorFeature,
     MoveBodyFeature,
     MoveFaceFeature,
+    OffsetSurfaceFeature,
     Part,
     PatternAxisRef,
     PatternDirectionRef,
@@ -68,11 +70,13 @@ from app.document.models import (
     RuledSurfaceFeature,
     ScaleBodyFeature,
     SketchFeature,
+    SolidFromSurfacesFeature,
     SplitFeature,
     SurfaceFeature,
     SweepFeature,
     SweepMode,
     SweptSurfaceFeature,
+    ThickenFeature,
 )
 from app.sketch.store import all_sketches
 
@@ -490,6 +494,18 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
             depends_on = _loft_surface_dependencies(part, feature)
         elif isinstance(feature, RuledSurfaceFeature):
             depends_on = _ruled_surface_dependencies(part, feature)
+        elif isinstance(feature, ThickenFeature):
+            # Phase 2 surfacing package: a bare Feature id, no base_
+            # feature_id mapping needed - mirrors SplitFeature.tool.
+            # surface_feature_id's own identical treatment in
+            # _split_dependencies.
+            depends_on = (feature.surface_feature_id,)
+        elif isinstance(feature, KnitSurfaceFeature):
+            depends_on = tuple(feature.surface_feature_ids)
+        elif isinstance(feature, SolidFromSurfacesFeature):
+            depends_on = tuple(feature.surface_feature_ids)
+        elif isinstance(feature, OffsetSurfaceFeature):
+            depends_on = _offset_surface_dependencies(feature)
         elif isinstance(feature, MirrorFeature):
             depends_on = _mirror_dependencies(feature)
         elif isinstance(feature, MergeFeature):
@@ -676,6 +692,21 @@ def _ruled_surface_dependencies(part: Part, feature: RuledSurfaceFeature) -> tup
         if part.get_feature(sketch_feature_id) is not None:
             deps.add(sketch_feature_id)
     return tuple(deps)
+
+
+def _offset_surface_dependencies(feature: OffsetSurfaceFeature) -> tuple[str, ...]:
+    """Phase 2 surfacing package: `build_feature_graph`'s `OffsetSurface
+    Feature` dependency-edge logic - mirrors `_split_dependencies`'s own
+    two-way `SplitToolRef` dispatch, just over `OffsetSourceRef`'s two
+    fields instead of three: `base_feature_id(source.face_ref.body_id)`
+    for a Body-face source, or the bare `source.surface_feature_id`
+    Feature id (already a Feature id, no `base_feature_id` mapping needed)
+    for a surface-Feature source."""
+    source = feature.source
+    if source.face_ref is not None:
+        return (base_feature_id(source.face_ref.body_id),)
+    assert source.surface_feature_id is not None
+    return (source.surface_feature_id,)
 
 
 def _plane_ref_dependency(ref: PlaneRef) -> str | None:

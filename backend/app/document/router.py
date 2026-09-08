@@ -118,6 +118,7 @@ from app.document.models import (
     GearType,
     ImportFeature,
     ImportSourceFormat,
+    KnitSurfaceFeature,
     LoftFeature,
     LoftMode,
     LoftSection,
@@ -127,6 +128,8 @@ from app.document.models import (
     MirrorFeature,
     MoveBodyFeature,
     MoveFaceFeature,
+    OffsetSourceRef,
+    OffsetSurfaceFeature,
     Part,
     PatternAxisRef,
     PatternDirectionRef,
@@ -146,6 +149,7 @@ from app.document.models import (
     RuledSurfaceFeature,
     ScaleBodyFeature,
     SketchFeature,
+    SolidFromSurfacesFeature,
     SplitFeature,
     SplitToolRef,
     SubShapeRef,
@@ -154,12 +158,17 @@ from app.document.models import (
     SweepFeature,
     SweepMode,
     SweptSurfaceFeature,
+    ThickenFeature,
 )
 from app.document.revolve import resolve_revolve
 from app.document.delete_face import resolve_delete_face
+from app.document.knit_surface import resolve_knit_surface
 from app.document.move_body import resolve_move_body
 from app.document.move_face import resolve_move_face
+from app.document.offset_surface import resolve_offset_surface
 from app.document.scale_body import resolve_scale_body
+from app.document.solid_from_surfaces import resolve_solid_from_surfaces
+from app.document.thicken import resolve_thicken
 from app.document.schemas import (
     BevelGearFeatureCreate,
     BevelGearFeatureResponse,
@@ -240,6 +249,9 @@ from app.document.schemas import (
     GearPreviewResponse,
     ImportFeatureCreate,
     ImportFeatureResponse,
+    KnitSurfaceFeatureCreate,
+    KnitSurfaceFeatureResponse,
+    KnitSurfaceFeatureUpdate,
     LoftFeatureCreate,
     LoftFeatureResponse,
     LoftFeatureUpdate,
@@ -255,6 +267,10 @@ from app.document.schemas import (
     MirrorFeatureResponse,
     MirrorFeatureUpdate,
     NativeImportResponse,
+    OffsetSourceRefSchema,
+    OffsetSurfaceFeatureCreate,
+    OffsetSurfaceFeatureResponse,
+    OffsetSurfaceFeatureUpdate,
     PartCreate,
     PartResponse,
     PatternAxisRefSchema,
@@ -286,6 +302,9 @@ from app.document.schemas import (
     SketchEntityRefSchema,
     SketchFeatureCreate,
     SketchFeatureResponse,
+    SolidFromSurfacesFeatureCreate,
+    SolidFromSurfacesFeatureResponse,
+    SolidFromSurfacesFeatureUpdate,
     SplitFeatureCreate,
     SplitFeatureResponse,
     SplitFeatureUpdate,
@@ -300,6 +319,9 @@ from app.document.schemas import (
     SweptSurfaceFeatureCreate,
     SweptSurfaceFeatureResponse,
     SweptSurfaceFeatureUpdate,
+    ThickenFeatureCreate,
+    ThickenFeatureResponse,
+    ThickenFeatureUpdate,
 )
 from app.document.split import CONNECTABLE_CURVE_ENTITY_TYPES, resolve_split
 from app.document.sweep import resolve_sweep
@@ -510,6 +532,20 @@ def _split_tool_ref_to_schema(ref: SplitToolRef) -> SplitToolRefSchema:
     )
 
 
+def _offset_source_ref_to_domain(schema: OffsetSourceRefSchema) -> OffsetSourceRef:
+    return OffsetSourceRef(
+        face_ref=_subshape_ref_to_domain(schema.face_ref) if schema.face_ref else None,
+        surface_feature_id=schema.surface_feature_id,
+    )
+
+
+def _offset_source_ref_to_schema(ref: OffsetSourceRef) -> OffsetSourceRefSchema:
+    return OffsetSourceRefSchema(
+        face_ref=_subshape_ref_to_schema(ref.face_ref) if ref.face_ref else None,
+        surface_feature_id=ref.surface_feature_id,
+    )
+
+
 def _pattern_direction_ref_to_domain(schema: PatternDirectionRefSchema) -> PatternDirectionRef:
     return PatternDirectionRef(
         edge_ref=_subshape_ref_to_domain(schema.edge_ref) if schema.edge_ref else None,
@@ -693,6 +729,36 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
         return RuledSurfaceFeatureResponse(
             id=feature.id,
             sections=[_ruled_surface_section_to_schema(section) for section in feature.sections],
+            locked=part.is_locked(feature.id),
+            produces=feature.produces,
+        )
+    if isinstance(feature, ThickenFeature):
+        return ThickenFeatureResponse(
+            id=feature.id,
+            surface_feature_id=feature.surface_feature_id,
+            thickness=feature.thickness,
+            locked=part.is_locked(feature.id),
+            produces=feature.produces,
+        )
+    if isinstance(feature, KnitSurfaceFeature):
+        return KnitSurfaceFeatureResponse(
+            id=feature.id,
+            surface_feature_ids=list(feature.surface_feature_ids),
+            locked=part.is_locked(feature.id),
+            produces=feature.produces,
+        )
+    if isinstance(feature, SolidFromSurfacesFeature):
+        return SolidFromSurfacesFeatureResponse(
+            id=feature.id,
+            surface_feature_ids=list(feature.surface_feature_ids),
+            locked=part.is_locked(feature.id),
+            produces=feature.produces,
+        )
+    if isinstance(feature, OffsetSurfaceFeature):
+        return OffsetSurfaceFeatureResponse(
+            id=feature.id,
+            source=_offset_source_ref_to_schema(feature.source),
+            distance=feature.distance,
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
@@ -3509,6 +3575,311 @@ def update_ruled_surface_feature(
     resolve_ruled_surface(part, candidate)  # raises on an unresolvable/invalid section pair
 
     feature.sections = candidate.sections
+    return _feature_response(part, feature)
+
+
+# --- Phase 2 surfacing package: Thicken/Knit Surfaces/Solid from Surfaces/Offset Surface ----
+
+
+def _validate_surface_feature_ref(part: Part, surface_feature_id: str, field_name: str = "surface_feature_id") -> None:
+    """Shared structural check every Phase 2 surface-consuming tool's own
+    payload validator uses: `surface_feature_id` must resolve to a real
+    Feature in this Part that currently `produces == Produces.SURFACE` -
+    mirrors `_validate_split_tool_ref`'s own `surface_feature_id` isinstance
+    check, generalized from "must be a SurfaceFeature" to "must produce a
+    Surface" (any of the five Phase 1 surface-producing tools, or the
+    pre-existing `SurfaceFeature`, all qualify)."""
+    source_feature = part.get_feature(surface_feature_id)
+    if source_feature is None or source_feature.produces != Produces.SURFACE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name} {surface_feature_id!r} does not refer to a surface-producing "
+            "Feature in this Part",
+        )
+
+
+def _validate_thicken_payload(part: Part, surface_feature_id: str) -> None:
+    """Structural check only - resolves `surface_feature_id` to a Feature
+    with `produces == Produces.SURFACE`. Referential/geometric validity
+    (the Feature's own shape actually being thickenable by the given
+    thickness) is `app.document.thicken.resolve_thicken`'s own job, same
+    "payload shape here, resolution there" split every other tool uses."""
+    _validate_surface_feature_ref(part, surface_feature_id)
+
+
+def _validate_knit_surface_payload(part: Part, surface_feature_ids: list[str]) -> None:
+    """A `KnitSurfaceFeature` needs 2+ `surface_feature_ids`, each
+    resolving to a surface-producing Feature - mirrors `_validate_loft_
+    sections`'s own "at least 2" bare-400 convention."""
+    if len(surface_feature_ids) < 2:
+        raise HTTPException(
+            status_code=400, detail="KnitSurfaceFeature requires at least 2 surface_feature_ids"
+        )
+    for surface_feature_id in surface_feature_ids:
+        _validate_surface_feature_ref(part, surface_feature_id, "surface_feature_ids entry")
+
+
+def _validate_solid_from_surfaces_payload(part: Part, surface_feature_ids: list[str]) -> None:
+    """Identical structural shape to `_validate_knit_surface_payload` -
+    watertightness itself is only checked at resolve time (see `app.
+    document.solid_from_surfaces`'s own module docstring)."""
+    if len(surface_feature_ids) < 2:
+        raise HTTPException(
+            status_code=400, detail="SolidFromSurfacesFeature requires at least 2 surface_feature_ids"
+        )
+    for surface_feature_id in surface_feature_ids:
+        _validate_surface_feature_ref(part, surface_feature_id, "surface_feature_ids entry")
+
+
+def _validate_offset_surface_distance(distance: float) -> None:
+    """`OffsetSurfaceFeature.distance` must be non-zero - mirrors `_validate_
+    move_face_payload`'s own identical `offset_distance == 0.0` rejection
+    for `MoveFaceFeature`'s own `offset_distance` mode (the same underlying
+    `BRepOffset_MakeOffset` technique) - a zero offset has no meaningful
+    "new copy identical to the source" interpretation for this tool."""
+    if distance == 0.0:
+        raise HTTPException(status_code=422, detail="distance must be non-zero")
+
+
+def _validate_offset_surface_source(part: Part, source: OffsetSourceRef) -> None:
+    """Enforces exactly one of `face_ref`/`surface_feature_id` is supplied,
+    matching `OffsetSourceRef`'s own "one of two" convention (see its
+    docstring), and that whichever one is supplied is itself well-formed -
+    a `face_ref` must have `shape_type=FACE` (same typed-slot check
+    `_validate_plane_ref`/`_validate_move_face_payload` already make for a
+    bare `SubShapeRef`), a `surface_feature_id` must name a Feature that
+    currently `produces == Produces.SURFACE` in this Part. Whether a
+    surface-Feature source actually resolves to a single shell (not a
+    Compound-of-shells) is a referential/geometric check left to `app.
+    document.offset_surface.resolve_offset_surface` instead."""
+    set_count = sum(x is not None for x in (source.face_ref, source.surface_feature_id))
+    if set_count != 1:
+        raise HTTPException(
+            status_code=422,
+            detail="OffsetSurfaceFeature source must have exactly one of face_ref or surface_feature_id",
+        )
+    if source.face_ref is not None:
+        if source.face_ref.shape_type != SubShapeType.FACE:
+            raise HTTPException(status_code=422, detail="source face_ref must have shape_type=FACE")
+    else:
+        assert source.surface_feature_id is not None
+        _validate_surface_feature_ref(part, source.surface_feature_id, "source.surface_feature_id")
+
+
+@router.post(
+    "/parts/{part_id}/thicken-features", response_model=ThickenFeatureResponse, status_code=201
+)
+def create_thicken_feature(part_id: str, payload: ThickenFeatureCreate) -> ThickenFeatureResponse:
+    """Phase 2 surfacing package: creates a `ThickenFeature` - unlocked from
+    the start, fails closed (via `_validate_thicken_payload`/`_validate_
+    thickness_nonzero` for payload shape, then `resolve_thicken` for
+    referential/geometric validity) before ever persisting an unresolvable
+    Thicken."""
+    part = get_part_or_404(part_id)
+    _validate_thicken_payload(part, payload.surface_feature_id)
+    _validate_thickness_nonzero(payload.thickness)
+    feature = ThickenFeature(
+        id=str(uuid.uuid4()),
+        surface_feature_id=payload.surface_feature_id,
+        thickness=payload.thickness,
+    )
+    resolve_thicken(part, feature)  # raises on an unresolvable reference or failed thicken
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_thicken_feature_or_404(part: Part, feature_id: str) -> ThickenFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, ThickenFeature):
+        raise HTTPException(status_code=404, detail="Thicken feature not found")
+    return feature
+
+
+@router.patch(
+    "/parts/{part_id}/thicken-features/{feature_id}", response_model=ThickenFeatureResponse
+)
+def update_thicken_feature(
+    part_id: str, feature_id: str, payload: ThickenFeatureUpdate
+) -> ThickenFeatureResponse:
+    """Same validate-before-mutate discipline as every other Phase 2
+    surfacing endpoint below."""
+    part = get_part_or_404(part_id)
+    feature = _get_thicken_feature_or_404(part, feature_id)
+
+    new_surface_feature_id = (
+        payload.surface_feature_id if payload.surface_feature_id is not None else feature.surface_feature_id
+    )
+    new_thickness = payload.thickness if payload.thickness is not None else feature.thickness
+    _validate_thicken_payload(part, new_surface_feature_id)
+    _validate_thickness_nonzero(new_thickness)
+
+    candidate = ThickenFeature(
+        id=feature.id, surface_feature_id=new_surface_feature_id, thickness=new_thickness
+    )
+    resolve_thicken(part, candidate)  # raises on an unresolvable reference or failed thicken
+
+    feature.surface_feature_id = candidate.surface_feature_id
+    feature.thickness = candidate.thickness
+    return _feature_response(part, feature)
+
+
+@router.post(
+    "/parts/{part_id}/knit-surface-features", response_model=KnitSurfaceFeatureResponse, status_code=201
+)
+def create_knit_surface_feature(
+    part_id: str, payload: KnitSurfaceFeatureCreate
+) -> KnitSurfaceFeatureResponse:
+    """Phase 2 surfacing package: creates a `KnitSurfaceFeature` - mirrors
+    `create_thicken_feature`'s shape, generalized to a list of 2+ sources."""
+    part = get_part_or_404(part_id)
+    _validate_knit_surface_payload(part, payload.surface_feature_ids)
+    feature = KnitSurfaceFeature(
+        id=str(uuid.uuid4()), surface_feature_ids=list(payload.surface_feature_ids)
+    )
+    resolve_knit_surface(part, feature)  # raises on an unresolvable reference
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_knit_surface_feature_or_404(part: Part, feature_id: str) -> KnitSurfaceFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, KnitSurfaceFeature):
+        raise HTTPException(status_code=404, detail="Knit surface feature not found")
+    return feature
+
+
+@router.patch(
+    "/parts/{part_id}/knit-surface-features/{feature_id}", response_model=KnitSurfaceFeatureResponse
+)
+def update_knit_surface_feature(
+    part_id: str, feature_id: str, payload: KnitSurfaceFeatureUpdate
+) -> KnitSurfaceFeatureResponse:
+    """Same validate-before-mutate discipline as `update_thicken_feature`."""
+    part = get_part_or_404(part_id)
+    feature = _get_knit_surface_feature_or_404(part, feature_id)
+
+    new_surface_feature_ids = (
+        list(payload.surface_feature_ids)
+        if payload.surface_feature_ids is not None
+        else feature.surface_feature_ids
+    )
+    _validate_knit_surface_payload(part, new_surface_feature_ids)
+
+    candidate = KnitSurfaceFeature(id=feature.id, surface_feature_ids=new_surface_feature_ids)
+    resolve_knit_surface(part, candidate)  # raises on an unresolvable reference
+
+    feature.surface_feature_ids = candidate.surface_feature_ids
+    return _feature_response(part, feature)
+
+
+@router.post(
+    "/parts/{part_id}/solid-from-surfaces-features",
+    response_model=SolidFromSurfacesFeatureResponse,
+    status_code=201,
+)
+def create_solid_from_surfaces_feature(
+    part_id: str, payload: SolidFromSurfacesFeatureCreate
+) -> SolidFromSurfacesFeatureResponse:
+    """Phase 2 surfacing package: creates a `SolidFromSurfacesFeature` -
+    mirrors `create_knit_surface_feature`'s shape - fails closed with a
+    structured `not_watertight` 422 (via `resolve_solid_from_surfaces`) for
+    a set of surfaces that doesn't actually sew into one closed, valid
+    solid, before ever persisting."""
+    part = get_part_or_404(part_id)
+    _validate_solid_from_surfaces_payload(part, payload.surface_feature_ids)
+    feature = SolidFromSurfacesFeature(
+        id=str(uuid.uuid4()), surface_feature_ids=list(payload.surface_feature_ids)
+    )
+    resolve_solid_from_surfaces(part, feature)  # raises not_watertight, or an unresolvable reference
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_solid_from_surfaces_feature_or_404(part: Part, feature_id: str) -> SolidFromSurfacesFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, SolidFromSurfacesFeature):
+        raise HTTPException(status_code=404, detail="Solid from surfaces feature not found")
+    return feature
+
+
+@router.patch(
+    "/parts/{part_id}/solid-from-surfaces-features/{feature_id}",
+    response_model=SolidFromSurfacesFeatureResponse,
+)
+def update_solid_from_surfaces_feature(
+    part_id: str, feature_id: str, payload: SolidFromSurfacesFeatureUpdate
+) -> SolidFromSurfacesFeatureResponse:
+    """Same validate-before-mutate discipline as `update_knit_surface_
+    feature`."""
+    part = get_part_or_404(part_id)
+    feature = _get_solid_from_surfaces_feature_or_404(part, feature_id)
+
+    new_surface_feature_ids = (
+        list(payload.surface_feature_ids)
+        if payload.surface_feature_ids is not None
+        else feature.surface_feature_ids
+    )
+    _validate_solid_from_surfaces_payload(part, new_surface_feature_ids)
+
+    candidate = SolidFromSurfacesFeature(id=feature.id, surface_feature_ids=new_surface_feature_ids)
+    resolve_solid_from_surfaces(part, candidate)  # raises not_watertight, or an unresolvable reference
+
+    feature.surface_feature_ids = candidate.surface_feature_ids
+    return _feature_response(part, feature)
+
+
+@router.post(
+    "/parts/{part_id}/offset-surface-features", response_model=OffsetSurfaceFeatureResponse, status_code=201
+)
+def create_offset_surface_feature(
+    part_id: str, payload: OffsetSurfaceFeatureCreate
+) -> OffsetSurfaceFeatureResponse:
+    """Phase 2 surfacing package, last of the four: creates an
+    `OffsetSurfaceFeature` - unlocked from the start, fails closed (via
+    `_validate_offset_surface_source` for payload shape, then `resolve_
+    offset_surface` for referential/geometric validity, including a
+    Compound-of-shells source's own `invalid_offset_source` rejection)
+    before ever persisting."""
+    part = get_part_or_404(part_id)
+    source = _offset_source_ref_to_domain(payload.source)
+    _validate_offset_surface_source(part, source)
+    _validate_offset_surface_distance(payload.distance)
+    feature = OffsetSurfaceFeature(id=str(uuid.uuid4()), source=source, distance=payload.distance)
+    resolve_offset_surface(part, feature)  # raises on an unresolvable reference or failed offset
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_offset_surface_feature_or_404(part: Part, feature_id: str) -> OffsetSurfaceFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, OffsetSurfaceFeature):
+        raise HTTPException(status_code=404, detail="Offset surface feature not found")
+    return feature
+
+
+@router.patch(
+    "/parts/{part_id}/offset-surface-features/{feature_id}", response_model=OffsetSurfaceFeatureResponse
+)
+def update_offset_surface_feature(
+    part_id: str, feature_id: str, payload: OffsetSurfaceFeatureUpdate
+) -> OffsetSurfaceFeatureResponse:
+    """Same validate-before-mutate discipline as every other Phase 2
+    surfacing endpoint above."""
+    part = get_part_or_404(part_id)
+    feature = _get_offset_surface_feature_or_404(part, feature_id)
+
+    new_source = (
+        _offset_source_ref_to_domain(payload.source) if payload.source is not None else feature.source
+    )
+    new_distance = payload.distance if payload.distance is not None else feature.distance
+    _validate_offset_surface_source(part, new_source)
+    _validate_offset_surface_distance(new_distance)
+
+    candidate = OffsetSurfaceFeature(id=feature.id, source=new_source, distance=new_distance)
+    resolve_offset_surface(part, candidate)  # raises on an unresolvable reference or failed offset
+
+    feature.source = candidate.source
+    feature.distance = candidate.distance
     return _feature_response(part, feature)
 
 

@@ -1759,6 +1759,116 @@ class RuledSurfaceFeatureResponse(BaseModel):
     produces: Produces
 
 
+class ThickenFeatureCreate(BaseModel):
+    """Phase 2 surfacing package: creates a `ThickenFeature` - thickens the
+    shell produced by the existing surface-producing Feature named by
+    `surface_feature_id` (bare Feature id, same convention `SplitToolRef
+    Schema.surface_feature_id` already establishes) by `thickness` (nonzero
+    - see `app.document.router._validate_thickness_nonzero`, the Phase-0-
+    renamed generic check `LoftFeatureCreate.thickness` already uses)."""
+
+    surface_feature_id: str
+    thickness: float
+
+
+class ThickenFeatureUpdate(BaseModel):
+    surface_feature_id: str | None = None
+    thickness: float | None = None
+
+
+class ThickenFeatureResponse(BaseModel):
+    type: Literal["thicken"] = "thicken"
+    id: str
+    surface_feature_id: str
+    thickness: float
+    locked: bool
+    # B1: always BODY for a ThickenFeature.
+    produces: Produces
+
+
+class KnitSurfaceFeatureCreate(BaseModel):
+    """Phase 2 surfacing package: creates a `KnitSurfaceFeature` - sews 2+
+    existing surface-producing Features (`surface_feature_ids`, bare
+    Feature ids) into one shape (see `app.document.router._validate_knit_
+    surface_payload` for the length/type checks)."""
+
+    surface_feature_ids: list[str]
+
+
+class KnitSurfaceFeatureUpdate(BaseModel):
+    surface_feature_ids: list[str] | None = None
+
+
+class KnitSurfaceFeatureResponse(BaseModel):
+    type: Literal["knit_surface"] = "knit_surface"
+    id: str
+    surface_feature_ids: list[str]
+    locked: bool
+    # B1: always SURFACE for a KnitSurfaceFeature.
+    produces: Produces
+
+
+class SolidFromSurfacesFeatureCreate(BaseModel):
+    """Phase 2 surfacing package: creates a `SolidFromSurfacesFeature` -
+    sews 2+ existing surface-producing Features (`surface_feature_ids`,
+    same convention as `KnitSurfaceFeatureCreate`) into a single watertight
+    solid Body (see `app.document.router._validate_solid_from_surfaces_
+    payload` for the length/type checks - watertightness itself is only
+    checked at resolve time, see `app.document.solid_from_surfaces`'s own
+    module docstring)."""
+
+    surface_feature_ids: list[str]
+
+
+class SolidFromSurfacesFeatureUpdate(BaseModel):
+    surface_feature_ids: list[str] | None = None
+
+
+class SolidFromSurfacesFeatureResponse(BaseModel):
+    type: Literal["solid_from_surfaces"] = "solid_from_surfaces"
+    id: str
+    surface_feature_ids: list[str]
+    locked: bool
+    # B1: always BODY for a SolidFromSurfacesFeature.
+    produces: Produces
+
+
+class OffsetSourceRefSchema(BaseModel):
+    """Phase 2 surfacing package: the wire counterpart to `app.document.
+    models.OffsetSourceRef` - exactly one of `face_ref`/`surface_feature_id`
+    should be supplied, matching `PlaneRefSchema`'s own "one of N optional
+    fields" convention (see its docstring); not enforced here, checked by
+    `app.document.router._validate_offset_surface_source`."""
+
+    face_ref: SubShapeRefSchema | None = None
+    surface_feature_id: str | None = None
+
+
+class OffsetSurfaceFeatureCreate(BaseModel):
+    """Phase 2 surfacing package, last of the four: creates an
+    `OffsetSurfaceFeature` - offsets `source` (a Body face or an existing
+    single-shell surface Feature) by `distance` along its own outward
+    normal, into a brand-new, independent Surface."""
+
+    source: OffsetSourceRefSchema
+    distance: float
+
+
+class OffsetSurfaceFeatureUpdate(BaseModel):
+    source: OffsetSourceRefSchema | None = None
+    distance: float | None = None
+
+
+class OffsetSurfaceFeatureResponse(BaseModel):
+    type: Literal["offset_surface"] = "offset_surface"
+    id: str
+    source: OffsetSourceRefSchema
+    distance: float
+    locked: bool
+    # B1: always SURFACE for an OffsetSurfaceFeature.
+    produces: Produces
+
+
 class GearGroupSchema(BaseModel):
     """`docs/gear-design/05-gear-chain-and-planetary.md`: the wire
     counterpart to `app.document.models.GearGroup` - see that dataclass's
@@ -2295,6 +2405,10 @@ FeatureResponse = Union[
     SweptSurfaceFeatureResponse,
     LoftSurfaceFeatureResponse,
     RuledSurfaceFeatureResponse,
+    ThickenFeatureResponse,
+    KnitSurfaceFeatureResponse,
+    SolidFromSurfacesFeatureResponse,
+    OffsetSurfaceFeatureResponse,
 ]
 """Pre-existing bug fix (found while verifying LOD Phase 2 chunk 3's own new
 `PlanetaryGearFeature` job-mode tests): `GearChainFeatureResponse`/`Planetary

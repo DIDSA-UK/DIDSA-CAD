@@ -46,6 +46,7 @@ from app.document.models import (
     GearType,
     ImportFeature,
     ImportSourceFormat,
+    KnitSurfaceFeature,
     LoftFeature,
     LoftMode,
     LoftSection,
@@ -55,6 +56,8 @@ from app.document.models import (
     MirrorFeature,
     MoveBodyFeature,
     MoveFaceFeature,
+    OffsetSourceRef,
+    OffsetSurfaceFeature,
     Part,
     PatternAxisRef,
     PatternDirectionRef,
@@ -73,6 +76,7 @@ from app.document.models import (
     RuledSurfaceFeature,
     ScaleBodyFeature,
     SketchFeature,
+    SolidFromSurfacesFeature,
     SpiralBevelHand,
     SplitFeature,
     SplitToolRef,
@@ -82,6 +86,7 @@ from app.document.models import (
     SweepFeature,
     SweepMode,
     SweptSurfaceFeature,
+    ThickenFeature,
 )
 from app.sketch.constraints import (
     AngleConstraint,
@@ -889,6 +894,20 @@ def _pattern_axis_ref_from_dict(data: dict) -> PatternAxisRef:
     )
 
 
+def _offset_source_ref_to_dict(ref: OffsetSourceRef) -> dict:
+    return {
+        "face_ref": _subshape_ref_to_dict(ref.face_ref) if ref.face_ref else None,
+        "surface_feature_id": ref.surface_feature_id,
+    }
+
+
+def _offset_source_ref_from_dict(data: dict) -> OffsetSourceRef:
+    return OffsetSourceRef(
+        face_ref=_subshape_ref_from_dict(data["face_ref"]) if data.get("face_ref") else None,
+        surface_feature_id=data.get("surface_feature_id"),
+    )
+
+
 # --- Features --------------------------------------------------------------
 
 
@@ -960,6 +979,32 @@ def _feature_to_dict(feature: Feature) -> dict:
             "type": "ruled_surface",
             "id": feature.id,
             "sections": [_loft_section_to_dict(section) for section in feature.sections],
+        }
+    if isinstance(feature, ThickenFeature):
+        return {
+            "type": "thicken",
+            "id": feature.id,
+            "surface_feature_id": feature.surface_feature_id,
+            "thickness": feature.thickness,
+        }
+    if isinstance(feature, KnitSurfaceFeature):
+        return {
+            "type": "knit_surface",
+            "id": feature.id,
+            "surface_feature_ids": list(feature.surface_feature_ids),
+        }
+    if isinstance(feature, SolidFromSurfacesFeature):
+        return {
+            "type": "solid_from_surfaces",
+            "id": feature.id,
+            "surface_feature_ids": list(feature.surface_feature_ids),
+        }
+    if isinstance(feature, OffsetSurfaceFeature):
+        return {
+            "type": "offset_surface",
+            "id": feature.id,
+            "source": _offset_source_ref_to_dict(feature.source),
+            "distance": feature.distance,
         }
     if isinstance(feature, CreatePlaneFeature):
         return {
@@ -1297,6 +1342,28 @@ def _feature_from_dict(data: dict) -> Feature:
         return RuledSurfaceFeature(
             id=feature_id,
             sections=[_loft_section_from_dict(s) for s in data.get("sections", [])],
+        )
+    if feature_type == "thicken":
+        return ThickenFeature(
+            id=feature_id,
+            surface_feature_id=_require(data, "surface_feature_id"),
+            thickness=_require(data, "thickness"),
+        )
+    if feature_type == "knit_surface":
+        return KnitSurfaceFeature(
+            id=feature_id,
+            surface_feature_ids=list(data.get("surface_feature_ids", [])),
+        )
+    if feature_type == "solid_from_surfaces":
+        return SolidFromSurfacesFeature(
+            id=feature_id,
+            surface_feature_ids=list(data.get("surface_feature_ids", [])),
+        )
+    if feature_type == "offset_surface":
+        return OffsetSurfaceFeature(
+            id=feature_id,
+            source=_offset_source_ref_from_dict(_require(data, "source")),
+            distance=_require(data, "distance"),
         )
     if feature_type == "create_plane":
         return CreatePlaneFeature(
