@@ -13,6 +13,14 @@ enum FeaturePickerAction {
   loft,
   plane,
   surface,
+  // Phase 1 surfacing package: five new surface-producing tools, all
+  // grouped into the existing "Surfacing" section alongside [surface]
+  // ("Extrude Surface") below.
+  planarSurface,
+  revolveSurface,
+  sweptSurface,
+  loftSurface,
+  ruledSurface,
   fillet,
   chamfer,
   mirror,
@@ -140,6 +148,15 @@ Future<FeaturePickerAction?> showFeaturePickerSheet(BuildContext context) {
                             ],
                           ),
                           _FeatureSection(
+                            // Phase 1 surfacing package: five new entries
+                            // join the pre-existing "Extrude Surface" -
+                            // Revolve/Swept/Loft Surface reuse their solid-
+                            // tool sibling's own icon (same underlying
+                            // construction technique, just wire-vs-face -
+                            // see each backend Feature's own docstring);
+                            // Planar Surface and Ruled Surface get their
+                            // own new glyphs (no solid-tool analog to
+                            // borrow from).
                             title: 'Surfacing',
                             initiallyExpanded: false,
                             entries: [
@@ -147,6 +164,31 @@ Future<FeaturePickerAction?> showFeaturePickerSheet(BuildContext context) {
                                 icon: 'assets/icons/feature/feature_surface.svg',
                                 label: 'Extrude Surface',
                                 action: FeaturePickerAction.surface,
+                              ),
+                              _FeatureEntry(
+                                icon: 'assets/icons/feature/feature_planar_surface.svg',
+                                label: 'Planar Surface',
+                                action: FeaturePickerAction.planarSurface,
+                              ),
+                              _FeatureEntry(
+                                icon: 'assets/icons/feature/feature_revolve.svg',
+                                label: 'Revolve Surface',
+                                action: FeaturePickerAction.revolveSurface,
+                              ),
+                              _FeatureEntry(
+                                icon: 'assets/icons/feature/feature_sweep.svg',
+                                label: 'Swept Surface',
+                                action: FeaturePickerAction.sweptSurface,
+                              ),
+                              _FeatureEntry(
+                                icon: 'assets/icons/feature/feature_loft.svg',
+                                label: 'Loft Surface',
+                                action: FeaturePickerAction.loftSurface,
+                              ),
+                              _FeatureEntry(
+                                icon: 'assets/icons/feature/feature_ruled_surface.svg',
+                                label: 'Ruled Surface',
+                                action: FeaturePickerAction.ruledSurface,
                               ),
                             ],
                           ),
