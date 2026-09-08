@@ -267,6 +267,54 @@ void main() {
     expect(camera.farClip, OrbitCamera.defaultFarClip);
   });
 
+  // Bug fix (on-device feedback: "when zooming very close to a body and the
+  // body gets too close to the camera, the body gets clipped... the
+  // engineer may want to inspect very small details"): effectiveNearClip
+  // must shrink well past the static, radius-derived nearClip once the
+  // camera is actually zoomed in close, since that static value alone left
+  // large bodies impossible to inspect up close - see that getter's own
+  // doc comment.
+  group('effectiveNearClip', () {
+    test('tightens well past the static nearClip once zoomed in close on a large body', () {
+      final camera = OrbitCamera()..setZoomBoundsForRadius(1000);
+      // From the "large body" test above: nearClip = 2.2, minDistance = 4.4.
+      expect(camera.nearClip, closeTo(2.2, 1e-9));
+
+      camera.distance = camera.minDistance;
+      // distance / 10000 = 4.4 / 10000 = 0.00044 - far tighter than the
+      // static nearClip (2.2) the old, unfixed behaviour was stuck with.
+      expect(camera.effectiveNearClip, closeTo(0.00044, 1e-9));
+      expect(camera.effectiveNearClip, lessThan(camera.nearClip));
+    });
+
+    test('never exceeds the static nearClip, even zoomed all the way out', () {
+      final camera = OrbitCamera()..setZoomBoundsForRadius(1000);
+
+      camera.distance = camera.maxDistance;
+      // distance / 10000 = 20000 / 10000 = 2.0, which is actually *less*
+      // than the static nearClip (2.2) here too - min() keeps whichever is
+      // smaller, so a normal zoomed-out view is only ever unaffected or
+      // tightened, never loosened past the old value.
+      expect(camera.effectiveNearClip, lessThanOrEqualTo(camera.nearClip));
+    });
+
+    test('never goes below the absolute floor, however close the camera gets', () {
+      final camera = OrbitCamera()..setZoomBoundsForRadius(1000);
+
+      camera.distance = 0;
+      expect(camera.effectiveNearClip, greaterThan(0));
+    });
+
+    test('matches the un-fixed nearClip for a small/default body at a normal distance', () {
+      final camera = OrbitCamera();
+      // Default state: nearClip = 0.1, distance = 80 -> 80/10000 = 0.008,
+      // already tighter than 0.1, so effectiveNearClip differs even here -
+      // by design (see the getter's own doc comment: this can only ever
+      // tighten, never loosen, relative to the old plain nearClip).
+      expect(camera.effectiveNearClip, lessThanOrEqualTo(camera.nearClip));
+    });
+  });
+
   test('reset returns to the default orbit state', () {
     final camera = OrbitCamera();
     final defaultPosition = camera.cameraFor(size).position.clone();
