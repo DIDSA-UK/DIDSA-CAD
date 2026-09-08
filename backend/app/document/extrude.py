@@ -33,7 +33,7 @@ from OCC.Core.TColgp import TColgp_Array1OfPnt
 from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED, TopAbs_SOLID, TopAbs_VERTEX
 from OCC.Core.TopExp import TopExp_Explorer, topexp
 from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Edge, TopoDS_Shape, TopoDS_Vertex, TopoDS_Wire, topods
-from OCC.Core.TopTools import TopTools_IndexedMapOfShape
+from OCC.Core.TopTools import TopTools_IndexedMapOfShape, TopTools_ListOfShape
 
 from app.document import body_cache
 from app.document.graph import base_feature_id, build_feature_graph, topological_order
@@ -979,28 +979,42 @@ def _boolean_op_failed(op: str, body_ids: list[str]) -> HTTPException:
     (the same class of failure `fillet.py`'s/`chamfer.py`'s own
     `_build_fillet`/`_build_chamfer` already guard against - see their own
     doc comments), reported `IsDone() == False`, produced a shape with zero
-    `TopAbs_SOLID`s despite reporting success, or - a second, distinct
-    failure mode confirmed while investigating a Sweep+Fillet+Chamfer body
-    silently losing material after Merge - produced a *nonzero* result
-    whose volume is less than one of its own operands' own volume, which is
-    geometrically impossible for a legitimate union (fusing two solids can
-    only ever remove double-counted overlap volume, never eat into either
-    operand's own unshared material). Root-caused directly against a real
-    OCCT kernel (pythonocc-core 7.9.3): `BRepAlgoAPI_Fuse` can silently
-    return a corrupted result when one of its operand shapes (built via
-    `BRepOffsetAPI_MakePipeShell`, i.e. any Sweep) has previously been used
-    as an operand in an earlier, separate `BRepAlgoAPI_Fuse` call in the
-    same process - confirmed deterministic, confirmed NOT fixed by
-    `SetFuzzyValue`, `SetRunParallel(False)`, `ShapeFix_Shape`,
-    `BRepBuilderAPI_Sewing`, or re-serializing the shape through a BREP
-    round-trip (all tried directly against a reduced repro) - only ever
-    avoided by never reusing an already-fused shape as a fresh operand.
-    `IsDone()`/zero-solid checks alone do not catch this "succeeds with a
-    plausible-looking but wrong volume" case, so `_safe_fuse` below also
-    checks the result's volume against both operands'. All are geometric
-    failures, not malformed references - a structured 422, not an uncaught
-    exception surfacing as a 500, and critically not a silently-wrong
-    result standing in for a real fuse."""
+    `TopAbs_SOLID`s despite reporting success, or produced a *nonzero*
+    result whose volume is less than one of its own operands' own volume,
+    which is geometrically impossible for a legitimate union (fusing two
+    solids can only ever remove double-counted overlap volume, never eat
+    into either operand's own unshared material).
+
+    Root-caused directly against a real OCCT kernel (pythonocc-core 7.9.3)
+    while investigating a Sweep+Fillet+Chamfer body silently losing material
+    after Merge: `BRepAlgoAPI_Fuse` can silently return a corrupted result
+    when one of its operand shapes (built via `BRepOffsetAPI_MakePipeShell`,
+    i.e. any Sweep) has previously been used as an operand in an earlier,
+    separate `BRepAlgoAPI_Fuse` call in the same process - reproduced
+    deterministically, and confirmed NOT fixed by `SetFuzzyValue`,
+    `SetRunParallel(False)`, `ShapeFix_Shape`, `BRepBuilderAPI_Sewing` +
+    `ShapeUpgrade_ShapeDivideClosed`, deep-copying the operand, or
+    re-serializing it through a BREP round-trip (all tried directly against
+    a reduced repro - none decontaminate an already-used operand, pointing
+    at process-global state inside OCCT's classic BOP implementation, not
+    data cached on the shape itself). The actual fix is
+    `SetNonDestructive(True)` below (a documented OCCT flag controlling
+    whether a Boolean operation is allowed to modify its own argument
+    shapes in place) - confirmed to resolve every instance of this specific
+    failure mode found during investigation, including a clean 60-point
+    scan of the real repro shape.
+
+    A second, distinct and much narrower failure mode was also found and is
+    NOT fixed by `SetNonDestructive`: two shapes translated by an exact
+    tangency-inducing offset (e.g. a circular-profile torus offset by
+    exactly its own tube radius) can produce zero solids even as the very
+    first Boolean operation ever run on otherwise-fresh shapes - a
+    near-tangent/degenerate intersection classification limitation, not a
+    reuse issue. This is the residual case `_safe_fuse`'s own volume/solid
+    checks below exist to catch and report as a clean 422 rather than let
+    through as silently-wrong geometry - a structured error, not an
+    uncaught exception surfacing as a 500, and critically not a
+    silently-wrong result standing in for a real fuse."""
     return HTTPException(status_code=422, detail={"type": "boolean_op_failed", "op": op, "body_ids": sorted(body_ids)})
 
 
@@ -1021,15 +1035,31 @@ _FUSE_VOLUME_TOLERANCE = 1e-4
 def _safe_fuse(a: TopoDS_Shape, b: TopoDS_Shape, op: str, body_ids: list[str]) -> TopoDS_Shape:
     """`BRepAlgoAPI_Fuse(a, b).Shape()`, hardened - see `_boolean_op_failed`'s
     own doc comment for exactly what this catches and why `IsDone()` alone
-    isn't enough. Only ever used for a genuine Fuse (Boss's own multi-target
-    fuse, Merge, Mirror/Pattern's `FUSE_INTO_ONE`) - unlike Cut, fusing two
-    non-empty solids together can never legitimately produce zero solids or
-    a result smaller than either operand, so both checks below are safe
-    here without the "a Cut may legitimately consume its whole target"
-    carve-out `_register_solids`'s own doc comment documents for Cut
-    specifically."""
+    isn't enough, and why `SetNonDestructive(True)` (rather than the bare
+    `BRepAlgoAPI_Fuse(a, b)` constructor form) is used here: without it, a
+    shape that was previously fused elsewhere in this same process can
+    silently corrupt this call's result even though both `a` and `b` are
+    individually valid - `SetNonDestructive` tells OCCT not to modify its
+    own argument shapes in place, which is exactly the confirmed fix (see
+    `backend/tests/test_stage_r_sweep_fillet_chamfer_merge.py`'s own
+    `test_safe_fuse_rejects_a_reused_swept_operand_instead_of_returning_
+    wrong_volume` for a direct regression test of this). Only ever used for
+    a genuine Fuse (Boss's own multi-target fuse, Merge, Mirror/Pattern's
+    `FUSE_INTO_ONE`) - unlike Cut, fusing two non-empty solids together can
+    never legitimately produce zero solids or a result smaller than either
+    operand, so both checks below are safe here without the "a Cut may
+    legitimately consume its whole target" carve-out `_register_solids`'s
+    own doc comment documents for Cut specifically."""
     try:
-        fuse = BRepAlgoAPI_Fuse(a, b)
+        fuse = BRepAlgoAPI_Fuse()
+        fuse.SetNonDestructive(True)
+        arguments = TopTools_ListOfShape()
+        arguments.Append(a)
+        tools = TopTools_ListOfShape()
+        tools.Append(b)
+        fuse.SetArguments(arguments)
+        fuse.SetTools(tools)
+        fuse.Build()
     except RuntimeError as exc:
         raise _boolean_op_failed(op, body_ids) from exc
     if not fuse.IsDone():
