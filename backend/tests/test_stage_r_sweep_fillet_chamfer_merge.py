@@ -18,43 +18,51 @@ correct_torus` for why body-count/mesh-only checks are not sufficient here
 (a wrong-but-single-body result is a real, previously-seen failure mode).
 
 Root-caused directly against a real OCCT kernel (pythonocc-core 7.9.3), this
-turned out NOT to be a Fillet/Chamfer- or Ellipse-specific defect: the full
-staged repro below (and the raw-Sweep-only isolation control) both pass
-cleanly, because a single Merge of two independently-computed bodies never
-hits the actual trigger. The real defect was in `BRepAlgoAPI_Fuse` itself -
-confirmed to silently produce a corrupted (nonzero-but-wrong-volume, or
-zero-solid) result when one of its operand shapes (built via
-`BRepOffsetAPI_MakePipeShell`, i.e. any Sweep - reproduced here with the
-rectangle-around-ellipse shape, and separately against a plain circular
-torus matching a prior investigation's finding) had already been used as an
-operand in an *earlier, separate* `BRepAlgoAPI_Fuse` call in the same
-process, even when the second call's own inputs were otherwise completely
-independent and correct in isolation. Confirmed deterministic; confirmed
-NOT fixed by `SetFuzzyValue`, `SetRunParallel(False)`, `ShapeFix_Shape`,
-`BRepBuilderAPI_Sewing` + `ShapeUpgrade_ShapeDivideClosed`, deep-copying the
-operand, or a BREP serialization round-trip. Cross-checked against an
-independent Monte Carlo point-classification volume estimate
-(`BRepClass3d_SolidClassifier`, not sharing any code path with the BOP
-algorithms under suspicion) to confirm which of `BRepAlgoAPI_Fuse`'s and
-`BRepAlgoAPI_Common`'s often-differing outputs was actually wrong in a given
-case - both can independently misbehave, so neither is a safe oracle for
-the other.
+turned out NOT to be a Fillet/Chamfer- or Ellipse-specific defect, and took
+several rounds to fully characterize - each partial fix, tested only
+against a *reduced* repro, missed a real failure mode that only showed up
+once tested against the actual HTTP-level workflow and the real shapes
+`sweep.py`/`move_body.py` produce (an early hand-built approximation of the
+swept shape wasn't even geometrically faithful - its own volume didn't
+match the real Sweep's output - so a "clean scan" against it proved
+nothing about the real bug). See `app.document.extrude._boolean_op_failed`'s
+own doc comment for the complete, final account of every distinct defect
+found and fixed:
 
-The actual fix - `BRepAlgoAPI_BooleanOperation.SetNonDestructive(True)`, a
-documented OCCT flag controlling whether a Boolean operation may modify its
-own argument shapes in place - is now used by `extrude._safe_fuse` itself
-(see that function's own doc comment) and confirmed via a clean 60-point
-scan of the real repro shape (fresh operands, no reuse) to leave zero
-residual failures. `test_safe_fuse_correctly_reuses_an_already_fused_
-swept_operand` below exercises `_safe_fuse` directly against the exact
-confirmed-corrupting sequence and asserts the *correct* volume is now
-returned. A second, narrower, unrelated failure mode - two shapes offset by
-an exact tangency-inducing amount producing zero solids even on their very
-first-ever Boolean operation - is NOT fixed by `SetNonDestructive` and
-remains a residual risk that `_safe_fuse`'s pre-existing zero-solid/volume
-checks still catch and report as a clean error rather than lost material;
-see `test_safe_fuse_rejects_a_near_tangent_result_instead_of_returning_
-wrong_volume`.
+1. `BRepAlgoAPI_Fuse` silently corrupting a result when one operand had
+   already been used in an earlier, separate Fuse call in the same process
+   - fixed by `SetNonDestructive(True)`.
+2. Independent of (1), reproducible with fresh operands: `BRepAlgoAPI_Fuse`/
+   `BRepAlgoAPI_Common` badly misclassifying overlapping `MakePipeShell`-
+   built solids (their `GeomAbs_BSplineSurface` faces specifically, *not*
+   `GeomAbs_SurfaceOfExtrusion` as first assumed) over a wide, unpredictable
+   band of overlap depths - fixed by converting both operands to Bezier
+   patches (`ShapeUpgrade_ShapeConvertToBezier`) before fusing.
+3. A two-tier "cheap fast path, expensive fallback only when needed" design
+   for combining fixes (1) and (2) was tried and found unsafe: the fast
+   path's own Fuse call, merely by executing, corrupts a *second* Fuse call
+   made afterward against different (Bezier-converted) operands - confirmed
+   there is no cheap-input-detection shortcut around this either. The only
+   pattern confirmed reliable is `_safe_fuse` making exactly one Fuse call
+   per invocation, always through the Bezier conversion.
+
+Cross-checked throughout against two oracles independent of the
+`BRepAlgoAPI_*` algorithms under suspicion: `BRepClass3d_SolidClassifier`-
+based Monte Carlo point-classification volume estimates (used directly in
+the investigation, not in these tests, since it's too slow to run in a test
+suite), and this file's own `_common_volume` helper, which - like
+`_safe_fuse` itself - must run its own `BRepAlgoAPI_Common` call through the
+same Bezier conversion, or it inherits defect (2) and becomes an unreliable
+oracle for the very thing it's meant to verify.
+
+A fourth, much narrower and still-unresolved failure remains: two copies of
+the same Sweep body overlapping by a very small fraction of their own size
+(near-total coincidence, not near-tangency) can still produce a zero or
+negative-volume result even after all of the above fixes -
+`test_safe_fuse_rejects_a_near_tangent_result_instead_of_returning_
+wrong_volume` exercises this residual case and confirms `_safe_fuse`'s
+volume/solid-count checks still catch and report it as a clean error rather
+than silently losing material.
 
 Needs a real pythonocc-core environment - see `backend/environment.yml`.
 """
@@ -589,15 +597,20 @@ def test_safe_fuse_correctly_reuses_an_already_fused_swept_operand():
 
 
 def test_safe_fuse_rejects_a_near_tangent_result_instead_of_returning_wrong_volume():
-    """A second, distinct and much narrower failure mode found during this
-    investigation, NOT fixed by `SetNonDestructive`: two circular-profile
-    tori translated by an exact tangency-inducing offset (here, exactly the
-    tube's own profile radius) produce zero solids even as the very first
-    Boolean operation ever run on otherwise-fresh, never-reused shapes - a
-    near-tangent/degenerate intersection classification limitation. This is
-    the residual case `_safe_fuse`'s own zero-solid check still needs to
-    catch and report as a clean `boolean_op_failed` rather than silently
-    losing all material."""
+    """A fourth, distinct and much narrower failure mode found during this
+    investigation, NOT fixed by `SetNonDestructive` and confirmed still NOT
+    fixed by `_prepare_for_boolean`'s Bezier conversion either: two
+    circular-profile tori translated by an exact tangency-inducing offset
+    (here, exactly the tube's own profile radius) produce zero solids even
+    as the very first Boolean operation ever run on otherwise-fresh,
+    never-reused shapes - a near-tangent/degenerate intersection
+    classification limitation, distinct from the wider
+    `GeomAbs_BSplineSurface`-misclassification band `_prepare_for_boolean`
+    does fix (see `extrude._boolean_op_failed`'s own doc comment for the
+    complete numbered list of every defect found). This is the residual
+    case `_safe_fuse`'s own zero-solid check still needs to catch and
+    report as a clean `boolean_op_failed` rather than silently losing all
+    material."""
     from fastapi import HTTPException
     from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire, BRepBuilderAPI_Transform
     from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_MakePipeShell
