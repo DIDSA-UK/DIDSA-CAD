@@ -1446,6 +1446,12 @@ enum GhostKind { length, linear, vertical, horizontal, radius, diameter, lineDis
 /// applies.
 enum CircleDragMode { resize, translate, blocked }
 
+/// [CircleDragMode]'s counterpart for Arc - same on-device bug ("an arc can
+/// be resized when a dimension has been applied... the dimension is not
+/// driving and should be"), same fix, same three outcomes - see
+/// [SketchController._arcDragMode]'s own doc comment.
+enum ArcDragMode { resize, translate, blocked }
+
 /// A client-side-only preview of a dimension that doesn't exist as a real
 /// Constraint yet (or whose existing value hasn't been confirmed for
 /// editing yet) - Stage 13 item 5. Nothing here is sent to the backend
@@ -5786,6 +5792,60 @@ class SketchController extends ChangeNotifier {
     };
   }
 
+  /// [_circleDragMode]'s counterpart for Arc. Centre-drag is unconditionally
+  /// [ArcDragMode.translate] (never [resize]) - unlike Circle's own centre-
+  /// drag branch, [_closedFormArcGeometry]'s centre case always rigidly
+  /// translates all 3 Points together (radius and both angles preserved, see
+  /// its own doc comment), so there is nothing a driving radius dimension
+  /// could ever need to protect against there. Dragging start/end is
+  /// [resize] only while nothing protects the radius (no confirmed
+  /// dimension); once one is confirmed, dragging either endpoint must
+  /// instead translate the whole Arc rigidly (respecting the driving
+  /// radius) - or refuse outright ([blocked]) if the centre itself has
+  /// nowhere to move either, exactly mirroring [_circleDragMode]'s own
+  /// blocked case.
+  ArcDragMode _arcDragMode(SketchArcView arc, String draggedPointId) {
+    if (draggedPointId == arc.centerPointId) return ArcDragMode.translate;
+    final radiusConstraint = _arcRadiusConstraint(arc);
+    if (radiusConstraint == null || radiusConstraint.provisional) return ArcDragMode.resize;
+    return isPointFullyPinned(arc.centerPointId) ? ArcDragMode.blocked : ArcDragMode.translate;
+  }
+
+  /// [_closedFormArcGeometry]'s own drag-target-position computation,
+  /// wrapped with [_arcDragMode]'s dispatch - mirrors
+  /// [_closedFormCircleDragPositions] exactly, the single call site both
+  /// [updatePointDrag] (live preview) and [_settleClosedFormShapeDrag]
+  /// (drop/undo) use, so the two can never disagree about which of resize/
+  /// translate/blocked a given drag is. [translate] on a start/end drag is
+  /// implemented the same way Circle's own rim-drag translate is: computing
+  /// the delta from [draggedPointId]'s own current position to
+  /// [targetX]/[targetY], then asking for the geometry as if the centre
+  /// itself had moved by that same delta - a rigid translate of the whole
+  /// Arc, radius and both angles unchanged.
+  Map<String, (double, double)>? _closedFormArcDragPositions(
+    SketchArcView arc,
+    String draggedPointId,
+    double targetX,
+    double targetY,
+  ) {
+    switch (_arcDragMode(arc, draggedPointId)) {
+      case ArcDragMode.blocked:
+        return null;
+      case ArcDragMode.resize:
+        return _closedFormArcGeometry(arc, draggedPointId, targetX, targetY);
+      case ArcDragMode.translate:
+        if (draggedPointId == arc.centerPointId) {
+          return _closedFormArcGeometry(arc, draggedPointId, targetX, targetY);
+        }
+        final dragged = points[draggedPointId];
+        final center = points[arc.centerPointId];
+        if (dragged == null || center == null) return null;
+        final dx = targetX - dragged.x;
+        final dy = targetY - dragged.y;
+        return _closedFormArcGeometry(arc, arc.centerPointId, center.x + dx, center.y + dy);
+    }
+  }
+
   /// The still-intact Ellipse [pointId] belongs to (as centre, or one of the
   /// 4 major/minor axis tip Points), or null - same "every Point/Line it was
   /// built from still present, live-checked" contract as
@@ -6370,7 +6430,8 @@ class SketchController extends ChangeNotifier {
       centerId = circle.centerPointId;
       rimId = circle.radiusPointId;
     } else {
-      positions = _closedFormArcGeometry(arc!, draggedPointId, targetX, targetY);
+      dragTranslatesOnly = _arcDragMode(arc!, draggedPointId) == ArcDragMode.translate;
+      positions = _closedFormArcDragPositions(arc, draggedPointId, targetX, targetY);
       radiusConstraint = _arcRadiusConstraint(arc);
       centerId = arc.centerPointId;
       rimId = arc.startPointId;
@@ -6466,6 +6527,13 @@ class SketchController extends ChangeNotifier {
     // starting a drag guaranteed to visibly do nothing.
     final intactCircle = _intactCircleForPoint(pointId);
     if (intactCircle != null && _circleDragMode(intactCircle, pointId) == CircleDragMode.blocked) {
+      return false;
+    }
+    // Same reasoning, for Arc (see [_arcDragMode]'s own doc comment for the
+    // bug this closes - an Arc with a confirmed radius dimension and a
+    // fully-pinned centre had nowhere to go, but wasn't refusing the grab).
+    final intactArc = _intactArcForPoint(pointId);
+    if (intactArc != null && _arcDragMode(intactArc, pointId) == ArcDragMode.blocked) {
       return false;
     }
     // Same reasoning, for a Polygon's own centre specifically (see
@@ -6611,7 +6679,7 @@ class SketchController extends ChangeNotifier {
       } else if (intactCircle != null) {
         positions = _closedFormCircleDragPositions(intactCircle, pointId, newX, newY);
       } else if (intactArc != null) {
-        positions = _closedFormArcGeometry(intactArc, pointId, newX, newY);
+        positions = _closedFormArcDragPositions(intactArc, pointId, newX, newY);
       } else if (intactEllipse != null) {
         positions = _closedFormEllipseGeometry(intactEllipse, pointId, newX, newY);
       } else if (intactEllipseArc != null) {

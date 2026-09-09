@@ -101,6 +101,36 @@ class ExtrudeType(str, Enum):
     CUT = "cut"
 
 
+class ThicknessDirection(str, Enum):
+    """On-device feedback ("add option to thicken in, out or from the
+    middle"): which side of the profile's own sketched wire a thin
+    extrude's wall material grows on - previously only reachable by typing
+    a positive or negative `ExtrudeFeature.thickness` and discovering by
+    trial which sign did which, an unlabeled and easily-reversed UX.
+    Mirrors `ExtrudeType`'s str-Enum pattern.
+
+    `OUTWARD` (the default - see `ExtrudeFeature.thickness_direction`
+    below) passes `thickness` through completely unchanged, so a Part
+    saved before this field existed keeps producing the exact same solid
+    it always has. `INWARD` negates `thickness`'s own magnitude
+    (`app.document.extrude._thicken_shell_for_direction`) -
+    `MakeThickSolidBySimple`'s documented behavior offsets along each
+    face's own outward normal for a positive offset, and the wire-prism
+    shell `_prism_for_profile` builds has its side faces already facing
+    outward from the sketched wire, so a negative offset is assumed to
+    grow the wall inward (not yet independently re-confirmed against a
+    real OCCT kernel in this sandbox - flagged the same way every other
+    not-yet-on-device-verified OCCT sign assumption in this codebase is).
+    `SYMMETRIC` grows the wall evenly on both sides of the sketched wire
+    (see `_thicken_shell_for_direction`'s own doc comment for how) - the
+    "from the middle" option the brief asked for, with no sign-convention
+    question of its own since it isn't one-sided."""
+
+    OUTWARD = "outward"
+    INWARD = "inward"
+    SYMMETRIC = "symmetric"
+
+
 @dataclass
 class ExtrudeFeature(Feature):
     """Extrudes the closed Profile of the SketchFeature referenced by
@@ -164,6 +194,12 @@ class ExtrudeFeature(Feature):
     # thickness` already established, reusing the identical OCCT idiom (see
     # `app.document.extrude._prism_for_profile`'s own thin branch).
     thickness: float | None = None
+
+    # Meaningful only when `thickness` is set - see `ThicknessDirection`'s
+    # own doc comment. Defaults to `OUTWARD`, matching this feature's
+    # pre-existing behavior for a positive `thickness` (so a Part saved
+    # before this field existed keeps its current wall side unchanged).
+    thickness_direction: ThicknessDirection = ThicknessDirection.OUTWARD
 
     @property
     def type(self) -> str:
@@ -314,6 +350,28 @@ class PointRef:
 
     vertex_ref: SubShapeRef | None = None
     sketch_point_ref: SketchEntityRef | None = None
+
+
+@dataclass(frozen=True)
+class SketchOrEdgeRef:
+    """On-device feedback ("surface tools should support edges, curves, as
+    well as sketch lines as inputs - e.g. sweep along an edge, loft between
+    two edges or edge and sketch line, ruled surface along an edge"): a
+    curve-like reference usable wherever a surface tool's path/guide-curve/
+    section previously only accepted a `SketchEntityRef` - either a Sketch
+    Line/Arc/Circle/Ellipse/Spline (`sketch_entity_ref`) or an existing
+    Body edge (`edge_ref`), never both at once. Mirrors `PointRef`'s own
+    two-way "never both, payload shape validated by the router" convention
+    exactly, just for a curve instead of a point.
+
+    `edge_ref` resolves via the same `SubShapeRef`/`resolve_subshape[_from_
+    bodies]` machinery `FilletFeature.edge_refs`/`PointRef.vertex_ref`
+    already use - no new resolution primitive, just a new place one is
+    accepted from. `sketch_entity_ref` is unchanged from every existing
+    caller's own prior plain-`SketchEntityRef` behaviour."""
+
+    sketch_entity_ref: SketchEntityRef | None = None
+    edge_ref: SubShapeRef | None = None
 
 
 @dataclass(frozen=True)
@@ -609,7 +667,7 @@ class SweepFeature(Feature):
 
     id: str
     sketch_feature_id: str
-    path_refs: list[SketchEntityRef]
+    path_refs: list[SketchOrEdgeRef]
     mode: SweepMode
     target_body_ids: list[str] = field(default_factory=list)
 
@@ -1106,7 +1164,7 @@ class SweptSurfaceFeature(Feature):
 
     id: str
     sketch_feature_id: str
-    path_refs: list[SketchEntityRef]
+    path_refs: list[SketchOrEdgeRef]
     profile_refs: list[SketchEntityRef] = field(default_factory=list)
 
     @property
@@ -1648,12 +1706,29 @@ class LoftSection:
     - a *translation* there would slide a tooth off its own gear axis,
     silently wrong), so it must never change meaning under it - the two
     fields compose (both may be set on the same section) rather than one
-    superseding the other."""
+    superseding the other.
 
-    sketch_feature_id: str
+    `edge_ref` (on-device feedback: "loft between two edges or edge and
+    sketch line"): a section may instead be a single existing Body edge
+    directly - no Sketch involved at all - in which case `sketch_feature_
+    id` is `None` and `profile_refs`/`reference_point`/`alignment_point`
+    must all be left unset (enforced by the router). Deliberately narrow:
+    an edge has no Sketch basis of its own for `reference_point`'s
+    rotation or `alignment_point`'s translation to work against, so this
+    doesn't attempt to extend either - a mixed Loft (one edge-only
+    section, one ordinary Sketch-profile section) simply can't use them
+    on the edge-only side, same restriction `RuledSurfaceFeature.sections`
+    already accepts (its own router-level payload schema never exposes
+    `reference_point`/`alignment_point` either - see its own docstring).
+    Exactly one of `sketch_feature_id` or `edge_ref` is set, mirroring
+    every other "Sketch entity or Body edge" reference this app now has
+    (`SketchOrEdgeRef`) - checked by the router, not here."""
+
+    sketch_feature_id: str | None = None
     profile_refs: list[SketchEntityRef] = field(default_factory=list)
     reference_point: SketchEntityRef | None = None
     alignment_point: SketchEntityRef | None = None
+    edge_ref: SubShapeRef | None = None
 
 
 @dataclass
@@ -1733,7 +1808,7 @@ class LoftFeature(Feature):
     target_body_ids: list[str] = field(default_factory=list)
     thickness: float | None = None
     thin_from_closed_profile: bool = False
-    guide_curve_refs: list[SketchEntityRef] = field(default_factory=list)
+    guide_curve_refs: list[SketchOrEdgeRef] = field(default_factory=list)
 
     @property
     def type(self) -> str:
@@ -1775,7 +1850,7 @@ class LoftSurfaceFeature(Feature):
     id: str
     sections: list[LoftSection]
     ruled: bool = False
-    guide_curve_refs: list[SketchEntityRef] = field(default_factory=list)
+    guide_curve_refs: list[SketchOrEdgeRef] = field(default_factory=list)
 
     @property
     def type(self) -> str:

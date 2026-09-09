@@ -32,9 +32,10 @@ from OCC.Core.TopoDS import TopoDS_Shape
 from app.document.extrude import compute_part_bodies
 from app.document.loft import (
     _apply_alignment_point_translation,
+    _harmonize_section_wire_edge_counts,
     _mid_section_warnings,
-    _resolve_closed_section,
-    _resolve_open_section,
+    _resolve_closed_or_edge_section,
+    _resolve_open_or_edge_section,
     _wires_from_resolved,
 )
 from app.document.models import LoftSurfaceFeature, Part
@@ -73,12 +74,12 @@ def _resolve_sections(
     thickness` drives its own closed-vs-open dispatch."""
     try:
         return [
-            _resolve_closed_section(part, section, bodies_so_far, excluded_feature_ids, index)
+            _resolve_closed_or_edge_section(part, section, bodies_so_far, excluded_feature_ids, index)
             for index, section in enumerate(feature.sections)
         ]
     except HTTPException:
         return [
-            _resolve_open_section(part, section, bodies_so_far, excluded_feature_ids, index)
+            _resolve_open_or_edge_section(part, section, bodies_so_far, excluded_feature_ids, index)
             for index, section in enumerate(feature.sections)
         ]
 
@@ -105,6 +106,7 @@ def resolve_loft_surface_from_bodies(
     wires = _apply_alignment_point_translation(
         feature, resolved, wires, part, bodies_so_far, excluded_feature_ids
     )
+    wires = _harmonize_section_wire_edge_counts(wires)
 
     loft_maker = BRepOffsetAPI_ThruSections(False, feature.ruled)
     for wire in wires:

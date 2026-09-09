@@ -70,6 +70,7 @@ from app.document.models import (
     RuledSurfaceFeature,
     ScaleBodyFeature,
     SketchFeature,
+    SketchOrEdgeRef,
     SolidFromSurfacesFeature,
     SplitFeature,
     SurfaceFeature,
@@ -320,6 +321,22 @@ def sketch_feature_id_for_sketch(part: Part, sketch_id: str) -> str | None:
         if isinstance(feature, SketchFeature) and feature.sketch_id == sketch_id:
             return feature.id
     return None
+
+
+def _sketch_or_edge_ref_dependency(part: Part, ref: SketchOrEdgeRef) -> str | None:
+    """On-device feedback ("surface tools should support edges, curves...
+    as well as sketch lines"): the Feature id one `SketchOrEdgeRef` entry
+    (a `path_refs`/`guide_curve_refs` entry) depends on - `ref.sketch_
+    entity_ref`'s own owning SketchFeature (`sketch_feature_id_for_sketch`,
+    unchanged from every pre-existing call site's own behaviour), or `ref.
+    edge_ref`'s own owning Body Feature (`base_feature_id`, the same helper
+    every `target_body_ids` entry already resolves through) - whichever of
+    the two is set. Returns `None` (never raises) if it doesn't resolve,
+    same tolerance every other reference kind in this module already has."""
+    if ref.edge_ref is not None:
+        return base_feature_id(ref.edge_ref.body_id)
+    assert ref.sketch_entity_ref is not None
+    return sketch_feature_id_for_sketch(part, ref.sketch_entity_ref.sketch_id)
 
 
 def _sketch_external_reference_dependencies(feature: SketchFeature) -> tuple[str, ...]:
@@ -612,9 +629,9 @@ def _sweep_dependencies(part: Part, feature: SweepFeature) -> tuple[str, ...]:
     deduplicated via a `set`."""
     deps: set[str] = {feature.sketch_feature_id}
     for ref in feature.path_refs:
-        path_sketch_feature_id = sketch_feature_id_for_sketch(part, ref.sketch_id)
-        if path_sketch_feature_id is not None:
-            deps.add(path_sketch_feature_id)
+        dep = _sketch_or_edge_ref_dependency(part, ref)
+        if dep is not None:
+            deps.add(dep)
     deps.update(base_feature_id(tid) for tid in feature.target_body_ids)
     return tuple(deps)
 
@@ -658,9 +675,9 @@ def _swept_surface_dependencies(part: Part, feature: SweptSurfaceFeature) -> tup
     every distinct Sketch named across `path_refs`."""
     deps: set[str] = {feature.sketch_feature_id}
     for ref in feature.path_refs:
-        path_sketch_feature_id = sketch_feature_id_for_sketch(part, ref.sketch_id)
-        if path_sketch_feature_id is not None:
-            deps.add(path_sketch_feature_id)
+        dep = _sketch_or_edge_ref_dependency(part, ref)
+        if dep is not None:
+            deps.add(dep)
     return tuple(deps)
 
 
@@ -675,9 +692,9 @@ def _loft_surface_dependencies(part: Part, feature: LoftSurfaceFeature) -> tuple
         if part.get_feature(sketch_feature_id) is not None:
             deps.add(sketch_feature_id)
     for ref in feature.guide_curve_refs:
-        guide_sketch_feature_id = sketch_feature_id_for_sketch(part, ref.sketch_id)
-        if guide_sketch_feature_id is not None:
-            deps.add(guide_sketch_feature_id)
+        guide_dep = _sketch_or_edge_ref_dependency(part, ref)
+        if guide_dep is not None:
+            deps.add(guide_dep)
     return tuple(deps)
 
 
@@ -837,9 +854,9 @@ def _loft_dependencies(part: Part, feature: LoftFeature) -> tuple[str, ...]:
         if part.get_feature(sketch_feature_id) is not None:
             deps.add(sketch_feature_id)
     for ref in feature.guide_curve_refs:
-        guide_sketch_feature_id = sketch_feature_id_for_sketch(part, ref.sketch_id)
-        if guide_sketch_feature_id is not None:
-            deps.add(guide_sketch_feature_id)
+        guide_dep = _sketch_or_edge_ref_dependency(part, ref)
+        if guide_dep is not None:
+            deps.add(guide_dep)
     deps.update(base_feature_id(tid) for tid in feature.target_body_ids)
     return tuple(deps)
 

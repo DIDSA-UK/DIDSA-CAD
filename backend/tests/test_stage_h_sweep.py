@@ -20,16 +20,19 @@ import math
 import pytest
 from fastapi.testclient import TestClient
 from OCC.Core.BRepAdaptor import BRepAdaptor_Curve
+from OCC.Core.BRepCheck import BRepCheck_Analyzer
 from OCC.Core.BRepGProp import brepgprop
 from OCC.Core.BRepTools import BRepTools_WireExplorer
 from OCC.Core.GeomAbs import GeomAbs_Circle
 from OCC.Core.GProp import GProp_GProps
-from OCC.Core.TopAbs import TopAbs_FORWARD
+from OCC.Core.TopAbs import TopAbs_FACE, TopAbs_FORWARD
+from OCC.Core.TopExp import TopExp_Explorer
 
 from app.document.extrude import compute_part_bodies
 from app.document.sweep import resolve_path_wire
 from app.document.store import get_part_or_404
 from app.main import app
+from app.document.models import SketchOrEdgeRef
 from app.sketch.models import SketchEntityRef, SketchEntityType
 from tests.conftest import TEST_API_KEY
 
@@ -317,7 +320,11 @@ def test_boss_sweep_along_a_path_spanning_two_different_sketches_succeeds():
     ]
     response = _create_sweep(part["id"], profile["id"], path_refs)
     assert response.status_code == 201
-    assert response.json()["path_refs"] == path_refs
+    # `path_refs` entries are now `SketchOrEdgeRefSchema` (see
+    # app.document.models.SketchOrEdgeRef), which always echoes its own
+    # `edge_ref` field (None for a Sketch-entity entry) alongside the
+    # original flat sketch_id/entity_type/entity_id fields.
+    assert response.json()["path_refs"] == [{**ref, "edge_ref": None} for ref in path_refs]
 
     mesh = _mesh(part["id"])
     assert len(mesh) == 1
@@ -427,6 +434,60 @@ def test_boss_sweep_along_a_standalone_ellipse_path_succeeds():
 
     mesh = _mesh(part["id"])
     assert len(mesh) == 1
+
+
+def test_boss_sweep_of_a_rectangle_around_an_ellipse_path_has_no_phantom_internal_face():
+    """On-device feedback ("select other" list didn't include the body for
+    a rectangle swept around an ellipse; a face only visible with body
+    transparency turned on): root-caused to `_sweep_wire`'s implicit
+    (Frenet-style) trihedron mode not reliably closing up around a full
+    loop of an Ellipse path's own *varying* curvature for a non-radially-
+    symmetric profile - see that function's own doc comment for the fixed-
+    binormal-direction fix. The same test using a square/rectangle Profile
+    already existed (`test_boss_sweep_along_a_standalone_ellipse_path_
+    succeeds`, reusing `_create_profile_sketch_feature`'s square) but only
+    ever asserted a single mesh entry came back - exactly the kind of
+    "didn't 500" check the module docstring above warns is insufficient,
+    since a wrong-but-single-body result (a solid with a spurious internal
+    face baked in) passes that check too.
+
+    Verified two ways a phantom internal face would actually be caught by:
+    a rectangle profile swept along any single closed, seamless path
+    (Circle or Ellipse - no path-side seam vertex, see
+    `_create_circular_path_sketch_feature`'s/`_create_ellipse_path_sketch_
+    feature`'s own doc comments) with no holes has exactly 4 real faces -
+    one per rectangle side, no end caps (a swept-along-a-closed-loop tube
+    needs none) and no phantom seam face; and the whole solid must pass
+    `BRepCheck_Analyzer`, which a self-intersecting/reversed-winding
+    duplicate face - the exact failure mode reported - fails."""
+    part = _create_part()
+    profile = _create_profile_sketch_feature(part["id"])
+    path_feature, path_ellipse = _create_ellipse_path_sketch_feature(part["id"])
+
+    response = _create_sweep(
+        part["id"], profile["id"], [_path_ref(path_feature["sketch_id"], path_ellipse["id"], "ellipse")]
+    )
+    assert response.status_code == 201
+
+    body_ids = _body_ids(part["id"])
+    assert len(body_ids) == 1
+
+    part_obj = get_part_or_404(part["id"])
+    bodies = compute_part_bodies(part_obj)
+    shape = bodies[body_ids[0]]
+
+    assert BRepCheck_Analyzer(shape).IsValid()
+
+    face_explorer = TopExp_Explorer(shape, TopAbs_FACE)
+    face_count = 0
+    while face_explorer.More():
+        face_count += 1
+        face_explorer.Next()
+    assert face_count == 4
+
+    props = GProp_GProps()
+    brepgprop.VolumeProperties(shape, props)
+    assert props.Mass() > 0
 
 
 def test_boss_sweep_along_a_single_spline_segment_succeeds():
@@ -756,15 +817,19 @@ def test_resolve_path_wire_reverses_an_arc_segment_walked_back_to_front():
     line = _add_line(path_feature["sketch_id"], p_far["id"], p_mid["id"])
 
     part_obj = get_part_or_404(part["id"])
-    arc_ref = SketchEntityRef(
-        sketch_id=path_feature["sketch_id"], entity_type=SketchEntityType.ARC, entity_id=arc["id"]
+    arc_ref = SketchOrEdgeRef(
+        sketch_entity_ref=SketchEntityRef(
+            sketch_id=path_feature["sketch_id"], entity_type=SketchEntityType.ARC, entity_id=arc["id"]
+        )
     )
-    line_ref = SketchEntityRef(
-        sketch_id=path_feature["sketch_id"], entity_type=SketchEntityType.LINE, entity_id=line["id"]
+    line_ref = SketchOrEdgeRef(
+        sketch_entity_ref=SketchEntityRef(
+            sketch_id=path_feature["sketch_id"], entity_type=SketchEntityType.LINE, entity_id=line["id"]
+        )
     )
 
     def wire_edges(path_refs):
-        wire = resolve_path_wire(part_obj, path_refs, {}, frozenset())
+        wire, _fixed_binormal = resolve_path_wire(part_obj, path_refs, {}, frozenset())
         explorer = BRepTools_WireExplorer(wire)
         edges = []
         while explorer.More():

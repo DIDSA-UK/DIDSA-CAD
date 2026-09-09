@@ -38,6 +38,7 @@ from app.document.models import (
     RevolveFeature,
     RevolveMode,
     SketchFeature,
+    SketchOrEdgeRef,
     SubShapeRef,
     SubShapeType,
     SweepFeature,
@@ -138,7 +139,10 @@ def _build_document_with_every_feature_type(sketch: Sketch) -> Document:
     sweep = SweepFeature(
         id="feat-sweep",
         sketch_feature_id=sketch_feature.id,
-        path_refs=[_line_ref(sketch.id, lines[0].id), _line_ref(sketch.id, lines[1].id)],
+        path_refs=[
+            SketchOrEdgeRef(sketch_entity_ref=_line_ref(sketch.id, lines[0].id)),
+            SketchOrEdgeRef(sketch_entity_ref=_line_ref(sketch.id, lines[1].id)),
+        ],
         mode=SweepMode.CUT,
         target_body_ids=[f"{extrude.id}#0"],
     )

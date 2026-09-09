@@ -1975,6 +1975,7 @@ class _PartScreenState extends State<PartScreen> {
     List<String> targetBodyIds,
     List<SketchEntityRefDto> profileRefs,
     double? thickness,
+    ThicknessDirection thicknessDirection,
   })? _extrudeEditSnapshot;
 
   /// Prompt G: which outer profile(s) of [_extrudeSketchFeature] to use -
@@ -1997,6 +1998,12 @@ class _PartScreenState extends State<PartScreen> {
   /// [_ensureExtrudeFeatureExists] the same way [_extrudeStartDistance] etc.
   /// are.
   double? _extrudeThickness;
+
+  /// Which side of the sketched wire a thin extrude's wall grows on - see
+  /// [ExtrudePanel.initialThicknessDirection]'s own doc comment. Threaded
+  /// through [_ensureExtrudeFeatureExists] the same way [_extrudeThickness]
+  /// is.
+  ThicknessDirection _extrudeThicknessDirection = ThicknessDirection.outward;
 
   /// Debounces the panel's live-preview PATCH/POST + mesh refresh by 500ms
   /// after the last field change, per the brief - cancelled outright by
@@ -7077,16 +7084,14 @@ class _PartScreenState extends State<PartScreen> {
     await ViewPreferences.setFarClip(value);
   }
 
-  /// File > Exit: abandons the current Part and returns all the way back to
-  /// the first splash/[ConnectionScreen] - a fresh, non-revisit instance
-  /// (so its "View a mesh file" entry is present, same as cold launch),
-  /// with [Navigator.pushAndRemoveUntil] clearing this and every other
-  /// route underneath so there's no way back to the abandoned [PartScreen]
-  /// via the system back gesture. Confirms first, mirroring
-  /// [_startNewPart]'s identical "unsaved work would be lost" dialog -
-  /// exiting is just as destructive to unsaved changes as starting new.
-  Future<void> _exitToConnectionScreen() async {
-    setState(() => _toolbarOpen = false);
+  /// Shared "unsaved work would be lost" confirmation for leaving the Part -
+  /// used both by [_exitToConnectionScreen] (File > Exit) and the system
+  /// back gesture (see the [PopScope] in [build]), which is just as
+  /// destructive to unsaved changes as the toolbar's own Exit action.
+  /// Returns `true` only if the user actually confirmed (and the widget is
+  /// still mounted afterwards) - callers don't need to separately re-check
+  /// [mounted].
+  Future<bool> _confirmExitPart() async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -7104,7 +7109,36 @@ class _PartScreenState extends State<PartScreen> {
         ],
       ),
     );
-    if (confirmed != true || !mounted) return;
+    return confirmed == true && mounted;
+  }
+
+  /// The system back gesture's own exit path (see the [PopScope] in
+  /// [build]) - confirms via [_confirmExitPart], then pops this screen for
+  /// real. A named `State` method rather than the inline async closure this
+  /// used to be: `flutter analyze`'s `use_build_context_synchronously`
+  /// check doesn't recognize a `mounted` guard inside a locally-defined
+  /// async closure as related to the enclosing `State`, even though it is -
+  /// pulling it out into its own method (mirroring [_exitToConnectionScreen]
+  /// immediately below) is the standard fix.
+  Future<void> _confirmAndPopPart() async {
+    final confirmed = await _confirmExitPart();
+    if (!confirmed || !mounted) return;
+    Navigator.of(context).pop();
+  }
+
+  /// File > Exit: abandons the current Part and returns all the way back to
+  /// the first splash/[ConnectionScreen] - a fresh, non-revisit instance
+  /// (so its "View a mesh file" entry is present, same as cold launch),
+  /// with [Navigator.pushAndRemoveUntil] clearing this and every other
+  /// route underneath so there's no way back to the abandoned [PartScreen]
+  /// via the system back gesture. Confirms first via [_confirmExitPart],
+  /// mirroring [_startNewPart]'s identical "unsaved work would be lost"
+  /// dialog - exiting is just as destructive to unsaved changes as starting
+  /// new.
+  Future<void> _exitToConnectionScreen() async {
+    setState(() => _toolbarOpen = false);
+    if (!await _confirmExitPart()) return;
+    if (!mounted) return;
 
     await Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(builder: (context) => const ConnectionScreen()),
@@ -9609,6 +9643,7 @@ class _PartScreenState extends State<PartScreen> {
       _extrudeStartDistance = 0.0;
       _extrudeEndDistance = 10.0;
       _extrudeThickness = null;
+      _extrudeThicknessDirection = ThicknessDirection.outward;
       _extrudeProfileRefs = profileRefs;
       _entitiesBeforeExtrude = _selectedEntities;
       _selectedEntities = {};
@@ -9657,6 +9692,7 @@ class _PartScreenState extends State<PartScreen> {
     final targetBodyIds = feature.targetBodyIds;
     final profileRefs = feature.profileRefs;
     final thickness = feature.thickness;
+    final thicknessDirection = ThicknessDirection.fromApiValue(feature.thicknessDirection);
 
     setState(() {
       _extrudeSketchFeature = sketchFeature;
@@ -9669,12 +9705,14 @@ class _PartScreenState extends State<PartScreen> {
         targetBodyIds: targetBodyIds,
         profileRefs: profileRefs,
         thickness: thickness,
+        thicknessDirection: thicknessDirection,
       );
       _meshBeforeExtrude = _bodies;
       _extrudeType = type;
       _extrudeStartDistance = start;
       _extrudeEndDistance = end;
       _extrudeThickness = thickness;
+      _extrudeThicknessDirection = thicknessDirection;
       _extrudeProfileRefs = profileRefs;
       _entitiesBeforeExtrude = _selectedEntities;
       _selectedEntities = {
@@ -9715,6 +9753,7 @@ class _PartScreenState extends State<PartScreen> {
     List<String> targetBodyIds,
     List<SketchEntityRefDto> profileRefs, [
     double? thickness,
+    ThicknessDirection thicknessDirection = ThicknessDirection.outward,
   ]) async {
     final part = _part;
     final sketchFeature = _extrudeSketchFeature;
@@ -9731,6 +9770,7 @@ class _PartScreenState extends State<PartScreen> {
         targetBodyIds: targetBodyIds,
         profileRefs: profileRefs,
         thickness: thickness,
+        thicknessDirection: thicknessDirection.apiValue,
       );
       _previewExtrudeFeatureId = created.id;
     } else {
@@ -9742,6 +9782,7 @@ class _PartScreenState extends State<PartScreen> {
         endDistance: end,
         targetBodyIds: targetBodyIds,
         profileRefs: profileRefs,
+        thicknessDirection: thicknessDirection.apiValue,
         thickness: thickness,
       );
     }
@@ -9761,11 +9802,13 @@ class _PartScreenState extends State<PartScreen> {
   /// [ExtrudePanel.onChanged] - records the latest values immediately (so
   /// [_confirmExtrude] always has them, even mid-debounce) and (re)starts
   /// the 500ms debounce before actually hitting the backend.
-  void _onExtrudeValuesChanged(ExtrudeType type, double start, double end, double? thickness) {
+  void _onExtrudeValuesChanged(ExtrudeType type, double start, double end, double? thickness,
+      ThicknessDirection thicknessDirection) {
     _extrudeType = type;
     _extrudeStartDistance = start;
     _extrudeEndDistance = end;
     _extrudeThickness = thickness;
+    _extrudeThicknessDirection = thicknessDirection;
     _scheduleExtrudePreview();
   }
 
@@ -9785,6 +9828,7 @@ class _PartScreenState extends State<PartScreen> {
             _currentTargetBodyIds(),
             _extrudeProfileRefs,
             _extrudeThickness,
+            _extrudeThicknessDirection,
           ));
     });
   }
@@ -9837,6 +9881,7 @@ class _PartScreenState extends State<PartScreen> {
         targetBodyIds,
         _extrudeProfileRefs,
         _extrudeThickness,
+        _extrudeThicknessDirection,
       );
       await _refreshFeatures();
       await _refreshSketchGeometries();
@@ -9869,6 +9914,7 @@ class _PartScreenState extends State<PartScreen> {
       _extrudeEditSnapshot = null;
       _extrudeProfileRefs = [];
       _extrudeThickness = null;
+      _extrudeThicknessDirection = ThicknessDirection.outward;
       _selectedEntities = _entitiesBeforeExtrude ?? {};
       _entitiesBeforeExtrude = null;
       _selectionFilterOverrides.pop();
@@ -9920,6 +9966,7 @@ class _PartScreenState extends State<PartScreen> {
       _extrudeEditSnapshot = null;
       _extrudeProfileRefs = [];
       _extrudeThickness = null;
+      _extrudeThicknessDirection = ThicknessDirection.outward;
       _selectedEntities = _entitiesBeforeExtrude ?? {};
       _entitiesBeforeExtrude = null;
       _selectionFilterOverrides.pop();
@@ -9939,6 +9986,7 @@ class _PartScreenState extends State<PartScreen> {
             targetBodyIds: editSnapshot.targetBodyIds,
             profileRefs: editSnapshot.profileRefs,
             thickness: editSnapshot.thickness,
+            thicknessDirection: editSnapshot.thicknessDirection.apiValue,
           );
           await _refreshFeatures();
         });
@@ -16113,24 +16161,17 @@ class _PartScreenState extends State<PartScreen> {
     return PopScope(
       // While choosing a plane for a new Sketch (Stage 10b) or a Sketch to
       // extrude (Prompt D), the device back gesture cancels that mode
-      // instead of popping this screen - canPop: false intercepts it; any
-      // other time, popping proceeds normally. Fillet's own guided entry
-      // doesn't intercept back here, consistent with Extrude/Create Plane's
-      // own "Confirm/Cancel are the only way out" panels once open - see
-      // [_openFilletPanel].
-      canPop: !_planeSelectionMode &&
-          !_confirmingSketchOrientation &&
-          !_sketchPickerActive &&
-          !_revolveSketchPickerActive &&
-          !_sweepSketchPickerActive &&
-          !_loftSketchPickerActive &&
-          !_planarSurfaceSketchPickerActive &&
-          !_revolveSurfaceSketchPickerActive &&
-          !_sweptSurfaceSketchPickerActive &&
-          !_loftSurfaceSketchPickerActive &&
-          !_ruledSurfaceSketchPickerActive &&
-          !_profilePickerActive &&
-          !_pathPickerActive,
+      // instead of popping this screen. Otherwise, the back gesture exits
+      // the Part - just as destructive to unsaved work as the toolbar's
+      // File > Exit, so it needs the same confirmation (on-device feedback:
+      // "pressing back should ask to confirm exit"). Either way the pop
+      // can't be allowed to happen immediately - canPop is always false, and
+      // [onPopInvokedWithResult] decides what actually happens: cancel the
+      // active picker mode, or await [_confirmExitPart] and pop for real.
+      // Fillet's own guided entry doesn't intercept back here, consistent
+      // with Extrude/Create Plane's own "Confirm/Cancel are the only way
+      // out" panels once open - see [_openFilletPanel].
+      canPop: false,
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
         if (_confirmingSketchOrientation) {
@@ -16157,8 +16198,10 @@ class _PartScreenState extends State<PartScreen> {
           _cancelProfilePicker();
         } else if (_pathPickerActive) {
           _cancelPathPicker();
-        } else {
+        } else if (_planeSelectionMode) {
           _cancelPlaneSelectionMode();
+        } else {
+          _confirmAndPopPart();
         }
       },
       child: Stack(
@@ -16817,6 +16860,7 @@ class _PartScreenState extends State<PartScreen> {
                       initialStartDistance: _extrudeStartDistance,
                       initialEndDistance: _extrudeEndDistance,
                       initialThickness: _extrudeThickness,
+                      initialThicknessDirection: _extrudeThicknessDirection,
                       targetBodyCount: _selectedEntities.length,
                       onChanged: _onExtrudeValuesChanged,
                       onConfirm: _confirmExtrude,

@@ -77,6 +77,7 @@ from app.document.models import (
     RuledSurfaceFeature,
     ScaleBodyFeature,
     SketchFeature,
+    SketchOrEdgeRef,
     SolidFromSurfacesFeature,
     SpiralBevelHand,
     SplitFeature,
@@ -88,6 +89,7 @@ from app.document.models import (
     SweepMode,
     SweptSurfaceFeature,
     ThickenFeature,
+    ThicknessDirection,
 )
 from app.sketch.constraints import (
     AngleConstraint,
@@ -696,6 +698,25 @@ def _subshape_ref_from_dict(data: dict) -> SubShapeRef:
     )
 
 
+def _sketch_or_edge_ref_to_dict(ref: SketchOrEdgeRef) -> dict:
+    """`SketchOrEdgeRef`'s native-export counterpart to `app.document.
+    router._sketch_or_edge_ref_to_schema` - same flat-fields-plus-optional-
+    edge_ref shape as `SketchOrEdgeRefSchema` (see that class's own doc
+    comment for why: so a native file exported before this field existed
+    keeps importing unchanged, with `edge_ref` simply absent)."""
+    if ref.edge_ref is not None:
+        return {"edge_ref": _subshape_ref_to_dict(ref.edge_ref)}
+    assert ref.sketch_entity_ref is not None
+    return _sketch_entity_ref_to_dict(ref.sketch_entity_ref)
+
+
+def _sketch_or_edge_ref_from_dict(data: dict) -> SketchOrEdgeRef:
+    edge_ref = data.get("edge_ref")
+    if edge_ref is not None:
+        return SketchOrEdgeRef(edge_ref=_subshape_ref_from_dict(edge_ref))
+    return SketchOrEdgeRef(sketch_entity_ref=_sketch_entity_ref_from_dict(data))
+
+
 def _loft_section_to_dict(section: LoftSection) -> dict:
     return {
         "sketch_feature_id": section.sketch_feature_id,
@@ -706,12 +727,13 @@ def _loft_section_to_dict(section: LoftSection) -> dict:
         "alignment_point": _sketch_entity_ref_to_dict(section.alignment_point)
         if section.alignment_point
         else None,
+        "edge_ref": _subshape_ref_to_dict(section.edge_ref) if section.edge_ref else None,
     }
 
 
 def _loft_section_from_dict(data: dict) -> LoftSection:
     return LoftSection(
-        sketch_feature_id=_require(data, "sketch_feature_id"),
+        sketch_feature_id=data.get("sketch_feature_id"),
         profile_refs=[_sketch_entity_ref_from_dict(r) for r in data.get("profile_refs", [])],
         reference_point=_sketch_entity_ref_from_dict(data["reference_point"])
         if data.get("reference_point")
@@ -719,6 +741,7 @@ def _loft_section_from_dict(data: dict) -> LoftSection:
         alignment_point=_sketch_entity_ref_from_dict(data["alignment_point"])
         if data.get("alignment_point")
         else None,
+        edge_ref=_subshape_ref_from_dict(data["edge_ref"]) if data.get("edge_ref") else None,
     )
 
 
@@ -931,6 +954,7 @@ def _feature_to_dict(feature: Feature) -> dict:
             "target_body_ids": list(feature.target_body_ids),
             "profile_refs": [_sketch_entity_ref_to_dict(r) for r in feature.profile_refs],
             "thickness": feature.thickness,
+            "thickness_direction": feature.thickness_direction.value,
         }
     if isinstance(feature, SurfaceFeature):
         return {
@@ -965,7 +989,7 @@ def _feature_to_dict(feature: Feature) -> dict:
             "type": "swept_surface",
             "id": feature.id,
             "sketch_feature_id": feature.sketch_feature_id,
-            "path_refs": [_sketch_entity_ref_to_dict(r) for r in feature.path_refs],
+            "path_refs": [_sketch_or_edge_ref_to_dict(r) for r in feature.path_refs],
             "profile_refs": [_sketch_entity_ref_to_dict(r) for r in feature.profile_refs],
         }
     if isinstance(feature, LoftSurfaceFeature):
@@ -974,7 +998,7 @@ def _feature_to_dict(feature: Feature) -> dict:
             "id": feature.id,
             "sections": [_loft_section_to_dict(section) for section in feature.sections],
             "ruled": feature.ruled,
-            "guide_curve_refs": [_sketch_entity_ref_to_dict(r) for r in feature.guide_curve_refs],
+            "guide_curve_refs": [_sketch_or_edge_ref_to_dict(r) for r in feature.guide_curve_refs],
         }
     if isinstance(feature, RuledSurfaceFeature):
         return {
@@ -1051,7 +1075,7 @@ def _feature_to_dict(feature: Feature) -> dict:
             "type": "sweep",
             "id": feature.id,
             "sketch_feature_id": feature.sketch_feature_id,
-            "path_refs": [_sketch_entity_ref_to_dict(r) for r in feature.path_refs],
+            "path_refs": [_sketch_or_edge_ref_to_dict(r) for r in feature.path_refs],
             "mode": feature.mode.value,
             "target_body_ids": list(feature.target_body_ids),
             "profile_refs": [_sketch_entity_ref_to_dict(r) for r in feature.profile_refs],
@@ -1255,7 +1279,7 @@ def _feature_to_dict(feature: Feature) -> dict:
             "target_body_ids": list(feature.target_body_ids),
             "thickness": feature.thickness,
             "thin_from_closed_profile": feature.thin_from_closed_profile,
-            "guide_curve_refs": [_sketch_entity_ref_to_dict(r) for r in feature.guide_curve_refs],
+            "guide_curve_refs": [_sketch_or_edge_ref_to_dict(r) for r in feature.guide_curve_refs],
         }
     if isinstance(feature, GearChainFeature):
         return {
@@ -1302,6 +1326,7 @@ def _feature_from_dict(data: dict) -> Feature:
             target_body_ids=list(data.get("target_body_ids", [])),
             profile_refs=[_sketch_entity_ref_from_dict(r) for r in data.get("profile_refs", [])],
             thickness=data.get("thickness"),
+            thickness_direction=ThicknessDirection(data.get("thickness_direction", ThicknessDirection.OUTWARD.value)),
         )
     if feature_type == "surface":
         return SurfaceFeature(
@@ -1332,7 +1357,7 @@ def _feature_from_dict(data: dict) -> Feature:
         return SweptSurfaceFeature(
             id=feature_id,
             sketch_feature_id=_require(data, "sketch_feature_id"),
-            path_refs=[_sketch_entity_ref_from_dict(r) for r in data.get("path_refs", [])],
+            path_refs=[_sketch_or_edge_ref_from_dict(r) for r in data.get("path_refs", [])],
             profile_refs=[_sketch_entity_ref_from_dict(r) for r in data.get("profile_refs", [])],
         )
     if feature_type == "loft_surface":
@@ -1340,7 +1365,7 @@ def _feature_from_dict(data: dict) -> Feature:
             id=feature_id,
             sections=[_loft_section_from_dict(s) for s in data.get("sections", [])],
             ruled=data.get("ruled", False),
-            guide_curve_refs=[_sketch_entity_ref_from_dict(r) for r in data.get("guide_curve_refs", [])],
+            guide_curve_refs=[_sketch_or_edge_ref_from_dict(r) for r in data.get("guide_curve_refs", [])],
         )
     if feature_type == "ruled_surface":
         return RuledSurfaceFeature(
@@ -1407,7 +1432,7 @@ def _feature_from_dict(data: dict) -> Feature:
         return SweepFeature(
             id=feature_id,
             sketch_feature_id=_require(data, "sketch_feature_id"),
-            path_refs=[_sketch_entity_ref_from_dict(r) for r in data.get("path_refs", [])],
+            path_refs=[_sketch_or_edge_ref_from_dict(r) for r in data.get("path_refs", [])],
             mode=SweepMode(_require(data, "mode")),
             target_body_ids=list(data.get("target_body_ids", [])),
             profile_refs=[_sketch_entity_ref_from_dict(r) for r in data.get("profile_refs", [])],
@@ -1606,7 +1631,7 @@ def _feature_from_dict(data: dict) -> Feature:
             target_body_ids=list(data.get("target_body_ids", [])),
             thickness=data.get("thickness"),
             thin_from_closed_profile=data.get("thin_from_closed_profile", False),
-            guide_curve_refs=[_sketch_entity_ref_from_dict(r) for r in data.get("guide_curve_refs", [])],
+            guide_curve_refs=[_sketch_or_edge_ref_from_dict(r) for r in data.get("guide_curve_refs", [])],
         )
     if feature_type == "gear_chain":
         return GearChainFeature(

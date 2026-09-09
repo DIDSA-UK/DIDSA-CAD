@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from fastapi import HTTPException
 from OCC.Core.BRep import BRep_Builder, BRep_Tool
 from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Cut
+from OCC.Core.BRepCheck import BRepCheck_Analyzer
 from OCC.Core.BRepBuilderAPI import (
     BRepBuilderAPI_MakeEdge,
     BRepBuilderAPI_MakeWire,
@@ -33,9 +34,11 @@ from OCC.Core.BRepBuilderAPI import (
 )
 from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_MakePipeShell
 from OCC.Core.Geom import Geom_BezierCurve
-from OCC.Core.gp import gp_Ax2, gp_Circ, gp_Elips, gp_Pnt
+from OCC.Core.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Elips, gp_Pnt
 from OCC.Core.TColgp import TColgp_Array1OfPnt
-from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Edge, TopoDS_Shape, TopoDS_Wire
+from OCC.Core.TopAbs import TopAbs_VERTEX
+from OCC.Core.TopExp import TopExp_Explorer
+from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Edge, TopoDS_Shape, TopoDS_Wire, topods
 
 from app.document.create_plane import resolve_sketch_basis
 from app.document.extrude import (
@@ -50,11 +53,12 @@ from app.document.extrude import (
     basis_normal,
     basis_point_to_world,
     compute_part_bodies,
+    resolve_subshape_from_bodies,
     select_profiles,
     wire_for_profile,
 )
 from app.document.graph import sketch_feature_id_for_sketch
-from app.document.models import Part, SketchFeature, SweepFeature
+from app.document.models import Part, SketchFeature, SketchOrEdgeRef, SubShapeRef, SweepFeature
 from app.document.plane_geometry import is_mirrored_basis
 from app.sketch.models import Arc, Circle, Ellipse, Line, SketchEntityRef, SketchEntityType, Spline
 from app.sketch.profile import ProfileStatus, detect_profile
@@ -75,7 +79,35 @@ logger = logging.getLogger(__name__)
 _PATH_POINT_TOLERANCE = 1e-6
 
 
-def _invalid_path_ref(ref: SketchEntityRef) -> HTTPException:
+def _path_ref_error_detail(ref: SketchEntityRef | SketchOrEdgeRef) -> dict:
+    """The `sketch_id`/`entity_type`/`entity_id` (a Sketch entity) or
+    `body_id`/`shape_type`/`index` (a Body edge) fields `_invalid_path_ref`/
+    `_disconnected_path` embed to identify which `path_refs`/`guide_curve_
+    refs` entry failed. Accepts a bare `SketchEntityRef` directly (every
+    call site inside `_resolve_path_segment`, which only ever handles the
+    Sketch-entity branches and never itself sees the outer wrapper) as well
+    as a `SketchOrEdgeRef` (every call site in `resolve_path_wire` itself,
+    which sees whichever of the two callers actually resolved) - whichever
+    of `ref.sketch_entity_ref`/`ref.edge_ref` is set on the latter (the
+    router's own payload-shape validation guarantees exactly one is, by the
+    time either error can fire)."""
+    if isinstance(ref, SketchEntityRef):
+        return {"sketch_id": ref.sketch_id, "entity_type": ref.entity_type.value, "entity_id": ref.entity_id}
+    if ref.sketch_entity_ref is not None:
+        return {
+            "sketch_id": ref.sketch_entity_ref.sketch_id,
+            "entity_type": ref.sketch_entity_ref.entity_type.value,
+            "entity_id": ref.sketch_entity_ref.entity_id,
+        }
+    assert ref.edge_ref is not None
+    return {
+        "body_id": ref.edge_ref.body_id,
+        "shape_type": ref.edge_ref.shape_type.value,
+        "index": ref.edge_ref.index,
+    }
+
+
+def _invalid_path_ref(ref: SketchEntityRef | SketchOrEdgeRef) -> HTTPException:
     """The structured `invalid_path_ref` error for a `path_refs` entry that
     cannot be used as a Sweep path segment - covers every way this can
     fail: the entity doesn't exist, exists but isn't a Line/Arc/Circle/
@@ -101,16 +133,11 @@ def _invalid_path_ref(ref: SketchEntityRef) -> HTTPException:
     root-cause writeup."""
     return HTTPException(
         status_code=422,
-        detail={
-            "type": "invalid_path_ref",
-            "sketch_id": ref.sketch_id,
-            "entity_type": ref.entity_type.value,
-            "entity_id": ref.entity_id,
-        },
+        detail={"type": "invalid_path_ref", **_path_ref_error_detail(ref)},
     )
 
 
-def _disconnected_path(ref: SketchEntityRef, index: int) -> HTTPException:
+def _disconnected_path(ref: SketchOrEdgeRef, index: int) -> HTTPException:
     """The structured `disconnected_path` error for a `path_refs` entry
     (at `index`, the entry's own position in the list) whose Line does not
     share a coincident endpoint (within `_PATH_POINT_TOLERANCE`) with the
@@ -120,13 +147,7 @@ def _disconnected_path(ref: SketchEntityRef, index: int) -> HTTPException:
     that earlier failure mode)."""
     return HTTPException(
         status_code=422,
-        detail={
-            "type": "disconnected_path",
-            "sketch_id": ref.sketch_id,
-            "entity_type": ref.entity_type.value,
-            "entity_id": ref.entity_id,
-            "index": index,
-        },
+        detail={"type": "disconnected_path", **_path_ref_error_detail(ref), "index": index},
     )
 
 
@@ -139,7 +160,11 @@ def _sweep_failed() -> HTTPException:
     return HTTPException(status_code=422, detail={"type": "sweep_failed"})
 
 
-def _sweep_wire(path_wire: TopoDS_Wire, wire: TopoDS_Wire) -> tuple[TopoDS_Shape, BRepOffsetAPI_MakePipeShell]:
+def _sweep_wire(
+    path_wire: TopoDS_Wire,
+    wire: TopoDS_Wire,
+    fixed_binormal: gp_Dir | None = None,
+) -> tuple[TopoDS_Shape, BRepOffsetAPI_MakePipeShell]:
     """Sweeps one closed `wire` (a Profile's outer boundary, or one of its
     holes - see `resolve_sweep_from_bodies`, which sweeps each of those
     independently and boolean-cuts the results together rather than
@@ -166,14 +191,58 @@ def _sweep_wire(path_wire: TopoDS_Wire, wire: TopoDS_Wire) -> tuple[TopoDS_Shape
     likely still correct (there's still a real corner to cut), but this
     hasn't been re-verified on-device against a curved path specifically -
     flagged as a follow-up if a curved-path Sweep looks wrong at a Line/
-    curve junction, not changed speculatively here."""
+    curve junction, not changed speculatively here.
+
+    On-device feedback ("body created by rectangle swept around an
+    ellipse... an internal/duplicate face only visible with transparency
+    on"): `MakePipeShell`'s own default trihedron mode (Frenet, or this
+    OCCT version's "corrected Frenet" - never explicitly set before this)
+    continuously reorients `wire` to stay normal to `path_wire`'s local
+    tangent. That tracks a Circle's constant curvature back to its own
+    starting orientation after one full loop with nothing left over, but
+    an Ellipse's curvature varies around the loop - for a non-radially-
+    symmetric profile (a rectangle, not a circle) the frame does not
+    generally return to its exact starting orientation at the seam,
+    leaving a twist `MakePipeShell` can silently resolve into a spurious
+    internal, reversed-winding face rather than failing `IsDone()`
+    outright. Since every Ellipse (and Circle) path here is planar by
+    construction (`_resolve_path_segment`'s own Circle/Ellipse branches),
+    the profile's own orientation never actually needs to *vary* around
+    the loop at all - `fixed_binormal` (the path plane's own normal,
+    `_PathSegment.plane_normal`, threaded through by `resolve_path_wire`/
+    `resolve_sweep_from_bodies` for exactly this single-closed-segment
+    case) switches to OCCT's "fixed binormal direction" trihedron mode
+    instead: the profile keeps one constant orientation the entire way
+    around, so there is no curvature-dependent twist to fail to close in
+    the first place. Applied to the Circle case too (not just Ellipse) so
+    both share one code path rather than silently diverging - confirmed
+    by `BRepCheck_Analyzer` below not to regress the already-working
+    Circle sweep."""
     pipe_maker = BRepOffsetAPI_MakePipeShell(path_wire)
     pipe_maker.SetTransitionMode(BRepBuilderAPI_RightCorner)
+    if fixed_binormal is not None:
+        pipe_maker.SetMode(fixed_binormal)
     pipe_maker.Add(wire)
     pipe_maker.Build()
     if not pipe_maker.IsDone() or not pipe_maker.MakeSolid():
         raise _sweep_failed()
-    return pipe_maker.Shape(), pipe_maker
+    shape = pipe_maker.Shape()
+    # Defense-in-depth (same convention as app.document.extrude/move_face/
+    # solid_from_surfaces), scoped to the new `fixed_binormal` path only -
+    # `IsDone()`/`MakeSolid()` alone do not rule out a self-intersecting/
+    # duplicate-face result (see this function's own doc comment above),
+    # so this additionally requires `BRepCheck_Analyzer` to pass before
+    # handing the shape back, turning a bad sweep into the same
+    # `_sweep_failed()` 422 rather than a silently wrong solid. Not
+    # applied to the general Line/Arc-chain path below (`fixed_binormal is
+    # None`): `app.document.bevel`'s own doc comment on
+    # `BRepCheck_Analyzer` warns it has real false positives
+    # (`BRepCheck_UnorientableShape`) on otherwise-legitimate shapes -
+    # a risk not worth taking on the already-working, unrelated path this
+    # change isn't trying to fix.
+    if fixed_binormal is not None and not BRepCheck_Analyzer(shape).IsValid():
+        raise _sweep_failed()
+    return shape, pipe_maker
 
 
 @dataclass
@@ -187,12 +256,20 @@ class _PathSegment:
     which has no endpoints to connect at. `edges` are the already-built
     OCCT edge(s) in this segment's own natural order; multiple only for a
     Spline (one Bezier edge per internal through-point-to-through-point
-    hop)."""
+    hop).
+
+    `plane_normal` is set only for a `closed` segment (Circle/Ellipse) -
+    the sketch plane's own normal that segment's edge was built against
+    (`basis_normal(basis)`/`_ellipse_axis(...).Direction()` respectively).
+    `resolve_path_wire` threads this through to `_sweep_wire`'s own
+    `fixed_binormal` - see that function's own doc comment for why a
+    varying-curvature closed path (an Ellipse, unlike a Circle) needs it."""
 
     start: gp_Pnt | None
     end: gp_Pnt | None
     edges: list[TopoDS_Edge]
     closed: bool = False
+    plane_normal: gp_Dir | None = None
 
 
 def _reversed_edge(edge: TopoDS_Edge) -> TopoDS_Edge:
@@ -355,9 +432,10 @@ def _resolve_path_segment(
         # re-checked per entity type here).
         center = sketch.points[entity.center_point_id]
         radius = entity.radius(sketch.points)
-        axis = gp_Ax2(basis_point_to_world(basis, center.x, center.y), basis_normal(basis))
+        normal = basis_normal(basis)
+        axis = gp_Ax2(basis_point_to_world(basis, center.x, center.y), normal)
         edge = BRepBuilderAPI_MakeEdge(gp_Circ(axis, radius)).Edge()
-        return _PathSegment(start=None, end=None, edges=[edge], closed=True)
+        return _PathSegment(start=None, end=None, edges=[edge], closed=True, plane_normal=normal)
 
     if ref.entity_type == SketchEntityType.ELLIPSE and isinstance(entity, Ellipse):
         # Always closed/standalone (see the Ellipse class's own doc
@@ -369,17 +447,51 @@ def _resolve_path_segment(
         rotation = entity.rotation(sketch.points)
         axis = _ellipse_axis(basis, center.x, center.y, rotation)
         edge = BRepBuilderAPI_MakeEdge(gp_Elips(axis, major_radius, minor_radius)).Edge()
-        return _PathSegment(start=None, end=None, edges=[edge], closed=True)
+        return _PathSegment(start=None, end=None, edges=[edge], closed=True, plane_normal=axis.Direction())
 
     raise _invalid_path_ref(ref)
 
 
+def _resolve_edge_path_segment(bodies_so_far: dict[str, TopoDS_Shape], edge_ref: SubShapeRef) -> _PathSegment:
+    """On-device feedback ("surface tools should support edges, curves...
+    e.g. sweep along an edge"): the Body-edge counterpart to
+    `_resolve_path_segment`'s Sketch-entity branches, for a `path_refs`/
+    `guide_curve_refs` entry whose `SketchOrEdgeRef.edge_ref` is set
+    instead of `sketch_entity_ref`. Reuses `app.document.extrude.resolve_
+    subshape_from_bodies` verbatim - the same resolver `FilletFeature.
+    edge_refs`/`PointRef.vertex_ref` already use - so an unresolvable/stale
+    reference fails the same way theirs does (`missing_reference`), not a
+    separate error type.
+
+    A closed/periodic edge with no two genuinely distinct vertices (e.g. a
+    full-circle silhouette edge on a cylindrical face) resolves as its own
+    standalone closed segment, mirroring `_resolve_path_segment`'s Circle/
+    Ellipse branches - but with `plane_normal=None` (unlike those, an
+    arbitrary Body edge's own plane isn't already known here the way a
+    Sketch entity's own basis is) - `_sweep_wire`'s fixed-binormal fix
+    (see its own doc comment) is simply not applied for this case, falling
+    back to the same default trihedron every other non-fixed-binormal path
+    already uses; not yet extended to cover it."""
+    edge = topods.Edge(resolve_subshape_from_bodies(bodies_so_far, edge_ref))
+    explorer = TopExp_Explorer(edge, TopAbs_VERTEX)
+    vertices = []
+    while explorer.More():
+        vertices.append(topods.Vertex(explorer.Current()))
+        explorer.Next()
+    if len(vertices) >= 2:
+        start = BRep_Tool.Pnt(vertices[0])
+        end = BRep_Tool.Pnt(vertices[-1])
+        if start.Distance(end) >= _PATH_POINT_TOLERANCE:
+            return _PathSegment(start=start, end=end, edges=[edge], closed=False)
+    return _PathSegment(start=None, end=None, edges=[edge], closed=True)
+
+
 def resolve_path_wire(
     part: Part,
-    path_refs: list[SketchEntityRef],
+    path_refs: list[SketchOrEdgeRef],
     bodies_so_far: dict[str, TopoDS_Shape],
     excluded_feature_ids: frozenset[str],
-) -> TopoDS_Wire:
+) -> tuple[TopoDS_Wire, gp_Dir | None]:
     """Resolves `path_refs` (an ordered, possibly cross-Sketch, possibly
     mixed-type list of Line/Arc/Circle/Ellipse/Spline references - see
     `SweepFeature`'s own docstring) into a single OCCT wire, via
@@ -434,16 +546,31 @@ def resolve_path_wire(
     discarded here) before being added, exactly mirroring `wire_for_profile`'s
     own Spline branch (`segments = reversed(...)` when `profile.point_ids[i]`
     is the entity's last through-point) generalized to every segment type
-    via `_PathSegment.edges` rather than re-derived per entity type."""
+    via `_PathSegment.edges` rather than re-derived per entity type.
+
+    Returns `(wire, fixed_binormal)`: `fixed_binormal` is the lone closed
+    segment's own `plane_normal` (see `_PathSegment`'s own doc comment) for
+    the single-Circle/single-Ellipse case, `None` otherwise - `_sweep_wire`'s
+    own parameter of the same name, threaded through by
+    `resolve_sweep_from_bodies`.
+
+    Each entry resolves via `_resolve_path_segment` (a Sketch entity,
+    `ref.sketch_entity_ref`) or `_resolve_edge_path_segment` (a Body edge,
+    `ref.edge_ref`) - see `SketchOrEdgeRef`'s own doc comment; the router's
+    payload-shape validation already guarantees exactly one is set per
+    entry, so this dispatches on whichever is, rather than re-checking."""
     segments = [
-        _resolve_path_segment(part, ref, bodies_so_far, excluded_feature_ids) for ref in path_refs
+        _resolve_path_segment(part, ref.sketch_entity_ref, bodies_so_far, excluded_feature_ids)
+        if ref.sketch_entity_ref is not None
+        else _resolve_edge_path_segment(bodies_so_far, ref.edge_ref)
+        for ref in path_refs
     ]
 
     if len(segments) == 1 and segments[0].closed:
         wire_maker = BRepBuilderAPI_MakeWire()
         for edge in segments[0].edges:
             wire_maker.Add(edge)
-        return wire_maker.Wire()
+        return wire_maker.Wire(), segments[0].plane_normal
 
     for ref, segment in zip(path_refs, segments):
         if segment.closed:
@@ -479,7 +606,7 @@ def resolve_path_wire(
         edges = [_reversed_edge(edge) for edge in reversed(segment.edges)] if is_reversed else segment.edges
         for edge in edges:
             wire_maker.Add(edge)
-    return wire_maker.Wire()
+    return wire_maker.Wire(), None
 
 
 def resolve_sweep_from_bodies(
@@ -565,7 +692,7 @@ def resolve_sweep_from_bodies(
         return None
 
     basis = resolve_sketch_basis(part, sketch_feature, bodies_so_far, excluded_feature_ids)
-    path_wire = resolve_path_wire(part, feature.path_refs, bodies_so_far, excluded_feature_ids)
+    path_wire, fixed_binormal = resolve_path_wire(part, feature.path_refs, bodies_so_far, excluded_feature_ids)
 
     if result.status == ProfileStatus.CLOSED_LOOP:
         assert result.profile is not None
@@ -578,12 +705,12 @@ def resolve_sweep_from_bodies(
     provenance_by_profile: list[dict[str, dict[str, EdgeProvenanceEntry]] | None] = []
     for profile in profiles:
         outer_wire = wire_for_profile(sketch, profile, basis)
-        solid, pipe_maker = _sweep_wire(path_wire, outer_wire)
+        solid, pipe_maker = _sweep_wire(path_wire, outer_wire, fixed_binormal)
         point_to_vertex, line_to_edge = _profile_boundary_shapes(sketch, profile, basis, outer_wire)
         provenance = _edge_provenance_from_builder(pipe_maker, point_to_vertex, line_to_edge, solid)
         for inner_loop in profile.inner_loops:
             inner_wire = wire_for_profile(sketch, inner_loop, basis)
-            inner_solid, _inner_pipe_maker = _sweep_wire(path_wire, inner_wire)
+            inner_solid, _inner_pipe_maker = _sweep_wire(path_wire, inner_wire, fixed_binormal)
             # Bug fix (root-caused against a real OCCT kernel while
             # investigating a body silently losing material after Merge):
             # neither `IsDone()` nor a raw OCCT `RuntimeError` is

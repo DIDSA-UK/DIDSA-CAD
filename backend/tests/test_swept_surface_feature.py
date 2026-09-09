@@ -127,9 +127,13 @@ def test_create_swept_surface_feature_along_a_single_straight_segment_succeeds()
     assert body["produces"] == "surface"
 
 
-def test_create_swept_surface_feature_on_an_open_chain_is_rejected():
-    """Unlike Revolve Surface, there is no open-chain fallback here - a
-    genuinely closed profile is required up front."""
+def test_create_swept_surface_feature_on_an_open_chain_succeeds():
+    """On-device feedback ("swept surface should support an open profile
+    sketch"): unlike Sweep (which builds a solid, and genuinely needs a
+    closed cross-section), a Swept Surface's own `BRepOffsetAPI_
+    MakePipeShell` never calls `.MakeSolid()` and has no dependency on the
+    profile wire being closed - see `app.document.swept_surface`'s own
+    module docstring."""
     part = _create_part()
     feature = _create_sketch_feature(part["id"])
     _add_open_chain(feature["sketch_id"], 0.0, 0.0, 2.0)
@@ -139,7 +143,45 @@ def test_create_swept_surface_feature_on_an_open_chain_is_rejected():
         part["id"], feature["id"], [_path_ref(path_feature["sketch_id"], path_line["id"])]
     )
 
-    assert response.status_code == 400
+    assert response.status_code == 201
+    body = response.json()
+    assert body["type"] == "swept_surface"
+    assert body["produces"] == "surface"
+
+
+def test_swept_surface_feature_on_an_open_chain_produces_a_valid_open_shell():
+    """Real-OCCT geometry check, not just "the request didn't fail" - the
+    resulting shape must be a genuinely valid open shell (an open chain
+    swept along a straight path) with no solid at all (this tool never
+    calls `.MakeSolid()` - see `app.document.swept_surface._shell_for_
+    wire`)."""
+    from OCC.Core.BRepCheck import BRepCheck_Analyzer
+    from OCC.Core.TopAbs import TopAbs_SOLID
+    from OCC.Core.TopExp import TopExp_Explorer
+
+    from app.document.extrude import compute_part_bodies
+    from app.document.store import get_part_or_404
+
+    part = _create_part()
+    feature = _create_sketch_feature(part["id"])
+    _add_open_chain(feature["sketch_id"], 0.0, 0.0, 2.0)
+    path_feature, path_line = _create_straight_path_sketch_feature(part["id"])
+
+    response = _create_swept_surface(
+        part["id"], feature["id"], [_path_ref(path_feature["sketch_id"], path_line["id"])]
+    )
+    assert response.status_code == 201
+
+    bodies = _get_bodies(part["id"])
+    assert len(bodies) == 1
+
+    part_obj = get_part_or_404(part["id"])
+    shapes = compute_part_bodies(part_obj)
+    shape = shapes[bodies[0]["body_id"]]
+
+    assert BRepCheck_Analyzer(shape).IsValid()
+    solid_explorer = TopExp_Explorer(shape, TopAbs_SOLID)
+    assert not solid_explorer.More()
 
 
 def test_create_swept_surface_feature_with_no_path_refs_is_rejected():
@@ -209,7 +251,11 @@ def test_swept_surface_feature_round_trips_through_native_export_import():
         features = client.get(f"/document/parts/{part['id']}/features").json()
         round_tripped = next(f for f in features if f["type"] == "swept_surface")
         assert round_tripped["sketch_feature_id"] == surface["sketch_feature_id"]
-        assert round_tripped["path_refs"] == path_refs
+        # `path_refs` entries are now `SketchOrEdgeRefSchema` (see
+        # app.document.models.SketchOrEdgeRef), which always echoes its own
+        # `edge_ref` field (None for a Sketch-entity entry) alongside the
+        # original flat sketch_id/entity_type/entity_id fields.
+        assert round_tripped["path_refs"] == [{**ref, "edge_ref": None} for ref in path_refs]
     finally:
         replace_document(saved_document)
         replace_all_sketches(saved_sketches)

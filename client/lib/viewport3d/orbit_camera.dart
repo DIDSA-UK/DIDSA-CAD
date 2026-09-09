@@ -127,7 +127,7 @@ class OrbitCamera {
   ///
   /// This is what [cameraFor] actually feeds the renderer instead of the
   /// raw [nearClip] field: whichever is *smaller* of [nearClip] itself and
-  /// `distance / _nearFarRatio` - the same safe 1:10000 ratio [nearClip]
+  /// `clipDistance / _nearFarRatio` - the same safe 1:10000 ratio [nearClip]
   /// is already derived with, just recomputed continuously against the
   /// camera's own current distance rather than frozen at whatever
   /// [setZoomBoundsForRadius] last saw. Taking the smaller of the two
@@ -143,8 +143,49 @@ class OrbitCamera {
   /// simultaneously resolve sub-millimetre detail up close *and* keep a
   /// multi-metre assembly in the same depth range without z-fighting) -
   /// this only ever narrows the *near* side of that window.
-  double get effectiveNearClip =>
-      math.max(math.min(nearClip, distance / _nearFarRatio), _minAbsoluteNearClip);
+  ///
+  /// Bug fix (on-device feedback, follow-up to the above: panning so
+  /// [target] sits away from the actual feature the camera is nose-up
+  /// against still clipped that feature, even zoomed in close, because
+  /// [distance] alone is camera-to-*target*, not camera-to-the-geometry-
+  /// that's-actually-close): `clipDistance` also considers the camera's
+  /// distance to the nearest point of the whole scene's own bounding
+  /// sphere ([sceneCenter]/[sceneRadius], set by [setZoomBoundsForRadius]
+  /// alongside [nearClip]/[farClip]), tightening further whenever that's
+  /// smaller than [distance].
+  ///
+  /// Only applied while the camera is provably *outside* that bounding
+  /// sphere (`distanceToCenter > sceneRadius`) - a camera *inside* the
+  /// sphere (the common case: [target] at or near the sphere's own centre,
+  /// [distance] well under [sceneRadius] while zoomed into one small
+  /// feature) tells you nothing about how close any real surface actually
+  /// is, since the sphere only bounds where geometry *might* be, not where
+  /// it definitely isn't - forcing a tighter clip there would wrongly
+  /// clamp [effectiveNearClip] to its absolute floor on every ordinary
+  /// zoomed-in view, not just the panned-away-from-target case this is
+  /// meant to catch. Outside the sphere, though, `distanceToCenter -
+  /// sceneRadius` *is* a true lower bound on distance to any point the
+  /// geometry could occupy - exactly the case of the camera approaching a
+  /// body's outer surface away from [target] (e.g. after panning), which
+  /// is what this targets.
+  double get effectiveNearClip {
+    var clipDistance = distance;
+    if (sceneRadius > 0) {
+      final distanceToCenter = (position - sceneCenter).length;
+      if (distanceToCenter > sceneRadius) {
+        clipDistance = math.min(clipDistance, distanceToCenter - sceneRadius);
+      }
+    }
+    return math.max(math.min(nearClip, clipDistance / _nearFarRatio), _minAbsoluteNearClip);
+  }
+
+  /// The whole scene's own bounding-sphere center/radius, set by
+  /// [setZoomBoundsForRadius] alongside [nearClip]/[farClip] - see
+  /// [effectiveNearClip]'s own doc comment for why this is tracked
+  /// separately from [target] (which the user can pan away from the actual
+  /// geometry).
+  vm.Vector3 sceneCenter = vm.Vector3.zero();
+  double sceneRadius = 0;
 
   /// Radians/pixel for a mouse drag or 1:1-scaled touch drag - matches the
   /// "real device px -> visible angle" feel [SketchViewport] aims for with
@@ -369,7 +410,15 @@ class OrbitCamera {
   /// the `default*` constants instead. [distance] is re-clamped to the new
   /// bounds immediately, so a body shrinking never leaves the camera further
   /// out than [maxDistance] now allows.
-  void setZoomBoundsForRadius(double radius) {
+  ///
+  /// [center] is the same bounding sphere's own center - stored as
+  /// [sceneCenter]/[sceneRadius] for [effectiveNearClip] to use, entirely
+  /// separate from [target] (which panning can move away from the actual
+  /// geometry). Defaults to the origin when omitted or when [radius] is
+  /// non-positive.
+  void setZoomBoundsForRadius(double radius, {vm.Vector3? center}) {
+    sceneRadius = radius > 0 ? radius : 0;
+    sceneCenter = sceneRadius > 0 ? (center ?? vm.Vector3.zero()) : vm.Vector3.zero();
     if (radius > 0) {
       farClip = math.max(_minFarClip, radius * _farClipRadiusFactor);
       nearClip = farClip / _nearFarRatio;

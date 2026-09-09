@@ -1985,8 +1985,17 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   void _syncZoomBounds(MeshBounds? bodyBounds) {
     final sketchPoints = widget.sketchGeometries.values.expand((geometry) => geometry.points);
     final sketchBounds = boundsOfPoints(sketchPoints);
-    final radius = math.max(bodyBounds?.boundingSphereRadius ?? 0, sketchBounds?.boundingSphereRadius ?? 0);
-    _camera.setZoomBoundsForRadius(radius);
+    final bodyRadius = bodyBounds?.boundingSphereRadius ?? 0;
+    final sketchRadius = sketchBounds?.boundingSphereRadius ?? 0;
+    final radius = math.max(bodyRadius, sketchRadius);
+    // Center paired with whichever bound actually contributed [radius] above
+    // - see [OrbitCamera.setZoomBoundsForRadius]'s own doc comment for why
+    // this (not [OrbitCamera.target]) drives near-clip against the real
+    // geometry's own extent.
+    final center = radius <= 0
+        ? null
+        : (bodyRadius >= sketchRadius ? bodyBounds!.center : sketchBounds!.center);
+    _camera.setZoomBoundsForRadius(radius, center: center);
   }
 
   /// Stage 11: rebuilds [_edgesNodes] from [PartViewport.bodies]' real OCCT
@@ -2008,6 +2017,21 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// intermediate frame, trading a small amount of staleness while
   /// orbiting for not rebuilding every `PolylineGeometry` primitive on
   /// every pointer-move delta.
+  /// Bug report (Section tool: "the triad should remain [usably sized] on
+  /// screen ... normal panning, zooming, orbiting works when not dragging
+  /// the triad"): the section gizmo/plane-quad's constant-on-screen-size
+  /// scaling (`section_gizmo.dart`'s `_sectionGizmoWorldScale`) depends on
+  /// the *current* camera position the exact same way [_syncEdgesNode]'s
+  /// own towards-camera bias does - resynced alongside it, once per
+  /// completed camera-moving gesture, from the same call sites, rather
+  /// than duplicating each one. Skips the (comparatively pricier) full
+  /// [_syncSectionNodes] rebuild whenever there's no section quad/gizmo
+  /// currently on screen to rescale.
+  void _resyncCameraDependentOverlays() {
+    _syncEdgesNode();
+    if (_sectionGizmoNode != null || _sectionQuadNodes.isNotEmpty) _syncSectionNodes();
+  }
+
   void _syncEdgesNode() {
     final scene = _scene;
     if (scene == null) return;
@@ -2166,7 +2190,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
 
     _sectionQuadNodes = {
       for (final plane in widget.sectionPlanes)
-        plane.id: buildSectionPlaneQuadNode(plane, active: plane.id == widget.activeSectionId),
+        plane.id: buildSectionPlaneQuadNode(
+          plane,
+          active: plane.id == widget.activeSectionId,
+          cameraPosition: _camera.position,
+          viewportSize: _viewportSize,
+        ),
     };
     for (final node in _sectionQuadNodes.values) {
       scene.add(node);
@@ -2181,7 +2210,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
     _sectionGizmoNode = activePlane == null
         ? null
-        : buildSectionGizmoNode(activePlane, highlightedHandle: _sectionDragHandle);
+        : buildSectionGizmoNode(
+            activePlane,
+            highlightedHandle: _sectionDragHandle,
+            cameraPosition: _camera.position,
+            viewportSize: _viewportSize,
+          );
     if (_sectionGizmoNode != null) scene.add(_sectionGizmoNode!);
   }
 
@@ -2235,7 +2269,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
 
     final camera = _camera.cameraFor(_viewportSize);
     final ray = camera.screenPointToRay(screenPosition, _viewportSize);
-    final hit = hitTestSectionGizmo(ray, plane, _viewportSize);
+    final hit = hitTestSectionGizmo(ray, plane, _viewportSize, cameraPosition: _camera.position);
     if (hit == null) return false;
 
     final basis = sectionGizmoBasis(plane.normal);
@@ -2569,7 +2603,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       controller.dispose();
       // C3: the camera orientation just changed - resync the edge overlay's
       // towards-camera bias (see [_syncEdgesNode]) for the new view.
-      if (mounted) setState(_syncEdgesNode);
+      if (mounted) setState(_resyncCameraDependentOverlays);
     }
   }
 
@@ -3092,7 +3126,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       // C3: a two-finger pinch-zoom/pan (_applyPinchPan) can still move the
       // camera while selecting - resync the edge overlay's towards-camera
       // bias the same as the orbit-mode path below does.
-      setState(_syncEdgesNode);
+      setState(_resyncCameraDependentOverlays);
       return;
     }
     if (widget.drawCursorMode) {
@@ -3106,7 +3140,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         if (_activeTouches.isEmpty) _hadMultiTouch = false;
       }
       if (wasTap) _commitDrawCursor();
-      setState(_syncEdgesNode);
+      setState(_resyncCameraDependentOverlays);
       return;
     }
     _handlePointerEnd(event);
@@ -3114,7 +3148,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // camera - resync the edge overlay's towards-camera bias (see
     // [_syncEdgesNode]) once per completed gesture, not on every
     // intermediate pointer-move delta.
-    setState(_syncEdgesNode);
+    setState(_resyncCameraDependentOverlays);
   }
 
   void _onPointerHover(PointerHoverEvent event) {
@@ -3944,8 +3978,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   void _doRecentre() {
     _camera.reset();
     // C3: "Reset view" moves the camera - resync the edge overlay's
-    // towards-camera bias (see [_syncEdgesNode]) for the new position.
+    // towards-camera bias (see [_syncEdgesNode]) for the new position, and
+    // the section triad/plane-quad's own constant-on-screen-size scaling
+    // (see [_resyncCameraDependentOverlays]) the same way.
     _syncEdgesNode();
+    if (_sectionGizmoNode != null || _sectionQuadNodes.isNotEmpty) _syncSectionNodes();
     double minX = double.infinity, maxX = double.negativeInfinity;
     double minY = double.infinity, maxY = double.negativeInfinity;
     double minZ = double.infinity, maxZ = double.negativeInfinity;
@@ -3996,7 +4033,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
     final overrideEntity = widget.highlightOverride;
     if (overrideEntity != null) {
-      final node = _buildEntityHighlightNode(overrideEntity, _hoverColor);
+      // Bug report ("Select Other"): a candidate the user explicitly picked
+      // from that list should always be visible, not hidden behind whatever
+      // face happens to be nearer the camera - forced always-on-top,
+      // regardless of entity kind, unlike the ordinary pointer-hover case
+      // below (see [_buildEntityHighlightNode]'s own doc comment).
+      final node = _buildEntityHighlightNode(overrideEntity, _hoverColor, forceAlwaysOnTop: true);
       if (node == null) return;
       scene.add(node);
       _hoverNode = node;
@@ -4248,7 +4290,18 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// [PartViewport.sketchGeometries] (keyed by Feature id via
   /// [SelectionEntityRef.sketchFeatureId]) instead of [_bodyFor] - mirrors
   /// [_syncSelectedEntityNodes]'s own per-case lookup.
-  Node? _buildEntityHighlightNode(SelectionEntityRef entity, vm.Vector4 color) {
+  ///
+  /// [forceAlwaysOnTop] additionally forces the `face`/`edge`/`vertex`/
+  /// `body` cases below to the same always-on-top treatment - used only by
+  /// the "Select Other" override case in [_syncHoverNode] (see its own doc
+  /// comment); left `false` for the ordinary pointer-hover case so a
+  /// highlighted Body edge/face behind another Body face still hides
+  /// normally.
+  Node? _buildEntityHighlightNode(
+    SelectionEntityRef entity,
+    vm.Vector4 color, {
+    bool forceAlwaysOnTop = false,
+  }) {
     // On-device feedback ("dynamic highlight is not showing up on sketch
     // entities behind a body"): a `sketch*`-kind entity belonging to the
     // actively-edited Sketch gets the same always-visible-over-a-Body
@@ -4256,10 +4309,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // [AlwaysOnTopMaterial]'s own doc comment, `mesh_geometry.dart`) - a
     // Body's own face/edge/vertex highlight (this same [entity.kind] switch,
     // `face`/`edge`/`vertex`/`body` cases below) stays normally depth-tested
-    // regardless, since a highlighted Body edge behind another Body face
-    // should still be hidden.
-    final alwaysOnTop = entity.sketchFeatureId.isNotEmpty &&
-        entity.sketchFeatureId == widget.activeSketchFeatureId;
+    // regardless, unless [forceAlwaysOnTop] overrides it (see this method's
+    // own doc comment).
+    final alwaysOnTop = forceAlwaysOnTop ||
+        (entity.sketchFeatureId.isNotEmpty && entity.sketchFeatureId == widget.activeSketchFeatureId);
     switch (entity.kind) {
       case SelectionEntityKind.face:
         final body = _bodyFor(entity.bodyId);
@@ -4271,19 +4324,25 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         return buildHighlightFacesNode(
           biasTrianglesTowardCamera(triangles, _camera.position, kEdgeDepthBias),
           color: color,
+          alwaysOnTop: alwaysOnTop,
         );
       case SelectionEntityKind.edge:
         final body = _bodyFor(entity.bodyId);
         if (body == null) return null;
         final segments = edgeSegmentsForId(body.mesh, entity.id);
         if (segments.isEmpty) return null;
-        return buildMeshEdgesNode(segments, color: color, width: kHighlightEdgeStrokeWidth);
+        return buildMeshEdgesNode(
+          segments,
+          color: color,
+          width: kHighlightEdgeStrokeWidth,
+          alwaysOnTop: alwaysOnTop,
+        );
       case SelectionEntityKind.vertex:
         final body = _bodyFor(entity.bodyId);
         if (body == null) return null;
         final position = vertexPositionForId(body.mesh, entity.id);
         if (position == null) return null;
-        return buildVertexMarkersNode([position], color: color);
+        return buildVertexMarkersNode([position], color: color, alwaysOnTop: alwaysOnTop);
       case SelectionEntityKind.body:
         // Prompt A3: whole-Body highlight - same as a Body-kind selection
         // (see _syncSelectedEntityNodes), just for the hover case.
@@ -4294,6 +4353,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         return buildHighlightFacesNode(
           biasTrianglesTowardCamera(triangles, _camera.position, kEdgeDepthBias),
           color: color,
+          alwaysOnTop: alwaysOnTop,
         );
       case SelectionEntityKind.sketchPoint:
         final geometry = widget.sketchGeometries[entity.sketchFeatureId];
@@ -4682,7 +4742,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     _handlePointerSignal(event);
     // C3: a scroll-wheel zoom moves the camera - resync the edge overlay's
     // towards-camera bias (see [_syncEdgesNode]).
-    setState(_syncEdgesNode);
+    setState(_resyncCameraDependentOverlays);
   }
 }
 

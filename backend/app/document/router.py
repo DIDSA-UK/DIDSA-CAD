@@ -150,6 +150,7 @@ from app.document.models import (
     RuledSurfaceFeature,
     ScaleBodyFeature,
     SketchFeature,
+    SketchOrEdgeRef,
     SolidFromSurfacesFeature,
     SplitFeature,
     SplitToolRef,
@@ -309,6 +310,7 @@ from app.document.schemas import (
     SketchEntityRefSchema,
     SketchFeatureCreate,
     SketchFeatureResponse,
+    SketchOrEdgeRefSchema,
     SolidFromSurfacesFeatureCreate,
     SolidFromSurfacesFeatureResponse,
     SolidFromSurfacesFeatureUpdate,
@@ -423,6 +425,7 @@ def _loft_section_to_domain(schema: LoftSectionSchema) -> LoftSection:
         alignment_point=_sketch_entity_ref_to_domain(schema.alignment_point)
         if schema.alignment_point
         else None,
+        edge_ref=_subshape_ref_to_domain(schema.edge_ref) if schema.edge_ref else None,
     )
 
 
@@ -436,7 +439,38 @@ def _loft_section_to_schema(section: LoftSection) -> LoftSectionSchema:
         alignment_point=_sketch_entity_ref_to_schema(section.alignment_point)
         if section.alignment_point
         else None,
+        edge_ref=_subshape_ref_to_schema(section.edge_ref) if section.edge_ref else None,
     )
+
+
+def _validate_loft_section_shape(sections: list[LoftSection], index_offset: int = 0) -> None:
+    """On-device feedback ("loft between two edges or edge and sketch
+    line"): payload-shape validation for `LoftFeature`/`LoftSurfaceFeature`/
+    `RuledSurfaceFeature.sections` - each entry sets exactly one of
+    `sketch_feature_id` or `edge_ref` (mirrors `SketchOrEdgeRef`'s own
+    "exactly one of two" convention, just spread across `LoftSection`'s
+    existing fields rather than one wrapper field, since a section carries
+    several other Sketch-only fields alongside its source). An `edge_ref`
+    section has no Sketch basis of its own for `reference_point`'s
+    rotation or `alignment_point`'s translation to work against - see
+    `LoftSection`'s own docstring - so both, and `profile_refs`, must be
+    left unset there too."""
+    for index, section in enumerate(sections, start=index_offset):
+        if (section.sketch_feature_id is None) == (section.edge_ref is None):
+            raise HTTPException(
+                status_code=400,
+                detail=f"sections[{index}] must set exactly one of sketch_feature_id or edge_ref",
+            )
+        if section.edge_ref is not None and (
+            section.profile_refs or section.reference_point is not None or section.alignment_point is not None
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"sections[{index}] is edge_ref-based and cannot also set "
+                    "profile_refs/reference_point/alignment_point"
+                ),
+            )
 
 
 def _gear_group_to_domain(schema: GearGroupSchema) -> GearGroup:
@@ -535,6 +569,50 @@ def _point_ref_to_schema(ref: PointRef) -> PointRefSchema:
         if ref.sketch_point_ref
         else None,
     )
+
+
+def _sketch_or_edge_ref_to_domain(schema: SketchOrEdgeRefSchema) -> SketchOrEdgeRef:
+    """`SketchOrEdgeRefSchema`'s flat `sketch_id`/`entity_type`/`entity_id`
+    fields (see its own doc comment for why they're flat, not nested)
+    become a real `SketchEntityRef` here - only past this conversion does
+    the domain layer see `SketchOrEdgeRef`'s clean two-nested-field shape.
+    Neither-set (a malformed payload) becomes a `SketchOrEdgeRef` with
+    both fields `None`, caught by `_validate_sketch_or_edge_refs` right
+    after this runs at every call site - never reaches `resolve_path_wire`."""
+    if schema.edge_ref is not None:
+        return SketchOrEdgeRef(edge_ref=_subshape_ref_to_domain(schema.edge_ref))
+    if schema.sketch_id is not None and schema.entity_type is not None and schema.entity_id is not None:
+        return SketchOrEdgeRef(
+            sketch_entity_ref=SketchEntityRef(
+                sketch_id=schema.sketch_id, entity_type=schema.entity_type, entity_id=schema.entity_id
+            )
+        )
+    return SketchOrEdgeRef()
+
+
+def _sketch_or_edge_ref_to_schema(ref: SketchOrEdgeRef) -> SketchOrEdgeRefSchema:
+    if ref.edge_ref is not None:
+        return SketchOrEdgeRefSchema(edge_ref=_subshape_ref_to_schema(ref.edge_ref))
+    assert ref.sketch_entity_ref is not None
+    return SketchOrEdgeRefSchema(
+        sketch_id=ref.sketch_entity_ref.sketch_id,
+        entity_type=ref.sketch_entity_ref.entity_type,
+        entity_id=ref.sketch_entity_ref.entity_id,
+    )
+
+
+def _validate_sketch_or_edge_refs(refs: list[SketchOrEdgeRef]) -> None:
+    """Payload-shape validation for a `list[SketchOrEdgeRef]` (Sweep/Swept-
+    Surface `path_refs`, Loft/Loft-Surface `guide_curve_refs`) - each entry
+    must set exactly one of `sketch_entity_ref`/`edge_ref`, mirroring
+    `PointRef`'s identical "exactly one of two" convention and its own
+    validation site (`_validate_create_plane_payload`)."""
+    for index, ref in enumerate(refs):
+        if (ref.sketch_entity_ref is None) == (ref.edge_ref is None):
+            raise HTTPException(
+                status_code=400,
+                detail=f"path_refs[{index}] must set exactly one of sketch_entity_ref or edge_ref",
+            )
 
 
 def _plane_ref_to_domain(schema: PlaneRefSchema) -> PlaneRef:
@@ -721,6 +799,7 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             target_body_ids=feature.target_body_ids,
             profile_refs=[_sketch_entity_ref_to_schema(ref) for ref in feature.profile_refs],
             thickness=feature.thickness,
+            thickness_direction=feature.thickness_direction,
             produces=feature.produces,
         )
     if isinstance(feature, SurfaceFeature):
@@ -758,7 +837,7 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
         return SweptSurfaceFeatureResponse(
             id=feature.id,
             sketch_feature_id=feature.sketch_feature_id,
-            path_refs=[_sketch_entity_ref_to_schema(ref) for ref in feature.path_refs],
+            path_refs=[_sketch_or_edge_ref_to_schema(ref) for ref in feature.path_refs],
             profile_refs=[_sketch_entity_ref_to_schema(ref) for ref in feature.profile_refs],
             locked=part.is_locked(feature.id),
             produces=feature.produces,
@@ -834,7 +913,7 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
         return SweepFeatureResponse(
             id=feature.id,
             sketch_feature_id=feature.sketch_feature_id,
-            path_refs=[_sketch_entity_ref_to_schema(ref) for ref in feature.path_refs],
+            path_refs=[_sketch_or_edge_ref_to_schema(ref) for ref in feature.path_refs],
             mode=feature.mode,
             locked=part.is_locked(feature.id),
             target_body_ids=feature.target_body_ids,
@@ -1255,7 +1334,7 @@ def _loft_feature_response(part: Part, feature: LoftFeature, warnings: list[str]
         target_body_ids=feature.target_body_ids,
         thickness=feature.thickness,
         thin_from_closed_profile=feature.thin_from_closed_profile,
-        guide_curve_refs=[_sketch_entity_ref_to_schema(ref) for ref in feature.guide_curve_refs],
+        guide_curve_refs=[_sketch_or_edge_ref_to_schema(ref) for ref in feature.guide_curve_refs],
         locked=part.is_locked(feature.id),
         produces=feature.produces,
         warnings=warnings,
@@ -1280,7 +1359,7 @@ def _loft_surface_feature_response(
         id=feature.id,
         sections=[_loft_section_to_schema(section) for section in feature.sections],
         ruled=feature.ruled,
-        guide_curve_refs=[_sketch_entity_ref_to_schema(ref) for ref in feature.guide_curve_refs],
+        guide_curve_refs=[_sketch_or_edge_ref_to_schema(ref) for ref in feature.guide_curve_refs],
         locked=part.is_locked(feature.id),
         produces=feature.produces,
         warnings=warnings,
@@ -1297,6 +1376,7 @@ def _ruled_surface_section_to_domain(schema: RuledSurfaceSectionSchema) -> LoftS
         profile_refs=[_sketch_entity_ref_to_domain(ref) for ref in schema.profile_refs],
         reference_point=None,
         alignment_point=None,
+        edge_ref=_subshape_ref_to_domain(schema.edge_ref) if schema.edge_ref else None,
     )
 
 
@@ -1304,6 +1384,7 @@ def _ruled_surface_section_to_schema(section: LoftSection) -> RuledSurfaceSectio
     return RuledSurfaceSectionSchema(
         sketch_feature_id=section.sketch_feature_id,
         profile_refs=[_sketch_entity_ref_to_schema(ref) for ref in section.profile_refs],
+        edge_ref=_subshape_ref_to_schema(section.edge_ref) if section.edge_ref else None,
     )
 
 
@@ -2215,7 +2296,7 @@ _SWEEP_PATH_ENTITY_TYPES = frozenset(
 )
 
 
-def _validate_sweep_path_refs(path_refs: list[SketchEntityRef]) -> None:
+def _validate_sweep_path_refs(path_refs: list[SketchOrEdgeRef]) -> None:
     """A SweepFeature must name at least one `path_refs` entry (422,
     mirroring Cut's own "at least one target_body_ids entry" check in
     `_validate_target_body_ids`) and every named ref must be a Line/Arc/
@@ -2239,15 +2320,10 @@ def _validate_sweep_path_refs(path_refs: list[SketchEntityRef]) -> None:
             status_code=422,
             detail="SweepFeature requires at least one path_refs entry",
         )
-    for ref in path_refs:
-        if ref.entity_type not in _SWEEP_PATH_ENTITY_TYPES:
-            raise HTTPException(
-                status_code=422,
-                detail="path_refs entries must have entity_type one of line, arc, ellipse, spline",
-            )
+    _validate_sweep_or_loft_curve_refs(path_refs)
 
 
-def _validate_swept_surface_path_refs(path_refs: list[SketchEntityRef]) -> None:
+def _validate_swept_surface_path_refs(path_refs: list[SketchOrEdgeRef]) -> None:
     """Phase 1 surfacing package: mirrors `_validate_sweep_path_refs`
     exactly, own error message naming `SweptSurfaceFeature` instead of
     `SweepFeature` so a client can tell which tool's payload failed."""
@@ -2256,11 +2332,32 @@ def _validate_swept_surface_path_refs(path_refs: list[SketchEntityRef]) -> None:
             status_code=422,
             detail="SweptSurfaceFeature requires at least one path_refs entry",
         )
-    for ref in path_refs:
-        if ref.entity_type not in _SWEEP_PATH_ENTITY_TYPES:
+    _validate_sweep_or_loft_curve_refs(path_refs)
+
+
+def _validate_sweep_or_loft_curve_refs(refs: list[SketchOrEdgeRef]) -> None:
+    """On-device feedback ("surface tools should support edges, curves, as
+    well as sketch lines as inputs"): shared entry-shape check for
+    `SweepFeature`/`SweptSurfaceFeature.path_refs` and `LoftFeature`/
+    `LoftSurfaceFeature.guide_curve_refs`, all four now `list[SketchOrEdge
+    Ref]` - `_validate_sketch_or_edge_refs` checks the generic "exactly one
+    of `sketch_entity_ref`/`edge_ref`" shape every such list shares; a
+    `sketch_entity_ref` entry is further restricted to the same entity
+    types `_resolve_path_segment` already resolves (mirrors this
+    function's own pre-existing check); an `edge_ref` entry must actually
+    name an edge - any Body edge is a valid curve to sweep/loft along, so
+    no further narrowing is needed there."""
+    _validate_sketch_or_edge_refs(refs)
+    for ref in refs:
+        if ref.sketch_entity_ref is not None and ref.sketch_entity_ref.entity_type not in _SWEEP_PATH_ENTITY_TYPES:
             raise HTTPException(
                 status_code=422,
                 detail="path_refs entries must have entity_type one of line, arc, ellipse, spline",
+            )
+        if ref.edge_ref is not None and ref.edge_ref.shape_type != SubShapeType.EDGE:
+            raise HTTPException(
+                status_code=422,
+                detail="path_refs edge_ref entries must reference an edge",
             )
 
 
@@ -2272,6 +2369,7 @@ def _validate_loft_surface_sections(sections: list[LoftSection]) -> None:
             status_code=422,
             detail="LoftSurfaceFeature requires at least 2 sections",
         )
+    _validate_loft_section_shape(sections)
 
 
 def _validate_ruled_surface_sections(sections: list[LoftSection]) -> None:
@@ -2284,6 +2382,7 @@ def _validate_ruled_surface_sections(sections: list[LoftSection]) -> None:
             status_code=422,
             detail="RuledSurfaceFeature requires exactly 2 sections",
         )
+    _validate_loft_section_shape(sections)
 
 
 def _validate_loft_sections(sections: list[LoftSection]) -> None:
@@ -2301,6 +2400,7 @@ def _validate_loft_sections(sections: list[LoftSection]) -> None:
             status_code=422,
             detail="LoftFeature requires at least 2 sections",
         )
+    _validate_loft_section_shape(sections)
 
 
 def _validate_thickness_nonzero(thickness: float | None) -> None:
@@ -2315,29 +2415,25 @@ def _validate_thickness_nonzero(thickness: float | None) -> None:
         raise HTTPException(status_code=400, detail="thickness must not be 0")
 
 
-def _validate_loft_guide_curve_refs(guide_curve_refs: list[SketchEntityRef]) -> None:
+def _validate_loft_guide_curve_refs(guide_curve_refs: list[SketchOrEdgeRef]) -> None:
     """A `LoftFeatureCreate`/`Update.guide_curve_refs`, if provided at all,
-    must name only Line/Arc/Ellipse/Spline entities - mirrors `_validate_
-    sweep_path_refs`'s own identical entity-type gate exactly (this reuses
-    the very same `_SWEEP_PATH_ENTITY_TYPES` set and the very same
-    resolution machinery, `app.document.sweep.resolve_path_wire`, just as a
-    rail rather than an extrusion direction - see `LoftFeature.guide_curve_
-    refs`'s own docstring). Unlike a Sweep's `path_refs`, an empty list is
-    perfectly valid here (it means "no guide curve", not "nothing to loft
-    along") - so, unlike `_validate_sweep_path_refs`, there is no "at least
-    one entry" rule. Whether the named entities actually resolve, chain
-    into one connected path, and (once every section requires an
-    `alignment_point`, see `app.document.loft._apply_alignment_point_
-    translation`) cross each section's own plane exactly once is a
-    referential/geometric check made by `app.document.loft.resolve_loft`
-    instead, same "payload shape in the router, resolution in the OCCT
-    module" split every other structured Feature error here already uses."""
-    for ref in guide_curve_refs:
-        if ref.entity_type not in _SWEEP_PATH_ENTITY_TYPES:
-            raise HTTPException(
-                status_code=422,
-                detail="guide_curve_refs entries must have entity_type one of line, arc, ellipse, spline",
-            )
+    must name only Line/Arc/Ellipse/Spline entities or Body edges - mirrors
+    `_validate_sweep_or_loft_curve_refs`'s own identical entry-shape gate
+    exactly (this reuses the very same `_SWEEP_PATH_ENTITY_TYPES` set and
+    the very same resolution machinery, `app.document.sweep.resolve_path_
+    wire`, just as a rail rather than an extrusion direction - see
+    `LoftFeature.guide_curve_refs`'s own docstring). Unlike a Sweep's
+    `path_refs`, an empty list is perfectly valid here (it means "no guide
+    curve", not "nothing to loft along") - so, unlike `_validate_sweep_
+    path_refs`, there is no "at least one entry" rule. Whether the named
+    entities actually resolve, chain into one connected path, and (once
+    every section requires an `alignment_point`, see `app.document.loft.
+    _apply_alignment_point_translation`) cross each section's own plane
+    exactly once is a referential/geometric check made by `app.document.
+    loft.resolve_loft` instead, same "payload shape in the router,
+    resolution in the OCCT module" split every other structured Feature
+    error here already uses."""
+    _validate_sweep_or_loft_curve_refs(guide_curve_refs)
 
 
 def _validate_fillet_radius(radius: float) -> None:
@@ -3224,6 +3320,7 @@ def create_extrude_feature(part_id: str, payload: ExtrudeFeatureCreate) -> Extru
         target_body_ids=list(payload.target_body_ids),
         profile_refs=profile_refs,
         thickness=payload.thickness,
+        thickness_direction=payload.thickness_direction,
     )
     part.add_feature(feature)
     return _feature_response(part, feature)
@@ -3274,6 +3371,9 @@ def update_extrude_feature(
     _validate_profile_refs(sketch_feature, new_profile_refs)
     new_thickness = payload.thickness if payload.thickness is not None else feature.thickness
     _validate_thickness_nonzero(new_thickness)
+    new_thickness_direction = (
+        payload.thickness_direction if payload.thickness_direction is not None else feature.thickness_direction
+    )
 
     feature.extrude_type = new_extrude_type
     feature.start_distance = new_start
@@ -3281,6 +3381,7 @@ def update_extrude_feature(
     feature.target_body_ids = list(new_target_body_ids)
     feature.profile_refs = new_profile_refs
     feature.thickness = new_thickness
+    feature.thickness_direction = new_thickness_direction
     return _feature_response(part, feature)
 
 
@@ -3508,13 +3609,20 @@ def update_revolve_surface_feature(
 )
 def create_swept_surface_feature(part_id: str, payload: SweptSurfaceFeatureCreate) -> SweptSurfaceFeatureResponse:
     """Mirrors `create_sweep_feature`'s shape, minus `mode`/`target_body_
-    ids` - strict closed-profile requirement (`_require_closed_sketch_
-    feature`), same as Extrude/Revolve/Sweep (see `app.document.models.
-    SweptSurfaceFeature`'s own docstring for why, unlike Revolve Surface,
-    there is no open-chain fallback here)."""
+    ids`. On-device feedback ("swept surface should support an open
+    profile sketch"): unlike Extrude/Revolve/Sweep, the backing Sketch is
+    no longer required to already have a closed profile - a single open
+    chain is also valid (mirrors `RevolveSurfaceFeature`'s/`SurfaceFeature`'s
+    own tolerance - see `app.document.swept_surface`'s own module
+    docstring), so this validates `sketch_feature_id` resolves to a real
+    SketchFeature only, rather than `_require_closed_sketch_feature`."""
     part = get_part_or_404(part_id)
-    _require_closed_sketch_feature(part, payload.sketch_feature_id)
-    path_refs = [_sketch_entity_ref_to_domain(ref) for ref in payload.path_refs]
+    sketch_feature = part.get_feature(payload.sketch_feature_id)
+    if not isinstance(sketch_feature, SketchFeature):
+        raise HTTPException(
+            status_code=400, detail="sketch_feature_id does not refer to a SketchFeature in this Part"
+        )
+    path_refs = [_sketch_or_edge_ref_to_domain(ref) for ref in payload.path_refs]
     _validate_swept_surface_path_refs(path_refs)
     feature = SweptSurfaceFeature(
         id=str(uuid.uuid4()),
@@ -3546,7 +3654,7 @@ def update_swept_surface_feature(
     feature = _get_swept_surface_feature_or_404(part, feature_id)
 
     new_path_refs = (
-        [_sketch_entity_ref_to_domain(ref) for ref in payload.path_refs]
+        [_sketch_or_edge_ref_to_domain(ref) for ref in payload.path_refs]
         if payload.path_refs is not None
         else feature.path_refs
     )
@@ -3580,7 +3688,7 @@ def create_loft_surface_feature(part_id: str, payload: LoftSurfaceFeatureCreate)
     exercises."""
     part = get_part_or_404(part_id)
     sections = [_loft_section_to_domain(section) for section in payload.sections]
-    guide_curve_refs = [_sketch_entity_ref_to_domain(ref) for ref in payload.guide_curve_refs]
+    guide_curve_refs = [_sketch_or_edge_ref_to_domain(ref) for ref in payload.guide_curve_refs]
     _validate_loft_surface_sections(sections)
     _validate_loft_guide_curve_refs(guide_curve_refs)
     feature = LoftSurfaceFeature(
@@ -3615,7 +3723,7 @@ def update_loft_surface_feature(
     )
     new_ruled = payload.ruled if payload.ruled is not None else feature.ruled
     new_guide_curve_refs = (
-        [_sketch_entity_ref_to_domain(ref) for ref in payload.guide_curve_refs]
+        [_sketch_or_edge_ref_to_domain(ref) for ref in payload.guide_curve_refs]
         if payload.guide_curve_refs is not None
         else feature.guide_curve_refs
     )
@@ -4408,7 +4516,7 @@ def create_sweep_feature(part_id: str, payload: SweepFeatureCreate) -> SweepFeat
     reference` rather than ever persisting an unresolvable Sweep."""
     part = get_part_or_404(part_id)
     _require_closed_sketch_feature(part, payload.sketch_feature_id)
-    path_refs = [_sketch_entity_ref_to_domain(ref) for ref in payload.path_refs]
+    path_refs = [_sketch_or_edge_ref_to_domain(ref) for ref in payload.path_refs]
     _validate_sweep_path_refs(path_refs)
     _validate_target_body_ids(part, payload.mode == SweepMode.CUT, payload.target_body_ids)
     feature = SweepFeature(
@@ -4448,7 +4556,7 @@ def update_sweep_feature(part_id: str, feature_id: str, payload: SweepFeatureUpd
     feature = _get_sweep_feature_or_404(part, feature_id)
 
     new_path_refs = (
-        [_sketch_entity_ref_to_domain(ref) for ref in payload.path_refs]
+        [_sketch_or_edge_ref_to_domain(ref) for ref in payload.path_refs]
         if payload.path_refs is not None
         else feature.path_refs
     )
@@ -4495,7 +4603,7 @@ def create_loft_feature(part_id: str, payload: LoftFeatureCreate) -> LoftFeature
     response rather than re-resolved a second time."""
     part = get_part_or_404(part_id)
     sections = [_loft_section_to_domain(section) for section in payload.sections]
-    guide_curve_refs = [_sketch_entity_ref_to_domain(ref) for ref in payload.guide_curve_refs]
+    guide_curve_refs = [_sketch_or_edge_ref_to_domain(ref) for ref in payload.guide_curve_refs]
     _validate_loft_sections(sections)
     _validate_thickness_nonzero(payload.thickness)
     _validate_loft_guide_curve_refs(guide_curve_refs)
@@ -4529,7 +4637,7 @@ def preview_loft_feature_coarse(
     part = get_part_or_404(part_id)
     mesh_quality = DEFAULT_MESH_QUALITY if quality is None else mesh_quality_from_slider(quality)
     sections = [_loft_section_to_domain(section) for section in payload.sections]
-    guide_curve_refs = [_sketch_entity_ref_to_domain(ref) for ref in payload.guide_curve_refs]
+    guide_curve_refs = [_sketch_or_edge_ref_to_domain(ref) for ref in payload.guide_curve_refs]
     _validate_loft_sections(sections)
     _validate_thickness_nonzero(payload.thickness)
     _validate_loft_guide_curve_refs(guide_curve_refs)
@@ -4581,7 +4689,7 @@ def update_loft_feature(part_id: str, feature_id: str, payload: LoftFeatureUpdat
         else feature.thin_from_closed_profile
     )
     new_guide_curve_refs = (
-        [_sketch_entity_ref_to_domain(ref) for ref in payload.guide_curve_refs]
+        [_sketch_or_edge_ref_to_domain(ref) for ref in payload.guide_curve_refs]
         if payload.guide_curve_refs is not None
         else feature.guide_curve_refs
     )
