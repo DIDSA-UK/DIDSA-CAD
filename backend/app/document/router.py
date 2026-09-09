@@ -33,7 +33,7 @@ from app.document.extrude import (
     select_profiles,
 )
 from app.document.fillet import resolve_fillet
-from app.document.measure import MeasurementResult, measure as compute_measurement
+from app.document.measure import MeasurementResult, mass_properties as compute_mass_properties, measure as compute_measurement
 from app.document.gear import resolve_gear, resolve_gear_coarse, resolve_gear_profile_shift
 from app.document.gear_math import (
     GearGeometryError,
@@ -85,7 +85,7 @@ from app.document.graph import (
     tool_feature_qualifies,
     transitive_dependents,
 )
-from app.document.import_geometry import resolve_import
+from app.document.import_geometry import extract_step_metadata, resolve_import
 from app.document.mesh import DEFAULT_MESH_QUALITY, MeshData, mesh_quality_from_slider, tessellate_shape
 from app.document.mesh_data import Triangle
 from app.document.mesh_export import encode_glb, encode_obj, encode_stl
@@ -123,6 +123,7 @@ from app.document.models import (
     LoftMode,
     LoftSection,
     LoftSurfaceFeature,
+    MaterialAssignment,
     MergeFeature,
     MergeMode,
     MirrorFeature,
@@ -267,12 +268,16 @@ from app.document.schemas import (
     MirrorFeatureResponse,
     MirrorFeatureUpdate,
     NativeImportResponse,
+    MassPropertiesResponse,
+    MaterialAssignmentSchema,
+    MaterialAssignmentUpdate,
     OffsetSourceRefSchema,
     OffsetSurfaceFeatureCreate,
     OffsetSurfaceFeatureResponse,
     OffsetSurfaceFeatureUpdate,
     PartCreate,
     PartResponse,
+    PartUpdate,
     PatternAxisRefSchema,
     PatternDirectionRefSchema,
     PatternFeatureCreate,
@@ -352,8 +357,37 @@ def _get_feature_or_404(part: Part, feature_id: str) -> Feature:
     return feature
 
 
+def _material_assignment_to_schema(assignment: MaterialAssignment) -> MaterialAssignmentSchema:
+    return MaterialAssignmentSchema(
+        material_id=assignment.material_id, name=assignment.name, density_g_cm3=assignment.density_g_cm3
+    )
+
+
+def _material_assignment_to_domain(schema: MaterialAssignmentSchema) -> MaterialAssignment:
+    return MaterialAssignment(
+        material_id=schema.material_id, name=schema.name, density_g_cm3=schema.density_g_cm3
+    )
+
+
 def _part_response(part: Part) -> PartResponse:
-    return PartResponse(id=part.id, name=part.name, feature_ids=[f.id for f in part.features])
+    return PartResponse(
+        id=part.id,
+        name=part.name,
+        feature_ids=[f.id for f in part.features],
+        part_number=part.part_number,
+        description=part.description,
+        revision=part.revision,
+        remarks=part.remarks,
+        supplier=part.supplier,
+        supplier_part_number=part.supplier_part_number,
+        default_material=(
+            _material_assignment_to_schema(part.default_material) if part.default_material is not None else None
+        ),
+        body_material_assignments={
+            body_id: _material_assignment_to_schema(assignment)
+            for body_id, assignment in part.body_material_assignments.items()
+        },
+    )
 
 
 def _subshape_ref_to_domain(schema: SubShapeRefSchema) -> SubShapeRef:
@@ -683,6 +717,7 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             locked=part.is_locked(feature.id),
             target_body_ids=feature.target_body_ids,
             profile_refs=[_sketch_entity_ref_to_schema(ref) for ref in feature.profile_refs],
+            thickness=feature.thickness,
             produces=feature.produces,
         )
     if isinstance(feature, SurfaceFeature):
@@ -1216,6 +1251,7 @@ def _loft_feature_response(part: Part, feature: LoftFeature, warnings: list[str]
         ruled=feature.ruled,
         target_body_ids=feature.target_body_ids,
         thickness=feature.thickness,
+        thin_from_closed_profile=feature.thin_from_closed_profile,
         guide_curve_refs=[_sketch_entity_ref_to_schema(ref) for ref in feature.guide_curve_refs],
         locked=part.is_locked(feature.id),
         produces=feature.produces,
@@ -2754,6 +2790,67 @@ def get_part(part_id: str) -> PartResponse:
     return _part_response(get_part_or_404(part_id))
 
 
+@router.patch("/parts/{part_id}", response_model=PartResponse)
+def update_part(part_id: str, payload: PartUpdate) -> PartResponse:
+    """Part Properties: updates the free-text metadata fields only (Part
+    Number/Description/Revision/Remarks/Supplier/Supplier Part Number) -
+    material assignment has its own dedicated endpoints below (a whole-
+    object replace, not a field-by-field PATCH, since a `MaterialAssignment`
+    is always set or cleared as one unit, never partially). Same omitted-
+    vs-current-value convention as every `*FeatureUpdate` endpoint."""
+    part = get_part_or_404(part_id)
+    if payload.part_number is not None:
+        part.part_number = payload.part_number
+    if payload.description is not None:
+        part.description = payload.description
+    if payload.revision is not None:
+        part.revision = payload.revision
+    if payload.remarks is not None:
+        part.remarks = payload.remarks
+    if payload.supplier is not None:
+        part.supplier = payload.supplier
+    if payload.supplier_part_number is not None:
+        part.supplier_part_number = payload.supplier_part_number
+    return _part_response(part)
+
+
+@router.put("/parts/{part_id}/default-material", response_model=PartResponse)
+def set_default_material(part_id: str, payload: MaterialAssignmentUpdate) -> PartResponse:
+    """Sets (or, with `material: null`, clears) this Part's own default
+    material - the material every Body without its own override resolves to
+    (`Part.resolve_material`)."""
+    part = get_part_or_404(part_id)
+    part.default_material = (
+        _material_assignment_to_domain(payload.material) if payload.material is not None else None
+    )
+    return _part_response(part)
+
+
+@router.put("/parts/{part_id}/bodies/{body_id}/material", response_model=PartResponse)
+def set_body_material(part_id: str, body_id: str, payload: MaterialAssignmentUpdate) -> PartResponse:
+    """Sets (or, with `material: null`, clears - reverting to the Part's own
+    default) `body_id`'s own material override. A granular per-Body endpoint
+    rather than a whole-map replace, to avoid read-modify-write races
+    between two overrides being set close together."""
+    part = get_part_or_404(part_id)
+    if payload.material is not None:
+        part.body_material_assignments[body_id] = _material_assignment_to_domain(payload.material)
+    else:
+        part.body_material_assignments.pop(body_id, None)
+    return _part_response(part)
+
+
+@router.get("/parts/{part_id}/mass-properties", response_model=MassPropertiesResponse)
+def get_mass_properties(part_id: str) -> MassPropertiesResponse:
+    """Part Properties' Mass field: volume (mm^3) for every current Body,
+    mass (g) for whichever also have a resolvable material - explicit/
+    on-demand (a full `compute_part_bodies` recompute), never folded into
+    the cheap metadata-only `GET /parts/{part_id}`."""
+    part = get_part_or_404(part_id)
+    body_volumes, body_masses = compute_mass_properties(part)
+    return MassPropertiesResponse(body_volumes=body_volumes, body_masses=body_masses)
+
+
 @router.get("/parts/{part_id}/features", response_model=list[FeatureResponse])
 def list_features(part_id: str) -> list[FeatureResponse]:
     part = get_part_or_404(part_id)
@@ -3114,6 +3211,7 @@ def create_extrude_feature(part_id: str, payload: ExtrudeFeatureCreate) -> Extru
     _validate_target_body_ids(part, payload.extrude_type == ExtrudeType.CUT, payload.target_body_ids)
     profile_refs = [_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs]
     _validate_profile_refs(sketch_feature, profile_refs)
+    _validate_thickness_nonzero(payload.thickness)
     feature = ExtrudeFeature(
         id=str(uuid.uuid4()),
         sketch_feature_id=payload.sketch_feature_id,
@@ -3122,6 +3220,7 @@ def create_extrude_feature(part_id: str, payload: ExtrudeFeatureCreate) -> Extru
         end_distance=payload.end_distance,
         target_body_ids=list(payload.target_body_ids),
         profile_refs=profile_refs,
+        thickness=payload.thickness,
     )
     part.add_feature(feature)
     return _feature_response(part, feature)
@@ -3170,12 +3269,15 @@ def update_extrude_feature(
     )
     sketch_feature = _require_closed_sketch_feature(part, feature.sketch_feature_id)
     _validate_profile_refs(sketch_feature, new_profile_refs)
+    new_thickness = payload.thickness if payload.thickness is not None else feature.thickness
+    _validate_thickness_nonzero(new_thickness)
 
     feature.extrude_type = new_extrude_type
     feature.start_distance = new_start
     feature.end_distance = new_end
     feature.target_body_ids = list(new_target_body_ids)
     feature.profile_refs = new_profile_refs
+    feature.thickness = new_thickness
     return _feature_response(part, feature)
 
 
@@ -4052,6 +4154,8 @@ def _measurement_result_to_schema(result: MeasurementResult) -> MeasurementResul
         axes_parallel=result.axes_parallel,
         normal_distance=result.normal_distance,
         faces_parallel=result.faces_parallel,
+        body_volumes=result.body_volumes,
+        body_masses=result.body_masses,
     )
 
 
@@ -4400,6 +4504,7 @@ def create_loft_feature(part_id: str, payload: LoftFeatureCreate) -> LoftFeature
         ruled=payload.ruled,
         target_body_ids=list(payload.target_body_ids),
         thickness=payload.thickness,
+        thin_from_closed_profile=payload.thin_from_closed_profile,
         guide_curve_refs=guide_curve_refs,
     )
     _, warnings = resolve_loft(part, feature)  # raises on an unresolvable/invalid loft
@@ -4433,6 +4538,7 @@ def preview_loft_feature_coarse(
         ruled=payload.ruled,
         target_body_ids=list(payload.target_body_ids),
         thickness=payload.thickness,
+        thin_from_closed_profile=payload.thin_from_closed_profile,
         guide_curve_refs=guide_curve_refs,
     )
     shape = resolve_loft_coarse(part, feature)  # raises on an unresolvable/invalid loft
@@ -4466,6 +4572,11 @@ def update_loft_feature(part_id: str, feature_id: str, payload: LoftFeatureUpdat
         payload.target_body_ids if payload.target_body_ids is not None else feature.target_body_ids
     )
     new_thickness = payload.thickness if payload.thickness is not None else feature.thickness
+    new_thin_from_closed_profile = (
+        payload.thin_from_closed_profile
+        if payload.thin_from_closed_profile is not None
+        else feature.thin_from_closed_profile
+    )
     new_guide_curve_refs = (
         [_sketch_entity_ref_to_domain(ref) for ref in payload.guide_curve_refs]
         if payload.guide_curve_refs is not None
@@ -4483,6 +4594,7 @@ def update_loft_feature(part_id: str, feature_id: str, payload: LoftFeatureUpdat
         ruled=new_ruled,
         target_body_ids=list(new_target_body_ids),
         thickness=new_thickness,
+        thin_from_closed_profile=new_thin_from_closed_profile,
         guide_curve_refs=new_guide_curve_refs,
     )
     _, warnings = resolve_loft(part, candidate)  # raises on an unresolvable/invalid loft
@@ -4492,6 +4604,7 @@ def update_loft_feature(part_id: str, feature_id: str, payload: LoftFeatureUpdat
     feature.ruled = candidate.ruled
     feature.target_body_ids = candidate.target_body_ids
     feature.thickness = candidate.thickness
+    feature.thin_from_closed_profile = candidate.thin_from_closed_profile
     feature.guide_curve_refs = candidate.guide_curve_refs
     return _loft_feature_response(part, feature, warnings)
 
@@ -7022,6 +7135,20 @@ def create_import_feature(part_id: str, payload: ImportFeatureCreate) -> ImportF
     feature = ImportFeature(id=str(uuid.uuid4()), source_format=payload.source_format, source_data=source_data)
     resolve_import(feature)  # raises on an unimportable file; result unused here
     part.add_feature(feature)
+
+    # Part Properties round: a STEP import may carry its own source
+    # platform's material designation - pre-fill this Body's own material
+    # assignment with it when present (never overwrites an existing
+    # assignment, though there can't be one yet for a Feature just created).
+    # Only ever covers the common single-solid case - `feature.id` is the
+    # resulting Body's own unsuffixed id (see `app.document.extrude.
+    # _register_solids`); a multi-solid STEP import's extra `#N`-suffixed
+    # Bodies are not covered by this best-effort pre-fill.
+    if payload.source_format == ImportSourceFormat.STEP:
+        metadata = extract_step_metadata(source_data)
+        if metadata is not None and metadata.material is not None:
+            part.body_material_assignments.setdefault(feature.id, metadata.material)
+
     return _feature_response(part, feature)
 
 
@@ -7335,7 +7462,7 @@ def export_part_step(part_id: str) -> Response:
     why AP242 is written now even with no PMI/MBD populated yet."""
     part = get_part_or_404(part_id)
     bodies = _export_bodies_or_400(part)
-    data = export_step(bodies)
+    data = export_step(bodies, part)
     return Response(
         content=data,
         media_type="application/step",

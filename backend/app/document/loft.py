@@ -66,7 +66,7 @@ from OCC.Core.BRepBuilderAPI import (
     BRepBuilderAPI_Transform,
 )
 from OCC.Core.BRepGProp import brepgprop
-from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_MakeThickSolid, BRepOffsetAPI_ThruSections
+from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_ThruSections
 from OCC.Core.Bnd import Bnd_Box
 from OCC.Core.BRepBndLib import brepbndlib
 from OCC.Core.Geom import Geom_BezierCurve
@@ -88,6 +88,7 @@ from app.document.extrude import (
     wire_for_profile,
 )
 from app.document.models import LoftFeature, LoftSection, Part, ResolvedPlane, SketchFeature
+from app.document.shell_ops import thicken_shell_to_solid
 from app.document.plane_geometry import is_mirrored_basis
 from app.document.sweep import resolve_path_wire
 from app.sketch.models import Arc, EllipseArc, Sketch, SketchEntityRef, SketchEntityType, Spline
@@ -613,36 +614,6 @@ def _wires_from_resolved(resolved: list) -> list[TopoDS_Wire]:
     return wires
 
 
-def thicken_shell_to_solid(shell: TopoDS_Shape, thickness: float) -> TopoDS_Shape:
-    """Thickens an open shell into a solid via OCCT's standard
-    BRepOffsetAPI_MakeThickSolid idiom, including the volume-sign fixup
-    a real on-device/CI run found necessary: MakeThickSolidBySimple's own
-    output solid can come back with inverted (inward-pointing) face
-    orientation depending on the input shell's own winding -
-    BRepGProp's volume integral is signed by face orientation, so this
-    surfaces as a *negative* Mass() for an otherwise perfectly valid solid
-    (confirmed via a real 10x8x1 thin loft: OCCT returned -80.0, not 80.0).
-    `.Reversed()` flips every face's orientation (and, transitively, the
-    sign BRepGProp reports) without changing the solid's actual shape at
-    all - the standard OCCT fix for exactly this, applied unconditionally
-    based on a real volume check rather than assumed to always be needed
-    (a shell that happens to come out right-side-up already has this be a
-    no-op check, not a blind flip). Raises `ValueError` if the thicken
-    operation itself does not complete."""
-    thicken = BRepOffsetAPI_MakeThickSolid()
-    thicken.MakeThickSolidBySimple(shell, thickness)
-    thicken.Build()
-    if not thicken.IsDone():
-        raise ValueError("could not thicken the given surface by the given thickness")
-    solid = thicken.Shape()
-
-    volume_props = GProp_GProps()
-    brepgprop.VolumeProperties(solid, volume_props)
-    if volume_props.Mass() < 0:
-        solid = solid.Reversed()
-    return solid
-
-
 def resolve_loft_from_bodies(
     feature: LoftFeature,
     part: Part,
@@ -664,10 +635,15 @@ def resolve_loft_from_bodies(
     `feature.thickness is None` is the original, closed-profile path: each
     section resolves to a closed Profile (`_resolve_closed_section`), and
     `BRepOffsetAPI_ThruSections(isSolid=True, ...)` lofts them directly into
-    a solid. `feature.thickness is not None` is the newer open-chain path:
-    each section resolves to a single open chain (`_resolve_open_section`),
-    `ThruSections(isSolid=False, ...)` lofts them into an open shell
-    instead, and `BRepOffsetAPI_MakeThickSolid.MakeThickSolidBySimple`
+    a solid. `feature.thickness is not None` is a thin/sheet Loft - which of
+    two thin-wall sources it uses is `feature.thin_from_closed_profile`:
+    `False` (the original addition) resolves each section as a single open
+    chain (`_resolve_open_section`); `True` (later addition) resolves each
+    section as a closed Profile instead (the identical resolution the solid
+    path above uses), lofted with `isSolid=False` into a closed, cap-less
+    shell (a hollow tube) rather than an open one. Either way,
+    `ThruSections(isSolid=False, ...)` lofts the resolved wires into a
+    shell, and `BRepOffsetAPI_MakeThickSolid.MakeThickSolidBySimple`
     thickens that shell into a solid by `feature.thickness` (its sign
     picking which side of the shell the material is added to) - the
     standard OCCT idiom for turning an open lofted surface into a genuine
@@ -694,6 +670,42 @@ def resolve_loft_from_bodies(
         if not loft_maker.IsDone():
             raise _loft_failed("could not loft between the given sections")
         solid = loft_maker.Shape()
+
+        warnings = _mid_section_warnings(solid, resolved[0].basis, resolved[-1].basis)
+        return solid, warnings
+
+    if feature.thin_from_closed_profile:
+        # Thin loft, closed-profile source: the exact same per-section
+        # resolution the solid path above uses (_resolve_closed_section) -
+        # each section is still a closed Profile, not an open chain - but
+        # lofted with isSolid=False (like the open-chain thin path below)
+        # instead of directly into a solid. A closed wire lofted this way
+        # produces a closed *shell* with no end caps (a hollow tube), which
+        # thicken_shell_to_solid then thickens into a uniform-wall-thickness
+        # tube, open at both ends - the standard way to get a thin-walled
+        # loft without requiring the user to redraw their sketches as open
+        # chains.
+        resolved = [
+            _resolve_closed_section(part, section, bodies_so_far, excluded_feature_ids, index)
+            for index, section in enumerate(feature.sections)
+        ]
+        wires = _wires_from_resolved(resolved)
+        wires = _apply_alignment_point_translation(
+            feature, resolved, wires, part, bodies_so_far, excluded_feature_ids
+        )
+
+        loft_maker = BRepOffsetAPI_ThruSections(False, feature.ruled)
+        for wire in wires:
+            loft_maker.AddWire(wire)
+        loft_maker.Build()
+        if not loft_maker.IsDone():
+            raise _loft_failed("could not loft a surface between the given closed sections")
+        shell = loft_maker.Shape()
+
+        try:
+            solid = thicken_shell_to_solid(shell, feature.thickness)
+        except ValueError:
+            raise _loft_failed("could not thicken the lofted surface by the given thickness") from None
 
         warnings = _mid_section_warnings(solid, resolved[0].basis, resolved[-1].basis)
         return solid, warnings

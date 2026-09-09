@@ -253,11 +253,13 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
 /// an enum + bottom sheet, matching [FeatureContextMenuAction]/
 /// [showFeatureContextMenu]'s own shape, so a later stage can add more
 /// entries here without restructuring this call site or [FeatureTreePanel].
-enum BodyContextMenuAction { toggleVisibility }
+enum BodyContextMenuAction { toggleVisibility, assignMaterial }
 
 /// On-device feedback: a Body row's long-press used to toggle Hide/Show
 /// directly; this instead shows a bottom sheet in the same style as
-/// [showFeatureContextMenu], with Hide/Show as its one entry.
+/// [showFeatureContextMenu]. `assignMaterial` opens the material picker
+/// (`material_picker_sheet.dart`) scoped to this Body - see
+/// `PartScreen._onBodyLongPress`'s own dispatch.
 Future<BodyContextMenuAction?> showBodyContextMenu(
   BuildContext context, {
   required bool isHidden,
@@ -272,6 +274,11 @@ Future<BodyContextMenuAction?> showBodyContextMenu(
             leading: Icon(isHidden ? Icons.visibility : Icons.visibility_off),
             title: Text(isHidden ? 'Show' : 'Hide'),
             onTap: () => Navigator.of(context).pop(BodyContextMenuAction.toggleVisibility),
+          ),
+          ListTile(
+            leading: const Icon(Icons.science_outlined),
+            title: const Text('Assign Material'),
+            onTap: () => Navigator.of(context).pop(BodyContextMenuAction.assignMaterial),
           ),
         ],
       ),

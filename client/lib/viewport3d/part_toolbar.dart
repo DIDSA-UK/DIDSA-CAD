@@ -90,6 +90,13 @@ class PartToolbar extends StatelessWidget {
   /// non-parametric Body - see `PartScreen._importGeometry`.
   final VoidCallback? onImportGeometry;
 
+  /// Opens `PartPropertiesScreen` (MBD metadata: Part Number/Description/
+  /// Revision/Material/Mass/Remarks/Supplier/Supplier Part Number) - a
+  /// whole-Part action, so it lives in the File menu alongside Save/Export
+  /// rather than in app-wide Settings (which is for device-wide config like
+  /// the Materials Manager, not per-document data).
+  final VoidCallback? onPartProperties;
+
   /// Stage 18: current 3D-viewport appearance preferences (see
   /// [ViewPreferences]) and their change callbacks - [PartScreen] owns the
   /// state and persistence, this just renders the entries that open each
@@ -156,6 +163,7 @@ class PartToolbar extends StatelessWidget {
     this.onStartNew,
     this.onExportPart,
     this.onImportGeometry,
+    this.onPartProperties,
     this.bgColourHex = ViewPreferences.defaultBgColourHex,
     this.bodyColourHex = ViewPreferences.defaultBodyColourHex,
     this.bodyOpacity = ViewPreferences.defaultBodyOpacity,
@@ -272,6 +280,11 @@ class PartToolbar extends StatelessWidget {
           leading: const SvgIcon('assets/icons/feature/parttoolbar_export.svg'),
           title: const Text('Export…'),
           onTap: onExportPart,
+        ),
+        ListTile(
+          leading: const Icon(Icons.description_outlined),
+          title: const Text('Part Properties…'),
+          onTap: onPartProperties,
         ),
         ListTile(
           leading: const SvgIcon('assets/icons/feature/parttoolbar_exit.svg'),

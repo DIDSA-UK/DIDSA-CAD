@@ -47,6 +47,13 @@ class ExtrudePanel extends StatefulWidget {
   final double initialStartDistance;
   final double initialEndDistance;
 
+  /// Thin extrude: `null` (default) is the ordinary solid extrude,
+  /// unchanged. Set (and nonzero), the profile is prismed as a thin wall of
+  /// this signed thickness instead - see the backend `ExtrudeFeature.
+  /// thickness`'s own doc comment for the sign convention (which side of
+  /// the wall gets material).
+  final double? initialThickness;
+
   /// Prompt A4: how many target bodies are currently picked in the 3D
   /// viewport (see [PartScreen]'s body-picking flow, driven independently
   /// of this panel's own fields) - read live on every build, unlike
@@ -55,8 +62,8 @@ class ExtrudePanel extends StatefulWidget {
   /// Drives Cut's "requires 1+" rule below.
   final int targetBodyCount;
 
-  final void Function(
-      ExtrudeType type, double startDistance, double endDistance) onChanged;
+  final void Function(ExtrudeType type, double startDistance,
+      double endDistance, double? thickness) onChanged;
   final VoidCallback onConfirm;
   final VoidCallback onCancel;
 
@@ -67,6 +74,7 @@ class ExtrudePanel extends StatefulWidget {
     this.initialType = ExtrudeType.boss,
     this.initialStartDistance = 0.0,
     this.initialEndDistance = 10.0,
+    this.initialThickness,
     required this.targetBodyCount,
     required this.onChanged,
     required this.onConfirm,
@@ -81,6 +89,8 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
   late ExtrudeType _type;
   late final TextEditingController _startController;
   late final TextEditingController _endController;
+  late bool _isThin;
+  late final TextEditingController _thicknessController;
 
   /// The depth implied by the current start/end fields - `null` once they
   /// no longer parse as numbers, so [build] can fall back to not showing a
@@ -100,14 +110,17 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
     _endController =
         TextEditingController(text: _formatDistance(widget.initialEndDistance));
     _depth = widget.initialEndDistance - widget.initialStartDistance;
+    _isThin = widget.initialThickness != null;
+    _thicknessController = TextEditingController(
+        text: widget.initialThickness == null ? '' : _formatDistance(widget.initialThickness!));
     // Without this, the live preview underneath this panel doesn't appear
     // until the user actually edits a field - onChanged was only ever wired
     // to the TextField/SegmentedButton callbacks, never fired for the
     // initial values this panel opens with.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
-        widget.onChanged(
-            _type, widget.initialStartDistance, widget.initialEndDistance);
+        widget.onChanged(_type, widget.initialStartDistance,
+            widget.initialEndDistance, widget.initialThickness);
       }
     });
   }
@@ -116,6 +129,7 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
   void dispose() {
     _startController.dispose();
     _endController.dispose();
+    _thicknessController.dispose();
     super.dispose();
   }
 
@@ -126,10 +140,19 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
   /// Confirm is disabled for an invalid depth (pre-existing rule) or, new in
   /// Prompt A4, for a Cut with nothing picked yet - Boss has no such
   /// requirement, 0 selected is exactly how a Boss starts a brand-new Body.
+  /// The current thin-wall thickness, or `null` when [_isThin] is off or
+  /// the field doesn't parse as a nonzero number yet.
+  double? get _thickness {
+    if (!_isThin) return null;
+    final value = double.tryParse(_thicknessController.text);
+    return (value == null || value == 0) ? null : value;
+  }
+
   bool get _canConfirm =>
       _depth != null &&
       _depth! > 0 &&
-      !(_type == ExtrudeType.cut && widget.targetBodyCount == 0);
+      !(_type == ExtrudeType.cut && widget.targetBodyCount == 0) &&
+      (!_isThin || _thickness != null);
 
   void _emitChange() {
     final start = double.tryParse(_startController.text);
@@ -137,11 +160,16 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
     setState(
         () => _depth = (start != null && end != null) ? end - start : null);
     if (start == null || end == null) return;
-    widget.onChanged(_type, start, end);
+    widget.onChanged(_type, start, end, _thickness);
   }
 
   void _onTypeChanged(ExtrudeType type) {
     setState(() => _type = type);
+    _emitChange();
+  }
+
+  void _onThinToggled(bool value) {
+    setState(() => _isThin = value);
     _emitChange();
   }
 
@@ -240,6 +268,25 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
               fontSize: 12,
             ),
           ),
+          const SizedBox(height: 4),
+          CheckboxListTile(
+            contentPadding: EdgeInsets.zero,
+            controlAffinity: ListTileControlAffinity.leading,
+            title: const Text('Thin extrude'),
+            value: _isThin,
+            onChanged: (value) => _onThinToggled(value ?? false),
+          ),
+          if (_isThin)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: TextField(
+                controller: _thicknessController,
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true, signed: true),
+                decoration: const InputDecoration(labelText: 'Wall thickness'),
+                onChanged: (_) => _emitChange(),
+              ),
+            ),
           // Prompt A4: Cut requires 1+ target bodies (Boss doesn't -
           // zero is a valid "start a new body" pick) - picking itself
           // happens in the 3D viewport behind this panel, driven by
