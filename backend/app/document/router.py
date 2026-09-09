@@ -304,6 +304,8 @@ from app.document.schemas import (
     RuledSurfaceFeatureResponse,
     RuledSurfaceFeatureUpdate,
     RuledSurfaceSectionSchema,
+    SectionBodyMeshResponse,
+    SectionPreviewRequest,
     SketchEntityRefSchema,
     SketchFeatureCreate,
     SketchFeatureResponse,
@@ -328,6 +330,7 @@ from app.document.schemas import (
     ThickenFeatureResponse,
     ThickenFeatureUpdate,
 )
+from app.document.section import SectionPlaneSpec, compute_section_mesh
 from app.document.split import CONNECTABLE_CURVE_ENTITY_TYPES, resolve_split
 from app.document.sweep import resolve_sweep
 from app.document.store import get_document, get_part_or_404, replace_document
@@ -7385,6 +7388,34 @@ def get_part_mesh(
             )
         )
     return responses
+
+
+@router.post("/parts/{part_id}/section-preview", response_model=list[SectionBodyMeshResponse])
+def preview_section(
+    part_id: str, payload: SectionPreviewRequest, quality: float | None = Query(default=None, ge=0.0, le=1.0)
+) -> list[SectionBodyMeshResponse]:
+    """The sectioning tool's own stateless preview endpoint (`docs/roadmap.
+    md`'s "Analysis tools" entry) - trims each of `payload.body_ids`' own
+    current shape (per `GET /mesh`'s own `compute_part_bodies`) by the
+    intersection of `payload.planes`, and tessellates the result, exactly
+    like `_coarse_preview_response` does for a not-yet-created Feature
+    payload. Never calls `part.add_feature`, never touches `app.document.
+    graph`/`app.document.store` - nothing here is persisted, and nothing
+    about `part`'s own stored state changes as a result of calling this,
+    matching `app.document.section`'s own module-level "not a Feature"
+    framing exactly."""
+    part = get_part_or_404(part_id)
+    mesh_quality = DEFAULT_MESH_QUALITY if quality is None else mesh_quality_from_slider(quality)
+    planes = [SectionPlaneSpec(origin=p.origin, normal=p.normal, flipped=p.flipped) for p in payload.planes]
+    section_bodies = compute_section_mesh(part, payload.body_ids, planes)
+    return [
+        SectionBodyMeshResponse(
+            body_id=body.body_id,
+            mesh=_mesh_vertex_data(tessellate_shape(body.shape, mesh_quality)),
+            cut_face_ids=body.cut_face_ids,
+        )
+        for body in section_bodies
+    ]
 
 
 @router.get("/export/native")

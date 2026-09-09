@@ -1263,6 +1263,31 @@ class BodyMeshDto {
       );
 }
 
+/// Sectioning Tool: one entry of `POST .../section-preview`'s response
+/// array - the wire counterpart to the backend's own per-body section
+/// result (`app.document.section`, `preview_section` in `router.py`).
+/// [mesh] is the exact same shape [BodyMeshDto.mesh] already is (the
+/// backend's own contract: "the exact same shape `GET /mesh` already
+/// returns per body"), so every existing mesh-rendering helper in
+/// `mesh_geometry.dart` already knows how to consume it unmodified.
+/// [cutFaceIds] is the subset of [mesh]'s own `faceIds` values that are
+/// newly-created cut-cap faces - `PartViewport` renders triangles whose
+/// `faceIds` entry is in this set with a visually distinct material from
+/// the rest of the body, the standard CAD section-view convention.
+class SectionPreviewResultDto {
+  final String bodyId;
+  final MeshDto mesh;
+  final Set<int> cutFaceIds;
+
+  SectionPreviewResultDto({required this.bodyId, required this.mesh, required this.cutFaceIds});
+
+  factory SectionPreviewResultDto.fromJson(Map<String, dynamic> json) => SectionPreviewResultDto(
+        bodyId: json['body_id'] as String,
+        mesh: MeshDto.fromJson(json['mesh'] as Map<String, dynamic>),
+        cutFaceIds: (json['cut_face_ids'] as List? ?? const []).map((v) => v as int).toSet(),
+      );
+}
+
 /// What a cascade delete actually removed - both the Features and the
 /// Sketches each deleted SketchFeature owned - so a caller can confirm the
 /// backend's view matches what it asked for, even though the client
@@ -3769,6 +3794,44 @@ class DocumentApiClient {
             ),
         (body) =>
             (body as List).map((b) => BodyMeshDto.fromJson(b as Map<String, dynamic>)).toList(),
+      );
+
+  /// Sectioning Tool: `POST /document/parts/{part_id}/section-preview` - a
+  /// live, accurate, properly-capped section (clip) of [bodyIds] against
+  /// [planes] (multiple planes combine by intersection - see each plane's
+  /// own `{"origin": [...], "normal": [...], "flipped": ...}` shape, built
+  /// by `SectionPlane.toRequestJson`). Unlike [getPartMesh], this is never
+  /// used for the *interactive/pickable* mesh - it's purely a rendering
+  /// swap-in once a gizmo drag settles or an Offset/Flip/Add/Remove/Toggle
+  /// commits (see `docs/live-preview-pattern.md`'s debounce shape, mirrored
+  /// by `PartScreen._scheduleSectionPreview`), and never touches this app's
+  /// Feature/Body model at all - a section is transient view state, not a
+  /// modeling operation (see `section_plane.dart`'s own doc comment).
+  ///
+  /// [quality] mirrors [getPartMesh]'s own `meshQuality` (0..1, omitted for
+  /// the backend's own default tessellation). Throws [ApiException] (422)
+  /// for an empty [planes] list (`{"type": "no_section_planes"}`) or an
+  /// unrecognized body id (`{"type": "unknown_body_id", "body_id": "..."}`)
+  /// - both surfaced via [ApiException.message] the same way every other
+  /// structured `{"type": ...}` domain error in this backend already is
+  /// (see [_detailOf]).
+  Future<List<SectionPreviewResultDto>> sectionPreview(
+    String partId, {
+    required List<String> bodyIds,
+    required List<Map<String, dynamic>> planes,
+    double? quality,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/section-preview').replace(
+                queryParameters: quality == null ? null : {'quality': quality.toString()},
+              ),
+              headers: _headers,
+              body: jsonEncode({'body_ids': bodyIds, 'planes': planes}),
+            ),
+        (body) => (body as List)
+            .map((b) => SectionPreviewResultDto.fromJson(b as Map<String, dynamic>))
+            .toList(),
       );
 
   /// Native Save: the whole in-memory Document (every Part's ordered

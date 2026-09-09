@@ -2582,6 +2582,46 @@ class BodyMeshResponse(BaseModel):
     is_surface: bool = False
 
 
+class SectionPlaneRequest(BaseModel):
+    """One active clipping plane in a `POST .../section-preview` request -
+    see `app.document.section.SectionPlaneSpec`'s own docstring for what
+    `origin`/`normal`/`flipped` mean; this schema is the plain-JSON wire
+    shape that gets converted 1:1 into that dataclass in the router."""
+
+    origin: tuple[float, float, float]
+    normal: tuple[float, float, float]
+    flipped: bool = False
+
+
+class SectionPreviewRequest(BaseModel):
+    """`POST /parts/{part_id}/section-preview`'s request body - the
+    sectioning tool's own transient, client-held state (which Bodies are
+    targeted, and every currently-active section plane) sent fresh on
+    every request; nothing here is ever persisted server-side (see
+    `app.document.section`'s own module docstring)."""
+
+    body_ids: list[str]
+    planes: list[SectionPlaneRequest]
+
+
+class SectionBodyMeshResponse(BaseModel):
+    """One entry of `POST .../section-preview`'s response - deliberately a
+    standalone schema rather than reusing `BodyMeshResponse` (smaller blast
+    radius: this stateless preview's own response contract can evolve
+    without touching every other mesh-returning endpoint, and `hidden`/
+    `is_surface` have no meaning for a non-persisted cutaway preview, so
+    they're dropped rather than inherited as always-constant/unused
+    fields). `cut_face_ids` are the subset of `mesh.face_ids` that are
+    newly-created cut-cap faces (see `app.document.section`'s own
+    "Cut-face tagging" docstring) - the client renders triangles whose
+    `face_ids` entry is in this list with a distinct cut-face material."""
+
+    body_id: str
+    source: Literal["section"] = "section"
+    mesh: MeshVertexData
+    cut_face_ids: list[int]
+
+
 class NativeImportResponse(BaseModel):
     """What `POST /document/import/native` hands back once the full-replace
     import succeeds - just enough for the client to confirm the new state

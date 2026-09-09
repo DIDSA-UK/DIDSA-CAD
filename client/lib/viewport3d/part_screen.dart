@@ -78,6 +78,8 @@ import 'selection_filter.dart';
 import 'select_other_sheet.dart';
 import 'selection_hit_test.dart' show HoverHit, SelectionEntityKind, SelectionEntityRef;
 import 'selection_list_drawer.dart';
+import 'section_panel.dart';
+import 'section_plane.dart';
 import 'sketch_geometry_3d.dart';
 import 'sketch_orientation_indicator.dart';
 import 'split_panel.dart';
@@ -282,6 +284,15 @@ class PartScreen extends StatefulWidget {
   /// matching a Part that opened with nothing hidden.
   final List<String> initialHiddenFeatureIds;
 
+  /// Native Load: [SectionPlane]s a native file's own client-only
+  /// `section_planes` stash carried (see [_PartScreenState._buildNativeExportBytes]/
+  /// [_PartScreenState._openNativeFile]) - restored into the fresh screen's
+  /// [_PartScreenState._sectionPlanes] at [_PartScreenState.initState], same
+  /// "constructor param on a brand-new screen, not mutated in place" reasoning
+  /// as [initialHiddenFeatureIds]. Empty by default, matching a Part that
+  /// opened with no sections active.
+  final List<SectionPlane> initialSectionPlanes;
+
   /// Native Load/Save: the filename Open just read this Part from (see
   /// [_PartScreenState._openNativeFile]), or null for a brand-new (never
   /// Opened) Part - remembered as [_PartScreenState._lastSavedFileName]'s
@@ -311,6 +322,7 @@ class PartScreen extends StatefulWidget {
     this.sketchApiFactory,
     this.initialPartId,
     this.initialHiddenFeatureIds = const [],
+    this.initialSectionPlanes = const [],
     this.initialFileName,
     this.initialFilePath,
     this.initialWarnings = const [],
@@ -485,6 +497,250 @@ class _PartScreenState extends State<PartScreen> {
   /// toggled from [PartToolbar]'s "Hide/Show Reference Planes" entry,
   /// in-memory only (no persistence across app restarts, per the brief).
   bool _referencePlanesHidden = false;
+
+  /// Sectioning Tool: every live section plane - transient VIEW state, never
+  /// a `Feature` (see `section_plane.dart`'s own doc comment for the full
+  /// "why"). Persisted only as a client-only stash in the native save file
+  /// (mirrors [_hiddenFeatureIds] - see [_buildNativeExportBytes]/
+  /// [_openNativeFile]), never through the backend's own Feature tree.
+  List<SectionPlane> _sectionPlanes = [];
+
+  /// Which of [_sectionPlanes] [SectionPanel] is currently editing - drives
+  /// the gizmo (`PartViewport.activeSectionId`) and which plane a face/plane
+  /// tap re-anchors. Null selects nothing (no gizmo shown), even while the
+  /// panel itself is open (e.g. every section was just deleted).
+  String? _activeSectionId;
+
+  /// Whether [SectionPanel] is currently open - controls-widget flag mirroring
+  /// every other tool panel's own `_xPanelOpen`-shaped field on this screen.
+  bool _sectionPanelOpen = false;
+
+  int _nextSectionSeq = 0;
+
+  /// Debounced accurate-backend-preview fetch (see
+  /// `docs/live-preview-pattern.md`'s debounce shape) - (re)started by
+  /// [_scheduleSectionPreview] on every commit-worthy change (a gizmo drag
+  /// ending, an Offset field commit, Flip, Add/Remove/Toggle Section).
+  Timer? _sectionPreviewDebounce;
+
+  /// [DocumentApiClient.sectionPreview]'s own settled result, kept separate
+  /// per Body - see [PartViewport.sectionPreviewMeshes]'s own doc comment
+  /// for why this is a swap-in over the momentary client-side
+  /// [approximateClipMesh] fallback rather than the only rendering path.
+  Map<String, MeshDto> _sectionPreviewMeshes = {};
+  Map<String, Set<int>> _sectionPreviewCutFaceIds = {};
+
+  /// [PartToolbar]'s "Section" entry point - not selection-gated, always
+  /// available, exactly like Create Plane (see `part_toolbar.dart`'s own
+  /// doc comment on that entry). Reopening after a Close simply resumes
+  /// editing whatever [_sectionPlanes] already exist - unlike every
+  /// Feature-backed panel, there is no create-vs-edit distinction here at
+  /// all (a section is never "confirmed" into existence - see
+  /// `section_plane.dart`'s own doc comment), so there's nothing to
+  /// roll back on Cancel either.
+  void _openSectionPanel() {
+    setState(() {
+      _toolbarOpen = false;
+      _sectionPanelOpen = true;
+      _activeSectionId ??= _sectionPlanes.isEmpty ? null : _sectionPlanes.first.id;
+    });
+  }
+
+  /// Closing the panel only hides its UI and the gizmo (clearing
+  /// [_activeSectionId]) - [_sectionPlanes] itself, and every section's own
+  /// live cutaway, stays exactly as it was left; this tool has no "discard
+  /// unconfirmed changes" concept (see [_openSectionPanel]'s own doc
+  /// comment).
+  void _closeSectionPanel() {
+    setState(() {
+      _sectionPanelOpen = false;
+      _activeSectionId = null;
+    });
+  }
+
+  /// "Add Section" - a fresh XY-oriented plane through the current model's
+  /// bounding-box center (falling back to the world origin for an empty
+  /// Part - [boundsOfBodies] returns null then), immediately made active so
+  /// its gizmo and Offset field are ready to use. Per this tool's own brief:
+  /// "some sane default placement".
+  void _addSection() {
+    final center = boundsOfBodies(_visibleBodies)?.center ?? vm.Vector3.zero();
+    final plane = newSectionPlane('section-${_nextSectionSeq++}', center, vm.Vector3(0, 0, 1));
+    setState(() {
+      _sectionPlanes = [..._sectionPlanes, plane];
+      _activeSectionId = plane.id;
+    });
+    _scheduleSectionPreview();
+  }
+
+  void _selectSection(String id) => setState(() => _activeSectionId = id);
+
+  void _removeSection(String id) {
+    setState(() {
+      _sectionPlanes = _sectionPlanes.where((s) => s.id != id).toList();
+      if (_activeSectionId == id) _activeSectionId = null;
+    });
+    _scheduleSectionPreview();
+  }
+
+  void _toggleSection(String id, bool enabled) {
+    setState(() {
+      _sectionPlanes = [
+        for (final s in _sectionPlanes) if (s.id == id) s.copyWith(enabled: enabled) else s,
+      ];
+    });
+    _scheduleSectionPreview();
+  }
+
+  void _flipSection(String id) {
+    setState(() {
+      _sectionPlanes = [
+        for (final s in _sectionPlanes) if (s.id == id) s.copyWith(flipped: !s.flipped) else s,
+      ];
+    });
+    _scheduleSectionPreview();
+  }
+
+  /// One of [SectionPanel]'s three quick-anchor buttons - reuses
+  /// [ReferencePlaneKind]'s own well-known origin (the world origin - every
+  /// fixed reference plane passes through it) and normal directly, per this
+  /// tool's own brief ("reuse ReferencePlaneKind's origin/normal from
+  /// reference_planes.dart directly").
+  void _quickAnchorActiveSection(ReferencePlaneKind plane) {
+    final id = _activeSectionId;
+    if (id == null) return;
+    final normal = switch (plane) {
+      ReferencePlaneKind.xy => vm.Vector3(0, 0, 1),
+      ReferencePlaneKind.xz => vm.Vector3(0, 1, 0),
+      ReferencePlaneKind.yz => vm.Vector3(1, 0, 0),
+    };
+    setState(() {
+      _sectionPlanes = [
+        for (final s in _sectionPlanes)
+          if (s.id == id) s.reanchored(vm.Vector3.zero(), normal) else s,
+      ];
+    });
+    _scheduleSectionPreview();
+  }
+
+  /// [PartViewport.onSectionPlacementTap] - a face/plane tap while the
+  /// active section is being (re)placed. Fires for any placement-eligible
+  /// tap regardless of which section is active; a curved face never reaches
+  /// here at all (see `PartViewport._bodyFaceNormal`'s own planarity gate).
+  void _onSectionPlacementTap(vm.Vector3 origin, vm.Vector3 normal) {
+    final id = _activeSectionId;
+    if (id == null) return;
+    setState(() {
+      _sectionPlanes = [
+        for (final s in _sectionPlanes) if (s.id == id) s.reanchored(origin, normal) else s,
+      ];
+    });
+    _scheduleSectionPreview();
+  }
+
+  /// [SectionPanel.onOffsetChanged] - live, every valid keystroke (mirrors
+  /// [MoveBodyPanel.onDeltaChanged]'s own live-preview shape); the momentary
+  /// [approximateClipMesh] client-side preview updates immediately via the
+  /// `setState` below, and the accurate backend swap-in is debounced (see
+  /// [_scheduleSectionPreview]).
+  void _onSectionOffsetChanged(String id, double offset) {
+    setState(() {
+      _sectionPlanes = [
+        for (final s in _sectionPlanes) if (s.id == id) s.withOffset(offset) else s,
+      ];
+    });
+    _scheduleSectionPreview();
+  }
+
+  /// [PartViewport.onSectionGizmoDragUpdate] - fires on every pointer-move
+  /// while a gizmo handle is being dragged. Deliberately does *not* call
+  /// [_scheduleSectionPreview] itself (only [_onSectionGizmoDragEnd] does,
+  /// on pointer-up) - per this tool's own brief, the accurate backend fetch
+  /// is debounced off the drag's *end*, not every intermediate frame; the
+  /// momentary [approximateClipMesh] client-side clip (applied automatically
+  /// by `PartViewport._syncMeshNode` whenever [_sectionPreviewMeshes] hasn't
+  /// caught up yet) is what renders live during the drag itself.
+  void _onSectionGizmoDragUpdate(String id, vm.Vector3 origin, vm.Vector3 normal) {
+    setState(() {
+      _sectionPlanes = [
+        for (final s in _sectionPlanes) if (s.id == id) s.copyWith(origin: origin, normal: normal) else s,
+      ];
+    });
+  }
+
+  void _onSectionGizmoDragEnd() => _scheduleSectionPreview();
+
+  /// Shared by every commit-worthy section change (see each call site above)
+  /// - mirrors [_scheduleFilletPreview]'s own 500ms-debounce-then-fetch
+  /// shape from `docs/live-preview-pattern.md`, just at a shorter delay
+  /// (150-300ms) per this tool's own brief, which explicitly calls out
+  /// mirroring "this codebase's existing live-preview debounce pattern"
+  /// while asking for a snappier one than Fillet's radius-drag 500ms.
+  void _scheduleSectionPreview() {
+    _sectionPreviewDebounce?.cancel();
+    _sectionPreviewDebounce = Timer(const Duration(milliseconds: 200), _refreshSectionPreview);
+  }
+
+  /// The accurate half of this tool's own two-tier preview (see this
+  /// screen's own module-level brief on the fast client-side clip vs. the
+  /// backend's properly-capped result). Fetches one section-preview per
+  /// currently-computed solid Body (surfaces have no volume to section) in
+  /// parallel with itself only - unlike Fillet/Chamfer's own
+  /// `Future.wait([_refreshMesh(), _refreshXPreviewMesh()])` pairing, there
+  /// is no "stable pick body" mesh to keep in sync here at all (a section
+  /// never changes which ids are pickable - see `docs/live-preview-pattern.md`'s
+  /// own decision tree, step 1: a section, like Create Plane, never modifies
+  /// Body-level geometry), so nothing else needs to run alongside this.
+  Future<void> _refreshSectionPreview() async {
+    final part = _part;
+    final enabled = _sectionPlanes.where((s) => s.enabled).toList();
+    if (part == null || enabled.isEmpty) {
+      if (!mounted) return;
+      setState(() {
+        _sectionPreviewMeshes = {};
+        _sectionPreviewCutFaceIds = {};
+      });
+      return;
+    }
+    final bodyIds = _computedBodyIds;
+    if (bodyIds.isEmpty) {
+      if (!mounted) return;
+      setState(() {
+        _sectionPreviewMeshes = {};
+        _sectionPreviewCutFaceIds = {};
+      });
+      return;
+    }
+    try {
+      final results = await _api.sectionPreview(
+        part.id,
+        bodyIds: bodyIds,
+        planes: [for (final s in enabled) s.toRequestJson()],
+        quality: _meshQuality,
+      );
+      if (!mounted) return;
+      setState(() {
+        _sectionPreviewMeshes = {for (final r in results) r.bodyId: r.mesh};
+        _sectionPreviewCutFaceIds = {for (final r in results) r.bodyId: r.cutFaceIds};
+      });
+    } on ApiException {
+      // On-device note: a section wholly missing every Body (e.g. placed
+      // far outside every solid's extent) is a normal, non-error state for
+      // this tool - the momentary client-side approximate clip stays
+      // visible (which correctly shows nothing changed, or the whole Body
+      // if the plane misses it entirely) rather than surfacing a scary
+      // error banner for what the user will read as "I put the plane
+      // somewhere odd", not a real failure. A genuine backend/network
+      // problem here is silent by the same reasoning every other
+      // best-effort live-preview refresh in this file already accepts
+      // (see e.g. [_refreshFilletPreviewMesh], which has no try/catch of
+      // its own either - errors there simply propagate up through
+      // [_runGuarded] at whatever call site scheduled them; this one has
+      // no such wrapper since it's debounced from a Timer, not a direct
+      // user action, so swallowing here is the deliberate choice, not an
+      // oversight).
+    }
+  }
 
   /// On-device feedback: the reference planes are a placement aid for an
   /// empty Part - once the first real Body exists, they're clutter, so
@@ -1001,7 +1257,8 @@ class _PartScreenState extends State<PartScreen> {
       _profilePickerActive ||
       _pathPickerActive ||
       _planeSelectionMode ||
-      _measureActive;
+      _measureActive ||
+      _sectionPanelOpen;
 
   /// Bug report ("Select Other"): whichever candidate row the open Select
   /// Other sheet is currently hovered/focused on, if any - fed straight
@@ -2008,6 +2265,23 @@ class _PartScreenState extends State<PartScreen> {
     sketchCircle: false,
     plane: false,
   );
+
+  /// Sectioning Tool's own toolbar entry point - an always-available toggle
+  /// FAB, same precedent as [_measureFabVisible]/[_toggleMeasure] (not
+  /// selection-gated, per this tool's own brief: "always available, like
+  /// Create Plane" - Measure is this app's actual existing precedent for
+  /// that shape, `Create Plane` itself is selection-gated via
+  /// `selection_actions.dart`'s context menu instead).
+  bool get _sectionFabVisible =>
+      !_featureTreePanelVisible && !_confirmingSketchOrientation && (_sectionPanelOpen || !_anyToolPanelOpen);
+
+  void _toggleSectionPanel() {
+    if (_sectionPanelOpen) {
+      _closeSectionPanel();
+    } else {
+      _openSectionPanel();
+    }
+  }
 
   /// The Measure FAB's callback.
   void _toggleMeasure() {
@@ -6675,6 +6949,7 @@ class _PartScreenState extends State<PartScreen> {
     // `hidden_feature_ids` named - see [PartScreen.initialHiddenFeatureIds]'s
     // own doc comment. A no-op (empty) for every non-native-Load launch.
     _hiddenFeatureIds.addAll(widget.initialHiddenFeatureIds);
+    _sectionPlanes = widget.initialSectionPlanes;
     _lastSavedFileName = widget.initialFileName;
     _lastSavedFilePath = widget.initialFilePath;
     _loadPart();
@@ -6874,6 +7149,12 @@ class _PartScreenState extends State<PartScreen> {
     // the backend's `import_native` simply ignores, so opening this file
     // elsewhere restores it too instead of silently losing it.
     data['hidden_feature_ids'] = _hiddenFeatureIds.toList();
+    // Sectioning Tool: same client-only stash technique, one key over -
+    // the backend's own `import_native` has no concept of a section at all
+    // (see `section_plane.dart`'s own doc comment for why: it's transient
+    // VIEW state, never a Feature/Body-tree entry), so this is the only
+    // place a section's placement survives a Save/Load round trip.
+    data['section_planes'] = [for (final s in _sectionPlanes) s.toJson()];
     return Uint8List.fromList(utf8.encode(jsonEncode(data)));
   }
 
@@ -7030,6 +7311,24 @@ class _PartScreenState extends State<PartScreen> {
     // [_saveNativeFile]) - the backend's `import_native` doesn't know this
     // key exists and simply ignores it, so it's read back here instead.
     final hiddenFeatureIds = (decoded['hidden_feature_ids'] as List?)?.cast<String>() ?? const [];
+    // Sectioning Tool: same "backend ignores this key, read it back
+    // ourselves" restore as [hiddenFeatureIds] above. Tolerant of a single
+    // corrupt entry (skips just that one, per [SectionPlane.fromJson]'s own
+    // doc comment) rather than failing the whole Open on account of one bad
+    // section - a foreign/hand-edited file is the only realistic way this
+    // key would ever be malformed, and losing every section over one typo
+    // in one of them would be a needlessly harsh failure mode.
+    final sectionPlanesRaw = (decoded['section_planes'] as List?) ?? const [];
+    final sectionPlanes = <SectionPlane>[];
+    for (final raw in sectionPlanesRaw) {
+      if (raw is! Map<String, dynamic>) continue;
+      try {
+        sectionPlanes.add(SectionPlane.fromJson(raw));
+      } catch (_) {
+        // Skip just this one malformed entry - see this block's own doc
+        // comment above.
+      }
+    }
 
     NativeImportResultDto? imported;
     await _runGuarded(() async {
@@ -7044,6 +7343,7 @@ class _PartScreenState extends State<PartScreen> {
           sketchApiFactory: widget.sketchApiFactory,
           initialPartId: imported!.partIds.first,
           initialHiddenFeatureIds: hiddenFeatureIds,
+          initialSectionPlanes: sectionPlanes,
           initialFileName: result.files.single.name,
           initialFilePath: result.files.single.path,
         ),
@@ -7147,6 +7447,7 @@ class _PartScreenState extends State<PartScreen> {
   void dispose() {
     _extrudeDebounce?.cancel();
     _surfaceDebounce?.cancel();
+    _sectionPreviewDebounce?.cancel();
     _busyOverlayTimer?.cancel();
     _jobPollTimer?.cancel();
     if (widget.documentApi == null) {
@@ -7299,6 +7600,15 @@ class _PartScreenState extends State<PartScreen> {
         _hasAutoHiddenReferencePlanes = true;
       }
     });
+    // Sectioning Tool: a Body's geometry can change for reasons entirely
+    // unrelated to the section itself (any other Feature edit re-solving
+    // this same Part) - re-fetching whenever [_refreshMesh] runs (not just
+    // on this tool's own commits) keeps the accurate section-cap render in
+    // sync with the current model instead of silently going stale the next
+    // time an unrelated edit changes the underlying Body. Also what
+    // restores it after Native Load, since [initState] alone has no Body
+    // ids yet to section against.
+    if (_sectionPlanes.any((s) => s.enabled)) _scheduleSectionPreview();
   }
 
   /// [_refreshMesh]'s own background half - see its call site's doc
@@ -15924,6 +16234,18 @@ class _PartScreenState extends State<PartScreen> {
                   selectedCreatePlaneFeatureId: _selectedCreatePlaneFeatureId,
                   onPlaneTap: _onPlaneTap,
                   onBackgroundTap: _onViewportBackgroundTap,
+                  // Sectioning Tool - see `section_plane.dart`/`section_gizmo.dart`.
+                  // Placement is live for the whole time [SectionPanel] is
+                  // open with an active section, not just while a gizmo is
+                  // present (mirrors `MoveBodyPanel`'s own always-live pick).
+                  sectionPlanes: _sectionPlanes,
+                  activeSectionId: _activeSectionId,
+                  sectionPlacementActive: _sectionPanelOpen && _activeSectionId != null,
+                  onSectionPlacementTap: _onSectionPlacementTap,
+                  sectionPreviewMeshes: _sectionPreviewMeshes,
+                  sectionPreviewCutFaceIds: _sectionPreviewCutFaceIds,
+                  onSectionGizmoDragUpdate: _onSectionGizmoDragUpdate,
+                  onSectionGizmoDragEnd: _onSectionGizmoDragEnd,
                   // Prompt F: Revolve uses the same simple tinted-preview
                   // convention Extrude does (see docs/live-preview-pattern.md's
                   // decision tree - Boss/Cut target_body_ids are Body-level
@@ -16116,6 +16438,30 @@ class _PartScreenState extends State<PartScreen> {
                             _measureActive ? Theme.of(context).colorScheme.primaryContainer : null,
                         onPressed: _busy ? null : _toggleMeasure,
                         child: const SvgIcon('assets/icons/viewport/viewport_measure.svg'),
+                      ),
+                    ),
+                  ),
+                // Sectioning Tool: mirrors the Measure FAB immediately
+                // above exactly (same always-available precedent - see
+                // [_sectionFabVisible]'s own doc comment) - `top: 152` is
+                // that FAB's own `top: 104` plus its 40px height plus the
+                // same 8px gap. A plain Material [Icon] (`content_cut`)
+                // rather than a new [SvgIcon] asset - no dedicated section-
+                // tool icon exists in this app's `assets/icons/viewport/`
+                // set yet, and adding one is outside this pass's scope.
+                if (_sectionFabVisible)
+                  Positioned(
+                    top: 152,
+                    right: 8,
+                    child: SafeArea(
+                      bottom: false,
+                      child: FloatingActionButton.small(
+                        heroTag: 'section-fab',
+                        tooltip: _sectionPanelOpen ? 'Close Section' : 'Section',
+                        backgroundColor:
+                            _sectionPanelOpen ? Theme.of(context).colorScheme.primaryContainer : null,
+                        onPressed: _busy ? null : _toggleSectionPanel,
+                        child: const Icon(Icons.content_cut),
                       ),
                     ),
                   ),
@@ -16506,6 +16852,22 @@ class _PartScreenState extends State<PartScreen> {
                       onOffsetChanged: _onCreatePlaneOffsetChanged,
                       onConfirm: _confirmCreatePlane,
                       onCancel: _cancelCreatePlane,
+                    ),
+                  ),
+                if (_sectionPanelOpen)
+                  Positioned.fill(
+                    key: const ValueKey('section-panel-slot'),
+                    child: SectionPanel(
+                      sections: _sectionPlanes,
+                      activeSectionId: _activeSectionId,
+                      onAddSection: _addSection,
+                      onSelectSection: _selectSection,
+                      onRemoveSection: _removeSection,
+                      onToggleSection: _toggleSection,
+                      onFlipSection: _flipSection,
+                      onQuickAnchor: _quickAnchorActiveSection,
+                      onOffsetChanged: _onSectionOffsetChanged,
+                      onClose: _closeSectionPanel,
                     ),
                   ),
                 if (_filletActive)

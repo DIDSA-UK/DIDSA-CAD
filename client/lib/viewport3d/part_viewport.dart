@@ -23,6 +23,8 @@ import 'reference_planes.dart';
 import 'render_mode.dart';
 import 'scene_preferences.dart';
 import 'screen_projection.dart';
+import 'section_gizmo.dart';
+import 'section_plane.dart';
 import 'selection_filter.dart';
 import 'selection_hit_test.dart';
 import 'sketch_constraint_overlay.dart';
@@ -541,6 +543,61 @@ class PartViewport extends StatefulWidget {
   /// debounced create/update-then-refetch flow) rather than confirmed
   /// geometry - renders the mesh translucent and tinted so a preview solid
   /// is never mistaken for the Part's actual, saved shape.
+  /// Sectioning Tool: every live section plane (enabled or not - a disabled
+  /// one is still rendered as a dimmer quad, just excluded from the actual
+  /// clip). Empty by default so every existing screen/test that never wires
+  /// this up renders/behaves exactly as before this tool existed.
+  final List<SectionPlane> sectionPlanes;
+
+  /// Which of [sectionPlanes] is the one [SectionPanel] is currently editing
+  /// - drives which one gets its own gizmo drawn/hit-tested (only one gizmo
+  /// is ever shown at a time), and which one a face/plane tap while
+  /// [sectionPlacementActive] re-anchors.
+  final String? activeSectionId;
+
+  /// True while [SectionPanel] is open and the active section is eligible
+  /// for a fresh tap-to-place pick - gates [onSectionPlacementTap] firing
+  /// from [_handleTap] ahead of every other tap target (a reference plane,
+  /// created Plane, or planar Body face), the same "live for the relevant
+  /// entity kinds the whole time the panel is open, no separate arm-the-
+  /// picker step" convention [MoveBodyPanel]'s own rotation-axis pick uses.
+  final bool sectionPlacementActive;
+
+  /// Fired for a tap that lands on a reference plane, an existing created
+  /// Plane, or a planar Body face while [sectionPlacementActive] - the new
+  /// origin/(unit) normal to re-anchor the active [SectionPlane] to. Never
+  /// fires for a non-planar face (see `PartScreen._isFacePlanar`) - picking
+  /// one is simply ignored, falling through to whatever an ordinary tap
+  /// there would otherwise do.
+  final void Function(vm.Vector3 origin, vm.Vector3 normal)? onSectionPlacementTap;
+
+  /// The backend's accurate, capped `POST .../section-preview` result, once
+  /// settled (see `docs/live-preview-pattern.md`'s debounce shape) - keyed
+  /// by Body id, substituted in place of that Body's own clipped mesh once
+  /// available. Empty (not present) for a Body still showing the momentary
+  /// client-side [approximateClipMesh] fallback (mid-drag, or before the
+  /// first debounced fetch completes).
+  final Map<String, MeshDto> sectionPreviewMeshes;
+
+  /// [sectionPreviewMeshes]' own `cut_face_ids` companion - which of that
+  /// mesh's `faceIds` are newly-created cut-cap faces, rendered with a
+  /// visually distinct material (see [splitMeshByCutFaces]).
+  final Map<String, Set<int>> sectionPreviewCutFaceIds;
+
+  /// Fired on every pointer-move while a section gizmo handle is being
+  /// dragged, with the active [SectionPlane]'s id and its live-updated
+  /// origin/normal - [PartScreen] applies this directly to its own
+  /// [SectionPlane] list (driving the momentary [approximateClipMesh]
+  /// preview and the Offset field's bidirectional sync), without yet
+  /// scheduling the accurate backend fetch (see [onSectionGizmoDragEnd]).
+  final void Function(String sectionId, vm.Vector3 origin, vm.Vector3 normal)? onSectionGizmoDragUpdate;
+
+  /// Fired once on pointer-up at the end of a section gizmo drag - the
+  /// trigger for the debounced accurate-backend-preview fetch (see
+  /// `docs/live-preview-pattern.md`), mirroring every other tool's own
+  /// "commit on release" moment.
+  final VoidCallback? onSectionGizmoDragEnd;
+
   final bool isPreviewMesh;
 
   /// On-device feedback: a *per-Body* alternative to [isPreviewMesh] for
@@ -867,6 +924,14 @@ class PartViewport extends StatefulWidget {
     this.preferEntityPickIncludesFace = false,
     this.onSketchEntityTap,
     this.hasEntityNearSketchTap,
+    this.sectionPlanes = const [],
+    this.activeSectionId,
+    this.sectionPlacementActive = false,
+    this.onSectionPlacementTap,
+    this.sectionPreviewMeshes = const {},
+    this.sectionPreviewCutFaceIds = const {},
+    this.onSectionGizmoDragUpdate,
+    this.onSectionGizmoDragEnd,
     this.isPreviewMesh = false,
     this.previewOverlayBodyId,
     this.previewOverlayMesh,
@@ -974,6 +1039,56 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   Map<ReferencePlaneKind, Node> _planeNodes = {};
   Map<String, Node> _sketchNodes = {};
   Map<String, Node> _createPlaneNodes = {};
+
+  /// Sectioning Tool - mirrors [_createPlaneNodes]'s own "one Node per
+  /// entry, rebuilt wholesale" shape: one bounded quad per
+  /// [PartViewport.sectionPlanes] entry, keyed by [SectionPlane.id].
+  Map<String, Node> _sectionQuadNodes = {};
+
+  /// The single active section's own gizmo Node (never more than one at a
+  /// time - only the section [PartViewport.activeSectionId] names ever
+  /// shows a gizmo), or null while nothing is being edited.
+  Node? _sectionGizmoNode;
+
+  /// Sectioning Tool: the accurate backend result's own cut-cap faces get a
+  /// second, distinctly-colored [Node] per Body alongside that Body's own
+  /// entry in [_meshNodes] - see [_applySectionToMesh]/[splitMeshByCutFaces].
+  Map<String, Node> _sectionCutCapNodes = {};
+
+  /// Sectioning Tool - which gizmo handle (if any) is currently being
+  /// dragged, and the state a drag needs across pointer-move calls. Null
+  /// [_sectionDragHandle] means no drag in progress; every other
+  /// `_sectionDrag*` field is only meaningful while it's non-null, and is
+  /// simply left stale (never read) between drags rather than reset to
+  /// null, mirroring this file's own [_hoverHit]-style "guarded by its own
+  /// sibling flag" convention.
+  SectionGizmoHandleKind? _sectionDragHandle;
+  String? _sectionDragSectionId;
+  vm.Vector3? _sectionDragStartOrigin;
+  vm.Vector3? _sectionDragStartNormal;
+
+  /// Translate-handle drag only: the fixed world-space axis direction (a
+  /// snapshot of the gizmo's own basis at drag-start, so the constrained
+  /// line a translate handle drags along never itself moves mid-drag even
+  /// though the plane's normal - which the basis is derived from - might if
+  /// a rotate handle were somehow dragged first) and the ray's own closest
+  /// point on that axis line at drag-start (see [closestPointOnLineToRay]) -
+  /// together let every later pointer-move compute a pure delta along the
+  /// axis without needing to re-derive the start state each time.
+  vm.Vector3? _sectionDragAxis;
+  vm.Vector3? _sectionDragStartPointOnAxis;
+
+  /// Rotate-handle drag only: the fixed rotation axis and the in-plane
+  /// (reference, perpendicular) axis pair [angleOnRotationPlane] measures
+  /// against, all frozen at drag-start for the same reason
+  /// [_sectionDragAxis] is, plus the angle the drag started at - every
+  /// later pointer-move's own angle minus this is the total rotation to
+  /// apply to [_sectionDragStartNormal], never an incremental per-frame
+  /// delta (which would accumulate floating-point drift over a long drag).
+  vm.Vector3? _sectionDragRotationAxis;
+  vm.Vector3? _sectionDragRefAxis;
+  vm.Vector3? _sectionDragPerpAxis;
+  double? _sectionDragStartAngle;
 
   /// P8/P9: unlike [_planeNodes]/[_sketchNodes]/[_createPlaneNodes], never
   /// more than one of each at a time - there's only ever one active Sketch
@@ -1332,6 +1447,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         _syncReferencePlaneNodes();
         _syncSketchNodes();
         _syncCreatePlaneNodes();
+        _syncSectionNodes();
         _syncSketchPlaneSurfaceNode();
         _syncSketchPlaneGridNode();
         _syncDrawGhostNode();
@@ -1379,8 +1495,19 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         // gates) - without this, flipping the toggle updated the widget's
         // own prop but never re-ran either sync method, so the already-
         // built mesh/edge Nodes in the Scene just sat there unchanged.
-        widget.bodiesHidden != oldWidget.bodiesHidden) {
+        widget.bodiesHidden != oldWidget.bodiesHidden ||
+        // Sectioning Tool: the clip itself (or its accurate swap-in) is
+        // applied inside [_syncMeshNode]'s own per-Body loop (see
+        // [_applySectionToMesh]) - any of these three changing must
+        // rebuild every Body's Node exactly like a genuine mesh/render-mode
+        // change already does above.
+        widget.sectionPlanes != oldWidget.sectionPlanes ||
+        widget.sectionPreviewMeshes != oldWidget.sectionPreviewMeshes ||
+        widget.sectionPreviewCutFaceIds != oldWidget.sectionPreviewCutFaceIds) {
       setState(_syncMeshNode);
+    }
+    if (widget.sectionPlanes != oldWidget.sectionPlanes || widget.activeSectionId != oldWidget.activeSectionId) {
+      setState(_syncSectionNodes);
     }
     if (widget.lightIntensity != oldWidget.lightIntensity) {
       setState(_applyLighting);
@@ -1585,6 +1712,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       scene.remove(node);
     }
     _meshNodes = {};
+    // Sectioning Tool: the cut-cap Nodes ([_applySectionToMesh]'s own
+    // second, distinctly-colored primitive per Body) are rebuilt in lockstep
+    // with [_meshNodes] itself below - cleared here up front the same way.
+    for (final node in _sectionCutCapNodes.values) {
+      scene.remove(node);
+    }
+    _sectionCutCapNodes = {};
     // Rendered/cleared unconditionally, independent of the `bodies.isEmpty`
     // early-return just below - a not-yet-created Loft can be the very
     // first solid in an empty Part, so its coarse-preview overlay must
@@ -1666,7 +1800,17 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         // source-scoped re-diagnosis (see mesh_geometry.dart's
         // renderMirrorCorrectedMesh doc comment).
         final mesh = isPreviewOverlay ? widget.previewOverlayMesh! : (isCoarseOverlay ? coarseMesh : body.mesh);
-        if (mesh.vertices.isEmpty) {
+        // Sectioning Tool: only ever applied to a Body's own ordinary mesh -
+        // deliberately skipped for a live-edit preview/coarse/skip overlay
+        // (each already has its own, unrelated, meaning for "this Body's
+        // Node looks different right now"; stacking a clip on top of one of
+        // those would be visually ambiguous about which state is which, and
+        // none of those overlays is ever what `POST .../section-preview`'s
+        // own `sectionPreviewMeshes` was fetched against anyway).
+        final canSection = !isPreviewOverlay && !isCoarseOverlay && !isSkippedInstance;
+        final (displayMesh, cutCapMesh) =
+            canSection ? _applySectionToMesh(mesh, body.bodyId) : (mesh, null);
+        if (displayMesh.vertices.isEmpty) {
           // flutter_scene's UnskinnedGeometry.uploadVertexData allocates a
           // GPU device buffer sized off the vertex/index data - a
           // zero-length buffer throws "DeviceBuffer creation failed"
@@ -1680,9 +1824,20 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           );
           continue;
         }
+        // Sectioning Tool: a fully-clipped-away Body (every triangle on the
+        // discarded side of an enabled plane) keeps its non-empty `vertices`
+        // array (see [approximateClipMesh]'s own doc comment - vertices are
+        // never renumbered/dropped, only the triangle list is filtered), so
+        // the check above alone wouldn't catch it; skip separately here for
+        // the same "don't hand flutter_scene a zero-index-count buffer"
+        // reason, correctly rendering "nothing visible on this side of the
+        // cut" as no Node at all rather than an empty one.
+        if (displayMesh.triangleIndices.isEmpty) {
+          continue;
+        }
         debugPrint(
           '[PartViewport] _syncMeshNode: geometryFromMesh(${body.bodyId}, '
-          '${mesh.vertices.length} verts)...',
+          '${displayMesh.vertices.length} verts)...',
         );
         // Face-culling bug fix: any translucent material below (preview
         // overlays are always translucent; a confirmed Body is translucent
@@ -1694,7 +1849,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             isCoarseOverlay ||
             isSkippedInstance ||
             widget.bodyOpacity < 1.0;
-        final geometry = geometryFromMesh(mesh, doubleSidedWinding: isTranslucent);
+        final geometry = geometryFromMesh(displayMesh, doubleSidedWinding: isTranslucent);
         // Live-operation preview overlays stay a flat, translucent tint -
         // they're meant to read as a distinct "in-progress" indicator, not
         // real lit geometry, so they're deliberately left on UnlitMaterial.
@@ -1743,6 +1898,20 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         final node = Node(mesh: Mesh(geometry, material));
         scene.add(node);
         _meshNodes[body.bodyId] = node;
+
+        // Sectioning Tool: the accurate backend result's own cut-cap faces
+        // (standard CAD section-view convention: a visually distinct flat
+        // color from the rest of the body) - a second Node, since one
+        // MeshPrimitive only ever takes one Material.
+        if (cutCapMesh != null && cutCapMesh.triangleIndices.isNotEmpty) {
+          final capGeometry = geometryFromMesh(cutCapMesh, doubleSidedWinding: true);
+          final capMaterial = UnlitMaterial()
+            ..alphaMode = AlphaMode.opaque
+            ..baseColorFactor = vm.Vector4(0.85, 0.55, 0.15, 1.0);
+          final capNode = Node(mesh: Mesh(capGeometry, capMaterial));
+          scene.add(capNode);
+          _sectionCutCapNodes[body.bodyId] = capNode;
+        }
       }
       debugPrint(
         '[PartViewport] _syncMeshNode: ${_meshNodes.length}/${bodies.length} body Node(s) '
@@ -1972,6 +2141,198 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     };
     for (final node in _createPlaneNodes.values) {
       scene.add(node);
+    }
+  }
+
+  /// Sectioning Tool: mirrors [_syncCreatePlaneNodes]'s own "remove
+  /// everything, rebuild wholesale" shape for [PartViewport.sectionPlanes]'
+  /// bounded quads, plus the single active section's own gizmo (see
+  /// `section_gizmo.dart`'s `buildSectionPlaneQuadNode`/`buildSectionGizmoNode`).
+  /// A disabled section still renders its quad (dimmer - see
+  /// `buildSectionPlaneQuadNode`'s own `active` flag, reused here for
+  /// "currently being edited" rather than "enabled") so the user can still
+  /// see and re-enable it; only [PartViewport.activeSectionId]'s own plane
+  /// ever gets a gizmo, and only while it's actually present in
+  /// [PartViewport.sectionPlanes] (it can briefly be absent for one frame
+  /// right after Add Section, before [PartScreen]'s own state settles).
+  void _syncSectionNodes() {
+    final scene = _scene;
+    if (scene == null) return;
+    for (final node in _sectionQuadNodes.values) {
+      scene.remove(node);
+    }
+    final gizmoNode = _sectionGizmoNode;
+    if (gizmoNode != null) scene.remove(gizmoNode);
+
+    _sectionQuadNodes = {
+      for (final plane in widget.sectionPlanes)
+        plane.id: buildSectionPlaneQuadNode(plane, active: plane.id == widget.activeSectionId),
+    };
+    for (final node in _sectionQuadNodes.values) {
+      scene.add(node);
+    }
+
+    SectionPlane? activePlane;
+    for (final plane in widget.sectionPlanes) {
+      if (plane.id == widget.activeSectionId) {
+        activePlane = plane;
+        break;
+      }
+    }
+    _sectionGizmoNode = activePlane == null
+        ? null
+        : buildSectionGizmoNode(activePlane, highlightedHandle: _sectionDragHandle);
+    if (_sectionGizmoNode != null) scene.add(_sectionGizmoNode!);
+  }
+
+  /// Sectioning Tool: applies the active clip to one Body's [mesh] for
+  /// rendering - see `docs/live-preview-pattern.md`'s debounce shape and
+  /// this tool's own brief ("cheap approximate clip... during drag; the
+  /// accurate, capped result swaps in once settled"). Returns `(displayMesh,
+  /// cutCapMesh)`: [cutCapMesh] is only ever non-null once the accurate
+  /// backend result for [bodyId] has arrived *and* it actually produced cut
+  /// faces (an enabled section that misses this Body's own geometry
+  /// entirely produces none). No enabled section at all is the overwhelming
+  /// common case (the tool is off) - returns [mesh] completely untouched
+  /// then, not even a copy, so this never costs anything when the feature
+  /// isn't in use.
+  (MeshDto, MeshDto?) _applySectionToMesh(MeshDto mesh, String bodyId) {
+    final enabled = widget.sectionPlanes.where((p) => p.enabled).toList();
+    if (enabled.isEmpty) return (mesh, null);
+    final accurate = widget.sectionPreviewMeshes[bodyId];
+    if (accurate != null) {
+      final cutFaceIds = widget.sectionPreviewCutFaceIds[bodyId] ?? const <int>{};
+      final (bodyPart, capPart) = splitMeshByCutFaces(accurate, cutFaceIds);
+      return (bodyPart, capPart.triangleIndices.isEmpty ? null : capPart);
+    }
+    return (approximateClipMesh(mesh, enabled), null);
+  }
+
+  /// Sectioning Tool: hit-tests [screenPosition] against the active
+  /// section's own gizmo (see [hitTestSectionGizmo]) and, on a hit, snapshots
+  /// every piece of frozen drag-start state a translate or rotate handle's
+  /// own math needs (see the `_sectionDrag*` fields' own doc comments) and
+  /// enters drag mode. Returns whether a drag actually began - the caller
+  /// (`_onPointerDown`) uses this to decide whether to consume the gesture
+  /// entirely (no orbit/selection/draw-cursor behavior for the rest of this
+  /// pointer's lifetime) or fall through to its own ordinary handling.
+  bool _tryBeginSectionGizmoDrag(Offset screenPosition) {
+    final activeId = widget.activeSectionId;
+    if (activeId == null) return false;
+    SectionPlane? foundPlane;
+    for (final p in widget.sectionPlanes) {
+      if (p.id == activeId) {
+        foundPlane = p;
+        break;
+      }
+    }
+    if (foundPlane == null) return false;
+    // Effectively-final local (never reassigned after this point) so the
+    // `setState` closure below can read it without a null-check on every
+    // single access - `foundPlane` itself stays nullable-typed since a
+    // `for` loop's own break-early assignment isn't promotable.
+    final plane = foundPlane;
+
+    final camera = _camera.cameraFor(_viewportSize);
+    final ray = camera.screenPointToRay(screenPosition, _viewportSize);
+    final hit = hitTestSectionGizmo(ray, plane, _viewportSize);
+    if (hit == null) return false;
+
+    final basis = sectionGizmoBasis(plane.normal);
+    vm.Vector3? axis;
+    vm.Vector3? rotationAxis, refAxis, perpAxis;
+    double? startAngle;
+    switch (hit.kind) {
+      case SectionGizmoHandleKind.translateX:
+        axis = basis.xAxis;
+        break;
+      case SectionGizmoHandleKind.translateY:
+        axis = basis.yAxis;
+        break;
+      case SectionGizmoHandleKind.translateZ:
+        axis = basis.zAxis;
+        break;
+      case SectionGizmoHandleKind.rotateX:
+        rotationAxis = basis.xAxis;
+        refAxis = basis.yAxis;
+        perpAxis = basis.zAxis;
+        startAngle = angleOnRotationPlane(ray, plane.origin, rotationAxis, refAxis, perpAxis);
+        break;
+      case SectionGizmoHandleKind.rotateY:
+        rotationAxis = basis.yAxis;
+        refAxis = basis.zAxis;
+        perpAxis = basis.xAxis;
+        startAngle = angleOnRotationPlane(ray, plane.origin, rotationAxis, refAxis, perpAxis);
+        break;
+    }
+    // A rotate handle grabbed at exactly the degenerate look-down-the-axis
+    // angle (see [angleOnRotationPlane]'s own null case) has no well-defined
+    // start angle to measure a delta from - abandon the drag rather than
+    // enter a broken one; the user can simply orbit slightly and try again.
+    if ((rotationAxis != null) && startAngle == null) return false;
+
+    setState(() {
+      _sectionDragHandle = hit.kind;
+      _sectionDragSectionId = plane.id;
+      _sectionDragStartOrigin = plane.origin;
+      _sectionDragStartNormal = plane.normal;
+      _sectionDragAxis = axis;
+      _sectionDragStartPointOnAxis = axis == null ? null : closestPointOnLineToRay(ray, plane.origin, axis);
+      _sectionDragRotationAxis = rotationAxis;
+      _sectionDragRefAxis = refAxis;
+      _sectionDragPerpAxis = perpAxis;
+      _sectionDragStartAngle = startAngle;
+      _syncSectionNodes();
+    });
+    return true;
+  }
+
+  /// Sectioning Tool: the live per-pointer-move drag math - see this tool's
+  /// own brief for the two cases. A translate handle projects [screenPosition]'s
+  /// own ray onto the frozen world-space axis line ([closestPointOnLineToRay])
+  /// and applies the delta from drag-start directly to the origin (a pure
+  /// translation - the plane's normal never changes). A rotate handle
+  /// re-measures the in-plane angle ([angleOnRotationPlane]) and applies the
+  /// *total* delta from drag-start to the drag-start normal via
+  /// [rotateAroundAxis] (never an incremental per-frame delta, which would
+  /// accumulate floating-point drift over a long drag) - the origin never
+  /// changes. Either way, the result is then handed to [PartScreen] via
+  /// [PartViewport.onSectionGizmoDragUpdate] - this method never mutates
+  /// [PartViewport.sectionPlanes] itself (it's the parent's own state).
+  void _updateSectionGizmoDrag(Offset screenPosition) {
+    final handle = _sectionDragHandle;
+    final sectionId = _sectionDragSectionId;
+    final startOrigin = _sectionDragStartOrigin;
+    final startNormal = _sectionDragStartNormal;
+    if (handle == null || sectionId == null || startOrigin == null || startNormal == null) return;
+
+    final camera = _camera.cameraFor(_viewportSize);
+    final ray = camera.screenPointToRay(screenPosition, _viewportSize);
+
+    switch (handle) {
+      case SectionGizmoHandleKind.translateX:
+      case SectionGizmoHandleKind.translateY:
+      case SectionGizmoHandleKind.translateZ:
+        final axis = _sectionDragAxis;
+        final startPoint = _sectionDragStartPointOnAxis;
+        if (axis == null || startPoint == null) return;
+        final currentPoint = closestPointOnLineToRay(ray, startOrigin, axis);
+        final newOrigin = startOrigin + (currentPoint - startPoint);
+        widget.onSectionGizmoDragUpdate?.call(sectionId, newOrigin, startNormal);
+        break;
+      case SectionGizmoHandleKind.rotateX:
+      case SectionGizmoHandleKind.rotateY:
+        final rotationAxis = _sectionDragRotationAxis;
+        final refAxis = _sectionDragRefAxis;
+        final perpAxis = _sectionDragPerpAxis;
+        final startAngle = _sectionDragStartAngle;
+        if (rotationAxis == null || refAxis == null || perpAxis == null || startAngle == null) return;
+        final currentAngle = angleOnRotationPlane(ray, startOrigin, rotationAxis, refAxis, perpAxis);
+        if (currentAngle == null) return; // Momentarily looking edge-on - hold the last good value.
+        final delta = currentAngle - startAngle;
+        final newNormal = rotateAroundAxis(startNormal, rotationAxis, delta).normalized();
+        widget.onSectionGizmoDragUpdate?.call(sectionId, startOrigin, newNormal);
+        break;
     }
   }
 
@@ -2337,6 +2698,49 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// (this returns `null` for) doesn't.
   double? _orthographicHalfHeightOf(Camera camera) => camera is OrthographicCamera ? camera.halfHeight : null;
 
+  /// Sectioning Tool: the world-space unit normal of one of the three fixed,
+  /// origin-centered reference planes - the zeroed axis
+  /// [ReferencePlaneKindX._zeroAxis] names, as a unit vector. That field is
+  /// private to `reference_planes.dart`, so this is a small, deliberate
+  /// duplication (this codebase's own documented preference for a tiny
+  /// per-consumer helper over widening another file's public surface - see
+  /// `section_gizmo.dart`'s own small duplicated helpers) rather than an
+  /// import-visibility change.
+  vm.Vector3 _referencePlaneNormal(ReferencePlaneKind plane) => switch (plane) {
+        ReferencePlaneKind.xy => vm.Vector3(0, 0, 1),
+        ReferencePlaneKind.xz => vm.Vector3(0, 1, 0),
+        ReferencePlaneKind.yz => vm.Vector3(1, 0, 0),
+      };
+
+  /// Sectioning Tool: [bodyId]'s own face [faceId]'s unit normal, or null if
+  /// that face isn't planar (see [MeshDto.faceIsPlanar] - permissive/`true`
+  /// when the flag is missing entirely, same "not known, not known to be
+  /// curved" contract `PartScreen._isFacePlanar`'s own doc comment
+  /// documents, mirrored here since this file has no access to that
+  /// PartScreen-private method) or the Body/face can't be found at all.
+  /// Every backend [MeshDto] triangle owns its own 3 unique vertices with a
+  /// per-vertex normal (see `mesh_geometry.dart`'s own `meshBuffersFromMesh`
+  /// doc comment) - since a genuinely planar face's vertex normals are all
+  /// identical, reading any one triangle belonging to [faceId] is exact, not
+  /// an approximation.
+  vm.Vector3? _bodyFaceNormal(String bodyId, int faceId) {
+    for (final body in widget.bodies) {
+      if (body.bodyId != bodyId) continue;
+      final mesh = body.mesh;
+      if (faceId >= 0 && faceId < mesh.faceIsPlanar.length && !mesh.faceIsPlanar[faceId]) {
+        return null; // Curved face - not a valid section-plane anchor.
+      }
+      for (var i = 0; i < mesh.triangleIndices.length && i < mesh.faceIds.length; i++) {
+        if (mesh.faceIds[i] != faceId) continue;
+        final vertexIndex = mesh.triangleIndices[i][0];
+        final n = mesh.normals[vertexIndex];
+        return vm.Vector3(n[0], n[1], n[2]).normalized();
+      }
+      return null;
+    }
+    return null;
+  }
+
   /// Converts a confirmed tap into a [ReferencePlaneKind] hit-test, via the
   /// same [PerspectiveCamera.screenPointToRay] `flutter_scene` already
   /// builds for its own picking/`raycast.dart` - reused here rather than
@@ -2344,6 +2748,50 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   void _handleTap(Offset localPosition) {
     final camera = _camera.cameraFor(_viewportSize);
     final ray = camera.screenPointToRay(localPosition, _viewportSize);
+    // Sectioning Tool: while [SectionPanel] is open and awaiting a fresh
+    // placement, a tap re-anchors the active section instead of doing
+    // whatever it would ordinarily do (selecting a reference plane, opening
+    // a created Plane's context sheet, picking a sketch entity) - checked
+    // first, ahead of every other tap target below, same "this panel is
+    // live for the whole time it's open" precedence [MoveBodyPanel]'s own
+    // rotation-axis pick already has. Tries, in order: a fixed reference
+    // plane, an existing created Plane, then a planar Body face (a curved
+    // face is silently rejected - falls through to whatever this tap would
+    // ordinarily hit instead, mirroring how a curved-face tap already has
+    // no effect for Create Plane's own `offsetFace` mode).
+    if (widget.sectionPlacementActive && widget.onSectionPlacementTap != null) {
+      final referenceHit = widget.referencePlanesHidden ? null : hitTestReferencePlanes(ray);
+      if (referenceHit != null) {
+        widget.onSectionPlacementTap!(vm.Vector3.zero(), _referencePlaneNormal(referenceHit.plane));
+        return;
+      }
+      final createHit = hitTestCreatePlanes(ray, widget.createPlanes);
+      if (createHit != null) {
+        final geometry = widget.createPlanes[createHit.featureId];
+        if (geometry != null) {
+          widget.onSectionPlacementTap!(geometry.origin, geometry.normal);
+          return;
+        }
+      }
+      final faceHit = hitTestBodies(
+        ray: ray,
+        viewportSize: _viewportSize,
+        bodies: widget.bodies,
+        filter: const SelectionFilterState(vertex: false, edge: false, face: true, body: false),
+        facesOccludeOtherHits: widget.renderMode.showsFilledFaces && !widget.bodiesHidden,
+        orthographicHalfHeight: _orthographicHalfHeightOf(camera),
+      );
+      if (faceHit != null && faceHit.entity.kind == SelectionEntityKind.face) {
+        final normal = _bodyFaceNormal(faceHit.entity.bodyId, faceHit.entity.id);
+        if (normal != null) {
+          widget.onSectionPlacementTap!(ray.at(faceHit.rayT), normal);
+          return;
+        }
+      }
+      // Missed every valid placement target - falls through to this tap's
+      // ordinary meaning below, same as every other picking flow in this
+      // app when a tap lands on empty space or an ineligible target.
+    }
     final hit = widget.referencePlanesHidden ? null : hitTestReferencePlanes(ray);
     if (hit != null) {
       widget.onPlaneTap(hit.plane);
@@ -2458,6 +2906,15 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   Offset _viewportCenter() => Offset(_viewportSize.width / 2, _viewportSize.height / 2);
 
   void _onPointerDown(PointerDownEvent event) {
+    // Sectioning Tool: a gizmo-handle grab takes top priority over every
+    // other pointer behavior (orbit, marquee-select, draw-cursor) - the
+    // same "checked first, ahead of everything else" precedence
+    // `hitTestSectionGizmo` is documented to need in `part_viewport.dart`'s
+    // own hit-test chain per this tool's own brief. Only armed while
+    // [PartViewport.activeSectionId] actually names one of
+    // [PartViewport.sectionPlanes] - i.e. only while [SectionPanel] is open
+    // and editing a specific section.
+    if (_tryBeginSectionGizmoDrag(event.localPosition)) return;
     if (widget.selectionMode) {
       // P25: mirrors sketch_canvas.dart's own "the marquee gesture only
       // ever tracks one pointer - a second finger touching down mid-drag
@@ -2505,6 +2962,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   }
 
   void _onPointerMove(PointerMoveEvent event) {
+    if (_sectionDragHandle != null) {
+      _updateSectionGizmoDrag(event.localPosition);
+      return;
+    }
     if (widget.selectionMode) {
       if (_marqueeActive) {
         setState(() => _marqueeCurrentScreen = event.localPosition);
@@ -2563,6 +3024,15 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   }
 
   void _onPointerEnd(PointerEvent event) {
+    if (_sectionDragHandle != null) {
+      setState(() {
+        _sectionDragHandle = null;
+        _sectionDragSectionId = null;
+        _syncSectionNodes();
+      });
+      widget.onSectionGizmoDragEnd?.call();
+      return;
+    }
     if (widget.selectionMode) {
       if (_marqueeActive) {
         if (event.kind != PointerDeviceKind.mouse) {
