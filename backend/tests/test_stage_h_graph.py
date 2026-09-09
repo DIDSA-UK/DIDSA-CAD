@@ -14,14 +14,17 @@ from app.document.models import (
     ExtrudeType,
     Part,
     SketchFeature,
+    SketchOrEdgeRef,
     SweepFeature,
     SweepMode,
 )
 from app.sketch.models import SketchEntityRef, SketchEntityType
 
 
-def _path_ref(sketch_id: str, entity_id: str) -> SketchEntityRef:
-    return SketchEntityRef(sketch_id=sketch_id, entity_type=SketchEntityType.LINE, entity_id=entity_id)
+def _path_ref(sketch_id: str, entity_id: str) -> SketchOrEdgeRef:
+    return SketchOrEdgeRef(
+        sketch_entity_ref=SketchEntityRef(sketch_id=sketch_id, entity_type=SketchEntityType.LINE, entity_id=entity_id)
+    )
 
 
 def _part_with_one_sketch() -> tuple[Part, str]:

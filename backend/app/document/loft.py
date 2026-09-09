@@ -67,6 +67,7 @@ from OCC.Core.BRepBuilderAPI import (
 )
 from OCC.Core.BRepGProp import brepgprop
 from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_ThruSections
+from OCC.Core.BRepTools import BRepTools_WireExplorer
 from OCC.Core.Bnd import Bnd_Box
 from OCC.Core.BRepBndLib import brepbndlib
 from OCC.Core.Geom import Geom_BezierCurve
@@ -75,7 +76,7 @@ from OCC.Core.gp import gp_Ax1, gp_Circ, gp_Dir, gp_Elips, gp_Pln, gp_Pnt, gp_Tr
 from OCC.Core.TColgp import TColgp_Array1OfPnt
 from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_VERTEX
 from OCC.Core.TopExp import TopExp_Explorer
-from OCC.Core.TopoDS import TopoDS_Shape, TopoDS_Wire, topods
+from OCC.Core.TopoDS import TopoDS_Edge, TopoDS_Shape, TopoDS_Wire, topods
 
 from app.document.create_plane import resolve_sketch_basis
 from app.document.extrude import (
@@ -84,6 +85,7 @@ from app.document.extrude import (
     arc_axis,
     basis_point_to_world,
     compute_part_bodies,
+    resolve_subshape_from_bodies,
     select_profiles,
     wire_for_profile,
 )
@@ -237,6 +239,69 @@ class _ResolvedOpenSection:
     chain: OpenChain
     reference_angle: float | None
     alignment_local: tuple[float, float] | None
+
+
+@dataclass
+class _ResolvedEdgeSection:
+    """On-device feedback ("loft between two edges or edge and sketch
+    line"): the `edge_ref` counterpart to `_ResolvedClosedSection`/
+    `_ResolvedOpenSection` - just the already-built `wire`, no `sketch`/
+    `basis` (an arbitrary Body edge has no Sketch plane of its own) and no
+    `reference_angle`/`alignment_local` (both forbidden on an edge_ref
+    section by the router - see `LoftSection`'s own docstring for why).
+    Kept as its own type (not, say, `basis=None` on the existing types) so
+    `_wires_from_resolved`'s `isinstance` dispatch stays exhaustive and
+    explicit about which fields an edge section actually has."""
+
+    wire: TopoDS_Wire
+    basis: None = None
+    reference_angle: None = None
+    alignment_local: None = None
+
+
+def _resolve_edge_section(bodies_so_far: dict[str, TopoDS_Shape], section: LoftSection) -> _ResolvedEdgeSection:
+    """Resolves one `LoftSection.edge_ref` (a Body edge) into a
+    `_ResolvedEdgeSection` - reuses `app.document.extrude.resolve_subshape_
+    from_bodies` verbatim (same resolver, same `missing_reference` failure
+    mode, as every other Body-edge/vertex reference in this app - not
+    rewrapped into a Loft-specific error), wrapped into a single-edge
+    `TopoDS_Wire`."""
+    assert section.edge_ref is not None
+    edge = topods.Edge(resolve_subshape_from_bodies(bodies_so_far, section.edge_ref))
+    wire_maker = BRepBuilderAPI_MakeWire()
+    wire_maker.Add(edge)
+    return _ResolvedEdgeSection(wire=wire_maker.Wire())
+
+
+def _resolve_closed_or_edge_section(
+    part: Part,
+    section: LoftSection,
+    bodies_so_far: dict[str, TopoDS_Shape],
+    excluded_feature_ids: frozenset[str],
+    index: int,
+) -> "_ResolvedClosedSection | _ResolvedEdgeSection":
+    """Dispatches one `LoftSection` to `_resolve_edge_section` when it's a
+    bare Body-edge section, else to `_resolve_closed_section` - the router
+    already guarantees exactly one of `sketch_feature_id`/`edge_ref` is set
+    (see `_validate_loft_section_shape`), so this never needs to guess."""
+    if section.edge_ref is not None:
+        return _resolve_edge_section(bodies_so_far, section)
+    return _resolve_closed_section(part, section, bodies_so_far, excluded_feature_ids, index)
+
+
+def _resolve_open_or_edge_section(
+    part: Part,
+    section: LoftSection,
+    bodies_so_far: dict[str, TopoDS_Shape],
+    excluded_feature_ids: frozenset[str],
+    index: int,
+) -> "_ResolvedOpenSection | _ResolvedEdgeSection":
+    """The thin/open-chain-Loft counterpart to `_resolve_closed_or_edge_
+    section` - dispatches to `_resolve_edge_section` for a bare Body-edge
+    section, else to `_resolve_open_section`."""
+    if section.edge_ref is not None:
+        return _resolve_edge_section(bodies_so_far, section)
+    return _resolve_open_section(part, section, bodies_so_far, excluded_feature_ids, index)
 
 
 def _resolve_open_section(
@@ -601,14 +666,19 @@ def _wires_from_resolved(resolved: list) -> list[TopoDS_Wire]:
     """Shared twist-alignment + wire-building step for both the closed-solid
     and open-thickness paths below: each resolved section's own wire
     (`wire_for_profile` for a closed `_ResolvedClosedSection`,
-    `wire_for_open_chain` for an open `_ResolvedOpenSection` - both entries
-    carry a `.sketch`/`.basis`/`.reference_angle` in the same shape, only
-    the middle field differs) is built, then rotated into alignment with
-    the first section's own `reference_angle` if both are set (see
-    `_rotate_wire`'s own docstring)."""
+    `wire_for_open_chain` for an open `_ResolvedOpenSection`, or already
+    built for an edge_ref-based `_ResolvedEdgeSection` - see that type's
+    own doc comment for why it carries no `.sketch`/`.basis` to build one
+    from) is built, then rotated into alignment with the first section's
+    own `reference_angle` if both are set (see `_rotate_wire`'s own
+    docstring) - always `None` for a `_ResolvedEdgeSection`, so this never
+    tries to rotate one."""
     reference_angle_0 = resolved[0].reference_angle
     wires: list[TopoDS_Wire] = []
     for index, entry in enumerate(resolved):
+        if isinstance(entry, _ResolvedEdgeSection):
+            wires.append(entry.wire)
+            continue
         wire = (
             wire_for_profile(entry.sketch, entry.profile, entry.basis)
             if isinstance(entry, _ResolvedClosedSection)
@@ -619,6 +689,104 @@ def _wires_from_resolved(resolved: list) -> list[TopoDS_Wire]:
             wire = _rotate_wire(wire, entry.basis, twist)
         wires.append(wire)
     return wires
+
+
+def _wire_edges_in_order(wire: TopoDS_Wire) -> list[TopoDS_Edge]:
+    """The edges of `wire`, in wire-traversal order - `TopExp_Explorer`
+    (used everywhere else in this module) enumerates a shape's own
+    sub-shapes in an unspecified, non-traversal order; `BRepTools_
+    WireExplorer` is OCCT's dedicated "walk this wire edge by edge, in
+    order" tool, needed here only because `_harmonize_section_wire_edge_
+    counts` picks which edge to split by length, not by position - the
+    order itself doesn't matter for that, but `BRepBuilderAPI_MakeWire`
+    reassembles a valid wire from any edge list via shared-vertex matching
+    regardless of the order they're added in, so there's no reason to
+    prefer one enumeration over the other; this one is simply the correct
+    tool for walking a wire."""
+    edges: list[TopoDS_Edge] = []
+    explorer = BRepTools_WireExplorer(wire)
+    while explorer.More():
+        edges.append(topods.Edge(explorer.Current()))
+        explorer.Next()
+    return edges
+
+
+def _edge_length(edge: TopoDS_Edge) -> float:
+    props = GProp_GProps()
+    brepgprop.LinearProperties(edge, props)
+    return props.Mass()
+
+
+def _split_edge_in_half(edge: TopoDS_Edge) -> tuple[TopoDS_Edge, TopoDS_Edge]:
+    """Splits `edge` at its own curve-parameter midpoint into two new edges
+    sharing the original curve (`BRep_Tool.Curve` gives back the same
+    `Geom_Curve` plus its `[first, last]` parameter range) - not a
+    reimplementation of the curve, just two `BRepBuilderAPI_MakeEdge`
+    sub-ranges of it. `BRepBuilderAPI_MakeWire`'s own shared-vertex
+    matching (see `_wire_edges_in_order`'s own doc comment) means the two
+    new edges don't need to be explicitly re-oriented to match the
+    original edge's own `Orientation()` - they're geometrically coincident
+    with the two halves of the original edge either way."""
+    curve, first, last = BRep_Tool.Curve(edge)
+    mid = (first + last) / 2.0
+    edge_a = BRepBuilderAPI_MakeEdge(curve, first, mid).Edge()
+    edge_b = BRepBuilderAPI_MakeEdge(curve, mid, last).Edge()
+    return edge_a, edge_b
+
+
+def _harmonize_section_wire_edge_counts(wires: list[TopoDS_Wire]) -> list[TopoDS_Wire]:
+    """Fixes the Thicken-Surface corner-defect bug ("lofted between an arc
+    and a profile of lines then thickened... inconsistent thickness,
+    untrimmed lines and bad corners"): `BRepOffsetAPI_ThruSections` between
+    sections with mismatched edge counts (e.g. a 1-edge Arc section vs an
+    N-edge polygon section) collapses into a single smooth BSpline face
+    with none of the polygon's own sharp corners carried into the result
+    as real trimmed edges - there is then nothing for a later `Thicken`
+    step's true-normal offset to preserve, however its own join-type
+    argument is set (`app.document.shell_ops.thicken_shell_to_solid`'s own
+    `GeomAbs_Intersection` join mitres corners *between adjacent faces of
+    an already-faceted shell*; it has nothing to mitre when the loft
+    itself produced only one smooth face to begin with).
+
+    The fix belongs upstream of `ThruSections`, not in `Thicken` itself:
+    every section wire is brought up to the same edge count - the highest
+    among them - by repeatedly splitting each low-count wire's own
+    currently-longest edge (by real arc length, `_edge_length`) at its
+    curve-parameter midpoint (`_split_edge_in_half`) until it matches. This
+    doesn't change any section's own shape at all (a split edge is still
+    exactly the same curve, just as two pieces) - only how many real,
+    individually-controllable edges represent it, which is what
+    `ThruSections` uses to decide where a lofted face boundary (and thus a
+    real corner in the output shell) falls. Splitting the *longest* edge
+    each time (rather than, say, always the first) keeps every original
+    section's own actual corners intact and spreads new splits evenly
+    rather than fragmenting one edge repeatedly while others stay whole.
+
+    A no-op (returns `wires` unchanged) when every wire already has the
+    same edge count, or when the shared count is 1 (an Arc-vs-Arc loft,
+    say) - matching this session's every other "no opt-in, no change"
+    convention (`_apply_alignment_point_translation`'s own docstring notes
+    the same one)."""
+    edge_lists = [_wire_edges_in_order(wire) for wire in wires]
+    target_edge_count = max(len(edges) for edges in edge_lists)
+    if target_edge_count <= 1 or all(len(edges) == target_edge_count for edges in edge_lists):
+        return wires
+
+    harmonized: list[TopoDS_Wire] = []
+    for wire, edges in zip(wires, edge_lists):
+        if len(edges) == target_edge_count:
+            harmonized.append(wire)
+            continue
+        edges = list(edges)
+        while len(edges) < target_edge_count:
+            longest_index = max(range(len(edges)), key=lambda i: _edge_length(edges[i]))
+            edge_a, edge_b = _split_edge_in_half(edges[longest_index])
+            edges[longest_index : longest_index + 1] = [edge_a, edge_b]
+        wire_maker = BRepBuilderAPI_MakeWire()
+        for edge in edges:
+            wire_maker.Add(edge)
+        harmonized.append(wire_maker.Wire())
+    return harmonized
 
 
 def resolve_loft_from_bodies(
@@ -662,13 +830,14 @@ def resolve_loft_from_bodies(
 
     if feature.thickness is None:
         resolved = [
-            _resolve_closed_section(part, section, bodies_so_far, excluded_feature_ids, index)
+            _resolve_closed_or_edge_section(part, section, bodies_so_far, excluded_feature_ids, index)
             for index, section in enumerate(feature.sections)
         ]
         wires = _wires_from_resolved(resolved)
         wires = _apply_alignment_point_translation(
             feature, resolved, wires, part, bodies_so_far, excluded_feature_ids
         )
+        wires = _harmonize_section_wire_edge_counts(wires)
 
         loft_maker = BRepOffsetAPI_ThruSections(True, feature.ruled)
         for wire in wires:
@@ -693,13 +862,14 @@ def resolve_loft_from_bodies(
         # loft without requiring the user to redraw their sketches as open
         # chains.
         resolved = [
-            _resolve_closed_section(part, section, bodies_so_far, excluded_feature_ids, index)
+            _resolve_closed_or_edge_section(part, section, bodies_so_far, excluded_feature_ids, index)
             for index, section in enumerate(feature.sections)
         ]
         wires = _wires_from_resolved(resolved)
         wires = _apply_alignment_point_translation(
             feature, resolved, wires, part, bodies_so_far, excluded_feature_ids
         )
+        wires = _harmonize_section_wire_edge_counts(wires)
 
         loft_maker = BRepOffsetAPI_ThruSections(False, feature.ruled)
         for wire in wires:
@@ -718,11 +888,12 @@ def resolve_loft_from_bodies(
         return solid, warnings
 
     resolved = [
-        _resolve_open_section(part, section, bodies_so_far, excluded_feature_ids, index)
+        _resolve_open_or_edge_section(part, section, bodies_so_far, excluded_feature_ids, index)
         for index, section in enumerate(feature.sections)
     ]
     wires = _wires_from_resolved(resolved)
     wires = _apply_alignment_point_translation(feature, resolved, wires, part, bodies_so_far, excluded_feature_ids)
+    wires = _harmonize_section_wire_edge_counts(wires)
 
     loft_maker = BRepOffsetAPI_ThruSections(False, feature.ruled)
     for wire in wires:

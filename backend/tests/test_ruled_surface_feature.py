@@ -119,9 +119,9 @@ def test_create_ruled_surface_feature_between_two_closed_squares_succeeds():
     assert body["type"] == "ruled_surface"
     assert body["produces"] == "surface"
     assert len(body["sections"]) == 2
-    # RuledSurfaceSectionSchema exposes only sketch_feature_id/profile_refs -
-    # no reference_point/alignment_point in the response shape at all.
-    assert set(body["sections"][0].keys()) == {"sketch_feature_id", "profile_refs"}
+    # RuledSurfaceSectionSchema exposes only sketch_feature_id/profile_refs/
+    # edge_ref - no reference_point/alignment_point in the response shape at all.
+    assert set(body["sections"][0].keys()) == {"sketch_feature_id", "profile_refs", "edge_ref"}
 
 
 def test_create_ruled_surface_feature_with_1_section_is_rejected():

@@ -6,19 +6,28 @@ but builds an open shell via `BRepOffsetAPI_MakePipeShell` (never calling
 document.sweep._sweep_wire`'s own setup, this module diverges only at that
 one call) instead of a solid.
 
-Unlike `RevolveSurfaceFeature`/`SurfaceFeature`, this requires a genuinely
-closed Profile up front - the same strict `EXTRUDABLE_STATUSES` gate `app.
-document.router._require_closed_sketch_feature` already enforces for
-Extrude/Revolve/Sweep - since `BRepOffsetAPI_MakePipeShell.Add` needs a real
-wire to sweep, and an "open profile swept into an open shell" has no
-established meaning the way a closed-profile-into-open-shell (this
-Feature's whole point) does.
+On-device feedback ("swept surface should support an open profile sketch"):
+unlike `SweepFeature`, this module never calls `.MakeSolid()` and
+`_shell_for_wire` below has no dependency at all on `wire` being closed
+(`BRepOffsetAPI_MakePipeShell.Add` sweeps an open wire into an open shell
+exactly as readily as a closed one) - the closed-profile-only gate this
+module originally inherited from Sweep's own `EXTRUDABLE_STATUSES` was
+therefore stricter than the actual OCCT operation needs, not a real
+limitation. Prefers a closed Profile (`EXTRUDABLE_STATUSES`) when the
+Sketch has one, exactly as before; falls back to a single open chain
+(`app.sketch.profile.detect_open_chain`, reusing `app.document.loft.
+wire_for_open_chain` - the exact same open-chain wire builder the thin/
+open-chain Loft path already uses) when it doesn't. `feature.profile_refs`
+(multi-profile disambiguation) has no open-chain analogue - mirrors `app.
+document.loft._resolve_open_section`'s own "a sketch with 2+ disjoint open
+chains is ambiguous, reject" scoping, rather than trying to extend it.
 
 v1 scope (mirrors `app.document.loft._resolve_closed_section`'s own
-identical guard): a profile with inner loops (holes) is rejected outright -
-`SweepFeature`'s own hollow-profile handling boolean-cuts two independently
-swept *solids* together, which has no shell equivalent (there is no
-"subtract one open shell from another" operation)."""
+identical guard): a *closed* profile with inner loops (holes) is rejected
+outright - `SweepFeature`'s own hollow-profile handling boolean-cuts two
+independently swept *solids* together, which has no shell equivalent (there
+is no "subtract one open shell from another" operation). An open chain has
+no holes concept at all, so this guard is moot for the open-chain path."""
 
 import logging
 
@@ -35,9 +44,10 @@ from app.document.extrude import (
     select_profiles,
     wire_for_profile,
 )
+from app.document.loft import wire_for_open_chain
 from app.document.models import Part, SketchFeature, SweptSurfaceFeature
 from app.document.sweep import resolve_path_wire
-from app.sketch.profile import ProfileStatus, detect_profile
+from app.sketch.profile import OpenChainStatus, ProfileStatus, detect_open_chain, detect_profile
 from app.sketch.store import get_sketch_or_404
 
 logger = logging.getLogger(__name__)
@@ -87,24 +97,34 @@ def resolve_swept_surface_from_bodies(
     excluded_feature_ids: frozenset[str],
 ) -> TopoDS_Shape | None:
     """The real OCCT shell(s) for one `SweptSurfaceFeature`, or `None` if
-    its backing Sketch no longer has a closed profile - callers skip rather
-    than error in that case, mirroring `app.document.surface.resolve_
-    surface_from_bodies`'s identical tolerance. A profile with holes always
-    raises `swept_surface_holes_unsupported` rather than being tolerated -
-    that is a structural v1-scope limitation, not topology drift."""
+    its backing Sketch no longer has a closed profile or a single open
+    chain to sweep - callers skip rather than error in that case, mirroring
+    `app.document.surface.resolve_surface_from_bodies`'s identical
+    tolerance. A *closed* profile with holes always raises `swept_surface_
+    holes_unsupported` rather than being tolerated - that is a structural
+    v1-scope limitation, not topology drift (see this module's own doc
+    comment for why an open chain has no holes concept to trip this at
+    all)."""
     sketch = get_sketch_or_404(sketch_feature.sketch_id)
     result = detect_profile(sketch)
-    # Sketcher-roadmap Phase 7 (2D Pattern/Mirror): see extrude.py's
-    # identical call site for why this re-expansion is needed here too.
-    sketch = sketch.expand_pattern_and_mirror_instances()
-    if result.status not in EXTRUDABLE_STATUSES:
+    # Only probed when there's no closed profile to use - keeps the common
+    # (closed-profile) case from paying for an open-chain detection pass it
+    # will never use.
+    open_result = None if result.status in EXTRUDABLE_STATUSES else detect_open_chain(sketch)
+    is_open_chain = open_result is not None and open_result.status == OpenChainStatus.SINGLE_CHAIN
+    if result.status not in EXTRUDABLE_STATUSES and not is_open_chain:
         logger.warning(
-            "Skipping SweptSurfaceFeature %s: sketch %s has no closed profile (status=%s)",
+            "Skipping SweptSurfaceFeature %s: sketch %s has no closed profile or single open "
+            "chain (closed status=%s, open status=%s)",
             feature.id,
             sketch.id,
             result.status.value,
+            open_result.status.value if open_result is not None else "n/a",
         )
         return None
+    # Sketcher-roadmap Phase 7 (2D Pattern/Mirror): see extrude.py's
+    # identical call site for why this re-expansion is needed here too.
+    sketch = sketch.expand_pattern_and_mirror_instances()
 
     basis = resolve_sketch_basis(part, sketch_feature, bodies_so_far, excluded_feature_ids)
     # `resolve_path_wire`'s second element (a fixed-binormal direction for
@@ -115,18 +135,23 @@ def resolve_swept_surface_from_bodies(
     # `_swept_surface_wire`-equivalent pipe-shell call.
     path_wire, _fixed_binormal = resolve_path_wire(part, feature.path_refs, bodies_so_far, excluded_feature_ids)
 
-    if result.status == ProfileStatus.CLOSED_LOOP:
-        assert result.profile is not None
-        candidates = [result.profile]
+    if result.status in EXTRUDABLE_STATUSES:
+        if result.status == ProfileStatus.CLOSED_LOOP:
+            assert result.profile is not None
+            candidates = [result.profile]
+        else:
+            candidates = result.loops
+        profiles = select_profiles(candidates, feature.profile_refs)
+
+        for profile in profiles:
+            if profile.inner_loops:
+                raise _swept_surface_holes_unsupported()
+
+        shells = [_shell_for_wire(path_wire, wire_for_profile(sketch, profile, basis)) for profile in profiles]
     else:
-        candidates = result.loops
-    profiles = select_profiles(candidates, feature.profile_refs)
+        assert open_result is not None and open_result.chain is not None
+        shells = [_shell_for_wire(path_wire, wire_for_open_chain(sketch, open_result.chain, basis))]
 
-    for profile in profiles:
-        if profile.inner_loops:
-            raise _swept_surface_holes_unsupported()
-
-    shells = [_shell_for_wire(path_wire, wire_for_profile(sketch, profile, basis)) for profile in profiles]
     if len(shells) == 1:
         return shells[0]
     builder = BRep_Builder()

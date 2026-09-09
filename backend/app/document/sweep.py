@@ -36,7 +36,9 @@ from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_MakePipeShell
 from OCC.Core.Geom import Geom_BezierCurve
 from OCC.Core.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Elips, gp_Pnt
 from OCC.Core.TColgp import TColgp_Array1OfPnt
-from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Edge, TopoDS_Shape, TopoDS_Wire
+from OCC.Core.TopAbs import TopAbs_VERTEX
+from OCC.Core.TopExp import TopExp_Explorer
+from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Edge, TopoDS_Shape, TopoDS_Wire, topods
 
 from app.document.create_plane import resolve_sketch_basis
 from app.document.extrude import (
@@ -51,11 +53,12 @@ from app.document.extrude import (
     basis_normal,
     basis_point_to_world,
     compute_part_bodies,
+    resolve_subshape_from_bodies,
     select_profiles,
     wire_for_profile,
 )
 from app.document.graph import sketch_feature_id_for_sketch
-from app.document.models import Part, SketchFeature, SweepFeature
+from app.document.models import Part, SketchFeature, SketchOrEdgeRef, SubShapeRef, SweepFeature
 from app.document.plane_geometry import is_mirrored_basis
 from app.sketch.models import Arc, Circle, Ellipse, Line, SketchEntityRef, SketchEntityType, Spline
 from app.sketch.profile import ProfileStatus, detect_profile
@@ -76,7 +79,35 @@ logger = logging.getLogger(__name__)
 _PATH_POINT_TOLERANCE = 1e-6
 
 
-def _invalid_path_ref(ref: SketchEntityRef) -> HTTPException:
+def _path_ref_error_detail(ref: SketchEntityRef | SketchOrEdgeRef) -> dict:
+    """The `sketch_id`/`entity_type`/`entity_id` (a Sketch entity) or
+    `body_id`/`shape_type`/`index` (a Body edge) fields `_invalid_path_ref`/
+    `_disconnected_path` embed to identify which `path_refs`/`guide_curve_
+    refs` entry failed. Accepts a bare `SketchEntityRef` directly (every
+    call site inside `_resolve_path_segment`, which only ever handles the
+    Sketch-entity branches and never itself sees the outer wrapper) as well
+    as a `SketchOrEdgeRef` (every call site in `resolve_path_wire` itself,
+    which sees whichever of the two callers actually resolved) - whichever
+    of `ref.sketch_entity_ref`/`ref.edge_ref` is set on the latter (the
+    router's own payload-shape validation guarantees exactly one is, by the
+    time either error can fire)."""
+    if isinstance(ref, SketchEntityRef):
+        return {"sketch_id": ref.sketch_id, "entity_type": ref.entity_type.value, "entity_id": ref.entity_id}
+    if ref.sketch_entity_ref is not None:
+        return {
+            "sketch_id": ref.sketch_entity_ref.sketch_id,
+            "entity_type": ref.sketch_entity_ref.entity_type.value,
+            "entity_id": ref.sketch_entity_ref.entity_id,
+        }
+    assert ref.edge_ref is not None
+    return {
+        "body_id": ref.edge_ref.body_id,
+        "shape_type": ref.edge_ref.shape_type.value,
+        "index": ref.edge_ref.index,
+    }
+
+
+def _invalid_path_ref(ref: SketchEntityRef | SketchOrEdgeRef) -> HTTPException:
     """The structured `invalid_path_ref` error for a `path_refs` entry that
     cannot be used as a Sweep path segment - covers every way this can
     fail: the entity doesn't exist, exists but isn't a Line/Arc/Circle/
@@ -102,16 +133,11 @@ def _invalid_path_ref(ref: SketchEntityRef) -> HTTPException:
     root-cause writeup."""
     return HTTPException(
         status_code=422,
-        detail={
-            "type": "invalid_path_ref",
-            "sketch_id": ref.sketch_id,
-            "entity_type": ref.entity_type.value,
-            "entity_id": ref.entity_id,
-        },
+        detail={"type": "invalid_path_ref", **_path_ref_error_detail(ref)},
     )
 
 
-def _disconnected_path(ref: SketchEntityRef, index: int) -> HTTPException:
+def _disconnected_path(ref: SketchOrEdgeRef, index: int) -> HTTPException:
     """The structured `disconnected_path` error for a `path_refs` entry
     (at `index`, the entry's own position in the list) whose Line does not
     share a coincident endpoint (within `_PATH_POINT_TOLERANCE`) with the
@@ -121,13 +147,7 @@ def _disconnected_path(ref: SketchEntityRef, index: int) -> HTTPException:
     that earlier failure mode)."""
     return HTTPException(
         status_code=422,
-        detail={
-            "type": "disconnected_path",
-            "sketch_id": ref.sketch_id,
-            "entity_type": ref.entity_type.value,
-            "entity_id": ref.entity_id,
-            "index": index,
-        },
+        detail={"type": "disconnected_path", **_path_ref_error_detail(ref), "index": index},
     )
 
 
@@ -432,9 +452,43 @@ def _resolve_path_segment(
     raise _invalid_path_ref(ref)
 
 
+def _resolve_edge_path_segment(bodies_so_far: dict[str, TopoDS_Shape], edge_ref: SubShapeRef) -> _PathSegment:
+    """On-device feedback ("surface tools should support edges, curves...
+    e.g. sweep along an edge"): the Body-edge counterpart to
+    `_resolve_path_segment`'s Sketch-entity branches, for a `path_refs`/
+    `guide_curve_refs` entry whose `SketchOrEdgeRef.edge_ref` is set
+    instead of `sketch_entity_ref`. Reuses `app.document.extrude.resolve_
+    subshape_from_bodies` verbatim - the same resolver `FilletFeature.
+    edge_refs`/`PointRef.vertex_ref` already use - so an unresolvable/stale
+    reference fails the same way theirs does (`missing_reference`), not a
+    separate error type.
+
+    A closed/periodic edge with no two genuinely distinct vertices (e.g. a
+    full-circle silhouette edge on a cylindrical face) resolves as its own
+    standalone closed segment, mirroring `_resolve_path_segment`'s Circle/
+    Ellipse branches - but with `plane_normal=None` (unlike those, an
+    arbitrary Body edge's own plane isn't already known here the way a
+    Sketch entity's own basis is) - `_sweep_wire`'s fixed-binormal fix
+    (see its own doc comment) is simply not applied for this case, falling
+    back to the same default trihedron every other non-fixed-binormal path
+    already uses; not yet extended to cover it."""
+    edge = topods.Edge(resolve_subshape_from_bodies(bodies_so_far, edge_ref))
+    explorer = TopExp_Explorer(edge, TopAbs_VERTEX)
+    vertices = []
+    while explorer.More():
+        vertices.append(topods.Vertex(explorer.Current()))
+        explorer.Next()
+    if len(vertices) >= 2:
+        start = BRep_Tool.Pnt(vertices[0])
+        end = BRep_Tool.Pnt(vertices[-1])
+        if start.Distance(end) >= _PATH_POINT_TOLERANCE:
+            return _PathSegment(start=start, end=end, edges=[edge], closed=False)
+    return _PathSegment(start=None, end=None, edges=[edge], closed=True)
+
+
 def resolve_path_wire(
     part: Part,
-    path_refs: list[SketchEntityRef],
+    path_refs: list[SketchOrEdgeRef],
     bodies_so_far: dict[str, TopoDS_Shape],
     excluded_feature_ids: frozenset[str],
 ) -> tuple[TopoDS_Wire, gp_Dir | None]:
@@ -498,9 +552,18 @@ def resolve_path_wire(
     segment's own `plane_normal` (see `_PathSegment`'s own doc comment) for
     the single-Circle/single-Ellipse case, `None` otherwise - `_sweep_wire`'s
     own parameter of the same name, threaded through by
-    `resolve_sweep_from_bodies`."""
+    `resolve_sweep_from_bodies`.
+
+    Each entry resolves via `_resolve_path_segment` (a Sketch entity,
+    `ref.sketch_entity_ref`) or `_resolve_edge_path_segment` (a Body edge,
+    `ref.edge_ref`) - see `SketchOrEdgeRef`'s own doc comment; the router's
+    payload-shape validation already guarantees exactly one is set per
+    entry, so this dispatches on whichever is, rather than re-checking."""
     segments = [
-        _resolve_path_segment(part, ref, bodies_so_far, excluded_feature_ids) for ref in path_refs
+        _resolve_path_segment(part, ref.sketch_entity_ref, bodies_so_far, excluded_feature_ids)
+        if ref.sketch_entity_ref is not None
+        else _resolve_edge_path_segment(bodies_so_far, ref.edge_ref)
+        for ref in path_refs
     ]
 
     if len(segments) == 1 and segments[0].closed:

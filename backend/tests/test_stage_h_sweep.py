@@ -32,6 +32,7 @@ from app.document.extrude import compute_part_bodies
 from app.document.sweep import resolve_path_wire
 from app.document.store import get_part_or_404
 from app.main import app
+from app.document.models import SketchOrEdgeRef
 from app.sketch.models import SketchEntityRef, SketchEntityType
 from tests.conftest import TEST_API_KEY
 
@@ -319,7 +320,11 @@ def test_boss_sweep_along_a_path_spanning_two_different_sketches_succeeds():
     ]
     response = _create_sweep(part["id"], profile["id"], path_refs)
     assert response.status_code == 201
-    assert response.json()["path_refs"] == path_refs
+    # `path_refs` entries are now `SketchOrEdgeRefSchema` (see
+    # app.document.models.SketchOrEdgeRef), which always echoes its own
+    # `edge_ref` field (None for a Sketch-entity entry) alongside the
+    # original flat sketch_id/entity_type/entity_id fields.
+    assert response.json()["path_refs"] == [{**ref, "edge_ref": None} for ref in path_refs]
 
     mesh = _mesh(part["id"])
     assert len(mesh) == 1
@@ -812,11 +817,15 @@ def test_resolve_path_wire_reverses_an_arc_segment_walked_back_to_front():
     line = _add_line(path_feature["sketch_id"], p_far["id"], p_mid["id"])
 
     part_obj = get_part_or_404(part["id"])
-    arc_ref = SketchEntityRef(
-        sketch_id=path_feature["sketch_id"], entity_type=SketchEntityType.ARC, entity_id=arc["id"]
+    arc_ref = SketchOrEdgeRef(
+        sketch_entity_ref=SketchEntityRef(
+            sketch_id=path_feature["sketch_id"], entity_type=SketchEntityType.ARC, entity_id=arc["id"]
+        )
     )
-    line_ref = SketchEntityRef(
-        sketch_id=path_feature["sketch_id"], entity_type=SketchEntityType.LINE, entity_id=line["id"]
+    line_ref = SketchOrEdgeRef(
+        sketch_entity_ref=SketchEntityRef(
+            sketch_id=path_feature["sketch_id"], entity_type=SketchEntityType.LINE, entity_id=line["id"]
+        )
     )
 
     def wire_edges(path_refs):

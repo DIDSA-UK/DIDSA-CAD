@@ -424,6 +424,29 @@ class PointRefSchema(BaseModel):
     sketch_point_ref: SketchEntityRefSchema | None = None
 
 
+class SketchOrEdgeRefSchema(BaseModel):
+    """The wire counterpart to `app.document.models.SketchOrEdgeRef` - used
+    wherever `SweepFeature`/`SweptSurfaceFeature.path_refs` and
+    `LoftFeature`/`LoftSurfaceFeature.guide_curve_refs` previously accepted
+    a plain `SketchEntityRefSchema`.
+
+    Deliberately NOT `PointRefSchema`'s own two-nested-field shape
+    (`sketch_entity_ref: SketchEntityRefSchema | None` /
+    `edge_ref: SubShapeRefSchema | None`) - `sketch_id`/`entity_type`/
+    `entity_id` are inlined flat instead, exactly matching
+    `SketchEntityRefSchema`'s own field names, so every existing `path_refs`/
+    `guide_curve_refs` entry already sent by this app's client (and every
+    existing test payload) keeps parsing identically, unchanged, with
+    `edge_ref` left unset - this new field is purely additive. Exactly one
+    of (`sketch_id`+`entity_type`+`entity_id` all set) or (`edge_ref` set)
+    is enforced by the router (`_validate_sketch_or_edge_refs`), not here."""
+
+    sketch_id: str | None = None
+    entity_type: SketchEntityType | None = None
+    entity_id: str | None = None
+    edge_ref: SubShapeRefSchema | None = None
+
+
 class PlaneRefSchema(BaseModel):
     """C5: the wire counterpart to `app.document.models.PlaneRef` - exactly
     one of `face_ref`/`fixed_plane`/`plane_feature_id` should be supplied,
@@ -658,7 +681,7 @@ class SweepFeatureCreate(BaseModel):
     `profile_refs` mirrors `ExtrudeFeatureCreate.profile_refs` exactly."""
 
     sketch_feature_id: str
-    path_refs: list[SketchEntityRefSchema]
+    path_refs: list[SketchOrEdgeRefSchema]
     mode: SweepMode
     target_body_ids: list[str] = []
     profile_refs: list[SketchEntityRefSchema] = []
@@ -670,7 +693,7 @@ class SweepFeatureUpdate(BaseModel):
     `sketch_feature_id` is never revised, only the path/mode/targets/
     profile selection of whichever Sketch this Feature already sweeps."""
 
-    path_refs: list[SketchEntityRefSchema] | None = None
+    path_refs: list[SketchOrEdgeRefSchema] | None = None
     mode: SweepMode | None = None
     target_body_ids: list[str] | None = None
     profile_refs: list[SketchEntityRefSchema] | None = None
@@ -680,7 +703,7 @@ class SweepFeatureResponse(BaseModel):
     type: Literal["sweep"] = "sweep"
     id: str
     sketch_feature_id: str
-    path_refs: list[SketchEntityRefSchema] = []
+    path_refs: list[SketchOrEdgeRefSchema] = []
     mode: SweepMode
     locked: bool
     target_body_ids: list[str] = []
@@ -1186,12 +1209,12 @@ class SweptSurfaceFeatureCreate(BaseModel):
     fallback here)."""
 
     sketch_feature_id: str
-    path_refs: list[SketchEntityRefSchema]
+    path_refs: list[SketchOrEdgeRefSchema]
     profile_refs: list[SketchEntityRefSchema] = []
 
 
 class SweptSurfaceFeatureUpdate(BaseModel):
-    path_refs: list[SketchEntityRefSchema] | None = None
+    path_refs: list[SketchOrEdgeRefSchema] | None = None
     profile_refs: list[SketchEntityRefSchema] | None = None
 
 
@@ -1199,7 +1222,7 @@ class SweptSurfaceFeatureResponse(BaseModel):
     type: Literal["swept_surface"] = "swept_surface"
     id: str
     sketch_feature_id: str
-    path_refs: list[SketchEntityRefSchema] = []
+    path_refs: list[SketchOrEdgeRefSchema] = []
     profile_refs: list[SketchEntityRefSchema] = []
     locked: bool
     # B1: always SURFACE for a SweptSurfaceFeature.
@@ -1700,10 +1723,11 @@ class LoftSectionSchema(BaseModel):
     own docstring for `reference_point`'s alignment semantics and
     `alignment_point`'s own, separate translation semantics."""
 
-    sketch_feature_id: str
+    sketch_feature_id: str | None = None
     profile_refs: list[SketchEntityRefSchema] = []
     reference_point: SketchEntityRefSchema | None = None
     alignment_point: SketchEntityRefSchema | None = None
+    edge_ref: SubShapeRefSchema | None = None
 
 
 class LoftFeatureCreate(BaseModel):
@@ -1730,7 +1754,7 @@ class LoftFeatureCreate(BaseModel):
     # closed Profile, lofted as a hollow, cap-less tube instead - see
     # `LoftFeature`'s own docstring.
     thin_from_closed_profile: bool = False
-    guide_curve_refs: list[SketchEntityRefSchema] = []
+    guide_curve_refs: list[SketchOrEdgeRefSchema] = []
 
 
 class LoftFeatureUpdate(BaseModel):
@@ -1751,7 +1775,7 @@ class LoftFeatureUpdate(BaseModel):
     target_body_ids: list[str] | None = None
     thickness: float | None = None
     thin_from_closed_profile: bool | None = None
-    guide_curve_refs: list[SketchEntityRefSchema] | None = None
+    guide_curve_refs: list[SketchOrEdgeRefSchema] | None = None
 
 
 class LoftFeatureResponse(BaseModel):
@@ -1763,7 +1787,7 @@ class LoftFeatureResponse(BaseModel):
     target_body_ids: list[str] = []
     thickness: float | None = None
     thin_from_closed_profile: bool = False
-    guide_curve_refs: list[SketchEntityRefSchema] = []
+    guide_curve_refs: list[SketchOrEdgeRefSchema] = []
     locked: bool
     # B1: see SketchFeatureResponse.produces above - always BODY for a
     # LoftFeature.
@@ -1785,13 +1809,13 @@ class LoftSurfaceFeatureCreate(BaseModel):
 
     sections: list[LoftSectionSchema]
     ruled: bool = False
-    guide_curve_refs: list[SketchEntityRefSchema] = []
+    guide_curve_refs: list[SketchOrEdgeRefSchema] = []
 
 
 class LoftSurfaceFeatureUpdate(BaseModel):
     sections: list[LoftSectionSchema] | None = None
     ruled: bool | None = None
-    guide_curve_refs: list[SketchEntityRefSchema] | None = None
+    guide_curve_refs: list[SketchOrEdgeRefSchema] | None = None
 
 
 class LoftSurfaceFeatureResponse(BaseModel):
@@ -1799,7 +1823,7 @@ class LoftSurfaceFeatureResponse(BaseModel):
     id: str
     sections: list[LoftSectionSchema]
     ruled: bool
-    guide_curve_refs: list[SketchEntityRefSchema] = []
+    guide_curve_refs: list[SketchOrEdgeRefSchema] = []
     locked: bool
     # B1: always SURFACE for a LoftSurfaceFeature.
     produces: Produces
@@ -1815,8 +1839,9 @@ class RuledSurfaceSectionSchema(BaseModel):
     docstring - the router constructs the real domain `LoftSection` with
     those two always `None`)."""
 
-    sketch_feature_id: str
+    sketch_feature_id: str | None = None
     profile_refs: list[SketchEntityRefSchema] = []
+    edge_ref: SubShapeRefSchema | None = None
 
 
 class RuledSurfaceFeatureCreate(BaseModel):
