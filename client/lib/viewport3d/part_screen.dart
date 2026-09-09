@@ -7124,6 +7124,7 @@ class _PartScreenState extends State<PartScreen> {
   Future<void> _exitToConnectionScreen() async {
     setState(() => _toolbarOpen = false);
     if (!await _confirmExitPart()) return;
+    if (!mounted) return;
 
     await Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(builder: (context) => const ConnectionScreen()),
@@ -16187,9 +16188,9 @@ class _PartScreenState extends State<PartScreen> {
           _cancelPlaneSelectionMode();
         } else {
           () async {
-            if (await _confirmExitPart()) {
-              Navigator.of(context).pop();
-            }
+            final confirmed = await _confirmExitPart();
+            if (!confirmed || !mounted) return;
+            Navigator.of(context).pop();
           }();
         }
       },
