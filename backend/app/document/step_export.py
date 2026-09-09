@@ -27,20 +27,35 @@ no STEP AP has a schema slot for them (see `Part`'s own docstring), so
 writing them would only ever round-trip with DIDSA-CAD itself, not
 interoperate with another platform.
 
-**Verification status**: the XCAF/STEPCAFControl technique above is new to
-this codebase - like every other genuinely new OCCT technique here (see
-`app.document.loft`'s own module docstring), it needs a real on-device/CI
-pass before being trusted; this repo's dev sandbox has historically had no
-`pythonocc-core` installed. The mass/volume validation-properties write in
-particular (`XCAFDoc_Volume`) is the most speculative part of this module -
-wrapped in its own narrow try/except so a version of pythonocc-core missing
-that specific (less commonly used) binding degrades to "no mass in this
-STEP file" rather than failing the whole export; Name/Material writing is
-not wrapped this way, since those are extremely well-established, widely
-documented OCCT/XCAF calls.
+**Verification status**: verified against a real `pythonocc-core==7.9.3`
+install (conda-forge), not just code review - see the git history for what
+that pass caught and fixed. Two corrections from the first draft of this
+module, both confirmed by hand against a real install before landing:
+
+1. `TDocStd_Document`/`XCAFApp_Application`: the textbook `XCAFApp_
+   Application.GetApplication()` + `app.NewDocument(...)` two-step (found in
+   most OCCT C++ tutorials) is a **hard process abort** in this
+   pythonocc-core build - `TDocStd_Document`'s own format-name constructor
+   argument needs the application's plugin/resource files
+   (`CSF_PluginDefaults` etc.) wired up, which this build's own Python
+   layer does not do for you. pythonocc-core's own bundled `OCC.Extend.
+   DataExchange` module (`read_step_file_with_names_colors`) uses a much
+   simpler, working idiom instead: `TDocStd_Document("any-label-string")`
+   with no `XCAFApp_Application` involved at all - copied here verbatim.
+2. `TDataStd_Name.Set(label, ...)` wants a plain Python `str`, not a
+   `TCollection_ExtendedString` - passing the latter raises a SWIG
+   overload-resolution `TypeError` (this one's a clean, catchable Python
+   exception, not a process abort).
+
+`XCAFDoc_Volume.Set`/`XCAFDoc_MaterialTool.AddMaterial`/`SetMaterial`,
+`STEPCAFControl_Writer.Transfer`, and the density-unit round-trip
+(`AddMaterial`'s density arg in kg/m^3 with `densName="KG/M3"` reads back as
+g/cm^3 via `XCAFDoc_MaterialTool.GetDensityForShape` - OCCT's own Units
+library normalizing it) were all confirmed correct as originally written,
+by writing a real STEP file and grepping it for the resulting `PRODUCT`/
+`DESCRIPTIVE_REPRESENTATION_ITEM`/`VOLUME_MEASURE` entities.
 """
 
-import logging
 import os
 import tempfile
 
@@ -50,39 +65,34 @@ from OCC.Core.IFSelect import IFSelect_RetDone
 from OCC.Core.Interface import Interface_Static
 from OCC.Core.STEPCAFControl import STEPCAFControl_Writer
 from OCC.Core.STEPControl import STEPControl_AsIs
-from OCC.Core.TCollection import TCollection_ExtendedString, TCollection_HAsciiString
+from OCC.Core.TCollection import TCollection_HAsciiString
 from OCC.Core.TDataStd import TDataStd_Name
 from OCC.Core.TDocStd import TDocStd_Document
-from OCC.Core.XCAFApp import XCAFApp_Application
 from OCC.Core.XCAFDoc import XCAFDoc_DocumentTool
 
 from app.document.models import MaterialAssignment, Part
 
-logger = logging.getLogger(__name__)
-
 
 def _new_xcaf_document() -> TDocStd_Document:
-    """A fresh, empty XCAF document - the standard OCCT
-    `XCAFApp_Application`/`TDocStd_Document` boilerplate every XCAF-based
-    read/write starts from."""
-    app = XCAFApp_Application.GetApplication()
-    doc = TDocStd_Document(TCollection_ExtendedString("XmlXCAF"))
-    app.NewDocument(TCollection_ExtendedString("MDTV-XCAF"), doc)
-    return doc
+    """A fresh, empty XCAF document - see this module's own docstring for
+    why this is `TDocStd_Document("...")` alone (pythonocc-core's own
+    `OCC.Extend.DataExchange` idiom) and not the `XCAFApp_Application`
+    two-step every OCCT C++ tutorial shows, which aborts the whole process
+    in this build."""
+    return TDocStd_Document("didsa-cad-step-export")
 
 
 def _set_shape_mass_property(label, volume_mm3: float) -> None:
-    """Best-effort: records `volume_mm3` on `label` via the `XCAFDoc_Volume`
-    XCAF attribute, so `STEPCAFControl_Writer` includes it as a STEP
-    validation property. See this module's own docstring for why this is
-    wrapped separately from the rest of the XCAF writing - the most
-    speculative single call in this file."""
-    try:
-        from OCC.Core.XCAFDoc import XCAFDoc_Volume
+    """Records `volume_mm3` on `label` via the `XCAFDoc_Volume` XCAF
+    attribute, so `STEPCAFControl_Writer` includes it as a STEP validation
+    property (`PROPERTY_DEFINITION('geometric validation property',
+    'volume', ...)` + `VOLUME_MEASURE`, confirmed by writing a real file and
+    grepping it) - the raw value round-trips verbatim (no unit conversion,
+    unlike density), so `volume_mm3` (this app's own implicit-mm convention)
+    is exactly what shows up in the exported file."""
+    from OCC.Core.XCAFDoc import XCAFDoc_Volume
 
-        XCAFDoc_Volume.Set(label, volume_mm3)
-    except Exception:  # noqa: BLE001 - deliberately broad, see module docstring
-        logger.warning("Could not record a STEP validation-property volume for a Body", exc_info=True)
+    XCAFDoc_Volume.Set(label, volume_mm3)
 
 
 def export_step(bodies: dict[str, object], part: Part | None = None) -> bytes:
@@ -141,14 +151,20 @@ def export_step(bodies: dict[str, object], part: Part | None = None) -> bytes:
             # across its constituent solids unless the user names them
             # individually).
             display_name = part.part_number or part.name
-            TDataStd_Name.Set(label, TCollection_ExtendedString(display_name))
+            TDataStd_Name.Set(label, display_name)
 
             volume_props = GProp_GProps()
             brepgprop.VolumeProperties(shape, volume_props)
             _set_shape_mass_property(label, abs(volume_props.Mass()))
 
-    Interface_Static.SetCVal("write.step.schema", "AP242DIS")
+    # STEPCAFControl_Writer() must be constructed *before* SetCVal - same
+    # ordering requirement this module's own original bare-STEPControl_
+    # Writer code already had to learn the hard way (confirmed again here:
+    # reordering these two during the XCAF rewrite silently dropped every
+    # export back to AP214/AUTOMOTIVE_DESIGN, caught by grepping a real
+    # exported file's own FILE_SCHEMA line for "AP242" and getting nothing).
     writer = STEPCAFControl_Writer()
+    Interface_Static.SetCVal("write.step.schema", "AP242DIS")
     if not writer.Transfer(doc, STEPControl_AsIs):
         raise RuntimeError("STEP transfer failed for this Part's Bodies")
 

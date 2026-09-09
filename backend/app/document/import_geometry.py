@@ -79,24 +79,37 @@ class StepImportMetadata:
 
 def extract_step_metadata(data: bytes) -> StepImportMetadata | None:
     """Best-effort read of a STEP file's own XCAF product name/material
-    (Part Properties round) via `STEPCAFControl_Reader` - a genuinely new
-    OCCT technique to this codebase, on the read side of the same AP242/XCAF
-    machinery `app.document.step_export.export_step` now writes with.
-    Returns `None` (never raises) on any failure - this is supplementary,
-    nice-to-have metadata for pre-filling this app's own Part Properties/
-    material-assignment UI after an import, never something a successful
-    geometry import should be blocked by. What actually comes back depends
-    entirely on what the *source* CAD system chose to populate on its own
-    STEP export - there is no guarantee any given field is present, even for
-    a well-formed AP242 file.
+    (Part Properties round) via `STEPCAFControl_Reader` - the read side of
+    the same AP242/XCAF machinery `app.document.step_export.export_step`
+    writes with. Returns `None` on failure (never lets a malformed/unusual
+    third-party STEP file's metadata block a successful geometry import) -
+    what actually comes back depends entirely on what the *source* CAD
+    system chose to populate on its own STEP export; there is no guarantee
+    any given field is present, even for a well-formed AP242 file.
 
-    Deliberately wrapped in one broad try/except for the whole function
-    (unlike `app.document.step_export`'s narrower per-call wrapping) - unlike
-    export, which controls exactly what it asks OCCT to write, this is
-    reading arbitrary third-party STEP files through a corner of the
-    pythonocc-core binding surface this codebase has not exercised before,
-    so any of several unfamiliar calls could plausibly raise on a given
-    pythonocc-core version or a given file's own structure."""
+    Verified against a real `pythonocc-core==7.9.3` install, not just code
+    review - two corrections from the first draft, both confirmed by hand:
+    1. Document creation mirrors `app.document.step_export._new_xcaf_
+       document`'s own fix - `TDocStd_Document("...")` alone, no
+       `XCAFApp_Application` (that idiom is a hard process abort in this
+       build, which no amount of try/except can catch - a process abort
+       isn't a Python exception at all, so getting the OCCT calls
+       themselves right is the only real fix, not defensive wrapping).
+    2. `TDF_Label.FindAttribute` with a plain `(GUID, attr)` pair - the
+       naive/textbook call - doesn't match this binding's expected
+       argument shape and raises (a catchable `TypeError`, unlike (1));
+       `TDF_Label.GetLabelName()` is pythonocc-core's own simpler
+       convenience wrapper for the same thing and is used instead.
+       Likewise `XCAFDoc_MaterialTool.GetMaterial(shapeLabel)` - passing a
+       *shape's* label where the binding actually expects a *material's*
+       own label - segfaults; `GetDensityForShape(shapeLabel)` is the
+       binding's own correct shape-oriented accessor (confirmed to already
+       return density in g/cm^3, matching this app's own convention,
+       regardless of what unit string the source file's material was
+       declared in - OCCT's own Units library normalizes it), and a
+       material's *name* has no equivalent single-call accessor, so it's
+       recovered by scanning `GetMaterialLabels()` (see below).
+    """
     fd, tmp_path = tempfile.mkstemp(suffix=".step")
     os.close(fd)
     try:
@@ -104,16 +117,11 @@ def extract_step_metadata(data: bytes) -> StepImportMetadata | None:
             handle.write(data)
 
         from OCC.Core.STEPCAFControl import STEPCAFControl_Reader
-        from OCC.Core.TCollection import TCollection_ExtendedString
-        from OCC.Core.TDataStd import TDataStd_Name
         from OCC.Core.TDF import TDF_LabelSequence
         from OCC.Core.TDocStd import TDocStd_Document
-        from OCC.Core.XCAFApp import XCAFApp_Application
         from OCC.Core.XCAFDoc import XCAFDoc_DocumentTool
 
-        app = XCAFApp_Application.GetApplication()
-        doc = TDocStd_Document(TCollection_ExtendedString("XmlXCAF"))
-        app.NewDocument(TCollection_ExtendedString("MDTV-XCAF"), doc)
+        doc = TDocStd_Document("didsa-cad-step-import")
 
         reader = STEPCAFControl_Reader()
         reader.SetNameMode(True)
@@ -132,33 +140,39 @@ def extract_step_metadata(data: bytes) -> StepImportMetadata | None:
             return None
         label = free_shapes.Value(1)
 
-        name: str | None = None
-        name_attr = TDataStd_Name()
-        if label.FindAttribute(TDataStd_Name.GetID(), name_attr):
-            name = name_attr.Get().ToExtString()
+        name = label.GetLabelName() or None
 
         material: MaterialAssignment | None = None
-        material_label = material_tool.GetMaterial(label)
-        if material_label is not None and not material_label.IsNull():
-            got = material_tool.GetMaterial(material_label)
-            # pythonocc-core wraps a C++ bool-returning, reference-out-param
-            # method as a Python tuple `(ok, name, description, density,
-            # dens_name, dens_val_type)` - unpack defensively rather than
-            # assuming this exact shape, since this specific binding is the
-            # least-exercised call in this file.
-            if isinstance(got, tuple) and len(got) >= 4 and got[0]:
-                material_name = str(got[1])
-                density_kg_m3 = float(got[3])
-                material = MaterialAssignment(
-                    material_id=f"imported:{material_name}",
-                    name=material_name,
-                    density_g_cm3=density_kg_m3 / 1000.0,
-                )
+        density_g_cm3 = material_tool.GetDensityForShape(label)
+        if density_g_cm3 > 0:
+            # No single-call "material name for this shape" accessor exists
+            # on this binding (see this function's own docstring) - the
+            # common case is exactly one material defined in the whole
+            # document, so name that one; with several, there's no reliable
+            # way to tell which belongs to this shape from density alone
+            # (two materials can share a density), so fall back to a
+            # density-only label rather than guessing wrong.
+            material_labels = TDF_LabelSequence()
+            material_tool.GetMaterialLabels(material_labels)
+            material_name = f"Imported ({density_g_cm3:g} g/cm3)"
+            if material_labels.Length() == 1:
+                got = material_tool.GetMaterial(material_labels.Value(1))
+                if isinstance(got, (list, tuple)) and len(got) >= 2 and got[0]:
+                    material_name = str(got[1])
+            material = MaterialAssignment(
+                material_id=f"imported:{material_name}",
+                name=material_name,
+                density_g_cm3=density_g_cm3,
+            )
 
         if name is None and material is None:
             return None
         return StepImportMetadata(name=name, material=material)
-    except Exception:  # noqa: BLE001 - deliberately broad, see docstring
+    except Exception:  # noqa: BLE001 - a genuinely unfamiliar third-party file's
+        # structure could still raise somewhere in this reading path even with
+        # every call above confirmed against a real install - never let that
+        # block a successful geometry import, which is all this metadata is
+        # supplementary to.
         logger.warning("Could not extract STEP MBD metadata from an imported file", exc_info=True)
         return None
     finally:
