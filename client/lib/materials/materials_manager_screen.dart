@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
@@ -39,20 +38,20 @@ class _MaterialsManagerScreenState extends State<MaterialsManagerScreen> {
   }
 
   Future<void> _addMaterial() async {
-    final saved = await Navigator.of(context).push<Material>(
+    final saved = await Navigator.of(context).push<CadMaterial>(
       MaterialPageRoute(builder: (_) => const MaterialFormScreen()),
     );
     if (saved != null && mounted) setState(() {});
   }
 
-  Future<void> _editMaterial(Material material) async {
-    final saved = await Navigator.of(context).push<Material>(
+  Future<void> _editMaterial(CadMaterial material) async {
+    final saved = await Navigator.of(context).push<CadMaterial>(
       MaterialPageRoute(builder: (_) => MaterialFormScreen(existing: material)),
     );
     if (saved != null && mounted) setState(() {});
   }
 
-  Future<void> _deleteMaterial(Material material) async {
+  Future<void> _deleteMaterial(CadMaterial material) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(

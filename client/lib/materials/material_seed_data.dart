@@ -10,8 +10,8 @@ import 'material.dart';
 /// wrong density is a silent mass-calculation bug. `null` marks a property
 /// this app has no confident typical value for (e.g. cast iron's yield
 /// strength - grey iron is brittle and has no well-defined yield point).
-List<Material> buildSeedMaterials(DateTime now) {
-  Material m(
+List<CadMaterial> buildSeedMaterials(DateTime now) {
+  CadMaterial m(
     String name,
     String category,
     double density, {
@@ -24,7 +24,7 @@ List<Material> buildSeedMaterials(DateTime now) {
     double? k,
     double? cp,
   }) =>
-      Material(
+      CadMaterial(
         id: 'seed-${name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '-')}',
         name: name,
         category: category,

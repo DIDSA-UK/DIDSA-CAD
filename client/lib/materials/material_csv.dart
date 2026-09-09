@@ -24,7 +24,7 @@ const List<String> materialCsvColumns = [
   'specific_heat_j_kgk',
 ];
 
-String materialsToCsv(List<Material> materials) {
+String materialsToCsv(List<CadMaterial> materials) {
   final rows = <List<dynamic>>[
     materialCsvColumns,
     for (final m in materials)
@@ -51,9 +51,9 @@ String materialsToCsv(List<Material> materials) {
 /// parses to `null` rather than being treated as an error. Every imported
 /// material is fresh (`isBuiltIn: false`, a new id, the current timestamp) -
 /// see [materialCsvColumns]'s own doc comment for why.
-({List<Material> imported, int skipped}) materialsFromCsv(String csv) {
+({List<CadMaterial> imported, int skipped}) materialsFromCsv(String csv) {
   final rows = const CsvToListConverter(eol: '\n', shouldParseNumbers: false).convert(csv);
-  if (rows.isEmpty) return (imported: const <Material>[], skipped: 0);
+  if (rows.isEmpty) return (imported: const <CadMaterial>[], skipped: 0);
 
   final header = rows.first.map((c) => c.toString().trim().toLowerCase()).toList();
   final columnIndex = {for (var i = 0; i < header.length; i++) header[i]: i};
@@ -68,7 +68,7 @@ String materialsToCsv(List<Material> materials) {
   double? parseDouble(String? value) => value == null ? null : double.tryParse(value);
 
   final random = Random();
-  final imported = <Material>[];
+  final imported = <CadMaterial>[];
   var skipped = 0;
 
   for (final row in rows.skip(1)) {
@@ -80,7 +80,7 @@ String materialsToCsv(List<Material> materials) {
       skipped++;
       continue;
     }
-    imported.add(Material(
+    imported.add(CadMaterial(
       id: '${DateTime.now().microsecondsSinceEpoch}-${random.nextInt(1 << 32)}',
       name: name,
       category: category,

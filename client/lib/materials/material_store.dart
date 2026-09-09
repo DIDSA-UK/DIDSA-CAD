@@ -19,12 +19,12 @@ class MaterialStore {
 
   static const String _prefKey = 'material_library';
 
-  static List<Material> _materials = [];
+  static List<CadMaterial> _materials = [];
   static final Random _idRandom = Random();
 
-  static List<Material> get all => List.unmodifiable(_materials);
+  static List<CadMaterial> get all => List.unmodifiable(_materials);
 
-  static Material? byId(String id) {
+  static CadMaterial? byId(String id) {
     for (final material in _materials) {
       if (material.id == id) return material;
     }
@@ -43,7 +43,7 @@ class MaterialStore {
     }
     try {
       final decoded = jsonDecode(raw) as List;
-      _materials = decoded.map((e) => Material.fromJson(e as Map<String, dynamic>)).toList();
+      _materials = decoded.map((e) => CadMaterial.fromJson(e as Map<String, dynamic>)).toList();
     } catch (_) {
       // Corrupt/unreadable stored value - fail open to the seed set rather
       // than crashing the whole screen on load, same "don't let stale local
@@ -58,9 +58,9 @@ class MaterialStore {
     await prefs.setString(_prefKey, jsonEncode(_materials.map((m) => m.toJson()).toList()));
   }
 
-  static Future<Material> add(Material material) async {
+  static Future<CadMaterial> add(CadMaterial material) async {
     final withId = material.id.isEmpty
-        ? Material(
+        ? CadMaterial(
             id: '${DateTime.now().microsecondsSinceEpoch}-${_idRandom.nextInt(1 << 32)}',
             name: material.name,
             category: material.category,
@@ -82,7 +82,7 @@ class MaterialStore {
     return withId;
   }
 
-  static Future<void> update(Material material) async {
+  static Future<void> update(CadMaterial material) async {
     _materials = [for (final m in _materials) if (m.id == material.id) material else m];
     await _persist();
   }

@@ -3,14 +3,14 @@ import 'package:flutter/material.dart';
 import 'material.dart';
 import 'material_store.dart';
 
-/// Add/edit form for one [Material] - shared by the Materials Manager's own
+/// Add/edit form for one [CadMaterial] - shared by the Materials Manager's own
 /// "+ Add Material"/edit actions and the material picker sheet's "+ Add new
 /// material..." quick-add row (`material_picker_sheet.dart`), so there is
 /// exactly one place this form's fields/validation live. Pops with the
-/// saved [Material] on success, or `null` on cancel.
+/// saved [CadMaterial] on success, or `null` on cancel.
 class MaterialFormScreen extends StatefulWidget {
   /// Null for "add a new material"; non-null to edit an existing one.
-  final Material? existing;
+  final CadMaterial? existing;
 
   const MaterialFormScreen({super.key, this.existing});
 
@@ -62,7 +62,7 @@ class _MaterialFormScreenState extends State<MaterialFormScreen> {
     if (density == null) return; // validator already guards this
 
     final existing = widget.existing;
-    final material = Material(
+    final material = CadMaterial(
       id: existing?.id ?? '',
       name: _name.text.trim(),
       category: _category.text.trim(),

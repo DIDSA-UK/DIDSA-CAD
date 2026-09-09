@@ -52,7 +52,7 @@ class _MaterialPickerSheetState extends State<_MaterialPickerSheet> {
     setState(() => _loaded = true);
   }
 
-  void _choose(Material material) {
+  void _choose(CadMaterial material) {
     Navigator.of(context).pop(
       MaterialPickerResult(
         MaterialAssignmentDto(materialId: material.id, name: material.name, densityGCm3: material.densityGCm3),
@@ -61,7 +61,7 @@ class _MaterialPickerSheetState extends State<_MaterialPickerSheet> {
   }
 
   Future<void> _addNew() async {
-    final saved = await Navigator.of(context).push<Material>(
+    final saved = await Navigator.of(context).push<CadMaterial>(
       MaterialPageRoute(builder: (_) => const MaterialFormScreen()),
     );
     if (saved != null && mounted) _choose(saved);

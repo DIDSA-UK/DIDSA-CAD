@@ -15,7 +15,7 @@
 /// (`mass_g = volume_mm3 * density_g_cm3 * 0.001`) lives on the backend
 /// (`app.document.measure._mass_grams`) since mass is always computed from
 /// geometry the backend already holds.
-class Material {
+class CadMaterial {
   final String id;
   final String name;
   final String category;
@@ -36,7 +36,7 @@ class Material {
   final bool isBuiltIn;
   final DateTime createdAt;
 
-  const Material({
+  const CadMaterial({
     required this.id,
     required this.name,
     required this.category,
@@ -53,7 +53,7 @@ class Material {
     required this.createdAt,
   });
 
-  Material copyWith({
+  CadMaterial copyWith({
     String? name,
     String? category,
     double? densityGCm3,
@@ -67,7 +67,7 @@ class Material {
     double? specificHeatJKgK,
     bool? isBuiltIn,
   }) {
-    return Material(
+    return CadMaterial(
       id: id,
       name: name ?? this.name,
       category: category ?? this.category,
@@ -85,7 +85,7 @@ class Material {
     );
   }
 
-  factory Material.fromJson(Map<String, dynamic> json) => Material(
+  factory CadMaterial.fromJson(Map<String, dynamic> json) => CadMaterial(
         id: json['id'] as String,
         name: json['name'] as String,
         category: json['category'] as String,
