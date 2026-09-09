@@ -1039,6 +1039,98 @@ class SurfaceFeatureResponse(BaseModel):
     produces: Produces
 
 
+class PlanarSurfaceFeatureCreate(BaseModel):
+    """Phase 1 surfacing package: creates a `PlanarSurfaceFeature` - a flat
+    face straight from an existing SketchFeature's closed Profile (see
+    `app.document.models.PlanarSurfaceFeature`'s own docstring). Unlike
+    `SurfaceFeatureCreate`, the backing Sketch must already have a closed
+    profile at create time (`app.document.router._require_closed_sketch_
+    feature`) - there is no open-chain fallback for a bare face. `profile_
+    refs` mirrors `ExtrudeFeatureCreate.profile_refs` exactly."""
+
+    sketch_feature_id: str
+    profile_refs: list[SketchEntityRefSchema] = []
+
+
+class PlanarSurfaceFeatureUpdate(BaseModel):
+    """Partial update for live-preview re-solves, same omitted-vs-current-
+    value convention as `SurfaceFeatureUpdate`."""
+
+    sketch_feature_id: str | None = None
+    profile_refs: list[SketchEntityRefSchema] | None = None
+
+
+class PlanarSurfaceFeatureResponse(BaseModel):
+    type: Literal["planar_surface"] = "planar_surface"
+    id: str
+    sketch_feature_id: str
+    profile_refs: list[SketchEntityRefSchema] = []
+    locked: bool
+    # B1: always SURFACE for a PlanarSurfaceFeature.
+    produces: Produces
+
+
+class RevolveSurfaceFeatureCreate(BaseModel):
+    """Phase 1 surfacing package: creates a `RevolveSurfaceFeature` -
+    mirrors `RevolveFeatureCreate` minus `mode`/`target_body_ids` (a
+    standalone-only Feature, see `app.document.models.RevolveSurfaceFeature`'s
+    own docstring). Unlike `RevolveFeatureCreate`, the backing Sketch is not
+    required to already have a closed profile - a single open wire is also
+    valid, mirroring `SurfaceFeatureCreate`'s own tolerance."""
+
+    sketch_feature_id: str
+    axis_ref: SketchEntityRefSchema
+    angle: float
+    profile_refs: list[SketchEntityRefSchema] = []
+
+
+class RevolveSurfaceFeatureUpdate(BaseModel):
+    axis_ref: SketchEntityRefSchema | None = None
+    angle: float | None = None
+    profile_refs: list[SketchEntityRefSchema] | None = None
+
+
+class RevolveSurfaceFeatureResponse(BaseModel):
+    type: Literal["revolve_surface"] = "revolve_surface"
+    id: str
+    sketch_feature_id: str
+    axis_ref: SketchEntityRefSchema
+    angle: float
+    profile_refs: list[SketchEntityRefSchema] = []
+    locked: bool
+    # B1: always SURFACE for a RevolveSurfaceFeature.
+    produces: Produces
+
+
+class SweptSurfaceFeatureCreate(BaseModel):
+    """Phase 1 surfacing package: creates a `SweptSurfaceFeature` - mirrors
+    `SweepFeatureCreate` minus `mode`/`target_body_ids`. Unlike
+    `RevolveSurfaceFeatureCreate`, the backing Sketch must already have a
+    closed profile at create time (see `app.document.models.
+    SweptSurfaceFeature`'s own docstring for why there is no open-chain
+    fallback here)."""
+
+    sketch_feature_id: str
+    path_refs: list[SketchEntityRefSchema]
+    profile_refs: list[SketchEntityRefSchema] = []
+
+
+class SweptSurfaceFeatureUpdate(BaseModel):
+    path_refs: list[SketchEntityRefSchema] | None = None
+    profile_refs: list[SketchEntityRefSchema] | None = None
+
+
+class SweptSurfaceFeatureResponse(BaseModel):
+    type: Literal["swept_surface"] = "swept_surface"
+    id: str
+    sketch_feature_id: str
+    path_refs: list[SketchEntityRefSchema] = []
+    profile_refs: list[SketchEntityRefSchema] = []
+    locked: bool
+    # B1: always SURFACE for a SweptSurfaceFeature.
+    produces: Produces
+
+
 class PatternFeatureCreate(BaseModel):
     """Pattern/Mirror scoping's Phase 2/4 (`docs/pattern-mirror-scope.md`
     §2.2/§2.3/§4): creates a `PatternFeature` repeating the single Body
@@ -1544,7 +1636,7 @@ class LoftFeatureCreate(BaseModel):
     `app.document.router._validate_loft_sections`) via `BRepOffsetAPI_
     ThruSections`. Boss/Cut + `target_body_ids` follow `SweepFeatureCreate`'s
     exact convention. `thickness`, if set (see `app.document.router.
-    _validate_loft_thickness`), switches every section from a closed Profile
+    _validate_thickness_nonzero`), switches every section from a closed Profile
     to a single open chain and thickens the resulting lofted shell by this
     signed value instead of lofting directly into a solid - see
     `LoftFeature`'s own docstring. `guide_curve_refs`, if set (see
@@ -1600,6 +1692,181 @@ class LoftFeatureResponse(BaseModel):
     # `00-conventions.md`'s validation-banner convention (empty for the
     # common, non-self-intersecting case).
     warnings: list[str] = []
+
+
+class LoftSurfaceFeatureCreate(BaseModel):
+    """Phase 1 surfacing package: creates a `LoftSurfaceFeature` - mirrors
+    `LoftFeatureCreate` minus `mode`/`target_body_ids`/`thickness` (see
+    `app.document.models.LoftSurfaceFeature`'s own docstring for the
+    closed-vs-open probing dispatch this Feature's own eager resolve
+    exercises instead of a persisted `thickness` flag)."""
+
+    sections: list[LoftSectionSchema]
+    ruled: bool = False
+    guide_curve_refs: list[SketchEntityRefSchema] = []
+
+
+class LoftSurfaceFeatureUpdate(BaseModel):
+    sections: list[LoftSectionSchema] | None = None
+    ruled: bool | None = None
+    guide_curve_refs: list[SketchEntityRefSchema] | None = None
+
+
+class LoftSurfaceFeatureResponse(BaseModel):
+    type: Literal["loft_surface"] = "loft_surface"
+    id: str
+    sections: list[LoftSectionSchema]
+    ruled: bool
+    guide_curve_refs: list[SketchEntityRefSchema] = []
+    locked: bool
+    # B1: always SURFACE for a LoftSurfaceFeature.
+    produces: Produces
+    # Mirrors LoftFeatureResponse.warnings exactly - see that field's own
+    # doc comment.
+    warnings: list[str] = []
+
+
+class RuledSurfaceSectionSchema(BaseModel):
+    """Phase 1 surfacing package: the narrower, Ruled-Surface-only section
+    shape - just `sketch_feature_id`/`profile_refs`, no `reference_point`/
+    `alignment_point` (see `app.document.models.RuledSurfaceFeature`'s own
+    docstring - the router constructs the real domain `LoftSection` with
+    those two always `None`)."""
+
+    sketch_feature_id: str
+    profile_refs: list[SketchEntityRefSchema] = []
+
+
+class RuledSurfaceFeatureCreate(BaseModel):
+    """Phase 1 surfacing package: creates a `RuledSurfaceFeature` - exactly
+    2 `sections` (see `app.document.router._validate_ruled_surface_
+    sections`), no ruled toggle/reference-point/alignment-point/guide-curve
+    UI at all (see `RuledSurfaceSectionSchema`'s own docstring)."""
+
+    sections: list[RuledSurfaceSectionSchema]
+
+
+class RuledSurfaceFeatureUpdate(BaseModel):
+    sections: list[RuledSurfaceSectionSchema] | None = None
+
+
+class RuledSurfaceFeatureResponse(BaseModel):
+    type: Literal["ruled_surface"] = "ruled_surface"
+    id: str
+    sections: list[RuledSurfaceSectionSchema]
+    locked: bool
+    # B1: always SURFACE for a RuledSurfaceFeature.
+    produces: Produces
+
+
+class ThickenFeatureCreate(BaseModel):
+    """Phase 2 surfacing package: creates a `ThickenFeature` - thickens the
+    shell produced by the existing surface-producing Feature named by
+    `surface_feature_id` (bare Feature id, same convention `SplitToolRef
+    Schema.surface_feature_id` already establishes) by `thickness` (nonzero
+    - see `app.document.router._validate_thickness_nonzero`, the Phase-0-
+    renamed generic check `LoftFeatureCreate.thickness` already uses)."""
+
+    surface_feature_id: str
+    thickness: float
+
+
+class ThickenFeatureUpdate(BaseModel):
+    surface_feature_id: str | None = None
+    thickness: float | None = None
+
+
+class ThickenFeatureResponse(BaseModel):
+    type: Literal["thicken"] = "thicken"
+    id: str
+    surface_feature_id: str
+    thickness: float
+    locked: bool
+    # B1: always BODY for a ThickenFeature.
+    produces: Produces
+
+
+class KnitSurfaceFeatureCreate(BaseModel):
+    """Phase 2 surfacing package: creates a `KnitSurfaceFeature` - sews 2+
+    existing surface-producing Features (`surface_feature_ids`, bare
+    Feature ids) into one shape (see `app.document.router._validate_knit_
+    surface_payload` for the length/type checks)."""
+
+    surface_feature_ids: list[str]
+
+
+class KnitSurfaceFeatureUpdate(BaseModel):
+    surface_feature_ids: list[str] | None = None
+
+
+class KnitSurfaceFeatureResponse(BaseModel):
+    type: Literal["knit_surface"] = "knit_surface"
+    id: str
+    surface_feature_ids: list[str]
+    locked: bool
+    # B1: always SURFACE for a KnitSurfaceFeature.
+    produces: Produces
+
+
+class SolidFromSurfacesFeatureCreate(BaseModel):
+    """Phase 2 surfacing package: creates a `SolidFromSurfacesFeature` -
+    sews 2+ existing surface-producing Features (`surface_feature_ids`,
+    same convention as `KnitSurfaceFeatureCreate`) into a single watertight
+    solid Body (see `app.document.router._validate_solid_from_surfaces_
+    payload` for the length/type checks - watertightness itself is only
+    checked at resolve time, see `app.document.solid_from_surfaces`'s own
+    module docstring)."""
+
+    surface_feature_ids: list[str]
+
+
+class SolidFromSurfacesFeatureUpdate(BaseModel):
+    surface_feature_ids: list[str] | None = None
+
+
+class SolidFromSurfacesFeatureResponse(BaseModel):
+    type: Literal["solid_from_surfaces"] = "solid_from_surfaces"
+    id: str
+    surface_feature_ids: list[str]
+    locked: bool
+    # B1: always BODY for a SolidFromSurfacesFeature.
+    produces: Produces
+
+
+class OffsetSourceRefSchema(BaseModel):
+    """Phase 2 surfacing package: the wire counterpart to `app.document.
+    models.OffsetSourceRef` - exactly one of `face_ref`/`surface_feature_id`
+    should be supplied, matching `PlaneRefSchema`'s own "one of N optional
+    fields" convention (see its docstring); not enforced here, checked by
+    `app.document.router._validate_offset_surface_source`."""
+
+    face_ref: SubShapeRefSchema | None = None
+    surface_feature_id: str | None = None
+
+
+class OffsetSurfaceFeatureCreate(BaseModel):
+    """Phase 2 surfacing package, last of the four: creates an
+    `OffsetSurfaceFeature` - offsets `source` (a Body face or an existing
+    single-shell surface Feature) by `distance` along its own outward
+    normal, into a brand-new, independent Surface."""
+
+    source: OffsetSourceRefSchema
+    distance: float
+
+
+class OffsetSurfaceFeatureUpdate(BaseModel):
+    source: OffsetSourceRefSchema | None = None
+    distance: float | None = None
+
+
+class OffsetSurfaceFeatureResponse(BaseModel):
+    type: Literal["offset_surface"] = "offset_surface"
+    id: str
+    source: OffsetSourceRefSchema
+    distance: float
+    locked: bool
+    # B1: always SURFACE for an OffsetSurfaceFeature.
+    produces: Produces
 
 
 class GearGroupSchema(BaseModel):
@@ -2133,6 +2400,15 @@ FeatureResponse = Union[
     BevelPairFeatureResponse,
     GearChainFeatureResponse,
     PlanetaryGearFeatureResponse,
+    PlanarSurfaceFeatureResponse,
+    RevolveSurfaceFeatureResponse,
+    SweptSurfaceFeatureResponse,
+    LoftSurfaceFeatureResponse,
+    RuledSurfaceFeatureResponse,
+    ThickenFeatureResponse,
+    KnitSurfaceFeatureResponse,
+    SolidFromSurfacesFeatureResponse,
+    OffsetSurfaceFeatureResponse,
 ]
 """Pre-existing bug fix (found while verifying LOD Phase 2 chunk 3's own new
 `PlanetaryGearFeature` job-mode tests): `GearChainFeatureResponse`/`Planetary

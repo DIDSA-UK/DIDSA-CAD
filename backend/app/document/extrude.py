@@ -59,29 +59,38 @@ from app.document.models import (
     GearFeature,
     GearType,
     ImportFeature,
+    KnitSurfaceFeature,
     ScaleBodyFeature,
     LoftFeature,
     LoftMode,
+    LoftSurfaceFeature,
     MergeFeature,
     MergeMode,
     MirrorFeature,
     MoveBodyFeature,
     MoveFaceFeature,
+    OffsetSurfaceFeature,
     Part,
     PatternFeature,
+    PlanarSurfaceFeature,
     PlanetaryGearFeature,
     RackFeature,
     RackType,
     ResolvedPlane,
     RevolveFeature,
     RevolveMode,
+    RevolveSurfaceFeature,
+    RuledSurfaceFeature,
     SketchFeature,
+    SolidFromSurfacesFeature,
     SplitFeature,
     SubShapeRef,
     SubShapeType,
     SurfaceFeature,
     SweepFeature,
     SweepMode,
+    SweptSurfaceFeature,
+    ThickenFeature,
 )
 from app.sketch.models import (
     Arc,
@@ -1766,6 +1775,202 @@ def _apply_feature_to_bodies_impl(
         # shape directly rather than going through that split-by-solid
         # path - the same "not every registered body is a TopoDS_Solid"
         # precedent.
+        bodies[feature.id] = shape
+        return
+
+    if isinstance(feature, PlanarSurfaceFeature):
+        # Phase 1 surfacing package: simplest of the five new surface-
+        # producing tools - see PlanarSurfaceFeature's own docstring.
+        # Function-local import mirrors this function's own SurfaceFeature
+        # import just above (app.document.planar_surface imports several
+        # names from this module at its own module level, so the reverse
+        # import must stay function-local to avoid a circular import).
+        # resolve_planar_surface_from_bodies follows LoftFeature's own
+        # "always raise, never return None" contract, so this narrowly
+        # tolerates only its own invalid_planar_surface_sketch error type -
+        # anything else (e.g. a missing_reference from an upstream plane)
+        # must still propagate and fail the whole request.
+        from app.document.planar_surface import resolve_planar_surface_from_bodies
+
+        sketch_feature = part.get_feature(feature.sketch_feature_id)
+        if not isinstance(sketch_feature, SketchFeature):
+            logger.warning(
+                "Skipping PlanarSurfaceFeature %s: referenced sketch feature %s not found",
+                feature.id,
+                feature.sketch_feature_id,
+            )
+            return
+        try:
+            shape = resolve_planar_surface_from_bodies(
+                feature, sketch_feature, part, bodies, excluded_feature_ids
+            )
+        except HTTPException as exc:
+            if not isinstance(exc.detail, dict) or exc.detail.get("type") != "invalid_planar_surface_sketch":
+                raise
+            logger.warning("Skipping PlanarSurfaceFeature %s: could not be resolved", feature.id)
+            return
+        # Mirrors SurfaceFeature's own registration just above - a bare
+        # Face/Compound has no TopAbs_SOLID for _register_solids' own
+        # TopExp_Explorer walk to find.
+        bodies[feature.id] = shape
+        return
+
+    if isinstance(feature, RevolveSurfaceFeature):
+        # Phase 1 surfacing package: mirrors SurfaceFeature's own "skip,
+        # don't fail /mesh" tolerance for a stale/edited-away Sketch
+        # (resolve_revolve_surface_from_bodies returns None for that case),
+        # plus a blanket HTTPException catch for a genuine axis/build
+        # failure - the same tolerance RevolveFeature's own Boss/Cut branch
+        # already has (see that branch's own comment).
+        from app.document.revolve_surface import resolve_revolve_surface_from_bodies
+
+        sketch_feature = part.get_feature(feature.sketch_feature_id)
+        if not isinstance(sketch_feature, SketchFeature):
+            logger.warning(
+                "Skipping RevolveSurfaceFeature %s: referenced sketch feature %s not found",
+                feature.id,
+                feature.sketch_feature_id,
+            )
+            return
+        try:
+            shape = resolve_revolve_surface_from_bodies(
+                feature, sketch_feature, part, bodies, excluded_feature_ids
+            )
+        except HTTPException:
+            logger.warning("Skipping RevolveSurfaceFeature %s: could not be resolved", feature.id)
+            return
+        if shape is None:
+            return
+        bodies[feature.id] = shape
+        return
+
+    if isinstance(feature, SweptSurfaceFeature):
+        # Phase 1 surfacing package: same tolerance shape as
+        # RevolveSurfaceFeature just above - resolve_swept_surface_from_
+        # bodies returns None for a stale/edited-away Sketch, and a
+        # genuine path/build/holes failure is tolerated broadly here too.
+        from app.document.swept_surface import resolve_swept_surface_from_bodies
+
+        sketch_feature = part.get_feature(feature.sketch_feature_id)
+        if not isinstance(sketch_feature, SketchFeature):
+            logger.warning(
+                "Skipping SweptSurfaceFeature %s: referenced sketch feature %s not found",
+                feature.id,
+                feature.sketch_feature_id,
+            )
+            return
+        try:
+            shape = resolve_swept_surface_from_bodies(
+                feature, sketch_feature, part, bodies, excluded_feature_ids
+            )
+        except HTTPException:
+            logger.warning("Skipping SweptSurfaceFeature %s: could not be resolved", feature.id)
+            return
+        if shape is None:
+            return
+        bodies[feature.id] = shape
+        return
+
+    if isinstance(feature, LoftSurfaceFeature):
+        # Phase 1 surfacing package: mirrors LoftFeature's own branch
+        # further down - narrowly tolerates only this module's own
+        # invalid_loft_surface_section/loft_surface_failed error types,
+        # and threads its own non-blocking self-intersection warnings
+        # through _record_feature_warnings the identical way LoftFeature's
+        # own branch does, so a plain GET .../features re-read can surface
+        # them via cached_feature_warnings.
+        from app.document.loft_surface import resolve_loft_surface_from_bodies
+
+        try:
+            shape, warnings = resolve_loft_surface_from_bodies(feature, part, bodies, excluded_feature_ids)
+        except HTTPException as exc:
+            if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
+                "invalid_loft_surface_section",
+                "loft_surface_failed",
+            ):
+                raise
+            logger.warning("Skipping LoftSurfaceFeature %s: could not be resolved", feature.id)
+            _record_feature_warnings(part, feature.id, [], excluded_feature_ids)
+            return
+        _record_feature_warnings(part, feature.id, warnings, excluded_feature_ids)
+        bodies[feature.id] = shape
+        return
+
+    if isinstance(feature, RuledSurfaceFeature):
+        # Phase 1 surfacing package: a thin delegating wrapper around
+        # LoftSurfaceFeature's own construction (see its own docstring) -
+        # tolerated broadly since a genuine failure here can legitimately
+        # surface with either this module's own invalid_ruled_surface_
+        # sections type or app.document.loft_surface's own error types
+        # (the delegated call can raise either).
+        from app.document.ruled_surface import resolve_ruled_surface_from_bodies
+
+        try:
+            shape = resolve_ruled_surface_from_bodies(feature, part, bodies, excluded_feature_ids)
+        except HTTPException:
+            logger.warning("Skipping RuledSurfaceFeature %s: could not be resolved", feature.id)
+            return
+        bodies[feature.id] = shape
+        return
+
+    if isinstance(feature, ThickenFeature):
+        # Phase 2 surfacing package: mirrors LoftSurfaceFeature's own
+        # tolerance shape just above - a blanket HTTPException catch (an
+        # invalid/stale surface_feature_id reference, or a genuine thicken
+        # failure, are both tolerated here the same "skip, don't fail
+        # /mesh" way every other Phase 1/2 surfacing branch already is).
+        # Unlike the seven shell-producing tools, a Thicken solid DOES have
+        # a TopAbs_SOLID for _register_solids' own TopExp_Explorer walk to
+        # find, so it's registered the same way LoftFeature's own solid is.
+        from app.document.thicken import resolve_thicken_from_bodies
+
+        try:
+            solid = resolve_thicken_from_bodies(feature, part, bodies, excluded_feature_ids)
+        except HTTPException:
+            logger.warning("Skipping ThickenFeature %s: could not be resolved", feature.id)
+            return
+        _register_solids(bodies, feature.id, solid)
+        return
+
+    if isinstance(feature, KnitSurfaceFeature):
+        # Phase 2 surfacing package: mirrors SurfaceFeature's own
+        # registration - a sewn Shell/Compound has no TopAbs_SOLID for
+        # _register_solids' own TopExp_Explorer walk to find.
+        from app.document.knit_surface import resolve_knit_surface_from_bodies
+
+        try:
+            shape = resolve_knit_surface_from_bodies(feature, part, bodies, excluded_feature_ids)
+        except HTTPException:
+            logger.warning("Skipping KnitSurfaceFeature %s: could not be resolved", feature.id)
+            return
+        bodies[feature.id] = shape
+        return
+
+    if isinstance(feature, SolidFromSurfacesFeature):
+        # Phase 2 surfacing package: a genuine TopoDS_Solid (unlike Knit
+        # Surfaces just above), registered via _register_solids the same
+        # way ThickenFeature's own solid is.
+        from app.document.solid_from_surfaces import resolve_solid_from_surfaces_from_bodies
+
+        try:
+            solid = resolve_solid_from_surfaces_from_bodies(feature, part, bodies, excluded_feature_ids)
+        except HTTPException:
+            logger.warning("Skipping SolidFromSurfacesFeature %s: could not be resolved", feature.id)
+            return
+        _register_solids(bodies, feature.id, solid)
+        return
+
+    if isinstance(feature, OffsetSurfaceFeature):
+        # Phase 2 surfacing package, last of the four: mirrors KnitSurface
+        # Feature's own registration - a bare offset Face/Shell has no
+        # TopAbs_SOLID either.
+        from app.document.offset_surface import resolve_offset_surface_from_bodies
+
+        try:
+            shape = resolve_offset_surface_from_bodies(feature, part, bodies, excluded_feature_ids)
+        except HTTPException:
+            logger.warning("Skipping OffsetSurfaceFeature %s: could not be resolved", feature.id)
+            return
         bodies[feature.id] = shape
         return
 

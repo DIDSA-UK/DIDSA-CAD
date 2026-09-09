@@ -257,6 +257,31 @@ class PlaneRefDto {
       };
 }
 
+/// Phase 2 surfacing package: the wire counterpart to the backend's
+/// `OffsetSourceRefSchema` - exactly one of [faceRef]/[surfaceFeatureId]
+/// should be supplied (a Body face, or an existing single-shell surface-
+/// producing Feature), matching [PlaneRefDto]'s own "one of N optional
+/// fields" convention. Used only by [FeatureDto.offsetSource]/
+/// `createOffsetSurfaceFeature`/`updateOffsetSurfaceFeature`.
+class OffsetSourceRefDto {
+  final SubShapeRefDto? faceRef;
+  final String? surfaceFeatureId;
+
+  const OffsetSourceRefDto({this.faceRef, this.surfaceFeatureId});
+
+  factory OffsetSourceRefDto.fromJson(Map<String, dynamic> json) => OffsetSourceRefDto(
+        faceRef: json['face_ref'] == null
+            ? null
+            : SubShapeRefDto.fromJson(json['face_ref'] as Map<String, dynamic>),
+        surfaceFeatureId: json['surface_feature_id'] as String?,
+      );
+
+  Map<String, dynamic> toJson() => {
+        if (faceRef != null) 'face_ref': faceRef!.toJson(),
+        if (surfaceFeatureId != null) 'surface_feature_id': surfaceFeatureId,
+      };
+}
+
 /// Pattern/Mirror scoping's Phase 2: the wire counterpart to the backend's
 /// `PatternDirectionRefSchema` - exactly one of [edgeRef]/[sketchLineRef]/
 /// [fixedAxis] should be supplied (a straight Body edge, a straight Sketch
@@ -764,6 +789,31 @@ class FeatureDto {
   /// type and wire key (`offset`, not `offset_distance`).
   final double? offsetDistance;
 
+  /// Phase 2 surfacing package - only present on a `"thicken"` Feature: the
+  /// existing surface-producing Feature it thickens into a solid Body (the
+  /// backend `ThickenFeature.surface_feature_id` - bare Feature id, same
+  /// convention [toolSurfaceFeatureId] already establishes). This Feature's
+  /// own signed thickness reuses [thickness] verbatim (identical wire key,
+  /// and a [FeatureDto] instance is only ever one Feature type at a time -
+  /// same "no separate field needed" reasoning [delta]/[directionRef]
+  /// already document).
+  final String? surfaceFeatureId;
+
+  /// Phase 2 surfacing package - only present on a `"knit_surface"` or
+  /// `"solid_from_surfaces"` Feature: the 2+ existing surface-producing
+  /// Features (bare ids) being sewn together (the backend `KnitSurface
+  /// Feature`/`SolidFromSurfacesFeature.surface_feature_ids`).
+  final List<String> surfaceFeatureIds;
+
+  /// Phase 2 surfacing package - only present on an `"offset_surface"`
+  /// Feature: the single Body face or existing surface-producing Feature
+  /// being offset (the backend `OffsetSurfaceFeature.source` -
+  /// [OffsetSourceRefDto]'s own "exactly one of two" convention). This
+  /// Feature's own signed offset distance reuses [distance] verbatim
+  /// (identical wire key, same "no separate field needed" reasoning
+  /// [radius]/[distance] already share between Fillet/Chamfer).
+  final OffsetSourceRefDto? offsetSource;
+
   FeatureDto({
     required this.type,
     required this.id,
@@ -839,6 +889,9 @@ class FeatureDto {
     this.directEditFaceRefs = const [],
     this.offsetDistance,
     this.directionDistance,
+    this.surfaceFeatureId,
+    this.surfaceFeatureIds = const [],
+    this.offsetSource,
   });
 
   factory FeatureDto.fromJson(Map<String, dynamic> json) => FeatureDto(
@@ -981,6 +1034,11 @@ class FeatureDto {
             : const [],
         offsetDistance: (json['offset_distance'] as num?)?.toDouble(),
         directionDistance: (json['direction_distance'] as num?)?.toDouble(),
+        surfaceFeatureId: json['surface_feature_id'] as String?,
+        surfaceFeatureIds: (json['surface_feature_ids'] as List?)?.cast<String>() ?? const [],
+        offsetSource: json['source'] == null
+            ? null
+            : OffsetSourceRefDto.fromJson(json['source'] as Map<String, dynamic>),
       );
 }
 
@@ -2946,6 +3004,402 @@ class DocumentApiClient {
                 if (thickness != null) 'thickness': thickness,
                 if (guideCurveRefs != null)
                   'guide_curve_refs': guideCurveRefs.map((r) => r.toJson()).toList(),
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  // --- Phase 1 surfacing package -------------------------------------------
+  // Five new surface-producing tools (Planar/Revolve/Swept/Loft/Ruled
+  // Surface) - each mirrors its solid-tool sibling's create/update pair
+  // exactly (same field names/shapes, same `FeatureDto.fromJson` decode -
+  // see `backend/app/document/schemas.py`'s own `PlanarSurfaceFeatureCreate`/
+  // `RevolveSurfaceFeatureCreate`/`SweptSurfaceFeatureCreate`/
+  // `LoftSurfaceFeatureCreate`/`RuledSurfaceFeatureCreate` for the exact wire
+  // shape each was built against), minus `mode`/`target_body_ids` (none of
+  // these five ever combine with an existing Body - always a brand-new,
+  // standalone Surface).
+
+  /// Creates a PlanarSurfaceFeature - the simplest of the five: a flat face
+  /// straight from [sketchFeatureId]'s own closed Profile, no further
+  /// parameters at all beyond which profile(s) to use.
+  Future<FeatureDto> createPlanarSurfaceFeature(
+    String partId, {
+    required String sketchFeatureId,
+    List<SketchEntityRefDto> profileRefs = const [],
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/planar-surface-features'),
+              headers: _headers,
+              body: jsonEncode({
+                'sketch_feature_id': sketchFeatureId,
+                'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing PlanarSurfaceFeature - mirrors
+  /// [updateSurfaceFeature]'s omitted-vs-current-value convention, minus the
+  /// fields a Planar Surface has no concept of at all.
+  Future<FeatureDto> updatePlanarSurfaceFeature(
+    String partId,
+    String featureId, {
+    String? sketchFeatureId,
+    List<SketchEntityRefDto>? profileRefs,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/planar-surface-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (sketchFeatureId != null) 'sketch_feature_id': sketchFeatureId,
+                if (profileRefs != null)
+                  'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Creates a RevolveSurfaceFeature - mirrors [createRevolveFeature] exactly,
+  /// minus `mode`/`targetBodyIds` (always a brand-new, standalone Surface).
+  Future<FeatureDto> createRevolveSurfaceFeature(
+    String partId, {
+    required String sketchFeatureId,
+    required SketchEntityRefDto axisRef,
+    required double angle,
+    List<SketchEntityRefDto> profileRefs = const [],
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/revolve-surface-features'),
+              headers: _headers,
+              body: jsonEncode({
+                'sketch_feature_id': sketchFeatureId,
+                'axis_ref': axisRef.toJson(),
+                'angle': angle,
+                'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing RevolveSurfaceFeature - mirrors
+  /// [updateRevolveFeature]'s omitted-vs-current-value convention, minus
+  /// `mode`/`targetBodyIds`.
+  Future<FeatureDto> updateRevolveSurfaceFeature(
+    String partId,
+    String featureId, {
+    SketchEntityRefDto? axisRef,
+    double? angle,
+    List<SketchEntityRefDto>? profileRefs,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/revolve-surface-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (axisRef != null) 'axis_ref': axisRef.toJson(),
+                if (angle != null) 'angle': angle,
+                if (profileRefs != null)
+                  'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Creates a SweptSurfaceFeature - mirrors [createSweepFeature] exactly,
+  /// minus `mode`/`targetBodyIds`.
+  Future<FeatureDto> createSweptSurfaceFeature(
+    String partId, {
+    required String sketchFeatureId,
+    required List<SketchEntityRefDto> pathRefs,
+    List<SketchEntityRefDto> profileRefs = const [],
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/swept-surface-features'),
+              headers: _headers,
+              body: jsonEncode({
+                'sketch_feature_id': sketchFeatureId,
+                'path_refs': pathRefs.map((r) => r.toJson()).toList(),
+                'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing SweptSurfaceFeature - mirrors
+  /// [updateSweepFeature]'s omitted-vs-current-value convention, minus
+  /// `mode`/`targetBodyIds`.
+  Future<FeatureDto> updateSweptSurfaceFeature(
+    String partId,
+    String featureId, {
+    List<SketchEntityRefDto>? pathRefs,
+    List<SketchEntityRefDto>? profileRefs,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/swept-surface-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (pathRefs != null) 'path_refs': pathRefs.map((r) => r.toJson()).toList(),
+                if (profileRefs != null)
+                  'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Creates a LoftSurfaceFeature - mirrors [createLoftFeature] exactly,
+  /// minus `mode`/`targetBodyIds`/`thickness` (a Loft Surface never thickens
+  /// itself into a solid - see the backend `LoftSurfaceFeature`'s own
+  /// docstring; a user wanting a solid chains Thicken afterward).
+  Future<FeatureDto> createLoftSurfaceFeature(
+    String partId, {
+    required List<LoftSectionDto> sections,
+    bool ruled = false,
+    List<SketchEntityRefDto> guideCurveRefs = const [],
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/loft-surface-features'),
+              headers: _headers,
+              body: jsonEncode({
+                'sections': sections.map((s) => s.toJson()).toList(),
+                'ruled': ruled,
+                'guide_curve_refs': guideCurveRefs.map((r) => r.toJson()).toList(),
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing LoftSurfaceFeature - mirrors
+  /// [updateLoftFeature]'s omitted-vs-current-value convention (including for
+  /// [guideCurveRefs] - omitting keeps the current value, `[]` explicitly
+  /// clears it), minus `mode`/`targetBodyIds`/`thickness`.
+  Future<FeatureDto> updateLoftSurfaceFeature(
+    String partId,
+    String featureId, {
+    List<LoftSectionDto>? sections,
+    bool? ruled,
+    List<SketchEntityRefDto>? guideCurveRefs,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/loft-surface-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (sections != null) 'sections': sections.map((s) => s.toJson()).toList(),
+                if (ruled != null) 'ruled': ruled,
+                if (guideCurveRefs != null)
+                  'guide_curve_refs': guideCurveRefs.map((r) => r.toJson()).toList(),
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Creates a RuledSurfaceFeature - exactly 2 [sections] (the backend's own
+  /// `_validate_ruled_surface_sections` enforces this; this method just
+  /// serializes whatever it's given), each a bare `{sketch_feature_id,
+  /// profile_refs}` pair - no `reference_point`/`alignment_point` at all
+  /// (see the backend `RuledSurfaceSectionSchema`'s own docstring), unlike
+  /// [LoftSectionDto] which carries both. Reuses [LoftSectionDto] as the
+  /// wire type anyway (both fields it doesn't need simply stay null/omitted
+  /// via [LoftSectionDto.toJson]'s own `if != null` guards) rather than
+  /// introducing a narrower DTO purely for this one endpoint.
+  Future<FeatureDto> createRuledSurfaceFeature(
+    String partId, {
+    required List<LoftSectionDto> sections,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/ruled-surface-features'),
+              headers: _headers,
+              body: jsonEncode({
+                'sections': [
+                  for (final s in sections)
+                    {'sketch_feature_id': s.sketchFeatureId, 'profile_refs': s.profileRefs.map((r) => r.toJson()).toList()},
+                ],
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing RuledSurfaceFeature - mirrors
+  /// [updateLoftSurfaceFeature]'s omitted-vs-current-value convention, minus
+  /// every field a Ruled Surface has no concept of at all.
+  Future<FeatureDto> updateRuledSurfaceFeature(
+    String partId,
+    String featureId, {
+    List<LoftSectionDto>? sections,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/ruled-surface-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (sections != null)
+                  'sections': [
+                    for (final s in sections)
+                      {'sketch_feature_id': s.sketchFeatureId, 'profile_refs': s.profileRefs.map((r) => r.toJson()).toList()},
+                  ],
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  // --- Phase 2 surfacing package ---------------------------------------
+  // Four new surface-consuming tools (Thicken/Knit Surfaces/Solid from
+  // Surfaces/Offset Surface) - mirrors the Phase 1 block just above (same
+  // `FeatureDto.fromJson` decode, same wire shape each was built against -
+  // see `backend/app/document/schemas.py`'s own `ThickenFeatureCreate`/
+  // `KnitSurfaceFeatureCreate`/`SolidFromSurfacesFeatureCreate`/
+  // `OffsetSurfaceFeatureCreate` for the exact field names).
+
+  /// Creates a ThickenFeature - thickens [surfaceFeatureId]'s own shell by
+  /// [thickness] (nonzero - the backend's `_validate_thickness_nonzero`
+  /// rejects 0) into a brand-new, standalone solid Body.
+  Future<FeatureDto> createThickenFeature(
+    String partId, {
+    required String surfaceFeatureId,
+    required double thickness,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/thicken-features'),
+              headers: _headers,
+              body: jsonEncode({
+                'surface_feature_id': surfaceFeatureId,
+                'thickness': thickness,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing ThickenFeature - mirrors
+  /// [updatePlanarSurfaceFeature]'s omitted-vs-current-value convention.
+  Future<FeatureDto> updateThickenFeature(
+    String partId,
+    String featureId, {
+    String? surfaceFeatureId,
+    double? thickness,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/thicken-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (surfaceFeatureId != null) 'surface_feature_id': surfaceFeatureId,
+                if (thickness != null) 'thickness': thickness,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Creates a KnitSurfaceFeature - sews 2+ [surfaceFeatureIds] into one
+  /// Surface, no solidify (the backend's own `_validate_knit_surface_payload`
+  /// enforces the 2+ minimum; this method just serializes whatever it's
+  /// given).
+  Future<FeatureDto> createKnitSurfaceFeature(
+    String partId, {
+    required List<String> surfaceFeatureIds,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/knit-surface-features'),
+              headers: _headers,
+              body: jsonEncode({'surface_feature_ids': surfaceFeatureIds}),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing KnitSurfaceFeature.
+  Future<FeatureDto> updateKnitSurfaceFeature(
+    String partId,
+    String featureId, {
+    List<String>? surfaceFeatureIds,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/knit-surface-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (surfaceFeatureIds != null) 'surface_feature_ids': surfaceFeatureIds,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Creates a SolidFromSurfacesFeature - sews 2+ [surfaceFeatureIds] into a
+  /// single watertight solid Body (a structured `not_watertight` 422 if the
+  /// result isn't - see the backend `solid_from_surfaces` module's own
+  /// docstring).
+  Future<FeatureDto> createSolidFromSurfacesFeature(
+    String partId, {
+    required List<String> surfaceFeatureIds,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/solid-from-surfaces-features'),
+              headers: _headers,
+              body: jsonEncode({'surface_feature_ids': surfaceFeatureIds}),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing SolidFromSurfacesFeature.
+  Future<FeatureDto> updateSolidFromSurfacesFeature(
+    String partId,
+    String featureId, {
+    List<String>? surfaceFeatureIds,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/solid-from-surfaces-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (surfaceFeatureIds != null) 'surface_feature_ids': surfaceFeatureIds,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Creates an OffsetSurfaceFeature - offsets [source] (a Body face or an
+  /// existing single-shell surface Feature) by [distance] along its own
+  /// outward normal, into a brand-new, independent Surface.
+  Future<FeatureDto> createOffsetSurfaceFeature(
+    String partId, {
+    required OffsetSourceRefDto source,
+    required double distance,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/offset-surface-features'),
+              headers: _headers,
+              body: jsonEncode({
+                'source': source.toJson(),
+                'distance': distance,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing OffsetSurfaceFeature.
+  Future<FeatureDto> updateOffsetSurfaceFeature(
+    String partId,
+    String featureId, {
+    OffsetSourceRefDto? source,
+    double? distance,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/offset-surface-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (source != null) 'source': source.toJson(),
+                if (distance != null) 'distance': distance,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
