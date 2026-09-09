@@ -7112,6 +7112,20 @@ class _PartScreenState extends State<PartScreen> {
     return confirmed == true && mounted;
   }
 
+  /// The system back gesture's own exit path (see the [PopScope] in
+  /// [build]) - confirms via [_confirmExitPart], then pops this screen for
+  /// real. A named `State` method rather than the inline async closure this
+  /// used to be: `flutter analyze`'s `use_build_context_synchronously`
+  /// check doesn't recognize a `mounted` guard inside a locally-defined
+  /// async closure as related to the enclosing `State`, even though it is -
+  /// pulling it out into its own method (mirroring [_exitToConnectionScreen]
+  /// immediately below) is the standard fix.
+  Future<void> _confirmAndPopPart() async {
+    final confirmed = await _confirmExitPart();
+    if (!confirmed || !mounted) return;
+    Navigator.of(context).pop();
+  }
+
   /// File > Exit: abandons the current Part and returns all the way back to
   /// the first splash/[ConnectionScreen] - a fresh, non-revisit instance
   /// (so its "View a mesh file" entry is present, same as cold launch),
@@ -16187,11 +16201,7 @@ class _PartScreenState extends State<PartScreen> {
         } else if (_planeSelectionMode) {
           _cancelPlaneSelectionMode();
         } else {
-          () async {
-            final confirmed = await _confirmExitPart();
-            if (!confirmed || !mounted) return;
-            Navigator.of(context).pop();
-          }();
+          _confirmAndPopPart();
         }
       },
       child: Stack(
