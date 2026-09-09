@@ -6,17 +6,86 @@ import 'package:http/http.dart' as http;
 import '../config.dart';
 import 'sketch_api_client.dart' show ApiException;
 
+/// Wire counterpart of the backend's `MaterialAssignmentSchema` - a
+/// resolved `(materialId, name, densityGCm3)` assignment, distinct from the
+/// client-local `Material` (`material.dart`)'s own full library entry (8
+/// additional optional stress-analysis fields the backend never sees).
+class MaterialAssignmentDto {
+  final String materialId;
+  final String name;
+  final double densityGCm3;
+
+  const MaterialAssignmentDto({required this.materialId, required this.name, required this.densityGCm3});
+
+  factory MaterialAssignmentDto.fromJson(Map<String, dynamic> json) => MaterialAssignmentDto(
+        materialId: json['material_id'] as String,
+        name: json['name'] as String,
+        densityGCm3: (json['density_g_cm3'] as num).toDouble(),
+      );
+
+  Map<String, dynamic> toJson() => {'material_id': materialId, 'name': name, 'density_g_cm3': densityGCm3};
+}
+
+/// Part Properties (MBD metadata) + material assignment - see the backend's
+/// `PartResponse`/`Part` for the STEP-portable-vs-DIDSA-CAD-only field
+/// split ([remarks]/[supplier]/[supplierPartNumber] never reach STEP).
 class PartDto {
   final String id;
   final String name;
   final List<String> featureIds;
+  final String? partNumber;
+  final String? description;
+  final String? revision;
+  final String? remarks;
+  final String? supplier;
+  final String? supplierPartNumber;
+  final MaterialAssignmentDto? defaultMaterial;
+  final Map<String, MaterialAssignmentDto> bodyMaterialAssignments;
 
-  PartDto({required this.id, required this.name, required this.featureIds});
+  PartDto({
+    required this.id,
+    required this.name,
+    required this.featureIds,
+    this.partNumber,
+    this.description,
+    this.revision,
+    this.remarks,
+    this.supplier,
+    this.supplierPartNumber,
+    this.defaultMaterial,
+    this.bodyMaterialAssignments = const {},
+  });
 
   factory PartDto.fromJson(Map<String, dynamic> json) => PartDto(
         id: json['id'] as String,
         name: json['name'] as String,
         featureIds: (json['feature_ids'] as List).cast<String>(),
+        partNumber: json['part_number'] as String?,
+        description: json['description'] as String?,
+        revision: json['revision'] as String?,
+        remarks: json['remarks'] as String?,
+        supplier: json['supplier'] as String?,
+        supplierPartNumber: json['supplier_part_number'] as String?,
+        defaultMaterial: json['default_material'] == null
+            ? null
+            : MaterialAssignmentDto.fromJson(json['default_material'] as Map<String, dynamic>),
+        bodyMaterialAssignments: (json['body_material_assignments'] as Map<String, dynamic>? ?? {}).map(
+          (k, v) => MapEntry(k, MaterialAssignmentDto.fromJson(v as Map<String, dynamic>)),
+        ),
+      );
+}
+
+/// `GET /parts/{part_id}/mass-properties` response - volume (mm^3)/mass (g)
+/// for every current Body, keyed by Body id.
+class MassPropertiesDto {
+  final Map<String, double> bodyVolumes;
+  final Map<String, double> bodyMasses;
+
+  const MassPropertiesDto({required this.bodyVolumes, required this.bodyMasses});
+
+  factory MassPropertiesDto.fromJson(Map<String, dynamic> json) => MassPropertiesDto(
+        bodyVolumes: (json['body_volumes'] as Map<String, dynamic>).map((k, v) => MapEntry(k, (v as num).toDouble())),
+        bodyMasses: (json['body_masses'] as Map<String, dynamic>).map((k, v) => MapEntry(k, (v as num).toDouble())),
       );
 }
 
@@ -83,6 +152,12 @@ class MeasurementResultDto {
   final bool? axesParallel;
   final double? normalDistance;
   final bool? facesParallel;
+  // Volume (mm^3)/mass (g) of every distinct Body among the request's refs,
+  // keyed by Body id - see the backend's `MeasurementResultSchema` for the
+  // exact population rules (a Body with no material assigned is simply
+  // absent from [bodyMasses], not present with a null/zero value).
+  final Map<String, double>? bodyVolumes;
+  final Map<String, double>? bodyMasses;
 
   const MeasurementResultDto({
     this.point,
@@ -102,7 +177,13 @@ class MeasurementResultDto {
     this.axesParallel,
     this.normalDistance,
     this.facesParallel,
+    this.bodyVolumes,
+    this.bodyMasses,
   });
+
+  static Map<String, double>? _doubleMap(dynamic json) => json == null
+      ? null
+      : (json as Map<String, dynamic>).map((k, v) => MapEntry(k, (v as num).toDouble()));
 
   static List<double>? _vec(dynamic json) =>
       json == null ? null : (json as List).map((v) => (v as num).toDouble()).toList();
@@ -125,6 +206,8 @@ class MeasurementResultDto {
         axesParallel: json['axes_parallel'] as bool?,
         normalDistance: (json['normal_distance'] as num?)?.toDouble(),
         facesParallel: json['faces_parallel'] as bool?,
+        bodyVolumes: _doubleMap(json['body_volumes']),
+        bodyMasses: _doubleMap(json['body_masses']),
       );
 }
 
@@ -535,12 +618,21 @@ class FeatureDto {
   /// are involved.
   final bool ruled;
 
-  /// Only present on a `"loft"` Feature, and only when it's a thin/sheet
-  /// Loft between open chains rather than a solid Loft between closed
-  /// Profiles - the signed thickness `[sections]`' lofted shell is
-  /// thickened by (the backend `LoftFeature.thickness`; `null` is the
-  /// original closed-profile solid Loft, completely unchanged).
+  /// On a `"loft"` Feature, only when it's a thin/sheet Loft (open-chain or
+  /// closed-profile - see [thinFromClosedProfile]) rather than a solid Loft
+  /// between closed Profiles - the signed thickness the lofted shell is
+  /// thickened by (`null` is the original closed-profile solid Loft,
+  /// completely unchanged). On an `"extrude"` Feature, the signed thin-wall
+  /// thickness (`ExtrudeFeature.thickness`; `null` is the ordinary solid
+  /// prism, unchanged) - the same field name/sign convention reused
+  /// verbatim across both Feature types.
   final double? thickness;
+
+  /// Only present on a `"loft"` Feature - `true` when a thin Loft
+  /// ([thickness] set) sources its sections as closed profiles (a hollow
+  /// tube, open at both ends) instead of open chains - see
+  /// `LoftFeature.thin_from_closed_profile`.
+  final bool? thinFromClosedProfile;
 
   /// Only present on a `"loft"` Feature - the ordered, possibly cross-
   /// Sketch Line/Arc/Ellipse/Spline chain (the backend `LoftFeature.
@@ -849,6 +941,7 @@ class FeatureDto {
     this.sections = const [],
     this.ruled = false,
     this.thickness,
+    this.thinFromClosedProfile,
     this.guideCurveRefs = const [],
     this.hasLostReference = false,
     this.sourceBodyIds = const [],
@@ -957,6 +1050,7 @@ class FeatureDto {
             const [],
         ruled: json['ruled'] as bool? ?? false,
         thickness: (json['thickness'] as num?)?.toDouble(),
+        thinFromClosedProfile: json['thin_from_closed_profile'] as bool?,
         guideCurveRefs: (json['guide_curve_refs'] as List?)
                 ?.map((r) => SketchEntityRefDto.fromJson(r as Map<String, dynamic>))
                 .toList() ??
@@ -1876,6 +1970,65 @@ class DocumentApiClient {
         (body) => PartDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// Part Properties: partial update of the free-text metadata fields only
+  /// (material assignment has its own dedicated endpoints below) - omitted
+  /// fields keep their current value, same convention every Feature Update
+  /// call already uses.
+  Future<PartDto> updatePart(
+    String partId, {
+    String? partNumber,
+    String? description,
+    String? revision,
+    String? remarks,
+    String? supplier,
+    String? supplierPartNumber,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (partNumber != null) 'part_number': partNumber,
+                if (description != null) 'description': description,
+                if (revision != null) 'revision': revision,
+                if (remarks != null) 'remarks': remarks,
+                if (supplier != null) 'supplier': supplier,
+                if (supplierPartNumber != null) 'supplier_part_number': supplierPartNumber,
+              }),
+            ),
+        (body) => PartDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Sets (or, with `material: null`, clears) this Part's own default
+  /// material.
+  Future<PartDto> setDefaultMaterial(String partId, MaterialAssignmentDto? material) => _send(
+        () => _httpClient.put(
+              _uri('/document/parts/$partId/default-material'),
+              headers: _headers,
+              body: jsonEncode({'material': material?.toJson()}),
+            ),
+        (body) => PartDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Sets (or, with `material: null`, clears - reverting to the Part's own
+  /// default) `bodyId`'s own material override.
+  Future<PartDto> setBodyMaterial(String partId, String bodyId, MaterialAssignmentDto? material) => _send(
+        () => _httpClient.put(
+              _uri('/document/parts/$partId/bodies/$bodyId/material'),
+              headers: _headers,
+              body: jsonEncode({'material': material?.toJson()}),
+            ),
+        (body) => PartDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Part Properties' Mass field: volume/mass for every current Body -
+  /// explicit/on-demand (a full geometry recompute), never implied by a
+  /// plain [getPart].
+  Future<MassPropertiesDto> getMassProperties(String partId) => _send(
+        () => _httpClient.get(_uri('/document/parts/$partId/mass-properties'), headers: _headers),
+        (body) => MassPropertiesDto.fromJson(body as Map<String, dynamic>),
+      );
+
   Future<List<FeatureDto>> listFeatures(String partId) => _send(
         () => _httpClient.get(_uri('/document/parts/$partId/features'), headers: _headers),
         (body) => (body as List).map((f) => FeatureDto.fromJson(f as Map<String, dynamic>)).toList(),
@@ -1921,6 +2074,7 @@ class DocumentApiClient {
     required double endDistance,
     List<String> targetBodyIds = const [],
     List<SketchEntityRefDto> profileRefs = const [],
+    double? thickness,
   }) =>
       _send(
         () => _httpClient.post(
@@ -1933,6 +2087,7 @@ class DocumentApiClient {
                 'end_distance': endDistance,
                 'target_body_ids': targetBodyIds,
                 'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
+                if (thickness != null) 'thickness': thickness,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -1954,6 +2109,7 @@ class DocumentApiClient {
     double? endDistance,
     List<String>? targetBodyIds,
     List<SketchEntityRefDto>? profileRefs,
+    double? thickness,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -1966,6 +2122,7 @@ class DocumentApiClient {
                 if (targetBodyIds != null) 'target_body_ids': targetBodyIds,
                 if (profileRefs != null)
                   'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
+                if (thickness != null) 'thickness': thickness,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -2921,6 +3078,7 @@ class DocumentApiClient {
     bool ruled = false,
     List<String> targetBodyIds = const [],
     double? thickness,
+    bool thinFromClosedProfile = false,
     List<SketchEntityRefDto> guideCurveRefs = const [],
   }) =>
       _send(
@@ -2933,6 +3091,7 @@ class DocumentApiClient {
                 'ruled': ruled,
                 'target_body_ids': targetBodyIds,
                 if (thickness != null) 'thickness': thickness,
+                'thin_from_closed_profile': thinFromClosedProfile,
                 'guide_curve_refs': guideCurveRefs.map((r) => r.toJson()).toList(),
               }),
             ),
@@ -2990,6 +3149,7 @@ class DocumentApiClient {
     bool? ruled,
     List<String>? targetBodyIds,
     double? thickness,
+    bool? thinFromClosedProfile,
     List<SketchEntityRefDto>? guideCurveRefs,
   }) =>
       _send(
@@ -3002,6 +3162,8 @@ class DocumentApiClient {
                 if (ruled != null) 'ruled': ruled,
                 if (targetBodyIds != null) 'target_body_ids': targetBodyIds,
                 if (thickness != null) 'thickness': thickness,
+                if (thinFromClosedProfile != null)
+                  'thin_from_closed_profile': thinFromClosedProfile,
                 if (guideCurveRefs != null)
                   'guide_curve_refs': guideCurveRefs.map((r) => r.toJson()).toList(),
               }),

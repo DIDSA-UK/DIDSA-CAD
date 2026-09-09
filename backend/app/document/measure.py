@@ -68,6 +68,17 @@ class MeasurementResult:
     axes_parallel: bool | None = None
     normal_distance: float | None = None
     faces_parallel: bool | None = None
+    # Volume/mass of every *distinct* Body among the 1-2 refs, keyed by Body
+    # id - populated regardless of whether a ref's own shape_type is BODY
+    # (selecting a face still reports its owning Body's volume/mass), so a
+    # 2-ref measurement spanning two different Bodies can carry up to two
+    # entries. `body_masses` only ever carries an entry for a Body that has
+    # a resolvable material (per-Body override, else the Part's own default -
+    # see `app.document.models.Part.default_material`/
+    # `body_material_assignments`); a Body with no material assigned is
+    # simply absent from `body_masses`, not present with a null/zero value.
+    body_volumes: dict[str, float] | None = None
+    body_masses: dict[str, float] | None = None
 
 
 def _measure_failed(refs: list[SubShapeRef]) -> HTTPException:
@@ -160,6 +171,14 @@ def _axis_to_axis_distance(a: gp_Ax1, b: gp_Ax1) -> tuple[float, bool]:
 
 
 def _measure_single(ref: SubShapeRef, shape: TopoDS_Shape) -> MeasurementResult:
+    if ref.shape_type == SubShapeType.BODY:
+        # No single-entity field of its own - the whole-Body volume/mass
+        # rides on `body_volumes`/`body_masses` instead (populated by
+        # `measure()` for every distinct body among the refs, whether or not
+        # any ref's own shape_type is BODY), so a direct Body selection
+        # reports identically to selecting one of its faces/edges/vertices.
+        return MeasurementResult()
+
     if ref.shape_type == SubShapeType.VERTEX:
         pnt = BRep_Tool.Pnt(topods.Vertex(shape))
         return MeasurementResult(point=_point(pnt))
@@ -272,6 +291,52 @@ def _measure_pair(
     return result
 
 
+def _mass_grams(volume_mm3: float, density_g_cm3: float) -> float:
+    """`volume_mm3 * density_g_cm3 * 0.001` - 1 cm^3 == 1000 mm^3, so
+    density in g/cm^3 is 0.001 g/mm^3. The one mass formula used everywhere
+    this app computes mass (Measure, the mass-properties endpoint, STEP
+    export's validation properties) - see `docs/dxf-io/00-conventions.md`'s
+    "implicitly all-mm" note for why volume always arrives in mm^3."""
+    return volume_mm3 * density_g_cm3 * 0.001
+
+
+def _body_volumes_and_masses(
+    part: Part, bodies: dict[str, TopoDS_Shape], body_ids: set[str]
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Volume (mm^3) for every id in `body_ids` that still resolves in
+    `bodies`, plus mass (g) for whichever of those also have a resolvable
+    material (`Part.resolve_material`) - a Body with no material assigned
+    is simply absent from the mass dict, not present with a null/zero
+    value."""
+    volumes: dict[str, float] = {}
+    masses: dict[str, float] = {}
+    for body_id in body_ids:
+        body = bodies.get(body_id)
+        if body is None:
+            continue
+        props = GProp_GProps()
+        brepgprop.VolumeProperties(body, props)
+        volume = abs(props.Mass())
+        volumes[body_id] = volume
+
+        material = part.resolve_material(body_id)
+        if material is not None:
+            masses[body_id] = _mass_grams(volume, material.density_g_cm3)
+    return volumes, masses
+
+
+def mass_properties(part: Part) -> tuple[dict[str, float], dict[str, float]]:
+    """`(body_volumes, body_masses)` for *every* current Body in `part` -
+    the `GET /parts/{part_id}/mass-properties` endpoint's own entry point,
+    powering the Part Properties screen's Mass field. Deliberately its own
+    explicit, on-demand call (not folded into the cheap `GET /parts/
+    {part_id}`) since it requires a full `compute_part_bodies` geometry
+    recompute, same reasoning `measure()` itself already has for why this
+    isn't free."""
+    bodies = compute_part_bodies(part)
+    return _body_volumes_and_masses(part, bodies, set(bodies.keys()))
+
+
 def measure(
     part: Part, refs: list[SubShapeRef], excluded_feature_ids: frozenset[str] = frozenset()
 ) -> MeasurementResult:
@@ -282,9 +347,20 @@ def measure(
     two refs into two different Bodies still see a mutually consistent
     Part state, then dispatches on how many entities were selected. Raises
     the existing `missing_reference` 422 (via `resolve_subshape_from_bodies`)
-    if any ref no longer resolves."""
+    if any ref no longer resolves.
+
+    Also always computes `body_volumes`/`body_masses` for every *distinct*
+    Body among `refs` (regardless of whether any ref's own shape_type is
+    BODY - selecting a face still reports its owning Body's volume/mass),
+    and attaches them to whichever `MeasurementResult` `_measure_single`/
+    `_measure_pair` produced."""
     bodies = compute_part_bodies(part, excluded_feature_ids)
     shapes = [resolve_subshape_from_bodies(bodies, ref) for ref in refs]
     if len(shapes) == 1:
-        return _measure_single(refs[0], shapes[0])
-    return _measure_pair(refs[0], shapes[0], refs[1], shapes[1])
+        result = _measure_single(refs[0], shapes[0])
+    else:
+        result = _measure_pair(refs[0], shapes[0], refs[1], shapes[1])
+
+    body_ids = {ref.body_id for ref in refs}
+    result.body_volumes, result.body_masses = _body_volumes_and_masses(part, bodies, body_ids)
+    return result

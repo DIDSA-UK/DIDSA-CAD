@@ -156,6 +156,15 @@ class ExtrudeFeature(Feature):
     # itself reports as usable.
     profile_refs: list[SketchEntityRef] = field(default_factory=list)
 
+    # Thin extrude: `None` (default) is the original solid-face-prism path,
+    # unchanged. Set, this instead prisms the profile's own wire into an
+    # open shell and thickens it by this signed value (which side of the
+    # wall gets material) via `app.document.shell_ops.thicken_shell_to_
+    # solid` - the exact same signed-thickness convention `LoftFeature.
+    # thickness` already established, reusing the identical OCCT idiom (see
+    # `app.document.extrude._prism_for_profile`'s own thin branch).
+    thickness: float | None = None
+
     @property
     def type(self) -> str:
         return "extrude"
@@ -186,6 +195,13 @@ class SubShapeType(str, Enum):
     EDGE = "edge"
     FACE = "face"
     VERTEX = "vertex"
+    # Measure tool (whole-Body volume/mass): a body-scoped reference with no
+    # sub-shape at all - `SubShapeRef.index` is meaningless here and always
+    # `0`, mirroring `SelectionEntityKind.body`'s own "id always 0" client-
+    # side convention. Resolves directly to the Body's own shape (see
+    # `resolve_subshape_from_bodies`'s early BODY branch) rather than
+    # through `topexp.MapShapes`, since there is no sub-shape to enumerate.
+    BODY = "body"
 
 
 @dataclass(frozen=True)
@@ -1671,14 +1687,24 @@ class LoftFeature(Feature):
     once per hole), rejected outright (`invalid_loft_section`) rather than
     silently only lofting the outer boundary and dropping the holes.
 
-    `thickness`, when set, switches every `sections` entry from a closed
-    Profile to a single open chain (`app.sketch.profile.detect_open_chain`)
-    - a thin/sheet Loft, lofted as an open shell then thickened by this
-    signed value (`app.document.loft.resolve_loft_from_bodies`) rather than
-    lofted directly into a solid. `None` (the default) is the original
-    closed-profile behaviour, completely unchanged. A `LoftFeature` never
-    mixes open and closed sections - `thickness` applies to every section
-    at once, not per-section.
+    `thickness`, when set, switches every `sections` entry away from a
+    directly-solid closed-Profile loft into a thin/sheet Loft, thickened by
+    this signed value (`app.document.loft.resolve_loft_from_bodies`) -
+    `None` (the default) is the original closed-profile-into-solid
+    behaviour, completely unchanged. `thin_from_closed_profile` picks which
+    of the two thin-wall sources `thickness` applies to: `False` (default,
+    the original thin-loft addition) switches every section to a single
+    open chain (`app.sketch.profile.detect_open_chain`), lofted as an open
+    shell and thickened into a solid; `True` keeps every section as a
+    closed Profile (the same resolution the solid path uses,
+    `_resolve_closed_section`), lofted as a closed *shell* (no end caps -
+    `BRepOffsetAPI_ThruSections(isSolid=False, ...)` on closed wires
+    produces a hollow tube) and then thickened the same way - i.e. a
+    uniform-wall-thickness hollow tube between the given closed sections,
+    open at both ends. `thin_from_closed_profile` is meaningless (ignored)
+    when `thickness` is `None`. A `LoftFeature` never mixes open and closed
+    sections, nor mixes thin-wall sources - whichever mode applies, it
+    applies to every section at once, not per-section.
 
     `guide_curve_refs` (optional, empty by default - completely unchanged
     behaviour when omitted): an ordered, possibly cross-Sketch chain of
@@ -1706,6 +1732,7 @@ class LoftFeature(Feature):
     ruled: bool = False
     target_body_ids: list[str] = field(default_factory=list)
     thickness: float | None = None
+    thin_from_closed_profile: bool = False
     guide_curve_refs: list[SketchEntityRef] = field(default_factory=list)
 
     @property
@@ -2726,6 +2753,24 @@ class MoveFaceFeature(Feature):
         return Produces.BODY
 
 
+@dataclass(frozen=True)
+class MaterialAssignment:
+    """A resolved material as assigned to a Part (default) or a specific
+    Body (override) - not the full material-library entry (name plus 8
+    optional stress-analysis fields), which lives client-side only in the
+    Flutter app's own `MaterialStore` and never needs to reach the backend.
+    The backend only ever needs `name`+`density_g_cm3` (to compute mass and,
+    on STEP export, to populate STEP's `material_designation`); `material_id`
+    is an opaque client-library id, stored and echoed back verbatim but never
+    interpreted here - it lets the client re-identify "this is the same
+    material as library entry X" on reload without the backend needing to
+    know anything about the client's own library schema."""
+
+    material_id: str
+    name: str
+    density_g_cm3: float
+
+
 @dataclass
 class Part:
     """An independent solid-modeling history: an ordered list of Features.
@@ -2735,11 +2780,40 @@ class Part:
     a Feature can only be edited/deleted while it is the LAST Feature in
     this list; earlier Features are permanently locked for this stage once
     something is added after them.
+
+    Part Properties (MBD metadata): `part_number`/`description`/`revision`
+    have a real STEP home (`product.id`/`.description`,
+    `product_definition_formation.id` respectively - see
+    `app.document.step_export`) and round-trip with other CAD platforms;
+    `remarks`/`supplier`/`supplier_part_number` are DIDSA-CAD-only (no STEP
+    AP has a schema slot for them) and are deliberately never written into a
+    STEP export. `default_material`/`body_material_assignments` are this
+    Part's material assignment - resolution order for a given Body is: its
+    own entry in `body_material_assignments` if present, else
+    `default_material`, else unassigned. All of these are plain in-memory
+    Part state, exactly like `name` already is - they flow through
+    `exportNative`/`import_native` the same way, with no separate
+    client-side stash needed.
     """
 
     id: str
     name: str
     features: list[Feature] = field(default_factory=list)
+    part_number: str | None = None
+    description: str | None = None
+    revision: str | None = None
+    remarks: str | None = None
+    supplier: str | None = None
+    supplier_part_number: str | None = None
+    default_material: MaterialAssignment | None = None
+    body_material_assignments: dict[str, MaterialAssignment] = field(default_factory=dict)
+
+    def resolve_material(self, body_id: str) -> MaterialAssignment | None:
+        """The material that applies to `body_id`: its own override if one
+        exists, else this Part's own default, else `None` (unassigned) - the
+        one resolution rule used identically by Measure's mass calculation,
+        the mass-properties endpoint, and STEP export."""
+        return self.body_material_assignments.get(body_id, self.default_material)
 
     def add_feature(self, feature: Feature) -> None:
         self.features.append(feature)

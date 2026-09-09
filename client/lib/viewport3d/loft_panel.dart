@@ -68,6 +68,12 @@ class LoftPanel extends StatefulWidget {
   final bool initialRuled;
   final double? initialThickness;
 
+  /// Meaningful only when [initialThickness] is set - `false` (default)
+  /// sources the thin Loft's sections as open chains; `true` keeps them as
+  /// closed profiles instead, lofted as a hollow, cap-less tube (see the
+  /// backend `LoftFeature.thin_from_closed_profile`'s own docstring).
+  final bool initialThinFromClosedProfile;
+
   /// How many sections were picked (2+, see [PartScreen]'s own section-
   /// picking state).
   final int sectionCount;
@@ -102,7 +108,8 @@ class LoftPanel extends StatefulWidget {
   final VoidCallback onClearGuideCurve;
   final VoidCallback onCancelGuideCurvePick;
 
-  final void Function(LoftMode mode, bool ruled, double? thickness) onChanged;
+  final void Function(LoftMode mode, bool ruled, double? thickness, bool thinFromClosedProfile)
+      onChanged;
   final VoidCallback onConfirm;
   final VoidCallback onCancel;
 
@@ -113,6 +120,7 @@ class LoftPanel extends StatefulWidget {
     this.initialMode = LoftMode.boss,
     this.initialRuled = false,
     this.initialThickness,
+    this.initialThinFromClosedProfile = false,
     required this.sectionCount,
     required this.targetBodyCount,
     this.alignmentPointsSet = const [],
@@ -137,6 +145,7 @@ class LoftPanel extends StatefulWidget {
 class _LoftPanelState extends State<LoftPanel> {
   late LoftMode _mode;
   late bool _ruled;
+  late bool _thinFromClosedProfile;
   late final TextEditingController _thicknessController;
 
   /// `true` once the thickness field either is empty (solid Loft between
@@ -151,6 +160,7 @@ class _LoftPanelState extends State<LoftPanel> {
     super.initState();
     _mode = widget.initialMode;
     _ruled = widget.initialRuled;
+    _thinFromClosedProfile = widget.initialThinFromClosedProfile;
     _thicknessController = TextEditingController(
       text: widget.initialThickness == null ? '' : _formatThickness(widget.initialThickness!),
     );
@@ -160,7 +170,9 @@ class _LoftPanelState extends State<LoftPanel> {
     // this panel opens with (mirrors SweepPanel/RevolvePanel's identical
     // fix).
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) widget.onChanged(_mode, _ruled, widget.initialThickness);
+      if (mounted) {
+        widget.onChanged(_mode, _ruled, widget.initialThickness, _thinFromClosedProfile);
+      }
     });
   }
 
@@ -193,17 +205,22 @@ class _LoftPanelState extends State<LoftPanel> {
       thickness = valid ? value : null;
     }
     setState(() => _thicknessValid = valid);
-    if (valid) widget.onChanged(_mode, _ruled, thickness);
+    if (valid) widget.onChanged(_mode, _ruled, thickness, _thinFromClosedProfile);
   }
 
   void _onModeChanged(LoftMode mode) {
     setState(() => _mode = mode);
-    if (_thicknessValid) widget.onChanged(mode, _ruled, _currentThickness());
+    if (_thicknessValid) widget.onChanged(mode, _ruled, _currentThickness(), _thinFromClosedProfile);
   }
 
   void _onRuledChanged(bool ruled) {
     setState(() => _ruled = ruled);
-    if (_thicknessValid) widget.onChanged(_mode, ruled, _currentThickness());
+    if (_thicknessValid) widget.onChanged(_mode, ruled, _currentThickness(), _thinFromClosedProfile);
+  }
+
+  void _onThinFromClosedProfileChanged(bool value) {
+    setState(() => _thinFromClosedProfile = value);
+    if (_thicknessValid) widget.onChanged(_mode, _ruled, _currentThickness(), value);
   }
 
   double? _currentThickness() {
@@ -263,6 +280,16 @@ class _LoftPanelState extends State<LoftPanel> {
                 'Thickness must be a nonzero number',
                 style: TextStyle(color: Theme.of(context).colorScheme.error, fontSize: 12),
               ),
+            ),
+          if (_thicknessValid && _currentThickness() != null)
+            CheckboxListTile(
+              contentPadding: EdgeInsets.zero,
+              dense: true,
+              controlAffinity: ListTileControlAffinity.leading,
+              title: const Text('Sections are closed profiles'),
+              subtitle: const Text('Lofts a hollow tube between closed profiles instead of open chains'),
+              value: _thinFromClosedProfile,
+              onChanged: (value) => _onThinFromClosedProfileChanged(value ?? false),
             ),
           const SizedBox(height: 8),
           SwitchListTile(

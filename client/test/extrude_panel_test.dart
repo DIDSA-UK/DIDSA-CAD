@@ -21,7 +21,7 @@ void main() {
           body: ExtrudePanel(
             initialType: type,
             targetBodyCount: targetBodyCount,
-            onChanged: (_, __, ___) {},
+            onChanged: (_, __, ___, ____) {},
             onConfirm: () {},
             onCancel: () {},
           ),
@@ -69,7 +69,7 @@ void main() {
             body: ExtrudePanel(
               initialType: ExtrudeType.boss,
               targetBodyCount: 0,
-              onChanged: (_, __, ___) {},
+              onChanged: (_, __, ___, ____) {},
               onConfirm: () {},
               onCancel: () {},
             ),
@@ -102,7 +102,7 @@ void main() {
               initialStartDistance: 10,
               initialEndDistance: 0, // end <= start: invalid depth.
               targetBodyCount: 5,
-              onChanged: (_, __, ___) {},
+              onChanged: (_, __, ___, ____) {},
               onConfirm: () {},
               onCancel: () {},
             ),
@@ -129,7 +129,7 @@ void main() {
               initialStartDistance: 0,
               initialEndDistance: 10,
               targetBodyCount: 0,
-              onChanged: (type, start, end) {
+              onChanged: (type, start, end, _) {
                 lastType = type;
                 lastStart = start;
                 lastEnd = end;
@@ -163,7 +163,7 @@ void main() {
               initialStartDistance: -2,
               initialEndDistance: 8,
               targetBodyCount: 0,
-              onChanged: (_, start, end) {
+              onChanged: (_, start, end, __) {
                 lastStart = start;
                 lastEnd = end;
               },
@@ -194,7 +194,7 @@ void main() {
           home: Scaffold(
             body: ExtrudePanel(
               targetBodyCount: 0,
-              onChanged: (_, __, ___) {},
+              onChanged: (_, __, ___, ____) {},
               onConfirm: () {},
               onCancel: () {},
             ),
@@ -215,7 +215,7 @@ void main() {
               initialStartDistance: 0,
               initialEndDistance: 10,
               targetBodyCount: 0,
-              onChanged: (_, __, ___) {},
+              onChanged: (_, __, ___, ____) {},
               onConfirm: () {},
               onCancel: () {},
             ),

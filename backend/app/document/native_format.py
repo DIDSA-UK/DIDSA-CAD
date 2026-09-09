@@ -51,6 +51,7 @@ from app.document.models import (
     LoftMode,
     LoftSection,
     LoftSurfaceFeature,
+    MaterialAssignment,
     MergeFeature,
     MergeMode,
     MirrorFeature,
@@ -929,6 +930,7 @@ def _feature_to_dict(feature: Feature) -> dict:
             "end_distance": feature.end_distance,
             "target_body_ids": list(feature.target_body_ids),
             "profile_refs": [_sketch_entity_ref_to_dict(r) for r in feature.profile_refs],
+            "thickness": feature.thickness,
         }
     if isinstance(feature, SurfaceFeature):
         return {
@@ -1252,6 +1254,7 @@ def _feature_to_dict(feature: Feature) -> dict:
             "ruled": feature.ruled,
             "target_body_ids": list(feature.target_body_ids),
             "thickness": feature.thickness,
+            "thin_from_closed_profile": feature.thin_from_closed_profile,
             "guide_curve_refs": [_sketch_entity_ref_to_dict(r) for r in feature.guide_curve_refs],
         }
     if isinstance(feature, GearChainFeature):
@@ -1298,6 +1301,7 @@ def _feature_from_dict(data: dict) -> Feature:
             end_distance=_require(data, "end_distance"),
             target_body_ids=list(data.get("target_body_ids", [])),
             profile_refs=[_sketch_entity_ref_from_dict(r) for r in data.get("profile_refs", [])],
+            thickness=data.get("thickness"),
         )
     if feature_type == "surface":
         return SurfaceFeature(
@@ -1601,6 +1605,7 @@ def _feature_from_dict(data: dict) -> Feature:
             ruled=data.get("ruled", False),
             target_body_ids=list(data.get("target_body_ids", [])),
             thickness=data.get("thickness"),
+            thin_from_closed_profile=data.get("thin_from_closed_profile", False),
             guide_curve_refs=[_sketch_entity_ref_from_dict(r) for r in data.get("guide_curve_refs", [])],
         )
     if feature_type == "gear_chain":
@@ -1630,17 +1635,61 @@ def _feature_from_dict(data: dict) -> Feature:
 # --- Part / Document ---------------------------------------------------------
 
 
+def _material_assignment_to_dict(assignment: MaterialAssignment) -> dict:
+    return {
+        "material_id": assignment.material_id,
+        "name": assignment.name,
+        "density_g_cm3": assignment.density_g_cm3,
+    }
+
+
+def _material_assignment_from_dict(data: dict) -> MaterialAssignment:
+    return MaterialAssignment(
+        material_id=_require(data, "material_id"),
+        name=_require(data, "name"),
+        density_g_cm3=_require(data, "density_g_cm3"),
+    )
+
+
 def _part_to_dict(part: Part) -> dict:
     return {
         "id": part.id,
         "name": part.name,
         "features": [_feature_to_dict(f) for f in part.features],
+        # Part Properties (MBD metadata) - see `Part`'s own docstring for
+        # why `remarks`/`supplier`/`supplier_part_number` live here too even
+        # though STEP export never writes them.
+        "part_number": part.part_number,
+        "description": part.description,
+        "revision": part.revision,
+        "remarks": part.remarks,
+        "supplier": part.supplier,
+        "supplier_part_number": part.supplier_part_number,
+        "default_material": (
+            _material_assignment_to_dict(part.default_material) if part.default_material is not None else None
+        ),
+        "body_material_assignments": {
+            body_id: _material_assignment_to_dict(assignment)
+            for body_id, assignment in part.body_material_assignments.items()
+        },
     }
 
 
 def _part_from_dict(data: dict) -> Part:
     part = Part(id=_require(data, "id"), name=_require(data, "name"))
     part.features = [_feature_from_dict(f) for f in data.get("features", [])]
+    part.part_number = data.get("part_number")
+    part.description = data.get("description")
+    part.revision = data.get("revision")
+    part.remarks = data.get("remarks")
+    part.supplier = data.get("supplier")
+    part.supplier_part_number = data.get("supplier_part_number")
+    default_material = data.get("default_material")
+    part.default_material = _material_assignment_from_dict(default_material) if default_material else None
+    part.body_material_assignments = {
+        body_id: _material_assignment_from_dict(assignment)
+        for body_id, assignment in data.get("body_material_assignments", {}).items()
+    }
     return part
 
 

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../ai/ai_provider_settings_screen.dart';
+import '../materials/materials_manager_screen.dart';
 import '../viewport3d/view_preferences.dart';
 
 /// Reachable from the connection screen's own settings entry, attached to
@@ -83,6 +84,24 @@ class _SketcherSettingsScreenState extends State<SketcherSettingsScreen> {
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () => Navigator.of(context).push(
                     MaterialPageRoute(builder: (_) => const AiProviderSettingsScreen()),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                Text('Materials', style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 4),
+                Text(
+                  "Manage the material library used for material assignment and mass "
+                  "calculation - built-in plastics/steels/stainless/aluminum/engineering "
+                  "alloys, plus any you add yourself or import from CSV.",
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 12),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Materials Manager'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const MaterialsManagerScreen()),
                   ),
                 ),
               ],

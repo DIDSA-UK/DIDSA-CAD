@@ -707,6 +707,7 @@ void main() {
     // (top of the screen) alongside ExtrudePanel's own - both wired to the
     // same _cancelExtrude, so either one works; `.last` picks a single
     // widget rather than leaving the finder ambiguous.
+    await tester.ensureVisible(find.text('Cancel').last);
     await tester.tap(find.text('Cancel').last);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
@@ -2564,6 +2565,7 @@ void main() {
       expect(find.byType(ExtrudePanel), findsOneWidget);
       expect(anchored(), isTrue);
 
+      await tester.ensureVisible(find.text('Cancel'));
       await tester.tap(find.text('Cancel'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
@@ -2619,6 +2621,7 @@ void main() {
       // row - see the sibling test in this same file for the full note.
       expect(find.text('Cancel'), findsOneWidget);
 
+      await tester.ensureVisible(find.text('Confirm'));
       await tester.tap(find.text('Confirm'));
       await tester.pump();
       await _pumpUntil(tester, () => find.text('Extrude 1').evaluate().isNotEmpty);
@@ -2907,6 +2910,7 @@ void main() {
       // ever the one Cancel.
       expect(find.text('Cancel'), findsOneWidget);
 
+      await tester.ensureVisible(find.text('Confirm'));
       await tester.tap(find.text('Confirm'));
       await tester.pump();
       await _pumpUntil(tester, () => find.text('Extrude 1').evaluate().isNotEmpty);
@@ -3097,6 +3101,7 @@ void main() {
         await tester.tap(find.text('Sketch 1'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
+        await tester.ensureVisible(find.text('Confirm'));
         await tester.tap(find.text('Confirm'));
         await tester.pump();
         await _pumpUntil(tester, () => find.text('Extrude 1').evaluate().isNotEmpty);
@@ -3170,6 +3175,7 @@ void main() {
         await tester.tap(find.text('Sketch 1'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
+        await tester.ensureVisible(find.text('Confirm'));
         await tester.tap(find.text('Confirm'));
         await tester.pump();
         await _pumpUntil(tester, () => find.text('Extrude 1').evaluate().isNotEmpty);
@@ -3256,6 +3262,7 @@ void main() {
     // Prompt A4's target-body-picker banner adds its own Cancel button
     // alongside ExtrudePanel's own - both wired to the same _cancelExtrude,
     // so `.last` just needs to pick one, not the specific one.
+    await tester.ensureVisible(find.text('Cancel').last);
     await tester.tap(find.text('Cancel').last);
     await _pumpUntil(tester, () => backend.features.every((f) => f['type'] != 'extrude'));
     await tester.pump();

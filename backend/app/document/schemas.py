@@ -29,10 +29,66 @@ class PartCreate(BaseModel):
     name: str
 
 
+class MaterialAssignmentSchema(BaseModel):
+    """Wire counterpart of `app.document.models.MaterialAssignment` - the
+    backend only ever stores/echoes `material_id` (opaque, client-library
+    id) + `name` + `density_g_cm3`; the client's own full material-library
+    entry (8 additional optional stress-analysis fields) never reaches the
+    backend at all - see `MaterialAssignment`'s own docstring."""
+
+    material_id: str
+    name: str
+    density_g_cm3: float
+
+
+class PartUpdate(BaseModel):
+    """Part Properties: partial update, same omitted-vs-current-value
+    convention as every `*FeatureUpdate` schema in this file. `remarks`/
+    `supplier`/`supplier_part_number` are DIDSA-CAD-only metadata (see
+    `app.document.models.Part`'s own docstring) - stored here alongside the
+    STEP-portable fields for a uniform Part Properties CRUD surface, but
+    `app.document.step_export` deliberately never reads them."""
+
+    part_number: str | None = None
+    description: str | None = None
+    revision: str | None = None
+    remarks: str | None = None
+    supplier: str | None = None
+    supplier_part_number: str | None = None
+
+
+class MaterialAssignmentUpdate(BaseModel):
+    """Body `{material: ...}` for the default-material/per-Body-material
+    endpoints - `material: null` explicitly clears the assignment (Part
+    default) or reverts a Body to the Part default (per-Body override)."""
+
+    material: MaterialAssignmentSchema | None = None
+
+
 class PartResponse(BaseModel):
     id: str
     name: str
     feature_ids: list[str]
+    part_number: str | None = None
+    description: str | None = None
+    revision: str | None = None
+    remarks: str | None = None
+    supplier: str | None = None
+    supplier_part_number: str | None = None
+    default_material: MaterialAssignmentSchema | None = None
+    body_material_assignments: dict[str, MaterialAssignmentSchema] = {}
+
+
+class MassPropertiesResponse(BaseModel):
+    """`GET /parts/{part_id}/mass-properties` - explicit/on-demand (not
+    folded into the cheap `GET /parts/{part_id}`, which must stay metadata-
+    only) since computing this requires a full `compute_part_bodies` geometry
+    recompute. Volume (mm^3) for every current Body; mass (g) only for a
+    Body with a resolvable material (`Part.resolve_material`) - a Body with
+    none assigned is simply absent from `body_masses`."""
+
+    body_volumes: dict[str, float]
+    body_masses: dict[str, float]
 
 
 class SketchFeatureCreate(BaseModel):
@@ -116,6 +172,12 @@ class ExtrudeFeatureCreate(BaseModel):
     end_distance: float
     target_body_ids: list[str] = []
     profile_refs: list[SketchEntityRefSchema] = []
+    # Thin extrude: `None` (default) is the ordinary solid-face-prism path.
+    # Set (and nonzero - see `app.document.router._validate_thickness_
+    # nonzero`), the profile's own wire is prismed into an open shell and
+    # thickened by this signed value instead - see `LoftFeatureCreate.
+    # thickness`'s own doc comment for the identical sign convention.
+    thickness: float | None = None
 
 
 class ExtrudeFeatureUpdate(BaseModel):
@@ -133,6 +195,7 @@ class ExtrudeFeatureUpdate(BaseModel):
     end_distance: float | None = None
     target_body_ids: list[str] | None = None
     profile_refs: list[SketchEntityRefSchema] | None = None
+    thickness: float | None = None
 
 
 class ExtrudeFeatureResponse(BaseModel):
@@ -145,6 +208,7 @@ class ExtrudeFeatureResponse(BaseModel):
     locked: bool
     target_body_ids: list[str] = []
     profile_refs: list[SketchEntityRefSchema] = []
+    thickness: float | None = None
     # B1: see SketchFeatureResponse.produces above - always BODY for an
     # ExtrudeFeature today (Boss and Cut alike).
     produces: Produces
@@ -215,6 +279,11 @@ class MeasurementResultSchema(BaseModel):
     axes_parallel: bool | None = None
     normal_distance: float | None = None
     faces_parallel: bool | None = None
+    # Volume (mm^3)/mass (g) of every distinct Body among the request's refs,
+    # keyed by Body id - see `app.document.measure.MeasurementResult`'s own
+    # doc comment for the exact population rules.
+    body_volumes: dict[str, float] | None = None
+    body_masses: dict[str, float] | None = None
 
 
 class ExternalVertexReferenceCreate(BaseModel):
@@ -1650,6 +1719,11 @@ class LoftFeatureCreate(BaseModel):
     ruled: bool = False
     target_body_ids: list[str] = []
     thickness: float | None = None
+    # Meaningful only when `thickness` is set - `False` (default) is the
+    # original open-chain thin-loft source; `True` keeps every section a
+    # closed Profile, lofted as a hollow, cap-less tube instead - see
+    # `LoftFeature`'s own docstring.
+    thin_from_closed_profile: bool = False
     guide_curve_refs: list[SketchEntityRefSchema] = []
 
 
@@ -1670,6 +1744,7 @@ class LoftFeatureUpdate(BaseModel):
     ruled: bool | None = None
     target_body_ids: list[str] | None = None
     thickness: float | None = None
+    thin_from_closed_profile: bool | None = None
     guide_curve_refs: list[SketchEntityRefSchema] | None = None
 
 
@@ -1681,6 +1756,7 @@ class LoftFeatureResponse(BaseModel):
     ruled: bool
     target_body_ids: list[str] = []
     thickness: float | None = None
+    thin_from_closed_profile: bool = False
     guide_curve_refs: list[SketchEntityRefSchema] = []
     locked: bool
     # B1: see SketchFeatureResponse.produces above - always BODY for a

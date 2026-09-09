@@ -39,6 +39,8 @@ import 'delete_body_panel.dart';
 import 'delete_face_panel.dart';
 import 'extrude_panel.dart';
 import 'feature_context_menu.dart';
+import '../materials/material_picker_sheet.dart';
+import '../materials/part_properties_screen.dart';
 import 'feature_picker_sheet.dart';
 import 'feature_tree_panel.dart';
 import 'export_format_dialog.dart';
@@ -1715,6 +1717,7 @@ class _PartScreenState extends State<PartScreen> {
     double end,
     List<String> targetBodyIds,
     List<SketchEntityRefDto> profileRefs,
+    double? thickness,
   })? _extrudeEditSnapshot;
 
   /// Prompt G: which outer profile(s) of [_extrudeSketchFeature] to use -
@@ -1731,6 +1734,12 @@ class _PartScreenState extends State<PartScreen> {
   ExtrudeType _extrudeType = ExtrudeType.boss;
   double _extrudeStartDistance = 0.0;
   double _extrudeEndDistance = 10.0;
+
+  /// Thin extrude: `null` (default) is the ordinary solid extrude - see
+  /// [ExtrudePanel.initialThickness]'s own doc comment. Threaded through
+  /// [_ensureExtrudeFeatureExists] the same way [_extrudeStartDistance] etc.
+  /// are.
+  double? _extrudeThickness;
 
   /// Debounces the panel's live-preview PATCH/POST + mesh refresh by 500ms
   /// after the last field change, per the brief - cancelled outright by
@@ -1982,14 +1991,18 @@ class _PartScreenState extends State<PartScreen> {
   /// handles more simply than a cancel-and-restart `Timer`.
   int _measureRequestToken = 0;
 
-  /// Vertex/edge/face only, mirroring [_filletSelectionFilter]'s shape -
-  /// Measure has no face-tap special case (unlike Fillet's whole-boundary-
-  /// loop convenience), so `vertex` stays on here where Fillet turns it off.
+  /// Vertex/edge/face, mirroring [_filletSelectionFilter]'s shape - Measure
+  /// has no face-tap special case (unlike Fillet's whole-boundary-loop
+  /// convenience), so `vertex` stays on here where Fillet turns it off.
+  /// `body: true` (unlike most tools) lets Measure/Select Other offer a
+  /// whole Body as its own pick target, for the volume/mass measurement -
+  /// see `_subShapeTypeFor`'s own `body` case and
+  /// `app.document.measure.MeasurementResult.body_volumes`.
   static const _measureSelectionFilter = SelectionFilterState(
     vertex: true,
     edge: true,
     face: true,
-    body: false,
+    body: true,
     sketchPoint: false,
     sketchLine: false,
     sketchCircle: false,
@@ -2035,7 +2048,8 @@ class _PartScreenState extends State<PartScreen> {
         SelectionEntityKind.vertex => 'vertex',
         SelectionEntityKind.edge => 'edge',
         SelectionEntityKind.face => 'face',
-        _ => throw ArgumentError('Measure only supports vertex/edge/face entities, got $kind'),
+        SelectionEntityKind.body => 'body',
+        _ => throw ArgumentError('Measure only supports vertex/edge/face/body entities, got $kind'),
       };
 
   /// Fires on every selection change while [_measureActive] - cheap and
@@ -4588,6 +4602,7 @@ class _PartScreenState extends State<PartScreen> {
     LoftMode mode,
     bool ruled,
     double? thickness,
+    bool thinFromClosedProfile,
     List<String> targetBodyIds,
     List<SketchEntityRefDto?> alignmentPoints,
     SketchEntityRefDto? guideCurveRef,
@@ -4596,6 +4611,10 @@ class _PartScreenState extends State<PartScreen> {
   LoftMode _loftMode = LoftMode.boss;
   bool _loftRuled = false;
   double? _loftThickness;
+
+  /// Meaningful only when [_loftThickness] is set - see
+  /// [LoftPanel.initialThinFromClosedProfile]'s own doc comment.
+  bool _loftThinFromClosedProfile = false;
 
   /// One slot per [_loftSections] entry - the backend `LoftSection.
   /// alignment_point`, null until that section's own point has been
@@ -4697,6 +4716,7 @@ class _PartScreenState extends State<PartScreen> {
       _loftMode = LoftMode.boss;
       _loftRuled = false;
       _loftThickness = null;
+      _loftThinFromClosedProfile = false;
       _loftAlignmentPoints = List.filled(sections.length, null);
       _loftGuideCurveRef = null;
       _entitiesBeforeLoft = _selectedEntities;
@@ -4720,6 +4740,7 @@ class _PartScreenState extends State<PartScreen> {
     final mode = LoftMode.fromApiValue(feature.mode ?? 'boss');
     final ruled = feature.ruled;
     final thickness = feature.thickness;
+    final thinFromClosedProfile = feature.thinFromClosedProfile ?? false;
     final targetBodyIds = feature.targetBodyIds;
     final alignmentPoints = [for (final section in feature.sections) section.alignmentPoint];
     final guideCurveRef = feature.guideCurveRefs.isNotEmpty ? feature.guideCurveRefs.first : null;
@@ -4732,6 +4753,7 @@ class _PartScreenState extends State<PartScreen> {
         mode: mode,
         ruled: ruled,
         thickness: thickness,
+        thinFromClosedProfile: thinFromClosedProfile,
         targetBodyIds: targetBodyIds,
         alignmentPoints: alignmentPoints,
         guideCurveRef: guideCurveRef,
@@ -4740,6 +4762,7 @@ class _PartScreenState extends State<PartScreen> {
       _loftMode = mode;
       _loftRuled = ruled;
       _loftThickness = thickness;
+      _loftThinFromClosedProfile = thinFromClosedProfile;
       _loftAlignmentPoints = alignmentPoints;
       _loftGuideCurveRef = guideCurveRef;
       _entitiesBeforeLoft = _selectedEntities;
@@ -4763,8 +4786,9 @@ class _PartScreenState extends State<PartScreen> {
     LoftMode mode,
     bool ruled,
     double? thickness,
-    List<String> targetBodyIds,
-  ) async {
+    List<String> targetBodyIds, [
+    bool thinFromClosedProfile = false,
+  ]) async {
     final part = _part;
     if (part == null || _loftSections.length < 2) return;
 
@@ -4795,6 +4819,7 @@ class _PartScreenState extends State<PartScreen> {
           ruled: ruled,
           targetBodyIds: targetBodyIds,
           thickness: thickness,
+          thinFromClosedProfile: thinFromClosedProfile,
           guideCurveRefs: guideCurveRefs,
         );
         _previewLoftFeatureId = created.id;
@@ -4810,6 +4835,7 @@ class _PartScreenState extends State<PartScreen> {
         ruled: ruled,
         targetBodyIds: targetBodyIds,
         thickness: thickness,
+        thinFromClosedProfile: thinFromClosedProfile,
         guideCurveRefs: guideCurveRefs,
       );
     }
@@ -4818,10 +4844,11 @@ class _PartScreenState extends State<PartScreen> {
 
   /// [LoftPanel.onChanged] - mirrors [_onSweepValuesChanged], plus the
   /// ruled/thickness fields Sweep has no equivalent of.
-  void _onLoftValuesChanged(LoftMode mode, bool ruled, double? thickness) {
+  void _onLoftValuesChanged(LoftMode mode, bool ruled, double? thickness, bool thinFromClosedProfile) {
     _loftMode = mode;
     _loftRuled = ruled;
     _loftThickness = thickness;
+    _loftThinFromClosedProfile = thinFromClosedProfile;
     _scheduleLoftPreview();
   }
 
@@ -4834,6 +4861,7 @@ class _PartScreenState extends State<PartScreen> {
             _loftRuled,
             _loftThickness,
             _currentLoftTargetBodyIds(),
+            _loftThinFromClosedProfile,
           ));
     });
   }
@@ -4847,7 +4875,8 @@ class _PartScreenState extends State<PartScreen> {
     final wasEditing = _editingLoftFeatureId != null;
     final targetBodyIds = _currentLoftTargetBodyIds();
     await _runGuarded(() async {
-      await _ensureLoftFeatureExists(_loftMode, _loftRuled, _loftThickness, targetBodyIds);
+      await _ensureLoftFeatureExists(
+          _loftMode, _loftRuled, _loftThickness, targetBodyIds, _loftThinFromClosedProfile);
       await _refreshFeatures();
       await _refreshSketchGeometries();
     });
@@ -4866,6 +4895,7 @@ class _PartScreenState extends State<PartScreen> {
       _meshBeforeLoft = null;
       _editingLoftFeatureId = null;
       _loftEditSnapshot = null;
+      _loftThinFromClosedProfile = false;
       _loftAlignmentPoints = [];
       _loftGuideCurveRef = null;
       // Defensive: abandons an in-flight alignment-point/guide-curve
@@ -4904,6 +4934,7 @@ class _PartScreenState extends State<PartScreen> {
       _meshBeforeLoft = null;
       _editingLoftFeatureId = null;
       _loftEditSnapshot = null;
+      _loftThinFromClosedProfile = false;
       _loftAlignmentPoints = [];
       _loftGuideCurveRef = null;
       // Mirrors _confirmLoft's own identical defensive cleanup above.
@@ -4939,6 +4970,7 @@ class _PartScreenState extends State<PartScreen> {
             ruled: editSnapshot.ruled,
             targetBodyIds: editSnapshot.targetBodyIds,
             thickness: editSnapshot.thickness,
+            thinFromClosedProfile: editSnapshot.thinFromClosedProfile,
             guideCurveRefs: revertGuideCurveRefs,
           );
           await _refreshFeatures();
@@ -9021,7 +9053,45 @@ class _PartScreenState extends State<PartScreen> {
     switch (action) {
       case BodyContextMenuAction.toggleVisibility:
         await _toggleFeatureVisibility(feature);
+      case BodyContextMenuAction.assignMaterial:
+        await _assignMaterialToBody(bodyId);
     }
+  }
+
+  /// File > Part Properties: the app's MBD metadata screen for the current
+  /// Part - see `PartPropertiesScreen`'s own doc comment for why this is a
+  /// File-menu entry rather than a Settings-page one.
+  Future<void> _openPartProperties() async {
+    final part = _part;
+    if (part == null) return;
+    setState(() => _toolbarOpen = false);
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => PartPropertiesScreen(api: _api, part: part)),
+    );
+    // PartPropertiesScreen may have changed Part Properties/material
+    // assignment via its own direct API calls - refetch rather than
+    // threading a return value back, so this stays correct even if the
+    // user backs out mid-edit after a save already went through.
+    if (!mounted) return;
+    await _runGuarded(() async {
+      final refreshed = await _api.getPart(part.id);
+      if (mounted) setState(() => _part = refreshed);
+    });
+  }
+
+  /// Opens the material picker scoped to [bodyId] (a per-Body override -
+  /// "None" reverts it to the Part's own default) and applies the choice via
+  /// the backend's dedicated endpoint - see `PartDto.bodyMaterialAssignments`/
+  /// `DocumentApiClient.setBodyMaterial`.
+  Future<void> _assignMaterialToBody(String bodyId) async {
+    final part = _part;
+    if (part == null) return;
+    final result = await showMaterialPickerSheet(context, isBodyOverride: true);
+    if (!mounted || result == null) return;
+    await _runGuarded(() async {
+      final updated = await _api.setBodyMaterial(part.id, bodyId, result.assignment);
+      if (mounted) setState(() => _part = updated);
+    });
   }
 
   /// [_onBodyTap]'s Surfaces-section counterpart - a Surface's shape is
@@ -9051,6 +9121,8 @@ class _PartScreenState extends State<PartScreen> {
     switch (action) {
       case BodyContextMenuAction.toggleVisibility:
         await _toggleFeatureVisibility(feature);
+      case BodyContextMenuAction.assignMaterial:
+        await _assignMaterialToBody(surfaceId);
     }
   }
 
@@ -9226,6 +9298,7 @@ class _PartScreenState extends State<PartScreen> {
       _extrudeType = ExtrudeType.boss;
       _extrudeStartDistance = 0.0;
       _extrudeEndDistance = 10.0;
+      _extrudeThickness = null;
       _extrudeProfileRefs = profileRefs;
       _entitiesBeforeExtrude = _selectedEntities;
       _selectedEntities = {};
@@ -9273,6 +9346,7 @@ class _PartScreenState extends State<PartScreen> {
     final end = feature.endDistance ?? 10.0;
     final targetBodyIds = feature.targetBodyIds;
     final profileRefs = feature.profileRefs;
+    final thickness = feature.thickness;
 
     setState(() {
       _extrudeSketchFeature = sketchFeature;
@@ -9284,11 +9358,13 @@ class _PartScreenState extends State<PartScreen> {
         end: end,
         targetBodyIds: targetBodyIds,
         profileRefs: profileRefs,
+        thickness: thickness,
       );
       _meshBeforeExtrude = _bodies;
       _extrudeType = type;
       _extrudeStartDistance = start;
       _extrudeEndDistance = end;
+      _extrudeThickness = thickness;
       _extrudeProfileRefs = profileRefs;
       _entitiesBeforeExtrude = _selectedEntities;
       _selectedEntities = {
@@ -9327,8 +9403,9 @@ class _PartScreenState extends State<PartScreen> {
     double start,
     double end,
     List<String> targetBodyIds,
-    List<SketchEntityRefDto> profileRefs,
-  ) async {
+    List<SketchEntityRefDto> profileRefs, [
+    double? thickness,
+  ]) async {
     final part = _part;
     final sketchFeature = _extrudeSketchFeature;
     if (part == null || sketchFeature == null) return;
@@ -9343,6 +9420,7 @@ class _PartScreenState extends State<PartScreen> {
         endDistance: end,
         targetBodyIds: targetBodyIds,
         profileRefs: profileRefs,
+        thickness: thickness,
       );
       _previewExtrudeFeatureId = created.id;
     } else {
@@ -9354,6 +9432,7 @@ class _PartScreenState extends State<PartScreen> {
         endDistance: end,
         targetBodyIds: targetBodyIds,
         profileRefs: profileRefs,
+        thickness: thickness,
       );
     }
     await _refreshMesh();
@@ -9372,10 +9451,11 @@ class _PartScreenState extends State<PartScreen> {
   /// [ExtrudePanel.onChanged] - records the latest values immediately (so
   /// [_confirmExtrude] always has them, even mid-debounce) and (re)starts
   /// the 500ms debounce before actually hitting the backend.
-  void _onExtrudeValuesChanged(ExtrudeType type, double start, double end) {
+  void _onExtrudeValuesChanged(ExtrudeType type, double start, double end, double? thickness) {
     _extrudeType = type;
     _extrudeStartDistance = start;
     _extrudeEndDistance = end;
+    _extrudeThickness = thickness;
     _scheduleExtrudePreview();
   }
 
@@ -9394,6 +9474,7 @@ class _PartScreenState extends State<PartScreen> {
             _extrudeEndDistance,
             _currentTargetBodyIds(),
             _extrudeProfileRefs,
+            _extrudeThickness,
           ));
     });
   }
@@ -9445,6 +9526,7 @@ class _PartScreenState extends State<PartScreen> {
         _extrudeEndDistance,
         targetBodyIds,
         _extrudeProfileRefs,
+        _extrudeThickness,
       );
       await _refreshFeatures();
       await _refreshSketchGeometries();
@@ -9476,6 +9558,7 @@ class _PartScreenState extends State<PartScreen> {
       _editingExtrudeFeatureId = null;
       _extrudeEditSnapshot = null;
       _extrudeProfileRefs = [];
+      _extrudeThickness = null;
       _selectedEntities = _entitiesBeforeExtrude ?? {};
       _entitiesBeforeExtrude = null;
       _selectionFilterOverrides.pop();
@@ -9526,6 +9609,7 @@ class _PartScreenState extends State<PartScreen> {
       _editingExtrudeFeatureId = null;
       _extrudeEditSnapshot = null;
       _extrudeProfileRefs = [];
+      _extrudeThickness = null;
       _selectedEntities = _entitiesBeforeExtrude ?? {};
       _entitiesBeforeExtrude = null;
       _selectionFilterOverrides.pop();
@@ -9544,6 +9628,7 @@ class _PartScreenState extends State<PartScreen> {
             endDistance: editSnapshot.end,
             targetBodyIds: editSnapshot.targetBodyIds,
             profileRefs: editSnapshot.profileRefs,
+            thickness: editSnapshot.thickness,
           );
           await _refreshFeatures();
         });
@@ -16331,6 +16416,7 @@ class _PartScreenState extends State<PartScreen> {
                     onStartNew: _startNewPart,
                     onExportPart: _exportPart,
                     onImportGeometry: _importGeometry,
+                    onPartProperties: _openPartProperties,
                     bgColourHex: _bgColourHex,
                     bodyColourHex: _bodyColourHex,
                     bodyOpacity: _bodyOpacity,
@@ -16384,6 +16470,7 @@ class _PartScreenState extends State<PartScreen> {
                       initialType: _extrudeType,
                       initialStartDistance: _extrudeStartDistance,
                       initialEndDistance: _extrudeEndDistance,
+                      initialThickness: _extrudeThickness,
                       targetBodyCount: _selectedEntities.length,
                       onChanged: _onExtrudeValuesChanged,
                       onConfirm: _confirmExtrude,
@@ -16784,6 +16871,7 @@ class _PartScreenState extends State<PartScreen> {
                       initialMode: _loftMode,
                       initialRuled: _loftRuled,
                       initialThickness: _loftThickness,
+                      initialThinFromClosedProfile: _loftThinFromClosedProfile,
                       sectionCount: _loftSections.length,
                       targetBodyCount: _currentLoftTargetBodyIds().length,
                       alignmentPointsSet: [for (final ref in _loftAlignmentPoints) ref != null],

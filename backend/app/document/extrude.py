@@ -37,6 +37,7 @@ from OCC.Core.TopTools import TopTools_IndexedMapOfShape, TopTools_ListOfShape
 
 from app.document import body_cache
 from app.document.graph import base_feature_id, build_feature_graph, topological_order
+from app.document.shell_ops import thicken_shell_to_solid
 from app.document.plane_geometry import (
     is_mirrored_basis,
     resolve_ccw_arc_endpoints,
@@ -723,6 +724,16 @@ def cached_feature_edge_provenance(part: Part, feature_id: str) -> dict[str, dic
     return _feature_edge_provenance_cache.get(part.id, {}).get(feature_id)
 
 
+def _thin_extrude_failed(feature_id: str) -> HTTPException:
+    """A structurally-valid thin Extrude (a real profile, a nonzero
+    thickness) that OCCT nonetheless couldn't thicken into a solid -
+    mirrors `app.document.loft._loft_failed`'s own "resolvable parameters,
+    unresolvable geometry" distinction."""
+    return HTTPException(
+        status_code=422, detail={"type": "thin_extrude_failed", "feature_id": feature_id}
+    )
+
+
 def _prism_for_profile(
     sketch: Sketch, profile: Profile, feature: ExtrudeFeature, basis: ResolvedPlane
 ) -> tuple[TopoDS_Shape, dict[str, dict[str, EdgeProvenanceEntry]] | None]:
@@ -744,10 +755,34 @@ def _prism_for_profile(
     # then covers the remaining (end_distance - start_distance) span.
     start_transform = gp_Trsf()
     start_transform.SetTranslation(direction.Multiplied(feature.start_distance))
+    prism_vector = direction.Multiplied(feature.end_distance - feature.start_distance)
+
+    if feature.thickness is not None:
+        # Thin extrude: prism the profile's own WIRE (not its face) into an
+        # open shell (OCCT's documented Wire->Shell sweep behavior, the same
+        # "prism a wire, not a face" idiom `app.document.loft`'s thin/open-
+        # chain path already relies on for `BRepOffsetAPI_ThruSections`),
+        # then thicken that shell into a solid by `feature.thickness`
+        # (`thicken_shell_to_solid` - same signed-thickness convention as
+        # `LoftFeature.thickness`: the sign picks which side of the wall
+        # gets material). No edge-index provenance is recorded for this
+        # branch - a thickened shell's topology doesn't line up with the
+        # face-prism boundary shapes provenance is built from (see
+        # `_profile_boundary_shapes`), a narrow, acceptable limitation
+        # consistent with this function's existing "only the common
+        # single-profile, no-target case" provenance caveat.
+        wire = wire_for_profile(sketch, profile, basis)
+        moved_wire = topods.Wire(BRepBuilderAPI_Transform(wire, start_transform, True).Shape())
+        shell = BRepPrimAPI_MakePrism(moved_wire, prism_vector).Shape()
+        try:
+            solid = thicken_shell_to_solid(shell, feature.thickness)
+        except ValueError:
+            raise _thin_extrude_failed(feature.id) from None
+        return solid, None
+
     face = face_for_profile(sketch, profile, basis)
     moved_face = BRepBuilderAPI_Transform(face, start_transform, True).Shape()
 
-    prism_vector = direction.Multiplied(feature.end_distance - feature.start_distance)
     prism = BRepPrimAPI_MakePrism(moved_face, prism_vector)
     shape = prism.Shape()
     point_to_vertex, line_to_edge = _profile_boundary_shapes(sketch, profile, basis, moved_face)
@@ -2947,6 +2982,12 @@ def resolve_subshape_from_bodies(bodies: dict[str, TopoDS_Shape], ref: SubShapeR
     body = bodies.get(ref.body_id)
     if body is None:
         raise _missing_reference(ref)
+
+    # Measure tool: a BODY ref has no sub-shape to enumerate - it resolves
+    # directly to the whole Body's own shape (`_TOPABS_FOR_SUBSHAPE_TYPE`
+    # has no BODY entry, and never needs one).
+    if ref.shape_type == SubShapeType.BODY:
+        return body
 
     shape_map = TopTools_IndexedMapOfShape()
     topexp.MapShapes(body, _TOPABS_FOR_SUBSHAPE_TYPE[ref.shape_type], shape_map)

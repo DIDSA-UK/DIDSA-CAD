@@ -43,7 +43,7 @@ class MeasurementPanel extends StatelessWidget {
   });
 
   String? get _tooltip => switch (selectedEntities.length) {
-        0 => 'Select a vertex, edge, or face to measure',
+        0 => 'Select a vertex, edge, face, or body to measure',
         1 => 'Select a second entity to compare, or view this measurement alone',
         _ => null,
       };
@@ -109,6 +109,7 @@ class MeasurementPanel extends StatelessWidget {
         SelectionEntityKind.face => const SvgIcon('assets/icons/viewport/selection_face.svg'),
         SelectionEntityKind.edge => const SvgIcon('assets/icons/viewport/selection_edge.svg'),
         SelectionEntityKind.vertex => const SvgIcon('assets/icons/viewport/selection_vertex.svg'),
+        SelectionEntityKind.body => const SvgIcon('assets/icons/viewport/selection_body.svg'),
         _ => const SizedBox.shrink(),
       };
 
@@ -116,11 +117,16 @@ class MeasurementPanel extends StatelessWidget {
         SelectionEntityKind.face => 'Face',
         SelectionEntityKind.edge => 'Edge',
         SelectionEntityKind.vertex => 'Vertex',
+        SelectionEntityKind.body => 'Body',
         _ => 'Entity',
       };
 
   String _titleFor(SelectionEntityRef entity) {
     final bodyName = bodyNames[entity.bodyId] ?? 'Body';
+    // A body-kind entity's own `id` is always 0 (no sub-shape index to show -
+    // see SelectionEntityRef's own doc comment), so naming it "Body #0" would
+    // be redundant noise; just the body's own name/label is the whole story.
+    if (entity.kind == SelectionEntityKind.body) return bodyName;
     return '$bodyName - ${_labelFor(entity.kind)} #${entity.id}';
   }
 
@@ -144,6 +150,25 @@ class MeasurementPanel extends StatelessWidget {
     if (r.normalDistance != null) row('Normal distance', _fmt(r.normalDistance!));
     if (r.distance != null) row('Distance', _fmt(r.distance!));
     if (r.delta != null) row('ΔX, ΔY, ΔZ', _fmtVec(r.delta!));
+
+    // Volume/mass of every distinct Body among the current selection - up to
+    // 2 rows each when the two selected entities belong to different Bodies
+    // (mass only for a Body with a material actually assigned; see
+    // MeasurementResultDto.bodyMasses's own doc comment).
+    final distinctBodyIds = selectedEntities.map((e) => e.bodyId).toSet();
+    final multiBody = distinctBodyIds.length > 1;
+    if (r.bodyVolumes != null) {
+      for (final entry in r.bodyVolumes!.entries) {
+        final label = multiBody ? '${bodyNames[entry.key] ?? 'Body'} volume' : 'Volume';
+        row(label, _fmt(entry.value));
+      }
+    }
+    if (r.bodyMasses != null) {
+      for (final entry in r.bodyMasses!.entries) {
+        final label = multiBody ? '${bodyNames[entry.key] ?? 'Body'} mass' : 'Mass';
+        row(label, '${_fmt(entry.value)} g');
+      }
+    }
 
     return rows;
   }
