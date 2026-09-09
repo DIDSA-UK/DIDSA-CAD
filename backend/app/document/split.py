@@ -130,7 +130,7 @@ def _bbox_corners_and_diagonal(shape: TopoDS_Shape) -> tuple[list[tuple[float, f
     return corners, diagonal
 
 
-def _plane_block(basis: ResolvedPlane, target_shape: TopoDS_Shape) -> TopoDS_Shape:
+def plane_block(basis: ResolvedPlane, target_shape: TopoDS_Shape) -> TopoDS_Shape:
     """An oversized rectangular box on `basis`'s own `+normal` side -
     `target_shape`'s own bounding-box corners are projected into `basis`'s
     local (u, v) in-plane coordinates (`world_point_to_basis`) and signed
@@ -139,7 +139,13 @@ def _plane_block(basis: ResolvedPlane, target_shape: TopoDS_Shape) -> TopoDS_Sha
     both sized correctly regardless of `basis`'s orientation relative to
     `target_shape`'s own bounding-box axes - this projection is the piece
     that keeps a tilted cutting plane robust (a naive world-axis-aligned
-    box built straight from the bounding box would not)."""
+    box built straight from the bounding box would not).
+
+    Public (no leading underscore) since `app.document.section`'s own
+    section-preview cutaway is a second real consumer outside this module -
+    same "promote to public once a second module needs it" convention
+    `app.document.create_plane.resolve_plane_ref`'s own docstring already
+    follows."""
     corners, diagonal = _bbox_corners_and_diagonal(target_shape)
     margin = diagonal + _MARGIN_PADDING
     us = [world_point_to_basis(basis, corner)[0] for corner in corners]
@@ -466,7 +472,7 @@ def _split_tool_block(
             basis = resolve_plane_ref(part, bodies, tool.plane_ref, excluded_feature_ids)
         except HTTPException:
             return None
-        return _plane_block(basis, target_shape)
+        return plane_block(basis, target_shape)
 
     if tool.surface_feature_id is not None:
         surface_feature = part.get_feature(tool.surface_feature_id)
