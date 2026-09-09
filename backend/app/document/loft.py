@@ -473,7 +473,14 @@ def _apply_alignment_point_translation(
                 raise _invalid_loft_section(
                     index, "every section needs an alignment_point when guide_curve_refs is set"
                 )
-        guide_wire = resolve_path_wire(part, feature.guide_curve_refs, bodies_so_far, excluded_feature_ids)
+        # `resolve_path_wire`'s second element (a Sweep-specific fixed-
+        # binormal fix - see `app.document.sweep._sweep_wire`'s own doc
+        # comment) doesn't apply to a Loft guide curve, which is never fed
+        # to `BRepOffsetAPI_MakePipeShell` here - only the wire itself is
+        # used, for `_guide_curve_intersection`'s own ray-vs-curve math.
+        guide_wire, _fixed_binormal = resolve_path_wire(
+            part, feature.guide_curve_refs, bodies_so_far, excluded_feature_ids
+        )
         targets = [_guide_curve_intersection(guide_wire, entry.basis, i) for i, entry in enumerate(resolved)]
     else:
         first_with_alignment = next(

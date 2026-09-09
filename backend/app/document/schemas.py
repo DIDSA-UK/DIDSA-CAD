@@ -20,6 +20,7 @@ from app.document.models import (
     SpiralBevelHand,
     SubShapeType,
     SweepMode,
+    ThicknessDirection,
 )
 from app.sketch.models import Plane, SketchEntityType
 from app.sketch.schemas import ArcResponse, CircleResponse, LineResponse, PointResponse
@@ -178,6 +179,9 @@ class ExtrudeFeatureCreate(BaseModel):
     # thickened by this signed value instead - see `LoftFeatureCreate.
     # thickness`'s own doc comment for the identical sign convention.
     thickness: float | None = None
+    # Meaningful only when `thickness` is set - see `ThicknessDirection`'s
+    # own doc comment.
+    thickness_direction: ThicknessDirection = ThicknessDirection.OUTWARD
 
 
 class ExtrudeFeatureUpdate(BaseModel):
@@ -196,6 +200,7 @@ class ExtrudeFeatureUpdate(BaseModel):
     target_body_ids: list[str] | None = None
     profile_refs: list[SketchEntityRefSchema] | None = None
     thickness: float | None = None
+    thickness_direction: ThicknessDirection | None = None
 
 
 class ExtrudeFeatureResponse(BaseModel):
@@ -209,6 +214,7 @@ class ExtrudeFeatureResponse(BaseModel):
     target_body_ids: list[str] = []
     profile_refs: list[SketchEntityRefSchema] = []
     thickness: float | None = None
+    thickness_direction: ThicknessDirection = ThicknessDirection.OUTWARD
     # B1: see SketchFeatureResponse.produces above - always BODY for an
     # ExtrudeFeature today (Boss and Cut alike).
     produces: Produces

@@ -92,6 +92,7 @@ from app.document.models import (
     SweepMode,
     SweptSurfaceFeature,
     ThickenFeature,
+    ThicknessDirection,
 )
 from app.sketch.models import (
     Arc,
@@ -734,6 +735,60 @@ def _thin_extrude_failed(feature_id: str) -> HTTPException:
     )
 
 
+def _thicken_shell_for_direction(
+    shell: TopoDS_Shape, thickness: float, direction: ThicknessDirection
+) -> TopoDS_Shape | None:
+    """On-device feedback ("add option to thicken in, out or from the
+    middle"): resolves `ThicknessDirection` against `thicken_shell_to_
+    solid`'s existing single-direction, signed-thickness call.
+
+    `OUTWARD` passes `thickness` through completely unchanged - this is
+    deliberate, not a simplification: `OUTWARD` is this field's default
+    (`ThicknessDirection.OUTWARD`, both on `ExtrudeFeature` and wherever a
+    Part saved before this field existed loads it), so a pre-existing thin
+    Extrude's already-working, already-signed `thickness` value must keep
+    producing the exact same solid it always has - not have its sign
+    silently reinterpreted the day this field shipped. `INWARD` negates
+    the *magnitude* (`-abs(thickness)`) rather than just flipping
+    `thickness`'s own sign - see `ThicknessDirection`'s own doc comment
+    for why a negative value is assumed to mean inward (not yet
+    independently re-confirmed against a real OCCT kernel) - so choosing
+    `INWARD` in the UI always means "inward" regardless of whatever sign
+    the user happened to type.
+
+    `SYMMETRIC` has no single-call equivalent: `thicken_shell_to_solid`/
+    `MakeThickSolidBySimple` only ever offsets once, in one direction, by
+    one magnitude - there is no "offset half each way" mode to ask OCCT
+    for directly. Built instead from two independent half-thickness
+    solids (one `+abs(thickness)/2`, one `-abs(thickness)/2`, i.e. one on
+    each side of the sketched wire) unioned via `BRepAlgoAPI_Fuse`
+    (`_run_fuse`, the same hardened helper `_apply_boss_or_cut`'s own
+    multi-target Boss-fuse chain uses) into the one wall centered on the
+    wire - not yet confirmed against a real OCCT kernel whether the two
+    half-shells' shared inner boundary fuses cleanly (flagged the same way
+    every other not-yet-on-device-verified OCCT technique in this codebase
+    is).
+
+    Returns `None` (never raises past a `ValueError` from `thicken_shell_
+    to_solid` itself, which callers already handle) if the `SYMMETRIC`
+    fuse doesn't produce a valid result, so a caller can treat that the
+    same as any other "OCCT couldn't build this" failure."""
+    if direction == ThicknessDirection.SYMMETRIC:
+        half = abs(thickness) / 2
+        outward_half = thicken_shell_to_solid(shell, half)
+        inward_half = thicken_shell_to_solid(shell, -half)
+        fuse = _run_fuse(outward_half, inward_half)
+        if not fuse.IsDone():
+            return None
+        solid = fuse.Shape()
+        if solid is None or solid.IsNull() or not BRepCheck_Analyzer(solid).IsValid():
+            return None
+        return solid
+    if direction == ThicknessDirection.INWARD:
+        return thicken_shell_to_solid(shell, -abs(thickness))
+    return thicken_shell_to_solid(shell, thickness)
+
+
 def _prism_for_profile(
     sketch: Sketch, profile: Profile, feature: ExtrudeFeature, basis: ResolvedPlane
 ) -> tuple[TopoDS_Shape, dict[str, dict[str, EdgeProvenanceEntry]] | None]:
@@ -763,11 +818,9 @@ def _prism_for_profile(
         # "prism a wire, not a face" idiom `app.document.loft`'s thin/open-
         # chain path already relies on for `BRepOffsetAPI_ThruSections`),
         # then thicken that shell into a solid by `feature.thickness`
-        # (`thicken_shell_to_solid` - same signed-thickness convention as
-        # `LoftFeature.thickness`: the sign picks which side of the wall
-        # gets material). No edge-index provenance is recorded for this
-        # branch - a thickened shell's topology doesn't line up with the
-        # face-prism boundary shapes provenance is built from (see
+        # (`thicken_shell_to_solid`). No edge-index provenance is recorded
+        # for this branch - a thickened shell's topology doesn't line up
+        # with the face-prism boundary shapes provenance is built from (see
         # `_profile_boundary_shapes`), a narrow, acceptable limitation
         # consistent with this function's existing "only the common
         # single-profile, no-target case" provenance caveat.
@@ -775,9 +828,11 @@ def _prism_for_profile(
         moved_wire = topods.Wire(BRepBuilderAPI_Transform(wire, start_transform, True).Shape())
         shell = BRepPrimAPI_MakePrism(moved_wire, prism_vector).Shape()
         try:
-            solid = thicken_shell_to_solid(shell, feature.thickness)
+            solid = _thicken_shell_for_direction(shell, feature.thickness, feature.thickness_direction)
         except ValueError:
             raise _thin_extrude_failed(feature.id) from None
+        if solid is None:
+            raise _thin_extrude_failed(feature.id)
         return solid, None
 
     face = face_for_profile(sketch, profile, basis)

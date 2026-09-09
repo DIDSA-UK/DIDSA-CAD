@@ -17,6 +17,21 @@ enum ExtrudeType {
       .firstWhere((t) => t.apiValue == value, orElse: () => ExtrudeType.boss);
 }
 
+/// On-device feedback ("add option to thicken in, out or from the
+/// middle"): which side of the sketched wire a thin extrude's wall grows
+/// on - mirrors the backend's `thickness_direction` string values exactly,
+/// same `apiValue`/`fromApiValue` convention as [ExtrudeType].
+enum ThicknessDirection {
+  outward,
+  inward,
+  symmetric;
+
+  String get apiValue => name;
+
+  static ThicknessDirection fromApiValue(String value) => ThicknessDirection.values
+      .firstWhere((d) => d.apiValue == value, orElse: () => ThicknessDirection.outward);
+}
+
 /// The bottom-sheet-style panel [PartScreen] opens via the long-press
 /// "Extrude" context-menu action. Slides up from the bottom (same
 /// [AnimatedSlide] pattern [FeatureTreePanel]/[PartToolbar] use for their own
@@ -54,6 +69,12 @@ class ExtrudePanel extends StatefulWidget {
   /// the wall gets material).
   final double? initialThickness;
 
+  /// Which side of the sketched wire the thin wall grows on - meaningful
+  /// only when [initialThickness] is set. Defaults to `outward`, matching
+  /// the backend's own default (and this feature's pre-existing behavior
+  /// for a positive thickness, before this field existed).
+  final ThicknessDirection initialThicknessDirection;
+
   /// Prompt A4: how many target bodies are currently picked in the 3D
   /// viewport (see [PartScreen]'s body-picking flow, driven independently
   /// of this panel's own fields) - read live on every build, unlike
@@ -63,7 +84,7 @@ class ExtrudePanel extends StatefulWidget {
   final int targetBodyCount;
 
   final void Function(ExtrudeType type, double startDistance,
-      double endDistance, double? thickness) onChanged;
+      double endDistance, double? thickness, ThicknessDirection thicknessDirection) onChanged;
   final VoidCallback onConfirm;
   final VoidCallback onCancel;
 
@@ -75,6 +96,7 @@ class ExtrudePanel extends StatefulWidget {
     this.initialStartDistance = 0.0,
     this.initialEndDistance = 10.0,
     this.initialThickness,
+    this.initialThicknessDirection = ThicknessDirection.outward,
     required this.targetBodyCount,
     required this.onChanged,
     required this.onConfirm,
@@ -91,6 +113,7 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
   late final TextEditingController _endController;
   late bool _isThin;
   late final TextEditingController _thicknessController;
+  late ThicknessDirection _thicknessDirection;
 
   /// The depth implied by the current start/end fields - `null` once they
   /// no longer parse as numbers, so [build] can fall back to not showing a
@@ -113,14 +136,15 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
     _isThin = widget.initialThickness != null;
     _thicknessController = TextEditingController(
         text: widget.initialThickness == null ? '' : _formatDistance(widget.initialThickness!));
+    _thicknessDirection = widget.initialThicknessDirection;
     // Without this, the live preview underneath this panel doesn't appear
     // until the user actually edits a field - onChanged was only ever wired
     // to the TextField/SegmentedButton callbacks, never fired for the
     // initial values this panel opens with.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
-        widget.onChanged(_type, widget.initialStartDistance,
-            widget.initialEndDistance, widget.initialThickness);
+        widget.onChanged(_type, widget.initialStartDistance, widget.initialEndDistance,
+            widget.initialThickness, _thicknessDirection);
       }
     });
   }
@@ -160,7 +184,7 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
     setState(
         () => _depth = (start != null && end != null) ? end - start : null);
     if (start == null || end == null) return;
-    widget.onChanged(_type, start, end, _thickness);
+    widget.onChanged(_type, start, end, _thickness, _thicknessDirection);
   }
 
   void _onTypeChanged(ExtrudeType type) {
@@ -170,6 +194,11 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
 
   void _onThinToggled(bool value) {
     setState(() => _isThin = value);
+    _emitChange();
+  }
+
+  void _onDirectionChanged(ThicknessDirection direction) {
+    setState(() => _thicknessDirection = direction);
     _emitChange();
   }
 
@@ -276,7 +305,7 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
             value: _isThin,
             onChanged: (value) => _onThinToggled(value ?? false),
           ),
-          if (_isThin)
+          if (_isThin) ...[
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: TextField(
@@ -287,6 +316,19 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
                 onChanged: (_) => _emitChange(),
               ),
             ),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: SegmentedButton<ThicknessDirection>(
+                segments: const [
+                  ButtonSegment(value: ThicknessDirection.outward, label: Text('Out')),
+                  ButtonSegment(value: ThicknessDirection.inward, label: Text('In')),
+                  ButtonSegment(value: ThicknessDirection.symmetric, label: Text('Middle')),
+                ],
+                selected: {_thicknessDirection},
+                onSelectionChanged: (selection) => _onDirectionChanged(selection.first),
+              ),
+            ),
+          ],
           // Prompt A4: Cut requires 1+ target bodies (Boss doesn't -
           // zero is a valid "start a new body" pick) - picking itself
           // happens in the 3D viewport behind this panel, driven by

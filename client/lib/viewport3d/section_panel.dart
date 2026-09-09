@@ -179,7 +179,7 @@ class _SectionPanelState extends State<SectionPanel> {
       title: 'Section',
       tooltip: active == null
           ? 'Add a section, then tap a face or plane (or use XY/XZ/YZ) to place it'
-          : 'Drag the gizmo, or tap a face/plane, to reposition the selected section',
+          : 'Drag the triad, or tap a face/plane, to reposition the selected section',
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,

@@ -101,6 +101,36 @@ class ExtrudeType(str, Enum):
     CUT = "cut"
 
 
+class ThicknessDirection(str, Enum):
+    """On-device feedback ("add option to thicken in, out or from the
+    middle"): which side of the profile's own sketched wire a thin
+    extrude's wall material grows on - previously only reachable by typing
+    a positive or negative `ExtrudeFeature.thickness` and discovering by
+    trial which sign did which, an unlabeled and easily-reversed UX.
+    Mirrors `ExtrudeType`'s str-Enum pattern.
+
+    `OUTWARD` (the default - see `ExtrudeFeature.thickness_direction`
+    below) passes `thickness` through completely unchanged, so a Part
+    saved before this field existed keeps producing the exact same solid
+    it always has. `INWARD` negates `thickness`'s own magnitude
+    (`app.document.extrude._thicken_shell_for_direction`) -
+    `MakeThickSolidBySimple`'s documented behavior offsets along each
+    face's own outward normal for a positive offset, and the wire-prism
+    shell `_prism_for_profile` builds has its side faces already facing
+    outward from the sketched wire, so a negative offset is assumed to
+    grow the wall inward (not yet independently re-confirmed against a
+    real OCCT kernel in this sandbox - flagged the same way every other
+    not-yet-on-device-verified OCCT sign assumption in this codebase is).
+    `SYMMETRIC` grows the wall evenly on both sides of the sketched wire
+    (see `_thicken_shell_for_direction`'s own doc comment for how) - the
+    "from the middle" option the brief asked for, with no sign-convention
+    question of its own since it isn't one-sided."""
+
+    OUTWARD = "outward"
+    INWARD = "inward"
+    SYMMETRIC = "symmetric"
+
+
 @dataclass
 class ExtrudeFeature(Feature):
     """Extrudes the closed Profile of the SketchFeature referenced by
@@ -164,6 +194,12 @@ class ExtrudeFeature(Feature):
     # thickness` already established, reusing the identical OCCT idiom (see
     # `app.document.extrude._prism_for_profile`'s own thin branch).
     thickness: float | None = None
+
+    # Meaningful only when `thickness` is set - see `ThicknessDirection`'s
+    # own doc comment. Defaults to `OUTWARD`, matching this feature's
+    # pre-existing behavior for a positive `thickness` (so a Part saved
+    # before this field existed keeps its current wall side unchanged).
+    thickness_direction: ThicknessDirection = ThicknessDirection.OUTWARD
 
     @property
     def type(self) -> str:

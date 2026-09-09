@@ -88,6 +88,7 @@ from app.document.models import (
     SweepMode,
     SweptSurfaceFeature,
     ThickenFeature,
+    ThicknessDirection,
 )
 from app.sketch.constraints import (
     AngleConstraint,
@@ -931,6 +932,7 @@ def _feature_to_dict(feature: Feature) -> dict:
             "target_body_ids": list(feature.target_body_ids),
             "profile_refs": [_sketch_entity_ref_to_dict(r) for r in feature.profile_refs],
             "thickness": feature.thickness,
+            "thickness_direction": feature.thickness_direction.value,
         }
     if isinstance(feature, SurfaceFeature):
         return {
@@ -1302,6 +1304,7 @@ def _feature_from_dict(data: dict) -> Feature:
             target_body_ids=list(data.get("target_body_ids", [])),
             profile_refs=[_sketch_entity_ref_from_dict(r) for r in data.get("profile_refs", [])],
             thickness=data.get("thickness"),
+            thickness_direction=ThicknessDirection(data.get("thickness_direction", ThicknessDirection.OUTWARD.value)),
         )
     if feature_type == "surface":
         return SurfaceFeature(

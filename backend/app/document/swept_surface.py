@@ -107,7 +107,13 @@ def resolve_swept_surface_from_bodies(
         return None
 
     basis = resolve_sketch_basis(part, sketch_feature, bodies_so_far, excluded_feature_ids)
-    path_wire = resolve_path_wire(part, feature.path_refs, bodies_so_far, excluded_feature_ids)
+    # `resolve_path_wire`'s second element (a fixed-binormal direction for
+    # the closed Circle/Ellipse path case - see `app.document.sweep.
+    # _sweep_wire`'s own doc comment) is `app.document.sweep`'s own fix for
+    # a Sweep-specific defect; not yet applied here, so intentionally
+    # discarded rather than threaded through this module's own
+    # `_swept_surface_wire`-equivalent pipe-shell call.
+    path_wire, _fixed_binormal = resolve_path_wire(part, feature.path_refs, bodies_so_far, excluded_feature_ids)
 
     if result.status == ProfileStatus.CLOSED_LOOP:
         assert result.profile is not None

@@ -721,6 +721,7 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             target_body_ids=feature.target_body_ids,
             profile_refs=[_sketch_entity_ref_to_schema(ref) for ref in feature.profile_refs],
             thickness=feature.thickness,
+            thickness_direction=feature.thickness_direction,
             produces=feature.produces,
         )
     if isinstance(feature, SurfaceFeature):
@@ -3224,6 +3225,7 @@ def create_extrude_feature(part_id: str, payload: ExtrudeFeatureCreate) -> Extru
         target_body_ids=list(payload.target_body_ids),
         profile_refs=profile_refs,
         thickness=payload.thickness,
+        thickness_direction=payload.thickness_direction,
     )
     part.add_feature(feature)
     return _feature_response(part, feature)
@@ -3274,6 +3276,9 @@ def update_extrude_feature(
     _validate_profile_refs(sketch_feature, new_profile_refs)
     new_thickness = payload.thickness if payload.thickness is not None else feature.thickness
     _validate_thickness_nonzero(new_thickness)
+    new_thickness_direction = (
+        payload.thickness_direction if payload.thickness_direction is not None else feature.thickness_direction
+    )
 
     feature.extrude_type = new_extrude_type
     feature.start_distance = new_start
@@ -3281,6 +3286,7 @@ def update_extrude_feature(
     feature.target_body_ids = list(new_target_body_ids)
     feature.profile_refs = new_profile_refs
     feature.thickness = new_thickness
+    feature.thickness_direction = new_thickness_direction
     return _feature_response(part, feature)
 
 

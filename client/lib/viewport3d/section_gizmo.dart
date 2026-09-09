@@ -5,6 +5,7 @@ import 'package:flutter_scene/scene.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart' show MeshDto;
+import 'mesh_geometry.dart' show AlwaysOnTopMaterial;
 import 'reference_planes.dart' show closedLoopBorderPoints, doubleSidedQuadBuffers;
 import 'section_plane.dart';
 import 'selection_hit_test.dart' show kSelectionHitRadiusPixels, kCameraVerticalFovRadians;
@@ -17,12 +18,21 @@ import 'selection_hit_test.dart' show kSelectionHitRadiusPixels, kCameraVertical
 /// manipulator anchored on the active [SectionPlane]'s own origin/normal.
 ///
 /// World-space half-length of each translation arrow's shaft, and the
-/// radius of each rotation ring - sized to be comfortably tappable at
-/// [OrbitCamera]'s default distance without dwarfing a typical Body, the
+/// radius of each rotation ring, used only as a fallback when a caller has
+/// no camera position/viewport size to compute [_sectionGizmoWorldScale]'s
+/// constant-on-screen-size value from (see that function's own doc
+/// comment for the primary sizing rule) - sized to be comfortably tappable
+/// at [OrbitCamera]'s default distance without dwarfing a typical Body, the
 /// same "large enough to be visible/tappable, not dominating" reasoning
 /// `reference_planes.dart`'s own `referencePlaneSize` doc comment gives.
 const double kSectionGizmoArrowLength = 6.0;
 const double kSectionGizmoRingRadius = 4.5;
+
+/// Desired constant on-screen size (in screen pixels) for the translate-
+/// arrow half-length and rotation-ring radius respectively - see
+/// [_sectionGizmoWorldScale]'s own doc comment.
+const double kSectionGizmoArrowLengthPixels = 90.0;
+const double kSectionGizmoRingRadiusPixels = 70.0;
 
 /// Number of straight segments approximating each rotation ring, both for
 /// rendering (a closed [PolylineGeometry] loop) and for hit-testing (see
@@ -148,6 +158,49 @@ double _worldUnitsPerPixelAtDepth(double depth, Size viewportSize) {
   return worldHeightAtDepth / viewportSize.height;
 }
 
+/// On-device feedback ("the cutting plane is too small... should be sized
+/// relative to the geometry on screen" / "the triad should remain centred
+/// on screen so the user can always access it"): the gizmo/plane-quad used
+/// to be sized by a single flat world-space constant
+/// ([kSectionGizmoArrowLength] etc.) - correctly tappable at the default
+/// zoom, but shrinking to an unusable sliver once the user zoomed out (or
+/// dwarfing the model once zoomed in very close), since its *world-space*
+/// size never adapted to the camera's current distance from the plane.
+///
+/// This computes the world-space size that reads as a constant
+/// [desiredScreenPixels] on screen at [planeOrigin]'s own depth from
+/// [cameraPosition] - the standard "constant apparent size" technique
+/// every CAD manipulator uses, built from [_worldUnitsPerPixelAtDepth] (the
+/// same primitive [hitTestSectionGizmo] already uses for its own tap
+/// tolerance). The gizmo's *position* still tracks [planeOrigin] through
+/// pan/orbit exactly as before (this only scales its size, never
+/// repositions it) - dragging still resolves against real world-space
+/// geometry, unlike the orientation-only 2D `triad.dart` compass overlay,
+/// which this deliberately does not imitate (see this file's own module
+/// doc comment on why a draggable 3D manipulator needs a different
+/// technique).
+///
+/// Falls back to [fallbackWorldUnits] whenever [cameraPosition]/
+/// [viewportSize] aren't available (kept optional so existing callers -
+/// and tests - that only care about the gizmo's shape, not its on-screen
+/// size, don't need to supply a camera) or the plane sits exactly at the
+/// camera (a zero/negative depth has no meaningful on-screen size to solve
+/// for).
+double _sectionGizmoWorldScale({
+  required double desiredScreenPixels,
+  required double fallbackWorldUnits,
+  required vm.Vector3 planeOrigin,
+  vm.Vector3? cameraPosition,
+  Size? viewportSize,
+}) {
+  if (cameraPosition == null || viewportSize == null || viewportSize.height <= 0) {
+    return fallbackWorldUnits;
+  }
+  final depth = (planeOrigin - cameraPosition).length;
+  if (depth <= 0) return fallbackWorldUnits;
+  return desiredScreenPixels * _worldUnitsPerPixelAtDepth(depth, viewportSize);
+}
+
 /// [selection_hit_test.dart]'s own private `_closestRaySegmentDistance`,
 /// duplicated for the same reason as [_worldUnitsPerPixelAtDepth] above -
 /// returns `(rayT, worldDistance)` for the closest approach between [ray]
@@ -225,8 +278,27 @@ SectionGizmoHit? hitTestSectionGizmo(
   SectionPlane plane,
   Size viewportSize, {
   double radiusPixels = kSelectionHitRadiusPixels,
+  vm.Vector3? cameraPosition,
 }) {
   final basis = sectionGizmoBasis(plane.normal);
+  // Must match whatever [buildSectionGizmoNode] actually rendered for this
+  // same [plane]/[cameraPosition]/[viewportSize] - see
+  // [_sectionGizmoWorldScale]'s own doc comment; otherwise the tappable
+  // area and the drawn gizmo drift apart as the camera moves.
+  final arrowLength = _sectionGizmoWorldScale(
+    desiredScreenPixels: kSectionGizmoArrowLengthPixels,
+    fallbackWorldUnits: kSectionGizmoArrowLength,
+    planeOrigin: plane.origin,
+    cameraPosition: cameraPosition,
+    viewportSize: viewportSize,
+  );
+  final ringRadius = _sectionGizmoWorldScale(
+    desiredScreenPixels: kSectionGizmoRingRadiusPixels,
+    fallbackWorldUnits: kSectionGizmoRingRadius,
+    planeOrigin: plane.origin,
+    cameraPosition: cameraPosition,
+    viewportSize: viewportSize,
+  );
   SectionGizmoHit? best;
   double? bestPixelDistance;
 
@@ -242,13 +314,13 @@ SectionGizmoHit? hitTestSectionGizmo(
     }
   }
 
-  consider(SectionGizmoHandleKind.translateX, plane.origin, plane.origin + basis.xAxis * kSectionGizmoArrowLength);
-  consider(SectionGizmoHandleKind.translateY, plane.origin, plane.origin + basis.yAxis * kSectionGizmoArrowLength);
-  consider(SectionGizmoHandleKind.translateZ, plane.origin, plane.origin + basis.zAxis * kSectionGizmoArrowLength);
+  consider(SectionGizmoHandleKind.translateX, plane.origin, plane.origin + basis.xAxis * arrowLength);
+  consider(SectionGizmoHandleKind.translateY, plane.origin, plane.origin + basis.yAxis * arrowLength);
+  consider(SectionGizmoHandleKind.translateZ, plane.origin, plane.origin + basis.zAxis * arrowLength);
 
   void considerRing(SectionGizmoHandleKind kind, vm.Vector3 axisA, vm.Vector3 axisB) {
     vm.Vector3 pointAt(double t) =>
-        plane.origin + (axisA * math.cos(t) + axisB * math.sin(t)) * kSectionGizmoRingRadius;
+        plane.origin + (axisA * math.cos(t) + axisB * math.sin(t)) * ringRadius;
     var previous = pointAt(0);
     for (var i = 1; i <= kSectionGizmoRingSegments; i++) {
       final t = 2 * math.pi * i / kSectionGizmoRingSegments;
@@ -310,14 +382,40 @@ vm.Vector4 sectionGizmoHandleColor(SectionGizmoHandleKind kind, {bool highlighte
 /// losing any interactivity. [highlightedHandle] (the handle currently
 /// hovered/dragged, if any) renders with a thicker line and full opacity -
 /// see [sectionGizmoHandleColor].
-Node buildSectionGizmoNode(SectionPlane plane, {SectionGizmoHandleKind? highlightedHandle}) {
+Node buildSectionGizmoNode(
+  SectionPlane plane, {
+  SectionGizmoHandleKind? highlightedHandle,
+  vm.Vector3? cameraPosition,
+  Size? viewportSize,
+}) {
   final basis = sectionGizmoBasis(plane.normal);
   final primitives = <MeshPrimitive>[];
+  // See [_sectionGizmoWorldScale]'s own doc comment - keeps this in sync
+  // with [hitTestSectionGizmo]'s identical computation for the same
+  // [plane]/[cameraPosition]/[viewportSize].
+  final arrowLength = _sectionGizmoWorldScale(
+    desiredScreenPixels: kSectionGizmoArrowLengthPixels,
+    fallbackWorldUnits: kSectionGizmoArrowLength,
+    planeOrigin: plane.origin,
+    cameraPosition: cameraPosition,
+    viewportSize: viewportSize,
+  );
+  final ringRadius = _sectionGizmoWorldScale(
+    desiredScreenPixels: kSectionGizmoRingRadiusPixels,
+    fallbackWorldUnits: kSectionGizmoRingRadius,
+    planeOrigin: plane.origin,
+    cameraPosition: cameraPosition,
+    viewportSize: viewportSize,
+  );
 
   void addArrow(SectionGizmoHandleKind kind, vm.Vector3 axis) {
-    final tip = plane.origin + axis * kSectionGizmoArrowLength;
+    final tip = plane.origin + axis * arrowLength;
     final highlighted = kind == highlightedHandle;
-    final material = UnlitMaterial()
+    // On-device feedback ("can't see the [triad]"): AlwaysOnTopMaterial
+    // instead of the normal depth-tested UnlitMaterial - this manipulator
+    // must never be occluded by a Body, unlike an ordinary highlight (see
+    // that class's own doc comment, `mesh_geometry.dart`).
+    final material = AlwaysOnTopMaterial()
       ..alphaMode = AlphaMode.opaque
       ..baseColorFactor = sectionGizmoHandleColor(kind, highlighted: highlighted);
     primitives.add(MeshPrimitive(
@@ -333,9 +431,9 @@ Node buildSectionGizmoNode(SectionPlane plane, {SectionGizmoHandleKind? highligh
         plane.origin +
             (axisA * math.cos(2 * math.pi * i / kSectionGizmoRingSegments) +
                     axisB * math.sin(2 * math.pi * i / kSectionGizmoRingSegments)) *
-                kSectionGizmoRingRadius,
+                ringRadius,
     ];
-    final material = UnlitMaterial()
+    final material = AlwaysOnTopMaterial()
       ..alphaMode = AlphaMode.opaque
       ..baseColorFactor = sectionGizmoHandleColor(kind, highlighted: highlighted);
     primitives.add(MeshPrimitive(PolylineGeometry(points, width: highlighted ? 4 : 2.5), material));
@@ -355,39 +453,60 @@ const double _sectionPlaneAlpha = 0.22;
 const double _sectionPlaneActiveAlpha = 0.4;
 final vm.Vector3 _sectionPlaneBaseColor = vm.Vector3(0xB8 / 255, 0x3A / 255, 0xD5 / 255);
 
+/// Desired constant on-screen half-size (screen pixels) for the plane
+/// quad - see [_sectionGizmoWorldScale]'s own doc comment; [buildSectionPlaneQuadNode]
+/// otherwise falls back to [_sectionPlaneQuadHalfSize] unchanged.
+const double kSectionPlaneQuadHalfSizePixels = 150.0;
+
 /// Builds the [Node] rendering [plane]'s own bounded quad - a double-sided
 /// translucent fill plus an opaque border, the exact same two-primitive
 /// technique `reference_planes.dart`'s `buildReferencePlaneNode` uses (see
 /// that function's own doc comment for why the fill needs the double-sided
-/// vertex duplication trick at all). Sized to a fixed [_sectionPlaneQuadHalfSize]
-/// rather than the target Body's real bounding box: this app's [BodyMeshDto]
-/// doesn't carry a precomputed AABB today, and deriving one here would mean
-/// walking every triangle of every enabled Body on every gizmo-drag frame -
-/// a fixed size (comfortably larger than `referencePlaneSize`'s own 20-unit
-/// square, since a section plane is usually placed *through* real geometry
-/// rather than centered on the origin) is the pragmatic call for this pass;
-/// a real per-Body AABB (already computed for the "recentre" camera fit -
-/// see `PartViewport._doRecentre`) would be the natural follow-up to size
-/// this against instead, if a fixed size proves visually too small/large in
-/// practice.
-Node buildSectionPlaneQuadNode(SectionPlane plane, {bool active = false}) {
+/// vertex duplication trick at all). Sized via [_sectionGizmoWorldScale] to
+/// read as a constant [kSectionPlaneQuadHalfSizePixels] on screen regardless
+/// of zoom (on-device feedback: "the cutting plane is too small... should
+/// be sized relative to the geometry on screen") when [cameraPosition]/
+/// [viewportSize] are supplied, falling back to the flat
+/// [_sectionPlaneQuadHalfSize] otherwise. This is still not the target
+/// Body's real bounding box - this app's [BodyMeshDto] doesn't carry a
+/// precomputed AABB today, and deriving one here would mean walking every
+/// triangle of every enabled Body on every gizmo-drag frame - a real
+/// per-Body AABB (already computed for the "recentre" camera fit - see
+/// `PartViewport._doRecentre`) would be the natural follow-up if a
+/// constant-screen-size quad still proves too small/large against a
+/// particular Body in practice.
+Node buildSectionPlaneQuadNode(
+  SectionPlane plane, {
+  bool active = false,
+  vm.Vector3? cameraPosition,
+  Size? viewportSize,
+}) {
   final basis = sectionGizmoBasis(plane.normal);
   final alpha = active ? _sectionPlaneActiveAlpha : _sectionPlaneAlpha;
+  final halfSize = _sectionGizmoWorldScale(
+    desiredScreenPixels: kSectionPlaneQuadHalfSizePixels,
+    fallbackWorldUnits: _sectionPlaneQuadHalfSize,
+    planeOrigin: plane.origin,
+    cameraPosition: cameraPosition,
+    viewportSize: viewportSize,
+  );
 
-  final fillMaterial = UnlitMaterial()
+  // AlwaysOnTopMaterial for both primitives - same "must never be occluded
+  // by a Body" reasoning as [buildSectionGizmoNode]'s own arrows/rings.
+  final fillMaterial = AlwaysOnTopMaterial()
     ..alphaMode = AlphaMode.blend
     ..baseColorFactor = vm.Vector4(_sectionPlaneBaseColor.x, _sectionPlaneBaseColor.y, _sectionPlaneBaseColor.z, alpha);
-  final fillBuffers = doubleSidedQuadBuffers(_sectionPlaneQuadHalfSize);
+  final fillBuffers = doubleSidedQuadBuffers(halfSize);
   final fillGeometry = MeshGeometry.fromArrays(
     positions: fillBuffers.positions,
     normals: fillBuffers.normals,
     indices: fillBuffers.indices,
   );
 
-  final borderMaterial = UnlitMaterial()
+  final borderMaterial = AlwaysOnTopMaterial()
     ..alphaMode = AlphaMode.opaque
     ..baseColorFactor = vm.Vector4(_sectionPlaneBaseColor.x, _sectionPlaneBaseColor.y, _sectionPlaneBaseColor.z, 1.0);
-  final borderGeometry = PolylineGeometry(closedLoopBorderPoints(_sectionPlaneQuadHalfSize), width: 2.0);
+  final borderGeometry = PolylineGeometry(closedLoopBorderPoints(halfSize), width: 2.0);
 
   // doubleSidedQuadBuffers/closedLoopBorderPoints are built flat in local
   // XZ, facing +Y - reuse [createPlaneTransform]'s exact same column-matrix

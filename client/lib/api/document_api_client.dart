@@ -628,6 +628,14 @@ class FeatureDto {
   /// verbatim across both Feature types.
   final double? thickness;
 
+  /// Only present on an `"extrude"` Feature with [thickness] set - which
+  /// side of the sketched wire the thin wall grows on
+  /// (`ExtrudeFeature.thickness_direction`): `'outward'`, `'inward'`, or
+  /// `'symmetric'` (from the middle). Defaults to `'outward'`, matching
+  /// the backend's own default (and this feature's pre-existing behavior
+  /// for a positive [thickness], before this field existed).
+  final String thicknessDirection;
+
   /// Only present on a `"loft"` Feature - `true` when a thin Loft
   /// ([thickness] set) sources its sections as closed profiles (a hollow
   /// tube, open at both ends) instead of open chains - see
@@ -941,6 +949,7 @@ class FeatureDto {
     this.sections = const [],
     this.ruled = false,
     this.thickness,
+    this.thicknessDirection = 'outward',
     this.thinFromClosedProfile,
     this.guideCurveRefs = const [],
     this.hasLostReference = false,
@@ -1050,6 +1059,7 @@ class FeatureDto {
             const [],
         ruled: json['ruled'] as bool? ?? false,
         thickness: (json['thickness'] as num?)?.toDouble(),
+        thicknessDirection: json['thickness_direction'] as String? ?? 'outward',
         thinFromClosedProfile: json['thin_from_closed_profile'] as bool?,
         guideCurveRefs: (json['guide_curve_refs'] as List?)
                 ?.map((r) => SketchEntityRefDto.fromJson(r as Map<String, dynamic>))
@@ -2100,6 +2110,7 @@ class DocumentApiClient {
     List<String> targetBodyIds = const [],
     List<SketchEntityRefDto> profileRefs = const [],
     double? thickness,
+    String? thicknessDirection,
   }) =>
       _send(
         () => _httpClient.post(
@@ -2113,6 +2124,7 @@ class DocumentApiClient {
                 'target_body_ids': targetBodyIds,
                 'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
                 if (thickness != null) 'thickness': thickness,
+                if (thicknessDirection != null) 'thickness_direction': thicknessDirection,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -2120,12 +2132,12 @@ class DocumentApiClient {
 
   /// Partial update for an existing ExtrudeFeature - any subset of
   /// [extrudeType]/[startDistance]/[endDistance]/[targetBodyIds]/
-  /// [profileRefs] may be supplied, mirroring the backend's
-  /// `ExtrudeFeatureUpdate` (omitted fields keep their current value -
-  /// [targetBodyIds]/[profileRefs] null omits it, matching the others, so a
-  /// live-preview re-solve that never touched target-body/profile picking
-  /// doesn't accidentally clear it). Used for the live-preview debounced
-  /// re-solve.
+  /// [profileRefs]/[thicknessDirection] may be supplied, mirroring the
+  /// backend's `ExtrudeFeatureUpdate` (omitted fields keep their current
+  /// value - [targetBodyIds]/[profileRefs] null omits it, matching the
+  /// others, so a live-preview re-solve that never touched target-body/
+  /// profile picking doesn't accidentally clear it). Used for the
+  /// live-preview debounced re-solve.
   Future<FeatureDto> updateExtrudeFeature(
     String partId,
     String featureId, {
@@ -2135,6 +2147,7 @@ class DocumentApiClient {
     List<String>? targetBodyIds,
     List<SketchEntityRefDto>? profileRefs,
     double? thickness,
+    String? thicknessDirection,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -2148,6 +2161,7 @@ class DocumentApiClient {
                 if (profileRefs != null)
                   'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
                 if (thickness != null) 'thickness': thickness,
+                if (thicknessDirection != null) 'thickness_direction': thicknessDirection,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

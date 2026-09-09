@@ -740,9 +740,19 @@ MeshBuffers triangleHighlightBuffers(List<(vm.Vector3, vm.Vector3, vm.Vector3)> 
 /// comment), so [color]'s partial alpha no longer has any visual effect -
 /// the highlight renders as a fully solid/saturated tint rather than a
 /// translucent one, an accepted trade-off for correct occlusion.
+///
+/// [alwaysOnTop] opts into [AlwaysOnTopMaterial] instead of the normal
+/// depth-tested [UnlitMaterial] above - same trade-off [buildMeshEdgesNode]
+/// already makes for its own [alwaysOnTop] case, applied here too for the
+/// "Select other" candidate-highlight case (on-device feedback: a
+/// candidate the user explicitly picked from that list should always be
+/// visible, not hidden behind whichever face happens to be nearer the
+/// camera). Left false by default so ordinary hover highlights keep the
+/// ordinary occlusion-correct behavior documented above.
 Node buildHighlightFacesNode(
   List<(vm.Vector3, vm.Vector3, vm.Vector3)> triangles, {
   required vm.Vector4 color,
+  bool alwaysOnTop = false,
 }) {
   final buffers = triangleHighlightBuffers(triangles);
   final geometry = UnskinnedGeometry();
@@ -752,9 +762,13 @@ Node buildHighlightFacesNode(
     buffers.indexData,
     indexType: gpu.IndexType.int32,
   );
-  final material = UnlitMaterial()
-    ..alphaMode = AlphaMode.opaque
-    ..baseColorFactor = color;
+  final material = alwaysOnTop
+      ? (AlwaysOnTopMaterial()
+        ..alphaMode = AlphaMode.opaque
+        ..baseColorFactor = color)
+      : (UnlitMaterial()
+        ..alphaMode = AlphaMode.opaque
+        ..baseColorFactor = color);
   return Node(name: 'highlight-faces', mesh: Mesh(geometry, material));
 }
 
