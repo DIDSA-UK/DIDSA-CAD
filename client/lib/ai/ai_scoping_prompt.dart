@@ -508,13 +508,27 @@ matters:
 
 To round a 90-degree corner where one straight segment arrives at corner
 point C travelling in direction D1 and the next straight segment leaves C
-travelling in direction D2, with fillet radius r:
-1. The arc's center is offset from C by r, perpendicular to each segment,
-   on the inside of the turn (the side the corner bends toward).
-2. The two tangent points - where the straight segments actually end/start
+travelling in direction D2 (D1, D2 unit vectors, perpendicular to each
+other), with fillet radius r:
+1. The two tangent points - where the straight segments actually end/start
    now, instead of at C itself - are each r back from C along their own
-   segment's direction, i.e. incoming_tangent_point = C - r*D1 and
-   outgoing_tangent_point = C + r*D2 (D1, D2 unit vectors).
+   segment's direction: incoming_tangent_point = C - r*D1 and
+   outgoing_tangent_point = C + r*D2.
+2. The arc's CENTER is C + r*(D2 - D1) - NOT C itself. This is the single
+   most common way this goes wrong: C is a tempting shortcut (especially
+   when C happens to land on a round number, e.g. a sketch's own origin),
+   but a center at C makes the arc meet each straight segment radially
+   (the segment's line runs straight through the center) instead of
+   tangentially, producing a sharp, non-smooth kink even though the
+   tangent points from step 1 look right - this breaks a Sweep path
+   invisibly in the plan JSON (everything still connects end-to-end
+   numerically) and only shows up as a self-intersecting/pinched result
+   once the profile is actually swept around that corner.
+   MANDATORY CHECK before using this center: the perpendicular distance
+   from your computed center to EACH straight segment's line must equal r
+   exactly (not the distance to C - the distance to the infinite line the
+   segment lies on). If either distance is 0 or anything other than r, you
+   have not applied the offset and must redo step 2.
 3. Figure out whether the corner turns left or right (i.e. whether D2 is a
    counter-clockwise or clockwise turn from D1). If left (CCW) turn: start
    the arc at incoming_tangent_point and end at outgoing_tangent_point - the
@@ -523,12 +537,18 @@ travelling in direction D2, with fillet radius r:
    end_point_id must be incoming_tangent_point - naming them in direction-
    of-travel order (as you would for the CCW case) produces an arc that
    sweeps the long way around the circle instead of the small corner, which
-   is the single most common way this goes wrong.
+   is the second most common way this goes wrong (a direction mistake,
+   independent of step 2's center-placement mistake - check both).
+This only covers a 90-degree corner (D1 perpendicular to D2); for any other
+angle between the segments, use a Fillet feature on the downstream Body
+instead of working out the general (non-90-degree) tangent-circle geometry
+by hand.
 Sanity-check every sketch_arc corner this way before finalizing your plan:
-does the arc as you've defined it (start to end, going CCW) trace the
-SHORT way around, hugging the actual corner - not loop most of the way
+(a) does the center pass the step 2 distance check above for BOTH segments,
+and (b) does the arc as you've defined it (start to end, going CCW) trace
+the SHORT way around, hugging the actual corner - not loop most of the way
 around the circle and not bulge out the wrong side of the path? If you are
-not confident of the direction, prefer end_angle (an absolute angle from
+not confident of either check, prefer end_angle (an absolute angle from
 center, easier to reason about directly than a second point) or reconsider
 whether a Fillet feature on a downstream Body would avoid this arithmetic
 entirely.''';
