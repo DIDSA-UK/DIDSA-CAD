@@ -191,17 +191,23 @@ class OrthographicCamera extends Camera {
 /// Builds an [OrthographicCamera] matching [orbit]'s current
 /// position/target/up - the orthographic counterpart to
 /// [OrbitCamera.cameraFor], for call sites (the embedded sketch view) that
-/// default to orthographic rather than perspective. Matches perspective's
-/// apparent scale at the current orbit distance (half-height = distance *
-/// tan(halfFovY), using [OrbitCamera.cameraFor]'s default 45deg vertical
-/// FOV) so switching between the two doesn't jarringly resize the view.
+/// default to orthographic rather than perspective.
+///
+/// Item 6: used to derive [halfHeight] fresh from `orbit.distance` on every
+/// call (`distance * tan(halfFovY)`, at a fixed 45deg vertical FOV) - that
+/// formula is exactly what made orthographic zoom a disguised dolly zoom
+/// too (scroll-wheel zoom only ever changed `distance`, which this then
+/// converted straight back into a bigger/smaller [halfHeight]). Now reads
+/// [OrbitCamera.halfHeight] directly - the same live zoom state
+/// [OrbitCamera.zoomHalfHeightTowardScreenPoint] changes instead of
+/// `distance` - so orthographic zoom keeps the camera itself stationary the
+/// same way perspective zoom now does via [OrbitCamera.fovRadiansY].
 OrthographicCamera orthographicCameraFor(OrbitCamera orbit, Size size) {
-  final halfHeight = orbit.distance * math.tan(45 * math.pi / 180 / 2);
   return OrthographicCamera(
     position: orbit.position,
     target: orbit.target,
     up: orbit.up,
-    halfHeight: halfHeight,
+    halfHeight: orbit.halfHeight,
     // Bug fix (on-device feedback: geometry clipped when zoomed in close) -
     // see OrbitCamera.effectiveNearClip's own doc comment.
     near: orbit.effectiveNearClip,

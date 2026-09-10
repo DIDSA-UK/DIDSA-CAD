@@ -251,11 +251,31 @@ class HoverHit {
 /// depth-independent formula instead; null (every call site that hasn't
 /// opted in, and every perspective camera) keeps the original formula
 /// unchanged.
-double _worldUnitsPerPixelAtDepth(double depth, Size viewportSize, {double? orthographicHalfHeight}) {
+///
+/// Item 6: [fovRadiansY] used to be hardcoded to the fixed
+/// [kCameraVerticalFovRadians] constant - correct back when [OrbitCamera]
+/// itself always rendered at that one fixed FOV, but scroll-wheel zoom now
+/// changes [OrbitCamera.fovRadiansY] live (see that field's own doc
+/// comment), so a hit-test/gizmo-sizing computation still assuming the
+/// fixed default would silently drift out of sync with what's actually
+/// rendered at any zoom level other than the default - hit targets sized
+/// for the *old* apparent scale while the geometry itself now reads at a
+/// different one. Every caller now threads its own camera's actual live
+/// [OrbitCamera.fovRadiansY] through here instead (see e.g.
+/// `part_viewport.dart`'s own call sites) - defaults to
+/// [kCameraVerticalFovRadians] purely so this stays backward compatible for
+/// any caller (tests included) that hasn't been updated to pass a live
+/// value, exactly the same "opt-in, default preserves old behaviour" shape
+/// [orthographicHalfHeight] itself already uses.
+double _worldUnitsPerPixelAtDepth(
+  double depth,
+  Size viewportSize, {
+  double? orthographicHalfHeight,
+  double fovRadiansY = kCameraVerticalFovRadians,
+}) {
   if (viewportSize.height <= 0) return double.infinity;
-  final worldHeightAtDepth = orthographicHalfHeight != null
-      ? 2 * orthographicHalfHeight
-      : 2 * depth * math.tan(kCameraVerticalFovRadians / 2);
+  final worldHeightAtDepth =
+      orthographicHalfHeight != null ? 2 * orthographicHalfHeight : 2 * depth * math.tan(fovRadiansY / 2);
   return worldHeightAtDepth / viewportSize.height;
 }
 
@@ -314,6 +334,7 @@ HoverHit? hitTestVertices(
   List<int> ids, {
   double radiusPixels = kSelectionHitRadiusPixels,
   double? orthographicHalfHeight,
+  double fovRadiansY = kCameraVerticalFovRadians,
 }) {
   final direction = ray.direction.normalized();
   HoverHit? best;
@@ -324,7 +345,7 @@ HoverHit? hitTestVertices(
     final closestOnRay = ray.origin + direction * t;
     final worldDistance = (vertices[i] - closestOnRay).length;
     final pixelDistance = worldDistance /
-        _worldUnitsPerPixelAtDepth(t, viewportSize, orthographicHalfHeight: orthographicHalfHeight);
+        _worldUnitsPerPixelAtDepth(t, viewportSize, orthographicHalfHeight: orthographicHalfHeight, fovRadiansY: fovRadiansY);
     if (pixelDistance > radiusPixels) continue;
     if (best == null || _isCloserHit(pixelDistance, t, best.pixelDistance!, best.rayT)) {
       best = HoverHit(
@@ -435,6 +456,7 @@ HoverHit? hitTestEdges(
   List<int> ids, {
   double radiusPixels = kSelectionHitRadiusPixels,
   double? orthographicHalfHeight,
+  double fovRadiansY = kCameraVerticalFovRadians,
 }) {
   final direction = ray.direction.normalized();
   HoverHit? best;
@@ -444,7 +466,7 @@ HoverHit? hitTestEdges(
     if (closest == null) continue;
     final (t, worldDistance) = closest;
     final pixelDistance = worldDistance /
-        _worldUnitsPerPixelAtDepth(t, viewportSize, orthographicHalfHeight: orthographicHalfHeight);
+        _worldUnitsPerPixelAtDepth(t, viewportSize, orthographicHalfHeight: orthographicHalfHeight, fovRadiansY: fovRadiansY);
     if (pixelDistance > radiusPixels) continue;
     if (best == null || _isCloserHit(pixelDistance, t, best.pixelDistance!, best.rayT)) {
       best = HoverHit(
@@ -471,6 +493,7 @@ HoverHit? hitTestSketchPoints(
   List<String> ids, {
   double radiusPixels = kVertexSelectionHitRadiusPixels,
   double? orthographicHalfHeight,
+  double fovRadiansY = kCameraVerticalFovRadians,
 }) {
   final direction = ray.direction.normalized();
   HoverHit? best;
@@ -481,7 +504,7 @@ HoverHit? hitTestSketchPoints(
     final closestOnRay = ray.origin + direction * t;
     final worldDistance = (points[i] - closestOnRay).length;
     final pixelDistance = worldDistance /
-        _worldUnitsPerPixelAtDepth(t, viewportSize, orthographicHalfHeight: orthographicHalfHeight);
+        _worldUnitsPerPixelAtDepth(t, viewportSize, orthographicHalfHeight: orthographicHalfHeight, fovRadiansY: fovRadiansY);
     if (pixelDistance > radiusPixels) continue;
     if (best == null || _isCloserHit(pixelDistance, t, best.pixelDistance!, best.rayT)) {
       best = HoverHit(
@@ -510,6 +533,7 @@ HoverHit? hitTestSketchLines(
   List<String> ids, {
   double radiusPixels = kSelectionHitRadiusPixels,
   double? orthographicHalfHeight,
+  double fovRadiansY = kCameraVerticalFovRadians,
 }) {
   final direction = ray.direction.normalized();
   HoverHit? best;
@@ -519,7 +543,7 @@ HoverHit? hitTestSketchLines(
     if (closest == null) continue;
     final (t, worldDistance) = closest;
     final pixelDistance = worldDistance /
-        _worldUnitsPerPixelAtDepth(t, viewportSize, orthographicHalfHeight: orthographicHalfHeight);
+        _worldUnitsPerPixelAtDepth(t, viewportSize, orthographicHalfHeight: orthographicHalfHeight, fovRadiansY: fovRadiansY);
     if (pixelDistance > radiusPixels) continue;
     if (best == null || _isCloserHit(pixelDistance, t, best.pixelDistance!, best.rayT)) {
       best = HoverHit(
@@ -552,6 +576,7 @@ HoverHit? hitTestSketchCircles(
   List<String> ids, {
   double radiusPixels = kSelectionHitRadiusPixels,
   double? orthographicHalfHeight,
+  double fovRadiansY = kCameraVerticalFovRadians,
 }) =>
     _hitTestSketchPolylines(
       ray,
@@ -562,6 +587,7 @@ HoverHit? hitTestSketchCircles(
       SelectionEntityKind.sketchCircle,
       radiusPixels: radiusPixels,
       orthographicHalfHeight: orthographicHalfHeight,
+      fovRadiansY: fovRadiansY,
     );
 
 /// On-device feedback: a Circle could be selected but an Arc/Ellipse/
@@ -580,6 +606,7 @@ HoverHit? hitTestSketchArcs(
   List<String> ids, {
   double radiusPixels = kSelectionHitRadiusPixels,
   double? orthographicHalfHeight,
+  double fovRadiansY = kCameraVerticalFovRadians,
 }) =>
     _hitTestSketchPolylines(
       ray,
@@ -590,6 +617,7 @@ HoverHit? hitTestSketchArcs(
       SelectionEntityKind.sketchArc,
       radiusPixels: radiusPixels,
       orthographicHalfHeight: orthographicHalfHeight,
+      fovRadiansY: fovRadiansY,
     );
 
 /// Mirrors [hitTestSketchCircles] for an Ellipse's own closed polygon (see
@@ -603,6 +631,7 @@ HoverHit? hitTestSketchEllipses(
   List<String> ids, {
   double radiusPixels = kSelectionHitRadiusPixels,
   double? orthographicHalfHeight,
+  double fovRadiansY = kCameraVerticalFovRadians,
 }) =>
     _hitTestSketchPolylines(
       ray,
@@ -613,6 +642,7 @@ HoverHit? hitTestSketchEllipses(
       SelectionEntityKind.sketchEllipse,
       radiusPixels: radiusPixels,
       orthographicHalfHeight: orthographicHalfHeight,
+      fovRadiansY: fovRadiansY,
     );
 
 /// Mirrors [hitTestSketchArcs] for an EllipseArc's own open polyline (see
@@ -627,6 +657,7 @@ HoverHit? hitTestSketchEllipseArcs(
   List<String> ids, {
   double radiusPixels = kSelectionHitRadiusPixels,
   double? orthographicHalfHeight,
+  double fovRadiansY = kCameraVerticalFovRadians,
 }) =>
     _hitTestSketchPolylines(
       ray,
@@ -637,6 +668,7 @@ HoverHit? hitTestSketchEllipseArcs(
       SelectionEntityKind.sketchEllipseArc,
       radiusPixels: radiusPixels,
       orthographicHalfHeight: orthographicHalfHeight,
+      fovRadiansY: fovRadiansY,
     );
 
 /// Mirrors [hitTestSketchArcs] for a Spline's own tessellated polyline (see
@@ -650,6 +682,7 @@ HoverHit? hitTestSketchSplines(
   List<String> ids, {
   double radiusPixels = kSelectionHitRadiusPixels,
   double? orthographicHalfHeight,
+  double fovRadiansY = kCameraVerticalFovRadians,
 }) =>
     _hitTestSketchPolylines(
       ray,
@@ -660,6 +693,7 @@ HoverHit? hitTestSketchSplines(
       SelectionEntityKind.sketchSpline,
       radiusPixels: radiusPixels,
       orthographicHalfHeight: orthographicHalfHeight,
+      fovRadiansY: fovRadiansY,
     );
 
 /// 3D-viewport Text tool round: [hitTestSketchCircles]' counterpart for a
@@ -681,6 +715,7 @@ HoverHit? hitTestSketchTexts(
   List<String> ids, {
   double radiusPixels = kSelectionHitRadiusPixels,
   double? orthographicHalfHeight,
+  double fovRadiansY = kCameraVerticalFovRadians,
 }) =>
     _hitTestSketchPolylines(
       ray,
@@ -691,6 +726,7 @@ HoverHit? hitTestSketchTexts(
       SelectionEntityKind.sketchText,
       radiusPixels: radiusPixels,
       orthographicHalfHeight: orthographicHalfHeight,
+      fovRadiansY: fovRadiansY,
     );
 
 HoverHit? _hitTestSketchPolylines(
@@ -702,6 +738,7 @@ HoverHit? _hitTestSketchPolylines(
   SelectionEntityKind kind, {
   double radiusPixels = kSelectionHitRadiusPixels,
   double? orthographicHalfHeight,
+  double fovRadiansY = kCameraVerticalFovRadians,
 }) {
   final direction = ray.direction.normalized();
   HoverHit? best;
@@ -712,7 +749,7 @@ HoverHit? _hitTestSketchPolylines(
       if (closest == null) continue;
       final (t, worldDistance) = closest;
       final pixelDistance = worldDistance /
-          _worldUnitsPerPixelAtDepth(t, viewportSize, orthographicHalfHeight: orthographicHalfHeight);
+          _worldUnitsPerPixelAtDepth(t, viewportSize, orthographicHalfHeight: orthographicHalfHeight, fovRadiansY: fovRadiansY);
       if (pixelDistance > radiusPixels) continue;
       if (best == null || _isCloserHit(pixelDistance, t, best.pixelDistance!, best.rayT)) {
         best = HoverHit(
@@ -752,6 +789,7 @@ HoverHit? hitTestSketchPatternMirrorInstances(
   List<String> ownerInstanceIds, {
   double radiusPixels = kSelectionHitRadiusPixels,
   double? orthographicHalfHeight,
+  double fovRadiansY = kCameraVerticalFovRadians,
 }) {
   final direction = ray.direction.normalized();
   HoverHit? best;
@@ -760,7 +798,7 @@ HoverHit? hitTestSketchPatternMirrorInstances(
     if (closest == null) continue;
     final (t, worldDistance) = closest;
     final pixelDistance = worldDistance /
-        _worldUnitsPerPixelAtDepth(t, viewportSize, orthographicHalfHeight: orthographicHalfHeight);
+        _worldUnitsPerPixelAtDepth(t, viewportSize, orthographicHalfHeight: orthographicHalfHeight, fovRadiansY: fovRadiansY);
     if (pixelDistance > radiusPixels) continue;
     if (best == null || _isCloserHit(pixelDistance, t, best.pixelDistance!, best.rayT)) {
       best = HoverHit(
@@ -981,6 +1019,7 @@ HoverHit? hitTestMeshEntities({
   double vertexRadiusPixels = kVertexSelectionHitRadiusPixels,
   SelectionFilterState filter = SelectionFilterState.defaults,
   double? orthographicHalfHeight,
+  double fovRadiansY = kCameraVerticalFovRadians,
 }) {
   final vertexHit = filter.vertex
       ? hitTestVertices(
@@ -990,6 +1029,7 @@ HoverHit? hitTestMeshEntities({
           mesh.topologyVertexIds,
           radiusPixels: vertexRadiusPixels,
           orthographicHalfHeight: orthographicHalfHeight,
+          fovRadiansY: fovRadiansY,
         )
       : null;
   final edgeHit = filter.edge
@@ -1000,6 +1040,7 @@ HoverHit? hitTestMeshEntities({
           mesh.edgeIds,
           radiusPixels: radiusPixels,
           orthographicHalfHeight: orthographicHalfHeight,
+          fovRadiansY: fovRadiansY,
         )
       : null;
 
@@ -1110,6 +1151,7 @@ HoverHit? hitTestBodies({
   // occlusion).
   String activeSketchFeatureId = '',
   double? orthographicHalfHeight,
+  double fovRadiansY = kCameraVerticalFovRadians,
 }) {
   HoverHit taggedWithBody(HoverHit hit, String bodyId) => HoverHit(
         entity: SelectionEntityRef(kind: hit.entity.kind, bodyId: bodyId, id: hit.entity.id),
@@ -1132,6 +1174,7 @@ HoverHit? hitTestBodies({
         mesh.topologyVertexIds,
         radiusPixels: vertexRadiusPixels,
         orthographicHalfHeight: orthographicHalfHeight,
+        fovRadiansY: fovRadiansY,
       );
       if (hit != null && (bestVertex == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestVertex.pixelDistance!, bestVertex.rayT))) {
         bestVertex = taggedWithBody(hit, body.bodyId);
@@ -1145,6 +1188,7 @@ HoverHit? hitTestBodies({
         mesh.edgeIds,
         radiusPixels: radiusPixels,
         orthographicHalfHeight: orthographicHalfHeight,
+        fovRadiansY: fovRadiansY,
       );
       if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
         bestEdge = taggedWithBody(hit, body.bodyId);
@@ -1170,6 +1214,7 @@ HoverHit? hitTestBodies({
         geometry.pointIds,
         radiusPixels: vertexRadiusPixels,
         orthographicHalfHeight: orthographicHalfHeight,
+        fovRadiansY: fovRadiansY,
       );
       if (hit != null && (bestVertex == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestVertex.pixelDistance!, bestVertex.rayT))) {
         bestVertex = hit;
@@ -1184,6 +1229,7 @@ HoverHit? hitTestBodies({
         geometry.lineIds,
         radiusPixels: radiusPixels,
         orthographicHalfHeight: orthographicHalfHeight,
+        fovRadiansY: fovRadiansY,
       );
       if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
         bestEdge = hit;
@@ -1198,6 +1244,7 @@ HoverHit? hitTestBodies({
         geometry.circleIds,
         radiusPixels: radiusPixels,
         orthographicHalfHeight: orthographicHalfHeight,
+        fovRadiansY: fovRadiansY,
       );
       if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
         bestEdge = hit;
@@ -1212,6 +1259,7 @@ HoverHit? hitTestBodies({
         geometry.arcIds,
         radiusPixels: radiusPixels,
         orthographicHalfHeight: orthographicHalfHeight,
+        fovRadiansY: fovRadiansY,
       );
       if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
         bestEdge = hit;
@@ -1226,6 +1274,7 @@ HoverHit? hitTestBodies({
         geometry.ellipseIds,
         radiusPixels: radiusPixels,
         orthographicHalfHeight: orthographicHalfHeight,
+        fovRadiansY: fovRadiansY,
       );
       if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
         bestEdge = hit;
@@ -1240,6 +1289,7 @@ HoverHit? hitTestBodies({
         geometry.ellipseArcIds,
         radiusPixels: radiusPixels,
         orthographicHalfHeight: orthographicHalfHeight,
+        fovRadiansY: fovRadiansY,
       );
       if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
         bestEdge = hit;
@@ -1254,6 +1304,7 @@ HoverHit? hitTestBodies({
         geometry.splineIds,
         radiusPixels: radiusPixels,
         orthographicHalfHeight: orthographicHalfHeight,
+        fovRadiansY: fovRadiansY,
       );
       if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
         bestEdge = hit;
@@ -1268,6 +1319,7 @@ HoverHit? hitTestBodies({
         geometry.textIds,
         radiusPixels: radiusPixels,
         orthographicHalfHeight: orthographicHalfHeight,
+        fovRadiansY: fovRadiansY,
       );
       if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
         bestEdge = hit;
@@ -1302,6 +1354,7 @@ HoverHit? hitTestBodies({
       ownerIds,
       radiusPixels: radiusPixels,
       orthographicHalfHeight: orthographicHalfHeight,
+      fovRadiansY: fovRadiansY,
     );
     if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
       bestEdge = hit;
@@ -1424,6 +1477,7 @@ List<HoverHit> hitTestAllCandidates({
   double vertexRadiusPixels = kVertexSelectionHitRadiusPixels,
   SelectionFilterState filter = SelectionFilterState.defaults,
   double? orthographicHalfHeight,
+  double fovRadiansY = kCameraVerticalFovRadians,
   // Bug report ("Select Other ... still does not cover bodies in the
   // selection list"): [_fireSelectOther] (this function's sole caller)
   // passes true so a whole-Body candidate is offered alongside face
@@ -1458,6 +1512,7 @@ List<HoverHit> hitTestAllCandidates({
         mesh.topologyVertexIds,
         radiusPixels: vertexRadiusPixels,
         orthographicHalfHeight: orthographicHalfHeight,
+        fovRadiansY: fovRadiansY,
       );
       if (hit != null && (bestVertex == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestVertex.pixelDistance!, bestVertex.rayT))) {
         bestVertex = taggedWithBody(hit, body.bodyId);
@@ -1471,6 +1526,7 @@ List<HoverHit> hitTestAllCandidates({
         mesh.edgeIds,
         radiusPixels: radiusPixels,
         orthographicHalfHeight: orthographicHalfHeight,
+        fovRadiansY: fovRadiansY,
       );
       if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
         bestEdge = taggedWithBody(hit, body.bodyId);
@@ -1495,6 +1551,7 @@ List<HoverHit> hitTestAllCandidates({
         geometry.pointIds,
         radiusPixels: vertexRadiusPixels,
         orthographicHalfHeight: orthographicHalfHeight,
+        fovRadiansY: fovRadiansY,
       );
       if (hit != null && (bestVertex == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestVertex.pixelDistance!, bestVertex.rayT))) {
         bestVertex = hit;
@@ -1509,6 +1566,7 @@ List<HoverHit> hitTestAllCandidates({
         geometry.lineIds,
         radiusPixels: radiusPixels,
         orthographicHalfHeight: orthographicHalfHeight,
+        fovRadiansY: fovRadiansY,
       );
       if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
         bestEdge = hit;
@@ -1523,6 +1581,7 @@ List<HoverHit> hitTestAllCandidates({
         geometry.circleIds,
         radiusPixels: radiusPixels,
         orthographicHalfHeight: orthographicHalfHeight,
+        fovRadiansY: fovRadiansY,
       );
       if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
         bestEdge = hit;
@@ -1537,6 +1596,7 @@ List<HoverHit> hitTestAllCandidates({
         geometry.arcIds,
         radiusPixels: radiusPixels,
         orthographicHalfHeight: orthographicHalfHeight,
+        fovRadiansY: fovRadiansY,
       );
       if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
         bestEdge = hit;
@@ -1551,6 +1611,7 @@ List<HoverHit> hitTestAllCandidates({
         geometry.ellipseIds,
         radiusPixels: radiusPixels,
         orthographicHalfHeight: orthographicHalfHeight,
+        fovRadiansY: fovRadiansY,
       );
       if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
         bestEdge = hit;
@@ -1565,6 +1626,7 @@ List<HoverHit> hitTestAllCandidates({
         geometry.ellipseArcIds,
         radiusPixels: radiusPixels,
         orthographicHalfHeight: orthographicHalfHeight,
+        fovRadiansY: fovRadiansY,
       );
       if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
         bestEdge = hit;
@@ -1579,6 +1641,7 @@ List<HoverHit> hitTestAllCandidates({
         geometry.splineIds,
         radiusPixels: radiusPixels,
         orthographicHalfHeight: orthographicHalfHeight,
+        fovRadiansY: fovRadiansY,
       );
       if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
         bestEdge = hit;
@@ -1593,6 +1656,7 @@ List<HoverHit> hitTestAllCandidates({
         geometry.textIds,
         radiusPixels: radiusPixels,
         orthographicHalfHeight: orthographicHalfHeight,
+        fovRadiansY: fovRadiansY,
       );
       if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
         bestEdge = hit;

@@ -158,9 +158,22 @@ double? angleOnRotationPlane(
 /// on `_filletPreviewMesh`/`_chamferPreviewMesh` - is to duplicate small
 /// per-consumer helpers like this rather than thread a new shared export
 /// through an already-large file for one extra caller).
-double _worldUnitsPerPixelAtDepth(double depth, Size viewportSize) {
+///
+/// Item 6: [fovRadiansY] used to be hardcoded to the fixed
+/// [kCameraVerticalFovRadians] constant, back when every camera in this app
+/// rendered at that one fixed FOV - scroll-wheel zoom now changes
+/// [OrbitCamera.fovRadiansY] live instead (see that field's own doc
+/// comment), so this gizmo's own on-screen size/tap-tolerance would
+/// silently drift out of sync with the actual rendered scale at any zoom
+/// level other than the default unless its callers thread the live value
+/// through - defaults to [kCameraVerticalFovRadians] so an existing caller
+/// (or test) that hasn't been updated keeps today's behaviour unchanged,
+/// same "opt-in, default preserves old behaviour" shape this function's own
+/// module doc comment already uses for orthographic mode (not yet
+/// supported here - see that comment).
+double _worldUnitsPerPixelAtDepth(double depth, Size viewportSize, {double fovRadiansY = kCameraVerticalFovRadians}) {
   if (viewportSize.height <= 0) return double.infinity;
-  final worldHeightAtDepth = 2 * depth * math.tan(kCameraVerticalFovRadians / 2);
+  final worldHeightAtDepth = 2 * depth * math.tan(fovRadiansY / 2);
   return worldHeightAtDepth / viewportSize.height;
 }
 
@@ -198,13 +211,14 @@ double _sectionGizmoWorldScale({
   required vm.Vector3 planeOrigin,
   vm.Vector3? cameraPosition,
   Size? viewportSize,
+  double fovRadiansY = kCameraVerticalFovRadians,
 }) {
   if (cameraPosition == null || viewportSize == null || viewportSize.height <= 0) {
     return fallbackWorldUnits;
   }
   final depth = (planeOrigin - cameraPosition).length;
   if (depth <= 0) return fallbackWorldUnits;
-  return desiredScreenPixels * _worldUnitsPerPixelAtDepth(depth, viewportSize);
+  return desiredScreenPixels * _worldUnitsPerPixelAtDepth(depth, viewportSize, fovRadiansY: fovRadiansY);
 }
 
 /// [selection_hit_test.dart]'s own private `_closestRaySegmentDistance`,
@@ -285,6 +299,7 @@ SectionGizmoHit? hitTestSectionGizmo(
   Size viewportSize, {
   double radiusPixels = kSelectionHitRadiusPixels,
   vm.Vector3? cameraPosition,
+  double fovRadiansY = kCameraVerticalFovRadians,
 }) {
   final basis = sectionGizmoBasis(plane.normal);
   // Must match whatever [buildSectionGizmoNode] actually rendered for this
@@ -297,6 +312,7 @@ SectionGizmoHit? hitTestSectionGizmo(
     planeOrigin: plane.origin,
     cameraPosition: cameraPosition,
     viewportSize: viewportSize,
+    fovRadiansY: fovRadiansY,
   );
   final ringRadius = _sectionGizmoWorldScale(
     desiredScreenPixels: kSectionGizmoRingRadiusPixels,
@@ -304,6 +320,7 @@ SectionGizmoHit? hitTestSectionGizmo(
     planeOrigin: plane.origin,
     cameraPosition: cameraPosition,
     viewportSize: viewportSize,
+    fovRadiansY: fovRadiansY,
   );
   SectionGizmoHit? best;
   double? bestPixelDistance;
@@ -312,7 +329,7 @@ SectionGizmoHit? hitTestSectionGizmo(
     final closest = _closestRaySegmentDistance(ray, a, b);
     if (closest == null) return;
     final (rayT, worldDistance) = closest;
-    final pixelDistance = worldDistance / _worldUnitsPerPixelAtDepth(rayT, viewportSize);
+    final pixelDistance = worldDistance / _worldUnitsPerPixelAtDepth(rayT, viewportSize, fovRadiansY: fovRadiansY);
     if (pixelDistance > radiusPixels) return;
     if (bestPixelDistance == null || pixelDistance < bestPixelDistance!) {
       bestPixelDistance = pixelDistance;
@@ -391,6 +408,7 @@ Node buildSectionGizmoNode(
   SectionGizmoHandleKind? highlightedHandle,
   vm.Vector3? cameraPosition,
   Size? viewportSize,
+  double fovRadiansY = kCameraVerticalFovRadians,
 }) {
   final basis = sectionGizmoBasis(plane.normal);
   final primitives = <MeshPrimitive>[];
@@ -403,6 +421,7 @@ Node buildSectionGizmoNode(
     planeOrigin: plane.origin,
     cameraPosition: cameraPosition,
     viewportSize: viewportSize,
+    fovRadiansY: fovRadiansY,
   );
   final ringRadius = _sectionGizmoWorldScale(
     desiredScreenPixels: kSectionGizmoRingRadiusPixels,
@@ -410,6 +429,7 @@ Node buildSectionGizmoNode(
     planeOrigin: plane.origin,
     cameraPosition: cameraPosition,
     viewportSize: viewportSize,
+    fovRadiansY: fovRadiansY,
   );
 
   void addArrow(SectionGizmoHandleKind kind, vm.Vector3 axis) {
@@ -496,6 +516,7 @@ Node buildSectionPlaneQuadNode(
   bool active = false,
   vm.Vector3? cameraPosition,
   Size? viewportSize,
+  double fovRadiansY = kCameraVerticalFovRadians,
 }) {
   final basis = sectionGizmoBasis(plane.normal);
   final alpha = active ? _sectionPlaneActiveAlpha : _sectionPlaneAlpha;
@@ -505,6 +526,7 @@ Node buildSectionPlaneQuadNode(
     planeOrigin: plane.origin,
     cameraPosition: cameraPosition,
     viewportSize: viewportSize,
+    fovRadiansY: fovRadiansY,
   );
 
   // AlwaysOnTopMaterial for both primitives - same "must never be occluded

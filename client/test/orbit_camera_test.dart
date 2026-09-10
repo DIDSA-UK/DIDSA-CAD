@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 import 'package:didsa_cad_client/viewport3d/orbit_camera.dart';
+import 'package:didsa_cad_client/viewport3d/orthographic_camera.dart';
 
 void main() {
   const size = Size(400, 300);
@@ -304,6 +305,174 @@ void main() {
     });
   });
 
+  group(
+      'zoomFovTowardScreenPoint (Item 6: scroll-wheel zoom now narrows/widens fovRadiansY instead of '
+      'dollying distance, so distance stays untouched and the camera itself never moves)', () {
+    test('leaves distance untouched - the whole point of Item 6\'s lens zoom over the old dolly zoom', () {
+      final camera = OrbitCamera();
+      final distanceBefore = camera.distance;
+
+      camera.zoomFovTowardScreenPoint(0.5, const Offset(50, 40), size);
+
+      expect(camera.distance, distanceBefore);
+    });
+
+    test('zooming toward the exact screen centre matches applying scaleFactor to fovRadiansY directly - '
+        'the centre ray already passes through target, so the cursor-anchor point IS (up to floating-'
+        'point noise) target, and nudging target toward itself is a near-no-op', () {
+      final camera = OrbitCamera();
+      final fovBefore = camera.fovRadiansY;
+
+      camera.zoomFovTowardScreenPoint(0.5, Offset(size.width / 2, size.height / 2), size);
+
+      expect(camera.fovRadiansY, closeTo(fovBefore * 0.5, 1e-9));
+      expect(camera.target.length, lessThan(1e-2));
+    });
+
+    test('zooming in toward an off-centre screen point slides target toward that point, not just '
+        'toward the old target - an off-axis feature (a corner) now grows under the cursor without '
+        'the camera itself dollying through the scene', () {
+      final camera = OrbitCamera();
+      final targetBefore = camera.target.clone();
+      final fovBefore = camera.fovRadiansY;
+
+      camera.zoomFovTowardScreenPoint(0.9, const Offset(50, 40), size);
+
+      expect(camera.fovRadiansY, closeTo(fovBefore * 0.9, 1e-6));
+      expect(camera.target, isNot(targetBefore), reason: 'target must move toward the cursor, unlike a bare FOV scale');
+    });
+
+    test('repeated zoom-in ticks toward the same off-centre point converge target closer to that '
+        'point\'s own ray each time, rather than leaving it pinned at the original target', () {
+      final camera = OrbitCamera();
+      const point = Offset(50, 40);
+      final ray = camera.cameraFor(size).screenPointToRay(point, size);
+      final rayDirection = ray.direction.normalized();
+
+      double distanceToRay(vm.Vector3 p) {
+        final toPoint = p - ray.origin;
+        final along = toPoint.dot(rayDirection);
+        final closest = ray.origin + rayDirection * along;
+        return (p - closest).length;
+      }
+
+      final distBefore = distanceToRay(camera.target);
+      camera.zoomFovTowardScreenPoint(0.9, point, size);
+      final distAfterOneTick = distanceToRay(camera.target);
+      camera.zoomFovTowardScreenPoint(0.9, point, size);
+      final distAfterTwoTicks = distanceToRay(camera.target);
+
+      expect(distAfterOneTick, lessThan(distBefore));
+      expect(distAfterTwoTicks, lessThan(distAfterOneTick));
+    });
+
+    test('zooming out from an off-centre point slides target away from it - the symmetric zoom-out '
+        'counterpart', () {
+      final camera = OrbitCamera();
+      final targetBefore = camera.target.clone();
+      final fovBefore = camera.fovRadiansY;
+
+      camera.zoomFovTowardScreenPoint(1.1, const Offset(50, 40), size);
+
+      expect(camera.fovRadiansY, closeTo(fovBefore * 1.1, 1e-6));
+      expect(camera.target, isNot(targetBefore));
+    });
+
+    test('is a no-op on target once already clamped at minFovRadiansY/maxFovRadiansY - never drifts '
+        'target once zoom itself can go no further', () {
+      final camera = OrbitCamera()..zoomFovTowardScreenPoint(0.00001, const Offset(50, 40), size);
+      final targetAtMin = camera.target.clone();
+      camera.zoomFovTowardScreenPoint(0.00001, const Offset(50, 40), size);
+      expect(camera.fovRadiansY, camera.minFovRadiansY);
+      expect(camera.target, targetAtMin);
+
+      final atMax = OrbitCamera()..zoomFovTowardScreenPoint(1000, const Offset(50, 40), size);
+      final targetAtMax = atMax.target.clone();
+      atMax.zoomFovTowardScreenPoint(1000, const Offset(50, 40), size);
+      expect(atMax.fovRadiansY, atMax.maxFovRadiansY);
+      expect(atMax.target, targetAtMax);
+    });
+  });
+
+  group(
+      'zoomHalfHeightTowardScreenPoint (Item 6\'s orthographic counterpart to zoomFovTowardScreenPoint - '
+      'narrows/widens halfHeight instead of dollying distance)', () {
+    test('leaves distance untouched', () {
+      final camera = OrbitCamera();
+      final distanceBefore = camera.distance;
+
+      camera.zoomHalfHeightTowardScreenPoint(0.5, const Offset(50, 40), size);
+
+      expect(camera.distance, distanceBefore);
+    });
+
+    test('zooming toward the exact screen centre matches applying scaleFactor to halfHeight directly', () {
+      final camera = OrbitCamera();
+      final halfHeightBefore = camera.halfHeight;
+
+      camera.zoomHalfHeightTowardScreenPoint(0.5, Offset(size.width / 2, size.height / 2), size);
+
+      expect(camera.halfHeight, closeTo(halfHeightBefore * 0.5, 1e-9));
+      expect(camera.target.length, lessThan(1e-2));
+    });
+
+    test('zooming in toward an off-centre screen point slides target toward that point', () {
+      final camera = OrbitCamera();
+      final targetBefore = camera.target.clone();
+      final halfHeightBefore = camera.halfHeight;
+
+      camera.zoomHalfHeightTowardScreenPoint(0.9, const Offset(50, 40), size);
+
+      expect(camera.halfHeight, closeTo(halfHeightBefore * 0.9, 1e-6));
+      expect(camera.target, isNot(targetBefore));
+    });
+
+    test('zooming out from an off-centre point slides target away from it', () {
+      final camera = OrbitCamera();
+      final targetBefore = camera.target.clone();
+      final halfHeightBefore = camera.halfHeight;
+
+      camera.zoomHalfHeightTowardScreenPoint(1.1, const Offset(50, 40), size);
+
+      expect(camera.halfHeight, closeTo(halfHeightBefore * 1.1, 1e-6));
+      expect(camera.target, isNot(targetBefore));
+    });
+
+    test('is a no-op on target once already clamped at minHalfHeight/maxHalfHeight', () {
+      final camera = OrbitCamera()..zoomHalfHeightTowardScreenPoint(0.00001, const Offset(50, 40), size);
+      final targetAtMin = camera.target.clone();
+      camera.zoomHalfHeightTowardScreenPoint(0.00001, const Offset(50, 40), size);
+      expect(camera.halfHeight, camera.minHalfHeight);
+      expect(camera.target, targetAtMin);
+
+      final atMax = OrbitCamera()..zoomHalfHeightTowardScreenPoint(1000, const Offset(50, 40), size);
+      final targetAtMax = atMax.target.clone();
+      atMax.zoomHalfHeightTowardScreenPoint(1000, const Offset(50, 40), size);
+      expect(atMax.halfHeight, atMax.maxHalfHeight);
+      expect(atMax.target, targetAtMax);
+    });
+  });
+
+  test(
+      'cameraFor/orthographicCameraFor read fovRadiansY/halfHeight directly - scroll-wheel zoom changes '
+      'the rendered FOV/ortho scale without moving the camera position', () {
+    final perspectiveCamera = OrbitCamera()..isPerspective = true;
+    final positionBefore = perspectiveCamera.position.clone();
+    perspectiveCamera.zoomFovTowardScreenPoint(0.5, Offset(size.width / 2, size.height / 2), size);
+    final rendered = perspectiveCamera.cameraFor(size);
+    expect(rendered, isA<FixedPerspectiveCamera>());
+    expect((rendered as FixedPerspectiveCamera).fovRadiansY, perspectiveCamera.fovRadiansY);
+    // Position tracks target+direction*distance, both of which zoomFovTowardScreenPoint at
+    // exact screen-centre leaves untouched (target barely moves, distance never does).
+    expect((rendered.position - positionBefore).length, lessThan(1e-2));
+
+    final orthoCamera = OrbitCamera()..isPerspective = false;
+    orthoCamera.zoomHalfHeightTowardScreenPoint(0.5, Offset(size.width / 2, size.height / 2), size);
+    final renderedOrtho = orthoCamera.cameraFor(size);
+    expect(renderedOrtho, isA<OrthographicCamera>());
+    expect((renderedOrtho as OrthographicCamera).halfHeight, orthoCamera.halfHeight);
+  });
+
   test('setZoomBoundsForRadius scales far/near clip and min/max distance to the body, re-clamping distance', () {
     final camera = OrbitCamera();
 
@@ -335,6 +504,32 @@ void main() {
     expect(camera.farClip, greaterThan(camera.maxDistance + 1000));
     expect(camera.nearClip, closeTo(2.2, 1e-9)); // farClip / 10000
     expect(camera.minDistance, closeTo(4.4, 1e-9)); // nearClip * 2
+  });
+
+  test(
+      'setZoomBoundsForRadius scales fovRadiansY/halfHeight bounds to the body too (Item 6), clamp-only - '
+      'never resetting the user\'s current zoom just because the mesh resynced', () {
+    final camera = OrbitCamera();
+    final fovBefore = camera.fovRadiansY;
+    final halfHeightBefore = camera.halfHeight;
+
+    camera.setZoomBoundsForRadius(10);
+
+    // Bounds narrow along with minDistance/maxDistance (10/200 for this radius).
+    expect(camera.minFovRadiansY, lessThan(fovBefore));
+    expect(camera.maxFovRadiansY, greaterThan(fovBefore));
+    expect(camera.minHalfHeight, lessThan(halfHeightBefore));
+    expect(camera.maxHalfHeight, greaterThan(halfHeightBefore));
+    // Clamp-only: fovRadiansY/halfHeight themselves are untouched, since the
+    // camera's default zoom already sat inside the new (still generous) bounds.
+    expect(camera.fovRadiansY, fovBefore);
+    expect(camera.halfHeight, halfHeightBefore);
+
+    // Shrinking the bounds below the camera's current fovRadiansY/halfHeight
+    // must pull them back in immediately, not leave them violating the new max.
+    camera.setZoomBoundsForRadius(1);
+    expect(camera.fovRadiansY, camera.maxFovRadiansY);
+    expect(camera.halfHeight, camera.maxHalfHeight);
   });
 
   test('setZoomBoundsForRadius falls back to the fixed defaults for a non-positive radius', () {
@@ -410,6 +605,24 @@ void main() {
     expect(camera.cameraFor(size).position, defaultPosition);
     expect(camera.distance, 80);
     expect(camera.target, vm.Vector3.zero());
+  });
+
+  test(
+      'reset also restores the default fovRadiansY/halfHeight (Item 6) - "Reset view" must undo a '
+      'scroll-zoomed lens, not just orientation/distance/target', () {
+    final camera = OrbitCamera();
+    final defaultFov = camera.fovRadiansY;
+    final defaultHalfHeight = camera.halfHeight;
+
+    camera.zoomFovTowardScreenPoint(0.5, const Offset(50, 40), size);
+    camera.zoomHalfHeightTowardScreenPoint(0.5, const Offset(50, 40), size);
+    expect(camera.fovRadiansY, isNot(defaultFov));
+    expect(camera.halfHeight, isNot(defaultHalfHeight));
+
+    camera.reset();
+
+    expect(camera.fovRadiansY, closeTo(defaultFov, 1e-9));
+    expect(camera.halfHeight, closeTo(defaultHalfHeight, 1e-9));
   });
 
   test('setTarget re-centers the camera and becomes what reset returns to', () {
