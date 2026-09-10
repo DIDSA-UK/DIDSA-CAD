@@ -2259,6 +2259,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           active: plane.id == widget.activeSectionId,
           cameraPosition: _camera.position,
           viewportSize: _viewportSize,
+          fovRadiansY: _camera.fovRadiansY,
         ),
     };
     for (final node in _sectionQuadNodes.values) {
@@ -2279,6 +2280,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             highlightedHandle: _sectionDragHandle,
             cameraPosition: _camera.position,
             viewportSize: _viewportSize,
+            fovRadiansY: _camera.fovRadiansY,
           );
     if (_sectionGizmoNode != null) scene.add(_sectionGizmoNode!);
   }
@@ -2336,7 +2338,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
 
     final camera = _camera.cameraFor(_viewportSize);
     final ray = camera.screenPointToRay(screenPosition, _viewportSize);
-    final hit = hitTestSectionGizmo(ray, plane, _viewportSize, cameraPosition: _camera.position);
+    final hit = hitTestSectionGizmo(
+      ray,
+      plane,
+      _viewportSize,
+      cameraPosition: _camera.position,
+      fovRadiansY: _camera.fovRadiansY,
+    );
     if (hit == null) return false;
 
     final basis = sectionGizmoBasis(plane.normal);
@@ -2701,6 +2709,20 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// Sketch's own eventual Extrude) both use the oriented one - the two
   /// visibly drift out of registration with each other whenever orientation
   /// isn't the default.
+  /// Item 6: this computation assumes [OrbitCamera.fovRadiansY] sits at its
+  /// fixed [kCameraVerticalFovRadians] default (see this method's own doc
+  /// comment above) - live-verified (grepping every call site in this repo)
+  /// that this method has no caller at all, live or in tests: the
+  /// "shaded-body backdrop" it targets predates Orbit View, which embeds
+  /// its own independent [PartViewport] (`sketch_screen.dart`'s
+  /// `_orbitViewportKey`) rather than driving a shared camera through this
+  /// method. So there is currently no path by which scroll-wheel zoom's new
+  /// live [OrbitCamera.fovRadiansY] (Item 6) could reach this method's
+  /// camera already non-default - no reset-before-sync guard was added here
+  /// for that reason. If a future caller revives this method, it should
+  /// reset `_camera.fovRadiansY`/`_camera.halfHeight` to their defaults
+  /// first, exactly like [OrbitCamera.reset] does, since this formula's
+  /// `distance` solve only makes sense against that fixed default FOV.
   void syncToSketchViewport({
     required ReferencePlaneKind plane,
     required double pixelsPerUnit,
@@ -2792,6 +2814,20 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// (this returns `null` for) doesn't.
   double? _orthographicHalfHeightOf(Camera camera) => camera is OrthographicCamera ? camera.halfHeight : null;
 
+  /// Item 6's own counterpart to [_orthographicHalfHeightOf] - every
+  /// [hitTestBodies]/[hitTestAllCandidates] call site below needs this too,
+  /// for the same reason: [_worldUnitsPerPixelAtDepth]'s perspective branch
+  /// (`selection_hit_test.dart`) now reads its FOV live off the camera it's
+  /// hit-testing against, rather than assuming the fixed
+  /// [kCameraVerticalFovRadians] constant every camera used to render at -
+  /// see [OrbitCamera.fovRadiansY]'s own doc comment. Falls back to that
+  /// same constant for an [OrthographicCamera] (where it's unused - the
+  /// [_orthographicHalfHeightOf] branch takes over instead) purely to keep
+  /// this a total function without an unreachable-`camera is`-branch
+  /// assertion.
+  double _perspectiveFovOf(Camera camera) =>
+      camera is FixedPerspectiveCamera ? camera.fovRadiansY : kCameraVerticalFovRadians;
+
   /// Sectioning Tool: the world-space unit normal of one of the three fixed,
   /// origin-centered reference planes - the zeroed axis
   /// [ReferencePlaneKindX._zeroAxis] names, as a unit vector. That field is
@@ -2874,6 +2910,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         filter: const SelectionFilterState(vertex: false, edge: false, face: true, body: false),
         facesOccludeOtherHits: widget.renderMode.showsFilledFaces && !widget.bodiesHidden,
         orthographicHalfHeight: _orthographicHalfHeightOf(camera),
+        fovRadiansY: _perspectiveFovOf(camera),
       );
       if (faceHit != null && faceHit.entity.kind == SelectionEntityKind.face) {
         final normal = _bodyFaceNormal(faceHit.entity.bodyId, faceHit.entity.id);
@@ -2931,6 +2968,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               ),
               facesOccludeOtherHits: widget.renderMode.showsFilledFaces && !widget.bodiesHidden,
               orthographicHalfHeight: _orthographicHalfHeightOf(camera),
+              fovRadiansY: _perspectiveFovOf(camera),
             );
             if (bodyHit != null) {
               widget.onSketchEntityTap?.call(bodyHit.entity);
@@ -2948,17 +2986,53 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   void _handlePointerSignal(PointerSignalEvent event) {
     if (event is PointerScrollEvent) {
       // Scrolling "down" (positive dy) zooms out - same convention as
-      // SketchCanvas, but inverted in effect since a bigger `distance`
-      // (unlike a bigger sketch `zoom`) means further away/more zoomed out.
+      // SketchCanvas. Under the old distance-based dolly zoom a bigger
+      // `distance` meant more zoomed out; under Item 6's FOV/halfHeight lens
+      // zoom a bigger `fovRadiansY`/`halfHeight` means the same thing (a
+      // wider-angle lens sees more of the scene, reading as "further away"),
+      // so the same [scaleFactor] convention carries over unchanged.
       final scaleFactor = event.scrollDelta.dy > 0 ? 1.1 : 1 / 1.1;
-      // Bug fix (on-device feedback: zooming in on a Body's corner lost it
-      // from view far too soon - see zoomTowardScreenPoint's own doc
-      // comment): anchored to the cursor's own screen position, not
-      // [_camera.zoomByFactor]'s always-toward-target dolly.
-      setState(() => _camera.zoomTowardScreenPoint(scaleFactor, event.localPosition, _viewportSize));
+      // Item 6 (on-device feedback, repeated across several rounds:
+      // zooming in on a Body's corner lost it from view far too soon): a
+      // prior fix (zoomTowardScreenPoint) only anchored *which* point a
+      // distance-based dolly moved toward - it never stopped being a dolly,
+      // so an off-axis point still swept toward the frame edge under
+      // ordinary perspective foreshortening. This now zooms the camera's
+      // lens instead of moving the camera - see [OrbitCamera.fovRadiansY]'s
+      // own doc comment - branching on [OrbitCamera.isPerspective] since
+      // the two projections track independent live zoom state
+      // ([OrbitCamera.fovRadiansY] vs. [OrbitCamera.halfHeight]).
+      setState(() {
+        if (_camera.isPerspective) {
+          _camera.zoomFovTowardScreenPoint(scaleFactor, event.localPosition, _viewportSize);
+        } else {
+          _camera.zoomHalfHeightTowardScreenPoint(scaleFactor, event.localPosition, _viewportSize);
+        }
+      });
     }
   }
 
+  /// Bug fix (on-device feedback, immediately following Item 6: "pinch to
+  /// zoom does not function at all"): this used to call [_camera.
+  /// zoomByFactor], which only ever changes [OrbitCamera.distance] - Item 6
+  /// deliberately left that call alone as a documented fast-follow (the
+  /// plan's own "distance should now only change via reset()/frameRadius()
+  /// (and optionally pinch-zoom as a fast-follow)"), not realizing the
+  /// consequence under [OrbitCamera.isPerspective] `false`: [distance] no
+  /// longer has *any* visual effect at all once [orthographicCameraFor]
+  /// reads [OrbitCamera.halfHeight] directly instead of deriving it from
+  /// [distance] (see that function's own doc comment) - so on the app's
+  /// default orthographic startup view, a pinch gesture moved [distance]
+  /// exactly as before yet produced literally zero on-screen change,
+  /// reading as "does not function at all". Mirrors [_handlePointerSignal]'s
+  /// identical [OrbitCamera.isPerspective] branch onto
+  /// [OrbitCamera.zoomFovTowardScreenPoint]/[OrbitCamera.
+  /// zoomHalfHeightTowardScreenPoint] instead, anchored at [afterCentroid]
+  /// (the pinch gesture's own natural "point under the fingers", the same
+  /// role [event.localPosition] plays for a scroll tick) - a pinch now zooms
+  /// the camera's lens exactly like scroll-wheel zoom does, rather than a
+  /// distance-based dolly that (in orthographic mode) no longer does
+  /// anything visible at all.
   void _applyPinchPan(Map<int, Offset> before, Map<int, Offset> after) {
     final beforeCentroid = _centroidOf(before.values);
     final afterCentroid = _centroidOf(after.values);
@@ -2969,7 +3043,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     setState(() {
       _camera.panByScreenDelta(panDelta.dx, panDelta.dy);
       if (beforeSpread > 1e-6) {
-        _camera.zoomByFactor(beforeSpread / afterSpread);
+        final scaleFactor = beforeSpread / afterSpread;
+        if (_camera.isPerspective) {
+          _camera.zoomFovTowardScreenPoint(scaleFactor, afterCentroid, _viewportSize);
+        } else {
+          _camera.zoomHalfHeightTowardScreenPoint(scaleFactor, afterCentroid, _viewportSize);
+        }
       }
     });
   }
@@ -3309,6 +3388,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             facesOccludeOtherHits: widget.renderMode.showsFilledFaces && !widget.bodiesHidden,
             activeSketchFeatureId: widget.activeSketchFeatureId,
             orthographicHalfHeight: _orthographicHalfHeightOf(camera),
+            fovRadiansY: _perspectiveFovOf(camera),
           );
     final planeHit = _hoverHitTestPlanes(ray);
     if (meshHit == null) {
@@ -3419,6 +3499,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             facesOccludeOtherHits: widget.renderMode.showsFilledFaces && !widget.bodiesHidden,
             activeSketchFeatureId: widget.activeSketchFeatureId,
             orthographicHalfHeight: _orthographicHalfHeightOf(camera),
+            fovRadiansY: _perspectiveFovOf(camera),
           );
     return meshHit != null || _hoverHitTestPlanes(ray) != null;
   }
@@ -3576,6 +3657,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             sketchGeometries: widget.sketchGeometries,
             filter: widget.selectionFilter,
             orthographicHalfHeight: _orthographicHalfHeightOf(camera),
+            fovRadiansY: _perspectiveFovOf(camera),
             // Bug report ("Select Other ... still does not cover bodies in
             // the selection list") - see [hitTestAllCandidates]'s own doc
             // comment for this parameter.
@@ -4015,6 +4097,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             ),
             facesOccludeOtherHits: widget.renderMode.showsFilledFaces && !widget.bodiesHidden,
             orthographicHalfHeight: _orthographicHalfHeightOf(camera),
+            fovRadiansY: _perspectiveFovOf(camera),
           );
           if (bodyHit != null) {
             widget.onSketchEntityTap?.call(bodyHit.entity);

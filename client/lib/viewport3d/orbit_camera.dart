@@ -193,10 +193,41 @@ class OrbitCamera {
   static const double orbitSensitivity = 0.01;
 
   /// World units of [target] travel per screen pixel of pan drag, *
-  /// [distance] - panning by a fixed angle/world-distance per pixel would
-  /// feel too fast when zoomed in and too slow zoomed out, so it scales with
-  /// how far the camera currently is from its target.
+  /// [_effectiveDistanceForPanSensitivity] - panning by a fixed angle/world-
+  /// distance per pixel would feel too fast when zoomed in and too slow
+  /// zoomed out, so it scales with how far the camera currently *appears*
+  /// to be from its target (see that getter's own doc comment for why,
+  /// post-Item-6, that's no longer simply [distance]).
   static const double panSensitivityPerDistance = 0.002;
+
+  /// Bug fix (on-device feedback, immediately following Item 6: "pan feels
+  /// hyper sensitive"): [panByScreenDelta] used to scale directly by
+  /// [distance] - correct back when zooming in/out always shrank/grew
+  /// [distance] itself (the old dolly zoom), so pan sensitivity naturally
+  /// shrank right along with the zoomed-in view. Item 6 moved interactive
+  /// zoom onto [fovRadiansY]/[halfHeight] instead, deliberately leaving
+  /// [distance] to only change via [reset]/[frameRadius] - so at any zoom
+  /// level reached by scrolling, [distance] now sits at whatever it was
+  /// last framed to, completely unrelated to how zoomed-in the view
+  /// currently looks. Panning by raw [distance] then moves the same
+  /// absolute world distance per pixel regardless of zoom level, while the
+  /// *visible* extent shrinks as [fovRadiansY]/[halfHeight] narrow - so a
+  /// pixel of drag covers an ever-larger fraction of the actually-visible
+  /// frame the more zoomed in the view is, exactly the "too fast zoomed in"
+  /// feel [panSensitivityPerDistance]'s own doc comment already knew to
+  /// avoid, just reintroduced from the zoom side instead of the pan side.
+  ///
+  /// This restores the old *feel* by computing the same effective-distance
+  /// [panByScreenDelta] would have seen under the old, always-in-sync
+  /// dolly zoom: the current visible half-height at [target]'s own depth,
+  /// converted back into a "distance" via the inverse of
+  /// [_halfHeightForDistance] - i.e. exactly [distance] itself whenever
+  /// [fovRadiansY]/[halfHeight] sit at their own defaults (both formulas
+  /// collapse to the identity there - confirmed algebraically, not just by
+  /// spot-check), shrinking/growing proportionally as the user scroll-zooms
+  /// away from that default, same as [distance] itself always used to.
+  double get _effectiveDistanceForPanSensitivity =>
+      isPerspective ? distance * math.tan(fovRadiansY / 2) / math.tan(_defaultFovRadiansY / 2) : halfHeight / math.tan(_defaultFovRadiansY / 2);
 
   // A4/Phase 2: perspective vs orthographic toggle, wired through the View
   // menu. Was a dead flag until the sketcher restructure's Phase 2 - real
@@ -216,6 +247,68 @@ class OrbitCamera {
   vm.Quaternion orientation;
   double distance;
   vm.Vector3 target;
+
+  /// Item 6 (on-device feedback, repeated across several rounds: zooming in
+  /// on a Body's corner kept losing it "far too soon" - traced every time
+  /// back to [zoomByFactor]/[zoomTowardScreenPoint] changing [distance], i.e.
+  /// dollying the camera physically through the scene rather than zooming
+  /// its lens. A prior fix ([zoomTowardScreenPoint]) only anchored *which*
+  /// point the dolly moved toward (the cursor instead of always [target]) -
+  /// it never stopped being a dolly, so any off-axis point (a corner is the
+  /// common case) still swept toward the frame edge under ordinary
+  /// perspective foreshortening as [distance] shrank. A true "lens zoom"
+  /// (the part visibly grows while the camera itself stays put) has to
+  /// change the field of view instead - [fovRadiansY] is that live zoom
+  /// state under [isPerspective] ([halfHeight] below is its orthographic
+  /// counterpart), read directly by [cameraFor]/[orthographicCameraFor]
+  /// rather than [distance]-derived the way both used to be. [distance] now
+  /// only changes via [reset]/[frameRadius] (initial framing, not zoom) -
+  /// see [zoomFovTowardScreenPoint]/[zoomHalfHeightTowardScreenPoint], the
+  /// scroll-wheel zoom's new call targets ([PartViewportState.
+  /// _handlePointerSignal]), for the actual zoom math.
+  double fovRadiansY = _defaultFovRadiansY;
+
+  /// [halfHeight]'s orthographic counterpart to [fovRadiansY] - see that
+  /// field's own doc comment. World-space half-height of the orthographic
+  /// view volume, read directly by [orthographicCameraFor] instead of being
+  /// derived from [distance] on every call the way it used to be.
+  double halfHeight = _halfHeightForDistance(_defaultDistance);
+
+  /// [fovRadiansY]'s zoom-in/zoom-out bounds - mirrors [minDistance]/
+  /// [maxDistance]'s own role, just for the FOV-based zoom [fovRadiansY]
+  /// now drives instead. Scaled to the current body by
+  /// [setZoomBoundsForRadius], same as [minDistance]/[maxDistance] are.
+  double minFovRadiansY = _fovForHalfHeight(_halfHeightForDistance(defaultMinDistance), _defaultDistance);
+  double maxFovRadiansY = _fovForHalfHeight(_halfHeightForDistance(defaultMaxDistance), _defaultDistance);
+
+  /// [halfHeight]'s own zoom-in/zoom-out bounds - the orthographic
+  /// counterpart to [minFovRadiansY]/[maxFovRadiansY], expressed directly in
+  /// world units since [halfHeight] (unlike [fovRadiansY]) has no [distance]
+  /// dependency to convert through.
+  double minHalfHeight = _halfHeightForDistance(defaultMinDistance);
+  double maxHalfHeight = _halfHeightForDistance(defaultMaxDistance);
+
+  /// flutter_scene's own default vertical FOV (45 degrees) - what
+  /// [fovRadiansY]/[halfHeight] both start at, and what [reset] returns them
+  /// to, matching the fixed FOV every zoom-distance tuning in this file
+  /// (`_maxDistanceRadiusFactor`, [frameRadius], [orthographicCameraFor])
+  /// already assumes.
+  static const double _defaultFovRadiansY = math.pi / 4;
+
+  /// The world-space visible half-height at [distance] under
+  /// [_defaultFovRadiansY] - the shared "how big a world-space extent does
+  /// the old distance-based zoom range correspond to" conversion
+  /// [setZoomBoundsForRadius] and the field initializers above both use, so
+  /// the new FOV-based zoom covers the same effective range the old
+  /// distance-based dolly zoom did.
+  static double _halfHeightForDistance(double distance) => distance * math.tan(_defaultFovRadiansY / 2);
+
+  /// The inverse conversion - [_halfHeightForDistance] genuinely inverted
+  /// via `2 * atan(halfHeight / distance)` (see this class's own Item 6
+  /// design note on [fovRadiansY]), not merely an approximation: this is
+  /// exactly the vertical-FOV angle a [halfHeight]-tall view volume subtends
+  /// at [distance].
+  static double _fovForHalfHeight(double halfHeight, double distance) => 2 * math.atan(halfHeight / distance);
 
   /// What [reset] returns [distance] to, clamped to the current
   /// [minDistance]/[maxDistance] - those bounds may since have been
@@ -329,6 +422,7 @@ class OrbitCamera {
         position: position,
         target: target,
         up: _up,
+        fovRadiansY: fovRadiansY,
         fovNear: effectiveNearClip,
         fovFar: farClip,
       );
@@ -392,7 +486,7 @@ class OrbitCamera {
   /// movement - on-device feedback confirmed only left/right felt backwards,
   /// consistent with the render fix only mirroring the horizontal axis.
   void panByScreenDelta(double dxPixels, double dyPixels) {
-    final scale = panSensitivityPerDistance * distance;
+    final scale = panSensitivityPerDistance * _effectiveDistanceForPanSensitivity;
     target = target - _right * (dxPixels * scale) + _up * (dyPixels * scale);
   }
 
@@ -446,6 +540,55 @@ class OrbitCamera {
     distance = newDistance;
   }
 
+  /// Item 6's actual zoom - [zoomTowardScreenPoint]'s FOV-based replacement
+  /// for scroll-wheel zoom under [isPerspective] (see [fovRadiansY]'s own
+  /// doc comment for why). [distance] is untouched - the camera itself
+  /// never moves - only [fovRadiansY] narrows/widens, exactly the "the part
+  /// gets bigger" lens-zoom feel a physical camera's zoom lens gives, as
+  /// opposed to the "camera flies through the part" dolly-zoom feel
+  /// [zoomTowardScreenPoint] gives.
+  ///
+  /// Same cursor-anchoring approach as [zoomTowardScreenPoint], with the
+  /// scale factor recast in FOV terms: [zoomTowardScreenPoint] nudges
+  /// [target] toward [anchor] by the same fraction the *world-space extent
+  /// visible at [target]'s own depth* just shrank by, which under a
+  /// [distance]-based dolly is `1 - newDistance / distance` (that extent is
+  /// directly proportional to [distance] at fixed FOV). Under an
+  /// FOV-based zoom with [distance] fixed instead, that same visible
+  /// extent is directly proportional to `tan(fovRadiansY / 2)` instead (a
+  /// standard property of a perspective frustum - the half-height visible
+  /// at any given depth is `depth * tan(halfFovY)`), so the fraction here is
+  /// `1 - tan(newFov / 2) / tan(fovRadiansY / 2)` - the exact FOV-terms
+  /// counterpart of the same formula, not a separate derivation.
+  void zoomFovTowardScreenPoint(double scaleFactor, Offset screenPoint, Size viewportSize) {
+    final newFov = (fovRadiansY * scaleFactor).clamp(minFovRadiansY, maxFovRadiansY);
+    if (newFov == fovRadiansY) return;
+    final ray = cameraFor(viewportSize).screenPointToRay(screenPoint, viewportSize);
+    final rayDirection = ray.direction.normalized();
+    final anchor = ray.origin + rayDirection * distance;
+    final t = 1 - math.tan(newFov / 2) / math.tan(fovRadiansY / 2);
+    target = target + (anchor - target) * t;
+    fovRadiansY = newFov;
+  }
+
+  /// [zoomFovTowardScreenPoint]'s orthographic counterpart - narrows/widens
+  /// [halfHeight] instead of [fovRadiansY], with [distance] equally
+  /// untouched. [halfHeight] (unlike [fovRadiansY]) already scales the
+  /// visible extent *linearly*, exactly like [distance] did for
+  /// [zoomTowardScreenPoint] - so this reuses that same fraction formula
+  /// directly (`1 - newHalfHeight / halfHeight`), no `tan` conversion
+  /// needed.
+  void zoomHalfHeightTowardScreenPoint(double scaleFactor, Offset screenPoint, Size viewportSize) {
+    final newHalfHeight = (halfHeight * scaleFactor).clamp(minHalfHeight, maxHalfHeight);
+    if (newHalfHeight == halfHeight) return;
+    final ray = cameraFor(viewportSize).screenPointToRay(screenPoint, viewportSize);
+    final rayDirection = ray.direction.normalized();
+    final anchor = ray.origin + rayDirection * distance;
+    final t = 1 - newHalfHeight / halfHeight;
+    target = target + (anchor - target) * t;
+    halfHeight = newHalfHeight;
+  }
+
   /// Scales [nearClip]/[farClip] and [minDistance]/[maxDistance] to [radius]
   /// (a body's bounding-sphere radius - see [boundsOfMesh]), so a large
   /// model is never far-clipped, the near clip plane (and so the zoom-in
@@ -477,6 +620,20 @@ class OrbitCamera {
       maxDistance = defaultMaxDistance;
     }
     distance = distance.clamp(minDistance, maxDistance);
+
+    // Item 6: [fovRadiansY]/[halfHeight]'s own bounds, scaled the same way
+    // [minDistance]/[maxDistance] just were - see [fovRadiansY]'s own doc
+    // comment for the world-space-visible-height conversion this uses.
+    // Clamp-only, exactly like [distance] just above: this must never reset
+    // the user's current zoom back to a default just because the mesh
+    // resynced (e.g. after every feature edit) - only narrow/widen which
+    // zoom levels are *reachable* going forward.
+    minHalfHeight = _halfHeightForDistance(minDistance);
+    maxHalfHeight = _halfHeightForDistance(maxDistance);
+    minFovRadiansY = _fovForHalfHeight(minHalfHeight, distance);
+    maxFovRadiansY = _fovForHalfHeight(maxHalfHeight, distance);
+    halfHeight = halfHeight.clamp(minHalfHeight, maxHalfHeight);
+    fovRadiansY = fovRadiansY.clamp(minFovRadiansY, maxFovRadiansY);
   }
 
   /// Re-centers both the current and "Reset view" target on [newTarget] -
@@ -493,6 +650,11 @@ class OrbitCamera {
     orientation = _defaultOrientation();
     distance = _defaultDistance.clamp(minDistance, maxDistance);
     target = _defaultTarget;
+    // Item 6: "Reset view" restores the *whole* default view, zoom lens
+    // included - not just orientation/distance/target - so a scroll-zoomed
+    // FOV/halfHeight doesn't linger through a reset.
+    fovRadiansY = _defaultFovRadiansY.clamp(minFovRadiansY, maxFovRadiansY);
+    halfHeight = _halfHeightForDistance(_defaultDistance).clamp(minHalfHeight, maxHalfHeight);
   }
 
   /// Keeps a body from touching the exact viewport edge once framed - purely
