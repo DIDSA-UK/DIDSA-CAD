@@ -3494,6 +3494,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             sketchGeometries: widget.sketchGeometries,
             filter: widget.selectionFilter,
             orthographicHalfHeight: _orthographicHalfHeightOf(camera),
+            // Bug report ("Select Other ... still does not cover bodies in
+            // the selection list") - see [hitTestAllCandidates]'s own doc
+            // comment for this parameter.
+            includeBodyCandidateWithFaces: true,
           );
     if (candidates.isEmpty) return;
     final toUndo = _lastTapToggledEntity;

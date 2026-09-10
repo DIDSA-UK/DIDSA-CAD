@@ -5832,7 +5832,17 @@ class SketchController extends ChangeNotifier {
     if (draggedPointId == arc.centerPointId) {
       return isPointFullyPinned(arc.centerPointId) ? ArcDragMode.blocked : ArcDragMode.translate;
     }
-    if (isPointFullyPinned(draggedPointId)) return ArcDragMode.blocked;
+    // Deliberately the narrower `rigidity.isPointFullyConstrained` here, not
+    // `isPointFullyPinned` (which ORs in the sketch-wide `isFullyConstrained`
+    // flag) - `isFullyConstrained` goes true whenever *any* point anywhere
+    // in the sketch is grounded (e.g. this Arc's own centre sitting at the
+    // origin, which `beginPointDrag`'s own origin guard already treats as
+    // grounded), which has nothing to do with whether *this* start/end
+    // Point specifically is pinned. Confirmed against a real scenario: an
+    // Arc centred exactly at the origin with a free (undimensioned)
+    // start/end incorrectly reported `isPointFullyPinned(draggedPointId)`
+    // as true and blocked a perfectly legitimate resize drag.
+    if (rigidity.isPointFullyConstrained(draggedPointId)) return ArcDragMode.blocked;
     final radiusConstraint = _arcRadiusConstraint(arc);
     if (radiusConstraint == null || radiusConstraint.provisional) return ArcDragMode.resize;
     return isPointFullyPinned(arc.centerPointId) ? ArcDragMode.blocked : ArcDragMode.translate;
