@@ -2951,7 +2951,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       // SketchCanvas, but inverted in effect since a bigger `distance`
       // (unlike a bigger sketch `zoom`) means further away/more zoomed out.
       final scaleFactor = event.scrollDelta.dy > 0 ? 1.1 : 1 / 1.1;
-      setState(() => _camera.zoomByFactor(scaleFactor));
+      // Bug fix (on-device feedback: zooming in on a Body's corner lost it
+      // from view far too soon - see zoomTowardScreenPoint's own doc
+      // comment): anchored to the cursor's own screen position, not
+      // [_camera.zoomByFactor]'s always-toward-target dolly.
+      setState(() => _camera.zoomTowardScreenPoint(scaleFactor, event.localPosition, _viewportSize));
     }
   }
 
