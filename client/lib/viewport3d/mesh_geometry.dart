@@ -507,23 +507,38 @@ List<(vm.Vector3, vm.Vector3)> biasSegmentsTowardCamera(
 /// so the (correctly opaque) highlight underneath can get redrawn over by
 /// the translucent Body's own face, even though it should be occluding
 /// nothing at the *same* depth. Nudging the highlight's own triangles
-/// toward the camera - the same fix [kEdgeDepthBias]/
-/// [biasSegmentsTowardCamera] already established for edges hitting this
-/// identical class of bug - gives it a real, if small, depth advantage
-/// that doesn't depend on the blend pass's depth test being trustworthy at
-/// all.
-List<(vm.Vector3, vm.Vector3, vm.Vector3)> biasTrianglesTowardCamera(
+/// gives it a real, if small, depth advantage that doesn't depend on the
+/// blend pass's depth test being trustworthy at all.
+///
+/// Bug fix (on-device feedback: selecting a non-visible face - e.g. the far
+/// side of a cube, reached via "Select Other" - highlighted the *wrong*
+/// side, appearing to sit inside the solid): this used to nudge every
+/// triangle towards [vm.Vector3] `cameraPosition` (the same direction
+/// [biasSegmentsTowardCamera] still uses for edges, where it's harmless -
+/// an edge polyline has no "outward side" to get backwards). For an
+/// ordinary front-facing selection, "towards camera" and "the face's own
+/// outward normal" roughly agree, so this looked fine - but for a
+/// far/hidden face, the true outward normal points *away* from the camera
+/// while "towards camera" points *through* the solid's interior, pushing
+/// the highlight the wrong way. Nudging along each triangle's own outward
+/// normal instead - computed the identical way [triangleHighlightBuffers]
+/// below already derives its own front-face normal, from the triangle's
+/// real vertex winding (`(b - a).cross(c - a)`), so the two always
+/// agree - fixes the far-face case and is a no-op change for the ordinary
+/// front-facing one (near-camera and outward-normal directions still
+/// roughly coincide there).
+List<(vm.Vector3, vm.Vector3, vm.Vector3)> biasTrianglesAlongNormal(
   List<(vm.Vector3, vm.Vector3, vm.Vector3)> triangles,
-  vm.Vector3 cameraPosition,
   double amount,
 ) {
-  vm.Vector3 biased(vm.Vector3 point) {
-    final direction = cameraPosition - point;
-    if (direction.length2 < 1e-12) return point.clone();
-    return point + direction.normalized() * amount;
+  (vm.Vector3, vm.Vector3, vm.Vector3) biased(vm.Vector3 a, vm.Vector3 b, vm.Vector3 c) {
+    final cross = (b - a).cross(c - a);
+    if (cross.length2 < 1e-12) return (a.clone(), b.clone(), c.clone());
+    final offset = cross.normalized() * amount;
+    return (a + offset, b + offset, c + offset);
   }
 
-  return [for (final triangle in triangles) (biased(triangle.$1), biased(triangle.$2), biased(triangle.$3))];
+  return [for (final triangle in triangles) biased(triangle.$1, triangle.$2, triangle.$3)];
 }
 
 /// Builds the [Node] rendering [segments] as [color]d polylines - one

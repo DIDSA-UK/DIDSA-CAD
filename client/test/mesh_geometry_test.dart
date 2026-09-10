@@ -260,27 +260,47 @@ void main() {
     expect(biased[0].$1, vm.Vector3(5, 5, 5));
   });
 
-  test('biasTrianglesTowardCamera pushes each vertex towards the camera by amount (on-device feedback: '
-      'face highlight lost to the Body\'s own translucent surface)', () {
+  test(
+      'biasTrianglesAlongNormal pushes every vertex along the triangle\'s own outward normal by amount '
+      '(bug fix, on-device feedback: selecting a non-visible face - e.g. the far side of a cube via '
+      '"Select Other" - highlighted the wrong, inward side; the old biasTrianglesTowardCamera pushed '
+      'towards the camera instead, which points *through* the solid for a far/hidden face)', () {
     final triangles = [(vm.Vector3(0, 0, 0), vm.Vector3(10, 0, 0), vm.Vector3(0, 10, 0))];
 
-    final biased = biasTrianglesTowardCamera(triangles, vm.Vector3(-5, 0, 0), 1.0);
+    final biased = biasTrianglesAlongNormal(triangles, 1.0);
 
-    expect(biased[0].$1, vm.Vector3(-1, 0, 0));
-    expect(biased[0].$2, vm.Vector3(9, 0, 0));
-    // (0,10,0) pulled 1 unit toward (-5,0,0): direction (-5,-10,0), length
-    // sqrt(125) ≈ 11.1803, normalized ≈ (-0.4472, -0.8944, 0).
-    expect(biased[0].$3.x, closeTo(-0.4472, 1e-3));
-    expect(biased[0].$3.y, closeTo(9.1056, 1e-3));
-    expect(biased[0].$3.z, closeTo(0.0, 1e-9));
+    // (b-a).cross(c-a) = (10,0,0).cross(0,10,0) = (0,0,100), normalized (0,0,1) -
+    // every vertex pushed 1 unit along +Z, regardless of where the camera is.
+    expect(biased[0].$1, vm.Vector3(0, 0, 1));
+    expect(biased[0].$2, vm.Vector3(10, 0, 1));
+    expect(biased[0].$3, vm.Vector3(0, 10, 1));
   });
 
-  test('biasTrianglesTowardCamera leaves a vertex exactly at the camera unchanged', () {
-    final triangles = [(vm.Vector3(5, 5, 5), vm.Vector3(10, 0, 0), vm.Vector3(0, 10, 0))];
+  test('biasTrianglesAlongNormal leaves a degenerate (zero-area/collinear) triangle unchanged', () {
+    final triangles = [(vm.Vector3(0, 0, 0), vm.Vector3(1, 0, 0), vm.Vector3(2, 0, 0))];
 
-    final biased = biasTrianglesTowardCamera(triangles, vm.Vector3(5, 5, 5), 1.0);
+    final biased = biasTrianglesAlongNormal(triangles, 1.0);
 
-    expect(biased[0].$1, vm.Vector3(5, 5, 5));
+    expect(biased[0].$1, vm.Vector3(0, 0, 0));
+    expect(biased[0].$2, vm.Vector3(1, 0, 0));
+    expect(biased[0].$3, vm.Vector3(2, 0, 0));
+  });
+
+  test('biasTrianglesAlongNormal pushes a far/hidden-face triangle away from a camera on the near side '
+      'the same as a near-face triangle - the direction only depends on the triangle\'s own winding, '
+      'never on where the camera is', () {
+    // Two triangles with opposite winding (front vs. back face of a thin
+    // slab) both push along their own outward normal - one +Z, one -Z -
+    // regardless of a shared camera position, unlike the old camera-relative
+    // bias which pushed both towards the same camera direction.
+    final frontFace = [(vm.Vector3(0, 0, 0), vm.Vector3(10, 0, 0), vm.Vector3(0, 10, 0))];
+    final backFace = [(vm.Vector3(0, 0, 0), vm.Vector3(0, 10, 0), vm.Vector3(10, 0, 0))];
+
+    final biasedFront = biasTrianglesAlongNormal(frontFace, 1.0);
+    final biasedBack = biasTrianglesAlongNormal(backFace, 1.0);
+
+    expect(biasedFront[0].$1.z, closeTo(1.0, 1e-9));
+    expect(biasedBack[0].$1.z, closeTo(-1.0, 1e-9));
   });
 
   group('vertexMarkerSegments', () {
