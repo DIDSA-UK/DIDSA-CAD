@@ -40,14 +40,22 @@ was independently confirmed to already return a genuine Solid, so this
 check is a no-op there.
 """
 
+from OCC.Core.BRepBuilderAPI import (
+    BRepBuilderAPI_MakeFace,
+    BRepBuilderAPI_MakeSolid,
+    BRepBuilderAPI_Sewing,
+)
 from OCC.Core.BRepCheck import BRepCheck_Analyzer
 from OCC.Core.BRepGProp import brepgprop
 from OCC.Core.BRepOffset import BRepOffset_Skin
 from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_MakeThickSolid
 from OCC.Core.GeomAbs import GeomAbs_Intersection
 from OCC.Core.GProp import GProp_GProps
-from OCC.Core.TopAbs import TopAbs_SOLID
-from OCC.Core.TopoDS import TopoDS_Shape
+from OCC.Core.ShapeAnalysis import ShapeAnalysis_FreeBounds
+from OCC.Core.ShapeFix import ShapeFix_Solid
+from OCC.Core.TopAbs import TopAbs_SHELL, TopAbs_SOLID, TopAbs_WIRE
+from OCC.Core.TopExp import TopExp_Explorer
+from OCC.Core.TopoDS import TopoDS_Shape, topods
 from OCC.Core.TopTools import TopTools_ListOfShape
 
 
@@ -113,16 +121,115 @@ def _thicken_by_join(shell: TopoDS_Shape, thickness: float) -> TopoDS_Shape | No
     return solid
 
 
+def _thicken_by_capping_free_bounds(shell: TopoDS_Shape, thickness: float) -> TopoDS_Shape | None:
+    """On-device feedback ("Thicken surface on a rectangular extruded
+    surface still produced bad geometry"): a genuinely open, multi-face,
+    cap-less shell (e.g. `app.document.surface._prism_shell_for_wire`'s
+    own output - a rectangular tube's 4 side walls, no top/bottom) has no
+    known cap faces to pass as `ClosingFaces` the way [thicken_capped_
+    solid_to_solid] does for Extrude Thin (that function's own caller
+    controls its construction and can build temporary caps *before*
+    thickening; a Surface feature arrives here already built, with no cap
+    information at all) - so both [_thicken_by_join] (empty `ClosingFaces`,
+    rejected for this shell shape per bug (3) in this module's own
+    verification-status note) and `MakeThickSolidBySimple` (this module's
+    fallback) improvise their own rounded/bulged closing at every free
+    edge, not just the intended wall thickness. Confirmed against a real
+    kernel (10x10 square wire, prismed 20 along Z, thickness 2): bounding
+    box inflates by `thickness*sqrt(2)` on *every* axis instead of staying
+    flat, and volume comes back roughly half the correct 1920.
+
+    Fix: discover the shell's own free boundary wire loops via OCCT's
+    `ShapeAnalysis_FreeBounds` (for the tube case, exactly the top and
+    bottom rims), build a temporary face for each (`BRepBuilderAPI_
+    MakeFace`), sew them onto the shell into a genuinely closed solid
+    (`BRepBuilderAPI_Sewing` + `BRepBuilderAPI_MakeSolid`, then `ShapeFix_
+    Solid` - confirmed necessary against a real kernel: without it the
+    sewn solid's face orientations come back inconsistent, and thickening
+    it produces an invalid result with a negative, wrong-magnitude
+    volume), then thicken via the same proven `MakeThickSolidByJoin` +
+    `ClosingFaces` idiom [thicken_capped_solid_to_solid] uses, passing the
+    newly-built caps as the faces to remove again - leaving a correctly
+    flat-rimmed thickened shell. Confirmed against the same repro: volume
+    now comes back exactly 1920.0, Z bounds exactly [0, 20]; also
+    confirmed against an L-shaped (non-convex, 6-vertex) profile - a
+    valid, flat-Z-bounded solid.
+
+    Returns `None` (never raises) if any step fails - no closed boundary
+    wire found, a cap face that fails to build, a sewn result that can't
+    be coerced into a valid solid, or the thicken call itself failing -
+    so [thicken_shell_to_solid] can fall back to `MakeThickSolidBySimple`
+    (correct for the genuinely-already-closed/single-face cases this
+    function isn't needed for) rather than surface a crash."""
+    free_bounds = ShapeAnalysis_FreeBounds(shell)
+    closed_wires_compound = free_bounds.GetClosedWires()
+    wire_explorer = TopExp_Explorer(closed_wires_compound, TopAbs_WIRE)
+    boundary_wires = []
+    while wire_explorer.More():
+        boundary_wires.append(topods.Wire(wire_explorer.Current()))
+        wire_explorer.Next()
+    if not boundary_wires:
+        return None
+
+    cap_faces = []
+    for wire in boundary_wires:
+        face_maker = BRepBuilderAPI_MakeFace(wire)
+        if not face_maker.IsDone():
+            return None
+        cap_faces.append(face_maker.Face())
+
+    sewing = BRepBuilderAPI_Sewing(1.0e-6)
+    sewing.Add(shell)
+    for face in cap_faces:
+        sewing.Add(face)
+    sewing.Perform()
+    sewn = sewing.SewedShape()
+    if sewn is None or sewn.IsNull():
+        return None
+
+    solid_maker = BRepBuilderAPI_MakeSolid()
+    if sewn.ShapeType() == TopAbs_SHELL:
+        solid_maker.Add(topods.Shell(sewn))
+    else:
+        shell_explorer = TopExp_Explorer(sewn, TopAbs_SHELL)
+        found_shell = False
+        while shell_explorer.More():
+            solid_maker.Add(topods.Shell(shell_explorer.Current()))
+            found_shell = True
+            shell_explorer.Next()
+        if not found_shell:
+            return None
+    if not solid_maker.IsDone():
+        return None
+    solid = solid_maker.Solid()
+
+    fixer = ShapeFix_Solid(solid)
+    fixer.Perform()
+    solid = fixer.Solid()
+    if solid is None or solid.IsNull() or not BRepCheck_Analyzer(solid).IsValid():
+        return None
+
+    closing_faces = TopTools_ListOfShape()
+    for face in cap_faces:
+        closing_faces.Append(face)
+    try:
+        return thicken_capped_solid_to_solid(solid, closing_faces, thickness)
+    except ValueError:
+        return None
+
+
 def thicken_shell_to_solid(shell: TopoDS_Shape, thickness: float) -> TopoDS_Shape:
     """Thickens an open shell into a solid via OCCT's standard
     BRepOffsetAPI_MakeThickSolid idiom.
 
     Tries [_thicken_by_join] first (`GeomAbs_Intersection`-mitred corners -
     see that function's own doc comment for the rectangular-corner bug
-    this fixes), falling back to the original `MakeThickSolidBySimple`
-    call - kept exactly as before, unconditionally, for a shell the join
-    upgrade doesn't successfully handle - rather than risk regressing a
-    shape that already thickened correctly under it.
+    this fixes), then [_thicken_by_capping_free_bounds] (a genuinely
+    open, multi-face, cap-less shell - see that function's own doc
+    comment), falling back to the original `MakeThickSolidBySimple` call -
+    kept exactly as before, unconditionally, for a shell neither upgrade
+    successfully handles - rather than risk regressing a shape that
+    already thickened correctly under it.
 
     Either path includes the volume-sign fixup a real on-device/CI run
     found necessary: the output solid can come back with inverted
@@ -136,8 +243,10 @@ def thicken_shell_to_solid(shell: TopoDS_Shape, thickness: float) -> TopoDS_Shap
     unconditionally based on a real volume check rather than assumed to
     always be needed (a shell that happens to come out right-side-up
     already has this be a no-op check, not a blind flip). Raises
-    `ValueError` if neither path completes."""
+    `ValueError` if no path completes."""
     solid = _thicken_by_join(shell, thickness)
+    if solid is None:
+        solid = _thicken_by_capping_free_bounds(shell, thickness)
     if solid is None:
         thicken = BRepOffsetAPI_MakeThickSolid()
         thicken.MakeThickSolidBySimple(shell, thickness)

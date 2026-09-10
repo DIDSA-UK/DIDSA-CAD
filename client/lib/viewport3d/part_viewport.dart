@@ -1067,6 +1067,28 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   vm.Vector3? _sectionDragStartOrigin;
   vm.Vector3? _sectionDragStartNormal;
 
+  /// The pointer id that started the current section-gizmo drag - bug fix
+  /// (on-device feedback: "orbit stopped working and single finger drag
+  /// started doing a strange combination of pan and zoom instead... This
+  /// persisted after exiting the section tool"): [_onPointerMove]/
+  /// [_onPointerEnd]'s own `_sectionDragHandle != null` gates previously
+  /// matched *any* pointer's event, not just the one that started the
+  /// drag. A second finger touching down mid-drag got added to
+  /// [_activeTouches] normally (it doesn't hit the gizmo), but if it
+  /// lifted before the drag-owning finger, its up-event was swallowed by
+  /// the section-drag-end branch - which cleared [_sectionDragHandle] but
+  /// never called `_activeTouches.remove` for that finger, permanently
+  /// orphaning its entry (that pointer id fires no further events). From
+  /// then on `_handlePointerMove` always saw `_activeTouches.length >= 2`
+  /// and routed every subsequent single-finger drag into
+  /// [_applyPinchPan] instead of orbit - a plain mutable field, so it
+  /// survived `setState`/tool-exit and only cleared when this whole State
+  /// was disposed and recreated (matching "starting a new part resolved
+  /// it" exactly). Gating on this field too means an unrelated pointer's
+  /// events now correctly fall through to the normal handling that
+  /// maintains [_activeTouches] itself.
+  int? _sectionDragPointerId;
+
   /// Translate-handle drag only: the fixed world-space axis direction (a
   /// snapshot of the gizmo's own basis at drag-start, so the constrained
   /// line a translate handle drags along never itself moves mid-drag even
@@ -1508,6 +1530,20 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
     if (widget.sectionPlanes != oldWidget.sectionPlanes || widget.activeSectionId != oldWidget.activeSectionId) {
       setState(_syncSectionNodes);
+    }
+    // Bug fix, defense in depth: if the section tool becomes inactive or
+    // switches to a different section while a gizmo drag is in progress
+    // (e.g. the panel closed via a UI button, not a pointer-up), clear
+    // every `_sectionDrag*` field and the touch-tracking state the pointer-
+    // id fix above relies on - see [_sectionDragPointerId]'s own doc
+    // comment for the stuck-touch-state bug this guards against beyond
+    // just the ordinary pointer-up path.
+    if (widget.activeSectionId != oldWidget.activeSectionId && _sectionDragHandle != null) {
+      _sectionDragHandle = null;
+      _sectionDragPointerId = null;
+      _sectionDragSectionId = null;
+      _activeTouches.clear();
+      _hadMultiTouch = false;
     }
     if (widget.lightIntensity != oldWidget.lightIntensity) {
       setState(_applyLighting);
@@ -2250,9 +2286,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// (`_onPointerDown`) uses this to decide whether to consume the gesture
   /// entirely (no orbit/selection/draw-cursor behavior for the rest of this
   /// pointer's lifetime) or fall through to its own ordinary handling.
-  bool _tryBeginSectionGizmoDrag(Offset screenPosition) {
+  bool _tryBeginSectionGizmoDrag(Offset screenPosition, int pointerId) {
     final activeId = widget.activeSectionId;
     if (activeId == null) return false;
+    // Bug fix: never let a second pointer hijack an already-in-progress
+    // drag - see [_sectionDragPointerId]'s own doc comment.
+    if (_sectionDragHandle != null) return false;
     SectionPlane? foundPlane;
     for (final p in widget.sectionPlanes) {
       if (p.id == activeId) {
@@ -2301,6 +2340,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
 
     setState(() {
       _sectionDragHandle = hit.kind;
+      _sectionDragPointerId = pointerId;
       _sectionDragSectionId = plane.id;
       _sectionDragStartOrigin = plane.origin;
       _sectionDragStartNormal = plane.normal;
@@ -2940,7 +2980,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // [PartViewport.activeSectionId] actually names one of
     // [PartViewport.sectionPlanes] - i.e. only while [SectionPanel] is open
     // and editing a specific section.
-    if (_tryBeginSectionGizmoDrag(event.localPosition)) return;
+    if (_tryBeginSectionGizmoDrag(event.localPosition, event.pointer)) return;
     if (widget.selectionMode) {
       // P25: mirrors sketch_canvas.dart's own "the marquee gesture only
       // ever tracks one pointer - a second finger touching down mid-drag
@@ -2988,7 +3028,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   }
 
   void _onPointerMove(PointerMoveEvent event) {
-    if (_sectionDragHandle != null) {
+    // Bug fix: only the pointer that started this drag continues it - see
+    // [_sectionDragPointerId]'s own doc comment. Any other pointer's move
+    // falls through to the normal handling below, which keeps
+    // [_activeTouches] correctly up to date.
+    if (_sectionDragHandle != null && event.pointer == _sectionDragPointerId) {
       _updateSectionGizmoDrag(event.localPosition);
       return;
     }
@@ -3050,9 +3094,15 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   }
 
   void _onPointerEnd(PointerEvent event) {
-    if (_sectionDragHandle != null) {
+    // Bug fix: only the pointer that started this drag can end it - see
+    // [_sectionDragPointerId]'s own doc comment. Any other pointer's
+    // up/cancel event falls through to the normal handling below, which
+    // correctly removes it from [_activeTouches] instead of leaving an
+    // orphaned entry that never gets removed.
+    if (_sectionDragHandle != null && event.pointer == _sectionDragPointerId) {
       setState(() {
         _sectionDragHandle = null;
+        _sectionDragPointerId = null;
         _sectionDragSectionId = null;
         _syncSectionNodes();
       });
@@ -4229,19 +4279,32 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       // depth test, so an un-biased highlight sitting exactly on the
       // Body's own surface can get redrawn over.
       final biasedTriangles = biasTrianglesTowardCamera(faceTriangles, _camera.position, kEdgeDepthBias);
-      // Bug report ("faces selected using 'select other' still don't
-      // highlight when selected correctly"): a face reached via Select
-      // Other is typically an occluded back/inner face - the whole reason
-      // that tool exists - so it needs the same `alwaysOnTop: true` this
-      // method's own hover/preview path already uses for the identical
-      // reason (see [_syncHoverNode]'s `forceAlwaysOnTop: true`, fixed for
-      // the hover case only). Without it, a genuinely-selected occluded
-      // face renders behind the Body's own opaque surface and is
-      // effectively invisible even though it *is* selected.
+      // Reverted (on-device feedback: "major regression to highlighting a
+      // face or body when selected... odd translucent appearance and the
+      // edges lose visibility"): `alwaysOnTop: true` was added here to fix
+      // an occluded Select-Other face not highlighting, but
+      // `AlwaysOnTopMaterial.bind()` mutates the shared `gpu.RenderPass`'s
+      // depth-compare state (`setDepthCompareOperation(always)`) with
+      // nothing in `flutter_scene` ever resetting it back to `lessEqual`
+      // afterward - safe for the transient hover/Select-Other preview
+      // ([_syncHoverNode]'s `forceAlwaysOnTop`) and the dedicated active-
+      // Sketch overlay pass (both self-contained, "everything here wants
+      // identical treatment"), but this node draws on *every* ordinary
+      // frame alongside normal Body/edge rendering - whatever gets drawn
+      // after it in that frame's arbitrary opaque-pipeline order inherits
+      // the leaked always-pass-depth-test state, corrupting normal
+      // occlusion for the rest of the frame (a translucent-opacity Body
+      // loses its real depth test entirely; opaque edges/faces drawn after
+      // simply paint over earlier draws regardless of true depth) -
+      // exactly the reported symptoms. No safe way to keep this without a
+      // much larger fix (every material type in the viewport, including
+      // the third-party `PhysicallyBasedMaterial`, would need to force-
+      // reset the compare function in its own `bind()`) that can't be
+      // verified without real GPU rendering, unavailable in this sandbox -
+      // reverted rather than risk shipping an unverified replacement.
       final node = buildHighlightFacesNode(
         biasedTriangles,
         color: _highContrastFaceHighlightColor(),
-        alwaysOnTop: true,
       );
       scene.add(node);
       _selectedFacesNode = node;

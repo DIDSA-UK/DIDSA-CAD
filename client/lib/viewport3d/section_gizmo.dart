@@ -419,8 +419,20 @@ Node buildSectionGizmoNode(
     // instead of the normal depth-tested UnlitMaterial - this manipulator
     // must never be occluded by a Body, unlike an ordinary highlight (see
     // that class's own doc comment, `mesh_geometry.dart`).
+    //
+    // On-device feedback, follow-up ("the gizmo/triad/manipulator needs to
+    // be drawn on top of everything"): AlwaysOnTopMaterial's depth-always
+    // override alone isn't enough - `flutter_scene`'s opaque-phase draws
+    // are ordered by `(pipelineKey, depth)` where `pipelineKey` is an
+    // arbitrary per-session hash, not scene/draw order, so whether this
+    // (still `AlphaMode.opaque`) gizmo drew before or after a Body's own
+    // opaque mesh was essentially a coin flip. `AlphaMode.blend` instead
+    // (matching [buildSectionPlaneQuadNode]'s own fill, already reliably
+    // on top) routes it through the translucent phase, which always draws
+    // strictly after every opaque draw - a deterministic ordering, not an
+    // arbitrary one.
     final material = AlwaysOnTopMaterial()
-      ..alphaMode = AlphaMode.opaque
+      ..alphaMode = AlphaMode.blend
       ..baseColorFactor = sectionGizmoHandleColor(kind, highlighted: highlighted);
     primitives.add(MeshPrimitive(
       PolylineGeometry([plane.origin, tip], width: highlighted ? 5 : 3),
@@ -437,8 +449,10 @@ Node buildSectionGizmoNode(
                     axisB * math.sin(2 * math.pi * i / kSectionGizmoRingSegments)) *
                 ringRadius,
     ];
+    // See [addArrow]'s own doc comment for why `AlphaMode.blend`, not
+    // `opaque`.
     final material = AlwaysOnTopMaterial()
-      ..alphaMode = AlphaMode.opaque
+      ..alphaMode = AlphaMode.blend
       ..baseColorFactor = sectionGizmoHandleColor(kind, highlighted: highlighted);
     primitives.add(MeshPrimitive(PolylineGeometry(points, width: highlighted ? 4 : 2.5), material));
   }
@@ -505,8 +519,11 @@ Node buildSectionPlaneQuadNode(
     indices: fillBuffers.indices,
   );
 
+  // See [buildSectionGizmoNode]'s `addArrow` doc comment for why
+  // `AlphaMode.blend`, not `opaque` - same z-order fix, kept consistent
+  // with the fill primitive just below (already `blend`).
   final borderMaterial = AlwaysOnTopMaterial()
-    ..alphaMode = AlphaMode.opaque
+    ..alphaMode = AlphaMode.blend
     ..baseColorFactor = vm.Vector4(_sectionPlaneBaseColor.x, _sectionPlaneBaseColor.y, _sectionPlaneBaseColor.z, 1.0);
   final borderGeometry = PolylineGeometry(closedLoopBorderPoints(halfSize), width: 2.0);
 

@@ -1099,6 +1099,37 @@ def _register_solids(bodies: dict[str, TopoDS_Shape], base_id: str, shape: TopoD
             bodies[f"{base_id}#{i}"] = solid
 
 
+def _register_solids_or_shape(bodies: dict[str, TopoDS_Shape], base_id: str, shape: TopoDS_Shape) -> None:
+    """On-device feedback ("Create planar surface > pattern along z-axis
+    produced no additional instances. Mirror about plane also produced no
+    additional instances."): [_register_solids]'s own "zero solids
+    registers nothing" contract (see its own doc comment) is correct for
+    every solid-only operation (Boss/Cut, Merge, Scale/Move Body, etc.) but
+    silently drops a Mirror/Pattern instance of a *Surface* source - a
+    mirrored/patterned `TopoDS_Face`/`TopoDS_Shell` has zero `TopAbs_SOLID`
+    sub-shapes by construction, not because anything went wrong (confirmed
+    against a real kernel: transforming a planar face and running it
+    through [_register_solids] yields an empty `bodies` dict).
+
+    Mirror's/Pattern's own-instance registration is the only caller of
+    this - every genuine surface-producing Feature (`SurfaceFeature`,
+    `PlanarSurfaceFeature`, `RevolveSurfaceFeature`, etc.) already knows to
+    register its own output directly (`bodies[feature.id] = shape`, no
+    `_explode_solids` at all) since it never produces a Solid in the first
+    place; Mirror/Pattern's own registration never got that same
+    distinction when they were widened to accept Surface sources. Delegates
+    to [_register_solids] unchanged whenever `shape` actually contains 1+
+    solids (a mirrored/patterned solid Body, the common case, keeps its
+    existing multi-solid-compound-splitting behaviour exactly as before);
+    registers `shape` directly under `base_id` otherwise - a Surface has no
+    "multiple solids in one compound" concept to explode, mirroring how the
+    surface-producing Features above register their own single output."""
+    if _explode_solids(shape):
+        _register_solids(bodies, base_id, shape)
+    else:
+        bodies[base_id] = shape
+
+
 def _boolean_op_failed(op: str, body_ids: list[str]) -> HTTPException:
     """A `BRepAlgoAPI_Fuse` call either raised a raw OCCT `RuntimeError`
     (the same class of failure `fillet.py`'s/`chamfer.py`'s own
@@ -2140,10 +2171,14 @@ def _apply_feature_to_bodies_impl(
             base_ids = effective_mirror_source_body_ids(bodies, feature)
             _fuse_realized_instances(bodies, feature_index, base_ids, mirrored_shapes)
         elif len(mirrored_shapes) == 1:
-            _register_solids(bodies, feature.id, mirrored_shapes[0])
+            # On-device feedback ("mirror about plane produced no
+            # additional instances" for a Surface source): a mirrored
+            # Surface has no solids to explode - see
+            # `_register_solids_or_shape`'s own doc comment.
+            _register_solids_or_shape(bodies, feature.id, mirrored_shapes[0])
         else:
             for i, shape in enumerate(mirrored_shapes):
-                _register_solids(bodies, f"{feature.id}#{i}", shape)
+                _register_solids_or_shape(bodies, f"{feature.id}#{i}", shape)
         return
 
     if isinstance(feature, MergeFeature):
@@ -2361,10 +2396,14 @@ def _apply_feature_to_bodies_impl(
             ((_, instances),) = per_source_instances.items()
             if len(instances) == 1:
                 ((_, only_shape),) = instances.items()
-                _register_solids(bodies, feature.id, only_shape)
+                # On-device feedback ("pattern along z-axis produced no
+                # additional instances" for a Surface source): a patterned
+                # Surface has no solids to explode - see
+                # `_register_solids_or_shape`'s own doc comment.
+                _register_solids_or_shape(bodies, feature.id, only_shape)
             else:
                 for index, shape in instances.items():
-                    _register_solids(bodies, f"{feature.id}#{index}", shape)
+                    _register_solids_or_shape(bodies, f"{feature.id}#{index}", shape)
         else:
             # Phase 6: 2+ sources - every instance is a brand-new Body
             # keyed by both which source it belongs to (`source_index`,
@@ -2378,7 +2417,7 @@ def _apply_feature_to_bodies_impl(
             # completely unaffected by this change).
             for source_index, (_, instances) in enumerate(per_source_instances.items()):
                 for index, shape in instances.items():
-                    _register_solids(bodies, f"{feature.id}#{source_index}_{index}", shape)
+                    _register_solids_or_shape(bodies, f"{feature.id}#{source_index}_{index}", shape)
         return
 
     if isinstance(feature, RevolveFeature):
