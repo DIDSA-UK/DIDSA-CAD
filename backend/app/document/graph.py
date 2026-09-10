@@ -63,6 +63,7 @@ from app.document.models import (
     PlanetaryGearFeature,
     PlaneRef,
     PlaneType,
+    Produces,
     RackFeature,
     RevolveFeature,
     RevolveMode,
@@ -186,6 +187,61 @@ def body_ids_for_feature_id(body_ids: Iterable[str], feature_id: str) -> list[st
     `missing_reference`-shaped error for that, keeping this helper itself
     OCCT-free and side-effect-free like every other lookup in this module."""
     return [bid for bid in body_ids if base_feature_id(bid) == feature_id]
+
+
+def resolve_feature_produces(feature: Feature, part: Part, *, _visited: frozenset[str] = frozenset()) -> Produces:
+    """Bug fix (on-device feedback: "mirrored and patterned surfaces present
+    in the build tree as bodies... they should present as surfaces like
+    their parent surface"): `MirrorFeature.produces`/`PatternFeature.
+    produces` are both hardcoded to `Produces.BODY`, regardless of whether
+    their sources are solid- or surface-producing - this is the source-
+    aware replacement every caller that used to read `feature.produces`
+    directly for one of these two types should use instead (every other
+    Feature type's own `.produces` is already correct as a bare static
+    value, so this just passes those straight through unchanged).
+
+    Resolves every one of `feature`'s sources (`source_body_ids` mapped
+    through `base_feature_id` - the same "which Feature does this Body
+    ultimately trace back to" lookup `_mirror_dependencies`/
+    `_pattern_dependencies` already use - plus `source_feature_ids` and
+    `tool_feature_id`, both already bare Feature ids) back to their own
+    owning Feature and recurses on each (so a Mirror-of-a-Mirror-of-a-
+    Surface, or a Pattern of one, still resolves through to `SURFACE`) -
+    `Produces.SURFACE` only if *every* resolved source is itself `SURFACE`;
+    `BODY` for a solid source, a mix of both, or no resolvable source at
+    all (matches `_validate_mirror_source_body_ids`/`_validate_pattern_
+    source_body_ids`'s own new uniformity check, which rejects a mixed
+    solid+surface source set at creation time - see those functions' own
+    doc comments - so "mixed" should never actually reach here for a
+    Feature that was allowed to be created, this is just the same safe
+    fallback as "no source" for a hypothetically malformed one).
+
+    `_visited` is purely defensive - the create-time uniformity check plus
+    `build_feature_graph`'s own cycle detection mean a real cycle should
+    never reach this function, but this is also called from payload
+    *validation* itself, before a new Feature has been added to `part`
+    (and so before that graph check could catch anything involving it) -
+    a `frozenset` (not a mutable set threaded by reference) so sibling
+    branches of the same recursive call never see each other's visited
+    ids, only each one's own ancestor chain."""
+    if not isinstance(feature, (MirrorFeature, PatternFeature)):
+        return feature.produces
+    if feature.id in _visited:
+        return Produces.BODY
+    visited = _visited | {feature.id}
+
+    source_ids: set[str] = {base_feature_id(bid) for bid in feature.source_body_ids}
+    source_ids.update(feature.source_feature_ids)
+    if feature.tool_feature_id is not None:
+        source_ids.add(feature.tool_feature_id)
+
+    resolved: set[Produces] = set()
+    for source_id in source_ids:
+        source_feature = part.get_feature(source_id)
+        if source_feature is not None:
+            resolved.add(resolve_feature_produces(source_feature, part, _visited=visited))
+
+    return Produces.SURFACE if resolved == {Produces.SURFACE} else Produces.BODY
 
 
 def tool_feature_qualifies(feature: Feature | None) -> bool:

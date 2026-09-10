@@ -3436,4 +3436,116 @@ void main() {
       await tester.pump(const Duration(milliseconds: 600));
     });
   });
+
+  // Bug fix (on-device feedback, re-tested live after this round's other
+  // fixes: "clicking a flat face or plane should set the section position
+  // and orientation to be coplanar with the selected face or plane" stopped
+  // working partway through an ordinary session): `PartViewport`'s own
+  // `_handleTap`-based Section-placement logic only ever runs from the
+  // Orbit-mode-only tap path, unreachable whenever `PartScreen._selectionMode`
+  // is on - and since ~50 of this file's own call sites turn that on (vs. 2
+  // that ever turn it back off), a perfectly ordinary "use Extrude, then open
+  // Section" session already leaves it on for the rest of that session. See
+  // `PartScreen._tryHandleSectionPlacementToggle`'s own doc comment for the
+  // full root-cause writeup. `onSelectionToggle` is the one dispatcher every
+  // viewport tap reaches regardless of Selection mode (mirrors this file's
+  // own Skip-instances-redesign tests just above, which drive the same
+  // callback directly rather than simulating a raw pointer gesture) - this
+  // exercises the exact code path a real tap takes while Selection mode is
+  // on, the case the old Orbit-mode-only implementation could never reach.
+  group('Sectioning Tool bug fix: face tap reanchors regardless of Selection mode', () {
+    testWidgets(
+        'onSelectionToggle with a face entity reanchors the active section to '
+        "that face's own plane", (tester) async {
+      // Two single-triangle faces with distinct, known normals/positions -
+      // face 0 a "top" cap (normal +Z, through z=10), face 1 a "side" wall
+      // (normal +X, through x=5) - enough to prove a tap re-derives the
+      // plane from the *tapped* face, not just leaves whatever was already
+      // there (the bug's own failure mode: the tap silently no-ops).
+      final mesh = {
+        'vertices': [
+          [0.0, 0.0, 10.0],
+          [1.0, 0.0, 10.0],
+          [0.0, 1.0, 10.0],
+          [5.0, 0.0, 0.0],
+          [5.0, 1.0, 0.0],
+          [5.0, 0.0, 1.0],
+        ],
+        'normals': [
+          [0.0, 0.0, 1.0],
+          [0.0, 0.0, 1.0],
+          [0.0, 0.0, 1.0],
+          [1.0, 0.0, 0.0],
+          [1.0, 0.0, 0.0],
+          [1.0, 0.0, 0.0],
+        ],
+        'triangle_indices': [
+          [0, 1, 2],
+          [3, 4, 5],
+        ],
+        'face_ids': [0, 1],
+      };
+      final backend = _FakeDocumentBackend();
+      final documentApi = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          if (request.url.path == '/document/parts/part-1/mesh' && request.method == 'GET') {
+            // 'computed' (not 'placeholder') - a single-entry `source:
+            // "placeholder"` response is `PartScreen`'s own "no real Bodies
+            // yet" signal (see `_refreshMesh`'s own `isPlaceholder` check),
+            // which discards the entry entirely rather than treating it as
+            // a real Body.
+            return http.Response(
+              jsonEncode([
+                {'body_id': 'body-1', 'source': 'computed', 'mesh': mesh},
+              ]),
+              200,
+            );
+          }
+          return backend.handle(request);
+        }),
+      );
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+      await _pumpUntil(
+        tester,
+        () => tester.widget<PartViewport>(find.byType(PartViewport)).bodies.isNotEmpty,
+      );
+
+      await tester.tap(find.byTooltip('Section'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.widgetWithText(FilledButton, 'Add Section'));
+      await tester.pump();
+
+      // Sanity check: the freshly-added section's own default plane is not
+      // already coplanar with face 1 (normal +X through x=5) - otherwise a
+      // no-op bug could masquerade as a pass.
+      final before = tester.widget<PartViewport>(find.byType(PartViewport)).sectionPlanes.single;
+      expect(before.normal.x, isNot(closeTo(1.0, 1e-6)));
+
+      // The exact callback a real tap reaches via `PartViewport.
+      // onSelectionToggle` regardless of `_selectionMode` - see this
+      // group's own header comment for why that's the scenario worth
+      // covering (not `PartViewport`'s own separate Orbit-mode `_handleTap`,
+      // already covered by that widget's own hit-testing unit tests).
+      tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+            const SelectionEntityRef(kind: SelectionEntityKind.face, bodyId: 'body-1', id: 1),
+          );
+      await tester.pump();
+
+      final after = tester.widget<PartViewport>(find.byType(PartViewport)).sectionPlanes.single;
+      expect(after.normal.x, closeTo(1.0, 1e-6));
+      expect(after.normal.y, closeTo(0.0, 1e-6));
+      expect(after.normal.z, closeTo(0.0, 1e-6));
+      expect(after.origin.x, closeTo(5.0, 1e-6));
+    });
+  });
 }

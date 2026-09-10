@@ -30,6 +30,7 @@ from OCC.Core.TopExp import TopExp_Explorer
 from OCC.Core.TopoDS import TopoDS_Shape, TopoDS_Shell, topods
 
 from app.document.extrude import compute_part_bodies
+from app.document.graph import resolve_feature_produces
 from app.document.models import Part, Produces, SolidFromSurfacesFeature
 from app.document.surface_ops import sew_surfaces
 
@@ -59,7 +60,7 @@ def _resolve_surface_feature_shape(
     part: Part, surface_feature_id: str, bodies_so_far: dict[str, TopoDS_Shape]
 ) -> TopoDS_Shape:
     source_feature = part.get_feature(surface_feature_id)
-    if source_feature is None or source_feature.produces != Produces.SURFACE:
+    if source_feature is None or resolve_feature_produces(source_feature, part) != Produces.SURFACE:
         raise _invalid_surface_feature_ref(
             surface_feature_id, "does not refer to a surface-producing Feature in this Part"
         )

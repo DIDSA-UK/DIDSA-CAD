@@ -4305,12 +4305,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
 
     if (faceTriangles.isNotEmpty) {
       // On-device feedback ("dynamic face[s] hilight is not working"): see
-      // [biasTrianglesTowardCamera]'s own doc comment - the embedded 3D
+      // [biasTrianglesAlongNormal]'s own doc comment - the embedded 3D
       // sketcher's Body opacity defaults below 100%, which routes the
       // Body's own material onto the translucent pass and its unreliable
       // depth test, so an un-biased highlight sitting exactly on the
       // Body's own surface can get redrawn over.
-      final biasedTriangles = biasTrianglesTowardCamera(faceTriangles, _camera.position, kEdgeDepthBias);
+      final biasedTriangles = biasTrianglesAlongNormal(faceTriangles, kEdgeDepthBias);
       // Reverted (on-device feedback: "major regression to highlighting a
       // face or body when selected... odd translucent appearance and the
       // edges lose visibility"): `alwaysOnTop: true` was added here to fix
@@ -4424,9 +4424,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         final triangles = faceTrianglesForId(body.mesh, entity.id);
         if (triangles.isEmpty) return null;
         // On-device feedback ("dynamic face[s] hilight is not working") -
-        // see [biasTrianglesTowardCamera]'s own doc comment.
+        // see [biasTrianglesAlongNormal]'s own doc comment.
         return buildHighlightFacesNode(
-          biasTrianglesTowardCamera(triangles, _camera.position, kEdgeDepthBias),
+          biasTrianglesAlongNormal(triangles, kEdgeDepthBias),
           color: color,
           alwaysOnTop: alwaysOnTop,
         );
@@ -4455,7 +4455,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         final triangles = trianglesFromMesh(body.mesh);
         if (triangles.isEmpty) return null;
         return buildHighlightFacesNode(
-          biasTrianglesTowardCamera(triangles, _camera.position, kEdgeDepthBias),
+          biasTrianglesAlongNormal(triangles, kEdgeDepthBias),
           color: color,
           alwaysOnTop: alwaysOnTop,
         );
