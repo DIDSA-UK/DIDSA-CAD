@@ -1413,6 +1413,32 @@ class _PartScreenState extends State<PartScreen> {
       _toggleChamferFaceEdges(entity);
       return;
     }
+    // On-device feedback ("the user should be able to select surfaces...
+    // by using the cursor by clicking the surfaces in the viewport
+    // directly"): Thicken/Solid from Surfaces' source pickers used to be
+    // reachable only via the Build Tree's Features-list picker mode (see
+    // [_thickenSourcePickerActive]/[_solidFromSurfacesPickerActive]'s own
+    // doc comments) - a body or face tap while either is active now
+    // resolves back to its owning Feature the same way [_onBodyLongPress]
+    // does (via [baseFeatureId]/[_featureById]), and is silently ignored
+    // (not a fall-through to the generic toggle below) unless that Feature
+    // is itself surface-producing - mirrors [_thickenSelectedFeature]'s own
+    // `produces == 'surface'` gate. [_surfaceSourcePickerSelectionFilter]
+    // (pushed for the duration of both pickers) already guarantees only
+    // body/face entities can even be hit-tested here, but the produces
+    // check still matters since a tapped Body's *shape* alone can't tell a
+    // solid's face from a surface's.
+    if ((_thickenSourcePickerActive || _solidFromSurfacesPickerActive) &&
+        (entity.kind == SelectionEntityKind.body || entity.kind == SelectionEntityKind.face)) {
+      final feature = _featureById(baseFeatureId(entity.bodyId));
+      if (feature == null || feature.produces != 'surface') return;
+      if (_thickenSourcePickerActive) {
+        _onThickenSourcePicked(feature);
+      } else {
+        _toggleSolidFromSurfacesPick(feature);
+      }
+      return;
+    }
     // Prompt G: a sketchLine/sketchCircle tap while the profile picker is
     // open toggles its whole containing loop, not just the one tapped
     // entity - see [_toggleProfileLoop]. Checked before the Revolve axis
@@ -6102,7 +6128,35 @@ class _PartScreenState extends State<PartScreen> {
   /// Thicken source is any `produces == 'surface'` Feature, not only a
   /// Sketch, so `isSketchPickerMode`'s own hardcoded Sketch-only gate
   /// doesn't fit).
+  ///
+  /// On-device feedback: also now reachable via a direct viewport tap or a
+  /// Build Tree Surfaces-section tap on a surface-producing Body/face - see
+  /// [_toggleSelectedEntity]'s own branch and [_surfaceSourcePickerSelectionFilter].
   bool _thickenSourcePickerActive = false;
+
+  /// Locks [_selectionFilterOverrides] to Body/face kinds only, for the
+  /// duration of both Thicken's and Solid from Surfaces' own source
+  /// pickers - lets a direct viewport tap (or, via [_onSurfaceTap], a Build
+  /// Tree Surfaces-section tap, which routes through the exact same
+  /// [_toggleSelectedEntity] call) reach [_toggleSelectedEntity]'s new
+  /// `_thickenSourcePickerActive || _solidFromSurfacesPickerActive` branch,
+  /// mirroring [_offsetSurfaceSelectionFilter]'s own "restrict ambient
+  /// hit-testing to exactly what this picker cares about" shape.
+  static const _surfaceSourcePickerSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: true,
+    body: true,
+    sketchPoint: false,
+    sketchLine: false,
+    sketchCircle: false,
+    sketchArc: false,
+    sketchEllipse: false,
+    sketchEllipseArc: false,
+    sketchSpline: false,
+    sketchText: false,
+    plane: false,
+  );
 
   /// The surface-producing Feature currently backing [ThickenPanel] - null
   /// while the picker is still live/nothing has been picked yet.
@@ -6149,17 +6203,21 @@ class _PartScreenState extends State<PartScreen> {
       _thickenSourcePickerActive = true;
       _featureTreeVisible = true;
       _toolbarOpen = false;
+      _selectionMode = true;
       _planeSelectionModeStack.pop();
+      _selectionFilterOverrides.push(_surfaceSourcePickerSelectionFilter);
     });
   }
 
   /// [FeatureTreePanel.onFeaturePickerToggle] while [_thickenSourcePickerActive]
   /// - commits immediately (no accumulation), mirrors [_onPlanarSurfaceSketchPicked]'s
-  /// own single-pick-then-open-panel shape.
+  /// own single-pick-then-open-panel shape. Also reached directly from
+  /// [_toggleSelectedEntity]'s own viewport/Surfaces-list branch.
   void _onThickenSourcePicked(FeatureDto feature) {
     setState(() {
       _thickenSourcePickerActive = false;
       _featureTreeVisible = false;
+      _selectionFilterOverrides.pop();
     });
     _openThickenPanel(feature);
   }
@@ -6168,6 +6226,7 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _thickenSourcePickerActive = false;
       _featureTreeVisible = false;
+      _selectionFilterOverrides.pop();
     });
   }
 
@@ -6462,6 +6521,10 @@ class _PartScreenState extends State<PartScreen> {
   // anyway - simple duplication reads more clearly here than that
   // indirection would.
 
+  /// On-device feedback: also reachable via a direct viewport tap or a
+  /// Build Tree Surfaces-section tap - see [_toggleSelectedEntity]'s own
+  /// branch and [_surfaceSourcePickerSelectionFilter] (mirrors
+  /// [_thickenSourcePickerActive]'s own doc comment).
   bool _solidFromSurfacesPickerActive = false;
   List<FeatureDto> _solidFromSurfacesPendingSurfaces = [];
   List<FeatureDto> _solidFromSurfacesSurfaces = [];
@@ -6476,11 +6539,15 @@ class _PartScreenState extends State<PartScreen> {
       _solidFromSurfacesPickerActive = true;
       _featureTreeVisible = true;
       _toolbarOpen = false;
+      _selectionMode = true;
       _planeSelectionModeStack.pop();
       _solidFromSurfacesPendingSurfaces = [];
+      _selectionFilterOverrides.push(_surfaceSourcePickerSelectionFilter);
     });
   }
 
+  /// Also reached directly from [_toggleSelectedEntity]'s own viewport/
+  /// Surfaces-list branch, in addition to [FeatureTreePanel.onFeaturePickerToggle].
   void _toggleSolidFromSurfacesPick(FeatureDto feature) {
     setState(() {
       final index = _solidFromSurfacesPendingSurfaces.indexWhere((f) => f.id == feature.id);
@@ -6498,6 +6565,7 @@ class _PartScreenState extends State<PartScreen> {
       _solidFromSurfacesPickerActive = false;
       _featureTreeVisible = false;
       _solidFromSurfacesPendingSurfaces = [];
+      _selectionFilterOverrides.pop();
     });
     _openSolidFromSurfacesPanel(surfaces);
   }
@@ -6507,6 +6575,7 @@ class _PartScreenState extends State<PartScreen> {
       _solidFromSurfacesPickerActive = false;
       _featureTreeVisible = false;
       _solidFromSurfacesPendingSurfaces = [];
+      _selectionFilterOverrides.pop();
     });
   }
 
@@ -18028,7 +18097,19 @@ class _PartScreenState extends State<PartScreen> {
                       // (see where `_planeSelectionMode` builds one above),
                       // which this FAB would otherwise sit directly on top
                       // of.
-                      !_planeSelectionMode)
+                      !_planeSelectionMode &&
+                      // Bug fix (on-device feedback: "the 'new' fab sits on
+                      // top of the [section] tool obscuring part of it"):
+                      // Measure/Section only ever got added to the *offset*
+                      // list above (bottom: 180) - the ResizableToolPanel
+                      // both actually render in defaults to 50% of the
+                      // viewport (resizable 25%-85%), far taller than a
+                      // fixed 180px, so the FAB kept overlapping it. Every
+                      // other tool panel avoids this by being in *this* list
+                      // instead, hiding the FAB outright - Measure/Section
+                      // just never got added here too.
+                      !_measureActive &&
+                      !_sectionPanelOpen)
                     FloatingActionButton(
                       heroTag: 'add-fab',
                       tooltip: 'Add',
