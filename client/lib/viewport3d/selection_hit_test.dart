@@ -1424,6 +1424,16 @@ List<HoverHit> hitTestAllCandidates({
   double vertexRadiusPixels = kVertexSelectionHitRadiusPixels,
   SelectionFilterState filter = SelectionFilterState.defaults,
   double? orthographicHalfHeight,
+  // Bug report ("Select Other ... still does not cover bodies in the
+  // selection list"): [_fireSelectOther] (this function's sole caller)
+  // passes true so a whole-Body candidate is offered alongside face
+  // candidates even when `filter.body` is false (the ordinary ambient
+  // select-mode filter's own default - it only means "not the primary
+  // click target yet", not "never reachable via Select Other"). Defaults
+  // false so every other caller/test asserting this function's plain
+  // `filter`-only contract (e.g. a picker's own strict face-only filter)
+  // is unaffected.
+  bool includeBodyCandidateWithFaces = false,
 }) {
   HoverHit taggedWithBody(HoverHit hit, String bodyId) => HoverHit(
         entity: SelectionEntityRef(kind: hit.entity.kind, bodyId: bodyId, id: hit.entity.id),
@@ -1594,14 +1604,15 @@ List<HoverHit> hitTestAllCandidates({
   if (bestVertex != null) candidates.add(bestVertex);
   if (bestEdge != null) candidates.add(bestEdge);
   for (final entry in bodyFaceHits.entries) {
-    if (filter.body) {
+    if (filter.body || (filter.face && includeBodyCandidateWithFaces)) {
       // A Body only needs one representative candidate - its own nearest
       // face hit (the list is already sorted nearest-first).
       candidates.add(HoverHit(
         entity: SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: entry.key),
         rayT: entry.value.first.rayT,
       ));
-    } else if (filter.face) {
+    }
+    if (filter.face) {
       // Bug report ("Select Other"): every face this Body's ray crossing
       // found - not just the nearest - so a back/far face becomes its own
       // selectable candidate.

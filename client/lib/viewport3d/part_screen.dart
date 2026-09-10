@@ -151,9 +151,42 @@ const _bodyProducingFeatureTypes = {
   // body_ids` at all - see each backend Feature's own docstring), so both
   // are eligible Mirror/Pattern sources the same way every other type in
   // this set already is. Knit Surfaces/Offset Surface deliberately do NOT
-  // join this set - they produce Surfaces, not Bodies.
+  // join this set - they produce Surfaces, not Bodies. Merge/Subtract/
+  // Common/Split (the Boolean family) also gate on this exact set (see
+  // this file's own `showMerge`/`showSubtract`/`showCommon`/`showSplit`
+  // call sites) - a genuine Boolean op needs real solids, so this set must
+  // stay Body-only; Mirror/Pattern's own widened "Body or Surface" source
+  // eligibility (on-device feedback: "surfaces should be a valid target
+  // for pattern and mirror") lives in `_patternMirrorSourceFeatureTypes`
+  // below instead, not here.
   'thicken',
   'solid_from_surfaces',
+};
+
+/// Pattern/Mirror scoping (on-device feedback: "surfaces should be a valid
+/// target for pattern and mirror"): [_bodyProducingFeatureTypes] widened
+/// with every surface-producing Feature type too - mirrors the backend's
+/// own widened `_PATTERN_MIRROR_SOURCE_FEATURE_TYPES` (`app.document.
+/// router`), which now accepts `SurfaceFeature`/`PlanarSurfaceFeature`/
+/// `RevolveSurfaceFeature`/`SweptSurfaceFeature`/`LoftSurfaceFeature`/
+/// `RuledSurfaceFeature`/`KnitSurfaceFeature`/`OffsetSurfaceFeature` (their
+/// own `BRepBuilderAPI_Transform`-based Mirror/Pattern geometry is shape-
+/// agnostic - a Surface's shell mirrors/patterns exactly as well as a
+/// Body's solid does). Deliberately a separate set from
+/// [_bodyProducingFeatureTypes] itself, not a widening of it in place -
+/// Merge/Subtract/Common/Split's own gates share that set too and must
+/// stay Body-only (see its own doc comment), so only Mirror/Pattern's own
+/// four call sites use this wider set instead.
+const _patternMirrorSourceFeatureTypes = {
+  ..._bodyProducingFeatureTypes,
+  'surface',
+  'planar_surface',
+  'revolve_surface',
+  'swept_surface',
+  'loft_surface',
+  'ruled_surface',
+  'knit_surface',
+  'offset_surface',
 };
 
 /// Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
@@ -1197,8 +1230,46 @@ class _PartScreenState extends State<PartScreen> {
   /// [_confirmingSketchOrientation] (that step already forces orbit mode
   /// for its own duration - see [_addSketchFeature]'s own doc comment - so
   /// the toggle would be both redundant and misleadingly implying a choice
-  /// that isn't actually available).
-  bool get _selectionModeFabVisible => !_featureTreePanelVisible && !_confirmingSketchOrientation;
+  /// that isn't actually available) - *except* while
+  /// [_anyFeatureOrSourcePickerSessionActive] (on-device feedback: "when a
+  /// tool starts and asks user to pick a sketch, or edge, line, etc. the
+  /// orbit/select toggle fab ... should be visible") - the tree only shows
+  /// during one of those sessions to present the pick list itself, not
+  /// because the user is browsing/managing Features, and the user still
+  /// needs to orbit the camera to see what they're about to pick, exactly
+  /// like during any other tool's own active picking/preview session.
+  bool get _selectionModeFabVisible =>
+      (!_featureTreePanelVisible || _anyFeatureOrSourcePickerSessionActive) &&
+      !_confirmingSketchOrientation;
+
+  /// Every "pick a sketch/source Feature from the tree" session this file
+  /// runs - each sets [_featureTreeVisible] true (so the tree can present
+  /// the pick list) well before its own `_xxxActive` getter turns true
+  /// (that only flips once something is actually picked - e.g. [_sweepActive]
+  /// is `_sweepSketchFeature != null`, false throughout the pick itself),
+  /// which [_featureTreePanelVisible] has no way to distinguish from
+  /// genuine feature-tree browsing - see [_selectionModeFabVisible]'s own
+  /// doc comment for why that distinction matters there. Also covers
+  /// Pattern/Mirror's own Build Tree multi-select Feature picker
+  /// ([_sourceFeaturePickerTarget]), the same session
+  /// [_featureTreePanelVisible]'s own final OR-clause already forces the
+  /// tree open for.
+  bool get _anyFeatureOrSourcePickerSessionActive =>
+      _sketchPickerActive ||
+      _surfaceSketchPickerActive ||
+      _revolveSketchPickerActive ||
+      _sweepSketchPickerActive ||
+      _loftSketchPickerActive ||
+      _loftSurfaceSketchPickerActive ||
+      _ruledSurfaceSketchPickerActive ||
+      _thickenSourcePickerActive ||
+      _knitSurfacePickerActive ||
+      _solidFromSurfacesPickerActive ||
+      _offsetSurfaceSourcePickerActive ||
+      _planarSurfaceSketchPickerActive ||
+      _revolveSurfaceSketchPickerActive ||
+      _sweptSurfaceSketchPickerActive ||
+      _sourceFeaturePickerTarget != null;
 
   /// The Measure FAB - available whenever nothing else is mid-flow, plus
   /// always while Measure itself is active (so it stays tappable to turn
@@ -1686,7 +1757,7 @@ class _PartScreenState extends State<PartScreen> {
   PatternMirrorSeedKind? get _mirrorSeedKind {
     final feature = _mirrorLongPressSeedFeature;
     if (feature == null) return null;
-    final qualifiesAsBody = _bodyProducingFeatureTypes.contains(feature.type);
+    final qualifiesAsBody = _patternMirrorSourceFeatureTypes.contains(feature.type);
     final qualifiesAsToolFeature = _isEligibleToolFeature(feature);
     if (!(qualifiesAsBody && qualifiesAsToolFeature)) return null;
     return _mirrorToolFeatureId != null ? PatternMirrorSeedKind.feature : PatternMirrorSeedKind.body;
@@ -9545,7 +9616,7 @@ class _PartScreenState extends State<PartScreen> {
     // this exactly - the entry-point asymmetry this phase fixes (Pattern
     // already had a "seed from this Feature" entry; Mirror never did).
     final showPatternOrMirror =
-        _bodyProducingFeatureTypes.contains(feature.type) || _isEligibleToolFeature(feature);
+        _patternMirrorSourceFeatureTypes.contains(feature.type) || _isEligibleToolFeature(feature);
     if (!mounted) return;
 
     final action = await showFeatureContextMenu(
@@ -10913,62 +10984,56 @@ class _PartScreenState extends State<PartScreen> {
   /// Mirrors [_sweepActive].
   bool get _sweptSurfaceActive => _sweptSurfaceSketchFeature != null;
 
-  /// The "Add" FAB's Swept Surface entry - mirrors [_sweepSelectedFeature]
-  /// exactly, substituting [_ProfilePickerTarget.sweptSurface].
+  /// The "Add" FAB's Swept Surface entry - mirrors [_sweepSelectedFeature]'s
+  /// overall shape, but on-device feedback ("swept surface still doesn't
+  /// allow a sketch with an open profile to be swept along a curve - open
+  /// profiles should sweep to produce a surface") removed the
+  /// [_checkExtrudeEligibility] closed-profile gate entirely - mirrors
+  /// [_revolveSurfaceSelectedFeature]'s own already-lenient shape instead
+  /// (no eligibility check at all). [_proceedToSketchConsumingFeature]
+  /// itself already tolerates an open-profile-only sketch just fine (zero
+  /// `fillableLoops` means it skips straight past the profile-picker sub-
+  /// flow to [_startPathPicker] - see that method's own `loops.length <= 1`
+  /// branch), so the eligibility check here was the only thing actually
+  /// blocking an open profile, not the picking flow itself.
   Future<void> _sweptSurfaceSelectedFeature() async {
     final featureId = _selectedFeatureId;
     final feature = featureId == null ? null : _featureById(featureId);
     if (feature != null && feature.type == 'sketch') {
-      final reason = await _checkExtrudeEligibility(feature);
-      if (!mounted) return;
-      if (reason == null) {
-        await _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.sweptSurface);
-        return;
-      }
+      await _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.sweptSurface);
+      return;
     }
     _startSweptSurfaceSketchPicker();
   }
 
-  /// Mirrors [_startSweepSketchPicker] exactly.
+  /// Mirrors [_startRevolveSurfaceSketchPicker] exactly (every sketch is
+  /// pickable, synchronously, no eligibility filtering) - see
+  /// [_sweptSurfaceSelectedFeature]'s own doc comment for why Swept
+  /// Surface no longer needs the async closed-profile-filtering
+  /// [_refreshPickableSweepSketchIds]-style refresh Sweep's own picker
+  /// still needs.
   void _startSweptSurfaceSketchPicker() {
     setState(() {
       _sweptSurfaceSketchPickerActive = true;
       _featureTreeVisible = true;
       _toolbarOpen = false;
       _planeSelectionModeStack.pop();
-      _pickableSweptSurfaceSketchIds = {};
-    });
-    _refreshPickableSweptSurfaceSketchIds();
-  }
-
-  /// Mirrors [_refreshPickableSweepSketchIds] exactly.
-  Future<void> _refreshPickableSweptSurfaceSketchIds() async {
-    final sketchFeatures = _features.where((f) => f.type == 'sketch').toList();
-    final results = await Future.wait(sketchFeatures.map((feature) async {
-      final reason = await _checkExtrudeEligibility(feature);
-      return MapEntry(feature.id, reason == null);
-    }));
-    if (!mounted || !_sweptSurfaceSketchPickerActive) return;
-    setState(() {
-      _pickableSweptSurfaceSketchIds = {for (final entry in results) if (entry.value) entry.key};
+      _pickableSweptSurfaceSketchIds = {
+        for (final f in _features)
+          if (f.type == 'sketch') f.id,
+      };
     });
   }
 
-  /// Mirrors [_onSweepSketchPicked] exactly.
-  Future<void> _onSweptSurfaceSketchPicked(FeatureDto feature) async {
-    final reason = await _checkExtrudeEligibility(feature);
-    if (!mounted || !_sweptSurfaceSketchPickerActive) return;
-    if (reason != null) {
-      _showSnack('This sketch has no closed profile — add more lines or close the loop first');
-      return;
-    }
+  /// Mirrors [_onRevolveSurfaceSketchPicked] exactly - no eligibility check.
+  void _onSweptSurfaceSketchPicked(FeatureDto feature) {
     setState(() {
       _sweptSurfaceSketchPickerActive = false;
       _featureTreeVisible = false;
       _selectedFeatureId = feature.id;
       _pickableSweptSurfaceSketchIds = {};
     });
-    await _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.sweptSurface);
+    _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.sweptSurface);
   }
 
   /// Mirrors [_cancelSweepSketchPicker] exactly.
@@ -11899,7 +11964,8 @@ class _PartScreenState extends State<PartScreen> {
         : (_editingPatternFeatureId ?? _previewPatternFeatureId);
     return {
       for (final feature in _features)
-        if (_bodyProducingFeatureTypes.contains(feature.type) && feature.id != excludeId) feature.id,
+        if (_patternMirrorSourceFeatureTypes.contains(feature.type) && feature.id != excludeId)
+          feature.id,
     };
   }
 
@@ -15089,7 +15155,7 @@ class _PartScreenState extends State<PartScreen> {
   PatternMirrorSeedKind? get _patternSeedKind {
     final feature = _patternLongPressSeedFeature;
     if (feature == null) return null;
-    final qualifiesAsBody = _bodyProducingFeatureTypes.contains(feature.type);
+    final qualifiesAsBody = _patternMirrorSourceFeatureTypes.contains(feature.type);
     final qualifiesAsToolFeature = _isEligibleToolFeature(feature);
     if (!(qualifiesAsBody && qualifiesAsToolFeature)) return null;
     return _patternToolFeatureId != null ? PatternMirrorSeedKind.feature : PatternMirrorSeedKind.body;
@@ -17913,7 +17979,14 @@ class _PartScreenState extends State<PartScreen> {
                         // see this Padding's own sibling comments above) and
                         // sat on top of the Measure panel instead of clearing
                         // it like every other tool.
-                        _measureActive)
+                        _measureActive ||
+                        // Bug fix (on-device feedback: "the 'new' fab sits on
+                        // top of the [section] tool obscuring part of it"):
+                        // same gap as the Measure panel's own fix just above -
+                        // SectionPanel is the same bottom-docked
+                        // ResizableToolPanel shell too, but was likewise
+                        // missing from this list.
+                        _sectionPanelOpen)
                     ? 180
                     : 0,
               ),

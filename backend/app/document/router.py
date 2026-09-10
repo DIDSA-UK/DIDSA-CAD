@@ -1619,15 +1619,21 @@ def _validate_move_body_payload(
     """Direct Editing family (third entry, "Move/Copy Body"): `body_id`
     must resolve (via `base_feature_id`, same round-trip tolerance as
     `_validate_scale_body_factor`) to a Feature that currently produces a
-    Body in this Part; `rotation_axis`, if supplied, must have exactly one
-    of `edge_ref`/`face_ref`/`sketch_line_ref` set - reuses `_validate_
-    pattern_axis_ref` verbatim (already shared with Circular Pattern's own
-    `axis` field)."""
+    Body or a Surface in this Part (on-device feedback: "surfaces should be
+    a valid target for move/copy body" - `resolve_move_body_from_bodies`'s
+    own `BRepBuilderAPI_Transform` calls are shape-agnostic, so a Surface's
+    shell moves/copies exactly as well as a Body's solid does; the
+    restriction to `Produces.BODY` only was purely this validation's own
+    gap, not a geometry limitation); `rotation_axis`, if supplied, must have
+    exactly one of `edge_ref`/`face_ref`/`sketch_line_ref` set - reuses
+    `_validate_pattern_axis_ref` verbatim (already shared with Circular
+    Pattern's own `axis` field)."""
     source_feature = part.get_feature(base_feature_id(body_id))
-    if source_feature is None or source_feature.produces != Produces.BODY:
+    if source_feature is None or source_feature.produces not in (Produces.BODY, Produces.SURFACE):
         raise HTTPException(
             status_code=400,
-            detail=f"body_id {body_id!r} does not refer to a Body-producing Feature in this Part",
+            detail=f"body_id {body_id!r} does not refer to a Body- or Surface-producing Feature "
+            "in this Part",
         )
     if rotation_axis is not None:
         _validate_pattern_axis_ref(rotation_axis, field_name="rotation_axis")
@@ -1835,11 +1841,23 @@ _PATTERN_MIRROR_SOURCE_FEATURE_TYPES = (
     PlanetaryGearFeature,
     BevelGearFeature,
     BevelPairFeature,
+    SurfaceFeature,
+    PlanarSurfaceFeature,
+    RevolveSurfaceFeature,
+    SweptSurfaceFeature,
+    LoftSurfaceFeature,
+    RuledSurfaceFeature,
+    KnitSurfaceFeature,
+    OffsetSurfaceFeature,
+    ThickenFeature,
+    SolidFromSurfacesFeature,
 )
 _PATTERN_MIRROR_SOURCE_FEATURE_TYPES_DESCRIPTION = (
     "ExtrudeFeature, RevolveFeature, SweepFeature, ImportFeature, MirrorFeature, PatternFeature, "
     "GearFeature, RackFeature, LoftFeature, GearChainFeature, PlanetaryGearFeature, BevelGearFeature, "
-    "or BevelPairFeature"
+    "BevelPairFeature, SurfaceFeature, PlanarSurfaceFeature, RevolveSurfaceFeature, "
+    "SweptSurfaceFeature, LoftSurfaceFeature, RuledSurfaceFeature, KnitSurfaceFeature, "
+    "OffsetSurfaceFeature, ThickenFeature, or SolidFromSurfacesFeature"
 )
 
 
