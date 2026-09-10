@@ -1,5 +1,5 @@
 import 'dart:math' as math;
-import 'dart:ui' show Size;
+import 'dart:ui' show Offset, Size;
 
 import 'package:flutter_scene/scene.dart';
 import 'package:vector_math/vector_math.dart' as vm;
@@ -398,6 +398,52 @@ class OrbitCamera {
 
   void zoomByFactor(double scaleFactor) {
     distance = (distance * scaleFactor).clamp(minDistance, maxDistance);
+  }
+
+  /// [zoomByFactor]'s cursor-anchored counterpart - scroll-wheel zoom's own
+  /// call site ([PartViewportState._handlePointerSignal]) uses this instead.
+  ///
+  /// Bug fix (on-device feedback: zooming in on a Body's corner - hovering
+  /// the cursor directly over it and scrolling - lost the corner from view
+  /// "far too soon", well before the zoom itself would explain it; a
+  /// zoomed-in screenshot sequence showed the corner sweeping toward a
+  /// screen edge and being swallowed by whichever single face happened to
+  /// sit nearest [target]'s own viewing axis, a handful of scroll ticks
+  /// later): [zoomByFactor] only ever changes [distance], always dollying
+  /// straight along the *existing* [target]-to-camera axis - it has no idea
+  /// where on screen the user is even pointing. Zooming in on anything not
+  /// already dead-centered on [target] (a corner near a Body's edge is the
+  /// common case) sweeps that point toward the frame edge at an
+  /// accelerating rate as [distance] shrinks (ordinary perspective
+  /// foreshortening off-axis), while the face nearest the true viewing axis
+  /// balloons to fill the screen - reads exactly like the corner "clipped
+  /// out of view", though no clip plane is actually involved.
+  ///
+  /// [screenPoint]/[viewportSize] identify the same point every other
+  /// screen-space hit-test in this file already resolves via
+  /// [Camera.screenPointToRay] - [anchor] approximates the world point the
+  /// user is pointing at by walking that ray out to the *current* [distance]
+  /// (the same depth [target] itself already sits at) rather than
+  /// raycasting the real mesh, cheap and good enough: this only has to bias
+  /// [target] toward roughly the right neighbourhood, not land on the exact
+  /// surface point, and the bias compounds correctly over repeated ticks
+  /// either way. [target] is then nudged toward [anchor] by the same
+  /// fraction [distance] just shrank by - zooming in slides [target] toward
+  /// wherever the cursor is hovering (so that point grows under the cursor,
+  /// staying on screen, instead of sliding off it), zooming out slides
+  /// [target] away from it (the standard, symmetric "zoom out from cursor"
+  /// counterpart) - a no-op, same as [zoomByFactor], once already at
+  /// [minDistance]/[maxDistance] (`newDistance == distance` then, so `t`
+  /// comes out exactly `0`).
+  void zoomTowardScreenPoint(double scaleFactor, Offset screenPoint, Size viewportSize) {
+    final newDistance = (distance * scaleFactor).clamp(minDistance, maxDistance);
+    if (newDistance == distance) return;
+    final ray = cameraFor(viewportSize).screenPointToRay(screenPoint, viewportSize);
+    final rayDirection = ray.direction.normalized();
+    final anchor = ray.origin + rayDirection * distance;
+    final t = 1 - newDistance / distance;
+    target = target + (anchor - target) * t;
+    distance = newDistance;
   }
 
   /// Scales [nearClip]/[farClip] and [minDistance]/[maxDistance] to [radius]

@@ -352,11 +352,13 @@ class SketchRigidity {
   final Set<String> _fullyConstrainedPointIds;
   final Set<String> _overConstrainedPointIds;
   final Set<String> _groundedPointIds;
+  final Set<String> _pinnedPointIds;
 
   const SketchRigidity._(
     this._fullyConstrainedPointIds,
     this._overConstrainedPointIds,
     this._groundedPointIds,
+    this._pinnedPointIds,
   );
 
   /// [pointIds] should include every Point id in the Sketch (origin
@@ -475,13 +477,96 @@ class SketchRigidity {
       if (groundedByRoot[root] ?? false) grounded.add(pointId);
     }
 
-    return SketchRigidity._(fully, over, grounded);
+    // [isPointPinned]'s own second, narrower union-find pass - deliberately
+    // separate from the `parent`/cluster analysis above. That analysis asks
+    // "does this Point's whole *cluster* have zero remaining freedom",
+    // which understates a Point whenever anything else sharing its cluster
+    // (via some other, non-pinning Constraint - a radius dimension, say)
+    // still has freedom of its own: an Arc/Circle centre Coincident to the
+    // origin has an exactly fixed position on its own regardless of
+    // whether its start/end Points can still rotate around it, but the
+    // moment a confirmed radius `DistanceConstraint` unions centre with
+    // start (and, via EqualRadiusConstraint, end too) into one cluster,
+    // that cluster's remaining DOF goes from 0 to 2 (the two endpoints'
+    // own sweep-angle freedom) - so `isPointFullyConstrained(centrePointId)`
+    // flips to false even though the centre itself never moved. Confirmed
+    // directly on-device: an Arc centred exactly at the origin with a
+    // confirmed radius dimension let its centre be dragged away, visibly
+    // detaching it from the origin (the "Coincident" badge left stranded
+    // behind) - `_arcDragMode`/`beginPointDrag` (`sketch_controller.dart`)
+    // both gate on `isPointFullyPinned`, which this bug fix closes at the
+    // source rather than patching each call site individually.
+    //
+    // Only 'coincident'/'concentric' (see [dofCostByConstraintType]: both
+    // literally assert `xa = xb AND ya = yb`, nothing else) count as edges
+    // here - each is a simple, exact "these two Points share one position"
+    // fact, true regardless of whatever *else* either Point is unioned
+    // into via a different (non-fully-pinning) Constraint type, so a plain
+    // union-find over just these two types, then flooding "pinned" out
+    // from [fixedPointIds], is exact - no DOF-counting approximation risk,
+    // the same guarantee [isPointGrounded] already relies on for its own,
+    // broader ("any Constraint type") reachability question.
+    //
+    // Deliberately excludes 'at_midpoint' (also cost-2, also always in
+    // [dofCostByConstraintType]) despite otherwise fitting the "exactly
+    // pins one Point's position" description: unlike coincident/concentric,
+    // an AtMidpointConstraint's pinned Point sits at the midpoint of a
+    // *Line* - it's only actually fixed once *both* the Line's own
+    // endpoints are independently pinned too, which a plain pairwise union
+    // can't express (it would need a proper two-input fixpoint, unioning
+    // the midpoint Point only once both line-endpoint unions have already
+    // resolved). Rare enough in practice (nowhere near as common as an
+    // Arc/Circle centre Coincident to the origin, this fix's actual
+    // on-device motivating case) that leaving it to the existing
+    // cluster-DOF check alone - same as before this fix - is the safer
+    // tradeoff versus risking a wrong fixpoint implementation.
+    final pinParent = <String, String>{};
+    String pinFind(String id) {
+      pinParent.putIfAbsent(id, () => id);
+      var root = id;
+      while (pinParent[root] != root) {
+        root = pinParent[root]!;
+      }
+      var current = id;
+      while (pinParent[current] != root) {
+        final next = pinParent[current]!;
+        pinParent[current] = root;
+        current = next;
+      }
+      return root;
+    }
+
+    void pinUnion(String a, String b) {
+      final rootA = pinFind(a);
+      final rootB = pinFind(b);
+      if (rootA != rootB) pinParent[rootA] = rootB;
+    }
+
+    for (final description in descriptions) {
+      if (description.type != 'coincident' && description.type != 'concentric') continue;
+      final ids = description.pointIds;
+      for (var i = 1; i < ids.length; i++) {
+        pinUnion(ids[0], ids[i]);
+      }
+    }
+
+    final pinnedRoots = <String>{
+      for (final pointId in fixedPointIds)
+        if (pinParent.containsKey(pointId)) pinFind(pointId),
+    };
+    final pinned = <String>{
+      ...fixedPointIds,
+      for (final pointId in pointIds)
+        if (pinParent.containsKey(pointId) && pinnedRoots.contains(pinFind(pointId))) pointId,
+    };
+
+    return SketchRigidity._(fully, over, grounded, pinned);
   }
 
   /// An empty analysis - every query returns false. Used before a Sketch
   /// has loaded, mirroring the "nothing computed yet" state other
   /// controller fields default to.
-  const SketchRigidity.empty() : this._(const {}, const {}, const {});
+  const SketchRigidity.empty() : this._(const {}, const {}, const {}, const {});
 
   bool isPointFullyConstrained(String pointId) => _fullyConstrainedPointIds.contains(pointId);
 
@@ -498,6 +583,21 @@ class SketchRigidity {
   /// comment for why splitting the two concerns this way is more robust
   /// than trusting either alone.
   bool isPointGrounded(String pointId) => _groundedPointIds.contains(pointId);
+
+  /// Whether [pointId]'s own position is exactly fixed - transitively, via
+  /// a chain of Coincident/Concentric Constraints only - to one of the
+  /// Sketch's fixed Points (today, only ever the origin). Deliberately
+  /// narrower than [isPointGrounded] (which follows *any* Constraint type)
+  /// and orthogonal to [isPointFullyConstrained] (a whole-cluster DOF-count
+  /// approximation): a Point can be exactly pinned this way while its
+  /// cluster's own remaining-DOF count is still nonzero, whenever some
+  /// *other*, non-pinning Constraint (a radius dimension, say) also unions
+  /// it with a Point that still has freedom of its own - see [analyze]'s
+  /// own doc comment (the Arc/Circle-centre-coincident-to-origin bug this
+  /// closes) for the full reasoning. Like [isPointGrounded], this is exact
+  /// topological reachability, not a counting approximation - no risk of a
+  /// false positive.
+  bool isPointPinned(String pointId) => _pinnedPointIds.contains(pointId);
 
   /// Whether *any* Point anywhere in the Sketch is grounded. Grounding
   /// propagates through a cluster's whole union-find (a single fixed

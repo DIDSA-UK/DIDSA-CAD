@@ -1,5 +1,5 @@
 import 'dart:math' as math;
-import 'dart:ui' show Size;
+import 'dart:ui' show Offset, Size;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vector_math/vector_math.dart' as vm;
@@ -220,6 +220,88 @@ void main() {
 
     camera.zoomByFactor(0.00001);
     expect(camera.distance, camera.minDistance);
+  });
+
+  group(
+      'zoomTowardScreenPoint (on-device feedback: zooming in on a Body\'s corner lost it from view "far '
+      'too soon" - scroll-wheel zoom always dollying straight toward target, with no idea where on '
+      'screen the cursor even was, swept anything off-axis toward the frame edge)', () {
+    test('zooming toward the exact screen centre matches zoomByFactor closely - the centre ray already '
+        'passes through target, so the cursor-anchor point IS (up to the same floating-point '
+        'view-matrix-inversion/unprojection noise every other screenPointToRay call site already '
+        'tolerates) target, and nudging target toward itself is a near-no-op', () {
+      final zoomByFactorCamera = OrbitCamera()..zoomByFactor(0.5);
+      final towardCentreCamera = OrbitCamera()
+        ..zoomTowardScreenPoint(0.5, Offset(size.width / 2, size.height / 2), size);
+
+      expect(towardCentreCamera.distance, closeTo(zoomByFactorCamera.distance, 1e-9));
+      expect((towardCentreCamera.target - zoomByFactorCamera.target).length, lessThan(1e-2));
+      expect(towardCentreCamera.target.length, lessThan(1e-2));
+    });
+
+    test('zooming in toward an off-centre screen point slides target toward that point, not just '
+        'toward the old target - the actual fix: an off-axis feature (a corner) now grows under the '
+        'cursor instead of sweeping off screen', () {
+      final camera = OrbitCamera();
+      final targetBefore = camera.target.clone();
+      final distanceBefore = camera.distance;
+
+      // Off to the corner of the viewport, not the centre.
+      camera.zoomTowardScreenPoint(0.9, const Offset(50, 40), size);
+
+      expect(camera.distance, closeTo(distanceBefore * 0.9, 1e-6));
+      expect(camera.target, isNot(targetBefore), reason: 'target must move toward the cursor, unlike zoomByFactor');
+    });
+
+    test('repeated zoom-in ticks toward the same off-centre point converge target closer to that '
+        'point\'s own ray each time, rather than leaving it pinned at the original target', () {
+      final camera = OrbitCamera();
+      const point = Offset(50, 40);
+      final ray = camera.cameraFor(size).screenPointToRay(point, size);
+      final rayDirection = ray.direction.normalized();
+
+      double distanceToRay(vm.Vector3 p) {
+        final toPoint = p - ray.origin;
+        final along = toPoint.dot(rayDirection);
+        final closest = ray.origin + rayDirection * along;
+        return (p - closest).length;
+      }
+
+      final distBefore = distanceToRay(camera.target);
+      camera.zoomTowardScreenPoint(0.9, point, size);
+      final distAfterOneTick = distanceToRay(camera.target);
+      camera.zoomTowardScreenPoint(0.9, point, size);
+      final distAfterTwoTicks = distanceToRay(camera.target);
+
+      expect(distAfterOneTick, lessThan(distBefore));
+      expect(distAfterTwoTicks, lessThan(distAfterOneTick));
+    });
+
+    test('zooming out from an off-centre point slides target away from it - the symmetric zoom-out '
+        'counterpart', () {
+      final camera = OrbitCamera();
+      final targetBefore = camera.target.clone();
+
+      camera.zoomTowardScreenPoint(1.1, const Offset(50, 40), size);
+
+      expect(camera.distance, closeTo(80 * 1.1, 1e-6));
+      expect(camera.target, isNot(targetBefore));
+    });
+
+    test('is a no-op on target once already clamped at minDistance/maxDistance, same as zoomByFactor - '
+        'never drifts target once zoom itself can go no further', () {
+      final camera = OrbitCamera()..zoomByFactor(1000); // clamp to maxDistance
+      final targetAtMax = camera.target.clone();
+      camera.zoomTowardScreenPoint(1000, const Offset(50, 40), size);
+      expect(camera.distance, camera.maxDistance);
+      expect(camera.target, targetAtMax);
+
+      final atMin = OrbitCamera()..zoomByFactor(0.00001); // clamp to minDistance
+      final targetAtMin = atMin.target.clone();
+      atMin.zoomTowardScreenPoint(0.00001, const Offset(50, 40), size);
+      expect(atMin.distance, atMin.minDistance);
+      expect(atMin.target, targetAtMin);
+    });
   });
 
   test('setZoomBoundsForRadius scales far/near clip and min/max distance to the body, re-clamping distance', () {

@@ -2710,8 +2710,21 @@ class SketchController extends ChangeNotifier {
   /// per-cluster verdict ([SketchRigidity.isPointFullyConstrained], which
   /// already requires grounding - see that method's own doc comment) for
   /// [pointId] specifically.
+  ///
+  /// Bug fix (on-device feedback: an Arc/Circle centred exactly on the
+  /// origin, with a confirmed radius dimension, could still have its
+  /// centre dragged away - the "Coincident" badge left stranded at the
+  /// origin while the shape itself visibly detached from it): the
+  /// per-cluster check above understates a Point whose *own* position is
+  /// exactly pinned (via Coincident/Concentric to the origin) whenever a
+  /// separate, non-pinning Constraint - a radius dimension unioning centre
+  /// with a still-freely-rotating start/end Point, say - also happens to
+  /// share its cluster. [rigidity.isPointPinned] closes that gap with an
+  /// exact (not approximate) reachability check scoped to only the
+  /// Constraint types that actually assert one Point's position equals
+  /// another's - see that method's own doc comment for the full reasoning.
   bool isPointFullyPinned(String pointId) =>
-      isFullyConstrained || rigidity.isPointFullyConstrained(pointId);
+      isFullyConstrained || rigidity.isPointFullyConstrained(pointId) || rigidity.isPointPinned(pointId);
 
   /// [anchorPointIds] passes through to [SketchApiClient.solveAndRefresh] -
   /// see that method's doc comment. Defaults to none, which every call site
