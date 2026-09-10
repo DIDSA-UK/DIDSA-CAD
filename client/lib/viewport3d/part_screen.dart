@@ -671,6 +671,103 @@ class _PartScreenState extends State<PartScreen> {
     _scheduleSectionPreview();
   }
 
+  /// Bug fix (on-device feedback, re-tested live against a real solid after
+  /// this round's other fixes: "clicking a flat face or plane should set the
+  /// section position... " stopped working partway through an ordinary
+  /// session): [PartViewport]'s own face/plane-tap-to-reanchor logic
+  /// (`_handleTap`'s `sectionPlacementActive` block) only ever runs from the
+  /// Orbit-mode-only tap path - it's unreachable whenever [_selectionMode] is
+  /// on. Nothing in this file ever resets [_selectionMode] back to `false`
+  /// once another guided tool turns it on (of this file's ~50 call sites that
+  /// set it `true`, only two ever set it back `false`, for an unrelated
+  /// sketch-orientation-redefinition case) - so a perfectly ordinary "use
+  /// Extrude (or any other guided picker), then open Section" session already
+  /// leaves Selection mode on, silently breaking every face/plane tap for the
+  /// rest of that session: the tap still "does something" (falls through to
+  /// [_toggleSelectedEntity]'s own generic accumulate-toggle below, visibly
+  /// highlighting the tapped face) just never reanchors the section, with no
+  /// error or other feedback that anything went wrong. [_toggleSelectedEntity]
+  /// is the one dispatcher every viewport tap reaches regardless of
+  /// [_selectionMode] (see [PartViewport.onSelectionToggle] vs.
+  /// `PartViewport`'s own separate Orbit-mode `_handleTap`), so resolving the
+  /// tapped entity's own plane here and calling [_onSectionPlacementTap]
+  /// directly - mirroring [_setMirrorPlane]'s identical "resolve a plane-like
+  /// entity, don't fall through to the generic toggle" shape - makes
+  /// placement work the same way no matter which mode the tap arrived
+  /// through. [PartViewport]'s own `_handleTap` branch is left as-is (still
+  /// correct, still needed for the Orbit-mode case this doesn't cover).
+  bool _tryHandleSectionPlacementToggle(SelectionEntityRef entity) {
+    if (!(_sectionPanelOpen && _activeSectionId != null)) return false;
+    if (entity.kind != SelectionEntityKind.face &&
+        entity.kind != SelectionEntityKind.referencePlane &&
+        entity.kind != SelectionEntityKind.createPlane) {
+      return false;
+    }
+    final plane = _sectionPlaneFor(entity);
+    if (plane == null) return false;
+    _onSectionPlacementTap(plane.$1, plane.$2);
+    return true;
+  }
+
+  /// [entity]'s own world-space plane (origin, normal) for
+  /// [_tryHandleSectionPlacementToggle] - a face/referencePlane/createPlane
+  /// kind only, mirroring `PartViewport._handleTap`'s own
+  /// `hitTestReferencePlanes`/`hitTestCreatePlanes`/`hitTestBodies`+
+  /// `_bodyFaceNormal` resolution exactly (a fixed reference plane's own
+  /// normal, duplicated from `PartViewport._referencePlaneNormal` since
+  /// that's private to that State class; an existing Plane feature's stored
+  /// origin/normal from [_createPlaneGeometries]; a real Body face's own
+  /// planar normal via [_bodyFacePlane] below).
+  (vm.Vector3, vm.Vector3)? _sectionPlaneFor(SelectionEntityRef entity) {
+    switch (entity.kind) {
+      case SelectionEntityKind.referencePlane:
+        final kind = entity.referencePlaneKind;
+        if (kind == null) return null;
+        final normal = switch (kind) {
+          ReferencePlaneKind.xy => vm.Vector3(0, 0, 1),
+          ReferencePlaneKind.xz => vm.Vector3(0, 1, 0),
+          ReferencePlaneKind.yz => vm.Vector3(1, 0, 0),
+        };
+        return (vm.Vector3.zero(), normal);
+      case SelectionEntityKind.createPlane:
+        final geometry = _createPlaneGeometries[entity.planeFeatureId];
+        if (geometry == null) return null;
+        return (geometry.origin, geometry.normal);
+      case SelectionEntityKind.face:
+        return _bodyFacePlane(entity.bodyId, entity.id);
+      default:
+        return null;
+    }
+  }
+
+  /// Mirrors `PartViewport._bodyFaceNormal` exactly, plus also returning the
+  /// same matched triangle's own vertex position - [_sectionPlaneFor] needs
+  /// a point on the face's plane, not only its normal, to fully reanchor a
+  /// section (unlike the viewport's own version, which only ever needed the
+  /// normal since its caller already has the exact ray-hit point). Duplicated
+  /// here rather than widening that State-private method's visibility - this
+  /// file's own established "a small per-consumer duplicate over widening
+  /// another file's private surface" convention (see `part_viewport.dart`'s
+  /// own doc comments on this exact pattern, e.g. `_referencePlaneNormal`).
+  (vm.Vector3, vm.Vector3)? _bodyFacePlane(String bodyId, int faceId) {
+    for (final body in _bodies) {
+      if (body.bodyId != bodyId) continue;
+      final mesh = body.mesh;
+      if (faceId >= 0 && faceId < mesh.faceIsPlanar.length && !mesh.faceIsPlanar[faceId]) {
+        return null; // Curved face - not a valid section-plane anchor.
+      }
+      for (var i = 0; i < mesh.triangleIndices.length && i < mesh.faceIds.length; i++) {
+        if (mesh.faceIds[i] != faceId) continue;
+        final vertexIndex = mesh.triangleIndices[i][0];
+        final p = mesh.vertices[vertexIndex];
+        final n = mesh.normals[vertexIndex];
+        return (vm.Vector3(p[0], p[1], p[2]), vm.Vector3(n[0], n[1], n[2]).normalized());
+      }
+      return null;
+    }
+    return null;
+  }
+
   /// [SectionPanel.onOffsetChanged] - live, every valid keystroke (mirrors
   /// [MoveBodyPanel.onDeltaChanged]'s own live-preview shape); the momentary
   /// [approximateClipMesh] client-side preview updates immediately via the
@@ -1386,6 +1483,13 @@ class _PartScreenState extends State<PartScreen> {
   /// the debounced live-preview re-solve while [_filletActive], same
   /// reasoning as the [_extrudeActive] case just above.
   void _toggleSelectedEntity(SelectionEntityRef entity) {
+    // Sectioning Tool bug fix (see [_tryHandleSectionPlacementToggle]'s own
+    // doc comment for the full root cause): checked before every other
+    // special-case below, same "this exclusive session owns every tap while
+    // it's open" precedence they all already use - a face/plane tap while
+    // placing a section must never fall through to the generic accumulate-
+    // toggle, in Selection mode or not.
+    if (_tryHandleSectionPlacementToggle(entity)) return;
     // Measure: caps the selection at 2 entities. Toggling an already-
     // selected entity removes it (same as the generic toggle below). A 3rd
     // distinct tap starts fresh with just the newly-tapped entity, rather
