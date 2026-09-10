@@ -82,6 +82,7 @@ from app.document.graph import (
     base_feature_id,
     build_feature_graph,
     excluded_feature_ids_after,
+    resolve_feature_produces,
     tool_feature_qualifies,
     transitive_dependents,
 )
@@ -929,7 +930,10 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             merge=feature.merge,
             tool_feature_id=feature.tool_feature_id,
             locked=part.is_locked(feature.id),
-            produces=feature.produces,
+            # Bug fix: MirrorFeature.produces is a hardcoded BODY - resolve
+            # through its actual sources so a Mirror of a Surface reports
+            # SURFACE - see resolve_feature_produces's own doc comment.
+            produces=resolve_feature_produces(feature, part),
         )
     if isinstance(feature, MergeFeature):
         return MergeFeatureResponse(
@@ -1030,7 +1034,10 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             merge=feature.merge,
             tool_feature_id=feature.tool_feature_id,
             locked=part.is_locked(feature.id),
-            produces=feature.produces,
+            # Bug fix: PatternFeature.produces is a hardcoded BODY - resolve
+            # through its actual sources so a Pattern of a Surface reports
+            # SURFACE - see resolve_feature_produces's own doc comment.
+            produces=resolve_feature_produces(feature, part),
         )
     if isinstance(feature, ImportFeature):
         return ImportFeatureResponse(
@@ -1559,7 +1566,12 @@ def _validate_merge_body_ids(part: Part, body_ids: list[str]) -> None:
         )
     for body_id in body_ids:
         source_feature = part.get_feature(base_feature_id(body_id))
-        if source_feature is None or source_feature.produces != Produces.BODY:
+        # Bug fix: source_feature.produces alone is always BODY for a
+        # MirrorFeature/PatternFeature regardless of source - resolve
+        # through the actual sources instead, so a Mirror/Pattern of a
+        # Surface is correctly rejected here rather than wrongly accepted as
+        # a Merge target - see resolve_feature_produces's own doc comment.
+        if source_feature is None or resolve_feature_produces(source_feature, part) != Produces.BODY:
             raise HTTPException(
                 status_code=400,
                 detail=f"body_ids entry {body_id!r} does not refer to a Body-producing Feature in this Part",
@@ -1585,7 +1597,8 @@ def _validate_delete_body_ids(part: Part, body_ids: list[str]) -> None:
         )
     for body_id in body_ids:
         source_feature = part.get_feature(base_feature_id(body_id))
-        if source_feature is None or source_feature.produces != Produces.BODY:
+        # Bug fix: see _validate_merge_body_ids's identical fix above.
+        if source_feature is None or resolve_feature_produces(source_feature, part) != Produces.BODY:
             raise HTTPException(
                 status_code=400,
                 detail=f"body_ids entry {body_id!r} does not refer to a Body-producing Feature in this Part",
@@ -1606,7 +1619,8 @@ def _validate_scale_body_factor(part: Part, body_id: str, factor: float) -> None
             detail="ScaleBodyFeature requires factor > 0 - zero or negative is not a scale",
         )
     source_feature = part.get_feature(base_feature_id(body_id))
-    if source_feature is None or source_feature.produces != Produces.BODY:
+    # Bug fix: see _validate_merge_body_ids's identical fix above.
+    if source_feature is None or resolve_feature_produces(source_feature, part) != Produces.BODY:
         raise HTTPException(
             status_code=400,
             detail=f"body_id {body_id!r} does not refer to a Body-producing Feature in this Part",
@@ -1758,7 +1772,8 @@ def _validate_boolean_body_ids(
         )
     for body_id in (*target_body_ids, *tool_body_ids):
         source_feature = part.get_feature(base_feature_id(body_id))
-        if source_feature is None or source_feature.produces != Produces.BODY:
+        # Bug fix: see _validate_merge_body_ids's identical fix above.
+        if source_feature is None or resolve_feature_produces(source_feature, part) != Produces.BODY:
             raise HTTPException(
                 status_code=400,
                 detail=f"body_ids entry {body_id!r} does not refer to a Body-producing Feature in this Part",
@@ -1775,7 +1790,8 @@ def _validate_split_target_body_id(part: Part, target_body_id: str) -> None:
     Mirror/Pattern-produced Bodies entirely - a Split's own target has no
     such restriction, any existing Body is a valid pick)."""
     target_feature = part.get_feature(base_feature_id(target_body_id))
-    if target_feature is None or target_feature.produces != Produces.BODY:
+    # Bug fix: see _validate_merge_body_ids's identical fix above.
+    if target_feature is None or resolve_feature_produces(target_feature, part) != Produces.BODY:
         raise HTTPException(
             status_code=400,
             detail=f"target_body_id {target_body_id!r} does not refer to a Body-producing Feature "
@@ -1888,6 +1904,38 @@ def _validate_source_feature_ids(
             )
 
 
+def _validate_uniform_source_produces(
+    part: Part, source_body_ids: list[str], source_feature_ids: list[str], feature_type_name: str
+) -> None:
+    """Bug fix (on-device feedback: "mirrored and patterned surfaces...
+    need to be valid targets for thicken and body from surfaces"): once
+    `MirrorFeature`/`PatternFeature.produces` became source-aware (see
+    `resolve_feature_produces`'s own doc comment) instead of a hardcoded
+    `Produces.BODY`, a single Mirror/Pattern mixing solid and surface
+    sources together would need a *per-instance* classification nothing
+    else in this codebase does (`is_surface`/`produces` is always a
+    per-Feature question everywhere else) - simpler and safer to reject a
+    mixed source set outright at creation time instead, matching how a
+    user would expect one Mirror/Pattern operation to behave (uniform
+    sources in, uniform-typed output). Only reachable when `tool_feature_id`
+    isn't set (that mode has exactly one source by construction, nothing to
+    mix) - both call sites below only call this when `source_body_ids`/
+    `source_feature_ids` are what's actually being used."""
+    resolved_ids = {base_feature_id(bid) for bid in source_body_ids}
+    resolved_ids.update(source_feature_ids)
+    produces_seen: set[Produces] = set()
+    for source_id in resolved_ids:
+        source_feature = part.get_feature(source_id)
+        if source_feature is not None:
+            produces_seen.add(resolve_feature_produces(source_feature, part))
+    if len(produces_seen) > 1:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{feature_type_name} sources must be all Body-producing or all Surface-producing, "
+            "not a mix of both",
+        )
+
+
 def _validate_mirror_source_body_ids(
     part: Part,
     source_body_ids: list[str],
@@ -1933,6 +1981,8 @@ def _validate_mirror_source_body_ids(
                 f"{_PATTERN_MIRROR_SOURCE_FEATURE_TYPES_DESCRIPTION} in this Part",
             )
     _validate_source_feature_ids(part, source_feature_ids, "MirrorFeature")
+    if tool_feature_id is None:
+        _validate_uniform_source_produces(part, source_body_ids, source_feature_ids, "MirrorFeature")
 
 
 def _validate_pattern_source_body_ids(
@@ -1968,6 +2018,8 @@ def _validate_pattern_source_body_ids(
                 f"{_PATTERN_MIRROR_SOURCE_FEATURE_TYPES_DESCRIPTION} in this Part",
             )
     _validate_source_feature_ids(part, source_feature_ids, "PatternFeature")
+    if tool_feature_id is None:
+        _validate_uniform_source_produces(part, source_body_ids, source_feature_ids, "PatternFeature")
 
 
 def _invalid_tool_feature_ref(tool_feature_id: str) -> HTTPException:
@@ -3821,7 +3873,12 @@ def _validate_surface_feature_ref(part: Part, surface_feature_id: str, field_nam
     Surface" (any of the five Phase 1 surface-producing tools, or the
     pre-existing `SurfaceFeature`, all qualify)."""
     source_feature = part.get_feature(surface_feature_id)
-    if source_feature is None or source_feature.produces != Produces.SURFACE:
+    # Bug fix: source_feature.produces alone is always BODY for a
+    # MirrorFeature/PatternFeature regardless of source - resolve through
+    # the actual sources instead, so Thicken/Solid-from-Surfaces/etc. accept
+    # a Mirror/Pattern of a Surface as a valid target - see
+    # resolve_feature_produces's own doc comment.
+    if source_feature is None or resolve_feature_produces(source_feature, part) != Produces.SURFACE:
         raise HTTPException(
             status_code=400,
             detail=f"{field_name} {surface_feature_id!r} does not refer to a surface-producing "
@@ -7510,7 +7567,13 @@ def get_part_mesh(
                 source="computed",
                 mesh=_mesh_vertex_data(tessellate_shape(shape, mesh_quality)),
                 hidden=base_feature_id(body_id) in hidden,
-                is_surface=owning_feature is not None and owning_feature.produces == Produces.SURFACE,
+                # Bug fix: owning_feature.produces alone is always BODY for a
+                # MirrorFeature/PatternFeature regardless of source - resolve
+                # through the actual sources instead, so a Mirror/Pattern of
+                # a Surface is correctly grouped under Surfaces in the client
+                # Build Tree - see resolve_feature_produces's own doc comment.
+                is_surface=owning_feature is not None
+                and resolve_feature_produces(owning_feature, part) == Produces.SURFACE,
             )
         )
     return responses
