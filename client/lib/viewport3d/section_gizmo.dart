@@ -44,8 +44,14 @@ const int kSectionGizmoRingSegments = 48;
 /// Which part of the gizmo a drag or hit-test targets. Rotation about the
 /// plane's own normal (local Z) is deliberately omitted - see this file's
 /// own module doc comment below for why - so there is no `rotateZ` alongside
-/// [rotateX]/[rotateY].
-enum SectionGizmoHandleKind { translateX, translateY, translateZ, rotateX, rotateY }
+/// [rotateX]/[rotateY]. Lateral [translateX]/[translateY] handles were
+/// removed (on-device feedback: "the section plane can be translated in
+/// directions other than its normal, this is unnecessary as the section is
+/// infinite in width and height, it should only move along its normal and
+/// rotate about 2 axes") - the plane's own infinite extent means an in-
+/// plane translation is a visual no-op (it never changes which geometry the
+/// section cuts through), so only [translateZ] (along the normal) remains.
+enum SectionGizmoHandleKind { translateZ, rotateX, rotateY }
 
 /// The plane's own local orthonormal frame the gizmo is drawn/dragged
 /// against: [zAxis] is always the plane's real normal (the translate-Z arrow
@@ -314,8 +320,6 @@ SectionGizmoHit? hitTestSectionGizmo(
     }
   }
 
-  consider(SectionGizmoHandleKind.translateX, plane.origin, plane.origin + basis.xAxis * arrowLength);
-  consider(SectionGizmoHandleKind.translateY, plane.origin, plane.origin + basis.yAxis * arrowLength);
   consider(SectionGizmoHandleKind.translateZ, plane.origin, plane.origin + basis.zAxis * arrowLength);
 
   void considerRing(SectionGizmoHandleKind kind, vm.Vector3 axisA, vm.Vector3 axisB) {
@@ -361,8 +365,8 @@ final vm.Vector3 _sectionGizmoColorZ = vm.Vector3(0x3A / 255, 0x7B / 255, 0xD5 /
 /// arbitrary third color.
 vm.Vector4 sectionGizmoHandleColor(SectionGizmoHandleKind kind, {bool highlighted = false}) {
   final base = switch (kind) {
-    SectionGizmoHandleKind.translateX || SectionGizmoHandleKind.rotateX => _sectionGizmoColorX,
-    SectionGizmoHandleKind.translateY || SectionGizmoHandleKind.rotateY => _sectionGizmoColorY,
+    SectionGizmoHandleKind.rotateX => _sectionGizmoColorX,
+    SectionGizmoHandleKind.rotateY => _sectionGizmoColorY,
     SectionGizmoHandleKind.translateZ => _sectionGizmoColorZ,
   };
   final alpha = highlighted ? 1.0 : 0.85;
@@ -439,8 +443,6 @@ Node buildSectionGizmoNode(
     primitives.add(MeshPrimitive(PolylineGeometry(points, width: highlighted ? 4 : 2.5), material));
   }
 
-  addArrow(SectionGizmoHandleKind.translateX, basis.xAxis);
-  addArrow(SectionGizmoHandleKind.translateY, basis.yAxis);
   addArrow(SectionGizmoHandleKind.translateZ, basis.zAxis);
   addRing(SectionGizmoHandleKind.rotateX, basis.yAxis, basis.zAxis);
   addRing(SectionGizmoHandleKind.rotateY, basis.xAxis, basis.zAxis);

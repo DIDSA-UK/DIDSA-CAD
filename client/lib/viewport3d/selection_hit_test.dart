@@ -1594,14 +1594,27 @@ List<HoverHit> hitTestAllCandidates({
   if (bestVertex != null) candidates.add(bestVertex);
   if (bestEdge != null) candidates.add(bestEdge);
   for (final entry in bodyFaceHits.entries) {
-    if (filter.body) {
+    // Bug report ("Select Other ... still does not cover bodies in the
+    // selection list"): a whole-Body candidate is now additive, not
+    // mutually exclusive with the face candidates below - it's included
+    // whenever `filter.body` explicitly allows body-kind selection (an
+    // explicit body-only picker, e.g. Mirror/Move Body's own) *or*
+    // `filter.face` does (the ordinary ambient select-mode filter, whose
+    // own `body: false` default only means "not the primary click target
+    // yet", not "never reachable" - `hitTestAllCandidates`'s sole caller,
+    // [_fireSelectOther], exists precisely to surface additional entity
+    // kinds beyond the ambient filter's primary one). A pure edge/vertex-
+    // only picker (both `body`/`face` false) still excludes it, same as
+    // before this fix - a whole Body was never a sensible candidate there.
+    if (filter.body || filter.face) {
       // A Body only needs one representative candidate - its own nearest
       // face hit (the list is already sorted nearest-first).
       candidates.add(HoverHit(
         entity: SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: entry.key),
         rayT: entry.value.first.rayT,
       ));
-    } else if (filter.face) {
+    }
+    if (filter.face) {
       // Bug report ("Select Other"): every face this Body's ray crossing
       // found - not just the nearest - so a back/far face becomes its own
       // selectable candidate.

@@ -37,7 +37,7 @@ from OCC.Core.TopTools import TopTools_IndexedMapOfShape, TopTools_ListOfShape
 
 from app.document import body_cache
 from app.document.graph import base_feature_id, build_feature_graph, topological_order
-from app.document.shell_ops import thicken_shell_to_solid
+from app.document.shell_ops import thicken_capped_solid_to_solid, thicken_shell_to_solid
 from app.document.plane_geometry import (
     is_mirrored_basis,
     resolve_ccw_arc_endpoints,
@@ -735,12 +735,20 @@ def _thin_extrude_failed(feature_id: str) -> HTTPException:
     )
 
 
-def _thicken_shell_for_direction(
-    shell: TopoDS_Shape, thickness: float, direction: ThicknessDirection
+def _thin_wall_solid_for_direction(
+    capped_solid: TopoDS_Shape,
+    closing_faces: TopTools_ListOfShape,
+    thickness: float,
+    direction: ThicknessDirection,
 ) -> TopoDS_Shape | None:
     """On-device feedback ("add option to thicken in, out or from the
-    middle"): resolves `ThicknessDirection` against `thicken_shell_to_
-    solid`'s existing single-direction, signed-thickness call.
+    middle"): resolves `ThicknessDirection` against `thicken_capped_solid_
+    to_solid`'s existing single-direction, signed-thickness call. `capped_
+    solid` must be a genuinely closed solid (real end caps - see
+    `_prism_for_profile`'s own doc comment for why it's built from the
+    profile's FACE, not just its wire) with `closing_faces` naming its two
+    end caps, so OCCT has explicit, unambiguous instructions for where the
+    thin wall's own top/bottom rim should stay flat.
 
     `OUTWARD` passes `thickness` through completely unchanged - this is
     deliberate, not a simplification: `OUTWARD` is this field's default
@@ -750,43 +758,46 @@ def _thicken_shell_for_direction(
     producing the exact same solid it always has - not have its sign
     silently reinterpreted the day this field shipped. `INWARD` negates
     the *magnitude* (`-abs(thickness)`) rather than just flipping
-    `thickness`'s own sign - see `ThicknessDirection`'s own doc comment
-    for why a negative value is assumed to mean inward (not yet
-    independently re-confirmed against a real OCCT kernel) - so choosing
-    `INWARD` in the UI always means "inward" regardless of whatever sign
-    the user happened to type.
+    `thickness`'s own sign - confirmed against a real OCCT kernel (30x30
+    square, 5mm wall): `MakeThickSolidByJoin`'s signed `Offset` does grow
+    the wall inward for a negative value here, matching this module's own
+    prior (until now unconfirmed) assumption - so choosing `INWARD` in the
+    UI always means "inward" regardless of whatever sign the user happened
+    to type.
 
-    `SYMMETRIC` has no single-call equivalent: `thicken_shell_to_solid`/
-    `MakeThickSolidBySimple` only ever offsets once, in one direction, by
-    one magnitude - there is no "offset half each way" mode to ask OCCT
-    for directly. Built instead from two independent half-thickness
-    solids (one `+abs(thickness)/2`, one `-abs(thickness)/2`, i.e. one on
-    each side of the sketched wire) unioned via `BRepAlgoAPI_Fuse`
-    (`_run_fuse`, the same hardened helper `_apply_boss_or_cut`'s own
-    multi-target Boss-fuse chain uses) into the one wall centered on the
-    wire - not yet confirmed against a real OCCT kernel whether the two
-    half-shells' shared inner boundary fuses cleanly (flagged the same way
-    every other not-yet-on-device-verified OCCT technique in this codebase
-    is).
+    `SYMMETRIC` has no single-call equivalent: `MakeThickSolidByJoin` only
+    ever offsets once, in one direction, by one magnitude - there is no
+    "offset half each way" mode to ask OCCT for directly. Built instead
+    from two independent half-thickness solids (one `+abs(thickness)/2`,
+    one `-abs(thickness)/2`, i.e. one on each side of the sketched wire)
+    unioned via `BRepAlgoAPI_Fuse` (`_run_fuse`) into the one wall centered
+    on the wire, with `_fuse_result_is_sane` guarding the result the same
+    way `_safe_fuse`'s own multi-target Boss-fuse chain does - confirmed
+    against a real kernel this fuse *does* produce a single valid solid
+    (30x30/5mm case: volume 12000.0, exactly the expected (35^2-25^2)*20),
+    unlike the previous open-shell-based implementation, which silently
+    produced zero solids for this exact direction (the reported "mid
+    produced no solid at all").
 
-    Returns `None` (never raises past a `ValueError` from `thicken_shell_
-    to_solid` itself, which callers already handle) if the `SYMMETRIC`
-    fuse doesn't produce a valid result, so a caller can treat that the
-    same as any other "OCCT couldn't build this" failure."""
+    Returns `None` (never raises past a `ValueError` from `thicken_capped_
+    solid_to_solid` itself, which callers already handle) if the
+    `SYMMETRIC` fuse doesn't produce a valid result, so a caller can treat
+    that the same as any other "OCCT couldn't build this" failure."""
     if direction == ThicknessDirection.SYMMETRIC:
         half = abs(thickness) / 2
-        outward_half = thicken_shell_to_solid(shell, half)
-        inward_half = thicken_shell_to_solid(shell, -half)
+        outward_half = thicken_capped_solid_to_solid(capped_solid, closing_faces, half)
+        inward_half = thicken_capped_solid_to_solid(capped_solid, closing_faces, -half)
+        vol_a, vol_b = _volume(outward_half), _volume(inward_half)
         fuse = _run_fuse(outward_half, inward_half)
         if not fuse.IsDone():
             return None
         solid = fuse.Shape()
-        if solid is None or solid.IsNull() or not BRepCheck_Analyzer(solid).IsValid():
+        if not _fuse_result_is_sane(solid, vol_a, vol_b):
             return None
         return solid
     if direction == ThicknessDirection.INWARD:
-        return thicken_shell_to_solid(shell, -abs(thickness))
-    return thicken_shell_to_solid(shell, thickness)
+        return thicken_capped_solid_to_solid(capped_solid, closing_faces, -abs(thickness))
+    return thicken_capped_solid_to_solid(capped_solid, closing_faces, thickness)
 
 
 def _prism_for_profile(
@@ -812,31 +823,46 @@ def _prism_for_profile(
     start_transform.SetTranslation(direction.Multiplied(feature.start_distance))
     prism_vector = direction.Multiplied(feature.end_distance - feature.start_distance)
 
+    face = face_for_profile(sketch, profile, basis)
+    moved_face = BRepBuilderAPI_Transform(face, start_transform, True).Shape()
+
     if feature.thickness is not None:
-        # Thin extrude: prism the profile's own WIRE (not its face) into an
-        # open shell (OCCT's documented Wire->Shell sweep behavior, the same
-        # "prism a wire, not a face" idiom `app.document.loft`'s thin/open-
-        # chain path already relies on for `BRepOffsetAPI_ThruSections`),
-        # then thicken that shell into a solid by `feature.thickness`
-        # (`thicken_shell_to_solid`). No edge-index provenance is recorded
-        # for this branch - a thickened shell's topology doesn't line up
-        # with the face-prism boundary shapes provenance is built from (see
-        # `_profile_boundary_shapes`), a narrow, acceptable limitation
-        # consistent with this function's existing "only the common
-        # single-profile, no-target case" provenance caveat.
-        wire = wire_for_profile(sketch, profile, basis)
-        moved_wire = topods.Wire(BRepBuilderAPI_Transform(wire, start_transform, True).Shape())
-        shell = BRepPrimAPI_MakePrism(moved_wire, prism_vector).Shape()
+        # Thin extrude: prism the profile's own FACE (not just its wire)
+        # into a genuinely closed, capped solid, then use OCCT's textbook
+        # BRepOffsetAPI_MakeThickSolid idiom - "hollow this solid, giving
+        # it wall thickness, by removing these named end-cap faces"
+        # (`ClosingFaces=[first, last]`, via `thicken_capped_solid_to_
+        # solid`) - so the tube's own top/bottom rim stays exactly flat at
+        # [start_distance, end_distance]. Previously this branch prismed
+        # only the WIRE into an already-open, cap-less shell and thickened
+        # *that* with an empty ClosingFaces list, leaving OCCT no faces to
+        # remove and no guidance for closing the free top/bottom rim -
+        # confirmed against a real OCCT kernel to silently improvise a
+        # rounded cap there, inflating the Z bounds ~3.5mm past the
+        # intended range and corrupting the volume (a 30x30 square/5mm
+        # wall/20mm-tall case came back as 6833 instead of 14000 for
+        # OUTWARD, and produced no solid at all for SYMMETRIC/Mid - the
+        # exact "bad geometry"/"no solid" defects reported from on-device
+        # testing). No edge-index provenance is recorded for this branch -
+        # a thin-walled solid's topology doesn't line up with the boundary
+        # shapes provenance is built from (see `_profile_boundary_shapes`),
+        # a narrow, acceptable limitation consistent with this function's
+        # existing "only the common single-profile, no-target case"
+        # provenance caveat.
+        prism = BRepPrimAPI_MakePrism(moved_face, prism_vector)
+        capped_solid = prism.Shape()
+        closing_faces = TopTools_ListOfShape()
+        closing_faces.Append(prism.FirstShape())
+        closing_faces.Append(prism.LastShape())
         try:
-            solid = _thicken_shell_for_direction(shell, feature.thickness, feature.thickness_direction)
+            solid = _thin_wall_solid_for_direction(
+                capped_solid, closing_faces, feature.thickness, feature.thickness_direction
+            )
         except ValueError:
             raise _thin_extrude_failed(feature.id) from None
         if solid is None:
             raise _thin_extrude_failed(feature.id)
         return solid, None
-
-    face = face_for_profile(sketch, profile, basis)
-    moved_face = BRepBuilderAPI_Transform(face, start_transform, True).Shape()
 
     prism = BRepPrimAPI_MakePrism(moved_face, prism_vector)
     shape = prism.Shape()

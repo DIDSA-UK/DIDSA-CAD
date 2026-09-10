@@ -2277,12 +2277,6 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     vm.Vector3? rotationAxis, refAxis, perpAxis;
     double? startAngle;
     switch (hit.kind) {
-      case SectionGizmoHandleKind.translateX:
-        axis = basis.xAxis;
-        break;
-      case SectionGizmoHandleKind.translateY:
-        axis = basis.yAxis;
-        break;
       case SectionGizmoHandleKind.translateZ:
         axis = basis.zAxis;
         break;
@@ -2344,8 +2338,6 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final ray = camera.screenPointToRay(screenPosition, _viewportSize);
 
     switch (handle) {
-      case SectionGizmoHandleKind.translateX:
-      case SectionGizmoHandleKind.translateY:
       case SectionGizmoHandleKind.translateZ:
         final axis = _sectionDragAxis;
         final startPoint = _sectionDragStartPointOnAxis;
@@ -4233,7 +4225,20 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       // depth test, so an un-biased highlight sitting exactly on the
       // Body's own surface can get redrawn over.
       final biasedTriangles = biasTrianglesTowardCamera(faceTriangles, _camera.position, kEdgeDepthBias);
-      final node = buildHighlightFacesNode(biasedTriangles, color: _highContrastFaceHighlightColor());
+      // Bug report ("faces selected using 'select other' still don't
+      // highlight when selected correctly"): a face reached via Select
+      // Other is typically an occluded back/inner face - the whole reason
+      // that tool exists - so it needs the same `alwaysOnTop: true` this
+      // method's own hover/preview path already uses for the identical
+      // reason (see [_syncHoverNode]'s `forceAlwaysOnTop: true`, fixed for
+      // the hover case only). Without it, a genuinely-selected occluded
+      // face renders behind the Body's own opaque surface and is
+      // effectively invisible even though it *is* selected.
+      final node = buildHighlightFacesNode(
+        biasedTriangles,
+        color: _highContrastFaceHighlightColor(),
+        alwaysOnTop: true,
+      );
       scene.add(node);
       _selectedFacesNode = node;
       debugPrint(
@@ -4590,6 +4595,18 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                   size: size,
                   polylineCarryingNodes: [
                     ..._planeNodes.values,
+                    // Bug report ("the triad for moving and rotating the
+                    // section plane is not visible at all"): the section
+                    // gizmo/quad are built from `PolylineGeometry` too (see
+                    // `buildSectionGizmoNode`/`buildSectionPlaneQuadNode`,
+                    // `section_gizmo.dart`) and need the same per-frame
+                    // `updateForCamera` call every other polyline node here
+                    // gets (see `_ScenePainter.paint`'s own loop over this
+                    // list) - without it their camera-facing strip geometry
+                    // never gets built, so they render as degenerate/
+                    // invisible despite being added to the Scene.
+                    ..._sectionQuadNodes.values,
+                    if (_sectionGizmoNode != null) _sectionGizmoNode!,
                     if (_sketchPlaneSurfaceNode != null) _sketchPlaneSurfaceNode!,
                     if (_sketchPlaneGridNode != null) _sketchPlaneGridNode!,
                     if (_drawGhostGuideNode != null) _drawGhostGuideNode!,

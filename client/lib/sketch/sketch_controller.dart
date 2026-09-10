@@ -5671,7 +5671,18 @@ class SketchController extends ChangeNotifier {
   /// "there's nowhere for this drag to go" precedent it already applies to
   /// an ordinary (non-closed-form) fully-pinned Point.
   CircleDragMode _circleDragMode(SketchCircleView circle, String draggedPointId) {
-    if (draggedPointId == circle.centerPointId) return CircleDragMode.resize;
+    // Bug fix (on-device feedback: "if a[n] arc/circle is grounded by
+    // constraints or dimensions and a drag is attempted, the [entity] can
+    // be dragged and dropped[,] it then returns on the solve. If it's
+    // grounded, the drag should be blocked."): a center-drag never
+    // consulted [isPointFullyPinned] at all, so a fully-grounded centre
+    // could still be grabbed and dragged (only to snap back once the
+    // solver re-ran) - blocked outright now, same "nowhere for this drag
+    // to go" precedent every other fully-pinned-Point case here already
+    // uses.
+    if (draggedPointId == circle.centerPointId) {
+      return isPointFullyPinned(circle.centerPointId) ? CircleDragMode.blocked : CircleDragMode.resize;
+    }
     final radiusConstraint = _circleRadiusConstraint(circle);
     if (radiusConstraint == null || radiusConstraint.provisional) return CircleDragMode.resize;
     return isPointFullyPinned(circle.centerPointId) ? CircleDragMode.blocked : CircleDragMode.translate;
@@ -5805,7 +5816,23 @@ class SketchController extends ChangeNotifier {
   /// nowhere to move either, exactly mirroring [_circleDragMode]'s own
   /// blocked case.
   ArcDragMode _arcDragMode(SketchArcView arc, String draggedPointId) {
-    if (draggedPointId == arc.centerPointId) return ArcDragMode.translate;
+    // Bug fix (on-device feedback: "if a[n] arc is grounded by constraints
+    // or dimensions and a drag is attempted, the arc can be dragged and
+    // dropped[,] it then returns on the solve. If it's grounded, the drag
+    // should be blocked."): two gaps here previously let a grounded Arc
+    // start a drag anyway (only to snap back once the solver re-ran) -
+    // (1) a centre-drag never consulted [isPointFullyPinned] at all, and
+    // (2) a start/end-drag only ever returned [blocked] when a confirmed,
+    // non-provisional radius dimension existed, falling through to
+    // [resize] regardless of [isPointFullyPinned] whenever the Arc was
+    // grounded some other way (e.g. Coincident/PointOnLine constraints on
+    // start/end, no radius dimension confirmed yet). Both now check
+    // [isPointFullyPinned] directly, mirroring [beginLineDrag]'s own
+    // unconditional endpoint check.
+    if (draggedPointId == arc.centerPointId) {
+      return isPointFullyPinned(arc.centerPointId) ? ArcDragMode.blocked : ArcDragMode.translate;
+    }
+    if (isPointFullyPinned(draggedPointId)) return ArcDragMode.blocked;
     final radiusConstraint = _arcRadiusConstraint(arc);
     if (radiusConstraint == null || radiusConstraint.provisional) return ArcDragMode.resize;
     return isPointFullyPinned(arc.centerPointId) ? ArcDragMode.blocked : ArcDragMode.translate;
