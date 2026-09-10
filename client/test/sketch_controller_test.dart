@@ -5505,6 +5505,96 @@ void main() {
     });
   });
 
+  group(
+      'Arc drag respects a confirmed driving dimension (same on-device bug/fix as Circle\'s own '
+      'identically-named group above - "Circle drag respects a confirmed driving dimension" - the '
+      'Arc group above only ever exercised a still-provisional radius dimension), plus the specific '
+      'live on-device regression this closes: on-device feedback ("create an arc in a sketch, give '
+      'it a dimension and anchor the centre (coincident to origin) then try drag operations on the '
+      'end points and the curve") found the whole Arc, centre included, could be dragged clean off '
+      'the origin - the "Coincident" badge left stranded behind it - because SketchRigidity\'s own '
+      'per-cluster DOF count (what isPointFullyPinned used to rely on exclusively) understates a '
+      'Point whose *own* position is exactly pinned whenever a radius dimension unions it into the '
+      'same cluster as a start/end Point that still has its own sweep-angle freedom - see '
+      'SketchRigidity.isPointPinned\'s own doc comment (dof_analysis.dart) for the fix', () {
+    test(
+        'dragging the start Point is refused outright once the confirmed dimension\'s own centre is '
+        'coincident to the origin - there is nowhere left for the drag to go (the exact live-app '
+        'regression: previously this returned true, and the drag detached the whole Arc from its '
+        'own pinned centre)', () async {
+      controller.selectDrawTool(SketchTool.arc);
+      // Tapping exactly on the origin for the centre auto-snaps a
+      // Coincident constraint against it (same as the live-app repro this
+      // test mirrors - no separate addCoincidentConstraint() step needed,
+      // and adding one anyway would create a redundant *second* Coincident
+      // between the same two Points, which happens to numerically mask
+      // this exact bug: two independent Coincident constraints on one pair
+      // over-subtract the cluster's DOF by exactly the two endpoints' own
+      // remaining sweep-angle freedom, coincidentally making the cluster
+      // read as "fully constrained" - confirmed directly while writing
+      // this test - so drawing the arc is the *entire* setup here).
+      await controller.handleCanvasTap(0, 0); // centre placed exactly on the origin
+      await controller.handleCanvasTap(10, 0); // start, radius 10
+      await controller.handleCanvasTap(0, 10); // end, 90 degrees from start
+      controller.exitToSelectMode();
+      final arc = controller.arcs.values.single;
+      expect(
+        controller.constraints.values.whereType<CoincidentConstraintDto>().length,
+        1,
+        reason: 'exactly one auto-snapped Coincident constraint, not a redundant second one',
+      );
+
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(10 * math.cos(math.pi / 8), 10 * math.sin(math.pi / 8));
+      // The real backend's own py-slvs solve would report the sketch's two
+      // genuinely-remaining degrees of freedom here (start/end's own sweep
+      // angles) - this fake backend's `dof` defaults to 0 regardless of
+      // real topology (see the many other `backend.dof = ...` call sites
+      // in this file for the same pattern), which would otherwise mask
+      // this exact bug behind `isFullyConstrained`'s *other* disjunct
+      // (`_backendConfirmsSolved && isAnyPointGrounded`, already
+      // trivially true once *anything* is grounded) rather than actually
+      // exercising `SketchRigidity.isPointPinned` the way the real app
+      // does.
+      backend.dof = 2;
+      await controller.confirmGhostValue('radius', 10.0);
+      controller.exitToSelectMode();
+
+      final radiusConstraint = controller.constraints.values.whereType<DistanceConstraintDto>().single;
+      expect(radiusConstraint.provisional, isFalse);
+      expect(controller.rigidity.isPointFullyConstrained(arc.centerPointId), isFalse,
+          reason: 'the pre-existing gap: the cluster\'s own remaining DOF (the two endpoints\' sweep '
+              'angles) masks that the centre\'s own position never moved');
+      expect(controller.isPointFullyPinned(arc.centerPointId), isTrue);
+      expect(controller.beginPointDrag(arc.startPointId), isFalse);
+      expect(controller.beginPointDrag(arc.endPointId), isFalse);
+      expect(controller.beginPointDrag(arc.centerPointId), isFalse);
+    });
+
+    test(
+        'dragging the start Point with a still-provisional dimension and a coincident-to-origin '
+        'centre keeps resizing (the pre-existing, still-correct behaviour) even after this fix - a '
+        'provisional dimension never protects the radius, so there is always somewhere to go',
+        () async {
+      controller.selectDrawTool(SketchTool.arc);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(10, 0);
+      await controller.handleCanvasTap(0, 10);
+      controller.exitToSelectMode();
+      final arc = controller.arcs.values.single;
+
+      controller.selectEntity(SketchSelection(kind: SelectionKind.point, id: controller.originPointId!));
+      controller.selectEntity(SketchSelection(kind: SelectionKind.point, id: arc.centerPointId));
+      await controller.addCoincidentConstraint();
+
+      final radiusConstraint = controller.constraints.values.whereType<DistanceConstraintDto>().single;
+      expect(radiusConstraint.provisional, isTrue);
+      expect(controller.isPointFullyPinned(arc.centerPointId), isTrue, reason: 'the centre is still pinned');
+      expect(controller.beginPointDrag(arc.startPointId), isTrue,
+          reason: 'a provisional radius always has somewhere to go, regardless of the centre');
+    });
+  });
+
   test(
       'dragging a Slot corner reflows the rest of the shape sanely, even when the Slot was drawn '
       'starting at the sketch origin (on-device feedback: "dragging constrained entities is still '

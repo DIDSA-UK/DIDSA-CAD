@@ -313,6 +313,73 @@ void main() {
     });
   });
 
+  group('isPointPinned - exact position pin independent of a shared cluster\'s own DOF', () {
+    test(
+        'a Point Coincident with the origin is pinned even though a sibling in its cluster still '
+        'has freedom (the Arc/Circle-centre-drag bug this closes)', () {
+      // Mirrors an Arc: `centre` Coincident to the origin (so its own
+      // position is exactly fixed), `start` tied to `centre` only by a
+      // radius DistanceConstraint (1 DOF, not a full pin) - the same
+      // Constraint that unions `start` into `centre`'s cluster, leaving 1
+      // remaining degree of freedom (start's own angle around centre) and
+      // so making the *cluster-wide* isPointFullyConstrained false for
+      // every Point in it, centre included, even though centre itself
+      // never had anywhere to go.
+      final rigidity = _analyze(
+        pointIds: ['origin', 'centre', 'start'],
+        constraints: const [
+          CoincidentConstraintDto(id: 'c1', pointAId: 'origin', pointBId: 'centre'),
+          DistanceConstraintDto(id: 'c2', pointAId: 'centre', pointBId: 'start', distance: 5.0),
+        ],
+      );
+      expect(rigidity.isPointFullyConstrained('centre'), isFalse, reason: 'the pre-existing gap');
+      expect(rigidity.isPointPinned('centre'), isTrue, reason: 'the fix');
+      expect(rigidity.isPointPinned('start'), isFalse, reason: 'start is still free to rotate around centre');
+    });
+
+    test('is false for a Point only reachable via a non-pinning (1-DOF) constraint type', () {
+      final rigidity = _analyze(
+        pointIds: ['origin', 'a'],
+        constraints: const [
+          DistanceConstraintDto(id: 'c1', pointAId: 'origin', pointBId: 'a', distance: 5.0),
+        ],
+      );
+      expect(rigidity.isPointPinned('a'), isFalse);
+    });
+
+    test('Concentric pins the same way Coincident does (same DOF cost/semantics, Arc/Circle centres)', () {
+      final rigidity = _analyze(
+        pointIds: ['origin', 'centre'],
+        constraints: const [
+          ConcentricConstraintDto(
+            id: 'c1',
+            entity1Id: 'e1',
+            entity2Id: 'e2',
+            center1PointId: 'origin',
+            center2PointId: 'centre',
+          ),
+        ],
+      );
+      expect(rigidity.isPointPinned('centre'), isTrue);
+    });
+
+    test('pinning is transitive through a chain of Coincident Points', () {
+      final rigidity = _analyze(
+        pointIds: ['origin', 'a', 'b'],
+        constraints: const [
+          CoincidentConstraintDto(id: 'c1', pointAId: 'origin', pointBId: 'a'),
+          CoincidentConstraintDto(id: 'c2', pointAId: 'a', pointBId: 'b'),
+        ],
+      );
+      expect(rigidity.isPointPinned('b'), isTrue);
+    });
+
+    test('SketchRigidity.empty reports isPointPinned false for everything', () {
+      const rigidity = SketchRigidity.empty();
+      expect(rigidity.isPointPinned('a'), isFalse);
+    });
+  });
+
   group('isPointGrounded - exact topological connectivity to the origin, independent of DOF counting', () {
     test('a rigid pair not connected to the origin is not grounded, even though DOF is not what '
         'gates this check', () {
