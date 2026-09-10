@@ -193,10 +193,41 @@ class OrbitCamera {
   static const double orbitSensitivity = 0.01;
 
   /// World units of [target] travel per screen pixel of pan drag, *
-  /// [distance] - panning by a fixed angle/world-distance per pixel would
-  /// feel too fast when zoomed in and too slow zoomed out, so it scales with
-  /// how far the camera currently is from its target.
+  /// [_effectiveDistanceForPanSensitivity] - panning by a fixed angle/world-
+  /// distance per pixel would feel too fast when zoomed in and too slow
+  /// zoomed out, so it scales with how far the camera currently *appears*
+  /// to be from its target (see that getter's own doc comment for why,
+  /// post-Item-6, that's no longer simply [distance]).
   static const double panSensitivityPerDistance = 0.002;
+
+  /// Bug fix (on-device feedback, immediately following Item 6: "pan feels
+  /// hyper sensitive"): [panByScreenDelta] used to scale directly by
+  /// [distance] - correct back when zooming in/out always shrank/grew
+  /// [distance] itself (the old dolly zoom), so pan sensitivity naturally
+  /// shrank right along with the zoomed-in view. Item 6 moved interactive
+  /// zoom onto [fovRadiansY]/[halfHeight] instead, deliberately leaving
+  /// [distance] to only change via [reset]/[frameRadius] - so at any zoom
+  /// level reached by scrolling, [distance] now sits at whatever it was
+  /// last framed to, completely unrelated to how zoomed-in the view
+  /// currently looks. Panning by raw [distance] then moves the same
+  /// absolute world distance per pixel regardless of zoom level, while the
+  /// *visible* extent shrinks as [fovRadiansY]/[halfHeight] narrow - so a
+  /// pixel of drag covers an ever-larger fraction of the actually-visible
+  /// frame the more zoomed in the view is, exactly the "too fast zoomed in"
+  /// feel [panSensitivityPerDistance]'s own doc comment already knew to
+  /// avoid, just reintroduced from the zoom side instead of the pan side.
+  ///
+  /// This restores the old *feel* by computing the same effective-distance
+  /// [panByScreenDelta] would have seen under the old, always-in-sync
+  /// dolly zoom: the current visible half-height at [target]'s own depth,
+  /// converted back into a "distance" via the inverse of
+  /// [_halfHeightForDistance] - i.e. exactly [distance] itself whenever
+  /// [fovRadiansY]/[halfHeight] sit at their own defaults (both formulas
+  /// collapse to the identity there - confirmed algebraically, not just by
+  /// spot-check), shrinking/growing proportionally as the user scroll-zooms
+  /// away from that default, same as [distance] itself always used to.
+  double get _effectiveDistanceForPanSensitivity =>
+      isPerspective ? distance * math.tan(fovRadiansY / 2) / math.tan(_defaultFovRadiansY / 2) : halfHeight / math.tan(_defaultFovRadiansY / 2);
 
   // A4/Phase 2: perspective vs orthographic toggle, wired through the View
   // menu. Was a dead flag until the sketcher restructure's Phase 2 - real
@@ -455,7 +486,7 @@ class OrbitCamera {
   /// movement - on-device feedback confirmed only left/right felt backwards,
   /// consistent with the render fix only mirroring the horizontal axis.
   void panByScreenDelta(double dxPixels, double dyPixels) {
-    final scale = panSensitivityPerDistance * distance;
+    final scale = panSensitivityPerDistance * _effectiveDistanceForPanSensitivity;
     target = target - _right * (dxPixels * scale) + _up * (dyPixels * scale);
   }
 

@@ -210,6 +210,80 @@ void main() {
     expect(leftDrag.target.x.sign, isNot(rightDrag.target.x.sign));
   });
 
+  test(
+      'panByScreenDelta scales down with fovRadiansY the same way it used to scale down with distance '
+      'under the old dolly zoom (bug fix: on-device feedback, immediately after Item 6, "pan feels '
+      'hyper sensitive" - panByScreenDelta used to scale by raw distance, which the old dolly zoom kept '
+      'shrinking as the user zoomed in; Item 6 stopped touching distance on zoom, so pan sensitivity '
+      'stayed frozen at whatever distance was last framed to, regardless of how zoomed-in the view '
+      'looked)', () {
+    final camera = OrbitCamera()..isPerspective = true;
+    camera.panByScreenDelta(10, 5);
+    final unzoomedTarget = camera.target.clone();
+
+    final zoomedIn = OrbitCamera()..isPerspective = true;
+    zoomedIn.zoomFovTowardScreenPoint(0.5, Offset(size.width / 2, size.height / 2), size);
+    zoomedIn.panByScreenDelta(10, 5);
+
+    expect(zoomedIn.target.length, lessThan(unzoomedTarget.length));
+  });
+
+  test(
+      'panByScreenDelta scales with halfHeight in orthographic mode the same way, so pan sensitivity '
+      'tracks orthographic zoom too', () {
+    final camera = OrbitCamera()..isPerspective = false;
+    camera.panByScreenDelta(10, 5);
+    final unzoomedTarget = camera.target.clone();
+
+    final zoomedIn = OrbitCamera()..isPerspective = false;
+    zoomedIn.zoomHalfHeightTowardScreenPoint(0.5, Offset(size.width / 2, size.height / 2), size);
+    zoomedIn.panByScreenDelta(10, 5);
+
+    expect(zoomedIn.target.length, lessThan(unzoomedTarget.length));
+  });
+
+  test(
+      'panByScreenDelta matches its own pre-Item-6 distance-scaled formula exactly at default zoom - '
+      'the fix must be a no-op at the default FOV/halfHeight, only diverging once the user actually '
+      'zooms', () {
+    final perspective = OrbitCamera()..isPerspective = true;
+    final perspectiveOld = OrbitCamera()..isPerspective = true;
+    perspective.panByScreenDelta(10, 5);
+    perspectiveOld.target = perspectiveOld.target -
+        perspectiveOld.right * (10 * OrbitCamera.panSensitivityPerDistance * perspectiveOld.distance) +
+        perspectiveOld.up * (5 * OrbitCamera.panSensitivityPerDistance * perspectiveOld.distance);
+    expect((perspective.target - perspectiveOld.target).length, closeTo(0, 1e-9));
+
+    final ortho = OrbitCamera()..isPerspective = false;
+    final orthoOld = OrbitCamera()..isPerspective = false;
+    ortho.panByScreenDelta(10, 5);
+    orthoOld.target = orthoOld.target -
+        orthoOld.right * (10 * OrbitCamera.panSensitivityPerDistance * orthoOld.distance) +
+        orthoOld.up * (5 * OrbitCamera.panSensitivityPerDistance * orthoOld.distance);
+    expect((ortho.target - orthoOld.target).length, closeTo(0, 1e-9));
+  });
+
+  group(
+      '_applyPinchPan / pinch-zoom (bug fix: on-device feedback, immediately after Item 6: "pinch to '
+      'zoom does not function at all" - the old zoomByFactor(distance) pinch call had literally zero '
+      'visual effect in orthographic mode, the app\'s own default view, once orthographicCameraFor '
+      'started reading halfHeight directly instead of deriving it from distance)', () {
+    test('zoomHalfHeightTowardScreenPoint (orthographic pinch\'s new target) actually changes halfHeight, '
+        'unlike the old zoomByFactor(distance) call which changed a field orthographicCameraFor no '
+        'longer reads at all', () {
+      final camera = OrbitCamera()..isPerspective = false;
+      final halfHeightBefore = camera.halfHeight;
+      final distanceBefore = camera.distance;
+
+      camera.zoomHalfHeightTowardScreenPoint(0.5, Offset(size.width / 2, size.height / 2), size);
+
+      expect(camera.halfHeight, isNot(halfHeightBefore));
+      expect(camera.distance, distanceBefore);
+      final rendered = camera.cameraFor(size) as OrthographicCamera;
+      expect(rendered.halfHeight, camera.halfHeight);
+    });
+  });
+
   test('zoomByFactor scales distance and is clamped to the min/max range', () {
     final camera = OrbitCamera();
 

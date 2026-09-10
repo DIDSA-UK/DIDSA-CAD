@@ -3012,6 +3012,27 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
   }
 
+  /// Bug fix (on-device feedback, immediately following Item 6: "pinch to
+  /// zoom does not function at all"): this used to call [_camera.
+  /// zoomByFactor], which only ever changes [OrbitCamera.distance] - Item 6
+  /// deliberately left that call alone as a documented fast-follow (the
+  /// plan's own "distance should now only change via reset()/frameRadius()
+  /// (and optionally pinch-zoom as a fast-follow)"), not realizing the
+  /// consequence under [OrbitCamera.isPerspective] `false`: [distance] no
+  /// longer has *any* visual effect at all once [orthographicCameraFor]
+  /// reads [OrbitCamera.halfHeight] directly instead of deriving it from
+  /// [distance] (see that function's own doc comment) - so on the app's
+  /// default orthographic startup view, a pinch gesture moved [distance]
+  /// exactly as before yet produced literally zero on-screen change,
+  /// reading as "does not function at all". Mirrors [_handlePointerSignal]'s
+  /// identical [OrbitCamera.isPerspective] branch onto
+  /// [OrbitCamera.zoomFovTowardScreenPoint]/[OrbitCamera.
+  /// zoomHalfHeightTowardScreenPoint] instead, anchored at [afterCentroid]
+  /// (the pinch gesture's own natural "point under the fingers", the same
+  /// role [event.localPosition] plays for a scroll tick) - a pinch now zooms
+  /// the camera's lens exactly like scroll-wheel zoom does, rather than a
+  /// distance-based dolly that (in orthographic mode) no longer does
+  /// anything visible at all.
   void _applyPinchPan(Map<int, Offset> before, Map<int, Offset> after) {
     final beforeCentroid = _centroidOf(before.values);
     final afterCentroid = _centroidOf(after.values);
@@ -3022,7 +3043,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     setState(() {
       _camera.panByScreenDelta(panDelta.dx, panDelta.dy);
       if (beforeSpread > 1e-6) {
-        _camera.zoomByFactor(beforeSpread / afterSpread);
+        final scaleFactor = beforeSpread / afterSpread;
+        if (_camera.isPerspective) {
+          _camera.zoomFovTowardScreenPoint(scaleFactor, afterCentroid, _viewportSize);
+        } else {
+          _camera.zoomHalfHeightTowardScreenPoint(scaleFactor, afterCentroid, _viewportSize);
+        }
       }
     });
   }
