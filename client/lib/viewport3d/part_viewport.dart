@@ -983,6 +983,34 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   vm.Vector3 get debugCameraTarget => _camera.target;
   @visibleForTesting
   double get debugCameraDistance => _camera.distance;
+  @visibleForTesting
+  vm.Quaternion get debugCameraOrientation => _camera.orientation;
+
+  /// Regression test support for the stuck-touch-state bug (on-device
+  /// feedback: "orbit stopped working and single finger drag started doing
+  /// a strange combination of pan and zoom instead... persisted after
+  /// exiting the section tool") - see [_sectionDragPointerId]'s own doc
+  /// comment for the bug itself. [debugActiveTouchCount] lets a test
+  /// confirm [_activeTouches] never ends up with an orphaned entry;
+  /// [debugSectionDragHandle] lets a test confirm a second pointer's
+  /// events can't end (or continue) a drag it didn't start;
+  /// [debugForceSectionDrag] simulates "a gizmo drag is already in
+  /// progress for this pointer" without needing to reproduce the exact
+  /// 3D screen-space hit-test a real gizmo grab requires - the bug this
+  /// guards against is in the pointer-dispatch gating itself
+  /// (`_onPointerMove`/`_onPointerEnd`), not in `hitTestSectionGizmo`, so
+  /// a test only needs `_sectionDragHandle`/`_sectionDragPointerId` set
+  /// correctly to exercise it.
+  @visibleForTesting
+  int get debugActiveTouchCount => _activeTouches.length;
+  @visibleForTesting
+  SectionGizmoHandleKind? get debugSectionDragHandle => _sectionDragHandle;
+  @visibleForTesting
+  void debugForceSectionDrag(String sectionId, int pointerId) {
+    _sectionDragHandle = SectionGizmoHandleKind.translateZ;
+    _sectionDragPointerId = pointerId;
+    _sectionDragSectionId = sectionId;
+  }
 
   /// `docs/lod-strategy/01-design.md` SS5 chunk 5: test-only window into
   /// which Bodies actually got a real filled-faces [Node] built for them -
