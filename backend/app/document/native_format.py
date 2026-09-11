@@ -21,7 +21,6 @@ import base64
 import dataclasses
 
 from app.document.models import (
-    Assembly,
     BevelGearFeature,
     BevelGearType,
     BevelPairFeature,
@@ -61,7 +60,6 @@ from app.document.models import (
     MirrorFeature,
     MoveBodyFeature,
     MoveFaceFeature,
-    Node,
     Occurrence,
     OffsetSourceRef,
     OffsetSurfaceFeature,
@@ -150,15 +148,15 @@ from app.sketch.models import (
 # older file - `import_native` rejects anything else outright rather than
 # guessing at a best-effort partial read.
 #
-# v2 (assembly support, `docs/assembly-scope.md`): `document.parts` (a flat
-# list of Parts) became `document.nodes` (a list of Nodes, each either a
-# `node_kind: "part"` leaf - the exact same shape v1's Part dicts already
-# had - or a `node_kind: "assembly"` composite), plus `document.
-# root_node_id`. `import_native` still reads v1 files (see the version
-# branch below) by wrapping their flat Part list as `node_kind: "part"`
-# nodes - a v1 file never had assemblies, so this is a lossless wrap, not a
-# best-effort guess.
-SCHEMA_VERSION = 2
+# Assembly support (`docs/assembly-scope.md`) did NOT bump this: `Part`
+# gained two new optional fields, `occurrences`/`mates`
+# (`_part_to_dict`/`_part_from_dict`), the same purely-additive shape every
+# other field addition to a persisted dataclass in this file already uses
+# (`.get(key, default)` on read, so a pre-assembly file with neither key
+# just imports with empty lists) - the top-level `"parts"` list shape is
+# unchanged, so a version bump would have been a formality with nothing
+# for it to actually gate.
+SCHEMA_VERSION = 1
 
 _CONSTRAINT_CLASSES: dict[str, type[Constraint]] = {
     "distance": DistanceConstraint,
@@ -1713,7 +1711,7 @@ def _rigid_transform_from_dict(data: dict | None) -> RigidTransform:
 
 
 def _occurrence_to_dict(occurrence: Occurrence) -> dict:
-    """`node_id` is deliberately never written here - see `Occurrence`'s own
+    """`part_id` is deliberately never written here - see `Occurrence`'s own
     docstring: it is a session-local id with no meaning outside the
     in-memory Document that produced it. Only `external_ref` (an opaque,
     client-owned relative file path this backend never parses) is
@@ -1731,7 +1729,7 @@ def _occurrence_to_dict(occurrence: Occurrence) -> dict:
 def _occurrence_from_dict(data: dict) -> Occurrence:
     return Occurrence(
         id=_require(data, "id"),
-        node_id=None,
+        part_id=None,
         external_ref=data.get("external_ref"),
         name_override=data.get("name_override"),
         transform=_rigid_transform_from_dict(data.get("transform")),
@@ -1780,41 +1778,6 @@ def _mate_from_dict(data: dict) -> Mate:
     )
 
 
-def _assembly_to_dict(assembly: Assembly) -> dict:
-    return {
-        "id": assembly.id,
-        "name": assembly.name,
-        "occurrences": [_occurrence_to_dict(o) for o in assembly.occurrences],
-        "mates": [_mate_to_dict(m) for m in assembly.mates],
-    }
-
-
-def _assembly_from_dict(data: dict) -> Assembly:
-    assembly = Assembly(id=_require(data, "id"), name=_require(data, "name"))
-    assembly.occurrences = [_occurrence_from_dict(o) for o in data.get("occurrences", [])]
-    assembly.mates = [_mate_from_dict(m) for m in data.get("mates", [])]
-    return assembly
-
-
-def _node_to_dict(node: Node) -> dict:
-    """A Node's on-disk envelope: the same Part/Assembly dict either
-    `_part_to_dict`/`_assembly_to_dict` already produces, plus a
-    `node_kind` discriminator so `_node_from_dict` knows which one to
-    rebuild - the same "one discriminator field, otherwise reuse the
-    existing per-type dict shape" convention `_feature_to_dict` already
-    uses for Feature's own ~40 subtypes (`type` there, `node_kind` here)."""
-    if isinstance(node, Part):
-        return {"node_kind": "part", **_part_to_dict(node)}
-    return {"node_kind": "assembly", **_assembly_to_dict(node)}
-
-
-def _node_from_dict(data: dict) -> Node:
-    node_kind = data.get("node_kind", "part")
-    if node_kind == "assembly":
-        return _assembly_from_dict(data)
-    return _part_from_dict(data)
-
-
 def _part_to_dict(part: Part) -> dict:
     return {
         "id": part.id,
@@ -1836,6 +1799,15 @@ def _part_to_dict(part: Part) -> dict:
             body_id: _material_assignment_to_dict(assignment)
             for body_id, assignment in part.body_material_assignments.items()
         },
+        # Assembly support (`docs/assembly-scope.md`): a Part's own
+        # occurrences/mates, coexisting with `features` above rather than
+        # living on a separate node type - see `Part`'s own docstring.
+        # Purely additive: absent on any file saved before assembly
+        # support existed, defaulting to empty lists below, no
+        # SCHEMA_VERSION bump needed for that (see this module's own
+        # `SCHEMA_VERSION` comment).
+        "occurrences": [_occurrence_to_dict(o) for o in part.occurrences],
+        "mates": [_mate_to_dict(m) for m in part.mates],
     }
 
 
@@ -1854,50 +1826,51 @@ def _part_from_dict(data: dict) -> Part:
         body_id: _material_assignment_from_dict(assignment)
         for body_id, assignment in data.get("body_material_assignments", {}).items()
     }
+    part.occurrences = [_occurrence_from_dict(o) for o in data.get("occurrences", [])]
+    part.mates = [_mate_from_dict(m) for m in data.get("mates", [])]
     return part
 
 
-def export_native(document: Document, sketches: dict[str, Sketch], node_id: str | None = None) -> dict:
+def export_native(document: Document, sketches: dict[str, Sketch], part_id: str | None = None) -> dict:
     """Serializes `document` plus every Sketch referenced by any
-    SketchFeature across whichever Nodes get exported, into a plain
+    SketchFeature across whichever Parts get exported, into a plain
     JSON-serializable dict - no cached mesh/geometry, no API-only fields
     (`locked`/`produces`/resolved plane geometry), matching the locked-in
     "pure parametric tree" scope. `sketches` is the full sketch store (see
     `app.sketch.store.all_sketches`) - only the ids actually referenced are
     included, sorted for a deterministic, diff-friendly output.
 
-    `node_id=None` (default) exports every Node currently in `document.
-    nodes` - a full session snapshot, useful for debug/backup or for a
-    session whose root is the only file that exists. `node_id=<id>` exports
-    just that one Node's own data - what an individual file in a multi-file
+    `part_id=None` (default) exports every Part currently in `document.
+    parts` - a full session snapshot, useful for debug/backup or for a
+    session whose root is the only file that exists. `part_id=<id>` exports
+    just that one Part's own data - what an individual file in a multi-file
     assembly actually saves on disk, since each file must be independently
-    saveable (`docs/assembly-scope.md`): a leaf Part's own features (plus
-    only its own referenced sketches), or a composite Assembly's own
-    occurrences/mates - never the resolved subtree those occurrences point
-    at, since those live in their own separate files."""
-    if node_id is not None:
-        node = document.nodes.get(node_id)
-        if node is None:
-            raise NativeFormatError(f"Unknown node_id: {node_id!r}")
-        nodes: dict[str, Node] = {node_id: node}
-        root_node_id = node_id
+    saveable (`docs/assembly-scope.md`): that Part's own features *and* its
+    own occurrences/mates (both coexist - see `Part`'s own docstring) -
+    never the resolved subtree those occurrences' `external_ref`s point at,
+    since that lives in its own separate file."""
+    if part_id is not None:
+        part = document.parts.get(part_id)
+        if part is None:
+            raise NativeFormatError(f"Unknown part_id: {part_id!r}")
+        parts: dict[str, Part] = {part_id: part}
+        root_part_id = part_id
     else:
-        nodes = document.nodes
-        root_node_id = document.root_node_id
+        parts = document.parts
+        root_part_id = document.root_part_id
 
     referenced_sketch_ids: set[str] = {
         feature.sketch_id
-        for node in nodes.values()
-        if isinstance(node, Part)
-        for feature in node.features
+        for part in parts.values()
+        for feature in part.features
         if isinstance(feature, SketchFeature)
     }
     return {
         "schema_version": SCHEMA_VERSION,
         "document": {
             "id": document.id,
-            "root_node_id": root_node_id,
-            "nodes": [_node_to_dict(node) for node in nodes.values()],
+            "root_part_id": root_part_id,
+            "parts": [_part_to_dict(part) for part in parts.values()],
         },
         "sketches": [
             sketch_to_dict(sketches[sketch_id])
@@ -1916,17 +1889,17 @@ def import_native(data: dict) -> tuple[Document, dict[str, Sketch]]:
     them. Raises `NativeFormatError` for anything malformed; never partially
     populates its return value on failure.
 
-    Reads both `SCHEMA_VERSION` (2, "nodes") and the legacy v1 ("parts")
-    shape - see `SCHEMA_VERSION`'s own comment for why the v1 branch is a
-    lossless wrap, not a best-effort guess: a v1 file never had assemblies,
-    so every Part it names becomes a `node_kind="part"` Node unchanged.
-    `document.root_node_id` is left `None` for a v1 import (a v1 Document
-    could hold several unrelated Parts with no "root" concept at all -
-    every existing caller already picks a specific Part by id, e.g.
+    `document_data`'s `"root_part_id"` key is new (assembly support) but
+    optional - a file saved before it existed simply has no key, and
+    `.get(...)` below leaves `document.root_part_id` as `None`, the same
+    "no root concept" state a pre-assembly multi-Part Document already had
+    (every existing caller already picks a specific Part by id, e.g.
     `NativeImportResponse.part_ids`, rather than relying on a root)."""
     if not isinstance(data, dict):
         raise NativeFormatError("Native file must be a JSON object")
     schema_version = data.get("schema_version")
+    if schema_version != SCHEMA_VERSION:
+        raise NativeFormatError(f"Unsupported native file schema_version: {schema_version!r}")
 
     sketches: dict[str, Sketch] = {}
     for sketch_data in data.get("sketches", []):
@@ -1935,17 +1908,9 @@ def import_native(data: dict) -> tuple[Document, dict[str, Sketch]]:
 
     document_data = _require(data, "document")
     document = Document(id=_require(document_data, "id"))
-
-    if schema_version == 1:
-        for part_data in document_data.get("parts", []):
-            part = _part_from_dict(part_data)
-            document.nodes[part.id] = part
-    elif schema_version == SCHEMA_VERSION:
-        for node_data in document_data.get("nodes", []):
-            node = _node_from_dict(node_data)
-            document.nodes[node.id] = node
-        document.root_node_id = document_data.get("root_node_id")
-    else:
-        raise NativeFormatError(f"Unsupported native file schema_version: {schema_version!r}")
+    for part_data in document_data.get("parts", []):
+        part = _part_from_dict(part_data)
+        document.parts[part.id] = part
+    document.root_part_id = document_data.get("root_part_id")
 
     return document, sketches

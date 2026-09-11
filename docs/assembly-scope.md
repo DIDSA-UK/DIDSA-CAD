@@ -27,12 +27,21 @@ abstraction) implemented. Phases 2–9 are design-only.**
 1. **Multi-file assemblies from v1** — an assembly file references separate
    part files (bottom-up *and* top-down authoring both in scope). Not an
    embedded/single-file "multi-body part" model.
-2. **Part and Assembly are one `Node` concept** — a Node is either a leaf
-   (a Feature history, i.e. today's `Part`) or a composite (`Assembly`:
-   Occurrences + Mates). Kept as two distinct dataclasses under one `Node =
-   Part | Assembly` union (see §2) rather than one discriminated dataclass,
-   so every existing Part-only Feature-handler module (`extrude.py`,
-   `pattern.py`, `fillet.py`, …) keeps working completely unchanged.
+2. **A `.didsa` file holds local Features and assembly structure
+   *simultaneously*, not as two mutually-exclusive kinds of file.** This is
+   the NX-style model directly: open one file, model or import local/
+   reference geometry (a fixture, a mounting boss) via Features, and in the
+   very same file place and mate other `.didsa` files' Parts as components
+   via Occurrences/Mates - switching between a "feature tools + feature
+   tree" lens and an "assembly tools + assembly tree" lens is a client-side
+   mode toggle on the one open screen, never a different file, a different
+   backend type, or a navigation away from the viewport (§2's "mode
+   switching" note spells out exactly how). Realized as **one** dataclass,
+   `Part` (see §2) - `occurrences: list[Occurrence]`/`mates: list[Mate]`
+   added directly onto it alongside its existing `features: list[Feature]`
+   - not a `Node = Part | Assembly` union of two exclusive types (an
+   earlier, incorrect pass at this decision briefly existed in this
+   codebase's history; corrected before any UI was built on top of it).
 3. **In-context editing is visual-only** — no persistent associative links
    between parts. Preserves `Part`'s own documented invariant ("Parts never
    reference each other or share Features/Sketches/Points",
@@ -68,7 +77,31 @@ existing dependency.
 
 ---
 
-## 2. Phase 0 — unified node data model (implemented)
+## 2. Phase 0 — unified Part data model (implemented)
+
+### Mode switching, concretely (answers "how does the user get to assembly
+mode without leaving the file")
+
+A `.didsa` file is one `Part` (see below) that can hold both Features and
+assembly structure at once. The client's build-tree/toolbar panel reads
+from *the same open Part* in either lens - "Part mode" shows
+`part.features` and the feature toolset (sketch/extrude/fillet/…); "Assembly
+mode" shows `part.occurrences`/`part.mates` and the assembly toolset
+(insert component/mate/pattern/…) over the *identical* viewport and file.
+Switching is a client-side UI state toggle (Phase 3), not a save, not a
+new file, not a navigation to a different screen - the backend has no
+"mode" concept at all, since a `Part` always has both fields regardless of
+which one the UI happens to be showing. Concretely, in the user's own
+scenario: opening a new `.didsa` file starts in Part mode by default (an
+empty `features` list, matching today's pre-assembly behavior exactly);
+toggling to Assembly mode shows an empty `occurrences`/`mates` tree ready
+for "insert component"; toggling back to Part mode to model or import a
+local mount adds to `features` on that *same* Part; toggling to Assembly
+mode again to insert and mate other `.didsa` files adds to `occurrences`/
+`mates` on that *same* Part - nothing about switching modes touches which
+file is open or creates/loads a different backend object.
+
+### The data model
 
 `backend/app/document/models.py`:
 
@@ -81,81 +114,99 @@ existing dependency.
   `MateEntityRef` (an Occurrence id + one of `SubShapeRef`/`PlaneRef`/
   `PointRef`, reused verbatim from the existing Feature-reference types),
   `Mate` (a `MateType` + `references` + optional `value`/`flipped`).
-- `Occurrence` — one placed instance of another Node inside an `Assembly`:
-  `id`, `node_id: str | None` (session-local, **never** persisted to disk —
-  populated by whoever assembles a multi-node graph into a `Document`),
+- `Occurrence` — one placed instance of another Part (in another file):
+  `id`, `part_id: str | None` (session-local, **never** persisted to disk —
+  populated by whoever assembles a multi-file graph into a `Document`),
   `external_ref: str | None` (the portable, client-owned relative-path
   identity — the only thing `native_format.py` (de)serializes for an
   Occurrence's target), `transform`, `suppressed`, `hidden`.
-- `Assembly` — `id`, `name`, `occurrences: list[Occurrence]`,
-  `mates: list[Mate]`. `Node = Part | Assembly`.
-- `Document.nodes: dict[str, Node]` + `root_node_id: str | None` replace
-  the old `Document.parts: dict[str, Part]` field. `Document.parts` is now
-  a read/write compatibility view (`_PartsView`, a `MutableMapping` proxy
-  over `nodes` filtered to `Part` instances) so every pre-assembly call
-  site — `native_format.py`'s import path, `store.py`'s part lookups, the
-  existing test suite's `document.parts[id] = part` writes — keeps
-  compiling *and* keeps actually mutating the real `nodes` dict, not a
-  disposable copy. New code should use `nodes`/`add_part`/`add_assembly`
-  directly.
+- `Part` gains two new fields directly, alongside its existing `features`:
+  `occurrences: list[Occurrence]` and `mates: list[Mate]`. **No new node
+  type, no union** - a single Part can have a non-empty `features` list
+  *and* a non-empty `occurrences`/`mates` list at the same time; nothing
+  in the model forces "only features" or "only assembly structure". The
+  existing "Parts never reference each other or share Features/Sketches/
+  Points" invariant (decision #3) is unchanged and still enforced at the
+  Feature level - `occurrences`/`mates` are a distinct, deliberately-added
+  relationship (an opaque `external_ref` string, never a Feature/Sketch/
+  Point reference), not an exception carved into that rule.
+- `Document.parts: dict[str, Part]` is unchanged in shape from before
+  assembly support - still a plain dict, no compatibility-view machinery
+  needed, since there is no second node kind to filter out anymore.
+  `Document.root_part_id: str | None` (new, optional) names which Part is
+  the session's currently-open file, as opposed to one pulled in only
+  because another Part's `Occurrence.external_ref` resolved to it
+  (Phase 2's multi-file graph compose).
 
 `backend/app/document/native_format.py`:
 
-- `SCHEMA_VERSION` 1 → 2. A v2 file's top-level shape is `{"document":
-  {"id", "root_node_id", "nodes": [...]}}`, each node dict carrying a
-  `"node_kind": "part" | "assembly"` discriminator (the same "one
-  discriminator field, otherwise reuse the existing per-type dict shape"
-  convention `_feature_to_dict` already uses for Feature's ~40 subtypes).
-- `import_native` still reads v1 files (a flat `"parts"` list, no
-  `node_kind`) by wrapping each Part as a `node_kind="part"` Node — a
-  lossless wrap, not a best-effort guess, since a v1 file never had
-  assemblies. `document.root_node_id` is left `None` for a v1 import (a v1
-  Document could hold several unrelated Parts with no "root" concept;
-  every existing caller already picks a specific Part by id rather than
-  relying on a root).
-- `export_native(document, sketches, node_id=None)` — `node_id=None`
-  exports every Node in the session (a full snapshot); `node_id=<id>`
-  exports just that one Node's own data, which is what saving an
-  individual file in a multi-file assembly needs: a leaf Part's own
-  features (+ only its own referenced sketches), or a composite Assembly's
-  own occurrences/mates — never the resolved subtree those occurrences'
-  `external_ref`s point at, since that lives in its own separate file.
-  `GET /export/native?node_id=<id>` (`backend/app/document/router.py`)
-  wires this through, 404ing for an unknown `node_id`.
-- An Occurrence's `node_id` is never written to or read from disk — only
+- `SCHEMA_VERSION` stays at **1** - unchanged. `occurrences`/`mates` are
+  purely additive fields on a Part's existing dict shape
+  (`_part_to_dict`/`_part_from_dict`), read back via `.get(key, [])`
+  exactly like every other evolutionary field this file already added
+  (e.g. Mirror/Pattern's `tool_feature_id`) - a file saved before assembly
+  support existed simply lacks the keys and imports with empty lists, no
+  version branch needed. `document_data`'s new `"root_part_id"` key is
+  optional the same way, defaulting to `None`.
+- `export_native(document, sketches, part_id=None)` — `part_id=None`
+  exports every Part in the session (a full snapshot); `part_id=<id>`
+  exports just that one Part's own data - its own `features` **and** its
+  own `occurrences`/`mates` together (both coexist, per above) - which is
+  what saving an individual file in a multi-file assembly needs, never the
+  resolved subtree an Occurrence's `external_ref` points at, since that
+  lives in its own separate file. `GET /export/native?part_id=<id>`
+  (`backend/app/document/router.py`) wires this through, 404ing for an
+  unknown `part_id`.
+- An Occurrence's `part_id` is never written to or read from disk — only
   `external_ref` is (de)serialized. A freshly-imported Occurrence always
-  has `node_id=None` until something resolves it (the client's compose
+  has `part_id=None` until something resolves it (the client's compose
   step, once multi-file assembly loading exists — Phase 2, not yet built).
 
 `backend/app/document/assembly.py` (new): pure vector/matrix math (no
 OCCT dependency) for composing `RigidTransform`s down a nested Occurrence
-tree — `compose(parent, child)` and `compose_chain(transforms)`. Uses the
-same Rodrigues'-rotation-formula construction as the client's
+tree (an Occurrence's target Part can itself have its own Occurrences) —
+`compose(parent, child)` and `compose_chain(transforms)`. Uses the same
+Rodrigues'-rotation-formula construction as the client's
 `section_gizmo.dart`'s `rotateAroundAxis`, kept in matching form so backend
 and client transform composition agree. Not yet consumed by any endpoint —
-Phase 2's `GET /nodes/{node_id}/assembly-mesh` is its first real caller.
+Phase 2's `GET /parts/{part_id}/assembly-mesh` is its first real caller.
 
-**Verified**: standalone round-trip tests (Document/Part/Assembly/
-Occurrence/Mate construction → `export_native` → real `json.dumps`/`loads`
-→ `import_native` → equivalence, both full-graph and single-node export,
-plus v1-legacy-payload import), and the **full backend test suite run for
-real against a `pythonocc-core`/`py-slvs` environment** (a `micromamba`
-env built from `backend/environment.yml` specifically to make this
-possible): **2201/2201 passed**. Getting there surfaced three genuine
-pre-existing-test regressions a sandbox without those dependencies
-couldn't have caught: 11 test files read a native export's Part list via
-the JSON key `exported["document"]["parts"]` (now `"nodes"`) rather than
-the `document.parts` Python attribute my initial grep covered, and one
-session-isolation test hand-built a v1-shaped import payload while
-dynamically fetching the live (now v2) `schema_version` — all fixed as
-straightforward key renames with no change in test intent. Two other
-pre-existing tests that hardcoded `schema_version == 1` for their own
-*current-export* assertions (not a v1-compat fixture) were updated to
-assert against the live `SCHEMA_VERSION` constant instead.
-`assembly.py`'s transform composition was separately verified (identity,
-pure translation, rotated-parent-composes-child's-local-offset-correctly,
-axis-angle↔matrix round-trip including the 180° edge case, chain-matches-
-nested-compose, and rotation non-commutativity).
+**Verified**: standalone round-trip tests (Document/Part/Occurrence/Mate
+construction, including a single Part with a local Feature *and*
+Occurrences/Mates at once → `export_native` → real `json.dumps`/`loads` →
+`import_native` → equivalence, both full-graph and single-part export,
+plus pre-assembly-payload import) plus five permanent pytest tests in
+`backend/tests/test_assembly_model.py`, and the **full backend test suite
+run for real against a `pythonocc-core`/`py-slvs` environment** (a
+`micromamba` env built from `backend/environment.yml` specifically to
+make this possible): **2201/2201 passed** after the correction described
+below (2206 including the 5 new tests). `assembly.py`'s transform
+composition was separately verified (identity, pure translation,
+rotated-parent-composes-child's-local-offset-correctly, axis-angle↔matrix
+round-trip including the 180° edge case, chain-matches-nested-compose,
+and rotation non-commutativity).
+
+**History note**: the first pass at this phase modeled Part/Assembly as
+two mutually-exclusive dataclasses under a `Node = Part | Assembly` union
+(`Document.nodes`, `SCHEMA_VERSION` bumped to 2 for a `"node_kind"`
+discriminator). A user walkthrough of the intended UX - modelling local
+reference geometry and placing/mating components in the *same* open file,
+switching lenses without navigating away - showed this was wrong: it made
+"Part" and "Assembly" two different kinds of file rather than two views
+over one. Corrected before any UI was built against it: `Assembly` and
+`Node` were removed, `occurrences`/`mates` moved directly onto `Part`,
+`Document.nodes`/`root_node_id` reverted to `Document.parts`/
+`root_part_id`, and `SCHEMA_VERSION` reverted to 1 (the corrected shape
+needed no version bump at all - see above). Getting the *original* Phase 0
+verification run to pass for real (2201/2201 against real OCCT/py-slvs)
+had already separately surfaced three genuine pre-existing-test
+regressions unrelated to this correction - 11 test files reading a native
+export's Part list via the JSON key `exported["document"]["parts"]`
+(temporarily `"nodes"` mid-correction, now reverted back to `"parts"`)
+rather than the `document.parts` Python attribute an initial grep
+covered, and one session-isolation test hand-building an import payload
+tied to the old shape - all fixed as straightforward, intent-preserving
+edits, re-verified clean after the correction landed.
 
 ---
 
@@ -247,16 +298,21 @@ silently falls back to the desktop implementation via
 ## 3. Remaining phases (design-only)
 
 2. **Multi-file compose + stateless recompute** — client-side graph
-   composition (resolve N `.didsa` files, assign session-local `node_id`s,
+   composition (resolve N `.didsa` files, assign session-local `part_id`s,
    cycle-check), reusing `/import/native` for the composed payload, plus a
-   new `GET /nodes/{node_id}/assembly-mesh` endpoint that walks the
+   new `GET /parts/{part_id}/assembly-mesh` endpoint that walks the
    composite graph (via `assembly.py`'s `compose_chain`) and reuses the
    existing per-Part body cache unchanged — N occurrences of one
    definition trigger one recompute, not N.
-3. **Assembly screen shell** — a new `AssemblyScreen` (not an extension of
-   the already-18k-line `part_screen.dart`), reusing `PartViewport` and a
-   new `AssemblyTreePanel`. Bottom-up insert, top-down create-in-place,
-   hide/show, isolate.
+3. **Part/Assembly mode toggle on the one open screen** — per §2's "mode
+   switching" note: this is a UI-state toggle inside the existing
+   part-editing screen, not a separate pushed screen. `PartViewport` is
+   shared unchanged between both modes; the side panel swaps between
+   `FeatureTreePanel` (existing) and a new `AssemblyTreePanel` reading
+   `part.occurrences`/`part.mates`, and the toolbar swaps between the
+   existing feature toolset and a new assembly toolset (insert component/
+   mate/pattern/hide/isolate), both bound to the *same* currently-open
+   Part. Bottom-up insert, top-down create-in-place, hide/show, isolate.
 4. **Whole-part selection, context menu, opacity tiers** — extend
    `SelectionFilterState`/`select_other_sheet.dart` with a `component`
    kind; new component context menu; per-instance opacity (nothing like
@@ -267,11 +323,14 @@ silently falls back to the desktop implementation via
    Feature" precedent is `MoveBodyPanel`'s create-then-update-in-place
    pattern). Local component-transform undo built in this phase, not
    deferred — no document-level undo exists anywhere in this app today.
-6. **In-context focus-mode editing** — "Make Focus" pushes `PartScreen` as
-   a child screen (same pattern already used for Sketch mode) with
-   read-only reference geometry from the rest of the assembly. No backend
-   changes needed: per-part Feature endpoints already work against a
-   session-local node id regardless of assembly context.
+6. **In-context focus-mode editing** — "Make Focus" on a placed component
+   (a *different* Part, in a different file, referenced via an
+   Occurrence - not the currently-open Part's own mode toggle, §2/item 3
+   above) pushes `PartScreen` as a child screen for that component's own
+   file (same pattern already used for Sketch mode) with read-only
+   reference geometry from the rest of the assembly. No backend changes
+   needed: per-part Feature endpoints already work against a session-local
+   part id regardless of assembly context.
 7. **Mate system** (coincident/concentric/parallel/distance/angle) — new
    `assembly_solver.py` (mirrors `sketch/solver.py`'s structure). v1 only
    drives the actively-dragged Occurrence against fixed peers — coupled
@@ -305,5 +364,5 @@ silently falls back to the desktop implementation via
   backend-only, same tolerated latency as `MoveBodyFeature` today.
 - `add_component`'s AI step is gated on a file-discovery mechanism not yet
   designed.
-- Composed multi-file graph `node_id`s are session-scoped, not persisted
+- Composed multi-file graph `part_id`s are session-scoped, not persisted
   across app restarts.

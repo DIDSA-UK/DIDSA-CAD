@@ -560,7 +560,7 @@ def test_native_export_import_round_trips_a_bevel_pair_feature():
         assert export_response.status_code == 200
         exported = export_response.json()
         pair_dicts = [
-            f for p in exported["document"]["nodes"] for f in p["features"] if f["type"] == "bevel_pair"
+            f for p in exported["document"]["parts"] for f in p["features"] if f["type"] == "bevel_pair"
         ]
         assert any(f["id"] == feature_id for f in pair_dicts)
 
@@ -1038,7 +1038,7 @@ def test_native_export_import_round_trips_spiral_bevel_pair_fields():
         assert export_response.status_code == 200
         exported = export_response.json()
         pair_dicts = [
-            f for p in exported["document"]["nodes"] for f in p["features"] if f["type"] == "bevel_pair"
+            f for p in exported["document"]["parts"] for f in p["features"] if f["type"] == "bevel_pair"
         ]
         exported_feature = next(f for f in pair_dicts if f["id"] == feature_id)
         assert exported_feature["spiral_angle_degrees"] == 18.0

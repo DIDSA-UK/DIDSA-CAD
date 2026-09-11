@@ -51,7 +51,7 @@ def test_new_document_clears_every_existing_part_in_the_session():
     assert response.json()["part_ids"] == []
 
     export = client.get("/document/export/native", headers=_headers(session)).json()
-    assert export["document"]["nodes"] == []
+    assert export["document"]["parts"] == []
 
 
 def test_new_document_clears_existing_sketches_in_the_session():
@@ -72,7 +72,7 @@ def test_new_document_leaves_other_sessions_completely_untouched():
     client.post("/document/new", headers=_headers(session_a))
 
     export_a = client.get("/document/export/native", headers=_headers(session_a)).json()
-    assert export_a["document"]["nodes"] == []
+    assert export_a["document"]["parts"] == []
 
     assert client.get(f"/document/parts/{part_b['id']}", headers=_headers(session_b)).status_code == 200
 
@@ -105,5 +105,5 @@ def test_two_new_part_cycles_in_one_session_produce_two_independent_saves():
     # Each save is its own, single-Part Document - neither contains the
     # other's Part, so opening either file shows the Part that was actually
     # current at Save time, not always the first one ever created.
-    assert [p["name"] for p in save_1["document"]["nodes"]] == ["Extruded Rectangle"]
-    assert [p["name"] for p in save_2["document"]["nodes"]] == ["Extruded Circle"]
+    assert [p["name"] for p in save_1["document"]["parts"]] == ["Extruded Rectangle"]
+    assert [p["name"] for p in save_2["document"]["parts"]] == ["Extruded Circle"]

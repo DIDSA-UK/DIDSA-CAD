@@ -70,8 +70,8 @@ def test_export_native_reflects_only_the_requesting_sessions_own_document():
     export_a = client.get("/document/export/native", headers=_headers(session_a)).json()
     export_b = client.get("/document/export/native", headers=_headers(session_b)).json()
 
-    names_a = {p["name"] for p in export_a["document"]["nodes"]}
-    names_b = {p["name"] for p in export_b["document"]["nodes"]}
+    names_a = {p["name"] for p in export_a["document"]["parts"]}
+    names_b = {p["name"] for p in export_b["document"]["parts"]}
 
     assert names_a == {"Todays Model"}
     assert names_b == {"Yesterdays Model"}
@@ -88,22 +88,18 @@ def test_native_import_full_replace_does_not_touch_another_sessions_document():
         "schema_version": client.get(
             "/document/export/native", headers=_headers(session_a)
         ).json()["schema_version"],
-        "document": {
-            "id": "imported-doc",
-            "root_node_id": "imp-part",
-            "nodes": [{"node_kind": "part", "id": "imp-part", "name": "Imported Part", "features": []}],
-        },
+        "document": {"id": "imported-doc", "parts": [{"id": "imp-part", "name": "Imported Part", "features": []}]},
         "sketches": [],
     }
     response = client.post("/document/import/native", json=imported_payload, headers=_headers(session_a))
     assert response.status_code == 200
 
     export_a = client.get("/document/export/native", headers=_headers(session_a)).json()
-    assert {p["name"] for p in export_a["document"]["nodes"]} == {"Imported Part"}
+    assert {p["name"] for p in export_a["document"]["parts"]} == {"Imported Part"}
 
     # Session B's own Document must be completely unaffected by Session A's import.
     export_b = client.get("/document/export/native", headers=_headers(session_b)).json()
-    assert {p["name"] for p in export_b["document"]["nodes"]} == {"Session B Part"}
+    assert {p["name"] for p in export_b["document"]["parts"]} == {"Session B Part"}
     assert client.get(f"/document/parts/{part_b['id']}", headers=_headers(session_b)).status_code == 200
 
 
@@ -171,8 +167,8 @@ def test_concurrent_requests_across_two_sessions_never_cross_contaminate():
 
     export_a = client.get("/document/export/native", headers=_headers(session_a)).json()
     export_b = client.get("/document/export/native", headers=_headers(session_b)).json()
-    names_a = {p["name"] for p in export_a["document"]["nodes"]}
-    names_b = {p["name"] for p in export_b["document"]["nodes"]}
+    names_a = {p["name"] for p in export_a["document"]["parts"]}
+    names_b = {p["name"] for p in export_b["document"]["parts"]}
 
     assert names_a == {f"A-{i}" for i in range(iterations)}
     assert names_b == {f"B-{i}" for i in range(iterations)}

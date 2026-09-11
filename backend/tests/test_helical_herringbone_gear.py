@@ -404,7 +404,7 @@ def test_native_export_import_round_trips_helix_angle_and_herringbone():
         export_response = client.get("/document/export/native")
         assert export_response.status_code == 200
         exported = export_response.json()
-        gear_dicts = [f for p in exported["document"]["nodes"] for f in p["features"] if f["type"] == "gear"]
+        gear_dicts = [f for p in exported["document"]["parts"] for f in p["features"] if f["type"] == "gear"]
         matching = [f for f in gear_dicts if f["id"] == feature_id]
         assert matching
         assert matching[0]["helix_angle_degrees"] == 18.0

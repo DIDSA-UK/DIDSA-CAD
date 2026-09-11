@@ -1,9 +1,10 @@
 """Assembly support's coordinate-transform math (`docs/assembly-scope.md`):
-composing `RigidTransform`s down a nested Occurrence tree (Assembly -> sub-
-Assembly -> ... -> leaf Part) - what `GET /nodes/{node_id}/assembly-mesh`
-(Phase 2) needs to place each unique leaf's shared, cached mesh at every one
-of its Occurrences' world positions, and what a `ComponentPattern`'s
-transform expansion (Phase 8) needs to mint each generated Occurrence's own
+composing `RigidTransform`s down a nested Occurrence tree (an Occurrence's
+target Part can itself have its own Occurrences, placing components inside
+components) - what `GET /parts/{part_id}/assembly-mesh` (Phase 2) needs to
+place each unique leaf's shared, cached mesh at every one of its
+Occurrences' world positions, and what a `ComponentPattern`'s transform
+expansion (Phase 8) needs to mint each generated Occurrence's own
 placement.
 
 Pure vector/matrix math, no OCCT dependency - `RigidTransform`'s translate +
@@ -95,9 +96,9 @@ def _mat3_to_axis_angle(m: Mat3) -> tuple[Vec3, float]:
 
 def compose(parent: RigidTransform, child: RigidTransform) -> RigidTransform:
     """The world-space `RigidTransform` of an Occurrence placed by `child`
-    inside a parent Assembly that is itself placed by `parent` - one step
-    of walking down a nested-subassembly Occurrence tree
-    (`GET /nodes/{node_id}/assembly-mesh`, Phase 2). Applies `child` in the
+    inside a parent Part that is itself placed by `parent` - one step of
+    walking down a nested-subassembly Occurrence tree
+    (`GET /parts/{part_id}/assembly-mesh`, Phase 2). Applies `child` in the
     parent's local frame, then places the result via `parent` - the
     standard child-relative-to-parent composition, matching
     `RigidTransform`'s own rotate-then-translate convention at each level."""
@@ -117,8 +118,8 @@ def compose(parent: RigidTransform, child: RigidTransform) -> RigidTransform:
 def compose_chain(transforms: list[RigidTransform]) -> RigidTransform:
     """`compose` folded left-to-right over a full Occurrence path from an
     assembly-mesh walk's root down to one leaf - `transforms[0]` is the
-    outermost (the root Assembly's own top-level Occurrence transform, if
-    any) and `transforms[-1]` the innermost (the leaf's own Occurrence
+    outermost (the root Part's own top-level Occurrence transform, if any)
+    and `transforms[-1]` the innermost (the leaf's own Occurrence
     transform). An empty list returns the identity transform."""
     result = RigidTransform.identity()
     for transform in transforms:

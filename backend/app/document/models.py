@@ -1,6 +1,5 @@
 import uuid
 from abc import ABC, abstractmethod
-from collections.abc import Iterator, MutableMapping
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -2849,13 +2848,38 @@ class MaterialAssignment:
 
 @dataclass
 class Part:
-    """An independent solid-modeling history: an ordered list of Features.
+    """A `.didsa` file's content: an ordered list of Features (this Part's
+    own local solid-modeling history) *and*, since assembly support
+    (`docs/assembly-scope.md`), an assembly structure - `occurrences`
+    placing other Parts (in other files) as components, and `mates`
+    constraining them. Both coexist on every Part rather than being two
+    separate node kinds: exactly the NX-style "one file, features and
+    assembly structure side by side" model the brainstorm settled on - a
+    user models local/reference geometry (import a fixture, sketch a
+    mounting boss) via `features` in the same file where they place and
+    mate other Parts as components via `occurrences`/`mates`, switching
+    between a "feature tools + feature tree" lens and an "assembly tools +
+    assembly tree" lens on the client without ever leaving the file. A
+    Part with empty `occurrences`/`mates` is indistinguishable from a
+    pre-assembly Part; a Part with an empty `features` list is a pure
+    assembly shell. Nothing here requires a Part to be "only" one or the
+    other.
 
-    Parts never reference each other or share Features/Sketches/Points -
-    each Part is a fully separate Feature list. Stage 7's locking rule:
-    a Feature can only be edited/deleted while it is the LAST Feature in
-    this list; earlier Features are permanently locked for this stage once
-    something is added after them.
+    Parts still never share Features/Sketches/Points directly, and a
+    Part's own Feature history still never references another Part's
+    Features/Sketches/Points - that invariant (in-context editing is
+    visual-only, no persistent associative links - decision #3) is
+    unchanged. What's new is `occurrences`: a *first-class*, deliberate
+    reference from this Part to another Part-in-another-file, addressed by
+    `Occurrence.external_ref` (an opaque relative path, never a Feature/
+    Sketch/Point reference) - a different, explicitly-designed relationship
+    from the one that invariant forbids, not an exception to it.
+
+    Stage 7's locking rule: a Feature can only be edited/deleted while it
+    is the LAST Feature in this list; earlier Features are permanently
+    locked for this stage once something is added after them. Locking
+    applies only to `features` - `occurrences`/`mates` have their own,
+    independent mutation rules (Phase 5/7).
 
     Part Properties (MBD metadata): `part_number`/`description`/`revision`
     have a real STEP home (`product.id`/`.description`,
@@ -2883,6 +2907,8 @@ class Part:
     supplier_part_number: str | None = None
     default_material: MaterialAssignment | None = None
     body_material_assignments: dict[str, MaterialAssignment] = field(default_factory=dict)
+    occurrences: list["Occurrence"] = field(default_factory=list)
+    mates: list["Mate"] = field(default_factory=list)
 
     def resolve_material(self, body_id: str) -> MaterialAssignment | None:
         """The material that applies to `body_id`: its own override if one
@@ -3050,12 +3076,14 @@ class Mate:
 
 @dataclass
 class Occurrence:
-    """One placed instance of another Node (a Part or a nested Assembly)
-    inside an Assembly - the definition/instance split an assembly needs
-    that a bare `Document.nodes` dict alone doesn't give: the same Part
-    definition can appear as several Occurrences, each with its own
+    """One placed instance of another Part (in another file) inside this
+    Part's assembly structure (see `Part`'s own docstring for why
+    `occurrences`/`mates` live directly on `Part` rather than on a
+    separate composite type). The definition/instance split an assembly
+    needs that a bare `Document.parts` dict alone doesn't give: the same
+    Part definition can appear as several Occurrences, each with its own
     `transform`, while sharing one underlying feature history and one
-    `app.document.body_cache` entry (keyed by node id, unaffected by how
+    `app.document.body_cache` entry (keyed by part id, unaffected by how
     many Occurrences reference it - so N occurrences of one definition
     trigger one recompute, not N).
 
@@ -3065,24 +3093,24 @@ class Occurrence:
     for DIDSA-CAD's multi-file assembly model - that this backend stores
     and echoes back verbatim and never parses or resolves itself. This
     backend has no filesystem/SAF access at all (`docs/assembly-scope.md`);
-    resolving `external_ref` into real Node data is entirely the client's
+    resolving `external_ref` into a real Part is entirely the client's
     job, done before it ever sends a composed graph to this backend.
 
-    `node_id` is deliberately `str | None`, not required, and is NEVER
+    `part_id` is deliberately `str | None`, not required, and is NEVER
     written to or read from disk (`native_format.py` only ever
     (de)serializes `external_ref` for an Occurrence - see its own
     `_occurrence_to_dict`/`_occurrence_from_dict`). It is the session-local
-    id (a key into this Document's own `nodes` dict) of whichever Node
+    id (a key into this Document's own `parts` dict) of whichever Part
     `external_ref` has been resolved to, valid for *this* editing session
-    only, populated by whoever is assembling a multi-node graph into this
+    only, populated by whoever is assembling a multi-file graph into this
     Document (the client's compose step for a real multi-file assembly -
     `docs/assembly-scope.md` - or directly by a caller/test that already
-    has all referenced Nodes in hand). An Occurrence freshly loaded from a
-    single native file has `node_id=None` until something resolves it;
+    has all referenced Parts in hand). An Occurrence freshly loaded from a
+    single native file has `part_id=None` until something resolves it;
     never assume it survives a save/reload round-trip on its own."""
 
     id: str
-    node_id: str | None = None
+    part_id: str | None = None
     external_ref: str | None = None
     name_override: str | None = None
     transform: RigidTransform = field(default_factory=RigidTransform)
@@ -3091,101 +3119,23 @@ class Occurrence:
 
 
 @dataclass
-class Assembly:
-    """The composite counterpart to `Part` (see that class's own
-    docstring): a Node with no Feature history of its own, but a list of
-    child `Occurrence`s (each placing another Node - a Part or a nested
-    Assembly) plus `Mate`s between them. `Node = Part | Assembly` below is
-    the union this backend treats as "one addressable thing in a
-    Document".
-
-    Kept as a distinct dataclass from `Part` - rather than one
-    discriminated dataclass covering both leaf and composite shapes - so
-    every existing Part-only Feature-handler module (`extrude.py`,
-    `pattern.py`, `fillet.py`, and the ~40 Feature subtypes' own resolvers)
-    keeps working completely unchanged: none of them need to reason about
-    "what if this is actually a composite"."""
-
-    id: str
-    name: str
-    occurrences: list[Occurrence] = field(default_factory=list)
-    mates: list[Mate] = field(default_factory=list)
-
-
-Node = Part | Assembly
-
-
-class _PartsView(MutableMapping):
-    """`Document.parts`'s backing object (see that property's own
-    docstring): a live, read/write dict-like view over `Document.nodes`
-    filtered to `Part` instances, so every pre-assembly-model call site
-    written against the old `document.parts[id] = part` / `document.
-    parts[id]` / `document.parts.values()` shape - `native_format.py`'s
-    import path, `store.py`'s part lookups, and the existing backend test
-    suite - keeps compiling AND keeps actually mutating the real `nodes`
-    dict, not a disposable copy, without every one of those call sites
-    needing to switch to `document.nodes`/`add_part` right away."""
-
-    def __init__(self, nodes: dict[str, "Node"]) -> None:
-        self._nodes = nodes
-
-    def __getitem__(self, key: str) -> Part:
-        node = self._nodes[key]
-        if not isinstance(node, Part):
-            raise KeyError(key)
-        return node
-
-    def __setitem__(self, key: str, value: Part) -> None:
-        self._nodes[key] = value
-
-    def __delitem__(self, key: str) -> None:
-        node = self._nodes.get(key)
-        if not isinstance(node, Part):
-            raise KeyError(key)
-        del self._nodes[key]
-
-    def __iter__(self) -> Iterator[str]:
-        return (key for key, node in self._nodes.items() if isinstance(node, Part))
-
-    def __len__(self) -> int:
-        return sum(1 for node in self._nodes.values() if isinstance(node, Part))
-
-    def __repr__(self) -> str:
-        return f"_PartsView({dict(self)!r})"
-
-
-@dataclass
 class Document:
     """The single Document instance this stage assumes - no multi-document
-    management. Owns a graph of Nodes (`nodes`), each either a leaf `Part`
-    or a composite `Assembly` - `root_node_id` names which Node is this
-    session's currently-open file (a single Part for today's pre-assembly
-    workflow, or an Assembly once assembly support is used).
-
-    `parts` is a read/write compatibility view (`_PartsView`, above) over
-    `nodes` filtered to just the Part instances - kept so existing code
-    written against `document.parts` keeps working unchanged; new
-    assembly-aware code should use `nodes`/`add_part`/`add_assembly`
-    directly."""
+    management. Owns one or more Parts (`parts`) - each already able to
+    hold both local Features and assembly structure at once (see `Part`'s
+    own docstring). `root_part_id` names which Part is this session's
+    currently-open file, as opposed to a Part pulled in only because
+    something else's `Occurrence.external_ref` resolved to it (Phase 2's
+    multi-file graph compose) - optional, since a session opening a single
+    plain file has no need to distinguish "the" Part from itself."""
 
     id: str
-    nodes: dict[str, Node] = field(default_factory=dict)
-    root_node_id: str | None = None
-
-    @property
-    def parts(self) -> _PartsView:
-        return _PartsView(self.nodes)
+    parts: dict[str, Part] = field(default_factory=dict)
+    root_part_id: str | None = None
 
     def add_part(self, name: str) -> Part:
         part = Part(id=str(uuid.uuid4()), name=name)
-        self.nodes[part.id] = part
-        if self.root_node_id is None:
-            self.root_node_id = part.id
+        self.parts[part.id] = part
+        if self.root_part_id is None:
+            self.root_part_id = part.id
         return part
-
-    def add_assembly(self, name: str) -> Assembly:
-        assembly = Assembly(id=str(uuid.uuid4()), name=name)
-        self.nodes[assembly.id] = assembly
-        if self.root_node_id is None:
-            self.root_node_id = assembly.id
-        return assembly

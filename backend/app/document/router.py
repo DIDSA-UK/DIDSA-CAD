@@ -7608,7 +7608,7 @@ def preview_section(
 
 
 @router.get("/export/native")
-def export_native_document(node_id: str | None = None) -> dict:
+def export_native_document(part_id: str | None = None) -> dict:
     """Native Save: hands back the in-memory Document as a plain JSON dict -
     no cached mesh/geometry (see `app.document.native_format.export_native`'s
     own docstring for the full "pure parametric tree" rationale). Client-
@@ -7616,15 +7616,17 @@ def export_native_document(node_id: str | None = None) -> dict:
     own, this is the client's one chance to read the full state out before
     it writes the actual file to disk.
 
-    `node_id` omitted (default): every Node currently in this session's
-    Document - a full session snapshot. `node_id=<id>`: just that one
-    Node's own data, which is what saving a single file in a multi-file
-    assembly actually needs (`docs/assembly-scope.md`) - each `.didsa` file
-    is independently saveable, and must never embed the resolved subtree
-    its own Occurrences' `external_ref`s point at, since those live in
-    their own separate files. 404s for an unknown `node_id`."""
+    `part_id` omitted (default): every Part currently in this session's
+    Document - a full session snapshot. `part_id=<id>`: just that one
+    Part's own data (its own features *and* its own occurrences/mates, both
+    of which can coexist on one Part - see `Part`'s own docstring), which
+    is what saving a single file in a multi-file assembly actually needs
+    (`docs/assembly-scope.md`) - each `.didsa` file is independently
+    saveable, and must never embed the resolved subtree its own
+    Occurrences' `external_ref`s point at, since those live in their own
+    separate files. 404s for an unknown `part_id`."""
     try:
-        return export_native(get_document(), all_sketches(), node_id=node_id)
+        return export_native(get_document(), all_sketches(), part_id=part_id)
     except NativeFormatError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
