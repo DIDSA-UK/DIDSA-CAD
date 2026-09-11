@@ -72,7 +72,7 @@ constraint with zero new library code, and the library additionally has
 `addTransform`/`addSameOrientation`/`addPointPlaneDistance`/
 `addPointInPlane` — exactly the rigid-body-placement and mate-alignment
 primitives a mate solver needs. **No new 6-DOF solver needs to be built**
-for Phase 7 (§3) — this is additive backend integration reusing an
+for Phase 6 (§3) — this is additive backend integration reusing an
 existing dependency.
 
 ---
@@ -108,7 +108,7 @@ file is open or creates/loads a different backend object.
 - `RigidTransform` (translation + axis-angle rotation, applied rotate-
   then-translate — the same composition order `MoveBodyFeature` already
   uses, for consistency across the codebase). Wire format is axis-angle,
-  not a quaternion; the mate solver (Phase 7) converts to/from quaternion
+  not a quaternion; the mate solver (Phase 6) converts to/from quaternion
   only at its own SolveSpace FFI boundary.
 - `MateType` (`coincident`/`concentric`/`parallel`/`distance`/`angle`),
   `MateEntityRef` (an Occurrence id + one of `SubShapeRef`/`PlaneRef`/
@@ -303,35 +303,69 @@ silently falls back to the desktop implementation via
    new `GET /parts/{part_id}/assembly-mesh` endpoint that walks the
    composite graph (via `assembly.py`'s `compose_chain`) and reuses the
    existing per-Part body cache unchanged — N occurrences of one
-   definition trigger one recompute, not N.
-3. **Part/Assembly mode toggle on the one open screen** — per §2's "mode
-   switching" note: this is a UI-state toggle inside the existing
-   part-editing screen, not a separate pushed screen. `PartViewport` is
-   shared unchanged between both modes; the side panel swaps between
-   `FeatureTreePanel` (existing) and a new `AssemblyTreePanel` reading
-   `part.occurrences`/`part.mates`, and the toolbar swaps between the
-   existing feature toolset and a new assembly toolset (insert component/
-   mate/pattern/hide/isolate), both bound to the *same* currently-open
-   Part. Bottom-up insert, top-down create-in-place, hide/show, isolate.
-4. **Whole-part selection, context menu, opacity tiers** — extend
+   definition trigger one recompute, not N. **Must return the target
+   Part's own local bodies (its own `compute_part_bodies` result, exactly
+   like today's plain `/mesh`) in addition to every resolved Occurrence's
+   bodies** - an easy thing to under-scope now that a Part can have both
+   local features and occurrences at once (§1 decision #2): the root
+   Part's own geometry (e.g. a locally-modelled mount) is just as much
+   part of the assembly-mesh response as anything it references.
+3. **Unified screen architecture: lens toggle + focus stack** — the
+   foundational client-side piece everything else in this list sits on
+   top of, and the concrete answer to "does the viewport change between
+   modes?" (it doesn't). Two independent axes on **one continuous
+   screen/viewport** - neither ever pushes a new screen, resets the
+   camera, or re-fetches anything on its own:
+   - **Lens** (Part mode ↔ Assembly mode): a pure UI-state toggle for
+     whichever Part is currently primary. Swaps the side panel between
+     `FeatureTreePanel` (existing, reads `part.features`) and a new
+     `AssemblyTreePanel` (reads `part.occurrences`/`part.mates`), and the
+     toolbar between the existing feature toolset and a new assembly
+     toolset (insert component/mate/pattern/hide/isolate). The 3D scene
+     itself is identical in both lenses - always this Part's own bodies
+     *and* every resolved Occurrence together, since both genuinely
+     coexist in the same file (§1 decision #2). No opacity change, no
+     selectability change, no backend call on a lens switch by itself.
+   - **Focus stack** (Make Focus / Exit Focus): a stack of "which Part is
+     currently primary" - "Make Focus" on a placed component pushes that
+     component's own Part; "Exit Focus" (or back) pops it. Reuses the
+     `OverrideStack` pattern already established in this codebase
+     (`_planeSelectionModeStack`/`_selectionFilterOverrides` in
+     `part_screen.dart`), just applied one level higher: a stack of
+     primary-Part-id rather than only selection-filter state. Top-of-
+     stack's own subtree (its own bodies plus its own resolved
+     Occurrences) renders opaque and stays selectable/editable; every
+     other Part in the stack renders translucent and becomes unselectable
+     via the same `OverrideStack<SelectionFilterState>` mechanism - a
+     clean 2-tier split that reproduces the original brainstorm's "focus
+     part and its children opaque, peers and parents translucent" spec
+     exactly, with no separate parent/peer/grandparent grading needed.
+     Translucent context geometry stays visible and snappable but never
+     produces a persistent Feature-level reference (decision #3 -
+     visual-only in-context editing).
+
+   Supersedes two originally-separate phases: the earlier "Part/Assembly
+   mode toggle" (the lens, above) and the earlier "in-context focus-mode
+   editing," which no longer pushes `PartScreen` as a child screen - focus
+   changes now stay on the same continuous screen/viewport throughout,
+   consistent with the lens toggle's own "never leave the viewport"
+   principle. Bottom-up insert, top-down create-in-place, hide/show,
+   isolate all build on this.
+4. **Whole-part selection + context menu** — extend
    `SelectionFilterState`/`select_other_sheet.dart` with a `component`
-   kind; new component context menu; per-instance opacity (nothing like
-   this exists today — only one global `bodyOpacity` preference).
+   kind, usable in either lens and regardless of focus depth (needed for
+   Make Focus, mate-authoring, and Move/Rotate no matter which tree is
+   currently shown); new component context menu (Make Focus/Move-Rotate/
+   Hide/Isolate/Mate/Pattern). Per-instance opacity itself now lives in
+   Phase 3's focus stack above, not here - there is no "opacity for mode"
+   concept anymore, only "opacity for focus depth."
 5. **Move/Rotate gizmo + persisted placement + undo** — a new 6-handle
    `component_gizmo.dart` reusing `section_gizmo.dart`'s proven math
    (which itself never persists anything — the actual "drag commits a
    Feature" precedent is `MoveBodyPanel`'s create-then-update-in-place
    pattern). Local component-transform undo built in this phase, not
    deferred — no document-level undo exists anywhere in this app today.
-6. **In-context focus-mode editing** — "Make Focus" on a placed component
-   (a *different* Part, in a different file, referenced via an
-   Occurrence - not the currently-open Part's own mode toggle, §2/item 3
-   above) pushes `PartScreen` as a child screen for that component's own
-   file (same pattern already used for Sketch mode) with read-only
-   reference geometry from the rest of the assembly. No backend changes
-   needed: per-part Feature endpoints already work against a session-local
-   part id regardless of assembly context.
-7. **Mate system** (coincident/concentric/parallel/distance/angle) — new
+6. **Mate system** (coincident/concentric/parallel/distance/angle) — new
    `assembly_solver.py` (mirrors `sketch/solver.py`'s structure). v1 only
    drives the actively-dragged Occurrence against fixed peers — coupled
    mechanisms (linkages) are a known v1 limitation, not a bug. Debounced
@@ -340,17 +374,18 @@ silently falls back to the desktop implementation via
    `client/native/slvs/`'s FFI shim is possible (pinned to the identical
    fork commit) but needs new forwarding functions that don't exist yet —
    explicitly deferred past v1.
-8. **Component pattern** (linear + circular) — a `ComponentPattern` on
-   `Assembly`, expanded via `assembly.py`'s transform math only (no OCCT
-   work needed, unlike body-level `PatternFeature`).
-9. **AI plan pipeline integration** — new `PlanStep` kinds (`mate`,
+7. **Component pattern** (linear + circular) — a `ComponentPattern` on
+   `Part` (not a separate `Assembly` type - see §1 decision #2), expanded
+   via `assembly.py`'s transform math only (no OCCT work needed, unlike
+   body-level `PatternFeature`).
+8. **AI plan pipeline integration** — new `PlanStep` kinds (`mate`,
    `move_component`, `pattern_component`, `hide_component`,
    `isolate_component`) following `MoveBodyStep`'s exact existing template.
    `add_component` needs its own client-side file-discovery mechanism
    (the stateless backend can't enumerate the user's project files) and
    may ship as a later sub-phase.
-10. **Hardening, migration, docs** — full `.didsacad` backward-compat test
-    matrix; keep this document current as phases land.
+9. **Hardening, migration, docs** — full `.didsacad` backward-compat test
+   matrix; keep this document current as phases land.
 
 ## 4. Known v1 limitations (carried forward from the plan, restated so they
    don't get lost)
