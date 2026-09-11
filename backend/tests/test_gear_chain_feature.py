@@ -390,7 +390,7 @@ def test_native_export_import_round_trips_a_gear_chain_feature():
         assert export_response.status_code == 200
         exported = export_response.json()
         chain_dicts = [
-            f for p in exported["document"]["parts"] for f in p["features"] if f["type"] == "gear_chain"
+            f for p in exported["document"]["nodes"] for f in p["features"] if f["type"] == "gear_chain"
         ]
         assert any(f["id"] == feature_id for f in chain_dicts)
 

@@ -172,7 +172,7 @@ def test_native_export_import_round_trips_a_planetary_gear_feature():
         assert export_response.status_code == 200
         exported = export_response.json()
         planetary_dicts = [
-            f for p in exported["document"]["parts"] for f in p["features"] if f["type"] == "planetary_gear"
+            f for p in exported["document"]["nodes"] for f in p["features"] if f["type"] == "planetary_gear"
         ]
         assert any(f["id"] == feature_id for f in planetary_dicts)
 

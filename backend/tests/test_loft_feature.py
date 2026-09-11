@@ -385,7 +385,7 @@ def test_native_export_import_round_trips_a_loft_feature():
         export_response = client.get("/document/export/native")
         assert export_response.status_code == 200
         exported = export_response.json()
-        loft_dicts = [f for p in exported["document"]["parts"] for f in p["features"] if f["type"] == "loft"]
+        loft_dicts = [f for p in exported["document"]["nodes"] for f in p["features"] if f["type"] == "loft"]
         assert any(f["id"] == feature_id for f in loft_dicts)
 
         import_response = client.post("/document/import/native", json=exported)
