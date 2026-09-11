@@ -6,7 +6,7 @@
 
 DIDSA Design Tools puts a real parametric CAD system — sketching, solid modelling, gears, and AI-assisted modelling — in one cross-platform app, backed by a lightweight server you can run on a Raspberry Pi, a spare PC, or even the Android phone the app is running on. It's built by [DIDSA (Didsbury Space Agency)](https://didsa.uk/didsa-design-tools/) as a personal education/interest project that's grown into something genuinely useful, and it's free for anyone with an idea to use, learn from, and build on.
 
-> **DIDSA Design Tools is developed with the assistance of AI**, guided by over a decade of hands-on engineering-software and design-tool experience. AI is a powerful amplifier when used thoughtfully and in moderation, under experienced hands.
+> Built with AI assistance, guided by over a decade of hands-on engineering-software and design-tool experience.
 
 [![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
 [![Backend CI](https://github.com/DIDSA-UK/DIDSA-CAD/actions/workflows/backend-verify.yml/badge.svg)](https://github.com/DIDSA-UK/DIDSA-CAD/actions/workflows/backend-verify.yml)
@@ -15,11 +15,11 @@ DIDSA Design Tools puts a real parametric CAD system — sketching, solid modell
 
 ---
 
-## ⚠️ Pre-release status — please read before relying on this
+## ⚠️ Pre-release status
 
-DIDSA Design Tools is **under active, heavy development and not yet a finished product.** The backend has an extensive automated test suite (2,000+ tests, run on every change), but real-world, on-device verification lags behind what's actually built — some features are confirmed working on real hardware (a Raspberry Pi 5 backend, an Android phone running the client, and even the backend itself running directly on a phone), while others are only verified against automated tests and are waiting for a real person to click through them.
+DIDSA Design Tools is under active development. The backend carries an extensive automated test suite (2,000+ tests, run on every change), but real-device testing is not exhaustive — some features are confirmed on real hardware, others only against automated tests, and iOS has had zero testing so far. More testing across more devices is needed.
 
-**If you try it, expect rough edges, and please tell us about them.** Bug reports, "this confused me," and "this crashed on my device" are exactly what this stage of the project needs — see [Contributing](#contributing--feedback) below. Model files aren't guaranteed to stay forward-compatible between versions yet, and this is not (yet) something to trust with work you can't afford to lose.
+If you try it, **a clear reproduction is the single most useful thing you can send us** — see [Contributing](#contributing--feedback).
 
 ---
 
@@ -80,7 +80,7 @@ DIDSA Design Tools is a thin client talking to a self-hosted backend — the bac
 | | Any x86_64 machine (Docker) | Multi-arch images are built for exactly this migration path |
 | | An Android phone itself, via Termux | The backend runs directly under Termux/proot Debian on-device — no separate server needed at all |
 | **Client app** | Android, Windows | Built and tested on real devices, including a phone with a fold-out mouse/trackpad workflow |
-| | iOS | Builds via the same Flutter codebase; less on-device verification so far |
+| | iOS | Builds via the same Flutter codebase; zero on-device testing so far |
 
 ## Software requirements
 
