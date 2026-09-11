@@ -6,7 +6,7 @@
 
 DIDSA Design Tools puts a real parametric CAD system — sketching, solid modelling, gears, and AI-assisted modelling — in one cross-platform app, backed by a lightweight server you can run on a Raspberry Pi, a spare PC, or even the Android phone the app is running on. It's built by [DIDSA (Didsbury Space Agency)](https://didsa.uk/didsa-design-tools/) as a personal education/interest project that's grown into something genuinely useful, and it's free for anyone with an idea to use, learn from, and build on.
 
-> **DIDSA Design Tools is developed with the assistance of AI**, guided by over a decade of hands-on engineering-software and design-tool experience. AI is a powerful amplifier when used thoughtfully and in moderation, under experienced hands — this project is also a live example of that approach, not just a statement of it.
+> **DIDSA Design Tools is developed with the assistance of AI**, guided by over a decade of hands-on engineering-software and design-tool experience. AI is a powerful amplifier when used thoughtfully and in moderation, under experienced hands.
 
 [![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
 [![Backend CI](https://github.com/DIDSA-UK/DIDSA-CAD/actions/workflows/backend-verify.yml/badge.svg)](https://github.com/DIDSA-UK/DIDSA-CAD/actions/workflows/backend-verify.yml)
