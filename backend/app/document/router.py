@@ -7608,16 +7608,25 @@ def preview_section(
 
 
 @router.get("/export/native")
-def export_native_document() -> dict:
-    """Native Save: hands back the whole in-memory Document (every Part's
-    ordered Feature list) plus every Sketch referenced by any SketchFeature
-    in it, as a plain JSON dict - no cached mesh/geometry (see
-    `app.document.native_format.export_native`'s own docstring for the full
-    "pure parametric tree" rationale). Client-owned files (locked-in scope):
-    the backend has no project storage of its own, this is the client's one
-    chance to read the full state out before it writes the actual file to
-    disk."""
-    return export_native(get_document(), all_sketches())
+def export_native_document(node_id: str | None = None) -> dict:
+    """Native Save: hands back the in-memory Document as a plain JSON dict -
+    no cached mesh/geometry (see `app.document.native_format.export_native`'s
+    own docstring for the full "pure parametric tree" rationale). Client-
+    owned files (locked-in scope): the backend has no project storage of its
+    own, this is the client's one chance to read the full state out before
+    it writes the actual file to disk.
+
+    `node_id` omitted (default): every Node currently in this session's
+    Document - a full session snapshot. `node_id=<id>`: just that one
+    Node's own data, which is what saving a single file in a multi-file
+    assembly actually needs (`docs/assembly-scope.md`) - each `.didsa` file
+    is independently saveable, and must never embed the resolved subtree
+    its own Occurrences' `external_ref`s point at, since those live in
+    their own separate files. 404s for an unknown `node_id`."""
+    try:
+        return export_native(get_document(), all_sketches(), node_id=node_id)
+    except NativeFormatError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 
 @router.post("/import/native", response_model=NativeImportResponse)

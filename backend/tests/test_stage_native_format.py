@@ -44,7 +44,7 @@ from app.document.models import (
     SweepFeature,
     SweepMode,
 )
-from app.document.native_format import NativeFormatError, export_native, import_native
+from app.document.native_format import SCHEMA_VERSION, NativeFormatError, export_native, import_native
 from app.sketch.models import Plane, Sketch, SketchEntityRef, SketchEntityType
 
 
@@ -194,7 +194,7 @@ def test_round_trips_every_feature_type_through_real_json():
     # arbitrary objects - round-trip through the real encoder/decoder.
     reloaded = json.loads(json.dumps(exported))
 
-    assert reloaded["schema_version"] == 1
+    assert reloaded["schema_version"] == SCHEMA_VERSION
 
     imported_document, imported_sketches = import_native(reloaded)
 
@@ -629,7 +629,7 @@ def test_export_import_native_over_http():
         export_response = client.get("/document/export/native")
         assert export_response.status_code == 200
         exported = export_response.json()
-        assert exported["schema_version"] == 1
+        assert exported["schema_version"] == SCHEMA_VERSION
         assert any(sketch["id"] == sketch_id for sketch in exported["sketches"])
 
         import_response = client.post("/document/import/native", json=exported)

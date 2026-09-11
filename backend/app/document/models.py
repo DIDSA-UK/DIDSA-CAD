@@ -1,5 +1,6 @@
 import uuid
 from abc import ABC, abstractmethod
+from collections.abc import Iterator, MutableMapping
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -2964,15 +2965,227 @@ class Part:
         return deleted
 
 
+@dataclass(frozen=True)
+class RigidTransform:
+    """Assembly support's placement primitive: an Occurrence's position in
+    its parent Assembly's coordinate space, as a translation plus an axis-
+    angle rotation about the Occurrence's own origin, applied rotate-then-
+    translate - the identical composition order `MoveBodyFeature` already
+    uses (see that class's own docstring: "matching SolidWorks' own
+    composition order"), kept consistent across the codebase rather than
+    introducing a second rotation convention.
+
+    Unlike `MoveBodyFeature.rotation_axis` (a `PatternAxisRef` - an axis
+    *derived* from existing Body/Sketch geometry), a `RigidTransform`'s
+    `rotation_axis` is a free unit-vector direction in the parent's
+    coordinate space, not resolved from any geometry - an Occurrence's
+    placement is arbitrary, not pinned to a reference feature. Stored as
+    axis-angle (not a quaternion) for this same MoveBodyFeature-consistency
+    reason; the assembly mate solver (`app.document.assembly_solver`,
+    Phase 7) converts to/from quaternion only at its own SolveSpace FFI
+    boundary, never in this wire type."""
+
+    translation: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    rotation_axis: tuple[float, float, float] = (0.0, 0.0, 1.0)
+    rotation_angle_degrees: float = 0.0
+
+    @staticmethod
+    def identity() -> "RigidTransform":
+        return RigidTransform()
+
+
+class MateType(str, Enum):
+    """Assembly support's basic mate set (`docs/assembly-scope.md`) - the
+    five industry-standard mates available immediately; more complex mates
+    (gear, cam, path, symmetry, width, limit) are explicitly out of scope
+    for this pass, added later the same way `PatternType`/`PlaneType` grew
+    new members without disturbing existing ones."""
+
+    COINCIDENT = "coincident"
+    CONCENTRIC = "concentric"
+    PARALLEL = "parallel"
+    DISTANCE = "distance"
+    ANGLE = "angle"
+
+
+@dataclass(frozen=True)
+class MateEntityRef:
+    """One side of a Mate: which Occurrence the referenced geometry belongs
+    to, plus the geometry itself. Reuses `SubShapeRef`/`PlaneRef`/`PointRef`
+    verbatim - the same reference types a Feature's own parameters already
+    use - since a mate references a face/edge/vertex/plane exactly the way
+    an existing Feature does; only `occurrence_id` is new, since a bare
+    `SubShapeRef` alone doesn't say which of possibly-many Occurrences of
+    the same Part definition it belongs to. Exactly one of the three ref
+    fields is ever set, mirroring `PointRef`/`PlaneRef`'s own established
+    "exactly one of N fields, payload shape validated by the router"
+    convention."""
+
+    occurrence_id: str
+    subshape_ref: SubShapeRef | None = None
+    plane_ref: PlaneRef | None = None
+    point_ref: PointRef | None = None
+
+
+@dataclass
+class Mate:
+    """A constraint between two Occurrences' geometry, of one of the five
+    `MateType`s. `value` is the distance (mm) for `DISTANCE` or the angle
+    (degrees) for `ANGLE`, unused otherwise. `flipped` is the alignment
+    flag `COINCIDENT`/`CONCENTRIC` mates need (SolidWorks' own "mate
+    alignment" toggle) to pick between the two valid normal-alignment
+    solutions a coincidence/concentricity constraint alone doesn't
+    disambiguate. Solving (turning a Mate into a resolved `RigidTransform`
+    for the Occurrences it references) is `app.document.assembly_solver`'s
+    job (Phase 7), not this dataclass's - this is data only, mirroring how
+    a Feature's own dataclass never resolves its own geometry either."""
+
+    id: str
+    type: MateType
+    references: list[MateEntityRef] = field(default_factory=list)
+    value: float | None = None
+    flipped: bool = False
+    suppressed: bool = False
+
+
+@dataclass
+class Occurrence:
+    """One placed instance of another Node (a Part or a nested Assembly)
+    inside an Assembly - the definition/instance split an assembly needs
+    that a bare `Document.nodes` dict alone doesn't give: the same Part
+    definition can appear as several Occurrences, each with its own
+    `transform`, while sharing one underlying feature history and one
+    `app.document.body_cache` entry (keyed by node id, unaffected by how
+    many Occurrences reference it - so N occurrences of one definition
+    trigger one recompute, not N).
+
+    `external_ref` is this Occurrence's target, expressed the same way
+    `MaterialAssignment.material_id` already is (see that field's own
+    docstring): an opaque, client-owned string - a relative file path,
+    for DIDSA-CAD's multi-file assembly model - that this backend stores
+    and echoes back verbatim and never parses or resolves itself. This
+    backend has no filesystem/SAF access at all (`docs/assembly-scope.md`);
+    resolving `external_ref` into real Node data is entirely the client's
+    job, done before it ever sends a composed graph to this backend.
+
+    `node_id` is deliberately `str | None`, not required, and is NEVER
+    written to or read from disk (`native_format.py` only ever
+    (de)serializes `external_ref` for an Occurrence - see its own
+    `_occurrence_to_dict`/`_occurrence_from_dict`). It is the session-local
+    id (a key into this Document's own `nodes` dict) of whichever Node
+    `external_ref` has been resolved to, valid for *this* editing session
+    only, populated by whoever is assembling a multi-node graph into this
+    Document (the client's compose step for a real multi-file assembly -
+    `docs/assembly-scope.md` - or directly by a caller/test that already
+    has all referenced Nodes in hand). An Occurrence freshly loaded from a
+    single native file has `node_id=None` until something resolves it;
+    never assume it survives a save/reload round-trip on its own."""
+
+    id: str
+    node_id: str | None = None
+    external_ref: str | None = None
+    name_override: str | None = None
+    transform: RigidTransform = field(default_factory=RigidTransform)
+    suppressed: bool = False
+    hidden: bool = False
+
+
+@dataclass
+class Assembly:
+    """The composite counterpart to `Part` (see that class's own
+    docstring): a Node with no Feature history of its own, but a list of
+    child `Occurrence`s (each placing another Node - a Part or a nested
+    Assembly) plus `Mate`s between them. `Node = Part | Assembly` below is
+    the union this backend treats as "one addressable thing in a
+    Document".
+
+    Kept as a distinct dataclass from `Part` - rather than one
+    discriminated dataclass covering both leaf and composite shapes - so
+    every existing Part-only Feature-handler module (`extrude.py`,
+    `pattern.py`, `fillet.py`, and the ~40 Feature subtypes' own resolvers)
+    keeps working completely unchanged: none of them need to reason about
+    "what if this is actually a composite"."""
+
+    id: str
+    name: str
+    occurrences: list[Occurrence] = field(default_factory=list)
+    mates: list[Mate] = field(default_factory=list)
+
+
+Node = Part | Assembly
+
+
+class _PartsView(MutableMapping):
+    """`Document.parts`'s backing object (see that property's own
+    docstring): a live, read/write dict-like view over `Document.nodes`
+    filtered to `Part` instances, so every pre-assembly-model call site
+    written against the old `document.parts[id] = part` / `document.
+    parts[id]` / `document.parts.values()` shape - `native_format.py`'s
+    import path, `store.py`'s part lookups, and the existing backend test
+    suite - keeps compiling AND keeps actually mutating the real `nodes`
+    dict, not a disposable copy, without every one of those call sites
+    needing to switch to `document.nodes`/`add_part` right away."""
+
+    def __init__(self, nodes: dict[str, "Node"]) -> None:
+        self._nodes = nodes
+
+    def __getitem__(self, key: str) -> Part:
+        node = self._nodes[key]
+        if not isinstance(node, Part):
+            raise KeyError(key)
+        return node
+
+    def __setitem__(self, key: str, value: Part) -> None:
+        self._nodes[key] = value
+
+    def __delitem__(self, key: str) -> None:
+        node = self._nodes.get(key)
+        if not isinstance(node, Part):
+            raise KeyError(key)
+        del self._nodes[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return (key for key, node in self._nodes.items() if isinstance(node, Part))
+
+    def __len__(self) -> int:
+        return sum(1 for node in self._nodes.values() if isinstance(node, Part))
+
+    def __repr__(self) -> str:
+        return f"_PartsView({dict(self)!r})"
+
+
 @dataclass
 class Document:
     """The single Document instance this stage assumes - no multi-document
-    management. Owns one or more independent Parts."""
+    management. Owns a graph of Nodes (`nodes`), each either a leaf `Part`
+    or a composite `Assembly` - `root_node_id` names which Node is this
+    session's currently-open file (a single Part for today's pre-assembly
+    workflow, or an Assembly once assembly support is used).
+
+    `parts` is a read/write compatibility view (`_PartsView`, above) over
+    `nodes` filtered to just the Part instances - kept so existing code
+    written against `document.parts` keeps working unchanged; new
+    assembly-aware code should use `nodes`/`add_part`/`add_assembly`
+    directly."""
 
     id: str
-    parts: dict[str, Part] = field(default_factory=dict)
+    nodes: dict[str, Node] = field(default_factory=dict)
+    root_node_id: str | None = None
+
+    @property
+    def parts(self) -> _PartsView:
+        return _PartsView(self.nodes)
 
     def add_part(self, name: str) -> Part:
         part = Part(id=str(uuid.uuid4()), name=name)
-        self.parts[part.id] = part
+        self.nodes[part.id] = part
+        if self.root_node_id is None:
+            self.root_node_id = part.id
         return part
+
+    def add_assembly(self, name: str) -> Assembly:
+        assembly = Assembly(id=str(uuid.uuid4()), name=name)
+        self.nodes[assembly.id] = assembly
+        if self.root_node_id is None:
+            self.root_node_id = assembly.id
+        return assembly
