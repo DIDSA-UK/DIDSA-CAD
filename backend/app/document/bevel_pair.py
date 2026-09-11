@@ -171,7 +171,7 @@ from app.document.bevel_math import (
 )
 from app.document.create_plane import resolve_plane_ref
 from app.document.extrude import compute_part_bodies
-from app.document.job_cancellation import CancellationToken
+from app.document.job_cancellation import CancellationToken, JobCancelled
 from app.document.job_cancellation import cancellation_scope as _cancellation_scope
 from app.document.models import BevelPairFeature, Part, ResolvedPlane
 from app.document.occt_process_utils import shape_from_brep_bytes as _shape_from_brep_bytes
@@ -538,6 +538,7 @@ def _run_phase_search_tier(
     grid_points: int,
     refine_iterations: int,
     zero_delta_overlap: float | None,
+    cancellation: "CancellationToken | None" = None,
 ) -> tuple[float, float | None]:
     """One grid-scan-plus-golden-section-refine tier - the same algorithm
     the original single-tier `_search_meshing_phase` ran unconditionally,
@@ -563,11 +564,20 @@ def _run_phase_search_tier(
     bracket depends on the last) and a minority of trials even after
     tiering, not worth forcing into the pool.
 
-    Returns `(best_delta_radians, best_overlap_mm3)`, `best_overlap_mm3`
-    `None` (and `best_delta_radians` `0.0`) if not even one trial in this
-    tier - grid or refine - produced a usable reading anywhere in the
-    window, mirroring the original function's own "no usable signal
-    ANYWHERE" contract."""
+    `cancellation` is checked cooperatively at entry and before every
+    serial-refine trial (`f`, below) - the pool-kill-triggers-an-exception
+    mechanism `job_cancellation.CancellationToken.cancel()` otherwise relies
+    on only fires while a future is actually in flight, and this tier spends
+    real, possibly multi-second-per-trial wall-clock time with the pool
+    completely idle (the whole golden-section refine, plus the gap between
+    the draft and full tier `_search_meshing_phase` reuses this same
+    `executor` for) - a `cancel()` landing in one of those windows would
+    otherwise go unnoticed until the next pool submission, which on a slow/
+    contended host can be minutes away. `is_cancelled()` short-circuits that
+    by raising `JobCancelled` directly instead of waiting for the pool to
+    surface it."""
+    if cancellation is not None and cancellation.is_cancelled():
+        raise JobCancelled()
     grid_deltas = [-half_pitch + 2 * half_pitch * i / (grid_points - 1) for i in range(grid_points)]
     zero_index = grid_points // 2  # grid_points is odd - this is exactly the window's own center.
     pool_deltas = grid_deltas[:zero_index] + grid_deltas[zero_index + 1 :]
@@ -580,6 +590,8 @@ def _run_phase_search_tier(
     step = 2 * half_pitch / (grid_points - 1)
 
     def f(delta: float) -> float:
+        if cancellation is not None and cancellation.is_cancelled():
+            raise JobCancelled()
         rotated = _rotated_about_axis(solid_2_base, basis_2, delta)
         overlap = _common_overlap_volume(solid_1, rotated)
         return overlap if overlap is not None else math.inf
@@ -667,6 +679,7 @@ def _search_meshing_phase(
             _PHASE_SEARCH_DRAFT_GRID_POINTS,
             _PHASE_SEARCH_DRAFT_REFINE_ITERATIONS,
             zero_overlap,
+            cancellation,
         )
         if draft_overlap is not None and draft_overlap <= _PHASE_SEARCH_EARLY_EXIT_OVERLAP_MM3:
             return draft_delta, draft_overlap
@@ -680,6 +693,7 @@ def _search_meshing_phase(
             _PHASE_SEARCH_GRID_POINTS,
             _PHASE_SEARCH_REFINE_ITERATIONS,
             zero_overlap,
+            cancellation,
         )
 
     if draft_overlap is None:
