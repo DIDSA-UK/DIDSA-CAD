@@ -88,7 +88,11 @@ def test_native_import_full_replace_does_not_touch_another_sessions_document():
         "schema_version": client.get(
             "/document/export/native", headers=_headers(session_a)
         ).json()["schema_version"],
-        "document": {"id": "imported-doc", "parts": [{"id": "imp-part", "name": "Imported Part", "features": []}]},
+        "document": {
+            "id": "imported-doc",
+            "root_node_id": "imp-part",
+            "nodes": [{"node_kind": "part", "id": "imp-part", "name": "Imported Part", "features": []}],
+        },
         "sketches": [],
     }
     response = client.post("/document/import/native", json=imported_payload, headers=_headers(session_a))
