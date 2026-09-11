@@ -76,6 +76,26 @@ dependencies:
   # `ai_modelling_screen.dart` never attempts to initialize it on Linux.
   speech_to_text: ^7.0.0
 
+  # Assembly support's storage layer (`docs/assembly-scope.md`): Android/
+  # iOS have no free-form filesystem access outside the app sandbox since
+  # scoped storage (Android 10+) - a project folder the user can see in
+  # their own file explorer, and that supports network-mounted storage via
+  # whatever documents-provider app already exposes it, requires the
+  # Storage Access Framework (`ACTION_OPEN_DOCUMENT_TREE` +
+  # `takePersistableUriPermission`), not `dart:io`'s plain `File`/
+  # `Directory`. `saf_util` (pick/create/list/mkdirp a SAF tree) and
+  # `saf_stream` (read/write file bytes against a SAF URI) are this
+  # project's Android SAF backend for `client/lib/storage/`'s
+  # `StorageService` - desktop keeps using plain `dart:io` paths (see
+  # `desktop_storage_service.dart`). Android-only (no iOS platform
+  # implementation as of these versions) - iOS needs its own security-
+  # scoped-bookmark equivalent, tracked as a known gap in
+  # `docs/assembly-scope.md`, not built yet.
+  saf_util: ^3.1.0
+  saf_stream: ^4.0.1
+  path: ^1.9.1
+  crypto: ^3.0.7
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

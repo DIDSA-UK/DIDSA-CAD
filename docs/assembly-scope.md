@@ -14,10 +14,11 @@ what's implemented so far, and what's still planned.
 
 Backend: `backend/app/document/*` (FastAPI + pythonocc-core/OCCT).
 Client: `client/lib/viewport3d/*` (3D viewport/tree/tools),
-`client/lib/storage/*`, `client/lib/assembly/*` (planned, not yet built).
+`client/lib/storage/*` (implemented), `client/lib/assembly/*` (planned,
+not yet built).
 
-**Status: Phase 0 (backend data model) implemented. Phases 1–10 are
-design-only — nothing else in this document is implemented yet.**
+**Status: Phase 0 (backend data model) and Phase 1 (client storage
+abstraction) implemented. Phases 2–9 are design-only.**
 
 ---
 
@@ -158,13 +159,93 @@ nested-compose, and rotation non-commutativity).
 
 ---
 
+## 2b. Phase 1 — client storage abstraction layer (implemented)
+
+`client/lib/storage/`:
+
+- `ProjectRoot` (`project_root.dart`) — sealed, two variants:
+  `DesktopProjectRoot` (a plain OS directory path) and `SafProjectRoot` (a
+  granted Android SAF tree URI + display name). No iOS variant — iOS has
+  no Storage Access Framework and needs its own security-scoped-bookmark
+  mechanism, tracked as a known gap below, not guessed at here.
+- `FileHandle` (`file_handle.dart`) — sealed the same way
+  (`DesktopFileHandle`/`SafFileHandle`), always carrying `relativePath`
+  (the portable identity that ends up in an `Occurrence.external_ref`)
+  alongside the platform-specific locator (`path`/`uri`, a live-session
+  convenience only, never persisted).
+- `StorageService` (`storage_service.dart`) — the abstract interface:
+  `pickOrCreateProjectRoot`, `lastUsedProjectRoot`, `resolve`, `readFile`,
+  `writeFile`, `lastModified`, `exists`, all in terms of
+  `ProjectRoot`/`FileHandle`/relative paths only, plus `StorageException`
+  for anything unreadable/unreachable.
+- `DesktopStorageService` (`desktop_storage_service.dart`) — a thin
+  `dart:io` `File`/`Directory` wrapper; relocated from what used to be
+  inlined directly in `part_screen.dart`'s save/load methods.
+- `SafStorageService` (`saf_storage_service.dart`) — Android-only, backed
+  by the `saf_util`/`saf_stream` packages (same maintainer, designed as a
+  pair): `saf_util` for tree navigation (pick/mkdirp/child/stat/exists),
+  `saf_stream` for file-byte I/O (`readFileBytes`,
+  `writeFileUriBytes`/`writeFileBytes`). `writeFile` overwrites an
+  existing file via its own URI (`writeFileUriBytes`) rather than the
+  create-or-rename-on-conflict path, so a re-save keeps the same
+  underlying SAF document identity. No `AndroidManifest.xml` or
+  `build.gradle` changes were needed: neither plugin declares any Android
+  permissions, and both require `minSdk 24`, which Flutter's own project
+  template already defaults to for this Flutter version.
+- `RecentProjectStore` (`recent_project_store.dart`) — persists
+  `(persistedKey, displayName)` via `shared_preferences` so
+  `lastUsedProjectRoot()` can reopen the last project without re-prompting
+  the picker; shared by both `StorageService` implementations rather than
+  each reimplementing it. Each implementation re-validates the persisted
+  key is still reachable/granted before trusting it (`lastUsedProjectRoot`
+  reads `null` for a revoked SAF permission or a deleted desktop
+  directory, not a stale success).
+- `FileCache` (`file_cache.dart`) — the "cached last-known-good snapshot"
+  half of the reference-staleness policy (§1.5): `get`/`put`/`evict`
+  keyed by a `sha256` hash of `(root.persistedKey, relativePath)`, backed
+  by `path_provider`'s app-private cache directory. Pure store, not a
+  decision-maker — the "try live, fall back to cache, flag stale" policy
+  itself belongs to whichever caller needs it (Phase 2's multi-file graph
+  composer, not yet built).
+- `storage_service_factory.dart` — `createStorageService()` picks
+  `SafStorageService` on Android, `DesktopStorageService` everywhere else
+  this app currently runs; iOS falls back to the desktop implementation
+  today, which will not actually work there (a known gap, not a real
+  implementation).
+
+New dependencies: `saf_util: ^3.1.0`, `saf_stream: ^4.0.1` (both actively
+maintained, Dart-3-compatible — an earlier candidate, `shared_storage`,
+was rejected for capping its SDK constraint below Dart 3.0), `path:
+^1.9.1`, `crypto: ^3.0.7`.
+
+**Verified**: a full `micromamba`-independent Flutter/Dart toolchain was
+installed specifically to make this possible (`flutter analyze` clean
+across the whole client; the full existing client test suite - 1684
+passed, 12 GPU/Impeller tests gracefully self-skip in this headless
+sandbox - confirmed as a pre-Phase-1 regression baseline). `Desktop
+StorageService` is tested against a real temporary directory (genuine
+`dart:io` I/O, no mocking). `SafStorageService` is tested against a fake
+`SafUtil`/`SafStream` pair (an in-memory tree standing in for the real
+Android platform channel, which is fundamentally untestable without a
+device/emulator) built by subclassing the real plugin classes - the same
+"inject the real dependency, substitute a fake for tests" convention this
+codebase already uses (e.g. `PartScreen`'s injectable `documentApi`),
+applied to third-party plugin classes. `FileCache` and
+`RecentProjectStore` are tested against a real temp directory and
+`SharedPreferences.setMockInitialValues` respectively. 47 new tests, all
+passing; the full client suite was rerun afterward to confirm no
+regressions.
+
+**Known gap, not built**: iOS has no SAF equivalent implemented yet - it
+needs its own security-scoped-bookmark mechanism
+(`UIDocumentPickerViewController` + persisted bookmarks), currently just
+silently falls back to the desktop implementation via
+`createStorageService()`, which will not work on a real iOS sandbox.
+
+---
+
 ## 3. Remaining phases (design-only)
 
-1. **Storage abstraction (client)** — a `StorageService` interface with
-   SAF-backed (Android/iOS) and plain-path (desktop) implementations, a
-   `ProjectRoot` concept, and the staleness cache described in §1.4/§1.5.
-   Genuinely new — no storage abstraction exists in the client today (file
-   I/O is inlined in `part_screen.dart` via the `file_picker` package).
 2. **Multi-file compose + stateless recompute** — client-side graph
    composition (resolve N `.didsa` files, assign session-local `node_id`s,
    cycle-check), reusing `/import/native` for the composed payload, plus a
