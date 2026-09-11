@@ -3063,7 +3063,7 @@ class Mate:
     solutions a coincidence/concentricity constraint alone doesn't
     disambiguate. Solving (turning a Mate into a resolved `RigidTransform`
     for the Occurrences it references) is `app.document.assembly_solver`'s
-    job (Phase 7), not this dataclass's - this is data only, mirroring how
+    job (Phase 6), not this dataclass's - this is data only, mirroring how
     a Feature's own dataclass never resolves its own geometry either."""
 
     id: str
@@ -3096,18 +3096,28 @@ class Occurrence:
     resolving `external_ref` into a real Part is entirely the client's
     job, done before it ever sends a composed graph to this backend.
 
-    `part_id` is deliberately `str | None`, not required, and is NEVER
-    written to or read from disk (`native_format.py` only ever
-    (de)serializes `external_ref` for an Occurrence - see its own
-    `_occurrence_to_dict`/`_occurrence_from_dict`). It is the session-local
-    id (a key into this Document's own `parts` dict) of whichever Part
-    `external_ref` has been resolved to, valid for *this* editing session
-    only, populated by whoever is assembling a multi-file graph into this
-    Document (the client's compose step for a real multi-file assembly -
-    `docs/assembly-scope.md` - or directly by a caller/test that already
-    has all referenced Parts in hand). An Occurrence freshly loaded from a
-    single native file has `part_id=None` until something resolves it;
-    never assume it survives a save/reload round-trip on its own."""
+    `part_id` is `str | None`, not required - the session-local id (a key
+    into this Document's own `parts` dict) of whichever Part `external_ref`
+    has been resolved to, valid for *this* editing session only. It IS
+    round-tripped through `native_format.py`, but only ever as a same-
+    payload cross-reference (wire key `"resolved_part_id"`,
+    `_occurrence_to_dict`/`_occurrence_from_dict`): `import_native`
+    trusts a `resolved_part_id` only when it actually matches another
+    Part's `id` present in that *same* import payload (a two-pass build -
+    every Part first, then every Occurrence's cross-reference validated
+    against that set), never a bare stored path. This is exactly what lets
+    the client's compose step (`docs/assembly-scope.md`) build one combined
+    `/import/native` payload out of N resolved `.didsa` files - each file's
+    own parsed Part gets a session-local id the client assigns, and each
+    Occurrence's `resolved_part_id` names which of those *other Parts in
+    the same payload* it resolves to. A single-file save
+    (`export_native(..., part_id=X)`) naturally can't have its Occurrences'
+    targets satisfy this - the referenced Part lives in a different file,
+    not in that solo payload - so re-opening such a file alone always
+    leaves `part_id=None` regardless of what was echoed into
+    `resolved_part_id` when it was last saved: never assume it survives a
+    single-file save/reload round-trip on its own, only a same-session
+    composed-graph one."""
 
     id: str
     part_id: str | None = None

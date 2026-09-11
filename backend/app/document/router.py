@@ -11,6 +11,7 @@ from OCC.Core.TopoDS import TopoDS_Shape
 
 from app.document.ai_plan import validate_ai_plan as validate_ai_plan_steps
 from app.document.ai_plan_schemas import PlanValidateRequest, PlanValidateResponse
+from app.document.assembly import compose_chain
 from app.document.bevel import _spiral_hand_from_feature, resolve_bevel_gear, resolve_bevel_gear_coarse
 from app.document.bevel_pair import resolve_bevel_pair, resolve_bevel_pair_coarse, resolve_member_profile_shifts
 from app.document.chamfer import resolve_chamfer
@@ -88,7 +89,7 @@ from app.document.graph import (
 )
 from app.document.import_geometry import extract_step_metadata, resolve_import
 from app.document.mesh import DEFAULT_MESH_QUALITY, MeshData, mesh_quality_from_slider, tessellate_shape
-from app.document.mesh_data import Triangle
+from app.document.mesh_data import MeshQuality, Triangle
 from app.document.mesh_export import encode_glb, encode_obj, encode_stl
 from app.document.mirror import resolve_mirror
 from app.document.native_format import NativeFormatError, export_native, import_native
@@ -148,6 +149,7 @@ from app.document.models import (
     RevolveFeature,
     RevolveMode,
     RevolveSurfaceFeature,
+    RigidTransform,
     RuledSurfaceFeature,
     ScaleBodyFeature,
     SketchFeature,
@@ -184,6 +186,10 @@ from app.document.schemas import (
     JobStatusResponse,
     BevelPairMemberSpecSchema,
     BevelPairMeshPreviewResult,
+    AssemblyBodyGeometry,
+    AssemblyMeshResponse,
+    AssemblyOccurrenceInstance,
+    RigidTransformResponse,
     BodyMeshResponse,
     BooleanFeatureCreate,
     BooleanFeatureResponse,
@@ -7577,6 +7583,135 @@ def get_part_mesh(
             )
         )
     return responses
+
+
+def _assembly_body_mesh_responses(part: Part, mesh_quality: MeshQuality) -> list[BodyMeshResponse]:
+    """The placeholder-or-real-bodies logic `get_part_mesh` above already
+    has, factored out so `get_assembly_mesh` (below) can compute one Part's
+    own local-space bodies the same way, without `hidden_feature_ids`/
+    `rollback_excluded_feature_ids` - those are the currently-open Part's
+    own live-editing state (`PartScreen`'s hide/show and B4 rollback), not
+    meaningful for a whole-tree scene fetch of Parts the user isn't
+    actively editing right now. A Part's `hidden` Body state is still
+    reported per-Body below (same as `get_part_mesh`'s own convention) -
+    only the *editing-session* exclusions are dropped, not the persisted
+    hidden flag itself... except there is no persisted per-Body hidden flag
+    on `Part` today (it's purely the client's own `hidden_feature_ids` set,
+    per `get_part_mesh`'s own docstring) - so every Body here reports
+    `hidden=False`, and it's each client's job to apply its own hide/show
+    state when rendering, exactly as it already must for any Part it isn't
+    the primary editing target of."""
+    if not part.produces_displayable_geometry:
+        box = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
+        mesh_data = tessellate_shape(box, mesh_quality)
+        return [BodyMeshResponse(body_id=_PLACEHOLDER_BODY_ID, source="placeholder", mesh=_mesh_vertex_data(mesh_data))]
+
+    bodies = compute_part_bodies(part, frozenset())
+    responses = []
+    for body_id, shape in bodies.items():
+        owning_feature = part.get_feature(base_feature_id(body_id))
+        responses.append(
+            BodyMeshResponse(
+                body_id=body_id,
+                source="computed",
+                mesh=_mesh_vertex_data(tessellate_shape(shape, mesh_quality)),
+                is_surface=owning_feature is not None
+                and resolve_feature_produces(owning_feature, part) == Produces.SURFACE,
+            )
+        )
+    return responses
+
+
+@router.get("/parts/{part_id}/assembly-mesh", response_model=AssemblyMeshResponse)
+def get_assembly_mesh(
+    part_id: str,
+    quality: float | None = Query(default=None, ge=0.0, le=1.0),
+) -> AssemblyMeshResponse:
+    """Assembly support (`docs/assembly-scope.md` Phase 2): everything
+    visible in `part_id`'s own assembly scene - its own local bodies (from
+    `part.features`, exactly like `GET /mesh`) *and* every Occurrence's
+    resolved geometry, recursively (an Occurrence's target Part can itself
+    have its own Occurrences), with world-space transforms already composed
+    down from the root (`app.document.assembly.compose_chain`). A Part's
+    own local geometry is included as one instance with `occurrence_path=
+    []` and the identity transform - it is exactly as much part of the
+    assembly view as anything it references, since `occurrences`/`mates`
+    coexist with `features` on one Part (decision #2) rather than living on
+    a separate node type.
+
+    Requires the full multi-file graph to already be composed into this
+    session's `Document` (the client's own compose step, Phase 2 - resolve
+    every referenced `.didsa` file, assign each a session-local `part_id`,
+    send the composed graph through `POST /import/native`, *then* call this
+    endpoint). This backend has no filesystem/SAF access of its own
+    (decision #6) - an `Occurrence` whose `part_id` hasn't been resolved
+    into `document.parts` yet is silently skipped, not an error, so every
+    sibling that *is* resolved still renders. A cyclic graph (an Occurrence
+    chain that would revisit a Part already on its own path) is likewise
+    skipped defensively rather than erroring the whole response - the
+    client's own compose step is the real cycle-detection gate (Phase 2);
+    this is a backstop, not the primary validation.
+
+    Geometry is deduplicated by Part id (`AssemblyBodyGeometry`, one entry
+    per unique Part actually reachable, reusing `app.document.body_cache`'s
+    existing per-Part-id caching - see that module's own docstring) -
+    N Occurrences of one Part definition trigger one recompute and ship one
+    geometry payload, never N. Every placed instance (`AssemblyOccurrence
+    Instance`) then just carries its own `world_transform`, not its own
+    copy of the mesh."""
+    document = get_document()
+    root_part = get_part_or_404(part_id)
+    mesh_quality = DEFAULT_MESH_QUALITY if quality is None else mesh_quality_from_slider(quality)
+
+    geometry_by_part_id: dict[str, AssemblyBodyGeometry] = {}
+    instances: list[AssemblyOccurrenceInstance] = []
+
+    def _geometry_for(part: Part) -> None:
+        if part.id in geometry_by_part_id:
+            return
+        geometry_by_part_id[part.id] = AssemblyBodyGeometry(
+            part_id=part.id, bodies=_assembly_body_mesh_responses(part, mesh_quality)
+        )
+
+    def _walk(
+        part: Part,
+        occurrence_path: list[str],
+        transform_chain: list[RigidTransform],
+        hidden: bool,
+        ancestors: frozenset[str],
+    ) -> None:
+        _geometry_for(part)
+        world_transform = compose_chain(transform_chain)
+        instances.append(
+            AssemblyOccurrenceInstance(
+                occurrence_path=occurrence_path,
+                part_id=part.id,
+                world_transform=RigidTransformResponse(
+                    translation=world_transform.translation,
+                    rotation_axis=world_transform.rotation_axis,
+                    rotation_angle_degrees=world_transform.rotation_angle_degrees,
+                ),
+                hidden=hidden,
+            )
+        )
+        child_ancestors = ancestors | {part.id}
+        for occurrence in part.occurrences:
+            if occurrence.suppressed or occurrence.part_id is None:
+                continue
+            child_part = document.parts.get(occurrence.part_id)
+            if child_part is None or child_part.id in child_ancestors:
+                continue
+            _walk(
+                child_part,
+                [*occurrence_path, occurrence.id],
+                [*transform_chain, occurrence.transform],
+                occurrence.hidden,
+                child_ancestors,
+            )
+
+    _walk(root_part, [], [], hidden=False, ancestors=frozenset())
+
+    return AssemblyMeshResponse(geometry=list(geometry_by_part_id.values()), instances=instances)
 
 
 @router.post("/parts/{part_id}/section-preview", response_model=list[SectionBodyMeshResponse])

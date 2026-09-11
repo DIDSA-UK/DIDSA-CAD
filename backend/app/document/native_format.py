@@ -1711,14 +1711,20 @@ def _rigid_transform_from_dict(data: dict | None) -> RigidTransform:
 
 
 def _occurrence_to_dict(occurrence: Occurrence) -> dict:
-    """`part_id` is deliberately never written here - see `Occurrence`'s own
-    docstring: it is a session-local id with no meaning outside the
-    in-memory Document that produced it. Only `external_ref` (an opaque,
-    client-owned relative file path this backend never parses) is
-    persisted, so a saved Occurrence is always addressed portably."""
+    """`part_id` round-trips as `"resolved_part_id"` - see `Occurrence`'s
+    own docstring for the full mechanism: `import_native` only trusts this
+    when it actually matches another Part's `id` present in the *same*
+    import payload (validated in a second pass after every Part in that
+    payload has been built - see `import_native`'s own `_resolve_
+    occurrence_part_ids`), so a single-file save's Occurrences (whose
+    targets necessarily live in other files, not in that solo payload)
+    naturally lose it again on any later standalone reimport, exactly as
+    intended - `external_ref` remains the only identity portable across a
+    single-file save/reload."""
     return {
         "id": occurrence.id,
         "external_ref": occurrence.external_ref,
+        "resolved_part_id": occurrence.part_id,
         "name_override": occurrence.name_override,
         "transform": _rigid_transform_to_dict(occurrence.transform),
         "suppressed": occurrence.suppressed,
@@ -1727,9 +1733,14 @@ def _occurrence_to_dict(occurrence: Occurrence) -> dict:
 
 
 def _occurrence_from_dict(data: dict) -> Occurrence:
+    """`part_id` is read tentatively from `"resolved_part_id"` here - not
+    yet validated, since at this point not every Part in the payload has
+    necessarily been built yet. `import_native` validates it afterward
+    (`_resolve_occurrence_part_ids`), clearing it back to `None` unless it
+    actually names another Part present in this same payload."""
     return Occurrence(
         id=_require(data, "id"),
-        part_id=None,
+        part_id=data.get("resolved_part_id"),
         external_ref=data.get("external_ref"),
         name_override=data.get("name_override"),
         transform=_rigid_transform_from_dict(data.get("transform")),
@@ -1912,5 +1923,26 @@ def import_native(data: dict) -> tuple[Document, dict[str, Sketch]]:
         part = _part_from_dict(part_data)
         document.parts[part.id] = part
     document.root_part_id = document_data.get("root_part_id")
+    _resolve_occurrence_part_ids(document)
 
     return document, sketches
+
+
+def _resolve_occurrence_part_ids(document: Document) -> None:
+    """The validation half of `Occurrence.part_id`'s round-trip (see that
+    field's own docstring, and `_occurrence_to_dict`/`_occurrence_from_
+    dict`'s): every Occurrence's tentative `part_id` (read from the wire's
+    `"resolved_part_id"`) is trusted only if it names a Part actually
+    present in `document.parts` - i.e. included in this *same* import
+    payload, exactly what the client's multi-file compose step
+    (`docs/assembly-scope.md`) produces when it bundles N resolved `.didsa`
+    files into one `/import/native` call. Anything else (a single-file
+    save's stale echo, a hand-edited or foreign id) is cleared back to
+    `None` rather than trusted - the safe, `resolve-before-use` default the
+    rest of this codebase already applies everywhere a reference might not
+    resolve (`resolve_subshape`'s own fail-closed behaviour is the
+    precedent)."""
+    for part in document.parts.values():
+        for occurrence in part.occurrences:
+            if occurrence.part_id is not None and occurrence.part_id not in document.parts:
+                occurrence.part_id = None

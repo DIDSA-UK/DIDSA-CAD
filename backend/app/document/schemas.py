@@ -2690,3 +2690,76 @@ class CascadeDeletePreviewResponse(BaseModel):
     features`' own natural order, mutating nothing."""
 
     feature_ids: list[str]
+
+
+class RigidTransformResponse(BaseModel):
+    """The wire form of `app.document.models.RigidTransform` - see that
+    dataclass's own docstring for why axis-angle, not a quaternion, is this
+    codebase's rotation convention. Used by `AssemblyOccurrenceInstance`
+    below; not tied to any one Feature the way `BodyMeshResponse` etc. are,
+    since a rigid placement isn't itself a Feature (`Occurrence.transform`
+    is a value, not something with its own `id`/history)."""
+
+    translation: tuple[float, float, float]
+    rotation_axis: tuple[float, float, float]
+    rotation_angle_degrees: float
+
+
+class AssemblyBodyGeometry(BaseModel):
+    """`GET /parts/{part_id}/assembly-mesh`'s per-Part-definition geometry -
+    one entry per *unique* Part actually reachable from the requested root
+    (itself plus every Part any Occurrence resolves to, recursively),
+    computed exactly once regardless of how many Occurrences place it
+    (`app.document.body_cache`'s own per-Part-id caching already gives this
+    for free - see that module's docstring). `bodies` is local-space,
+    identical in shape to `GET /parts/{id}/mesh`'s own response (in fact
+    the same `compute_part_bodies` call for this same `part_id`) - never
+    pre-transformed; every `AssemblyOccurrenceInstance` below that
+    references this `part_id` applies its own `world_transform` on top of
+    this same shared geometry, the instancing this endpoint exists to
+    provide (N occurrences of one definition ship one geometry payload, not
+    N)."""
+
+    part_id: str
+    bodies: list[BodyMeshResponse]
+
+
+class AssemblyOccurrenceInstance(BaseModel):
+    """One placed instance in `GET /parts/{part_id}/assembly-mesh`'s
+    response - either the requested root Part's own local bodies
+    (`occurrence_path=[]`, `world_transform` the identity - a Part's own
+    geometry is exactly as much part of its assembly view as anything it
+    references, since `occurrences`/`mates` coexist with `features` on one
+    Part, see `docs/assembly-scope.md` decision #2), or one Occurrence
+    somewhere in the resolved tree.
+
+    `occurrence_path` is the chain of `Occurrence.id`s from the root down
+    to this instance (e.g. `["occ-subassembly-1", "occ-bolt-3"]` for a bolt
+    placed inside a sub-assembly placed inside the root) - stable enough to
+    key client-side per-instance UI state (hide/isolate/selection) across a
+    single session, even though the same `part_id` might repeat elsewhere
+    in the tree with a different path and a different `world_transform`.
+    `part_id` names which `AssemblyBodyGeometry` entry's `bodies` this
+    instance places. `world_transform` is already fully composed down from
+    the root (`app.document.assembly.compose_chain`) - the client applies
+    it directly, with no further composition of its own required."""
+
+    occurrence_path: list[str]
+    part_id: str
+    world_transform: RigidTransformResponse
+    hidden: bool = False
+
+
+class AssemblyMeshResponse(BaseModel):
+    """`GET /parts/{part_id}/assembly-mesh`'s full response: every unique
+    Part's own local-space geometry (`geometry`) plus every placed instance
+    referencing it (`instances`), including the requested root Part's own
+    content as one instance with `occurrence_path=[]`. An Occurrence whose
+    `part_id` hasn't been resolved yet (the client's multi-file compose
+    step, `docs/assembly-scope.md` Phase 2, hasn't loaded that file into
+    this session) is silently skipped rather than erroring the whole
+    response - there is no geometry to show for it yet, but every sibling
+    that *is* resolved still renders."""
+
+    geometry: list[AssemblyBodyGeometry]
+    instances: list[AssemblyOccurrenceInstance]
