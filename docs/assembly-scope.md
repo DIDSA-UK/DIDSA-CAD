@@ -14,11 +14,13 @@ what's implemented so far, and what's still planned.
 
 Backend: `backend/app/document/*` (FastAPI + pythonocc-core/OCCT).
 Client: `client/lib/viewport3d/*` (3D viewport/tree/tools),
-`client/lib/storage/*` (implemented), `client/lib/assembly/*` (planned,
-not yet built).
+`client/lib/storage/*` (implemented), `client/lib/assembly/*`
+(implemented so far: graph compose + document client; screen/UI pieces
+still planned).
 
-**Status: Phase 0 (backend data model) and Phase 1 (client storage
-abstraction) implemented. Phases 2–9 are design-only.**
+**Status: Phase 0 (backend data model), Phase 1 (client storage
+abstraction), and Phase 2 (multi-file compose + recompute) implemented.
+Phases 3–9 are design-only.**
 
 ---
 
@@ -295,21 +297,87 @@ silently falls back to the desktop implementation via
 
 ---
 
+## 2c. Phase 2 — multi-file compose + stateless recompute (implemented)
+
+`backend/app/document/schemas.py`/`router.py`:
+
+- New `GET /parts/{part_id}/assembly-mesh` endpoint
+  (`AssemblyMeshResponse`: `geometry` + `instances`). Walks the Occurrence
+  tree from `part_id` down (`app.document.assembly.compose_chain` for
+  world transforms), computing each **unique** Part's own local bodies
+  exactly once (`_assembly_body_mesh_responses`, the same
+  `compute_part_bodies` path `GET /mesh` uses, reusing the existing
+  per-Part body cache) regardless of how many Occurrences place it -
+  `geometry` ships one entry per unique Part, `instances` ships one entry
+  per placed Occurrence (plus the root's own content, `occurrence_path:
+  []`), each carrying only its own `world_transform`. Confirmed correct
+  even down a nested subassembly chain (a component inside a component)
+  via a real `compose_chain` composition test. An Occurrence whose target
+  hasn't been resolved into `document.parts` yet, or that would revisit a
+  Part already on its own path (a cycle), is silently skipped rather than
+  failing the whole response - every resolvable sibling still renders.
+- **A real gap found and fixed while building this**: `Occurrence.part_id`
+  (session-local, Phase 0) had no mechanism to ever become non-`None` from
+  an import - `external_ref` alone can't be resolved by a backend with no
+  filesystem access (decision #6), so every Occurrence would have stayed
+  unresolved forever and `assembly-mesh` would never have shown a single
+  component. Fixed with a `"resolved_part_id"` wire field
+  (`_occurrence_to_dict`/`_occurrence_from_dict`) that `import_native`
+  only trusts when it names another Part actually present in the *same*
+  import payload (a two-pass build: every Part first, then every
+  Occurrence's cross-reference validated against that set,
+  `_resolve_occurrence_part_ids`) - exactly what lets the client's compose
+  step bundle N resolved `.didsa` files into one `/import/native` call. A
+  single-file save naturally loses this cross-reference on a later
+  standalone reimport (the referenced Part isn't in that solo payload) -
+  only `external_ref` survives a single-file round trip, matching the
+  "never embed the resolved subtree" principle.
+
+`client/lib/assembly/`:
+
+- `AssemblyGraphComposer` (`assembly_graph_composer.dart`) - resolves a
+  root `.didsa` file and everything it (transitively) references via
+  `StorageService`, into one combined `/import/native`-ready payload. Each
+  file's own persisted `id` is trusted as-is (not reassigned), which is
+  what makes resolving the same file from two different Occurrences (a
+  shared library part, or two paths converging on one sub-assembly) an
+  ordinary dedup rather than something needing special handling - both
+  resolve to the same relative path, hit the same cache entry, end up as
+  one Part entry either way. Throws `AssemblyGraphCycleException` for a
+  genuine reference cycle (including direct self-reference); a child file
+  that can't be read at all (live or cached) leaves its Occurrence
+  unresolved rather than failing the whole compose, mirroring the
+  backend's own unresolved-Occurrence handling. Implements the staleness
+  policy concretely (decision #5): tries a live read first, falls back to
+  `FileCache` on failure, and reports every relative path that had to fall
+  back via `staleRelativePaths`.
+- `AssemblyDocumentClient` (`assembly_document_client.dart`) - ties the
+  composer, `DocumentApiClient`, and `StorageService` together into the
+  three operations a caller needs: `openAssembly` (compose + one
+  `importNative` call), `fetchAssemblyMesh`, `savePart` (`exportNative
+  (partId: ...)` + `StorageService.writeFile`). Deliberately thin - no
+  dirty-tracking or UI state, that's Phase 3's screen to own.
+- `DocumentApiClient.exportNative` gained an optional `partId`; new
+  `getAssemblyMesh` plus `RigidTransformDto`/`AssemblyBodyGeometryDto`/
+  `AssemblyOccurrenceInstanceDto`/`AssemblyMeshDto`.
+
+**Verified**: full backend suite against real `pythonocc-core`/`py-slvs` -
+**2211/2211 passed** (5 new integration tests in
+`backend/tests/test_assembly_mesh.py`, covering a plain part, a root
+Part's own bodies coexisting with a placed Occurrence, geometry dedup
+across 3 occurrences of one Part, an unresolved-Occurrence no-op, and a
+real `compose_chain` transform-composition check down a 3-level nested
+chain with the exact expected coordinates asserted). Full client suite -
+**1742/1742 passed**, 12 GPU-skips (9 new `AssemblyGraphComposer` tests
+against a fake in-memory `StorageService` - dedup, direct and
+self-referencing cycles, missing files, cache-fallback staleness, 3-level
+nesting - plus 3 new `AssemblyDocumentClient` tests against a `MockClient`
+confirming the composed payload/mesh-parsing/save-back wiring end to end).
+
+---
+
 ## 3. Remaining phases (design-only)
 
-2. **Multi-file compose + stateless recompute** — client-side graph
-   composition (resolve N `.didsa` files, assign session-local `part_id`s,
-   cycle-check), reusing `/import/native` for the composed payload, plus a
-   new `GET /parts/{part_id}/assembly-mesh` endpoint that walks the
-   composite graph (via `assembly.py`'s `compose_chain`) and reuses the
-   existing per-Part body cache unchanged — N occurrences of one
-   definition trigger one recompute, not N. **Must return the target
-   Part's own local bodies (its own `compute_part_bodies` result, exactly
-   like today's plain `/mesh`) in addition to every resolved Occurrence's
-   bodies** - an easy thing to under-scope now that a Part can have both
-   local features and occurrences at once (§1 decision #2): the root
-   Part's own geometry (e.g. a locally-modelled mount) is just as much
-   part of the assembly-mesh response as anything it references.
 3. **Unified screen architecture: lens toggle + focus stack** — the
    foundational client-side piece everything else in this list sits on
    top of, and the concrete answer to "does the viewport change between
