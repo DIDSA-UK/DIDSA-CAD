@@ -137,13 +137,20 @@ Phase 2's `GET /nodes/{node_id}/assembly-mesh` is its first real caller.
 **Verified**: standalone round-trip tests (Document/Part/Assembly/
 Occurrence/Mate construction → `export_native` → real `json.dumps`/`loads`
 → `import_native` → equivalence, both full-graph and single-node export,
-plus v1-legacy-payload import) and the existing
-`backend/tests/test_stage_native_format.py` suite (13/14 tests pass in a
-sandbox without `pythonocc-core`/`py-slvs` installed; the one failure is
-`test_export_import_native_over_http`, which its own docstring already
-notes "only runs for real in CI" since it goes through the full FastAPI
-app). Two pre-existing tests that hardcoded `schema_version == 1` were
-updated to assert against the live `SCHEMA_VERSION` constant instead.
+plus v1-legacy-payload import), and the **full backend test suite run for
+real against a `pythonocc-core`/`py-slvs` environment** (a `micromamba`
+env built from `backend/environment.yml` specifically to make this
+possible): **2201/2201 passed**. Getting there surfaced three genuine
+pre-existing-test regressions a sandbox without those dependencies
+couldn't have caught: 11 test files read a native export's Part list via
+the JSON key `exported["document"]["parts"]` (now `"nodes"`) rather than
+the `document.parts` Python attribute my initial grep covered, and one
+session-isolation test hand-built a v1-shaped import payload while
+dynamically fetching the live (now v2) `schema_version` — all fixed as
+straightforward key renames with no change in test intent. Two other
+pre-existing tests that hardcoded `schema_version == 1` for their own
+*current-export* assertions (not a v1-compat fixture) were updated to
+assert against the live `SCHEMA_VERSION` constant instead.
 `assembly.py`'s transform composition was separately verified (identity,
 pure translation, rotated-parent-composes-child's-local-offset-correctly,
 axis-angle↔matrix round-trip including the 180° edge case, chain-matches-
