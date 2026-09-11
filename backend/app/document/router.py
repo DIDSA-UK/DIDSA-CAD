@@ -126,11 +126,15 @@ from app.document.models import (
     LoftSection,
     LoftSurfaceFeature,
     MaterialAssignment,
+    Mate,
+    MateEntityRef,
+    MateType,
     MergeFeature,
     MergeMode,
     MirrorFeature,
     MoveBodyFeature,
     MoveFaceFeature,
+    Occurrence,
     OffsetSourceRef,
     OffsetSurfaceFeature,
     Part,
@@ -189,6 +193,9 @@ from app.document.schemas import (
     AssemblyBodyGeometry,
     AssemblyMeshResponse,
     AssemblyOccurrenceInstance,
+    MateEntityRefResponse,
+    MateResponse,
+    OccurrenceResponse,
     RigidTransformResponse,
     BodyMeshResponse,
     BooleanFeatureCreate,
@@ -386,6 +393,8 @@ def _part_response(part: Part) -> PartResponse:
         id=part.id,
         name=part.name,
         feature_ids=[f.id for f in part.features],
+        occurrence_ids=[o.id for o in part.occurrences],
+        mate_ids=[m.id for m in part.mates],
         part_number=part.part_number,
         description=part.description,
         revision=part.revision,
@@ -3036,6 +3045,62 @@ def list_features(part_id: str) -> list[FeatureResponse]:
 def get_feature(part_id: str, feature_id: str) -> FeatureResponse:
     part = get_part_or_404(part_id)
     return _feature_response(part, _get_feature_or_404(part, feature_id))
+
+
+def _occurrence_response(occurrence: Occurrence) -> OccurrenceResponse:
+    return OccurrenceResponse(
+        id=occurrence.id,
+        external_ref=occurrence.external_ref,
+        resolved_part_id=occurrence.part_id,
+        name_override=occurrence.name_override,
+        transform=RigidTransformResponse(
+            translation=occurrence.transform.translation,
+            rotation_axis=occurrence.transform.rotation_axis,
+            rotation_angle_degrees=occurrence.transform.rotation_angle_degrees,
+        ),
+        suppressed=occurrence.suppressed,
+        hidden=occurrence.hidden,
+    )
+
+
+def _mate_entity_ref_response(ref: MateEntityRef) -> MateEntityRefResponse:
+    return MateEntityRefResponse(
+        occurrence_id=ref.occurrence_id,
+        subshape_ref=_subshape_ref_to_schema(ref.subshape_ref) if ref.subshape_ref else None,
+        plane_ref=_plane_ref_to_schema(ref.plane_ref) if ref.plane_ref else None,
+        point_ref=_point_ref_to_schema(ref.point_ref) if ref.point_ref else None,
+    )
+
+
+def _mate_response(mate: Mate) -> MateResponse:
+    return MateResponse(
+        id=mate.id,
+        type=mate.type.value,
+        references=[_mate_entity_ref_response(ref) for ref in mate.references],
+        value=mate.value,
+        flipped=mate.flipped,
+        suppressed=mate.suppressed,
+    )
+
+
+@router.get("/parts/{part_id}/occurrences", response_model=list[OccurrenceResponse])
+def list_occurrences(part_id: str) -> list[OccurrenceResponse]:
+    """Assembly support (`docs/assembly-scope.md`): the Assembly tree's own
+    "components" list - `part_id`'s own `occurrences`, full detail (unlike
+    `PartResponse.occurrence_ids`, ids only). Coexists with `list_features`
+    above rather than replacing it - both can return real entries for the
+    same Part at once (decision #2)."""
+    part = get_part_or_404(part_id)
+    return [_occurrence_response(occurrence) for occurrence in part.occurrences]
+
+
+@router.get("/parts/{part_id}/mates", response_model=list[MateResponse])
+def list_mates(part_id: str) -> list[MateResponse]:
+    """Assembly support (`docs/assembly-scope.md`): the Assembly tree's own
+    Mates list - `part_id`'s own `mates`, full detail (unlike
+    `PartResponse.mate_ids`, ids only)."""
+    part = get_part_or_404(part_id)
+    return [_mate_response(mate) for mate in part.mates]
 
 
 @router.post(

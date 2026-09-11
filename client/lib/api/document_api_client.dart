@@ -33,6 +33,15 @@ class PartDto {
   final String id;
   final String name;
   final List<String> featureIds;
+
+  /// Assembly support (`docs/assembly-scope.md`): cheap id-only summaries,
+  /// mirroring [featureIds]' own "ids here, full detail via
+  /// [DocumentApiClient.listOccurrences]/[listMates]" split. Can both be
+  /// non-empty on the same Part [featureIds] is, at the same time -
+  /// features and assembly structure coexist (decision #2).
+  final List<String> occurrenceIds;
+  final List<String> mateIds;
+
   final String? partNumber;
   final String? description;
   final String? revision;
@@ -46,6 +55,8 @@ class PartDto {
     required this.id,
     required this.name,
     required this.featureIds,
+    this.occurrenceIds = const [],
+    this.mateIds = const [],
     this.partNumber,
     this.description,
     this.revision,
@@ -60,6 +71,8 @@ class PartDto {
         id: json['id'] as String,
         name: json['name'] as String,
         featureIds: (json['feature_ids'] as List).cast<String>(),
+        occurrenceIds: (json['occurrence_ids'] as List? ?? const []).cast<String>(),
+        mateIds: (json['mate_ids'] as List? ?? const []).cast<String>(),
         partNumber: json['part_number'] as String?,
         description: json['description'] as String?,
         revision: json['revision'] as String?,
@@ -1340,6 +1353,103 @@ class AssemblyOccurrenceInstanceDto {
         partId: json['part_id'] as String,
         worldTransform: RigidTransformDto.fromJson(json['world_transform'] as Map<String, dynamic>),
         hidden: json['hidden'] as bool? ?? false,
+      );
+}
+
+/// The live, editable counterpart to [AssemblyOccurrenceInstanceDto] -
+/// `app.document.models.Occurrence` itself, what the Assembly tree's own
+/// "components" list reads from ([DocumentApiClient.listOccurrences]),
+/// unlike that geometry-fetch-only, world-transform-already-composed DTO.
+class OccurrenceDto {
+  final String id;
+  final String? externalRef;
+
+  /// Mirrors `Occurrence.part_id` - `null` until the client's compose step
+  /// (`AssemblyGraphComposer`) has resolved [externalRef] into a real Part
+  /// for this session. Named `resolvedPartId`, not `partId`, so it can't be
+  /// mistaken for a stable, always-present identity the way [id] is.
+  final String? resolvedPartId;
+
+  final String? nameOverride;
+  final RigidTransformDto transform;
+  final bool suppressed;
+  final bool hidden;
+
+  OccurrenceDto({
+    required this.id,
+    this.externalRef,
+    this.resolvedPartId,
+    this.nameOverride,
+    required this.transform,
+    this.suppressed = false,
+    this.hidden = false,
+  });
+
+  factory OccurrenceDto.fromJson(Map<String, dynamic> json) => OccurrenceDto(
+        id: json['id'] as String,
+        externalRef: json['external_ref'] as String?,
+        resolvedPartId: json['resolved_part_id'] as String?,
+        nameOverride: json['name_override'] as String?,
+        transform: RigidTransformDto.fromJson(json['transform'] as Map<String, dynamic>),
+        suppressed: json['suppressed'] as bool? ?? false,
+        hidden: json['hidden'] as bool? ?? false,
+      );
+}
+
+/// One side of a [MateDto] - see the backend `MateEntityRef`'s own
+/// docstring. Exactly one of [subshapeRef]/[planeRef]/[pointRef] is ever
+/// set.
+class MateEntityRefDto {
+  final String occurrenceId;
+  final SubShapeRefDto? subshapeRef;
+  final PlaneRefDto? planeRef;
+  final PointRefDto? pointRef;
+
+  MateEntityRefDto({required this.occurrenceId, this.subshapeRef, this.planeRef, this.pointRef});
+
+  factory MateEntityRefDto.fromJson(Map<String, dynamic> json) => MateEntityRefDto(
+        occurrenceId: json['occurrence_id'] as String,
+        subshapeRef: json['subshape_ref'] == null
+            ? null
+            : SubShapeRefDto.fromJson(json['subshape_ref'] as Map<String, dynamic>),
+        planeRef: json['plane_ref'] == null
+            ? null
+            : PlaneRefDto.fromJson(json['plane_ref'] as Map<String, dynamic>),
+        pointRef: json['point_ref'] == null
+            ? null
+            : PointRefDto.fromJson(json['point_ref'] as Map<String, dynamic>),
+      );
+}
+
+/// The Assembly tree's own Mates list - what
+/// [DocumentApiClient.listMates] returns, one entry per `app.document.
+/// models.Mate`.
+class MateDto {
+  final String id;
+  final String type;
+  final List<MateEntityRefDto> references;
+  final double? value;
+  final bool flipped;
+  final bool suppressed;
+
+  MateDto({
+    required this.id,
+    required this.type,
+    required this.references,
+    this.value,
+    this.flipped = false,
+    this.suppressed = false,
+  });
+
+  factory MateDto.fromJson(Map<String, dynamic> json) => MateDto(
+        id: json['id'] as String,
+        type: json['type'] as String,
+        references: (json['references'] as List)
+            .map((r) => MateEntityRefDto.fromJson(r as Map<String, dynamic>))
+            .toList(),
+        value: (json['value'] as num?)?.toDouble(),
+        flipped: json['flipped'] as bool? ?? false,
+        suppressed: json['suppressed'] as bool? ?? false,
       );
 }
 
@@ -3922,6 +4032,22 @@ class DocumentApiClient {
               headers: _headers,
             ),
         (body) => AssemblyMeshDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Assembly support: `GET /document/parts/{part_id}/occurrences` - the
+  /// Assembly tree's own "components" list for [partId], full detail
+  /// (unlike [PartDto.occurrenceIds], ids only).
+  Future<List<OccurrenceDto>> listOccurrences(String partId) => _send(
+        () => _httpClient.get(_uri('/document/parts/$partId/occurrences'), headers: _headers),
+        (body) => (body as List).map((o) => OccurrenceDto.fromJson(o as Map<String, dynamic>)).toList(),
+      );
+
+  /// Assembly support: `GET /document/parts/{part_id}/mates` - the
+  /// Assembly tree's own Mates list for [partId], full detail (unlike
+  /// [PartDto.mateIds], ids only).
+  Future<List<MateDto>> listMates(String partId) => _send(
+        () => _httpClient.get(_uri('/document/parts/$partId/mates'), headers: _headers),
+        (body) => (body as List).map((m) => MateDto.fromJson(m as Map<String, dynamic>)).toList(),
       );
 
   /// Sectioning Tool: `POST /document/parts/{part_id}/section-preview` - a

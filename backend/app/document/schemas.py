@@ -70,6 +70,16 @@ class PartResponse(BaseModel):
     id: str
     name: str
     feature_ids: list[str]
+
+    # Assembly support (`docs/assembly-scope.md`): cheap summary ids only,
+    # mirroring `feature_ids`' own "id list here, full detail via its own
+    # endpoint" split - `GET /parts/{part_id}/occurrences`/`.../mates`
+    # return the full `OccurrenceResponse`/`MateResponse` objects. A Part's
+    # `occurrences`/`mates` coexist with `features` (decision #2), so both
+    # id lists can be non-empty on the same Part at once.
+    occurrence_ids: list[str] = []
+    mate_ids: list[str] = []
+
     part_number: str | None = None
     description: str | None = None
     revision: str | None = None
@@ -2763,3 +2773,46 @@ class AssemblyMeshResponse(BaseModel):
 
     geometry: list[AssemblyBodyGeometry]
     instances: list[AssemblyOccurrenceInstance]
+
+
+class OccurrenceResponse(BaseModel):
+    """`GET /parts/{part_id}/occurrences`'s per-entry shape - the live,
+    editable counterpart to `AssemblyOccurrenceInstance` above (which is
+    geometry-fetch-only, read-only, and world-transform-already-composed).
+    This is `app.document.models.Occurrence` itself: the Assembly tree's
+    own "components" list reads straight from this, one row per entry.
+    `resolved_part_id` mirrors `Occurrence.part_id` (see that field's own
+    docstring for why it's session-local, `None` until something resolves
+    it) - named `resolved_part_id` here, not `part_id`, so a client can't
+    mistake it for a stable, always-present identity the way `id` is."""
+
+    id: str
+    external_ref: str | None = None
+    resolved_part_id: str | None = None
+    name_override: str | None = None
+    transform: RigidTransformResponse
+    suppressed: bool = False
+    hidden: bool = False
+
+
+class MateEntityRefResponse(BaseModel):
+    """One side of a `MateResponse` - see `app.document.models.
+    MateEntityRef`'s own docstring. Exactly one of `subshape_ref`/
+    `plane_ref`/`point_ref` is ever set."""
+
+    occurrence_id: str
+    subshape_ref: SubShapeRefSchema | None = None
+    plane_ref: PlaneRefSchema | None = None
+    point_ref: PointRefSchema | None = None
+
+
+class MateResponse(BaseModel):
+    """`GET /parts/{part_id}/mates`'s per-entry shape - `app.document.
+    models.Mate` itself, the Assembly tree's own Mates list."""
+
+    id: str
+    type: Literal["coincident", "concentric", "parallel", "distance", "angle"]
+    references: list[MateEntityRefResponse]
+    value: float | None = None
+    flipped: bool = False
+    suppressed: bool = False

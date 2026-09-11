@@ -13,14 +13,17 @@ reading the code, not assumed), with the model decisions that were made,
 what's implemented so far, and what's still planned.
 
 Backend: `backend/app/document/*` (FastAPI + pythonocc-core/OCCT).
-Client: `client/lib/viewport3d/*` (3D viewport/tree/tools),
-`client/lib/storage/*` (implemented), `client/lib/assembly/*`
-(implemented so far: graph compose + document client; screen/UI pieces
-still planned).
+Client: `client/lib/viewport3d/*` (3D viewport/tree/tools, now including
+`assembly_tree_panel.dart`), `client/lib/storage/*` (implemented),
+`client/lib/assembly/*` (graph compose, document client, `AssemblyLens`,
+`AssemblyFocusStack` - all implemented; screen/UI pieces beyond the lens
+toggle itself, e.g. Make Focus and per-instance opacity, still planned).
 
 **Status: Phase 0 (backend data model), Phase 1 (client storage
-abstraction), and Phase 2 (multi-file compose + recompute) implemented.
-Phases 3–9 are design-only.**
+abstraction), Phase 2 (multi-file compose + recompute), and Phase 3
+(lens toggle + focus-stack state, `AssemblyTreePanel`) implemented -
+Phase 3's Make Focus wiring and viewport opacity/instance rendering are
+explicitly deferred to Phases 4/5 (see §2d). Phases 4–9 are design-only.**
 
 ---
 
@@ -376,57 +379,109 @@ confirming the composed payload/mesh-parsing/save-back wiring end to end).
 
 ---
 
+## 2d. Phase 3 — unified screen architecture: lens toggle + focus stack (implemented, partial)
+
+The foundational client-side piece everything else in this list sits on
+top of, and the concrete answer to "does the viewport change between
+modes?" (it doesn't). Two independent axes on **one continuous
+screen/viewport** - neither ever pushes a new screen, resets the camera,
+or re-fetches anything on its own:
+
+- **Lens** (`AssemblyLens.part` ↔ `AssemblyLens.assembly`, new
+  `client/lib/assembly/assembly_lens.dart`) - a pure UI-state toggle for
+  whichever Part is currently primary. `PartScreen` now swaps the side
+  panel between the existing `FeatureTreePanel` (reads `_features`) and a
+  new `AssemblyTreePanel` (`viewport3d/assembly_tree_panel.dart`, reads
+  new `_occurrences: List<OccurrenceDto>`/`_mates: List<MateDto>` fields
+  fetched via `DocumentApiClient.listOccurrences`/`listMates` -
+  `backend/app/document/router.py`'s new `GET /parts/{part_id}/
+  occurrences`/`GET /parts/{part_id}/mates`, `OccurrenceResponse`/
+  `MateResponse` schemas, `PartResponse.occurrence_ids`/`mate_ids`
+  summary fields). A new small FAB (`assembly-lens-fab`, next to the
+  existing feature-tree FAB) toggles `_lens` and its tooltip/icon; only
+  one of `FeatureTreePanel`/`AssemblyTreePanel` is ever built into the
+  widget tree at a time (not merely hidden via `visible: false`) - both
+  carry their own "Close" button, and `AnimatedSlide`-hidden-but-mounted
+  widgets duplicated it, which a real widget test caught (see
+  `part_screen_test.dart`'s "dismissing the Feature tree cancels the
+  pending Extrude creation" - `find.byTooltip('Close').tap()` became
+  ambiguous with two matches). The accepted v1 cost: switching lens while
+  the panel is open swaps content instantly rather than sliding, unlike
+  toggling the panel open/closed within one lens (still animated).
+  `AssemblyTreePanel` itself is deliberately simpler than
+  `FeatureTreePanel` - no picker-mode machinery (nothing needs an in-tree
+  picker yet) and no Bodies/Planes/Surfaces sections (those stay
+  Part-lens-only) - just a Components section (occurrence rows, named via
+  `nameOverride` → `external_ref` basename → "Component N", flagging
+  hidden/suppressed/unresolved state) and a Mates section (mate rows named
+  "Type N"), both fully covered by widget tests
+  (`test/assembly_tree_panel_test.dart`).
+- **Focus stack** (`AssemblyFocusStack`, new
+  `client/lib/assembly/focus_stack.dart`) - a stack of "which Part is
+  currently primary," reusing the `OverrideStack<T>` pattern already
+  established in this codebase one level higher: `push`/`pop` a Part id,
+  `current` defaulting to the root Part (unlike `OverrideStack.current`,
+  never `null` - there is always a focused Part once an assembly is open).
+  `PartScreen` now owns one (`_focusStack`, seeded with the opened Part's
+  own id in `_loadPart`) and `_refreshAssemblyTree` reads
+  `_focusStack.current` rather than assuming the root Part is always what
+  the Assembly tree shows. Fully covered by unit tests
+  (`test/focus_stack_test.dart`).
+
+**Deferred, not yet wired**: "Make Focus"/"Exit Focus" actions that
+actually `push`/`pop` the focus stack (`AssemblyTreePanel.
+onOccurrenceLongPress` currently only selects a row, reserved for Phase
+4's Component context menu), and the opacity/selectability split for
+non-primary Parts described in the original brainstorm ("focus part and
+its children opaque, peers and parents translucent"). That enforcement
+needs `SelectionFilterState` to gain a `component` kind first - a real
+dependency on Phase 4, not a sequencing choice - so it stays scoped there
+rather than being claimed here. The 3D viewport itself does not yet
+render every resolved Occurrence alongside the primary Part's own bodies
+(consuming Phase 2's instanced `assembly-mesh` response is real
+rendering-pipeline work in `mesh_geometry.dart`, flagged as its own risk
+in the original plan) - today's viewport content is unchanged by the lens
+toggle, matching the "lens never changes the viewport" principle for the
+subset of scene content that already renders (this Part's own bodies),
+but Occurrences are not yet drawn as placed instances. Both are called
+out explicitly rather than silently assumed done.
+
+**Verified**: full backend suite against real `pythonocc-core`/`py-slvs` -
+**2214/2214 passed** (3 new tests in `test_assembly_tree_endpoints.py`: a
+fresh Part has no occurrences/mates; occurrences+mates appear in both the
+`PartResponse` summary and the full list endpoints with correct field
+values; occurrences and features coexist on one Part's own response - the
+exact model-correction scenario). Full client suite - **1762/1762
+passed**, 12 GPU-skips (`flutter analyze` clean on every touched/new file;
+20 new tests across `focus_stack_test.dart` and
+`assembly_tree_panel_test.dart`, including the `AssemblyFocusStack`
+push/pop/clear invariants and every `AssemblyTreePanel` display-name/
+empty-state/hidden/unresolved/tap/long-press/suppressed case). The
+`PartScreen` wiring itself caught one real regression before it shipped:
+mounting both tree panels simultaneously (one merely `visible: false`
+rather than absent from the tree) duplicated their "Close" buttons and
+broke `part_screen_test.dart`'s existing "dismissing the Feature tree
+cancels the pending Extrude creation" test via an ambiguous
+`find.byTooltip('Close')` - fixed by gating each panel's presence in the
+widget tree on `_lens` (an `if` in the `Stack`'s children, not just its
+own `visible` param), confirmed by re-running that test in isolation
+before the full re-run above went green.
+
+---
+
 ## 3. Remaining phases (design-only)
 
-3. **Unified screen architecture: lens toggle + focus stack** — the
-   foundational client-side piece everything else in this list sits on
-   top of, and the concrete answer to "does the viewport change between
-   modes?" (it doesn't). Two independent axes on **one continuous
-   screen/viewport** - neither ever pushes a new screen, resets the
-   camera, or re-fetches anything on its own:
-   - **Lens** (Part mode ↔ Assembly mode): a pure UI-state toggle for
-     whichever Part is currently primary. Swaps the side panel between
-     `FeatureTreePanel` (existing, reads `part.features`) and a new
-     `AssemblyTreePanel` (reads `part.occurrences`/`part.mates`), and the
-     toolbar between the existing feature toolset and a new assembly
-     toolset (insert component/mate/pattern/hide/isolate). The 3D scene
-     itself is identical in both lenses - always this Part's own bodies
-     *and* every resolved Occurrence together, since both genuinely
-     coexist in the same file (§1 decision #2). No opacity change, no
-     selectability change, no backend call on a lens switch by itself.
-   - **Focus stack** (Make Focus / Exit Focus): a stack of "which Part is
-     currently primary" - "Make Focus" on a placed component pushes that
-     component's own Part; "Exit Focus" (or back) pops it. Reuses the
-     `OverrideStack` pattern already established in this codebase
-     (`_planeSelectionModeStack`/`_selectionFilterOverrides` in
-     `part_screen.dart`), just applied one level higher: a stack of
-     primary-Part-id rather than only selection-filter state. Top-of-
-     stack's own subtree (its own bodies plus its own resolved
-     Occurrences) renders opaque and stays selectable/editable; every
-     other Part in the stack renders translucent and becomes unselectable
-     via the same `OverrideStack<SelectionFilterState>` mechanism - a
-     clean 2-tier split that reproduces the original brainstorm's "focus
-     part and its children opaque, peers and parents translucent" spec
-     exactly, with no separate parent/peer/grandparent grading needed.
-     Translucent context geometry stays visible and snappable but never
-     produces a persistent Feature-level reference (decision #3 -
-     visual-only in-context editing).
-
-   Supersedes two originally-separate phases: the earlier "Part/Assembly
-   mode toggle" (the lens, above) and the earlier "in-context focus-mode
-   editing," which no longer pushes `PartScreen` as a child screen - focus
-   changes now stay on the same continuous screen/viewport throughout,
-   consistent with the lens toggle's own "never leave the viewport"
-   principle. Bottom-up insert, top-down create-in-place, hide/show,
-   isolate all build on this.
 4. **Whole-part selection + context menu** — extend
    `SelectionFilterState`/`select_other_sheet.dart` with a `component`
    kind, usable in either lens and regardless of focus depth (needed for
    Make Focus, mate-authoring, and Move/Rotate no matter which tree is
    currently shown); new component context menu (Make Focus/Move-Rotate/
-   Hide/Isolate/Mate/Pattern). Per-instance opacity itself now lives in
-   Phase 3's focus stack above, not here - there is no "opacity for mode"
-   concept anymore, only "opacity for focus depth."
+   Hide/Isolate/Mate/Pattern), wiring Phase 3's `AssemblyFocusStack.push`/
+   `pop` to "Make Focus"/"Exit Focus" for the first time. Per-instance
+   opacity for non-primary Parts in the focus stack is built here, driven
+   by this phase's new `component` selection-filter kind (Phase 3's
+   `AssemblyFocusStack` only tracks *which* Part is primary - it has no
+   opacity/selectability enforcement of its own yet).
 5. **Move/Rotate gizmo + persisted placement + undo** — a new 6-handle
    `component_gizmo.dart` reusing `section_gizmo.dart`'s proven math
    (which itself never persists anything — the actual "drag commits a
