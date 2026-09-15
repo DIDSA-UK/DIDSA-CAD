@@ -13,29 +13,35 @@ reading the code, not assumed), with the model decisions that were made,
 what's implemented so far, and what's still planned.
 
 Backend: `backend/app/document/*` (FastAPI + pythonocc-core/OCCT) -
-unchanged by Phase 3b, see §2e for why.
+unchanged since Phase 2, see §2e/§2f for why Phase 3b/4 needed no backend
+changes either.
 Client: `client/lib/viewport3d/*` (3D viewport/tree/tools, now including
-`assembly_tree_panel.dart`, `action_sheet.dart`, `component_context_menu.dart`,
-and Phase 3b's own additions to `add_button_menu.dart`/`part_toolbar.dart`),
+`assembly_tree_panel.dart`, `action_sheet.dart`, `component_context_menu.dart`
+(now with a real call site - see §2f), Phase 3b's own additions to
+`add_button_menu.dart`/`part_toolbar.dart`, and Phase 4's own additions to
+`selection_filter.dart`/`selection_hit_test.dart`/`select_other_sheet.dart`/
+`selection_list_drawer.dart`/`mesh_geometry.dart`/`part_viewport.dart`),
 `client/lib/storage/*` (implemented), `client/lib/assembly/*` (graph
 compose, document client, `AssemblyLens`, `AssemblyFocusStack`,
-`assembly_lens_theme.dart`, `add_component.dart` - all implemented;
-screen/UI pieces beyond the lens toggle itself, e.g. Make Focus and
-per-instance opacity, still planned).
+`assembly_lens_theme.dart`, `add_component.dart`, and Phase 4's own
+`occurrence_visibility.dart` - all implemented).
 
 **Status: Phase 0 (backend data model), Phase 1 (client storage
 abstraction), Phase 2 (multi-file compose + recompute), Phase 3 (lens
-toggle + focus-stack state, `AssemblyTreePanel`), and Phase 3b (lens
-color/theme accent + Assembly-lens "Add" FAB/`PartToolbar` toolset)
+toggle + focus-stack state, `AssemblyTreePanel`), Phase 3b (lens
+color/theme accent + Assembly-lens "Add" FAB/`PartToolbar` toolset), and
+Phase 4 (whole-component selection + context menu, Make Focus/Exit Focus,
+Hide/Isolate, per-instance opacity, instanced viewport rendering)
 implemented. Assembly lens now has a working in-UI way to add a first
-component (`Add Component` → `mergeComponentIntoDocument`) and a distinct
-visual identity - see §2e for the real gap Phase 3b found along the way
-(no backend mutation endpoint exists for Occurrences, so `Add Component`
-works by merging and re-importing the whole session rather than an
-incremental create call) and what it left stubbed as a result (top-down
-"Create Component", Add Mate, Pattern Component). Phase 3's Make Focus
-wiring and viewport opacity/instance rendering are still deferred to
-Phases 4/5. Phases 4–9 are design-only.**
+component (`Add Component` → `mergeComponentIntoDocument`), a distinct
+visual identity, real Make Focus/Exit Focus, and placed Occurrences
+actually render (translucent when a focus fades them out) and are
+selectable in the 3D viewport for the first time - see §2e for the "Add
+Component" gap (no backend mutation endpoint exists for Occurrences) and
+§2f for Phase 4's own real gaps (client-only Hide/Isolate with no way to
+persist or override a backend-true `hidden`; root-Part selectability isn't
+enforced while focused elsewhere, only rendering opacity is). Phases 5–9
+are design-only.**
 
 ---
 
@@ -657,19 +663,197 @@ addition for what it would actually catch beyond the existing coverage.
 
 ---
 
+## 2f. Phase 4 — Whole-part selection + context menu (implemented)
+
+Closed the two gaps §2d/§2e each flagged and deliberately left open:
+`AssemblyTreePanel.onOccurrenceLongPress` had no real action behind it, and
+the 3D viewport never rendered a placed Occurrence at all - only this
+screen's own root Part ever showed. Both needed for the same reason: Make
+Focus/Hide/Isolate/opacity are all about *which rendered instance* is
+primary right now, and there was no rendered instance to be primary about
+before this phase.
+
+### `component` selection kind
+
+`client/lib/viewport3d/selection_hit_test.dart` gains
+`SelectionEntityKind.component` and `SelectionEntityRef.occurrenceId` (a
+joined `occurrencePath`, not a bare Occurrence id - the same Part
+definition can be placed more than once at different paths, Phase 2's own
+dedup precedent, so the path is what's actually unique per rendered
+instance). `client/lib/viewport3d/selection_filter.dart`'s
+`SelectionFilterState` gains a matching `component` field - defaulting
+`true` (unlike `body`, which started `false` with no hit-test to gate at
+all until a later prompt gave it one - `component` has a real consumer
+from this same phase). Every other exhaustive `switch` over
+`SelectionEntityKind` the compiler flagged (`select_other_sheet.dart`,
+`selection_list_drawer.dart`, and two in `part_viewport.dart` - one
+accumulating every selected entity's highlight geometry, one building a
+single hover/selection highlight Node) gained a `component` case, mirroring
+each file's own existing `body` case (a whole-component highlight is every
+one of its own Bodies' faces, the same "highlight everything, not just
+one" treatment a whole-Body selection already gets).
+
+### Instanced viewport rendering + hit-testing
+
+The real, previously-deferred piece: `PartViewport` now actually renders
+Phase 2's `assembly-mesh` response. `PartScreen._refreshAssemblyMesh` fetches
+it (lazily, same "most sessions never open Assembly lens" cost-avoidance
+`_refreshAssemblyTree` already established) and feeds two new
+`PartViewport` fields - `assemblyGeometry` (the dedup'd per-Part geometry)
+and `assemblyInstances` (every placed Occurrence's own world transform) -
+into a new `_syncAssemblyInstanceNodes`, `_syncMeshNode`'s sibling for this
+one job. Placement uses a new pure `mesh_geometry.dart` function,
+`matrix4FromRigidTransform` (translation + axis-angle rotation, rotate-
+then-translate via `vm.Matrix4.compose` - the client-side counterpart to
+`backend/app/document/assembly.py`'s identical backend-side math, verified
+against the same identity/pure-translation/known-angle/180°-edge-case
+matrix `assembly.py`'s own tests already cover). Hit-testing gained a new
+`selection_hit_test.dart` function, `hitTestComponentInstances` -
+`hitTestBodies`' whole-instance sibling, wired into
+`PartViewport._recomputeHover` as a third candidate competed by `rayT`
+against the existing mesh/plane candidates exactly the way those two
+already compete against each other.
+
+An instance's own `occurrencePath` empty means the requested root Part's
+own local content (Phase 2's convention) - skipped by both the render and
+hit-test paths, since that content is already covered by the ordinary
+`PartViewport.bodies` path; rendering/testing it a second time at the
+identity transform would just double it.
+
+### Make Focus / Exit Focus (real, for the first time)
+
+`AssemblyTreePanel.onOccurrenceLongPress` → `PartScreen._onOccurrenceLongPress`
+now calls `component_context_menu.dart`'s `showComponentContextMenu` (built
+in Phase 3b with no caller until now) and acts on the result:
+
+- **Make Focus** pushes the Occurrence's own `resolvedPartId` onto
+  `AssemblyFocusStack` (Phase 3's `push`/`pop`'s first real call site) and
+  re-fetches the Assembly tree, so the panel immediately shows the newly-
+  focused Part's own Occurrences/Mates - exactly the "which Part is primary"
+  question `_refreshAssemblyTree` already keyed off `AssemblyFocusStack.current`
+  for, since Phase 3, with nothing ever pushing onto it until now. Disabled
+  (surfaces an error rather than silently no-opping) for an unresolved
+  Occurrence - there is no Part id to push.
+- **Exit Focus** pops it and re-fetches the same way.
+- **Hide/Show** toggle a new, purely client-side `_hiddenOccurrenceIds` set
+  (mirrors `_hiddenFeatureIds`'s own convention exactly) - no backend
+  mutation endpoint exists for Occurrences at all (§2e's own documented
+  gap), so this can never be more than a session-only overlay.
+- **Isolate** sets/clears a new `_isolatedOccurrenceId` (at most one at a
+  time) - hides every *other* Occurrence. A toggle (Isolate again on the
+  same Occurrence clears it), since the context menu has no separate
+  "un-isolate"/"show all" action of its own yet.
+- **Move/Rotate/Mate/Pattern** stay disabled in the menu itself (Phases
+  5-7) and so never reach this `switch` - the same "picker already
+  filtered to enabled entries" shape `_onAssemblyAddPressed` already uses
+  for its own disabled entries.
+
+Both overlays are combined with each Occurrence's own backend-reported
+`hidden` via two new, standalone, directly-tested pure functions in
+`client/lib/assembly/occurrence_visibility.dart` - rather than living only
+as private getter logic, so both have real coverage independent of
+`part_screen_test.dart`'s own backend-fake limitations (see below).
+`applyOccurrenceVisibilityOverrides` feeds `PartScreen._displayOccurrences`
+(the Assembly tree's own list, keyed by bare Occurrence id, since an
+`OccurrenceDto` is only ever shown at one nesting level at a time);
+`applyInstanceVisibilityOverrides` feeds `PartViewport.assemblyInstances`
+directly (Phase 2's own placed-instance list, keyed by the *whole*
+`occurrencePath` chain, since a nested instance's path can contain a
+Hidden/Isolated Occurrence from any ancestor level - Hide/Isolate on a
+sub-assembly must hide/isolate everything nested inside it too, the
+standard CAD convention, which matching only the path's last segment would
+miss). Without the second function, Hide/Isolate would only ever have
+affected the tree panel's own rows, never what actually renders in the 3D
+viewport - caught before this phase's own tests were considered complete,
+not after. **A real, honestly-scoped limitation, not an oversight**: since
+there is no mutation endpoint, Hide/Show/Isolate only ever *OR* onto
+whatever the backend already reports - an Occurrence whose own `hidden`
+arrived from the backend as `true` (e.g. loaded from a file saved with it
+hidden) can never be un-hidden client-side; Show only ever clears this
+session's own override.
+
+### Opacity/selectability split
+
+`mesh_geometry.dart` gains `assemblyInstanceOpacity` (pure, tested) and
+`buildAssemblyInstanceNode` (GPU-bound, builds the placed instance's own
+Node at a given opacity/transform) plus the fixed
+`kNonPrimaryAssemblyOpacity` translucency constant. The rule: while no
+focus is active, every top-level instance renders fully opaque
+(`PartViewport.focusedComponentPartId == null` - ordinary assembly
+browsing); once a focus *is* pushed, only the one instance whose own
+target Part matches `AssemblyFocusStack.current` stays opaque - every
+other instance, **and the root Part's own local content** (`_syncMeshNode`
+folds a matching dim factor into `widget.bodyOpacity`, composing with
+rather than overriding the user's own Transparency slider), fades to
+`kNonPrimaryAssemblyOpacity`. Selectability mirrors this exactly in
+`PartViewport._hoverHitTestComponents`: an instance outside the focused
+subtree is excluded from `hitTestComponentInstances`' own
+`selectableOccurrencePaths` set entirely, never merely a losing candidate -
+the same "hidden means genuinely untestable" contract
+`PartViewport.bodiesHidden` already applies to a Part's own Bodies.
+
+**A real, honestly-scoped limitation, not an oversight**: this enforces
+selectability for placed *Occurrence instances* only. The root Part's own
+Bodies stay selectable (via the ordinary `hitTestBodies`/feature-editing
+path) even while some other component is focused - blocking that would
+mean gating the one hit-test every Part-lens feature tool in this app
+already depends on, unconditionally, a much larger and riskier change than
+this phase's own real scope. `AssemblyFocusStack` also still only tracks
+*which Part* is focused, not *which Occurrence* (Phase 3's own original
+simplification) - focusing one of two Occurrences that happen to place the
+same shared Part makes both read as "focused" simultaneously; a real,
+already-documented v1 limitation of the data model this phase inherited
+rather than one it introduced.
+
+**Verified**: no backend changes this phase (pure client work, reusing
+Phase 2's existing `GET /parts/{part_id}/assembly-mesh` endpoint
+end-to-end for the first time) - backend suite re-confirmed at its
+pre-existing baseline against real `pythonocc-core`/`py-slvs` -
+**2214/2214 passed**, unchanged from §2d/§2e. Full client suite -
+**1800/1800 passed** before this phase's own new tests were added; after,
+`flutter analyze` clean on every touched/new file, and **1833/1833
+passed** (12 GPU-skips, unchanged), with new tests across:
+`selection_filter_test.dart` (component defaults/copyWith/equality),
+`selection_hit_test_test.dart` (two new `SelectionEntityRef` equality
+cases for the `component` kind, plus `hitTestComponentInstances`'
+selectable-instance hit, excluded-instance skip, root's-own-empty-path
+skip, nearest-of-two-instances-wins, nested-path joining, and a genuine
+miss), `mesh_geometry_test.dart` (`matrix4FromRigidTransform`'s identity/
+pure-translation/known-angle/180°-edge-case/degenerate-axis cases -
+loosened to a `1e-6` tolerance after a real, caught-before-commit failure:
+`vm.Matrix4`/`vm.Vector3` store components as single-precision
+`Float32List`, so a trig-derived result can land a few ULPs off an exact
+integer value even though the maths itself is correct; `assemblyInstanceOpacity`'s
+focus-active/focused-instance matrix), `occurrence_visibility_test.dart`
+(new file - every
+`applyOccurrenceVisibilityOverrides` combination: no override, hidden-set,
+isolate, both composing, a backend-true `hidden` staying un-overridable,
+non-mutation of the input, and the empty-list case; plus
+`applyInstanceVisibilityOverrides`' own occurrencePath-prefix cases: hiding
+a top-level Occurrence also hides its own nested instance, hiding a nested
+one does *not* hide its parent, isolating a top-level Occurrence keeps its
+own nested contents visible while hiding every peer, and the same backend-
+true/empty-list cases), and two new
+`part_screen_test.dart` cases confirming a `component`-kind
+`onSelectionToggle` never lands in `PartViewport.selectedEntities` (the
+generic accumulate-toggle every other kind shares) while an ordinary
+`face` entity still does. A full end-to-end Make Focus/Hide/Isolate round
+trip through `part_screen_test.dart` was **not** attempted -
+`_FakeDocumentBackend` has no `listOccurrences`/`listMates`/
+`getAssemblyMesh` route implemented (§2e's own already-documented reason
+this stays out of scope for that harness) - mirroring exactly the same
+cost/benefit call §2e already made for its own FAB-wiring tests.
+
+---
+
 ## 3. Remaining phases (design-only)
 
-4. **Whole-part selection + context menu** — extend
-   `SelectionFilterState`/`select_other_sheet.dart` with a `component`
-   kind, usable in either lens and regardless of focus depth (needed for
-   Make Focus, mate-authoring, and Move/Rotate no matter which tree is
-   currently shown); new component context menu (Make Focus/Move-Rotate/
-   Hide/Isolate/Mate/Pattern), wiring Phase 3's `AssemblyFocusStack.push`/
-   `pop` to "Make Focus"/"Exit Focus" for the first time. Per-instance
-   opacity for non-primary Parts in the focus stack is built here, driven
-   by this phase's new `component` selection-filter kind (Phase 3's
-   `AssemblyFocusStack` only tracks *which* Part is primary - it has no
-   opacity/selectability enforcement of its own yet).
+Phase 4 ("Whole-part selection + context menu") moved to §2f - implemented.
+Numbering below is otherwise unchanged from the original plan (starts at 5
+rather than being renumbered), so every existing cross-reference elsewhere
+in this document (e.g. §4's own "Phase 5" undo note) still points at the
+same phase it always did.
+
 5. **Move/Rotate gizmo + persisted placement + undo** — a new 6-handle
    `component_gizmo.dart` reusing `section_gizmo.dart`'s proven math
    (which itself never persists anything — the actual "drag commits a

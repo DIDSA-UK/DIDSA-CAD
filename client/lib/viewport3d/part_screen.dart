@@ -25,6 +25,8 @@ import '../assembly/add_component.dart';
 import '../assembly/assembly_lens.dart';
 import '../assembly/assembly_lens_theme.dart';
 import '../assembly/focus_stack.dart';
+import '../assembly/occurrence_visibility.dart';
+import 'component_context_menu.dart';
 import '../connection_screen.dart';
 import '../didsa_logo_button.dart';
 import '../gear/bevel_design_screen.dart';
@@ -412,12 +414,14 @@ class _PartScreenState extends State<PartScreen> {
   /// separate axis from which tree/toolset that primary Part is shown with.
   AssemblyLens _lens = AssemblyLens.part;
 
-  /// Assembly support Phase 3: which Part is currently primary within this
-  /// composed assembly (see [AssemblyFocusStack]'s own doc comment) - `null`
-  /// until [_part] first loads, since the stack's root is this screen's own
-  /// Part id. Opacity/selectability enforcement for non-primary Parts is
-  /// Phase 4/5 work (needs `SelectionFilterState`'s new `component` kind) -
-  /// this screen only tracks the stack itself for now.
+  /// Assembly support Phase 3/4: which Part is currently primary within
+  /// this composed assembly (see [AssemblyFocusStack]'s own doc comment) -
+  /// `null` until [_part] first loads, since the stack's root is this
+  /// screen's own Part id. "Make Focus"/"Exit Focus" (Phase 4,
+  /// [_onOccurrenceLongPress]) are the first real `push`/`pop` call sites;
+  /// [PartViewport.focusedComponentPartId] reads [AssemblyFocusStack.current]
+  /// (only while [AssemblyFocusStack.isFocused]) for the opacity/
+  /// selectability split - see that field's own doc comment.
   AssemblyFocusStack? _focusStack;
 
   /// [_lens]'s own data - this Part's live Occurrences/Mates, fetched via
@@ -427,6 +431,47 @@ class _PartScreenState extends State<PartScreen> {
   List<OccurrenceDto> _occurrences = [];
   List<MateDto> _mates = [];
   String? _selectedOccurrenceId;
+
+  /// Assembly support Phase 4: purely client-side Hide/Show for an
+  /// Occurrence, mirroring [_hiddenFeatureIds]'s own convention exactly -
+  /// no backend mutation endpoint exists for Occurrences at all
+  /// (`docs/assembly-scope.md` §2e's own documented gap), so this can never
+  /// be more than a session-only overlay on top of whatever
+  /// [OccurrenceDto.hidden] the backend happens to already report. Combined
+  /// with that field (never replacing it) everywhere an Occurrence's
+  /// effective hidden state is needed - see [_displayOccurrences].
+  final Set<String> _hiddenOccurrenceIds = {};
+
+  /// Assembly support Phase 4: "Isolate" on the Component context menu -
+  /// at most one Occurrence id at a time (unlike [_hiddenOccurrenceIds],
+  /// which has no such cap); every *other* Occurrence is treated as hidden
+  /// while this is set (see [_displayOccurrences]). No dedicated "show all"
+  /// action exists on that menu yet, so this is a toggle: Isolate again on
+  /// the same Occurrence clears it, same as there being no distinct
+  /// "un-isolate" affordance elsewhere in the UI yet.
+  String? _isolatedOccurrenceId;
+
+  /// Assembly support Phase 4: [_occurrences] with [_hiddenOccurrenceIds]/
+  /// [_isolatedOccurrenceId]'s purely-client-side overlays folded into each
+  /// entry's own [OccurrenceDto.hidden] - see
+  /// [applyOccurrenceVisibilityOverrides]'s own doc comment for the full
+  /// rule (factored out as a standalone pure function, directly unit-
+  /// tested, rather than living only as this getter's own logic).
+  List<OccurrenceDto> get _displayOccurrences => applyOccurrenceVisibilityOverrides(
+        _occurrences,
+        hiddenOccurrenceIds: _hiddenOccurrenceIds,
+        isolatedOccurrenceId: _isolatedOccurrenceId,
+      );
+
+  /// Assembly support Phase 4: Phase 2's own `assembly-mesh` fetch
+  /// (`AssemblyMeshDto` - dedup'd per-Part geometry plus every placed
+  /// instance's own world transform), the data [PartViewport.
+  /// assemblyGeometry]/[assemblyInstances] render. `null` until the first
+  /// fetch resolves, and left `null` forever for a Part with no Occurrences
+  /// at all (see [_refreshAssemblyMesh]'s own early-return) - the same
+  /// "most sessions never pay for this" shape [_occurrences]/[_mates]'
+  /// own lazy [_refreshAssemblyTree] already established for Phase 3.
+  AssemblyMeshDto? _assemblyMesh;
 
   /// Prompt A3: one entry per independently-tessellated Body (Prompt A1's
   /// `/mesh` array) - was a single `MeshDto? _mesh` before this. Empty
@@ -1519,6 +1564,18 @@ class _PartScreenState extends State<PartScreen> {
     // placing a section must never fall through to the generic accumulate-
     // toggle, in Selection mode or not.
     if (_tryHandleSectionPlacementToggle(entity)) return;
+    // Assembly support Phase 4 (`docs/assembly-scope.md` §3): a whole-
+    // component viewport tap has entirely different semantics from every
+    // other kind below (single selected Occurrence id, mirroring
+    // [AssemblyTreePanel]'s own row selection - see [_onOccurrenceTap]) -
+    // never accumulated into [_selectedEntities], so this is checked
+    // before Measure/Fillet/Chamfer/the generic toggle, same "special case
+    // ahead of the generic toggle" precedence every branch below already
+    // uses for its own kind-specific behaviour.
+    if (entity.kind == SelectionEntityKind.component) {
+      setState(() => _selectedOccurrenceId = entity.occurrenceId);
+      return;
+    }
     // Measure: caps the selection at 2 entities. Toggling an already-
     // selected entity removes it (same as the generic toggle below). A 3rd
     // distinct tap starts fresh with just the newly-tapped entity, rather
@@ -7849,6 +7906,36 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
+  /// Assembly support Phase 4 (`docs/assembly-scope.md` §3): fetches
+  /// [PartViewport.assemblyGeometry]/[assemblyInstances]'s own data - Phase
+  /// 2's `GET /parts/{part_id}/assembly-mesh`, walked from this screen's own
+  /// *root* Part (never [_focusStack]'s currently-primary one - unlike
+  /// [_refreshAssemblyTree], which fetches whichever Part's own Occurrences/
+  /// Mates the tree panel is showing right now, this needs the *whole*
+  /// resolved tree every time, since Make Focus only changes which already-
+  /// rendered instance reads opaque vs translucent, never which instances
+  /// exist at all). Called whenever the set of Occurrences on this root
+  /// Part could plausibly have changed (after [_loadPart], and after
+  /// [_onInsertComponentPressed] adds one) - never on a bare focus push/pop,
+  /// since that only changes [PartViewport.focusedComponentPartId] (a
+  /// widget rebuild [PartViewport.didUpdateWidget] already reacts to on its
+  /// own, no new fetch needed).
+  ///
+  /// Left `_assemblyMesh == null` (no fetch at all) for a Part with no
+  /// Occurrences yet - mirrors [_refreshAssemblyTree]'s own "most sessions
+  /// never need this" cost-avoidance, just checked from [_occurrences]
+  /// (already fetched by the time this is ever called) instead of the lens.
+  Future<void> _refreshAssemblyMesh() async {
+    final part = _part;
+    if (part == null || _occurrences.isEmpty) {
+      if (_assemblyMesh != null && mounted) setState(() => _assemblyMesh = null);
+      return;
+    }
+    final mesh = await _api.getAssemblyMesh(part.id);
+    if (!mounted) return;
+    setState(() => _assemblyMesh = mesh);
+  }
+
   /// Re-fetches the Part's mesh with [_hiddenFeatureIds]/
   /// [_rollbackExcludedFeatureIds] sent along (as two separate params - see
   /// [_hiddenFeatureIds]'s own doc comment for why they must never be
@@ -8915,6 +9002,7 @@ class _PartScreenState extends State<PartScreen> {
       }
       await _api.importNative(merged);
       await _refreshAssemblyTree();
+      await _refreshAssemblyMesh();
     });
   }
 
@@ -16447,6 +16535,11 @@ class _PartScreenState extends State<PartScreen> {
     });
     if (_lens == AssemblyLens.assembly) {
       unawaited(_refreshAssemblyTree());
+      // Assembly support Phase 4: same lazy-fetch timing as
+      // [_refreshAssemblyTree] just above - most sessions never open the
+      // Assembly lens at all, so this stays uncalled (and [_assemblyMesh]
+      // stays `null`) for them, matching that call's own doc comment.
+      unawaited(_refreshAssemblyMesh());
     }
   }
 
@@ -16459,12 +16552,67 @@ class _PartScreenState extends State<PartScreen> {
     setState(() => _selectedOccurrenceId = occurrence.id);
   }
 
-  /// [AssemblyTreePanel.onOccurrenceLongPress] - reserved for the Component
-  /// context menu (Make Focus/Hide/Isolate/Mate/Pattern, Phase 4). A no-op
-  /// selection for now, same "wire the callback now, fill in its action
-  /// later" shape as [_onOccurrenceTap] until Phase 4 lands.
-  void _onOccurrenceLongPress(OccurrenceDto occurrence) {
+  /// [AssemblyTreePanel.onOccurrenceLongPress] - Phase 4's real call site
+  /// for `component_context_menu.dart`'s [showComponentContextMenu] (built
+  /// in Phase 3b with no caller yet, per that file's own doc comment).
+  /// Selects the row first (same as [_onOccurrenceTap]), same "select, then
+  /// offer more" precedence a long-press already has everywhere else in
+  /// this screen (e.g. [_onBodyLongPress]).
+  ///
+  /// Make Focus/Exit Focus are [AssemblyFocusStack.push]/[pop]'s first real
+  /// call sites (`docs/assembly-scope.md` §3) - [_refreshAssemblyTree] is
+  /// re-run afterward so the tree panel immediately shows the newly-focused
+  /// (or un-focused) Part's own Occurrences/Mates, exactly like every other
+  /// `_focusStack`-current-changing moment already re-fetches. Disabled
+  /// (unresolved `resolvedPartId`) can't be focused - there is nothing to
+  /// push, so this surfaces an error rather than silently no-opping.
+  ///
+  /// Hide/Show/Isolate are purely client-side (see [_hiddenOccurrenceIds]/
+  /// [_isolatedOccurrenceId]'s own doc comments - no backend mutation
+  /// endpoint for Occurrences exists at all, `docs/assembly-scope.md` §2e).
+  /// Move/Rotate/Mate/Pattern render disabled in the menu itself (Phases
+  /// 5-7) and so never reach this `switch` - same "picker already filtered
+  /// to enabled entries" shape [_onAssemblyAddPressed] already uses for its
+  /// own disabled entries.
+  Future<void> _onOccurrenceLongPress(OccurrenceDto occurrence) async {
     setState(() => _selectedOccurrenceId = occurrence.id);
+    final resolvedPartId = occurrence.resolvedPartId;
+    final focusStack = _focusStack;
+    final isFocused = (focusStack?.isFocused ?? false) &&
+        resolvedPartId != null &&
+        focusStack!.current == resolvedPartId;
+    final hidden = occurrence.hidden ||
+        _hiddenOccurrenceIds.contains(occurrence.id) ||
+        (_isolatedOccurrenceId != null && _isolatedOccurrenceId != occurrence.id);
+    final action = await showComponentContextMenu(context, isFocused: isFocused, hidden: hidden);
+    if (!mounted || action == null) return;
+    switch (action) {
+      case ComponentContextMenuAction.makeFocus:
+        if (resolvedPartId == null) {
+          setState(() => _errorMessage = 'Cannot focus an unresolved component - its file was never loaded');
+          return;
+        }
+        setState(() => focusStack?.push(resolvedPartId));
+        await _refreshAssemblyTree();
+      case ComponentContextMenuAction.exitFocus:
+        setState(() => focusStack?.pop());
+        await _refreshAssemblyTree();
+      case ComponentContextMenuAction.hide:
+        setState(() => _hiddenOccurrenceIds.add(occurrence.id));
+      case ComponentContextMenuAction.show:
+        setState(() {
+          _hiddenOccurrenceIds.remove(occurrence.id);
+          if (_isolatedOccurrenceId == occurrence.id) _isolatedOccurrenceId = null;
+        });
+      case ComponentContextMenuAction.isolate:
+        setState(() {
+          _isolatedOccurrenceId = _isolatedOccurrenceId == occurrence.id ? null : occurrence.id;
+        });
+      case ComponentContextMenuAction.moveRotate:
+      case ComponentContextMenuAction.mate:
+      case ComponentContextMenuAction.pattern:
+        break;
+    }
   }
 
   /// Pushes the Sketch screen and, once it returns (back button or the
@@ -16682,6 +16830,26 @@ class _PartScreenState extends State<PartScreen> {
                 PartViewport(
                   key: _viewportKey,
                   bodies: _visibleBodies,
+                  // Assembly support Phase 4 (`docs/assembly-scope.md` §3):
+                  // empty for every Part with no Occurrences at all
+                  // (`_assemblyMesh` only ever populates once one exists -
+                  // see [_refreshAssemblyMesh]'s own doc comment), so this is
+                  // a zero-cost no-op for the overwhelming majority of
+                  // existing, non-assembly usage.
+                  assemblyGeometry: _assemblyMesh?.geometry ?? const [],
+                  // Assembly support Phase 4: Hide/Isolate must reach the
+                  // viewport too, not just [AssemblyTreePanel] - see
+                  // [applyInstanceVisibilityOverrides]'s own doc comment for
+                  // why this needs occurrencePath-prefix matching rather
+                  // than [_displayOccurrences]'s simpler bare-id one.
+                  assemblyInstances: _assemblyMesh == null
+                      ? const []
+                      : applyInstanceVisibilityOverrides(
+                          _assemblyMesh!.instances,
+                          hiddenOccurrenceIds: _hiddenOccurrenceIds,
+                          isolatedOccurrenceId: _isolatedOccurrenceId,
+                        ),
+                  focusedComponentPartId: (_focusStack?.isFocused ?? false) ? _focusStack!.current : null,
                   selectedPlane: _selectedPlane,
                   sketchGeometries: _visibleSketchGeometries,
                   createPlanes: _createPlaneGeometries,
@@ -17225,7 +17393,7 @@ class _PartScreenState extends State<PartScreen> {
                 Positioned.fill(
                   child: AssemblyTreePanel(
                     visible: _featureTreePanelVisible,
-                    occurrences: _occurrences,
+                    occurrences: _displayOccurrences,
                     mates: _mates,
                     selectedOccurrenceId: _selectedOccurrenceId,
                     onOccurrenceTap: _onOccurrenceTap,

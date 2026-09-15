@@ -157,6 +157,11 @@ class _SelectOtherSheetState extends State<_SelectOtherSheet> {
         return const SvgIcon('assets/icons/viewport/selection_plane.svg');
       case SelectionEntityKind.sketchPatternMirrorInstance:
         return const SvgIcon('assets/icons/feature/feature_pattern.svg');
+      // Assembly support Phase 4: mirrors `AssemblyTreePanel`'s own
+      // Components-section icon, so a whole-component candidate reads the
+      // same way here as it already does in the Assembly tree.
+      case SelectionEntityKind.component:
+        return const Icon(Icons.view_in_ar_outlined);
     }
   }
 
@@ -191,6 +196,8 @@ class _SelectOtherSheetState extends State<_SelectOtherSheet> {
         return 'Plane';
       case SelectionEntityKind.sketchPatternMirrorInstance:
         return 'Pattern/Mirror';
+      case SelectionEntityKind.component:
+        return 'Component';
     }
   }
 
@@ -198,6 +205,15 @@ class _SelectOtherSheetState extends State<_SelectOtherSheet> {
     if (entity.kind == SelectionEntityKind.body) {
       final id = entity.bodyId;
       return widget.bodyNames[id] ?? 'Body ${id.length > 8 ? id.substring(0, 8) : id}';
+    }
+    // Assembly support Phase 4: [entity.id] carries no meaning for a
+    // component hit (see [SelectionEntityRef.occurrenceId]'s own doc
+    // comment) - falling through to the generic `#${entity.id}` default
+    // below would always print "#0", so this gets its own branch the same
+    // way [SelectionEntityKind.body] already does above.
+    if (entity.kind == SelectionEntityKind.component) {
+      final id = entity.occurrenceId;
+      return 'Component ${id.length > 8 ? id.substring(0, 8) : id}';
     }
     if (entity.kind == SelectionEntityKind.sketchPoint ||
         entity.kind == SelectionEntityKind.sketchLine ||

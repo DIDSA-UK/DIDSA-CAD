@@ -806,3 +806,107 @@ vm.Vector4 highContrastColorFrom(List<vm.Vector4> palette, vm.Vector4 referenceC
         distanceSquared(candidate, referenceColor) > distanceSquared(best, referenceColor) ? candidate : best,
   );
 }
+
+/// Assembly support Phase 4 (`docs/assembly-scope.md` §3): the client-side
+/// counterpart to `backend/app/document/assembly.py`'s own `RigidTransform`
+/// composition math - converts the wire form (translation + axis-angle
+/// rotation, applied rotate-then-translate, per that backend dataclass's
+/// own docstring) into the `Matrix4` `flutter_scene`'s `Node.localTransform`
+/// expects, so [PartViewport] can place a placed Occurrence instance's
+/// (dedup'd, Phase 2) geometry at its own world position without baking the
+/// transform into the vertex data itself.
+///
+/// [Matrix4.compose] applies scale, then rotation, then translation to a
+/// point - exactly "rotate then translate" with `scale` fixed at
+/// `(1, 1, 1)`, since `RigidTransform` has no scale field at all (an
+/// Occurrence never scales its target Part - decision #2's data model). A
+/// near-zero-length [RigidTransformDto.rotationAxis] (the identity-rotation
+/// case every fresh Occurrence starts at, before a user ever mates/moves
+/// it) is treated as no rotation rather than normalizing a degenerate
+/// vector, mirroring `assembly.py`'s own backend-side handling of the same
+/// case.
+vm.Matrix4 matrix4FromRigidTransform(RigidTransformDto transform) {
+  final translation = vm.Vector3(
+    transform.translation[0],
+    transform.translation[1],
+    transform.translation[2],
+  );
+  final axis = vm.Vector3(
+    transform.rotationAxis[0],
+    transform.rotationAxis[1],
+    transform.rotationAxis[2],
+  );
+  final rotation = axis.length2 < 1e-12
+      ? vm.Quaternion.identity()
+      : vm.Quaternion.axisAngle(axis.normalized(), transform.rotationAngleDegrees * math.pi / 180);
+  return vm.Matrix4.compose(translation, rotation, vm.Vector3(1, 1, 1));
+}
+
+/// Assembly support Phase 4: the opacity half of "opacity/selectability
+/// split for non-primary Parts in the focus stack" (`docs/assembly-
+/// scope.md` §3) - pure and directly unit-testable, kept separate from
+/// [buildAssemblyInstanceNode]'s own GPU-bound Node construction the same
+/// way [matrix4FromRigidTransform] keeps its own math separate from that
+/// Node's placement.
+///
+/// While no focus has been pushed yet (`AssemblyFocusStack.isFocused ==
+/// false` - ordinary top-level assembly browsing), every instance renders
+/// fully opaque; the caller passes `focusActive: false` in exactly that
+/// case, before ever checking which instance is "the" focused one, so
+/// [isFocusedInstance] is meaningless (and ignored) there. Once a focus
+/// *is* active, only the one instance whose own target Part is
+/// `AssemblyFocusStack.current` stays opaque - every other instance (and,
+/// separately, the root Part's own local content - see `PartViewport.
+/// _syncMeshNode`'s own use of [kNonPrimaryAssemblyOpacity]) fades to
+/// [kNonPrimaryAssemblyOpacity], the "this is context, not what you're
+/// working on right now" signal.
+double assemblyInstanceOpacity({required bool focusActive, required bool isFocusedInstance}) =>
+    (!focusActive || isFocusedInstance) ? 1.0 : kNonPrimaryAssemblyOpacity;
+
+/// Fixed translucency for a peer/parent instance once a focus is active -
+/// see [assemblyInstanceOpacity]'s own doc comment. Not user-adjustable
+/// (unlike [PartViewport.bodyOpacity]'s own Transparency slider) - this is
+/// a fixed "you are not editing this right now" signal, not a rendering
+/// preference.
+const double kNonPrimaryAssemblyOpacity = 0.25;
+
+/// Assembly support Phase 4: builds the [Node] rendering one placed
+/// Occurrence instance's own Body mesh - [_syncMeshNode]'s sibling for
+/// assembly-instance rendering (`PartViewport._syncAssemblyInstanceNodes`),
+/// needed because a placed instance's opacity/placement are genuinely
+/// *per-instance* concerns [_syncMeshNode]'s own single `widget.bodyOpacity`/
+/// implicit-identity-transform Node has no way to express - see `docs/
+/// assembly-scope.md` §3's Phase 4 "opacity/selectability split for
+/// non-primary Parts" and [assemblyInstanceOpacity]/
+/// [matrix4FromRigidTransform] for the two pure computations that feed it.
+///
+/// [opacity] below `1.0` switches to [AlphaMode.blend] plus double-sided
+/// winding (via [geometryFromMesh]'s own `doubleSidedWinding`) - the same
+/// face-culling fix [meshBuffersFromMesh]'s own doc comment already
+/// established for [PartViewport]'s ordinary Body Transparency slider,
+/// needed again here since this is a second, independent translucency
+/// source. A fixed neutral tint, not [PartViewport.bodyColourHex] - no
+/// per-Part colour exists in the data model yet (a real, documented gap,
+/// not an oversight), so every placed instance currently renders with the
+/// same neutral material regardless of which Part it places.
+///
+/// GPU-bound (delegates to [geometryFromMesh]), so - like every other
+/// Node-builder in this file - this cannot be exercised in a headless
+/// `flutter test` run; [matrix4FromRigidTransform]/[assemblyInstanceOpacity]
+/// above are this function's pure, directly-testable counterparts. Callers
+/// are expected to skip an empty [mesh] themselves, the same convention
+/// [_syncMeshNode]'s own per-Body loop already uses for [geometryFromMesh].
+Node buildAssemblyInstanceNode(
+  MeshDto mesh, {
+  required vm.Matrix4 localTransform,
+  required double opacity,
+}) {
+  final isTranslucent = opacity < 1.0;
+  final geometry = geometryFromMesh(mesh, doubleSidedWinding: isTranslucent);
+  final material = PhysicallyBasedMaterial()
+    ..alphaMode = isTranslucent ? AlphaMode.blend : AlphaMode.opaque
+    ..baseColorFactor = vm.Vector4(0.68, 0.72, 0.78, opacity)
+    ..roughnessFactor = 0.6
+    ..metallicFactor = 0.1;
+  return Node(name: 'assembly-instance', localTransform: localTransform, mesh: Mesh(geometry, material));
+}

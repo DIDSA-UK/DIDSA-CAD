@@ -58,6 +58,32 @@ class PartViewport extends StatefulWidget {
   /// [sketchGeometries] below already documents for its own `Map`.
   final List<BodyMeshDto> bodies;
 
+  /// Assembly support Phase 4 (`docs/assembly-scope.md` §3): Phase 2's own
+  /// dedup'd per-Part geometry (`AssemblyMeshDto.geometry`) - one entry per
+  /// unique Part regardless of how many [assemblyInstances] place it. Empty
+  /// (the default) renders nothing new - every Part with no Occurrences at
+  /// all (the overwhelming majority of existing, non-assembly usage) is
+  /// completely unaffected, the same "opt-in, zero-cost when unused" shape
+  /// every other assembly-support field on this widget follows.
+  final List<AssemblyBodyGeometryDto> assemblyGeometry;
+
+  /// Assembly support Phase 4: Phase 2's own placed-instance list
+  /// (`AssemblyMeshDto.instances`) - each entry's own [AssemblyOccurrenceInstanceDto.occurrencePath]
+  /// empty means the requested root Part's own local content (already
+  /// covered by [bodies] above - see [PartViewportState._syncAssemblyInstanceNodes]'s
+  /// own skip of that case) rather than a real placed Occurrence.
+  final List<AssemblyOccurrenceInstanceDto> assemblyInstances;
+
+  /// Assembly support Phase 4: `AssemblyFocusStack.current`, but only when
+  /// `AssemblyFocusStack.isFocused` is true - `null` means no focus has
+  /// been pushed yet (every top-level instance renders fully opaque and
+  /// selectable, ordinary assembly browsing). Non-null names the one Part
+  /// id whose own placed instance(s) should stay opaque/selectable while
+  /// every other instance (and the root Part's own local content) fades to
+  /// [kNonPrimaryAssemblyOpacity] - see [assemblyInstanceOpacity]'s own doc
+  /// comment for the full rule.
+  final String? focusedComponentPartId;
+
   /// On-device feedback ("Show reference body button in the sketcher
   /// should now toggle visibility of all bodies on/off to show user a
   /// clear view of the sketch"): true suppresses every rendered mesh/edge
@@ -875,6 +901,9 @@ class PartViewport extends StatefulWidget {
   const PartViewport({
     super.key,
     this.bodies = const [],
+    this.assemblyGeometry = const [],
+    this.assemblyInstances = const [],
+    this.focusedComponentPartId,
     this.bodiesHidden = false,
     required this.selectedPlane,
     required this.onPlaneTap,
@@ -1050,6 +1079,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// [_syncMeshNode] call the same way [_planeNodes]/[_sketchNodes] already
   /// rebuild wholesale from their own source maps.
   Map<String, Node> _meshNodes = {};
+
+  /// Assembly support Phase 4: one filled-faces [Node] per placed Occurrence
+  /// instance's own Body (`PartViewport.assemblyGeometry`/`assemblyInstances`),
+  /// keyed by `'<joined occurrencePath>/<bodyId>'` - rebuilt wholesale by
+  /// [_syncAssemblyInstanceNodes] the same "clear, then rebuild" shape
+  /// [_meshNodes] itself uses. Always empty for every Part with no
+  /// Occurrences at all.
+  Map<String, Node> _assemblyInstanceNodes = {};
 
   /// Stage 11: the Part's real OCCT edge polylines, one [Node] per Body
   /// (Prompt A3), rendered separately from [_meshNodes]' filled faces -
@@ -1493,6 +1530,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           'effectiveAntiAliasingMode=${_scene!.effectiveAntiAliasingMode}',
         );
         _syncMeshNode();
+        _syncAssemblyInstanceNodes();
         _syncEdgesNode();
         _syncReferencePlaneNodes();
         _syncSketchNodes();
@@ -1553,8 +1591,23 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         // change already does above.
         widget.sectionPlanes != oldWidget.sectionPlanes ||
         widget.sectionPreviewMeshes != oldWidget.sectionPreviewMeshes ||
-        widget.sectionPreviewCutFaceIds != oldWidget.sectionPreviewCutFaceIds) {
+        widget.sectionPreviewCutFaceIds != oldWidget.sectionPreviewCutFaceIds ||
+        // Assembly support Phase 4: [_syncMeshNode]'s own `effectiveBodyOpacity`
+        // folds this in to dim the root Part's own content while some other
+        // Part is focused - see that local variable's own doc comment.
+        widget.focusedComponentPartId != oldWidget.focusedComponentPartId) {
       setState(_syncMeshNode);
+    }
+    // Assembly support Phase 4: [_syncAssemblyInstanceNodes]'s own three
+    // inputs - kept as a separate rebuild from [_syncMeshNode] above (its
+    // own, unrelated Node map) even though [focusedComponentPartId] also
+    // triggers that one, the same "each sync method owns exactly its own
+    // Node map" convention every other pair of `_sync*Nodes` methods in
+    // this class already follows.
+    if (widget.assemblyGeometry != oldWidget.assemblyGeometry ||
+        widget.assemblyInstances != oldWidget.assemblyInstances ||
+        widget.focusedComponentPartId != oldWidget.focusedComponentPartId) {
+      setState(_syncAssemblyInstanceNodes);
     }
     if (widget.sectionPlanes != oldWidget.sectionPlanes || widget.activeSectionId != oldWidget.activeSectionId) {
       setState(_syncSectionNodes);
@@ -1792,6 +1845,19 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // real Bodies, same "no camera-bounds participation" contract
     // [PartViewport.transientCoarsePreviewBodies]'s own doc comment states.
     _syncTransientPreviewNodes(scene);
+    // Assembly support Phase 4 (`docs/assembly-scope.md` §3): once a focus
+    // has been pushed onto some *other* Part (`widget.focusedComponentPartId
+    // != null`), this root Part's own local content becomes context rather
+    // than what's actively being worked on - see [assemblyInstanceOpacity]'s
+    // own doc comment for the identical rule applied to a placed instance.
+    // Folded into a single local multiplier (rather than touching every
+    // `widget.bodyOpacity` read directly) so the user's own Transparency
+    // slider and this new focus-driven dimming compose instead of one
+    // silently overriding the other; `1.0` (no focus active, or none of
+    // this Part's own Occurrences have ever been used) leaves every
+    // existing non-assembly Part's rendering byte-for-byte unchanged.
+    final effectiveBodyOpacity =
+        widget.bodyOpacity * (widget.focusedComponentPartId == null ? 1.0 : kNonPrimaryAssemblyOpacity);
     final bodies = widget.bodies;
     if (bodies.isEmpty) {
       debugPrint('[PartViewport] _syncMeshNode: no bodies yet');
@@ -1912,7 +1978,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             isPreviewOverlay ||
             isCoarseOverlay ||
             isSkippedInstance ||
-            widget.bodyOpacity < 1.0;
+            effectiveBodyOpacity < 1.0;
         final geometry = geometryFromMesh(displayMesh, doubleSidedWinding: isTranslucent);
         // Live-operation preview overlays stay a flat, translucent tint -
         // they're meant to read as a distinct "in-progress" indicator, not
@@ -1948,8 +2014,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             // OCCT-tessellated geometry's winding is always culling-safe;
             // apparently it isn't always, so the same fix applies here too.
             : (PhysicallyBasedMaterial()
-              ..alphaMode = widget.bodyOpacity < 1.0 ? AlphaMode.blend : AlphaMode.opaque
-              ..baseColorFactor = vector4FromHex(widget.bodyColourHex, opacity: widget.bodyOpacity)
+              ..alphaMode = effectiveBodyOpacity < 1.0 ? AlphaMode.blend : AlphaMode.opaque
+              ..baseColorFactor = vector4FromHex(widget.bodyColourHex, opacity: effectiveBodyOpacity)
               ..roughnessFactor = widget.roughness
               ..metallicFactor = ScenePreferences.fixedMetallic
               ..emissiveFactor = vm.Vector4(
@@ -1996,6 +2062,56 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       '[PartViewport][RenderDebug] bounds: center=${bounds?.center} '
       'boundingSphereRadius=${bounds?.boundingSphereRadius} cameraDistance=${_camera.distance}',
     );
+  }
+
+  /// Assembly support Phase 4 (`docs/assembly-scope.md` §3): rebuilds
+  /// [_assemblyInstanceNodes] from scratch - the same "clear, then rebuild
+  /// wholesale" shape [_syncMeshNode] itself uses for [_meshNodes]. Renders
+  /// every entry of [PartViewport.assemblyInstances] whose own
+  /// [AssemblyOccurrenceInstanceDto.occurrencePath] is non-empty (an empty
+  /// path names the requested root Part's own local content, already
+  /// covered by [_syncMeshNode]'s ordinary [PartViewport.bodies] loop - a
+  /// second Node for the identical geometry at the identity transform would
+  /// just double-render it) using [buildAssemblyInstanceNode], placed via
+  /// [matrix4FromRigidTransform] and shaded via [assemblyInstanceOpacity] -
+  /// see both functions' own doc comments for the placement/opacity rules.
+  /// Deliberately does not touch the camera target/zoom bounds
+  /// [_syncMeshNode] manages - the root Part's own geometry stays what
+  /// frames the camera, matching this file's "lens/assembly state never
+  /// moves the camera on its own" convention elsewhere (e.g. the lens
+  /// toggle itself, `docs/assembly-scope.md` §2d).
+  void _syncAssemblyInstanceNodes() {
+    final scene = _scene;
+    if (scene == null) return;
+    for (final node in _assemblyInstanceNodes.values) {
+      scene.remove(node);
+    }
+    _assemblyInstanceNodes = {};
+    if (widget.assemblyInstances.isEmpty) return;
+    final focusedPartId = widget.focusedComponentPartId;
+    for (final instance in widget.assemblyInstances) {
+      if (instance.occurrencePath.isEmpty) continue;
+      // Assembly support Phase 3b/4: an instance somewhere along its own
+      // chain has been Hidden - the same "genuinely absent, not merely
+      // deprioritized" contract [PartViewport.bodiesHidden] already applies
+      // to a Part's own Bodies.
+      if (instance.hidden) continue;
+      final opacity = assemblyInstanceOpacity(
+        focusActive: focusedPartId != null,
+        isFocusedInstance: instance.partId == focusedPartId,
+      );
+      final transform = matrix4FromRigidTransform(instance.worldTransform);
+      final occurrenceKey = instance.occurrencePath.join('/');
+      for (final partGeometry in widget.assemblyGeometry) {
+        if (partGeometry.partId != instance.partId) continue;
+        for (final body in partGeometry.bodies) {
+          if (body.mesh.vertices.isEmpty) continue;
+          final node = buildAssemblyInstanceNode(body.mesh, localTransform: transform, opacity: opacity);
+          scene.add(node);
+          _assemblyInstanceNodes['$occurrenceKey/${body.bodyId}'] = node;
+        }
+      }
+    }
   }
 
   /// `docs/lod-strategy/01-design.md` SS5 chunk 5, flow 1: rebuilds
@@ -3391,13 +3507,53 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             fovRadiansY: _perspectiveFovOf(camera),
           );
     final planeHit = _hoverHitTestPlanes(ray);
-    if (meshHit == null) {
-      _hoverHit = planeHit;
-    } else if (planeHit == null) {
-      _hoverHit = meshHit;
-    } else {
-      _hoverHit = meshHit.rayT <= planeHit.rayT ? meshHit : planeHit;
+    // Assembly support Phase 4: a third candidate, competed by [HoverHit.
+    // rayT] the exact same way [meshHit]/[planeHit] already compete against
+    // each other just below - see [_hoverHitTestComponents]'s own doc
+    // comment for why this is gated on [SelectionFilterState.component] and
+    // what "selectable" means here.
+    final componentHit = _hoverHitTestComponents(ray);
+    final candidates = [meshHit, planeHit, componentHit].whereType<HoverHit>().toList();
+    if (candidates.isEmpty) {
+      _hoverHit = null;
+      return;
     }
+    _hoverHit = candidates.reduce((a, b) => a.rayT <= b.rayT ? a : b);
+  }
+
+  /// Assembly support Phase 4 (`docs/assembly-scope.md` §3): [hitTestComponentInstances]
+  /// wrapped as [_recomputeHover]'s own third hit-test candidate, mirroring
+  /// [_hoverHitTestPlanes]'s identical role for reference/created planes.
+  /// Gated on [SelectionFilterState.component] the same way
+  /// [_hoverHitTestPlanes] gates on `.plane` - a picking mode that turns
+  /// every other kind off (e.g. Fillet's edge/face-only filter) also turns
+  /// this off, exactly like every sibling kind already does.
+  ///
+  /// The "selectability" half of Phase 4's opacity/selectability split: an
+  /// instance outside the currently-focused subtree is excluded from
+  /// [selectableOccurrencePaths] entirely (see [hitTestComponentInstances]'s
+  /// own doc comment) - while [widget.focusedComponentPartId] is null
+  /// (ordinary top-level browsing, nothing focused yet) every instance is
+  /// selectable; once it's set, only instances whose own target Part
+  /// matches stay selectable, mirroring [assemblyInstanceOpacity]'s
+  /// identical rule for rendering.
+  HoverHit? _hoverHitTestComponents(vm.Ray ray) {
+    if (!widget.selectionFilter.component || widget.assemblyInstances.isEmpty) return null;
+    final focusedPartId = widget.focusedComponentPartId;
+    final selectablePaths = <String>{
+      for (final instance in widget.assemblyInstances)
+        if (instance.occurrencePath.isNotEmpty &&
+            !instance.hidden &&
+            (focusedPartId == null || instance.partId == focusedPartId))
+          instance.occurrencePath.join('/'),
+    };
+    if (selectablePaths.isEmpty) return null;
+    return hitTestComponentInstances(
+      ray: ray,
+      instances: widget.assemblyInstances,
+      geometry: widget.assemblyGeometry,
+      selectableOccurrencePaths: selectablePaths,
+    );
   }
 
   /// C5: hit-tests reference planes then created planes (same precedence
@@ -4233,6 +4389,39 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     return null;
   }
 
+  /// Assembly support Phase 4: [_bodyFor]'s sibling for a whole-component
+  /// selection - every triangle of every Body the Occurrence identified by
+  /// [occurrenceKey] (a joined `occurrencePath`, matching
+  /// [SelectionEntityRef.occurrenceId]'s own convention) places, already
+  /// transformed into world space via [matrix4FromRigidTransform]. Mirrors
+  /// [hitTestComponentInstances]'s own lookup (`instance.partId` into
+  /// [PartViewport.assemblyGeometry]) so a selected component's highlight
+  /// lines up exactly with what was actually hit-tested. Empty (not null -
+  /// same "nothing to add" convention every other highlight accumulator
+  /// here already uses) if the instance no longer exists (e.g. a stale
+  /// selection against an Occurrence a recompute just removed).
+  List<(vm.Vector3, vm.Vector3, vm.Vector3)> _worldTrianglesForOccurrence(String occurrenceKey) {
+    for (final instance in widget.assemblyInstances) {
+      if (instance.occurrencePath.join('/') != occurrenceKey) continue;
+      final transform = matrix4FromRigidTransform(instance.worldTransform);
+      final triangles = <(vm.Vector3, vm.Vector3, vm.Vector3)>[];
+      for (final partGeometry in widget.assemblyGeometry) {
+        if (partGeometry.partId != instance.partId) continue;
+        for (final body in partGeometry.bodies) {
+          for (final triangle in trianglesFromMesh(body.mesh)) {
+            triangles.add((
+              transform.transformed3(triangle.$1),
+              transform.transformed3(triangle.$2),
+              transform.transformed3(triangle.$3),
+            ));
+          }
+        }
+      }
+      return triangles;
+    }
+    return const [];
+  }
+
   /// Rebuilds all three selected-entity highlight nodes (one per kind, each
   /// combining every currently-selected entity of that kind) from
   /// [PartViewport.selectedEntities] - Item 3: "selected entities = distinct
@@ -4375,6 +4564,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         case SelectionEntityKind.sketchPatternMirrorInstance:
           (isActiveSketchEntity(entity) ? edgeSegmentsActiveSketch : edgeSegments)
               .addAll(widget.patternMirrorGhostSegments[entity.sketchEntityId] ?? const []);
+        case SelectionEntityKind.component:
+          // Assembly support Phase 4: a whole-component selection highlights
+          // every one of its own Bodies' faces, the exact same "highlight
+          // every face, not just one" treatment [SelectionEntityKind.body]
+          // above already gives a whole-Body selection.
+          faceTriangles.addAll(_worldTrianglesForOccurrence(entity.occurrenceId));
         case SelectionEntityKind.referencePlane:
         case SelectionEntityKind.createPlane:
           // C5: a selected plane's highlight is its own quad rendering
@@ -4677,6 +4872,17 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           segments,
           color: color,
           width: kHighlightEdgeStrokeWidth,
+          alwaysOnTop: alwaysOnTop,
+        );
+      case SelectionEntityKind.component:
+        // Assembly support Phase 4: mirrors [SelectionEntityKind.body]
+        // above - a whole-component hover/selection highlights every one
+        // of its own Bodies' faces.
+        final triangles = _worldTrianglesForOccurrence(entity.occurrenceId);
+        if (triangles.isEmpty) return null;
+        return buildHighlightFacesNode(
+          biasTrianglesAlongNormal(triangles, kEdgeDepthBias),
+          color: color,
           alwaysOnTop: alwaysOnTop,
         );
     }
