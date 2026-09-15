@@ -16,7 +16,8 @@ Backend: `backend/app/document/*` (FastAPI + pythonocc-core/OCCT) -
 unchanged from Phase 2 through Phase 4 (see §2e/§2f for why), then Phase 5
 added its own first-ever Occurrence mutation endpoint (§2g); unchanged
 again in Phase 6a (see §2h for why - a client-only prerequisite, no new
-mate data to persist yet).
+mate data to persist yet), then Phase 6 added `assembly_solver.py` and its
+own mate CRUD/solve endpoints (§2i).
 Client: `client/lib/viewport3d/*` (3D viewport/tree/tools, now including
 `assembly_tree_panel.dart`, `action_sheet.dart`, `component_context_menu.dart`
 (now with a real call site - see §2f; its Move/Rotate entry fixed in §2h),
@@ -24,8 +25,10 @@ Phase 3b's own additions to `add_button_menu.dart`/`part_toolbar.dart`,
 Phase 4's own additions to `selection_filter.dart`/`selection_hit_test.dart`/
 `select_other_sheet.dart`/`selection_list_drawer.dart`/`mesh_geometry.dart`/
 `part_viewport.dart`, Phase 5's own new `component_gizmo.dart` plus further
-`part_viewport.dart`/`part_screen.dart` additions, and Phase 6a's own
-further `selection_hit_test.dart` addition), `client/lib/storage/*`
+`part_viewport.dart`/`part_screen.dart` additions, Phase 6a's own further
+`selection_hit_test.dart` addition, and Phase 6/6b's own new
+`mate_panel.dart`/`selection_breadcrumbs.dart` plus further
+`part_viewport.dart`/`part_screen.dart` wiring), `client/lib/storage/*`
 (implemented), `client/lib/assembly/*` (graph compose, document client,
 `AssemblyLens`, `AssemblyFocusStack`, `assembly_lens_theme.dart`,
 `add_component.dart`, and `occurrence_visibility.dart` (Phase 4, extended
@@ -38,29 +41,34 @@ color/theme accent + Assembly-lens "Add" FAB/`PartToolbar` toolset), Phase
 4 (whole-component selection + context menu, Make Focus/Exit Focus,
 Hide/Isolate, per-instance opacity, instanced viewport rendering), Phase 5
 (Move/Rotate gizmo, Occurrence transform persistence, local
-component-transform undo), and Phase 6a (occurrence-attributed selection -
-Mate authoring's own prerequisite) implemented. Assembly lens now has a
+component-transform undo), Phase 6a (occurrence-attributed selection -
+Mate authoring's own prerequisite), and Phase 6/6b (the mate solver and
+the selection breadcrumbs UI) implemented. Assembly lens now has a
 working in-UI way to add a first component (`Add Component` →
 `mergeComponentIntoDocument`), a distinct visual identity, real Make
 Focus/Exit Focus, placed Occurrences render and are selectable in the 3D
 viewport, a *top-level* selected component can be dragged (translate/
-rotate, persisted, undoable) via a real 6-handle gizmo, and a
+rotate, persisted, undoable) via a real 6-handle gizmo, a
 vertex/edge/face/body hit against *placed Occurrence-instance* geometry can
-now be tagged with which Occurrence it came from - see §2e for the "Add
-Component" gap (no backend mutation endpoint existed for Occurrences at
-all, until §2g's own PATCH endpoint closed that specific gap for
-`transform` only), §2f for Phase 4's own real gaps (client-only Hide/
-Isolate with no way to persist or override a backend-true `hidden`;
-root-Part selectability isn't enforced while focused elsewhere, only
-rendering opacity is - both still open, tracked in §5's appendix), §2g for
-Phase 5's own deliberate v1 scope limit (the gizmo only targets a top-level
-Occurrence - editing one nested inside a focused sub-assembly needs
-ancestor-transform composition this phase doesn't attempt), and §2h for
-Phase 6a's own deliberate scope limit (the new hit-test capability is not
-yet wired into any live picking mode - no consumer needs sub-entity
-granularity on assembly-instance geometry until Mate authoring's own UI
-exists). Phase 6 (the mate solver itself), 6b (selection breadcrumbs UI),
-and 7–9 are design-only.**
+be tagged with which Occurrence it came from, mates (coincident/
+concentric/parallel/distance/angle) can be authored between two selected
+entities and solved against the dragged Occurrence, and a selected
+entity's own containment chain (face/edge/vertex → body → component) shows
+as a tappable breadcrumb bar - see §2e for the "Add Component" gap (no
+backend mutation endpoint existed for Occurrences at all, until §2g's own
+PATCH endpoint closed that specific gap for `transform` only), §2f for
+Phase 4's own real gaps (client-only Hide/Isolate with no way to persist or
+override a backend-true `hidden`; root-Part selectability isn't enforced
+while focused elsewhere, only rendering opacity is - both still open,
+tracked in §5's appendix), §2g for Phase 5's own deliberate v1 scope limit
+(the gizmo only targets a top-level Occurrence - editing one nested inside
+a focused sub-assembly needs ancestor-transform composition this phase
+doesn't attempt), §2h for Phase 6a's own deliberate scope limit (the new
+hit-test capability wasn't yet wired into any live picking mode - fixed by
+Phase 6's own Mate picking mode, §2i), and §2i for Phase 6/6b's own
+deliberate v1 scope limits (single-Occurrence-against-fixed-peers solving,
+no straight-edge axis reference, no feature-level breadcrumb tier, no live
+breadcrumb hover-preview highlight). Phase 7–9 are design-only.**
 
 ---
 
@@ -1096,50 +1104,173 @@ moveRotate" case.
 
 ---
 
+## 2i. Phase 6 & 6b — mate solver + selection breadcrumbs UI (implemented)
+
+Both halves of the original §3 items 6 and 6b, landed in the same pass:
+the mate solver itself (`assembly_solver.py` plus its CRUD/solve
+endpoints and `MatePanel` authoring UI), and the breadcrumb UI that 6a
+(§2h) existed to unblock.
+
+### The solver: `assembly_solver.py`
+
+New backend module mirroring `sketch/solver.py`'s own structure but built
+on `py_slvs`'s C++ `System` directly rather than the 2D sketch solver's
+own wrapper. Covers all five documented mate types
+(coincident/concentric/parallel/distance/angle) against the same
+vertex/circular-edge-axis/cylindrical-face-axis/planar-face-normal
+geometry `measure.py`'s `single_shape_geometry` (promoted from
+`_measure_single` for this reuse) already extracts for the Measure tool,
+resolved per-Occurrence via `create_plane.py`'s `resolve_plane_ref` and
+newly-promoted `resolve_point_ref_position`. `assembly.py` gained two
+small pure helpers, `apply_transform_to_point`/`apply_transform_to_direction`,
+used throughout to place locally-resolved geometry into world space.
+
+Getting a numerically-stable solve out of `py_slvs` for this problem
+needed real experimentation against the upstream C++ source
+(`realthunder/solvespace`), not just its thin Python bindings - three
+approaches were tried and rejected before landing on the final design,
+each for a concrete, reproduced failure rather than a guess:
+
+- `addSameOrientation` cannot express `flipped` at all - reading
+  `constrainteq.cpp` directly confirmed its own equations are sign-
+  agnostic ("allow either orientation... depending on how it was drawn").
+- Chaining a second `addTransform` onto a first transform's own result
+  (to compute an "expected tip" point) silently freezes - `entity.cpp`'s
+  `EntityBase::Transform` snapshots its source point's value once, at
+  entity-creation time, not live.
+- A `addPointPlaneDistance`-as-sign-pick approach (target dot product of
+  ±1) has a genuinely zero Jacobian exactly at its own target (0°/180°) -
+  Newton's method can't climb out of a seed that's already sitting on the
+  degenerate point.
+
+The design that actually works: `addParallel` alone (sign-agnostic, so it
+never hits the degenerate case) for every direction/orientation
+constraint, combined with a **warm-start seed** - a closed-form
+"rotate vector A onto vector B" quaternion (`_quaternion_aligning`)
+computed from a first geometry-resolution pass and used as the Newton
+solve's *initial guess*, resolving the sign ambiguity `addParallel` alone
+leaves open by starting already on the correct branch rather than by
+adding a constraint that can't express it. `solve_occurrence`'s own
+two-pass structure (resolve all applicable mates' geometry, compute the
+seed from that resolved geometry, *then* build the `py_slvs` system) is
+required by this ordering, not incidental.
+
+### API surface
+
+`POST /parts/{part_id}/mates` (create), `PATCH .../mates/{mate_id}`
+(update value/flipped/suppressed), `DELETE .../mates/{mate_id}`, and
+`POST /parts/{part_id}/occurrences/{occurrence_id}/solve` - the last one
+deliberately a separate endpoint from Phase 5's own
+`update_occurrence_transform` PATCH, not folded into it: a drag on an
+unmated Occurrence behaves exactly as before (no solve attempted, no new
+failure mode introduced for the overwhelmingly common no-mates case), and
+the client calls `solveForOccurrence` explicitly, only once a mate
+actually exists, immediately after `createMate` succeeds.
+
+### `MatePanel` + picking mode
+
+New `mate_panel.dart` (Mate-type dropdown, conditional value/flipped
+fields, selected-entity rows by body name - `ResizableToolPanel` shell
+mirroring `MeasurementPanel`'s own shape) plus a new cap-at-2 picking mode
+in `part_screen.dart` (`_mateActive`, mirroring Measure's own toggle
+picker rather than Fillet's eager-create-on-open pattern, per this
+phase's own research: a Mate, like a Measurement, is exactly "up to 2
+entities then confirm," with no natural "created but incomplete" state a
+Fillet-style immediate-open would need). Reuses Phase 6a's own
+`hitTestComponentInstanceEntities` (§2h) for its very first live caller -
+wired into `_recomputeHover` as a new candidate (gated on the mate/measure
+picker's own filter, never affecting default browsing) so a Mate can
+target a face/edge/vertex on a *placed Occurrence*, not just the root
+Part's own geometry. "Add Mate" (the Assembly Add menu and the component
+long-press menu) is enabled for the first time - both previously
+hardcoded `enabled: false` placeholders.
+
+### Selection breadcrumbs: `selection_breadcrumbs.dart`
+
+`breadcrumbTiersFor(SelectionEntityRef)` - pure, no hit-testing - and
+`SelectionBreadcrumbBar`, reusing `select_other_sheet.dart`'s own
+hover-preview/tap-commit interaction grammar per §3's original 6b
+proposal, but as a small persistent bar (not a modal sheet) so it stays
+out of the way of the 3D view it annotates. Renders nothing for a
+single-tier chain (nothing to disambiguate) or for a kind with no
+containment concept at all (sketch entities, reference/created planes).
+The real chain this app can support is entity (face/edge/vertex) → body →
+component - the "feature that created this face" tier §3's own proposal
+named is still absent, unchanged from that section's own finding that
+no per-face OCCT history attribution exists anywhere in the backend.
+
+Wired into `PartViewport` (`breadcrumbEntity`/`onBreadcrumbSelect`, a
+bottom-center overlay, controlled-widget shape matching
+`highlightOverride`/`selectedPlane`) and `PartScreen` (`_breadcrumbEntity`
+shows only when exactly one entity is selected and no exclusive picking
+session - Measure, Mate, any `_anyToolPanelOpen` tool, the Select Other
+sheet - is currently repurposing `_selectedEntities` for its own
+semantics; `_onBreadcrumbSelect` replaces the selection with the tapped
+tier's target, special-casing a `component`-kind target into
+`_selectedOccurrenceId` exactly like `_toggleSelectedEntity`'s own
+existing component branch does). Deliberately **not** wired to a live 3D
+highlight yet - `onPreview` exists on `SelectionBreadcrumbBar` itself, but
+plumbing it back out to `PartViewport.highlightOverride` was left for a
+follow-up rather than risking further changes to that gesture-sensitive
+file's hover machinery in this same pass.
+
+**Verified**: backend suite - **2241/2241 passed** against real
+`pythonocc-core`/`py-slvs` (up from 2219 in §2h; 22 new tests: 6 in
+`test_assembly_transform_apply.py`, 16 in `test_assembly_solver.py`, the
+latter exercising all five mate types plus validation/no-op/update/delete
+at the real HTTP layer via `TestClient`, building actual box/cylinder
+Parts through Sketch+Extrude rather than asserting against hand-computed
+matrices). Full client suite - **1914/1914 passed** (up from 1876 in §2h;
+14 GPU-skips, unchanged), `flutter analyze` clean on every touched file.
+New client tests: 9 `DocumentApiClient` Mate CRUD/solve cases, 15
+`MatePanel` cases, 15 `selection_breadcrumbs_test.dart` cases (pure
+`breadcrumbTiersFor` chains for every kind, plus `SelectionBreadcrumbBar`
+render/tap/hover behavior), plus updates to `assembly_add_menu_test.dart`/
+`component_context_menu_test.dart`'s own pre-existing "Add Mate/Mate
+render disabled" cases (stale now that this phase enables them) - each
+menu's own remaining placeholder (Create Component/Pattern Component,
+Phase 7, still design-only) keeps its own disabled-state coverage.
+
+### Known v1 limitations from this phase
+
+- COINCIDENT plane-plane `flipped` orientation is resolved by warm-start
+  seeding, not a hard constraint - Newton's method converges to whichever
+  orientation branch the seed is closer to, which is normally the correct
+  one (the seed is computed from the mate's own `flipped` flag) but is a
+  probabilistic guarantee, not an algebraic one, for a starting transform
+  very far from either valid solution.
+- DISTANCE between two planes locks separation but not relative spin
+  (`addPointPlaneDistance` + `addParallel`, deliberately not
+  `addSameOrientation` - a distance mate shouldn't also lock orientation).
+- CONCENTRIC/PARALLEL/ANGLE need axis geometry (a circular edge or
+  cylindrical face) on both sides - no straight-edge axis reference, and
+  no axis-to-axis DISTANCE variant.
+- The breadcrumb bar has no feature-level tier (per §3's own original
+  finding, restated above) and no live hover-preview highlight wired into
+  the 3D view yet.
+
+---
+
 ## 3. Remaining phases (design-only)
 
 Phase 4 ("Whole-part selection + context menu") moved to §2f, Phase 5
-("Move/Rotate gizmo + persisted placement + undo") to §2g, and Phase 6a
-("occurrence-attributed selection") to §2h - all three implemented.
-Numbering below is otherwise unchanged from the original plan (starts at 6
-rather than being renumbered), so every existing cross-reference elsewhere
-in this document (e.g. §4's own "Phase 5" undo note, which still correctly
-points at what's now §2g) still points at the same phase it always did.
+("Move/Rotate gizmo + persisted placement + undo") to §2g, Phase 6a
+("occurrence-attributed selection") to §2h, and Phase 6/6b (the mate
+solver and the breadcrumb UI) to §2i - all implemented. Numbering below is
+otherwise unchanged from the original plan (starts at 6 rather than being
+renumbered), so every existing cross-reference elsewhere in this document
+(e.g. §4's own "Phase 5" undo note, which still correctly points at what's
+now §2g) still points at the same phase it always did.
 
 5. **~~Move/Rotate gizmo + persisted placement + undo~~ — moved to §2g,
    implemented.**
-6. **Mate system** (coincident/concentric/parallel/distance/angle) — new
-   `assembly_solver.py` (mirrors `sketch/solver.py`'s structure). v1 only
-   drives the actively-dragged Occurrence against fixed peers — coupled
-   mechanisms (linkages) are a known v1 limitation, not a bug. Debounced
-   backend-only solving (same latency-tolerance shape as `MoveBodyFeature`'s
-   existing debounce); true low-latency client-side solving via
-   `client/native/slvs/`'s FFI shim is possible (pinned to the identical
-   fork commit) but needs new forwarding functions that don't exist yet —
-   explicitly deferred past v1.
+6. **~~Mate system~~ (coincident/concentric/parallel/distance/angle) —
+   moved to §2i, implemented.**
 
    **6a. ~~Prerequisite — occurrence-attributed selection.~~ — moved to
    §2h, implemented.**
-   **6b. Follow-on — selection breadcrumbs UI (not blocking the Phase 6
-   mate MVP).** The user's own proposal: after selecting a face, an
-   unintrusive horizontal breadcrumb bar shows the containment hierarchy
-   (face → body → feature → part → assembly) as tappable icons, each one
-   retargeting the selection up a level - mirrors SOLIDWORKS' own
-   breadcrumb trail. Deliberately **not** folded into 6a's own rollout even
-   though 6a now provides the hierarchy it needs (§2h): building the
-   breadcrumb UI itself, and deciding whether/how to wire
-   `hitTestComponentInstanceEntities` into a live picking mode, are real UI
-   design work of their own, explicitly out of scope for 6a's
-   prerequisite-only pass. The closest existing precedent is
-   `select_other_sheet.dart`'s hover-preview/tap-commit "Select Other"
-   sheet (candidates at one screen point, not one entity's containment
-   chain) - reuse that interaction grammar rather than inventing a new one.
-   The "feature that created this face" tier is an open question, not a
-   confirmed gap: per-face OCCT history attribution doesn't appear to exist
-   anywhere in the backend today (a grep for feature/face-history
-   attribution during the audit came back empty), so scope that tier
-   separately once someone has actually checked what OCCT can report,
-   rather than assuming it's a small addition alongside 6a.
+   **6b. ~~Follow-on — selection breadcrumbs UI.~~ — moved to §2i,
+   implemented.**
 7. **Component pattern** (linear + circular) — a `ComponentPattern` on
    `Part` (not a separate `Assembly` type - see §1 decision #2), expanded
    via `assembly.py`'s transform math only (no OCCT work needed, unlike
@@ -1163,6 +1294,11 @@ points at what's now §2g) still points at the same phase it always did.
   fixed peers — no simultaneous multi-body solving (linkages).
 - No real-time client-side (FFI) mate solving in v1 — debounced
   backend-only, same tolerated latency as `MoveBodyFeature` today.
+- COINCIDENT plane-plane `flipped` orientation, and no straight-edge axis
+  reference or axis-to-axis DISTANCE for CONCENTRIC/PARALLEL/ANGLE — see
+  §2i's own "Known v1 limitations from this phase" for the full list.
+- Selection breadcrumbs (§2i) have no feature-level tier and no live
+  hover-preview highlight into the 3D view yet.
 - `add_component`'s AI step is gated on a file-discovery mechanism not yet
   designed.
 - Composed multi-file graph `part_id`s are session-scoped, not persisted
@@ -1180,13 +1316,11 @@ are candidates for either a follow-up fix inside a later phase or a
 deliberate "still fine, leave it" call once there's real usage to judge
 them against.
 
-**Update**: items 3, 4, and 5 were fixed directly (each ahead of any real
-rollout) rather than left for later - struck through in place, not
+**Update**: items 3, 4, 5, and 6 were fixed directly (each ahead of any
+real rollout) rather than left for later - struck through in place, not
 deleted, so the record of what shipped broken and why stays intact. Items
 1-2 are still open and still genuinely await real usage before deciding
-whether they're worth fixing at all. Item 6 is formally owned by §3's
-6a/6b split (6a now implemented, §2h) and by §2h's own record of the item
-5 fix, not tracked independently here.
+whether they're worth fixing at all.
 
 1. **Hide/Show/Isolate can only ever *OR* onto the backend's own `hidden`
    flag, never override it.** No mutation endpoint exists for Occurrences
@@ -1270,13 +1404,12 @@ whether they're worth fixing at all. Item 6 is formally owned by §3's
    `moveRotate` case needed no new logic since `_onOccurrenceLongPress`
    already selects the row (and so already targets the gizmo) before the
    menu even opens. See §2h for the full writeup and verification.
-6. **Selection carries no occurrence attribution outside the dedicated
+6. **~~Selection carries no occurrence attribution outside the dedicated
    `component` kind, and no feature-level face-history attribution exists
-   anywhere - surfaced by a user proposal for SOLIDWORKS-style "selection
-   breadcrumbs," not by a bug report.** Formally tracked as Phase 6's own
-   prerequisite/follow-on split rather than left as a loose appendix note
-   - see §3 items **6a** (occurrence-attributed selection, a real Mate-
-   authoring prerequisite) and **6b** (the breadcrumb UI itself, deferred
-   until 6a lands). Listed here too only so the appendix stays the one
-   place that indexes every open "shipped without" gap in this document,
-   not because it needs separate tracking from 6a/6b.
+   anywhere~~ - fixed.** Surfaced by a user proposal for SOLIDWORKS-style
+   "selection breadcrumbs," not by a bug report; resolved by Phase 6a
+   (occurrence-attributed selection, §2h) and Phase 6b (the breadcrumb UI
+   itself, §2i). The feature-level tier remains genuinely absent (no
+   per-face OCCT history attribution exists anywhere in the backend, per
+   6b's own original finding) - not a leftover bug, a follow-up that needs
+   someone to first check what OCCT can actually report.

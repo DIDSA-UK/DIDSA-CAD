@@ -125,3 +125,30 @@ def compose_chain(transforms: list[RigidTransform]) -> RigidTransform:
     for transform in transforms:
         result = compose(result, transform)
     return result
+
+
+def apply_transform_to_point(transform: RigidTransform, point: Vec3) -> Vec3:
+    """Phase 6 (`docs/assembly-scope.md` §3): the mate solver's own most
+    basic need - a fixed (non-driven) Occurrence's `transform` is fully
+    known, so a `MateEntityRef` resolved against *that* Occurrence's own
+    target Part (in its local frame, via `compute_part_bodies`) is placed
+    into world space by plain rotate-then-translate, the exact same
+    convention `compose` itself already uses one level up - no `py_slvs`
+    involvement needed for a side of a mate that isn't being solved for.
+    `apply_transform_to_direction` is this function's sibling for a
+    direction/normal, which only rotates (never translates)."""
+    rotation = _mat3_from_axis_angle(transform.rotation_axis, transform.rotation_angle_degrees)
+    rotated = _mat3_apply(rotation, point)
+    return (
+        transform.translation[0] + rotated[0],
+        transform.translation[1] + rotated[1],
+        transform.translation[2] + rotated[2],
+    )
+
+
+def apply_transform_to_direction(transform: RigidTransform, direction: Vec3) -> Vec3:
+    """`apply_transform_to_point`'s sibling for a direction vector (a face
+    normal, an axis direction) - rotates only, since translation has no
+    effect on a direction (unlike a position)."""
+    rotation = _mat3_from_axis_angle(transform.rotation_axis, transform.rotation_angle_degrees)
+    return _mat3_apply(rotation, direction)

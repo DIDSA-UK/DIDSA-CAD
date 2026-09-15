@@ -27,6 +27,7 @@ import 'scene_preferences.dart';
 import 'screen_projection.dart';
 import 'section_gizmo.dart';
 import 'section_plane.dart';
+import 'selection_breadcrumbs.dart';
 import 'selection_filter.dart';
 import 'selection_hit_test.dart';
 import 'sketch_constraint_overlay.dart';
@@ -853,6 +854,22 @@ class PartViewport extends StatefulWidget {
   /// up, so nothing is highlighted except an explicit [highlightOverride].
   final bool suppressHoverFallback;
 
+  /// Phase 6b (`docs/assembly-scope.md` §3): the single selected entity to
+  /// show a [SelectionBreadcrumbBar] for, or `null` to hide it entirely -
+  /// [PartScreen] is expected to pass this only when exactly one entity is
+  /// selected (a breadcrumb chain for a multi-entity selection has no single
+  /// answer to "retarget to"), same "controlled widget, this class stays
+  /// opaque to the selection-count policy" shape [selectedPlane]/
+  /// [highlightOverride] already use.
+  final SelectionEntityRef? breadcrumbEntity;
+
+  /// Fired when a breadcrumb tier is tapped (see [SelectionBreadcrumbBar.
+  /// onSelect]) - [PartScreen] is expected to *replace* the current
+  /// selection with the tapped tier's target (not toggle/accumulate the way
+  /// [onSelectionToggle] does), since a breadcrumb tap means "I want this
+  /// coarser/finer thing selected instead," never "also select this."
+  final ValueChanged<SelectionEntityRef>? onBreadcrumbSelect;
+
   /// Prompt A2: which entity kinds [_recomputeHover] considers - [PartScreen]
   /// owns this (its View submenu toggles write it, plus any future
   /// push/pop override - see `OverrideStack`), same controlled-widget
@@ -1037,6 +1054,8 @@ class PartViewport extends StatefulWidget {
     this.onSelectOtherRequested,
     this.highlightOverride,
     this.suppressHoverFallback = false,
+    this.breadcrumbEntity,
+    this.onBreadcrumbSelect,
     this.selectionFilter = SelectionFilterState.defaults,
     this.isPerspective = false,
     this.farClip,
@@ -3819,12 +3838,43 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // comment for why this is gated on [SelectionFilterState.component] and
     // what "selectable" means here.
     final componentHit = _hoverHitTestComponents(ray);
-    final candidates = [meshHit, planeHit, componentHit].whereType<HoverHit>().toList();
+    // Phase 6a (`docs/assembly-scope.md` §3): a fourth candidate - a face/
+    // edge/vertex hit *on* placed Occurrence-instance geometry, tagged with
+    // which Occurrence it came from. [hitTestComponentInstanceEntities]
+    // itself has existed since Phase 6a landed, but stayed genuinely unused
+    // until now - no picking mode needed sub-entity granularity on
+    // assembly-instance geometry before Mate authoring's own UI
+    // ([PartScreen._mateActive]) existed to need it. Competes by [HoverHit.
+    // rayT] against every other candidate here exactly like [componentHit]
+    // already does against [meshHit]/[planeHit] - simultaneously pickable,
+    // no filter conflict, since [meshHit] only ever sees [widget.bodies]
+    // (the root Part's own geometry) while this only ever sees placed
+    // instances.
+    final componentEntityHit = _hoverHitTestComponentEntities(ray, camera);
+    final candidates =
+        [meshHit, planeHit, componentHit, componentEntityHit].whereType<HoverHit>().toList();
     if (candidates.isEmpty) {
       _hoverHit = null;
       return;
     }
     _hoverHit = candidates.reduce((a, b) => a.rayT <= b.rayT ? a : b);
+  }
+
+  /// [_hoverHitTestComponents]/[_hoverHitTestComponentEntities]'s shared
+  /// "selectability" computation - the Phase 4 opacity/selectability split
+  /// (an instance outside the currently-focused subtree is excluded
+  /// entirely, not merely deprioritized - see [hitTestComponentInstances]'s
+  /// own doc comment), factored out once a second caller needed the
+  /// identical set (Phase 6a) rather than duplicated a second time.
+  Set<String> _selectableOccurrencePaths() {
+    final focusedPath = widget.focusedOccurrencePath;
+    return {
+      for (final instance in widget.assemblyInstances)
+        if (instance.occurrencePath.isNotEmpty &&
+            !instance.hidden &&
+            (focusedPath.isEmpty || isOccurrencePathWithinFocus(instance.occurrencePath, focusedPath)))
+          instance.occurrencePath.join('/'),
+    };
   }
 
   /// Assembly support Phase 4 (`docs/assembly-scope.md` §3): [hitTestComponentInstances]
@@ -3848,20 +3898,44 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// nested instance the same as a peer/parent.
   HoverHit? _hoverHitTestComponents(vm.Ray ray) {
     if (!widget.selectionFilter.component || widget.assemblyInstances.isEmpty) return null;
-    final focusedPath = widget.focusedOccurrencePath;
-    final selectablePaths = <String>{
-      for (final instance in widget.assemblyInstances)
-        if (instance.occurrencePath.isNotEmpty &&
-            !instance.hidden &&
-            (focusedPath.isEmpty || isOccurrencePathWithinFocus(instance.occurrencePath, focusedPath)))
-          instance.occurrencePath.join('/'),
-    };
+    final selectablePaths = _selectableOccurrencePaths();
     if (selectablePaths.isEmpty) return null;
     return hitTestComponentInstances(
       ray: ray,
       instances: widget.assemblyInstances,
       geometry: widget.assemblyGeometry,
       selectableOccurrencePaths: selectablePaths,
+    );
+  }
+
+  /// Phase 6a (`docs/assembly-scope.md` §3): [hitTestComponentInstanceEntities]
+  /// wrapped as [_recomputeHover]'s own fourth hit-test candidate - the
+  /// fine-grained sibling of [_hoverHitTestComponents], reporting a
+  /// vertex/edge/face hit (never `component`) on placed Occurrence-instance
+  /// geometry instead of the whole instance. Gated on `filter.vertex`/
+  /// `.edge`/`.face` internally (the same fields already gate [meshHit]'s
+  /// own root-Part hit-test) rather than [SelectionFilterState.component] -
+  /// a picking mode wanting fine-grained Occurrence geometry (Mate
+  /// authoring) turns `component` *off* (so [_hoverHitTestComponents]'s own
+  /// whole-instance candidate never competes for the same tap) while
+  /// leaving `vertex`/`edge`/`face` on, exactly [PartScreen._mateSelectionFilter]'s
+  /// own shape.
+  HoverHit? _hoverHitTestComponentEntities(vm.Ray ray, Camera camera) {
+    if (widget.assemblyInstances.isEmpty) return null;
+    if (!widget.selectionFilter.vertex && !widget.selectionFilter.edge && !widget.selectionFilter.face) {
+      return null;
+    }
+    final selectablePaths = _selectableOccurrencePaths();
+    if (selectablePaths.isEmpty) return null;
+    return hitTestComponentInstanceEntities(
+      ray: ray,
+      viewportSize: _viewportSize,
+      instances: widget.assemblyInstances,
+      geometry: widget.assemblyGeometry,
+      selectableOccurrencePaths: selectablePaths,
+      filter: widget.selectionFilter,
+      orthographicHalfHeight: _orthographicHalfHeightOf(camera),
+      fovRadiansY: _perspectiveFovOf(camera),
     );
   }
 
@@ -5439,6 +5513,30 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               ),
             if (ViewPreferences.debugShowCameraOrientation)
               DebugCameraOrientationOverlay(camera: _camera.cameraFor(size)),
+            // Phase 6b (`docs/assembly-scope.md` §3): an unintrusive
+            // containment-chain breadcrumb bar for whichever single entity
+            // is selected right now - [PartScreen] gates [breadcrumbEntity]
+            // to exactly one selected entity, and
+            // [SelectionBreadcrumbBar] itself renders nothing for a
+            // one-tier chain, so this is a no-op overlay for the common
+            // "nothing/many selected" and "already at the coarsest tier"
+            // cases. Deliberately no live hover-preview highlight wired
+            // into the 3D view yet (would need [highlightOverride]-style
+            // plumbing back out to `PartScreen` - left for a follow-up
+            // pass since this bar's own tap-to-retarget is the feature
+            // that was asked for).
+            if (widget.breadcrumbEntity != null)
+              Positioned(
+                bottom: 16,
+                left: 0,
+                right: 0,
+                child: Center(
+                  child: SelectionBreadcrumbBar(
+                    entity: widget.breadcrumbEntity!,
+                    onSelect: (target) => widget.onBreadcrumbSelect?.call(target),
+                  ),
+                ),
+              ),
           ],
         );
       },

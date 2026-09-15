@@ -31,30 +31,42 @@ void main() {
       expect(await pendingResult, AssemblyAddMenuAction.insertExistingComponent);
     });
 
-    testWidgets('Create Component, Add Mate, and Pattern Component render disabled', (tester) async {
+    testWidgets('tapping Add Mate resolves addMate', (tester) async {
       await openMenu(tester);
-      for (final label in ['Create Component…', 'Add Mate', 'Pattern Component']) {
+      await tester.tap(find.text('Add Mate'));
+      await tester.pumpAndSettle();
+      expect(await pendingResult, AssemblyAddMenuAction.addMate);
+    });
+
+    // Phase 6 (`docs/assembly-scope.md` §2i): Add Mate was enabled here -
+    // Create Component and Pattern Component are the only remaining
+    // placeholders (Phase 7, still design-only).
+    testWidgets('Create Component and Pattern Component render disabled', (tester) async {
+      await openMenu(tester);
+      for (final label in ['Create Component…', 'Pattern Component']) {
         final tile = tester.widget<ListTile>(
           find.ancestor(of: find.text(label), matching: find.byType(ListTile)),
         );
         expect(tile.enabled, isFalse, reason: '$label should be disabled');
       }
-      expect(find.textContaining('Coming soon'), findsNWidgets(3));
+      expect(find.textContaining('Coming soon'), findsNWidgets(2));
     });
 
     testWidgets('tapping a disabled entry does nothing - the sheet stays open', (tester) async {
       await openMenu(tester);
-      await tester.tap(find.text('Add Mate'), warnIfMissed: false);
+      await tester.tap(find.text('Pattern Component'), warnIfMissed: false);
       await tester.pumpAndSettle();
-      expect(find.text('Add Mate'), findsOneWidget);
+      expect(find.text('Pattern Component'), findsOneWidget);
     });
 
-    testWidgets('Add Component is the only enabled entry', (tester) async {
+    testWidgets('Add Component and Add Mate are the only enabled entries', (tester) async {
       await openMenu(tester);
-      final addComponentTile = tester.widget<ListTile>(
-        find.ancestor(of: find.text('Add Component'), matching: find.byType(ListTile)),
-      );
-      expect(addComponentTile.enabled, isTrue);
+      for (final label in ['Add Component', 'Add Mate']) {
+        final tile = tester.widget<ListTile>(
+          find.ancestor(of: find.text(label), matching: find.byType(ListTile)),
+        );
+        expect(tile.enabled, isTrue, reason: '$label should be enabled');
+      }
     });
   });
 }

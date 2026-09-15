@@ -38,9 +38,9 @@ enum ComponentContextMenuAction {
 /// shows "Exit Focus" instead, mirroring `AssemblyFocusStack.isFocused`);
 /// [hidden] picks Hide vs Show, the same "label names the next state"
 /// convention `PartToolbar`'s own Hide/Show Reference Planes entry uses.
-/// Mate/Pattern have no backing implementation yet (Phases 6-7) and render
+/// Pattern has no backing implementation yet (Phase 7) and renders
 /// disabled, same "ship the stable shape, not the gap" rule
-/// [showAssemblyAddMenu] already applies to its own Mate/Pattern rows.
+/// [showAssemblyAddMenu] already applies to its own Pattern row.
 /// Move/Rotate is enabled - found disabled during a post-Phase-5
 /// completeness audit (`docs/assembly-scope.md` appendix item 5) even
 /// though Phase 5's gizmo already works via plain tap-selection, entirely
@@ -48,7 +48,9 @@ enum ComponentContextMenuAction {
 /// `_onOccurrenceLongPress` already selects the long-pressed row (setting
 /// `_selectedOccurrenceId`, exactly what `_gizmoTargetOccurrence` reads)
 /// before this menu even opens, so enabling the entry needed no new
-/// handling of its own.
+/// handling of its own. Mate is enabled too (Phase 6's mate solver) - its
+/// own handler opens the same generic 2-entity picking flow the "Add"
+/// FAB's own Add Mate entry does.
 Future<ComponentContextMenuAction?> showComponentContextMenu(
   BuildContext context, {
   required bool isFocused,
@@ -79,8 +81,6 @@ Future<ComponentContextMenuAction?> showComponentContextMenu(
       action: ComponentContextMenuAction.mate,
       label: 'Mate',
       icon: Icons.link,
-      enabled: false,
-      disabledReason: 'Coming soon - needs Phase 6\'s mate solver',
     ),
     const ActionSheetEntry(
       action: ComponentContextMenuAction.pattern,

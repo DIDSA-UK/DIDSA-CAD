@@ -510,7 +510,7 @@ def refresh_external_references(
     return lost_point_ids
 
 
-def _resolve_point_ref_position(
+def resolve_point_ref_position(
     part: Part,
     bodies: dict[str, TopoDS_Shape],
     point_ref: PointRef,
@@ -520,7 +520,14 @@ def _resolve_point_ref_position(
     (see `_resolve_vertex_position`), or a Sketch Point's local (x, y)
     mapped through its own Sketch's resolved basis (fixed or custom, via
     `basis_for_sketch` - the same recursive resolution `resolve_create_
-    plane_from_bodies`'s own `NORMAL_TO_LINE_AT_POINT` branch already uses)."""
+    plane_from_bodies`'s own `NORMAL_TO_LINE_AT_POINT` branch already uses).
+
+    Renamed from `_resolve_point_ref_position` (Phase 6, `docs/assembly-
+    scope.md` §3) and promoted to public - `app.document.assembly_solver`
+    needs the exact same "resolve a `PointRef` to a world position" logic
+    for a mate's own point-like references, mirroring `resolve_plane_ref`'s
+    own identical public-promotion precedent in this same file. Behavior is
+    unchanged - only the name and its one call site below moved."""
     if point_ref.vertex_ref is not None:
         point = _resolve_vertex_position(bodies, point_ref.vertex_ref)
         return (point.X(), point.Y(), point.Z())
@@ -541,11 +548,11 @@ def resolve_three_points_from_bodies(
 ) -> ResolvedPlane:
     """C4: the `_from_bodies` core of `resolve_three_points_feature` -
     resolves each of `point_refs`' three entries to a world position (see
-    `_resolve_point_ref_position`) and delegates the actual plane math to
+    `resolve_point_ref_position`) and delegates the actual plane math to
     `app.document.plane_geometry.resolve_three_points`, which needs no OCCT
     of its own once given three plain positions."""
     p0, p1, p2 = (
-        _resolve_point_ref_position(part, bodies, point_ref, excluded_feature_ids)
+        resolve_point_ref_position(part, bodies, point_ref, excluded_feature_ids)
         for point_ref in point_refs
     )
     return resolve_three_points(p0, p1, p2)

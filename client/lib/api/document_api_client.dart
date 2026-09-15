@@ -1450,7 +1450,7 @@ class MateEntityRefDto {
   final PlaneRefDto? planeRef;
   final PointRefDto? pointRef;
 
-  MateEntityRefDto({required this.occurrenceId, this.subshapeRef, this.planeRef, this.pointRef});
+  const MateEntityRefDto({required this.occurrenceId, this.subshapeRef, this.planeRef, this.pointRef});
 
   factory MateEntityRefDto.fromJson(Map<String, dynamic> json) => MateEntityRefDto(
         occurrenceId: json['occurrence_id'] as String,
@@ -1464,6 +1464,18 @@ class MateEntityRefDto {
             ? null
             : PointRefDto.fromJson(json['point_ref'] as Map<String, dynamic>),
       );
+
+  /// Phase 6 (`docs/assembly-scope.md` §3): the reverse direction -
+  /// [DocumentApiClient.createMate]'s own request body needs to send this
+  /// shape back out, the same "one schema, both directions" precedent
+  /// `SubShapeRefDto` itself already sets client-side (identical to the
+  /// backend's own `MateEntityRefResponse` reused verbatim for `MateCreate`).
+  Map<String, dynamic> toJson() => {
+        'occurrence_id': occurrenceId,
+        if (subshapeRef != null) 'subshape_ref': subshapeRef!.toJson(),
+        if (planeRef != null) 'plane_ref': planeRef!.toJson(),
+        if (pointRef != null) 'point_ref': pointRef!.toJson(),
+      };
 }
 
 /// The Assembly tree's own Mates list - what
@@ -4114,6 +4126,87 @@ class DocumentApiClient {
   Future<List<MateDto>> listMates(String partId) => _send(
         () => _httpClient.get(_uri('/document/parts/$partId/mates'), headers: _headers),
         (body) => (body as List).map((m) => MateDto.fromJson(m as Map<String, dynamic>)).toList(),
+      );
+
+  /// Phase 6 (`docs/assembly-scope.md` §3): `POST /document/parts/
+  /// {part_id}/mates` - creates a Mate, data only (no solving as a side
+  /// effect - `solveForOccurrence` below is the caller's own explicit next
+  /// step). [references] must have exactly 2 entries (the backend's own
+  /// `_validate_mate_create` rejects anything else with a 422).
+  Future<MateDto> createMate(
+    String partId, {
+    required String type,
+    required List<MateEntityRefDto> references,
+    double? value,
+    bool flipped = false,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/mates'),
+              headers: _headers,
+              body: jsonEncode({
+                'type': type,
+                'references': references.map((r) => r.toJson()).toList(),
+                if (value != null) 'value': value,
+                'flipped': flipped,
+              }),
+            ),
+        (body) => MateDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// `PATCH /document/parts/{part_id}/mates/{mate_id}` - `value`/`flipped`/
+  /// `suppressed` only, mirroring [MateUpdate]'s own narrow mutation
+  /// surface server-side (never `type`/`references` - a new Mate, not an
+  /// edit of this one). Omitted (`null`) means "leave this field as it
+  /// currently is" - same optional-vs-omitted convention every other
+  /// partial-update call in this file already uses.
+  Future<MateDto> updateMate(
+    String partId,
+    String mateId, {
+    double? value,
+    bool? flipped,
+    bool? suppressed,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/mates/$mateId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (value != null) 'value': value,
+                if (flipped != null) 'flipped': flipped,
+                if (suppressed != null) 'suppressed': suppressed,
+              }),
+            ),
+        (body) => MateDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// `DELETE /document/parts/{part_id}/mates/{mate_id}` - 204, no body.
+  Future<void> deleteMate(String partId, String mateId) => _send(
+        () => _httpClient.delete(_uri('/document/parts/$partId/mates/$mateId'), headers: _headers),
+        (_) {},
+      );
+
+  /// Phase 6 (`docs/assembly-scope.md` §3): `POST /document/parts/
+  /// {part_id}/occurrences/{occurrence_id}/solve` - solves every Mate
+  /// referencing [occurrenceId] against its fixed peers
+  /// (`app.document.assembly_solver.solve_occurrence`) and, on success,
+  /// returns the Occurrence with its newly-solved [OccurrenceDto.transform]
+  /// already applied server-side. Called right after [createMate] for the
+  /// newly-mated Occurrence (so it visibly snaps into place), and after a
+  /// gizmo drag-end's own [updateOccurrenceTransform] call whenever that
+  /// Occurrence has any Mates at all (the "clamped by mates" behavior from
+  /// the original brief) - see the endpoint's own docstring for why this is
+  /// a separate, explicit call rather than folded into either of those.
+  /// Throws [ApiException] (422, `{"type": "mate_solve_did_not_converge",
+  /// ...}`) if the Mate(s) can't actually be satisfied - the Occurrence's
+  /// own transform is left unchanged server-side in that case, never a
+  /// garbage partial result.
+  Future<OccurrenceDto> solveForOccurrence(String partId, String occurrenceId) => _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/occurrences/$occurrenceId/solve'),
+              headers: _headers,
+            ),
+        (body) => OccurrenceDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Sectioning Tool: `POST /document/parts/{part_id}/section-preview` - a

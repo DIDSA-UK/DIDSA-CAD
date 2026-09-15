@@ -196,7 +196,7 @@ def basis_point(basis: ResolvedPlane, x: float, y: float) -> Vector3:
     `origin + x * x_axis + y * y_axis`.
 
     C4: public (no leading underscore) since `app.document.create_plane`'s
-    `_resolve_point_ref_position` now also needs it, to map a `THREE_POINTS`
+    `resolve_point_ref_position` now also needs it, to map a `THREE_POINTS`
     Sketch-Point `PointRef`'s local coordinates into world space through its
     own Sketch's resolved basis."""
     ox, oy, oz = basis.origin

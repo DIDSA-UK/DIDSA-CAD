@@ -12,6 +12,7 @@ from OCC.Core.TopoDS import TopoDS_Shape
 from app.document.ai_plan import validate_ai_plan as validate_ai_plan_steps
 from app.document.ai_plan_schemas import PlanValidateRequest, PlanValidateResponse
 from app.document.assembly import compose_chain
+from app.document.assembly_solver import MateSolveResult, solve_occurrence
 from app.document.bevel import _spiral_hand_from_feature, resolve_bevel_gear, resolve_bevel_gear_coarse
 from app.document.bevel_pair import resolve_bevel_pair, resolve_bevel_pair_coarse, resolve_member_profile_shifts
 from app.document.chamfer import resolve_chamfer
@@ -193,8 +194,10 @@ from app.document.schemas import (
     AssemblyBodyGeometry,
     AssemblyMeshResponse,
     AssemblyOccurrenceInstance,
+    MateCreate,
     MateEntityRefResponse,
     MateResponse,
+    MateUpdate,
     OccurrenceResponse,
     OccurrenceTransformUpdate,
     RigidTransformResponse,
@@ -3136,6 +3139,151 @@ def update_occurrence_transform(
         rotation_axis=payload.transform.rotation_axis,
         rotation_angle_degrees=payload.transform.rotation_angle_degrees,
     )
+    return _occurrence_response(occurrence)
+
+
+def _mate_entity_ref_to_domain(schema: MateEntityRefResponse) -> MateEntityRef:
+    return MateEntityRef(
+        occurrence_id=schema.occurrence_id,
+        subshape_ref=_subshape_ref_to_domain(schema.subshape_ref) if schema.subshape_ref else None,
+        plane_ref=_plane_ref_to_domain(schema.plane_ref) if schema.plane_ref else None,
+        point_ref=_point_ref_to_domain(schema.point_ref) if schema.point_ref else None,
+    )
+
+
+def _validate_mate_entity_ref(part: Part, ref: MateEntityRefResponse) -> None:
+    """One `MateCreate.references` entry's own payload-shape validation -
+    exactly one of `subshape_ref`/`plane_ref`/`point_ref` (mirrors
+    `_validate_plane_ref`'s identical "exactly one of N" check for
+    `PlaneRef` itself), and `occurrence_id` is either `""` (this Part's own
+    root content - Phase 6a/`assembly_solver`'s own convention) or names a
+    real, top-level entry in `part.occurrences` (v1 scope: a Mate can only
+    ever reference a top-level Occurrence of the currently-open Part, the
+    same limit Phase 5's gizmo already has - see `assembly_solver`'s own
+    module docstring)."""
+    set_count = sum(x is not None for x in (ref.subshape_ref, ref.plane_ref, ref.point_ref))
+    if set_count != 1:
+        raise HTTPException(
+            status_code=422,
+            detail="Each mate reference must have exactly one of subshape_ref, plane_ref, or point_ref",
+        )
+    if ref.occurrence_id == "":
+        return
+    if not any(occurrence.id == ref.occurrence_id for occurrence in part.occurrences):
+        raise HTTPException(
+            status_code=422,
+            detail={"type": "occurrence_not_found", "occurrence_id": ref.occurrence_id},
+        )
+
+
+def _validate_mate_create(part: Part, payload: MateCreate) -> None:
+    """`POST /parts/{part_id}/mates`'s own payload-shape validation - the
+    router's job, mirroring every other structured Feature/Mate validation
+    split in this codebase (referential/geometric validity is `assembly_
+    solver`'s own job, raised lazily the first time a Mate is actually
+    solved, the same "resolve, don't pre-validate geometry" philosophy
+    `resolve_subshape`'s own docstring already establishes)."""
+    if len(payload.references) != 2:
+        raise HTTPException(status_code=422, detail="A Mate must have exactly 2 references")
+    for ref in payload.references:
+        _validate_mate_entity_ref(part, ref)
+    if payload.references[0].occurrence_id == payload.references[1].occurrence_id:
+        raise HTTPException(status_code=422, detail="A Mate's two references must name different occurrences")
+    if payload.type in ("distance", "angle") and payload.value is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"A {payload.type} Mate requires a value ({'mm' if payload.type == 'distance' else 'degrees'})",
+        )
+
+
+@router.post("/parts/{part_id}/mates", response_model=MateResponse, status_code=201)
+def create_mate(part_id: str, payload: MateCreate) -> MateResponse:
+    """Phase 6 (`docs/assembly-scope.md` §3): creates a Mate on `part_id` -
+    data only, mirroring `Mate`'s own docstring ("this is data only, ...
+    solving is `app.document.assembly_solver`'s job"). Does not solve
+    anything itself - the client calls `POST .../occurrences/{id}/solve`
+    afterward (see that endpoint's own docstring for why solving is a
+    separate, explicit step rather than an automatic side effect of
+    creating a Mate)."""
+    part = get_part_or_404(part_id)
+    _validate_mate_create(part, payload)
+    mate = Mate(
+        id=str(uuid.uuid4()),
+        type=MateType(payload.type),
+        references=[_mate_entity_ref_to_domain(ref) for ref in payload.references],
+        value=payload.value,
+        flipped=payload.flipped,
+    )
+    part.mates.append(mate)
+    return _mate_response(mate)
+
+
+def _get_mate_or_404(part: Part, mate_id: str) -> Mate:
+    for mate in part.mates:
+        if mate.id == mate_id:
+            return mate
+    raise HTTPException(status_code=404, detail="Mate not found")
+
+
+@router.patch("/parts/{part_id}/mates/{mate_id}", response_model=MateResponse)
+def update_mate(part_id: str, mate_id: str, payload: MateUpdate) -> MateResponse:
+    """`value`/`flipped`/`suppressed` only - see `MateUpdate`'s own
+    docstring for why `type`/`references` aren't editable here."""
+    part = get_part_or_404(part_id)
+    mate = _get_mate_or_404(part, mate_id)
+    if payload.value is not None:
+        mate.value = payload.value
+    if payload.flipped is not None:
+        mate.flipped = payload.flipped
+    if payload.suppressed is not None:
+        mate.suppressed = payload.suppressed
+    return _mate_response(mate)
+
+
+@router.delete("/parts/{part_id}/mates/{mate_id}", status_code=204)
+def delete_mate(part_id: str, mate_id: str) -> Response:
+    part = get_part_or_404(part_id)
+    mate = _get_mate_or_404(part, mate_id)
+    part.mates.remove(mate)
+    return Response(status_code=204)
+
+
+def _mate_solve_did_not_converge(occurrence_id: str, result: MateSolveResult) -> HTTPException:
+    return HTTPException(
+        status_code=422,
+        detail={"type": "mate_solve_did_not_converge", "occurrence_id": occurrence_id, "dof": result.dof},
+    )
+
+
+@router.post("/parts/{part_id}/occurrences/{occurrence_id}/solve", response_model=OccurrenceResponse)
+def solve_for_occurrence(part_id: str, occurrence_id: str) -> OccurrenceResponse:
+    """Phase 6 (`docs/assembly-scope.md` §3): solves every Mate referencing
+    `occurrence_id` against its fixed peers (`app.document.assembly_solver.
+    solve_occurrence`) and, if it converges, overwrites `occurrence.
+    transform` with the result and returns it - otherwise leaves the
+    Occurrence's own current transform untouched and reports 422, never a
+    garbage partial result.
+
+    A deliberately separate, explicit endpoint rather than folded into
+    `update_occurrence_transform`'s own PATCH - the gizmo's own drag-end
+    PATCH always sends the user's raw dragged transform first (so a drag on
+    an *unmated* Occurrence behaves exactly as it always has, no surprise
+    new behavior baked into an existing endpoint), and the client calls
+    this immediately afterward *only* when that Occurrence actually has
+    Mates - giving the "move/rotate triad gizmo clamped by mates" behavior
+    from the original brief: the raw drag position becomes the solve's own
+    initial guess (`solve_occurrence`'s own docstring), so the result snaps
+    to the *nearest* mate-satisfying placement rather than some other,
+    arbitrarily different valid one. The same call is also made right after
+    `create_mate` for the newly-mated Occurrence, so a freshly-authored
+    Mate visibly snaps its target into place immediately, matching real
+    CAD mate-authoring UX."""
+    part = get_part_or_404(part_id)
+    occurrence = _get_occurrence_or_404(part, occurrence_id)
+    result = solve_occurrence(get_document(), part, occurrence_id)
+    if not result.converged:
+        raise _mate_solve_did_not_converge(occurrence_id, result)
+    occurrence.transform = result.transform
     return _occurrence_response(occurrence)
 
 

@@ -1,0 +1,724 @@
+"""Phase 6 (`docs/assembly-scope.md` §3): the mate solver. Given a Part's
+own Mates + Occurrences, solves for one *driven* Occurrence's own
+`RigidTransform` that satisfies every non-suppressed Mate referencing it,
+treating every other referenced Occurrence - or the currently-open Part's
+own root geometry, for a `MateEntityRef.occurrence_id == ""` reference (this
+module's own convention, mirroring the client's identical "empty
+occurrencePath means the root Part's own content" rule, `selection_hit_test.
+dart`'s `hitTestComponentInstances`) - as *fixed* at its own already-known,
+current transform. "v1 only drives the actively-dragged Occurrence against
+fixed peers" (`docs/assembly-scope.md` §3) - no simultaneous multi-body
+solving, and (mirroring Phase 5's own gizmo scope limit) only ever a
+top-level Occurrence of the currently-open Part - a Mate cannot reference an
+Occurrence nested inside another Occurrence in this pass.
+
+Wraps `py_slvs.slvs.System` the same way `app.sketch.solver` does, but gets
+no code reuse from that module - `_PySlvsBuilder` there only ever exercises
+the 2D-sketch-workplane constraint subset (`addPointsCoincident`/
+`addPointsDistance`/etc, always with an explicit `wrkpln`); a mate instead
+needs `addTransform`/`addSameOrientation`/`addPointPlaneDistance`/
+`addPointInPlane`/`addParallel`/`addPointOnLine`/`addAngle`, all free-3D
+(`wrkpln` omitted), none of which `_PySlvsBuilder` touches.
+
+Design notes on `SLVS_E_TRANSFORM` (confirmed against `realthunder/
+solvespace`'s own `include/slvs.h`/`exposed/DOC.txt`/`src/entity.cpp` - the
+fork `docs/assembly-scope.md` §1 already identified as this dependency's
+real upstream):
+
+- `addTransform(src, dx, dy, dz, qw, qx, qy, qz, asAxisAngle=False, ...)`
+  with `asAxisAngle=False` (quaternion mode) produces `POINT_N_ROT_TRANS`/
+  `NORMAL_N_ROT` internally, whose world-space value is the standard
+  `q.Rotate(local) + (dx,dy,dz)` for a point, or `q_transform * q_local`
+  for a normal/frame - exactly `RigidTransform`'s own rotate-then-translate
+  convention, composed the same direction `app.document.assembly.compose`
+  already applies one Occurrence level at a time.
+  `asAxisAngle=True` instead produces `POINT_N_ROT_AA`, a *rotate-about-a-
+  fixed-pivot* transform with no independent translation term (`p_world =
+  q.Rotate(p_local - pivot) + pivot`, where the very same three params
+  double as both the pivot and the post-rotation offset) - useful for
+  SolveSpace's own "step-rotate a group about a point" UI feature, but
+  unable to represent a translation-only placement (pivot cancels out when
+  the rotation is the identity) and therefore *not* what a general
+  rigid-body mate placement needs. This module always uses quaternion mode.
+- Quaternion mode requires an accompanying `NORMAL_IN_3D` entity built from
+  the *same* `(qw, qx, qy, qz)` param handles, in the same solve group, per
+  `DOC.txt`'s own "IMPORTANT" note on `SLVS_E_TRANSFORM` - without it, the
+  implicit unit-quaternion constraint `NORMAL_IN_3D` normally carries never
+  gets added, and the solve is under/incorrectly constrained.
+- Only a point or normal entity can be transformed directly (`DOC.txt`:
+  "For other entities, ... recreate them yourself") - a line needed on the
+  *driven* side is always rebuilt from two independently-transformed
+  points (`addLineSegment`), and a workplane from a transformed point +
+  transformed normal (`addWorkplane`) - never transformed as a whole.
+- The *fixed* side of a mate never touches `py_slvs` at all - its
+  Occurrence's transform is already fully known, so its geometry is placed
+  into world space by plain Python (`app.document.assembly.
+  apply_transform_to_point`/`apply_transform_to_direction`) before being
+  fed in as literal, unsolved (`_FIXED_GROUP`) entities.
+
+Axis-angle <-> quaternion conversion is entirely this module's own - per
+`docs/assembly-scope.md` §1, `RigidTransform`'s wire format is axis-angle
+specifically so the mate solver is the *only* place a quaternion appears,
+at its own `py_slvs` FFI boundary, and no such converter exists anywhere
+else in this backend.
+
+Known v1 scope limits (documented here, not silently assumed):
+- A straight (non-circular) Edge is not a supported mate reference at all
+  ("edge-to-edge" mates); only a Vertex, a planar/cylindrical Face, a
+  circular Edge, a `PlaneRef`, or a `PointRef` are.
+- CONCENTRIC only supports axis-to-axis (a cylindrical Face or circular
+  Edge on *both* sides) - there is no "concentric to a point" variant.
+- DISTANCE only supports point-point/point-plane/plane-plane; an
+  axis-to-axis (parallel-shaft center-distance) DISTANCE mate is not
+  supported.
+- A COINCIDENT mate between two planar references locks the *full*
+  relative orientation (`addSameOrientation`, 3 DOF) rather than only the
+  2 DOF a real "flush, but free to spin about the shared normal" mate
+  should - a deliberate, documented v1 simplification (`addParallel`
+  alone cannot disambiguate the `flipped` sign, since two parallel lines
+  are equally "parallel" whether pointing the same or opposite ways).
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+
+from fastapi import HTTPException
+from OCC.Core.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
+from OCC.Core.GeomAbs import GeomAbs_Circle, GeomAbs_Cylinder, GeomAbs_Plane
+from OCC.Core.TopoDS import topods
+from py_slvs import slvs
+
+from app.document.assembly import apply_transform_to_direction, apply_transform_to_point
+from app.document.create_plane import resolve_plane_ref, resolve_point_ref_position
+from app.document.extrude import compute_part_bodies, resolve_subshape_from_bodies
+from app.document.measure import single_shape_geometry
+from app.document.models import (
+    Document,
+    Mate,
+    MateEntityRef,
+    MateType,
+    Occurrence,
+    Part,
+    PlaneRef,
+    ResolvedPlane,
+    RigidTransform,
+    SubShapeType,
+)
+
+Vec3 = tuple[float, float, float]
+Quaternion = tuple[float, float, float, float]
+
+# Mirrors `app.sketch.solver`'s own `_FIXED_GROUP`/`_SOLVE_GROUP` split -
+# group 1 for literal/known geometry (both the fixed peer's world-space
+# geometry, and the driven Occurrence's own *local*-frame source points/
+# normals, which are constants too - only the whole-body transform is the
+# unknown), group 2 for the transform's own 7 unknown params and anything
+# `addTransform` derives from them.
+_FIXED_GROUP = 1
+_SOLVE_GROUP = 2
+
+
+def _unsupported_mate_geometry(ref: MateEntityRef, needed: str) -> HTTPException:
+    """Structured 422, same envelope `app.document.extrude._missing_reference`/
+    `app.document.create_plane._non_planar_reference` already established -
+    `ref` resolved to real geometry, but not a kind this module knows how to
+    use as `needed` (e.g. a straight edge has no "axis")."""
+    return HTTPException(
+        status_code=422,
+        detail={
+            "type": "unsupported_mate_geometry",
+            "occurrence_id": ref.occurrence_id,
+            "needed": needed,
+        },
+    )
+
+
+def _unresolved_mate_occurrence(occurrence_id: str) -> HTTPException:
+    return HTTPException(
+        status_code=422,
+        detail={"type": "unresolved_mate_occurrence", "occurrence_id": occurrence_id},
+    )
+
+
+def _driven_occurrence_not_found(occurrence_id: str) -> HTTPException:
+    return HTTPException(status_code=404, detail={"type": "occurrence_not_found", "occurrence_id": occurrence_id})
+
+
+@dataclass
+class MateSolveResult:
+    """`solve_occurrence`'s own result - `converged` mirrors `app.sketch.
+    solver.SolveResult`'s identically-named field (`system.solve`'s result
+    code, `0` meaning success). `transform` is the *new* transform to store
+    on `driven_occurrence_id` when `converged`; when not converged, it is
+    the best-effort (likely garbage) value Newton's method stopped at -
+    callers must check `converged` before using it, exactly like `app.
+    sketch.solver`'s own caller always does."""
+
+    converged: bool
+    transform: RigidTransform
+    dof: int
+
+
+@dataclass
+class _ResolvedGeometry:
+    """A `MateEntityRef`'s resolved geometry, in *some* consistent frame
+    (local to its own target Part, or already placed in world space - the
+    caller tracks which). Fields are populated according to what kind of
+    reference this was - never all four at once:
+    - `point_ref`/a Vertex `subshape_ref` -> `point` only.
+    - `plane_ref`/a planar Face `subshape_ref` -> `point` (the plane's own
+      origin - a representative point on it, reused for the point-in-plane
+      half of a mixed point/plane mate), `plane`, and `direction` (the
+      plane's own normal - reused by PARALLEL/ANGLE, which only care about
+      *a* direction, not which kind of reference it came from).
+    - A cylindrical Face or circular Edge `subshape_ref` -> `axis_origin`
+      and `direction` (the axis' own direction - same field PARALLEL/ANGLE
+      already read for a planar reference, so those two mate types treat a
+      face normal and an axis direction identically)."""
+
+    point: Vec3 | None = None
+    plane: ResolvedPlane | None = None
+    axis_origin: Vec3 | None = None
+    direction: Vec3 | None = None
+
+
+def _resolve_local_geometry(target_part: Part, bodies: dict, ref: MateEntityRef) -> _ResolvedGeometry:
+    """`ref`'s own geometry, in `target_part`'s local frame (from `bodies`,
+    `compute_part_bodies(target_part)`'s own result - never pre-transformed).
+    Exactly one of `ref.point_ref`/`ref.plane_ref`/`ref.subshape_ref` is
+    ever set (the router's own validation, mirroring `PlaneRef`/`PointRef`'s
+    established "exactly one of N fields" convention)."""
+    if ref.point_ref is not None:
+        point = resolve_point_ref_position(target_part, bodies, ref.point_ref, frozenset())
+        return _ResolvedGeometry(point=point)
+    if ref.plane_ref is not None:
+        plane = resolve_plane_ref(target_part, bodies, ref.plane_ref, frozenset())
+        return _ResolvedGeometry(point=plane.origin, plane=plane, direction=plane.normal)
+
+    assert ref.subshape_ref is not None
+    sub = ref.subshape_ref
+    shape = resolve_subshape_from_bodies(bodies, sub)
+
+    if sub.shape_type == SubShapeType.VERTEX:
+        geometry = single_shape_geometry(sub, shape)
+        assert geometry.point is not None
+        return _ResolvedGeometry(point=geometry.point)
+
+    if sub.shape_type == SubShapeType.FACE:
+        surface_type = BRepAdaptor_Surface(topods.Face(shape), True).GetType()
+        if surface_type == GeomAbs_Plane:
+            plane = resolve_plane_ref(target_part, bodies, PlaneRef(face_ref=sub), frozenset())
+            return _ResolvedGeometry(point=plane.origin, plane=plane, direction=plane.normal)
+        if surface_type == GeomAbs_Cylinder:
+            geometry = single_shape_geometry(sub, shape)
+            assert geometry.axis_origin is not None and geometry.axis_direction is not None
+            return _ResolvedGeometry(axis_origin=geometry.axis_origin, direction=geometry.axis_direction)
+        raise _unsupported_mate_geometry(ref, "point, plane, or axis")
+
+    if sub.shape_type == SubShapeType.EDGE:
+        curve_type = BRepAdaptor_Curve(topods.Edge(shape)).GetType()
+        if curve_type == GeomAbs_Circle:
+            geometry = single_shape_geometry(sub, shape)
+            assert geometry.axis_origin is not None and geometry.axis_direction is not None
+            return _ResolvedGeometry(axis_origin=geometry.axis_origin, direction=geometry.axis_direction)
+        raise _unsupported_mate_geometry(ref, "an axis (only a circular edge has one)")
+
+    # SubShapeType.BODY - no meaningful point/plane/axis of its own.
+    raise _unsupported_mate_geometry(ref, "point, plane, or axis")
+
+
+def _place_in_world(geometry: _ResolvedGeometry, transform: RigidTransform) -> _ResolvedGeometry:
+    """`geometry` (local to some fixed Occurrence's own target Part), placed
+    into world space via `transform` (that Occurrence's own already-known
+    current transform) - plain Python, no `py_slvs` involvement, since
+    nothing here is being solved for."""
+    point = apply_transform_to_point(transform, geometry.point) if geometry.point is not None else None
+    axis_origin = (
+        apply_transform_to_point(transform, geometry.axis_origin) if geometry.axis_origin is not None else None
+    )
+    direction = (
+        apply_transform_to_direction(transform, geometry.direction) if geometry.direction is not None else None
+    )
+    plane = None
+    if geometry.plane is not None:
+        plane = ResolvedPlane(
+            origin=apply_transform_to_point(transform, geometry.plane.origin),
+            normal=apply_transform_to_direction(transform, geometry.plane.normal),
+            x_axis=apply_transform_to_direction(transform, geometry.plane.x_axis),
+            y_axis=apply_transform_to_direction(transform, geometry.plane.y_axis),
+        )
+    return _ResolvedGeometry(point=point, plane=plane, axis_origin=axis_origin, direction=direction)
+
+
+def _target_part_and_transform(
+    document: Document, part: Part, occurrence_id: str
+) -> tuple[Part, RigidTransform | None]:
+    """The Part whose local bodies `occurrence_id` places, plus that
+    Occurrence's own current `transform` - `None` for the special `""`
+    ("this Part's own root content") occurrence id, which needs no
+    transform at all (already at the assembly's own world origin)."""
+    if occurrence_id == "":
+        return part, None
+    for occurrence in part.occurrences:
+        if occurrence.id == occurrence_id:
+            if occurrence.part_id is None or occurrence.part_id not in document.parts:
+                raise _unresolved_mate_occurrence(occurrence_id)
+            return document.parts[occurrence.part_id], occurrence.transform
+    raise _unresolved_mate_occurrence(occurrence_id)
+
+
+# ---- Axis-angle <-> quaternion (this module's own private FFI boundary) --
+
+
+def _normalize(v: Vec3) -> Vec3:
+    length = math.sqrt(v[0] ** 2 + v[1] ** 2 + v[2] ** 2)
+    if length < 1e-12:
+        return (0.0, 0.0, 1.0)
+    return (v[0] / length, v[1] / length, v[2] / length)
+
+
+def _quaternion_from_axis_angle(axis: Vec3, angle_degrees: float) -> Quaternion:
+    ax, ay, az = _normalize(axis)
+    half = math.radians(angle_degrees) / 2.0
+    s = math.sin(half)
+    return (math.cos(half), ax * s, ay * s, az * s)
+
+
+def _axis_angle_from_quaternion(q: Quaternion) -> tuple[Vec3, float]:
+    qw = max(-1.0, min(1.0, q[0]))
+    angle_radians = 2.0 * math.acos(qw)
+    s = math.sqrt(max(0.0, 1.0 - qw * qw))
+    if s < 1e-9:
+        return (0.0, 0.0, 1.0), 0.0
+    return (q[1] / s, q[2] / s, q[3] / s), math.degrees(angle_radians)
+
+
+def _quaternion_aligning(source: Vec3, target: Vec3) -> Quaternion:
+    """A quaternion rotating unit vector `source` onto unit vector `target`
+    - `solve_occurrence`'s own warm-start seed for a COINCIDENT plane-plane
+    mate's direction, used *instead of* an extra sign-picking constraint
+    (see `_direction_lock`'s own docstring for why one doesn't work): once
+    `addParallel` has already locked the driven direction to lie along the
+    *same infinite line* as the target, seeding Newton's method already
+    almost exactly on the intended branch (same-direction vs opposite)
+    reliably keeps it there, the same "warm start" principle any Newton
+    solver relies on for a nearby-but-not-exact initial guess. Standard
+    "rotation between two vectors" construction (half-angle formula) - the
+    near-180-degree case (`source`/`target` opposite) is degenerate for the
+    usual `cross(source, target)` axis (near-zero magnitude), so that case
+    picks an arbitrary perpendicular axis instead (a full 180-degree
+    rotation, unique up to choice of axis for its own end result - and this
+    seed only needs to be *close*, not exact, since the real solve refines
+    it)."""
+    a = _normalize(source)
+    b = _normalize(target)
+    dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+    if dot > 1.0 - 1e-9:
+        return (1.0, 0.0, 0.0, 0.0)
+    if dot < -1.0 + 1e-9:
+        # Any vector not parallel to `a` gives a valid perpendicular axis
+        # via a second cross product.
+        arbitrary = (1.0, 0.0, 0.0) if abs(a[0]) < 0.9 else (0.0, 1.0, 0.0)
+        axis = _normalize(
+            (
+                a[1] * arbitrary[2] - a[2] * arbitrary[1],
+                a[2] * arbitrary[0] - a[0] * arbitrary[2],
+                a[0] * arbitrary[1] - a[1] * arbitrary[0],
+            )
+        )
+        return (0.0, axis[0], axis[1], axis[2])
+    cross = (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+    s = math.sqrt((1.0 + dot) * 2.0)
+    inv_s = 1.0 / s
+    return (s * 0.5, cross[0] * inv_s, cross[1] * inv_s, cross[2] * inv_s)
+
+
+def _quaternion_from_basis(x_axis: Vec3, y_axis: Vec3, z_axis: Vec3) -> Quaternion:
+    """Standard rotation-matrix-to-quaternion conversion (Shepperd's
+    method) for the right-handed orthonormal frame `[x_axis | y_axis |
+    z_axis]` (as columns) - `ResolvedPlane`'s own `x_axis`/`y_axis`/`normal`
+    triple already is exactly this, by construction (`app.document.
+    create_plane._resolve_planar_face`'s own docstring)."""
+    m00, m10, m20 = x_axis
+    m01, m11, m21 = y_axis
+    m02, m12, m22 = z_axis
+    trace = m00 + m11 + m22
+    if trace > 0:
+        s = 0.5 / math.sqrt(trace + 1.0)
+        return (0.25 / s, (m21 - m12) * s, (m02 - m20) * s, (m10 - m01) * s)
+    if m00 > m11 and m00 > m22:
+        s = 2.0 * math.sqrt(1.0 + m00 - m11 - m22)
+        return ((m21 - m12) / s, 0.25 * s, (m01 + m10) / s, (m02 + m20) / s)
+    if m11 > m22:
+        s = 2.0 * math.sqrt(1.0 + m11 - m00 - m22)
+        return ((m02 - m20) / s, (m01 + m10) / s, 0.25 * s, (m12 + m21) / s)
+    s = 2.0 * math.sqrt(1.0 + m22 - m00 - m11)
+    return ((m10 - m01) / s, (m02 + m20) / s, (m12 + m21) / s, 0.25 * s)
+
+
+# ---- The py_slvs solve itself --------------------------------------------
+
+
+@dataclass
+class _TransformParams:
+    """The 7 unknown params (`SLVS_E_TRANSFORM`'s own `dx,dy,dz,qw,qx,qy,qz`)
+    representing the driven Occurrence's own whole-body placement, created
+    once per solve and reused as `addTransform`'s own trailing arguments for
+    however many points/normals that Occurrence's own Mates need
+    transformed."""
+
+    dx: int
+    dy: int
+    dz: int
+    qw: int
+    qx: int
+    qy: int
+    qz: int
+
+
+class _DrivenGeometryBuilder:
+    """Wraps `system`/`transform` to build `py_slvs` entities for the
+    driven side of a mate - every local point/direction it's handed is
+    first created as a literal `_FIXED_GROUP` entity (the constant, known
+    local-frame value), then run through `addTransform` (quaternion mode -
+    see this module's own docstring for why) into a `_SOLVE_GROUP` entity
+    representing that same point/direction after the trial whole-body
+    placement Newton's method is searching over."""
+
+    def __init__(self, system: slvs.System, transform: _TransformParams):
+        self._system = system
+        self._transform = transform
+
+    def point(self, local: Vec3) -> int:
+        src = self._system.addPoint3dV(*local, group=_FIXED_GROUP)
+        t = self._transform
+        return self._system.addTransform(
+            src, t.dx, t.dy, t.dz, t.qw, t.qx, t.qy, t.qz, asAxisAngle=False, group=_SOLVE_GROUP
+        )
+
+    def normal_from_quaternion(self, local_quaternion: Quaternion) -> int:
+        src = self._system.addNormal3dV(*local_quaternion, group=_FIXED_GROUP)
+        t = self._transform
+        return self._system.addTransform(
+            src, t.dx, t.dy, t.dz, t.qw, t.qx, t.qy, t.qz, asAxisAngle=False, group=_SOLVE_GROUP
+        )
+
+    def line(self, origin: Vec3, direction: Vec3) -> int:
+        p0 = self.point(origin)
+        p1 = self.point((origin[0] + direction[0], origin[1] + direction[1], origin[2] + direction[2]))
+        return self._system.addLineSegment(p0, p1, group=_SOLVE_GROUP)
+
+
+def _direction_lock(
+    system: slvs.System,
+    builder: _DrivenGeometryBuilder,
+    driven_local_origin: Vec3,
+    driven_local_direction: Vec3,
+    fixed_direction: Vec3,
+) -> None:
+    """`MateType.COINCIDENT`'s own plane-plane branch needs the transformed
+    driven direction to end up parallel to `fixed_direction` (2 DOF) -
+    *which* of the two parallel branches (same-direction vs opposite) is
+    `flipped`'s own job, resolved not by an extra constraint here but by
+    `solve_occurrence`'s own warm-start seed (`_quaternion_aligning`) -
+    see that function's own docstring for why a *constraint* meant to pick
+    the sign doesn't actually work.
+
+    Two constraint-based attempts were tried and reverted here, both
+    confirmed by an actual failing solve, not just reasoning:
+    1. `addSameOrientation` - confirmed against `realthunder/solvespace`'s
+       own `src/constrainteq.cpp`, `SAME_ORIENTATION`'s actual equations are
+       "the two normals are *parallel*" (sign-agnostic - antiparallel
+       counts as parallel too) plus one dot-product term whose own comment
+       reads "allow either orientation for the coordinate system,
+       depending on how it was drawn" - i.e. it structurally cannot
+       distinguish `flipped` from not-flipped at all.
+    2. Chaining `addTranslate` off an already-`addTransform`'d point (to
+       build "driven's transformed origin, offset by a fixed target
+       vector") - `EntityBase::Transform`'s own `numPoint = src->
+       PointGetNum()` snapshots `src`'s value *once*, at entity-creation
+       time (confirmed directly against `entity.cpp`), so a `_SOLVE_GROUP`
+       `addTransform` result passed back in as a *second* transform's own
+       `src` stays frozen at its seed value forever - zero solver progress.
+    3. A signed `addPointPlaneDistance` of a point one unit along the
+       driven direction, once `addParallel` had already locked the
+       direction to +/- the target - correct in principle (unlike 1 and 2),
+       but its own Jacobian w.r.t. rotation is *exactly* zero at the target
+       configurations themselves (a dot-product/cosine measure is always
+       stationary at its own extrema, cos(theta) near theta=0 or pi) - a
+       real, reproduced convergence failure sitting precisely at the two
+       configurations this mate is actually trying to reach, not a
+       hypothetical concern."""
+    driven_line = builder.line(driven_local_origin, driven_local_direction)
+    fixed_line = _fixed_line(system, (0.0, 0.0, 0.0), fixed_direction)
+    system.addParallel(driven_line, fixed_line, group=_SOLVE_GROUP)
+
+
+def _fixed_point(system: slvs.System, point: Vec3) -> int:
+    return system.addPoint3dV(*point, group=_FIXED_GROUP)
+
+
+def _fixed_line(system: slvs.System, origin: Vec3, direction: Vec3) -> int:
+    p0 = system.addPoint3dV(*origin, group=_FIXED_GROUP)
+    tip = (origin[0] + direction[0], origin[1] + direction[1], origin[2] + direction[2])
+    p1 = system.addPoint3dV(*tip, group=_FIXED_GROUP)
+    return system.addLineSegment(p0, p1, group=_FIXED_GROUP)
+
+
+def _fixed_workplane(system: slvs.System, plane: ResolvedPlane) -> int:
+    origin = system.addPoint3dV(*plane.origin, group=_FIXED_GROUP)
+    quaternion = _quaternion_from_basis(plane.x_axis, plane.y_axis, plane.normal)
+    normal = system.addNormal3dV(*quaternion, group=_FIXED_GROUP)
+    return system.addWorkplane(origin, normal, group=_FIXED_GROUP)
+
+
+def _add_mate_constraints(
+    system: slvs.System,
+    builder: _DrivenGeometryBuilder,
+    mate: Mate,
+    driven: _ResolvedGeometry,
+    fixed: _ResolvedGeometry,
+    driven_ref: MateEntityRef,
+) -> None:
+    """Adds `mate`'s own constraint(s) to `system` - `driven`/`fixed` are
+    already resolved (driven still local, ready for `builder`; fixed
+    already placed in world space by `_place_in_world`). Raises
+    `_unsupported_mate_geometry` (named after `driven_ref` - either side of
+    a mismatched pair is equally "the" problem, so naming the driven side
+    consistently is simpler than picking whichever one is actually at
+    fault) for a reference-kind/`MateType` mismatch this module doesn't
+    support (see this module's own docstring for the documented v1 gaps)."""
+    ref_placeholder = driven_ref
+
+    if mate.type == MateType.COINCIDENT:
+        if driven.plane is not None and fixed.plane is not None:
+            # Not flipped (the default): the two faces sit flush facing
+            # *each other* - physically valid touching solids have their
+            # outward normals pointing in opposite directions (this is
+            # SolidWorks' own Coincident-mate default). `flipped=True` is
+            # the same-direction (surfaces co-facing, geometrically
+            # overlapping) configuration instead - a real option some
+            # assemblies genuinely need (e.g. a deliberately-open/
+            # see-through pair, or disambiguating a symmetric part), not a
+            # mistake. See `_direction_lock`'s own docstring for why
+            # *which* of the two parallel branches is picked by
+            # `solve_occurrence`'s own warm-start seed, not a constraint.
+            driven_point = builder.point(driven.plane.origin)
+            fixed_workplane = _fixed_workplane(system, fixed.plane)
+            system.addPointInPlane(driven_point, fixed_workplane, group=_SOLVE_GROUP)
+            _direction_lock(system, builder, driven.plane.origin, driven.plane.normal, fixed.plane.normal)
+        elif driven.plane is not None:
+            assert fixed.point is not None
+            fixed_point = _fixed_point(system, fixed.point)
+            driven_workplane_origin = builder.point(driven.plane.origin)
+            driven_workplane_normal = builder.normal_from_quaternion(
+                _quaternion_from_basis(driven.plane.x_axis, driven.plane.y_axis, driven.plane.normal)
+            )
+            driven_workplane = system.addWorkplane(driven_workplane_origin, driven_workplane_normal, group=_SOLVE_GROUP)
+            system.addPointInPlane(fixed_point, driven_workplane, group=_SOLVE_GROUP)
+        elif fixed.plane is not None:
+            assert driven.point is not None
+            driven_point = builder.point(driven.point)
+            fixed_workplane = _fixed_workplane(system, fixed.plane)
+            system.addPointInPlane(driven_point, fixed_workplane, group=_SOLVE_GROUP)
+        else:
+            if driven.point is None or fixed.point is None:
+                raise _unsupported_mate_geometry(ref_placeholder, "a point or plane on each side")
+            driven_point = builder.point(driven.point)
+            fixed_point = _fixed_point(system, fixed.point)
+            system.addPointsCoincident(driven_point, fixed_point, group=_SOLVE_GROUP)
+        return
+
+    if mate.type == MateType.CONCENTRIC:
+        if driven.axis_origin is None or driven.direction is None or fixed.axis_origin is None or fixed.direction is None:
+            raise _unsupported_mate_geometry(ref_placeholder, "an axis (a cylindrical face or circular edge) on each side")
+        driven_line = builder.line(driven.axis_origin, driven.direction)
+        driven_origin_point = builder.point(driven.axis_origin)
+        fixed_line = _fixed_line(system, fixed.axis_origin, fixed.direction)
+        system.addParallel(driven_line, fixed_line, group=_SOLVE_GROUP)
+        system.addPointOnLine(driven_origin_point, fixed_line, group=_SOLVE_GROUP)
+        return
+
+    if mate.type == MateType.PARALLEL:
+        if driven.direction is None or fixed.direction is None:
+            raise _unsupported_mate_geometry(ref_placeholder, "a direction (a face normal or an axis) on each side")
+        driven_origin = driven.axis_origin if driven.axis_origin is not None else (driven.point or (0.0, 0.0, 0.0))
+        fixed_origin = fixed.axis_origin if fixed.axis_origin is not None else (fixed.point or (0.0, 0.0, 0.0))
+        driven_line = builder.line(driven_origin, driven.direction)
+        fixed_line = _fixed_line(system, fixed_origin, fixed.direction)
+        system.addParallel(driven_line, fixed_line, group=_SOLVE_GROUP)
+        return
+
+    if mate.type == MateType.ANGLE:
+        if driven.direction is None or fixed.direction is None:
+            raise _unsupported_mate_geometry(ref_placeholder, "a direction (a face normal or an axis) on each side")
+        if mate.value is None:
+            raise _unsupported_mate_geometry(ref_placeholder, "a value (degrees)")
+        driven_origin = driven.axis_origin if driven.axis_origin is not None else (driven.point or (0.0, 0.0, 0.0))
+        fixed_origin = fixed.axis_origin if fixed.axis_origin is not None else (fixed.point or (0.0, 0.0, 0.0))
+        driven_line = builder.line(driven_origin, driven.direction)
+        fixed_line = _fixed_line(system, fixed_origin, fixed.direction)
+        system.addAngle(mate.value, mate.flipped, driven_line, fixed_line, group=_SOLVE_GROUP)
+        return
+
+    if mate.type == MateType.DISTANCE:
+        if mate.value is None:
+            raise _unsupported_mate_geometry(ref_placeholder, "a value (mm)")
+        distance = abs(mate.value)
+        if driven.plane is not None and fixed.plane is not None:
+            # Unlike COINCIDENT's plane-plane case, this keeps the two
+            # planes merely parallel (`addParallel`, 2 DOF - direction
+            # only), not fully orientation-locked (`addSameOrientation`,
+            # 3 DOF) - a "these two flat faces are N mm apart" mate has no
+            # reason to also lock spin about the shared normal, unlike a
+            # flush COINCIDENT mate where this module already documents
+            # that simplification as a deliberate v1 gap.
+            driven_point = builder.point(driven.plane.origin)
+            driven_line = builder.line(driven.plane.origin, driven.plane.normal)
+            fixed_workplane = _fixed_workplane(system, fixed.plane)
+            fixed_line = _fixed_line(system, fixed.plane.origin, fixed.plane.normal)
+            system.addPointPlaneDistance(distance, driven_point, fixed_workplane, group=_SOLVE_GROUP)
+            system.addParallel(driven_line, fixed_line, group=_SOLVE_GROUP)
+        elif driven.plane is not None:
+            assert fixed.point is not None
+            fixed_point = _fixed_point(system, fixed.point)
+            driven_workplane_origin = builder.point(driven.plane.origin)
+            driven_workplane_normal = builder.normal_from_quaternion(
+                _quaternion_from_basis(driven.plane.x_axis, driven.plane.y_axis, driven.plane.normal)
+            )
+            driven_workplane = system.addWorkplane(driven_workplane_origin, driven_workplane_normal, group=_SOLVE_GROUP)
+            system.addPointPlaneDistance(distance, fixed_point, driven_workplane, group=_SOLVE_GROUP)
+        elif fixed.plane is not None:
+            assert driven.point is not None
+            driven_point = builder.point(driven.point)
+            fixed_workplane = _fixed_workplane(system, fixed.plane)
+            system.addPointPlaneDistance(distance, driven_point, fixed_workplane, group=_SOLVE_GROUP)
+        else:
+            if driven.point is None or fixed.point is None:
+                raise _unsupported_mate_geometry(ref_placeholder, "a point or plane on each side")
+            driven_point = builder.point(driven.point)
+            fixed_point = _fixed_point(system, fixed.point)
+            system.addPointsDistance(distance, driven_point, fixed_point, group=_SOLVE_GROUP)
+        return
+
+    raise AssertionError(f"unhandled MateType: {mate.type}")  # pragma: no cover
+
+
+def _applicable_mates(part: Part, driven_occurrence_id: str) -> list[tuple[Mate, MateEntityRef, MateEntityRef]]:
+    """Every non-suppressed Mate in `part.mates` with exactly one of its two
+    `references` naming `driven_occurrence_id` - returned as `(mate,
+    driven_ref, fixed_ref)` triples. A Mate with zero or two references to
+    the driven Occurrence doesn't apply to *this* solve (the latter would
+    be a self-mate, which nothing in this codebase can create)."""
+    applicable = []
+    for mate in part.mates:
+        if mate.suppressed or len(mate.references) != 2:
+            continue
+        first, second = mate.references
+        if first.occurrence_id == driven_occurrence_id and second.occurrence_id != driven_occurrence_id:
+            applicable.append((mate, first, second))
+        elif second.occurrence_id == driven_occurrence_id and first.occurrence_id != driven_occurrence_id:
+            applicable.append((mate, second, first))
+    return applicable
+
+
+def solve_occurrence(document: Document, part: Part, driven_occurrence_id: str) -> MateSolveResult:
+    """Solves every Mate in `part.mates` that references
+    `driven_occurrence_id`, against every other referenced Occurrence held
+    fixed at its own current transform - the real prerequisite this
+    module's own docstring describes. `driven_occurrence_id` must name a
+    real, top-level entry in `part.occurrences` (never `""` - the root has
+    no transform of its own to solve for).
+
+    No applicable Mates at all is not an error - returns the Occurrence's
+    own current transform, trivially "converged" (nothing to satisfy).
+    Seeds the solve's own initial guess from that same current transform,
+    so a gizmo-dragged position (passed in in a live implementation, which
+    always writes to `Occurrence.transform` *before* calling this - see the
+    router's own `solve_for_occurrence` endpoint) snaps to the *nearest*
+    mate-satisfying placement rather than jumping to some other,
+    arbitrarily-different valid solution."""
+    driven_occurrence: Occurrence | None = None
+    for occurrence in part.occurrences:
+        if occurrence.id == driven_occurrence_id:
+            driven_occurrence = occurrence
+            break
+    if driven_occurrence is None:
+        raise _driven_occurrence_not_found(driven_occurrence_id)
+
+    applicable = _applicable_mates(part, driven_occurrence_id)
+    if not applicable:
+        return MateSolveResult(converged=True, transform=driven_occurrence.transform, dof=6)
+
+    if driven_occurrence.part_id is None or driven_occurrence.part_id not in document.parts:
+        raise _unresolved_mate_occurrence(driven_occurrence_id)
+    driven_target_part = document.parts[driven_occurrence.part_id]
+    driven_bodies = compute_part_bodies(driven_target_part)
+
+    # Resolve every applicable Mate's own geometry *before* building the
+    # `py_slvs` system - both because the constraint-building pass below
+    # needs it, and because a COINCIDENT plane-plane pair's own geometry
+    # gives `_quaternion_aligning` what it needs for a warm-start seed
+    # (see that function's own docstring for why the seed, not an extra
+    # constraint, is what actually disambiguates `flipped`).
+    resolved: list[tuple[Mate, MateEntityRef, _ResolvedGeometry, _ResolvedGeometry]] = []
+    for mate, driven_ref, fixed_ref in applicable:
+        driven_geometry = _resolve_local_geometry(driven_target_part, driven_bodies, driven_ref)
+        fixed_target_part, fixed_transform = _target_part_and_transform(document, part, fixed_ref.occurrence_id)
+        fixed_bodies = compute_part_bodies(fixed_target_part)
+        fixed_local_geometry = _resolve_local_geometry(fixed_target_part, fixed_bodies, fixed_ref)
+        fixed_geometry = (
+            fixed_local_geometry if fixed_transform is None else _place_in_world(fixed_local_geometry, fixed_transform)
+        )
+        resolved.append((mate, driven_ref, driven_geometry, fixed_geometry))
+
+    seed_rotation_quaternion: Quaternion | None = None
+    for mate, _driven_ref, driven_geometry, fixed_geometry in resolved:
+        if mate.type == MateType.COINCIDENT and driven_geometry.plane is not None and fixed_geometry.plane is not None:
+            target_direction = fixed_geometry.plane.normal if mate.flipped else tuple(-c for c in fixed_geometry.plane.normal)
+            seed_rotation_quaternion = _quaternion_aligning(driven_geometry.plane.normal, target_direction)
+            break
+
+    system = slvs.System()
+    seed_translation = driven_occurrence.transform.translation
+    seed_quaternion = seed_rotation_quaternion or _quaternion_from_axis_angle(
+        driven_occurrence.transform.rotation_axis, driven_occurrence.transform.rotation_angle_degrees
+    )
+    transform_params = _TransformParams(
+        dx=system.addParamV(seed_translation[0], group=_SOLVE_GROUP),
+        dy=system.addParamV(seed_translation[1], group=_SOLVE_GROUP),
+        dz=system.addParamV(seed_translation[2], group=_SOLVE_GROUP),
+        qw=system.addParamV(seed_quaternion[0], group=_SOLVE_GROUP),
+        qx=system.addParamV(seed_quaternion[1], group=_SOLVE_GROUP),
+        qy=system.addParamV(seed_quaternion[2], group=_SOLVE_GROUP),
+        qz=system.addParamV(seed_quaternion[3], group=_SOLVE_GROUP),
+    )
+    # The unit-quaternion entity `SLVS_E_TRANSFORM`'s own DOC.txt requires
+    # alongside the transform's params, in the same solve group (see this
+    # module's own docstring) - never otherwise referenced.
+    system.addNormal3d(
+        transform_params.qw, transform_params.qx, transform_params.qy, transform_params.qz, group=_SOLVE_GROUP
+    )
+    builder = _DrivenGeometryBuilder(system, transform_params)
+
+    for mate, driven_ref, driven_geometry, fixed_geometry in resolved:
+        _add_mate_constraints(system, builder, mate, driven_geometry, fixed_geometry, driven_ref)
+
+    result_code = system.solve(group=_SOLVE_GROUP, reportFailed=True)
+    converged = result_code == 0
+    translation = (
+        system.getParam(transform_params.dx).val,
+        system.getParam(transform_params.dy).val,
+        system.getParam(transform_params.dz).val,
+    )
+    quaternion = (
+        system.getParam(transform_params.qw).val,
+        system.getParam(transform_params.qx).val,
+        system.getParam(transform_params.qy).val,
+        system.getParam(transform_params.qz).val,
+    )
+    axis, angle = _axis_angle_from_quaternion(quaternion)
+    transform = RigidTransform(translation=translation, rotation_axis=axis, rotation_angle_degrees=angle)
+    return MateSolveResult(converged=converged, transform=transform, dof=system.Dof)

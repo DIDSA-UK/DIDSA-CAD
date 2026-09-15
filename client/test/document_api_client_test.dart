@@ -2097,4 +2097,173 @@ void main() {
       );
     });
   });
+
+  group('Phase 6 (docs/assembly-scope.md §3): DocumentApiClient Mate CRUD + solve', () {
+    http.Response jsonResponse(Object body, {int status = 200}) =>
+        http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});
+
+    Map<String, dynamic> mateJson({double? value, bool flipped = false}) => {
+          'id': 'mate-1',
+          'type': 'coincident',
+          'references': [
+            {
+              'occurrence_id': 'occ-1',
+              'subshape_ref': {'body_id': 'body-1', 'shape_type': 'face', 'index': 2},
+              'plane_ref': null,
+              'point_ref': null,
+            },
+            {
+              'occurrence_id': '',
+              'subshape_ref': {'body_id': 'body-2', 'shape_type': 'face', 'index': 5},
+              'plane_ref': null,
+              'point_ref': null,
+            },
+          ],
+          'value': value,
+          'flipped': flipped,
+          'suppressed': false,
+        };
+
+    test('MateEntityRefDto.toJson round-trips a subshape_ref-only reference', () {
+      const ref = MateEntityRefDto(
+        occurrenceId: 'occ-1',
+        subshapeRef: SubShapeRefDto(bodyId: 'body-1', shapeType: 'face', index: 2),
+      );
+      expect(ref.toJson(), {
+        'occurrence_id': 'occ-1',
+        'subshape_ref': {'body_id': 'body-1', 'shape_type': 'face', 'index': 2},
+      });
+    });
+
+    test('createMate posts type/references/flipped and omits value when not given', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse(mateJson(), status: 201);
+        }),
+      );
+
+      final mate = await client.createMate(
+        'part-1',
+        type: 'coincident',
+        references: const [
+          MateEntityRefDto(
+            occurrenceId: 'occ-1',
+            subshapeRef: SubShapeRefDto(bodyId: 'body-1', shapeType: 'face', index: 2),
+          ),
+          MateEntityRefDto(
+            occurrenceId: '',
+            subshapeRef: SubShapeRefDto(bodyId: 'body-2', shapeType: 'face', index: 5),
+          ),
+        ],
+      );
+
+      expect(capturedBody['type'], 'coincident');
+      expect(capturedBody['flipped'], false);
+      expect(capturedBody.containsKey('value'), isFalse);
+      expect((capturedBody['references'] as List).length, 2);
+      expect(mate.id, 'mate-1');
+      expect(mate.references.first.occurrenceId, 'occ-1');
+    });
+
+    test('createMate sends value/flipped when given', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse(mateJson(value: 25.0, flipped: true), status: 201);
+        }),
+      );
+
+      final mate = await client.createMate(
+        'part-1',
+        type: 'distance',
+        references: const [
+          MateEntityRefDto(occurrenceId: 'occ-1', subshapeRef: SubShapeRefDto(bodyId: 'b1', shapeType: 'vertex', index: 0)),
+          MateEntityRefDto(occurrenceId: '', subshapeRef: SubShapeRefDto(bodyId: 'b2', shapeType: 'vertex', index: 0)),
+        ],
+        value: 25.0,
+        flipped: true,
+      );
+
+      expect(capturedBody['value'], 25.0);
+      expect(capturedBody['flipped'], true);
+      expect(mate.value, 25.0);
+      expect(mate.flipped, true);
+    });
+
+    test('updateMate only sends the fields supplied', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse(mateJson(value: 30.0));
+        }),
+      );
+
+      await client.updateMate('part-1', 'mate-1', value: 30.0);
+
+      expect(capturedBody, {'value': 30.0});
+    });
+
+    test('deleteMate calls DELETE and completes with no error on a 204', () async {
+      Uri? capturedUri;
+      String? capturedMethod;
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedUri = request.url;
+          capturedMethod = request.method;
+          return http.Response('', 204);
+        }),
+      );
+
+      await client.deleteMate('part-1', 'mate-1');
+
+      expect(capturedMethod, 'DELETE');
+      expect(capturedUri?.path, '/document/parts/part-1/mates/mate-1');
+    });
+
+    test('solveForOccurrence posts to the solve endpoint and parses the returned Occurrence', () async {
+      Uri? capturedUri;
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedUri = request.url;
+          return jsonResponse({
+            'id': 'occ-1',
+            'external_ref': 'parts/bracket.didsa',
+            'resolved_part_id': 'part-2',
+            'name_override': null,
+            'transform': {
+              'translation': [1.0, 2.0, 3.0],
+              'rotation_axis': [0.0, 0.0, 1.0],
+              'rotation_angle_degrees': 45.0,
+            },
+            'suppressed': false,
+            'hidden': false,
+          });
+        }),
+      );
+
+      final occurrence = await client.solveForOccurrence('part-1', 'occ-1');
+
+      expect(capturedUri?.path, '/document/parts/part-1/occurrences/occ-1/solve');
+      expect(occurrence.transform.translation, [1.0, 2.0, 3.0]);
+    });
+
+    test('solveForOccurrence surfaces a mate_solve_did_not_converge 422 as an ApiException', () async {
+      final client = DocumentApiClient(
+        httpClient: MockClient(
+          (request) async => jsonResponse({
+            'detail': {'type': 'mate_solve_did_not_converge', 'occurrence_id': 'occ-1', 'dof': 2},
+          }, status: 422),
+        ),
+      );
+
+      await expectLater(
+        () => client.solveForOccurrence('part-1', 'occ-1'),
+        throwsA(isA<ApiException>().having((e) => e.statusCode, 'statusCode', 422)),
+      );
+    });
+  });
 }

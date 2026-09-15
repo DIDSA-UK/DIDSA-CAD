@@ -75,24 +75,27 @@ void main() {
       expect(await pendingResult, ComponentContextMenuAction.isolate);
     });
 
-    testWidgets('Mate and Pattern render disabled with a reason', (tester) async {
+    // Phase 6 (`docs/assembly-scope.md` §2i): Mate was enabled here -
+    // Pattern is the only remaining placeholder (Phase 7, still
+    // design-only).
+    testWidgets('Pattern renders disabled with a reason', (tester) async {
       await openMenu(tester, isFocused: false, hidden: false);
-      for (final label in ['Mate', 'Pattern']) {
-        final tile = tester.widget<ListTile>(
-          find.ancestor(of: find.text(label), matching: find.byType(ListTile)),
-        );
-        expect(tile.enabled, isFalse, reason: '$label should be disabled');
-      }
-      expect(find.textContaining('Coming soon'), findsNWidgets(2));
+      final tile = tester.widget<ListTile>(
+        find.ancestor(of: find.text('Pattern'), matching: find.byType(ListTile)),
+      );
+      expect(tile.enabled, isFalse, reason: 'Pattern should be disabled');
+      expect(find.textContaining('Coming soon'), findsOneWidget);
     });
 
     // Appendix item 5 fix (`docs/assembly-scope.md`): Move/Rotate used to
     // render disabled here even after Phase 5's gizmo shipped and already
     // worked via plain tap-selection - a discoverability bug, not a missing
     // feature. Grouped with Make Focus/Hide/Isolate now that it's real too.
-    testWidgets('Make Focus, Move/Rotate, Hide, and Isolate render enabled (already real)', (tester) async {
+    // Mate joined this group once Phase 6's own solver/authoring UI landed
+    // (§2i).
+    testWidgets('Make Focus, Mate, Move/Rotate, Hide, and Isolate render enabled (already real)', (tester) async {
       await openMenu(tester, isFocused: false, hidden: false);
-      for (final label in ['Make Focus', 'Move/Rotate', 'Hide', 'Isolate']) {
+      for (final label in ['Make Focus', 'Mate', 'Move/Rotate', 'Hide', 'Isolate']) {
         final tile = tester.widget<ListTile>(
           find.ancestor(of: find.text(label), matching: find.byType(ListTile)),
         );
@@ -105,6 +108,13 @@ void main() {
       await tester.tap(find.text('Move/Rotate'));
       await tester.pumpAndSettle();
       expect(await pendingResult, ComponentContextMenuAction.moveRotate);
+    });
+
+    testWidgets('tapping Mate resolves mate', (tester) async {
+      await openMenu(tester, isFocused: false, hidden: false);
+      await tester.tap(find.text('Mate'));
+      await tester.pumpAndSettle();
+      expect(await pendingResult, ComponentContextMenuAction.mate);
     });
   });
 }
