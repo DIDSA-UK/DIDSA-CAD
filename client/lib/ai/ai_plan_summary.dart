@@ -158,6 +158,18 @@ String _summarizeStep(AiGenerationPlan plan, AiPlanStep step) {
     case AiMoveBodyStep():
       final copySuffix = step.makeCopy ? ' (copy)' : '';
       return 'Move$copySuffix ${step.bodyId}';
+
+    case AiMateStep():
+      return 'Mate (${step.type.wireValue}) ${step.references.map((r) => r.occurrenceId).join(' ↔ ')}';
+
+    case AiMoveComponentStep():
+      return 'Move Component ${step.occurrenceId}';
+
+    case AiHideComponentStep():
+      return 'Hide Component ${step.occurrenceId}';
+
+    case AiIsolateComponentStep():
+      return 'Isolate Component ${step.occurrenceId}';
   }
 }
 

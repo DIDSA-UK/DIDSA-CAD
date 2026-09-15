@@ -31,13 +31,14 @@ from app.document.models import (
     ExtrudeType,
     FixedAxis,
     LoftMode,
+    MateType,
     MergeMode,
     PatternType,
     PlaneType,
     RevolveMode,
     SweepMode,
 )
-from app.document.schemas import SubShapeRefSchema
+from app.document.schemas import PlaneRefSchema, PointRefSchema, SubShapeRefSchema
 from app.sketch.models import Plane
 
 
@@ -459,6 +460,113 @@ class MoveBodyStep(BaseModel):
     make_copy: bool = False
 
 
+class MateEntityRefStep(BaseModel):
+    """Mirrors `MateEntityRefResponse` (`app.document.schemas`) - one side of
+    a `MateStep`. `occurrence_id` is either `""` (this Part's own root
+    content, the same convention `_validate_mate_entity_ref` already allows
+    for a real Mate) or `existing:<occurrence_id>`, naming a real Occurrence
+    already on the Part being edited - never a plan-local id, since no
+    `PlanStep` kind creates an Occurrence yet (`docs/assembly-scope.md` §3
+    item 8's own note on `add_component` staying out of this phase; see
+    `MateStep`'s own docstring). `subshape_ref`/`plane_ref`/`point_ref` are
+    reused verbatim from the real schema and are always literal, already-real
+    refs into that Occurrence's own resolved target Part's geometry - never a
+    plan-local id either, since that Part's Bodies aren't built by this plan
+    at all (they're assumed to already exist, the same way an `existing:`
+    Feature reference assumes the Part being edited already has one).
+    Exactly one of the three ref fields must be set."""
+
+    occurrence_id: str
+    subshape_ref: SubShapeRefSchema | None = None
+    plane_ref: PlaneRefSchema | None = None
+    point_ref: PointRefSchema | None = None
+
+
+class MateStep(BaseModel):
+    """Assembly support Phase 8 (`docs/assembly-scope.md` §2k): mirrors
+    `MateCreate` (`app.document.schemas`) - creates a Mate between two
+    already-placed Occurrences on the Part being edited. Scoped to
+    *existing* Occurrences only (`MateEntityRefStep.occurrence_id`'s own
+    docstring) - this phase adds no way for a plan to place a brand-new
+    Occurrence of its own (`add_component`'s own client-side file-discovery
+    gap, `docs/assembly-scope.md` §3 item 8), so every Mate a plan authors
+    necessarily references components a human already placed by hand before
+    asking the AI to mate/move/hide/isolate them."""
+
+    local_id: str
+    kind: Literal["mate"] = "mate"
+    type: MateType
+    references: list[MateEntityRefStep]
+    value: float | None = None
+    flipped: bool = False
+
+
+class MoveComponentStep(BaseModel):
+    """Assembly support Phase 8 (`docs/assembly-scope.md` §2k): follows
+    `MoveBodyStep`'s template one level up - components instead of bodies -
+    but its own placement shape mirrors `RigidTransform`/
+    `OccurrenceTransformUpdate` directly rather than `MoveBodyStep`'s
+    delta+`PatternAxisStep`+`make_copy` shape: an Occurrence's placement is a
+    whole-value replace with a free world-space rotation axis (`RigidTransform`'s
+    own docstring - "not resolved from any geometry"), never a sketch-line-
+    derived axis the way a Body's own rotation is, and there is no "make a
+    copy" concept for a component (patterning is `pattern_component`'s own,
+    separately-scoped concern - see that item's note in §3). `occurrence_id`
+    is `existing:<occurrence_id>` only - see `MateEntityRefStep`'s own
+    docstring for why no plan-local Occurrence id can exist yet."""
+
+    local_id: str
+    kind: Literal["move_component"] = "move_component"
+    occurrence_id: str
+    translation: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    rotation_axis: tuple[float, float, float] = (0.0, 0.0, 1.0)
+    rotation_angle_degrees: float = 0.0
+
+
+class HideComponentStep(BaseModel):
+    """Assembly support Phase 8 (`docs/assembly-scope.md` §2k): sets
+    `occurrence_id`'s own `hidden` flag - the first time an AI plan step
+    (or, transitively, this phase's own widened `OccurrenceTransformUpdate`,
+    see that schema's own docstring) has ever persisted `Occurrence.hidden`
+    at all, closing §5's appendix item 1's real gap as a side effect of
+    giving this step somewhere real to write to."""
+
+    local_id: str
+    kind: Literal["hide_component"] = "hide_component"
+    occurrence_id: str
+
+
+class IsolateComponentStep(BaseModel):
+    """Assembly support Phase 8 (`docs/assembly-scope.md` §2k): the real,
+    persisted counterpart to the client's own session-only Isolate overlay
+    (`docs/assembly-scope.md` §2f) - hides every *other* top-level Occurrence
+    of the Part `occurrence_id` belongs to and un-hides `occurrence_id`
+    itself. Unlike the client's own toggle-to-undo Isolate, this is a plain
+    one-shot mutation (matching `hide_component`'s own shape) - there is no
+    "isolate again to restore everything" concept at the AI-plan level, since
+    an AI plan has no notion of "the isolation this step itself started" to
+    toggle off later."""
+
+    local_id: str
+    kind: Literal["isolate_component"] = "isolate_component"
+    occurrence_id: str
+
+
+# `pattern_component` is deliberately not a `PlanStep` kind yet - see
+# `docs/assembly-scope.md` §3 item 8's own note (restated in §2k): the AI
+# plan pipeline has no existing concept of "the Occurrence id an earlier
+# step in this same plan just placed" to feed as a pattern's
+# `source_occurrence_ids`, and every Occurrence a plan *can* reference in
+# this phase (via `existing:<id>`, see `MateEntityRefStep`'s own docstring)
+# is already a real, persisted top-level Occurrence - one the real, already-
+# shipped `POST /parts/{part_id}/component-patterns` endpoint (Phase 7,
+# §2j) can already pattern directly today, with no AI-plan-authored
+# `pattern_component` step needed to reach it. Left for a future phase, once
+# `add_component` (or some other Occurrence-producing `PlanStep`) actually
+# exists and the "local_id names an Occurrence this same plan just placed"
+# problem is a real one to solve.
+
+
 PlanStep = Annotated[
     Union[
         SketchStep,
@@ -485,6 +593,10 @@ PlanStep = Annotated[
         DeleteBodyStep,
         ScaleBodyStep,
         MoveBodyStep,
+        MateStep,
+        MoveComponentStep,
+        HideComponentStep,
+        IsolateComponentStep,
     ],
     Field(discriminator="kind"),
 ]

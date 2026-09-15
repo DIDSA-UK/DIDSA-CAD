@@ -221,6 +221,15 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   String? _existingPartSummary;
   String? _existingFeaturesError;
 
+  // Assembly support Phase 8 (`docs/assembly-scope.md` §2k): the "Placed
+  // Components" half of the existing-Part context, refreshed alongside
+  // `_existingFeatures`/`_existingPartSummary` above by the same
+  // `_refreshExistingPartContext` call. Defaults to `''` (no components /
+  // not fetched yet) - `buildAiScopingSystemPrompt`'s own default, so a
+  // failed or not-yet-run fetch degrades to "no Placed Components section"
+  // rather than blocking the rest of the existing-Part context.
+  String _existingOccurrencesSummary = '';
+
   // Bug fix: a stopped run's own chat message (`_appendStoppedRunToTranscript`)
   // has always told the LLM "every step before this one was created
   // successfully and is still in the Part... propose a revised plan for the
@@ -263,10 +272,32 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     try {
       final features = await _documentApi.listFeatures(partId);
       final summary = await summarizeExistingPartForPrompt(_sketchApi, features);
+      // Assembly support Phase 8 (`docs/assembly-scope.md` §2k): best-effort
+      // - an occurrence-list fetch failure (e.g. this backend build predates
+      // the Assembly endpoints, a test harness's own fake backend with no
+      // `listOccurrences` route implemented - `part_screen_test.dart`'s own
+      // long-documented `_FakeDocumentBackend` gap, §2e/§2f - or a transient
+      // error) must not block the Feature-tree summary above, which every
+      // existing-Part conversation has always depended on; it just means no
+      // "Placed Components" section this time, the same degrade
+      // `summarizeExistingOccurrencesForPrompt` itself already gives an
+      // empty list. Caught broadly (not just `ApiException`) since an
+      // unexpected response shape (e.g. a 404 body a stub backend returns as
+      // a bare JSON object) throws a raw type-cast error inside DTO parsing,
+      // before ever reaching an `ApiException` - still just a best-effort
+      // fetch either way.
+      var occurrencesSummary = '';
+      try {
+        final occurrences = await _documentApi.listOccurrences(partId);
+        occurrencesSummary = await summarizeExistingOccurrencesForPrompt(_documentApi, occurrences);
+      } catch (_) {
+        // Leave occurrencesSummary as ''.
+      }
       if (!mounted) return;
       setState(() {
         _existingFeatures = features;
         _existingPartSummary = summary;
+        _existingOccurrencesSummary = occurrencesSummary;
         // Clears a previous call's failure - this is called repeatedly over
         // one conversation's lifetime now (every stop, every Continue-with-
         // AI success), not just once in `initState`, so a stale error from
@@ -411,6 +442,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         enabledAddOns: AiSystemPromptPreferences.enabledAddOns,
         disabledToolGroups: AiSystemPromptPreferences.disabledToolGroups,
         existingPartSummary: _existingPartSummary,
+        existingOccurrencesSummary: _existingOccurrencesSummary,
       );
       final result = await provider.sendScopingTurn(_transcript, systemPrompt: systemPrompt);
       final assistantMessage = AiChatMessage(role: AiMessageRole.assistant, text: result.assistantText);
@@ -941,6 +973,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       enabledAddOns: AiSystemPromptPreferences.enabledAddOns,
       disabledToolGroups: AiSystemPromptPreferences.disabledToolGroups,
       existingPartSummary: _existingPartSummary,
+      existingOccurrencesSummary: _existingOccurrencesSummary,
     );
     final package = buildExternalHandoffPackage(systemPrompt: systemPrompt, transcript: _transcript);
     if (!mounted) return;

@@ -102,6 +102,12 @@ const Map<String, AiToolGroup> aiToolGroups = {
     vocabularyText: directEditingBooleanVocabularyText,
     manualToolHint: 'the Direct Editing / Boolean tools in the Feature toolbar',
   ),
+  'assembly': AiToolGroup(
+    label: 'Assembly editing (Mate/Move/Hide/Isolate)',
+    kinds: {'mate', 'move_component', 'hide_component', 'isolate_component'},
+    vocabularyText: assemblyVocabularyText,
+    manualToolHint: 'the Assembly lens tools (Add Mate, the Move/Rotate gizmo, Hide/Show, Isolate)',
+  ),
 };
 
 /// Never shown as a toggle, never disableable - sketch primitives and

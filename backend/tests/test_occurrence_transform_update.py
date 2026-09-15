@@ -153,6 +153,55 @@ def test_patching_an_unknown_occurrence_on_a_real_part_returns_404():
     assert response.status_code == 404
 
 
+def test_patching_hidden_only_leaves_transform_untouched():
+    """Phase 8 (`docs/assembly-scope.md` §2k): `OccurrenceTransformUpdate`
+    widened to accept `hidden`, both fields now omitted-means-unchanged - a
+    `hidden`-only PATCH (no `transform` key at all) must not reset the
+    Occurrence's transform to identity or otherwise touch it."""
+    top_id, occurrence_id = _setup_top_with_one_occurrence()
+    client.patch(
+        f"/document/parts/{top_id}/occurrences/{occurrence_id}",
+        json={
+            "transform": {
+                "translation": [4.0, 0.0, 0.0],
+                "rotation_axis": [0.0, 0.0, 1.0],
+                "rotation_angle_degrees": 0.0,
+            }
+        },
+    )
+
+    response = client.patch(
+        f"/document/parts/{top_id}/occurrences/{occurrence_id}",
+        json={"hidden": True},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["hidden"] is True
+    assert body["transform"]["translation"] == [4.0, 0.0, 0.0]
+
+
+def test_patching_transform_only_leaves_hidden_untouched():
+    top_id, occurrence_id = _setup_top_with_one_occurrence()
+    client.patch(f"/document/parts/{top_id}/occurrences/{occurrence_id}", json={"hidden": True})
+
+    response = client.patch(
+        f"/document/parts/{top_id}/occurrences/{occurrence_id}",
+        json={
+            "transform": {
+                "translation": [1.0, 2.0, 3.0],
+                "rotation_axis": [0.0, 0.0, 1.0],
+                "rotation_angle_degrees": 0.0,
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["hidden"] is True
+    assert body["transform"]["translation"] == [1.0, 2.0, 3.0]
+
+
 def test_patching_leaves_every_other_occurrence_summary_field_alone():
     top_id, occurrence_id = _setup_top_with_one_occurrence()
     part_response = client.get(f"/document/parts/{top_id}").json()

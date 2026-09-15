@@ -1119,6 +1119,264 @@ void main() {
     });
   });
 
+  group('PlanTranslator.execute - Assembly (mate/move_component/hide_component/isolate_component)', () {
+    Map<String, dynamic> occurrenceJson(String id, {bool hidden = false, List<double> translation = const [0, 0, 0]}) => {
+          'id': id,
+          'external_ref': null,
+          'resolved_part_id': null,
+          'name_override': null,
+          'transform': {'translation': translation, 'rotation_axis': [0.0, 0.0, 1.0], 'rotation_angle_degrees': 0.0},
+          'suppressed': false,
+          'hidden': hidden,
+        };
+
+    test('move_component PATCHes the whole transform to the resolved real occurrence id', () async {
+      Map<String, dynamic>? patchBody;
+      final mock = MockClient((request) async {
+        if (request.url.path == '/document/parts/part-1/ai-plan/validate') {
+          return jsonResponse({
+            'results': [
+              {'local_id': 'mv1', 'ok': true, 'warnings': [], 'error': null},
+            ],
+          });
+        }
+        if (request.method == 'PATCH' && request.url.path == '/document/parts/part-1/occurrences/occ-a') {
+          patchBody = decodeBody(request);
+          return jsonResponse(occurrenceJson('occ-a', translation: [5.0, 0.0, 0.0]));
+        }
+        return http.Response('not found', 404);
+      });
+
+      final plan = AiGenerationPlan.fromJson({
+        'version': 1,
+        'steps': [
+          {
+            'local_id': 'mv1',
+            'kind': 'move_component',
+            'occurrence_id': 'existing:occ-a',
+            'translation': [5.0, 0.0, 0.0],
+            'rotation_axis': [0.0, 0.0, 1.0],
+            'rotation_angle_degrees': 90.0,
+          },
+        ],
+      });
+      final translator = PlanTranslator(
+        documentApi: DocumentApiClient(httpClient: mock),
+        sketchApi: SketchApiClient(httpClient: mock),
+      );
+      final result = await translator.execute(plan: plan, partId: 'part-1');
+
+      expect(result.outcome, PlanTranslationOutcome.success);
+      expect(result.localIdToRealId['mv1'], 'occ-a');
+      expect(patchBody!['transform']['translation'], [5.0, 0.0, 0.0]);
+      expect(patchBody!['transform']['rotation_angle_degrees'], 90.0);
+      // A move_component step never counts as a created Feature - nothing
+      // for "Undo this generation" to delete for it.
+      expect(result.createdFeatureIds, isEmpty);
+    });
+
+    test('hide_component PATCHes only hidden, via the resolved real occurrence id', () async {
+      Map<String, dynamic>? patchBody;
+      final mock = MockClient((request) async {
+        if (request.url.path == '/document/parts/part-1/ai-plan/validate') {
+          return jsonResponse({
+            'results': [
+              {'local_id': 'h1', 'ok': true, 'warnings': [], 'error': null},
+            ],
+          });
+        }
+        if (request.method == 'PATCH' && request.url.path == '/document/parts/part-1/occurrences/occ-a') {
+          patchBody = decodeBody(request);
+          return jsonResponse(occurrenceJson('occ-a', hidden: true));
+        }
+        return http.Response('not found', 404);
+      });
+
+      final plan = AiGenerationPlan.fromJson({
+        'version': 1,
+        'steps': [
+          {'local_id': 'h1', 'kind': 'hide_component', 'occurrence_id': 'existing:occ-a'},
+        ],
+      });
+      final translator = PlanTranslator(
+        documentApi: DocumentApiClient(httpClient: mock),
+        sketchApi: SketchApiClient(httpClient: mock),
+      );
+      final result = await translator.execute(plan: plan, partId: 'part-1');
+
+      expect(result.outcome, PlanTranslationOutcome.success);
+      expect(patchBody, {'hidden': true});
+    });
+
+    test('isolate_component hides every other top-level occurrence and un-hides the target', () async {
+      final patchedHidden = <String, bool>{};
+      final mock = MockClient((request) async {
+        if (request.url.path == '/document/parts/part-1/ai-plan/validate') {
+          return jsonResponse({
+            'results': [
+              {'local_id': 'i1', 'ok': true, 'warnings': [], 'error': null},
+            ],
+          });
+        }
+        if (request.method == 'GET' && request.url.path == '/document/parts/part-1/occurrences') {
+          return jsonResponse([
+            occurrenceJson('occ-a', hidden: true),
+            occurrenceJson('occ-b', hidden: false),
+            occurrenceJson('occ-c', hidden: false),
+          ]);
+        }
+        if (request.method == 'PATCH' && request.url.path.startsWith('/document/parts/part-1/occurrences/')) {
+          final id = request.url.pathSegments.last;
+          final body = decodeBody(request);
+          patchedHidden[id] = body['hidden'] as bool;
+          return jsonResponse(occurrenceJson(id, hidden: body['hidden'] as bool));
+        }
+        return http.Response('not found', 404);
+      });
+
+      final plan = AiGenerationPlan.fromJson({
+        'version': 1,
+        'steps': [
+          {'local_id': 'i1', 'kind': 'isolate_component', 'occurrence_id': 'existing:occ-a'},
+        ],
+      });
+      final translator = PlanTranslator(
+        documentApi: DocumentApiClient(httpClient: mock),
+        sketchApi: SketchApiClient(httpClient: mock),
+      );
+      final result = await translator.execute(plan: plan, partId: 'part-1');
+
+      expect(result.outcome, PlanTranslationOutcome.success);
+      // occ-a was already hidden:true but must become false (the isolate
+      // target); occ-b/occ-c were already hidden:false and must become true.
+      expect(patchedHidden['occ-a'], false);
+      expect(patchedHidden['occ-b'], true);
+      expect(patchedHidden['occ-c'], true);
+    });
+
+    test('mate creates the Mate then solves for the second reference\'s occurrence', () async {
+      Map<String, dynamic>? mateBody;
+      String? solvedOccurrenceId;
+      final mock = MockClient((request) async {
+        if (request.url.path == '/document/parts/part-1/ai-plan/validate') {
+          return jsonResponse({
+            'results': [
+              {'local_id': 'mate1', 'ok': true, 'warnings': [], 'error': null},
+            ],
+          });
+        }
+        if (request.method == 'POST' && request.url.path == '/document/parts/part-1/mates') {
+          mateBody = decodeBody(request);
+          return jsonResponse({
+            'id': 'mate-real-1',
+            'type': mateBody!['type'],
+            'references': mateBody!['references'],
+            'value': mateBody!['value'],
+            'flipped': mateBody!['flipped'],
+            'suppressed': false,
+          }, status: 201);
+        }
+        if (request.method == 'POST' && request.url.path == '/document/parts/part-1/occurrences/occ-b/solve') {
+          solvedOccurrenceId = 'occ-b';
+          return jsonResponse(occurrenceJson('occ-b'));
+        }
+        return http.Response('not found', 404);
+      });
+
+      final plan = AiGenerationPlan.fromJson({
+        'version': 1,
+        'steps': [
+          {
+            'local_id': 'mate1',
+            'kind': 'mate',
+            'type': 'coincident',
+            'references': [
+              {
+                'occurrence_id': 'existing:occ-a',
+                'subshape_ref': {'body_id': 'b1', 'shape_type': 'face', 'index': 0},
+              },
+              {
+                'occurrence_id': 'existing:occ-b',
+                'subshape_ref': {'body_id': 'b1', 'shape_type': 'face', 'index': 0},
+              },
+            ],
+          },
+        ],
+      });
+      final translator = PlanTranslator(
+        documentApi: DocumentApiClient(httpClient: mock),
+        sketchApi: SketchApiClient(httpClient: mock),
+      );
+      final result = await translator.execute(plan: plan, partId: 'part-1');
+
+      expect(result.outcome, PlanTranslationOutcome.success);
+      expect(result.localIdToRealId['mate1'], 'mate-real-1');
+      expect(mateBody!['references'][0]['occurrence_id'], 'occ-a');
+      expect(mateBody!['references'][1]['occurrence_id'], 'occ-b');
+      expect(solvedOccurrenceId, 'occ-b');
+      // A mate step never counts as a created Feature either.
+      expect(result.createdFeatureIds, isEmpty);
+    });
+
+    test('mate against this Part\'s own root content ("") never attempts to solve an empty occurrence id', () async {
+      var solveCalled = false;
+      final mock = MockClient((request) async {
+        if (request.url.path == '/document/parts/part-1/ai-plan/validate') {
+          return jsonResponse({
+            'results': [
+              {'local_id': 'mate1', 'ok': true, 'warnings': [], 'error': null},
+            ],
+          });
+        }
+        if (request.method == 'POST' && request.url.path == '/document/parts/part-1/mates') {
+          final body = decodeBody(request);
+          return jsonResponse({
+            'id': 'mate-real-1',
+            'type': body['type'],
+            'references': body['references'],
+            'value': body['value'],
+            'flipped': body['flipped'],
+            'suppressed': false,
+          }, status: 201);
+        }
+        if (request.method == 'POST' && request.url.path.endsWith('/solve')) {
+          solveCalled = true;
+          return jsonResponse(occurrenceJson('occ-a'));
+        }
+        return http.Response('not found', 404);
+      });
+
+      final plan = AiGenerationPlan.fromJson({
+        'version': 1,
+        'steps': [
+          {
+            'local_id': 'mate1',
+            'kind': 'mate',
+            'type': 'coincident',
+            'references': [
+              {
+                'occurrence_id': '',
+                'subshape_ref': {'body_id': 'b1', 'shape_type': 'face', 'index': 0},
+              },
+              {
+                'occurrence_id': 'existing:occ-a',
+                'subshape_ref': {'body_id': 'b1', 'shape_type': 'face', 'index': 0},
+              },
+            ],
+          },
+        ],
+      });
+      final translator = PlanTranslator(
+        documentApi: DocumentApiClient(httpClient: mock),
+        sketchApi: SketchApiClient(httpClient: mock),
+      );
+      final result = await translator.execute(plan: plan, partId: 'part-1');
+
+      expect(result.outcome, PlanTranslationOutcome.success);
+      expect(solveCalled, true, reason: 'the second (non-root) reference should still be solved');
+    });
+  });
+
   group('PlanTranslator.execute - tool-toggle enforcement (disabledKinds)', () {
     test('disabledKinds is merged into the validate request body', () async {
       Map<String, dynamic>? validateBody;

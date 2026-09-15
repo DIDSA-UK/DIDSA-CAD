@@ -4193,6 +4193,28 @@ class DocumentApiClient {
         (body) => OccurrenceDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// Assembly support Phase 8 (`docs/assembly-scope.md` §2k): `PATCH
+  /// /document/parts/{part_id}/occurrences/{occurrence_id}` with only
+  /// `hidden` set - the AI plan pipeline's `hide_component`/
+  /// `isolate_component` steps' own persistence call. A separate method from
+  /// [updateOccurrenceTransform] (rather than an optional param there) so
+  /// neither call site has to reason about the other field at all - see
+  /// `OccurrenceTransformUpdate`'s own docstring for why both are now
+  /// independently omittable server-side.
+  Future<OccurrenceDto> updateOccurrenceHidden(
+    String partId,
+    String occurrenceId,
+    bool hidden,
+  ) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/occurrences/$occurrenceId'),
+              headers: _headers,
+              body: jsonEncode({'hidden': hidden}),
+            ),
+        (body) => OccurrenceDto.fromJson(body as Map<String, dynamic>),
+      );
+
   /// Assembly support: `GET /document/parts/{part_id}/mates` - the
   /// Assembly tree's own Mates list for [partId], full detail (unlike
   /// [PartDto.mateIds], ids only).

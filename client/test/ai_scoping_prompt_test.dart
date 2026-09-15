@@ -99,6 +99,45 @@ void main() {
     expect(prompt, isNot(contains('## Editing an existing Part')));
   });
 
+  test('an existingOccurrencesSummary appends a "Placed Components" section under the existing-Part block', () {
+    final prompt = buildAiScopingSystemPrompt(
+      existingPartSummary: '1. existing:feat-1 - sketch [Sketch - ...]',
+      existingOccurrencesSummary: '1. existing:occ-a - bolt.didsa',
+    );
+
+    expect(prompt, contains('Placed Components (Occurrences already in the Assembly tree):'));
+    expect(prompt, contains('1. existing:occ-a - bolt.didsa'));
+  });
+
+  test('no existingOccurrencesSummary means no "Placed Components" section even with an existingPartSummary', () {
+    final prompt = buildAiScopingSystemPrompt(existingPartSummary: '1. existing:feat-1 - sketch [...]');
+    expect(prompt, isNot(contains('Placed Components (Occurrences already in the Assembly tree):')));
+  });
+
+  test('existingOccurrencesSummary is ignored (no Placed Components section) without an existingPartSummary', () {
+    final prompt = buildAiScopingSystemPrompt(existingOccurrencesSummary: '1. existing:occ-a - bolt.didsa');
+    expect(prompt, isNot(contains('Placed Components (Occurrences already in the Assembly tree):')));
+    expect(prompt, isNot(contains('## Editing an existing Part')));
+  });
+
+  test('with nothing disabled, the assembly tool group vocabulary is present', () {
+    final prompt = buildAiScopingSystemPrompt();
+    expect(prompt, contains(assemblyVocabularyText));
+    expect(prompt, contains('## Assembly editing'));
+  });
+
+  test('disabling the assembly tool group removes its vocabulary and names it in the "turned off" block', () {
+    final prompt = buildAiScopingSystemPrompt(disabledToolGroups: {'assembly'});
+    expect(prompt, isNot(contains(assemblyVocabularyText)));
+    expect(prompt, contains(aiToolGroups['assembly']!.label));
+  });
+
+  test('the permanent-limitations text no longer flatly claims there is no multi-Part assembly support', () {
+    final prompt = buildAiScopingSystemPrompt();
+    expect(prompt, isNot(contains('no multi-Part assembly')));
+    expect(prompt, contains('cannot place a brand-new component'));
+  });
+
   test('an existingPartSummary still appends the block even under a custom assistant-instructions override', () {
     final prompt = buildAiScopingSystemPrompt(
       assistantInstructionsOverride: 'Only ever speak in haiku.',
