@@ -79,6 +79,11 @@ class PartResponse(BaseModel):
     # id lists can be non-empty on the same Part at once.
     occurrence_ids: list[str] = []
     mate_ids: list[str] = []
+    # Phase 7 (`docs/assembly-scope.md` §3 item 7): same cheap id-only
+    # summary split as `occurrence_ids`/`mate_ids` above - `GET /parts/
+    # {part_id}/component-patterns` returns the full `ComponentPatternResponse`
+    # objects.
+    component_pattern_ids: list[str] = []
 
     part_number: str | None = None
     description: str | None = None
@@ -2866,4 +2871,76 @@ class MateUpdate(BaseModel):
 
     value: float | None = None
     flipped: bool | None = None
+    suppressed: bool | None = None
+
+
+class ComponentPatternAxisSchema(BaseModel):
+    """The wire form of `app.document.models.ComponentPatternAxis` - a free
+    world-space origin + direction, reused verbatim both directions (create
+    and response), the same "one schema, both directions" precedent
+    `MateEntityRefResponse` already establishes."""
+
+    origin: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    direction: tuple[float, float, float] = (0.0, 0.0, 1.0)
+
+
+class ComponentPatternResponse(BaseModel):
+    """`GET /parts/{part_id}/component-patterns`'s per-entry shape -
+    `app.document.models.ComponentPattern` itself."""
+
+    id: str
+    source_occurrence_ids: list[str]
+    pattern_type: Literal["linear", "circular"]
+    direction: tuple[float, float, float] = (1.0, 0.0, 0.0)
+    count: int = 1
+    spacing: float = 0.0
+    reverse: bool = False
+    axis: ComponentPatternAxisSchema | None = None
+    count_angular: int = 1
+    angle_total: float = 360.0
+    reverse_angular: bool = False
+    suppressed: bool = False
+
+
+class ComponentPatternCreate(BaseModel):
+    """Phase 7 (`docs/assembly-scope.md` §3 item 7): `POST /parts/
+    {part_id}/component-patterns`'s request body - creates a `ComponentPattern`
+    repeating every top-level Occurrence named in `source_occurrence_ids`,
+    either Linear (`pattern_type="linear"`, the default) - along `direction`
+    (`count` instances, `spacing` apart) - or Circular (`pattern_type=
+    "circular"`) - `count_angular` instances spaced evenly across
+    `angle_total` degrees around `axis`. Which field group is actually
+    required depends on `pattern_type` (see `app.document.router.
+    _validate_component_pattern_create`), the same "payload shape validated
+    by the API layer, not the schema" split `PatternFeatureCreate` already
+    uses for its own two construction methods."""
+
+    source_occurrence_ids: list[str]
+    pattern_type: Literal["linear", "circular"] = "linear"
+    direction: tuple[float, float, float] = (1.0, 0.0, 0.0)
+    count: int = 1
+    spacing: float = 0.0
+    reverse: bool = False
+    axis: ComponentPatternAxisSchema | None = None
+    count_angular: int = 1
+    angle_total: float = 360.0
+    reverse_angular: bool = False
+
+
+class ComponentPatternUpdate(BaseModel):
+    """Partial update, the omitted-vs-current-value convention
+    `PatternFeatureUpdate` already establishes. `pattern_type` is never
+    changed by an update - mirrors `PatternFeatureUpdate`'s identical
+    "construction method itself never changes" convention (switching
+    Linear <-> Circular is a delete+recreate, not an edit)."""
+
+    source_occurrence_ids: list[str] | None = None
+    direction: tuple[float, float, float] | None = None
+    count: int | None = None
+    spacing: float | None = None
+    reverse: bool | None = None
+    axis: ComponentPatternAxisSchema | None = None
+    count_angular: int | None = None
+    angle_total: float | None = None
+    reverse_angular: bool | None = None
     suppressed: bool | None = None

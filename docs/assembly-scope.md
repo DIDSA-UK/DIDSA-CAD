@@ -17,7 +17,10 @@ unchanged from Phase 2 through Phase 4 (see §2e/§2f for why), then Phase 5
 added its own first-ever Occurrence mutation endpoint (§2g); unchanged
 again in Phase 6a (see §2h for why - a client-only prerequisite, no new
 mate data to persist yet), then Phase 6 added `assembly_solver.py` and its
-own mate CRUD/solve endpoints (§2i).
+own mate CRUD/solve endpoints (§2i), then Phase 7 added `ComponentPattern`
+and its own CRUD endpoints plus `assembly.py`'s expansion math (§2j) -
+still no new OCCT work of its own, same "pure transform composition" shape
+Phase 0's own `compose`/`compose_chain` already established.
 Client: `client/lib/viewport3d/*` (3D viewport/tree/tools, now including
 `assembly_tree_panel.dart`, `action_sheet.dart`, `component_context_menu.dart`
 (now with a real call site - see §2f; its Move/Rotate entry fixed in §2h),
@@ -26,11 +29,14 @@ Phase 4's own additions to `selection_filter.dart`/`selection_hit_test.dart`/
 `select_other_sheet.dart`/`selection_list_drawer.dart`/`mesh_geometry.dart`/
 `part_viewport.dart`, Phase 5's own new `component_gizmo.dart` plus further
 `part_viewport.dart`/`part_screen.dart` additions, Phase 6a's own further
-`selection_hit_test.dart` addition, and Phase 6/6b's own new
+`selection_hit_test.dart` addition, Phase 6/6b's own new
 `mate_panel.dart`/`selection_breadcrumbs.dart` plus further
-`part_viewport.dart`/`part_screen.dart` wiring), `client/lib/storage/*`
-(implemented), `client/lib/assembly/*` (graph compose, document client,
-`AssemblyLens`, `AssemblyFocusStack`, `assembly_lens_theme.dart`,
+`part_viewport.dart`/`part_screen.dart` wiring, and Phase 7's own new
+`component_pattern_panel.dart` plus further `add_button_menu.dart`/
+`component_context_menu.dart`/`assembly_tree_panel.dart`/`part_screen.dart`
+wiring - no new viewport rendering path needed, see §2j), `client/lib/
+storage/*` (implemented), `client/lib/assembly/*` (graph compose, document
+client, `AssemblyLens`, `AssemblyFocusStack`, `assembly_lens_theme.dart`,
 `add_component.dart`, and `occurrence_visibility.dart` (Phase 4, extended
 in Phase 5) - all implemented).
 
@@ -42,8 +48,9 @@ color/theme accent + Assembly-lens "Add" FAB/`PartToolbar` toolset), Phase
 Hide/Isolate, per-instance opacity, instanced viewport rendering), Phase 5
 (Move/Rotate gizmo, Occurrence transform persistence, local
 component-transform undo), Phase 6a (occurrence-attributed selection -
-Mate authoring's own prerequisite), and Phase 6/6b (the mate solver and
-the selection breadcrumbs UI) implemented. Assembly lens now has a
+Mate authoring's own prerequisite), Phase 6/6b (the mate solver and
+the selection breadcrumbs UI), and Phase 7 (linear/circular
+`ComponentPattern`, §2j) implemented. Assembly lens now has a
 working in-UI way to add a first component (`Add Component` →
 `mergeComponentIntoDocument`), a distinct visual identity, real Make
 Focus/Exit Focus, placed Occurrences render and are selectable in the 3D
@@ -52,9 +59,11 @@ rotate, persisted, undoable) via a real 6-handle gizmo, a
 vertex/edge/face/body hit against *placed Occurrence-instance* geometry can
 be tagged with which Occurrence it came from, mates (coincident/
 concentric/parallel/distance/angle) can be authored between two selected
-entities and solved against the dragged Occurrence, and a selected
+entities and solved against the dragged Occurrence, a selected
 entity's own containment chain (face/edge/vertex → body → component) shows
-as a tappable breadcrumb bar - see §2e for the "Add Component" gap (no
+as a tappable breadcrumb bar, and a top-level component can be patterned
+(linear or circular) into N derived, rendered-but-not-persisted placed
+instances - see §2e for the "Add Component" gap (no
 backend mutation endpoint existed for Occurrences at all, until §2g's own
 PATCH endpoint closed that specific gap for `transform` only), §2f for
 Phase 4's own real gaps (client-only Hide/Isolate with no way to persist or
@@ -65,10 +74,14 @@ tracked in §5's appendix), §2g for Phase 5's own deliberate v1 scope limit
 a focused sub-assembly needs ancestor-transform composition this phase
 doesn't attempt), §2h for Phase 6a's own deliberate scope limit (the new
 hit-test capability wasn't yet wired into any live picking mode - fixed by
-Phase 6's own Mate picking mode, §2i), and §2i for Phase 6/6b's own
+Phase 6's own Mate picking mode, §2i), §2i for Phase 6/6b's own
 deliberate v1 scope limits (single-Occurrence-against-fixed-peers solving,
 no straight-edge axis reference, no feature-level breadcrumb tier, no live
-breadcrumb hover-preview highlight). Phase 7–9 are design-only.**
+breadcrumb hover-preview highlight), and §2j for Phase 7's own deliberate
+v1 scope limits (top-level source Occurrences only, one source per
+authored pattern in the UI even though the backend accepts several, no
+arbitrary custom axis/direction in the panel, no pattern edit/delete UI
+yet). Phase 8–9 are design-only.**
 
 ---
 
@@ -1251,16 +1264,250 @@ Phase 7, still design-only) keeps its own disabled-state coverage.
 
 ---
 
+## 2j. Phase 7 — component pattern (implemented)
+
+§3's original item 7: a linear or circular pattern of one or more
+top-level Occurrences, expanded via `assembly.py`'s own pure transform math
+- no OCCT work needed, unlike body-level `PatternFeature`'s real geometry
+construction (`app.document.pattern`). Read `PatternFeature`'s own
+docstring and `app.document.router`'s mate CRUD (§2i) first, before writing
+any of this - both are the direct precedent this phase mirrors, one level
+up (components instead of bodies) for the first, and "a new dataclass with
+its own CRUD endpoints living directly on `Part`" for the second.
+
+### The data model: `ComponentPattern`
+
+`backend/app/document/models.py` gains three new types, and `Part` gains
+one new field:
+
+- `ComponentPatternType` (`LINEAR`/`CIRCULAR`) - named this way, not
+  `RECTANGULAR`/`CIRCULAR` like the body-level `PatternType`, since a
+  `ComponentPattern` only ever repeats along one direction (no
+  `direction_2`/2D-grid equivalent - the original brief's own wording was
+  "linear + circular", never "rectangular").
+- `ComponentPatternAxis` (`origin` + `direction`, both free world-space
+  vectors) - a `ComponentPattern`'s circular axis is never resolved from
+  Body/Sketch geometry the way body-level `PatternAxisRef` is (an
+  Occurrence has no sub-shape topology of its own to reference without
+  resolving its target Part's Bodies, which would reintroduce the OCCT
+  dependency this whole phase exists to avoid) - it mirrors
+  `RigidTransform.rotation_axis`'s own "free unit-vector direction ...
+  not resolved from any geometry" convention instead, the correct
+  one-level-up precedent.
+- `ComponentPattern` itself - `id`, `source_occurrence_ids: list[str]`
+  (one or more, mirroring `PatternFeature.source_body_ids`'s own
+  Phase-6-widened shape), `pattern_type`, Linear's own `direction`/`count`/
+  `spacing`/`reverse`, Circular's own `axis`/`count_angular`/`angle_total`/
+  `reverse_angular`, and `suppressed`. Every source's own existing
+  placement is index 0 (untouched, never re-created - `PatternFeature`'s
+  own "count includes the original" convention, restated for Occurrences).
+  **Deliberately never persisted as new `Occurrence` entries** - there is
+  no new solid geometry to instance, only an existing placement to repeat,
+  so a derived instance is computed on demand (`GET /parts/{part_id}/
+  assembly-mesh`, this pattern's own recompute-equivalent) the same way a
+  body-level pattern's derived Bodies are computed by `compute_part_bodies`
+  on every recompute rather than stored as their own Features.
+- `Part.component_patterns: list[ComponentPattern]` - coexists with
+  `occurrences`/`mates` the same way every assembly-structure field on
+  `Part` already does (decision #2).
+
+v1 scope, matching Phase 5/6's own identical limit (`Occurrence.transform`
+is relative to its immediate parent, and only a top-level Occurrence's
+local and world transforms coincide without needing ancestor-transform
+composition): every `source_occurrence_ids` entry must name a top-level
+Occurrence of the Part that owns the `ComponentPattern` - enforced simply
+by only ever checking membership in that Part's own `occurrences` list,
+the same restriction Mate's own `_validate_mate_entity_ref` already applies
+to a mate reference's `occurrence_id`.
+
+### Expansion math: `assembly.py`
+
+Two new pure functions, reusing `compose`/`apply_transform_to_point`
+directly rather than re-deriving equivalent math:
+
+- `_linear_pattern_step(direction, distance)` - a pure-translation
+  `RigidTransform` along `direction` (normalized) by `distance` (already
+  signed by `reverse` and scaled by `spacing * index`).
+- `_circular_pattern_step(axis, angle_degrees)` - a rotation about an
+  *arbitrary* world-space line (`axis.origin` + `axis.direction`), built
+  from the standard "translate origin to zero, rotate, translate back"
+  decomposition, computed via `apply_transform_to_point` itself (a pure
+  rotation applied to `axis.origin` gives the rotated origin; `origin -
+  that` is exactly the translation term needed) rather than duplicating
+  its rotation math a second time.
+- `expand_component_pattern_instances(pattern, source_transform)` - folds
+  either step function over `1..count-1`/`1..count_angular-1` (index 0
+  excluded, the untouched seed) and returns each derived transform as
+  `compose(step, source_transform)`. `compose(parent, child)`'s own
+  "parent applied after child" semantics are exactly the extrinsic
+  transform behavior wanted here (rotate/translate the *entire* existing
+  placement - both position and orientation - around the fixed world
+  reference) as long as `step` and `source_transform` share the same
+  reference frame, true for any two top-level Occurrences (both relative
+  to the same parent Part) - this phase's own v1 scope limit above is what
+  makes that assumption safe.
+
+Hand-verified against known rotations/translations (identity, pure
+translation forward/reversed, a non-unit direction normalized, composing
+onto an already-translated-and-rotated source transform, evenly-spaced
+circular instances around the default and an off-origin axis, reverse
+angular direction, composing rotation onto an already-rotated source,
+count/count_angular of 1 deriving nothing) - see
+`test_component_pattern_expand.py`.
+
+### API surface
+
+`GET`/`POST /parts/{part_id}/component-patterns`, `PATCH`/`DELETE .../
+component-patterns/{pattern_id}` - CRUD only, mirroring Mate's own CRUD
+shape (§2i) exactly: data in, data out, no expansion/geometry work happens
+in these endpoints themselves. `pattern_type` is never revised by an
+update (switching Linear <-> Circular is a delete+recreate, not an edit -
+mirrors `PatternFeatureUpdate`'s identical convention for its own
+`pattern_type`). Validation (`_validate_component_pattern_create`/
+`_validate_component_pattern_payload`) mirrors the body-level Pattern
+router's own checks almost exactly: `source_occurrence_ids` non-empty and
+every entry a real Occurrence of this Part; Linear's `direction` non-zero
+and `count >= 2` (a single-instance pattern derives nothing beyond the
+untouched seed - the identical no-op guard `PatternFeature`'s own count
+checks already use); Circular's `count_angular >= 2` and `angle_total` in
+`(0, 360]`; both counts capped at the same `_PATTERN_MAX_TOTAL_INSTANCES`
+(500) body-level patterns already share.
+
+### Expansion wiring: `GET /parts/{part_id}/assembly-mesh`
+
+The real integration point - `get_assembly_mesh`'s existing `_walk`
+recursion (Phase 2) gains one more loop after its ordinary Occurrence
+traversal: for every non-suppressed `ComponentPattern` on the Part
+currently being walked, for every one of its `source_occurrence_ids` that
+resolves to a real, non-suppressed, resolved-`part_id` Occurrence,
+`expand_component_pattern_instances` computes each derived transform, and
+`_walk` itself is called again - recursively - for each one, with a
+synthetic `occurrence_path` segment (`"{source_occurrence_id}#pattern:
+{pattern_id}:{index}"`, stable and unique per derived instance, since a
+derived instance was never assigned a real Occurrence id of its own) and
+the composed transform chain. Reusing `_walk` for the recursion, rather
+than writing a separate flattening pass, is what makes a pattern of a
+*sub-assembly* automatically repeat that sub-assembly's own nested content
+too, at each derived placement - verified directly
+(`test_component_pattern_of_a_nested_subassembly_repeats_its_own_children_too`).
+Geometry is still deduplicated by Part id exactly as before (Phase 2's own
+convention) - patterning a Part 5 times still ships that Part's geometry
+once.
+
+**This is also the client's entire rendering story** - no new viewport
+code was needed. A `ComponentPattern`'s derived instances arrive in
+`AssemblyMeshResponse.instances` shaped identically to any other
+`AssemblyOccurrenceInstance` (a `part_id` + a fully-composed
+`world_transform` + `occurrence_path`), so Phase 4's existing instanced
+rendering/hit-testing pipeline (`_syncAssemblyInstanceNodes`,
+`hitTestComponentInstances`, `AssemblyOccurrenceInstanceDto`) already
+renders and hit-tests them with zero client-side changes - confirmed by
+reading that pipeline before writing any client code for this phase,
+exactly the check the original brief asked for ("reuse the existing
+instanced-rendering pipeline ... if a derived pattern instance can be
+shaped to fit it - check before inventing a parallel rendering path").
+
+### Client: authoring UI
+
+`client/lib/viewport3d/component_pattern_panel.dart` (new) -
+`ComponentPatternPanel`, a plain-data-plus-callbacks `StatelessWidget`
+mirroring `MatePanel`'s own shape, not `pattern_panel.dart`'s (the
+body-level `PatternPanel` needs live viewport edge/face/Sketch-Line
+picking for its direction/axis; a `ComponentPattern`'s direction/axis are
+free vectors with nothing to pick in the viewport at all - see
+`ComponentPatternAxis`'s own docstring). Linear/Circular toggled by a
+`SegmentedButton`; direction/axis-direction picked via X/Y/Z quick-select
+buttons (`ComponentPatternAxisPreset`) rather than arbitrary vector entry
+- a known v1 UI limitation (the backend accepts any vector; this panel
+only ever offers the three world axes); axis origin, count(s),
+spacing/angle, and reverse toggle(s) are plain numeric fields/checkboxes.
+
+`PartScreen` gains `_openComponentPattern`/`_closeComponentPattern`/
+`_confirmComponentPattern` plus the panel's own field state, mirroring
+`_openMate`/`_closeMate`/`_confirmMate`'s shape - but simpler, since a
+`ComponentPattern` needs no picking mode at all: its source is whichever
+single Occurrence is already selected (`_selectedOccurrenceId`) when the
+panel opens. v1 UI scope: exactly **one** source Occurrence per
+panel-authored pattern (the backend's own `source_occurrence_ids` accepts
+several, for parity with `PatternFeature`'s own Phase-6-widened shape, but
+authoring a multi-source pattern isn't exposed in this UI yet - a
+straightforward follow-up once there's a multi-component selection
+mechanism to drive it with, which doesn't exist anywhere in this app
+today).
+
+Both previously-disabled "Pattern Component" placeholders are now real:
+`add_button_menu.dart`'s `AssemblyAddMenuAction.patternComponent` (the
+Assembly Add menu; requires a pre-existing selection, surfacing an error
+otherwise, since there is no dedicated picking mode for "select a whole
+component" beyond the ordinary default-browsing tap Assembly lens already
+supports) and `component_context_menu.dart`'s `ComponentContextMenuAction.
+pattern` (the long-press menu; uses the long-pressed row's own selection
+directly, the same way Move/Rotate already does). `assembly_tree_panel.dart`
+gains a **Patterns** section (`componentPatternDisplayName`/
+`componentPatternSummary`, "Linear N"/"Circular N" plus a "×5" or "×3
+(270°)" instance-count summary) so an already-authored pattern is at least
+visible in the tree - read-only for now, the same scope limit the Mates
+section itself still has (no tap/long-press wired to editing or deleting
+an existing entry from this panel; `updateComponentPattern`/
+`deleteComponentPattern` exist on `DocumentApiClient` and are directly
+tested, just not yet called from any UI).
+
+**Verified**: full backend suite against real `pythonocc-core`/`py-slvs` -
+**2269/2269 passed** (up from 2241 in §2i; 28 new tests: 11 in
+`test_component_pattern_expand.py` covering the pure transform-expansion
+math directly, 17 in `test_component_pattern_router.py` exercising CRUD,
+every validation rejection, linear/circular/suppressed/multi-source/
+nested-subassembly expansion into a real `assembly-mesh` response via
+`TestClient`, and a native export/import round trip - all at the real HTTP
+layer, building actual box Parts through Sketch+Extrude exactly like
+`test_assembly_mesh.py`/`test_assembly_solver.py` already do). Full client
+suite - **1940/1940 passed** (up from 1914 in §2i; 14 GPU-skips,
+unchanged), `flutter analyze` clean on every touched/new file. New client
+tests: 12 `ComponentPatternPanel`/`ComponentPatternMode`/
+`componentPatternAxisPresetVector` cases, 6 `DocumentApiClient`
+ComponentPattern CRUD cases (`document_api_client_test.dart`), 7 new
+`assembly_tree_panel_test.dart` cases (`componentPatternDisplayName`/
+`componentPatternSummary`'s own pure cases plus the Patterns section's
+empty/populated/suppressed rendering), plus updated `assembly_add_menu_
+test.dart`/`component_context_menu_test.dart` cases confirming Pattern
+Component/Pattern now resolve their own action and render enabled (Create
+Component alone remains the one disabled placeholder in the Add menu).
+A full end-to-end pattern-authoring round trip through `part_screen_test.dart`
+was **not** attempted - the same pre-existing `_FakeDocumentBackend`
+`listOccurrences`/`listMates`/`getAssemblyMesh` gap §2e/§2f/§2g already
+documented applies identically to the new `listComponentPatterns` call
+`_refreshAssemblyTree` now also makes.
+
+### Known v1 limitations from this phase
+
+- Top-level source Occurrences only - patterning an Occurrence nested
+  inside a focused sub-assembly isn't attempted (same limit Phase 5's
+  gizmo and Phase 6's Mate references already carry).
+- The authoring panel supports exactly one source Occurrence per pattern
+  and only the three world axes for direction/axis-direction - the backend
+  itself accepts several sources and any vector.
+- No pattern edit/delete UI yet - `updateComponentPattern`/
+  `deleteComponentPattern` exist and are tested at the API layer only.
+- No `skip_indices`/fuse-into-one equivalent - unlike body-level
+  `PatternFeature`, a `ComponentPattern` cannot suppress an individual
+  derived instance or fuse instances together (fusing doesn't even apply
+  here - these are placements, not Bodies).
+- The AI plan pipeline's `pattern_component` step (§3 item 8) is not part
+  of this phase - see that item's own note on why.
+
+---
+
 ## 3. Remaining phases (design-only)
 
 Phase 4 ("Whole-part selection + context menu") moved to §2f, Phase 5
 ("Move/Rotate gizmo + persisted placement + undo") to §2g, Phase 6a
-("occurrence-attributed selection") to §2h, and Phase 6/6b (the mate
-solver and the breadcrumb UI) to §2i - all implemented. Numbering below is
-otherwise unchanged from the original plan (starts at 6 rather than being
-renumbered), so every existing cross-reference elsewhere in this document
-(e.g. §4's own "Phase 5" undo note, which still correctly points at what's
-now §2g) still points at the same phase it always did.
+("occurrence-attributed selection") to §2h, Phase 6/6b (the mate
+solver and the breadcrumb UI) to §2i, and Phase 7 ("Component pattern") to
+§2j - all implemented. Numbering below is otherwise unchanged from the
+original plan (starts at 8 rather than being renumbered), so every
+existing cross-reference elsewhere in this document (e.g. §4's own "Phase
+5" undo note, which still correctly points at what's now §2g) still points
+at the same phase it always did.
 
 5. **~~Move/Rotate gizmo + persisted placement + undo~~ — moved to §2g,
    implemented.**
@@ -1271,16 +1518,26 @@ now §2g) still points at the same phase it always did.
    §2h, implemented.**
    **6b. ~~Follow-on — selection breadcrumbs UI.~~ — moved to §2i,
    implemented.**
-7. **Component pattern** (linear + circular) — a `ComponentPattern` on
-   `Part` (not a separate `Assembly` type - see §1 decision #2), expanded
-   via `assembly.py`'s transform math only (no OCCT work needed, unlike
-   body-level `PatternFeature`).
+7. **~~Component pattern~~ (linear + circular) — moved to §2j,
+   implemented.**
 8. **AI plan pipeline integration** — new `PlanStep` kinds (`mate`,
    `move_component`, `pattern_component`, `hide_component`,
    `isolate_component`) following `MoveBodyStep`'s exact existing template.
    `add_component` needs its own client-side file-discovery mechanism
    (the stateless backend can't enumerate the user's project files) and
-   may ship as a later sub-phase.
+   may ship as a later sub-phase. **`pattern_component` specifically**:
+   Phase 7 (§2j) shipped the real `POST /parts/{part_id}/component-patterns`
+   endpoint this step would call, but wiring a `PlanStep` kind to it is
+   deliberately left for whichever phase actually builds this item - it
+   is not "trivial once the endpoint exists" the way a first read might
+   suggest, since the AI plan pipeline has no existing concept of "the
+   Occurrence id most recently placed by an earlier `add_component` step in
+   this same plan" to feed as `source_occurrence_ids` (every other
+   `PlanStep` in this app targets a Body/Feature id the plan's own prior
+   steps already produced and can reference by construction; a
+   `pattern_component` step needs the equivalent for Occurrences, which
+   doesn't exist yet) - genuinely this item's own scope, not folded into
+   Phase 7.
 9. **Hardening, migration, docs** — full `.didsacad` backward-compat test
    matrix; keep this document current as phases land.
 
@@ -1299,8 +1556,14 @@ now §2g) still points at the same phase it always did.
   §2i's own "Known v1 limitations from this phase" for the full list.
 - Selection breadcrumbs (§2i) have no feature-level tier and no live
   hover-preview highlight into the 3D view yet.
+- Component patterns (§2j) only ever target top-level source Occurrences,
+  the authoring panel supports one source and only the three world axes,
+  and there is no edit/delete UI yet — see §2j's own "Known v1 limitations
+  from this phase" for the full list.
 - `add_component`'s AI step is gated on a file-discovery mechanism not yet
-  designed.
+  designed; `pattern_component`'s AI step is gated on the plan pipeline
+  having no way yet to reference an Occurrence id an earlier step in the
+  same plan produced (§3 item 8).
 - Composed multi-file graph `part_id`s are session-scoped, not persisted
   across app restarts.
 
@@ -1320,7 +1583,10 @@ them against.
 real rollout) rather than left for later - struck through in place, not
 deleted, so the record of what shipped broken and why stays intact. Items
 1-2 are still open and still genuinely await real usage before deciding
-whether they're worth fixing at all.
+whether they're worth fixing at all. Items 7-9 were added during Phase 7
+(§2j)'s own post-ship review, surfaced by direct user questions about the
+new `ComponentPattern` rather than a bug report - all three are still
+open.
 
 1. **Hide/Show/Isolate can only ever *OR* onto the backend's own `hidden`
    flag, never override it.** No mutation endpoint exists for Occurrences
@@ -1413,3 +1679,73 @@ whether they're worth fixing at all.
    per-face OCCT history attribution exists anywhere in the backend, per
    6b's own original finding) - not a leftover bug, a follow-up that needs
    someone to first check what OCCT can actually report.
+7. **`ComponentPattern` has no per-instance skip (§2j).** Unlike body-level
+   `PatternFeature`'s `skip_indices` (Pattern/Mirror scoping Phase 3), a
+   `ComponentPattern` is all-or-nothing - there is no way to suppress one
+   derived instance (e.g. omitting a single bolt from an otherwise-regular
+   bolt circle) while keeping the rest of the pattern. Both the model
+   (`ComponentPattern` has no `skip_indices` field) and the expansion
+   function (`app.document.assembly.expand_component_pattern_instances`
+   always derives every index from 1 to `count`/`count_angular`) would
+   need to grow one - straightforward to add later, mirroring
+   `PatternFeature.skip_indices`'s own shape and
+   `app.document.router._validate_pattern_skip_indices`'s own validation
+   (every entry a real, would-otherwise-be-created index; the untouched
+   seed's own index 0 rejected the same way), but deliberately left out of
+   Phase 7's initial scope rather than assumed needed.
+8. **A `ComponentPattern` cannot itself be patterned.** `source_occurrence_ids`
+   is validated only against `part.occurrences`
+   (`_validate_component_pattern_source_occurrence_ids`) - a derived
+   pattern instance is never persisted as a real `Occurrence` (§2j's own
+   "re-derive, don't cache" design), so there is structurally nothing for
+   a second `ComponentPattern` to reference. This is intentional, not an
+   oversight (nesting Occurrence patterns the way body-level Features can
+   chain - a pattern of a pattern - was never part of Phase 7's scope), but
+   the failure mode found on review is rougher than it should be: nothing
+   stops a user from tap-selecting a derived instance directly in the 3D
+   viewport (`PartScreen._toggleSelectedEntity`'s `component` branch sets
+   `_selectedOccurrenceId` to that instance's own synthetic
+   `occurrence_path`-derived id with no check that it names a real
+   Occurrence), then opening "Pattern Component" against it - the panel
+   opens normally, and only `createComponentPattern` at the backend fails,
+   with a generic `occurrence_not_found` 422 surfaced as inline panel error
+   text, rather than the selection or menu itself explaining "derived
+   pattern instances can't be patterned." Long-press-menu access is safe
+   from this (that menu only ever opens from a real Assembly-tree row, and
+   derived instances never appear as tree rows - see the "where do new
+   parts sit in the tree" question this item was raised alongside), only
+   the plain-tap-in-viewport path reaches it. Revisit either by actually
+   supporting nested/compound patterns, or - the smaller fix - rejecting a
+   `component`-kind tap on a synthetic (non-`Occurrence`) id before it ever
+   reaches `_selectedOccurrenceId`, with a clear user-facing reason.
+9. **No control over a Circular `ComponentPattern`'s own instance
+   orientation - only one of the two standard behaviors is implemented,
+   with no toggle for the other.** Verified directly
+   (`apply_transform_to_direction` against each derived instance): a
+   Circular pattern's derived instances currently always **rotate as they
+   go around** the axis - `expand_component_pattern_instances`'s
+   `compose(step, source_transform)` composes the pattern step's own
+   rotation *onto* the source's existing orientation (see
+   `_circular_pattern_step`'s own docstring on why `compose`'s "parent
+   applied after child" semantics give exactly this extrinsic-rotation
+   behavior), so a local vector that points toward/away from the axis on
+   the seed keeps pointing toward/away from the axis at every derived
+   position - spokes-of-a-wheel behavior, matching what most mainstream
+   CAD tools default to, and correctly the one this app should default to
+   as well. There is no way to instead **keep each instance's original
+   orientation** (translate-only around the circle, like gondolas on a
+   Ferris wheel that stay upright rather than tipping over as the wheel
+   turns) - a real, common second mode (e.g. Fusion 360's Circular
+   Pattern "Orientation: Identical" option) that this phase never
+   considered, let alone exposed a control for. Adding it needs: a new
+   `ComponentPattern` field (e.g. `orient_with_rotation: bool = True`,
+   defaulting to today's only behavior so no existing pattern's meaning
+   changes), an `expand_component_pattern_instances` branch that composes
+   only the step's *translation* onto `source_transform` when the flag is
+   false (leaving `source_transform`'s own rotation untouched - `_circular_
+   pattern_step`'s translation term already isolates cleanly from its
+   rotation term, so this is a small, well-contained change, not a
+   redesign), the matching schema/router/native-format plumbing Mate-CRUD-
+   shaped fields already all have precedent for in this same phase, and a
+   toggle in `ComponentPatternPanel` (Linear has no equivalent ambiguity -
+   a translation-only pattern has no orientation question to begin with).

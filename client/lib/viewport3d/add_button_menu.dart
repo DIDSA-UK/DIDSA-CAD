@@ -42,9 +42,11 @@ Future<AddButtonMenuAction?> showAddButtonMenu(BuildContext context) {
 /// open: Assembly lens was read/view-only, with no in-UI way to add a first
 /// component). [insertExistingComponent] is real end to end (see
 /// `PartScreen._onInsertComponentPressed`/`add_component.dart`'s
-/// `mergeComponentIntoDocument`); the rest have no backing implementation
-/// yet and render disabled (see [showAssemblyAddMenu]) rather than being
-/// omitted, so this menu's shape stays stable as later phases land.
+/// `mergeComponentIntoDocument`), as are [addMate] (Phase 6) and
+/// [patternComponent] (Phase 7, `docs/assembly-scope.md` §2j) now too;
+/// [createNewComponent] alone still has no backing implementation and
+/// renders disabled (see [showAssemblyAddMenu]) rather than being omitted,
+/// so this menu's shape stays stable once it finally lands.
 enum AssemblyAddMenuAction {
   insertExistingComponent,
   createNewComponent,
@@ -87,8 +89,6 @@ Future<AssemblyAddMenuAction?> showAssemblyAddMenu(BuildContext context) {
       action: AssemblyAddMenuAction.patternComponent,
       label: 'Pattern Component',
       icon: Icons.grid_view_outlined,
-      enabled: false,
-      disabledReason: 'Coming soon - needs Phase 7\'s component pattern',
     ),
   ]);
 }

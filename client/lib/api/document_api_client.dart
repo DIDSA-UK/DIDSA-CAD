@@ -42,6 +42,10 @@ class PartDto {
   final List<String> occurrenceIds;
   final List<String> mateIds;
 
+  /// Phase 7 (`docs/assembly-scope.md` §3 item 7): same cheap id-only
+  /// summary split as [occurrenceIds]/[mateIds] above.
+  final List<String> componentPatternIds;
+
   final String? partNumber;
   final String? description;
   final String? revision;
@@ -57,6 +61,7 @@ class PartDto {
     required this.featureIds,
     this.occurrenceIds = const [],
     this.mateIds = const [],
+    this.componentPatternIds = const [],
     this.partNumber,
     this.description,
     this.revision,
@@ -73,6 +78,7 @@ class PartDto {
         featureIds: (json['feature_ids'] as List).cast<String>(),
         occurrenceIds: (json['occurrence_ids'] as List? ?? const []).cast<String>(),
         mateIds: (json['mate_ids'] as List? ?? const []).cast<String>(),
+        componentPatternIds: (json['component_pattern_ids'] as List? ?? const []).cast<String>(),
         partNumber: json['part_number'] as String?,
         description: json['description'] as String?,
         revision: json['revision'] as String?,
@@ -1526,6 +1532,73 @@ class AssemblyMeshDto {
         instances: (json['instances'] as List)
             .map((i) => AssemblyOccurrenceInstanceDto.fromJson(i as Map<String, dynamic>))
             .toList(),
+      );
+}
+
+/// Phase 7 (`docs/assembly-scope.md` §3 item 7): a [ComponentPatternDto]'s
+/// circular axis - a free world-space origin + direction, reused verbatim
+/// both directions (matching the backend's own `ComponentPatternAxisSchema`).
+class ComponentPatternAxisDto {
+  final List<double> origin;
+  final List<double> direction;
+
+  const ComponentPatternAxisDto({required this.origin, required this.direction});
+
+  factory ComponentPatternAxisDto.fromJson(Map<String, dynamic> json) => ComponentPatternAxisDto(
+        origin: (json['origin'] as List).map((v) => (v as num).toDouble()).toList(),
+        direction: (json['direction'] as List).map((v) => (v as num).toDouble()).toList(),
+      );
+
+  Map<String, dynamic> toJson() => {'origin': origin, 'direction': direction};
+}
+
+/// The Assembly tree's own Component Patterns list - what
+/// [DocumentApiClient.listComponentPatterns] returns, one entry per
+/// `app.document.models.ComponentPattern`.
+class ComponentPatternDto {
+  final String id;
+  final List<String> sourceOccurrenceIds;
+  final String patternType;
+  final List<double> direction;
+  final int count;
+  final double spacing;
+  final bool reverse;
+  final ComponentPatternAxisDto? axis;
+  final int countAngular;
+  final double angleTotal;
+  final bool reverseAngular;
+  final bool suppressed;
+
+  const ComponentPatternDto({
+    required this.id,
+    required this.sourceOccurrenceIds,
+    required this.patternType,
+    required this.direction,
+    this.count = 1,
+    this.spacing = 0.0,
+    this.reverse = false,
+    this.axis,
+    this.countAngular = 1,
+    this.angleTotal = 360.0,
+    this.reverseAngular = false,
+    this.suppressed = false,
+  });
+
+  factory ComponentPatternDto.fromJson(Map<String, dynamic> json) => ComponentPatternDto(
+        id: json['id'] as String,
+        sourceOccurrenceIds: (json['source_occurrence_ids'] as List).cast<String>(),
+        patternType: json['pattern_type'] as String,
+        direction: (json['direction'] as List).map((v) => (v as num).toDouble()).toList(),
+        count: json['count'] as int? ?? 1,
+        spacing: (json['spacing'] as num?)?.toDouble() ?? 0.0,
+        reverse: json['reverse'] as bool? ?? false,
+        axis: json['axis'] == null
+            ? null
+            : ComponentPatternAxisDto.fromJson(json['axis'] as Map<String, dynamic>),
+        countAngular: json['count_angular'] as int? ?? 1,
+        angleTotal: (json['angle_total'] as num?)?.toDouble() ?? 360.0,
+        reverseAngular: json['reverse_angular'] as bool? ?? false,
+        suppressed: json['suppressed'] as bool? ?? false,
       );
 }
 
@@ -4207,6 +4280,106 @@ class DocumentApiClient {
               headers: _headers,
             ),
         (body) => OccurrenceDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Phase 7 (`docs/assembly-scope.md` §3 item 7): `GET /document/parts/
+  /// {part_id}/component-patterns` - the Assembly tree's own Component
+  /// Patterns list for [partId], full detail (unlike
+  /// [PartDto.componentPatternIds], ids only).
+  Future<List<ComponentPatternDto>> listComponentPatterns(String partId) => _send(
+        () => _httpClient.get(_uri('/document/parts/$partId/component-patterns'), headers: _headers),
+        (body) =>
+            (body as List).map((p) => ComponentPatternDto.fromJson(p as Map<String, dynamic>)).toList(),
+      );
+
+  /// Phase 7: `POST /document/parts/{part_id}/component-patterns` - creates
+  /// a `ComponentPattern` repeating every top-level Occurrence named in
+  /// [sourceOccurrenceIds], data only (no derived instance is persisted -
+  /// expansion happens at [getAssemblyMesh] fetch time). Linear fields
+  /// ([direction]/[count]/[spacing]/[reverse]) are only meaningful when
+  /// [patternType] is `'linear'`; circular fields ([axis]/[countAngular]/
+  /// [angleTotal]/[reverseAngular]) only when it's `'circular'` - mirrors
+  /// the backend's own per-`pattern_type` validation split.
+  Future<ComponentPatternDto> createComponentPattern(
+    String partId, {
+    required List<String> sourceOccurrenceIds,
+    required String patternType,
+    List<double> direction = const [1.0, 0.0, 0.0],
+    int count = 1,
+    double spacing = 0.0,
+    bool reverse = false,
+    ComponentPatternAxisDto? axis,
+    int countAngular = 1,
+    double angleTotal = 360.0,
+    bool reverseAngular = false,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/component-patterns'),
+              headers: _headers,
+              body: jsonEncode({
+                'source_occurrence_ids': sourceOccurrenceIds,
+                'pattern_type': patternType,
+                'direction': direction,
+                'count': count,
+                'spacing': spacing,
+                'reverse': reverse,
+                if (axis != null) 'axis': axis.toJson(),
+                'count_angular': countAngular,
+                'angle_total': angleTotal,
+                'reverse_angular': reverseAngular,
+              }),
+            ),
+        (body) => ComponentPatternDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// `PATCH /document/parts/{part_id}/component-patterns/{pattern_id}` -
+  /// partial update, omitted (`null`) fields left unchanged, mirroring
+  /// [updateMate]'s own convention. `patternType` is never revised (a new
+  /// pattern, not an edit of this one - see the backend's own
+  /// `ComponentPatternUpdate` docstring).
+  Future<ComponentPatternDto> updateComponentPattern(
+    String partId,
+    String patternId, {
+    List<String>? sourceOccurrenceIds,
+    List<double>? direction,
+    int? count,
+    double? spacing,
+    bool? reverse,
+    ComponentPatternAxisDto? axis,
+    int? countAngular,
+    double? angleTotal,
+    bool? reverseAngular,
+    bool? suppressed,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/component-patterns/$patternId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (sourceOccurrenceIds != null) 'source_occurrence_ids': sourceOccurrenceIds,
+                if (direction != null) 'direction': direction,
+                if (count != null) 'count': count,
+                if (spacing != null) 'spacing': spacing,
+                if (reverse != null) 'reverse': reverse,
+                if (axis != null) 'axis': axis.toJson(),
+                if (countAngular != null) 'count_angular': countAngular,
+                if (angleTotal != null) 'angle_total': angleTotal,
+                if (reverseAngular != null) 'reverse_angular': reverseAngular,
+                if (suppressed != null) 'suppressed': suppressed,
+              }),
+            ),
+        (body) => ComponentPatternDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// `DELETE /document/parts/{part_id}/component-patterns/{pattern_id}` -
+  /// 204, no body.
+  Future<void> deleteComponentPattern(String partId, String patternId) => _send(
+        () => _httpClient.delete(
+              _uri('/document/parts/$partId/component-patterns/$patternId'),
+              headers: _headers,
+            ),
+        (_) {},
       );
 
   /// Sectioning Tool: `POST /document/parts/{part_id}/section-preview` - a
