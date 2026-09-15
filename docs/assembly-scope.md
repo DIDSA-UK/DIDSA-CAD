@@ -1001,6 +1001,40 @@ phase it always did.
    `client/native/slvs/`'s FFI shim is possible (pinned to the identical
    fork commit) but needs new forwarding functions that don't exist yet —
    explicitly deferred past v1.
+
+   **6a. Prerequisite — occurrence-attributed selection.** Surfaced by a
+   user request for SOLIDWORKS-style "selection breadcrumbs" (see 6b) while
+   auditing Phases 0-5 for completeness: `SelectionEntityRef.occurrenceId`
+   (`client/lib/viewport3d/selection_hit_test.dart`) is populated *only*
+   for a `SelectionEntityKind.component` hit today - a face/edge/vertex hit
+   carries just `bodyId` + a local index, with no way to tell which placed
+   Occurrence it came from. That's fine for Phase 4/5 (whole-component
+   selection, top-level gizmo drag), but a mate needs "this face, on this
+   *specific* Occurrence" - the same Part placed twice (Phase 2's own
+   dedup precedent) must resolve to two distinct mate targets, not one
+   ambiguous one. This item is mate authoring's own real prerequisite, not
+   optional polish riding along with it: thread `occurrenceId`/
+   `occurrencePath` through every `SelectionEntityKind` (not just
+   `component`) wherever a hit happens on assembly-instance geometry, before
+   `assembly_solver.py`'s own `MateEntityRef` plumbing can correctly name
+   what a mate actually targets.
+   **6b. Follow-on — selection breadcrumbs UI (not blocking the Phase 6
+   mate MVP).** The user's own proposal: after selecting a face, an
+   unintrusive horizontal breadcrumb bar shows the containment hierarchy
+   (face → body → feature → part → assembly) as tappable icons, each one
+   retargeting the selection up a level - mirrors SOLIDWORKS' own
+   breadcrumb trail. Deliberately **not** folded into the current rollout:
+   it would have to be built against an incomplete hierarchy (6a not done
+   yet) and rebuilt once 6a lands. The closest existing precedent is
+   `select_other_sheet.dart`'s hover-preview/tap-commit "Select Other"
+   sheet (candidates at one screen point, not one entity's containment
+   chain) - reuse that interaction grammar rather than inventing a new one.
+   The "feature that created this face" tier is an open question, not a
+   confirmed gap: per-face OCCT history attribution doesn't appear to exist
+   anywhere in the backend today (a grep for feature/face-history
+   attribution during the audit came back empty), so scope that tier
+   separately once someone has actually checked what OCCT can report,
+   rather than assuming it's a small addition alongside 6a.
 7. **Component pattern** (linear + circular) — a `ComponentPattern` on
    `Part` (not a separate `Assembly` type - see §1 decision #2), expanded
    via `assembly.py`'s transform math only (no OCCT work needed, unlike
@@ -1029,22 +1063,26 @@ phase it always did.
 - Composed multi-file graph `part_id`s are session-scoped, not persisted
   across app restarts.
 
-## 5. Appendix — Phase 4 scope limits (evaluate after rollout)
+## 5. Appendix — scope limits and follow-ups (evaluate after rollout)
 
-Real, deliberately-scoped gaps Phase 4 (§2f) shipped with rather than
-silently claiming done - pulled out of that section's own narrative into
-one place specifically so they get a real look once the phase has been
-used for a while, rather than staying buried in a "Verified" paragraph
-nobody revisits. None of these block Phase 4's own stated goal (whole-
-component selection + context menu); all are candidates for either a
-follow-up fix inside a later phase or a deliberate "still fine, leave it"
-call once there's real usage to judge them against.
+Started as Phase 4 (§2f)'s own deliberately-scoped gaps, pulled out of that
+section's own narrative into one place specifically so they get a real
+look once the phase has been used for a while, rather than staying buried
+in a "Verified" paragraph nobody revisits - since broadened to index every
+open "shipped without" gap across the whole assembly effort, not just
+Phase 4's. None of these block whichever phase shipped alongside them; all
+are candidates for either a follow-up fix inside a later phase or a
+deliberate "still fine, leave it" call once there's real usage to judge
+them against.
 
 **Update**: items 3 and 4 were fixed directly (same session, ahead of any
 real rollout) rather than left for later - struck through in place, not
 deleted, so the record of what shipped broken and why stays intact. Items
 1-2 are still open and still genuinely await real usage before deciding
-whether they're worth fixing at all.
+whether they're worth fixing at all. Items 5-6 were found during a
+post-Phase-5 completeness audit (not real usage) - 5 is a small, isolated
+fix whenever this screen is next touched; 6 is formally owned by §3's new
+6a/6b split, not tracked independently here.
 
 1. **Hide/Show/Isolate can only ever *OR* onto the backend's own `hidden`
    flag, never override it.** No mutation endpoint exists for Occurrences
@@ -1112,3 +1150,28 @@ whether they're worth fixing at all.
    itself be a latent, likely-inconsequential quirk predating this fix -
    not touched here since it's a distinct concern from the rendering gap
    this item was actually about.
+5. **`component_context_menu.dart`'s "Move/Rotate" entry is still
+   hardcoded `enabled: false` ("Coming soon - needs Phase 5's move/rotate
+   gizmo"), and `part_screen.dart`'s handler for it is a no-op
+   (`case ComponentContextMenuAction.moveRotate: break;`) - found during
+   the post-Phase-5 completeness audit, still open.** Phase 5 *is* now
+   implemented, but nobody updated this Phase-3b-vintage stub when it
+   landed: the gizmo actually appears automatically the moment a top-level
+   component is tap-selected in Assembly lens (`_gizmoTargetOccurrence`),
+   entirely independent of this long-press menu item. Net effect: the menu
+   claims Move/Rotate is unbuilt while it already works via plain
+   selection - a discoverability/consistency bug, not a functional
+   blocker (nothing is actually broken; the feature works, just not from
+   the door a user would reasonably expect). Fix is a one-line enable (or
+   have the handler simply confirm the existing selection) whenever this
+   screen is next touched for other reasons.
+6. **Selection carries no occurrence attribution outside the dedicated
+   `component` kind, and no feature-level face-history attribution exists
+   anywhere - surfaced by a user proposal for SOLIDWORKS-style "selection
+   breadcrumbs," not by a bug report.** Formally tracked as Phase 6's own
+   prerequisite/follow-on split rather than left as a loose appendix note
+   - see §3 items **6a** (occurrence-attributed selection, a real Mate-
+   authoring prerequisite) and **6b** (the breadcrumb UI itself, deferred
+   until 6a lands). Listed here too only so the appendix stays the one
+   place that indexes every open "shipped without" gap in this document,
+   not because it needs separate tracking from 6a/6b.
