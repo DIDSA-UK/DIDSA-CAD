@@ -112,3 +112,48 @@ bool isOccurrencePathWithinFocus(List<String> occurrencePath, List<String> focus
   }
   return true;
 }
+
+/// Assembly support Phase 5: the Move/Rotate gizmo's own live-drag overlay
+/// - the pure matching logic behind `PartScreen._displayAssemblyInstances`,
+/// kept separate and directly testable the same way
+/// [applyOccurrenceVisibilityOverrides]/[applyInstanceVisibilityOverrides]
+/// already are. Replaces the world transform of whichever instance's own
+/// `occurrencePath` exactly equals [targetOccurrencePath] with
+/// [transform] - every other instance passes through unchanged. Without
+/// this, dragging the gizmo would move the manipulator handles while the
+/// actual placed geometry stayed frozen at its pre-drag position until the
+/// backend PATCH/refetch completed.
+///
+/// An exact-path match, not a prefix/containment one (unlike
+/// [isOccurrencePathWithinFocus]) - the gizmo only ever moves the one
+/// instance it's actually attached to, never anything nested inside it (a
+/// child Occurrence's own placement is relative to its parent, so it moves
+/// along automatically once the world transform this function *does*
+/// override is recomposed - overriding it a second time here would be
+/// wrong, not merely redundant).
+List<AssemblyOccurrenceInstanceDto> overrideInstanceTransform(
+  List<AssemblyOccurrenceInstanceDto> instances, {
+  required List<String> targetOccurrencePath,
+  required RigidTransformDto transform,
+}) {
+  return [
+    for (final instance in instances)
+      if (_pathEquals(instance.occurrencePath, targetOccurrencePath))
+        AssemblyOccurrenceInstanceDto(
+          occurrencePath: instance.occurrencePath,
+          partId: instance.partId,
+          worldTransform: transform,
+          hidden: instance.hidden,
+        )
+      else
+        instance,
+  ];
+}
+
+bool _pathEquals(List<String> a, List<String> b) {
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
+}

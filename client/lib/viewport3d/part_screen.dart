@@ -473,6 +473,83 @@ class _PartScreenState extends State<PartScreen> {
   /// own lazy [_refreshAssemblyTree] already established for Phase 3.
   AssemblyMeshDto? _assemblyMesh;
 
+  /// Assembly support Phase 5 (`docs/assembly-scope.md` §3): the Move/
+  /// Rotate gizmo's own live-drag value, `null` whenever no drag is in
+  /// progress. Set by [_onComponentGizmoDragUpdate] on every
+  /// [PartViewport.onComponentGizmoDragUpdate] call and read by
+  /// [_gizmoDisplayTransform]/[_displayAssemblyInstances] - kept as this
+  /// screen's own optimistic "what the user just dragged it to" value
+  /// (rather than re-deriving from [_occurrences]/[_assemblyMesh] on every
+  /// frame) so the gizmo, the moved Body, and the persisted PATCH at
+  /// drag-end all agree on the exact same number with no intermediate
+  /// snap-back while the PATCH/refetch is still in flight.
+  RigidTransformDto? _gizmoLiveTransform;
+
+  /// Assembly support Phase 5: local, session-only undo for component-
+  /// transform edits ("local component-transform undo built in this phase,
+  /// not deferred" - `docs/assembly-scope.md` §3 - no document-level undo
+  /// exists anywhere else in this app today). Each entry is
+  /// `(occurrenceId, the transform it had *before* the edit that pushed
+  /// it)` - [_undoLastComponentTransform] pops the most recent entry and
+  /// PATCHes that previous value straight back, the same "drag commits,
+  /// nothing more granular" undo grain a gizmo drag itself has (mid-drag
+  /// pointer moves never push their own entries - only
+  /// [_onComponentGizmoDragEnd]'s own single PATCH per gesture does).
+  final List<(String occurrenceId, RigidTransformDto previousTransform)> _componentTransformUndoStack = [];
+
+  /// Assembly support Phase 5: the Occurrence the Move/Rotate gizmo should
+  /// target right now, or `null` to hide it entirely (fed straight into
+  /// [PartViewport.selectedOccurrenceTransform] via [_gizmoDisplayTransform]).
+  /// Scoped to a *top-level* Occurrence only (`!(_focusStack?.isFocused ??
+  /// false)`) - a deliberate v1 scope limit, not an oversight:
+  /// `OccurrenceDto.transform` is relative to its own immediate parent, and
+  /// only the root Part's own frame is guaranteed world identity, so only a
+  /// top-level Occurrence's local and world transforms coincide without
+  /// this screen needing to convert between the two (real, undone follow-up
+  /// work - editing a nested Occurrence needs the gizmo's own drag math to
+  /// account for whatever rotation its ancestor chain contributes).
+  OccurrenceDto? get _gizmoTargetOccurrence {
+    if (_lens != AssemblyLens.assembly) return null;
+    if (_focusStack?.isFocused ?? false) return null;
+    final id = _selectedOccurrenceId;
+    if (id == null) return null;
+    for (final occurrence in _occurrences) {
+      if (occurrence.id == id) return occurrence;
+    }
+    return null;
+  }
+
+  /// [PartViewport.selectedOccurrenceTransform]'s own value - the live-drag
+  /// override while one is in progress, otherwise [_gizmoTargetOccurrence]'s
+  /// own current transform (`null` propagates straight through when there's
+  /// no gizmo target at all, correctly hiding the gizmo).
+  RigidTransformDto? get _gizmoDisplayTransform => _gizmoLiveTransform ?? _gizmoTargetOccurrence?.transform;
+
+  /// Assembly support Phase 5: [_displayOccurrences]'s sibling for Phase 2's
+  /// own placed-instance list - folds [_gizmoLiveTransform] into the
+  /// gizmo-target Occurrence's own instance entry (a top-level Occurrence's
+  /// `occurrencePath` is always exactly `[occurrenceId]`, per
+  /// [_gizmoTargetOccurrence]'s own scope limit) so the rendered Body itself
+  /// tracks the gizmo drag live, not just the gizmo overlay - without this,
+  /// dragging would move the manipulator handles while the actual geometry
+  /// stayed frozen at its pre-drag position until the PATCH/refetch
+  /// completed.
+  List<AssemblyOccurrenceInstanceDto> get _displayAssemblyInstances {
+    final overlaid = _assemblyMesh == null
+        ? const <AssemblyOccurrenceInstanceDto>[]
+        : applyInstanceVisibilityOverrides(
+            _assemblyMesh!.instances,
+            hiddenOccurrenceIds: _hiddenOccurrenceIds,
+            isolatedOccurrenceId: _isolatedOccurrenceId,
+          );
+    final liveTransform = _gizmoLiveTransform;
+    final targetId = _gizmoTargetOccurrence?.id;
+    if (liveTransform == null || targetId == null) return overlaid;
+    // [_gizmoTargetOccurrence]'s own scope limit (top-level only) means
+    // its occurrencePath is always exactly this single id.
+    return overrideInstanceTransform(overlaid, targetOccurrencePath: [targetId], transform: liveTransform);
+  }
+
   /// Prompt A3: one entry per independently-tessellated Body (Prompt A1's
   /// `/mesh` array) - was a single `MeshDto? _mesh` before this. Empty
   /// (not the placeholder box) whenever the Part has no ExtrudeFeature yet -
@@ -7934,6 +8011,61 @@ class _PartScreenState extends State<PartScreen> {
     final mesh = await _api.getAssemblyMesh(part.id);
     if (!mounted) return;
     setState(() => _assemblyMesh = mesh);
+  }
+
+  /// [PartViewport.onComponentGizmoDragUpdate] - stores every live drag
+  /// value as this screen's own state, exactly the "caller owns the
+  /// state, this widget only renders it" contract every other
+  /// [PartViewport] callback already follows (mirrors
+  /// [_onSectionGizmoDragUpdate]'s identical role for the section gizmo).
+  void _onComponentGizmoDragUpdate(RigidTransformDto liveTransform) {
+    setState(() => _gizmoLiveTransform = liveTransform);
+  }
+
+  /// [PartViewport.onComponentGizmoDragEnd] - PATCHes [_gizmoLiveTransform]
+  /// (the drag's own final value, already live-displayed) to the backend,
+  /// pushes the Occurrence's *previous* transform onto
+  /// [_componentTransformUndoStack], and re-fetches the tree/mesh so
+  /// [_occurrences]/[_assemblyMesh] agree with the backend going forward.
+  /// [_gizmoLiveTransform] is only cleared *after* that re-fetch completes -
+  /// clearing it first would show the stale pre-drag value for one frame
+  /// while the PATCH/refetch is still in flight, a visible snap-back-then-
+  /// snap-forward flicker this order avoids entirely.
+  Future<void> _onComponentGizmoDragEnd() async {
+    final occurrence = _gizmoTargetOccurrence;
+    final finalTransform = _gizmoLiveTransform;
+    final focusPartId = _focusStack?.current ?? _part?.id;
+    if (occurrence == null || finalTransform == null || focusPartId == null) {
+      setState(() => _gizmoLiveTransform = null);
+      return;
+    }
+    final previousTransform = occurrence.transform;
+    await _runGuarded(() async {
+      await _api.updateOccurrenceTransform(focusPartId, occurrence.id, finalTransform);
+      _componentTransformUndoStack.add((occurrence.id, previousTransform));
+      await _refreshAssemblyTree();
+      await _refreshAssemblyMesh();
+    });
+    if (mounted) setState(() => _gizmoLiveTransform = null);
+  }
+
+  /// Assembly support Phase 5: pops [_componentTransformUndoStack]'s most
+  /// recent entry and PATCHes that previous transform straight back -
+  /// "local component-transform undo" (`docs/assembly-scope.md` §3), the
+  /// only kind of undo this app has anywhere. A no-op while the stack is
+  /// empty (the Undo affordance is only ever shown/enabled when it isn't -
+  /// see the FAB wiring below) or while [_focusStack]/[_part] can't resolve
+  /// a Part id to PATCH against.
+  Future<void> _undoLastComponentTransform() async {
+    if (_componentTransformUndoStack.isEmpty) return;
+    final (occurrenceId, previousTransform) = _componentTransformUndoStack.removeLast();
+    final focusPartId = _focusStack?.current ?? _part?.id;
+    if (focusPartId == null) return;
+    await _runGuarded(() async {
+      await _api.updateOccurrenceTransform(focusPartId, occurrenceId, previousTransform);
+      await _refreshAssemblyTree();
+      await _refreshAssemblyMesh();
+    });
   }
 
   /// Re-fetches the Part's mesh with [_hiddenFeatureIds]/
@@ -16842,13 +16974,17 @@ class _PartScreenState extends State<PartScreen> {
                   // [applyInstanceVisibilityOverrides]'s own doc comment for
                   // why this needs occurrencePath-prefix matching rather
                   // than [_displayOccurrences]'s simpler bare-id one.
-                  assemblyInstances: _assemblyMesh == null
-                      ? const []
-                      : applyInstanceVisibilityOverrides(
-                          _assemblyMesh!.instances,
-                          hiddenOccurrenceIds: _hiddenOccurrenceIds,
-                          isolatedOccurrenceId: _isolatedOccurrenceId,
-                        ),
+                  // Phase 5: [_displayAssemblyInstances] additionally folds
+                  // in the gizmo's own live-drag value, if any, so the
+                  // moved Body itself tracks the drag - see that getter's
+                  // own doc comment.
+                  assemblyInstances: _displayAssemblyInstances,
+                  // Assembly support Phase 5: `null` whenever there's no
+                  // gizmo to show - see [_gizmoDisplayTransform]'s own doc
+                  // comment for every case that covers.
+                  selectedOccurrenceTransform: _gizmoDisplayTransform,
+                  onComponentGizmoDragUpdate: _onComponentGizmoDragUpdate,
+                  onComponentGizmoDragEnd: () => unawaited(_onComponentGizmoDragEnd()),
                   // Fixed (§5 appendix item 4): was just `_focusStack.current`
                   // (the focused Part's bare id) - the full occurrencePath
                   // chain lets PartViewport tell a nested instance apart
@@ -18183,6 +18319,30 @@ class _PartScreenState extends State<PartScreen> {
                               child: Icon(
                                 _lens == AssemblyLens.part ? Icons.view_in_ar_outlined : Icons.category_outlined,
                               ),
+                            ),
+                          // Assembly support Phase 5: "local component-
+                          // transform undo built in this phase, not
+                          // deferred" (`docs/assembly-scope.md` §3) - the
+                          // only Undo affordance anywhere in this app, since
+                          // no document-level undo exists elsewhere to hang
+                          // this off of. Shown only in Assembly lens (the
+                          // only place a component-transform edit can even
+                          // happen) and only once there's actually something
+                          // to undo - same "hidden while the toolbar is
+                          // open" rule the other small FABs in this Column
+                          // already follow.
+                          if (!_toolbarOpen &&
+                              _lens == AssemblyLens.assembly &&
+                              _componentTransformUndoStack.isNotEmpty)
+                            const SizedBox(height: 8),
+                          if (!_toolbarOpen &&
+                              _lens == AssemblyLens.assembly &&
+                              _componentTransformUndoStack.isNotEmpty)
+                            FloatingActionButton.small(
+                              heroTag: 'undo-component-transform-fab',
+                              tooltip: 'Undo move',
+                              onPressed: () => unawaited(_undoLastComponentTransform()),
+                              child: const Icon(Icons.undo),
                             ),
                         ],
                       ),

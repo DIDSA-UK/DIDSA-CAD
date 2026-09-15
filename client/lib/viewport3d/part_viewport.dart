@@ -16,6 +16,7 @@ import '../sketch/sketch_controller.dart'
         ConstraintLineDistanceDimensionItem,
         ConstraintLinearDimensionItem,
         ConstraintRadialDimensionItem;
+import 'component_gizmo.dart';
 import 'create_plane_geometry_3d.dart';
 import 'mesh_geometry.dart';
 import 'orbit_camera.dart';
@@ -93,6 +94,46 @@ class PartViewport extends StatefulWidget {
   /// [AssemblyFocusStack.currentOccurrencePath] guarantees this on its own
   /// end, so [didUpdateWidget]'s `!=` check here stays meaningful.
   final List<String> focusedOccurrencePath;
+
+  /// Assembly support Phase 5 (`docs/assembly-scope.md` §3): the Move/
+  /// Rotate gizmo's own target - the selected Occurrence's own current
+  /// `RigidTransformDto` (during a live drag, [PartScreen]'s own optimistic
+  /// "what it was just dragged to" value; otherwise whatever the backend
+  /// last reported), or `null` to hide the gizmo entirely. `null` covers
+  /// every case where showing it wouldn't make sense: not in Assembly
+  /// lens, nothing selected, or - a deliberate v1 scope limit, not an
+  /// oversight - the selected Occurrence isn't a *top-level* one
+  /// ([PartScreen]'s own `_gizmoTargetOccurrence` gates this on
+  /// `!AssemblyFocusStack.isFocused`). `Occurrence.transform` is relative
+  /// to its own immediate parent, and only a top-level Occurrence's parent
+  /// (the root Part) contributes a guaranteed-identity frame - so only for
+  /// a top-level Occurrence does "the world-space basis the gizmo renders
+  /// at" and "the local transform this widget composes drag deltas onto"
+  /// coincide without needing a parent-transform conversion this phase
+  /// doesn't attempt. [PartViewport] derives the gizmo's actual world-space
+  /// placement from this via [matrix4FromRigidTransform]/
+  /// [ComponentGizmoBasis.fromMatrix] - it never receives a separately-
+  /// tracked basis of its own, so there is exactly one source of truth for
+  /// "where is the selected component right now."
+  final RigidTransformDto? selectedOccurrenceTransform;
+
+  /// Fired on every pointer-move while a gizmo handle is being dragged,
+  /// with the full resulting [RigidTransformDto] already composed
+  /// ([composeTranslation]/[composeRotation]) - mirrors
+  /// [onSectionGizmoDragUpdate]'s identical role for the section gizmo.
+  /// [PartScreen] is expected to store this as its own live-preview value
+  /// (feeding it straight back into [selectedOccurrenceTransform] and the
+  /// corresponding [assemblyInstances] entry on its next build) - this
+  /// widget never mutates its own input props.
+  final void Function(RigidTransformDto liveTransform)? onComponentGizmoDragUpdate;
+
+  /// Fired once when a gizmo drag ends (pointer up/cancel) - mirrors
+  /// [onSectionGizmoDragEnd]'s identical "notify only, the caller already
+  /// has the latest value from the last [onComponentGizmoDragUpdate] call"
+  /// shape. [PartScreen] is expected to PATCH-persist whatever its own
+  /// live-preview value currently is and push the *previous* value onto its
+  /// own local undo stack.
+  final VoidCallback? onComponentGizmoDragEnd;
 
   /// On-device feedback ("Show reference body button in the sketcher
   /// should now toggle visibility of all bodies on/off to show user a
@@ -914,6 +955,9 @@ class PartViewport extends StatefulWidget {
     this.assemblyGeometry = const [],
     this.assemblyInstances = const [],
     this.focusedOccurrencePath = const [],
+    this.selectedOccurrenceTransform,
+    this.onComponentGizmoDragUpdate,
+    this.onComponentGizmoDragEnd,
     this.bodiesHidden = false,
     required this.selectedPlane,
     required this.onPlaneTap,
@@ -1051,6 +1095,19 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     _sectionDragSectionId = sectionId;
   }
 
+  /// Assembly support Phase 5: [debugForceSectionDrag]'s component-gizmo
+  /// sibling, for the identical stuck-touch-state regression class applied
+  /// to this second gizmo.
+  @visibleForTesting
+  ComponentGizmoHandleKind? get debugComponentGizmoDragHandle => _componentGizmoDragHandle;
+  @visibleForTesting
+  void debugForceComponentGizmoDrag(int pointerId) {
+    _componentGizmoDragHandle = ComponentGizmoHandleKind.translateX;
+    _componentGizmoDragPointerId = pointerId;
+    _componentGizmoDragStartTransform = widget.selectedOccurrenceTransform ??
+        RigidTransformDto(translation: const [0, 0, 0], rotationAxis: const [0, 0, 1], rotationAngleDegrees: 0);
+  }
+
   /// `docs/lod-strategy/01-design.md` SS5 chunk 5: test-only window into
   /// which Bodies actually got a real filled-faces [Node] built for them -
   /// lets a test confirm [coarseOverlayMeshes] substitutes a *rendered*
@@ -1186,6 +1243,32 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   vm.Vector3? _sectionDragRefAxis;
   vm.Vector3? _sectionDragPerpAxis;
   double? _sectionDragStartAngle;
+
+  /// Assembly support Phase 5 (`docs/assembly-scope.md` §3): the selected
+  /// component's own Move/Rotate gizmo Node - mirrors [_sectionGizmoNode]'s
+  /// identical "single optional Node, null while nothing to show" shape.
+  Node? _componentGizmoNode;
+
+  /// Assembly support Phase 5 - the component-gizmo sibling of every
+  /// `_sectionDrag*` field just above, same "null [_componentGizmoDragHandle]
+  /// means no drag in progress, every other field is stale-but-unread
+  /// between drags" convention. [_componentGizmoDragStartTransform] is the
+  /// exact [PartViewport.selectedOccurrenceTransform] value frozen the
+  /// instant the drag began - [_updateComponentGizmoDrag] always composes
+  /// its own delta onto *this*, never onto the (possibly already-live-
+  /// updated) current prop, for the identical "absolute delta from drag
+  /// start, no per-frame accumulation" reason [_sectionDragStartNormal]
+  /// itself is frozen rather than read fresh each move.
+  ComponentGizmoHandleKind? _componentGizmoDragHandle;
+  int? _componentGizmoDragPointerId;
+  RigidTransformDto? _componentGizmoDragStartTransform;
+  vm.Vector3? _componentGizmoDragStartOrigin;
+  vm.Vector3? _componentGizmoDragAxis;
+  vm.Vector3? _componentGizmoDragStartPointOnAxis;
+  vm.Vector3? _componentGizmoDragRotationAxis;
+  vm.Vector3? _componentGizmoDragRefAxis;
+  vm.Vector3? _componentGizmoDragPerpAxis;
+  double? _componentGizmoDragStartAngle;
 
   /// P8/P9: unlike [_planeNodes]/[_sketchNodes]/[_createPlaneNodes], never
   /// more than one of each at a time - there's only ever one active Sketch
@@ -1541,6 +1624,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         );
         _syncMeshNode();
         _syncAssemblyInstanceNodes();
+        _syncComponentGizmoNode();
         _syncEdgesNode();
         _syncReferencePlaneNodes();
         _syncSketchNodes();
@@ -1619,6 +1703,17 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         widget.focusedOccurrencePath != oldWidget.focusedOccurrencePath) {
       setState(_syncAssemblyInstanceNodes);
     }
+    // Assembly support Phase 5: [_syncComponentGizmoNode]'s own single
+    // input - a separate rebuild from [_syncAssemblyInstanceNodes] above
+    // (its own, unrelated Node), same "each sync method owns exactly its
+    // own Node(s)" convention. Live-drag updates flow back through this
+    // exact path - [PartScreen] stores each [onComponentGizmoDragUpdate]
+    // call as new state, which rebuilds this widget with a new
+    // [selectedOccurrenceTransform], which this comparison then picks up -
+    // [_updateComponentGizmoDrag] itself never calls this directly.
+    if (widget.selectedOccurrenceTransform != oldWidget.selectedOccurrenceTransform) {
+      setState(_syncComponentGizmoNode);
+    }
     if (widget.sectionPlanes != oldWidget.sectionPlanes || widget.activeSectionId != oldWidget.activeSectionId) {
       setState(_syncSectionNodes);
     }
@@ -1635,6 +1730,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       _sectionDragSectionId = null;
       _activeTouches.clear();
       _hadMultiTouch = false;
+    }
+    // Assembly support Phase 5: defensive clear if the gizmo's own target
+    // disappears mid-drag (e.g. the selection was cleared elsewhere while a
+    // pointer was still down) - mirrors the section-gizmo clear just above,
+    // scoped to this gizmo's own drag fields only.
+    if (widget.selectedOccurrenceTransform == null && _componentGizmoDragHandle != null) {
+      _componentGizmoDragHandle = null;
+      _componentGizmoDragPointerId = null;
     }
     if (widget.lightIntensity != oldWidget.lightIntensity) {
       setState(_applyLighting);
@@ -2569,6 +2672,167 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
   }
 
+  /// Assembly support Phase 5: [_tryBeginSectionGizmoDrag]'s component-gizmo
+  /// sibling - hit-tests [screenPosition] against
+  /// [PartViewport.selectedOccurrenceTransform]'s own gizmo and, on a hit,
+  /// freezes every piece of drag-start state [_updateComponentGizmoDrag]
+  /// needs. Same "returns whether a drag actually began, so the caller can
+  /// decide whether to consume the gesture entirely" contract
+  /// [_tryBeginSectionGizmoDrag] already has.
+  bool _tryBeginComponentGizmoDrag(Offset screenPosition, int pointerId) {
+    final transform = widget.selectedOccurrenceTransform;
+    if (transform == null) return false;
+    // Bug fix precedent (see [_sectionDragPointerId]'s own doc comment):
+    // never let a second pointer hijack an already-in-progress drag.
+    if (_componentGizmoDragHandle != null) return false;
+
+    final basis = ComponentGizmoBasis.fromMatrix(matrix4FromRigidTransform(transform));
+    final camera = _camera.cameraFor(_viewportSize);
+    final ray = camera.screenPointToRay(screenPosition, _viewportSize);
+    final hit = hitTestComponentGizmo(
+      ray,
+      basis,
+      _viewportSize,
+      cameraPosition: _camera.position,
+      fovRadiansY: _camera.fovRadiansY,
+    );
+    if (hit == null) return false;
+
+    vm.Vector3? axis;
+    vm.Vector3? rotationAxis, refAxis, perpAxis;
+    double? startAngle;
+    switch (hit.kind) {
+      case ComponentGizmoHandleKind.translateX:
+        axis = basis.xAxis;
+      case ComponentGizmoHandleKind.translateY:
+        axis = basis.yAxis;
+      case ComponentGizmoHandleKind.translateZ:
+        axis = basis.zAxis;
+      case ComponentGizmoHandleKind.rotateX:
+        rotationAxis = basis.xAxis;
+        refAxis = basis.yAxis;
+        perpAxis = basis.zAxis;
+        startAngle = angleOnRotationPlane(ray, basis.origin, rotationAxis, refAxis, perpAxis);
+      case ComponentGizmoHandleKind.rotateY:
+        rotationAxis = basis.yAxis;
+        refAxis = basis.zAxis;
+        perpAxis = basis.xAxis;
+        startAngle = angleOnRotationPlane(ray, basis.origin, rotationAxis, refAxis, perpAxis);
+      case ComponentGizmoHandleKind.rotateZ:
+        rotationAxis = basis.zAxis;
+        refAxis = basis.xAxis;
+        perpAxis = basis.yAxis;
+        startAngle = angleOnRotationPlane(ray, basis.origin, rotationAxis, refAxis, perpAxis);
+    }
+    // Same degenerate-look-down-the-axis abandon [_tryBeginSectionGizmoDrag]
+    // already uses - no well-defined start angle to measure a delta from.
+    if (rotationAxis != null && startAngle == null) return false;
+
+    setState(() {
+      _componentGizmoDragHandle = hit.kind;
+      _componentGizmoDragPointerId = pointerId;
+      _componentGizmoDragStartTransform = transform;
+      _componentGizmoDragStartOrigin = basis.origin;
+      _componentGizmoDragAxis = axis;
+      _componentGizmoDragStartPointOnAxis = axis == null ? null : closestPointOnLineToRay(ray, basis.origin, axis);
+      _componentGizmoDragRotationAxis = rotationAxis;
+      _componentGizmoDragRefAxis = refAxis;
+      _componentGizmoDragPerpAxis = perpAxis;
+      _componentGizmoDragStartAngle = startAngle;
+      _syncComponentGizmoNode();
+    });
+    return true;
+  }
+
+  /// Assembly support Phase 5: [_updateSectionGizmoDrag]'s component-gizmo
+  /// sibling - a translate handle projects [screenPosition]'s own ray onto
+  /// the frozen world-space axis line and applies the delta from drag-start
+  /// via [composeTranslation]; a rotate handle re-measures the in-plane
+  /// angle and applies the *total* delta from drag-start via
+  /// [composeRotation] (never an incremental per-frame delta - see that
+  /// function's own doc comment for why). Either way the result is a brand
+  /// new [RigidTransformDto] handed to [PartScreen] via
+  /// [PartViewport.onComponentGizmoDragUpdate] - this method never mutates
+  /// [PartViewport.selectedOccurrenceTransform] itself.
+  void _updateComponentGizmoDrag(Offset screenPosition) {
+    final handle = _componentGizmoDragHandle;
+    final startTransform = _componentGizmoDragStartTransform;
+    final startOrigin = _componentGizmoDragStartOrigin;
+    if (handle == null || startTransform == null || startOrigin == null) return;
+
+    final camera = _camera.cameraFor(_viewportSize);
+    final ray = camera.screenPointToRay(screenPosition, _viewportSize);
+
+    switch (handle) {
+      case ComponentGizmoHandleKind.translateX:
+      case ComponentGizmoHandleKind.translateY:
+      case ComponentGizmoHandleKind.translateZ:
+        final axis = _componentGizmoDragAxis;
+        final startPoint = _componentGizmoDragStartPointOnAxis;
+        if (axis == null || startPoint == null) return;
+        final currentPoint = closestPointOnLineToRay(ray, startOrigin, axis);
+        final newTranslation = composeTranslation(
+          vm.Vector3(startTransform.translation[0], startTransform.translation[1], startTransform.translation[2]),
+          currentPoint - startPoint,
+        );
+        widget.onComponentGizmoDragUpdate?.call(RigidTransformDto(
+          translation: [newTranslation.x, newTranslation.y, newTranslation.z],
+          rotationAxis: startTransform.rotationAxis,
+          rotationAngleDegrees: startTransform.rotationAngleDegrees,
+        ));
+      case ComponentGizmoHandleKind.rotateX:
+      case ComponentGizmoHandleKind.rotateY:
+      case ComponentGizmoHandleKind.rotateZ:
+        final rotationAxis = _componentGizmoDragRotationAxis;
+        final refAxis = _componentGizmoDragRefAxis;
+        final perpAxis = _componentGizmoDragPerpAxis;
+        final startAngle = _componentGizmoDragStartAngle;
+        if (rotationAxis == null || refAxis == null || perpAxis == null || startAngle == null) return;
+        final currentAngle = angleOnRotationPlane(ray, startOrigin, rotationAxis, refAxis, perpAxis);
+        if (currentAngle == null) return; // Momentarily looking edge-on - hold the last good value.
+        final (newAxis, newAngleDegrees) = composeRotation(
+          currentAxis: vm.Vector3(
+            startTransform.rotationAxis[0],
+            startTransform.rotationAxis[1],
+            startTransform.rotationAxis[2],
+          ),
+          currentAngleDegrees: startTransform.rotationAngleDegrees,
+          deltaAxis: rotationAxis,
+          deltaAngleRadians: currentAngle - startAngle,
+        );
+        widget.onComponentGizmoDragUpdate?.call(RigidTransformDto(
+          translation: startTransform.translation,
+          rotationAxis: [newAxis.x, newAxis.y, newAxis.z],
+          rotationAngleDegrees: newAngleDegrees,
+        ));
+    }
+  }
+
+  /// Assembly support Phase 5: rebuilds [_componentGizmoNode] - mirrors
+  /// whichever `_sync*Nodes` method rebuilds [_sectionGizmoNode] (a single
+  /// optional Node, remove-then-rebuild). Null
+  /// [PartViewport.selectedOccurrenceTransform] means no Node at all - same
+  /// "null is hidden" convention that field's own doc comment establishes.
+  void _syncComponentGizmoNode() {
+    final scene = _scene;
+    if (scene == null) return;
+    final oldNode = _componentGizmoNode;
+    if (oldNode != null) scene.remove(oldNode);
+    _componentGizmoNode = null;
+    final transform = widget.selectedOccurrenceTransform;
+    if (transform == null) return;
+    final basis = ComponentGizmoBasis.fromMatrix(matrix4FromRigidTransform(transform));
+    final node = buildComponentGizmoNode(
+      basis,
+      highlightedHandle: _componentGizmoDragHandle,
+      cameraPosition: _camera.position,
+      viewportSize: _viewportSize,
+      fovRadiansY: _camera.fovRadiansY,
+    );
+    scene.add(node);
+    _componentGizmoNode = node;
+  }
+
   /// P8: mirrors [_syncReferencePlaneNodes]'s remove-then-rebuild shape for
   /// the single active-Sketch-plane surface - null [PartViewport.sketchPlaneBasis]
   /// (not embedded-sketching) means no node at all, same "null is hidden"
@@ -3223,6 +3487,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // [PartViewport.sectionPlanes] - i.e. only while [SectionPanel] is open
     // and editing a specific section.
     if (_tryBeginSectionGizmoDrag(event.localPosition, event.pointer)) return;
+    // Assembly support Phase 5: the Move/Rotate gizmo's own handle grab -
+    // same "checked first, ahead of everything else" precedence as the
+    // section gizmo just above (a manipulator grab always wins over
+    // orbit/select/draw-cursor). Only armed while
+    // [PartViewport.selectedOccurrenceTransform] is non-null - i.e. only
+    // while a top-level Occurrence is selected in Assembly lens (see that
+    // field's own doc comment for the full gating).
+    if (_tryBeginComponentGizmoDrag(event.localPosition, event.pointer)) return;
     if (widget.selectionMode) {
       // P25: mirrors sketch_canvas.dart's own "the marquee gesture only
       // ever tracks one pointer - a second finger touching down mid-drag
@@ -3276,6 +3548,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // [_activeTouches] correctly up to date.
     if (_sectionDragHandle != null && event.pointer == _sectionDragPointerId) {
       _updateSectionGizmoDrag(event.localPosition);
+      return;
+    }
+    // Assembly support Phase 5: same pointer-ownership gating as the
+    // section gizmo just above, applied to the component gizmo's own drag
+    // - see [_sectionDragPointerId]'s own doc comment for the stuck-touch-
+    // state bug class this guards against.
+    if (_componentGizmoDragHandle != null && event.pointer == _componentGizmoDragPointerId) {
+      _updateComponentGizmoDrag(event.localPosition);
       return;
     }
     if (widget.selectionMode) {
@@ -3349,6 +3629,17 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         _syncSectionNodes();
       });
       widget.onSectionGizmoDragEnd?.call();
+      return;
+    }
+    // Assembly support Phase 5: same pointer-ownership gating as the
+    // section gizmo just above.
+    if (_componentGizmoDragHandle != null && event.pointer == _componentGizmoDragPointerId) {
+      setState(() {
+        _componentGizmoDragHandle = null;
+        _componentGizmoDragPointerId = null;
+        _syncComponentGizmoNode();
+      });
+      widget.onComponentGizmoDragEnd?.call();
       return;
     }
     if (widget.selectionMode) {

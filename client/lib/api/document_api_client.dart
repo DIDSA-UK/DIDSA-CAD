@@ -1317,6 +1317,40 @@ class RigidTransformDto {
         'rotation_axis': rotationAxis,
         'rotation_angle_degrees': rotationAngleDegrees,
       };
+
+  /// Assembly support Phase 5: value equality - the Move/Rotate gizmo's own
+  /// wiring (`PartViewport.didUpdateWidget`) needs a real `!=` check on this
+  /// type to know when the *value* actually changed, not merely when a new
+  /// object instance was built for it (the identity-based default every
+  /// plain Dart class gets otherwise) - see `PartViewport.bodies`'s own doc
+  /// comment for why this codebase's change-detection convention already
+  /// depends on this for every other comparable field.
+  @override
+  bool operator ==(Object other) =>
+      other is RigidTransformDto &&
+      _doubleListEquals(other.translation, translation) &&
+      _doubleListEquals(other.rotationAxis, rotationAxis) &&
+      other.rotationAngleDegrees == rotationAngleDegrees;
+
+  @override
+  int get hashCode => Object.hash(
+        Object.hashAll(translation),
+        Object.hashAll(rotationAxis),
+        rotationAngleDegrees,
+      );
+
+  @override
+  String toString() =>
+      'RigidTransformDto(translation: $translation, rotationAxis: $rotationAxis, '
+      'rotationAngleDegrees: $rotationAngleDegrees)';
+}
+
+bool _doubleListEquals(List<double> a, List<double> b) {
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
 }
 
 /// One unique Part's own local-space geometry within a [GetAssemblyMesh]

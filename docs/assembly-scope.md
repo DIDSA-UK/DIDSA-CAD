@@ -13,35 +13,44 @@ reading the code, not assumed), with the model decisions that were made,
 what's implemented so far, and what's still planned.
 
 Backend: `backend/app/document/*` (FastAPI + pythonocc-core/OCCT) -
-unchanged since Phase 2, see §2e/§2f for why Phase 3b/4 needed no backend
-changes either.
+unchanged from Phase 2 through Phase 4 (see §2e/§2f for why), then Phase 5
+added its own first-ever Occurrence mutation endpoint (§2g).
 Client: `client/lib/viewport3d/*` (3D viewport/tree/tools, now including
 `assembly_tree_panel.dart`, `action_sheet.dart`, `component_context_menu.dart`
 (now with a real call site - see §2f), Phase 3b's own additions to
-`add_button_menu.dart`/`part_toolbar.dart`, and Phase 4's own additions to
+`add_button_menu.dart`/`part_toolbar.dart`, Phase 4's own additions to
 `selection_filter.dart`/`selection_hit_test.dart`/`select_other_sheet.dart`/
-`selection_list_drawer.dart`/`mesh_geometry.dart`/`part_viewport.dart`),
-`client/lib/storage/*` (implemented), `client/lib/assembly/*` (graph
-compose, document client, `AssemblyLens`, `AssemblyFocusStack`,
-`assembly_lens_theme.dart`, `add_component.dart`, and Phase 4's own
-`occurrence_visibility.dart` - all implemented).
+`selection_list_drawer.dart`/`mesh_geometry.dart`/`part_viewport.dart`, and
+Phase 5's own new `component_gizmo.dart` plus further `part_viewport.dart`/
+`part_screen.dart` additions), `client/lib/storage/*` (implemented),
+`client/lib/assembly/*` (graph compose, document client, `AssemblyLens`,
+`AssemblyFocusStack`, `assembly_lens_theme.dart`, `add_component.dart`, and
+`occurrence_visibility.dart` (Phase 4, extended in Phase 5) - all
+implemented).
 
 **Status: Phase 0 (backend data model), Phase 1 (client storage
 abstraction), Phase 2 (multi-file compose + recompute), Phase 3 (lens
 toggle + focus-stack state, `AssemblyTreePanel`), Phase 3b (lens
-color/theme accent + Assembly-lens "Add" FAB/`PartToolbar` toolset), and
-Phase 4 (whole-component selection + context menu, Make Focus/Exit Focus,
-Hide/Isolate, per-instance opacity, instanced viewport rendering)
-implemented. Assembly lens now has a working in-UI way to add a first
-component (`Add Component` → `mergeComponentIntoDocument`), a distinct
-visual identity, real Make Focus/Exit Focus, and placed Occurrences
-actually render (translucent when a focus fades them out) and are
-selectable in the 3D viewport for the first time - see §2e for the "Add
-Component" gap (no backend mutation endpoint exists for Occurrences) and
-§2f for Phase 4's own real gaps (client-only Hide/Isolate with no way to
-persist or override a backend-true `hidden`; root-Part selectability isn't
-enforced while focused elsewhere, only rendering opacity is). Phases 5–9
-are design-only.**
+color/theme accent + Assembly-lens "Add" FAB/`PartToolbar` toolset), Phase
+4 (whole-component selection + context menu, Make Focus/Exit Focus,
+Hide/Isolate, per-instance opacity, instanced viewport rendering), and
+Phase 5 (Move/Rotate gizmo, Occurrence transform persistence, local
+component-transform undo) implemented. Assembly lens now has a working
+in-UI way to add a first component (`Add Component` →
+`mergeComponentIntoDocument`), a distinct visual identity, real Make
+Focus/Exit Focus, placed Occurrences render and are selectable in the 3D
+viewport, and a *top-level* selected component can be dragged (translate/
+rotate, persisted, undoable) via a real 6-handle gizmo - see §2e for the
+"Add Component" gap (no backend mutation endpoint existed for Occurrences
+at all, until §2g's own PATCH endpoint closed that specific gap for
+`transform` only), §2f for Phase 4's own real gaps (client-only Hide/
+Isolate with no way to persist or override a backend-true `hidden`;
+root-Part selectability isn't enforced while focused elsewhere, only
+rendering opacity is - both still open, tracked in §5's appendix), and §2g
+for Phase 5's own deliberate v1 scope limit (the gizmo only targets a
+top-level Occurrence - editing one nested inside a focused sub-assembly
+needs ancestor-transform composition this phase doesn't attempt). Phases
+6–9 are design-only.**
 
 ---
 
@@ -843,45 +852,146 @@ cost/benefit call §2e already made for its own FAB-wiring tests.
 
 ---
 
+## 2g. Phase 5 — Move/Rotate gizmo + persisted placement + undo (implemented)
+
+Landed in two passes within the same phase: the backend/math foundation
+first, then the interactive wiring - see the git history for the exact
+split if it matters, but both are complete and this section covers the
+whole thing as shipped.
+
+### Persistence
+
+`PATCH /parts/{part_id}/occurrences/{occurrence_id}` - the first mutation
+endpoint an Occurrence has ever had (`OccurrenceTransformUpdate` schema,
+whole-`transform` replace). No "create" step the way `MoveBodyFeature`
+needs one - an Occurrence already exists and its placement is a plain
+field, not a new history entry, so every drag (debounced client-side to
+one PATCH per gesture, on drag-end only - see below) PATCHes this same
+endpoint directly. `DocumentApiClient.updateOccurrenceTransform` +
+`RigidTransformDto.toJson`/`==`/`hashCode` on the client (equality needed
+for real: `PartViewport.didUpdateWidget`'s own change-detection convention
+depends on it, the same way every other comparable prop on that widget
+already does).
+
+### `component_gizmo.dart`
+
+The 6-handle (3 translate arrows + 3 rotate rings) sibling of
+`section_gizmo.dart`, reusing that file's own `closestPointOnLineToRay`/
+`angleOnRotationPlane` drag primitives rather than re-deriving equivalent
+math: `ComponentGizmoBasis` (world-space origin + the Occurrence's own
+current local axes, built from a placement `Matrix4` via
+`matrix4FromRigidTransform`), `hitTestComponentGizmo`/
+`buildComponentGizmoNode` (mirroring `hitTestSectionGizmo`/
+`buildSectionGizmoNode` almost line for line, just with a third arrow/ring
+pair - a component's placement has no "this axis doesn't matter" omission
+the way a section plane's own normal-axis rotation does), and the drag-math
+functions: `composeTranslation` (trivial - translations always commute),
+`composeRotation` (composes a drag's own delta rotation *onto* the
+Occurrence's existing rotation via quaternion multiplication - `q_current *
+q_delta`, the delta expressed in the object's own already-rotated local
+frame - then collapses back to a single axis-angle pair, since
+`RigidTransform` has no quaternion field of its own), `translateDragDelta`/
+`rotateDragDeltaRadians` (the absolute-delta-from-drag-start wrappers
+`PartViewport`'s own drag state calls each pointer-move).
+
+### Wiring into `PartViewport`
+
+New `selectedOccurrenceTransform`/`onComponentGizmoDragUpdate`/
+`onComponentGizmoDragEnd` props, plus a `_componentGizmoDrag*` field set and
+`_tryBeginComponentGizmoDrag`/`_updateComponentGizmoDrag`/
+`_syncComponentGizmoNode` methods - all structurally identical to the
+section gizmo's own `_sectionDrag*`/`_tryBeginSectionGizmoDrag`/
+`_updateSectionGizmoDrag` triplet, checked in `_onPointerDown`/
+`_onPointerMove`/`_onPointerEnd` right after the section gizmo's own check
+(a manipulator grab always wins over orbit/select/draw-cursor). Critically,
+this includes the exact same per-pointer ownership gating
+(`event.pointer == _componentGizmoDragPointerId`) the section gizmo needed
+a real on-device bug report to discover it was missing - built in from the
+start here rather than rediscovered, and directly regression-tested
+(`component_gizmo_touch_test.dart`, mirroring `section_gizmo_touch_test.dart`'s
+own stuck-touch-state scenario: a second finger touching down and lifting
+mid-drag must never end or hijack the first finger's own drag, and
+`_activeTouches` must never end up with an orphaned entry).
+
+Live-drag feedback needs no new rendering code of its own for the moved
+Body: `PartScreen._displayAssemblyInstances` (via the new
+`overrideInstanceTransform`, `occurrence_visibility.dart`'s third pure
+function) overrides the dragged Occurrence's own instance entry with the
+live transform, and the *existing* `_syncAssemblyInstanceNodes` (Phase 4)
+already re-renders whatever `PartViewport.assemblyInstances` says - the
+gizmo overlay is the only genuinely new Node.
+
+### `PartScreen` state + undo
+
+`_gizmoTargetOccurrence` (the selection, scoped to a *top-level* Occurrence
+only - see the scope-limit callout below), `_gizmoLiveTransform` (the
+optimistic in-flight value, cleared only *after* the post-drag
+PATCH+refetch completes, so there is never a stale-value flicker while
+that request is in transit), and `_componentTransformUndoStack` (a plain
+`List<(occurrenceId, previousTransform)>` - "local component-transform
+undo built in this phase, not deferred," the *only* undo mechanism
+anywhere in this app, surfaced as a small Undo FAB shown only in Assembly
+lens and only once the stack is non-empty).
+
+### A real, deliberate v1 scope limit: top-level Occurrences only
+
+`Occurrence.transform` is relative to its own immediate parent, and only
+the root Part's own frame is guaranteed world identity - so only a
+top-level Occurrence's local and world transforms coincide without this
+screen needing to convert between the two. `_gizmoTargetOccurrence` gates
+on `!(_focusStack?.isFocused ?? false)`: the gizmo simply doesn't appear
+for a selection made while focused into a sub-assembly. Real, undone
+follow-up work, not an oversight - editing a nested Occurrence needs the
+gizmo's own drag math to account for whatever rotation its ancestor chain
+contributes, which this phase doesn't attempt. Worth revisiting once
+there's real usage of nested assemblies to judge how much it's actually
+missed.
+
+**Verified**: backend - `test_occurrence_transform_update.py` (update/
+re-fetch/re-export/404×2/sibling-isolation), full suite **2219/2219
+passed** against real `pythonocc-core`/`py-slvs`, unchanged since (no
+backend changes in the interactive-wiring pass). Client - `flutter
+analyze` clean on every touched/new file throughout; full suite
+**1865/1865 passed** (14 GPU-skips - two more than Phase 4's own 12, both
+new: `component_gizmo_touch_test.dart`'s pair of pointer-ownership tests
+join `section_gizmo_touch_test.dart`'s pre-existing single test in
+gracefully self-skipping in this headless sandbox's own no-real-GPU
+limitation, not a regression). New tests: `component_gizmo_test.dart` (16
+- `ComponentGizmoBasis.fromMatrix`'s identity/translation/rotation cases,
+`hitTestComponentGizmo`'s per-handle hits and a miss, `composeTranslation`,
+`composeRotation`'s 90°-composition/180°-accumulation/exact-cancellation
+cases, `translateDragDelta`/`rotateDragDeltaRadians`'s hit and miss
+cases - one real caught-before-commit bug here: the first hit-test tests
+fired rays straight through the shared origin every arrow starts from, an
+ambiguous three-way tie the iteration order silently broke, fixed by
+aiming at each arrow's own midpoint instead), `component_gizmo_touch_test.dart`
+(2, the stuck-touch-state regression pair described above), and 5 new
+`overrideInstanceTransform` cases in `occurrence_visibility_test.dart`
+(exact-match override, a nested child left alone, a parent left alone,
+no-match leaves everything untouched, empty list). A full end-to-end
+drag-through-`PartScreen` test (real PATCH call, undo stack, live-preview
+flicker-avoidance) was **not** attempted - same `_FakeDocumentBackend`
+`listOccurrences`/`listMates`/`getAssemblyMesh` gap §2e/§2f already
+documented, plus a real on-screen gizmo hit-test needs camera-dependent
+screen coordinates this sandbox has no way to visually confirm; the
+pointer-*ownership* correctness (the actual historical bug class) is
+covered via `debugForceComponentGizmoDrag` instead, mirroring
+`section_gizmo_touch_test.dart`'s own identical choice.
+
+---
+
 ## 3. Remaining phases (design-only)
 
-Phase 4 ("Whole-part selection + context menu") moved to §2f - implemented.
-Numbering below is otherwise unchanged from the original plan (starts at 5
-rather than being renumbered), so every existing cross-reference elsewhere
-in this document (e.g. §4's own "Phase 5" undo note) still points at the
-same phase it always did.
+Phase 4 ("Whole-part selection + context menu") moved to §2f, and Phase 5
+("Move/Rotate gizmo + persisted placement + undo") to §2g - both
+implemented. Numbering below is otherwise unchanged from the original plan
+(starts at 6 rather than being renumbered), so every existing cross-
+reference elsewhere in this document (e.g. §4's own "Phase 5" undo note,
+which still correctly points at what's now §2g) still points at the same
+phase it always did.
 
-5. **Move/Rotate gizmo + persisted placement + undo — foundation landed,
-   interactive wiring still open.** What's real so far: the backend's
-   first-ever Occurrence mutation endpoint (`PATCH /parts/{part_id}/
-   occurrences/{occurrence_id}`, `OccurrenceTransformUpdate` schema,
-   whole-`transform` replace - no "create" step needed the way
-   `MoveBodyFeature` needs one, since an Occurrence already exists and its
-   placement is a plain field, not a new history entry; backend-tested in
-   `test_occurrence_transform_update.py` - update/re-fetch/re-export/404×2/
-   sibling-isolation, 2214+5/2219 passed against real `pythonocc-core`/
-   `py-slvs`), `DocumentApiClient.updateOccurrenceTransform` +
-   `RigidTransformDto.toJson` on the client, and a complete, independently
-   unit-tested `component_gizmo.dart` math/hit-test/rendering library - the
-   6-handle sibling of `section_gizmo.dart` (3 translate arrows + 3 rotate
-   rings, `ComponentGizmoBasis`/`hitTestComponentGizmo`/
-   `buildComponentGizmoNode`/`composeTranslation`/`composeRotation`/
-   `translateDragDelta`/`rotateDragDeltaRadians`, all reusing
-   `section_gizmo.dart`'s own `closestPointOnLineToRay`/
-   `angleOnRotationPlane` drag primitives rather than re-deriving
-   equivalent math; 16 new tests in `component_gizmo_test.dart`, including
-   a real caught-before-commit bug - the first hit-test tests fired rays
-   straight through the shared origin point every arrow starts from, an
-   ambiguous three-way tie the iteration order silently broke in favor of
-   whichever arrow came first, fixed by aiming at each arrow's own
-   midpoint instead). **Not yet built**: actually wiring this into
-   `PartViewport`'s pointer-gesture pipeline (hit-test on tap, drag-state
-   fields mirroring `_sectionDrag*`, live preview during drag, debounced
-   PATCH on drag-end) and `PartScreen`'s own local component-transform undo
-   stack - the interactive/UX half of this phase, deliberately left for a
-   dedicated follow-up pass rather than rushed alongside the persistence
-   layer, given how large and gesture-sensitive `PartViewport`'s existing
-   pointer-handling code already is.
+5. **~~Move/Rotate gizmo + persisted placement + undo~~ — moved to §2g,
+   implemented.**
 6. **Mate system** (coincident/concentric/parallel/distance/angle) — new
    `assembly_solver.py` (mirrors `sketch/solver.py`'s structure). v1 only
    drives the actively-dragged Occurrence against fixed peers — coupled

@@ -181,4 +181,70 @@ void main() {
       expect(isOccurrencePathWithinFocus(const ['x', 'y', 'z'], const ['a', 'b']), isFalse);
     });
   });
+
+  // Assembly support Phase 5: the Move/Rotate gizmo's own live-drag
+  // overlay - an exact-path match, unlike isOccurrencePathWithinFocus's
+  // prefix match.
+  group('overrideInstanceTransform', () {
+    AssemblyOccurrenceInstanceDto instance(List<String> path) => AssemblyOccurrenceInstanceDto(
+          occurrencePath: path,
+          partId: 'part-${path.isEmpty ? "root" : path.last}',
+          worldTransform: _identity(),
+        );
+
+    RigidTransformDto dragged() =>
+        RigidTransformDto(translation: const [9, 9, 9], rotationAxis: const [0, 0, 1], rotationAngleDegrees: 45);
+
+    test('overrides only the instance whose occurrencePath exactly matches', () {
+      final result = overrideInstanceTransform(
+        [instance(const ['a']), instance(const ['b'])],
+        targetOccurrencePath: const ['a'],
+        transform: dragged(),
+      );
+      expect(result[0].worldTransform, dragged());
+      expect(result[1].worldTransform, _identity());
+    });
+
+    test('does not override an instance nested inside the target path', () {
+      // A child's own placement is relative to its parent - it moves along
+      // automatically once the parent's world transform is recomposed, so
+      // overriding it here directly would be wrong, not just redundant.
+      final result = overrideInstanceTransform(
+        [instance(const ['a']), instance(const ['a', 'child'])],
+        targetOccurrencePath: const ['a'],
+        transform: dragged(),
+      );
+      expect(result[0].worldTransform, dragged());
+      expect(result[1].worldTransform, _identity());
+    });
+
+    test('does not override the target\'s own parent', () {
+      final result = overrideInstanceTransform(
+        [instance(const ['a']), instance(const ['a', 'child'])],
+        targetOccurrencePath: const ['a', 'child'],
+        transform: dragged(),
+      );
+      expect(result[0].worldTransform, _identity());
+      expect(result[1].worldTransform, dragged());
+    });
+
+    test('a target path matching no instance at all leaves every instance untouched', () {
+      final result = overrideInstanceTransform(
+        [instance(const ['a']), instance(const ['b'])],
+        targetOccurrencePath: const ['does-not-exist'],
+        transform: dragged(),
+      );
+      expect(result[0].worldTransform, _identity());
+      expect(result[1].worldTransform, _identity());
+    });
+
+    test('an empty instances list returns an empty list', () {
+      final result = overrideInstanceTransform(
+        const [],
+        targetOccurrencePath: const ['a'],
+        transform: dragged(),
+      );
+      expect(result, isEmpty);
+    });
+  });
 }
