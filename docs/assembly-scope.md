@@ -83,11 +83,15 @@ breadcrumb hover-preview highlight), and §2j for Phase 7's own deliberate
 v1 scope limits (top-level source Occurrences only, one source per
 authored pattern in the UI even though the backend accepts several, no
 arbitrary custom axis/direction in the panel, no pattern edit/delete UI
-yet), and §2k for Phase 8's own deliberate v1 scope limits (`pattern_component`
+yet), §2k for Phase 8's own deliberate v1 scope limits (`pattern_component`
 and `add_component` both still deferred, no assembly-level edge-selector
 heuristic for a Mate's own geometry refs, the manual Hide/Show/Isolate UI
 still uses the pre-existing session-only overlay rather than the newly-
-widened `hidden` PATCH). Phase 9 is design-only.**
+widened `hidden` PATCH), and §2l for Phase 9 (hardening/migration/docs -
+the full `.didsacad` backward-compat test matrix, plus this document's own
+currency pass). Every phase §3 originally scoped is now implemented -
+`pattern_component`/`add_component` are the only two deliberately deferred
+pieces of the original brief, both tracked in §2k/§5, not silently dropped.**
 
 ---
 
@@ -1737,13 +1741,102 @@ original `on ApiException` - both fixed before re-running the full suite.
 
 ---
 
-## 3. Remaining phases (design-only)
+## 2l. Phase 9 — Hardening, migration, docs (implemented)
+
+§3's original item 9: the full `.didsacad` backward-compat test matrix, plus
+keeping this document current as phases land. `SCHEMA_VERSION`
+(`backend/app/document/native_format.py`) has never bumped across any of
+Phases 0-8 - every field the assembly effort ever added is purely additive,
+read back via `.get(key, default)` (Phase 0's own §2 already documents this
+convention; every later phase followed it without exception) - so
+"backward compat" here means confirming every one of those additive fields,
+across every phase, actually degrades to a sensible default when an older
+file's dict is missing it, not a version-branch migration.
+
+### The test matrix: `backend/tests/test_didsacad_backward_compat.py`
+
+A single Phase-0-vintage case (a file predating assembly support entirely -
+no `occurrences`/`mates` keys at all) already existed
+(`test_assembly_model.py`'s own `test_a_pre_assembly_file_with_no_
+occurrences_or_mates_keys_imports_with_empty_lists`, not duplicated here).
+This new file is the first place every *other* historically-real shape gets
+its own dedicated coverage, built by hand-constructing native-format dicts
+missing exactly the keys a file saved at that point in this feature's
+history would actually be missing (never round-tripping today's
+dataclasses through export first, which could never produce a dict lacking
+a field the current model always populates):
+
+- **Phase 0-1 vintage**: an Occurrence dict predating Phase 2's own
+  `resolved_part_id` wire field (§2c) imports with `part_id=None`; an
+  Occurrence dict with nothing but its own required `id` defaults every
+  other field (`external_ref`/`name_override`/`part_id`/`suppressed`/
+  `hidden`/`transform`) to exactly what a freshly-placed Occurrence already
+  has.
+- **Phase 0-6 vintage** (predates Phase 7): a Part dict with real
+  `occurrences`/`mates` content but no `component_patterns` key at all
+  imports that key as `[]`; a bare-minimum Mate dict (only `id`/`type`/
+  `references`) defaults `value`/`flipped`/`suppressed`.
+- **Phase 7 vintage**: a bare-minimum `ComponentPattern` dict defaults to a
+  no-op Linear pattern (`direction=(1,0,0)`, `count=1`, ...); a Circular
+  one with no `axis` key at all still imports *and* still expands safely
+  via the real `assembly.expand_component_pattern_instances` (falls back to
+  the world Z axis through the origin, per that function's own documented
+  default - confirmed by actually calling it, not just asserting the
+  imported dataclass shape); an `axis` dict missing its own `direction` key
+  defaults to world Z.
+- **Document-level**: a composed payload predating Phase 0's own optional
+  `root_part_id` field imports with `root_part_id=None`.
+- **`resolved_part_id`'s own real safety net** (not a historical-file case,
+  but the same "don't trust blindly" property every other default here
+  relies on): a `resolved_part_id` naming a Part not actually present in
+  this import payload - the ordinary shape a single-file save/reload
+  produces, per `Occurrence.part_id`'s own docstring - is cleared to
+  `None`; one naming a Part that *is* present in the same payload is
+  trusted, confirming both halves of `_resolve_occurrence_part_ids`'s own
+  validation actually work, not just the failure half.
+- **A mixed-vintage import**: one Document composed from three Parts at
+  three different points in this feature's history (pre-assembly, pre-
+  Phase-7, current) imported together in one call - confirms one Part's
+  missing keys never leak a default into a sibling Part that actually has
+  real data for that same field.
+
+### Doc-currency pass
+
+Read the whole document end to end (this session's own instruction, not
+just a targeted diff) looking for anything a prior phase's own update left
+stale. Found and fixed: §3's own heading ("Remaining phases (design-only)")
+and its lead sentence were accurate through Phase 7 but became wrong the
+moment Phase 8 implemented item 8 - nothing under §3 has been "design-only"
+or "remaining" since then. Retitled to reflect that every phase §3
+originally scoped is now implemented (see §3's own updated text below) -
+the numbered list itself is left exactly as every prior phase already
+struck it through in place, per this document's own established "strike
+through, don't delete" convention, so the historical record of what each
+item originally said stays intact.
+
+**Verified**: backend - full suite against real `pythonocc-core`/`py-slvs`
+- **2296/2296 passed** (up from 2285 after §2k: 11 new tests, all in
+`test_didsacad_backward_compat.py`). No client changes this phase (a
+backend-data-format concern only) - client suite unchanged from §2k's own
+**1960/1960**.
+
+---
+
+## 3. Phase history (every originally-scoped phase implemented)
 
 Phase 4 ("Whole-part selection + context menu") moved to §2f, Phase 5
 ("Move/Rotate gizmo + persisted placement + undo") to §2g, Phase 6a
 ("occurrence-attributed selection") to §2h, Phase 6/6b (the mate
-solver and the breadcrumb UI) to §2i, and Phase 7 ("Component pattern") to
-§2j - all implemented. Numbering below is otherwise unchanged from the
+solver and the breadcrumb UI) to §2i, Phase 7 ("Component pattern") to
+§2j, Phase 8 ("AI plan pipeline integration") to §2k, and Phase 9
+("Hardening, migration, docs") to §2l - every phase originally scoped here
+is now implemented (this section was titled "Remaining phases (design-only)"
+through Phase 7; retitled once Phase 8 made that description wrong - see
+§2l's own "Doc-currency pass"). The only pieces of the original brief left
+open are `pattern_component`/`add_component`, both deliberately deferred
+with a written reason (§2k), not silently dropped - anyone extending this
+feature further should start there, not by re-scoping a "Phase 10" from
+scratch. Numbering below is otherwise unchanged from the
 original plan (starts at 8 rather than being renumbered), so every
 existing cross-reference elsewhere in this document (e.g. §4's own "Phase
 5" undo note, which still correctly points at what's now §2g) still points
@@ -1763,8 +1856,7 @@ at the same phase it always did.
 8. **~~AI plan pipeline integration~~ — moved to §2k, `mate`/`move_component`/
    `hide_component`/`isolate_component` implemented; `pattern_component` and
    `add_component` remain deferred, see §2k's own notes on why.**
-9. **Hardening, migration, docs** — full `.didsacad` backward-compat test
-   matrix; keep this document current as phases land.
+9. **~~Hardening, migration, docs~~ — moved to §2l, implemented.**
 
 ## 4. Known v1 limitations (carried forward from the plan, restated so they
    don't get lost)
