@@ -4,8 +4,8 @@ target Part can itself have its own Occurrences, placing components inside
 components) - what `GET /parts/{part_id}/assembly-mesh` (Phase 2) needs to
 place each unique leaf's shared, cached mesh at every one of its
 Occurrences' world positions, and what a `ComponentPattern`'s transform
-expansion (Phase 8) needs to mint each generated Occurrence's own
-placement.
+expansion (Phase 7, `expand_component_pattern_instances` below) needs to
+mint each derived instance's own placement.
 
 Pure vector/matrix math, no OCCT dependency - `RigidTransform`'s translate +
 axis-angle representation (`app.document.models.RigidTransform`) doesn't
@@ -18,7 +18,7 @@ transform composition agree.
 
 import math
 
-from app.document.models import RigidTransform
+from app.document.models import ComponentPattern, ComponentPatternAxis, ComponentPatternType, RigidTransform
 
 Vec3 = tuple[float, float, float]
 # Row-major: Mat3[row][col].
@@ -152,3 +152,80 @@ def apply_transform_to_direction(transform: RigidTransform, direction: Vec3) -> 
     effect on a direction (unlike a position)."""
     rotation = _mat3_from_axis_angle(transform.rotation_axis, transform.rotation_angle_degrees)
     return _mat3_apply(rotation, direction)
+
+
+def _linear_pattern_step(direction: Vec3, distance: float) -> RigidTransform:
+    """The pure-translation `RigidTransform` for a Linear `ComponentPattern`
+    step of `distance` along `direction` (already signed by `reverse` and
+    scaled by `spacing * index` - see `expand_component_pattern_instances`).
+    A zero-length `direction` (never normalized - `_normalize`'s own
+    degenerate fallback would silently substitute +Z) is rejected by the
+    router before this is ever called (`_validate_component_pattern_
+    create`), not defended against here."""
+    unit = _normalize(direction)
+    return RigidTransform(translation=(unit[0] * distance, unit[1] * distance, unit[2] * distance))
+
+
+def _circular_pattern_step(axis: ComponentPatternAxis, angle_degrees: float) -> RigidTransform:
+    """The `RigidTransform` for a Circular `ComponentPattern` step of
+    `angle_degrees` around `axis` - a rotation about an arbitrary world-space
+    line (`axis.origin` + `axis.direction`), not just the origin the way
+    `_mat3_from_axis_angle` alone assumes. Built from the standard "rotate
+    about an off-origin axis" decomposition (translate the origin to zero,
+    rotate, translate back - `T(origin) . R(axis, angle) . T(-origin)`),
+    computed here via `apply_transform_to_point` itself (a pure rotation
+    applied to `axis.origin` gives `R(axis, angle) . origin`, so `origin -
+    that` is exactly the translation term this composed transform needs) -
+    reusing this module's own public function rather than duplicating its
+    rotation math a second time.
+
+    The result is meant to be applied as `compose(step, source_transform)`
+    (see `expand_component_pattern_instances`) - `compose`'s own "parent
+    applied after child" semantics are exactly the extrinsic-rotation
+    behavior wanted here (rotate the *entire* existing placement - both its
+    position and its own orientation - around the fixed world axis), as
+    long as `step` and `source_transform` are expressed in the same
+    reference frame, true for any two top-level Occurrences' transforms
+    (both relative to the same parent Part, this pattern's own v1 scope
+    limit - see `ComponentPattern`'s own docstring)."""
+    rotation_only = RigidTransform(rotation_axis=axis.direction, rotation_angle_degrees=angle_degrees)
+    rotated_origin = apply_transform_to_point(rotation_only, axis.origin)
+    translation: Vec3 = (
+        axis.origin[0] - rotated_origin[0],
+        axis.origin[1] - rotated_origin[1],
+        axis.origin[2] - rotated_origin[2],
+    )
+    return RigidTransform(translation=translation, rotation_axis=axis.direction, rotation_angle_degrees=angle_degrees)
+
+
+def expand_component_pattern_instances(pattern: ComponentPattern, source_transform: RigidTransform) -> list[RigidTransform]:
+    """Every *derived* instance transform for `pattern`, applied to
+    `source_transform` (one of `pattern.source_occurrence_ids`' own current
+    `Occurrence.transform`) - excludes index 0, the untouched seed
+    Occurrence itself, the identical `PatternFeature`-precedent convention
+    `ComponentPattern`'s own docstring documents ("count includes the
+    original"). Returns `[]` for `count`/`count_angular <= 1` (nothing to
+    derive). Callers compose each result onto whatever transform chain
+    already places `source_transform`'s own parent (`GET /parts/{part_id}/
+    assembly-mesh`'s own `_walk`) - this function only ever computes the
+    *local* step relative to the source Occurrence's existing placement,
+    same "local step, composed by the caller" split `compose_chain`'s own
+    per-level `compose` calls already use."""
+    if pattern.pattern_type == ComponentPatternType.LINEAR:
+        count = max(pattern.count, 1)
+        sign = -1.0 if pattern.reverse else 1.0
+        instances = []
+        for index in range(1, count):
+            step = _linear_pattern_step(pattern.direction, pattern.spacing * index * sign)
+            instances.append(compose(step, source_transform))
+        return instances
+
+    count = max(pattern.count_angular, 1)
+    axis = pattern.axis if pattern.axis is not None else ComponentPatternAxis()
+    step_angle = pattern.angle_total / count
+    sign = -1.0 if pattern.reverse_angular else 1.0
+    instances = []
+    for index in range(1, count):
+        step = _circular_pattern_step(axis, step_angle * index * sign)
+        instances.append(compose(step, source_transform))
+    return instances

@@ -28,6 +28,9 @@ from app.document.models import (
     BooleanFeature,
     BooleanOperation,
     ChamferFeature,
+    ComponentPattern,
+    ComponentPatternAxis,
+    ComponentPatternType,
     CreatePlaneFeature,
     DeleteBodyFeature,
     DeleteFaceFeature,
@@ -1789,6 +1792,55 @@ def _mate_from_dict(data: dict) -> Mate:
     )
 
 
+def _component_pattern_axis_to_dict(axis: ComponentPatternAxis | None) -> dict | None:
+    if axis is None:
+        return None
+    return {"origin": list(axis.origin), "direction": list(axis.direction)}
+
+
+def _component_pattern_axis_from_dict(data: dict | None) -> ComponentPatternAxis | None:
+    if not data:
+        return None
+    origin = data.get("origin", [0.0, 0.0, 0.0])
+    direction = data.get("direction", [0.0, 0.0, 1.0])
+    return ComponentPatternAxis(origin=(origin[0], origin[1], origin[2]), direction=(direction[0], direction[1], direction[2]))
+
+
+def _component_pattern_to_dict(pattern: ComponentPattern) -> dict:
+    return {
+        "id": pattern.id,
+        "source_occurrence_ids": list(pattern.source_occurrence_ids),
+        "pattern_type": pattern.pattern_type.value,
+        "direction": list(pattern.direction),
+        "count": pattern.count,
+        "spacing": pattern.spacing,
+        "reverse": pattern.reverse,
+        "axis": _component_pattern_axis_to_dict(pattern.axis),
+        "count_angular": pattern.count_angular,
+        "angle_total": pattern.angle_total,
+        "reverse_angular": pattern.reverse_angular,
+        "suppressed": pattern.suppressed,
+    }
+
+
+def _component_pattern_from_dict(data: dict) -> ComponentPattern:
+    direction = data.get("direction", [1.0, 0.0, 0.0])
+    return ComponentPattern(
+        id=_require(data, "id"),
+        source_occurrence_ids=list(data.get("source_occurrence_ids", [])),
+        pattern_type=ComponentPatternType(data.get("pattern_type", ComponentPatternType.LINEAR.value)),
+        direction=(direction[0], direction[1], direction[2]),
+        count=data.get("count", 1),
+        spacing=data.get("spacing", 0.0),
+        reverse=data.get("reverse", False),
+        axis=_component_pattern_axis_from_dict(data.get("axis")),
+        count_angular=data.get("count_angular", 1),
+        angle_total=data.get("angle_total", 360.0),
+        reverse_angular=data.get("reverse_angular", False),
+        suppressed=data.get("suppressed", False),
+    )
+
+
 def _part_to_dict(part: Part) -> dict:
     return {
         "id": part.id,
@@ -1819,6 +1871,10 @@ def _part_to_dict(part: Part) -> dict:
         # `SCHEMA_VERSION` comment).
         "occurrences": [_occurrence_to_dict(o) for o in part.occurrences],
         "mates": [_mate_to_dict(m) for m in part.mates],
+        # Phase 7 (`docs/assembly-scope.md` §3 item 7): purely additive, same
+        # `.get(key, [])` fallback convention as `occurrences`/`mates` above -
+        # a file saved before Phase 7 existed simply lacks this key.
+        "component_patterns": [_component_pattern_to_dict(p) for p in part.component_patterns],
     }
 
 
@@ -1839,6 +1895,7 @@ def _part_from_dict(data: dict) -> Part:
     }
     part.occurrences = [_occurrence_from_dict(o) for o in data.get("occurrences", [])]
     part.mates = [_mate_from_dict(m) for m in data.get("mates", [])]
+    part.component_patterns = [_component_pattern_from_dict(p) for p in data.get("component_patterns", [])]
     return part
 
 

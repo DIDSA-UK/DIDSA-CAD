@@ -29,6 +29,34 @@ String occurrenceDisplayName(List<OccurrenceDto> occurrences, int index) {
   return 'Component $ordinal';
 }
 
+/// The display name for the ComponentPattern at [index] in [patterns] -
+/// mirrors [mateDisplayName]'s own "Type N" convention (a
+/// [ComponentPatternDto] has no user-chosen name field of its own either),
+/// plus a short parameter summary so two patterns of the same type are
+/// distinguishable at a glance without opening anything.
+String componentPatternDisplayName(List<ComponentPatternDto> patterns, int index) {
+  final pattern = patterns[index];
+  final label = switch (pattern.patternType) {
+    'linear' => 'Linear',
+    'circular' => 'Circular',
+    _ => pattern.patternType,
+  };
+  final ordinal = patterns.take(index + 1).where((p) => p.patternType == pattern.patternType).length;
+  return '$label $ordinal';
+}
+
+/// A short summary of [pattern]'s own instance count, shown as a
+/// [componentPatternDisplayName] row's subtitle - "×3" for a 3-instance
+/// Linear pattern, "×4 (270°)" for a Circular one swept less than a full
+/// turn (the common, expected 360° case omits the redundant angle).
+String componentPatternSummary(ComponentPatternDto pattern) {
+  if (pattern.patternType == 'circular') {
+    final angleSuffix = pattern.angleTotal == 360.0 ? '' : ' (${pattern.angleTotal.toStringAsFixed(0)}°)';
+    return '×${pattern.countAngular}$angleSuffix';
+  }
+  return '×${pattern.count}';
+}
+
 /// The display name for the Mate at [index] in [mates] - mirrors
 /// [occurrenceDisplayName]/`featureDisplayName`'s "Type N" convention
 /// (ordinal counts only same-type mates up to and including [index]), since a
@@ -64,6 +92,12 @@ class AssemblyTreePanel extends StatefulWidget {
   final bool visible;
   final List<OccurrenceDto> occurrences;
   final List<MateDto> mates;
+
+  /// Phase 7 (`docs/assembly-scope.md` §3 item 7): defaults to empty so
+  /// every pre-Phase-7 call site keeps working unchanged - mirrors
+  /// [mates]' own "purely additive" arrival.
+  final List<ComponentPatternDto> patterns;
+
   final String? selectedOccurrenceId;
   final void Function(OccurrenceDto occurrence) onOccurrenceTap;
   final void Function(OccurrenceDto occurrence) onOccurrenceLongPress;
@@ -76,6 +110,7 @@ class AssemblyTreePanel extends StatefulWidget {
     required this.visible,
     required this.occurrences,
     required this.mates,
+    this.patterns = const [],
     required this.selectedOccurrenceId,
     required this.onOccurrenceTap,
     required this.onOccurrenceLongPress,
@@ -231,7 +266,7 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
   /// explanation - a fresh assembly file inserts nothing until the user
   /// actually adds a component (Phase 3's insert flow).
   Widget _buildGroupedTree(BuildContext context) {
-    if (widget.occurrences.isEmpty && widget.mates.isEmpty) {
+    if (widget.occurrences.isEmpty && widget.mates.isEmpty && widget.patterns.isEmpty) {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
@@ -247,6 +282,7 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
       children: [
         _buildComponentsSection(context),
         if (widget.mates.isNotEmpty) _buildMatesSection(context),
+        if (widget.patterns.isNotEmpty) _buildPatternsSection(context),
       ],
     );
   }
@@ -340,6 +376,51 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
         trailing: mate.suppressed ? const Icon(Icons.visibility_off, size: 18) : null,
         onTap: widget.onMateTap == null ? null : () => widget.onMateTap!(mate),
         onLongPress: widget.onMateLongPress == null ? null : () => widget.onMateLongPress!(mate),
+      ),
+    );
+  }
+
+  /// Phase 7 (`docs/assembly-scope.md` §3 item 7 / §2j): read-only for now,
+  /// same scope [_buildMatesSection] itself still has (no tap/long-press
+  /// wired to editing or deleting an existing entry from this panel yet,
+  /// `PartScreen` never calls [AssemblyTreePanel.onMateTap]/
+  /// [onMateLongPress] either) - authoring happens via `PartScreen.
+  /// _openComponentPattern`/`ComponentPatternPanel`, this section exists so
+  /// an already-authored pattern is at least visible in the tree.
+  Widget _buildPatternsSection(BuildContext context) {
+    return ExpansionTile(
+      initiallyExpanded: true,
+      dense: true,
+      visualDensity: VisualDensity.compact,
+      leading: const Icon(Icons.grid_view_outlined, size: 26),
+      title: const Text('Patterns', maxLines: 1, overflow: TextOverflow.ellipsis, style: _sectionTitleStyle),
+      children: [
+        for (int i = 0; i < widget.patterns.length; i++) _buildPatternTile(context, i),
+      ],
+    );
+  }
+
+  Widget _buildPatternTile(BuildContext context, int index) {
+    final pattern = widget.patterns[index];
+    return Opacity(
+      opacity: pattern.suppressed ? 0.5 : 1.0,
+      child: ListTile(
+        dense: true,
+        visualDensity: VisualDensity.compact,
+        leading: const Icon(Icons.grid_view_outlined, size: 24),
+        title: Text(
+          componentPatternDisplayName(widget.patterns, index),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: _rowTitleStyle,
+        ),
+        subtitle: Text(
+          componentPatternSummary(pattern),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: _rowSubtitleStyle,
+        ),
+        trailing: pattern.suppressed ? const Icon(Icons.visibility_off, size: 18) : null,
       ),
     );
   }

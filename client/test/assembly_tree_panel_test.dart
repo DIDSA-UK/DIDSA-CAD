@@ -32,6 +32,25 @@ MateDto _mate(String id, {String type = 'coincident', bool suppressed = false}) 
       suppressed: suppressed,
     );
 
+ComponentPatternDto _pattern(
+  String id, {
+  String patternType = 'linear',
+  int count = 3,
+  double angleTotal = 360.0,
+  int countAngular = 1,
+  bool suppressed = false,
+}) =>
+    ComponentPatternDto(
+      id: id,
+      sourceOccurrenceIds: const ['o1'],
+      patternType: patternType,
+      direction: const [1.0, 0.0, 0.0],
+      count: count,
+      angleTotal: angleTotal,
+      countAngular: countAngular,
+      suppressed: suppressed,
+    );
+
 Widget _wrap(AssemblyTreePanel panel) => MaterialApp(home: Scaffold(body: panel));
 
 void main() {
@@ -59,6 +78,39 @@ void main() {
       expect(mateDisplayName(mates, 0), 'Coincident 1');
       expect(mateDisplayName(mates, 1), 'Concentric 1');
       expect(mateDisplayName(mates, 2), 'Coincident 2');
+    });
+  });
+
+  group('componentPatternDisplayName', () {
+    test('labels by type with a per-type ordinal', () {
+      final patterns = [
+        _pattern('p1', patternType: 'linear'),
+        _pattern('p2', patternType: 'circular'),
+        _pattern('p3', patternType: 'linear'),
+      ];
+      expect(componentPatternDisplayName(patterns, 0), 'Linear 1');
+      expect(componentPatternDisplayName(patterns, 1), 'Circular 1');
+      expect(componentPatternDisplayName(patterns, 2), 'Linear 2');
+    });
+  });
+
+  group('componentPatternSummary', () {
+    test('a linear pattern shows its instance count', () {
+      expect(componentPatternSummary(_pattern('p1', patternType: 'linear', count: 4)), '×4');
+    });
+
+    test('a full-circle circular pattern omits the redundant angle', () {
+      expect(
+        componentPatternSummary(_pattern('p1', patternType: 'circular', countAngular: 6, angleTotal: 360.0)),
+        '×6',
+      );
+    });
+
+    test('a partial-sweep circular pattern shows its angle', () {
+      expect(
+        componentPatternSummary(_pattern('p1', patternType: 'circular', countAngular: 3, angleTotal: 270.0)),
+        '×3 (270°)',
+      );
     });
   });
 
@@ -297,5 +349,63 @@ void main() {
 
     await tester.tap(find.byIcon(Icons.close));
     expect(closed, isTrue);
+  });
+
+  testWidgets('Patterns section lists patterns by display name, hidden by default when empty', (tester) async {
+    await tester.pumpWidget(
+      _wrap(
+        AssemblyTreePanel(
+          visible: true,
+          occurrences: const [],
+          mates: const [],
+          selectedOccurrenceId: null,
+          onOccurrenceTap: (_) {},
+          onOccurrenceLongPress: (_) {},
+          onClose: () {},
+        ),
+      ),
+    );
+
+    expect(find.text('Patterns'), findsNothing);
+  });
+
+  testWidgets('Patterns section shows a row with a summary subtitle', (tester) async {
+    await tester.pumpWidget(
+      _wrap(
+        AssemblyTreePanel(
+          visible: true,
+          occurrences: const [],
+          mates: const [],
+          patterns: [_pattern('p1', patternType: 'linear', count: 5)],
+          selectedOccurrenceId: null,
+          onOccurrenceTap: (_) {},
+          onOccurrenceLongPress: (_) {},
+          onClose: () {},
+        ),
+      ),
+    );
+
+    expect(find.text('Patterns'), findsOneWidget);
+    expect(find.text('Linear 1'), findsOneWidget);
+    expect(find.text('×5'), findsOneWidget);
+  });
+
+  testWidgets('a suppressed pattern is dimmed and shows the visibility-off trailing icon', (tester) async {
+    await tester.pumpWidget(
+      _wrap(
+        AssemblyTreePanel(
+          visible: true,
+          occurrences: const [],
+          mates: const [],
+          patterns: [_pattern('p1', suppressed: true)],
+          selectedOccurrenceId: null,
+          onOccurrenceTap: (_) {},
+          onOccurrenceLongPress: (_) {},
+          onClose: () {},
+        ),
+      ),
+    );
+
+    expect(find.byIcon(Icons.visibility_off), findsOneWidget);
   });
 }

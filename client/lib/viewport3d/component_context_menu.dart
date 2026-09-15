@@ -38,9 +38,10 @@ enum ComponentContextMenuAction {
 /// shows "Exit Focus" instead, mirroring `AssemblyFocusStack.isFocused`);
 /// [hidden] picks Hide vs Show, the same "label names the next state"
 /// convention `PartToolbar`'s own Hide/Show Reference Planes entry uses.
-/// Pattern has no backing implementation yet (Phase 7) and renders
-/// disabled, same "ship the stable shape, not the gap" rule
-/// [showAssemblyAddMenu] already applies to its own Pattern row.
+/// Pattern is enabled too (Phase 7, `docs/assembly-scope.md` §2j) - its own
+/// handler opens `PatternPanel` targeting whichever Occurrence was
+/// long-pressed as the pattern's own (single) source, mirroring how Mate's
+/// entry opens its own authoring flow.
 /// Move/Rotate is enabled - found disabled during a post-Phase-5
 /// completeness audit (`docs/assembly-scope.md` appendix item 5) even
 /// though Phase 5's gizmo already works via plain tap-selection, entirely
@@ -86,8 +87,6 @@ Future<ComponentContextMenuAction?> showComponentContextMenu(
       action: ComponentContextMenuAction.pattern,
       label: 'Pattern',
       icon: Icons.grid_view_outlined,
-      enabled: false,
-      disabledReason: 'Coming soon - needs Phase 7\'s component pattern',
     ),
   ]);
 }

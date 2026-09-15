@@ -59,6 +59,7 @@ import 'loft_panel.dart';
 import 'loft_surface_panel.dart';
 import 'merge_panel.dart';
 import 'mate_panel.dart';
+import 'component_pattern_panel.dart';
 import 'measurement_panel.dart';
 import 'mesh_geometry.dart';
 import 'mirror_panel.dart';
@@ -431,6 +432,7 @@ class _PartScreenState extends State<PartScreen> {
   /// different things that happen to coexist on the same Part.
   List<OccurrenceDto> _occurrences = [];
   List<MateDto> _mates = [];
+  List<ComponentPatternDto> _componentPatterns = [];
   String? _selectedOccurrenceId;
 
   /// Assembly support Phase 4: purely client-side Hide/Show for an
@@ -2923,6 +2925,117 @@ class _PartScreenState extends State<PartScreen> {
       setState(() {
         _mateSaving = false;
         _mateError = e.message;
+      });
+    }
+  }
+
+  // --- Phase 7 (`docs/assembly-scope.md` §3 item 7 / §2j): Component
+  // Pattern ---------------------------------------------------------------
+  // Unlike Mate, a ComponentPattern needs no face/edge/vertex picking - its
+  // source is whichever single Occurrence is already selected
+  // (`_selectedOccurrenceId`, set by a tap in the Assembly tree or a
+  // component long-press) when the panel is opened, mirroring how the
+  // Move/Rotate gizmo already targets that same selection. v1 UI scope:
+  // exactly one source Occurrence per pattern (the backend's own
+  // `ComponentPattern.source_occurrence_ids` accepts more, for parity with
+  // `PatternFeature.source_body_ids`'s own Phase-6-widened shape, but this
+  // panel only ever authors a single-source pattern).
+
+  bool _componentPatternPanelActive = false;
+  String? _componentPatternSourceOccurrenceId;
+
+  ComponentPatternMode _componentPatternMode = ComponentPatternMode.linear;
+  ComponentPatternAxisPreset _componentPatternDirection = ComponentPatternAxisPreset.x;
+  int _componentPatternCount = 3;
+  double _componentPatternSpacing = 10.0;
+  bool _componentPatternReverse = false;
+  List<double> _componentPatternAxisOrigin = [0.0, 0.0, 0.0];
+  ComponentPatternAxisPreset _componentPatternAxisDirection = ComponentPatternAxisPreset.z;
+  int _componentPatternCountAngular = 4;
+  double _componentPatternAngleTotal = 360.0;
+  bool _componentPatternReverseAngular = false;
+  bool _componentPatternSaving = false;
+  String? _componentPatternError;
+
+  /// Opens [ComponentPatternPanel] targeting [_selectedOccurrenceId] - both
+  /// the Assembly Add menu's "Pattern Component" entry and the component
+  /// long-press menu's "Pattern" entry call this (the former requires a
+  /// selection to already exist, surfacing an error otherwise, since there
+  /// is no picking mode for "select a whole component" beyond the ordinary
+  /// default-browsing tap Assembly lens already supports).
+  void _openComponentPattern() {
+    final sourceId = _selectedOccurrenceId;
+    if (sourceId == null) {
+      setState(() => _errorMessage = 'Select a component first to pattern it');
+      return;
+    }
+    setState(() {
+      _componentPatternPanelActive = true;
+      _componentPatternSourceOccurrenceId = sourceId;
+      _componentPatternMode = ComponentPatternMode.linear;
+      _componentPatternDirection = ComponentPatternAxisPreset.x;
+      _componentPatternCount = 3;
+      _componentPatternSpacing = 10.0;
+      _componentPatternReverse = false;
+      _componentPatternAxisOrigin = [0.0, 0.0, 0.0];
+      _componentPatternAxisDirection = ComponentPatternAxisPreset.z;
+      _componentPatternCountAngular = 4;
+      _componentPatternAngleTotal = 360.0;
+      _componentPatternReverseAngular = false;
+      _componentPatternSaving = false;
+      _componentPatternError = null;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+    });
+  }
+
+  void _closeComponentPattern() {
+    setState(() {
+      _componentPatternPanelActive = false;
+      _componentPatternSourceOccurrenceId = null;
+      _componentPatternError = null;
+      _componentPatternSaving = false;
+    });
+  }
+
+  Future<void> _confirmComponentPattern() async {
+    final part = _part;
+    final sourceId = _componentPatternSourceOccurrenceId;
+    if (part == null || sourceId == null) return;
+    setState(() {
+      _componentPatternSaving = true;
+      _componentPatternError = null;
+    });
+    try {
+      await _api.createComponentPattern(
+        part.id,
+        sourceOccurrenceIds: [sourceId],
+        patternType: _componentPatternMode.apiValue,
+        direction: componentPatternAxisPresetVector(_componentPatternDirection),
+        count: _componentPatternCount,
+        spacing: _componentPatternSpacing,
+        reverse: _componentPatternReverse,
+        axis: ComponentPatternAxisDto(
+          origin: _componentPatternAxisOrigin,
+          direction: componentPatternAxisPresetVector(_componentPatternAxisDirection),
+        ),
+        countAngular: _componentPatternCountAngular,
+        angleTotal: _componentPatternAngleTotal,
+        reverseAngular: _componentPatternReverseAngular,
+      );
+      if (!mounted) return;
+      setState(() {
+        _componentPatternPanelActive = false;
+        _componentPatternSourceOccurrenceId = null;
+        _componentPatternSaving = false;
+      });
+      await _refreshAssemblyTree();
+      await _refreshAssemblyMesh();
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _componentPatternSaving = false;
+        _componentPatternError = e.message;
       });
     }
   }
@@ -8164,10 +8277,12 @@ class _PartScreenState extends State<PartScreen> {
     if (focusPartId == null) return;
     final occurrences = await _api.listOccurrences(focusPartId);
     final mates = await _api.listMates(focusPartId);
+    final patterns = await _api.listComponentPatterns(focusPartId);
     if (!mounted) return;
     setState(() {
       _occurrences = occurrences;
       _mates = mates;
+      _componentPatterns = patterns;
       if (_selectedOccurrenceId != null && !occurrences.any((o) => o.id == _selectedOccurrenceId)) {
         _selectedOccurrenceId = null;
       }
@@ -9253,12 +9368,12 @@ class _PartScreenState extends State<PartScreen> {
   /// Assembly support Phase 3b (`docs/assembly-scope.md` §3): the "Add"
   /// FAB's Assembly-lens branch - shows [showAssemblyAddMenu] and acts on
   /// whichever (enabled) entry was tapped. [AssemblyAddMenuAction.
-  /// insertExistingComponent] and (Phase 6) [addMate] are real;
-  /// [createNewComponent]/[patternComponent] still render disabled in the
-  /// sheet itself (Create Component needs a multi-file save flow this app
-  /// doesn't have yet, Pattern Component needs Phase 7's component pattern)
-  /// and so never reach this `switch` - mirrors [_onFeaturePressed]'s own
-  /// "picker already filtered to enabled entries" shape.
+  /// insertExistingComponent], (Phase 6) [addMate], and (Phase 7)
+  /// [patternComponent] are all real; [createNewComponent] alone still
+  /// renders disabled in the sheet itself (needs a multi-file save flow
+  /// this app doesn't have yet) and so never reaches this `switch` -
+  /// mirrors [_onFeaturePressed]'s own "picker already filtered to enabled
+  /// entries" shape.
   Future<void> _onAssemblyAddPressed() async {
     final action = await showAssemblyAddMenu(context);
     if (!mounted || action == null) return;
@@ -9267,8 +9382,9 @@ class _PartScreenState extends State<PartScreen> {
         await _onInsertComponentPressed();
       case AssemblyAddMenuAction.addMate:
         _openMate();
-      case AssemblyAddMenuAction.createNewComponent:
       case AssemblyAddMenuAction.patternComponent:
+        _openComponentPattern();
+      case AssemblyAddMenuAction.createNewComponent:
         break;
     }
   }
@@ -16894,21 +17010,21 @@ class _PartScreenState extends State<PartScreen> {
   /// Hide/Show/Isolate are purely client-side (see [_hiddenOccurrenceIds]/
   /// [_isolatedOccurrenceId]'s own doc comments - no backend mutation
   /// endpoint for Occurrences exists at all, `docs/assembly-scope.md` §2e).
-  /// Pattern still renders disabled in the menu itself (Phase 7) and so
-  /// never reaches this `switch` - same "picker already filtered to
-  /// enabled entries" shape [_onAssemblyAddPressed] already uses for its
-  /// own disabled entries. Move/Rotate *does* reach this `switch` (appendix
-  /// item 5 - `component_context_menu.dart`'s own entry is enabled now) but
-  /// still needs no case body of its own: this method's very first line
-  /// already selected `occurrence` (`_selectedOccurrenceId = occurrence.id`),
-  /// which is exactly what [_gizmoTargetOccurrence] reads to show the
-  /// gizmo - the menu action is a confirmation of an already-real effect,
-  /// not a trigger for a new one. Mate (Phase 6, now enabled too) opens the
-  /// same generic 2-entity picking flow [_onAssemblyAddPressed]'s own "Add
-  /// Mate" entry does - `occurrence` itself isn't pre-selected into it (a
-  /// Mate targets a specific face/edge/vertex, not a whole component), so
-  /// long-pressing a tree row is only a discoverable second door into the
-  /// identical flow, not a different one.
+  /// Move/Rotate reaches this `switch` (appendix item 5 -
+  /// `component_context_menu.dart`'s own entry is enabled now) but still
+  /// needs no case body of its own: this method's very first line already
+  /// selected `occurrence` (`_selectedOccurrenceId = occurrence.id`), which
+  /// is exactly what [_gizmoTargetOccurrence] reads to show the gizmo - the
+  /// menu action is a confirmation of an already-real effect, not a trigger
+  /// for a new one. Mate (Phase 6) opens the same generic 2-entity picking
+  /// flow [_onAssemblyAddPressed]'s own "Add Mate" entry does -
+  /// `occurrence` itself isn't pre-selected into it (a Mate targets a
+  /// specific face/edge/vertex, not a whole component), so long-pressing a
+  /// tree row is only a discoverable second door into the identical flow,
+  /// not a different one. Pattern (Phase 7, `docs/assembly-scope.md` §2j)
+  /// opens [_openComponentPattern] - unlike Mate, this *does* use `occurrence`'s own
+  /// pre-selection directly, since a ComponentPattern's source genuinely is
+  /// "the whole component that was long-pressed."
   Future<void> _onOccurrenceLongPress(OccurrenceDto occurrence) async {
     setState(() => _selectedOccurrenceId = occurrence.id);
     final resolvedPartId = occurrence.resolvedPartId;
@@ -16951,7 +17067,7 @@ class _PartScreenState extends State<PartScreen> {
       case ComponentContextMenuAction.mate:
         _openMate();
       case ComponentContextMenuAction.pattern:
-        break;
+        _openComponentPattern();
     }
   }
 
@@ -17745,6 +17861,7 @@ class _PartScreenState extends State<PartScreen> {
                     visible: _featureTreePanelVisible,
                     occurrences: _displayOccurrences,
                     mates: _mates,
+                    patterns: _componentPatterns,
                     selectedOccurrenceId: _selectedOccurrenceId,
                     onOccurrenceTap: _onOccurrenceTap,
                     onOccurrenceLongPress: _onOccurrenceLongPress,
@@ -17925,6 +18042,36 @@ class _PartScreenState extends State<PartScreen> {
                           ? _confirmMate
                           : null,
                       onCancel: _closeMate,
+                    ),
+                  ),
+                if (_componentPatternPanelActive)
+                  Positioned.fill(
+                    key: const ValueKey('component-pattern-panel-slot'),
+                    child: ComponentPatternPanel(
+                      mode: _componentPatternMode,
+                      onModeChanged: (mode) => setState(() => _componentPatternMode = mode),
+                      direction: _componentPatternDirection,
+                      onDirectionChanged: (preset) => setState(() => _componentPatternDirection = preset),
+                      count: _componentPatternCount,
+                      onCountChanged: (count) => setState(() => _componentPatternCount = count),
+                      spacing: _componentPatternSpacing,
+                      onSpacingChanged: (spacing) => setState(() => _componentPatternSpacing = spacing),
+                      reverse: _componentPatternReverse,
+                      onReverseChanged: (reverse) => setState(() => _componentPatternReverse = reverse),
+                      axisOrigin: _componentPatternAxisOrigin,
+                      onAxisOriginChanged: (origin) => setState(() => _componentPatternAxisOrigin = origin),
+                      axisDirection: _componentPatternAxisDirection,
+                      onAxisDirectionChanged: (preset) => setState(() => _componentPatternAxisDirection = preset),
+                      countAngular: _componentPatternCountAngular,
+                      onCountAngularChanged: (count) => setState(() => _componentPatternCountAngular = count),
+                      angleTotal: _componentPatternAngleTotal,
+                      onAngleTotalChanged: (angle) => setState(() => _componentPatternAngleTotal = angle),
+                      reverseAngular: _componentPatternReverseAngular,
+                      onReverseAngularChanged: (reverse) => setState(() => _componentPatternReverseAngular = reverse),
+                      saving: _componentPatternSaving,
+                      error: _componentPatternError,
+                      onConfirm: _confirmComponentPattern,
+                      onCancel: _closeComponentPattern,
                     ),
                   ),
                 if (_chamferActive)

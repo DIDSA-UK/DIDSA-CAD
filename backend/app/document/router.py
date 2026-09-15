@@ -11,7 +11,7 @@ from OCC.Core.TopoDS import TopoDS_Shape
 
 from app.document.ai_plan import validate_ai_plan as validate_ai_plan_steps
 from app.document.ai_plan_schemas import PlanValidateRequest, PlanValidateResponse
-from app.document.assembly import compose_chain
+from app.document.assembly import compose_chain, expand_component_pattern_instances
 from app.document.assembly_solver import MateSolveResult, solve_occurrence
 from app.document.bevel import _spiral_hand_from_feature, resolve_bevel_gear, resolve_bevel_gear_coarse
 from app.document.bevel_pair import resolve_bevel_pair, resolve_bevel_pair_coarse, resolve_member_profile_shifts
@@ -103,6 +103,9 @@ from app.document.models import (
     BevelPairMemberSpec,
     BooleanFeature,
     ChamferFeature,
+    ComponentPattern,
+    ComponentPatternAxis,
+    ComponentPatternType,
     CreatePlaneFeature,
     DeleteBodyFeature,
     DeleteFaceFeature,
@@ -194,6 +197,10 @@ from app.document.schemas import (
     AssemblyBodyGeometry,
     AssemblyMeshResponse,
     AssemblyOccurrenceInstance,
+    ComponentPatternAxisSchema,
+    ComponentPatternCreate,
+    ComponentPatternResponse,
+    ComponentPatternUpdate,
     MateCreate,
     MateEntityRefResponse,
     MateResponse,
@@ -399,6 +406,7 @@ def _part_response(part: Part) -> PartResponse:
         feature_ids=[f.id for f in part.features],
         occurrence_ids=[o.id for o in part.occurrences],
         mate_ids=[m.id for m in part.mates],
+        component_pattern_ids=[p.id for p in part.component_patterns],
         part_number=part.part_number,
         description=part.description,
         revision=part.revision,
@@ -3245,6 +3253,221 @@ def delete_mate(part_id: str, mate_id: str) -> Response:
     part = get_part_or_404(part_id)
     mate = _get_mate_or_404(part, mate_id)
     part.mates.remove(mate)
+    return Response(status_code=204)
+
+
+def _component_pattern_axis_response(axis: ComponentPatternAxis | None) -> ComponentPatternAxisSchema | None:
+    if axis is None:
+        return None
+    return ComponentPatternAxisSchema(origin=axis.origin, direction=axis.direction)
+
+
+def _component_pattern_axis_to_domain(schema: ComponentPatternAxisSchema | None) -> ComponentPatternAxis | None:
+    if schema is None:
+        return None
+    return ComponentPatternAxis(origin=schema.origin, direction=schema.direction)
+
+
+def _component_pattern_response(pattern: ComponentPattern) -> ComponentPatternResponse:
+    return ComponentPatternResponse(
+        id=pattern.id,
+        source_occurrence_ids=list(pattern.source_occurrence_ids),
+        pattern_type=pattern.pattern_type.value,
+        direction=pattern.direction,
+        count=pattern.count,
+        spacing=pattern.spacing,
+        reverse=pattern.reverse,
+        axis=_component_pattern_axis_response(pattern.axis),
+        count_angular=pattern.count_angular,
+        angle_total=pattern.angle_total,
+        reverse_angular=pattern.reverse_angular,
+        suppressed=pattern.suppressed,
+    )
+
+
+@router.get("/parts/{part_id}/component-patterns", response_model=list[ComponentPatternResponse])
+def list_component_patterns(part_id: str) -> list[ComponentPatternResponse]:
+    """Phase 7 (`docs/assembly-scope.md` §3 item 7): the Assembly tree's own
+    Component Patterns list - `part_id`'s own `component_patterns`, full
+    detail (unlike `PartResponse.component_pattern_ids`, ids only)."""
+    part = get_part_or_404(part_id)
+    return [_component_pattern_response(pattern) for pattern in part.component_patterns]
+
+
+def _is_zero_vector(v: tuple[float, float, float]) -> bool:
+    return v[0] == 0.0 and v[1] == 0.0 and v[2] == 0.0
+
+
+def _validate_component_pattern_source_occurrence_ids(part: Part, source_occurrence_ids: list[str]) -> None:
+    """`source_occurrence_ids` must be non-empty, and every entry must name
+    a real, top-level Occurrence of `part` (this `ComponentPattern`'s own
+    owner) - `ComponentPattern`'s own v1 scope limit, the identical
+    top-level-only restriction Phase 5's gizmo and `_validate_mate_entity_
+    ref` already enforce, satisfied automatically here since `part.
+    occurrences` only ever holds top-level entries in the first place."""
+    if not source_occurrence_ids:
+        raise HTTPException(status_code=422, detail="ComponentPattern requires at least one source_occurrence_id")
+    known_ids = {occurrence.id for occurrence in part.occurrences}
+    for occurrence_id in source_occurrence_ids:
+        if occurrence_id not in known_ids:
+            raise HTTPException(
+                status_code=422,
+                detail={"type": "occurrence_not_found", "occurrence_id": occurrence_id},
+            )
+
+
+def _validate_component_pattern_linear_payload(direction: tuple[float, float, float], count: int) -> None:
+    """Mirrors `_validate_pattern_rectangular_payload`'s own shape, one
+    level up: `direction` must be non-zero (a zero vector would otherwise
+    silently fall back to `assembly._normalize`'s own +Z default -
+    `ComponentPattern`'s docstring on `_linear_pattern_step` says this is
+    rejected here rather than defended against there); `count` must be >= 2
+    (a single-instance pattern derives nothing beyond the untouched seed,
+    the same no-op guard `PatternFeature`'s own count checks already use)
+    and capped at `_PATTERN_MAX_TOTAL_INSTANCES`, the same sanity limit
+    body-level patterns already share."""
+    if _is_zero_vector(direction):
+        raise HTTPException(status_code=422, detail="ComponentPattern direction must not be the zero vector")
+    if count < 2:
+        raise HTTPException(
+            status_code=422,
+            detail="ComponentPattern count must be >= 2 - otherwise no new instance is produced beyond "
+            "the existing source Occurrence(s)",
+        )
+    if count > _PATTERN_MAX_TOTAL_INSTANCES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"ComponentPattern count must not exceed {_PATTERN_MAX_TOTAL_INSTANCES} (got {count})",
+        )
+
+
+def _validate_component_pattern_circular_payload(
+    axis: ComponentPatternAxis | None, count_angular: int, angle_total: float
+) -> None:
+    """Mirrors `_validate_pattern_circular_payload`'s own shape - `axis` may
+    be omitted (unlike `PatternAxisRef`, `ComponentPatternAxis` has a
+    genuinely meaningful default, the world Z axis through the origin, see
+    that dataclass's own docstring), but an explicitly-given `axis.direction`
+    must still be non-zero. `count_angular`/`angle_total` share the exact
+    same no-op/cap/range checks `_validate_pattern_circular_payload` already
+    enforces for the body-level equivalent."""
+    if axis is not None and _is_zero_vector(axis.direction):
+        raise HTTPException(status_code=422, detail="ComponentPattern axis direction must not be the zero vector")
+    if count_angular < 2:
+        raise HTTPException(
+            status_code=422,
+            detail="ComponentPattern count_angular must be >= 2 - otherwise no new instance is produced "
+            "beyond the existing source Occurrence(s)",
+        )
+    if count_angular > _PATTERN_MAX_TOTAL_INSTANCES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"ComponentPattern count_angular must not exceed {_PATTERN_MAX_TOTAL_INSTANCES} "
+            f"(got {count_angular})",
+        )
+    if angle_total <= 0 or angle_total > 360:
+        raise HTTPException(status_code=422, detail="ComponentPattern angle_total must be > 0 and <= 360")
+
+
+def _validate_component_pattern_payload(
+    pattern_type: ComponentPatternType,
+    direction: tuple[float, float, float],
+    count: int,
+    axis: ComponentPatternAxis | None,
+    count_angular: int,
+    angle_total: float,
+) -> None:
+    """The single entry point both `create_component_pattern`/`update_
+    component_pattern` call - mirrors `_validate_pattern_payload`'s own
+    per-`pattern_type` dispatch."""
+    if pattern_type == ComponentPatternType.CIRCULAR:
+        _validate_component_pattern_circular_payload(axis, count_angular, angle_total)
+    else:
+        _validate_component_pattern_linear_payload(direction, count)
+
+
+@router.post("/parts/{part_id}/component-patterns", response_model=ComponentPatternResponse, status_code=201)
+def create_component_pattern(part_id: str, payload: ComponentPatternCreate) -> ComponentPatternResponse:
+    """Phase 7 (`docs/assembly-scope.md` §3 item 7): creates a
+    `ComponentPattern` on `part_id` - data only, mirroring `ComponentPattern`'s
+    own docstring (no derived instance is persisted here - expansion happens
+    at `GET /parts/{part_id}/assembly-mesh` fetch time, `app.document.
+    assembly.expand_component_pattern_instances`)."""
+    part = get_part_or_404(part_id)
+    _validate_component_pattern_source_occurrence_ids(part, payload.source_occurrence_ids)
+    pattern_type = ComponentPatternType(payload.pattern_type)
+    axis = _component_pattern_axis_to_domain(payload.axis)
+    _validate_component_pattern_payload(
+        pattern_type, payload.direction, payload.count, axis, payload.count_angular, payload.angle_total
+    )
+    pattern = ComponentPattern(
+        id=str(uuid.uuid4()),
+        source_occurrence_ids=list(payload.source_occurrence_ids),
+        pattern_type=pattern_type,
+        direction=payload.direction,
+        count=payload.count,
+        spacing=payload.spacing,
+        reverse=payload.reverse,
+        axis=axis,
+        count_angular=payload.count_angular,
+        angle_total=payload.angle_total,
+        reverse_angular=payload.reverse_angular,
+    )
+    part.component_patterns.append(pattern)
+    return _component_pattern_response(pattern)
+
+
+def _get_component_pattern_or_404(part: Part, pattern_id: str) -> ComponentPattern:
+    for pattern in part.component_patterns:
+        if pattern.id == pattern_id:
+            return pattern
+    raise HTTPException(status_code=404, detail="ComponentPattern not found")
+
+
+@router.patch("/parts/{part_id}/component-patterns/{pattern_id}", response_model=ComponentPatternResponse)
+def update_component_pattern(
+    part_id: str, pattern_id: str, payload: ComponentPatternUpdate
+) -> ComponentPatternResponse:
+    """Partial update - `pattern_type` is never revised (see
+    `ComponentPatternUpdate`'s own docstring); every other field can be
+    adjusted in place (count/spacing/direction/axis/angle are the normal
+    day-to-day tweaks a user makes to an existing pattern). Re-validates the
+    fully-merged result the same way `update_pattern_feature` does, not just
+    whichever fields this particular payload happened to touch."""
+    part = get_part_or_404(part_id)
+    pattern = _get_component_pattern_or_404(part, pattern_id)
+    if payload.source_occurrence_ids is not None:
+        _validate_component_pattern_source_occurrence_ids(part, payload.source_occurrence_ids)
+        pattern.source_occurrence_ids = list(payload.source_occurrence_ids)
+    if payload.direction is not None:
+        pattern.direction = payload.direction
+    if payload.count is not None:
+        pattern.count = payload.count
+    if payload.spacing is not None:
+        pattern.spacing = payload.spacing
+    if payload.reverse is not None:
+        pattern.reverse = payload.reverse
+    if payload.axis is not None:
+        pattern.axis = _component_pattern_axis_to_domain(payload.axis)
+    if payload.count_angular is not None:
+        pattern.count_angular = payload.count_angular
+    if payload.angle_total is not None:
+        pattern.angle_total = payload.angle_total
+    if payload.reverse_angular is not None:
+        pattern.reverse_angular = payload.reverse_angular
+    if payload.suppressed is not None:
+        pattern.suppressed = payload.suppressed
+    _validate_component_pattern_payload(
+        pattern.pattern_type, pattern.direction, pattern.count, pattern.axis, pattern.count_angular, pattern.angle_total
+    )
+    return _component_pattern_response(pattern)
+
+
+@router.delete("/parts/{part_id}/component-patterns/{pattern_id}", status_code=204)
+def delete_component_pattern(part_id: str, pattern_id: str) -> Response:
+    part = get_part_or_404(part_id)
+    pattern = _get_component_pattern_or_404(part, pattern_id)
+    part.component_patterns.remove(pattern)
     return Response(status_code=204)
 
 
@@ -7957,6 +8180,36 @@ def get_assembly_mesh(
                 occurrence.hidden,
                 child_ancestors,
             )
+        # Phase 7 (`docs/assembly-scope.md` §3 item 7): every ComponentPattern
+        # owned by `part` derives its own extra instances on top of each of
+        # its `source_occurrence_ids`' real placements - never persisted as
+        # new `Occurrence` entries (see `ComponentPattern`'s own docstring),
+        # only ever appended to this response. Reuses `_walk` itself for the
+        # recursion, so a pattern of a sub-assembly renders that
+        # sub-assembly's own nested content at each derived placement exactly
+        # like an ordinary Occurrence branch does - `occurrence_path` grows
+        # with a synthetic, stable-per-(source, pattern, index) segment
+        # rather than a real Occurrence id, since a derived instance was
+        # never assigned one of its own.
+        for pattern in part.component_patterns:
+            if pattern.suppressed:
+                continue
+            for source_id in pattern.source_occurrence_ids:
+                source_occurrence = next((o for o in part.occurrences if o.id == source_id), None)
+                if source_occurrence is None or source_occurrence.suppressed or source_occurrence.part_id is None:
+                    continue
+                pattern_child_part = document.parts.get(source_occurrence.part_id)
+                if pattern_child_part is None or pattern_child_part.id in child_ancestors:
+                    continue
+                derived_transforms = expand_component_pattern_instances(pattern, source_occurrence.transform)
+                for index, derived_transform in enumerate(derived_transforms, start=1):
+                    _walk(
+                        pattern_child_part,
+                        [*occurrence_path, f"{source_occurrence.id}#pattern:{pattern.id}:{index}"],
+                        [*transform_chain, derived_transform],
+                        source_occurrence.hidden,
+                        child_ancestors,
+                    )
 
     _walk(root_part, [], [], hidden=False, ancestors=frozenset())
 

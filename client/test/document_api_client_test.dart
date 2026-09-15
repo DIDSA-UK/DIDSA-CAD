@@ -2266,4 +2266,153 @@ void main() {
       );
     });
   });
+
+  group('Phase 7 (docs/assembly-scope.md §3 item 7): DocumentApiClient ComponentPattern CRUD', () {
+    http.Response jsonResponse(Object body, {int status = 200}) =>
+        http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});
+
+    Map<String, dynamic> patternJson({
+      String patternType = 'linear',
+      int count = 3,
+      double spacing = 10.0,
+      Map<String, dynamic>? axis,
+      int countAngular = 1,
+      double angleTotal = 360.0,
+      bool suppressed = false,
+    }) =>
+        {
+          'id': 'pat-1',
+          'source_occurrence_ids': ['occ-1'],
+          'pattern_type': patternType,
+          'direction': [1.0, 0.0, 0.0],
+          'count': count,
+          'spacing': spacing,
+          'reverse': false,
+          'axis': axis,
+          'count_angular': countAngular,
+          'angle_total': angleTotal,
+          'reverse_angular': false,
+          'suppressed': suppressed,
+        };
+
+    test('ComponentPatternAxisDto.toJson/fromJson round-trips', () {
+      const axis = ComponentPatternAxisDto(origin: [1.0, 2.0, 3.0], direction: [0.0, 1.0, 0.0]);
+      final json = axis.toJson();
+      expect(json, {
+        'origin': [1.0, 2.0, 3.0],
+        'direction': [0.0, 1.0, 0.0],
+      });
+      final parsed = ComponentPatternAxisDto.fromJson(json);
+      expect(parsed.origin, [1.0, 2.0, 3.0]);
+      expect(parsed.direction, [0.0, 1.0, 0.0]);
+    });
+
+    test('listComponentPatterns parses the returned list', () async {
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async => jsonResponse([patternJson()])),
+      );
+
+      final patterns = await client.listComponentPatterns('part-1');
+
+      expect(patterns, hasLength(1));
+      expect(patterns.first.id, 'pat-1');
+      expect(patterns.first.patternType, 'linear');
+      expect(patterns.first.count, 3);
+    });
+
+    test('createComponentPattern posts every linear field', () async {
+      Map<String, dynamic> capturedBody = {};
+      Uri? capturedUri;
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedUri = request.url;
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse(patternJson(), status: 201);
+        }),
+      );
+
+      final pattern = await client.createComponentPattern(
+        'part-1',
+        sourceOccurrenceIds: ['occ-1'],
+        patternType: 'linear',
+        direction: const [1.0, 0.0, 0.0],
+        count: 3,
+        spacing: 10.0,
+      );
+
+      expect(capturedUri?.path, '/document/parts/part-1/component-patterns');
+      expect(capturedBody['source_occurrence_ids'], ['occ-1']);
+      expect(capturedBody['pattern_type'], 'linear');
+      expect(capturedBody['count'], 3);
+      expect(capturedBody['spacing'], 10.0);
+      expect(capturedBody.containsKey('axis'), isFalse);
+      expect(pattern.id, 'pat-1');
+    });
+
+    test('createComponentPattern includes axis when given, for a circular pattern', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse(
+            patternJson(
+              patternType: 'circular',
+              axis: {
+                'origin': [0.0, 0.0, 0.0],
+                'direction': [0.0, 0.0, 1.0],
+              },
+              countAngular: 4,
+            ),
+            status: 201,
+          );
+        }),
+      );
+
+      final pattern = await client.createComponentPattern(
+        'part-1',
+        sourceOccurrenceIds: ['occ-1'],
+        patternType: 'circular',
+        axis: const ComponentPatternAxisDto(origin: [0.0, 0.0, 0.0], direction: [0.0, 0.0, 1.0]),
+        countAngular: 4,
+      );
+
+      expect(capturedBody['axis'], {
+        'origin': [0.0, 0.0, 0.0],
+        'direction': [0.0, 0.0, 1.0],
+      });
+      expect(pattern.patternType, 'circular');
+      expect(pattern.countAngular, 4);
+    });
+
+    test('updateComponentPattern only sends the fields supplied', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse(patternJson(count: 5));
+        }),
+      );
+
+      await client.updateComponentPattern('part-1', 'pat-1', count: 5);
+
+      expect(capturedBody, {'count': 5});
+    });
+
+    test('deleteComponentPattern calls DELETE and completes with no error on a 204', () async {
+      Uri? capturedUri;
+      String? capturedMethod;
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedUri = request.url;
+          capturedMethod = request.method;
+          return http.Response('', 204);
+        }),
+      );
+
+      await client.deleteComponentPattern('part-1', 'pat-1');
+
+      expect(capturedMethod, 'DELETE');
+      expect(capturedUri?.path, '/document/parts/part-1/component-patterns/pat-1');
+    });
+  });
 }

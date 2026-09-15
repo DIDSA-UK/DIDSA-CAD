@@ -2909,6 +2909,11 @@ class Part:
     body_material_assignments: dict[str, MaterialAssignment] = field(default_factory=dict)
     occurrences: list["Occurrence"] = field(default_factory=list)
     mates: list["Mate"] = field(default_factory=list)
+    # Phase 7 (`docs/assembly-scope.md` §3 item 7): linear/circular patterns
+    # of this Part's own top-level Occurrences - coexists with `occurrences`/
+    # `mates` the same way every assembly-structure field on `Part` already
+    # does (decision #2).
+    component_patterns: list["ComponentPattern"] = field(default_factory=list)
 
     def resolve_material(self, body_id: str) -> MaterialAssignment | None:
         """The material that applies to `body_id`: its own override if one
@@ -3008,7 +3013,7 @@ class RigidTransform:
     placement is arbitrary, not pinned to a reference feature. Stored as
     axis-angle (not a quaternion) for this same MoveBodyFeature-consistency
     reason; the assembly mate solver (`app.document.assembly_solver`,
-    Phase 7) converts to/from quaternion only at its own SolveSpace FFI
+    Phase 6) converts to/from quaternion only at its own SolveSpace FFI
     boundary, never in this wire type."""
 
     translation: tuple[float, float, float] = (0.0, 0.0, 0.0)
@@ -3126,6 +3131,92 @@ class Occurrence:
     transform: RigidTransform = field(default_factory=RigidTransform)
     suppressed: bool = False
     hidden: bool = False
+
+
+class ComponentPatternType(str, Enum):
+    """Assembly support's Phase 7 (`docs/assembly-scope.md` §3 item 7):
+    which construction method a `ComponentPattern` uses - mirrors
+    `PatternType`'s own "one dataclass, many construction methods"
+    precedent, one level up (Occurrences instead of Bodies). Named `LINEAR`/
+    `CIRCULAR`, not `RECTANGULAR`/`CIRCULAR` like the body-level
+    `PatternType` - a `ComponentPattern` only ever repeats along one
+    direction (no `direction_2`/2D-grid equivalent, per the original
+    scope's own "linear + circular" wording), so "rectangular" would
+    overstate what this actually does."""
+
+    LINEAR = "linear"
+    CIRCULAR = "circular"
+
+
+@dataclass(frozen=True)
+class ComponentPatternAxis:
+    """A `ComponentPattern`'s circular axis: a free world-space origin point
+    + direction, arbitrary and never resolved from any Body/Sketch geometry -
+    mirrors `RigidTransform.rotation_axis`'s own "free unit-vector
+    direction ... not resolved from any geometry" convention (see that
+    field's own docstring), the correct one-level-up precedent here rather
+    than `PatternAxisRef`'s edge/face/sketch-line resolution: an Occurrence
+    has no sub-shape topology of its own to reference without resolving its
+    target Part's Bodies, which would reintroduce the OCCT dependency this
+    whole feature is designed to avoid (`docs/assembly-scope.md` §3 item 7:
+    "expanded via assembly.py's transform math only")."""
+
+    origin: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    direction: tuple[float, float, float] = (0.0, 0.0, 1.0)
+
+
+@dataclass
+class ComponentPattern:
+    """Assembly support's Phase 7 (`docs/assembly-scope.md` §3 item 7): a
+    linear or circular pattern of one or more top-level Occurrences,
+    repeated by `count`/`count_angular` derived *placed instances* - never
+    new `Occurrence` entries in `Part.occurrences` (there is no new solid
+    geometry to instance, only an existing placement to repeat, so there is
+    nothing for a persisted new Occurrence to usefully own beyond a
+    transform `app.document.assembly`'s pure functions already compute on
+    demand). Expansion happens the same way `PatternFeature`'s own derived
+    Bodies do - computed at fetch time (`GET /parts/{part_id}/
+    assembly-mesh`, this pattern's own recompute-equivalent), not persisted -
+    matching this codebase's "re-derive, don't cache" philosophy one level
+    up: components instead of bodies, `app.document.assembly.compose`/
+    `compose_chain` instead of an OCCT `gp_Trsf`.
+
+    `source_occurrence_ids` accepts one or more entries, mirroring
+    `PatternFeature.source_body_ids`'s own (Phase 6-widened) shape - each
+    source's own existing placement is index 0 (untouched, never
+    re-created, the exact same "count includes the original" convention
+    `PatternFeature`'s own docstring documents), and every source shares
+    the identical instance-transform grid (`direction`/`axis`, `count`/
+    `count_angular`, `spacing`, `reverse`/`reverse_angular`). v1 scope,
+    matching Phase 5/6's own identical limit (`Occurrence.transform` is
+    relative to its immediate parent, and only a top-level Occurrence's
+    local and world transforms coincide): every `source_occurrence_ids`
+    entry must name a top-level Occurrence of the Part that owns this
+    `ComponentPattern` (`app.document.router._validate_component_pattern_
+    create`) - patterning an Occurrence nested inside a focused
+    sub-assembly isn't attempted here, the same real, undone follow-up
+    Phase 5's gizmo already carries forward.
+
+    Every Linear-only and Circular-only field is optional/defaulted, same
+    as `PatternFeature`'s identical convention - which fields are actually
+    meaningful for a given `pattern_type` is a router/expansion concern
+    (`app.document.assembly.expand_component_pattern_instances`), not
+    encoded in this dataclass."""
+
+    id: str
+    source_occurrence_ids: list[str]
+    pattern_type: ComponentPatternType = ComponentPatternType.LINEAR
+    # Linear:
+    direction: tuple[float, float, float] = (1.0, 0.0, 0.0)
+    count: int = 1
+    spacing: float = 0.0
+    reverse: bool = False
+    # Circular:
+    axis: ComponentPatternAxis | None = None
+    count_angular: int = 1
+    angle_total: float = 360.0
+    reverse_angular: bool = False
+    suppressed: bool = False
 
 
 @dataclass
