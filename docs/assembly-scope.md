@@ -851,12 +851,37 @@ rather than being renumbered), so every existing cross-reference elsewhere
 in this document (e.g. §4's own "Phase 5" undo note) still points at the
 same phase it always did.
 
-5. **Move/Rotate gizmo + persisted placement + undo** — a new 6-handle
-   `component_gizmo.dart` reusing `section_gizmo.dart`'s proven math
-   (which itself never persists anything — the actual "drag commits a
-   Feature" precedent is `MoveBodyPanel`'s create-then-update-in-place
-   pattern). Local component-transform undo built in this phase, not
-   deferred — no document-level undo exists anywhere in this app today.
+5. **Move/Rotate gizmo + persisted placement + undo — foundation landed,
+   interactive wiring still open.** What's real so far: the backend's
+   first-ever Occurrence mutation endpoint (`PATCH /parts/{part_id}/
+   occurrences/{occurrence_id}`, `OccurrenceTransformUpdate` schema,
+   whole-`transform` replace - no "create" step needed the way
+   `MoveBodyFeature` needs one, since an Occurrence already exists and its
+   placement is a plain field, not a new history entry; backend-tested in
+   `test_occurrence_transform_update.py` - update/re-fetch/re-export/404×2/
+   sibling-isolation, 2214+5/2219 passed against real `pythonocc-core`/
+   `py-slvs`), `DocumentApiClient.updateOccurrenceTransform` +
+   `RigidTransformDto.toJson` on the client, and a complete, independently
+   unit-tested `component_gizmo.dart` math/hit-test/rendering library - the
+   6-handle sibling of `section_gizmo.dart` (3 translate arrows + 3 rotate
+   rings, `ComponentGizmoBasis`/`hitTestComponentGizmo`/
+   `buildComponentGizmoNode`/`composeTranslation`/`composeRotation`/
+   `translateDragDelta`/`rotateDragDeltaRadians`, all reusing
+   `section_gizmo.dart`'s own `closestPointOnLineToRay`/
+   `angleOnRotationPlane` drag primitives rather than re-deriving
+   equivalent math; 16 new tests in `component_gizmo_test.dart`, including
+   a real caught-before-commit bug - the first hit-test tests fired rays
+   straight through the shared origin point every arrow starts from, an
+   ambiguous three-way tie the iteration order silently broke in favor of
+   whichever arrow came first, fixed by aiming at each arrow's own
+   midpoint instead). **Not yet built**: actually wiring this into
+   `PartViewport`'s pointer-gesture pipeline (hit-test on tap, drag-state
+   fields mirroring `_sectionDrag*`, live preview during drag, debounced
+   PATCH on drag-end) and `PartScreen`'s own local component-transform undo
+   stack - the interactive/UX half of this phase, deliberately left for a
+   dedicated follow-up pass rather than rushed alongside the persistence
+   layer, given how large and gesture-sensitive `PartViewport`'s existing
+   pointer-handling code already is.
 6. **Mate system** (coincident/concentric/parallel/distance/angle) — new
    `assembly_solver.py` (mirrors `sketch/solver.py`'s structure). v1 only
    drives the actively-dragged Occurrence against fixed peers — coupled

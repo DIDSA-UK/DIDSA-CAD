@@ -1306,6 +1306,17 @@ class RigidTransformDto {
         rotationAxis: (json['rotation_axis'] as List).map((v) => (v as num).toDouble()).toList(),
         rotationAngleDegrees: (json['rotation_angle_degrees'] as num).toDouble(),
       );
+
+  /// Assembly support Phase 5: the Move/Rotate gizmo's own persistence call
+  /// (`DocumentApiClient.updateOccurrenceTransform`) is the first thing that
+  /// ever needs to *send* a `RigidTransformDto`, not just parse one back -
+  /// the backend's own `RigidTransformResponse` schema is symmetric (see
+  /// that schema's own docstring), so this mirrors its wire shape exactly.
+  Map<String, dynamic> toJson() => {
+        'translation': translation,
+        'rotation_axis': rotationAxis,
+        'rotation_angle_degrees': rotationAngleDegrees,
+      };
 }
 
 /// One unique Part's own local-space geometry within a [GetAssemblyMesh]
@@ -4040,6 +4051,27 @@ class DocumentApiClient {
   Future<List<OccurrenceDto>> listOccurrences(String partId) => _send(
         () => _httpClient.get(_uri('/document/parts/$partId/occurrences'), headers: _headers),
         (body) => (body as List).map((o) => OccurrenceDto.fromJson(o as Map<String, dynamic>)).toList(),
+      );
+
+  /// Assembly support Phase 5: `PATCH /document/parts/{part_id}/occurrences/
+  /// {occurrence_id}` - the Move/Rotate gizmo's own persistence call, and
+  /// the first mutation endpoint an Occurrence has ever had (every other
+  /// field - `hidden`/`suppressed`/`name_override` - still has no mutation
+  /// path; see `docs/assembly-scope.md` §2e/§5). Whole-value replace, not a
+  /// partial delta - the gizmo always computes and sends its own full
+  /// resulting [transform].
+  Future<OccurrenceDto> updateOccurrenceTransform(
+    String partId,
+    String occurrenceId,
+    RigidTransformDto transform,
+  ) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/occurrences/$occurrenceId'),
+              headers: _headers,
+              body: jsonEncode({'transform': transform.toJson()}),
+            ),
+        (body) => OccurrenceDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Assembly support: `GET /document/parts/{part_id}/mates` - the
