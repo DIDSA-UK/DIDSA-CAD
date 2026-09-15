@@ -1421,6 +1421,36 @@ void main() {
       const b = SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: 'occ-2');
       expect(a, isNot(b));
     });
+
+    test(
+      'Phase 6a: two face refs with identical bodyId/id but different occurrenceId are not equal - the exact '
+      'ambiguity occurrence-attributed selection exists to resolve',
+      () {
+        const onFirstOccurrence = SelectionEntityRef(
+          kind: SelectionEntityKind.face,
+          bodyId: 'b1',
+          id: 7,
+          occurrenceId: 'occ-1',
+        );
+        const onSecondOccurrence = SelectionEntityRef(
+          kind: SelectionEntityKind.face,
+          bodyId: 'b1',
+          id: 7,
+          occurrenceId: 'occ-2',
+        );
+        expect(onFirstOccurrence, isNot(onSecondOccurrence));
+        // ...but identical in every field, including occurrenceId, is still
+        // equal - occurrenceId behaves exactly like every other field here.
+        const onFirstOccurrenceAgain = SelectionEntityRef(
+          kind: SelectionEntityKind.face,
+          bodyId: 'b1',
+          id: 7,
+          occurrenceId: 'occ-1',
+        );
+        expect(onFirstOccurrence, onFirstOccurrenceAgain);
+        expect(onFirstOccurrence.hashCode, onFirstOccurrenceAgain.hashCode);
+      },
+    );
   });
 
   // Assembly support Phase 4 (`docs/assembly-scope.md` §3): [hitTestBodies]'
@@ -1553,6 +1583,255 @@ void main() {
       );
       final hit = hitTestComponentInstances(
         ray: straightDownZ,
+        instances: [instance],
+        geometry: [partGeometry('partB')],
+        selectableOccurrencePaths: const {'occ-1'},
+      );
+      expect(hit, isNull);
+    });
+  });
+
+  // Assembly support Phase 6a (`docs/assembly-scope.md` §3,
+  // "occurrence-attributed selection"): [hitTestComponentInstances]'s
+  // fine-grained sibling - a vertex/edge/face/body hit on placed
+  // Occurrence-instance geometry, tagged with which Occurrence it came
+  // from (not just a whole-component hit).
+  group('hitTestComponentInstanceEntities', () {
+    // A single triangle plus one topology vertex/edge, all in the target
+    // Part's own local space - the vertex/edge sit 0.01 off the ray's own
+    // axis (mirrors [nearBody]'s identical convention above), translated
+    // into world space by each instance's own worldTransform below.
+    AssemblyBodyGeometryDto partGeometry(String partId) => AssemblyBodyGeometryDto(
+          partId: partId,
+          bodies: [
+            BodyMeshDto(
+              bodyId: 'b1',
+              source: 'computed',
+              mesh: MeshDto(
+                vertices: const [
+                  [-1, -1, 0],
+                  [1, -1, 0],
+                  [0, 1, 0],
+                ],
+                normals: const [],
+                triangleIndices: const [
+                  [0, 1, 2],
+                ],
+                faceIds: const [7],
+                topologyVertices: const [
+                  [0.01, 0, 0],
+                ],
+                topologyVertexIds: const [3],
+                edges: const [0.01, -1, 0, 0.01, 1, 0],
+                edgeIds: const [5],
+              ),
+            ),
+          ],
+        );
+
+    RigidTransformDto translatedZ(double z) => RigidTransformDto(
+          translation: [0, 0, z],
+          rotationAxis: [0, 0, 0],
+          rotationAngleDegrees: 0,
+        );
+
+    test('a vertex hit on a placed instance carries occurrenceId alongside bodyId/id', () {
+      final instance = AssemblyOccurrenceInstanceDto(
+        occurrencePath: const ['occ-1'],
+        partId: 'partB',
+        worldTransform: translatedZ(5),
+      );
+      final hit = hitTestComponentInstanceEntities(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
+        instances: [instance],
+        geometry: [partGeometry('partB')],
+        selectableOccurrencePaths: const {'occ-1'},
+      );
+      expect(
+        hit?.entity,
+        const SelectionEntityRef(kind: SelectionEntityKind.vertex, bodyId: 'b1', id: 3, occurrenceId: 'occ-1'),
+      );
+      expect(hit?.rayT, closeTo(5, 1e-9));
+    });
+
+    test('an edge hit (vertex filtered off) carries occurrenceId', () {
+      final instance = AssemblyOccurrenceInstanceDto(
+        occurrencePath: const ['occ-1'],
+        partId: 'partB',
+        worldTransform: translatedZ(5),
+      );
+      final hit = hitTestComponentInstanceEntities(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
+        instances: [instance],
+        geometry: [partGeometry('partB')],
+        selectableOccurrencePaths: const {'occ-1'},
+        filter: const SelectionFilterState(vertex: false, edge: true, face: true, body: false),
+      );
+      expect(
+        hit?.entity,
+        const SelectionEntityRef(kind: SelectionEntityKind.edge, bodyId: 'b1', id: 5, occurrenceId: 'occ-1'),
+      );
+    });
+
+    test('a plain face hit (vertex/edge off) carries occurrenceId', () {
+      final instance = AssemblyOccurrenceInstanceDto(
+        occurrencePath: const ['occ-1'],
+        partId: 'partB',
+        worldTransform: translatedZ(5),
+      );
+      final hit = hitTestComponentInstanceEntities(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
+        instances: [instance],
+        geometry: [partGeometry('partB')],
+        selectableOccurrencePaths: const {'occ-1'},
+        filter: const SelectionFilterState(vertex: false, edge: false, face: true, body: false),
+      );
+      expect(
+        hit?.entity,
+        const SelectionEntityRef(kind: SelectionEntityKind.face, bodyId: 'b1', id: 7, occurrenceId: 'occ-1'),
+      );
+    });
+
+    test('body filter on: a face hit resolves to the owning body, still carrying occurrenceId', () {
+      final instance = AssemblyOccurrenceInstanceDto(
+        occurrencePath: const ['occ-1'],
+        partId: 'partB',
+        worldTransform: translatedZ(5),
+      );
+      final hit = hitTestComponentInstanceEntities(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
+        instances: [instance],
+        geometry: [partGeometry('partB')],
+        selectableOccurrencePaths: const {'occ-1'},
+        filter: const SelectionFilterState(vertex: false, edge: false, face: false, body: true),
+      );
+      expect(
+        hit?.entity,
+        const SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b1', occurrenceId: 'occ-1'),
+      );
+    });
+
+    test(
+      'the same Part definition placed twice resolves to two distinct occurrenceIds - the real Mate-authoring '
+      'prerequisite this phase exists for',
+      () {
+        final first = AssemblyOccurrenceInstanceDto(
+          occurrencePath: const ['occ-1'],
+          partId: 'sharedPart',
+          worldTransform: translatedZ(3),
+        );
+        final second = AssemblyOccurrenceInstanceDto(
+          occurrencePath: const ['occ-2'],
+          partId: 'sharedPart',
+          worldTransform: translatedZ(8),
+        );
+        final geometry = [partGeometry('sharedPart')];
+        // Face-only filter: an in-range topology vertex/edge would win the
+        // priority tier outright regardless of rayT (as every other test
+        // above already relies on), which would test vertex pixel-distance
+        // math, not the rayT-based nearest-occurrence resolution this test
+        // is actually about - see [nearBody]/[farBody]'s own doc comment
+        // above for why a *fixed* world-space offset (this fixture's own
+        // 0.01) reads as progressively *closer* in pixel terms the farther
+        // away it sits, which would make the farther instance's vertex win
+        // this exact scenario for the wrong reason entirely.
+        const faceOnly = SelectionFilterState(vertex: false, edge: false, face: true, body: false);
+
+        final nearHit = hitTestComponentInstanceEntities(
+          ray: straightDownZ,
+          viewportSize: viewportSize,
+          instances: [first, second],
+          geometry: geometry,
+          selectableOccurrencePaths: const {'occ-1', 'occ-2'},
+          filter: faceOnly,
+        );
+        expect(nearHit?.entity.occurrenceId, 'occ-1');
+        expect(nearHit?.entity.bodyId, 'b1');
+        expect(nearHit?.entity.id, 7);
+
+        // Excluding the nearer instance from selectability (as if only
+        // occ-2 were within the currently-focused subtree) surfaces the
+        // farther one instead, at the exact same local bodyId/id - proving
+        // the two placements are only distinguishable by occurrenceId,
+        // exactly the ambiguity 6a exists to resolve (`docs/assembly-
+        // scope.md` §3: "the same Part placed twice ... must resolve to
+        // two distinct mate targets, not one ambiguous one").
+        final farHit = hitTestComponentInstanceEntities(
+          ray: straightDownZ,
+          viewportSize: viewportSize,
+          instances: [first, second],
+          geometry: geometry,
+          selectableOccurrencePaths: const {'occ-2'},
+          filter: faceOnly,
+        );
+        expect(farHit?.entity.occurrenceId, 'occ-2');
+        expect(farHit?.entity.bodyId, 'b1');
+        expect(farHit?.entity.id, 7);
+        expect(farHit?.entity, isNot(nearHit?.entity));
+      },
+    );
+
+    test('an instance outside selectableOccurrencePaths is excluded entirely, not just deprioritized', () {
+      final instance = AssemblyOccurrenceInstanceDto(
+        occurrencePath: const ['occ-1'],
+        partId: 'partB',
+        worldTransform: translatedZ(5),
+      );
+      final hit = hitTestComponentInstanceEntities(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
+        instances: [instance],
+        geometry: [partGeometry('partB')],
+        selectableOccurrencePaths: const {},
+      );
+      expect(hit, isNull);
+    });
+
+    test('an empty occurrencePath (the root Part\'s own content) is always skipped', () {
+      final rootInstance = AssemblyOccurrenceInstanceDto(
+        occurrencePath: const [],
+        partId: 'root',
+        worldTransform: translatedZ(0),
+      );
+      final hit = hitTestComponentInstanceEntities(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
+        instances: [rootInstance],
+        geometry: [partGeometry('root')],
+        selectableOccurrencePaths: const {''},
+      );
+      expect(hit, isNull);
+    });
+
+    test('a nested occurrencePath is joined with "/" in the hit\'s own occurrenceId', () {
+      final instance = AssemblyOccurrenceInstanceDto(
+        occurrencePath: const ['occ-1', 'occ-2'],
+        partId: 'partB',
+        worldTransform: translatedZ(5),
+      );
+      final hit = hitTestComponentInstanceEntities(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
+        instances: [instance],
+        geometry: [partGeometry('partB')],
+        selectableOccurrencePaths: const {'occ-1/occ-2'},
+      );
+      expect(hit?.entity.occurrenceId, 'occ-1/occ-2');
+    });
+
+    test('a ray missing every instance entirely returns null', () {
+      final instance = AssemblyOccurrenceInstanceDto(
+        occurrencePath: const ['occ-1'],
+        partId: 'partB',
+        worldTransform: translatedZ(-5), // behind the ray's origin - never intersects.
+      );
+      final hit = hitTestComponentInstanceEntities(
+        ray: straightDownZ,
+        viewportSize: viewportSize,
         instances: [instance],
         geometry: [partGeometry('partB')],
         selectableOccurrencePaths: const {'occ-1'},

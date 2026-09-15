@@ -163,13 +163,27 @@ class SelectionEntityRef {
   final String planeFeatureId;
 
   /// Assembly support Phase 4: the Occurrence identity for a
-  /// [SelectionEntityKind.component] entity - meaningless for every other
-  /// kind, same convention as [referencePlaneKind]/[planeFeatureId] above.
-  /// A joined `occurrencePath` (`AssemblyOccurrenceInstanceDto.
-  /// occurrencePath.join('/')`), not a bare Occurrence id - the same Part
-  /// definition can be placed more than once at different paths (Phase 2's
-  /// own dedup precedent), so the path is what's actually unique per
-  /// rendered instance.
+  /// [SelectionEntityKind.component] entity - always empty for a mesh/
+  /// sketch/plane kind produced against the *root* Part's own geometry
+  /// ([hitTestBodies], every `hitTestSketchXxx`), same convention as
+  /// [referencePlaneKind]/[planeFeatureId] above. A joined `occurrencePath`
+  /// (`AssemblyOccurrenceInstanceDto.occurrencePath.join('/')`), not a bare
+  /// Occurrence id - the same Part definition can be placed more than once
+  /// at different paths (Phase 2's own dedup precedent), so the path is
+  /// what's actually unique per rendered instance.
+  ///
+  /// Phase 6a (`docs/assembly-scope.md` §3, "occurrence-attributed
+  /// selection"): also populated on a [SelectionEntityKind.vertex]/[edge]/
+  /// [face]/[body] entity when it comes from
+  /// [hitTestComponentInstanceEntities] instead of [hitTestBodies] - a face/
+  /// edge/vertex hit *on placed Occurrence-instance geometry* (as opposed to
+  /// the primary Part's own Bodies) now names which Occurrence it belongs
+  /// to, not just [bodyId]/[id] (which alone can't tell two Occurrences of
+  /// the same Part definition apart - Mate authoring's own real
+  /// prerequisite, since a mate target is "this face, on this *specific*
+  /// Occurrence"). Still exactly [SelectionEntityRef.kind]'s pre-existing
+  /// [bodyId]/[id] pair alongside it, unchanged in meaning - [occurrenceId]
+  /// only adds *which placed instance* those ids are scoped within.
   final String occurrenceId;
 
   const SelectionEntityRef({
@@ -222,6 +236,13 @@ class SelectionEntityRef {
         SelectionEntityKind.referencePlane => 'SelectionEntityRef($kind, $referencePlaneKind)',
         SelectionEntityKind.createPlane => 'SelectionEntityRef($kind, planeFeatureId: $planeFeatureId)',
         SelectionEntityKind.component => 'SelectionEntityRef($kind, occurrenceId: $occurrenceId)',
+        // Phase 6a: a vertex/edge/face/body hit against placed-instance
+        // geometry (see [hitTestComponentInstanceEntities]) carries a
+        // non-empty [occurrenceId] alongside its ordinary [bodyId]/[id] -
+        // surfaced here too so a debug print of one doesn't silently look
+        // identical to the equivalent root-Part hit.
+        _ when occurrenceId.isNotEmpty =>
+          'SelectionEntityRef($kind, occurrenceId: $occurrenceId, bodyId: $bodyId, $id)',
         _ => 'SelectionEntityRef($kind, bodyId: $bodyId, $id)',
       };
 }
@@ -1781,4 +1802,167 @@ HoverHit? hitTestComponentInstances({
     }
   }
   return best;
+}
+
+/// Phase 6a (`docs/assembly-scope.md` §3, "occurrence-attributed
+/// selection"): [hitTestBodies]' own vertex→edge→face priority hit-test,
+/// run against placed Occurrence-instance geometry instead of
+/// [PartViewport.bodies] - [hitTestComponentInstances]'s fine-grained
+/// sibling, never a replacement for it. That function reports one
+/// [SelectionEntityKind.component] hit per instance, correct for Phase 4/5
+/// (Make Focus/Move-Rotate target the whole component); this one reports a
+/// [SelectionEntityKind.vertex]/[edge]/[face]/[body] hit exactly like
+/// [hitTestBodies] would for the primary Part's own geometry, with
+/// [SelectionEntityRef.occurrenceId] additionally set to the hit instance's
+/// own joined `occurrencePath` - the real Mate-authoring prerequisite this
+/// phase exists for: the same Part definition placed twice (Phase 2's own
+/// dedup precedent) must resolve to two distinct mate targets, not one
+/// ambiguous "bodyId 3, face 7" that can't say which placement it came
+/// from.
+///
+/// Mirrors [hitTestComponentInstances]'s own transform/lookup machinery
+/// exactly (skip an empty `occurrencePath` - that's the root Part's own
+/// content, already covered by the ordinary [hitTestBodies] call over
+/// [PartViewport.bodies]; skip an instance outside
+/// [selectableOccurrencePaths] entirely, not merely deprioritized; resolve
+/// [instance.partId] into [geometry] and transform each Body's local mesh
+/// into world space via [matrix4FromRigidTransform] before ray-testing) -
+/// just testing vertex/edge/face per Body instead of [hitTestFaces] alone.
+/// Deliberately does not implement [hitTestBodies]' own `facesOccludeOtherHits`/
+/// Sketch-geometry handling - neither concept exists for placed-instance
+/// geometry today (no Sketch is ever rendered against another Part's own
+/// Occurrence, and [hitTestComponentInstances] itself never occludes one
+/// instance's hit against another's either) - so this stays exactly as
+/// broad as the capability actually needed, matching this codebase's
+/// standing "don't build for hypothetical future requirements" convention.
+///
+/// Not yet wired into [PartViewport]'s live hover/tap pipeline - no picking
+/// mode needs sub-entity granularity on assembly-instance geometry until
+/// Mate authoring's own UI exists (Phase 6, explicitly out of scope for
+/// 6a's own prerequisite-only pass). Mirrors `assembly.py`'s own Phase 0
+/// precedent ("pure vector/matrix math ... not yet consumed by any
+/// endpoint") - verified directly via real tests instead, ready for Phase
+/// 6's `assembly_solver.py`/mate-picking UI to call once that phase
+/// actually builds a picking mode that needs it.
+HoverHit? hitTestComponentInstanceEntities({
+  required vm.Ray ray,
+  required Size viewportSize,
+  required List<AssemblyOccurrenceInstanceDto> instances,
+  required List<AssemblyBodyGeometryDto> geometry,
+  required Set<String> selectableOccurrencePaths,
+  SelectionFilterState filter = SelectionFilterState.defaults,
+  double radiusPixels = kSelectionHitRadiusPixels,
+  double vertexRadiusPixels = kVertexSelectionHitRadiusPixels,
+  double? orthographicHalfHeight,
+  double fovRadiansY = kCameraVerticalFovRadians,
+}) {
+  HoverHit? bestVertex;
+  HoverHit? bestEdge;
+  HoverHit? bestFace;
+  String? bestFaceOccurrenceKey;
+  String? bestFaceBodyId;
+
+  for (final instance in instances) {
+    if (instance.occurrencePath.isEmpty) continue;
+    final occurrenceKey = instance.occurrencePath.join('/');
+    if (!selectableOccurrencePaths.contains(occurrenceKey)) continue;
+    final transform = matrix4FromRigidTransform(instance.worldTransform);
+    for (final partGeometry in geometry) {
+      if (partGeometry.partId != instance.partId) continue;
+      for (final body in partGeometry.bodies) {
+        final mesh = body.mesh;
+        if (filter.vertex) {
+          final worldVertices = [
+            for (final v in topologyVerticesFromMesh(mesh)) transform.transformed3(v),
+          ];
+          final hit = hitTestVertices(
+            ray,
+            viewportSize,
+            worldVertices,
+            mesh.topologyVertexIds,
+            radiusPixels: vertexRadiusPixels,
+            orthographicHalfHeight: orthographicHalfHeight,
+            fovRadiansY: fovRadiansY,
+          );
+          if (hit != null &&
+              (bestVertex == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestVertex.pixelDistance!, bestVertex.rayT))) {
+            bestVertex = HoverHit(
+              entity: SelectionEntityRef(
+                kind: SelectionEntityKind.vertex,
+                bodyId: body.bodyId,
+                id: hit.entity.id,
+                occurrenceId: occurrenceKey,
+              ),
+              rayT: hit.rayT,
+              pixelDistance: hit.pixelDistance,
+            );
+          }
+        }
+        if (filter.edge) {
+          final worldSegments = [
+            for (final s in edgeSegmentsFromMesh(mesh)) (transform.transformed3(s.$1), transform.transformed3(s.$2)),
+          ];
+          final hit = hitTestEdges(
+            ray,
+            viewportSize,
+            worldSegments,
+            mesh.edgeIds,
+            radiusPixels: radiusPixels,
+            orthographicHalfHeight: orthographicHalfHeight,
+            fovRadiansY: fovRadiansY,
+          );
+          if (hit != null &&
+              (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
+            bestEdge = HoverHit(
+              entity: SelectionEntityRef(
+                kind: SelectionEntityKind.edge,
+                bodyId: body.bodyId,
+                id: hit.entity.id,
+                occurrenceId: occurrenceKey,
+              ),
+              rayT: hit.rayT,
+              pixelDistance: hit.pixelDistance,
+            );
+          }
+        }
+        if (filter.face || filter.body) {
+          final worldTriangles = [
+            for (final t in trianglesFromMesh(mesh))
+              (transform.transformed3(t.$1), transform.transformed3(t.$2), transform.transformed3(t.$3)),
+          ];
+          final hit = hitTestFaces(ray, worldTriangles, mesh.faceIds);
+          if (hit != null && (bestFace == null || hit.rayT < bestFace.rayT)) {
+            bestFace = hit;
+            bestFaceOccurrenceKey = occurrenceKey;
+            bestFaceBodyId = body.bodyId;
+          }
+        }
+      }
+    }
+  }
+
+  if (bestVertex != null) return bestVertex;
+  if (bestEdge != null) return bestEdge;
+  if (bestFace == null) return null;
+
+  if (filter.body) {
+    return HoverHit(
+      entity: SelectionEntityRef(
+        kind: SelectionEntityKind.body,
+        bodyId: bestFaceBodyId!,
+        occurrenceId: bestFaceOccurrenceKey!,
+      ),
+      rayT: bestFace.rayT,
+    );
+  }
+  if (!filter.face) return null;
+  return HoverHit(
+    entity: SelectionEntityRef(
+      kind: SelectionEntityKind.face,
+      bodyId: bestFaceBodyId!,
+      id: bestFace.entity.id,
+      occurrenceId: bestFaceOccurrenceKey!,
+    ),
+    rayT: bestFace.rayT,
+  );
 }

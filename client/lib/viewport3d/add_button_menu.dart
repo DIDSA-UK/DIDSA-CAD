@@ -82,8 +82,6 @@ Future<AssemblyAddMenuAction?> showAssemblyAddMenu(BuildContext context) {
       action: AssemblyAddMenuAction.addMate,
       label: 'Add Mate',
       icon: Icons.link,
-      enabled: false,
-      disabledReason: 'Coming soon - needs Phase 6\'s mate solver',
     ),
     ActionSheetEntry(
       action: AssemblyAddMenuAction.patternComponent,

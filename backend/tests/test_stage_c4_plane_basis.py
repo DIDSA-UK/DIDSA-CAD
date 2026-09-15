@@ -1,7 +1,7 @@
 """C4: pure-Python tests for `app.document.plane_geometry.resolve_three_points`
 - the THREE_POINTS plane-construction math, given three already-resolved
 world-space positions. Has zero OCCT dependency of its own (unlike the
-`_resolve_point_ref_position`/`resolve_three_points_from_bodies` callers in
+`resolve_point_ref_position`/`resolve_three_points_from_bodies` callers in
 app.document.create_plane, which resolve a Body vertex or Sketch Point into
 those positions first - see test_stage_c4_create_plane.py for the OCCT-
 touching end-to-end path), so this runs for real in this sandbox, same as

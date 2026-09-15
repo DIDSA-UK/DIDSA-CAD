@@ -2832,3 +2832,38 @@ class MateResponse(BaseModel):
     value: float | None = None
     flipped: bool = False
     suppressed: bool = False
+
+
+class MateCreate(BaseModel):
+    """Phase 6 (`docs/assembly-scope.md` §3): `POST /parts/{part_id}/mates`'s
+    request body. `references` reuses `MateEntityRefResponse` verbatim
+    rather than a parallel `MateEntityRefCreate` - the wire shape (an
+    `occurrence_id` plus exactly one of `subshape_ref`/`plane_ref`/
+    `point_ref`) is identical in both directions, the same "one schema,
+    both directions" precedent `SubShapeRefSchema` itself already
+    establishes elsewhere in this file. Exactly 2 entries, each with
+    exactly one ref field set, and `value` required for `distance`/`angle` -
+    all checked by `app.document.router._validate_mate_create`, not here
+    (payload shape here, referential/geometric validity in the router/
+    resolver, this codebase's standing split)."""
+
+    type: Literal["coincident", "concentric", "parallel", "distance", "angle"]
+    references: list[MateEntityRefResponse]
+    value: float | None = None
+    flipped: bool = False
+
+
+class MateUpdate(BaseModel):
+    """`PATCH /parts/{part_id}/mates/{mate_id}`'s request body - `value`/
+    `flipped`/`suppressed` only (never `type`/`references`; changing what a
+    Mate actually references is a new Mate, not an edit of this one, the
+    same "narrow mutation surface" `OccurrenceTransformUpdate` itself
+    already accepts for `Occurrence`). Omitted (`None`) means "leave this
+    field as it currently is" - `flipped`/`suppressed` are themselves
+    booleans, so `None` (not `False`) is what "omitted" has to mean here,
+    the same optional-vs-omitted convention every other partial-update
+    schema in this file already uses."""
+
+    value: float | None = None
+    flipped: bool | None = None
+    suppressed: bool | None = None

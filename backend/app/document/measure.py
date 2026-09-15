@@ -43,7 +43,7 @@ _AXIS_ANGULAR_TOLERANCE = 1e-4
 class MeasurementResult:
     """Plain result type the router converts to `MeasurementResultSchema`.
     Every field is optional - which ones are populated depends on what was
-    selected (see `_measure_single`/`_measure_pair`); this mirrors the
+    selected (see `single_shape_geometry`/`_measure_pair`); this mirrors the
     schema's own "one flat, mostly-null response" shape, kept as a
     dataclass here rather than the pydantic model itself so this module has
     no wire-format/pydantic dependency of its own (consistent with every
@@ -59,6 +59,10 @@ class MeasurementResult:
     axis_origin: tuple[float, float, float] | None = None
     axis_direction: tuple[float, float, float] | None = None
     normal: tuple[float, float, float] | None = None
+    # Phase 6: reused by `app.document.assembly_solver` as "a representative
+    # point on the referenced planar face" for point-in-plane/point-plane-
+    # distance mate constraints - identical meaning to its original Measure
+    # tool use, no new field needed.
     point_on_face: tuple[float, float, float] | None = None
     distance: float | None = None
     point_a: tuple[float, float, float] | None = None
@@ -170,7 +174,16 @@ def _axis_to_axis_distance(a: gp_Ax1, b: gp_Ax1) -> tuple[float, bool]:
     return distance, False
 
 
-def _measure_single(ref: SubShapeRef, shape: TopoDS_Shape) -> MeasurementResult:
+def single_shape_geometry(ref: SubShapeRef, shape: TopoDS_Shape) -> MeasurementResult:
+    """Renamed from `_measure_single` (Phase 6, `docs/assembly-scope.md`
+    §3) - promoted to public since `app.document.assembly_solver` needs
+    the exact same point/normal/axis extraction a mate's `SubShapeRef`
+    resolves to (a vertex's point, a circular edge's or cylindrical face's
+    own fitted axis, a planar face's normal + a point on it) that this
+    function already provides, mirroring how `app.document.create_plane.
+    resolve_plane_ref` was itself promoted public for the same
+    cross-module-reuse reason. Behavior is unchanged - only the name and
+    its `measure()` call site below moved."""
     if ref.shape_type == SubShapeType.BODY:
         # No single-entity field of its own - the whole-Body volume/mass
         # rides on `body_volumes`/`body_masses` instead (populated by
@@ -352,12 +365,12 @@ def measure(
     Also always computes `body_volumes`/`body_masses` for every *distinct*
     Body among `refs` (regardless of whether any ref's own shape_type is
     BODY - selecting a face still reports its owning Body's volume/mass),
-    and attaches them to whichever `MeasurementResult` `_measure_single`/
+    and attaches them to whichever `MeasurementResult` `single_shape_geometry`/
     `_measure_pair` produced."""
     bodies = compute_part_bodies(part, excluded_feature_ids)
     shapes = [resolve_subshape_from_bodies(bodies, ref) for ref in refs]
     if len(shapes) == 1:
-        result = _measure_single(refs[0], shapes[0])
+        result = single_shape_geometry(refs[0], shapes[0])
     else:
         result = _measure_pair(refs[0], shapes[0], refs[1], shapes[1])
 

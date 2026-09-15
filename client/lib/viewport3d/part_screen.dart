@@ -58,6 +58,7 @@ import 'knit_surface_panel.dart';
 import 'loft_panel.dart';
 import 'loft_surface_panel.dart';
 import 'merge_panel.dart';
+import 'mate_panel.dart';
 import 'measurement_panel.dart';
 import 'mesh_geometry.dart';
 import 'mirror_panel.dart';
@@ -1615,6 +1616,39 @@ class _PartScreenState extends State<PartScreen> {
     if (mounted) setState(() => _selectOtherSheetOpen = false);
   }
 
+  /// Phase 6b (`docs/assembly-scope.md` §3): the one selected entity to
+  /// show a [SelectionBreadcrumbBar] for - null whenever there isn't
+  /// exactly one to name (empty or multi-entity selection), or an
+  /// exclusive picking session ([_anyToolPanelOpen]/
+  /// [_anyFeatureOrSourcePickerSessionActive], Mate's own separate
+  /// [_mateActive] flag, or the Select Other sheet) is repurposing
+  /// [_selectedEntities] for its own semantics (Measure/Mate's cap-at-2,
+  /// a body-picker's target-body accumulation, etc.) - retargeting the
+  /// selection via a breadcrumb tap there would fight whatever picker is
+  /// actually consuming [_selectedEntities] right now.
+  SelectionEntityRef? get _breadcrumbEntity {
+    if (_selectedEntities.length != 1) return null;
+    if (_anyToolPanelOpen || _anyFeatureOrSourcePickerSessionActive || _mateActive) return null;
+    if (_selectOtherSheetOpen) return null;
+    return _selectedEntities.single;
+  }
+
+  /// Phase 6b: passed to [PartViewport.onBreadcrumbSelect] - a breadcrumb
+  /// tap always *replaces* the selection with its target (never
+  /// accumulates the way the generic [_toggleSelectedEntity] does, since
+  /// "retarget to this tier" only ever means one thing selected
+  /// afterward). A `component`-kind target is special-cased exactly like
+  /// [_toggleSelectedEntity]'s own component branch just below - whole-
+  /// component selection is tracked via [_selectedOccurrenceId], never
+  /// folded into [_selectedEntities].
+  void _onBreadcrumbSelect(SelectionEntityRef target) {
+    if (target.kind == SelectionEntityKind.component) {
+      setState(() => _selectedOccurrenceId = target.occurrenceId);
+      return;
+    }
+    setState(() => _selectedEntities = {target});
+  }
+
   /// Item 4: "Unselected entity tap -> add; already-selected -> remove
   /// (toggle)" - passed to [PartViewport.onSelectionToggle], fired by a tap
   /// (Fix 4) when the cursor's hover hit is non-null.
@@ -1670,6 +1704,20 @@ class _PartScreenState extends State<PartScreen> {
         _selectedEntities = next;
       });
       _scheduleMeasureQuery();
+      return;
+    }
+    // Phase 6: same "cap at 2, a 3rd distinct tap starts fresh" shape
+    // Measure's own block just above uses - a Mate is exactly 2 references,
+    // same "1 <= len(refs) <= 2 would be ill-defined past 2" reasoning.
+    if (_mateActive) {
+      setState(() {
+        final next = Set<SelectionEntityRef>.of(_selectedEntities);
+        if (!next.remove(entity)) {
+          if (next.length >= 2) next.clear();
+          next.add(entity);
+        }
+        _selectedEntities = next;
+      });
       return;
     }
     if (_filletActive && entity.kind == SelectionEntityKind.face) {
@@ -2732,6 +2780,149 @@ class _PartScreenState extends State<PartScreen> {
         _measurementResult = null;
         _measurementError = e.message;
         _measurementLoading = false;
+      });
+    }
+  }
+
+  // --- Phase 6 (docs/assembly-scope.md §3): Mate authoring ------------------
+  // Picks exactly 2 vertex/edge/face entities - optionally on a placed
+  // Occurrence, reachable here via `hitTestComponentInstanceEntities` for the
+  // first time (Phase 6a's own real prerequisite: an entity's `occurrenceId`
+  // says which placed instance it came from, so a mate target actually names
+  // "this face, on this specific Occurrence", not just "bodyId 3, face 7") -
+  // then creates a Mate and immediately solves it for whichever side names a
+  // real Occurrence, so the newly-mated component visibly snaps into place.
+  // Mirrors the Measure tool's own "toggle + capped-at-2 selection" shape
+  // exactly (see that tool's own doc comment) rather than Fillet's
+  // eager-create-on-open one, since a Mate - like a Measurement - has
+  // nothing to create/preview until the user has actually finished picking
+  // both sides.
+
+  bool _mateActive = false;
+
+  /// [_selectedEntities]'s value from just before Mate picking was opened -
+  /// restored on close/cancel, same purpose [_entitiesBeforeMeasure] serves.
+  Set<SelectionEntityRef>? _entitiesBeforeMate;
+
+  String _mateType = kMateTypes.first;
+  double? _mateValue;
+  bool _mateFlipped = false;
+  bool _mateSaving = false;
+
+  /// Set when [_confirmMate]'s `createMate`/`solveForOccurrence` call fails -
+  /// surfaced inline in [MatePanel] (mirrors [_measurementError]'s identical
+  /// "don't route this through [_errorMessage]'s busy-overlay machinery"
+  /// reasoning) so the user can adjust the mate type/value and retry without
+  /// losing their two picked entities.
+  String? _mateError;
+
+  /// Vertex/edge/face only - `component: false` (unlike [_measureSelectionFilter],
+  /// which never needed to say either way, since [hitTestComponentInstances]'
+  /// whole-instance candidate and this mode's own sub-entity one are
+  /// otherwise independent competing candidates by `rayT`) so a tap on a
+  /// placed Occurrence always resolves to its own face/edge/vertex, never
+  /// the whole-component candidate a plain Assembly-lens tap would prefer.
+  static const _mateSelectionFilter = SelectionFilterState(
+    vertex: true,
+    edge: true,
+    face: true,
+    body: false,
+    component: false,
+    sketchPoint: false,
+    sketchLine: false,
+    sketchCircle: false,
+    plane: false,
+  );
+
+  void _openMate() {
+    setState(() {
+      _mateActive = true;
+      _entitiesBeforeMate = _selectedEntities;
+      _selectedEntities = {};
+      _mateType = kMateTypes.first;
+      _mateValue = null;
+      _mateFlipped = false;
+      _mateError = null;
+      _mateSaving = false;
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _selectionFilterOverrides.push(_mateSelectionFilter);
+    });
+  }
+
+  void _closeMate() {
+    setState(() {
+      _mateActive = false;
+      _selectedEntities = _entitiesBeforeMate ?? {};
+      _entitiesBeforeMate = null;
+      _mateError = null;
+      _mateSaving = false;
+      _selectionFilterOverrides.pop();
+    });
+  }
+
+  /// [SelectionEntityRef] -> the wire shape `DocumentApiClient.createMate`
+  /// needs - [SelectionEntityRef.occurrenceId] carries straight through
+  /// (empty for the root Part's own geometry, matching `MateEntityRef`'s own
+  /// convention server-side; non-empty for a placed Occurrence, Phase 6a's
+  /// own contribution). Only ever called with a vertex/edge/face entity -
+  /// [_mateSelectionFilter] guarantees nothing else can be picked while
+  /// [_mateActive].
+  static MateEntityRefDto _mateEntityRefFor(SelectionEntityRef entity) {
+    final shapeType = switch (entity.kind) {
+      SelectionEntityKind.face => 'face',
+      SelectionEntityKind.edge => 'edge',
+      SelectionEntityKind.vertex => 'vertex',
+      _ => throw ArgumentError('Mate only supports face/edge/vertex entities, got ${entity.kind}'),
+    };
+    return MateEntityRefDto(
+      occurrenceId: entity.occurrenceId,
+      subshapeRef: SubShapeRefDto(bodyId: entity.bodyId, shapeType: shapeType, index: entity.id),
+    );
+  }
+
+  Future<void> _confirmMate() async {
+    final part = _part;
+    if (part == null || _selectedEntities.length != 2) return;
+    final entities = _selectedEntities.toList();
+    setState(() {
+      _mateSaving = true;
+      _mateError = null;
+    });
+    try {
+      await _api.createMate(
+        part.id,
+        type: _mateType,
+        references: [for (final entity in entities) _mateEntityRefFor(entity)],
+        value: _mateValue,
+        flipped: _mateFlipped,
+      );
+      // Drives whichever side names a real placed Occurrence (never the
+      // root's own `""` id) - the second-picked entity's own Occurrence if
+      // it has one, else the first's; the router's own validation already
+      // guarantees the two references don't both name `""`, so at least one
+      // of these two is always real.
+      final drivenOccurrenceId =
+          entities[1].occurrenceId.isNotEmpty ? entities[1].occurrenceId : entities[0].occurrenceId;
+      if (drivenOccurrenceId.isNotEmpty) {
+        await _api.solveForOccurrence(part.id, drivenOccurrenceId);
+      }
+      if (!mounted) return;
+      setState(() {
+        _mateActive = false;
+        _selectedEntities = {};
+        _entitiesBeforeMate = null;
+        _mateSaving = false;
+        _selectionFilterOverrides.pop();
+      });
+      await _refreshAssemblyTree();
+      await _refreshAssemblyMesh();
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _mateSaving = false;
+        _mateError = e.message;
       });
     }
   }
@@ -9061,12 +9252,12 @@ class _PartScreenState extends State<PartScreen> {
 
   /// Assembly support Phase 3b (`docs/assembly-scope.md` §3): the "Add"
   /// FAB's Assembly-lens branch - shows [showAssemblyAddMenu] and acts on
-  /// whichever (enabled) entry was tapped. Only
-  /// [AssemblyAddMenuAction.insertExistingComponent] is real; the other
-  /// three render disabled in the sheet itself (Create Component needs a
-  /// multi-file save flow this app doesn't have yet, Add Mate needs Phase
-  /// 6's solver, Pattern Component needs Phase 7's component pattern) and
-  /// so never reach this `switch` - mirrors [_onFeaturePressed]'s own
+  /// whichever (enabled) entry was tapped. [AssemblyAddMenuAction.
+  /// insertExistingComponent] and (Phase 6) [addMate] are real;
+  /// [createNewComponent]/[patternComponent] still render disabled in the
+  /// sheet itself (Create Component needs a multi-file save flow this app
+  /// doesn't have yet, Pattern Component needs Phase 7's component pattern)
+  /// and so never reach this `switch` - mirrors [_onFeaturePressed]'s own
   /// "picker already filtered to enabled entries" shape.
   Future<void> _onAssemblyAddPressed() async {
     final action = await showAssemblyAddMenu(context);
@@ -9074,8 +9265,9 @@ class _PartScreenState extends State<PartScreen> {
     switch (action) {
       case AssemblyAddMenuAction.insertExistingComponent:
         await _onInsertComponentPressed();
-      case AssemblyAddMenuAction.createNewComponent:
       case AssemblyAddMenuAction.addMate:
+        _openMate();
+      case AssemblyAddMenuAction.createNewComponent:
       case AssemblyAddMenuAction.patternComponent:
         break;
     }
@@ -16702,10 +16894,21 @@ class _PartScreenState extends State<PartScreen> {
   /// Hide/Show/Isolate are purely client-side (see [_hiddenOccurrenceIds]/
   /// [_isolatedOccurrenceId]'s own doc comments - no backend mutation
   /// endpoint for Occurrences exists at all, `docs/assembly-scope.md` §2e).
-  /// Move/Rotate/Mate/Pattern render disabled in the menu itself (Phases
-  /// 5-7) and so never reach this `switch` - same "picker already filtered
-  /// to enabled entries" shape [_onAssemblyAddPressed] already uses for its
-  /// own disabled entries.
+  /// Pattern still renders disabled in the menu itself (Phase 7) and so
+  /// never reaches this `switch` - same "picker already filtered to
+  /// enabled entries" shape [_onAssemblyAddPressed] already uses for its
+  /// own disabled entries. Move/Rotate *does* reach this `switch` (appendix
+  /// item 5 - `component_context_menu.dart`'s own entry is enabled now) but
+  /// still needs no case body of its own: this method's very first line
+  /// already selected `occurrence` (`_selectedOccurrenceId = occurrence.id`),
+  /// which is exactly what [_gizmoTargetOccurrence] reads to show the
+  /// gizmo - the menu action is a confirmation of an already-real effect,
+  /// not a trigger for a new one. Mate (Phase 6, now enabled too) opens the
+  /// same generic 2-entity picking flow [_onAssemblyAddPressed]'s own "Add
+  /// Mate" entry does - `occurrence` itself isn't pre-selected into it (a
+  /// Mate targets a specific face/edge/vertex, not a whole component), so
+  /// long-pressing a tree row is only a discoverable second door into the
+  /// identical flow, not a different one.
   Future<void> _onOccurrenceLongPress(OccurrenceDto occurrence) async {
     setState(() => _selectedOccurrenceId = occurrence.id);
     final resolvedPartId = occurrence.resolvedPartId;
@@ -16741,7 +16944,12 @@ class _PartScreenState extends State<PartScreen> {
           _isolatedOccurrenceId = _isolatedOccurrenceId == occurrence.id ? null : occurrence.id;
         });
       case ComponentContextMenuAction.moveRotate:
+        // Appendix item 5: no-op by design - selecting `occurrence` above
+        // already made the gizmo target it (see this method's own doc
+        // comment).
+        break;
       case ComponentContextMenuAction.mate:
+        _openMate();
       case ComponentContextMenuAction.pattern:
         break;
     }
@@ -17125,6 +17333,8 @@ class _PartScreenState extends State<PartScreen> {
                   onSelectOtherRequested: _handleSelectOtherRequested,
                   highlightOverride: _selectOtherHighlight,
                   suppressHoverFallback: _selectOtherSheetOpen,
+                  breadcrumbEntity: _breadcrumbEntity,
+                  onBreadcrumbSelect: _onBreadcrumbSelect,
                   selectionFilter: _selectionFilter,
                   isPerspective: _isPerspective,
                   farClip: _farClip,
@@ -17694,6 +17904,27 @@ class _PartScreenState extends State<PartScreen> {
                       selectedEntities: _selectedEntities,
                       bodyNames: _selectionBodyNames,
                       onDone: _closeMeasure,
+                    ),
+                  ),
+                if (_mateActive)
+                  Positioned.fill(
+                    key: const ValueKey('mate-panel-slot'),
+                    child: MatePanel(
+                      selectedEntities: _selectedEntities,
+                      bodyNames: _selectionBodyNames,
+                      mateType: _mateType,
+                      value: _mateValue,
+                      flipped: _mateFlipped,
+                      onMateTypeChanged: (type) => setState(() => _mateType = type),
+                      onValueChanged: (value) => setState(() => _mateValue = value),
+                      onFlippedChanged: (flipped) => setState(() => _mateFlipped = flipped),
+                      saving: _mateSaving,
+                      error: _mateError,
+                      onConfirm: _selectedEntities.length == 2 &&
+                              (!mateTypeNeedsValue(_mateType) || _mateValue != null)
+                          ? _confirmMate
+                          : null,
+                      onCancel: _closeMate,
                     ),
                   ),
                 if (_chamferActive)
