@@ -2795,6 +2795,22 @@ class OccurrenceResponse(BaseModel):
     hidden: bool = False
 
 
+class OccurrenceTransformUpdate(BaseModel):
+    """Assembly support Phase 5 (`docs/assembly-scope.md`): `PATCH
+    /parts/{part_id}/occurrences/{occurrence_id}`'s request body - the
+    Move/Rotate gizmo's own persistence call. Reuses `RigidTransformResponse`'s
+    own shape verbatim for `transform` (identical either direction - a
+    `RigidTransform` is a plain value, not something with its own partial-
+    update semantics the way a Feature's `*Update` schemas need) rather than
+    defining a parallel input type. Whole-`transform` replace only, not a
+    partial delta - the gizmo always computes and sends its own full
+    resulting transform (translation composed with rotation already
+    applied), the same "client computes, server stores" split
+    `Occurrence.transform` already has no other mutation path for."""
+
+    transform: RigidTransformResponse
+
+
 class MateEntityRefResponse(BaseModel):
     """One side of a `MateResponse` - see `app.document.models.
     MateEntityRef`'s own docstring. Exactly one of `subshape_ref`/

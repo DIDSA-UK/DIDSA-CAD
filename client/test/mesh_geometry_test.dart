@@ -426,4 +426,105 @@ void main() {
       expect(roundTripped.edges, mesh.edges);
     });
   });
+
+  // Assembly support Phase 4 (`docs/assembly-scope.md` §3): matches
+  // `backend/tests/test_assembly_model.py`'s own transform-composition
+  // coverage as closely as a client-side, single-transform (no chain)
+  // function can - identity, pure translation, a known-angle rotation, and
+  // the 180-degree edge case that identity-vs-negated-axis both round-trip
+  // an axis-angle representation identically.
+  group('matrix4FromRigidTransform', () {
+    RigidTransformDto identity() => RigidTransformDto(
+          translation: [0, 0, 0],
+          rotationAxis: [0, 0, 0],
+          rotationAngleDegrees: 0,
+        );
+
+    test('identity transform leaves a point unchanged', () {
+      final matrix = matrix4FromRigidTransform(identity());
+      final result = matrix.transformed3(vm.Vector3(1, 2, 3));
+      expect(result.x, closeTo(1, 1e-9));
+      expect(result.y, closeTo(2, 1e-9));
+      expect(result.z, closeTo(3, 1e-9));
+    });
+
+    test('pure translation moves a point by exactly the translation vector', () {
+      final transform = RigidTransformDto(
+        translation: [5, -2, 10],
+        rotationAxis: [0, 0, 0],
+        rotationAngleDegrees: 0,
+      );
+      final matrix = matrix4FromRigidTransform(transform);
+      final result = matrix.transformed3(vm.Vector3(1, 1, 1));
+      expect(result.x, closeTo(6, 1e-9));
+      expect(result.y, closeTo(-1, 1e-9));
+      expect(result.z, closeTo(11, 1e-9));
+    });
+
+    test('a 90-degree rotation about +Z maps +X to +Y, then translates', () {
+      final transform = RigidTransformDto(
+        translation: [1, 0, 0],
+        rotationAxis: [0, 0, 1],
+        rotationAngleDegrees: 90,
+      );
+      final matrix = matrix4FromRigidTransform(transform);
+      // Rotate-then-translate (per RigidTransform's own docstring): (1,0,0)
+      // rotates to (0,1,0), then the translation is added.
+      // `vm.Matrix4`/`vm.Vector3` store components as `Float32List` (single
+      // precision) internally, so a trig-derived result (unlike the pure
+      // integer sums the translation-only tests above check) can land a few
+      // ULPs off an exact value - 1e-6 is the same tolerance the 180-degree
+      // edge case just below, and elsewhere in this codebase's own geometry
+      // tests, already uses for exactly this reason.
+      final result = matrix.transformed3(vm.Vector3(1, 0, 0));
+      expect(result.x, closeTo(1, 1e-6));
+      expect(result.y, closeTo(1, 1e-6));
+      expect(result.z, closeTo(0, 1e-6));
+    });
+
+    test('a 180-degree rotation about +X maps +Y to -Y (the axis-angle edge case)', () {
+      final transform = RigidTransformDto(
+        translation: [0, 0, 0],
+        rotationAxis: [1, 0, 0],
+        rotationAngleDegrees: 180,
+      );
+      final matrix = matrix4FromRigidTransform(transform);
+      final result = matrix.transformed3(vm.Vector3(0, 1, 0));
+      expect(result.x, closeTo(0, 1e-6));
+      expect(result.y, closeTo(-1, 1e-6));
+      expect(result.z, closeTo(0, 1e-6));
+    });
+
+    test('a near-zero-length rotation axis is treated as no rotation, not a degenerate normalize', () {
+      final transform = RigidTransformDto(
+        translation: [2, 0, 0],
+        rotationAxis: [0, 0, 0],
+        rotationAngleDegrees: 45, // meaningless with a zero-length axis - must be ignored.
+      );
+      final matrix = matrix4FromRigidTransform(transform);
+      final result = matrix.transformed3(vm.Vector3(0, 0, 0));
+      expect(result.x, closeTo(2, 1e-9));
+      expect(result.y, closeTo(0, 1e-9));
+      expect(result.z, closeTo(0, 1e-9));
+    });
+  });
+
+  // Assembly support Phase 4: the opacity half of "opacity/selectability
+  // split for non-primary Parts" - pure and directly testable, independent
+  // of [buildAssemblyInstanceNode]'s own GPU-bound Node construction.
+  group('assemblyInstanceOpacity', () {
+    test('every instance is fully opaque while no focus is active, regardless of isFocusedInstance', () {
+      expect(assemblyInstanceOpacity(focusActive: false, isFocusedInstance: false), 1.0);
+      expect(assemblyInstanceOpacity(focusActive: false, isFocusedInstance: true), 1.0);
+    });
+
+    test('the focused instance stays fully opaque once a focus is active', () {
+      expect(assemblyInstanceOpacity(focusActive: true, isFocusedInstance: true), 1.0);
+    });
+
+    test('every other instance fades to kNonPrimaryAssemblyOpacity once a focus is active', () {
+      expect(assemblyInstanceOpacity(focusActive: true, isFocusedInstance: false), kNonPrimaryAssemblyOpacity);
+      expect(kNonPrimaryAssemblyOpacity, lessThan(1.0));
+    });
+  });
 }

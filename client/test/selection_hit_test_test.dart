@@ -1408,5 +1408,156 @@ void main() {
       const createPlane = SelectionEntityRef(kind: SelectionEntityKind.createPlane);
       expect(plane, isNot(createPlane));
     });
+
+    test('Assembly support Phase 4: two component refs naming the same occurrenceId are equal', () {
+      const a = SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: 'occ-1');
+      const b = SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: 'occ-1');
+      expect(a, b);
+      expect(a.hashCode, b.hashCode);
+    });
+
+    test('Assembly support Phase 4: two component refs with different occurrenceId are not equal', () {
+      const a = SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: 'occ-1');
+      const b = SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: 'occ-2');
+      expect(a, isNot(b));
+    });
+  });
+
+  // Assembly support Phase 4 (`docs/assembly-scope.md` §3): [hitTestBodies]'
+  // whole-Occurrence-instance sibling - a coarser hit test reporting one
+  // [SelectionEntityKind.component] hit per placed instance rather than any
+  // sub-entity within it.
+  group('hitTestComponentInstances', () {
+    // A single triangle in the target Part's own local space, at local
+    // z=0 - translated into world space by each instance's own
+    // worldTransform below, exactly like [matrix4FromRigidTransform]'s own
+    // tests exercise that placement math directly.
+    AssemblyBodyGeometryDto partGeometry(String partId) => AssemblyBodyGeometryDto(
+          partId: partId,
+          bodies: [
+            BodyMeshDto(
+              bodyId: 'b1',
+              source: 'computed',
+              mesh: MeshDto(
+                vertices: const [
+                  [-1, -1, 0],
+                  [1, -1, 0],
+                  [0, 1, 0],
+                ],
+                normals: const [],
+                triangleIndices: const [
+                  [0, 1, 2],
+                ],
+                faceIds: const [1],
+              ),
+            ),
+          ],
+        );
+
+    RigidTransformDto translatedZ(double z) => RigidTransformDto(
+          translation: [0, 0, z],
+          rotationAxis: [0, 0, 0],
+          rotationAngleDegrees: 0,
+        );
+
+    test('a ray through a selectable instance reports a component hit at the instance\'s own occurrencePath', () {
+      final instance = AssemblyOccurrenceInstanceDto(
+        occurrencePath: const ['occ-1'],
+        partId: 'partB',
+        worldTransform: translatedZ(5),
+      );
+      final hit = hitTestComponentInstances(
+        ray: straightDownZ,
+        instances: [instance],
+        geometry: [partGeometry('partB')],
+        selectableOccurrencePaths: const {'occ-1'},
+      );
+      expect(hit, isNotNull);
+      expect(hit!.entity, const SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: 'occ-1'));
+      expect(hit.rayT, closeTo(5, 1e-9));
+    });
+
+    test('an instance outside selectableOccurrencePaths is excluded entirely, not just deprioritized', () {
+      final instance = AssemblyOccurrenceInstanceDto(
+        occurrencePath: const ['occ-1'],
+        partId: 'partB',
+        worldTransform: translatedZ(5),
+      );
+      final hit = hitTestComponentInstances(
+        ray: straightDownZ,
+        instances: [instance],
+        geometry: [partGeometry('partB')],
+        selectableOccurrencePaths: const {},
+      );
+      expect(hit, isNull);
+    });
+
+    test('an empty occurrencePath (the root Part\'s own content) is always skipped', () {
+      final rootInstance = AssemblyOccurrenceInstanceDto(
+        occurrencePath: const [],
+        partId: 'root',
+        worldTransform: translatedZ(0),
+      );
+      final hit = hitTestComponentInstances(
+        ray: straightDownZ,
+        instances: [rootInstance],
+        geometry: [partGeometry('root')],
+        selectableOccurrencePaths: const {''},
+      );
+      expect(hit, isNull);
+    });
+
+    test('the nearer of two selectable instances wins, by rayT', () {
+      final near = AssemblyOccurrenceInstanceDto(
+        occurrencePath: const ['occ-near'],
+        partId: 'partB',
+        worldTransform: translatedZ(3),
+      );
+      final far = AssemblyOccurrenceInstanceDto(
+        occurrencePath: const ['occ-far'],
+        partId: 'partB',
+        worldTransform: translatedZ(8),
+      );
+      final hit = hitTestComponentInstances(
+        ray: straightDownZ,
+        instances: [far, near],
+        geometry: [partGeometry('partB')],
+        selectableOccurrencePaths: const {'occ-near', 'occ-far'},
+      );
+      expect(hit, isNotNull);
+      expect(hit!.entity.occurrenceId, 'occ-near');
+      expect(hit.rayT, closeTo(3, 1e-9));
+    });
+
+    test('a nested occurrencePath is joined with "/" for both the selectable-set key and the hit\'s own occurrenceId', () {
+      final instance = AssemblyOccurrenceInstanceDto(
+        occurrencePath: const ['occ-1', 'occ-2'],
+        partId: 'partB',
+        worldTransform: translatedZ(5),
+      );
+      final hit = hitTestComponentInstances(
+        ray: straightDownZ,
+        instances: [instance],
+        geometry: [partGeometry('partB')],
+        selectableOccurrencePaths: const {'occ-1/occ-2'},
+      );
+      expect(hit, isNotNull);
+      expect(hit!.entity.occurrenceId, 'occ-1/occ-2');
+    });
+
+    test('a ray missing every instance entirely returns null', () {
+      final instance = AssemblyOccurrenceInstanceDto(
+        occurrencePath: const ['occ-1'],
+        partId: 'partB',
+        worldTransform: translatedZ(-5), // behind the ray's origin - never intersects.
+      );
+      final hit = hitTestComponentInstances(
+        ray: straightDownZ,
+        instances: [instance],
+        geometry: [partGeometry('partB')],
+        selectableOccurrencePaths: const {'occ-1'},
+      );
+      expect(hit, isNull);
+    });
   });
 }

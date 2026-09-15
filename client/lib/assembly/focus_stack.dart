@@ -2,9 +2,9 @@ import '../viewport3d/override_stack.dart';
 
 /// Which Part is currently primary within a composed assembly - the
 /// primary Part is what [AssemblyLens.part] edits, what
-/// `AssemblyTreePanel`/`FeatureTreePanel` both target, and (once Phase 4's
-/// opacity tiers land) the one rendered fully opaque while its peers/parents
-/// go translucent. "Make Focus" (Phase 6) pushes; the exit/back action pops.
+/// `AssemblyTreePanel`/`FeatureTreePanel` both target, and (Phase 4) the one
+/// whose own instance renders fully opaque while its peers/parents go
+/// translucent. "Make Focus" (Phase 4) pushes; "Exit Focus" pops.
 ///
 /// Reuses `OverrideStack<String>` one level higher than its first user
 /// (`PartScreen`'s `SelectionFilterState` overrides) - same "push a
@@ -19,6 +19,18 @@ class AssemblyFocusStack {
   final String rootPartId;
   final OverrideStack<String> _overrides = OverrideStack<String>();
 
+  /// Phase 4 fix (`docs/assembly-scope.md` §5 appendix item 4): the full
+  /// chain of Occurrence ids from the true root down to the currently-
+  /// focused Occurrence - `const []` while unfocused. [push]/[pop]/[clear]
+  /// are the only things that ever reassign this - a bare read of
+  /// [currentOccurrencePath] always returns the exact same `List` instance
+  /// until the next mutating call, the same "stable identity until content
+  /// actually changes" contract `PartViewport.bodies`'s own doc comment
+  /// already establishes for this codebase's change-detection convention
+  /// (`didUpdateWidget`'s `!=` checks are identity-based for a `List`,
+  /// never a deep-equality one).
+  List<String> _occurrencePath = const [];
+
   AssemblyFocusStack(this.rootPartId);
 
   /// The currently-focused Part id - [rootPartId] until something is pushed.
@@ -30,15 +42,32 @@ class AssemblyFocusStack {
   /// How many focus levels deep past [rootPartId] - 0 at the root.
   int get depth => _overrides.depth;
 
-  /// Focuses [partId] - e.g. "Make Focus" on a Component context menu
-  /// (Phase 4/6).
-  void push(String partId) => _overrides.push(partId);
+  /// See [_occurrencePath]'s own doc comment.
+  List<String> get currentOccurrencePath => _occurrencePath;
+
+  /// Focuses [partId] via the Occurrence identified by [occurrenceId] - e.g.
+  /// "Make Focus" on a Component context menu (Phase 4). [occurrenceId] is
+  /// appended to [currentOccurrencePath] (not replacing it) so a focus
+  /// pushed while already focused several levels deep still records the
+  /// *whole* chain down to it, not just this one step.
+  void push(String partId, String occurrenceId) {
+    _overrides.push(partId);
+    _occurrencePath = [..._occurrencePath, occurrenceId];
+  }
 
   /// Un-focuses back to whatever was focused before, or [rootPartId] if this
   /// was the last focus pushed. A no-op (returns null) if already at root.
-  String? pop() => _overrides.pop();
+  String? pop() {
+    if (_occurrencePath.isNotEmpty) {
+      _occurrencePath = _occurrencePath.sublist(0, _occurrencePath.length - 1);
+    }
+    return _overrides.pop();
+  }
 
   /// Un-focuses all the way back to [rootPartId] in one step - e.g. closing
   /// the assembly file or opening a different one.
-  void clear() => _overrides.clear();
+  void clear() {
+    _overrides.clear();
+    _occurrencePath = const [];
+  }
 }

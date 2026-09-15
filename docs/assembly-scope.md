@@ -13,29 +13,44 @@ reading the code, not assumed), with the model decisions that were made,
 what's implemented so far, and what's still planned.
 
 Backend: `backend/app/document/*` (FastAPI + pythonocc-core/OCCT) -
-unchanged by Phase 3b, see §2e for why.
+unchanged from Phase 2 through Phase 4 (see §2e/§2f for why), then Phase 5
+added its own first-ever Occurrence mutation endpoint (§2g).
 Client: `client/lib/viewport3d/*` (3D viewport/tree/tools, now including
-`assembly_tree_panel.dart`, `action_sheet.dart`, `component_context_menu.dart`,
-and Phase 3b's own additions to `add_button_menu.dart`/`part_toolbar.dart`),
-`client/lib/storage/*` (implemented), `client/lib/assembly/*` (graph
-compose, document client, `AssemblyLens`, `AssemblyFocusStack`,
-`assembly_lens_theme.dart`, `add_component.dart` - all implemented;
-screen/UI pieces beyond the lens toggle itself, e.g. Make Focus and
-per-instance opacity, still planned).
+`assembly_tree_panel.dart`, `action_sheet.dart`, `component_context_menu.dart`
+(now with a real call site - see §2f), Phase 3b's own additions to
+`add_button_menu.dart`/`part_toolbar.dart`, Phase 4's own additions to
+`selection_filter.dart`/`selection_hit_test.dart`/`select_other_sheet.dart`/
+`selection_list_drawer.dart`/`mesh_geometry.dart`/`part_viewport.dart`, and
+Phase 5's own new `component_gizmo.dart` plus further `part_viewport.dart`/
+`part_screen.dart` additions), `client/lib/storage/*` (implemented),
+`client/lib/assembly/*` (graph compose, document client, `AssemblyLens`,
+`AssemblyFocusStack`, `assembly_lens_theme.dart`, `add_component.dart`, and
+`occurrence_visibility.dart` (Phase 4, extended in Phase 5) - all
+implemented).
 
 **Status: Phase 0 (backend data model), Phase 1 (client storage
 abstraction), Phase 2 (multi-file compose + recompute), Phase 3 (lens
-toggle + focus-stack state, `AssemblyTreePanel`), and Phase 3b (lens
-color/theme accent + Assembly-lens "Add" FAB/`PartToolbar` toolset)
-implemented. Assembly lens now has a working in-UI way to add a first
-component (`Add Component` → `mergeComponentIntoDocument`) and a distinct
-visual identity - see §2e for the real gap Phase 3b found along the way
-(no backend mutation endpoint exists for Occurrences, so `Add Component`
-works by merging and re-importing the whole session rather than an
-incremental create call) and what it left stubbed as a result (top-down
-"Create Component", Add Mate, Pattern Component). Phase 3's Make Focus
-wiring and viewport opacity/instance rendering are still deferred to
-Phases 4/5. Phases 4–9 are design-only.**
+toggle + focus-stack state, `AssemblyTreePanel`), Phase 3b (lens
+color/theme accent + Assembly-lens "Add" FAB/`PartToolbar` toolset), Phase
+4 (whole-component selection + context menu, Make Focus/Exit Focus,
+Hide/Isolate, per-instance opacity, instanced viewport rendering), and
+Phase 5 (Move/Rotate gizmo, Occurrence transform persistence, local
+component-transform undo) implemented. Assembly lens now has a working
+in-UI way to add a first component (`Add Component` →
+`mergeComponentIntoDocument`), a distinct visual identity, real Make
+Focus/Exit Focus, placed Occurrences render and are selectable in the 3D
+viewport, and a *top-level* selected component can be dragged (translate/
+rotate, persisted, undoable) via a real 6-handle gizmo - see §2e for the
+"Add Component" gap (no backend mutation endpoint existed for Occurrences
+at all, until §2g's own PATCH endpoint closed that specific gap for
+`transform` only), §2f for Phase 4's own real gaps (client-only Hide/
+Isolate with no way to persist or override a backend-true `hidden`;
+root-Part selectability isn't enforced while focused elsewhere, only
+rendering opacity is - both still open, tracked in §5's appendix), and §2g
+for Phase 5's own deliberate v1 scope limit (the gizmo only targets a
+top-level Occurrence - editing one nested inside a focused sub-assembly
+needs ancestor-transform composition this phase doesn't attempt). Phases
+6–9 are design-only.**
 
 ---
 
@@ -657,25 +672,326 @@ addition for what it would actually catch beyond the existing coverage.
 
 ---
 
+## 2f. Phase 4 — Whole-part selection + context menu (implemented)
+
+Closed the two gaps §2d/§2e each flagged and deliberately left open:
+`AssemblyTreePanel.onOccurrenceLongPress` had no real action behind it, and
+the 3D viewport never rendered a placed Occurrence at all - only this
+screen's own root Part ever showed. Both needed for the same reason: Make
+Focus/Hide/Isolate/opacity are all about *which rendered instance* is
+primary right now, and there was no rendered instance to be primary about
+before this phase.
+
+### `component` selection kind
+
+`client/lib/viewport3d/selection_hit_test.dart` gains
+`SelectionEntityKind.component` and `SelectionEntityRef.occurrenceId` (a
+joined `occurrencePath`, not a bare Occurrence id - the same Part
+definition can be placed more than once at different paths, Phase 2's own
+dedup precedent, so the path is what's actually unique per rendered
+instance). `client/lib/viewport3d/selection_filter.dart`'s
+`SelectionFilterState` gains a matching `component` field - defaulting
+`true` (unlike `body`, which started `false` with no hit-test to gate at
+all until a later prompt gave it one - `component` has a real consumer
+from this same phase). Every other exhaustive `switch` over
+`SelectionEntityKind` the compiler flagged (`select_other_sheet.dart`,
+`selection_list_drawer.dart`, and two in `part_viewport.dart` - one
+accumulating every selected entity's highlight geometry, one building a
+single hover/selection highlight Node) gained a `component` case, mirroring
+each file's own existing `body` case (a whole-component highlight is every
+one of its own Bodies' faces, the same "highlight everything, not just
+one" treatment a whole-Body selection already gets).
+
+### Instanced viewport rendering + hit-testing
+
+The real, previously-deferred piece: `PartViewport` now actually renders
+Phase 2's `assembly-mesh` response. `PartScreen._refreshAssemblyMesh` fetches
+it (lazily, same "most sessions never open Assembly lens" cost-avoidance
+`_refreshAssemblyTree` already established) and feeds two new
+`PartViewport` fields - `assemblyGeometry` (the dedup'd per-Part geometry)
+and `assemblyInstances` (every placed Occurrence's own world transform) -
+into a new `_syncAssemblyInstanceNodes`, `_syncMeshNode`'s sibling for this
+one job. Placement uses a new pure `mesh_geometry.dart` function,
+`matrix4FromRigidTransform` (translation + axis-angle rotation, rotate-
+then-translate via `vm.Matrix4.compose` - the client-side counterpart to
+`backend/app/document/assembly.py`'s identical backend-side math, verified
+against the same identity/pure-translation/known-angle/180°-edge-case
+matrix `assembly.py`'s own tests already cover). Hit-testing gained a new
+`selection_hit_test.dart` function, `hitTestComponentInstances` -
+`hitTestBodies`' whole-instance sibling, wired into
+`PartViewport._recomputeHover` as a third candidate competed by `rayT`
+against the existing mesh/plane candidates exactly the way those two
+already compete against each other.
+
+An instance's own `occurrencePath` empty means the requested root Part's
+own local content (Phase 2's convention) - skipped by both the render and
+hit-test paths, since that content is already covered by the ordinary
+`PartViewport.bodies` path; rendering/testing it a second time at the
+identity transform would just double it.
+
+### Make Focus / Exit Focus (real, for the first time)
+
+`AssemblyTreePanel.onOccurrenceLongPress` → `PartScreen._onOccurrenceLongPress`
+now calls `component_context_menu.dart`'s `showComponentContextMenu` (built
+in Phase 3b with no caller until now) and acts on the result:
+
+- **Make Focus** pushes the Occurrence's own `resolvedPartId` onto
+  `AssemblyFocusStack` (Phase 3's `push`/`pop`'s first real call site) and
+  re-fetches the Assembly tree, so the panel immediately shows the newly-
+  focused Part's own Occurrences/Mates - exactly the "which Part is primary"
+  question `_refreshAssemblyTree` already keyed off `AssemblyFocusStack.current`
+  for, since Phase 3, with nothing ever pushing onto it until now. Disabled
+  (surfaces an error rather than silently no-opping) for an unresolved
+  Occurrence - there is no Part id to push.
+- **Exit Focus** pops it and re-fetches the same way.
+- **Hide/Show** toggle a new, purely client-side `_hiddenOccurrenceIds` set
+  (mirrors `_hiddenFeatureIds`'s own convention exactly) - no backend
+  mutation endpoint exists for Occurrences at all (§2e's own documented
+  gap), so this can never be more than a session-only overlay.
+- **Isolate** sets/clears a new `_isolatedOccurrenceId` (at most one at a
+  time) - hides every *other* Occurrence. A toggle (Isolate again on the
+  same Occurrence clears it), since the context menu has no separate
+  "un-isolate"/"show all" action of its own yet.
+- **Move/Rotate/Mate/Pattern** stay disabled in the menu itself (Phases
+  5-7) and so never reach this `switch` - the same "picker already
+  filtered to enabled entries" shape `_onAssemblyAddPressed` already uses
+  for its own disabled entries.
+
+Both overlays are combined with each Occurrence's own backend-reported
+`hidden` via two new, standalone, directly-tested pure functions in
+`client/lib/assembly/occurrence_visibility.dart` - rather than living only
+as private getter logic, so both have real coverage independent of
+`part_screen_test.dart`'s own backend-fake limitations (see below).
+`applyOccurrenceVisibilityOverrides` feeds `PartScreen._displayOccurrences`
+(the Assembly tree's own list, keyed by bare Occurrence id, since an
+`OccurrenceDto` is only ever shown at one nesting level at a time);
+`applyInstanceVisibilityOverrides` feeds `PartViewport.assemblyInstances`
+directly (Phase 2's own placed-instance list, keyed by the *whole*
+`occurrencePath` chain, since a nested instance's path can contain a
+Hidden/Isolated Occurrence from any ancestor level - Hide/Isolate on a
+sub-assembly must hide/isolate everything nested inside it too, the
+standard CAD convention, which matching only the path's last segment would
+miss). Without the second function, Hide/Isolate would only ever have
+affected the tree panel's own rows, never what actually renders in the 3D
+viewport - caught before this phase's own tests were considered complete,
+not after. **Scope limit** (full write-up in §5, item 1): Hide/Show/
+Isolate can only ever *OR* onto whatever the backend already reports,
+never override it.
+
+### Opacity/selectability split
+
+`mesh_geometry.dart` gains `assemblyInstanceOpacity` (pure, tested) and
+`buildAssemblyInstanceNode` (GPU-bound, builds the placed instance's own
+Node at a given opacity/transform) plus the fixed
+`kNonPrimaryAssemblyOpacity` translucency constant. The rule: while no
+focus is active, every top-level instance renders fully opaque
+(`PartViewport.focusedComponentPartId == null` - ordinary assembly
+browsing); once a focus *is* pushed, only the one instance whose own
+target Part matches `AssemblyFocusStack.current` stays opaque - every
+other instance, **and the root Part's own local content** (`_syncMeshNode`
+folds a matching dim factor into `widget.bodyOpacity`, composing with
+rather than overriding the user's own Transparency slider), fades to
+`kNonPrimaryAssemblyOpacity`. Selectability mirrors this exactly in
+`PartViewport._hoverHitTestComponents`: an instance outside the focused
+subtree is excluded from `hitTestComponentInstances`' own
+`selectableOccurrencePaths` set entirely, never merely a losing candidate -
+the same "hidden means genuinely untestable" contract
+`PartViewport.bodiesHidden` already applies to a Part's own Bodies.
+
+**Scope limits** (full write-up in §5, items 2-4): the root Part's own
+Bodies stay selectable regardless of focus; `AssemblyFocusStack` tracks
+*which Part* is focused, not *which Occurrence*; and - found on review
+after this phase shipped, not caught by its own tests - a placed instance
+*nested inside* the focused Occurrence (a "child" in the assembly-tree
+sense) is **not** treated as part of the focused subtree by either
+`assemblyInstanceOpacity` or `_hoverHitTestComponents`' own selectable-set
+computation, both of which match only `instance.partId ==
+AssemblyFocusStack.current` (an exact target-Part match), never occurrencePath
+containment. §2d's own original "Deferred, not yet wired" language asked
+for "focus part **and its children** opaque, peers and parents
+translucent" - only the exact-match half of that was actually built.
+
+**Verified**: no backend changes this phase (pure client work, reusing
+Phase 2's existing `GET /parts/{part_id}/assembly-mesh` endpoint
+end-to-end for the first time) - backend suite re-confirmed at its
+pre-existing baseline against real `pythonocc-core`/`py-slvs` -
+**2214/2214 passed**, unchanged from §2d/§2e. Full client suite -
+**1800/1800 passed** before this phase's own new tests were added; after,
+`flutter analyze` clean on every touched/new file, and **1833/1833
+passed** (12 GPU-skips, unchanged), with new tests across:
+`selection_filter_test.dart` (component defaults/copyWith/equality),
+`selection_hit_test_test.dart` (two new `SelectionEntityRef` equality
+cases for the `component` kind, plus `hitTestComponentInstances`'
+selectable-instance hit, excluded-instance skip, root's-own-empty-path
+skip, nearest-of-two-instances-wins, nested-path joining, and a genuine
+miss), `mesh_geometry_test.dart` (`matrix4FromRigidTransform`'s identity/
+pure-translation/known-angle/180°-edge-case/degenerate-axis cases -
+loosened to a `1e-6` tolerance after a real, caught-before-commit failure:
+`vm.Matrix4`/`vm.Vector3` store components as single-precision
+`Float32List`, so a trig-derived result can land a few ULPs off an exact
+integer value even though the maths itself is correct; `assemblyInstanceOpacity`'s
+focus-active/focused-instance matrix), `occurrence_visibility_test.dart`
+(new file - every
+`applyOccurrenceVisibilityOverrides` combination: no override, hidden-set,
+isolate, both composing, a backend-true `hidden` staying un-overridable,
+non-mutation of the input, and the empty-list case; plus
+`applyInstanceVisibilityOverrides`' own occurrencePath-prefix cases: hiding
+a top-level Occurrence also hides its own nested instance, hiding a nested
+one does *not* hide its parent, isolating a top-level Occurrence keeps its
+own nested contents visible while hiding every peer, and the same backend-
+true/empty-list cases), and two new
+`part_screen_test.dart` cases confirming a `component`-kind
+`onSelectionToggle` never lands in `PartViewport.selectedEntities` (the
+generic accumulate-toggle every other kind shares) while an ordinary
+`face` entity still does. A full end-to-end Make Focus/Hide/Isolate round
+trip through `part_screen_test.dart` was **not** attempted -
+`_FakeDocumentBackend` has no `listOccurrences`/`listMates`/
+`getAssemblyMesh` route implemented (§2e's own already-documented reason
+this stays out of scope for that harness) - mirroring exactly the same
+cost/benefit call §2e already made for its own FAB-wiring tests.
+
+---
+
+## 2g. Phase 5 — Move/Rotate gizmo + persisted placement + undo (implemented)
+
+Landed in two passes within the same phase: the backend/math foundation
+first, then the interactive wiring - see the git history for the exact
+split if it matters, but both are complete and this section covers the
+whole thing as shipped.
+
+### Persistence
+
+`PATCH /parts/{part_id}/occurrences/{occurrence_id}` - the first mutation
+endpoint an Occurrence has ever had (`OccurrenceTransformUpdate` schema,
+whole-`transform` replace). No "create" step the way `MoveBodyFeature`
+needs one - an Occurrence already exists and its placement is a plain
+field, not a new history entry, so every drag (debounced client-side to
+one PATCH per gesture, on drag-end only - see below) PATCHes this same
+endpoint directly. `DocumentApiClient.updateOccurrenceTransform` +
+`RigidTransformDto.toJson`/`==`/`hashCode` on the client (equality needed
+for real: `PartViewport.didUpdateWidget`'s own change-detection convention
+depends on it, the same way every other comparable prop on that widget
+already does).
+
+### `component_gizmo.dart`
+
+The 6-handle (3 translate arrows + 3 rotate rings) sibling of
+`section_gizmo.dart`, reusing that file's own `closestPointOnLineToRay`/
+`angleOnRotationPlane` drag primitives rather than re-deriving equivalent
+math: `ComponentGizmoBasis` (world-space origin + the Occurrence's own
+current local axes, built from a placement `Matrix4` via
+`matrix4FromRigidTransform`), `hitTestComponentGizmo`/
+`buildComponentGizmoNode` (mirroring `hitTestSectionGizmo`/
+`buildSectionGizmoNode` almost line for line, just with a third arrow/ring
+pair - a component's placement has no "this axis doesn't matter" omission
+the way a section plane's own normal-axis rotation does), and the drag-math
+functions: `composeTranslation` (trivial - translations always commute),
+`composeRotation` (composes a drag's own delta rotation *onto* the
+Occurrence's existing rotation via quaternion multiplication - `q_current *
+q_delta`, the delta expressed in the object's own already-rotated local
+frame - then collapses back to a single axis-angle pair, since
+`RigidTransform` has no quaternion field of its own), `translateDragDelta`/
+`rotateDragDeltaRadians` (the absolute-delta-from-drag-start wrappers
+`PartViewport`'s own drag state calls each pointer-move).
+
+### Wiring into `PartViewport`
+
+New `selectedOccurrenceTransform`/`onComponentGizmoDragUpdate`/
+`onComponentGizmoDragEnd` props, plus a `_componentGizmoDrag*` field set and
+`_tryBeginComponentGizmoDrag`/`_updateComponentGizmoDrag`/
+`_syncComponentGizmoNode` methods - all structurally identical to the
+section gizmo's own `_sectionDrag*`/`_tryBeginSectionGizmoDrag`/
+`_updateSectionGizmoDrag` triplet, checked in `_onPointerDown`/
+`_onPointerMove`/`_onPointerEnd` right after the section gizmo's own check
+(a manipulator grab always wins over orbit/select/draw-cursor). Critically,
+this includes the exact same per-pointer ownership gating
+(`event.pointer == _componentGizmoDragPointerId`) the section gizmo needed
+a real on-device bug report to discover it was missing - built in from the
+start here rather than rediscovered, and directly regression-tested
+(`component_gizmo_touch_test.dart`, mirroring `section_gizmo_touch_test.dart`'s
+own stuck-touch-state scenario: a second finger touching down and lifting
+mid-drag must never end or hijack the first finger's own drag, and
+`_activeTouches` must never end up with an orphaned entry).
+
+Live-drag feedback needs no new rendering code of its own for the moved
+Body: `PartScreen._displayAssemblyInstances` (via the new
+`overrideInstanceTransform`, `occurrence_visibility.dart`'s third pure
+function) overrides the dragged Occurrence's own instance entry with the
+live transform, and the *existing* `_syncAssemblyInstanceNodes` (Phase 4)
+already re-renders whatever `PartViewport.assemblyInstances` says - the
+gizmo overlay is the only genuinely new Node.
+
+### `PartScreen` state + undo
+
+`_gizmoTargetOccurrence` (the selection, scoped to a *top-level* Occurrence
+only - see the scope-limit callout below), `_gizmoLiveTransform` (the
+optimistic in-flight value, cleared only *after* the post-drag
+PATCH+refetch completes, so there is never a stale-value flicker while
+that request is in transit), and `_componentTransformUndoStack` (a plain
+`List<(occurrenceId, previousTransform)>` - "local component-transform
+undo built in this phase, not deferred," the *only* undo mechanism
+anywhere in this app, surfaced as a small Undo FAB shown only in Assembly
+lens and only once the stack is non-empty).
+
+### A real, deliberate v1 scope limit: top-level Occurrences only
+
+`Occurrence.transform` is relative to its own immediate parent, and only
+the root Part's own frame is guaranteed world identity - so only a
+top-level Occurrence's local and world transforms coincide without this
+screen needing to convert between the two. `_gizmoTargetOccurrence` gates
+on `!(_focusStack?.isFocused ?? false)`: the gizmo simply doesn't appear
+for a selection made while focused into a sub-assembly. Real, undone
+follow-up work, not an oversight - editing a nested Occurrence needs the
+gizmo's own drag math to account for whatever rotation its ancestor chain
+contributes, which this phase doesn't attempt. Worth revisiting once
+there's real usage of nested assemblies to judge how much it's actually
+missed.
+
+**Verified**: backend - `test_occurrence_transform_update.py` (update/
+re-fetch/re-export/404×2/sibling-isolation), full suite **2219/2219
+passed** against real `pythonocc-core`/`py-slvs`, unchanged since (no
+backend changes in the interactive-wiring pass). Client - `flutter
+analyze` clean on every touched/new file throughout; full suite
+**1865/1865 passed** (14 GPU-skips - two more than Phase 4's own 12, both
+new: `component_gizmo_touch_test.dart`'s pair of pointer-ownership tests
+join `section_gizmo_touch_test.dart`'s pre-existing single test in
+gracefully self-skipping in this headless sandbox's own no-real-GPU
+limitation, not a regression). New tests: `component_gizmo_test.dart` (16
+- `ComponentGizmoBasis.fromMatrix`'s identity/translation/rotation cases,
+`hitTestComponentGizmo`'s per-handle hits and a miss, `composeTranslation`,
+`composeRotation`'s 90°-composition/180°-accumulation/exact-cancellation
+cases, `translateDragDelta`/`rotateDragDeltaRadians`'s hit and miss
+cases - one real caught-before-commit bug here: the first hit-test tests
+fired rays straight through the shared origin every arrow starts from, an
+ambiguous three-way tie the iteration order silently broke, fixed by
+aiming at each arrow's own midpoint instead), `component_gizmo_touch_test.dart`
+(2, the stuck-touch-state regression pair described above), and 5 new
+`overrideInstanceTransform` cases in `occurrence_visibility_test.dart`
+(exact-match override, a nested child left alone, a parent left alone,
+no-match leaves everything untouched, empty list). A full end-to-end
+drag-through-`PartScreen` test (real PATCH call, undo stack, live-preview
+flicker-avoidance) was **not** attempted - same `_FakeDocumentBackend`
+`listOccurrences`/`listMates`/`getAssemblyMesh` gap §2e/§2f already
+documented, plus a real on-screen gizmo hit-test needs camera-dependent
+screen coordinates this sandbox has no way to visually confirm; the
+pointer-*ownership* correctness (the actual historical bug class) is
+covered via `debugForceComponentGizmoDrag` instead, mirroring
+`section_gizmo_touch_test.dart`'s own identical choice.
+
+---
+
 ## 3. Remaining phases (design-only)
 
-4. **Whole-part selection + context menu** — extend
-   `SelectionFilterState`/`select_other_sheet.dart` with a `component`
-   kind, usable in either lens and regardless of focus depth (needed for
-   Make Focus, mate-authoring, and Move/Rotate no matter which tree is
-   currently shown); new component context menu (Make Focus/Move-Rotate/
-   Hide/Isolate/Mate/Pattern), wiring Phase 3's `AssemblyFocusStack.push`/
-   `pop` to "Make Focus"/"Exit Focus" for the first time. Per-instance
-   opacity for non-primary Parts in the focus stack is built here, driven
-   by this phase's new `component` selection-filter kind (Phase 3's
-   `AssemblyFocusStack` only tracks *which* Part is primary - it has no
-   opacity/selectability enforcement of its own yet).
-5. **Move/Rotate gizmo + persisted placement + undo** — a new 6-handle
-   `component_gizmo.dart` reusing `section_gizmo.dart`'s proven math
-   (which itself never persists anything — the actual "drag commits a
-   Feature" precedent is `MoveBodyPanel`'s create-then-update-in-place
-   pattern). Local component-transform undo built in this phase, not
-   deferred — no document-level undo exists anywhere in this app today.
+Phase 4 ("Whole-part selection + context menu") moved to §2f, and Phase 5
+("Move/Rotate gizmo + persisted placement + undo") to §2g - both
+implemented. Numbering below is otherwise unchanged from the original plan
+(starts at 6 rather than being renumbered), so every existing cross-
+reference elsewhere in this document (e.g. §4's own "Phase 5" undo note,
+which still correctly points at what's now §2g) still points at the same
+phase it always did.
+
+5. **~~Move/Rotate gizmo + persisted placement + undo~~ — moved to §2g,
+   implemented.**
 6. **Mate system** (coincident/concentric/parallel/distance/angle) — new
    `assembly_solver.py` (mirrors `sketch/solver.py`'s structure). v1 only
    drives the actively-dragged Occurrence against fixed peers — coupled
@@ -685,6 +1001,40 @@ addition for what it would actually catch beyond the existing coverage.
    `client/native/slvs/`'s FFI shim is possible (pinned to the identical
    fork commit) but needs new forwarding functions that don't exist yet —
    explicitly deferred past v1.
+
+   **6a. Prerequisite — occurrence-attributed selection.** Surfaced by a
+   user request for SOLIDWORKS-style "selection breadcrumbs" (see 6b) while
+   auditing Phases 0-5 for completeness: `SelectionEntityRef.occurrenceId`
+   (`client/lib/viewport3d/selection_hit_test.dart`) is populated *only*
+   for a `SelectionEntityKind.component` hit today - a face/edge/vertex hit
+   carries just `bodyId` + a local index, with no way to tell which placed
+   Occurrence it came from. That's fine for Phase 4/5 (whole-component
+   selection, top-level gizmo drag), but a mate needs "this face, on this
+   *specific* Occurrence" - the same Part placed twice (Phase 2's own
+   dedup precedent) must resolve to two distinct mate targets, not one
+   ambiguous one. This item is mate authoring's own real prerequisite, not
+   optional polish riding along with it: thread `occurrenceId`/
+   `occurrencePath` through every `SelectionEntityKind` (not just
+   `component`) wherever a hit happens on assembly-instance geometry, before
+   `assembly_solver.py`'s own `MateEntityRef` plumbing can correctly name
+   what a mate actually targets.
+   **6b. Follow-on — selection breadcrumbs UI (not blocking the Phase 6
+   mate MVP).** The user's own proposal: after selecting a face, an
+   unintrusive horizontal breadcrumb bar shows the containment hierarchy
+   (face → body → feature → part → assembly) as tappable icons, each one
+   retargeting the selection up a level - mirrors SOLIDWORKS' own
+   breadcrumb trail. Deliberately **not** folded into the current rollout:
+   it would have to be built against an incomplete hierarchy (6a not done
+   yet) and rebuilt once 6a lands. The closest existing precedent is
+   `select_other_sheet.dart`'s hover-preview/tap-commit "Select Other"
+   sheet (candidates at one screen point, not one entity's containment
+   chain) - reuse that interaction grammar rather than inventing a new one.
+   The "feature that created this face" tier is an open question, not a
+   confirmed gap: per-face OCCT history attribution doesn't appear to exist
+   anywhere in the backend today (a grep for feature/face-history
+   attribution during the audit came back empty), so scope that tier
+   separately once someone has actually checked what OCCT can report,
+   rather than assuming it's a small addition alongside 6a.
 7. **Component pattern** (linear + circular) — a `ComponentPattern` on
    `Part` (not a separate `Assembly` type - see §1 decision #2), expanded
    via `assembly.py`'s transform math only (no OCCT work needed, unlike
@@ -712,3 +1062,116 @@ addition for what it would actually catch beyond the existing coverage.
   designed.
 - Composed multi-file graph `part_id`s are session-scoped, not persisted
   across app restarts.
+
+## 5. Appendix — scope limits and follow-ups (evaluate after rollout)
+
+Started as Phase 4 (§2f)'s own deliberately-scoped gaps, pulled out of that
+section's own narrative into one place specifically so they get a real
+look once the phase has been used for a while, rather than staying buried
+in a "Verified" paragraph nobody revisits - since broadened to index every
+open "shipped without" gap across the whole assembly effort, not just
+Phase 4's. None of these block whichever phase shipped alongside them; all
+are candidates for either a follow-up fix inside a later phase or a
+deliberate "still fine, leave it" call once there's real usage to judge
+them against.
+
+**Update**: items 3 and 4 were fixed directly (same session, ahead of any
+real rollout) rather than left for later - struck through in place, not
+deleted, so the record of what shipped broken and why stays intact. Items
+1-2 are still open and still genuinely await real usage before deciding
+whether they're worth fixing at all. Items 5-6 were found during a
+post-Phase-5 completeness audit (not real usage) - 5 is a small, isolated
+fix whenever this screen is next touched; 6 is formally owned by §3's new
+6a/6b split, not tracked independently here.
+
+1. **Hide/Show/Isolate can only ever *OR* onto the backend's own `hidden`
+   flag, never override it.** No mutation endpoint exists for Occurrences
+   at all (§2e), so an Occurrence whose `hidden` arrived from the backend
+   as `true` (e.g. loaded from a file saved with it hidden) can never be
+   un-hidden client-side - Show only ever clears *this session's own*
+   override, not the backend's own value. Revisit once Phase 6+ (or
+   whichever phase finally adds a real Occurrence-mutation endpoint) makes
+   a true, persisted Show possible.
+2. **The root Part's own Bodies stay selectable regardless of focus
+   state.** Once a component is focused elsewhere, its opacity correctly
+   fades (`_syncMeshNode`'s `effectiveBodyOpacity`), but the ordinary
+   `hitTestBodies`/feature-editing hit-test path was deliberately left
+   ungated - blocking it would mean touching the one hit-test every
+   Part-lens feature tool in this app already depends on, unconditionally,
+   for a selectability guarantee no bug report has asked for yet. Revisit
+   if real usage shows someone accidentally editing/selecting root-Part
+   geometry while intending to work inside a focused component.
+3. **~~`AssemblyFocusStack` tracks *which Part* is focused, not *which
+   Occurrence*~~ - resolved as a side effect of fixing item 4 below.**
+   `AssemblyFocusStack.current` (bare Part id, used by `_refreshAssemblyTree`/
+   `_onInsertComponentPressed` to know which Part's own Occurrences/Mates to
+   fetch - a legitimate use of "just the Part id," since that answer really
+   doesn't depend on *which* placed instance you're inside) is unchanged
+   and still Part-id-keyed - that part of the original concern doesn't
+   need fixing. What actually mattered - rendering opacity/selectability
+   correctly telling two instances of the same shared Part apart - now
+   works, since both key off the new `AssemblyFocusStack.currentOccurrencePath`
+   (item 4's own fix) rather than `current`'s bare Part id.
+4. **~~A placed instance nested *inside* the focused Occurrence is not
+   treated as part of the focused subtree~~ - fixed.** `AssemblyFocusStack`
+   gained `currentOccurrencePath` (the full Occurrence-id chain down to the
+   focus, populated by `push`'s new `occurrenceId` parameter - a real,
+   non-optional argument now, not a nullable add-on) and a new pure
+   function, `client/lib/assembly/occurrence_visibility.dart`'s
+   `isOccurrencePathWithinFocus`, replaces the old exact-`partId`-match
+   check everywhere `PartViewport` decides opacity
+   (`_syncAssemblyInstanceNodes`) or selectability
+   (`_hoverHitTestComponents`) - both now correctly treat a nested child
+   instance as part of the focused subtree, matching §2d's original
+   "focus part **and its children** opaque, peers and parents translucent"
+   language for the first time. `PartViewport.focusedComponentPartId` (a
+   bare `String?`) was replaced outright by `focusedOccurrencePath` (a
+   `List<String>`, `AssemblyFocusStack.currentOccurrencePath` piped
+   straight through) rather than kept alongside it, so there is exactly
+   one source of truth for "what's focused" feeding the viewport - not two
+   fields that could drift apart. `AssemblyFocusStack.currentOccurrencePath`
+   itself only ever reassigns its `List` on an actual `push`/`pop`/`clear`
+   (never rebuilds one on a bare read), preserving the identity-based
+   change-detection contract `PartViewport.didUpdateWidget`'s `!=` checks
+   already rely on for every other `List`-typed field on that widget.
+   Real tests added: `focus_stack_test.dart` (accumulates the full chain
+   across nested pushes, not just the last one; pops remove only the last
+   segment; stable `List` identity across bare reads) and
+   `occurrence_visibility_test.dart` (`isOccurrencePathWithinFocus`'s own
+   exact-match/nested-child/peer/parent/sibling/unrelated-path cases). No
+   backend changes - client suite **1844/1844 passed** (up from 1833, 12
+   GPU-skips unchanged), `flutter analyze` clean.
+   **Noticed but out of scope for this fix**: `_onOccurrenceLongPress`'s
+   own `isFocused` (which picks "Make Focus" vs "Exit Focus" in the menu
+   label) still compares `focusStack.current == resolvedPartId` - since
+   the Assembly tree only ever shows a Part's own *children*, this can
+   only be true for a self-referencing Occurrence (which cycle detection
+   already forbids), so in practice the label the menu ever shows may
+   itself be a latent, likely-inconsequential quirk predating this fix -
+   not touched here since it's a distinct concern from the rendering gap
+   this item was actually about.
+5. **`component_context_menu.dart`'s "Move/Rotate" entry is still
+   hardcoded `enabled: false` ("Coming soon - needs Phase 5's move/rotate
+   gizmo"), and `part_screen.dart`'s handler for it is a no-op
+   (`case ComponentContextMenuAction.moveRotate: break;`) - found during
+   the post-Phase-5 completeness audit, still open.** Phase 5 *is* now
+   implemented, but nobody updated this Phase-3b-vintage stub when it
+   landed: the gizmo actually appears automatically the moment a top-level
+   component is tap-selected in Assembly lens (`_gizmoTargetOccurrence`),
+   entirely independent of this long-press menu item. Net effect: the menu
+   claims Move/Rotate is unbuilt while it already works via plain
+   selection - a discoverability/consistency bug, not a functional
+   blocker (nothing is actually broken; the feature works, just not from
+   the door a user would reasonably expect). Fix is a one-line enable (or
+   have the handler simply confirm the existing selection) whenever this
+   screen is next touched for other reasons.
+6. **Selection carries no occurrence attribution outside the dedicated
+   `component` kind, and no feature-level face-history attribution exists
+   anywhere - surfaced by a user proposal for SOLIDWORKS-style "selection
+   breadcrumbs," not by a bug report.** Formally tracked as Phase 6's own
+   prerequisite/follow-on split rather than left as a loose appendix note
+   - see §3 items **6a** (occurrence-attributed selection, a real Mate-
+   authoring prerequisite) and **6b** (the breadcrumb UI itself, deferred
+   until 6a lands). Listed here too only so the appendix stays the one
+   place that indexes every open "shipped without" gap in this document,
+   not because it needs separate tracking from 6a/6b.

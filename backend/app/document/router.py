@@ -196,6 +196,7 @@ from app.document.schemas import (
     MateEntityRefResponse,
     MateResponse,
     OccurrenceResponse,
+    OccurrenceTransformUpdate,
     RigidTransformResponse,
     BodyMeshResponse,
     BooleanFeatureCreate,
@@ -3101,6 +3102,41 @@ def list_mates(part_id: str) -> list[MateResponse]:
     `PartResponse.mate_ids`, ids only)."""
     part = get_part_or_404(part_id)
     return [_mate_response(mate) for mate in part.mates]
+
+
+def _get_occurrence_or_404(part: Part, occurrence_id: str) -> Occurrence:
+    for occurrence in part.occurrences:
+        if occurrence.id == occurrence_id:
+            return occurrence
+    raise HTTPException(status_code=404, detail="Occurrence not found")
+
+
+@router.patch("/parts/{part_id}/occurrences/{occurrence_id}", response_model=OccurrenceResponse)
+def update_occurrence_transform(
+    part_id: str, occurrence_id: str, payload: OccurrenceTransformUpdate
+) -> OccurrenceResponse:
+    """Assembly support Phase 5 (`docs/assembly-scope.md`): the first
+    mutation endpoint an Occurrence has ever had - every prior phase's own
+    "no backend mutation endpoint exists for Occurrences at all" gap (§2e)
+    is real for every *other* field (`hidden`/`suppressed`/`name_override`),
+    but Move/Rotate specifically needs `transform` to persist, which is
+    what this adds. Whole-value replace (`Occurrence.transform = payload.
+    transform`, not a merge) - see `OccurrenceTransformUpdate`'s own
+    docstring for why a partial-delta shape doesn't apply here the way a
+    Feature's `*Update` schemas' omitted-vs-current convention does.
+    Unlike `MoveBodyFeature` (a new Feature/history entry created once, then
+    updated in place), there is no "create" step at all - the Occurrence
+    already exists, so every drag (debounced client-side, the same
+    latency-tolerance shape `MoveBodyFeature` itself already uses) PATCHes
+    this same endpoint directly."""
+    part = get_part_or_404(part_id)
+    occurrence = _get_occurrence_or_404(part, occurrence_id)
+    occurrence.transform = RigidTransform(
+        translation=payload.transform.translation,
+        rotation_axis=payload.transform.rotation_axis,
+        rotation_angle_degrees=payload.transform.rotation_angle_degrees,
+    )
+    return _occurrence_response(occurrence)
 
 
 @router.post(

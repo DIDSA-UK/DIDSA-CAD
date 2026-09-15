@@ -169,6 +169,10 @@ class SelectionListDrawer extends StatelessWidget {
         // already use for this identical concept on the 2D-canvas side, no
         // dedicated icon exists for either.
         return const SvgIcon('assets/icons/feature/feature_pattern.svg');
+      // Assembly support Phase 4: mirrors `AssemblyTreePanel`'s/
+      // `select_other_sheet.dart`'s own Component icon.
+      case SelectionEntityKind.component:
+        return const Icon(Icons.view_in_ar_outlined);
     }
   }
 
@@ -208,6 +212,8 @@ class SelectionListDrawer extends StatelessWidget {
         // richer `SelectionKind` enum instead) - a generic label rather
         // than guessing.
         return 'Pattern/Mirror';
+      case SelectionEntityKind.component:
+        return 'Component';
     }
   }
 
@@ -242,6 +248,13 @@ class SelectionListDrawer extends StatelessWidget {
     if (entity.kind == SelectionEntityKind.createPlane) {
       final id = entity.planeFeatureId;
       return 'Plane #${id.length > 8 ? id.substring(0, 8) : id}';
+    }
+    // Assembly support Phase 4: same "entity.id carries no meaning" reason
+    // `select_other_sheet.dart`'s own [SelectionEntityKind.component] branch
+    // documents.
+    if (entity.kind == SelectionEntityKind.component) {
+      final id = entity.occurrenceId;
+      return 'Component ${id.length > 8 ? id.substring(0, 8) : id}';
     }
     return '${_labelFor(entity.kind)} #${entity.id}';
   }

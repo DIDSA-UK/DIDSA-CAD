@@ -29,6 +29,14 @@ void main() {
       const state = SelectionFilterState.defaults;
       expect(state.sketchPatternMirrorInstance, isFalse);
     });
+
+    test(
+        'Assembly support Phase 4: component defaults on, unlike body - a real hit-test '
+        '(hitTestComponentInstances) exists from this same phase, unlike body\'s own '
+        '"wired but inert" history', () {
+      const state = SelectionFilterState.defaults;
+      expect(state.component, isTrue);
+    });
   });
 
   group('SelectionFilterState.copyWith', () {
@@ -86,6 +94,16 @@ void main() {
       expect(next.face, isTrue);
       expect(next.body, isFalse);
     });
+
+    test('Assembly support Phase 4: component can be set independently, leaving the rest untouched', () {
+      const state = SelectionFilterState.defaults;
+      final next = state.copyWith(component: false);
+      expect(next.component, isFalse);
+      expect(next.vertex, isTrue);
+      expect(next.edge, isTrue);
+      expect(next.face, isTrue);
+      expect(next.body, isFalse);
+    });
   });
 
   group('SelectionFilterState equality', () {
@@ -106,6 +124,7 @@ void main() {
       expect(base, isNot(base.copyWith(sketchLine: false)));
       expect(base, isNot(base.copyWith(plane: false)));
       expect(base, isNot(base.copyWith(sketchPatternMirrorInstance: true)));
+      expect(base, isNot(base.copyWith(component: false)));
     });
   });
 }

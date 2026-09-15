@@ -3548,4 +3548,75 @@ void main() {
       expect(after.origin.x, closeTo(5.0, 1e-6));
     });
   });
+
+  // Assembly support Phase 4 (`docs/assembly-scope.md` §3): a whole-
+  // component viewport tap (`PartViewport.onSelectionToggle` with a
+  // [SelectionEntityKind.component] entity) has entirely different
+  // semantics from every other kind - it must never reach the generic
+  // accumulate-into-[Set<SelectionEntityRef>] toggle every other kind
+  // shares (see `_toggleSelectedEntity`'s own doc comment on this early-
+  // return). The fake backend used throughout this file has no
+  // `listOccurrences`/`listMates`/`getAssemblyMesh` route implemented (see
+  // `docs/assembly-scope.md` §2e's own note on why a full lens-toggle round
+  // trip through this harness is a disproportionate addition), so this
+  // stays scoped to what's independently verifiable without one: that the
+  // dispatch itself is correctly separated, exactly like the sibling
+  // `onSelectionToggle`/`skippedPreviewBodyIds` tests above verify their
+  // own kind's dispatch without needing a real Pattern feature behind
+  // every case.
+  group('Assembly support Phase 4: component selection toggle', () {
+    testWidgets('a component entity never lands in PartViewport.selectedEntities', (tester) async {
+      final documentApi = DocumentApiClient(
+        httpClient: MockClient((request) async => _FakeDocumentBackend().handle(request)),
+      );
+      final sketchBackend = _FakeSketchBackend();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+            const SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: 'occ-1'),
+          );
+      await tester.pump();
+
+      expect(tester.takeException(), isNull);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).selectedEntities, isEmpty);
+    });
+
+    testWidgets('an ordinary face entity still accumulates into selectedEntities as before', (tester) async {
+      // Regression guard for the early-return itself: proves the component
+      // branch's `return` doesn't somehow also swallow every other kind.
+      final documentApi = DocumentApiClient(
+        httpClient: MockClient((request) async => _FakeDocumentBackend().handle(request)),
+      );
+      final sketchBackend = _FakeSketchBackend();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+            const SelectionEntityRef(kind: SelectionEntityKind.face, bodyId: 'body-1', id: 1),
+          );
+      await tester.pump();
+
+      expect(
+        tester.widget<PartViewport>(find.byType(PartViewport)).selectedEntities,
+        {const SelectionEntityRef(kind: SelectionEntityKind.face, bodyId: 'body-1', id: 1)},
+      );
+    });
+  });
 }

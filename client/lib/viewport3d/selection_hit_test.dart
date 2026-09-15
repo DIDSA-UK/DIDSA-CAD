@@ -4,7 +4,7 @@ import 'dart:ui' show Size;
 import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart';
-import 'mesh_geometry.dart' show edgeSegmentsFromMesh;
+import 'mesh_geometry.dart' show edgeSegmentsFromMesh, matrix4FromRigidTransform;
 import 'reference_planes.dart' show ReferencePlaneKind;
 import 'selection_filter.dart';
 import 'sketch_geometry_3d.dart' show SketchGeometry3D;
@@ -102,6 +102,16 @@ enum SelectionEntityKind {
   /// `SketchController._patternMirrorEntityAt`'s identical "whole owning
   /// instance, never a copy" contract on the 2D-canvas side.
   sketchPatternMirrorInstance,
+
+  /// Assembly support Phase 4 (`docs/assembly-scope.md` §3): a whole placed
+  /// Occurrence instance, hit-tested as one unit via
+  /// [hitTestComponentInstances] rather than any of its own sub-entities -
+  /// Make Focus/Move-Rotate/Mate/Pattern all target the *whole* component,
+  /// never a face/edge/vertex within it. [SelectionEntityRef.occurrenceId]
+  /// alone is this kind's identity (mirrors [body]'s "bodyId alone is the
+  /// whole identity" convention) - [id]/[bodyId]/every other field carries
+  /// no meaning here.
+  component,
 }
 
 /// Identifies one selectable mesh entity - a [SelectionEntityKind] plus the
@@ -152,6 +162,16 @@ class SelectionEntityRef {
   /// sketchPoint/sketchLine entity merely *belongs to*.
   final String planeFeatureId;
 
+  /// Assembly support Phase 4: the Occurrence identity for a
+  /// [SelectionEntityKind.component] entity - meaningless for every other
+  /// kind, same convention as [referencePlaneKind]/[planeFeatureId] above.
+  /// A joined `occurrencePath` (`AssemblyOccurrenceInstanceDto.
+  /// occurrencePath.join('/')`), not a bare Occurrence id - the same Part
+  /// definition can be placed more than once at different paths (Phase 2's
+  /// own dedup precedent), so the path is what's actually unique per
+  /// rendered instance.
+  final String occurrenceId;
+
   const SelectionEntityRef({
     required this.kind,
     this.bodyId = '',
@@ -160,6 +180,7 @@ class SelectionEntityRef {
     this.sketchEntityId = '',
     this.referencePlaneKind,
     this.planeFeatureId = '',
+    this.occurrenceId = '',
   });
 
   @override
@@ -171,7 +192,8 @@ class SelectionEntityRef {
       other.sketchFeatureId == sketchFeatureId &&
       other.sketchEntityId == sketchEntityId &&
       other.referencePlaneKind == referencePlaneKind &&
-      other.planeFeatureId == planeFeatureId;
+      other.planeFeatureId == planeFeatureId &&
+      other.occurrenceId == occurrenceId;
 
   @override
   int get hashCode => Object.hash(
@@ -182,6 +204,7 @@ class SelectionEntityRef {
         sketchEntityId,
         referencePlaneKind,
         planeFeatureId,
+        occurrenceId,
       );
 
   @override
@@ -198,6 +221,7 @@ class SelectionEntityRef {
           'SelectionEntityRef($kind, sketchFeatureId: $sketchFeatureId, $sketchEntityId)',
         SelectionEntityKind.referencePlane => 'SelectionEntityRef($kind, $referencePlaneKind)',
         SelectionEntityKind.createPlane => 'SelectionEntityRef($kind, planeFeatureId: $planeFeatureId)',
+        SelectionEntityKind.component => 'SelectionEntityRef($kind, occurrenceId: $occurrenceId)',
         _ => 'SelectionEntityRef($kind, bodyId: $bodyId, $id)',
       };
 }
@@ -1688,4 +1712,73 @@ List<HoverHit> hitTestAllCandidates({
 
   candidates.sort((a, b) => a.rayT.compareTo(b.rayT));
   return candidates;
+}
+
+/// Assembly support Phase 4 (`docs/assembly-scope.md` §3): [hitTestBodies]'
+/// whole-Occurrence-instance sibling - reports one [SelectionEntityKind.
+/// component] hit per placed [AssemblyOccurrenceInstanceDto], never a
+/// sub-entity within it (Make Focus/Move-Rotate/Mate/Pattern all target the
+/// whole component). Called alongside [hitTestBodies]/[_hoverHitTestPlanes]
+/// from `PartViewport._recomputeHover` and competed against them by
+/// [HoverHit.rayT] the same way those two already compete against each
+/// other.
+///
+/// [geometry] is Phase 2's own dedup - one entry per unique Part regardless
+/// of how many Occurrences place it (`AssemblyMeshDto.geometry`) - so each
+/// instance's own local-space triangles are looked up by [instance.partId]
+/// and transformed into world space via [matrix4FromRigidTransform] before
+/// being ray-tested, rather than the backend ever sending duplicated
+/// per-instance geometry.
+///
+/// [instance.occurrencePath] empty means the requested root Part's own
+/// local content (Phase 2's own convention) - skipped here unconditionally,
+/// since that content is already covered by the ordinary [hitTestBodies]
+/// call over [PartViewport.bodies]; testing it again here would just
+/// double-hit-test the identical geometry at the identity transform.
+///
+/// [selectableOccurrencePaths] (each entry a joined `occurrencePath`,
+/// matching [SelectionEntityRef.occurrenceId]'s own convention) is the
+/// "selectability" half of Phase 4's opacity/selectability split - an
+/// instance outside the currently-focused subtree is skipped outright, not
+/// merely a losing candidate, mirroring [PartViewport.bodiesHidden]'s own
+/// "hidden means genuinely untestable" contract. Computing that set (from
+/// `AssemblyFocusStack.current`) is the caller's job, exactly like
+/// [PartViewport.selectionFilter] itself is caller-computed state, not
+/// something this pure hit-test function decides on its own.
+HoverHit? hitTestComponentInstances({
+  required vm.Ray ray,
+  required List<AssemblyOccurrenceInstanceDto> instances,
+  required List<AssemblyBodyGeometryDto> geometry,
+  required Set<String> selectableOccurrencePaths,
+}) {
+  HoverHit? best;
+  for (final instance in instances) {
+    if (instance.occurrencePath.isEmpty) continue;
+    final occurrenceKey = instance.occurrencePath.join('/');
+    if (!selectableOccurrencePaths.contains(occurrenceKey)) continue;
+    final transform = matrix4FromRigidTransform(instance.worldTransform);
+    for (final partGeometry in geometry) {
+      if (partGeometry.partId != instance.partId) continue;
+      for (final body in partGeometry.bodies) {
+        final localTriangles = trianglesFromMesh(body.mesh);
+        if (localTriangles.isEmpty) continue;
+        final worldTriangles = [
+          for (final triangle in localTriangles)
+            (
+              transform.transformed3(triangle.$1),
+              transform.transformed3(triangle.$2),
+              transform.transformed3(triangle.$3),
+            ),
+        ];
+        final hit = hitTestFaces(ray, worldTriangles, List.filled(worldTriangles.length, 0));
+        if (hit != null && (best == null || hit.rayT < best.rayT)) {
+          best = HoverHit(
+            entity: SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: occurrenceKey),
+            rayT: hit.rayT,
+          );
+        }
+      }
+    }
+  }
+  return best;
 }

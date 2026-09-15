@@ -1306,6 +1306,51 @@ class RigidTransformDto {
         rotationAxis: (json['rotation_axis'] as List).map((v) => (v as num).toDouble()).toList(),
         rotationAngleDegrees: (json['rotation_angle_degrees'] as num).toDouble(),
       );
+
+  /// Assembly support Phase 5: the Move/Rotate gizmo's own persistence call
+  /// (`DocumentApiClient.updateOccurrenceTransform`) is the first thing that
+  /// ever needs to *send* a `RigidTransformDto`, not just parse one back -
+  /// the backend's own `RigidTransformResponse` schema is symmetric (see
+  /// that schema's own docstring), so this mirrors its wire shape exactly.
+  Map<String, dynamic> toJson() => {
+        'translation': translation,
+        'rotation_axis': rotationAxis,
+        'rotation_angle_degrees': rotationAngleDegrees,
+      };
+
+  /// Assembly support Phase 5: value equality - the Move/Rotate gizmo's own
+  /// wiring (`PartViewport.didUpdateWidget`) needs a real `!=` check on this
+  /// type to know when the *value* actually changed, not merely when a new
+  /// object instance was built for it (the identity-based default every
+  /// plain Dart class gets otherwise) - see `PartViewport.bodies`'s own doc
+  /// comment for why this codebase's change-detection convention already
+  /// depends on this for every other comparable field.
+  @override
+  bool operator ==(Object other) =>
+      other is RigidTransformDto &&
+      _doubleListEquals(other.translation, translation) &&
+      _doubleListEquals(other.rotationAxis, rotationAxis) &&
+      other.rotationAngleDegrees == rotationAngleDegrees;
+
+  @override
+  int get hashCode => Object.hash(
+        Object.hashAll(translation),
+        Object.hashAll(rotationAxis),
+        rotationAngleDegrees,
+      );
+
+  @override
+  String toString() =>
+      'RigidTransformDto(translation: $translation, rotationAxis: $rotationAxis, '
+      'rotationAngleDegrees: $rotationAngleDegrees)';
+}
+
+bool _doubleListEquals(List<double> a, List<double> b) {
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
 }
 
 /// One unique Part's own local-space geometry within a [GetAssemblyMesh]
@@ -4040,6 +4085,27 @@ class DocumentApiClient {
   Future<List<OccurrenceDto>> listOccurrences(String partId) => _send(
         () => _httpClient.get(_uri('/document/parts/$partId/occurrences'), headers: _headers),
         (body) => (body as List).map((o) => OccurrenceDto.fromJson(o as Map<String, dynamic>)).toList(),
+      );
+
+  /// Assembly support Phase 5: `PATCH /document/parts/{part_id}/occurrences/
+  /// {occurrence_id}` - the Move/Rotate gizmo's own persistence call, and
+  /// the first mutation endpoint an Occurrence has ever had (every other
+  /// field - `hidden`/`suppressed`/`name_override` - still has no mutation
+  /// path; see `docs/assembly-scope.md` §2e/§5). Whole-value replace, not a
+  /// partial delta - the gizmo always computes and sends its own full
+  /// resulting [transform].
+  Future<OccurrenceDto> updateOccurrenceTransform(
+    String partId,
+    String occurrenceId,
+    RigidTransformDto transform,
+  ) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/occurrences/$occurrenceId'),
+              headers: _headers,
+              body: jsonEncode({'transform': transform.toJson()}),
+            ),
+        (body) => OccurrenceDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Assembly support: `GET /document/parts/{part_id}/mates` - the

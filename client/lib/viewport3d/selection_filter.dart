@@ -92,6 +92,16 @@ class SelectionFilterState {
   /// was before its own toggle shipped.
   final bool plane;
 
+  /// Assembly support Phase 4 (`docs/assembly-scope.md` §3): gates whole-
+  /// Occurrence-instance hit-testing (`selection_hit_test.dart`'s
+  /// `hitTestComponentInstances`) - "usable in either lens and regardless
+  /// of focus depth" per the plan, so unlike [body] (born inert, with no
+  /// hit-test to gate at all until Prompt A3 later gave it one) this
+  /// defaults `true`: a real consumer exists from the same phase that adds
+  /// this field, mirroring [vertex]/[edge]/[face]/[plane]'s own "always
+  /// considered by default" precedent for a kind that actually works.
+  final bool component;
+
   const SelectionFilterState({
     required this.vertex,
     required this.edge,
@@ -107,6 +117,7 @@ class SelectionFilterState {
     this.sketchText = true,
     this.plane = true,
     this.sketchPatternMirrorInstance = false,
+    this.component = true,
   });
 
   /// Matches hit-testing's behaviour from before this filter framework
@@ -133,6 +144,7 @@ class SelectionFilterState {
     bool? sketchText,
     bool? plane,
     bool? sketchPatternMirrorInstance,
+    bool? component,
   }) {
     return SelectionFilterState(
       vertex: vertex ?? this.vertex,
@@ -149,6 +161,7 @@ class SelectionFilterState {
       sketchText: sketchText ?? this.sketchText,
       plane: plane ?? this.plane,
       sketchPatternMirrorInstance: sketchPatternMirrorInstance ?? this.sketchPatternMirrorInstance,
+      component: component ?? this.component,
     );
   }
 
@@ -168,7 +181,8 @@ class SelectionFilterState {
       other.sketchSpline == sketchSpline &&
       other.sketchText == sketchText &&
       other.plane == plane &&
-      other.sketchPatternMirrorInstance == sketchPatternMirrorInstance;
+      other.sketchPatternMirrorInstance == sketchPatternMirrorInstance &&
+      other.component == component;
 
   @override
   int get hashCode => Object.hash(
@@ -187,6 +201,7 @@ class SelectionFilterState {
           sketchText,
           plane,
           sketchPatternMirrorInstance,
+          component,
         ),
       );
 
@@ -197,5 +212,5 @@ class SelectionFilterState {
       'sketchArc: $sketchArc, sketchEllipse: $sketchEllipse, sketchEllipseArc: $sketchEllipseArc, '
       'sketchSpline: $sketchSpline, '
       'sketchText: $sketchText, plane: $plane, '
-      'sketchPatternMirrorInstance: $sketchPatternMirrorInstance)';
+      'sketchPatternMirrorInstance: $sketchPatternMirrorInstance, component: $component)';
 }
