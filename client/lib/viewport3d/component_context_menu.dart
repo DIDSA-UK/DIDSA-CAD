@@ -38,9 +38,17 @@ enum ComponentContextMenuAction {
 /// shows "Exit Focus" instead, mirroring `AssemblyFocusStack.isFocused`);
 /// [hidden] picks Hide vs Show, the same "label names the next state"
 /// convention `PartToolbar`'s own Hide/Show Reference Planes entry uses.
-/// Move/Rotate/Mate/Pattern have no backing implementation yet (Phases
-/// 5-7) and render disabled, same "ship the stable shape, not the gap" rule
+/// Mate/Pattern have no backing implementation yet (Phases 6-7) and render
+/// disabled, same "ship the stable shape, not the gap" rule
 /// [showAssemblyAddMenu] already applies to its own Mate/Pattern rows.
+/// Move/Rotate is enabled - found disabled during a post-Phase-5
+/// completeness audit (`docs/assembly-scope.md` appendix item 5) even
+/// though Phase 5's gizmo already works via plain tap-selection, entirely
+/// independent of this menu entry: `part_screen.dart`'s
+/// `_onOccurrenceLongPress` already selects the long-pressed row (setting
+/// `_selectedOccurrenceId`, exactly what `_gizmoTargetOccurrence` reads)
+/// before this menu even opens, so enabling the entry needed no new
+/// handling of its own.
 Future<ComponentContextMenuAction?> showComponentContextMenu(
   BuildContext context, {
   required bool isFocused,
@@ -52,12 +60,10 @@ Future<ComponentContextMenuAction?> showComponentContextMenu(
       label: isFocused ? 'Exit Focus' : 'Make Focus',
       icon: isFocused ? Icons.output_outlined : Icons.center_focus_strong_outlined,
     ),
-    ActionSheetEntry(
+    const ActionSheetEntry(
       action: ComponentContextMenuAction.moveRotate,
       label: 'Move/Rotate',
       icon: Icons.open_with,
-      enabled: false,
-      disabledReason: 'Coming soon - needs Phase 5\'s move/rotate gizmo',
     ),
     ActionSheetEntry(
       action: hidden ? ComponentContextMenuAction.show : ComponentContextMenuAction.hide,

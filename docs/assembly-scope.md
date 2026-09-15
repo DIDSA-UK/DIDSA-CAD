@@ -14,43 +14,53 @@ what's implemented so far, and what's still planned.
 
 Backend: `backend/app/document/*` (FastAPI + pythonocc-core/OCCT) -
 unchanged from Phase 2 through Phase 4 (see §2e/§2f for why), then Phase 5
-added its own first-ever Occurrence mutation endpoint (§2g).
+added its own first-ever Occurrence mutation endpoint (§2g); unchanged
+again in Phase 6a (see §2h for why - a client-only prerequisite, no new
+mate data to persist yet).
 Client: `client/lib/viewport3d/*` (3D viewport/tree/tools, now including
 `assembly_tree_panel.dart`, `action_sheet.dart`, `component_context_menu.dart`
-(now with a real call site - see §2f), Phase 3b's own additions to
-`add_button_menu.dart`/`part_toolbar.dart`, Phase 4's own additions to
-`selection_filter.dart`/`selection_hit_test.dart`/`select_other_sheet.dart`/
-`selection_list_drawer.dart`/`mesh_geometry.dart`/`part_viewport.dart`, and
-Phase 5's own new `component_gizmo.dart` plus further `part_viewport.dart`/
-`part_screen.dart` additions), `client/lib/storage/*` (implemented),
-`client/lib/assembly/*` (graph compose, document client, `AssemblyLens`,
-`AssemblyFocusStack`, `assembly_lens_theme.dart`, `add_component.dart`, and
-`occurrence_visibility.dart` (Phase 4, extended in Phase 5) - all
-implemented).
+(now with a real call site - see §2f; its Move/Rotate entry fixed in §2h),
+Phase 3b's own additions to `add_button_menu.dart`/`part_toolbar.dart`,
+Phase 4's own additions to `selection_filter.dart`/`selection_hit_test.dart`/
+`select_other_sheet.dart`/`selection_list_drawer.dart`/`mesh_geometry.dart`/
+`part_viewport.dart`, Phase 5's own new `component_gizmo.dart` plus further
+`part_viewport.dart`/`part_screen.dart` additions, and Phase 6a's own
+further `selection_hit_test.dart` addition), `client/lib/storage/*`
+(implemented), `client/lib/assembly/*` (graph compose, document client,
+`AssemblyLens`, `AssemblyFocusStack`, `assembly_lens_theme.dart`,
+`add_component.dart`, and `occurrence_visibility.dart` (Phase 4, extended
+in Phase 5) - all implemented).
 
 **Status: Phase 0 (backend data model), Phase 1 (client storage
 abstraction), Phase 2 (multi-file compose + recompute), Phase 3 (lens
 toggle + focus-stack state, `AssemblyTreePanel`), Phase 3b (lens
 color/theme accent + Assembly-lens "Add" FAB/`PartToolbar` toolset), Phase
 4 (whole-component selection + context menu, Make Focus/Exit Focus,
-Hide/Isolate, per-instance opacity, instanced viewport rendering), and
-Phase 5 (Move/Rotate gizmo, Occurrence transform persistence, local
-component-transform undo) implemented. Assembly lens now has a working
-in-UI way to add a first component (`Add Component` →
+Hide/Isolate, per-instance opacity, instanced viewport rendering), Phase 5
+(Move/Rotate gizmo, Occurrence transform persistence, local
+component-transform undo), and Phase 6a (occurrence-attributed selection -
+Mate authoring's own prerequisite) implemented. Assembly lens now has a
+working in-UI way to add a first component (`Add Component` →
 `mergeComponentIntoDocument`), a distinct visual identity, real Make
 Focus/Exit Focus, placed Occurrences render and are selectable in the 3D
-viewport, and a *top-level* selected component can be dragged (translate/
-rotate, persisted, undoable) via a real 6-handle gizmo - see §2e for the
-"Add Component" gap (no backend mutation endpoint existed for Occurrences
-at all, until §2g's own PATCH endpoint closed that specific gap for
+viewport, a *top-level* selected component can be dragged (translate/
+rotate, persisted, undoable) via a real 6-handle gizmo, and a
+vertex/edge/face/body hit against *placed Occurrence-instance* geometry can
+now be tagged with which Occurrence it came from - see §2e for the "Add
+Component" gap (no backend mutation endpoint existed for Occurrences at
+all, until §2g's own PATCH endpoint closed that specific gap for
 `transform` only), §2f for Phase 4's own real gaps (client-only Hide/
 Isolate with no way to persist or override a backend-true `hidden`;
 root-Part selectability isn't enforced while focused elsewhere, only
-rendering opacity is - both still open, tracked in §5's appendix), and §2g
-for Phase 5's own deliberate v1 scope limit (the gizmo only targets a
-top-level Occurrence - editing one nested inside a focused sub-assembly
-needs ancestor-transform composition this phase doesn't attempt). Phases
-6–9 are design-only.**
+rendering opacity is - both still open, tracked in §5's appendix), §2g for
+Phase 5's own deliberate v1 scope limit (the gizmo only targets a top-level
+Occurrence - editing one nested inside a focused sub-assembly needs
+ancestor-transform composition this phase doesn't attempt), and §2h for
+Phase 6a's own deliberate scope limit (the new hit-test capability is not
+yet wired into any live picking mode - no consumer needs sub-entity
+granularity on assembly-instance geometry until Mate authoring's own UI
+exists). Phase 6 (the mate solver itself), 6b (selection breadcrumbs UI),
+and 7–9 are design-only.**
 
 ---
 
@@ -980,15 +990,121 @@ covered via `debugForceComponentGizmoDrag` instead, mirroring
 
 ---
 
+## 2h. Phase 6a — occurrence-attributed selection (implemented)
+
+The prerequisite half of §3's original 6a/6b split (surfaced by a user
+request for SOLIDWORKS-style "selection breadcrumbs" while auditing Phases
+0-5 for completeness, before either sub-item had a home of its own) - see
+§3 below for 6b, the breadcrumb UI itself, still deliberately deferred.
+
+### The gap this closes
+
+Before this phase, `SelectionEntityRef.occurrenceId`
+(`client/lib/viewport3d/selection_hit_test.dart`) was populated *only* for
+a `SelectionEntityKind.component` hit (`hitTestComponentInstances`, Phase
+4's whole-Occurrence-instance hit test) - a face/edge/vertex hit only ever
+existed against the root Part's own Bodies (`hitTestBodies`), which has no
+Occurrence concept at all, so there was no hit-test capability that could
+even produce a face/edge/vertex hit *on placed Occurrence-instance
+geometry* in the first place, let alone tag one with which Occurrence it
+came from. That's fine for Phase 4/5 (whole-component selection, top-level
+gizmo drag), but a mate needs "this face, on this *specific* Occurrence" -
+the same Part placed twice (Phase 2's own dedup precedent) must resolve to
+two distinct mate targets, not one ambiguous one.
+
+### `hitTestComponentInstanceEntities`
+
+New sibling of `hitTestComponentInstances` in `selection_hit_test.dart`,
+mirroring `hitTestBodies`'s own vertex→edge→face priority hit-test exactly,
+but run against placed Occurrence-instance geometry (`AssemblyMeshDto`'s
+`geometry`/`instances`, the same inputs `hitTestComponentInstances` already
+takes) instead of `PartViewport.bodies`. Reports a
+`SelectionEntityKind.vertex`/`edge`/`face`/`body` hit - never `component` -
+with `bodyId`/`id` scoped exactly the way a root-Part hit already is,
+*plus* `SelectionEntityRef.occurrenceId` set to the hit instance's own
+joined `occurrencePath` (the same convention `hitTestComponentInstances`
+already established for its own whole-component kind). Mirrors that
+function's transform/lookup machinery precisely: skips an empty
+`occurrencePath` (the root Part's own content, already covered by the
+ordinary `hitTestBodies` call), skips an instance outside
+`selectableOccurrencePaths` entirely rather than merely deprioritizing it,
+and transforms each instance's own local Body mesh into world space via
+`matrix4FromRigidTransform` before ray-testing. Does not implement
+`hitTestBodies`'s own `facesOccludeOtherHits`/Sketch-geometry handling -
+neither concept exists for placed-instance geometry today (no Sketch is
+ever rendered against another Part's own Occurrence, and
+`hitTestComponentInstances` itself never occludes one instance's hit
+against another's either), so the new function stays exactly as broad as
+the capability actually needed.
+
+`SelectionEntityRef.occurrenceId`'s own doc comment was updated to match -
+no longer "meaningless for every other kind" (Phase 4's original claim,
+true only until this phase), now documented as populated for a
+vertex/edge/face/body kind too whenever the hit came from
+`hitTestComponentInstanceEntities` rather than `hitTestBodies`.
+
+### Appendix item 5 fixed in the same pass
+
+While in this area of the codebase, also fixed the appendix's own item 5
+(a real, already-open gap, not new to this phase):
+`component_context_menu.dart`'s "Move/Rotate" entry was still hardcoded
+`enabled: false` ("Coming soon - needs Phase 5's move/rotate gizmo") even
+though Phase 5 shipped and the gizmo already works via plain tap-selection,
+entirely independent of that menu entry - a discoverability/consistency
+bug, not a functional blocker. Fixed as the one-line enable the appendix
+item itself predicted would suffice: `part_screen.dart`'s
+`_onOccurrenceLongPress` already selects the long-pressed row
+(`_selectedOccurrenceId = occurrence.id`) before the context menu even
+opens, which is exactly what `_gizmoTargetOccurrence` reads to show the
+gizmo, so the `case ComponentContextMenuAction.moveRotate:` handler itself
+needed no new logic - see §5's own appendix entry for the struck-through
+record.
+
+### Deliberately not wired into any live picking mode
+
+`hitTestComponentInstanceEntities` has no caller in `part_viewport.dart`
+today - no picking mode needs sub-entity granularity on assembly-instance
+geometry until Mate authoring's own UI exists (Phase 6, out of scope for
+this prerequisite-only pass), and wiring it into `_recomputeHover`'s
+always-on default-browsing hover path (competing against the existing
+whole-component `_hoverHitTestComponents`) would change Phase 4/5's
+already-shipped default selection behavior for no consumer that exists
+yet. Mirrors `assembly.py`'s own Phase 0 precedent ("pure vector/matrix
+math ... not yet consumed by any endpoint") - verified directly via real
+tests instead, ready for Phase 6's `assembly_solver.py`/mate-picking UI to
+call once that phase actually builds a picking mode that needs it.
+
+**Verified**: no backend changes (a client-only prerequisite - no new mate
+data to persist yet), so the backend suite was only re-confirmed at its
+pre-existing baseline, unchanged from §2g - **2219/2219 passed** against
+real `pythonocc-core`/`py-slvs`. Full client suite - **1876/1876 passed**
+(14 GPU-skips, unchanged from §2g - no new GPU-dependent test was added),
+`flutter analyze` clean on every touched file. New tests: 9
+`hitTestComponentInstanceEntities` cases in `selection_hit_test_test.dart`
+(vertex/edge/face/body hits each tagged with `occurrenceId`; the same Part
+definition placed twice resolving to two distinct `occurrenceId`s at the
+identical local `bodyId`/`id` - the exact ambiguity this phase exists to
+resolve; an unselectable instance excluded entirely; an empty
+`occurrencePath` always skipped; a nested `occurrencePath` joined with
+`/`; a ray missing every instance returns null) plus one
+`SelectionEntityRef` equality case (two `face` refs with identical
+`bodyId`/`id` but different `occurrenceId` are not equal). Appendix item
+5's own fix is covered by `component_context_menu_test.dart`'s updated
+"Make Focus, Move/Rotate, Hide, and Isolate render enabled" case (grown
+from three entries to four) plus a new "tapping Move/Rotate resolves
+moveRotate" case.
+
+---
+
 ## 3. Remaining phases (design-only)
 
-Phase 4 ("Whole-part selection + context menu") moved to §2f, and Phase 5
-("Move/Rotate gizmo + persisted placement + undo") to §2g - both
-implemented. Numbering below is otherwise unchanged from the original plan
-(starts at 6 rather than being renumbered), so every existing cross-
-reference elsewhere in this document (e.g. §4's own "Phase 5" undo note,
-which still correctly points at what's now §2g) still points at the same
-phase it always did.
+Phase 4 ("Whole-part selection + context menu") moved to §2f, Phase 5
+("Move/Rotate gizmo + persisted placement + undo") to §2g, and Phase 6a
+("occurrence-attributed selection") to §2h - all three implemented.
+Numbering below is otherwise unchanged from the original plan (starts at 6
+rather than being renumbered), so every existing cross-reference elsewhere
+in this document (e.g. §4's own "Phase 5" undo note, which still correctly
+points at what's now §2g) still points at the same phase it always did.
 
 5. **~~Move/Rotate gizmo + persisted placement + undo~~ — moved to §2g,
    implemented.**
@@ -1002,30 +1118,19 @@ phase it always did.
    fork commit) but needs new forwarding functions that don't exist yet —
    explicitly deferred past v1.
 
-   **6a. Prerequisite — occurrence-attributed selection.** Surfaced by a
-   user request for SOLIDWORKS-style "selection breadcrumbs" (see 6b) while
-   auditing Phases 0-5 for completeness: `SelectionEntityRef.occurrenceId`
-   (`client/lib/viewport3d/selection_hit_test.dart`) is populated *only*
-   for a `SelectionEntityKind.component` hit today - a face/edge/vertex hit
-   carries just `bodyId` + a local index, with no way to tell which placed
-   Occurrence it came from. That's fine for Phase 4/5 (whole-component
-   selection, top-level gizmo drag), but a mate needs "this face, on this
-   *specific* Occurrence" - the same Part placed twice (Phase 2's own
-   dedup precedent) must resolve to two distinct mate targets, not one
-   ambiguous one. This item is mate authoring's own real prerequisite, not
-   optional polish riding along with it: thread `occurrenceId`/
-   `occurrencePath` through every `SelectionEntityKind` (not just
-   `component`) wherever a hit happens on assembly-instance geometry, before
-   `assembly_solver.py`'s own `MateEntityRef` plumbing can correctly name
-   what a mate actually targets.
+   **6a. ~~Prerequisite — occurrence-attributed selection.~~ — moved to
+   §2h, implemented.**
    **6b. Follow-on — selection breadcrumbs UI (not blocking the Phase 6
    mate MVP).** The user's own proposal: after selecting a face, an
    unintrusive horizontal breadcrumb bar shows the containment hierarchy
    (face → body → feature → part → assembly) as tappable icons, each one
    retargeting the selection up a level - mirrors SOLIDWORKS' own
-   breadcrumb trail. Deliberately **not** folded into the current rollout:
-   it would have to be built against an incomplete hierarchy (6a not done
-   yet) and rebuilt once 6a lands. The closest existing precedent is
+   breadcrumb trail. Deliberately **not** folded into 6a's own rollout even
+   though 6a now provides the hierarchy it needs (§2h): building the
+   breadcrumb UI itself, and deciding whether/how to wire
+   `hitTestComponentInstanceEntities` into a live picking mode, are real UI
+   design work of their own, explicitly out of scope for 6a's
+   prerequisite-only pass. The closest existing precedent is
    `select_other_sheet.dart`'s hover-preview/tap-commit "Select Other"
    sheet (candidates at one screen point, not one entity's containment
    chain) - reuse that interaction grammar rather than inventing a new one.
@@ -1075,14 +1180,13 @@ are candidates for either a follow-up fix inside a later phase or a
 deliberate "still fine, leave it" call once there's real usage to judge
 them against.
 
-**Update**: items 3 and 4 were fixed directly (same session, ahead of any
-real rollout) rather than left for later - struck through in place, not
+**Update**: items 3, 4, and 5 were fixed directly (each ahead of any real
+rollout) rather than left for later - struck through in place, not
 deleted, so the record of what shipped broken and why stays intact. Items
 1-2 are still open and still genuinely await real usage before deciding
-whether they're worth fixing at all. Items 5-6 were found during a
-post-Phase-5 completeness audit (not real usage) - 5 is a small, isolated
-fix whenever this screen is next touched; 6 is formally owned by §3's new
-6a/6b split, not tracked independently here.
+whether they're worth fixing at all. Item 6 is formally owned by §3's
+6a/6b split (6a now implemented, §2h) and by §2h's own record of the item
+5 fix, not tracked independently here.
 
 1. **Hide/Show/Isolate can only ever *OR* onto the backend's own `hidden`
    flag, never override it.** No mutation endpoint exists for Occurrences
@@ -1150,21 +1254,22 @@ fix whenever this screen is next touched; 6 is formally owned by §3's new
    itself be a latent, likely-inconsequential quirk predating this fix -
    not touched here since it's a distinct concern from the rendering gap
    this item was actually about.
-5. **`component_context_menu.dart`'s "Move/Rotate" entry is still
-   hardcoded `enabled: false` ("Coming soon - needs Phase 5's move/rotate
-   gizmo"), and `part_screen.dart`'s handler for it is a no-op
-   (`case ComponentContextMenuAction.moveRotate: break;`) - found during
-   the post-Phase-5 completeness audit, still open.** Phase 5 *is* now
-   implemented, but nobody updated this Phase-3b-vintage stub when it
-   landed: the gizmo actually appears automatically the moment a top-level
-   component is tap-selected in Assembly lens (`_gizmoTargetOccurrence`),
-   entirely independent of this long-press menu item. Net effect: the menu
-   claims Move/Rotate is unbuilt while it already works via plain
-   selection - a discoverability/consistency bug, not a functional
-   blocker (nothing is actually broken; the feature works, just not from
-   the door a user would reasonably expect). Fix is a one-line enable (or
-   have the handler simply confirm the existing selection) whenever this
-   screen is next touched for other reasons.
+5. **~~`component_context_menu.dart`'s "Move/Rotate" entry is still
+   hardcoded `enabled: false`~~ - fixed in §2h (Phase 6a's own pass, while
+   already in this area of the codebase).** Was found during the
+   post-Phase-5 completeness audit still hardcoded `enabled: false`
+   ("Coming soon - needs Phase 5's move/rotate gizmo") with
+   `part_screen.dart`'s own handler a no-op
+   (`case ComponentContextMenuAction.moveRotate: break;`), even though
+   Phase 5 *was* already implemented and the gizmo already appears
+   automatically the moment a top-level component is tap-selected in
+   Assembly lens (`_gizmoTargetOccurrence`), entirely independent of this
+   long-press menu item - nobody had updated this Phase-3b-vintage stub
+   when Phase 5 landed. Fixed exactly the one-line way this item itself
+   predicted would suffice: the entry now renders enabled, and the
+   `moveRotate` case needed no new logic since `_onOccurrenceLongPress`
+   already selects the row (and so already targets the gizmo) before the
+   menu even opens. See §2h for the full writeup and verification.
 6. **Selection carries no occurrence attribution outside the dedicated
    `component` kind, and no feature-level face-history attribution exists
    anywhere - surfaced by a user proposal for SOLIDWORKS-style "selection

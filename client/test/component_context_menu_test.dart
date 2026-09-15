@@ -75,25 +75,36 @@ void main() {
       expect(await pendingResult, ComponentContextMenuAction.isolate);
     });
 
-    testWidgets('Move/Rotate, Mate, and Pattern render disabled with a reason', (tester) async {
+    testWidgets('Mate and Pattern render disabled with a reason', (tester) async {
       await openMenu(tester, isFocused: false, hidden: false);
-      for (final label in ['Move/Rotate', 'Mate', 'Pattern']) {
+      for (final label in ['Mate', 'Pattern']) {
         final tile = tester.widget<ListTile>(
           find.ancestor(of: find.text(label), matching: find.byType(ListTile)),
         );
         expect(tile.enabled, isFalse, reason: '$label should be disabled');
       }
-      expect(find.textContaining('Coming soon'), findsNWidgets(3));
+      expect(find.textContaining('Coming soon'), findsNWidgets(2));
     });
 
-    testWidgets('Make Focus, Hide, and Isolate render enabled (already real)', (tester) async {
+    // Appendix item 5 fix (`docs/assembly-scope.md`): Move/Rotate used to
+    // render disabled here even after Phase 5's gizmo shipped and already
+    // worked via plain tap-selection - a discoverability bug, not a missing
+    // feature. Grouped with Make Focus/Hide/Isolate now that it's real too.
+    testWidgets('Make Focus, Move/Rotate, Hide, and Isolate render enabled (already real)', (tester) async {
       await openMenu(tester, isFocused: false, hidden: false);
-      for (final label in ['Make Focus', 'Hide', 'Isolate']) {
+      for (final label in ['Make Focus', 'Move/Rotate', 'Hide', 'Isolate']) {
         final tile = tester.widget<ListTile>(
           find.ancestor(of: find.text(label), matching: find.byType(ListTile)),
         );
         expect(tile.enabled, isTrue, reason: '$label should be enabled');
       }
+    });
+
+    testWidgets('tapping Move/Rotate resolves moveRotate', (tester) async {
+      await openMenu(tester, isFocused: false, hidden: false);
+      await tester.tap(find.text('Move/Rotate'));
+      await tester.pumpAndSettle();
+      expect(await pendingResult, ComponentContextMenuAction.moveRotate);
     });
   });
 }

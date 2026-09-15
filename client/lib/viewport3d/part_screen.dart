@@ -16702,10 +16702,16 @@ class _PartScreenState extends State<PartScreen> {
   /// Hide/Show/Isolate are purely client-side (see [_hiddenOccurrenceIds]/
   /// [_isolatedOccurrenceId]'s own doc comments - no backend mutation
   /// endpoint for Occurrences exists at all, `docs/assembly-scope.md` §2e).
-  /// Move/Rotate/Mate/Pattern render disabled in the menu itself (Phases
-  /// 5-7) and so never reach this `switch` - same "picker already filtered
-  /// to enabled entries" shape [_onAssemblyAddPressed] already uses for its
-  /// own disabled entries.
+  /// Mate/Pattern render disabled in the menu itself (Phases 6-7) and so
+  /// never reach this `switch` - same "picker already filtered to enabled
+  /// entries" shape [_onAssemblyAddPressed] already uses for its own
+  /// disabled entries. Move/Rotate *does* reach this `switch` (appendix
+  /// item 5 - `component_context_menu.dart`'s own entry is enabled now) but
+  /// still needs no case body of its own: this method's very first line
+  /// already selected `occurrence` (`_selectedOccurrenceId = occurrence.id`),
+  /// which is exactly what [_gizmoTargetOccurrence] reads to show the
+  /// gizmo - the menu action is a confirmation of an already-real effect,
+  /// not a trigger for a new one.
   Future<void> _onOccurrenceLongPress(OccurrenceDto occurrence) async {
     setState(() => _selectedOccurrenceId = occurrence.id);
     final resolvedPartId = occurrence.resolvedPartId;
@@ -16741,6 +16747,10 @@ class _PartScreenState extends State<PartScreen> {
           _isolatedOccurrenceId = _isolatedOccurrenceId == occurrence.id ? null : occurrence.id;
         });
       case ComponentContextMenuAction.moveRotate:
+        // Appendix item 5: no-op by design - selecting `occurrence` above
+        // already made the gizmo target it (see this method's own doc
+        // comment).
+        break;
       case ComponentContextMenuAction.mate:
       case ComponentContextMenuAction.pattern:
         break;
