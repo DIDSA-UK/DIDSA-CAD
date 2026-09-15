@@ -765,12 +765,9 @@ standard CAD convention, which matching only the path's last segment would
 miss). Without the second function, Hide/Isolate would only ever have
 affected the tree panel's own rows, never what actually renders in the 3D
 viewport - caught before this phase's own tests were considered complete,
-not after. **A real, honestly-scoped limitation, not an oversight**: since
-there is no mutation endpoint, Hide/Show/Isolate only ever *OR* onto
-whatever the backend already reports - an Occurrence whose own `hidden`
-arrived from the backend as `true` (e.g. loaded from a file saved with it
-hidden) can never be un-hidden client-side; Show only ever clears this
-session's own override.
+not after. **Scope limit** (full write-up in §5, item 1): Hide/Show/
+Isolate can only ever *OR* onto whatever the backend already reports,
+never override it.
 
 ### Opacity/selectability split
 
@@ -792,18 +789,18 @@ subtree is excluded from `hitTestComponentInstances`' own
 the same "hidden means genuinely untestable" contract
 `PartViewport.bodiesHidden` already applies to a Part's own Bodies.
 
-**A real, honestly-scoped limitation, not an oversight**: this enforces
-selectability for placed *Occurrence instances* only. The root Part's own
-Bodies stay selectable (via the ordinary `hitTestBodies`/feature-editing
-path) even while some other component is focused - blocking that would
-mean gating the one hit-test every Part-lens feature tool in this app
-already depends on, unconditionally, a much larger and riskier change than
-this phase's own real scope. `AssemblyFocusStack` also still only tracks
-*which Part* is focused, not *which Occurrence* (Phase 3's own original
-simplification) - focusing one of two Occurrences that happen to place the
-same shared Part makes both read as "focused" simultaneously; a real,
-already-documented v1 limitation of the data model this phase inherited
-rather than one it introduced.
+**Scope limits** (full write-up in §5, items 2-4): the root Part's own
+Bodies stay selectable regardless of focus; `AssemblyFocusStack` tracks
+*which Part* is focused, not *which Occurrence*; and - found on review
+after this phase shipped, not caught by its own tests - a placed instance
+*nested inside* the focused Occurrence (a "child" in the assembly-tree
+sense) is **not** treated as part of the focused subtree by either
+`assemblyInstanceOpacity` or `_hoverHitTestComponents`' own selectable-set
+computation, both of which match only `instance.partId ==
+AssemblyFocusStack.current` (an exact target-Part match), never occurrencePath
+containment. §2d's own original "Deferred, not yet wired" language asked
+for "focus part **and its children** opaque, peers and parents
+translucent" - only the exact-match half of that was actually built.
 
 **Verified**: no backend changes this phase (pure client work, reusing
 Phase 2's existing `GET /parts/{part_id}/assembly-mesh` endpoint
@@ -896,3 +893,62 @@ same phase it always did.
   designed.
 - Composed multi-file graph `part_id`s are session-scoped, not persisted
   across app restarts.
+
+## 5. Appendix — Phase 4 scope limits (evaluate after rollout)
+
+Real, deliberately-scoped gaps Phase 4 (§2f) shipped with rather than
+silently claiming done - pulled out of that section's own narrative into
+one place specifically so they get a real look once the phase has been
+used for a while, rather than staying buried in a "Verified" paragraph
+nobody revisits. None of these block Phase 4's own stated goal (whole-
+component selection + context menu); all are candidates for either a
+follow-up fix inside a later phase or a deliberate "still fine, leave it"
+call once there's real usage to judge them against.
+
+1. **Hide/Show/Isolate can only ever *OR* onto the backend's own `hidden`
+   flag, never override it.** No mutation endpoint exists for Occurrences
+   at all (§2e), so an Occurrence whose `hidden` arrived from the backend
+   as `true` (e.g. loaded from a file saved with it hidden) can never be
+   un-hidden client-side - Show only ever clears *this session's own*
+   override, not the backend's own value. Revisit once Phase 6+ (or
+   whichever phase finally adds a real Occurrence-mutation endpoint) makes
+   a true, persisted Show possible.
+2. **The root Part's own Bodies stay selectable regardless of focus
+   state.** Once a component is focused elsewhere, its opacity correctly
+   fades (`_syncMeshNode`'s `effectiveBodyOpacity`), but the ordinary
+   `hitTestBodies`/feature-editing hit-test path was deliberately left
+   ungated - blocking it would mean touching the one hit-test every
+   Part-lens feature tool in this app already depends on, unconditionally,
+   for a selectability guarantee no bug report has asked for yet. Revisit
+   if real usage shows someone accidentally editing/selecting root-Part
+   geometry while intending to work inside a focused component.
+3. **`AssemblyFocusStack` tracks *which Part* is focused, not *which
+   Occurrence*** - a Phase 3 simplification Phase 4 inherited rather than
+   introduced. Focusing one of two Occurrences that happen to place the
+   same shared Part (a library part instanced twice) makes *both* read as
+   "focused" simultaneously - both fade in/out together, and there is no
+   way to focus just one. Revisit if/when Phase 5's gizmo or Phase 6's
+   mate authoring need to disambiguate two instances of the same Part
+   (both will likely need occurrence-path-keyed focus regardless, at which
+   point this is probably worth fixing once rather than twice).
+4. **A placed instance nested *inside* the focused Occurrence is not
+   treated as part of the focused subtree.** `assemblyInstanceOpacity` and
+   `PartViewport._hoverHitTestComponents`' own selectable-set computation
+   both match on `instance.partId == AssemblyFocusStack.current` (an exact
+   target-Part match) - an Occurrence's own child Occurrence (nested one
+   level deeper in `occurrencePath`, i.e. a sub-assembly's own contents)
+   reads as "not focused" and fades/unselects right along with genuine
+   peers and parents. This directly contradicts §2d's own original
+   deferred-to-Phase-4 language - "focus part **and its children** opaque,
+   peers and parents translucent" - only the exact-match half shipped.
+   Found on review after Phase 4 merged, not caught by its own test suite
+   (every test built a single-level `occurrencePath`, so nothing exercised
+   a genuinely nested instance against a focus). Likely the first of these
+   four worth fixing outright rather than leaving for later: the fix is a
+   bounded, well-scoped one (`assemblyInstanceOpacity`'s `isFocusedInstance`/
+   `_hoverHitTestComponents`' selectable-set check would need to walk
+   `instance.occurrencePath` for the *focused Occurrence's own id*, not
+   just compare `partId` - which in turn means `AssemblyFocusStack` or its
+   caller needs to start carrying the focused Occurrence's id alongside its
+   Part id, touching item 3 above along the way), not a rendering-pipeline
+   risk on the scale Phase 4's own instanced-rendering work was.
