@@ -1583,7 +1583,10 @@ them against.
 real rollout) rather than left for later - struck through in place, not
 deleted, so the record of what shipped broken and why stays intact. Items
 1-2 are still open and still genuinely await real usage before deciding
-whether they're worth fixing at all.
+whether they're worth fixing at all. Items 7-9 were added during Phase 7
+(§2j)'s own post-ship review, surfaced by direct user questions about the
+new `ComponentPattern` rather than a bug report - all three are still
+open.
 
 1. **Hide/Show/Isolate can only ever *OR* onto the backend's own `hidden`
    flag, never override it.** No mutation endpoint exists for Occurrences
@@ -1676,3 +1679,73 @@ whether they're worth fixing at all.
    per-face OCCT history attribution exists anywhere in the backend, per
    6b's own original finding) - not a leftover bug, a follow-up that needs
    someone to first check what OCCT can actually report.
+7. **`ComponentPattern` has no per-instance skip (§2j).** Unlike body-level
+   `PatternFeature`'s `skip_indices` (Pattern/Mirror scoping Phase 3), a
+   `ComponentPattern` is all-or-nothing - there is no way to suppress one
+   derived instance (e.g. omitting a single bolt from an otherwise-regular
+   bolt circle) while keeping the rest of the pattern. Both the model
+   (`ComponentPattern` has no `skip_indices` field) and the expansion
+   function (`app.document.assembly.expand_component_pattern_instances`
+   always derives every index from 1 to `count`/`count_angular`) would
+   need to grow one - straightforward to add later, mirroring
+   `PatternFeature.skip_indices`'s own shape and
+   `app.document.router._validate_pattern_skip_indices`'s own validation
+   (every entry a real, would-otherwise-be-created index; the untouched
+   seed's own index 0 rejected the same way), but deliberately left out of
+   Phase 7's initial scope rather than assumed needed.
+8. **A `ComponentPattern` cannot itself be patterned.** `source_occurrence_ids`
+   is validated only against `part.occurrences`
+   (`_validate_component_pattern_source_occurrence_ids`) - a derived
+   pattern instance is never persisted as a real `Occurrence` (§2j's own
+   "re-derive, don't cache" design), so there is structurally nothing for
+   a second `ComponentPattern` to reference. This is intentional, not an
+   oversight (nesting Occurrence patterns the way body-level Features can
+   chain - a pattern of a pattern - was never part of Phase 7's scope), but
+   the failure mode found on review is rougher than it should be: nothing
+   stops a user from tap-selecting a derived instance directly in the 3D
+   viewport (`PartScreen._toggleSelectedEntity`'s `component` branch sets
+   `_selectedOccurrenceId` to that instance's own synthetic
+   `occurrence_path`-derived id with no check that it names a real
+   Occurrence), then opening "Pattern Component" against it - the panel
+   opens normally, and only `createComponentPattern` at the backend fails,
+   with a generic `occurrence_not_found` 422 surfaced as inline panel error
+   text, rather than the selection or menu itself explaining "derived
+   pattern instances can't be patterned." Long-press-menu access is safe
+   from this (that menu only ever opens from a real Assembly-tree row, and
+   derived instances never appear as tree rows - see the "where do new
+   parts sit in the tree" question this item was raised alongside), only
+   the plain-tap-in-viewport path reaches it. Revisit either by actually
+   supporting nested/compound patterns, or - the smaller fix - rejecting a
+   `component`-kind tap on a synthetic (non-`Occurrence`) id before it ever
+   reaches `_selectedOccurrenceId`, with a clear user-facing reason.
+9. **No control over a Circular `ComponentPattern`'s own instance
+   orientation - only one of the two standard behaviors is implemented,
+   with no toggle for the other.** Verified directly
+   (`apply_transform_to_direction` against each derived instance): a
+   Circular pattern's derived instances currently always **rotate as they
+   go around** the axis - `expand_component_pattern_instances`'s
+   `compose(step, source_transform)` composes the pattern step's own
+   rotation *onto* the source's existing orientation (see
+   `_circular_pattern_step`'s own docstring on why `compose`'s "parent
+   applied after child" semantics give exactly this extrinsic-rotation
+   behavior), so a local vector that points toward/away from the axis on
+   the seed keeps pointing toward/away from the axis at every derived
+   position - spokes-of-a-wheel behavior, matching what most mainstream
+   CAD tools default to, and correctly the one this app should default to
+   as well. There is no way to instead **keep each instance's original
+   orientation** (translate-only around the circle, like gondolas on a
+   Ferris wheel that stay upright rather than tipping over as the wheel
+   turns) - a real, common second mode (e.g. Fusion 360's Circular
+   Pattern "Orientation: Identical" option) that this phase never
+   considered, let alone exposed a control for. Adding it needs: a new
+   `ComponentPattern` field (e.g. `orient_with_rotation: bool = True`,
+   defaulting to today's only behavior so no existing pattern's meaning
+   changes), an `expand_component_pattern_instances` branch that composes
+   only the step's *translation* onto `source_transform` when the flag is
+   false (leaving `source_transform`'s own rotation untouched - `_circular_
+   pattern_step`'s translation term already isolates cleanly from its
+   rotation term, so this is a small, well-contained change, not a
+   redesign), the matching schema/router/native-format plumbing Mate-CRUD-
+   shaped fields already all have precedent for in this same phase, and a
+   toggle in `ComponentPatternPanel` (Linear has no equivalent ambiguity -
+   a translation-only pattern has no orientation question to begin with).
