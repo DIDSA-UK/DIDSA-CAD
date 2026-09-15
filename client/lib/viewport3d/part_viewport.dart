@@ -8,6 +8,7 @@ import 'package:flutter_scene/scene.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart';
+import '../assembly/occurrence_visibility.dart' show isOccurrencePathWithinFocus;
 import '../sketch/sketch_controller.dart'
     show
         ConstraintOverlayItem,
@@ -74,15 +75,24 @@ class PartViewport extends StatefulWidget {
   /// own skip of that case) rather than a real placed Occurrence.
   final List<AssemblyOccurrenceInstanceDto> assemblyInstances;
 
-  /// Assembly support Phase 4: `AssemblyFocusStack.current`, but only when
-  /// `AssemblyFocusStack.isFocused` is true - `null` means no focus has
-  /// been pushed yet (every top-level instance renders fully opaque and
-  /// selectable, ordinary assembly browsing). Non-null names the one Part
-  /// id whose own placed instance(s) should stay opaque/selectable while
-  /// every other instance (and the root Part's own local content) fades to
-  /// [kNonPrimaryAssemblyOpacity] - see [assemblyInstanceOpacity]'s own doc
-  /// comment for the full rule.
-  final String? focusedComponentPartId;
+  /// Assembly support Phase 4, fixed (`docs/assembly-scope.md` §5 appendix
+  /// item 4): `AssemblyFocusStack.currentOccurrencePath` - empty means no
+  /// focus has been pushed yet (every top-level instance renders fully
+  /// opaque and selectable, ordinary assembly browsing). Non-empty names
+  /// the full Occurrence-id chain down to the focused Occurrence; any
+  /// instance whose own `occurrencePath` is that Occurrence or nested
+  /// inside it ([isOccurrencePathWithinFocus]) stays opaque/selectable,
+  /// while every other instance (and the root Part's own local content)
+  /// fades to [kNonPrimaryAssemblyOpacity] - see [assemblyInstanceOpacity]'s
+  /// own doc comment for the full rule. Was originally just the focused
+  /// Part's bare id (`focusedComponentPartId`) - matched by exact `partId`
+  /// equality, which read a genuinely nested instance the same as a
+  /// peer/parent; replaced with the full path so "and its children" (§2d's
+  /// own original language) actually holds. Same "stable `List` identity
+  /// until content changes" contract [bodies] itself already documents -
+  /// [AssemblyFocusStack.currentOccurrencePath] guarantees this on its own
+  /// end, so [didUpdateWidget]'s `!=` check here stays meaningful.
+  final List<String> focusedOccurrencePath;
 
   /// On-device feedback ("Show reference body button in the sketcher
   /// should now toggle visibility of all bodies on/off to show user a
@@ -903,7 +913,7 @@ class PartViewport extends StatefulWidget {
     this.bodies = const [],
     this.assemblyGeometry = const [],
     this.assemblyInstances = const [],
-    this.focusedComponentPartId,
+    this.focusedOccurrencePath = const [],
     this.bodiesHidden = false,
     required this.selectedPlane,
     required this.onPlaneTap,
@@ -1595,18 +1605,18 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         // Assembly support Phase 4: [_syncMeshNode]'s own `effectiveBodyOpacity`
         // folds this in to dim the root Part's own content while some other
         // Part is focused - see that local variable's own doc comment.
-        widget.focusedComponentPartId != oldWidget.focusedComponentPartId) {
+        widget.focusedOccurrencePath != oldWidget.focusedOccurrencePath) {
       setState(_syncMeshNode);
     }
     // Assembly support Phase 4: [_syncAssemblyInstanceNodes]'s own three
     // inputs - kept as a separate rebuild from [_syncMeshNode] above (its
-    // own, unrelated Node map) even though [focusedComponentPartId] also
+    // own, unrelated Node map) even though [focusedOccurrencePath] also
     // triggers that one, the same "each sync method owns exactly its own
     // Node map" convention every other pair of `_sync*Nodes` methods in
     // this class already follows.
     if (widget.assemblyGeometry != oldWidget.assemblyGeometry ||
         widget.assemblyInstances != oldWidget.assemblyInstances ||
-        widget.focusedComponentPartId != oldWidget.focusedComponentPartId) {
+        widget.focusedOccurrencePath != oldWidget.focusedOccurrencePath) {
       setState(_syncAssemblyInstanceNodes);
     }
     if (widget.sectionPlanes != oldWidget.sectionPlanes || widget.activeSectionId != oldWidget.activeSectionId) {
@@ -1846,18 +1856,19 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // [PartViewport.transientCoarsePreviewBodies]'s own doc comment states.
     _syncTransientPreviewNodes(scene);
     // Assembly support Phase 4 (`docs/assembly-scope.md` §3): once a focus
-    // has been pushed onto some *other* Part (`widget.focusedComponentPartId
-    // != null`), this root Part's own local content becomes context rather
-    // than what's actively being worked on - see [assemblyInstanceOpacity]'s
-    // own doc comment for the identical rule applied to a placed instance.
-    // Folded into a single local multiplier (rather than touching every
-    // `widget.bodyOpacity` read directly) so the user's own Transparency
-    // slider and this new focus-driven dimming compose instead of one
-    // silently overriding the other; `1.0` (no focus active, or none of
-    // this Part's own Occurrences have ever been used) leaves every
-    // existing non-assembly Part's rendering byte-for-byte unchanged.
+    // has been pushed onto some *other* Occurrence
+    // (`widget.focusedOccurrencePath.isNotEmpty`), this root Part's own
+    // local content becomes context rather than what's actively being
+    // worked on - see [assemblyInstanceOpacity]'s own doc comment for the
+    // identical rule applied to a placed instance. Folded into a single
+    // local multiplier (rather than touching every `widget.bodyOpacity`
+    // read directly) so the user's own Transparency slider and this new
+    // focus-driven dimming compose instead of one silently overriding the
+    // other; `1.0` (no focus active, or none of this Part's own Occurrences
+    // have ever been used) leaves every existing non-assembly Part's
+    // rendering byte-for-byte unchanged.
     final effectiveBodyOpacity =
-        widget.bodyOpacity * (widget.focusedComponentPartId == null ? 1.0 : kNonPrimaryAssemblyOpacity);
+        widget.bodyOpacity * (widget.focusedOccurrencePath.isEmpty ? 1.0 : kNonPrimaryAssemblyOpacity);
     final bodies = widget.bodies;
     if (bodies.isEmpty) {
       debugPrint('[PartViewport] _syncMeshNode: no bodies yet');
@@ -2088,7 +2099,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
     _assemblyInstanceNodes = {};
     if (widget.assemblyInstances.isEmpty) return;
-    final focusedPartId = widget.focusedComponentPartId;
+    final focusedPath = widget.focusedOccurrencePath;
     for (final instance in widget.assemblyInstances) {
       if (instance.occurrencePath.isEmpty) continue;
       // Assembly support Phase 3b/4: an instance somewhere along its own
@@ -2096,9 +2107,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       // deprioritized" contract [PartViewport.bodiesHidden] already applies
       // to a Part's own Bodies.
       if (instance.hidden) continue;
+      // Fixed (§5 appendix item 4): was `instance.partId == focusedPartId`
+      // (an exact target-Part match) - see [isOccurrencePathWithinFocus]'s
+      // own doc comment for why that read a genuinely nested instance the
+      // same as a peer/parent.
       final opacity = assemblyInstanceOpacity(
-        focusActive: focusedPartId != null,
-        isFocusedInstance: instance.partId == focusedPartId,
+        focusActive: focusedPath.isNotEmpty,
+        isFocusedInstance: isOccurrencePathWithinFocus(instance.occurrencePath, focusedPath),
       );
       final transform = matrix4FromRigidTransform(instance.worldTransform);
       final occurrenceKey = instance.occurrencePath.join('/');
@@ -3532,19 +3547,22 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// The "selectability" half of Phase 4's opacity/selectability split: an
   /// instance outside the currently-focused subtree is excluded from
   /// [selectableOccurrencePaths] entirely (see [hitTestComponentInstances]'s
-  /// own doc comment) - while [widget.focusedComponentPartId] is null
+  /// own doc comment) - while [widget.focusedOccurrencePath] is empty
   /// (ordinary top-level browsing, nothing focused yet) every instance is
-  /// selectable; once it's set, only instances whose own target Part
-  /// matches stay selectable, mirroring [assemblyInstanceOpacity]'s
-  /// identical rule for rendering.
+  /// selectable; once it's non-empty, only the focused Occurrence's own
+  /// instance and anything nested inside it stay selectable
+  /// ([isOccurrencePathWithinFocus]), mirroring [assemblyInstanceOpacity]'s
+  /// identical rule for rendering. Fixed (§5 appendix item 4): was an exact
+  /// `instance.partId == focusedPartId` match, which excluded a genuinely
+  /// nested instance the same as a peer/parent.
   HoverHit? _hoverHitTestComponents(vm.Ray ray) {
     if (!widget.selectionFilter.component || widget.assemblyInstances.isEmpty) return null;
-    final focusedPartId = widget.focusedComponentPartId;
+    final focusedPath = widget.focusedOccurrencePath;
     final selectablePaths = <String>{
       for (final instance in widget.assemblyInstances)
         if (instance.occurrencePath.isNotEmpty &&
             !instance.hidden &&
-            (focusedPartId == null || instance.partId == focusedPartId))
+            (focusedPath.isEmpty || isOccurrencePathWithinFocus(instance.occurrencePath, focusedPath)))
           instance.occurrencePath.join('/'),
     };
     if (selectablePaths.isEmpty) return null;

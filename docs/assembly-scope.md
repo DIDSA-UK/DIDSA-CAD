@@ -905,6 +905,12 @@ component selection + context menu); all are candidates for either a
 follow-up fix inside a later phase or a deliberate "still fine, leave it"
 call once there's real usage to judge them against.
 
+**Update**: items 3 and 4 were fixed directly (same session, ahead of any
+real rollout) rather than left for later - struck through in place, not
+deleted, so the record of what shipped broken and why stays intact. Items
+1-2 are still open and still genuinely await real usage before deciding
+whether they're worth fixing at all.
+
 1. **Hide/Show/Isolate can only ever *OR* onto the backend's own `hidden`
    flag, never override it.** No mutation endpoint exists for Occurrences
    at all (§2e), so an Occurrence whose `hidden` arrived from the backend
@@ -922,33 +928,52 @@ call once there's real usage to judge them against.
    for a selectability guarantee no bug report has asked for yet. Revisit
    if real usage shows someone accidentally editing/selecting root-Part
    geometry while intending to work inside a focused component.
-3. **`AssemblyFocusStack` tracks *which Part* is focused, not *which
-   Occurrence*** - a Phase 3 simplification Phase 4 inherited rather than
-   introduced. Focusing one of two Occurrences that happen to place the
-   same shared Part (a library part instanced twice) makes *both* read as
-   "focused" simultaneously - both fade in/out together, and there is no
-   way to focus just one. Revisit if/when Phase 5's gizmo or Phase 6's
-   mate authoring need to disambiguate two instances of the same Part
-   (both will likely need occurrence-path-keyed focus regardless, at which
-   point this is probably worth fixing once rather than twice).
-4. **A placed instance nested *inside* the focused Occurrence is not
-   treated as part of the focused subtree.** `assemblyInstanceOpacity` and
-   `PartViewport._hoverHitTestComponents`' own selectable-set computation
-   both match on `instance.partId == AssemblyFocusStack.current` (an exact
-   target-Part match) - an Occurrence's own child Occurrence (nested one
-   level deeper in `occurrencePath`, i.e. a sub-assembly's own contents)
-   reads as "not focused" and fades/unselects right along with genuine
-   peers and parents. This directly contradicts §2d's own original
-   deferred-to-Phase-4 language - "focus part **and its children** opaque,
-   peers and parents translucent" - only the exact-match half shipped.
-   Found on review after Phase 4 merged, not caught by its own test suite
-   (every test built a single-level `occurrencePath`, so nothing exercised
-   a genuinely nested instance against a focus). Likely the first of these
-   four worth fixing outright rather than leaving for later: the fix is a
-   bounded, well-scoped one (`assemblyInstanceOpacity`'s `isFocusedInstance`/
-   `_hoverHitTestComponents`' selectable-set check would need to walk
-   `instance.occurrencePath` for the *focused Occurrence's own id*, not
-   just compare `partId` - which in turn means `AssemblyFocusStack` or its
-   caller needs to start carrying the focused Occurrence's id alongside its
-   Part id, touching item 3 above along the way), not a rendering-pipeline
-   risk on the scale Phase 4's own instanced-rendering work was.
+3. **~~`AssemblyFocusStack` tracks *which Part* is focused, not *which
+   Occurrence*~~ - resolved as a side effect of fixing item 4 below.**
+   `AssemblyFocusStack.current` (bare Part id, used by `_refreshAssemblyTree`/
+   `_onInsertComponentPressed` to know which Part's own Occurrences/Mates to
+   fetch - a legitimate use of "just the Part id," since that answer really
+   doesn't depend on *which* placed instance you're inside) is unchanged
+   and still Part-id-keyed - that part of the original concern doesn't
+   need fixing. What actually mattered - rendering opacity/selectability
+   correctly telling two instances of the same shared Part apart - now
+   works, since both key off the new `AssemblyFocusStack.currentOccurrencePath`
+   (item 4's own fix) rather than `current`'s bare Part id.
+4. **~~A placed instance nested *inside* the focused Occurrence is not
+   treated as part of the focused subtree~~ - fixed.** `AssemblyFocusStack`
+   gained `currentOccurrencePath` (the full Occurrence-id chain down to the
+   focus, populated by `push`'s new `occurrenceId` parameter - a real,
+   non-optional argument now, not a nullable add-on) and a new pure
+   function, `client/lib/assembly/occurrence_visibility.dart`'s
+   `isOccurrencePathWithinFocus`, replaces the old exact-`partId`-match
+   check everywhere `PartViewport` decides opacity
+   (`_syncAssemblyInstanceNodes`) or selectability
+   (`_hoverHitTestComponents`) - both now correctly treat a nested child
+   instance as part of the focused subtree, matching §2d's original
+   "focus part **and its children** opaque, peers and parents translucent"
+   language for the first time. `PartViewport.focusedComponentPartId` (a
+   bare `String?`) was replaced outright by `focusedOccurrencePath` (a
+   `List<String>`, `AssemblyFocusStack.currentOccurrencePath` piped
+   straight through) rather than kept alongside it, so there is exactly
+   one source of truth for "what's focused" feeding the viewport - not two
+   fields that could drift apart. `AssemblyFocusStack.currentOccurrencePath`
+   itself only ever reassigns its `List` on an actual `push`/`pop`/`clear`
+   (never rebuilds one on a bare read), preserving the identity-based
+   change-detection contract `PartViewport.didUpdateWidget`'s `!=` checks
+   already rely on for every other `List`-typed field on that widget.
+   Real tests added: `focus_stack_test.dart` (accumulates the full chain
+   across nested pushes, not just the last one; pops remove only the last
+   segment; stable `List` identity across bare reads) and
+   `occurrence_visibility_test.dart` (`isOccurrencePathWithinFocus`'s own
+   exact-match/nested-child/peer/parent/sibling/unrelated-path cases). No
+   backend changes - client suite **1844/1844 passed** (up from 1833, 12
+   GPU-skips unchanged), `flutter analyze` clean.
+   **Noticed but out of scope for this fix**: `_onOccurrenceLongPress`'s
+   own `isFocused` (which picks "Make Focus" vs "Exit Focus" in the menu
+   label) still compares `focusStack.current == resolvedPartId` - since
+   the Assembly tree only ever shows a Part's own *children*, this can
+   only be true for a self-referencing Occurrence (which cycle detection
+   already forbids), so in practice the label the menu ever shows may
+   itself be a latent, likely-inconsequential quirk predating this fix -
+   not touched here since it's a distinct concern from the rendering gap
+   this item was actually about.

@@ -79,3 +79,36 @@ List<AssemblyOccurrenceInstanceDto> applyInstanceVisibilityOverrides(
       ),
   ];
 }
+
+/// Phase 4 fix (`docs/assembly-scope.md` §5 appendix item 4, resolved):
+/// true if [occurrencePath] identifies the currently-focused Occurrence's
+/// own placed instance, or something nested inside it - a plain list-
+/// prefix check against [focusedOccurrencePath]
+/// (`AssemblyFocusStack.currentOccurrencePath`). This is the "and its
+/// children" half of §2d's original deferred-to-Phase-4 language ("focus
+/// part *and its children* opaque, peers and parents translucent") -
+/// Phase 4 as first shipped only matched on `instance.partId ==
+/// AssemblyFocusStack.current` (an exact target-Part match), which reads a
+/// genuinely nested instance the same as a peer/parent; this function
+/// replaces that exact-match check everywhere `PartViewport` decides
+/// opacity/selectability (`_syncAssemblyInstanceNodes`/
+/// `_hoverHitTestComponents`).
+///
+/// [focusedOccurrencePath] empty (nothing focused - `AssemblyFocusStack.
+/// isFocused == false`) never matches anything; callers already gate on
+/// that condition separately wherever they need the "nothing focused, so
+/// treat everything as primary" fallback (mirrors
+/// `mesh_geometry.dart`'s `assemblyInstanceOpacity`'s own `focusActive`
+/// parameter being checked ahead of `isFocusedInstance`, not folded into
+/// this function). [occurrencePath] shorter than [focusedOccurrencePath]
+/// can never be a match (nothing is "nested inside" something deeper than
+/// itself) - checked before the segment-by-segment comparison as a cheap
+/// early exit, not because the loop below would get it wrong.
+bool isOccurrencePathWithinFocus(List<String> occurrencePath, List<String> focusedOccurrencePath) {
+  if (focusedOccurrencePath.isEmpty) return false;
+  if (occurrencePath.length < focusedOccurrencePath.length) return false;
+  for (var i = 0; i < focusedOccurrencePath.length; i++) {
+    if (occurrencePath[i] != focusedOccurrencePath[i]) return false;
+  }
+  return true;
+}

@@ -145,4 +145,40 @@ void main() {
       expect(result, isEmpty);
     });
   });
+
+  // Phase 4 fix (`docs/assembly-scope.md` §5 appendix item 4, resolved):
+  // the "and its children" half of "focus part and its children opaque,
+  // peers and parents translucent" - a plain list-prefix check.
+  group('isOccurrencePathWithinFocus', () {
+    test('an empty focusedOccurrencePath (nothing focused) never matches anything', () {
+      expect(isOccurrencePathWithinFocus(const [], const []), isFalse);
+      expect(isOccurrencePathWithinFocus(const ['a'], const []), isFalse);
+    });
+
+    test('the focused Occurrence\'s own exact path matches', () {
+      expect(isOccurrencePathWithinFocus(const ['a'], const ['a']), isTrue);
+      expect(isOccurrencePathWithinFocus(const ['a', 'b'], const ['a', 'b']), isTrue);
+    });
+
+    test('an instance nested inside the focused Occurrence matches', () {
+      expect(isOccurrencePathWithinFocus(const ['a', 'child'], const ['a']), isTrue);
+      expect(isOccurrencePathWithinFocus(const ['a', 'child', 'grandchild'], const ['a']), isTrue);
+    });
+
+    test('a peer of the focused Occurrence does not match', () {
+      expect(isOccurrencePathWithinFocus(const ['b'], const ['a']), isFalse);
+    });
+
+    test('a parent of the focused Occurrence does not match', () {
+      expect(isOccurrencePathWithinFocus(const ['a'], const ['a', 'child']), isFalse);
+    });
+
+    test('a sibling nested one level deeper (shared prefix, different leaf) does not match', () {
+      expect(isOccurrencePathWithinFocus(const ['a', 'sibling'], const ['a', 'child']), isFalse);
+    });
+
+    test('an unrelated multi-segment path sharing no prefix does not match', () {
+      expect(isOccurrencePathWithinFocus(const ['x', 'y', 'z'], const ['a', 'b']), isFalse);
+    });
+  });
 }

@@ -419,8 +419,8 @@ class _PartScreenState extends State<PartScreen> {
   /// `null` until [_part] first loads, since the stack's root is this
   /// screen's own Part id. "Make Focus"/"Exit Focus" (Phase 4,
   /// [_onOccurrenceLongPress]) are the first real `push`/`pop` call sites;
-  /// [PartViewport.focusedComponentPartId] reads [AssemblyFocusStack.current]
-  /// (only while [AssemblyFocusStack.isFocused]) for the opacity/
+  /// [PartViewport.focusedOccurrencePath] reads
+  /// [AssemblyFocusStack.currentOccurrencePath] for the opacity/
   /// selectability split - see that field's own doc comment.
   AssemblyFocusStack? _focusStack;
 
@@ -7917,7 +7917,7 @@ class _PartScreenState extends State<PartScreen> {
   /// exist at all). Called whenever the set of Occurrences on this root
   /// Part could plausibly have changed (after [_loadPart], and after
   /// [_onInsertComponentPressed] adds one) - never on a bare focus push/pop,
-  /// since that only changes [PartViewport.focusedComponentPartId] (a
+  /// since that only changes [PartViewport.focusedOccurrencePath] (a
   /// widget rebuild [PartViewport.didUpdateWidget] already reacts to on its
   /// own, no new fetch needed).
   ///
@@ -16592,7 +16592,7 @@ class _PartScreenState extends State<PartScreen> {
           setState(() => _errorMessage = 'Cannot focus an unresolved component - its file was never loaded');
           return;
         }
-        setState(() => focusStack?.push(resolvedPartId));
+        setState(() => focusStack?.push(resolvedPartId, occurrence.id));
         await _refreshAssemblyTree();
       case ComponentContextMenuAction.exitFocus:
         setState(() => focusStack?.pop());
@@ -16849,7 +16849,11 @@ class _PartScreenState extends State<PartScreen> {
                           hiddenOccurrenceIds: _hiddenOccurrenceIds,
                           isolatedOccurrenceId: _isolatedOccurrenceId,
                         ),
-                  focusedComponentPartId: (_focusStack?.isFocused ?? false) ? _focusStack!.current : null,
+                  // Fixed (§5 appendix item 4): was just `_focusStack.current`
+                  // (the focused Part's bare id) - the full occurrencePath
+                  // chain lets PartViewport tell a nested instance apart
+                  // from a genuine peer/parent (isOccurrencePathWithinFocus).
+                  focusedOccurrencePath: _focusStack?.currentOccurrencePath ?? const [],
                   selectedPlane: _selectedPlane,
                   sketchGeometries: _visibleSketchGeometries,
                   createPlanes: _createPlaneGeometries,
