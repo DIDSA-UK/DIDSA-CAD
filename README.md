@@ -121,7 +121,6 @@ This is open source, and the toolset's direction is genuinely shaped by what the
 
 - **Found a bug, or something confusing?** Open an issue — at this pre-release stage, real-world reports are the single most valuable contribution you can make.
 - **Want a feature?** Open an issue describing what you're trying to build — the module list above grows based on what people are actually inspired to make.
-- **Want to contribute code?** PRs are welcome; see [`docs/project-brief.md`](docs/project-brief.md) and [`docs/roadmap.md`](docs/roadmap.md) for the current architecture and in-flight work before diving in.
 
 ## FAQ
 
@@ -136,12 +135,6 @@ It's aimed at the same kind of work — parametric sketch-and-feature solid mode
 
 **Does it have AI CAD generation (text-to-CAD)?**
 Yes — the AI-Assisted Design module turns a text description, a voice note, or a photo of a sketch/drawing into a real, editable parametric part, not just a mesh.
-
-**Can DIDSA design gears?**
-Yes — external/internal spur, helical, herringbone, rack-and-pinion, bevel, spiral bevel, crown and planetary gear sets, generated as normal editable parts ready for 3D printing or assemblies.
-
-**Is it ready for production use?**
-No — see the Pre-release status note near the top of this page. It's genuinely usable today but still under active development, with testing coverage that isn't yet exhaustive across every device.
 
 ## License
 
