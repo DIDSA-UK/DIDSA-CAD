@@ -33,6 +33,15 @@ class PartDto {
   final String id;
   final String name;
   final List<String> featureIds;
+
+  /// Assembly support (`docs/assembly-scope.md`): cheap id-only summaries,
+  /// mirroring [featureIds]' own "ids here, full detail via
+  /// [DocumentApiClient.listOccurrences]/[listMates]" split. Can both be
+  /// non-empty on the same Part [featureIds] is, at the same time -
+  /// features and assembly structure coexist (decision #2).
+  final List<String> occurrenceIds;
+  final List<String> mateIds;
+
   final String? partNumber;
   final String? description;
   final String? revision;
@@ -46,6 +55,8 @@ class PartDto {
     required this.id,
     required this.name,
     required this.featureIds,
+    this.occurrenceIds = const [],
+    this.mateIds = const [],
     this.partNumber,
     this.description,
     this.revision,
@@ -60,6 +71,8 @@ class PartDto {
         id: json['id'] as String,
         name: json['name'] as String,
         featureIds: (json['feature_ids'] as List).cast<String>(),
+        occurrenceIds: (json['occurrence_ids'] as List? ?? const []).cast<String>(),
+        mateIds: (json['mate_ids'] as List? ?? const []).cast<String>(),
         partNumber: json['part_number'] as String?,
         description: json['description'] as String?,
         revision: json['revision'] as String?,
@@ -1270,6 +1283,192 @@ class BodyMeshDto {
         mesh: MeshDto.fromJson(json['mesh'] as Map<String, dynamic>),
         hidden: json['hidden'] as bool? ?? false,
         isSurface: json['is_surface'] as bool? ?? false,
+      );
+}
+
+/// The wire form of `app.document.models.RigidTransform` - translation +
+/// axis-angle rotation, applied rotate-then-translate (see that backend
+/// dataclass's own docstring for why axis-angle, not a quaternion, is this
+/// codebase's convention).
+class RigidTransformDto {
+  final List<double> translation;
+  final List<double> rotationAxis;
+  final double rotationAngleDegrees;
+
+  RigidTransformDto({
+    required this.translation,
+    required this.rotationAxis,
+    required this.rotationAngleDegrees,
+  });
+
+  factory RigidTransformDto.fromJson(Map<String, dynamic> json) => RigidTransformDto(
+        translation: (json['translation'] as List).map((v) => (v as num).toDouble()).toList(),
+        rotationAxis: (json['rotation_axis'] as List).map((v) => (v as num).toDouble()).toList(),
+        rotationAngleDegrees: (json['rotation_angle_degrees'] as num).toDouble(),
+      );
+}
+
+/// One unique Part's own local-space geometry within a [GetAssemblyMesh]
+/// response - see `app.document.schemas.AssemblyBodyGeometry`'s own
+/// docstring. Computed once per Part id regardless of how many
+/// [AssemblyOccurrenceInstanceDto]s place it - the instancing
+/// `DocumentApiClient.getAssemblyMesh` exists to provide.
+class AssemblyBodyGeometryDto {
+  final String partId;
+  final List<BodyMeshDto> bodies;
+
+  AssemblyBodyGeometryDto({required this.partId, required this.bodies});
+
+  factory AssemblyBodyGeometryDto.fromJson(Map<String, dynamic> json) => AssemblyBodyGeometryDto(
+        partId: json['part_id'] as String,
+        bodies: (json['bodies'] as List)
+            .map((b) => BodyMeshDto.fromJson(b as Map<String, dynamic>))
+            .toList(),
+      );
+}
+
+/// One placed instance within a [GetAssemblyMesh] response - either the
+/// requested root Part's own local content ([occurrencePath] empty, the
+/// identity transform) or one Occurrence somewhere in the resolved tree.
+/// See `app.document.schemas.AssemblyOccurrenceInstance`'s own docstring
+/// for why [occurrencePath] (not just the Occurrence's own id) is the
+/// stable per-instance key - the same Part definition can be placed more
+/// than once, at different paths, with different transforms.
+class AssemblyOccurrenceInstanceDto {
+  final List<String> occurrencePath;
+  final String partId;
+  final RigidTransformDto worldTransform;
+  final bool hidden;
+
+  AssemblyOccurrenceInstanceDto({
+    required this.occurrencePath,
+    required this.partId,
+    required this.worldTransform,
+    this.hidden = false,
+  });
+
+  factory AssemblyOccurrenceInstanceDto.fromJson(Map<String, dynamic> json) =>
+      AssemblyOccurrenceInstanceDto(
+        occurrencePath: (json['occurrence_path'] as List).cast<String>(),
+        partId: json['part_id'] as String,
+        worldTransform: RigidTransformDto.fromJson(json['world_transform'] as Map<String, dynamic>),
+        hidden: json['hidden'] as bool? ?? false,
+      );
+}
+
+/// The live, editable counterpart to [AssemblyOccurrenceInstanceDto] -
+/// `app.document.models.Occurrence` itself, what the Assembly tree's own
+/// "components" list reads from ([DocumentApiClient.listOccurrences]),
+/// unlike that geometry-fetch-only, world-transform-already-composed DTO.
+class OccurrenceDto {
+  final String id;
+  final String? externalRef;
+
+  /// Mirrors `Occurrence.part_id` - `null` until the client's compose step
+  /// (`AssemblyGraphComposer`) has resolved [externalRef] into a real Part
+  /// for this session. Named `resolvedPartId`, not `partId`, so it can't be
+  /// mistaken for a stable, always-present identity the way [id] is.
+  final String? resolvedPartId;
+
+  final String? nameOverride;
+  final RigidTransformDto transform;
+  final bool suppressed;
+  final bool hidden;
+
+  OccurrenceDto({
+    required this.id,
+    this.externalRef,
+    this.resolvedPartId,
+    this.nameOverride,
+    required this.transform,
+    this.suppressed = false,
+    this.hidden = false,
+  });
+
+  factory OccurrenceDto.fromJson(Map<String, dynamic> json) => OccurrenceDto(
+        id: json['id'] as String,
+        externalRef: json['external_ref'] as String?,
+        resolvedPartId: json['resolved_part_id'] as String?,
+        nameOverride: json['name_override'] as String?,
+        transform: RigidTransformDto.fromJson(json['transform'] as Map<String, dynamic>),
+        suppressed: json['suppressed'] as bool? ?? false,
+        hidden: json['hidden'] as bool? ?? false,
+      );
+}
+
+/// One side of a [MateDto] - see the backend `MateEntityRef`'s own
+/// docstring. Exactly one of [subshapeRef]/[planeRef]/[pointRef] is ever
+/// set.
+class MateEntityRefDto {
+  final String occurrenceId;
+  final SubShapeRefDto? subshapeRef;
+  final PlaneRefDto? planeRef;
+  final PointRefDto? pointRef;
+
+  MateEntityRefDto({required this.occurrenceId, this.subshapeRef, this.planeRef, this.pointRef});
+
+  factory MateEntityRefDto.fromJson(Map<String, dynamic> json) => MateEntityRefDto(
+        occurrenceId: json['occurrence_id'] as String,
+        subshapeRef: json['subshape_ref'] == null
+            ? null
+            : SubShapeRefDto.fromJson(json['subshape_ref'] as Map<String, dynamic>),
+        planeRef: json['plane_ref'] == null
+            ? null
+            : PlaneRefDto.fromJson(json['plane_ref'] as Map<String, dynamic>),
+        pointRef: json['point_ref'] == null
+            ? null
+            : PointRefDto.fromJson(json['point_ref'] as Map<String, dynamic>),
+      );
+}
+
+/// The Assembly tree's own Mates list - what
+/// [DocumentApiClient.listMates] returns, one entry per `app.document.
+/// models.Mate`.
+class MateDto {
+  final String id;
+  final String type;
+  final List<MateEntityRefDto> references;
+  final double? value;
+  final bool flipped;
+  final bool suppressed;
+
+  MateDto({
+    required this.id,
+    required this.type,
+    required this.references,
+    this.value,
+    this.flipped = false,
+    this.suppressed = false,
+  });
+
+  factory MateDto.fromJson(Map<String, dynamic> json) => MateDto(
+        id: json['id'] as String,
+        type: json['type'] as String,
+        references: (json['references'] as List)
+            .map((r) => MateEntityRefDto.fromJson(r as Map<String, dynamic>))
+            .toList(),
+        value: (json['value'] as num?)?.toDouble(),
+        flipped: json['flipped'] as bool? ?? false,
+        suppressed: json['suppressed'] as bool? ?? false,
+      );
+}
+
+/// `GET /document/parts/{part_id}/assembly-mesh`'s full response - see
+/// `DocumentApiClient.getAssemblyMesh`'s own doc comment for when to call
+/// this and what it requires.
+class AssemblyMeshDto {
+  final List<AssemblyBodyGeometryDto> geometry;
+  final List<AssemblyOccurrenceInstanceDto> instances;
+
+  AssemblyMeshDto({required this.geometry, required this.instances});
+
+  factory AssemblyMeshDto.fromJson(Map<String, dynamic> json) => AssemblyMeshDto(
+        geometry: (json['geometry'] as List)
+            .map((g) => AssemblyBodyGeometryDto.fromJson(g as Map<String, dynamic>))
+            .toList(),
+        instances: (json['instances'] as List)
+            .map((i) => AssemblyOccurrenceInstanceDto.fromJson(i as Map<String, dynamic>))
+            .toList(),
       );
 }
 
@@ -3810,6 +4009,47 @@ class DocumentApiClient {
             (body as List).map((b) => BodyMeshDto.fromJson(b as Map<String, dynamic>)).toList(),
       );
 
+  /// Assembly support (`docs/assembly-scope.md` Phase 2): `GET /document
+  /// /parts/{part_id}/assembly-mesh` - everything visible in [partId]'s own
+  /// assembly scene: its own local bodies (like [getPartMesh]) *and* every
+  /// Occurrence's resolved geometry, recursively, with world transforms
+  /// already composed down from the root. Requires the full multi-file
+  /// graph to already be composed into this session's Document first (see
+  /// `client/lib/assembly/assembly_graph_composer.dart` - resolve every
+  /// referenced `.didsa` file, then [importNative] the composed payload,
+  /// *then* call this). An Occurrence whose target file hasn't been
+  /// composed/loaded yet is silently skipped by the backend, not an error -
+  /// every sibling that is resolved still renders.
+  Future<AssemblyMeshDto> getAssemblyMesh(
+    String partId, {
+    double? meshQuality,
+  }) =>
+      _send(
+        () => _httpClient.get(
+              _uri('/document/parts/$partId/assembly-mesh').replace(
+                queryParameters: meshQuality == null ? null : {'quality': meshQuality.toString()},
+              ),
+              headers: _headers,
+            ),
+        (body) => AssemblyMeshDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Assembly support: `GET /document/parts/{part_id}/occurrences` - the
+  /// Assembly tree's own "components" list for [partId], full detail
+  /// (unlike [PartDto.occurrenceIds], ids only).
+  Future<List<OccurrenceDto>> listOccurrences(String partId) => _send(
+        () => _httpClient.get(_uri('/document/parts/$partId/occurrences'), headers: _headers),
+        (body) => (body as List).map((o) => OccurrenceDto.fromJson(o as Map<String, dynamic>)).toList(),
+      );
+
+  /// Assembly support: `GET /document/parts/{part_id}/mates` - the
+  /// Assembly tree's own Mates list for [partId], full detail (unlike
+  /// [PartDto.mateIds], ids only).
+  Future<List<MateDto>> listMates(String partId) => _send(
+        () => _httpClient.get(_uri('/document/parts/$partId/mates'), headers: _headers),
+        (body) => (body as List).map((m) => MateDto.fromJson(m as Map<String, dynamic>)).toList(),
+      );
+
   /// Sectioning Tool: `POST /document/parts/{part_id}/section-preview` - a
   /// live, accurate, properly-capped section (clip) of [bodyIds] against
   /// [planes] (multiple planes combine by intersection - see each plane's
@@ -3848,15 +4088,26 @@ class DocumentApiClient {
             .toList(),
       );
 
-  /// Native Save: the whole in-memory Document (every Part's ordered
-  /// Feature list) plus every Sketch referenced by any SketchFeature in it,
-  /// as a plain JSON object - no cached mesh/geometry (see the backend's
-  /// `app.document.native_format.export_native` docstring for the full
-  /// "pure parametric tree" rationale). The caller is responsible for
-  /// writing this to an actual file - client-owned files, this app has no
-  /// project storage of its own.
-  Future<Map<String, dynamic>> exportNative() => _send(
-        () => _httpClient.get(_uri('/document/export/native'), headers: _headers),
+  /// Native Save: the in-memory Document as a plain JSON object - no cached
+  /// mesh/geometry (see the backend's `app.document.native_format.
+  /// export_native` docstring for the full "pure parametric tree"
+  /// rationale). The caller is responsible for writing this to an actual
+  /// file - client-owned files, this app has no project storage of its own.
+  ///
+  /// [partId] omitted (default): every Part currently in the session - a
+  /// full snapshot. [partId] given: just that one Part's own data (its own
+  /// features *and* its own occurrences/mates, both of which can coexist -
+  /// see `docs/assembly-scope.md` decision #2), which is what saving one
+  /// file in a multi-file assembly actually needs - never the resolved
+  /// subtree an Occurrence's `externalRef` points at, since that lives in
+  /// its own separate file. Throws [ApiException] (404) for an unknown
+  /// [partId].
+  Future<Map<String, dynamic>> exportNative({String? partId}) => _send(
+        () => _httpClient.get(
+              _uri('/document/export/native')
+                  .replace(queryParameters: partId == null ? null : {'part_id': partId}),
+              headers: _headers,
+            ),
         (body) => body as Map<String, dynamic>,
       );
 

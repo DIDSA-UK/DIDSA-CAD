@@ -6,6 +6,7 @@ import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:uuid/uuid.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 import '../ai/ai_modelling_screen.dart';
@@ -20,6 +21,10 @@ import '../api/sketch_api_client.dart'
         ProfileLoopDto,
         SketchApiClient,
         TextContourDto;
+import '../assembly/add_component.dart';
+import '../assembly/assembly_lens.dart';
+import '../assembly/assembly_lens_theme.dart';
+import '../assembly/focus_stack.dart';
 import '../connection_screen.dart';
 import '../didsa_logo_button.dart';
 import '../gear/bevel_design_screen.dart';
@@ -28,6 +33,7 @@ import '../gear/gear_design_screen.dart';
 import '../sketch/sketch_controller.dart';
 import '../sketch/sketch_screen.dart';
 import 'add_button_menu.dart';
+import 'assembly_tree_panel.dart';
 import 'body_naming.dart';
 import 'boolean_panel.dart';
 import 'cascade_delete_dialog.dart';
@@ -398,6 +404,29 @@ class _PartScreenState extends State<PartScreen> {
 
   PartDto? _part;
   List<FeatureDto> _features = [];
+
+  /// Assembly support Phase 3: which side panel/toolset is currently shown
+  /// for this Part - a pure UI-state toggle, never a navigation or a
+  /// viewport change (`docs/assembly-scope.md`'s "lens toggle" decision).
+  /// Independent of [_focusStack] - which Part is currently primary is a
+  /// separate axis from which tree/toolset that primary Part is shown with.
+  AssemblyLens _lens = AssemblyLens.part;
+
+  /// Assembly support Phase 3: which Part is currently primary within this
+  /// composed assembly (see [AssemblyFocusStack]'s own doc comment) - `null`
+  /// until [_part] first loads, since the stack's root is this screen's own
+  /// Part id. Opacity/selectability enforcement for non-primary Parts is
+  /// Phase 4/5 work (needs `SelectionFilterState`'s new `component` kind) -
+  /// this screen only tracks the stack itself for now.
+  AssemblyFocusStack? _focusStack;
+
+  /// [_lens]'s own data - this Part's live Occurrences/Mates, fetched via
+  /// [_refreshAssemblyTree] and shown by [AssemblyTreePanel]. Kept separate
+  /// from [_features] (never merged into one list) since they're genuinely
+  /// different things that happen to coexist on the same Part.
+  List<OccurrenceDto> _occurrences = [];
+  List<MateDto> _mates = [];
+  String? _selectedOccurrenceId;
 
   /// Prompt A3: one entry per independently-tessellated Body (Prompt A1's
   /// `/mesh` array) - was a single `MeshDto? _mesh` before this. Empty
@@ -7756,6 +7785,7 @@ class _PartScreenState extends State<PartScreen> {
         debugPrint('[PartScreen] createPart done: ${part.id}');
       }
       _part = part;
+      _focusStack = AssemblyFocusStack(part.id);
       // LOD Phase 2 chunk 4: fire-and-forget, same convention
       // `_refreshMesh`'s own background coarse-tier fetch below uses - a
       // brand-new job-mode create (this screen's own `initialPartId` is the
@@ -7793,6 +7823,29 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _features = features;
       _recomputeCreatePlaneGeometries();
+    });
+  }
+
+  /// Assembly support Phase 3: fetches [_focusStack]'s currently-primary
+  /// Part's own Occurrences/Mates for [AssemblyTreePanel] - mirrors
+  /// [_refreshFeatures]'s own fetch-then-setState shape. Called lazily
+  /// (on first switch into [AssemblyLens.assembly], and on every
+  /// subsequent switch back into it) rather than from [_loadPart] - most
+  /// sessions never open the Assembly lens at all, so there is no reason to
+  /// pay for this fetch on every Part open the way [_refreshFeatures]'s own
+  /// Features fetch always must.
+  Future<void> _refreshAssemblyTree() async {
+    final focusPartId = _focusStack?.current ?? _part?.id;
+    if (focusPartId == null) return;
+    final occurrences = await _api.listOccurrences(focusPartId);
+    final mates = await _api.listMates(focusPartId);
+    if (!mounted) return;
+    setState(() {
+      _occurrences = occurrences;
+      _mates = mates;
+      if (_selectedOccurrenceId != null && !occurrences.any((o) => o.id == _selectedOccurrenceId)) {
+        _selectedOccurrenceId = null;
+      }
     });
   }
 
@@ -8759,11 +8812,19 @@ class _PartScreenState extends State<PartScreen> {
     if (_sketchPickerActive) _cancelSketchPicker();
   }
 
-  /// Opens the "Add" FAB's flyout. "New Sketch" enters [_planeSelectionMode]
-  /// rather than acting directly (Stage 10b); Stage 19b Item 3's "Feature"
-  /// opens the second-level Feature picker instead.
+  /// Opens the "Add" FAB's flyout - Part lens shows the existing Feature-
+  /// authoring flyout ([showAddButtonMenu], unchanged); Assembly lens shows
+  /// [showAssemblyAddMenu] instead (`docs/assembly-scope.md` §3's Phase
+  /// 3b), closing the gap Phase 3 left open (no in-UI way to add a first
+  /// component). "New Sketch" enters [_planeSelectionMode] rather than
+  /// acting directly (Stage 10b); Stage 19b Item 3's "Feature" opens the
+  /// second-level Feature picker instead.
   Future<void> _onAddPressed() async {
     if (_busy) return;
+    if (_lens == AssemblyLens.assembly) {
+      await _onAssemblyAddPressed();
+      return;
+    }
     final action = await showAddButtonMenu(context);
     if (!mounted || action == null) return;
     switch (action) {
@@ -8777,6 +8838,84 @@ class _PartScreenState extends State<PartScreen> {
       case AddButtonMenuAction.feature:
         await _onFeaturePressed();
     }
+  }
+
+  /// Assembly support Phase 3b (`docs/assembly-scope.md` §3): the "Add"
+  /// FAB's Assembly-lens branch - shows [showAssemblyAddMenu] and acts on
+  /// whichever (enabled) entry was tapped. Only
+  /// [AssemblyAddMenuAction.insertExistingComponent] is real; the other
+  /// three render disabled in the sheet itself (Create Component needs a
+  /// multi-file save flow this app doesn't have yet, Add Mate needs Phase
+  /// 6's solver, Pattern Component needs Phase 7's component pattern) and
+  /// so never reach this `switch` - mirrors [_onFeaturePressed]'s own
+  /// "picker already filtered to enabled entries" shape.
+  Future<void> _onAssemblyAddPressed() async {
+    final action = await showAssemblyAddMenu(context);
+    if (!mounted || action == null) return;
+    switch (action) {
+      case AssemblyAddMenuAction.insertExistingComponent:
+        await _onInsertComponentPressed();
+      case AssemblyAddMenuAction.createNewComponent:
+      case AssemblyAddMenuAction.addMate:
+      case AssemblyAddMenuAction.patternComponent:
+        break;
+    }
+  }
+
+  /// "Add Component" (bottom-up insert an existing `.didsa` file) - the
+  /// piece of Phase 3b that actually closes Phase 3's gap (Assembly lens
+  /// was read/view-only). Picks a file the same way [_openNativeFile]
+  /// already does (`file_picker`, `FileType.any` - see that method's own
+  /// doc comment for why not an extension allow-list; there is no
+  /// `StorageService`/`ProjectRoot` session wired into this screen to
+  /// resolve a real project-relative path against, a real gap noted in
+  /// `docs/assembly-scope.md` rather than papered over here), merges its
+  /// own exported document into this session's current full snapshot
+  /// (`add_component.dart`'s `mergeComponentIntoDocument`), and re-imports
+  /// the merged result - a full replace, the same semantics
+  /// [_openNativeFile] already relies on, just staying on this screen
+  /// instead of pushing a new one (the currently-open Part keeps its own
+  /// id across the reimport - `native_format.py`'s `_part_from_dict` never
+  /// regenerates an id it's given).
+  Future<void> _onInsertComponentPressed() async {
+    // Same "whichever Part is currently primary" lookup [_refreshAssemblyTree]
+    // already uses - today this is always the root Part (nothing pushes
+    // onto [_focusStack] yet, Phase 4's own job), but this stays correct
+    // once Make Focus actually does.
+    final rootPartId = _focusStack?.current ?? _part?.id;
+    if (rootPartId == null) return;
+
+    final result = await FilePicker.platform.pickFiles(withData: true, type: FileType.any);
+    if (result == null || result.files.isEmpty || !mounted) return;
+    final bytes = result.files.single.bytes;
+    if (bytes == null) return;
+
+    Map<String, dynamic> componentPayload;
+    try {
+      componentPayload = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
+    } catch (_) {
+      setState(() => _errorMessage = 'Not a valid native project file');
+      return;
+    }
+
+    await _runGuarded(() async {
+      final currentPayload = await _api.exportNative();
+      Map<String, dynamic> merged;
+      try {
+        merged = mergeComponentIntoDocument(
+          currentPayload: currentPayload,
+          componentPayload: componentPayload,
+          rootPartId: rootPartId,
+          occurrenceId: const Uuid().v4(),
+          externalRef: result.files.single.name,
+        );
+      } on AddComponentException catch (e) {
+        setState(() => _errorMessage = e.message);
+        return;
+      }
+      await _api.importNative(merged);
+      await _refreshAssemblyTree();
+    });
   }
 
   /// The "Add" FAB's "Feature" entry - shows the second-level picker and
@@ -16294,6 +16433,40 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
+  /// Assembly support Phase 3: [_lens]'s own toggle - flips between Part
+  /// mode (existing [FeatureTreePanel]/feature toolset, unchanged) and
+  /// Assembly mode ([AssemblyTreePanel], reading [_occurrences]/[_mates]).
+  /// Purely a UI-state flip, per `docs/assembly-scope.md`'s "lens toggle"
+  /// decision - never navigates, never touches the viewport/camera, never
+  /// changes [_part]. Re-fetches the assembly tree on every switch into
+  /// Assembly mode (see [_refreshAssemblyTree]'s own doc comment for why
+  /// this isn't instead kept always-fresh in the background).
+  void _toggleAssemblyLens() {
+    setState(() {
+      _lens = _lens == AssemblyLens.part ? AssemblyLens.assembly : AssemblyLens.part;
+    });
+    if (_lens == AssemblyLens.assembly) {
+      unawaited(_refreshAssemblyTree());
+    }
+  }
+
+  /// [AssemblyTreePanel.onOccurrenceTap] - selects/highlights that
+  /// Occurrence, mirroring [_onFeatureTap]'s own selection role for
+  /// Features. No viewport hit-testing/opacity wiring yet (Phase 4/5 own
+  /// that); this only drives [AssemblyTreePanel]'s own selected-row
+  /// highlight for now.
+  void _onOccurrenceTap(OccurrenceDto occurrence) {
+    setState(() => _selectedOccurrenceId = occurrence.id);
+  }
+
+  /// [AssemblyTreePanel.onOccurrenceLongPress] - reserved for the Component
+  /// context menu (Make Focus/Hide/Isolate/Mate/Pattern, Phase 4). A no-op
+  /// selection for now, same "wire the callback now, fill in its action
+  /// later" shape as [_onOccurrenceTap] until Phase 4 lands.
+  void _onOccurrenceLongPress(OccurrenceDto occurrence) {
+    setState(() => _selectedOccurrenceId = occurrence.id);
+  }
+
   /// Pushes the Sketch screen and, once it returns (back button or the
   /// ribbon's Exit Sketch action - both just pop this route), re-fetches
   /// Features and their Sketch content: whatever was drawn during this
@@ -16839,6 +17012,18 @@ class _PartScreenState extends State<PartScreen> {
                       bodyNames: _selectionBodyNames,
                     ),
                   ),
+                // Assembly support Phase 3: only one of FeatureTreePanel/
+                // AssemblyTreePanel is ever built at a time, gated on
+                // [_lens] - both carry their own "Close" `IconButton`, and
+                // `AnimatedSlide` keeps a merely-`visible: false` child
+                // mounted (just translated off-screen), which duplicated
+                // that "Close" button in the tree and made every close-
+                // button `find`/`tap()` in this screen's own tests
+                // ambiguous. Switching lens while the panel is open loses
+                // the slide-in animation for that one transition (the panel
+                // simply swaps), an accepted v1 cost of avoiding the
+                // ambiguity.
+                if (_lens == AssemblyLens.part)
                 Positioned.fill(
                   child: FeatureTreePanel(
                     visible: _featureTreePanelVisible,
@@ -17030,9 +17215,32 @@ class _PartScreenState extends State<PartScreen> {
                     },
                   ),
                 ),
+                // Assembly support Phase 3: [_lens]'s Assembly-mode
+                // counterpart to [FeatureTreePanel] just above - see that
+                // block's own comment for why only one of the two is ever
+                // built at a time. Same `onClose` fallback (no picker modes
+                // of its own yet to cancel first, unlike Feature tree's
+                // long `onClose` chain above).
+                if (_lens == AssemblyLens.assembly)
+                Positioned.fill(
+                  child: AssemblyTreePanel(
+                    visible: _featureTreePanelVisible,
+                    occurrences: _occurrences,
+                    mates: _mates,
+                    selectedOccurrenceId: _selectedOccurrenceId,
+                    onOccurrenceTap: _onOccurrenceTap,
+                    onOccurrenceLongPress: _onOccurrenceLongPress,
+                    onClose: () => setState(() => _featureTreeVisible = false),
+                  ),
+                ),
                 Positioned.fill(
                   child: PartToolbar(
                     visible: _toolbarOpen,
+                    lens: _lens,
+                    onInsertExistingComponent: () {
+                      setState(() => _toolbarOpen = false);
+                      unawaited(_onInsertComponentPressed());
+                    },
                     referencePlanesHidden: _referencePlanesHidden,
                     onToggleReferencePlanes: _onToggleReferencePlanes,
                     renderMode: _renderMode,
@@ -17776,6 +17984,34 @@ class _PartScreenState extends State<PartScreen> {
                               onPressed: _toggleFeatureTree,
                               child: const SvgIcon('assets/icons/feature/feature_tree.svg'),
                             ),
+                          const SizedBox(height: 8),
+                          // Assembly support Phase 3: [_lens]'s own toggle -
+                          // lives in this same Column as the hamburger/
+                          // feature-tree FABs above, same "hidden while the
+                          // toolbar is open" rule as the feature-tree FAB
+                          // just above (its own tooltip/icon flips with
+                          // [_lens] so the button always names the *other*
+                          // lens - the one tapping it switches to).
+                          if (!_toolbarOpen)
+                            FloatingActionButton.small(
+                              heroTag: 'assembly-lens-fab',
+                              tooltip: _lens == AssemblyLens.part ? 'Assembly tree' : 'Feature tree',
+                              onPressed: _toggleAssemblyLens,
+                              // Phase 3b lens theming (`docs/assembly-
+                              // scope.md` §3): this button is itself the
+                              // clearest place to signal "you're in
+                              // Assembly lens now" - tinted with the same
+                              // accent `PartToolbar`'s border and
+                              // `AssemblyTreePanel`'s header use, reverting
+                              // to the FAB's own default color (`null`) in
+                              // Part lens.
+                              backgroundColor: _lens == AssemblyLens.assembly
+                                  ? assemblyLensAccentColor(Theme.of(context).colorScheme, _lens)
+                                  : null,
+                              child: Icon(
+                                _lens == AssemblyLens.part ? Icons.view_in_ar_outlined : Icons.category_outlined,
+                              ),
+                            ),
                         ],
                       ),
                     ),
@@ -18218,6 +18454,13 @@ class _PartScreenState extends State<PartScreen> {
                       heroTag: 'add-fab',
                       tooltip: 'Add',
                       onPressed: _busy ? null : _onAddPressed,
+                      // Phase 3b lens theming: same accent as the lens-
+                      // toggle FAB above - this is the FAB whose own flyout
+                      // changes shape between lenses (Feature tools vs Add
+                      // Component/Mate/Pattern), so it gets the same signal.
+                      backgroundColor: _lens == AssemblyLens.assembly
+                          ? assemblyLensAccentColor(Theme.of(context).colorScheme, _lens)
+                          : null,
                       child: const SvgIcon('assets/icons/viewport/viewport_add.svg'),
                     ),
                   // On-device feedback ("the tooltip at the top of the

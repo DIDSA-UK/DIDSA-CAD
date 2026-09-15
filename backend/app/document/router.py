@@ -11,6 +11,7 @@ from OCC.Core.TopoDS import TopoDS_Shape
 
 from app.document.ai_plan import validate_ai_plan as validate_ai_plan_steps
 from app.document.ai_plan_schemas import PlanValidateRequest, PlanValidateResponse
+from app.document.assembly import compose_chain
 from app.document.bevel import _spiral_hand_from_feature, resolve_bevel_gear, resolve_bevel_gear_coarse
 from app.document.bevel_pair import resolve_bevel_pair, resolve_bevel_pair_coarse, resolve_member_profile_shifts
 from app.document.chamfer import resolve_chamfer
@@ -88,7 +89,7 @@ from app.document.graph import (
 )
 from app.document.import_geometry import extract_step_metadata, resolve_import
 from app.document.mesh import DEFAULT_MESH_QUALITY, MeshData, mesh_quality_from_slider, tessellate_shape
-from app.document.mesh_data import Triangle
+from app.document.mesh_data import MeshQuality, Triangle
 from app.document.mesh_export import encode_glb, encode_obj, encode_stl
 from app.document.mirror import resolve_mirror
 from app.document.native_format import NativeFormatError, export_native, import_native
@@ -125,11 +126,15 @@ from app.document.models import (
     LoftSection,
     LoftSurfaceFeature,
     MaterialAssignment,
+    Mate,
+    MateEntityRef,
+    MateType,
     MergeFeature,
     MergeMode,
     MirrorFeature,
     MoveBodyFeature,
     MoveFaceFeature,
+    Occurrence,
     OffsetSourceRef,
     OffsetSurfaceFeature,
     Part,
@@ -148,6 +153,7 @@ from app.document.models import (
     RevolveFeature,
     RevolveMode,
     RevolveSurfaceFeature,
+    RigidTransform,
     RuledSurfaceFeature,
     ScaleBodyFeature,
     SketchFeature,
@@ -184,6 +190,13 @@ from app.document.schemas import (
     JobStatusResponse,
     BevelPairMemberSpecSchema,
     BevelPairMeshPreviewResult,
+    AssemblyBodyGeometry,
+    AssemblyMeshResponse,
+    AssemblyOccurrenceInstance,
+    MateEntityRefResponse,
+    MateResponse,
+    OccurrenceResponse,
+    RigidTransformResponse,
     BodyMeshResponse,
     BooleanFeatureCreate,
     BooleanFeatureResponse,
@@ -380,6 +393,8 @@ def _part_response(part: Part) -> PartResponse:
         id=part.id,
         name=part.name,
         feature_ids=[f.id for f in part.features],
+        occurrence_ids=[o.id for o in part.occurrences],
+        mate_ids=[m.id for m in part.mates],
         part_number=part.part_number,
         description=part.description,
         revision=part.revision,
@@ -3030,6 +3045,62 @@ def list_features(part_id: str) -> list[FeatureResponse]:
 def get_feature(part_id: str, feature_id: str) -> FeatureResponse:
     part = get_part_or_404(part_id)
     return _feature_response(part, _get_feature_or_404(part, feature_id))
+
+
+def _occurrence_response(occurrence: Occurrence) -> OccurrenceResponse:
+    return OccurrenceResponse(
+        id=occurrence.id,
+        external_ref=occurrence.external_ref,
+        resolved_part_id=occurrence.part_id,
+        name_override=occurrence.name_override,
+        transform=RigidTransformResponse(
+            translation=occurrence.transform.translation,
+            rotation_axis=occurrence.transform.rotation_axis,
+            rotation_angle_degrees=occurrence.transform.rotation_angle_degrees,
+        ),
+        suppressed=occurrence.suppressed,
+        hidden=occurrence.hidden,
+    )
+
+
+def _mate_entity_ref_response(ref: MateEntityRef) -> MateEntityRefResponse:
+    return MateEntityRefResponse(
+        occurrence_id=ref.occurrence_id,
+        subshape_ref=_subshape_ref_to_schema(ref.subshape_ref) if ref.subshape_ref else None,
+        plane_ref=_plane_ref_to_schema(ref.plane_ref) if ref.plane_ref else None,
+        point_ref=_point_ref_to_schema(ref.point_ref) if ref.point_ref else None,
+    )
+
+
+def _mate_response(mate: Mate) -> MateResponse:
+    return MateResponse(
+        id=mate.id,
+        type=mate.type.value,
+        references=[_mate_entity_ref_response(ref) for ref in mate.references],
+        value=mate.value,
+        flipped=mate.flipped,
+        suppressed=mate.suppressed,
+    )
+
+
+@router.get("/parts/{part_id}/occurrences", response_model=list[OccurrenceResponse])
+def list_occurrences(part_id: str) -> list[OccurrenceResponse]:
+    """Assembly support (`docs/assembly-scope.md`): the Assembly tree's own
+    "components" list - `part_id`'s own `occurrences`, full detail (unlike
+    `PartResponse.occurrence_ids`, ids only). Coexists with `list_features`
+    above rather than replacing it - both can return real entries for the
+    same Part at once (decision #2)."""
+    part = get_part_or_404(part_id)
+    return [_occurrence_response(occurrence) for occurrence in part.occurrences]
+
+
+@router.get("/parts/{part_id}/mates", response_model=list[MateResponse])
+def list_mates(part_id: str) -> list[MateResponse]:
+    """Assembly support (`docs/assembly-scope.md`): the Assembly tree's own
+    Mates list - `part_id`'s own `mates`, full detail (unlike
+    `PartResponse.mate_ids`, ids only)."""
+    part = get_part_or_404(part_id)
+    return [_mate_response(mate) for mate in part.mates]
 
 
 @router.post(
@@ -7579,6 +7650,135 @@ def get_part_mesh(
     return responses
 
 
+def _assembly_body_mesh_responses(part: Part, mesh_quality: MeshQuality) -> list[BodyMeshResponse]:
+    """The placeholder-or-real-bodies logic `get_part_mesh` above already
+    has, factored out so `get_assembly_mesh` (below) can compute one Part's
+    own local-space bodies the same way, without `hidden_feature_ids`/
+    `rollback_excluded_feature_ids` - those are the currently-open Part's
+    own live-editing state (`PartScreen`'s hide/show and B4 rollback), not
+    meaningful for a whole-tree scene fetch of Parts the user isn't
+    actively editing right now. A Part's `hidden` Body state is still
+    reported per-Body below (same as `get_part_mesh`'s own convention) -
+    only the *editing-session* exclusions are dropped, not the persisted
+    hidden flag itself... except there is no persisted per-Body hidden flag
+    on `Part` today (it's purely the client's own `hidden_feature_ids` set,
+    per `get_part_mesh`'s own docstring) - so every Body here reports
+    `hidden=False`, and it's each client's job to apply its own hide/show
+    state when rendering, exactly as it already must for any Part it isn't
+    the primary editing target of."""
+    if not part.produces_displayable_geometry:
+        box = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
+        mesh_data = tessellate_shape(box, mesh_quality)
+        return [BodyMeshResponse(body_id=_PLACEHOLDER_BODY_ID, source="placeholder", mesh=_mesh_vertex_data(mesh_data))]
+
+    bodies = compute_part_bodies(part, frozenset())
+    responses = []
+    for body_id, shape in bodies.items():
+        owning_feature = part.get_feature(base_feature_id(body_id))
+        responses.append(
+            BodyMeshResponse(
+                body_id=body_id,
+                source="computed",
+                mesh=_mesh_vertex_data(tessellate_shape(shape, mesh_quality)),
+                is_surface=owning_feature is not None
+                and resolve_feature_produces(owning_feature, part) == Produces.SURFACE,
+            )
+        )
+    return responses
+
+
+@router.get("/parts/{part_id}/assembly-mesh", response_model=AssemblyMeshResponse)
+def get_assembly_mesh(
+    part_id: str,
+    quality: float | None = Query(default=None, ge=0.0, le=1.0),
+) -> AssemblyMeshResponse:
+    """Assembly support (`docs/assembly-scope.md` Phase 2): everything
+    visible in `part_id`'s own assembly scene - its own local bodies (from
+    `part.features`, exactly like `GET /mesh`) *and* every Occurrence's
+    resolved geometry, recursively (an Occurrence's target Part can itself
+    have its own Occurrences), with world-space transforms already composed
+    down from the root (`app.document.assembly.compose_chain`). A Part's
+    own local geometry is included as one instance with `occurrence_path=
+    []` and the identity transform - it is exactly as much part of the
+    assembly view as anything it references, since `occurrences`/`mates`
+    coexist with `features` on one Part (decision #2) rather than living on
+    a separate node type.
+
+    Requires the full multi-file graph to already be composed into this
+    session's `Document` (the client's own compose step, Phase 2 - resolve
+    every referenced `.didsa` file, assign each a session-local `part_id`,
+    send the composed graph through `POST /import/native`, *then* call this
+    endpoint). This backend has no filesystem/SAF access of its own
+    (decision #6) - an `Occurrence` whose `part_id` hasn't been resolved
+    into `document.parts` yet is silently skipped, not an error, so every
+    sibling that *is* resolved still renders. A cyclic graph (an Occurrence
+    chain that would revisit a Part already on its own path) is likewise
+    skipped defensively rather than erroring the whole response - the
+    client's own compose step is the real cycle-detection gate (Phase 2);
+    this is a backstop, not the primary validation.
+
+    Geometry is deduplicated by Part id (`AssemblyBodyGeometry`, one entry
+    per unique Part actually reachable, reusing `app.document.body_cache`'s
+    existing per-Part-id caching - see that module's own docstring) -
+    N Occurrences of one Part definition trigger one recompute and ship one
+    geometry payload, never N. Every placed instance (`AssemblyOccurrence
+    Instance`) then just carries its own `world_transform`, not its own
+    copy of the mesh."""
+    document = get_document()
+    root_part = get_part_or_404(part_id)
+    mesh_quality = DEFAULT_MESH_QUALITY if quality is None else mesh_quality_from_slider(quality)
+
+    geometry_by_part_id: dict[str, AssemblyBodyGeometry] = {}
+    instances: list[AssemblyOccurrenceInstance] = []
+
+    def _geometry_for(part: Part) -> None:
+        if part.id in geometry_by_part_id:
+            return
+        geometry_by_part_id[part.id] = AssemblyBodyGeometry(
+            part_id=part.id, bodies=_assembly_body_mesh_responses(part, mesh_quality)
+        )
+
+    def _walk(
+        part: Part,
+        occurrence_path: list[str],
+        transform_chain: list[RigidTransform],
+        hidden: bool,
+        ancestors: frozenset[str],
+    ) -> None:
+        _geometry_for(part)
+        world_transform = compose_chain(transform_chain)
+        instances.append(
+            AssemblyOccurrenceInstance(
+                occurrence_path=occurrence_path,
+                part_id=part.id,
+                world_transform=RigidTransformResponse(
+                    translation=world_transform.translation,
+                    rotation_axis=world_transform.rotation_axis,
+                    rotation_angle_degrees=world_transform.rotation_angle_degrees,
+                ),
+                hidden=hidden,
+            )
+        )
+        child_ancestors = ancestors | {part.id}
+        for occurrence in part.occurrences:
+            if occurrence.suppressed or occurrence.part_id is None:
+                continue
+            child_part = document.parts.get(occurrence.part_id)
+            if child_part is None or child_part.id in child_ancestors:
+                continue
+            _walk(
+                child_part,
+                [*occurrence_path, occurrence.id],
+                [*transform_chain, occurrence.transform],
+                occurrence.hidden,
+                child_ancestors,
+            )
+
+    _walk(root_part, [], [], hidden=False, ancestors=frozenset())
+
+    return AssemblyMeshResponse(geometry=list(geometry_by_part_id.values()), instances=instances)
+
+
 @router.post("/parts/{part_id}/section-preview", response_model=list[SectionBodyMeshResponse])
 def preview_section(
     part_id: str, payload: SectionPreviewRequest, quality: float | None = Query(default=None, ge=0.0, le=1.0)
@@ -7608,16 +7808,27 @@ def preview_section(
 
 
 @router.get("/export/native")
-def export_native_document() -> dict:
-    """Native Save: hands back the whole in-memory Document (every Part's
-    ordered Feature list) plus every Sketch referenced by any SketchFeature
-    in it, as a plain JSON dict - no cached mesh/geometry (see
-    `app.document.native_format.export_native`'s own docstring for the full
-    "pure parametric tree" rationale). Client-owned files (locked-in scope):
-    the backend has no project storage of its own, this is the client's one
-    chance to read the full state out before it writes the actual file to
-    disk."""
-    return export_native(get_document(), all_sketches())
+def export_native_document(part_id: str | None = None) -> dict:
+    """Native Save: hands back the in-memory Document as a plain JSON dict -
+    no cached mesh/geometry (see `app.document.native_format.export_native`'s
+    own docstring for the full "pure parametric tree" rationale). Client-
+    owned files (locked-in scope): the backend has no project storage of its
+    own, this is the client's one chance to read the full state out before
+    it writes the actual file to disk.
+
+    `part_id` omitted (default): every Part currently in this session's
+    Document - a full session snapshot. `part_id=<id>`: just that one
+    Part's own data (its own features *and* its own occurrences/mates, both
+    of which can coexist on one Part - see `Part`'s own docstring), which
+    is what saving a single file in a multi-file assembly actually needs
+    (`docs/assembly-scope.md`) - each `.didsa` file is independently
+    saveable, and must never embed the resolved subtree its own
+    Occurrences' `external_ref`s point at, since those live in their own
+    separate files. 404s for an unknown `part_id`."""
+    try:
+        return export_native(get_document(), all_sketches(), part_id=part_id)
+    except NativeFormatError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 
 @router.post("/import/native", response_model=NativeImportResponse)

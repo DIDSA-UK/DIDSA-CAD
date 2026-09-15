@@ -70,6 +70,16 @@ class PartResponse(BaseModel):
     id: str
     name: str
     feature_ids: list[str]
+
+    # Assembly support (`docs/assembly-scope.md`): cheap summary ids only,
+    # mirroring `feature_ids`' own "id list here, full detail via its own
+    # endpoint" split - `GET /parts/{part_id}/occurrences`/`.../mates`
+    # return the full `OccurrenceResponse`/`MateResponse` objects. A Part's
+    # `occurrences`/`mates` coexist with `features` (decision #2), so both
+    # id lists can be non-empty on the same Part at once.
+    occurrence_ids: list[str] = []
+    mate_ids: list[str] = []
+
     part_number: str | None = None
     description: str | None = None
     revision: str | None = None
@@ -2690,3 +2700,119 @@ class CascadeDeletePreviewResponse(BaseModel):
     features`' own natural order, mutating nothing."""
 
     feature_ids: list[str]
+
+
+class RigidTransformResponse(BaseModel):
+    """The wire form of `app.document.models.RigidTransform` - see that
+    dataclass's own docstring for why axis-angle, not a quaternion, is this
+    codebase's rotation convention. Used by `AssemblyOccurrenceInstance`
+    below; not tied to any one Feature the way `BodyMeshResponse` etc. are,
+    since a rigid placement isn't itself a Feature (`Occurrence.transform`
+    is a value, not something with its own `id`/history)."""
+
+    translation: tuple[float, float, float]
+    rotation_axis: tuple[float, float, float]
+    rotation_angle_degrees: float
+
+
+class AssemblyBodyGeometry(BaseModel):
+    """`GET /parts/{part_id}/assembly-mesh`'s per-Part-definition geometry -
+    one entry per *unique* Part actually reachable from the requested root
+    (itself plus every Part any Occurrence resolves to, recursively),
+    computed exactly once regardless of how many Occurrences place it
+    (`app.document.body_cache`'s own per-Part-id caching already gives this
+    for free - see that module's docstring). `bodies` is local-space,
+    identical in shape to `GET /parts/{id}/mesh`'s own response (in fact
+    the same `compute_part_bodies` call for this same `part_id`) - never
+    pre-transformed; every `AssemblyOccurrenceInstance` below that
+    references this `part_id` applies its own `world_transform` on top of
+    this same shared geometry, the instancing this endpoint exists to
+    provide (N occurrences of one definition ship one geometry payload, not
+    N)."""
+
+    part_id: str
+    bodies: list[BodyMeshResponse]
+
+
+class AssemblyOccurrenceInstance(BaseModel):
+    """One placed instance in `GET /parts/{part_id}/assembly-mesh`'s
+    response - either the requested root Part's own local bodies
+    (`occurrence_path=[]`, `world_transform` the identity - a Part's own
+    geometry is exactly as much part of its assembly view as anything it
+    references, since `occurrences`/`mates` coexist with `features` on one
+    Part, see `docs/assembly-scope.md` decision #2), or one Occurrence
+    somewhere in the resolved tree.
+
+    `occurrence_path` is the chain of `Occurrence.id`s from the root down
+    to this instance (e.g. `["occ-subassembly-1", "occ-bolt-3"]` for a bolt
+    placed inside a sub-assembly placed inside the root) - stable enough to
+    key client-side per-instance UI state (hide/isolate/selection) across a
+    single session, even though the same `part_id` might repeat elsewhere
+    in the tree with a different path and a different `world_transform`.
+    `part_id` names which `AssemblyBodyGeometry` entry's `bodies` this
+    instance places. `world_transform` is already fully composed down from
+    the root (`app.document.assembly.compose_chain`) - the client applies
+    it directly, with no further composition of its own required."""
+
+    occurrence_path: list[str]
+    part_id: str
+    world_transform: RigidTransformResponse
+    hidden: bool = False
+
+
+class AssemblyMeshResponse(BaseModel):
+    """`GET /parts/{part_id}/assembly-mesh`'s full response: every unique
+    Part's own local-space geometry (`geometry`) plus every placed instance
+    referencing it (`instances`), including the requested root Part's own
+    content as one instance with `occurrence_path=[]`. An Occurrence whose
+    `part_id` hasn't been resolved yet (the client's multi-file compose
+    step, `docs/assembly-scope.md` Phase 2, hasn't loaded that file into
+    this session) is silently skipped rather than erroring the whole
+    response - there is no geometry to show for it yet, but every sibling
+    that *is* resolved still renders."""
+
+    geometry: list[AssemblyBodyGeometry]
+    instances: list[AssemblyOccurrenceInstance]
+
+
+class OccurrenceResponse(BaseModel):
+    """`GET /parts/{part_id}/occurrences`'s per-entry shape - the live,
+    editable counterpart to `AssemblyOccurrenceInstance` above (which is
+    geometry-fetch-only, read-only, and world-transform-already-composed).
+    This is `app.document.models.Occurrence` itself: the Assembly tree's
+    own "components" list reads straight from this, one row per entry.
+    `resolved_part_id` mirrors `Occurrence.part_id` (see that field's own
+    docstring for why it's session-local, `None` until something resolves
+    it) - named `resolved_part_id` here, not `part_id`, so a client can't
+    mistake it for a stable, always-present identity the way `id` is."""
+
+    id: str
+    external_ref: str | None = None
+    resolved_part_id: str | None = None
+    name_override: str | None = None
+    transform: RigidTransformResponse
+    suppressed: bool = False
+    hidden: bool = False
+
+
+class MateEntityRefResponse(BaseModel):
+    """One side of a `MateResponse` - see `app.document.models.
+    MateEntityRef`'s own docstring. Exactly one of `subshape_ref`/
+    `plane_ref`/`point_ref` is ever set."""
+
+    occurrence_id: str
+    subshape_ref: SubShapeRefSchema | None = None
+    plane_ref: PlaneRefSchema | None = None
+    point_ref: PointRefSchema | None = None
+
+
+class MateResponse(BaseModel):
+    """`GET /parts/{part_id}/mates`'s per-entry shape - `app.document.
+    models.Mate` itself, the Assembly tree's own Mates list."""
+
+    id: str
+    type: Literal["coincident", "concentric", "parallel", "distance", "angle"]
+    references: list[MateEntityRefResponse]
+    value: float | None = None
+    flipped: bool = False
+    suppressed: bool = False

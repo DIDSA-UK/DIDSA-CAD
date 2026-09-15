@@ -2848,13 +2848,38 @@ class MaterialAssignment:
 
 @dataclass
 class Part:
-    """An independent solid-modeling history: an ordered list of Features.
+    """A `.didsa` file's content: an ordered list of Features (this Part's
+    own local solid-modeling history) *and*, since assembly support
+    (`docs/assembly-scope.md`), an assembly structure - `occurrences`
+    placing other Parts (in other files) as components, and `mates`
+    constraining them. Both coexist on every Part rather than being two
+    separate node kinds: exactly the NX-style "one file, features and
+    assembly structure side by side" model the brainstorm settled on - a
+    user models local/reference geometry (import a fixture, sketch a
+    mounting boss) via `features` in the same file where they place and
+    mate other Parts as components via `occurrences`/`mates`, switching
+    between a "feature tools + feature tree" lens and an "assembly tools +
+    assembly tree" lens on the client without ever leaving the file. A
+    Part with empty `occurrences`/`mates` is indistinguishable from a
+    pre-assembly Part; a Part with an empty `features` list is a pure
+    assembly shell. Nothing here requires a Part to be "only" one or the
+    other.
 
-    Parts never reference each other or share Features/Sketches/Points -
-    each Part is a fully separate Feature list. Stage 7's locking rule:
-    a Feature can only be edited/deleted while it is the LAST Feature in
-    this list; earlier Features are permanently locked for this stage once
-    something is added after them.
+    Parts still never share Features/Sketches/Points directly, and a
+    Part's own Feature history still never references another Part's
+    Features/Sketches/Points - that invariant (in-context editing is
+    visual-only, no persistent associative links - decision #3) is
+    unchanged. What's new is `occurrences`: a *first-class*, deliberate
+    reference from this Part to another Part-in-another-file, addressed by
+    `Occurrence.external_ref` (an opaque relative path, never a Feature/
+    Sketch/Point reference) - a different, explicitly-designed relationship
+    from the one that invariant forbids, not an exception to it.
+
+    Stage 7's locking rule: a Feature can only be edited/deleted while it
+    is the LAST Feature in this list; earlier Features are permanently
+    locked for this stage once something is added after them. Locking
+    applies only to `features` - `occurrences`/`mates` have their own,
+    independent mutation rules (Phase 5/7).
 
     Part Properties (MBD metadata): `part_number`/`description`/`revision`
     have a real STEP home (`product.id`/`.description`,
@@ -2882,6 +2907,8 @@ class Part:
     supplier_part_number: str | None = None
     default_material: MaterialAssignment | None = None
     body_material_assignments: dict[str, MaterialAssignment] = field(default_factory=dict)
+    occurrences: list["Occurrence"] = field(default_factory=list)
+    mates: list["Mate"] = field(default_factory=list)
 
     def resolve_material(self, body_id: str) -> MaterialAssignment | None:
         """The material that applies to `body_id`: its own override if one
@@ -2964,15 +2991,161 @@ class Part:
         return deleted
 
 
+@dataclass(frozen=True)
+class RigidTransform:
+    """Assembly support's placement primitive: an Occurrence's position in
+    its parent Assembly's coordinate space, as a translation plus an axis-
+    angle rotation about the Occurrence's own origin, applied rotate-then-
+    translate - the identical composition order `MoveBodyFeature` already
+    uses (see that class's own docstring: "matching SolidWorks' own
+    composition order"), kept consistent across the codebase rather than
+    introducing a second rotation convention.
+
+    Unlike `MoveBodyFeature.rotation_axis` (a `PatternAxisRef` - an axis
+    *derived* from existing Body/Sketch geometry), a `RigidTransform`'s
+    `rotation_axis` is a free unit-vector direction in the parent's
+    coordinate space, not resolved from any geometry - an Occurrence's
+    placement is arbitrary, not pinned to a reference feature. Stored as
+    axis-angle (not a quaternion) for this same MoveBodyFeature-consistency
+    reason; the assembly mate solver (`app.document.assembly_solver`,
+    Phase 7) converts to/from quaternion only at its own SolveSpace FFI
+    boundary, never in this wire type."""
+
+    translation: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    rotation_axis: tuple[float, float, float] = (0.0, 0.0, 1.0)
+    rotation_angle_degrees: float = 0.0
+
+    @staticmethod
+    def identity() -> "RigidTransform":
+        return RigidTransform()
+
+
+class MateType(str, Enum):
+    """Assembly support's basic mate set (`docs/assembly-scope.md`) - the
+    five industry-standard mates available immediately; more complex mates
+    (gear, cam, path, symmetry, width, limit) are explicitly out of scope
+    for this pass, added later the same way `PatternType`/`PlaneType` grew
+    new members without disturbing existing ones."""
+
+    COINCIDENT = "coincident"
+    CONCENTRIC = "concentric"
+    PARALLEL = "parallel"
+    DISTANCE = "distance"
+    ANGLE = "angle"
+
+
+@dataclass(frozen=True)
+class MateEntityRef:
+    """One side of a Mate: which Occurrence the referenced geometry belongs
+    to, plus the geometry itself. Reuses `SubShapeRef`/`PlaneRef`/`PointRef`
+    verbatim - the same reference types a Feature's own parameters already
+    use - since a mate references a face/edge/vertex/plane exactly the way
+    an existing Feature does; only `occurrence_id` is new, since a bare
+    `SubShapeRef` alone doesn't say which of possibly-many Occurrences of
+    the same Part definition it belongs to. Exactly one of the three ref
+    fields is ever set, mirroring `PointRef`/`PlaneRef`'s own established
+    "exactly one of N fields, payload shape validated by the router"
+    convention."""
+
+    occurrence_id: str
+    subshape_ref: SubShapeRef | None = None
+    plane_ref: PlaneRef | None = None
+    point_ref: PointRef | None = None
+
+
+@dataclass
+class Mate:
+    """A constraint between two Occurrences' geometry, of one of the five
+    `MateType`s. `value` is the distance (mm) for `DISTANCE` or the angle
+    (degrees) for `ANGLE`, unused otherwise. `flipped` is the alignment
+    flag `COINCIDENT`/`CONCENTRIC` mates need (SolidWorks' own "mate
+    alignment" toggle) to pick between the two valid normal-alignment
+    solutions a coincidence/concentricity constraint alone doesn't
+    disambiguate. Solving (turning a Mate into a resolved `RigidTransform`
+    for the Occurrences it references) is `app.document.assembly_solver`'s
+    job (Phase 6), not this dataclass's - this is data only, mirroring how
+    a Feature's own dataclass never resolves its own geometry either."""
+
+    id: str
+    type: MateType
+    references: list[MateEntityRef] = field(default_factory=list)
+    value: float | None = None
+    flipped: bool = False
+    suppressed: bool = False
+
+
+@dataclass
+class Occurrence:
+    """One placed instance of another Part (in another file) inside this
+    Part's assembly structure (see `Part`'s own docstring for why
+    `occurrences`/`mates` live directly on `Part` rather than on a
+    separate composite type). The definition/instance split an assembly
+    needs that a bare `Document.parts` dict alone doesn't give: the same
+    Part definition can appear as several Occurrences, each with its own
+    `transform`, while sharing one underlying feature history and one
+    `app.document.body_cache` entry (keyed by part id, unaffected by how
+    many Occurrences reference it - so N occurrences of one definition
+    trigger one recompute, not N).
+
+    `external_ref` is this Occurrence's target, expressed the same way
+    `MaterialAssignment.material_id` already is (see that field's own
+    docstring): an opaque, client-owned string - a relative file path,
+    for DIDSA-CAD's multi-file assembly model - that this backend stores
+    and echoes back verbatim and never parses or resolves itself. This
+    backend has no filesystem/SAF access at all (`docs/assembly-scope.md`);
+    resolving `external_ref` into a real Part is entirely the client's
+    job, done before it ever sends a composed graph to this backend.
+
+    `part_id` is `str | None`, not required - the session-local id (a key
+    into this Document's own `parts` dict) of whichever Part `external_ref`
+    has been resolved to, valid for *this* editing session only. It IS
+    round-tripped through `native_format.py`, but only ever as a same-
+    payload cross-reference (wire key `"resolved_part_id"`,
+    `_occurrence_to_dict`/`_occurrence_from_dict`): `import_native`
+    trusts a `resolved_part_id` only when it actually matches another
+    Part's `id` present in that *same* import payload (a two-pass build -
+    every Part first, then every Occurrence's cross-reference validated
+    against that set), never a bare stored path. This is exactly what lets
+    the client's compose step (`docs/assembly-scope.md`) build one combined
+    `/import/native` payload out of N resolved `.didsa` files - each file's
+    own parsed Part gets a session-local id the client assigns, and each
+    Occurrence's `resolved_part_id` names which of those *other Parts in
+    the same payload* it resolves to. A single-file save
+    (`export_native(..., part_id=X)`) naturally can't have its Occurrences'
+    targets satisfy this - the referenced Part lives in a different file,
+    not in that solo payload - so re-opening such a file alone always
+    leaves `part_id=None` regardless of what was echoed into
+    `resolved_part_id` when it was last saved: never assume it survives a
+    single-file save/reload round-trip on its own, only a same-session
+    composed-graph one."""
+
+    id: str
+    part_id: str | None = None
+    external_ref: str | None = None
+    name_override: str | None = None
+    transform: RigidTransform = field(default_factory=RigidTransform)
+    suppressed: bool = False
+    hidden: bool = False
+
+
 @dataclass
 class Document:
     """The single Document instance this stage assumes - no multi-document
-    management. Owns one or more independent Parts."""
+    management. Owns one or more Parts (`parts`) - each already able to
+    hold both local Features and assembly structure at once (see `Part`'s
+    own docstring). `root_part_id` names which Part is this session's
+    currently-open file, as opposed to a Part pulled in only because
+    something else's `Occurrence.external_ref` resolved to it (Phase 2's
+    multi-file graph compose) - optional, since a session opening a single
+    plain file has no need to distinguish "the" Part from itself."""
 
     id: str
     parts: dict[str, Part] = field(default_factory=dict)
+    root_part_id: str | None = None
 
     def add_part(self, name: str) -> Part:
         part = Part(id=str(uuid.uuid4()), name=name)
         self.parts[part.id] = part
+        if self.root_part_id is None:
+            self.root_part_id = part.id
         return part

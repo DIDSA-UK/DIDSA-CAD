@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'action_sheet.dart';
 import 'svg_icon.dart';
 
 /// Actions available from the floating "Add" button's flyout. Stage 10b adds
@@ -9,7 +10,10 @@ enum AddButtonMenuAction { newSketch, feature }
 
 /// Shows a bottom sheet of actions for the "Add" FAB, replacing its old
 /// direct-to-`_addSketchFeature` behaviour - per the Stage 10b brief, the FAB
-/// should open a flyout rather than act directly.
+/// should open a flyout rather than act directly. Part-lens only - see
+/// [showAssemblyAddMenu] for the Assembly-lens counterpart this FAB shows
+/// instead when `PartScreen._lens == AssemblyLens.assembly`
+/// (`docs/assembly-scope.md` §3's Phase 3b).
 Future<AddButtonMenuAction?> showAddButtonMenu(BuildContext context) {
   return showModalBottomSheet<AddButtonMenuAction>(
     context: context,
@@ -31,4 +35,62 @@ Future<AddButtonMenuAction?> showAddButtonMenu(BuildContext context) {
       ),
     ),
   );
+}
+
+/// Actions available from the "Add" FAB's flyout while in Assembly lens
+/// (`docs/assembly-scope.md` §3's Phase 3b - closes the gap Phase 3 left
+/// open: Assembly lens was read/view-only, with no in-UI way to add a first
+/// component). [insertExistingComponent] is real end to end (see
+/// `PartScreen._onInsertComponentPressed`/`add_component.dart`'s
+/// `mergeComponentIntoDocument`); the rest have no backing implementation
+/// yet and render disabled (see [showAssemblyAddMenu]) rather than being
+/// omitted, so this menu's shape stays stable as later phases land.
+enum AssemblyAddMenuAction {
+  insertExistingComponent,
+  createNewComponent,
+  addMate,
+  patternComponent,
+}
+
+/// Shows the Assembly-lens "Add" FAB's flyout - the direct analog of
+/// [showAddButtonMenu] for [AssemblyLens.assembly]. Shares
+/// [showActionSheet]'s shell with `component_context_menu.dart`'s
+/// [showComponentContextMenu] rather than each building its own bottom
+/// sheet, since both are flat lists of the same kind of row and several
+/// actions (Mate/Pattern) appear in both places.
+Future<AssemblyAddMenuAction?> showAssemblyAddMenu(BuildContext context) {
+  return showActionSheet<AssemblyAddMenuAction>(context, const [
+    ActionSheetEntry(
+      action: AssemblyAddMenuAction.insertExistingComponent,
+      label: 'Add Component',
+      icon: Icons.view_in_ar_outlined,
+    ),
+    ActionSheetEntry(
+      action: AssemblyAddMenuAction.createNewComponent,
+      label: 'Create Component…',
+      icon: Icons.note_add_outlined,
+      enabled: false,
+      // A brand-new in-place Part can be created in this session today
+      // (the same mechanism `PartScreen._startNewPart` already uses), but
+      // there is nowhere yet to save it out to its own file - this app has
+      // no multi-file save flow at all (`_saveNativeFile` only ever writes
+      // the single currently-open Part) - so it stays disabled rather than
+      // creating a component the user then has no way to persist.
+      disabledReason: 'Coming soon - needs a multi-file save flow first',
+    ),
+    ActionSheetEntry(
+      action: AssemblyAddMenuAction.addMate,
+      label: 'Add Mate',
+      icon: Icons.link,
+      enabled: false,
+      disabledReason: 'Coming soon - needs Phase 6\'s mate solver',
+    ),
+    ActionSheetEntry(
+      action: AssemblyAddMenuAction.patternComponent,
+      label: 'Pattern Component',
+      icon: Icons.grid_view_outlined,
+      enabled: false,
+      disabledReason: 'Coming soon - needs Phase 7\'s component pattern',
+    ),
+  ]);
 }

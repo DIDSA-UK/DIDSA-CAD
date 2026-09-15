@@ -52,11 +52,15 @@ from app.document.models import (
     LoftSection,
     LoftSurfaceFeature,
     MaterialAssignment,
+    Mate,
+    MateEntityRef,
+    MateType,
     MergeFeature,
     MergeMode,
     MirrorFeature,
     MoveBodyFeature,
     MoveFaceFeature,
+    Occurrence,
     OffsetSourceRef,
     OffsetSurfaceFeature,
     Part,
@@ -74,6 +78,7 @@ from app.document.models import (
     RevolveFeature,
     RevolveMode,
     RevolveSurfaceFeature,
+    RigidTransform,
     RuledSurfaceFeature,
     ScaleBodyFeature,
     SketchFeature,
@@ -142,6 +147,15 @@ from app.sketch.models import (
 # Bumped whenever the on-disk shape changes in a way that breaks reading an
 # older file - `import_native` rejects anything else outright rather than
 # guessing at a best-effort partial read.
+#
+# Assembly support (`docs/assembly-scope.md`) did NOT bump this: `Part`
+# gained two new optional fields, `occurrences`/`mates`
+# (`_part_to_dict`/`_part_from_dict`), the same purely-additive shape every
+# other field addition to a persisted dataclass in this file already uses
+# (`.get(key, default)` on read, so a pre-assembly file with neither key
+# just imports with empty lists) - the top-level `"parts"` list shape is
+# unchanged, so a version bump would have been a formality with nothing
+# for it to actually gate.
 SCHEMA_VERSION = 1
 
 _CONSTRAINT_CLASSES: dict[str, type[Constraint]] = {
@@ -1676,6 +1690,105 @@ def _material_assignment_from_dict(data: dict) -> MaterialAssignment:
     )
 
 
+def _rigid_transform_to_dict(transform: RigidTransform) -> dict:
+    return {
+        "translation": list(transform.translation),
+        "rotation_axis": list(transform.rotation_axis),
+        "rotation_angle_degrees": transform.rotation_angle_degrees,
+    }
+
+
+def _rigid_transform_from_dict(data: dict | None) -> RigidTransform:
+    if not data:
+        return RigidTransform()
+    translation = data.get("translation", [0.0, 0.0, 0.0])
+    rotation_axis = data.get("rotation_axis", [0.0, 0.0, 1.0])
+    return RigidTransform(
+        translation=(translation[0], translation[1], translation[2]),
+        rotation_axis=(rotation_axis[0], rotation_axis[1], rotation_axis[2]),
+        rotation_angle_degrees=data.get("rotation_angle_degrees", 0.0),
+    )
+
+
+def _occurrence_to_dict(occurrence: Occurrence) -> dict:
+    """`part_id` round-trips as `"resolved_part_id"` - see `Occurrence`'s
+    own docstring for the full mechanism: `import_native` only trusts this
+    when it actually matches another Part's `id` present in the *same*
+    import payload (validated in a second pass after every Part in that
+    payload has been built - see `import_native`'s own `_resolve_
+    occurrence_part_ids`), so a single-file save's Occurrences (whose
+    targets necessarily live in other files, not in that solo payload)
+    naturally lose it again on any later standalone reimport, exactly as
+    intended - `external_ref` remains the only identity portable across a
+    single-file save/reload."""
+    return {
+        "id": occurrence.id,
+        "external_ref": occurrence.external_ref,
+        "resolved_part_id": occurrence.part_id,
+        "name_override": occurrence.name_override,
+        "transform": _rigid_transform_to_dict(occurrence.transform),
+        "suppressed": occurrence.suppressed,
+        "hidden": occurrence.hidden,
+    }
+
+
+def _occurrence_from_dict(data: dict) -> Occurrence:
+    """`part_id` is read tentatively from `"resolved_part_id"` here - not
+    yet validated, since at this point not every Part in the payload has
+    necessarily been built yet. `import_native` validates it afterward
+    (`_resolve_occurrence_part_ids`), clearing it back to `None` unless it
+    actually names another Part present in this same payload."""
+    return Occurrence(
+        id=_require(data, "id"),
+        part_id=data.get("resolved_part_id"),
+        external_ref=data.get("external_ref"),
+        name_override=data.get("name_override"),
+        transform=_rigid_transform_from_dict(data.get("transform")),
+        suppressed=data.get("suppressed", False),
+        hidden=data.get("hidden", False),
+    )
+
+
+def _mate_entity_ref_to_dict(ref: MateEntityRef) -> dict:
+    return {
+        "occurrence_id": ref.occurrence_id,
+        "subshape_ref": _subshape_ref_to_dict(ref.subshape_ref) if ref.subshape_ref else None,
+        "plane_ref": _plane_ref_to_dict(ref.plane_ref) if ref.plane_ref else None,
+        "point_ref": _point_ref_to_dict(ref.point_ref) if ref.point_ref else None,
+    }
+
+
+def _mate_entity_ref_from_dict(data: dict) -> MateEntityRef:
+    return MateEntityRef(
+        occurrence_id=_require(data, "occurrence_id"),
+        subshape_ref=_subshape_ref_from_dict(data["subshape_ref"]) if data.get("subshape_ref") else None,
+        plane_ref=_plane_ref_from_dict(data["plane_ref"]) if data.get("plane_ref") else None,
+        point_ref=_point_ref_from_dict(data["point_ref"]) if data.get("point_ref") else None,
+    )
+
+
+def _mate_to_dict(mate: Mate) -> dict:
+    return {
+        "id": mate.id,
+        "type": mate.type.value,
+        "references": [_mate_entity_ref_to_dict(ref) for ref in mate.references],
+        "value": mate.value,
+        "flipped": mate.flipped,
+        "suppressed": mate.suppressed,
+    }
+
+
+def _mate_from_dict(data: dict) -> Mate:
+    return Mate(
+        id=_require(data, "id"),
+        type=MateType(_require(data, "type")),
+        references=[_mate_entity_ref_from_dict(ref) for ref in data.get("references", [])],
+        value=data.get("value"),
+        flipped=data.get("flipped", False),
+        suppressed=data.get("suppressed", False),
+    )
+
+
 def _part_to_dict(part: Part) -> dict:
     return {
         "id": part.id,
@@ -1697,6 +1810,15 @@ def _part_to_dict(part: Part) -> dict:
             body_id: _material_assignment_to_dict(assignment)
             for body_id, assignment in part.body_material_assignments.items()
         },
+        # Assembly support (`docs/assembly-scope.md`): a Part's own
+        # occurrences/mates, coexisting with `features` above rather than
+        # living on a separate node type - see `Part`'s own docstring.
+        # Purely additive: absent on any file saved before assembly
+        # support existed, defaulting to empty lists below, no
+        # SCHEMA_VERSION bump needed for that (see this module's own
+        # `SCHEMA_VERSION` comment).
+        "occurrences": [_occurrence_to_dict(o) for o in part.occurrences],
+        "mates": [_mate_to_dict(m) for m in part.mates],
     }
 
 
@@ -1715,20 +1837,42 @@ def _part_from_dict(data: dict) -> Part:
         body_id: _material_assignment_from_dict(assignment)
         for body_id, assignment in data.get("body_material_assignments", {}).items()
     }
+    part.occurrences = [_occurrence_from_dict(o) for o in data.get("occurrences", [])]
+    part.mates = [_mate_from_dict(m) for m in data.get("mates", [])]
     return part
 
 
-def export_native(document: Document, sketches: dict[str, Sketch]) -> dict:
-    """Serializes `document` (every Part's ordered Feature list) plus every
-    Sketch referenced by any SketchFeature across any Part, into a plain
+def export_native(document: Document, sketches: dict[str, Sketch], part_id: str | None = None) -> dict:
+    """Serializes `document` plus every Sketch referenced by any
+    SketchFeature across whichever Parts get exported, into a plain
     JSON-serializable dict - no cached mesh/geometry, no API-only fields
     (`locked`/`produces`/resolved plane geometry), matching the locked-in
     "pure parametric tree" scope. `sketches` is the full sketch store (see
     `app.sketch.store.all_sketches`) - only the ids actually referenced are
-    included, sorted for a deterministic, diff-friendly output."""
+    included, sorted for a deterministic, diff-friendly output.
+
+    `part_id=None` (default) exports every Part currently in `document.
+    parts` - a full session snapshot, useful for debug/backup or for a
+    session whose root is the only file that exists. `part_id=<id>` exports
+    just that one Part's own data - what an individual file in a multi-file
+    assembly actually saves on disk, since each file must be independently
+    saveable (`docs/assembly-scope.md`): that Part's own features *and* its
+    own occurrences/mates (both coexist - see `Part`'s own docstring) -
+    never the resolved subtree those occurrences' `external_ref`s point at,
+    since that lives in its own separate file."""
+    if part_id is not None:
+        part = document.parts.get(part_id)
+        if part is None:
+            raise NativeFormatError(f"Unknown part_id: {part_id!r}")
+        parts: dict[str, Part] = {part_id: part}
+        root_part_id = part_id
+    else:
+        parts = document.parts
+        root_part_id = document.root_part_id
+
     referenced_sketch_ids: set[str] = {
         feature.sketch_id
-        for part in document.parts.values()
+        for part in parts.values()
         for feature in part.features
         if isinstance(feature, SketchFeature)
     }
@@ -1736,7 +1880,8 @@ def export_native(document: Document, sketches: dict[str, Sketch]) -> dict:
         "schema_version": SCHEMA_VERSION,
         "document": {
             "id": document.id,
-            "parts": [_part_to_dict(part) for part in document.parts.values()],
+            "root_part_id": root_part_id,
+            "parts": [_part_to_dict(part) for part in parts.values()],
         },
         "sketches": [
             sketch_to_dict(sketches[sketch_id])
@@ -1753,7 +1898,14 @@ def import_native(data: dict) -> tuple[Document, dict[str, Sketch]]:
     (`app.document.router`) explicit "full replace" step, mirroring
     `export_native` reading from the live stores rather than writing to
     them. Raises `NativeFormatError` for anything malformed; never partially
-    populates its return value on failure."""
+    populates its return value on failure.
+
+    `document_data`'s `"root_part_id"` key is new (assembly support) but
+    optional - a file saved before it existed simply has no key, and
+    `.get(...)` below leaves `document.root_part_id` as `None`, the same
+    "no root concept" state a pre-assembly multi-Part Document already had
+    (every existing caller already picks a specific Part by id, e.g.
+    `NativeImportResponse.part_ids`, rather than relying on a root)."""
     if not isinstance(data, dict):
         raise NativeFormatError("Native file must be a JSON object")
     schema_version = data.get("schema_version")
@@ -1770,5 +1922,27 @@ def import_native(data: dict) -> tuple[Document, dict[str, Sketch]]:
     for part_data in document_data.get("parts", []):
         part = _part_from_dict(part_data)
         document.parts[part.id] = part
+    document.root_part_id = document_data.get("root_part_id")
+    _resolve_occurrence_part_ids(document)
 
     return document, sketches
+
+
+def _resolve_occurrence_part_ids(document: Document) -> None:
+    """The validation half of `Occurrence.part_id`'s round-trip (see that
+    field's own docstring, and `_occurrence_to_dict`/`_occurrence_from_
+    dict`'s): every Occurrence's tentative `part_id` (read from the wire's
+    `"resolved_part_id"`) is trusted only if it names a Part actually
+    present in `document.parts` - i.e. included in this *same* import
+    payload, exactly what the client's multi-file compose step
+    (`docs/assembly-scope.md`) produces when it bundles N resolved `.didsa`
+    files into one `/import/native` call. Anything else (a single-file
+    save's stale echo, a hand-edited or foreign id) is cleared back to
+    `None` rather than trusted - the safe, `resolve-before-use` default the
+    rest of this codebase already applies everywhere a reference might not
+    resolve (`resolve_subshape`'s own fail-closed behaviour is the
+    precedent)."""
+    for part in document.parts.values():
+        for occurrence in part.occurrences:
+            if occurrence.part_id is not None and occurrence.part_id not in document.parts:
+                occurrence.part_id = None
