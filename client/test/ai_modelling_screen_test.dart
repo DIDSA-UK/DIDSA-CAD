@@ -808,12 +808,20 @@ Here's the plan:
     expect(find.textContaining("AI Modelling can't create one automatically yet"), findsOneWidget);
     // create-Part + validate, plus the same-Part-retry context refresh a
     // gearRequestEncountered stop now also triggers - a gear_request step
-    // is still never itself executed against the real backend.
+    // is still never itself executed against the real backend. Phase 8
+    // (`docs/assembly-scope.md` §2k) widened that same context refresh to
+    // also best-effort-fetch Occurrences (for the "Placed Components"
+    // prompt section) - this mock has no real route for it, so it falls
+    // through to the catch-all `results` response, which
+    // `summarizeExistingOccurrencesForPrompt` fails to parse as a List and
+    // silently degrades from (caught broadly in `_refreshExistingPartContext`,
+    // not just `ApiException` - see that method's own doc comment).
     expect(requestedPaths, [
       '/document/new',
       '/document/parts',
       '/document/parts/part-1/ai-plan/validate',
       '/document/parts/part-1/features',
+      '/document/parts/part-1/occurrences',
     ]);
     // No Features were ever created, so no Undo is offered.
     expect(find.text('Undo this generation'), findsNothing);

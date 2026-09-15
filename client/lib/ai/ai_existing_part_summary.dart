@@ -163,6 +163,53 @@ String _describe(FeatureDto f, Map<String, String> sketchGeometry) {
   }
 }
 
+/// Assembly support Phase 8 (`docs/assembly-scope.md` §2k): the prompt-facing
+/// summary of a Part's already-placed top-level Occurrences ("Placed
+/// Components"), embedded alongside [summarizeExistingPartForPrompt]'s own
+/// Feature-tree summary in `ai_scoping_prompt.dart`'s "Editing an existing
+/// Part" block. Gives the LLM the literal `existing:<id>` token for
+/// `mate`/`move_component`/`hide_component`/`isolate_component`'s own
+/// `occurrence_id` fields, plus (best-effort) the resolved target Part's own
+/// real Body Feature ids, since a Mate's `subshape_ref.body_id` names one of
+/// those directly (a body_id local to *that* Part, never the currently-open
+/// one). An Occurrence whose target hasn't been resolved this session
+/// (`resolvedPartId == null`) still gets a line - just without any Body ids,
+/// since there is nothing to fetch yet. Returns `''` for an empty list (never
+/// a "no components" line the caller would have to filter out), matching
+/// `ai_scoping_prompt.dart`'s own "no line when there is nothing to say"
+/// convention for optional prompt sections.
+Future<String> summarizeExistingOccurrencesForPrompt(
+  DocumentApiClient documentApi,
+  List<OccurrenceDto> occurrences,
+) async {
+  if (occurrences.isEmpty) return '';
+  final lines = <String>[];
+  for (var i = 0; i < occurrences.length; i++) {
+    final o = occurrences[i];
+    final label = o.nameOverride ?? o.externalRef ?? o.id;
+    var bodyIdsNote = '';
+    if (o.resolvedPartId != null) {
+      try {
+        final features = await documentApi.listFeatures(o.resolvedPartId!);
+        final bodyIds = [for (final f in features) if (f.produces == 'body') f.id];
+        if (bodyIds.isNotEmpty) {
+          bodyIdsNote = " - Body ids for this component's own subshape_ref.body_id: ${bodyIds.join(', ')}";
+        }
+      } catch (_) {
+        // Best-effort only - an unreachable/unresolved target Part just
+        // means no Body ids are offered for this one, not a failed summary.
+      }
+    }
+    lines.add(
+      '${i + 1}. existing:${o.id} - $label'
+      '${o.hidden ? ' [currently hidden]' : ''}'
+      '${o.resolvedPartId == null ? ' [target not resolved this session - no Body ids available]' : ''}'
+      '$bodyIdsNote',
+    );
+  }
+  return lines.join('\n');
+}
+
 /// Points an extrude/revolve/sweep description back at the Sketch entry
 /// above so the model can connect its own boss/cut numbers to the real
 /// profile that produced them, rather than only knowing "a sketch was

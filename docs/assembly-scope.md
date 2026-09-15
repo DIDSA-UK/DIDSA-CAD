@@ -49,8 +49,10 @@ Hide/Isolate, per-instance opacity, instanced viewport rendering), Phase 5
 (Move/Rotate gizmo, Occurrence transform persistence, local
 component-transform undo), Phase 6a (occurrence-attributed selection -
 Mate authoring's own prerequisite), Phase 6/6b (the mate solver and
-the selection breadcrumbs UI), and Phase 7 (linear/circular
-`ComponentPattern`, §2j) implemented. Assembly lens now has a
+the selection breadcrumbs UI), Phase 7 (linear/circular
+`ComponentPattern`, §2j), and Phase 8 (AI plan pipeline integration - `mate`/
+`move_component`/`hide_component`/`isolate_component` `PlanStep` kinds,
+§2k) implemented. Assembly lens now has a
 working in-UI way to add a first component (`Add Component` →
 `mergeComponentIntoDocument`), a distinct visual identity, real Make
 Focus/Exit Focus, placed Occurrences render and are selectable in the 3D
@@ -81,7 +83,11 @@ breadcrumb hover-preview highlight), and §2j for Phase 7's own deliberate
 v1 scope limits (top-level source Occurrences only, one source per
 authored pattern in the UI even though the backend accepts several, no
 arbitrary custom axis/direction in the panel, no pattern edit/delete UI
-yet). Phase 8–9 are design-only.**
+yet), and §2k for Phase 8's own deliberate v1 scope limits (`pattern_component`
+and `add_component` both still deferred, no assembly-level edge-selector
+heuristic for a Mate's own geometry refs, the manual Hide/Show/Isolate UI
+still uses the pre-existing session-only overlay rather than the newly-
+widened `hidden` PATCH). Phase 9 is design-only.**
 
 ---
 
@@ -1497,6 +1503,240 @@ documented applies identically to the new `listComponentPatterns` call
 
 ---
 
+## 2k. Phase 8 — AI plan pipeline integration (implemented, partial)
+
+§3's original item 8: new `PlanStep` kinds so the AI plan pipeline
+(`backend/app/document/ai_plan.py`/`ai_plan_schemas.py`, workstreams 3/5 of
+`docs/ai-modelling/`) can author assembly-level edits, mirroring
+`MoveBodyStep`'s exact template one level up - Occurrences instead of
+Bodies. Shipped four of the five originally-listed kinds
+(`mate`/`move_component`/`hide_component`/`isolate_component`);
+`pattern_component` is explicitly deferred - see its own note below, which
+confirms exactly the blocker §3's own item 8 text already predicted.
+
+### The real scope boundary this phase found
+
+Read `ai_plan.py`/`ai_plan_schemas.py` before writing anything, per the
+brief's own instruction, and confirmed a boundary condition the roadmap
+text didn't spell out: `add_component` isn't part of this phase (its own
+client-side file-discovery gap, unchanged), so **no `PlanStep` kind in this
+app has ever placed a brand-new Occurrence**. Every one of this phase's four
+new kinds can therefore only ever target an Occurrence a human already
+placed by hand before asking the AI to mate/move/hide/isolate it - never one
+the plan itself just created. This maps cleanly onto the existing-Part-
+editing convention (`docs/ai-modelling/09-existing-part-editing.md`)
+already built for Features: `occurrence_id` fields accept `existing:<id>`
+(a real Occurrence already on the Part being edited) or, for a `mate`
+reference only, the literal `""` (this Part's own root content, mirroring
+`_validate_mate_entity_ref`'s identical convention) - never a plan-local id,
+since no step produces one.
+
+### The new `PlanStep` kinds
+
+`backend/app/document/ai_plan_schemas.py` gains four new Pydantic models,
+added to the `PlanStep` discriminated union:
+
+- `MateStep` (`kind: "mate"`) - mirrors `MateCreate` almost exactly:
+  `type` (`MateType`), `references` (exactly 2 `MateEntityRefStep` entries),
+  `value`/`flipped`. `MateEntityRefStep` reuses `SubShapeRefSchema`/
+  `PlaneRefSchema`/`PointRefSchema` verbatim for its own geometry field
+  (`subshape_ref`/`plane_ref`/`point_ref`) - always a literal, already-real
+  ref into the target Occurrence's own resolved Part (that Part's Bodies
+  aren't built by this plan at all, so there's nothing plan-local to
+  resolve there), while `occurrence_id` is the one field that *does* need
+  existing-Part resolution.
+- `MoveComponentStep` (`kind: "move_component"`) - follows `MoveBodyStep`'s
+  template one level up but its own placement shape mirrors
+  `RigidTransform`/`OccurrenceTransformUpdate` directly, not `MoveBodyStep`'s
+  own delta+`PatternAxisStep`+`make_copy` shape: `occurrence_id`,
+  `translation`, `rotation_axis` (a **free world-space vector**, never a
+  `sketch_line_ref` - an Occurrence's placement has no sketch geometry of
+  its own to derive an axis from, `RigidTransform.rotation_axis`'s own
+  documented convention), `rotation_angle_degrees`. A whole-value replace
+  (matching the real PATCH endpoint's own semantics), never a delta - and
+  no `make_copy` concept, since patterning a component is `pattern_component`'s
+  own, separately-scoped concern.
+- `HideComponentStep`/`IsolateComponentStep` (`kind: "hide_component"`/
+  `"isolate_component"`) - just `occurrence_id`. `isolate_component` hides
+  every *other* top-level Occurrence of the same Part and un-hides
+  `occurrence_id` itself - a plain one-shot mutation (unlike the client's
+  own toggle-to-undo Isolate overlay), matching `hide_component`'s own
+  shape.
+
+### A real, previously-open gap closed as a side effect: persisted `hidden`
+
+Before this phase, **no mutation endpoint existed for `Occurrence.hidden`
+at all** (§5's appendix item 1) - Hide/Show/Isolate were purely a
+client-side session overlay that could only ever OR onto a backend-reported
+`hidden`, never truly clear it. `hide_component`/`isolate_component` need
+somewhere real to persist to, so `OccurrenceTransformUpdate`
+(`backend/app/document/schemas.py`) gained a `hidden: bool | None = None`
+field alongside a now-optional `transform: RigidTransformResponse | None =
+None` - both independently omittable (omitted means unchanged), so a
+`hidden`-only PATCH (the AI steps' own call) never has to resupply a
+transform it never computed, and the gizmo's own transform-only PATCH is
+unaffected. `update_occurrence_transform`
+(`backend/app/document/router.py`) applies whichever of the two fields is
+given. This is a genuine, if narrow, fix to §5 item 1's own gap - a real
+`Show` is now possible via this same endpoint, even though no UI wires it
+up yet (the client's own Hide/Show/Isolate context-menu actions still use
+the pre-existing session-only overlay - see "Known v1 limitations" below).
+
+### Dry-run validation: `backend/app/document/ai_plan.py`
+
+`_PlanValidator`'s scratch `Part` now also copies `occurrences`/`mates` (not
+just `features`) - `Occurrence` is a **mutable** dataclass, so a bare
+`list(part.occurrences)` would only copy the list, leaving every element
+the same object the real Part's own list holds; `move_component`/
+`hide_component`/`isolate_component` mutate their target Occurrence's own
+fields directly, which would otherwise corrupt real, live state during a
+*dry-run* validate call. Each Occurrence is copied via `dataclasses.replace`
+instead (cheap - `RigidTransform` itself is frozen). A new
+`_lookup_occurrence` method mirrors `_lookup_existing`'s shape but is
+narrower: `existing:<id>` only (no plan-local Occurrence local_id can exist,
+per the scope boundary above), resolved against the scratch Part's own
+Occurrences by id - letting several such steps in one plan chain against
+each other's own effect (e.g. `move_component` then `hide_component` on the
+same Occurrence) without ever touching the real Part. `_handle_mate`
+mirrors `_validate_mate_create`/`create_mate`'s own **structural-only**
+validation exactly - no OCCT resolution happens at real Mate-creation time
+either (solving is `assembly_solver`'s own lazy, separate concern), so this
+dry run genuinely behaves the same as real execution would, the same
+guarantee every other handler in this module already gives.
+
+### Real execution: `client/lib/ai/ai_plan_translator.dart`
+
+`PlanTranslator._executeStep` gained four new cases, each calling the exact
+same `DocumentApiClient` methods a human-driven screen would call - never a
+new code path into the backend, per this file's own standing convention:
+
+- `move_component` → `updateOccurrenceTransform` (whole-value replace).
+- `hide_component` → a new `DocumentApiClient.updateOccurrenceHidden`
+  (`hidden`-only PATCH, the widened endpoint's other half).
+- `isolate_component` → `listOccurrences` (to enumerate every top-level
+  sibling) then `updateOccurrenceHidden` for whichever ones actually need
+  to change (skips a no-op PATCH for an Occurrence already in its target
+  state).
+- `mate` → `createMate`, then `solveForOccurrence` for whichever reference
+  actually names a real Occurrence - mirrors `MatePanel`'s own real-UI
+  behavior (§2i: solve immediately after create so the mate visibly snaps
+  into place). Which of the two references is "the one being moved" is
+  genuinely ambiguous for a plan-authored Mate (unlike a human's own
+  drag-then-mate gesture) - the second reference is used as a reasonable
+  default (the first commonly names the fixed/anchor side), skipping `""`
+  (root content, never a real Occurrence to solve). A non-converging solve
+  surfaces as a real `ApiException`, the same `PlanTranslationOutcome.
+  stepFailed` path every other genuine-geometry-error case already uses.
+
+None of the four count as a "created Feature" (`_featureProducingKinds`
+deliberately excludes them) - there is nothing for "Undo this generation"
+to delete for a Mate/transform-mutation/hidden-flag change the way there is
+for a Feature.
+
+### System prompt / existing-Part context
+
+`client/lib/ai/ai_scoping_prompt.dart` gains a new `'assembly'` tool group
+(`ai_tool_groups.dart`) with its own locked vocabulary block
+(`assemblyVocabularyText`), and the locked "Editing an existing Part" block
+gained a fourth directly-referenceable thing (a placed component) plus an
+optional "Placed Components" section, fed by a new
+`summarizeExistingOccurrencesForPrompt` (`ai_existing_part_summary.dart`) -
+the occurrence-level mirror of the existing `summarizeExistingPartForPrompt`,
+giving the LLM each placed component's own `existing:<id>` token plus
+(best-effort, degrading silently on failure) its resolved target Part's own
+real Body Feature ids, since a Mate's `subshape_ref.body_id` names one of
+those directly. `ai_modelling_screen.dart`'s `_refreshExistingPartContext`
+fetches this alongside the existing Feature-tree summary. The locked
+"Permanent limitations" text's previous flat claim ("no multi-Part
+assembly") was corrected - it now states the real, narrower limitation
+(no brand-new-component placement, but mate/move/hide/isolate of an
+already-placed one is possible once "Editing an existing Part" lists at
+least one).
+
+### `pattern_component`: still deferred, confirmed why
+
+Investigated directly rather than assumed: §3's own item 8 text predicted
+the real blocker would be "the AI plan pipeline has no existing concept of
+the Occurrence id an earlier step in this same plan just placed" - reading
+the code confirmed this is exactly right, and the scope boundary this phase
+found while implementing the other four kinds sharpens it further. Since
+`add_component` still doesn't exist as a `PlanStep` kind, *every* Occurrence
+a plan can reference in this phase is already a real, persisted top-level
+Occurrence - one the real, already-shipped `POST /parts/{part_id}/
+component-patterns` endpoint (Phase 7, §2j) can already pattern directly
+today, with no AI-plan-authored `pattern_component` step needed to reach
+it. Adding one now would need either (a) inventing a "the AI names an
+existing, human-placed Occurrence to pattern" step - genuinely useful, but
+a smaller, different feature than what item 8's own text described - or
+(b) waiting for `add_component` to exist first, so a plan can legitimately
+need to pattern something it just placed. Left for a future phase either
+way, not folded into this one.
+
+**Verified**: backend - full suite against real `pythonocc-core`/`py-slvs` -
+**2285/2285 passed** (up from 2269 baseline: 16 new tests -
+`tests/test_ai_plan_assembly_steps.py`'s own 14, covering `mate`/
+`move_component`/`hide_component`/`isolate_component` at the real HTTP
+`/ai-plan/validate` layer plus direct `_PlanValidator` runs confirming
+dry-run non-persistence and scratch-copy isolation for `isolate_component`'s
+own multi-occurrence mutation; 2 new hidden-only/transform-only PATCH cases
+in `test_occurrence_transform_update.py` confirming the widened schema's
+independent-omission behavior). Full client suite - **1960/1960 passed**
+(up from 1940 baseline; 14 GPU-skips unchanged), `flutter analyze` clean on
+every touched/new file (including catching, and fixing, one real gap this
+phase's own new step classes exposed - see below). New client tests: 5
+`PlanTranslator` Assembly cases in `ai_plan_translator_test.dart`
+(move_component's PATCH body, hide_component's hidden-only PATCH,
+isolate_component's multi-occurrence PATCH set including the no-op-skip
+case, mate's create+solve happy path, mate's root-content `""` reference
+never attempting to solve an empty id), 6 new `ai_scoping_prompt_test.dart`
+cases (the assembly group's vocabulary presence/absence, the "Placed
+Components" section's presence/absence, the corrected permanent-limitations
+text), 7 new `summarizeExistingOccurrencesForPrompt`
+cases in `ai_existing_part_summary_test.dart` (empty list, external_ref/
+name_override display, hidden flag, unresolved-target degrade, real Body
+id listing, listFeatures-failure degrade), and 2 new `ai_plan_summary_test.dart`
+cases for the four new step kinds' own one-line summaries (a real gap the
+Review & Generate panel would otherwise have hit as a compile error - Dart's
+exhaustive-switch check on `AiPlanStep` caught the missing cases immediately
+once the new step classes existed). A real pre-existing-test regression was
+also caught and fixed before this count was final: `_refreshExistingPartContext`'s
+new best-effort Occurrence fetch changed `ai_modelling_screen_test.dart`'s own
+`gear_request`-only-plan test's exact expected request-path list (a real,
+correct new `GET .../occurrences` call now happens on that same stopped-run
+refresh) and, separately, surfaced that a non-`ApiException` parse failure
+(this test's own stub backend has no real `listOccurrences` route, so the
+fetch hits a differently-shaped JSON body) needs a broader `catch` than the
+original `on ApiException` - both fixed before re-running the full suite.
+
+### Known v1 limitations from this phase
+
+- `pattern_component` is not implemented - see its own note above.
+- `add_component` still has no `PlanStep` kind at all (unchanged from
+  before this phase) - every kind this phase adds can only target an
+  Occurrence a human already placed by hand.
+- A `mate` step's `subshape_ref`/`plane_ref`/`point_ref` must already be
+  real, literal ids on the target Occurrence's own resolved Part - there is
+  no edge-selector-style heuristic (the kind Fillet/Chamfer/`ai_plan_edges`
+  has for a Body's own not-yet-built topology) for assembly-level geometry;
+  the LLM must be given real ids via the existing-Part context's own "Placed
+  Components" Body-id listing (itself best-effort and only ever offers
+  whole-Body ids, never a specific face/edge/vertex index - the AI must
+  still guess or ask about which face of a listed Body it means).
+- `move_component`'s widened `OccurrenceTransformUpdate` has no validation
+  at all (mirrors the pre-existing real PATCH endpoint's own behavior
+  exactly, including a degenerate zero-vector `rotation_axis` with a
+  nonzero angle) - dry-run and real execution agree, but neither guards
+  against nonsensical input the way `_validate_move_body_payload` guards
+  `move_body`.
+- The client's own Hide/Show/Isolate context-menu actions (§2f) still use
+  the pre-existing session-only overlay, not the newly-widened `hidden`
+  PATCH this phase added - only the AI plan pipeline calls it today. Wiring
+  the manual UI to the same real persistence is a natural, small follow-up,
+  not attempted here (out of this phase's own scope, which is the AI
+  pipeline specifically).
+
+---
+
 ## 3. Remaining phases (design-only)
 
 Phase 4 ("Whole-part selection + context menu") moved to §2f, Phase 5
@@ -1520,24 +1760,9 @@ at the same phase it always did.
    implemented.**
 7. **~~Component pattern~~ (linear + circular) — moved to §2j,
    implemented.**
-8. **AI plan pipeline integration** — new `PlanStep` kinds (`mate`,
-   `move_component`, `pattern_component`, `hide_component`,
-   `isolate_component`) following `MoveBodyStep`'s exact existing template.
-   `add_component` needs its own client-side file-discovery mechanism
-   (the stateless backend can't enumerate the user's project files) and
-   may ship as a later sub-phase. **`pattern_component` specifically**:
-   Phase 7 (§2j) shipped the real `POST /parts/{part_id}/component-patterns`
-   endpoint this step would call, but wiring a `PlanStep` kind to it is
-   deliberately left for whichever phase actually builds this item - it
-   is not "trivial once the endpoint exists" the way a first read might
-   suggest, since the AI plan pipeline has no existing concept of "the
-   Occurrence id most recently placed by an earlier `add_component` step in
-   this same plan" to feed as `source_occurrence_ids` (every other
-   `PlanStep` in this app targets a Body/Feature id the plan's own prior
-   steps already produced and can reference by construction; a
-   `pattern_component` step needs the equivalent for Occurrences, which
-   doesn't exist yet) - genuinely this item's own scope, not folded into
-   Phase 7.
+8. **~~AI plan pipeline integration~~ — moved to §2k, `mate`/`move_component`/
+   `hide_component`/`isolate_component` implemented; `pattern_component` and
+   `add_component` remain deferred, see §2k's own notes on why.**
 9. **Hardening, migration, docs** — full `.didsacad` backward-compat test
    matrix; keep this document current as phases land.
 

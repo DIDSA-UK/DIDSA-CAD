@@ -49,6 +49,7 @@ individual Points/Lines/Circles/etc. are never directly referenceable (see
 reserved (`reserved_local_id_prefix`, checked in `_run_step`).
 """
 
+import dataclasses
 import math
 import uuid
 from dataclasses import dataclass
@@ -65,12 +66,17 @@ from app.document.ai_plan_schemas import (
     ExtrudeStep,
     FilletStep,
     GearRequestStep,
+    HideComponentStep,
+    IsolateComponentStep,
     LoftSectionStep,
     LoftStep,
+    MateEntityRefStep,
+    MateStep,
     MergeStep,
     MirrorPlaneStep,
     MirrorStep,
     MoveBodyStep,
+    MoveComponentStep,
     PatternAxisStep,
     PatternDirectionStep,
     PatternStep,
@@ -108,9 +114,13 @@ from app.document.models import (
     LoftFeature,
     LoftMode,
     LoftSection,
+    Mate,
+    MateEntityRef,
+    MateType,
     MergeFeature,
     MirrorFeature,
     MoveBodyFeature,
+    Occurrence,
     Part,
     PatternAxisRef,
     PatternDirectionRef,
@@ -121,6 +131,7 @@ from app.document.models import (
     Produces,
     RevolveFeature,
     RevolveMode,
+    RigidTransform,
     ScaleBodyFeature,
     SketchFeature,
     SweepFeature,
@@ -219,7 +230,24 @@ class _Resolved:
 
 class _PlanValidator:
     def __init__(self, part: Part, disabled_kinds: frozenset[str] = frozenset()):
-        self.part = Part(id=part.id, name=part.name, features=list(part.features))
+        # Assembly support Phase 8 (`docs/assembly-scope.md` §2k): `Occurrence`
+        # is a mutable dataclass, so a plain `list(part.occurrences)` would
+        # only copy the *list*, leaving every element the same object the
+        # real Part's own `occurrences` list holds - `_handle_move_component`/
+        # `_handle_hide_component`/`_handle_isolate_component` mutate their
+        # target Occurrence's own `transform`/`hidden` fields directly (the
+        # same "scratch copy, never touch real state" contract this module's
+        # docstring already promises for Features), which would otherwise
+        # corrupt the real, live Part during a *dry-run* validate call.
+        # `dataclasses.replace` gives each one a genuinely independent copy -
+        # cheap, since `RigidTransform` itself is frozen/immutable.
+        self.part = Part(
+            id=part.id,
+            name=part.name,
+            features=list(part.features),
+            occurrences=[dataclasses.replace(o) for o in part.occurrences],
+            mates=list(part.mates),
+        )
         self.resolved: dict[str, _Resolved] = {}
         self.failed: set[str] = set()
         # AI Settings -> Tools toggle enforcement: every `kind` the client
@@ -239,6 +267,15 @@ class _PlanValidator:
         # makes the intent ("the Part's real, pre-existing Features") clear
         # regardless of which list a future edit reads from.
         self._existing_by_id: dict[str, Feature] = {f.id: f for f in part.features}
+        # Assembly support Phase 8 (`docs/assembly-scope.md` §2k): every real
+        # Occurrence already on the Part being edited, by id - built from the
+        # *scratch* copy above (not `part.occurrences`), so `_lookup_occurrence`
+        # returns the same mutable-but-scratch object every `mate`/
+        # `move_component`/`hide_component`/`isolate_component` step mutates,
+        # letting several such steps in one plan chain against each other's
+        # own effect (e.g. `move_component` then `hide_component` on the same
+        # Occurrence) without ever touching the real Part.
+        self._existing_occurrence_by_id: dict[str, Occurrence] = {o.id: o for o in self.part.occurrences}
         # A pristine snapshot of every existing SketchFeature's real Sketch,
         # captured *before* any dry-run step can touch it - restored in
         # `run`'s own `finally` below. Needed because a new sketch_point/
@@ -370,6 +407,23 @@ class _PlanValidator:
         if resolved.kind == "gear_request":
             raise _StepError({"type": "gear_body_not_validatable", "field": field, "local_id": local_id})
         return resolved
+
+    def _lookup_occurrence(self, local_id: str, field: str) -> Occurrence:
+        """Assembly support Phase 8 (`docs/assembly-scope.md` §2k):
+        `mate`/`move_component`/`hide_component`/`isolate_component`'s own
+        occurrence-reference resolution - deliberately narrower than
+        `_lookup`/`_lookup_existing`: `local_id` must start with
+        `_EXISTING_ID_PREFIX` (no `PlanStep` kind produces a brand-new
+        Occurrence yet, see `MateEntityRefStep`'s own docstring), and it
+        resolves against `self._existing_occurrence_by_id` (this run's own
+        scratch Occurrences), never `self.resolved` - an Occurrence local_id
+        is never a plan-local step result the way a Feature's is."""
+        if not local_id.startswith(_EXISTING_ID_PREFIX):
+            raise _StepError({"type": "occurrence_requires_existing_prefix", "field": field, "local_id": local_id})
+        occurrence = self._existing_occurrence_by_id.get(local_id[len(_EXISTING_ID_PREFIX) :])
+        if occurrence is None:
+            raise _StepError({"type": "unknown_existing_id", "field": field, "local_id": local_id})
+        return occurrence
 
     def _entity_ref(self, resolved: _Resolved, entity_type: SketchEntityType) -> SketchEntityRef:
         return SketchEntityRef(sketch_id=resolved.owning_sketch_id, entity_type=entity_type, entity_id=resolved.entity_id)
@@ -842,6 +896,79 @@ def _handle_move_body(v: _PlanValidator, step: MoveBodyStep) -> None:
     v.resolved[step.local_id] = _Resolved(kind="move_body", feature_id=feature.id)
 
 
+# --- Assembly (Phase 8, docs/assembly-scope.md §2k) -----------------------
+
+
+def _mate_entity_ref_from_step(v: _PlanValidator, ref: MateEntityRefStep, field: str) -> MateEntityRef:
+    from app.document.router import _plane_ref_to_domain, _point_ref_to_domain, _subshape_ref_to_domain
+
+    set_count = sum(x is not None for x in (ref.subshape_ref, ref.plane_ref, ref.point_ref))
+    if set_count != 1:
+        raise _StepError(
+            {"type": "invalid_step_payload", "message": f"{field} requires exactly one of subshape_ref, plane_ref, or point_ref"}
+        )
+    occurrence_id = ""
+    if ref.occurrence_id != "":
+        occurrence_id = v._lookup_occurrence(ref.occurrence_id, f"{field}.occurrence_id").id
+    return MateEntityRef(
+        occurrence_id=occurrence_id,
+        subshape_ref=_subshape_ref_to_domain(ref.subshape_ref) if ref.subshape_ref else None,
+        plane_ref=_plane_ref_to_domain(ref.plane_ref) if ref.plane_ref else None,
+        point_ref=_point_ref_to_domain(ref.point_ref) if ref.point_ref else None,
+    )
+
+
+def _handle_mate(v: _PlanValidator, step: MateStep) -> None:
+    """Mirrors `app.document.router._validate_mate_create`/`create_mate`'s
+    own structural-only validation exactly (no OCCT resolution happens at
+    Mate-creation time on the real endpoint either - solving is
+    `assembly_solver`'s own lazy, separate concern, see `_validate_mate_create`'s
+    own docstring) - this dry run genuinely behaves the same as real
+    execution would, the same guarantee every other handler in this module
+    already gives."""
+    if len(step.references) != 2:
+        raise _StepError({"type": "invalid_step_payload", "message": "A Mate must have exactly 2 references"})
+    references = [
+        _mate_entity_ref_from_step(v, ref, f"references[{i}]") for i, ref in enumerate(step.references)
+    ]
+    if references[0].occurrence_id == references[1].occurrence_id:
+        raise _StepError({"type": "invalid_step_payload", "message": "A Mate's two references must name different occurrences"})
+    if step.type in (MateType.DISTANCE, MateType.ANGLE) and step.value is None:
+        raise _StepError(
+            {"type": "invalid_step_payload", "message": f"A {step.type.value} Mate requires a value (mm or degrees)"}
+        )
+    mate = Mate(id=str(uuid.uuid4()), type=step.type, references=references, value=step.value, flipped=step.flipped)
+    v.part.mates.append(mate)
+    v.resolved[step.local_id] = _Resolved(kind="mate", feature_id=mate.id)
+
+
+def _handle_move_component(v: _PlanValidator, step: MoveComponentStep) -> None:
+    occurrence = v._lookup_occurrence(step.occurrence_id, "occurrence_id")
+    occurrence.transform = RigidTransform(
+        translation=step.translation,
+        rotation_axis=step.rotation_axis,
+        rotation_angle_degrees=step.rotation_angle_degrees,
+    )
+    v.resolved[step.local_id] = _Resolved(kind="move_component", feature_id=occurrence.id)
+
+
+def _handle_hide_component(v: _PlanValidator, step: HideComponentStep) -> None:
+    occurrence = v._lookup_occurrence(step.occurrence_id, "occurrence_id")
+    occurrence.hidden = True
+    v.resolved[step.local_id] = _Resolved(kind="hide_component", feature_id=occurrence.id)
+
+
+def _handle_isolate_component(v: _PlanValidator, step: IsolateComponentStep) -> None:
+    """Hides every *other* top-level Occurrence of the Part `step.occurrence_id`
+    belongs to and un-hides that Occurrence itself - see
+    `IsolateComponentStep`'s own docstring for how this differs from the
+    client's session-only Isolate toggle."""
+    occurrence = v._lookup_occurrence(step.occurrence_id, "occurrence_id")
+    for other in v.part.occurrences:
+        other.hidden = other.id != occurrence.id
+    v.resolved[step.local_id] = _Resolved(kind="isolate_component", feature_id=occurrence.id)
+
+
 # --- Fillet / Chamfer ----------------------------------------------------
 
 
@@ -1052,4 +1179,8 @@ _HANDLERS = {
     "delete_body": _handle_delete_body,
     "scale_body": _handle_scale_body,
     "move_body": _handle_move_body,
+    "mate": _handle_mate,
+    "move_component": _handle_move_component,
+    "hide_component": _handle_hide_component,
+    "isolate_component": _handle_isolate_component,
 }

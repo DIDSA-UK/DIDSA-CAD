@@ -173,4 +173,49 @@ void main() {
     expect(summary.single, contains('module=2'));
     expect(summary.single, contains('tooth_count=20'));
   });
+
+  test('mate summary shows its type and the two referenced occurrence ids', () {
+    final plan = AiGenerationPlan.fromJson({
+      'version': 1,
+      'steps': [
+        {
+          'local_id': 'mate1',
+          'kind': 'mate',
+          'type': 'coincident',
+          'references': [
+            {
+              'occurrence_id': 'existing:occ-a',
+              'subshape_ref': {'body_id': 'b1', 'shape_type': 'face', 'index': 0},
+            },
+            {
+              'occurrence_id': 'existing:occ-b',
+              'subshape_ref': {'body_id': 'b1', 'shape_type': 'face', 'index': 0},
+            },
+          ],
+        },
+      ],
+    });
+    final summary = summarizeAiPlan(plan);
+    expect(summary.single, contains('coincident'));
+    expect(summary.single, contains('existing:occ-a'));
+    expect(summary.single, contains('existing:occ-b'));
+  });
+
+  test('move_component/hide_component/isolate_component summaries name their literal occurrence_id', () {
+    final plan = AiGenerationPlan.fromJson({
+      'version': 1,
+      'steps': [
+        {'local_id': 'mv1', 'kind': 'move_component', 'occurrence_id': 'existing:occ-a'},
+        {'local_id': 'h1', 'kind': 'hide_component', 'occurrence_id': 'existing:occ-b'},
+        {'local_id': 'i1', 'kind': 'isolate_component', 'occurrence_id': 'existing:occ-c'},
+      ],
+    });
+    final summary = summarizeAiPlan(plan);
+    expect(summary[0], contains('Move Component'));
+    expect(summary[0], contains('existing:occ-a'));
+    expect(summary[1], contains('Hide Component'));
+    expect(summary[1], contains('existing:occ-b'));
+    expect(summary[2], contains('Isolate Component'));
+    expect(summary[2], contains('existing:occ-c'));
+  });
 }

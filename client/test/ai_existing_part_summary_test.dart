@@ -123,4 +123,115 @@ void main() {
 
     expect(summary, contains('empty (no real geometry yet)'));
   });
+
+  group('summarizeExistingOccurrencesForPrompt', () {
+    OccurrenceDto occurrence({
+      required String id,
+      String? externalRef,
+      String? resolvedPartId,
+      String? nameOverride,
+      bool hidden = false,
+    }) =>
+        OccurrenceDto(
+          id: id,
+          externalRef: externalRef,
+          resolvedPartId: resolvedPartId,
+          nameOverride: nameOverride,
+          transform: RigidTransformDto(translation: [0, 0, 0], rotationAxis: [0, 0, 1], rotationAngleDegrees: 0),
+          hidden: hidden,
+        );
+
+    test('an empty occurrence list summarizes to the empty string', () async {
+      final documentApi = DocumentApiClient(httpClient: MockClient((_) async => http.Response('not found', 404)));
+      final summary = await summarizeExistingOccurrencesForPrompt(documentApi, []);
+      expect(summary, '');
+    });
+
+    test('each occurrence gets its own existing:<id> line, naming its external_ref/name_override', () async {
+      final mock = MockClient((request) async {
+        if (request.url.path == '/document/parts/bolt-part/features') return jsonResponse([]);
+        return http.Response('not found', 404);
+      });
+      final documentApi = DocumentApiClient(httpClient: mock);
+
+      final summary = await summarizeExistingOccurrencesForPrompt(documentApi, [
+        occurrence(id: 'occ-a', externalRef: 'parts/bolt.didsa', resolvedPartId: 'bolt-part'),
+      ]);
+
+      expect(summary, contains('1. existing:occ-a - parts/bolt.didsa'));
+    });
+
+    test('nameOverride takes priority over externalRef when both are present', () async {
+      final documentApi = DocumentApiClient(httpClient: MockClient((_) async => http.Response('not found', 404)));
+
+      final summary = await summarizeExistingOccurrencesForPrompt(documentApi, [
+        occurrence(id: 'occ-a', externalRef: 'parts/bolt.didsa', nameOverride: 'Left Bolt'),
+      ]);
+
+      expect(summary, contains('existing:occ-a - Left Bolt'));
+    });
+
+    test('a hidden occurrence is flagged as hidden', () async {
+      final documentApi = DocumentApiClient(httpClient: MockClient((_) async => http.Response('not found', 404)));
+
+      final summary = await summarizeExistingOccurrencesForPrompt(documentApi, [
+        occurrence(id: 'occ-a', externalRef: 'bolt.didsa', hidden: true),
+      ]);
+
+      expect(summary, contains('[currently hidden]'));
+    });
+
+    test('an unresolved occurrence (resolvedPartId null) is flagged and offers no Body ids', () async {
+      final documentApi = DocumentApiClient(httpClient: MockClient((_) async => http.Response('not found', 404)));
+
+      final summary = await summarizeExistingOccurrencesForPrompt(documentApi, [
+        occurrence(id: 'occ-a', externalRef: 'bolt.didsa'),
+      ]);
+
+      expect(summary, contains('[target not resolved this session - no Body ids available]'));
+      expect(summary, isNot(contains('subshape_ref.body_id')));
+    });
+
+    test('a resolved occurrence lists its target Part\'s own real Body Feature ids for subshape_ref.body_id',
+        () async {
+      final mock = MockClient((request) async {
+        if (request.url.path == '/document/parts/bolt-part/features') {
+          return jsonResponse([
+            {'type': 'sketch', 'id': 'feat-sk1', 'locked': false, 'sketch_id': 'sketch-1', 'produces': 'sketch'},
+            {
+              'type': 'extrude',
+              'id': 'feat-ex1',
+              'locked': false,
+              'sketch_feature_id': 'feat-sk1',
+              'extrude_type': 'boss',
+              'start_distance': 0.0,
+              'end_distance': 10.0,
+              'produces': 'body',
+            },
+          ]);
+        }
+        return http.Response('not found', 404);
+      });
+      final documentApi = DocumentApiClient(httpClient: mock);
+
+      final summary = await summarizeExistingOccurrencesForPrompt(documentApi, [
+        occurrence(id: 'occ-a', externalRef: 'bolt.didsa', resolvedPartId: 'bolt-part'),
+      ]);
+
+      expect(summary, contains('Body ids for this component\'s own subshape_ref.body_id: feat-ex1'));
+      expect(summary, isNot(contains('feat-sk1')));
+    });
+
+    test('a listFeatures failure for the resolved target Part degrades to no Body ids, not a thrown error', () async {
+      final mock = MockClient((request) async => http.Response(jsonEncode('nope'), 404));
+      final documentApi = DocumentApiClient(httpClient: mock);
+
+      final summary = await summarizeExistingOccurrencesForPrompt(documentApi, [
+        occurrence(id: 'occ-a', externalRef: 'bolt.didsa', resolvedPartId: 'bolt-part'),
+      ]);
+
+      expect(summary, contains('existing:occ-a'));
+      expect(summary, isNot(contains('Body ids')));
+    });
+  });
 }

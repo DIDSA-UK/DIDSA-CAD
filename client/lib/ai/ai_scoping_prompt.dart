@@ -248,6 +248,7 @@ real cut step).
 {{OPTIONAL_CREATE_PLANE_BULLET}}
 {{OPTIONAL_GEAR_ROUTING_SECTION}}
 {{OPTIONAL_FILLET_CHAMFER_SECTION}}
+{{OPTIONAL_ASSEMBLY_SECTION}}
 ## Reference kind-checking
 
 Every reference must point at the right KIND of earlier step, not just any
@@ -289,14 +290,18 @@ not just any earlier local_id.
 
 Only the kinds listed above (and anything named in "Tools currently turned
 off in this app" below, if present) exist. In particular, this tool has no
-Spline, no Text, and no multi-Part assembly - you are only ever working
-within a single Part at a time (see "Editing an existing Part" below if one
-has been provided for this conversation). If a request genuinely needs one
-of these (a hand-drawn freeform curve, a lettered label, an assembly of
-several parts), say so plainly and propose the closest approximation this
-tool can actually build (e.g. "I can approximate that curve with a few Arc
-segments - would that work?") rather than emitting a plan that references a
-kind that does not exist.{{OPTIONAL_DISABLED_TOOLS_BLOCK}}''';
+Spline and no Text. You cannot place a brand-new component into an
+assembly yourself (no kind exists for that yet - the user must add a
+component themselves first, via this app's own Assembly tools), but once at
+least one component has already been placed by the user, you CAN mate/move/
+hide/isolate it (see "Assembly editing" above, only present when editing an
+existing Part that already has one or more placed components). If a request
+genuinely needs a brand-new curve/label/component this tool cannot build
+itself (a hand-drawn freeform curve, a lettered label, a component you would
+need to place from scratch), say so plainly and propose the closest
+approximation this tool can actually build (e.g. "I can approximate that
+curve with a few Arc segments - would that work?") rather than emitting a
+plan that references a kind that does not exist.{{OPTIONAL_DISABLED_TOOLS_BLOCK}}''';
 
 /// `RevolveStep` vocabulary (`ai_tool_groups.dart`'s `'revolve'` group) -
 /// public so that file can reference it without duplicating the text.
@@ -553,6 +558,50 @@ center, easier to reason about directly than a second point) or reconsider
 whether a Fillet feature on a downstream Body would avoid this arithmetic
 entirely.''';
 
+/// `MateStep`/`MoveComponentStep`/`HideComponentStep`/`IsolateComponentStep`
+/// vocabulary (`ai_tool_groups.dart`'s `'assembly'` group). Only useful (and
+/// only ever shown alongside real ids to reference) when "Editing an
+/// existing Part" below lists at least one Placed Component - there is no
+/// kind here for placing a brand-new one yourself.
+const String assemblyVocabularyText = '''
+## Assembly editing (existing, already-placed components only)
+
+Every occurrence_id field below (and every "occurrence_id" inside a mate
+step's own "references") must be either the exact literal empty string ""
+(meaning this Part's own local geometry, not a placed component) or the
+literal token "existing:<id>" using one of the real ids listed under
+"Placed Components" below, copied verbatim - never a local_id you invented
+in this plan (no step kind here creates a brand-new placed component).
+
+- mate: {local_id, kind:"mate", type:"coincident"|"concentric"|"parallel"|
+  "distance"|"angle", references: [exactly 2 entries], value?, flipped?}
+  Each reference is {occurrence_id, subshape_ref} (a face/edge/vertex on
+  that component, given as the real {"body_id", "shape_type", "index"}
+  shown for it below) - "plane_ref"/"point_ref" also exist but are rarely
+  what you want from a plan; prefer subshape_ref. The two references must
+  name different occurrence_ids. "distance"/"angle" mates require "value"
+  (mm or degrees respectively); the others ignore it.
+- move_component: {local_id, kind:"move_component", occurrence_id,
+  translation?, rotation_axis?, rotation_angle_degrees?} - translation is
+  an [x, y, z] triple in mm (world space, not the component's own local
+  frame); rotation_axis is a free [x, y, z] world-space direction (NOT a
+  sketch_line_ref the way move_body's rotation_axis is - a placed
+  component's own axis is arbitrary, never resolved from geometry). This
+  REPLACES the component's whole placement (not a delta on top of wherever
+  it already is) - give the full resulting translation/rotation you intend,
+  not an offset from its current position.
+- hide_component: {local_id, kind:"hide_component", occurrence_id} - hides
+  that one component.
+- isolate_component: {local_id, kind:"isolate_component", occurrence_id} -
+  hides every OTHER top-level component in the assembly and shows this one.
+
+There is no kind to place a brand-new component, pattern one, or delete an
+existing Mate/component - if the user asks for one of those, say so
+plainly and tell them to use this app's own Assembly tools for that part of
+the request, then (if anything else in their request is genuinely
+achievable with mate/move_component/hide_component/isolate_component)
+still emit a plan for that remaining part.''';
+
 /// Assembles [_vocabularyTemplate] with every tool-group placeholder
 /// substituted: enabled groups (`ai_tool_groups.dart`'s `aiToolGroups`) get
 /// their own `vocabularyText`; disabled groups get nothing, plus a name in
@@ -597,6 +646,7 @@ substitute a workaround for it.''';
       .replaceFirst('{{OPTIONAL_CREATE_PLANE_BULLET}}', group('create_plane', createPlaneVocabularyText))
       .replaceFirst('{{OPTIONAL_GEAR_ROUTING_SECTION}}', group('gear_routing', gearRoutingVocabularyText))
       .replaceFirst('{{OPTIONAL_FILLET_CHAMFER_SECTION}}', group('fillet_chamfer', filletChamferVocabularyText))
+      .replaceFirst('{{OPTIONAL_ASSEMBLY_SECTION}}', group('assembly', assemblyVocabularyText))
       .replaceFirst('{{OPTIONAL_DISABLED_TOOLS_BLOCK}}', disabledBlock)
       // Collapse any run of 3+ blank lines a removed section leaves behind
       // down to a single blank line, so a disabled group doesn't leave
@@ -814,7 +864,13 @@ that message. Every prior message may be ordinary conversation.''';
 /// doesn't exist, or - worse - the translator misreading a plan-local id
 /// as a real one). [existingPartSummary] is [summarizeExistingPartForPrompt]
 /// (`ai_existing_part_summary.dart`)'s own output, embedded verbatim.
-String _existingPartEditingBlock(String existingPartSummary) => '''
+/// [existingOccurrencesSummary] (Phase 8, `docs/assembly-scope.md` §2k) is
+/// [summarizeExistingOccurrencesForPrompt]'s own output - `''` (the
+/// default) when the Part has no placed components at all, in which case no
+/// "Placed Components" section is appended (nothing here says the app has
+/// no assembly support - that claim was removed from the locked vocabulary
+/// text; this block just has nothing to list for this particular Part).
+String _existingPartEditingBlock(String existingPartSummary, [String existingOccurrencesSummary = '']) => '''
 ## Editing an existing Part
 
 This conversation is editing a Part that already exists in this tool - you
@@ -826,7 +882,7 @@ where a local_id you defined earlier in this plan would otherwise go - e.g.
 {"target_body_ids": ["existing:<id>"]} or
 {"edges": {"selector": "top_face_edges", "of": "existing:<id>"}}.
 
-Only three things about the existing Part are directly referenceable this
+Only four things about the existing Part are directly referenceable this
 way - nothing else:
 - A Feature that produces a solid Body - as target_body_ids/
   source_body_ids/tool_feature_id, or as the "of" in a fillet/chamfer edges
@@ -837,6 +893,10 @@ way - nothing else:
 - A whole existing Sketch - as the sketch_feature_id anchor for brand-new
   sketch_point/sketch_line/sketch_circle/etc. steps you define in this
   plan (i.e. adding new geometry into that already-existing Sketch).
+- A placed component (an "Occurrence") already in the Assembly tree, listed
+  under "Placed Components" below if any exist - as the occurrence_id in a
+  mate/move_component/hide_component/isolate_component step (see "Assembly
+  editing" above, only present when this tool group is enabled).
 You can NEVER reference one of an existing Sketch's individual Points/
 Lines/Circles/etc. directly - if new geometry needs to connect to or build
 on what is already there, express it as new sketch_point/sketch_line/etc.
@@ -845,7 +905,7 @@ entities.
 
 A local_id you invent for a brand-new step in this plan must never itself
 start with "existing:" - that prefix is reserved for referencing the
-Part's current Features as described above.
+Part's current Features/Occurrences as described above.
 
 Worked example: given a Feature list below containing
 "1. existing:feat-abc123 - extrude 0->10mm (boss), from existing:feat-xyz789"
@@ -866,7 +926,10 @@ below, never invented or guessed, and never the plan's own "f1" local_id
 used for the "of" field instead)
 
 Existing Part Features (in creation order):
-$existingPartSummary''';
+$existingPartSummary${existingOccurrencesSummary.isEmpty ? '' : '''
+
+Placed Components (Occurrences already in the Assembly tree):
+$existingOccurrencesSummary'''}''';
 
 /// Builds the full system prompt, passed to `AiProvider.sendScopingTurn`'s
 /// `systemPrompt` parameter. Assembly order: the user-editable assistant
@@ -886,6 +949,7 @@ String buildAiScopingSystemPrompt({
   Set<String> enabledAddOns = const {},
   Set<String> disabledToolGroups = const {},
   String? existingPartSummary,
+  String existingOccurrencesSummary = '',
 }) {
   final hasExistingPart = existingPartSummary != null && existingPartSummary.trim().isNotEmpty;
   final assistantInstructions =
@@ -899,7 +963,7 @@ String buildAiScopingSystemPrompt({
     _unitsConvention,
     _fewShotExamples,
     ...addOnBlocks,
-    if (hasExistingPart) _existingPartEditingBlock(existingPartSummary),
+    if (hasExistingPart) _existingPartEditingBlock(existingPartSummary, existingOccurrencesSummary),
     _planTerminationFooter,
   ].join('\n\n');
 }

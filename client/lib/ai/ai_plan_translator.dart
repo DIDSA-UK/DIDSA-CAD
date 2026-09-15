@@ -191,6 +191,16 @@ const Set<String> _featureProducingKinds = {
   'move_body',
 };
 
+/// Assembly support Phase 8 (`docs/assembly-scope.md` §2k): every
+/// `AiMateEntityRefStep.occurrenceId`/`AiMoveComponentStep.occurrenceId`/etc.
+/// is either `""` (this Part's own root content - never a real Occurrence to
+/// resolve) or `existing:<occurrence_id>` (no `PlanStep` kind places a new
+/// Occurrence yet - see `MateEntityRefStep`'s own backend docstring), so
+/// resolution is a plain prefix-strip, never a `localIdToRealId` lookup the
+/// way a Feature/sketch-entity reference needs.
+String _resolveOccurrenceId(String occurrenceId) =>
+    occurrenceId.isEmpty ? '' : occurrenceId.substring('existing:'.length);
+
 const Map<Type, String> _entityTypeForStepType = {
   AiSketchLineStep: 'line',
   AiSketchCircleStep: 'circle',
@@ -711,10 +721,103 @@ class PlanTranslator {
         );
         return feature.id;
 
+      case AiMateStep():
+        final mate = await documentApi.createMate(
+          partId,
+          type: step.type.wireValue,
+          references: [for (final r in step.references) _mateEntityRefDto(r)],
+          value: step.value,
+          flipped: step.flipped,
+        );
+        // Mirrors `MatePanel`'s own real-UI behavior (`docs/assembly-scope.md`
+        // §2i): solve immediately so the mated Occurrence visibly snaps into
+        // place. Ambiguous which of the two references is "the one being
+        // moved" for a plan-authored Mate (unlike a human's own drag-then-
+        // mate gesture) - the second reference is used as a reasonable
+        // default (the first commonly names the fixed/anchor side), skipping
+        // `""` (this Part's own root content, never a real Occurrence to
+        // solve). A non-converging solve surfaces as a real `ApiException`,
+        // the same "genuine geometry error the dry run's simplified checks
+        // didn't catch" `PlanTranslationOutcome.stepFailed` already covers.
+        final solveTarget = step.references[1].occurrenceId.isNotEmpty
+            ? step.references[1].occurrenceId
+            : step.references[0].occurrenceId;
+        if (solveTarget.isNotEmpty) {
+          await documentApi.solveForOccurrence(partId, _resolveOccurrenceId(solveTarget));
+        }
+        return mate.id;
+
+      case AiMoveComponentStep():
+        final occurrence = await documentApi.updateOccurrenceTransform(
+          partId,
+          _resolveOccurrenceId(step.occurrenceId),
+          RigidTransformDto(
+            translation: step.translation,
+            rotationAxis: step.rotationAxis,
+            rotationAngleDegrees: step.rotationAngleDegrees,
+          ),
+        );
+        return occurrence.id;
+
+      case AiHideComponentStep():
+        final occurrence = await documentApi.updateOccurrenceHidden(
+          partId,
+          _resolveOccurrenceId(step.occurrenceId),
+          true,
+        );
+        return occurrence.id;
+
+      case AiIsolateComponentStep():
+        final targetId = _resolveOccurrenceId(step.occurrenceId);
+        final siblings = await documentApi.listOccurrences(partId);
+        for (final occurrence in siblings) {
+          if (occurrence.hidden == (occurrence.id != targetId)) continue;
+          await documentApi.updateOccurrenceHidden(partId, occurrence.id, occurrence.id != targetId);
+        }
+        return targetId;
+
       case AiGearRequestStep():
         throw StateError('gear_request steps are intercepted before _executeStep is called');
     }
   }
+
+  /// [AiMateEntityRefStep] -> [MateEntityRefDto], resolving [step]'s own
+  /// `occurrence_id` (`""` or `existing:<id>`) to a real id via
+  /// [_resolveOccurrenceId] - every other field is already a literal,
+  /// already-real ref (see that step class's own doc comment).
+  MateEntityRefDto _mateEntityRefDto(AiMateEntityRefStep step) => MateEntityRefDto(
+        occurrenceId: _resolveOccurrenceId(step.occurrenceId),
+        subshapeRef: step.subshapeRef == null
+            ? null
+            : SubShapeRefDto(bodyId: step.subshapeRef!.bodyId, shapeType: step.subshapeRef!.shapeType, index: step.subshapeRef!.index),
+        planeRef: step.planeRef == null
+            ? null
+            : PlaneRefDto(
+                faceRef: step.planeRef!.faceRef == null
+                    ? null
+                    : SubShapeRefDto(
+                        bodyId: step.planeRef!.faceRef!.bodyId,
+                        shapeType: step.planeRef!.faceRef!.shapeType,
+                        index: step.planeRef!.faceRef!.index,
+                      ),
+                fixedPlane: step.planeRef!.fixedPlane?.wireValue,
+                planeFeatureId: step.planeRef!.planeFeatureId,
+              ),
+        pointRef: step.pointRef == null
+            ? null
+            : PointRefDto(
+                vertexRef: step.pointRef!.vertexRef == null
+                    ? null
+                    : SubShapeRefDto(
+                        bodyId: step.pointRef!.vertexRef!.bodyId,
+                        shapeType: step.pointRef!.vertexRef!.shapeType,
+                        index: step.pointRef!.vertexRef!.index,
+                      ),
+                sketchPointRef: step.pointRef!.sketchPointRef == null
+                    ? null
+                    : SketchEntityRefDto.fromJson(step.pointRef!.sketchPointRef!),
+              ),
+      );
 
   SketchEntityRefDto _entityRef(
     AiGenerationPlan plan,

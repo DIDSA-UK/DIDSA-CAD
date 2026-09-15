@@ -3139,14 +3139,21 @@ def update_occurrence_transform(
     updated in place), there is no "create" step at all - the Occurrence
     already exists, so every drag (debounced client-side, the same
     latency-tolerance shape `MoveBodyFeature` itself already uses) PATCHes
-    this same endpoint directly."""
+    this same endpoint directly.
+
+    Phase 8 (`docs/assembly-scope.md` §2k) widened this to also accept
+    `hidden`, both fields now omitted-means-unchanged - see
+    `OccurrenceTransformUpdate`'s own docstring for why."""
     part = get_part_or_404(part_id)
     occurrence = _get_occurrence_or_404(part, occurrence_id)
-    occurrence.transform = RigidTransform(
-        translation=payload.transform.translation,
-        rotation_axis=payload.transform.rotation_axis,
-        rotation_angle_degrees=payload.transform.rotation_angle_degrees,
-    )
+    if payload.transform is not None:
+        occurrence.transform = RigidTransform(
+            translation=payload.transform.translation,
+            rotation_axis=payload.transform.rotation_axis,
+            rotation_angle_degrees=payload.transform.rotation_angle_degrees,
+        )
+    if payload.hidden is not None:
+        occurrence.hidden = payload.hidden
     return _occurrence_response(occurrence)
 
 

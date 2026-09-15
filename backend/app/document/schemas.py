@@ -2801,19 +2801,31 @@ class OccurrenceResponse(BaseModel):
 
 
 class OccurrenceTransformUpdate(BaseModel):
-    """Assembly support Phase 5 (`docs/assembly-scope.md`): `PATCH
-    /parts/{part_id}/occurrences/{occurrence_id}`'s request body - the
-    Move/Rotate gizmo's own persistence call. Reuses `RigidTransformResponse`'s
-    own shape verbatim for `transform` (identical either direction - a
-    `RigidTransform` is a plain value, not something with its own partial-
-    update semantics the way a Feature's `*Update` schemas need) rather than
-    defining a parallel input type. Whole-`transform` replace only, not a
-    partial delta - the gizmo always computes and sends its own full
-    resulting transform (translation composed with rotation already
+    """`PATCH /parts/{part_id}/occurrences/{occurrence_id}`'s request body.
+    Assembly support Phase 5 (`docs/assembly-scope.md`) originally added this
+    for the Move/Rotate gizmo's own persistence call - `transform` reuses
+    `RigidTransformResponse`'s own shape verbatim (identical either direction
+    - a `RigidTransform` is a plain value, not something with its own
+    partial-update semantics the way a Feature's `*Update` schemas need)
+    rather than defining a parallel input type, and is a whole-value replace
+    when given, not a partial delta - the gizmo always computes and sends its
+    own full resulting transform (translation composed with rotation already
     applied), the same "client computes, server stores" split
-    `Occurrence.transform` already has no other mutation path for."""
+    `Occurrence.transform` already has no other mutation path for.
 
-    transform: RigidTransformResponse
+    Phase 8 (`docs/assembly-scope.md` §2k) widened this to also accept
+    `hidden` and made `transform` optional - the AI plan pipeline's
+    `hide_component`/`isolate_component` steps need to persist `hidden`
+    without also having to resupply a transform they never computed (closing
+    the real gap §5's appendix item 1 documented: no mutation endpoint
+    existed for `hidden` at all before this). Both fields are omitted-means-
+    unchanged, the same optional-vs-omitted convention every other partial-
+    update schema in this file already uses - a caller wanting only
+    `transform` (the gizmo) or only `hidden` (an AI plan step) sends just
+    that one field."""
+
+    transform: RigidTransformResponse | None = None
+    hidden: bool | None = None
 
 
 class MateEntityRefResponse(BaseModel):

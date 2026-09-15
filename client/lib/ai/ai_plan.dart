@@ -332,6 +332,116 @@ class AiLoftSectionStep {
       };
 }
 
+/// `app.document.models.MateType` - `MateStep.type`.
+enum AiMateType {
+  coincident('coincident'),
+  concentric('concentric'),
+  parallel('parallel'),
+  distance('distance'),
+  angle('angle');
+
+  final String wireValue;
+  const AiMateType(this.wireValue);
+
+  static AiMateType fromWire(String value) =>
+      AiMateType.values.firstWhere((e) => e.wireValue == value, orElse: () => throw FormatException('Unknown MateType: $value'));
+}
+
+/// `SubShapeRefSchema` (`app.document.schemas`) as reused verbatim by
+/// `MateEntityRefStep` - a literal, already-real reference (never a
+/// plan-local id) into an Occurrence's own resolved target Part's geometry.
+class AiSubShapeRef {
+  final String bodyId;
+  final String shapeType;
+  final int index;
+
+  const AiSubShapeRef({required this.bodyId, required this.shapeType, required this.index});
+
+  factory AiSubShapeRef.fromJson(Map<String, dynamic> json) => AiSubShapeRef(
+        bodyId: json['body_id'] as String,
+        shapeType: json['shape_type'] as String,
+        index: _asInt(json['index']),
+      );
+
+  Map<String, dynamic> toJson() => {'body_id': bodyId, 'shape_type': shapeType, 'index': index};
+}
+
+/// `PlaneRefSchema` (`app.document.schemas`) as reused verbatim by
+/// `MateEntityRefStep`. Unlike a Feature's own `PlaneRef`, `plane_feature_id`
+/// here is always a literal, already-real Feature id on the Occurrence's own
+/// resolved target Part - never a plan-local id (that Part's Features aren't
+/// built by this plan).
+class AiPlaneRef {
+  final AiSubShapeRef? faceRef;
+  final AiFixedPlane? fixedPlane;
+  final String? planeFeatureId;
+
+  const AiPlaneRef({this.faceRef, this.fixedPlane, this.planeFeatureId});
+
+  factory AiPlaneRef.fromJson(Map<String, dynamic> json) => AiPlaneRef(
+        faceRef: json['face_ref'] == null ? null : AiSubShapeRef.fromJson(json['face_ref'] as Map<String, dynamic>),
+        fixedPlane: json['fixed_plane'] == null ? null : AiFixedPlane.fromWire(json['fixed_plane'] as String),
+        planeFeatureId: json['plane_feature_id'] as String?,
+      );
+
+  Map<String, dynamic> toJson() => {
+        if (faceRef != null) 'face_ref': faceRef!.toJson(),
+        if (fixedPlane != null) 'fixed_plane': fixedPlane!.wireValue,
+        if (planeFeatureId != null) 'plane_feature_id': planeFeatureId,
+      };
+}
+
+/// `PointRefSchema` (`app.document.schemas`) as reused verbatim by
+/// `MateEntityRefStep`. `sketchPointRef` here (like `AiPlaneRef.planeFeatureId`)
+/// is always a literal, already-real `SketchEntityRefSchema` on the
+/// Occurrence's own resolved target Part - never a plan-local id.
+class AiPointRef {
+  final AiSubShapeRef? vertexRef;
+  final Map<String, dynamic>? sketchPointRef;
+
+  const AiPointRef({this.vertexRef, this.sketchPointRef});
+
+  factory AiPointRef.fromJson(Map<String, dynamic> json) => AiPointRef(
+        vertexRef: json['vertex_ref'] == null ? null : AiSubShapeRef.fromJson(json['vertex_ref'] as Map<String, dynamic>),
+        sketchPointRef: json['sketch_point_ref'] as Map<String, dynamic>?,
+      );
+
+  Map<String, dynamic> toJson() => {
+        if (vertexRef != null) 'vertex_ref': vertexRef!.toJson(),
+        if (sketchPointRef != null) 'sketch_point_ref': sketchPointRef,
+      };
+}
+
+/// `MateEntityRefStep` (`ai_plan_schemas.py`) - one side of a [AiMateStep].
+/// [occurrenceId] is either `""` (this Part's own root content) or
+/// `existing:<occurrence_id>` - see that Python class's own docstring for
+/// why no plan-local Occurrence id can exist yet. Exactly one of
+/// [subshapeRef]/[planeRef]/[pointRef] should be set (a server-side rule,
+/// not enforced here per this file's own permissive-parsing doc comment).
+class AiMateEntityRefStep {
+  final String occurrenceId;
+  final AiSubShapeRef? subshapeRef;
+  final AiPlaneRef? planeRef;
+  final AiPointRef? pointRef;
+
+  const AiMateEntityRefStep({required this.occurrenceId, this.subshapeRef, this.planeRef, this.pointRef});
+
+  factory AiMateEntityRefStep.fromJson(Map<String, dynamic> json) => AiMateEntityRefStep(
+        occurrenceId: json['occurrence_id'] as String,
+        subshapeRef:
+            json['subshape_ref'] == null ? null : AiSubShapeRef.fromJson(json['subshape_ref'] as Map<String, dynamic>),
+        planeRef: json['plane_ref'] == null ? null : AiPlaneRef.fromJson(json['plane_ref'] as Map<String, dynamic>),
+        pointRef: json['point_ref'] == null ? null : AiPointRef.fromJson(json['point_ref'] as Map<String, dynamic>),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'occurrence_id': occurrenceId,
+        if (subshapeRef != null) 'subshape_ref': subshapeRef!.toJson(),
+        if (planeRef != null) 'plane_ref': planeRef!.toJson(),
+        if (pointRef != null) 'point_ref': pointRef!.toJson(),
+      };
+}
+
 /// One step of an [AiGenerationPlan] - every concrete subtype below mirrors
 /// one Pydantic model in `ai_plan_schemas.py` field-for-field. [localId] is
 /// plan-local only (never a real backend id - see that file's own module
@@ -395,6 +505,14 @@ sealed class AiPlanStep {
         return AiScaleBodyStep.fromJson(json);
       case 'move_body':
         return AiMoveBodyStep.fromJson(json);
+      case 'mate':
+        return AiMateStep.fromJson(json);
+      case 'move_component':
+        return AiMoveComponentStep.fromJson(json);
+      case 'hide_component':
+        return AiHideComponentStep.fromJson(json);
+      case 'isolate_component':
+        return AiIsolateComponentStep.fromJson(json);
       default:
         throw FormatException('Unknown plan step kind: $kind');
     }
@@ -1216,6 +1334,125 @@ class AiMoveBodyStep extends AiPlanStep {
         'rotation_angle_degrees': rotationAngleDegrees,
         'make_copy': makeCopy,
       };
+}
+
+/// `MateStep` (`ai_plan_schemas.py`, `docs/assembly-scope.md` §2k) - creates
+/// a Mate between two already-placed Occurrences on the Part being edited.
+/// See [AiMateEntityRefStep]'s own doc comment for why every reference is
+/// scoped to an *existing* Occurrence only.
+class AiMateStep extends AiPlanStep {
+  final AiMateType type;
+  final List<AiMateEntityRefStep> references;
+  final double? value;
+  final bool flipped;
+
+  const AiMateStep({
+    required super.localId,
+    required this.type,
+    required this.references,
+    this.value,
+    this.flipped = false,
+  }) : super(kind: 'mate');
+
+  factory AiMateStep.fromJson(Map<String, dynamic> json) => AiMateStep(
+        localId: json['local_id'] as String,
+        type: AiMateType.fromWire(json['type'] as String),
+        references: (json['references'] as List)
+            .map((r) => AiMateEntityRefStep.fromJson(r as Map<String, dynamic>))
+            .toList(),
+        value: _asDoubleOrNull(json['value']),
+        flipped: json['flipped'] as bool? ?? false,
+      );
+
+  @override
+  Map<String, dynamic> toJson() => {
+        'local_id': localId,
+        'kind': kind,
+        'type': type.wireValue,
+        'references': references.map((r) => r.toJson()).toList(),
+        if (value != null) 'value': value,
+        'flipped': flipped,
+      };
+}
+
+/// `MoveComponentStep` (`ai_plan_schemas.py`, `docs/assembly-scope.md` §2k) -
+/// follows [AiMoveBodyStep]'s template one level up (components instead of
+/// bodies), but its own placement shape mirrors `RigidTransform` directly - a
+/// free world-space rotation axis, never a sketch-line-derived one - and a
+/// whole-value replace, never a delta (see the Python class's own docstring).
+/// [occurrenceId] is `existing:<occurrence_id>` only.
+class AiMoveComponentStep extends AiPlanStep {
+  final String occurrenceId;
+  final List<double> translation;
+  final List<double> rotationAxis;
+  final double rotationAngleDegrees;
+
+  const AiMoveComponentStep({
+    required super.localId,
+    required this.occurrenceId,
+    this.translation = const [0.0, 0.0, 0.0],
+    this.rotationAxis = const [0.0, 0.0, 1.0],
+    this.rotationAngleDegrees = 0.0,
+  }) : super(kind: 'move_component');
+
+  factory AiMoveComponentStep.fromJson(Map<String, dynamic> json) => AiMoveComponentStep(
+        localId: json['local_id'] as String,
+        occurrenceId: json['occurrence_id'] as String,
+        translation: json['translation'] == null
+            ? const [0.0, 0.0, 0.0]
+            : (json['translation'] as List).map((e) => (e as num).toDouble()).toList(),
+        rotationAxis: json['rotation_axis'] == null
+            ? const [0.0, 0.0, 1.0]
+            : (json['rotation_axis'] as List).map((e) => (e as num).toDouble()).toList(),
+        rotationAngleDegrees: json['rotation_angle_degrees'] == null ? 0.0 : _asDouble(json['rotation_angle_degrees']),
+      );
+
+  @override
+  Map<String, dynamic> toJson() => {
+        'local_id': localId,
+        'kind': kind,
+        'occurrence_id': occurrenceId,
+        'translation': translation,
+        'rotation_axis': rotationAxis,
+        'rotation_angle_degrees': rotationAngleDegrees,
+      };
+}
+
+/// `HideComponentStep` (`ai_plan_schemas.py`, `docs/assembly-scope.md` §2k) -
+/// hides [occurrenceId] (`existing:<occurrence_id>` only) for real, via the
+/// widened `OccurrenceTransformUpdate` PATCH.
+class AiHideComponentStep extends AiPlanStep {
+  final String occurrenceId;
+
+  const AiHideComponentStep({required super.localId, required this.occurrenceId}) : super(kind: 'hide_component');
+
+  factory AiHideComponentStep.fromJson(Map<String, dynamic> json) => AiHideComponentStep(
+        localId: json['local_id'] as String,
+        occurrenceId: json['occurrence_id'] as String,
+      );
+
+  @override
+  Map<String, dynamic> toJson() => {'local_id': localId, 'kind': kind, 'occurrence_id': occurrenceId};
+}
+
+/// `IsolateComponentStep` (`ai_plan_schemas.py`, `docs/assembly-scope.md`
+/// §2k) - hides every *other* top-level Occurrence of [occurrenceId]'s own
+/// Part and un-hides [occurrenceId] itself, for real - see that Python
+/// class's own docstring for how this differs from the client's session-only
+/// Isolate toggle.
+class AiIsolateComponentStep extends AiPlanStep {
+  final String occurrenceId;
+
+  const AiIsolateComponentStep({required super.localId, required this.occurrenceId})
+      : super(kind: 'isolate_component');
+
+  factory AiIsolateComponentStep.fromJson(Map<String, dynamic> json) => AiIsolateComponentStep(
+        localId: json['local_id'] as String,
+        occurrenceId: json['occurrence_id'] as String,
+      );
+
+  @override
+  Map<String, dynamic> toJson() => {'local_id': localId, 'kind': kind, 'occurrence_id': occurrenceId};
 }
 
 /// `GearRequestStep` - routing only (`00-conventions.md`'s "Gear-request
