@@ -3,6 +3,8 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
+import '../assembly/assembly_lens.dart';
+import '../assembly/assembly_lens_theme.dart';
 import 'orbit_camera.dart' show kDefaultFarClip;
 import 'render_mode.dart';
 import 'scene_controls_panel.dart';
@@ -149,6 +151,22 @@ class PartToolbar extends StatelessWidget {
   final void Function(bool value)? onSketchPointFilterChanged;
   final void Function(bool value)? onSketchLineFilterChanged;
 
+  /// Assembly support Phase 3b (`docs/assembly-scope.md` §3): which lens
+  /// [PartScreen] currently shows - drives this toolbar's own accent border
+  /// (see [build]) and whether [_buildAssemblyMenu] is shown at all.
+  /// Defaults to [AssemblyLens.part] so every pre-Phase-3b call site (this
+  /// widget's own existing tests included) keeps behaving exactly as
+  /// before without passing anything new.
+  final AssemblyLens lens;
+
+  /// The Assembly menu's only real entry - "Add Component" (bottom-up
+  /// insert an existing `.didsa` file), mirroring the Assembly-lens "Add"
+  /// FAB's own [AssemblyAddMenuAction.insertExistingComponent] so the same
+  /// action is reachable from either place. `null` disables the whole
+  /// Assembly menu (same "wire the callback now, action later" contract as
+  /// this file's own other nullable callbacks).
+  final VoidCallback? onInsertExistingComponent;
+
   const PartToolbar({
     super.key,
     required this.visible,
@@ -189,10 +207,18 @@ class PartToolbar extends StatelessWidget {
     this.onBodyFilterChanged,
     this.onSketchPointFilterChanged,
     this.onSketchLineFilterChanged,
+    this.lens = AssemblyLens.part,
+    this.onInsertExistingComponent,
   });
 
   @override
   Widget build(BuildContext context) {
+    final isAssemblyLens = lens == AssemblyLens.assembly;
+    // Phase 3b lens theming: an accent-colored border signals which lens is
+    // active without needing a whole second visual treatment for this
+    // panel - `BorderSide.none` in Part lens keeps today's exact look (a
+    // plain `Material` card, no border at all).
+    final accentColor = assemblyLensAccentColor(Theme.of(context).colorScheme, lens);
     return Align(
       alignment: Alignment.topLeft,
       child: ClipRect(
@@ -212,9 +238,12 @@ class PartToolbar extends StatelessWidget {
               padding: const EdgeInsets.only(top: 104),
               child: Material(
                 elevation: 4,
-                borderRadius: const BorderRadius.only(
-                  topRight: Radius.circular(12),
-                  bottomRight: Radius.circular(12),
+                shape: RoundedRectangleBorder(
+                  borderRadius: const BorderRadius.only(
+                    topRight: Radius.circular(12),
+                    bottomRight: Radius.circular(12),
+                  ),
+                  side: isAssemblyLens ? BorderSide(color: accentColor, width: 2) : BorderSide.none,
                 ),
                 child: ConstrainedBox(
                   // Capped to a third of the screen's own height, rather
@@ -230,6 +259,7 @@ class PartToolbar extends StatelessWidget {
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         mainAxisSize: MainAxisSize.min,
                         children: [
+                          if (isAssemblyLens) _buildAssemblyMenu(context),
                           _buildFileMenu(context),
                           _buildViewMenu(context),
                           _buildSelectionFilterMenu(context),
@@ -243,6 +273,50 @@ class PartToolbar extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+
+  /// Assembly support Phase 3b (`docs/assembly-scope.md` §3): the
+  /// hamburger-menu counterpart to the Assembly-lens "Add" FAB's own
+  /// flyout (`add_button_menu.dart`'s `showAssemblyAddMenu`) - offers the
+  /// same actions as a second, always-open (no extra tap to reach a
+  /// bottom-sheet) entry point, only shown while [lens] is
+  /// [AssemblyLens.assembly]. Same "stub what isn't built yet" rule as
+  /// that menu: only Add Component is real (see [onInsertExistingComponent]),
+  /// the rest render disabled via `enabled: false` (which - unlike a null
+  /// `onTap` alone - actually greys out the row, same convention
+  /// [_filterToggle] below already uses).
+  Widget _buildAssemblyMenu(BuildContext context) {
+    return ExpansionTile(
+      initiallyExpanded: true,
+      leading: const Icon(Icons.view_in_ar_outlined),
+      title: const Text('Assembly'),
+      children: [
+        ListTile(
+          enabled: onInsertExistingComponent != null,
+          leading: const Icon(Icons.view_in_ar_outlined),
+          title: const Text('Add Component'),
+          onTap: onInsertExistingComponent,
+        ),
+        const ListTile(
+          enabled: false,
+          leading: Icon(Icons.note_add_outlined),
+          title: Text('Create Component…'),
+          subtitle: Text('Coming soon - needs a multi-file save flow first'),
+        ),
+        const ListTile(
+          enabled: false,
+          leading: Icon(Icons.link),
+          title: Text('Add Mate'),
+          subtitle: Text('Coming soon - needs Phase 6\'s mate solver'),
+        ),
+        const ListTile(
+          enabled: false,
+          leading: Icon(Icons.grid_view_outlined),
+          title: Text('Pattern Component'),
+          subtitle: Text('Coming soon - needs Phase 7\'s component pattern'),
+        ),
+      ],
     );
   }
 

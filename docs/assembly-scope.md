@@ -12,21 +12,30 @@ into phases against the *actual current implementation* (verified by
 reading the code, not assumed), with the model decisions that were made,
 what's implemented so far, and what's still planned.
 
-Backend: `backend/app/document/*` (FastAPI + pythonocc-core/OCCT).
+Backend: `backend/app/document/*` (FastAPI + pythonocc-core/OCCT) -
+unchanged by Phase 3b, see §2e for why.
 Client: `client/lib/viewport3d/*` (3D viewport/tree/tools, now including
-`assembly_tree_panel.dart`), `client/lib/storage/*` (implemented),
-`client/lib/assembly/*` (graph compose, document client, `AssemblyLens`,
-`AssemblyFocusStack` - all implemented; screen/UI pieces beyond the lens
-toggle itself, e.g. Make Focus and per-instance opacity, still planned).
+`assembly_tree_panel.dart`, `action_sheet.dart`, `component_context_menu.dart`,
+and Phase 3b's own additions to `add_button_menu.dart`/`part_toolbar.dart`),
+`client/lib/storage/*` (implemented), `client/lib/assembly/*` (graph
+compose, document client, `AssemblyLens`, `AssemblyFocusStack`,
+`assembly_lens_theme.dart`, `add_component.dart` - all implemented;
+screen/UI pieces beyond the lens toggle itself, e.g. Make Focus and
+per-instance opacity, still planned).
 
 **Status: Phase 0 (backend data model), Phase 1 (client storage
-abstraction), Phase 2 (multi-file compose + recompute), and Phase 3
-(lens toggle + focus-stack state, `AssemblyTreePanel`) implemented -
-Phase 3's Make Focus wiring and viewport opacity/instance rendering are
-explicitly deferred to Phases 4/5, and the "Add" FAB/`PartToolbar` toolset
-+ lens color/theme accent are deferred to the new Phase 3b (see §2d).
-Assembly lens is read/view-only until Phase 3b lands - no in-UI way to add
-a first component yet. Phase 3b and Phases 4–9 are design-only.**
+abstraction), Phase 2 (multi-file compose + recompute), Phase 3 (lens
+toggle + focus-stack state, `AssemblyTreePanel`), and Phase 3b (lens
+color/theme accent + Assembly-lens "Add" FAB/`PartToolbar` toolset)
+implemented. Assembly lens now has a working in-UI way to add a first
+component (`Add Component` → `mergeComponentIntoDocument`) and a distinct
+visual identity - see §2e for the real gap Phase 3b found along the way
+(no backend mutation endpoint exists for Occurrences, so `Add Component`
+works by merging and re-importing the whole session rather than an
+incremental create call) and what it left stubbed as a result (top-down
+"Create Component", Add Mate, Pattern Component). Phase 3's Make Focus
+wiring and viewport opacity/instance rendering are still deferred to
+Phases 4/5. Phases 4–9 are design-only.**
 
 ---
 
@@ -484,42 +493,171 @@ before the full re-run above went green.
 
 ---
 
+## 2e. Phase 3b — Assembly lens toolset + visual theming (implemented)
+
+Closed the gap flagged at the end of §2d: a lens with no way to add
+anything and no visual identity of its own wasn't yet a usable second
+mode. Two pieces, both real:
+
+### Lens color/theme accent
+
+`client/lib/assembly/assembly_lens_theme.dart` (new) - two pure functions
+taking a `ColorScheme` directly (not a `BuildContext`, so both are
+directly unit-testable against a specific light/dark scheme with no
+widget tree needed):
+
+- `assemblyLensAccentColor(colorScheme, lens)` - `ColorScheme.tertiary`
+  for `AssemblyLens.assembly` (Material 3's own dedicated "distinct but
+  harmonious" accent slot, rather than a hand-picked hex value needing its
+  own light/dark tuning), `ColorScheme.primary` (the app's existing
+  default) for `AssemblyLens.part`.
+- `assemblyLensContainerColors(colorScheme, lens)` - the matching
+  container/on-container pair (`tertiaryContainer`/`onTertiaryContainer`
+  vs. plain `surface`/`onSurface`) for a filled background rather than a
+  foreground/icon color.
+
+Applied in three places, exactly the set named in the original plan:
+
+- **FAB row** (`part_screen.dart`) - the lens-toggle FAB
+  (`assembly-lens-fab`) and the "Add" FAB (`add-fab`) both get
+  `backgroundColor: assemblyLensAccentColor(...)` while `_lens ==
+  AssemblyLens.assembly`, `null` (the FAB's own default) in Part lens. The
+  hamburger/feature-tree FABs are left untinted - they open the same
+  toolbar/no-panel-of-their-own regardless of lens, so tinting them would
+  signal a distinction that isn't there.
+- **`PartToolbar` chrome** - gained a `lens` parameter (defaulting to
+  `AssemblyLens.part`, so every pre-Phase-3b call site keeps its exact
+  prior look with no change required) that colors the panel's own
+  `Material` border (`shape: RoundedRectangleBorder(side: ...)`,
+  `BorderSide.none` in Part lens - the same no-border look it always had).
+- **`AssemblyTreePanel` header** - always tinted with the Assembly
+  accent unconditionally (no lens parameter needed on this one - the panel
+  is only ever mounted while `_lens == AssemblyLens.assembly` in the first
+  place, per §2d's own "only one of the two tree panels is ever built at a
+  time" gate).
+
+### Lens-aware "Add" FAB + `PartToolbar` swap
+
+`client/lib/viewport3d/action_sheet.dart` (new) - the one
+bottom-sheet-action-list shell (`ActionSheetEntry<T>`/`showActionSheet<T>`,
+`isScrollControlled: true` + a `SingleChildScrollView` so a longer entry
+list with two-line disabled subtitles doesn't overflow a constrained
+viewport - a real `RenderFlex overflowed` failure the first version of
+this widget's own tests caught) shared by both of the below, since both
+are flat lists of the same kind of row with several actions in common.
+
+- **`add_button_menu.dart`'s new `showAssemblyAddMenu`/
+  `AssemblyAddMenuAction`** - the Assembly-lens branch of `_onAddPressed`
+  (`part_screen.dart`): **Add Component** (real - see below),
+  **Create Component…** (top-down, disabled), **Add Mate** (disabled),
+  **Pattern Component** (disabled). Decomposed as four separate rows
+  rather than one "Add Component" row with a bottom-up/top-down
+  sub-choice - simpler to implement and test, and keeps the one real
+  action unambiguous.
+- **`component_context_menu.dart`'s new `showComponentContextMenu`/
+  `ComponentContextMenuAction`** - built now (Make Focus/Exit Focus,
+  Move/Rotate, Hide/Show, Isolate, Mate, Pattern) since Phase 4 needs the
+  identical bottom-sheet-action-list shape and shares two entries
+  (Mate/Pattern) with the menu above, but **not wired to any call site
+  yet** - `AssemblyTreePanel.onOccurrenceLongPress` still only selects a
+  row, exactly as §2d already documented; Phase 4 owns wiring this to that
+  callback, since Make Focus/Exit Focus need `AssemblyFocusStack.push`/
+  `pop` and the `component` selection-filter kind Phase 4 builds. Move/
+  Rotate/Mate/Pattern render disabled (Phases 5-7); Make Focus/Exit Focus/
+  Hide/Show/Isolate render enabled - each has a real, already-existing
+  backing mechanism (`AssemblyFocusStack`, and the same client-only
+  `Set`-based hide/isolate convention `_viewportHiddenFeatureIds` already
+  uses for Features) even though nothing calls this function yet.
+- **`PartToolbar`'s own Assembly-lens variant** - a new "Assembly"
+  `ExpansionTile` (shown only while `lens == AssemblyLens.assembly`) with
+  the same four rows as the FAB's own menu, giving toolbar-menu parity
+  with the FAB the way File/View already do for Part-lens tools.
+
+**A real gap found while building "Add Component"**: the plan's original
+text claimed bottom-up insert and top-down create were "already fully
+supported end-to-end by Phase 2's `AssemblyGraphComposer`/
+`AssemblyDocumentClient`, only the UI entry point missing." Reading the
+actual code before wiring anything showed this wasn't quite right:
+
+- There is **no backend mutation endpoint for Occurrences at all** -
+  `backend/app/document/router.py` only has `GET /parts/{part_id}/
+  occurrences`/`GET /parts/{part_id}/mates` (Phase 3). The only existing
+  way to establish an Occurrence is a full `import_native` replace
+  (Phase 0/2) - there is no `POST`/`PATCH` to add one to an already-open
+  session.
+- `AssemblyGraphComposer`/`AssemblyDocumentClient` (Phase 2) support
+  *opening* a whole multi-file assembly graph via `StorageService`/
+  `ProjectRoot`, not incrementally adding one Occurrence to a session
+  that's already open - and `PartScreen` has never adopted
+  `StorageService`/`ProjectRoot` at all; `_openNativeFile`/
+  `_saveNativeFile` still use `file_picker` directly with no project-root/
+  relative-path concept whatsoever.
+
+Given that, "Add Component" is implemented **without** a new backend
+endpoint and **without** `StorageService`/`ProjectRoot`, reusing only
+what already exists: `client/lib/assembly/add_component.dart` (new) -
+a pure `mergeComponentIntoDocument` function that folds a picked file's
+own `export_native` JSON (read via the same `file_picker`-based flow
+`_openNativeFile` already uses) into the current session's own full
+snapshot (`DocumentApiClient.exportNative()`, no `partId` - every Part
+already live in the backend's in-memory session, reflecting every edit
+made so far even if never saved to a file), adding one new Occurrence
+onto the currently-open root Part. The merged payload goes straight back
+through `DocumentApiClient.importNative` - a full replace, the exact same
+semantics `_openNativeFile` already relies on, just staying on this
+screen instead of pushing a new one (the Part's own id survives the
+round trip unchanged - `native_format.py`'s `_part_from_dict` never
+regenerates an id it's given). Dedups by the incoming Part's own
+persisted id, mirroring Phase 2's "two Occurrences resolving to one Part
+is an ordinary dedup" behaviour even with no `ProjectRoot`-relative-path
+identity to key off. `externalRef` is only the picked file's own display
+name (e.g. `"bracket.didsa"`), not a real project-relative path, for the
+same reason.
+
+This is genuinely real and tested end to end (client-side) - a user can
+insert an existing `.didsa` file as a new component and see it appear as
+an Occurrence in the Assembly tree. What it does **not** do: render the
+inserted Occurrence in the 3D viewport (already a documented §2d gap,
+unrelated to this phase) or support re-saving the now-multi-part session
+back out to separate files (no multi-file save flow exists - this is why
+top-down "Create Component" stays disabled: a brand-new in-session Part
+is trivial to create, but there's nowhere yet to persist it).
+
+**Verified**: no backend changes this phase (see the gap above - this
+worked entirely with the client's existing endpoints), so the backend
+suite was only re-confirmed at its pre-existing baseline, not re-verified
+against new backend code - **2214/2214 passed** against real
+`pythonocc-core`/`py-slvs`, unchanged from §2d. Full client suite -
+**1762/1762 passed** before this phase's own new tests were added; after,
+`flutter analyze` clean on every touched/new file, and 38 new tests:
+9 `mergeComponentIntoDocument` unit tests (dedup, self-reference guard,
+schema mismatch, missing root_part_id fallback, missing-Parts/missing-root
+failures, nameOverride pass-through), 8 `assemblyLensAccentColor`/
+`assemblyLensContainerColors` unit tests (light+dark, both lenses), 4
+`showActionSheet` widget tests (enabled tap, disabled subtitle/no-op, no
+subtitle when enabled), 7 `showComponentContextMenu` widget tests
+(Focus/Hide label flips, Isolate, the disabled-vs-enabled split), 4
+`showAssemblyAddMenu` widget tests (the same split), 5 `PartToolbar`
+widget tests (border color under each lens, Assembly menu visibility/
+enabled state), plus one new `AssemblyTreePanel` header-color test.
+`action_sheet.dart`'s own first test revealed a real overflow bug
+(`showComponentContextMenu`'s six rows didn't fit a constrained viewport,
+`RenderFlex overflowed`) - fixed by wrapping the shared shell in
+`isScrollControlled: true` + `SingleChildScrollView` before any of that
+file's tests were counted as passing. The full `part_screen_test.dart`
+suite (57 tests) was re-run after wiring `_onAddPressed`/the two FAB
+colors/`PartToolbar`'s new params into that file and passed with zero
+regressions - no new end-to-end test was added at that level for the FAB
+colors specifically, since they're a one-line ternary reusing the same
+`assemblyLensAccentColor` function already covered directly, and
+`_FakeDocumentBackend` (`part_screen_test.dart`'s own test double) has no
+`listOccurrences`/`listMates` route implemented, making a full lens-toggle
+round trip through that harness a disproportionately large, fragile
+addition for what it would actually catch beyond the existing coverage.
+
+---
+
 ## 3. Remaining phases (design-only)
-
-**Phase 3b — Assembly lens toolset + visual theming.** Closes the gap
-flagged at the end of §2d, ahead of Phase 4, since a lens with no way to
-add anything and no visual identity of its own isn't yet a usable second
-mode - the rest of the plan (Phase 4's selection/context-menu work
-especially) is easier to build and test once a user can actually tell
-which lens they're in and put a first component into an assembly through
-the UI. Two independent, low-risk pieces:
-
-- **Lens color/theme accent** - a `Theme`/`ColorScheme` tint (a distinct
-  accent color, e.g. on the FAB row, toolbar chrome, and/or the tree
-  panel's own header) applied whenever `_lens == AssemblyLens.assembly`,
-  reverting to the app's default palette in Part lens. Purely additive, no
-  functional dependency on any other phase - the cheapest, safest place to
-  start, and it pays for itself across every later phase's on-device
-  testing (Phase 4 on) since a tester can see which lens is active without
-  reading state. Small enough to widget-test directly (assert the
-  FAB's/toolbar's resolved color under each `AssemblyLens` value).
-- **Lens-aware "Add" FAB + `PartToolbar` swap** - `add_button_menu.dart`'s
-  `showAddButtonMenu` and the FAB it's wired to (`_onAddPressed`,
-  `part_screen.dart`) are hardcoded to Part-lens actions (New Sketch/
-  Feature); in Assembly lens they need to offer **Add Component**
-  (bottom-up insert an existing `.didsa` file, or top-down create a new
-  one in place - both already fully supported end-to-end by Phase 2's
-  `AssemblyGraphComposer`/`AssemblyDocumentClient`, only the UI entry
-  point is missing), **Add Mate**, and **Pattern Component**. Build this
-  together with Phase 4's `component_context_menu.dart` rather than as a
-  separate menu - both are the same bottom-sheet-action-list pattern and
-  share several actions (Hide/Isolate/Mate/Pattern appear in both places).
-  Actions with no backing implementation yet (Mate before Phase 6's
-  solver, Pattern before Phase 7) ship as visibly-disabled/"coming soon"
-  entries rather than being omitted, so the menu's shape stays stable
-  across phases instead of being re-litigated each time one lands.
-  `PartToolbar`'s own Assembly-lens variant follows the same "stub what
-  isn't built yet" rule.
 
 4. **Whole-part selection + context menu** — extend
    `SelectionFilterState`/`select_other_sheet.dart` with a `component`

@@ -80,6 +80,33 @@ void main() {
     expect(find.text('Assembly Tree'), findsOneWidget);
   });
 
+  testWidgets('Phase 3b: the header is tinted with the theme\'s tertiaryContainer accent', (tester) async {
+    final colorScheme = ColorScheme.fromSeed(seedColor: Colors.blue);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData(colorScheme: colorScheme),
+        home: Scaffold(
+          body: AssemblyTreePanel(
+            visible: true,
+            occurrences: const [],
+            mates: const [],
+            selectedOccurrenceId: null,
+            onOccurrenceTap: (_) {},
+            onOccurrenceLongPress: (_) {},
+            onClose: () {},
+          ),
+        ),
+      ),
+    );
+
+    final header = tester.widget<Container>(
+      find.ancestor(of: find.text('Assembly Tree'), matching: find.byType(Container)).first,
+    );
+    expect(header.color, colorScheme.tertiaryContainer);
+    final title = tester.widget<Text>(find.text('Assembly Tree'));
+    expect(title.style?.color, colorScheme.onTertiaryContainer);
+  });
+
   testWidgets('shows an empty-state message when there are no occurrences or mates', (tester) async {
     await tester.pumpWidget(
       _wrap(

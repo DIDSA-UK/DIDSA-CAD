@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../api/document_api_client.dart';
+import '../assembly/assembly_lens.dart';
+import '../assembly/assembly_lens_theme.dart';
 
 /// The display name for the Occurrence at [index] in [occurrences] - mirrors
 /// `feature_tree_panel.dart`'s `featureDisplayName` (same "shared between the
@@ -129,30 +131,52 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
                           topRight: Radius.circular(12),
                           bottomRight: Radius.circular(12),
                         ),
-                        child: Column(
-                          children: [
-                            Padding(
-                              padding: const EdgeInsets.fromLTRB(16, 4, 4, 4),
-                              child: Row(
-                                children: [
-                                  const Expanded(
-                                    child: Text(
-                                      'Assembly Tree',
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: TextStyle(fontWeight: FontWeight.bold),
-                                    ),
+                        child: Builder(
+                          builder: (context) {
+                            // Phase 3b lens theming (`docs/assembly-
+                            // scope.md` §3): this panel is only ever
+                            // mounted while `_lens == AssemblyLens.
+                            // assembly` (see `part_screen.dart`'s own `if`
+                            // gate - only one of this/`FeatureTreePanel` is
+                            // ever in the widget tree at a time), so its
+                            // header always carries the Assembly accent
+                            // unconditionally, unlike the FAB row/
+                            // `PartToolbar` (which exist in both lenses and
+                            // so switch the accent on/off).
+                            final (headerColor, onHeaderColor) = assemblyLensContainerColors(
+                              Theme.of(context).colorScheme,
+                              AssemblyLens.assembly,
+                            );
+                            return Column(
+                              children: [
+                                Container(
+                                  color: headerColor,
+                                  padding: const EdgeInsets.fromLTRB(16, 4, 4, 4),
+                                  child: Row(
+                                    children: [
+                                      Expanded(
+                                        child: Text(
+                                          'Assembly Tree',
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            color: onHeaderColor,
+                                          ),
+                                        ),
+                                      ),
+                                      IconButton(
+                                        tooltip: 'Close',
+                                        icon: Icon(Icons.close, size: 20, color: onHeaderColor),
+                                        onPressed: widget.onClose,
+                                      ),
+                                    ],
                                   ),
-                                  IconButton(
-                                    tooltip: 'Close',
-                                    icon: const Icon(Icons.close, size: 20),
-                                    onPressed: widget.onClose,
-                                  ),
-                                ],
-                              ),
-                            ),
-                            Expanded(child: _buildGroupedTree(context)),
-                          ],
+                                ),
+                                Expanded(child: _buildGroupedTree(context)),
+                              ],
+                            );
+                          },
                         ),
                       ),
                       Positioned(top: 0, bottom: 0, right: -12, child: _buildDragHandle(totalWidth)),

@@ -6,6 +6,7 @@ import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:uuid/uuid.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 import '../ai/ai_modelling_screen.dart';
@@ -20,7 +21,9 @@ import '../api/sketch_api_client.dart'
         ProfileLoopDto,
         SketchApiClient,
         TextContourDto;
+import '../assembly/add_component.dart';
 import '../assembly/assembly_lens.dart';
+import '../assembly/assembly_lens_theme.dart';
 import '../assembly/focus_stack.dart';
 import '../connection_screen.dart';
 import '../didsa_logo_button.dart';
@@ -8809,11 +8812,19 @@ class _PartScreenState extends State<PartScreen> {
     if (_sketchPickerActive) _cancelSketchPicker();
   }
 
-  /// Opens the "Add" FAB's flyout. "New Sketch" enters [_planeSelectionMode]
-  /// rather than acting directly (Stage 10b); Stage 19b Item 3's "Feature"
-  /// opens the second-level Feature picker instead.
+  /// Opens the "Add" FAB's flyout - Part lens shows the existing Feature-
+  /// authoring flyout ([showAddButtonMenu], unchanged); Assembly lens shows
+  /// [showAssemblyAddMenu] instead (`docs/assembly-scope.md` §3's Phase
+  /// 3b), closing the gap Phase 3 left open (no in-UI way to add a first
+  /// component). "New Sketch" enters [_planeSelectionMode] rather than
+  /// acting directly (Stage 10b); Stage 19b Item 3's "Feature" opens the
+  /// second-level Feature picker instead.
   Future<void> _onAddPressed() async {
     if (_busy) return;
+    if (_lens == AssemblyLens.assembly) {
+      await _onAssemblyAddPressed();
+      return;
+    }
     final action = await showAddButtonMenu(context);
     if (!mounted || action == null) return;
     switch (action) {
@@ -8827,6 +8838,84 @@ class _PartScreenState extends State<PartScreen> {
       case AddButtonMenuAction.feature:
         await _onFeaturePressed();
     }
+  }
+
+  /// Assembly support Phase 3b (`docs/assembly-scope.md` §3): the "Add"
+  /// FAB's Assembly-lens branch - shows [showAssemblyAddMenu] and acts on
+  /// whichever (enabled) entry was tapped. Only
+  /// [AssemblyAddMenuAction.insertExistingComponent] is real; the other
+  /// three render disabled in the sheet itself (Create Component needs a
+  /// multi-file save flow this app doesn't have yet, Add Mate needs Phase
+  /// 6's solver, Pattern Component needs Phase 7's component pattern) and
+  /// so never reach this `switch` - mirrors [_onFeaturePressed]'s own
+  /// "picker already filtered to enabled entries" shape.
+  Future<void> _onAssemblyAddPressed() async {
+    final action = await showAssemblyAddMenu(context);
+    if (!mounted || action == null) return;
+    switch (action) {
+      case AssemblyAddMenuAction.insertExistingComponent:
+        await _onInsertComponentPressed();
+      case AssemblyAddMenuAction.createNewComponent:
+      case AssemblyAddMenuAction.addMate:
+      case AssemblyAddMenuAction.patternComponent:
+        break;
+    }
+  }
+
+  /// "Add Component" (bottom-up insert an existing `.didsa` file) - the
+  /// piece of Phase 3b that actually closes Phase 3's gap (Assembly lens
+  /// was read/view-only). Picks a file the same way [_openNativeFile]
+  /// already does (`file_picker`, `FileType.any` - see that method's own
+  /// doc comment for why not an extension allow-list; there is no
+  /// `StorageService`/`ProjectRoot` session wired into this screen to
+  /// resolve a real project-relative path against, a real gap noted in
+  /// `docs/assembly-scope.md` rather than papered over here), merges its
+  /// own exported document into this session's current full snapshot
+  /// (`add_component.dart`'s `mergeComponentIntoDocument`), and re-imports
+  /// the merged result - a full replace, the same semantics
+  /// [_openNativeFile] already relies on, just staying on this screen
+  /// instead of pushing a new one (the currently-open Part keeps its own
+  /// id across the reimport - `native_format.py`'s `_part_from_dict` never
+  /// regenerates an id it's given).
+  Future<void> _onInsertComponentPressed() async {
+    // Same "whichever Part is currently primary" lookup [_refreshAssemblyTree]
+    // already uses - today this is always the root Part (nothing pushes
+    // onto [_focusStack] yet, Phase 4's own job), but this stays correct
+    // once Make Focus actually does.
+    final rootPartId = _focusStack?.current ?? _part?.id;
+    if (rootPartId == null) return;
+
+    final result = await FilePicker.platform.pickFiles(withData: true, type: FileType.any);
+    if (result == null || result.files.isEmpty || !mounted) return;
+    final bytes = result.files.single.bytes;
+    if (bytes == null) return;
+
+    Map<String, dynamic> componentPayload;
+    try {
+      componentPayload = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
+    } catch (_) {
+      setState(() => _errorMessage = 'Not a valid native project file');
+      return;
+    }
+
+    await _runGuarded(() async {
+      final currentPayload = await _api.exportNative();
+      Map<String, dynamic> merged;
+      try {
+        merged = mergeComponentIntoDocument(
+          currentPayload: currentPayload,
+          componentPayload: componentPayload,
+          rootPartId: rootPartId,
+          occurrenceId: const Uuid().v4(),
+          externalRef: result.files.single.name,
+        );
+      } on AddComponentException catch (e) {
+        setState(() => _errorMessage = e.message);
+        return;
+      }
+      await _api.importNative(merged);
+      await _refreshAssemblyTree();
+    });
   }
 
   /// The "Add" FAB's "Feature" entry - shows the second-level picker and
@@ -17147,6 +17236,11 @@ class _PartScreenState extends State<PartScreen> {
                 Positioned.fill(
                   child: PartToolbar(
                     visible: _toolbarOpen,
+                    lens: _lens,
+                    onInsertExistingComponent: () {
+                      setState(() => _toolbarOpen = false);
+                      unawaited(_onInsertComponentPressed());
+                    },
                     referencePlanesHidden: _referencePlanesHidden,
                     onToggleReferencePlanes: _onToggleReferencePlanes,
                     renderMode: _renderMode,
@@ -17903,6 +17997,17 @@ class _PartScreenState extends State<PartScreen> {
                               heroTag: 'assembly-lens-fab',
                               tooltip: _lens == AssemblyLens.part ? 'Assembly tree' : 'Feature tree',
                               onPressed: _toggleAssemblyLens,
+                              // Phase 3b lens theming (`docs/assembly-
+                              // scope.md` §3): this button is itself the
+                              // clearest place to signal "you're in
+                              // Assembly lens now" - tinted with the same
+                              // accent `PartToolbar`'s border and
+                              // `AssemblyTreePanel`'s header use, reverting
+                              // to the FAB's own default color (`null`) in
+                              // Part lens.
+                              backgroundColor: _lens == AssemblyLens.assembly
+                                  ? assemblyLensAccentColor(Theme.of(context).colorScheme, _lens)
+                                  : null,
                               child: Icon(
                                 _lens == AssemblyLens.part ? Icons.view_in_ar_outlined : Icons.category_outlined,
                               ),
@@ -18349,6 +18454,13 @@ class _PartScreenState extends State<PartScreen> {
                       heroTag: 'add-fab',
                       tooltip: 'Add',
                       onPressed: _busy ? null : _onAddPressed,
+                      // Phase 3b lens theming: same accent as the lens-
+                      // toggle FAB above - this is the FAB whose own flyout
+                      // changes shape between lenses (Feature tools vs Add
+                      // Component/Mate/Pattern), so it gets the same signal.
+                      backgroundColor: _lens == AssemblyLens.assembly
+                          ? assemblyLensAccentColor(Theme.of(context).colorScheme, _lens)
+                          : null,
                       child: const SvgIcon('assets/icons/viewport/viewport_add.svg'),
                     ),
                   // On-device feedback ("the tooltip at the top of the

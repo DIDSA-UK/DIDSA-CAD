@@ -96,6 +96,17 @@ dependencies:
   path: ^1.9.1
   crypto: ^3.0.7
 
+  # Phase 3b (`docs/assembly-scope.md` §3): "Add Component > Insert
+  # Existing" needs a fresh Occurrence id before the backend ever sees it
+  # (`add_component.dart`'s `mergeComponentIntoDocument` builds the merged
+  # payload entirely client-side, then sends it to `import_native` in one
+  # shot) - this codebase otherwise always lets the backend mint new ids
+  # itself (`createPart`/`createFeature` etc.), so there was no existing
+  # id-generation utility to reuse. Already present transitively (a
+  # `saf_util`/`saf_stream` dependency) - pinned here as a direct
+  # dependency now that `add_component.dart` imports it directly.
+  uuid: ^4.5.3
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
