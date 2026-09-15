@@ -23,7 +23,10 @@ toggle itself, e.g. Make Focus and per-instance opacity, still planned).
 abstraction), Phase 2 (multi-file compose + recompute), and Phase 3
 (lens toggle + focus-stack state, `AssemblyTreePanel`) implemented -
 Phase 3's Make Focus wiring and viewport opacity/instance rendering are
-explicitly deferred to Phases 4/5 (see §2d). Phases 4–9 are design-only.**
+explicitly deferred to Phases 4/5, and the "Add" FAB/`PartToolbar` toolset
++ lens color/theme accent are deferred to the new Phase 3b (see §2d).
+Assembly lens is read/view-only until Phase 3b lands - no in-UI way to add
+a first component yet. Phase 3b and Phases 4–9 are design-only.**
 
 ---
 
@@ -446,6 +449,18 @@ subset of scene content that already renders (this Part's own bodies),
 but Occurrences are not yet drawn as placed instances. Both are called
 out explicitly rather than silently assumed done.
 
+**Also not yet wired, and not previously called out here (a real gap in
+this writeup, not a deliberate deferral)**: the lens toggle only swaps the
+*side panel*. The "Add" FAB (`_onAddPressed` → `add_button_menu.dart`'s
+`showAddButtonMenu`) and `PartToolbar` are both still hardcoded to
+Part-lens actions (New Sketch/Feature) regardless of `_lens`, and nothing
+in the UI - no FAB/toolbar color, no chrome - signals which lens is active
+beyond the tree panel's own content. Practically: Assembly lens is
+**read/view-only** today - a user can browse an already-imported
+assembly's occurrences/mates but has no in-UI way to add a first
+component. See Phase 3b below, inserted directly ahead of Phase 4 to close
+this before building further on top of it.
+
 **Verified**: full backend suite against real `pythonocc-core`/`py-slvs` -
 **2214/2214 passed** (3 new tests in `test_assembly_tree_endpoints.py`: a
 fresh Part has no occurrences/mates; occurrences+mates appear in both the
@@ -470,6 +485,41 @@ before the full re-run above went green.
 ---
 
 ## 3. Remaining phases (design-only)
+
+**Phase 3b — Assembly lens toolset + visual theming.** Closes the gap
+flagged at the end of §2d, ahead of Phase 4, since a lens with no way to
+add anything and no visual identity of its own isn't yet a usable second
+mode - the rest of the plan (Phase 4's selection/context-menu work
+especially) is easier to build and test once a user can actually tell
+which lens they're in and put a first component into an assembly through
+the UI. Two independent, low-risk pieces:
+
+- **Lens color/theme accent** - a `Theme`/`ColorScheme` tint (a distinct
+  accent color, e.g. on the FAB row, toolbar chrome, and/or the tree
+  panel's own header) applied whenever `_lens == AssemblyLens.assembly`,
+  reverting to the app's default palette in Part lens. Purely additive, no
+  functional dependency on any other phase - the cheapest, safest place to
+  start, and it pays for itself across every later phase's on-device
+  testing (Phase 4 on) since a tester can see which lens is active without
+  reading state. Small enough to widget-test directly (assert the
+  FAB's/toolbar's resolved color under each `AssemblyLens` value).
+- **Lens-aware "Add" FAB + `PartToolbar` swap** - `add_button_menu.dart`'s
+  `showAddButtonMenu` and the FAB it's wired to (`_onAddPressed`,
+  `part_screen.dart`) are hardcoded to Part-lens actions (New Sketch/
+  Feature); in Assembly lens they need to offer **Add Component**
+  (bottom-up insert an existing `.didsa` file, or top-down create a new
+  one in place - both already fully supported end-to-end by Phase 2's
+  `AssemblyGraphComposer`/`AssemblyDocumentClient`, only the UI entry
+  point is missing), **Add Mate**, and **Pattern Component**. Build this
+  together with Phase 4's `component_context_menu.dart` rather than as a
+  separate menu - both are the same bottom-sheet-action-list pattern and
+  share several actions (Hide/Isolate/Mate/Pattern appear in both places).
+  Actions with no backing implementation yet (Mate before Phase 6's
+  solver, Pattern before Phase 7) ship as visibly-disabled/"coming soon"
+  entries rather than being omitted, so the menu's shape stays stable
+  across phases instead of being re-litigated each time one lands.
+  `PartToolbar`'s own Assembly-lens variant follows the same "stub what
+  isn't built yet" rule.
 
 4. **Whole-part selection + context menu** — extend
    `SelectionFilterState`/`select_other_sheet.dart` with a `component`
