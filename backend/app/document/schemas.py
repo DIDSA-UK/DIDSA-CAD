@@ -2911,6 +2911,8 @@ class ComponentPatternResponse(BaseModel):
     count_angular: int = 1
     angle_total: float = 360.0
     reverse_angular: bool = False
+    skip_indices: list[int] = []
+    orient_with_rotation: bool = True
     suppressed: bool = False
 
 
@@ -2937,6 +2939,8 @@ class ComponentPatternCreate(BaseModel):
     count_angular: int = 1
     angle_total: float = 360.0
     reverse_angular: bool = False
+    skip_indices: list[int] = []
+    orient_with_rotation: bool = True
 
 
 class ComponentPatternUpdate(BaseModel):
@@ -2944,7 +2948,12 @@ class ComponentPatternUpdate(BaseModel):
     `PatternFeatureUpdate` already establishes. `pattern_type` is never
     changed by an update - mirrors `PatternFeatureUpdate`'s identical
     "construction method itself never changes" convention (switching
-    Linear <-> Circular is a delete+recreate, not an edit)."""
+    Linear <-> Circular is a delete+recreate, not an edit).
+
+    `skip_indices` (Phase 11, mirroring `PatternFeatureUpdate`'s own
+    identical field) needs the same omitted-vs-explicitly-cleared
+    distinction: `None` leaves the pattern's current skip set untouched,
+    `[]` explicitly un-skips every previously-skipped instance."""
 
     source_occurrence_ids: list[str] | None = None
     direction: tuple[float, float, float] | None = None
@@ -2955,4 +2964,6 @@ class ComponentPatternUpdate(BaseModel):
     count_angular: int | None = None
     angle_total: float | None = None
     reverse_angular: bool | None = None
+    skip_indices: list[int] | None = None
+    orient_with_rotation: bool | None = None
     suppressed: bool | None = None

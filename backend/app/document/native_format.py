@@ -1819,6 +1819,8 @@ def _component_pattern_to_dict(pattern: ComponentPattern) -> dict:
         "count_angular": pattern.count_angular,
         "angle_total": pattern.angle_total,
         "reverse_angular": pattern.reverse_angular,
+        "skip_indices": list(pattern.skip_indices),
+        "orient_with_rotation": pattern.orient_with_rotation,
         "suppressed": pattern.suppressed,
     }
 
@@ -1837,6 +1839,8 @@ def _component_pattern_from_dict(data: dict) -> ComponentPattern:
         count_angular=data.get("count_angular", 1),
         angle_total=data.get("angle_total", 360.0),
         reverse_angular=data.get("reverse_angular", False),
+        skip_indices=list(data.get("skip_indices", [])),
+        orient_with_rotation=data.get("orient_with_rotation", True),
         suppressed=data.get("suppressed", False),
     )
 

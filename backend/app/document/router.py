@@ -3315,6 +3315,8 @@ def _component_pattern_response(pattern: ComponentPattern) -> ComponentPatternRe
         count_angular=pattern.count_angular,
         angle_total=pattern.angle_total,
         reverse_angular=pattern.reverse_angular,
+        skip_indices=list(pattern.skip_indices),
+        orient_with_rotation=pattern.orient_with_rotation,
         suppressed=pattern.suppressed,
     )
 
@@ -3410,14 +3412,21 @@ def _validate_component_pattern_payload(
     axis: ComponentPatternAxis | None,
     count_angular: int,
     angle_total: float,
+    skip_indices: list[int],
 ) -> None:
     """The single entry point both `create_component_pattern`/`update_
     component_pattern` call - mirrors `_validate_pattern_payload`'s own
-    per-`pattern_type` dispatch."""
+    per-`pattern_type` dispatch. `skip_indices` (Phase 11, `[9]`) reuses
+    `_validate_pattern_skip_indices` verbatim, against whichever of
+    `count`/`count_angular` is this pattern_type's own actual total
+    instance count - the same per-`pattern_type` field selection every
+    other check here already makes."""
     if pattern_type == ComponentPatternType.CIRCULAR:
         _validate_component_pattern_circular_payload(axis, count_angular, angle_total)
+        _validate_pattern_skip_indices(skip_indices, count_angular)
     else:
         _validate_component_pattern_linear_payload(direction, count)
+        _validate_pattern_skip_indices(skip_indices, count)
 
 
 @router.post("/parts/{part_id}/component-patterns", response_model=ComponentPatternResponse, status_code=201)
@@ -3432,7 +3441,13 @@ def create_component_pattern(part_id: str, payload: ComponentPatternCreate) -> C
     pattern_type = ComponentPatternType(payload.pattern_type)
     axis = _component_pattern_axis_to_domain(payload.axis)
     _validate_component_pattern_payload(
-        pattern_type, payload.direction, payload.count, axis, payload.count_angular, payload.angle_total
+        pattern_type,
+        payload.direction,
+        payload.count,
+        axis,
+        payload.count_angular,
+        payload.angle_total,
+        payload.skip_indices,
     )
     pattern = ComponentPattern(
         id=str(uuid.uuid4()),
@@ -3446,6 +3461,8 @@ def create_component_pattern(part_id: str, payload: ComponentPatternCreate) -> C
         count_angular=payload.count_angular,
         angle_total=payload.angle_total,
         reverse_angular=payload.reverse_angular,
+        skip_indices=list(payload.skip_indices),
+        orient_with_rotation=payload.orient_with_rotation,
     )
     part.component_patterns.append(pattern)
     return _component_pattern_response(pattern)
@@ -3489,10 +3506,20 @@ def update_component_pattern(
         pattern.angle_total = payload.angle_total
     if payload.reverse_angular is not None:
         pattern.reverse_angular = payload.reverse_angular
+    if payload.skip_indices is not None:
+        pattern.skip_indices = list(payload.skip_indices)
+    if payload.orient_with_rotation is not None:
+        pattern.orient_with_rotation = payload.orient_with_rotation
     if payload.suppressed is not None:
         pattern.suppressed = payload.suppressed
     _validate_component_pattern_payload(
-        pattern.pattern_type, pattern.direction, pattern.count, pattern.axis, pattern.count_angular, pattern.angle_total
+        pattern.pattern_type,
+        pattern.direction,
+        pattern.count,
+        pattern.axis,
+        pattern.count_angular,
+        pattern.angle_total,
+        pattern.skip_indices,
     )
     return _component_pattern_response(pattern)
 
@@ -8236,7 +8263,7 @@ def get_assembly_mesh(
                 if pattern_child_part is None or pattern_child_part.id in child_ancestors:
                     continue
                 derived_transforms = expand_component_pattern_instances(pattern, source_occurrence.transform)
-                for index, derived_transform in enumerate(derived_transforms, start=1):
+                for index, derived_transform in derived_transforms.items():
                     _walk(
                         pattern_child_part,
                         [*occurrence_path, f"{source_occurrence.id}#pattern:{pattern.id}:{index}"],

@@ -45,21 +45,21 @@ def test_linear_pattern_excludes_the_untouched_seed_and_returns_count_minus_one_
     pattern = _linear_pattern(count=3)
     instances = expand_component_pattern_instances(pattern, RigidTransform.identity())
     assert len(instances) == 2
-    _assert_vec_close(instances[0].translation, (10.0, 0.0, 0.0))
-    _assert_vec_close(instances[1].translation, (20.0, 0.0, 0.0))
+    _assert_vec_close(instances[1].translation, (10.0, 0.0, 0.0))
+    _assert_vec_close(instances[2].translation, (20.0, 0.0, 0.0))
 
 
 def test_linear_pattern_reverse_flips_direction():
     pattern = _linear_pattern(count=3, reverse=True)
     instances = expand_component_pattern_instances(pattern, RigidTransform.identity())
-    _assert_vec_close(instances[0].translation, (-10.0, 0.0, 0.0))
-    _assert_vec_close(instances[1].translation, (-20.0, 0.0, 0.0))
+    _assert_vec_close(instances[1].translation, (-10.0, 0.0, 0.0))
+    _assert_vec_close(instances[2].translation, (-20.0, 0.0, 0.0))
 
 
 def test_linear_pattern_normalizes_a_non_unit_direction():
     pattern = _linear_pattern(direction=(2.0, 0.0, 0.0), count=2, spacing=5.0)
     instances = expand_component_pattern_instances(pattern, RigidTransform.identity())
-    _assert_vec_close(instances[0].translation, (5.0, 0.0, 0.0))
+    _assert_vec_close(instances[1].translation, (5.0, 0.0, 0.0))
 
 
 def test_linear_pattern_composes_onto_a_non_identity_source_transform():
@@ -70,14 +70,25 @@ def test_linear_pattern_composes_onto_a_non_identity_source_transform():
     pattern = _linear_pattern(direction=(0.0, 1.0, 0.0), count=2, spacing=10.0)
     instances = expand_component_pattern_instances(pattern, source)
     assert len(instances) == 1
-    _assert_vec_close(instances[0].translation, (0.0, 15.0, 0.0))
-    assert math.isclose(instances[0].rotation_angle_degrees, 45.0, abs_tol=1e-6)
-    _assert_vec_close(instances[0].rotation_axis, (0.0, 0.0, 1.0))
+    _assert_vec_close(instances[1].translation, (0.0, 15.0, 0.0))
+    assert math.isclose(instances[1].rotation_angle_degrees, 45.0, abs_tol=1e-6)
+    _assert_vec_close(instances[1].rotation_axis, (0.0, 0.0, 1.0))
 
 
 def test_linear_pattern_count_of_one_derives_nothing():
     pattern = _linear_pattern(count=1)
-    assert expand_component_pattern_instances(pattern, RigidTransform.identity()) == []
+    assert expand_component_pattern_instances(pattern, RigidTransform.identity()) == {}
+
+
+def test_linear_pattern_skip_indices_omits_specific_instances_without_renumbering():
+    """Phase 11 (`[9]`): skipping index 1 leaves index 2 keyed at `2`, not
+    shifted down to `1` - the same "stable id per index" guarantee
+    `PatternFeature.skip_indices` already provides for Body-level Patterns."""
+    pattern = _linear_pattern(count=4, skip_indices=[1])
+    instances = expand_component_pattern_instances(pattern, RigidTransform.identity())
+    assert sorted(instances.keys()) == [2, 3]
+    _assert_vec_close(instances[2].translation, (20.0, 0.0, 0.0))
+    _assert_vec_close(instances[3].translation, (30.0, 0.0, 0.0))
 
 
 def test_circular_pattern_evenly_spaces_instances_around_the_default_axis():
@@ -88,10 +99,10 @@ def test_circular_pattern_evenly_spaces_instances_around_the_default_axis():
     source = RigidTransform(translation=(10.0, 0.0, 0.0))
     instances = expand_component_pattern_instances(pattern, source)
     assert len(instances) == 3
-    _assert_vec_close(instances[0].translation, (0.0, 10.0, 0.0))
-    _assert_vec_close(instances[1].translation, (-10.0, 0.0, 0.0))
-    _assert_vec_close(instances[2].translation, (0.0, -10.0, 0.0))
-    assert math.isclose(instances[0].rotation_angle_degrees, 90.0, abs_tol=1e-6)
+    _assert_vec_close(instances[1].translation, (0.0, 10.0, 0.0))
+    _assert_vec_close(instances[2].translation, (-10.0, 0.0, 0.0))
+    _assert_vec_close(instances[3].translation, (0.0, -10.0, 0.0))
+    assert math.isclose(instances[1].rotation_angle_degrees, 90.0, abs_tol=1e-6)
 
 
 def test_circular_pattern_reverse_angular_flips_rotation_direction():
@@ -101,7 +112,7 @@ def test_circular_pattern_reverse_angular_flips_rotation_direction():
     source = RigidTransform(translation=(10.0, 0.0, 0.0))
     instances = expand_component_pattern_instances(pattern, source)
     assert len(instances) == 1
-    _assert_vec_close(instances[0].translation, (0.0, -10.0, 0.0))
+    _assert_vec_close(instances[1].translation, (0.0, -10.0, 0.0))
 
 
 def test_circular_pattern_around_an_off_origin_axis():
@@ -116,8 +127,8 @@ def test_circular_pattern_around_an_off_origin_axis():
     source = RigidTransform(translation=(10.0, 0.0, 0.0))
     instances = expand_component_pattern_instances(pattern, source)
     assert len(instances) == 1
-    _assert_vec_close(instances[0].translation, (5.0, 5.0, 0.0))
-    assert math.isclose(instances[0].rotation_angle_degrees, 90.0, abs_tol=1e-6)
+    _assert_vec_close(instances[1].translation, (5.0, 5.0, 0.0))
+    assert math.isclose(instances[1].rotation_angle_degrees, 90.0, abs_tol=1e-6)
 
 
 def test_circular_pattern_defaults_to_the_world_z_axis_through_the_origin_when_axis_omitted():
@@ -127,7 +138,7 @@ def test_circular_pattern_defaults_to_the_world_z_axis_through_the_origin_when_a
     source = RigidTransform(translation=(10.0, 0.0, 0.0))
     instances = expand_component_pattern_instances(pattern, source)
     assert len(instances) == 1
-    _assert_vec_close(instances[0].translation, (0.0, 10.0, 0.0))
+    _assert_vec_close(instances[1].translation, (0.0, 10.0, 0.0))
 
 
 def test_circular_pattern_composes_rotation_onto_an_already_rotated_source():
@@ -138,10 +149,51 @@ def test_circular_pattern_composes_rotation_onto_an_already_rotated_source():
     pattern = _circular_pattern(count_angular=2, angle_total=180.0)
     instances = expand_component_pattern_instances(pattern, source)
     assert len(instances) == 1
-    assert math.isclose(instances[0].rotation_angle_degrees, 120.0, abs_tol=1e-6)
-    _assert_vec_close(instances[0].rotation_axis, (0.0, 0.0, 1.0))
+    assert math.isclose(instances[1].rotation_angle_degrees, 120.0, abs_tol=1e-6)
+    _assert_vec_close(instances[1].rotation_axis, (0.0, 0.0, 1.0))
 
 
 def test_circular_pattern_count_angular_of_one_derives_nothing():
     pattern = _circular_pattern(count_angular=1)
-    assert expand_component_pattern_instances(pattern, RigidTransform.identity()) == []
+    assert expand_component_pattern_instances(pattern, RigidTransform.identity()) == {}
+
+
+def test_circular_pattern_skip_indices_omits_specific_instances_without_renumbering():
+    pattern = _circular_pattern(count_angular=4, angle_total=360.0, skip_indices=[2])
+    source = RigidTransform(translation=(10.0, 0.0, 0.0))
+    instances = expand_component_pattern_instances(pattern, source)
+    assert sorted(instances.keys()) == [1, 3]
+    _assert_vec_close(instances[1].translation, (0.0, 10.0, 0.0))
+    _assert_vec_close(instances[3].translation, (0.0, -10.0, 0.0))
+
+
+def test_circular_pattern_orient_with_rotation_false_repositions_without_rotating_own_orientation():
+    """Phase 11 (`[10]`): with `orient_with_rotation=False`, each derived
+    instance still lands at the correct circular position (the same
+    translation the default `True` case produces - see the "evenly spaces"
+    test above) but keeps the source's own rotation term (here, the
+    identity) instead of picking up the pattern step's own +90-degree
+    rotation."""
+    pattern = _circular_pattern(count_angular=4, angle_total=360.0, orient_with_rotation=False)
+    source = RigidTransform(translation=(10.0, 0.0, 0.0))
+    instances = expand_component_pattern_instances(pattern, source)
+    assert len(instances) == 3
+    _assert_vec_close(instances[1].translation, (0.0, 10.0, 0.0))
+    assert math.isclose(instances[1].rotation_angle_degrees, 0.0, abs_tol=1e-9)
+    _assert_vec_close(instances[2].translation, (-10.0, 0.0, 0.0))
+    assert math.isclose(instances[2].rotation_angle_degrees, 0.0, abs_tol=1e-9)
+
+
+def test_circular_pattern_orient_with_rotation_false_preserves_a_non_identity_source_rotation():
+    """The source's own pre-existing rotation (30 degrees about Z here)
+    survives unchanged in every derived instance when `orient_with_rotation`
+    is `False` - unlike the default `True` case (see "composes rotation
+    onto an already rotated source" above, which adds the pattern step's
+    own rotation on top: 30 + 90 = 120)."""
+    source = RigidTransform(translation=(10.0, 0.0, 0.0), rotation_axis=(0.0, 0.0, 1.0), rotation_angle_degrees=30.0)
+    pattern = _circular_pattern(count_angular=2, angle_total=180.0, orient_with_rotation=False)
+    instances = expand_component_pattern_instances(pattern, source)
+    assert len(instances) == 1
+    assert math.isclose(instances[1].rotation_angle_degrees, 30.0, abs_tol=1e-6)
+    _assert_vec_close(instances[1].rotation_axis, (0.0, 0.0, 1.0))
+    _assert_vec_close(instances[1].translation, (0.0, 10.0, 0.0))
