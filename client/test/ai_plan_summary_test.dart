@@ -218,4 +218,34 @@ void main() {
     expect(summary[2], contains('Isolate Component'));
     expect(summary[2], contains('existing:occ-c'));
   });
+
+  test('pattern_component summary shows its type, count, and source occurrence ids', () {
+    final plan = AiGenerationPlan.fromJson({
+      'version': 1,
+      'steps': [
+        {
+          'local_id': 'p1',
+          'kind': 'pattern_component',
+          'source_occurrence_ids': ['existing:occ-a'],
+          'pattern_type': 'linear',
+          'count': 4,
+        },
+        {
+          'local_id': 'p2',
+          'kind': 'pattern_component',
+          'source_occurrence_ids': ['existing:occ-b', 'existing:occ-c'],
+          'pattern_type': 'circular',
+          'count_angular': 6,
+        },
+      ],
+    });
+    final summary = summarizeAiPlan(plan);
+    expect(summary[0], contains('Linear'));
+    expect(summary[0], contains('×4'));
+    expect(summary[0], contains('existing:occ-a'));
+    expect(summary[1], contains('Circular'));
+    expect(summary[1], contains('×6'));
+    expect(summary[1], contains('existing:occ-b'));
+    expect(summary[1], contains('existing:occ-c'));
+  });
 }

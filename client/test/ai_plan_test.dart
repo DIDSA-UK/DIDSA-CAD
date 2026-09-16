@@ -240,4 +240,164 @@ void main() {
       expect(roundTripped.runtimeType, step.runtimeType);
     }
   });
+
+  // --- Assembly support Phase 14 (docs/assembly-scope.md §6 [3]/[1] partial) ---
+
+  test('mate step parses a reference with edge_selector and round-trips it', () {
+    final json = {
+      'version': 1,
+      'steps': [
+        {
+          'local_id': 'mate1',
+          'kind': 'mate',
+          'type': 'concentric',
+          'references': [
+            {
+              'occurrence_id': '',
+              'subshape_ref': {'body_id': 'b1', 'shape_type': 'edge', 'index': 0},
+              'edge_selector': {'selector': 'vertical_edges'},
+            },
+            {
+              'occurrence_id': 'existing:occ-1',
+              'subshape_ref': {'body_id': 'b2', 'shape_type': 'face', 'index': 2},
+            },
+          ],
+        },
+      ],
+    };
+
+    final mate = AiGenerationPlan.fromJson(json).steps.single as AiMateStep;
+    expect(mate.type, AiMateType.concentric);
+    expect(mate.references, hasLength(2));
+
+    final withSelector = mate.references[0];
+    expect(withSelector.occurrenceId, '');
+    expect(withSelector.subshapeRef?.bodyId, 'b1');
+    expect(withSelector.edgeSelector, isNotNull);
+    expect(withSelector.edgeSelector!.selector, AiEdgeSelectorKind.verticalEdges);
+    // `of` is never present for a Mate's own edge_selector (no plan-local
+    // Body-producing step to name).
+    expect(withSelector.edgeSelector!.of, isNull);
+
+    final withoutSelector = mate.references[1];
+    expect(withoutSelector.occurrenceId, 'existing:occ-1');
+    expect(withoutSelector.edgeSelector, isNull);
+
+    final roundTripped = AiPlanStep.fromJson(mate.toJson()) as AiMateStep;
+    expect(roundTripped.references[0].edgeSelector?.selector, AiEdgeSelectorKind.verticalEdges);
+    expect(roundTripped.references[0].edgeSelector?.toJson().containsKey('of'), isFalse);
+    expect(roundTripped.references[1].edgeSelector, isNull);
+  });
+
+  test('fillet edges.of still round-trips as required for a real fillet/chamfer step', () {
+    // The same AiEdgeSelector type now serves both call sites - confirms
+    // widening `of` to nullable didn't silently drop it for the call site
+    // that still always provides it.
+    final fillet = AiGenerationPlan.fromJson({
+      'version': 1,
+      'steps': [
+        {
+          'local_id': 'f2',
+          'kind': 'fillet',
+          'edges': {'selector': 'top_face_edges', 'of': 'f1'},
+          'radius': 5,
+        },
+      ],
+    }).steps.single as AiFilletStep;
+    expect(fillet.edges.of, 'f1');
+    expect(fillet.edges.toJson()['of'], 'f1');
+  });
+
+  test('pattern_component step parses a linear pattern and round-trips it', () {
+    final json = {
+      'version': 1,
+      'steps': [
+        {
+          'local_id': 'p1',
+          'kind': 'pattern_component',
+          'source_occurrence_ids': ['existing:occ-1'],
+          'pattern_type': 'linear',
+          'direction': [1.0, 0.0, 0.0],
+          'count': 4,
+          'spacing': 10.0,
+          'reverse': false,
+        },
+      ],
+    };
+
+    final pattern = AiGenerationPlan.fromJson(json).steps.single as AiPatternComponentStep;
+    expect(pattern.sourceOccurrenceIds, ['existing:occ-1']);
+    expect(pattern.patternType, 'linear');
+    expect(pattern.direction, [1.0, 0.0, 0.0]);
+    expect(pattern.count, 4);
+    expect(pattern.spacing, 10.0);
+    expect(pattern.axis, isNull);
+
+    final roundTripped = AiPlanStep.fromJson(pattern.toJson()) as AiPatternComponentStep;
+    expect(roundTripped.sourceOccurrenceIds, pattern.sourceOccurrenceIds);
+    expect(roundTripped.count, pattern.count);
+    expect(roundTripped.spacing, pattern.spacing);
+  });
+
+  test('pattern_component step parses a circular pattern with axis and multiple sources', () {
+    final json = {
+      'version': 1,
+      'steps': [
+        {
+          'local_id': 'p1',
+          'kind': 'pattern_component',
+          'source_occurrence_ids': ['existing:occ-1', 'existing:occ-2'],
+          'pattern_type': 'circular',
+          'axis': {
+            'origin': [0.0, 0.0, 0.0],
+            'direction': [0.0, 0.0, 1.0],
+          },
+          'count_angular': 6,
+          'angle_total': 180.0,
+          'reverse_angular': true,
+          'skip_indices': [2],
+          'orient_with_rotation': false,
+        },
+      ],
+    };
+
+    final pattern = AiGenerationPlan.fromJson(json).steps.single as AiPatternComponentStep;
+    expect(pattern.sourceOccurrenceIds, ['existing:occ-1', 'existing:occ-2']);
+    expect(pattern.patternType, 'circular');
+    expect(pattern.axis?.origin, [0.0, 0.0, 0.0]);
+    expect(pattern.axis?.direction, [0.0, 0.0, 1.0]);
+    expect(pattern.countAngular, 6);
+    expect(pattern.angleTotal, 180.0);
+    expect(pattern.reverseAngular, isTrue);
+    expect(pattern.skipIndices, [2]);
+    expect(pattern.orientWithRotation, isFalse);
+
+    final roundTripped = AiPlanStep.fromJson(pattern.toJson()) as AiPatternComponentStep;
+    expect(roundTripped.axis?.direction, [0.0, 0.0, 1.0]);
+    expect(roundTripped.skipIndices, [2]);
+    expect(roundTripped.orientWithRotation, isFalse);
+  });
+
+  test('pattern_component step defaults exactly like the Pydantic model defaults', () {
+    final pattern = AiGenerationPlan.fromJson({
+      'version': 1,
+      'steps': [
+        {
+          'local_id': 'p1',
+          'kind': 'pattern_component',
+          'source_occurrence_ids': ['existing:occ-1'],
+        },
+      ],
+    }).steps.single as AiPatternComponentStep;
+    expect(pattern.patternType, 'linear');
+    expect(pattern.direction, [1.0, 0.0, 0.0]);
+    expect(pattern.count, 1);
+    expect(pattern.spacing, 0.0);
+    expect(pattern.reverse, isFalse);
+    expect(pattern.countAngular, 1);
+    expect(pattern.angleTotal, 360.0);
+    expect(pattern.reverseAngular, isFalse);
+    expect(pattern.skipIndices, isEmpty);
+    expect(pattern.orientWithRotation, isTrue);
+  });
 }

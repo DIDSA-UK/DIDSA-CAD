@@ -62,6 +62,7 @@ from app.document.ai_plan_schemas import (
     ChamferStep,
     CreatePlaneStep,
     DeleteBodyStep,
+    EdgeSelector,
     EdgeSelectorKind,
     ExtrudeStep,
     FilletStep,
@@ -78,6 +79,7 @@ from app.document.ai_plan_schemas import (
     MoveBodyStep,
     MoveComponentStep,
     PatternAxisStep,
+    PatternComponentStep,
     PatternDirectionStep,
     PatternStep,
     PlanStep,
@@ -105,6 +107,8 @@ from app.document.mirror import resolve_mirror
 from app.document.models import (
     BooleanFeature,
     ChamferFeature,
+    ComponentPattern,
+    ComponentPatternType,
     CreatePlaneFeature,
     DeleteBodyFeature,
     ExtrudeFeature,
@@ -134,6 +138,7 @@ from app.document.models import (
     RigidTransform,
     ScaleBodyFeature,
     SketchFeature,
+    SubShapeType,
     SweepFeature,
     SweepMode,
 )
@@ -226,6 +231,9 @@ class _Resolved:
     # extrude/revolve/sweep steps only - see `StepResult.hole_count`'s own
     # doc comment.
     hole_count: int | None = None
+    # mate steps only, Phase 14 (`docs/assembly-scope.md` §6 `[3]`) - see
+    # `StepResult.resolved_mate_references`'s own doc comment.
+    resolved_mate_references: list[SubShapeRefSchema | None] | None = None
 
 
 class _PlanValidator:
@@ -327,7 +335,14 @@ class _PlanValidator:
         resolved = self.resolved.get(step.local_id)
         resolved_edges = resolved.resolved_edges if resolved is not None else None
         hole_count = resolved.hole_count if resolved is not None else None
-        return StepResult(local_id=step.local_id, ok=True, resolved_edges=resolved_edges, hole_count=hole_count)
+        resolved_mate_references = resolved.resolved_mate_references if resolved is not None else None
+        return StepResult(
+            local_id=step.local_id,
+            ok=True,
+            resolved_edges=resolved_edges,
+            hole_count=hole_count,
+            resolved_mate_references=resolved_mate_references,
+        )
 
     def _lookup(self, local_id: str, expected_kinds: frozenset[str], field: str) -> _Resolved:
         if local_id.startswith(_EXISTING_ID_PREFIX):
@@ -899,7 +914,80 @@ def _handle_move_body(v: _PlanValidator, step: MoveBodyStep) -> None:
 # --- Assembly (Phase 8, docs/assembly-scope.md §2k) -----------------------
 
 
-def _mate_entity_ref_from_step(v: _PlanValidator, ref: MateEntityRefStep, field: str) -> MateEntityRef:
+# Phase 14 (`docs/assembly-scope.md` §6 `[3]`): the two Workstream-12
+# provenance selectors need a real Feature id to trace sketch-entity
+# lineage from (`EdgeSelector.of`, ignored for a Mate's own edge_selector -
+# see that field's own doc comment) - not resolvable here.
+_MATE_EDGE_SELECTOR_UNSUPPORTED_KINDS = frozenset(
+    {EdgeSelectorKind.EDGE_FROM_SKETCH_POINT, EdgeSelectorKind.EDGE_FROM_SKETCH_LINE}
+)
+
+
+def _resolve_mate_edge_selector(
+    v: _PlanValidator, subshape_ref: SubShapeRefSchema, selector: EdgeSelector, field: str
+) -> SubShapeRefSchema:
+    """Phase 14 (`docs/assembly-scope.md` §6 `[3]`): resolves `selector`
+    against `v.part`'s own real, current Body geometry -
+    `app.document.ai_plan_edges.resolve_edge_selector` doesn't care whether
+    the Body predates this plan (confirmed directly, not just assumed from
+    its own docstring - the exact same call `_resolve_edges` already makes
+    for Fillet/Chamfer), so the same four heuristic selectors work
+    unchanged here. `subshape_ref.body_id` already names which real Body to
+    search (`EdgeSelector.of` has no plan-local Body-producing step to name
+    in this context, so it's simply never read), the same "the ref already
+    carries what identifies its own target" shape `subshape_ref` itself
+    always has. Only ever called for `occurrence_id == ""` - see
+    `_mate_entity_ref_from_step`'s own guard just above its call site."""
+    if subshape_ref.shape_type != SubShapeType.EDGE:
+        raise _StepError(
+            {
+                "type": "invalid_step_payload",
+                "message": f"{field}.edge_selector requires subshape_ref.shape_type == 'edge'",
+            }
+        )
+    if selector.selector in _MATE_EDGE_SELECTOR_UNSUPPORTED_KINDS:
+        raise _StepError(
+            {
+                "type": "invalid_step_payload",
+                "message": (
+                    f"{field}.edge_selector does not support {selector.selector.value} - only "
+                    "top_face_edges/bottom_face_edges/vertical_edges/all_edges_of_face_at_position"
+                ),
+            }
+        )
+    bodies = compute_part_bodies(v.part, frozenset())
+    if subshape_ref.body_id not in bodies:
+        raise _StepError(
+            {"type": "invalid_step_payload", "message": f"{field}.subshape_ref.body_id not found: {subshape_ref.body_id}"}
+        )
+    # `resolve_edge_selector` always returns a *list* (Fillet/Chamfer apply
+    # a rounding/bevel to a whole set at once), but a Mate reference names
+    # exactly one edge. `_no_matching_edges` (raised inside `resolve_edge_
+    # selector` itself) already covers the zero-match case; a *multi*-match
+    # is a real, honestly-documented v1 limitation, not an error this
+    # function pretends away: `top_face_edges`/`bottom_face_edges`/
+    # `vertical_edges` return every edge in that set for an ordinary
+    # polygonal Body (a box's own 4 vertical edges, say), so this deliberately
+    # takes the first result in `resolve_edge_selector`'s own stable
+    # `topexp.MapShapes` order rather than rejecting outright - the same
+    # trade-off `[3]`'s own scope accepts rather than solving disambiguation
+    # generally (the LLM has no way to further narrow "which one" today
+    # without falling back to an explicit raw index instead).
+    edge_refs = resolve_edge_selector(
+        bodies[subshape_ref.body_id], subshape_ref.body_id, selector.selector, selector.direction
+    )
+    return SubShapeRefSchema(body_id=subshape_ref.body_id, shape_type=SubShapeType.EDGE, index=edge_refs[0].index)
+
+
+def _mate_entity_ref_from_step(
+    v: _PlanValidator, ref: MateEntityRefStep, field: str
+) -> tuple[MateEntityRef, SubShapeRefSchema | None]:
+    """Returns both the structural `MateEntityRef` this dry run's own
+    `create_mate`-mirroring check uses, and (Phase 14, `docs/assembly-
+    scope.md` §6 `[3]`) `ref.edge_selector`'s own resolved `SubShapeRefSchema`
+    when one was given - `None` otherwise, letting `_handle_mate` build
+    `StepResult.resolved_mate_references` without re-deriving which
+    references actually used a selector."""
     from app.document.router import _plane_ref_to_domain, _point_ref_to_domain, _subshape_ref_to_domain
 
     set_count = sum(x is not None for x in (ref.subshape_ref, ref.plane_ref, ref.point_ref))
@@ -910,12 +998,35 @@ def _mate_entity_ref_from_step(v: _PlanValidator, ref: MateEntityRefStep, field:
     occurrence_id = ""
     if ref.occurrence_id != "":
         occurrence_id = v._lookup_occurrence(ref.occurrence_id, f"{field}.occurrence_id").id
-    return MateEntityRef(
+
+    subshape_ref = ref.subshape_ref
+    resolved_subshape_ref: SubShapeRefSchema | None = None
+    if ref.edge_selector is not None:
+        if subshape_ref is None:
+            raise _StepError(
+                {"type": "invalid_step_payload", "message": f"{field}.edge_selector requires subshape_ref"}
+            )
+        # `[3]`'s own real scope limit - see `_resolve_mate_edge_selector`'s
+        # own doc comment for why: a placed Occurrence's own target Part is
+        # a different Part this single-Part-scoped validator has no
+        # geometry access to at all.
+        if ref.occurrence_id != "":
+            raise _StepError(
+                {
+                    "type": "invalid_step_payload",
+                    "message": f"{field}.edge_selector is only supported for occurrence_id == '' (the currently-open Part's own root content)",
+                }
+            )
+        subshape_ref = _resolve_mate_edge_selector(v, subshape_ref, ref.edge_selector, field)
+        resolved_subshape_ref = subshape_ref
+
+    entity_ref = MateEntityRef(
         occurrence_id=occurrence_id,
-        subshape_ref=_subshape_ref_to_domain(ref.subshape_ref) if ref.subshape_ref else None,
+        subshape_ref=_subshape_ref_to_domain(subshape_ref) if subshape_ref else None,
         plane_ref=_plane_ref_to_domain(ref.plane_ref) if ref.plane_ref else None,
         point_ref=_point_ref_to_domain(ref.point_ref) if ref.point_ref else None,
     )
+    return entity_ref, resolved_subshape_ref
 
 
 def _handle_mate(v: _PlanValidator, step: MateStep) -> None:
@@ -928,9 +1039,11 @@ def _handle_mate(v: _PlanValidator, step: MateStep) -> None:
     already gives."""
     if len(step.references) != 2:
         raise _StepError({"type": "invalid_step_payload", "message": "A Mate must have exactly 2 references"})
-    references = [
+    resolved_pairs = [
         _mate_entity_ref_from_step(v, ref, f"references[{i}]") for i, ref in enumerate(step.references)
     ]
+    references = [pair[0] for pair in resolved_pairs]
+    resolved_mate_references = [pair[1] for pair in resolved_pairs]
     if references[0].occurrence_id == references[1].occurrence_id:
         raise _StepError({"type": "invalid_step_payload", "message": "A Mate's two references must name different occurrences"})
     if step.type in (MateType.DISTANCE, MateType.ANGLE) and step.value is None:
@@ -939,7 +1052,17 @@ def _handle_mate(v: _PlanValidator, step: MateStep) -> None:
         )
     mate = Mate(id=str(uuid.uuid4()), type=step.type, references=references, value=step.value, flipped=step.flipped)
     v.part.mates.append(mate)
-    v.resolved[step.local_id] = _Resolved(kind="mate", feature_id=mate.id)
+    # Phase 14 (`docs/assembly-scope.md` §6 `[3]`): `None` for both entries
+    # (the overwhelmingly common case - no `edge_selector` used at all) is
+    # collapsed to a bare `None` rather than `[None, None]`, mirroring
+    # `resolved_edges`' own "only present when actually meaningful"
+    # convention - a translator checking `is not None` doesn't need to
+    # additionally check "and not all entries are None" too.
+    v.resolved[step.local_id] = _Resolved(
+        kind="mate",
+        feature_id=mate.id,
+        resolved_mate_references=resolved_mate_references if any(resolved_mate_references) else None,
+    )
 
 
 def _handle_move_component(v: _PlanValidator, step: MoveComponentStep) -> None:
@@ -959,6 +1082,52 @@ def _handle_hide_component(v: _PlanValidator, step: HideComponentStep) -> None:
     occurrence = v._lookup_occurrence(step.occurrence_id, "occurrence_id")
     occurrence.hidden = True
     v.resolved[step.local_id] = _Resolved(kind="hide_component", feature_id=occurrence.id)
+
+
+def _handle_pattern_component(v: _PlanValidator, step: PatternComponentStep) -> None:
+    """Phase 14 (`docs/assembly-scope.md` §6 `[1] partial`): mirrors
+    `create_component_pattern`'s own structural-only validation exactly
+    (like `_handle_mate`, no OCCT resolution happens here - a
+    `ComponentPattern` has no geometry of its own to resolve at
+    creation/dry-run time, only Occurrence references and numeric
+    parameters, see `ComponentPattern`'s own "re-derive, don't cache"
+    docstring - real expansion only ever happens at `GET .../assembly-mesh`
+    fetch time). Reuses `_validate_component_pattern_source_occurrence_ids`/
+    `_validate_component_pattern_payload`/`_component_pattern_axis_to_domain`
+    directly, the same real-backend-validator-reuse convention every other
+    handler in this module already follows."""
+    from app.document.router import (
+        _component_pattern_axis_to_domain,
+        _validate_component_pattern_payload,
+        _validate_component_pattern_source_occurrence_ids,
+    )
+
+    source_occurrence_ids = [
+        v._lookup_occurrence(local_id, "source_occurrence_ids").id for local_id in step.source_occurrence_ids
+    ]
+    _validate_component_pattern_source_occurrence_ids(v.part, source_occurrence_ids)
+    pattern_type = ComponentPatternType(step.pattern_type)
+    axis = _component_pattern_axis_to_domain(step.axis)
+    _validate_component_pattern_payload(
+        pattern_type, step.direction, step.count, axis, step.count_angular, step.angle_total, step.skip_indices
+    )
+    pattern = ComponentPattern(
+        id=str(uuid.uuid4()),
+        source_occurrence_ids=source_occurrence_ids,
+        pattern_type=pattern_type,
+        direction=step.direction,
+        count=step.count,
+        spacing=step.spacing,
+        reverse=step.reverse,
+        axis=axis,
+        count_angular=step.count_angular,
+        angle_total=step.angle_total,
+        reverse_angular=step.reverse_angular,
+        skip_indices=list(step.skip_indices),
+        orient_with_rotation=step.orient_with_rotation,
+    )
+    v.part.component_patterns.append(pattern)
+    v.resolved[step.local_id] = _Resolved(kind="pattern_component", feature_id=pattern.id)
 
 
 def _handle_isolate_component(v: _PlanValidator, step: IsolateComponentStep) -> None:
@@ -994,6 +1163,8 @@ def _resolve_edges(v: _PlanValidator, edges) -> tuple[list, list[SubShapeRefSche
     has no `sketch_point`/`sketch_line` case - an existing Sketch's
     individual entities are never directly referenceable, per this
     module's own docstring)."""
+    if edges.of is None:
+        raise _StepError({"type": "invalid_step_payload", "message": "edges.of is required for fillet/chamfer"})
     target = v._lookup_body(edges.of, "edges.of")
     sketch_point_id = None
     sketch_line_id = None
@@ -1186,4 +1357,5 @@ _HANDLERS = {
     "move_component": _handle_move_component,
     "hide_component": _handle_hide_component,
     "isolate_component": _handle_isolate_component,
+    "pattern_component": _handle_pattern_component,
 }

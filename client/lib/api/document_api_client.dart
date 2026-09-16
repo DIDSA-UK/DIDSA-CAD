@@ -1741,6 +1741,19 @@ class AiPlanStepResultDto {
   /// truth, never a client-side geometric guess.
   final int? holeCount;
 
+  /// Assembly support Phase 14 (`docs/assembly-scope.md` §6 `[3]`): only
+  /// present (and only meaningful) on a successful `mate` step that used
+  /// `edge_selector` on at least one of its two `references` - exactly 2
+  /// entries in the same order as the step's own `references`, `null` for
+  /// whichever side (if either) didn't use a selector (send that side's own
+  /// `subshape_ref` unchanged - see `PlanTranslator`'s own use of this
+  /// field). Unlike [resolvedEdges]' own `bodyId`-is-a-local_id indirection,
+  /// each entry's `bodyId` here already matches the step's own
+  /// `references[i].subshapeRef.bodyId` verbatim - a Mate reference has no
+  /// `edges.of`-style separate body-producing-step field to resolve
+  /// through, so only `index` needs substituting at the point of use.
+  final List<SubShapeRefDto?>? resolvedMateReferences;
+
   AiPlanStepResultDto({
     required this.localId,
     required this.ok,
@@ -1748,6 +1761,7 @@ class AiPlanStepResultDto {
     this.error,
     this.resolvedEdges,
     this.holeCount,
+    this.resolvedMateReferences,
   });
 
   factory AiPlanStepResultDto.fromJson(Map<String, dynamic> json) => AiPlanStepResultDto(
@@ -1759,6 +1773,9 @@ class AiPlanStepResultDto {
             ?.map((e) => SubShapeRefDto.fromJson(e as Map<String, dynamic>))
             .toList(),
         holeCount: json['hole_count'] as int?,
+        resolvedMateReferences: (json['resolved_mate_references'] as List?)
+            ?.map((e) => e == null ? null : SubShapeRefDto.fromJson(e as Map<String, dynamic>))
+            .toList(),
       );
 }
 
@@ -4344,6 +4361,13 @@ class DocumentApiClient {
     int countAngular = 1,
     double angleTotal = 360.0,
     bool reverseAngular = false,
+    // Phase 14 (`docs/assembly-scope.md` §6 `[1] partial`): plumbed through
+    // for `PlanTranslator`'s own `pattern_component` step execution - Phase
+    // 11 added these to `ComponentPatternDto`'s own round-trip fidelity but
+    // never exposed them on this create call, since nothing needed to send
+    // a non-default value yet.
+    List<int> skipIndices = const [],
+    bool orientWithRotation = true,
   }) =>
       _send(
         () => _httpClient.post(
@@ -4360,6 +4384,8 @@ class DocumentApiClient {
                 'count_angular': countAngular,
                 'angle_total': angleTotal,
                 'reverse_angular': reverseAngular,
+                'skip_indices': skipIndices,
+                'orient_with_rotation': orientWithRotation,
               }),
             ),
         (body) => ComponentPatternDto.fromJson(body as Map<String, dynamic>),

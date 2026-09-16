@@ -259,6 +259,15 @@ class PlanTranslator {
       for (final r in validation.results)
         if (r.resolvedEdges != null) r.localId: r.resolvedEdges!,
     };
+    // Assembly support Phase 14 (`docs/assembly-scope.md` §6 `[3]`): the
+    // resolved index for any `mate` step reference that used `edgeSelector`
+    // - `resolvedEdgesByLocalId`'s own sibling, one level down (per-
+    // reference within a step, not per-step) since a Mate has exactly two
+    // references and at most one or both may have used a selector.
+    final resolvedMateReferencesByLocalId = <String, List<SubShapeRefDto?>>{
+      for (final r in validation.results)
+        if (r.resolvedMateReferences != null) r.localId: r.resolvedMateReferences!,
+    };
 
     final localIdToRealId = <String, String>{};
     // Existing-Part editing: an `existing:<feature_id>` naming a real
@@ -297,6 +306,7 @@ class PlanTranslator {
           ids: localIdToRealId,
           sketchIds: sketchIdByLocalId,
           resolvedEdgesByLocalId: resolvedEdgesByLocalId,
+          resolvedMateReferencesByLocalId: resolvedMateReferencesByLocalId,
         );
         localIdToRealId[step.localId] = realId;
         if (_featureProducingKinds.contains(step.kind)) createdFeatureIds.add(realId);
@@ -363,6 +373,7 @@ class PlanTranslator {
     required Map<String, String> ids,
     required Map<String, String> sketchIds,
     required Map<String, List<SubShapeRefDto>> resolvedEdgesByLocalId,
+    required Map<String, List<SubShapeRefDto?>> resolvedMateReferencesByLocalId,
   }) async {
     switch (step) {
       case AiSketchStep():
@@ -582,9 +593,17 @@ class PlanTranslator {
 
       case AiFilletStep():
         final planEdges = resolvedEdgesByLocalId[step.localId]!;
+        // `edges.of` is required (validated server-side, `_resolve_edges`'s
+        // own runtime check) for a fillet/chamfer step specifically - only
+        // optional at the schema level so the same `AiEdgeSelector` type can
+        // also serve `AiMateEntityRefStep.edgeSelector` (Phase 14, which has
+        // no plan-local Body-producing step to name `of` with at all - see
+        // that field's own doc comment). A plan that reaches real execution
+        // already passed workstream 5's own dry-run validate, which would
+        // have failed this step already had `of` been omitted.
         final feature = await documentApi.createFilletFeature(
           partId,
-          edgeRefs: [for (final e in planEdges) _realSubShapeRef(step.edges.of, e, ids)],
+          edgeRefs: [for (final e in planEdges) _realSubShapeRef(step.edges.of!, e, ids)],
           radius: step.radius,
         );
         return feature.id;
@@ -593,7 +612,7 @@ class PlanTranslator {
         final planEdges = resolvedEdgesByLocalId[step.localId]!;
         final feature = await documentApi.createChamferFeature(
           partId,
-          edgeRefs: [for (final e in planEdges) _realSubShapeRef(step.edges.of, e, ids)],
+          edgeRefs: [for (final e in planEdges) _realSubShapeRef(step.edges.of!, e, ids)],
           distance: step.distance,
         );
         return feature.id;
@@ -722,10 +741,21 @@ class PlanTranslator {
         return feature.id;
 
       case AiMateStep():
+        // Phase 14 (`docs/assembly-scope.md` §6 `[3]`): whichever reference(s)
+        // used `edgeSelector` get the dry run's own already-resolved real
+        // index substituted in (`resolvedMateReferences[i]`, `null` for a
+        // reference that didn't use one - see `_mateEntityRefDto`'s own
+        // doc comment) - there is no other way for this client to resolve
+        // an `EdgeSelector` at all (the heuristics need real OCCT topology,
+        // never available client-side).
+        final resolvedReferences = resolvedMateReferencesByLocalId[step.localId];
         final mate = await documentApi.createMate(
           partId,
           type: step.type.wireValue,
-          references: [for (final r in step.references) _mateEntityRefDto(r)],
+          references: [
+            for (var i = 0; i < step.references.length; i++)
+              _mateEntityRefDto(step.references[i], resolvedReferences == null ? null : resolvedReferences[i]),
+          ],
           value: step.value,
           flipped: step.flipped,
         );
@@ -776,6 +806,26 @@ class PlanTranslator {
         }
         return targetId;
 
+      case AiPatternComponentStep():
+        final pattern = await documentApi.createComponentPattern(
+          partId,
+          sourceOccurrenceIds: [for (final s in step.sourceOccurrenceIds) _resolveOccurrenceId(s)],
+          patternType: step.patternType,
+          direction: step.direction,
+          count: step.count,
+          spacing: step.spacing,
+          reverse: step.reverse,
+          axis: step.axis == null
+              ? null
+              : ComponentPatternAxisDto(origin: step.axis!.origin, direction: step.axis!.direction),
+          countAngular: step.countAngular,
+          angleTotal: step.angleTotal,
+          reverseAngular: step.reverseAngular,
+          skipIndices: step.skipIndices,
+          orientWithRotation: step.orientWithRotation,
+        );
+        return pattern.id;
+
       case AiGearRequestStep():
         throw StateError('gear_request steps are intercepted before _executeStep is called');
     }
@@ -785,11 +835,21 @@ class PlanTranslator {
   /// `occurrence_id` (`""` or `existing:<id>`) to a real id via
   /// [_resolveOccurrenceId] - every other field is already a literal,
   /// already-real ref (see that step class's own doc comment).
-  MateEntityRefDto _mateEntityRefDto(AiMateEntityRefStep step) => MateEntityRefDto(
+  ///
+  /// Phase 14 (`docs/assembly-scope.md` §6 `[3]`): [resolvedSubshapeRef], when
+  /// non-null, replaces [AiMateEntityRefStep.subshapeRef] outright - the
+  /// dry run's own real, resolved `edgeSelector` result (see [execute]'s own
+  /// `resolvedMateReferencesByLocalId`), never [step.subshapeRef] itself in
+  /// that case (which, when `edgeSelector` was used, carries whatever
+  /// placeholder `index` the LLM's own request happened to include, not a
+  /// real one - `subshape_ref.body_id`/`shape_type` are still trusted
+  /// as-is either way, since only `index` ever needed resolving).
+  MateEntityRefDto _mateEntityRefDto(AiMateEntityRefStep step, SubShapeRefDto? resolvedSubshapeRef) => MateEntityRefDto(
         occurrenceId: _resolveOccurrenceId(step.occurrenceId),
-        subshapeRef: step.subshapeRef == null
-            ? null
-            : SubShapeRefDto(bodyId: step.subshapeRef!.bodyId, shapeType: step.subshapeRef!.shapeType, index: step.subshapeRef!.index),
+        subshapeRef: resolvedSubshapeRef ??
+            (step.subshapeRef == null
+                ? null
+                : SubShapeRefDto(bodyId: step.subshapeRef!.bodyId, shapeType: step.subshapeRef!.shapeType, index: step.subshapeRef!.index)),
         planeRef: step.planeRef == null
             ? null
             : PlaneRefDto(

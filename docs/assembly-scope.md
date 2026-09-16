@@ -2119,6 +2119,135 @@ paragraph named the backend change only for `[10]`, deliberately leaving a
 UI control for a later pass once real usage shows which default this app's
 users actually want exposed.
 
+## 2o. Phase 14 — AI plan pipeline: Mate edge-selector heuristic + existing-only `pattern_component` (implemented)
+
+§6 roadmap's own Phase 14 entry: closes `[3]` (no edge-selector heuristic
+for a Mate's own geometry refs) and the achievable half of `[1]`
+(`pattern_component` PlanStep missing) - independent of `[2]`
+(`add_component`, still unimplemented).
+
+### `[3]` Mate edge-selector heuristic
+
+`MateEntityRefStep.subshape_ref`'s optional new sibling field,
+`edge_selector` (`ai_plan_schemas.py`) - reuses the exact same
+`EdgeSelector` type Fillet/Chamfer's own `edges` field already uses, so an
+LLM never has to guess a raw topology index for a Mate reference either
+(the same benefit workstream 4 already gave Fillet/Chamfer). `EdgeSelector.of`
+(previously required) is now optional at the schema level - genuinely
+required for `fillet`/`chamfer` (enforced at runtime, `_resolve_edges`'s
+own new explicit check, since it lost the schema-level guarantee), but
+never meaningful for a Mate's own `edge_selector` (no plan-local
+Body-producing step to name - `subshape_ref.body_id` already says which
+real Body to search).
+
+Real scope limits, found while implementing (confirmed directly, not
+assumed): `_PlanValidator` is single-Part-scoped (`v.part`, the Part being
+edited) with no `Document` access at all, so `edge_selector` only resolves
+for `occurrence_id == ""` (the currently-open Part's own root content) - a
+placed Occurrence's own target Part is a different Part this validator
+cannot reach, rejected with a clear `invalid_step_payload` rather than
+silently ignored. Only the four non-provenance selectors
+(`top_face_edges`/`bottom_face_edges`/`vertical_edges`/
+`all_edges_of_face_at_position`) are supported - `edge_from_sketch_point`/
+`edge_from_sketch_line` need a real Feature id to trace lineage from, which
+this call site has no equivalent of, also rejected explicitly. A genuine,
+honestly-documented ambiguity for the four supported selectors themselves:
+`resolve_edge_selector` always returns a *list* (Fillet/Chamfer round a
+whole set at once), but a Mate reference needs exactly one edge - an
+ordinary polygonal Body's `vertical_edges` (say, a box's own 4) very
+commonly resolves to more than one match. Rather than rejecting every
+multi-match outright (which would make these four selectors nearly unusable
+for typical bodies), the first result in `resolve_edge_selector`'s own
+stable `topexp.MapShapes` order is used - a real, disclosed v1 limitation
+(the LLM cannot further disambiguate "which one" today without falling back
+to a raw index), not a hidden guess.
+
+New `StepResult.resolved_mate_references` field (`ai_plan_schemas.py`) -
+`resolved_edges`'s own sibling one level down (per-reference within a step,
+not per-step): exactly 2 entries when at least one of a `mate` step's two
+references used `edge_selector` (`null` entirely otherwise, matching
+`resolved_edges`' own "only present when meaningful" convention), each
+entry the real resolved `SubShapeRefSchema` (or `null` for a reference that
+didn't use a selector) - the only way the client can get a concrete edge
+ref for this at all, the identical "no OCCT topology client-side" reason
+`resolved_edges` itself exists. Unlike `resolved_edges`' own
+`body_id`-is-a-local_id indirection, each entry's `body_id` here already
+matches the step's own `subshape_ref.body_id` verbatim (no `edges.of`-style
+separate body-producing-step field exists for a Mate reference to resolve
+through) - `PlanTranslator` (`ai_plan_translator.dart`) substitutes only
+`index` at the point of use.
+
+### `[1]` (achievable half) `pattern_component`
+
+New `PatternComponentStep` (`ai_plan_schemas.py`) mirrors
+`ComponentPatternCreate` directly - `source_occurrence_ids` entries are
+`existing:<id>` only, the same convention `MateEntityRefStep`/
+`MoveComponentStep` already use (no `PlanStep` kind produces a brand-new
+Occurrence yet, `add_component`'s own still-open `[2]`, unchanged). Reuses
+`_validate_component_pattern_source_occurrence_ids`/`_validate_component_
+pattern_payload`/`_component_pattern_axis_to_domain` directly, the same
+real-backend-validator-reuse convention every other handler in this module
+already follows - no new validation logic invented. The full version of
+`[1]` (accepting a plan-local `local_id` a plan itself just placed) still
+waits on `add_component` landing first, per Phase 19's own roadmap entry -
+this closes only "pattern a component a human already placed by hand,"
+which the real, already-shipped `POST .../component-patterns` endpoint
+could always do directly, but an AI plan chaining "mate this bolt, then
+pattern it 4 times around the flange" in one request couldn't, until now.
+
+### Client
+
+`ai_plan.dart` (Dart mirror of `ai_plan_schemas.py`, standalone, no
+dependency on `document_api_client.dart`): `AiEdgeSelector.of` widened to
+`String?`; `AiMateEntityRefStep.edgeSelector`; new `AiComponentPatternAxisStep`/
+`AiPatternComponentStep`. `ai_plan_summary.dart`/`ai_plan_translator.dart`
+both needed a new exhaustive-switch case each. `PlanTranslator` threads
+`resolvedMateReferencesByLocalId` through exactly like `resolvedEdgesByLocalId`
+already flows, substituting a resolved reference's real index into
+`_mateEntityRefDto` at the point of use; `pattern_component` execution calls
+`DocumentApiClient.createComponentPattern` directly (that method gained
+`skipIndices`/`orientWithRotation` params in the same pass - Phase 11 added
+them to `ComponentPatternDto`'s own round-trip fidelity but never exposed
+them on this create call, since nothing needed to send a non-default value
+until now). `ai_scoping_prompt.dart`'s assembly vocabulary section gained
+the `edge_selector` shape (with its own real scope-limit caveats spelled
+out to the LLM) and a full `pattern_component` field-by-field description;
+`ai_tool_groups.dart`'s `'assembly'` group gained `pattern_component` in its
+own `kinds` set (Tools-toggle enforcement) and an updated label.
+
+**Verified**: backend - full suite against real `pythonocc-core`/`py-slvs`
+- **2325/2325 passed, 0 failed** (up from 2311 after §2n: 14 new tests - 13
+in `test_ai_plan_assembly_steps.py` (a new `_add_box_body`/
+`_setup_top_with_box_and_two_occurrences` fixture pair, needed since this
+file's own pre-Phase-14 tests never required real Body geometry - no OCCT
+resolution ever happened for a Mate reference before this phase) covering
+edge_selector success/both rejection paths/the `resolved_mate_references`
+null-vs-populated cases, plus `pattern_component` success/dry-run-
+non-persistence/multi-source/both validation-reuse rejection paths; 1 in
+`test_ai_plan_validate.py` for the new `edges.of`-omitted-for-fillet runtime
+guard). Full client suite - **1992/1992 passed** (up from 1984 after Phase
+11's own merge; 14 GPU-skips, unchanged), `flutter analyze` clean on every
+touched file. New client tests (8 total, all pure parsing/summary/translator-
+logic - none of this phase's own real HTTP execution needs a live backend,
+`MockClient`-driven like every other `PlanTranslator` test): 5 in
+`ai_plan_test.dart` (edge_selector parse/round-trip, `fillet.edges.of`
+still round-trips correctly now that it's schema-optional, `pattern_component`
+linear/circular/defaults), 1 in `ai_plan_summary_test.dart`, 2 in
+`ai_plan_translator_test.dart` (the resolved-index substitution actually
+overriding the plan's own placeholder value; a real `pattern_component`
+execution posting to the real endpoint).
+
+### Remaining limitations after this phase
+
+`[2]` (`add_component`, no client-side file-discovery mechanism) is
+unchanged and still fully open - both `[3]`'s own cross-Part scope limit
+and `[1]`'s own "existing-only" scope limit trace back to the same root
+cause (`add_component` never landing yet), not a new gap this phase
+introduced. The Mate edge-selector's own "first match wins on ambiguity"
+behavior (see `[3]`'s own write-up above) is a real, disclosed v1
+limitation worth revisiting once real usage shows how often it actually
+picks the LLM's intended edge versus a coincidentally-equivalent one.
+
 ---
 
 ## 3. Phase history (every originally-scoped phase implemented)
@@ -2454,8 +2583,8 @@ variant. Check `py_slvs`'s own primitives before inventing new math,
 mirroring Phase 6's own "three rejected approaches" process - budget real
 experimentation time.
 
-**Phase 14 — AI plan pipeline: Mate edge-selector heuristic + existing-only
-`pattern_component` (medium).** Closes `[3]` and the achievable half of
+**~~Phase 14 — AI plan pipeline: Mate edge-selector heuristic + existing-only
+`pattern_component` (medium).~~ — moved to §2o, implemented.** Closes `[3]` and the achievable half of
 `[1]`, independent of `[2]`. `[3]`: `resolve_edge_selector`
 (`ai_plan_edges.py`) already takes a raw shape + `Part` and doesn't care
 whether the Body predates this plan - add an optional `EdgeSelector` field
@@ -2531,10 +2660,12 @@ limitation, not assembly-specific.
 
 ### The 23-item gap inventory this roadmap schedules against
 
-**AI plan pipeline (§2k)**: `[1]` `pattern_component` PlanStep missing;
+**AI plan pipeline (§2k)**: `[1]` ~~`pattern_component` PlanStep missing~~ -
+**fixed (existing-Occurrence-only half), Phase 14 §2o** - the full version
+(a plan-local id this same plan just placed) still waits on `[2]`;
 `[2]` `add_component` PlanStep missing (no client file-discovery
-mechanism); `[3]` no edge-selector heuristic for a Mate's own geometry
-refs; `[4]` ~~`move_component` has no payload validation~~ - **fixed,
+mechanism); `[3]` ~~no edge-selector heuristic for a Mate's own geometry
+refs~~ - **fixed, Phase 14 §2o**; `[4]` ~~`move_component` has no payload validation~~ - **fixed,
 Phase 10 §2m**; `[5]` ~~manual Hide/Show/Isolate UI still client-only~~ -
 **fixed, Phase 10 §2m**.
 
