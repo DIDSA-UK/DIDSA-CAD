@@ -63,14 +63,9 @@ at its own `py_slvs` FFI boundary, and no such converter exists anywhere
 else in this backend.
 
 Known v1 scope limits (documented here, not silently assumed):
-- A straight (non-circular) Edge is not a supported mate reference at all
-  ("edge-to-edge" mates); only a Vertex, a planar/cylindrical Face, a
-  circular Edge, a `PlaneRef`, or a `PointRef` are.
-- CONCENTRIC only supports axis-to-axis (a cylindrical Face or circular
-  Edge on *both* sides) - there is no "concentric to a point" variant.
-- DISTANCE only supports point-point/point-plane/plane-plane; an
-  axis-to-axis (parallel-shaft center-distance) DISTANCE mate is not
-  supported.
+- CONCENTRIC only supports axis-to-axis (a cylindrical Face, or a circular
+  or straight Edge - Phase 13, `docs/assembly-scope.md` §6 `[15]` - on
+  *both* sides) - there is no "concentric to a point" variant.
 - A COINCIDENT mate between two planar references locks the *full*
   relative orientation (`addSameOrientation`, 3 DOF) rather than only the
   2 DOF a real "flush, but free to spin about the shared normal" mate
@@ -86,7 +81,7 @@ from dataclasses import dataclass
 
 from fastapi import HTTPException
 from OCC.Core.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
-from OCC.Core.GeomAbs import GeomAbs_Circle, GeomAbs_Cylinder, GeomAbs_Plane
+from OCC.Core.GeomAbs import GeomAbs_Circle, GeomAbs_Cylinder, GeomAbs_Line, GeomAbs_Plane
 from OCC.Core.TopoDS import topods
 from py_slvs import slvs
 
@@ -219,11 +214,20 @@ def _resolve_local_geometry(target_part: Part, bodies: dict, ref: MateEntityRef)
 
     if sub.shape_type == SubShapeType.EDGE:
         curve_type = BRepAdaptor_Curve(topods.Edge(shape)).GetType()
-        if curve_type == GeomAbs_Circle:
+        if curve_type in (GeomAbs_Circle, GeomAbs_Line):
+            # Phase 13 (`docs/assembly-scope.md` §6 `[15]`): a straight
+            # edge now resolves the same way a circular one always has -
+            # `single_shape_geometry`'s own `GeomAbs_Line` branch reports
+            # the identical `axis_origin`/`axis_direction` shape (a point on
+            # the line + its direction) a circular edge's fitted axis
+            # already does, so no new field or branch is needed here beyond
+            # widening this `if` - CONCENTRIC/PARALLEL/ANGLE's own dispatch
+            # (`_apply_mate_constraint`) never distinguished where an
+            # `axis_origin`/`direction` pair came from in the first place.
             geometry = single_shape_geometry(sub, shape)
             assert geometry.axis_origin is not None and geometry.axis_direction is not None
             return _ResolvedGeometry(axis_origin=geometry.axis_origin, direction=geometry.axis_direction)
-        raise _unsupported_mate_geometry(ref, "an axis (only a circular edge has one)")
+        raise _unsupported_mate_geometry(ref, "an axis (a circular or straight edge)")
 
     # SubShapeType.BODY - no meaningful point/plane/axis of its own.
     raise _unsupported_mate_geometry(ref, "point, plane, or axis")
@@ -595,9 +599,36 @@ def _add_mate_constraints(
             driven_point = builder.point(driven.point)
             fixed_workplane = _fixed_workplane(system, fixed.plane)
             system.addPointPlaneDistance(distance, driven_point, fixed_workplane, group=_SOLVE_GROUP)
+        elif (
+            driven.axis_origin is not None
+            and driven.direction is not None
+            and fixed.axis_origin is not None
+            and fixed.direction is not None
+        ):
+            # Phase 13 (`docs/assembly-scope.md` §6 `[15]`): axis-to-axis
+            # DISTANCE - "these two parallel shafts/dowel-pin axes are N mm
+            # apart," the "parallel-shaft center-distance" case this
+            # module's own docstring used to list as unsupported. Checked
+            # `py_slvs`'s own primitives first, mirroring Phase 6's own
+            # "three rejected approaches" process rather than inventing new
+            # math: there is no direct line-to-line distance constraint
+            # (`system.addPointLineDistance` is the closest primitive), but
+            # a point-to-line distance *is* exactly the true axis-to-axis
+            # distance as long as the two axes are actually forced parallel
+            # first (`addParallel`, the same call CONCENTRIC already makes
+            # one line up) - for two non-parallel lines, point-line distance
+            # varies along the line and would silently mean something
+            # different depending on the fixed point py_slvs happened to
+            # measure from, so `addParallel` here isn't merely a nicety, it
+            # is what makes "the" distance well-defined at all.
+            driven_line = builder.line(driven.axis_origin, driven.direction)
+            driven_point = builder.point(driven.axis_origin)
+            fixed_line = _fixed_line(system, fixed.axis_origin, fixed.direction)
+            system.addParallel(driven_line, fixed_line, group=_SOLVE_GROUP)
+            system.addPointLineDistance(distance, driven_point, fixed_line, group=_SOLVE_GROUP)
         else:
             if driven.point is None or fixed.point is None:
-                raise _unsupported_mate_geometry(ref_placeholder, "a point or plane on each side")
+                raise _unsupported_mate_geometry(ref_placeholder, "a point, plane, or axis on each side")
             driven_point = builder.point(driven.point)
             fixed_point = _fixed_point(system, fixed.point)
             system.addPointsDistance(distance, driven_point, fixed_point, group=_SOLVE_GROUP)

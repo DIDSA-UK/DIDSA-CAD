@@ -22,7 +22,7 @@ from OCC.Core.BRep import BRep_Tool
 from OCC.Core.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
 from OCC.Core.BRepExtrema import BRepExtrema_DistShapeShape
 from OCC.Core.BRepGProp import brepgprop
-from OCC.Core.GeomAbs import GeomAbs_Circle, GeomAbs_Cylinder, GeomAbs_Plane
+from OCC.Core.GeomAbs import GeomAbs_Circle, GeomAbs_Cylinder, GeomAbs_Line, GeomAbs_Plane
 from OCC.Core.gp import gp_Ax1, gp_Pnt, gp_Vec
 from OCC.Core.GProp import GProp_GProps
 from OCC.Core.TopAbs import TopAbs_REVERSED
@@ -212,6 +212,25 @@ def single_shape_geometry(ref: SubShapeRef, shape: TopoDS_Shape) -> MeasurementR
                 center=_point(circle.Location()),
                 axis_origin=_point(axis.Location()),
                 axis_direction=_vec_tuple(gp_Vec(axis.Direction().X(), axis.Direction().Y(), axis.Direction().Z())),
+            )
+        if curve.GetType() == GeomAbs_Line:
+            # Phase 13 (`docs/assembly-scope.md` §6 `[15]`): a straight
+            # edge's own infinite-line direction + a point on it (the same
+            # `gp_Lin`-shaped `Location()`/`Direction()` pair a circular
+            # edge's `gp_Ax1` axis already reports above) - `app.document.
+            # create_plane._resolve_normal_to_edge_through_vertex`/`app.
+            # document.pattern`'s identical `curve.Line()` idiom, promoted
+            # here so `assembly_solver.py`'s CONCENTRIC/PARALLEL/ANGLE mate
+            # dispatch (already direction-agnostic to circle-vs-line - see
+            # that module's own docstring) can resolve a straight-edge mate
+            # reference the exact same way it already resolves a circular
+            # one, through this one shared function.
+            line = curve.Line()
+            direction = line.Direction()
+            return MeasurementResult(
+                length=length,
+                axis_origin=_point(line.Location()),
+                axis_direction=_vec_tuple(gp_Vec(direction.X(), direction.Y(), direction.Z())),
             )
         return MeasurementResult(length=length)
 
