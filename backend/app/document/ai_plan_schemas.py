@@ -38,7 +38,7 @@ from app.document.models import (
     RevolveMode,
     SweepMode,
 )
-from app.document.schemas import PlaneRefSchema, PointRefSchema, SubShapeRefSchema
+from app.document.schemas import ComponentPatternAxisSchema, PlaneRefSchema, PointRefSchema, SubShapeRefSchema
 from app.sketch.models import Plane
 
 
@@ -248,7 +248,19 @@ class CardinalDirection(str, Enum):
 
 class EdgeSelector(BaseModel):
     selector: EdgeSelectorKind
-    of: str  # local_id of an earlier Body-producing step (extrude/revolve/sweep/pattern/mirror/gear_request)
+    # local_id of an earlier Body-producing step (extrude/revolve/sweep/
+    # pattern/mirror/gear_request) - required for a `fillet`/`chamfer` step
+    # (`ai_plan.py._resolve_edges` raises `invalid_step_payload` if omitted
+    # there), but *ignored* when this `EdgeSelector` is instead
+    # `MateEntityRefStep.edge_selector` (Phase 14, `docs/assembly-scope.md`
+    # §6 `[3]`) - a Mate reference names its Body directly via `subshape_ref.
+    # body_id`, so there is no plan-local Body-producing step to name in the
+    # first place. Optional at the schema level (rather than two near-
+    # identical schemas) so one `EdgeSelector` type serves both call sites,
+    # the same "one schema reused, per-caller validation" convention
+    # `MateEntityRefStep`'s own docstring already establishes for its three
+    # ref fields.
+    of: str | None = None
     # Required iff selector == ALL_EDGES_OF_FACE_AT_POSITION; unused (and
     # ignored) for every other selector.
     direction: CardinalDirection | None = None
@@ -474,12 +486,32 @@ class MateEntityRefStep(BaseModel):
     plan-local id either, since that Part's Bodies aren't built by this plan
     at all (they're assumed to already exist, the same way an `existing:`
     Feature reference assumes the Part being edited already has one).
-    Exactly one of the three ref fields must be set."""
+    Exactly one of the three ref fields must be set.
+
+    `edge_selector` (Phase 14, `docs/assembly-scope.md` §6 `[3]`): optional,
+    only meaningful alongside `subshape_ref` (`shape_type == "edge"`) -
+    resolved *instead of* `subshape_ref.index` when set, the same benefit
+    `FilletStep`/`ChamferStep`'s own `edges: EdgeSelector` already gives a
+    Fillet/Chamfer edge pick (a heuristic name - "the top face's edges,"
+    "the vertical edges" - instead of guessing a raw topology index).
+    `ai_plan.py`'s own resolution only ever reaches `v.part`'s real, current
+    Body geometry (`compute_part_bodies`), so this is only honored for
+    `occurrence_id == ""` (the currently-open Part's own root content) -
+    `existing:<id>` names a placed Occurrence's own *different* target Part,
+    which this single-Part-scoped validator has no geometry access to at
+    all, so `edge_selector` there is rejected with a clear
+    `invalid_step_payload` rather than silently ignored. Only the four
+    non-provenance selectors (`top_face_edges`/`bottom_face_edges`/
+    `vertical_edges`/`all_edges_of_face_at_position`) are supported here -
+    `edge_from_sketch_point`/`edge_from_sketch_line` need a real Feature id
+    to trace lineage from, which `EdgeSelector.of`'s own doc comment already
+    explains this call site has no equivalent of."""
 
     occurrence_id: str
     subshape_ref: SubShapeRefSchema | None = None
     plane_ref: PlaneRefSchema | None = None
     point_ref: PointRefSchema | None = None
+    edge_selector: EdgeSelector | None = None
 
 
 class MateStep(BaseModel):
@@ -552,19 +584,48 @@ class IsolateComponentStep(BaseModel):
     occurrence_id: str
 
 
-# `pattern_component` is deliberately not a `PlanStep` kind yet - see
-# `docs/assembly-scope.md` §3 item 8's own note (restated in §2k): the AI
-# plan pipeline has no existing concept of "the Occurrence id an earlier
-# step in this same plan just placed" to feed as a pattern's
-# `source_occurrence_ids`, and every Occurrence a plan *can* reference in
-# this phase (via `existing:<id>`, see `MateEntityRefStep`'s own docstring)
-# is already a real, persisted top-level Occurrence - one the real, already-
-# shipped `POST /parts/{part_id}/component-patterns` endpoint (Phase 7,
-# §2j) can already pattern directly today, with no AI-plan-authored
-# `pattern_component` step needed to reach it. Left for a future phase, once
-# `add_component` (or some other Occurrence-producing `PlanStep`) actually
-# exists and the "local_id names an Occurrence this same plan just placed"
-# problem is a real one to solve.
+class PatternComponentStep(BaseModel):
+    """Phase 14 (`docs/assembly-scope.md` §6 `[1] partial`): mirrors
+    `ComponentPatternCreate` (`app.document.schemas`) directly - creates a
+    `ComponentPattern` repeating one or more already-placed Occurrences.
+
+    `source_occurrence_ids` entries are `existing:<occurrence_id>` only -
+    the same convention `MateEntityRefStep.occurrence_id`/
+    `MoveComponentStep.occurrence_id` already use, for the identical reason
+    (`MateEntityRefStep`'s own docstring): no `PlanStep` kind produces a
+    brand-new Occurrence yet (`add_component`'s own still-open gap,
+    `docs/assembly-scope.md` §6 `[2]`, unchanged by this phase). This closes
+    only the *achievable* half of the original deferred note below - a plan
+    can now pattern an Occurrence a human already placed by hand, just not
+    one this same plan placed itself; the full version (`[1]`'s remaining
+    half, accepting a plan-local `local_id` too) waits on `add_component`
+    landing first, per Phase 19's own roadmap entry.
+
+    Former deferred-scope note, restated for why this was ever left out in
+    the first place: every Occurrence a plan *can* reference (via
+    `existing:<id>`) is already a real, persisted top-level Occurrence - one
+    the real, already-shipped `POST /parts/{part_id}/component-patterns`
+    endpoint (Phase 7, §2j) could already pattern directly, with no
+    AI-plan-authored step strictly *needed* to reach it. Added anyway once
+    genuinely useful on its own terms (an AI plan chaining "mate this bolt,
+    then pattern it 4 times around the flange" in one request, rather than
+    requiring a separate manual step after the plan finishes) - not because
+    the original blocker was ever removed for the *full* version."""
+
+    local_id: str
+    kind: Literal["pattern_component"] = "pattern_component"
+    source_occurrence_ids: list[str]
+    pattern_type: Literal["linear", "circular"] = "linear"
+    direction: tuple[float, float, float] = (1.0, 0.0, 0.0)
+    count: int = 1
+    spacing: float = 0.0
+    reverse: bool = False
+    axis: ComponentPatternAxisSchema | None = None
+    count_angular: int = 1
+    angle_total: float = 360.0
+    reverse_angular: bool = False
+    skip_indices: list[int] = []
+    orient_with_rotation: bool = True
 
 
 PlanStep = Annotated[
@@ -597,6 +658,7 @@ PlanStep = Annotated[
         MoveComponentStep,
         HideComponentStep,
         IsolateComponentStep,
+        PatternComponentStep,
     ],
     Field(discriminator="kind"),
 ]
@@ -652,6 +714,19 @@ class StepResult(BaseModel):
     # ai_plan._hole_count`) - real backend truth, not a client-side guess
     # (the client has no OCCT topology to reason about this with at all).
     hole_count: int | None = None
+    # Phase 14 (`docs/assembly-scope.md` §6 `[3]`): only present (and only
+    # meaningful) on a successful `mate` step that used `edge_selector` on
+    # at least one of its two `references` - exactly 2 entries, in the same
+    # order as `step.references`, `None` for whichever side (if either)
+    # didn't use a selector (send that side's own `subshape_ref` unchanged).
+    # Unlike `resolved_edges`' own `body_id`-is-a-local_id indirection, each
+    # entry's `body_id` here is already the same real/plan-local-scratch
+    # value the step's own `references[i].subshape_ref.body_id` supplied -
+    # a Mate reference has no `edges.of`-style separate body-producing-step
+    # field to resolve through, `subshape_ref.body_id` already names it
+    # directly - so the translator substitutes only `index`, not `body_id`,
+    # at the point of use.
+    resolved_mate_references: list[SubShapeRefSchema | None] | None = None
 
 
 class PlanValidateResponse(BaseModel):

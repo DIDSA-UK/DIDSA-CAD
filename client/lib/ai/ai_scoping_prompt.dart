@@ -581,6 +581,26 @@ in this plan (no step kind here creates a brand-new placed component).
   what you want from a plan; prefer subshape_ref. The two references must
   name different occurrence_ids. "distance"/"angle" mates require "value"
   (mm or degrees respectively); the others ignore it.
+
+  A reference whose occurrence_id is exactly "" (this Part's own root
+  geometry, never a placed component) may add "edge_selector" as a THIRD,
+  sibling field alongside a subshape_ref whose shape_type is "edge" -
+  {"occurrence_id":"", "subshape_ref":{"body_id":<real body id>,
+  "shape_type":"edge","index":0}, "edge_selector":{"selector":
+  "top_face_edges"|"bottom_face_edges"|"vertical_edges"}} or
+  {..., "edge_selector":{"selector":"all_edges_of_face_at_position",
+  "direction":"+x"|"-x"|"+y"|"-y"|"+z"|"-z"}} - the same four selectors
+  Fillet/Chamfer use (below), minus the two sketch-entity-based ones
+  (edge_from_sketch_point/edge_from_sketch_line are NOT supported here).
+  subshape_ref's own "index" is ignored and overridden once "edge_selector"
+  is present - any placeholder value (e.g. 0) is fine there; only its
+  "body_id" is actually used. Only ever usable on the "" (root-content)
+  side of a Mate, never on a placed component's own occurrence_id side. If
+  more than one edge matches the selector (e.g. a box's own 4 vertical
+  edges), one of them is used - which one is not something you can control
+  from here, so only reach for edge_selector when you expect (or don't
+  care which of) the matches to be geometrically equivalent for the mate
+  you're making; otherwise fall back to a raw subshape_ref index instead.
 - move_component: {local_id, kind:"move_component", occurrence_id,
   translation?, rotation_axis?, rotation_angle_degrees?} - translation is
   an [x, y, z] triple in mm (world space, not the component's own local
@@ -594,12 +614,28 @@ in this plan (no step kind here creates a brand-new placed component).
   that one component.
 - isolate_component: {local_id, kind:"isolate_component", occurrence_id} -
   hides every OTHER top-level component in the assembly and shows this one.
+- pattern_component: {local_id, kind:"pattern_component",
+  source_occurrence_ids: [one or more occurrence_id entries],
+  pattern_type:"linear"|"circular", direction?, count?, spacing?, reverse?,
+  axis?, count_angular?, angle_total?, reverse_angular?} - repeats one or
+  more already-placed components. Every source_occurrence_ids entry (and
+  every other occurrence_id on this page) must still be a real
+  "existing:<id>" - a pattern_component step cannot repeat a component
+  another step in this same plan just placed (there is no such step kind
+  yet). Linear fields: "direction" [x, y, z] (default [1,0,0], world
+  space), "count" (instances INCLUDING the untouched original - 3 means 2
+  new copies), "spacing" (mm between instances), "reverse" (flips
+  direction). Circular fields: "axis" {"origin":[x,y,z], "direction":[x,y,z]}
+  (default the world Z axis through the origin), "count_angular" (same
+  "includes the original" convention), "angle_total" (degrees swept,
+  default 360), "reverse_angular". Omit whichever field group doesn't match
+  pattern_type.
 
-There is no kind to place a brand-new component, pattern one, or delete an
-existing Mate/component - if the user asks for one of those, say so
-plainly and tell them to use this app's own Assembly tools for that part of
-the request, then (if anything else in their request is genuinely
-achievable with mate/move_component/hide_component/isolate_component)
+There is no kind to place a brand-new component or delete an existing
+Mate/component/pattern - if the user asks for one of those, say so plainly
+and tell them to use this app's own Assembly tools for that part of the
+request, then (if anything else in their request is genuinely achievable
+with mate/move_component/hide_component/isolate_component/pattern_component)
 still emit a plan for that remaining part.''';
 
 /// Assembles [_vocabularyTemplate] with every tool-group placeholder
@@ -894,9 +930,11 @@ way - nothing else:
   sketch_point/sketch_line/sketch_circle/etc. steps you define in this
   plan (i.e. adding new geometry into that already-existing Sketch).
 - A placed component (an "Occurrence") already in the Assembly tree, listed
-  under "Placed Components" below if any exist - as the occurrence_id in a
-  mate/move_component/hide_component/isolate_component step (see "Assembly
-  editing" above, only present when this tool group is enabled).
+  under "Placed Components" below if any exist - as the occurrence_id (or a
+  pattern_component step's own source_occurrence_ids entry) in a mate/
+  move_component/hide_component/isolate_component/pattern_component step
+  (see "Assembly editing" above, only present when this tool group is
+  enabled).
 You can NEVER reference one of an existing Sketch's individual Points/
 Lines/Circles/etc. directly - if new geometry needs to connect to or build
 on what is already there, express it as new sketch_point/sketch_line/etc.

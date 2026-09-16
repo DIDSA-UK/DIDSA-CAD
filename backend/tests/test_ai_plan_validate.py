@@ -709,6 +709,39 @@ def test_fillet_step_reports_resolved_edges_keyed_by_local_id() -> None:
     assert results["f1"]["resolved_edges"] is None
 
 
+def test_fillet_step_rejects_an_omitted_edges_of() -> None:
+    """Phase 14 (`docs/assembly-scope.md` §6 `[3]`): `EdgeSelector.of`
+    became optional at the schema level (so the identical `EdgeSelector`
+    type can also serve `MateEntityRefStep.edge_selector`, which has no
+    plan-local Body-producing step to name) - `of` is still genuinely
+    required for `fillet`/`chamfer`, now enforced at runtime with a clear
+    `invalid_step_payload` instead of the schema itself refusing to parse a
+    request that omits it."""
+    part = _create_part()
+    steps = _rectangle_sketch_steps() + [
+        {
+            "local_id": "f1",
+            "kind": "extrude",
+            "sketch_feature_id": "sk1",
+            "extrude_type": "boss",
+            "start_distance": 0,
+            "end_distance": 10,
+        },
+        {
+            "local_id": "f2",
+            "kind": "fillet",
+            "edges": {"selector": "top_face_edges"},
+            "radius": 2,
+        },
+    ]
+
+    response = _validate(part["id"], steps)
+    results = _results_by_local_id(response)
+
+    assert results["f2"]["ok"] is False
+    assert results["f2"]["error"]["type"] == "invalid_step_payload"
+
+
 def test_sketch_line_angle_is_degrees_not_radians() -> None:
     """Bug fix found while implementing workstream 4: 00-conventions.md
     promises "degrees for every angle" (and `ai_plan_summary.dart`'s

@@ -199,10 +199,17 @@ enum AiCardinalDirection {
       .firstWhere((e) => e.wireValue == value, orElse: () => throw FormatException('Unknown CardinalDirection: $value'));
 }
 
-/// `EdgeSelector` (`ai_plan_schemas.py`) - `FilletStep.edges`/`ChamferStep.edges`.
+/// `EdgeSelector` (`ai_plan_schemas.py`) - `FilletStep.edges`/`ChamferStep.edges`,
+/// and (Phase 14, `docs/assembly-scope.md` §6 `[3]`) `MateEntityRefStep.
+/// edgeSelector`.
 class AiEdgeSelector {
   final AiEdgeSelectorKind selector;
-  final String of;
+  // Required for a fillet/chamfer step's own `edges` (the local_id of the
+  // Body-producing step it applies to); optional and always omitted for
+  // `MateEntityRefStep.edgeSelector` (that call site has no plan-local
+  // Body-producing step to name - see `EdgeSelector.of`'s own doc comment
+  // in `ai_plan_schemas.py`).
+  final String? of;
   final AiCardinalDirection? direction;
   // Workstream 12: required iff selector == edgeFromSketchPoint.
   final String? sketchPointRef;
@@ -215,7 +222,7 @@ class AiEdgeSelector {
 
   const AiEdgeSelector({
     required this.selector,
-    required this.of,
+    this.of,
     this.direction,
     this.sketchPointRef,
     this.sketchLineRef,
@@ -224,7 +231,7 @@ class AiEdgeSelector {
 
   factory AiEdgeSelector.fromJson(Map<String, dynamic> json) => AiEdgeSelector(
         selector: AiEdgeSelectorKind.fromWire(json['selector'] as String),
-        of: json['of'] as String,
+        of: json['of'] as String?,
         direction: json['direction'] == null ? null : AiCardinalDirection.fromWire(json['direction'] as String),
         sketchPointRef: json['sketch_point_ref'] as String?,
         sketchLineRef: json['sketch_line_ref'] as String?,
@@ -233,7 +240,7 @@ class AiEdgeSelector {
 
   Map<String, dynamic> toJson() => {
         'selector': selector.wireValue,
-        'of': of,
+        if (of != null) 'of': of,
         if (direction != null) 'direction': direction!.wireValue,
         if (sketchPointRef != null) 'sketch_point_ref': sketchPointRef,
         if (sketchLineRef != null) 'sketch_line_ref': sketchLineRef,
@@ -424,7 +431,23 @@ class AiMateEntityRefStep {
   final AiPlaneRef? planeRef;
   final AiPointRef? pointRef;
 
-  const AiMateEntityRefStep({required this.occurrenceId, this.subshapeRef, this.planeRef, this.pointRef});
+  /// Phase 14 (`docs/assembly-scope.md` §6 `[3]`): resolved instead of
+  /// [subshapeRef]'s own `index` when set - see `MateEntityRefStep.edge_
+  /// selector`'s own doc comment in `ai_plan_schemas.py` for the real scope
+  /// limit (only `occurrenceId == ""`, only the four non-provenance
+  /// selectors). `PlanTranslator` reads the resolved index back from
+  /// `AiPlanStepResultDto.resolvedMateReferences` at real-execution time -
+  /// this field only ever round-trips the LLM's own request, it is never
+  /// itself resolved client-side (no OCCT topology available here).
+  final AiEdgeSelector? edgeSelector;
+
+  const AiMateEntityRefStep({
+    required this.occurrenceId,
+    this.subshapeRef,
+    this.planeRef,
+    this.pointRef,
+    this.edgeSelector,
+  });
 
   factory AiMateEntityRefStep.fromJson(Map<String, dynamic> json) => AiMateEntityRefStep(
         occurrenceId: json['occurrence_id'] as String,
@@ -432,6 +455,8 @@ class AiMateEntityRefStep {
             json['subshape_ref'] == null ? null : AiSubShapeRef.fromJson(json['subshape_ref'] as Map<String, dynamic>),
         planeRef: json['plane_ref'] == null ? null : AiPlaneRef.fromJson(json['plane_ref'] as Map<String, dynamic>),
         pointRef: json['point_ref'] == null ? null : AiPointRef.fromJson(json['point_ref'] as Map<String, dynamic>),
+        edgeSelector:
+            json['edge_selector'] == null ? null : AiEdgeSelector.fromJson(json['edge_selector'] as Map<String, dynamic>),
       );
 
   Map<String, dynamic> toJson() => {
@@ -439,6 +464,7 @@ class AiMateEntityRefStep {
         if (subshapeRef != null) 'subshape_ref': subshapeRef!.toJson(),
         if (planeRef != null) 'plane_ref': planeRef!.toJson(),
         if (pointRef != null) 'point_ref': pointRef!.toJson(),
+        if (edgeSelector != null) 'edge_selector': edgeSelector!.toJson(),
       };
 }
 
@@ -513,6 +539,8 @@ sealed class AiPlanStep {
         return AiHideComponentStep.fromJson(json);
       case 'isolate_component':
         return AiIsolateComponentStep.fromJson(json);
+      case 'pattern_component':
+        return AiPatternComponentStep.fromJson(json);
       default:
         throw FormatException('Unknown plan step kind: $kind');
     }
@@ -1453,6 +1481,107 @@ class AiIsolateComponentStep extends AiPlanStep {
 
   @override
   Map<String, dynamic> toJson() => {'local_id': localId, 'kind': kind, 'occurrence_id': occurrenceId};
+}
+
+/// `ComponentPatternAxisSchema` (`app.document.schemas`) - [AiPatternComponentStep.axis].
+/// A free world-space origin + direction (unlike [AiPatternAxisStep], never
+/// resolved from Sketch geometry) - mirrored standalone here rather than
+/// imported from `document_api_client.dart`'s identically-shaped
+/// `ComponentPatternAxisDto`, matching this file's own "no dependency on
+/// any other file, mirror everything needed directly" convention (this
+/// file's own module docstring).
+class AiComponentPatternAxisStep {
+  final List<double> origin;
+  final List<double> direction;
+
+  const AiComponentPatternAxisStep({
+    this.origin = const [0.0, 0.0, 0.0],
+    this.direction = const [0.0, 0.0, 1.0],
+  });
+
+  factory AiComponentPatternAxisStep.fromJson(Map<String, dynamic> json) => AiComponentPatternAxisStep(
+        origin: json['origin'] == null
+            ? const [0.0, 0.0, 0.0]
+            : (json['origin'] as List).map((e) => (e as num).toDouble()).toList(),
+        direction: json['direction'] == null
+            ? const [0.0, 0.0, 1.0]
+            : (json['direction'] as List).map((e) => (e as num).toDouble()).toList(),
+      );
+
+  Map<String, dynamic> toJson() => {'origin': origin, 'direction': direction};
+}
+
+/// `PatternComponentStep` (`ai_plan_schemas.py`, Phase 14 - `docs/assembly-
+/// scope.md` §6 `[1] partial`) - mirrors `ComponentPatternCreate`
+/// (`app.document.schemas`) directly, creating a `ComponentPattern`
+/// repeating one or more already-placed Occurrences. [sourceOccurrenceIds]
+/// entries are `existing:<occurrence_id>` only - see [AiMateEntityRefStep]'s
+/// own doc comment for why no plan-local Occurrence id can exist yet.
+class AiPatternComponentStep extends AiPlanStep {
+  final List<String> sourceOccurrenceIds;
+  final String patternType;
+  final List<double> direction;
+  final int count;
+  final double spacing;
+  final bool reverse;
+  final AiComponentPatternAxisStep? axis;
+  final int countAngular;
+  final double angleTotal;
+  final bool reverseAngular;
+  final List<int> skipIndices;
+  final bool orientWithRotation;
+
+  const AiPatternComponentStep({
+    required super.localId,
+    required this.sourceOccurrenceIds,
+    this.patternType = 'linear',
+    this.direction = const [1.0, 0.0, 0.0],
+    this.count = 1,
+    this.spacing = 0.0,
+    this.reverse = false,
+    this.axis,
+    this.countAngular = 1,
+    this.angleTotal = 360.0,
+    this.reverseAngular = false,
+    this.skipIndices = const [],
+    this.orientWithRotation = true,
+  }) : super(kind: 'pattern_component');
+
+  factory AiPatternComponentStep.fromJson(Map<String, dynamic> json) => AiPatternComponentStep(
+        localId: json['local_id'] as String,
+        sourceOccurrenceIds: _asStringList(json['source_occurrence_ids']),
+        patternType: json['pattern_type'] as String? ?? 'linear',
+        direction: json['direction'] == null
+            ? const [1.0, 0.0, 0.0]
+            : (json['direction'] as List).map((e) => (e as num).toDouble()).toList(),
+        count: json['count'] == null ? 1 : _asInt(json['count']),
+        spacing: json['spacing'] == null ? 0.0 : _asDouble(json['spacing']),
+        reverse: json['reverse'] as bool? ?? false,
+        axis: json['axis'] == null ? null : AiComponentPatternAxisStep.fromJson(json['axis'] as Map<String, dynamic>),
+        countAngular: json['count_angular'] == null ? 1 : _asInt(json['count_angular']),
+        angleTotal: json['angle_total'] == null ? 360.0 : _asDouble(json['angle_total']),
+        reverseAngular: json['reverse_angular'] as bool? ?? false,
+        skipIndices: _asIntList(json['skip_indices']),
+        orientWithRotation: json['orient_with_rotation'] as bool? ?? true,
+      );
+
+  @override
+  Map<String, dynamic> toJson() => {
+        'local_id': localId,
+        'kind': kind,
+        'source_occurrence_ids': sourceOccurrenceIds,
+        'pattern_type': patternType,
+        'direction': direction,
+        'count': count,
+        'spacing': spacing,
+        'reverse': reverse,
+        if (axis != null) 'axis': axis!.toJson(),
+        'count_angular': countAngular,
+        'angle_total': angleTotal,
+        'reverse_angular': reverseAngular,
+        'skip_indices': skipIndices,
+        'orient_with_rotation': orientWithRotation,
+      };
 }
 
 /// `GearRequestStep` - routing only (`00-conventions.md`'s "Gear-request

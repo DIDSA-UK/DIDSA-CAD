@@ -1375,6 +1375,147 @@ void main() {
       expect(result.outcome, PlanTranslationOutcome.success);
       expect(solveCalled, true, reason: 'the second (non-root) reference should still be solved');
     });
+
+    test(
+        'mate with edge_selector sends the dry run\'s own resolved index, not the placeholder one the plan carried',
+        () async {
+      // Assembly support Phase 14 (`docs/assembly-scope.md` §6 `[3]`): the
+      // validate response's own `resolved_mate_references` (real OCCT
+      // resolution, only possible server-side) must win over whatever
+      // placeholder `index` the plan step itself happened to carry.
+      Map<String, dynamic>? mateBody;
+      final mock = MockClient((request) async {
+        if (request.url.path == '/document/parts/part-1/ai-plan/validate') {
+          return jsonResponse({
+            'results': [
+              {
+                'local_id': 'mate1',
+                'ok': true,
+                'warnings': [],
+                'error': null,
+                'resolved_mate_references': [
+                  {'body_id': 'b1', 'shape_type': 'edge', 'index': 7},
+                  null,
+                ],
+              },
+            ],
+          });
+        }
+        if (request.method == 'POST' && request.url.path == '/document/parts/part-1/mates') {
+          mateBody = decodeBody(request);
+          return jsonResponse({
+            'id': 'mate-real-1',
+            'type': mateBody!['type'],
+            'references': mateBody!['references'],
+            'value': mateBody!['value'],
+            'flipped': mateBody!['flipped'],
+            'suppressed': false,
+          }, status: 201);
+        }
+        if (request.method == 'POST' && request.url.path.endsWith('/solve')) {
+          return jsonResponse(occurrenceJson('occ-a'));
+        }
+        return http.Response('not found', 404);
+      });
+
+      final plan = AiGenerationPlan.fromJson({
+        'version': 1,
+        'steps': [
+          {
+            'local_id': 'mate1',
+            'kind': 'mate',
+            'type': 'concentric',
+            'references': [
+              {
+                'occurrence_id': '',
+                'subshape_ref': {'body_id': 'b1', 'shape_type': 'edge', 'index': 0},
+                'edge_selector': {'selector': 'vertical_edges'},
+              },
+              {
+                'occurrence_id': 'existing:occ-a',
+                'subshape_ref': {'body_id': 'b1', 'shape_type': 'face', 'index': 0},
+              },
+            ],
+          },
+        ],
+      });
+      final translator = PlanTranslator(
+        documentApi: DocumentApiClient(httpClient: mock),
+        sketchApi: SketchApiClient(httpClient: mock),
+      );
+      final result = await translator.execute(plan: plan, partId: 'part-1');
+
+      expect(result.outcome, PlanTranslationOutcome.success);
+      // The resolved index (7), not the plan's own placeholder (0).
+      expect(mateBody!['references'][0]['subshape_ref']['index'], 7);
+      expect(mateBody!['references'][0]['subshape_ref']['body_id'], 'b1');
+      // The second reference never used edge_selector - unchanged.
+      expect(mateBody!['references'][1]['subshape_ref']['index'], 0);
+    });
+  });
+
+  group('PlanTranslator.execute - pattern_component', () {
+    test('pattern_component creates a ComponentPattern with the resolved real occurrence ids', () async {
+      Map<String, dynamic>? patternBody;
+      final mock = MockClient((request) async {
+        if (request.url.path == '/document/parts/part-1/ai-plan/validate') {
+          return jsonResponse({
+            'results': [
+              {'local_id': 'p1', 'ok': true, 'warnings': [], 'error': null},
+            ],
+          });
+        }
+        if (request.method == 'POST' && request.url.path == '/document/parts/part-1/component-patterns') {
+          patternBody = decodeBody(request);
+          return jsonResponse({
+            'id': 'pat-real-1',
+            'source_occurrence_ids': patternBody!['source_occurrence_ids'],
+            'pattern_type': patternBody!['pattern_type'],
+            'direction': patternBody!['direction'],
+            'count': patternBody!['count'],
+            'spacing': patternBody!['spacing'],
+            'reverse': patternBody!['reverse'],
+            'axis': patternBody!['axis'],
+            'count_angular': patternBody!['count_angular'],
+            'angle_total': patternBody!['angle_total'],
+            'reverse_angular': patternBody!['reverse_angular'],
+            'skip_indices': patternBody!['skip_indices'],
+            'orient_with_rotation': patternBody!['orient_with_rotation'],
+            'suppressed': false,
+          }, status: 201);
+        }
+        return http.Response('not found', 404);
+      });
+
+      final plan = AiGenerationPlan.fromJson({
+        'version': 1,
+        'steps': [
+          {
+            'local_id': 'p1',
+            'kind': 'pattern_component',
+            'source_occurrence_ids': ['existing:occ-a', 'existing:occ-b'],
+            'pattern_type': 'linear',
+            'direction': [1.0, 0.0, 0.0],
+            'count': 4,
+            'spacing': 10.0,
+          },
+        ],
+      });
+      final translator = PlanTranslator(
+        documentApi: DocumentApiClient(httpClient: mock),
+        sketchApi: SketchApiClient(httpClient: mock),
+      );
+      final result = await translator.execute(plan: plan, partId: 'part-1');
+
+      expect(result.outcome, PlanTranslationOutcome.success);
+      expect(result.localIdToRealId['p1'], 'pat-real-1');
+      expect(patternBody!['source_occurrence_ids'], ['occ-a', 'occ-b']);
+      expect(patternBody!['count'], 4);
+      expect(patternBody!['spacing'], 10.0);
+      // Never a created Feature - nothing for "Undo this generation" to
+      // delete for it (same convention mate/move_component already have).
+      expect(result.createdFeatureIds, isEmpty);
+    });
   });
 
   group('PlanTranslator.execute - tool-toggle enforcement (disabledKinds)', () {

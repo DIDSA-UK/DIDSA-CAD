@@ -103,10 +103,10 @@ const Map<String, AiToolGroup> aiToolGroups = {
     manualToolHint: 'the Direct Editing / Boolean tools in the Feature toolbar',
   ),
   'assembly': AiToolGroup(
-    label: 'Assembly editing (Mate/Move/Hide/Isolate)',
-    kinds: {'mate', 'move_component', 'hide_component', 'isolate_component'},
+    label: 'Assembly editing (Mate/Move/Hide/Isolate/Pattern)',
+    kinds: {'mate', 'move_component', 'hide_component', 'isolate_component', 'pattern_component'},
     vocabularyText: assemblyVocabularyText,
-    manualToolHint: 'the Assembly lens tools (Add Mate, the Move/Rotate gizmo, Hide/Show, Isolate)',
+    manualToolHint: 'the Assembly lens tools (Add Mate, the Move/Rotate gizmo, Hide/Show, Isolate, Pattern Component)',
   ),
 };
 

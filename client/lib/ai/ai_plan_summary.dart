@@ -170,6 +170,11 @@ String _summarizeStep(AiGenerationPlan plan, AiPlanStep step) {
 
     case AiIsolateComponentStep():
       return 'Isolate Component ${step.occurrenceId}';
+
+    case AiPatternComponentStep():
+      final label = step.patternType == 'circular' ? 'Circular' : 'Linear';
+      final countText = step.patternType == 'circular' ? '×${step.countAngular}' : '×${step.count}';
+      return 'Pattern Component ($label $countText) ${step.sourceOccurrenceIds.join(', ')}';
   }
 }
 
