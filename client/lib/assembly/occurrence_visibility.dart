@@ -113,6 +113,48 @@ bool isOccurrencePathWithinFocus(List<String> occurrencePath, List<String> focus
   return true;
 }
 
+/// Assembly support Phase 12 (`docs/assembly-scope.md` §6 `[18]`):
+/// [isOccurrencePathWithinFocus]'s stricter sibling - true only for
+/// [occurrencePath] naming an *immediate* child of [focusedOccurrencePath]
+/// (exactly one segment deeper), not any arbitrarily-nested descendant.
+/// `PartScreen._gizmoTargetOccurrence` uses this to decide whether the
+/// Move/Rotate gizmo should target a selected Occurrence while a focus is
+/// active - the gizmo's own v1 scope (Phase 5's own docstring) is still
+/// "only an Occurrence whose local and world transforms are directly
+/// usable," true for a *direct* child of whichever Part is currently
+/// focused (its `OccurrenceDto.transform` is relative to that focused
+/// Part, the same relationship a top-level Occurrence has to the document
+/// root when nothing is focused), but not yet for a grandchild or deeper
+/// (still out of scope, unchanged by this phase).
+///
+/// [focusedOccurrencePath] empty means nothing is focused - every
+/// `PartScreen._occurrences` entry is then a top-level Occurrence, which
+/// this function correctly treats as a direct child of "the root," the
+/// same "empty focus path is the document root's own frame" convention
+/// [isOccurrencePathWithinFocus] itself does not need (it deliberately
+/// returns `false` for an empty focus, since "within focus" is meaningless
+/// when nothing is focused - this predicate's own meaning, "one level
+/// below whatever frame is current," still holds at the root).
+bool isDirectChildOfFocus(List<String> occurrencePath, List<String> focusedOccurrencePath) {
+  return occurrencePath.length == focusedOccurrencePath.length + 1 &&
+      _pathEquals(occurrencePath.sublist(0, focusedOccurrencePath.length), focusedOccurrencePath);
+}
+
+/// Assembly support Phase 12: the exact-path lookup
+/// `PartScreen._displayAssemblyInstances`'s nested live-drag overlay needs
+/// - the focused sub-assembly's own current placed instance (to compose the
+/// gizmo's live *local* transform through, via `mesh_geometry.dart`'s
+/// `composeRigidTransforms`, into the *world* transform
+/// [overrideInstanceTransform] requires) - `null` if [path] names no known
+/// instance (e.g. the assembly mesh hasn't been (re)fetched yet for the
+/// currently-focused Part).
+AssemblyOccurrenceInstanceDto? findInstanceAtPath(List<AssemblyOccurrenceInstanceDto> instances, List<String> path) {
+  for (final instance in instances) {
+    if (_pathEquals(instance.occurrencePath, path)) return instance;
+  }
+  return null;
+}
+
 /// Assembly support Phase 5: the Move/Rotate gizmo's own live-drag overlay
 /// - the pure matching logic behind `PartScreen._displayAssemblyInstances`,
 /// kept separate and directly testable the same way
