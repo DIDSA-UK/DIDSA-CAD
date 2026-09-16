@@ -17310,11 +17310,14 @@ class _PartScreenState extends State<PartScreen> {
           setState(() => _errorMessage = 'Cannot focus an unresolved component - its file was never loaded');
           return;
         }
-        setState(() => focusStack?.push(resolvedPartId, occurrence.id));
+        final occurrenceIndex = _occurrences.indexWhere((o) => o.id == occurrence.id);
+        final label = occurrenceIndex >= 0
+            ? occurrenceDisplayName(_occurrences, occurrenceIndex)
+            : occurrenceDisplayName([occurrence], 0);
+        setState(() => focusStack?.push(resolvedPartId, occurrence.id, label));
         await _refreshAssemblyTree();
       case ComponentContextMenuAction.exitFocus:
-        setState(() => focusStack?.pop());
-        await _refreshAssemblyTree();
+        await _exitAssemblyFocus();
       case ComponentContextMenuAction.hide:
         await _setOccurrenceHidden(occurrence, true);
       case ComponentContextMenuAction.show:
@@ -17331,6 +17334,20 @@ class _PartScreenState extends State<PartScreen> {
       case ComponentContextMenuAction.pattern:
         _openComponentPattern();
     }
+  }
+
+  /// Bug fix: `AssemblyFocusStack.pop`, then re-fetches the tree - the exact
+  /// same two lines the `exitFocus` case above always ran, factored out so
+  /// [AssemblyTreePanel]'s own breadcrumb row (its [AssemblyTreePanel.
+  /// onExitFocus]) can trigger the identical effect without going through
+  /// [showComponentContextMenu]. That menu is only ever reachable by long-
+  /// pressing an *Occurrence row* - a focused Part with no Occurrences of
+  /// its own renders no rows at all (`AssemblyTreePanel._buildGroupedTree`'s
+  /// empty state), which previously left no way back to Part lens or a
+  /// shallower focus depth at all once drilled into a leaf component.
+  Future<void> _exitAssemblyFocus() async {
+    setState(() => _focusStack?.pop());
+    await _refreshAssemblyTree();
   }
 
   /// §6 roadmap Phase 10 (`[5]`): Hide/Show's real persistence call -
@@ -18174,16 +18191,14 @@ class _PartScreenState extends State<PartScreen> {
                     onClose: () => setState(() => _featureTreeVisible = false),
                     onPatternTap: _openComponentPatternForEdit,
                     onPatternLongPress: _confirmDeleteComponentPattern,
+                    focusedLabel: _focusStack?.currentLabel,
+                    onExitFocus: () => unawaited(_exitAssemblyFocus()),
                   ),
                 ),
                 Positioned.fill(
                   child: PartToolbar(
                     visible: _toolbarOpen,
                     lens: _lens,
-                    onInsertExistingComponent: () {
-                      setState(() => _toolbarOpen = false);
-                      unawaited(_onInsertComponentPressed());
-                    },
                     referencePlanesHidden: _referencePlanesHidden,
                     onToggleReferencePlanes: _onToggleReferencePlanes,
                     renderMode: _renderMode,

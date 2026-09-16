@@ -9,7 +9,6 @@ void main() {
     WidgetTester tester, {
     required ColorScheme colorScheme,
     AssemblyLens lens = AssemblyLens.part,
-    VoidCallback? onInsertExistingComponent,
   }) async {
     await tester.pumpWidget(
       MaterialApp(
@@ -18,7 +17,6 @@ void main() {
           body: PartToolbar(
             visible: true,
             lens: lens,
-            onInsertExistingComponent: onInsertExistingComponent,
           ),
         ),
       ),
@@ -56,28 +54,14 @@ void main() {
       expect(shape.side.width, greaterThan(0));
     });
 
-    testWidgets('Assembly lens: shows the Assembly menu with Add Component enabled', (tester) async {
-      var tapped = false;
-      await pumpToolbar(
-        tester,
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
-        lens: AssemblyLens.assembly,
-        onInsertExistingComponent: () => tapped = true,
-      );
-
-      expect(find.text('Assembly'), findsOneWidget);
-      expect(find.text('Add Component'), findsOneWidget);
-
-      final addComponentTile = tester.widget<ListTile>(
-        find.ancestor(of: find.text('Add Component'), matching: find.byType(ListTile)),
-      );
-      expect(addComponentTile.enabled, isTrue);
-
-      await tester.tap(find.text('Add Component'));
-      expect(tapped, isTrue);
-    });
-
-    testWidgets('Assembly lens: Create Component, Add Mate, Pattern Component render disabled', (
+    // Bug fix: this hamburger-menu "Assembly" section (`_buildAssemblyMenu`)
+    // used to duplicate the Assembly-lens "Add" FAB's own flyout
+    // (`add_button_menu.dart`'s `showAssemblyAddMenu`) - same actions, same
+    // labels - and had already drifted stale on top of that (still showing
+    // Add Mate/Pattern Component as "Coming soon" after both became real in
+    // the FAB's own menu). Removed rather than kept in sync; the FAB flyout
+    // remains the one place to reach these actions.
+    testWidgets('Assembly lens: no separate Assembly menu section - Add Component only reachable via the FAB', (
       tester,
     ) async {
       await pumpToolbar(
@@ -86,28 +70,11 @@ void main() {
         lens: AssemblyLens.assembly,
       );
 
-      for (final label in ['Create Component…', 'Add Mate', 'Pattern Component']) {
-        final tile = tester.widget<ListTile>(
-          find.ancestor(of: find.text(label), matching: find.byType(ListTile)),
-        );
-        expect(tile.enabled, isFalse, reason: '$label should be disabled');
-      }
-      expect(find.textContaining('Coming soon'), findsNWidgets(3));
-    });
-
-    testWidgets('Assembly lens: Add Component is disabled when no callback is supplied', (
-      tester,
-    ) async {
-      await pumpToolbar(
-        tester,
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
-        lens: AssemblyLens.assembly,
-      );
-
-      final addComponentTile = tester.widget<ListTile>(
-        find.ancestor(of: find.text('Add Component'), matching: find.byType(ListTile)),
-      );
-      expect(addComponentTile.enabled, isFalse);
+      expect(find.text('Assembly'), findsNothing);
+      expect(find.text('Add Component'), findsNothing);
+      expect(find.text('Create Component…'), findsNothing);
+      expect(find.text('Add Mate'), findsNothing);
+      expect(find.text('Pattern Component'), findsNothing);
     });
   });
 }

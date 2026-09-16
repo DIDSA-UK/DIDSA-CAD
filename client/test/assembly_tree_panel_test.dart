@@ -459,6 +459,95 @@ void main() {
     expect(longPressed, same(pattern));
   });
 
+  // --- Bug fix: focus breadcrumb ---------------------------------------
+  // A focused Part with no Occurrences of its own previously rendered the
+  // plain "No components yet" empty state with nothing at all to
+  // long-press "Exit Focus" on - no way back out via the tree. The
+  // breadcrumb row (shown whenever `focusedLabel` is set) fixes that.
+
+  testWidgets('no breadcrumb row when focusedLabel is null', (tester) async {
+    await tester.pumpWidget(
+      _wrap(
+        AssemblyTreePanel(
+          visible: true,
+          occurrences: const [],
+          mates: const [],
+          selectedOccurrenceId: null,
+          onOccurrenceTap: (_) {},
+          onOccurrenceLongPress: (_) {},
+          onClose: () {},
+        ),
+      ),
+    );
+
+    expect(find.byIcon(Icons.arrow_back), findsNothing);
+    expect(find.text('No components yet'), findsOneWidget);
+  });
+
+  testWidgets('a focused Part with no Occurrences shows the breadcrumb, not just an empty state', (tester) async {
+    await tester.pumpWidget(
+      _wrap(
+        AssemblyTreePanel(
+          visible: true,
+          occurrences: const [],
+          mates: const [],
+          selectedOccurrenceId: null,
+          onOccurrenceTap: (_) {},
+          onOccurrenceLongPress: (_) {},
+          onClose: () {},
+          focusedLabel: 'Bracket',
+        ),
+      ),
+    );
+
+    expect(find.byIcon(Icons.arrow_back), findsOneWidget);
+    expect(find.text('Bracket'), findsOneWidget);
+    expect(find.text('This component has no sub-components of its own'), findsOneWidget);
+    expect(find.text('No components yet'), findsNothing);
+  });
+
+  testWidgets('tapping the breadcrumb calls onExitFocus', (tester) async {
+    bool exited = false;
+    await tester.pumpWidget(
+      _wrap(
+        AssemblyTreePanel(
+          visible: true,
+          occurrences: const [],
+          mates: const [],
+          selectedOccurrenceId: null,
+          onOccurrenceTap: (_) {},
+          onOccurrenceLongPress: (_) {},
+          onClose: () {},
+          focusedLabel: 'Bracket',
+          onExitFocus: () => exited = true,
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Bracket'));
+    expect(exited, isTrue);
+  });
+
+  testWidgets('the breadcrumb still shows above a non-empty tree while focused', (tester) async {
+    await tester.pumpWidget(
+      _wrap(
+        AssemblyTreePanel(
+          visible: true,
+          occurrences: [_occurrence('o1', externalRef: 'parts/bolt.didsa')],
+          mates: const [],
+          selectedOccurrenceId: null,
+          onOccurrenceTap: (_) {},
+          onOccurrenceLongPress: (_) {},
+          onClose: () {},
+          focusedLabel: 'Bracket',
+        ),
+      ),
+    );
+
+    expect(find.byIcon(Icons.arrow_back), findsOneWidget);
+    expect(find.text('bolt'), findsOneWidget);
+  });
+
   testWidgets('a pattern row is inert (no tap/long-press callback invoked) when neither is wired', (tester) async {
     await tester.pumpWidget(
       _wrap(

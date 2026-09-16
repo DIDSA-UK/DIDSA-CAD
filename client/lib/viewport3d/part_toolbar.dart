@@ -153,19 +153,22 @@ class PartToolbar extends StatelessWidget {
 
   /// Assembly support Phase 3b (`docs/assembly-scope.md` §3): which lens
   /// [PartScreen] currently shows - drives this toolbar's own accent border
-  /// (see [build]) and whether [_buildAssemblyMenu] is shown at all.
-  /// Defaults to [AssemblyLens.part] so every pre-Phase-3b call site (this
-  /// widget's own existing tests included) keeps behaving exactly as
-  /// before without passing anything new.
+  /// (see [build]). Defaults to [AssemblyLens.part] so every pre-Phase-3b
+  /// call site (this widget's own existing tests included) keeps behaving
+  /// exactly as before without passing anything new.
+  ///
+  /// Bug fix: this toolbar used to also show its own "Assembly" menu
+  /// section while in Assembly lens (`_buildAssemblyMenu`, Phase 3b) - a
+  /// second, always-open entry point offering the exact same actions as
+  /// the Assembly-lens "Add" FAB's own flyout (`add_button_menu.dart`'s
+  /// `showAssemblyAddMenu`). Pure duplication (same actions, same labels,
+  /// same icons) with no reason to keep both once the FAB flyout existed,
+  /// and it had already drifted stale besides - it still showed Add
+  /// Mate/Pattern Component as disabled "Coming soon" stubs after Phases 6
+  /// and 7 made both real in the FAB's own menu, so it was actively
+  /// misleading on top of being redundant. Removed rather than kept in
+  /// sync going forward.
   final AssemblyLens lens;
-
-  /// The Assembly menu's only real entry - "Add Component" (bottom-up
-  /// insert an existing `.didsa` file), mirroring the Assembly-lens "Add"
-  /// FAB's own [AssemblyAddMenuAction.insertExistingComponent] so the same
-  /// action is reachable from either place. `null` disables the whole
-  /// Assembly menu (same "wire the callback now, action later" contract as
-  /// this file's own other nullable callbacks).
-  final VoidCallback? onInsertExistingComponent;
 
   const PartToolbar({
     super.key,
@@ -208,7 +211,6 @@ class PartToolbar extends StatelessWidget {
     this.onSketchPointFilterChanged,
     this.onSketchLineFilterChanged,
     this.lens = AssemblyLens.part,
-    this.onInsertExistingComponent,
   });
 
   @override
@@ -259,7 +261,6 @@ class PartToolbar extends StatelessWidget {
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          if (isAssemblyLens) _buildAssemblyMenu(context),
                           _buildFileMenu(context),
                           _buildViewMenu(context),
                           _buildSelectionFilterMenu(context),
@@ -273,50 +274,6 @@ class PartToolbar extends StatelessWidget {
           ),
         ),
       ),
-    );
-  }
-
-  /// Assembly support Phase 3b (`docs/assembly-scope.md` §3): the
-  /// hamburger-menu counterpart to the Assembly-lens "Add" FAB's own
-  /// flyout (`add_button_menu.dart`'s `showAssemblyAddMenu`) - offers the
-  /// same actions as a second, always-open (no extra tap to reach a
-  /// bottom-sheet) entry point, only shown while [lens] is
-  /// [AssemblyLens.assembly]. Same "stub what isn't built yet" rule as
-  /// that menu: only Add Component is real (see [onInsertExistingComponent]),
-  /// the rest render disabled via `enabled: false` (which - unlike a null
-  /// `onTap` alone - actually greys out the row, same convention
-  /// [_filterToggle] below already uses).
-  Widget _buildAssemblyMenu(BuildContext context) {
-    return ExpansionTile(
-      initiallyExpanded: true,
-      leading: const Icon(Icons.view_in_ar_outlined),
-      title: const Text('Assembly'),
-      children: [
-        ListTile(
-          enabled: onInsertExistingComponent != null,
-          leading: const Icon(Icons.view_in_ar_outlined),
-          title: const Text('Add Component'),
-          onTap: onInsertExistingComponent,
-        ),
-        const ListTile(
-          enabled: false,
-          leading: Icon(Icons.note_add_outlined),
-          title: Text('Create Component…'),
-          subtitle: Text('Coming soon - needs a multi-file save flow first'),
-        ),
-        const ListTile(
-          enabled: false,
-          leading: Icon(Icons.link),
-          title: Text('Add Mate'),
-          subtitle: Text('Coming soon - needs Phase 6\'s mate solver'),
-        ),
-        const ListTile(
-          enabled: false,
-          leading: Icon(Icons.grid_view_outlined),
-          title: Text('Pattern Component'),
-          subtitle: Text('Coming soon - needs Phase 7\'s component pattern'),
-        ),
-      ],
     );
   }
 
