@@ -203,6 +203,37 @@ def _find_cylindrical_face(part_id: str, body_id: str) -> int:
     raise AssertionError(f"no cylindrical face found on {part_id}/{body_id}")
 
 
+def _measure_edge(part_id: str, body_id: str, index: int) -> dict:
+    response = client.post(
+        f"/document/parts/{part_id}/measure",
+        json={"refs": [{"body_id": body_id, "shape_type": "edge", "index": index}]},
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
+def _find_straight_edge(part_id: str, body_id: str, expected_direction: tuple[float, float, float]) -> int:
+    """Phase 13 (`docs/assembly-scope.md` §6 `[15]`): the index of `body_id`'s
+    own straight edge whose axis direction matches `expected_direction`
+    (either sign - an edge's own parametric direction isn't guaranteed to
+    point one way or the other) - `_find_planar_face`'s identical "measure
+    every candidate via the already-tested Measure endpoint rather than
+    assume a fixed `topexp.MapShapes` ordering" precedent, one shape kind
+    over. `result.get("radius")` distinguishes a straight edge's own `axis`
+    (radius `None`) from a circular edge's (radius set) - both populate
+    `axis` now that `single_shape_geometry` reports one for either."""
+    for index in range(24):
+        result = _measure_edge(part_id, body_id, index)
+        axis = result.get("axis")
+        if axis is None or result.get("radius") is not None:
+            continue
+        direction = axis["direction"]
+        negated = tuple(-d for d in expected_direction)
+        if _vectors_close(direction, expected_direction) or _vectors_close(direction, negated):
+            return index
+    raise AssertionError(f"no straight edge with direction {expected_direction} found on {part_id}/{body_id}")
+
+
 def _create_mate(
     root_part_id: str,
     *,
@@ -396,6 +427,50 @@ def test_concentric_aligns_two_cylinder_axes():
     assert math.sqrt(sum(p * p for p in perpendicular)) < _TOLERANCE
 
 
+def test_concentric_aligns_two_straight_edge_axes():
+    """Phase 13 (`docs/assembly-scope.md` §6 `[15]`): the exact same
+    CONCENTRIC dispatch as `test_concentric_aligns_two_cylinder_axes` above,
+    now against a straight Edge on each side instead of a cylindrical Face -
+    confirms `_resolve_local_geometry`'s widened `EDGE` branch and
+    `_apply_mate_constraint`'s own CONCENTRIC dispatch (already
+    direction-agnostic to circle-vs-line, per that function's own docstring)
+    really do work end to end for a straight-edge axis, not just resolve
+    without error."""
+    base = _make_box_part("Base", size=20.0, depth=10.0)
+    pin = _make_box_part("Pin", size=4.0, depth=4.0)
+    _place_occurrence(base["id"], pin["id"], translation=(77.0, -12.0, 5.0), rotation_axis=(1.0, 0.0, 0.0), rotation_angle_degrees=30.0)
+
+    base_edge = _find_straight_edge(base["id"], base["body_id"], (1.0, 0.0, 0.0))
+    pin_edge = _find_straight_edge(pin["id"], pin["body_id"], (1.0, 0.0, 0.0))
+
+    _create_mate(
+        base["id"],
+        mate_type="concentric",
+        driven_ref={"subshape_ref": {"body_id": pin["body_id"], "shape_type": "edge", "index": pin_edge}},
+        fixed_ref={"subshape_ref": {"body_id": base["body_id"], "shape_type": "edge", "index": base_edge}},
+    )
+    occurrence = _solve(base["id"])
+    transform = _rigid_transform_from_response(occurrence)
+
+    pin_axis = _measure_edge(pin["id"], pin["body_id"], pin_edge)["axis"]
+    base_axis = _measure_edge(base["id"], base["body_id"], base_edge)["axis"]
+
+    world_origin = apply_transform_to_point(transform, tuple(pin_axis["origin"]))
+    world_direction = apply_transform_to_direction(transform, tuple(pin_axis["direction"]))
+
+    cross = (
+        world_direction[1] * base_axis["direction"][2] - world_direction[2] * base_axis["direction"][1],
+        world_direction[2] * base_axis["direction"][0] - world_direction[0] * base_axis["direction"][2],
+        world_direction[0] * base_axis["direction"][1] - world_direction[1] * base_axis["direction"][0],
+    )
+    assert math.sqrt(sum(c * c for c in cross)) < 1e-3
+
+    to_point = tuple(w - b for w, b in zip(world_origin, base_axis["origin"]))
+    dot = sum(t * d for t, d in zip(to_point, base_axis["direction"]))
+    perpendicular = tuple(t - dot * d for t, d in zip(to_point, base_axis["direction"]))
+    assert math.sqrt(sum(p * p for p in perpendicular)) < _TOLERANCE
+
+
 # --- PARALLEL ------------------------------------------------------------
 
 
@@ -421,6 +496,38 @@ def test_parallel_faces_aligns_face_normals():
         world_normal[1] * 1.0 - world_normal[2] * 0.0,
         world_normal[2] * 0.0 - world_normal[0] * 1.0,
         world_normal[0] * 0.0 - world_normal[1] * 0.0,
+    )
+    assert math.sqrt(sum(c * c for c in cross)) < 1e-3
+
+
+def test_parallel_aligns_two_straight_edges():
+    """Phase 13 (`docs/assembly-scope.md` §6 `[15]`): PARALLEL's own
+    dispatch already reads `driven.direction`/`fixed.direction` regardless
+    of whether it came from a face normal or an axis - confirms a straight
+    edge's own new `direction` reaches it correctly end to end."""
+    base = _make_box_part("Base", size=20.0, depth=10.0)
+    bracket = _make_box_part("Bracket", size=8.0, depth=4.0)
+    _place_occurrence(base["id"], bracket["id"], translation=(5.0, 5.0, 60.0), rotation_axis=(1.0, 1.0, 0.0), rotation_angle_degrees=47.0)
+
+    base_edge = _find_straight_edge(base["id"], base["body_id"], (1.0, 0.0, 0.0))
+    bracket_edge = _find_straight_edge(bracket["id"], bracket["body_id"], (1.0, 0.0, 0.0))
+
+    _create_mate(
+        base["id"],
+        mate_type="parallel",
+        driven_ref={"subshape_ref": {"body_id": bracket["body_id"], "shape_type": "edge", "index": bracket_edge}},
+        fixed_ref={"subshape_ref": {"body_id": base["body_id"], "shape_type": "edge", "index": base_edge}},
+    )
+    occurrence = _solve(base["id"])
+    transform = _rigid_transform_from_response(occurrence)
+
+    bracket_direction = _measure_edge(bracket["id"], bracket["body_id"], bracket_edge)["axis"]["direction"]
+    base_direction = _measure_edge(base["id"], base["body_id"], base_edge)["axis"]["direction"]
+    world_direction = apply_transform_to_direction(transform, tuple(bracket_direction))
+    cross = (
+        world_direction[1] * base_direction[2] - world_direction[2] * base_direction[1],
+        world_direction[2] * base_direction[0] - world_direction[0] * base_direction[2],
+        world_direction[0] * base_direction[1] - world_direction[1] * base_direction[0],
     )
     assert math.sqrt(sum(c * c for c in cross)) < 1e-3
 
@@ -520,6 +627,93 @@ def test_distance_point_to_plane_sets_the_exact_offset():
     ).json()["point"]
     world_point = apply_transform_to_point(transform, tuple(driven_vertex))
     assert abs(abs(world_point[2] - 10.0) - 5.0) < 1e-3
+
+
+def test_distance_axis_to_axis_sets_the_exact_center_distance_between_two_parallel_shafts():
+    """Phase 13 (`docs/assembly-scope.md` §6 `[15]`): the "parallel-shaft
+    center-distance" DISTANCE variant this module's own docstring used to
+    list as unsupported - `addParallel` + `addPointLineDistance` against two
+    cylindrical-face axes. Verifies both halves of what the constraint
+    actually establishes: the two axes end up truly parallel (not just
+    coincidentally close in direction) *and* the true perpendicular
+    axis-to-axis distance (not a raw point-to-point one, which would be
+    wrong the moment the two axes aren't laterally aligned) equals the
+    requested value."""
+    base = _make_cylinder_part("BasePost", radius=10.0, depth=5.0)
+    pin = _make_cylinder_part("Pin", radius=3.0, depth=20.0)
+    _place_occurrence(base["id"], pin["id"], translation=(77.0, -12.0, 5.0), rotation_axis=(1.0, 0.0, 0.0), rotation_angle_degrees=17.0)
+
+    base_face = _find_cylindrical_face(base["id"], base["body_id"])
+    pin_face = _find_cylindrical_face(pin["id"], pin["body_id"])
+
+    _create_mate(
+        base["id"],
+        mate_type="distance",
+        driven_ref={"subshape_ref": {"body_id": pin["body_id"], "shape_type": "face", "index": pin_face}},
+        fixed_ref={"subshape_ref": {"body_id": base["body_id"], "shape_type": "face", "index": base_face}},
+        value=40.0,
+    )
+    occurrence = _solve(base["id"])
+    transform = _rigid_transform_from_response(occurrence)
+
+    pin_axis = _measure_face(pin["id"], pin["body_id"], pin_face)["axis"]
+    base_axis = _measure_face(base["id"], base["body_id"], base_face)["axis"]
+
+    world_origin = apply_transform_to_point(transform, tuple(pin_axis["origin"]))
+    world_direction = apply_transform_to_direction(transform, tuple(pin_axis["direction"]))
+
+    cross = (
+        world_direction[1] * base_axis["direction"][2] - world_direction[2] * base_axis["direction"][1],
+        world_direction[2] * base_axis["direction"][0] - world_direction[0] * base_axis["direction"][2],
+        world_direction[0] * base_axis["direction"][1] - world_direction[1] * base_axis["direction"][0],
+    )
+    assert math.sqrt(sum(c * c for c in cross)) < 1e-3
+
+    to_point = tuple(w - b for w, b in zip(world_origin, base_axis["origin"]))
+    dot = sum(t * d for t, d in zip(to_point, base_axis["direction"]))
+    perpendicular = tuple(t - dot * d for t, d in zip(to_point, base_axis["direction"]))
+    assert abs(math.sqrt(sum(p * p for p in perpendicular)) - 40.0) < 1e-3
+
+
+def test_distance_axis_to_axis_between_two_straight_edges_sets_the_exact_center_distance():
+    """The same axis-to-axis DISTANCE constraint, against a straight Edge on
+    each side instead of a cylindrical Face - `_resolve_local_geometry`'s
+    widened `EDGE` branch feeds `axis_origin`/`direction` into exactly the
+    same DISTANCE dispatch branch either way."""
+    base = _make_box_part("Base", size=20.0, depth=10.0)
+    pin = _make_box_part("Pin", size=4.0, depth=4.0)
+    _place_occurrence(base["id"], pin["id"], translation=(77.0, -12.0, 5.0), rotation_axis=(1.0, 0.0, 0.0), rotation_angle_degrees=17.0)
+
+    base_edge = _find_straight_edge(base["id"], base["body_id"], (1.0, 0.0, 0.0))
+    pin_edge = _find_straight_edge(pin["id"], pin["body_id"], (1.0, 0.0, 0.0))
+
+    _create_mate(
+        base["id"],
+        mate_type="distance",
+        driven_ref={"subshape_ref": {"body_id": pin["body_id"], "shape_type": "edge", "index": pin_edge}},
+        fixed_ref={"subshape_ref": {"body_id": base["body_id"], "shape_type": "edge", "index": base_edge}},
+        value=15.0,
+    )
+    occurrence = _solve(base["id"])
+    transform = _rigid_transform_from_response(occurrence)
+
+    pin_axis = _measure_edge(pin["id"], pin["body_id"], pin_edge)["axis"]
+    base_axis = _measure_edge(base["id"], base["body_id"], base_edge)["axis"]
+
+    world_origin = apply_transform_to_point(transform, tuple(pin_axis["origin"]))
+    world_direction = apply_transform_to_direction(transform, tuple(pin_axis["direction"]))
+
+    cross = (
+        world_direction[1] * base_axis["direction"][2] - world_direction[2] * base_axis["direction"][1],
+        world_direction[2] * base_axis["direction"][0] - world_direction[0] * base_axis["direction"][2],
+        world_direction[0] * base_axis["direction"][1] - world_direction[1] * base_axis["direction"][0],
+    )
+    assert math.sqrt(sum(c * c for c in cross)) < 1e-3
+
+    to_point = tuple(w - b for w, b in zip(world_origin, base_axis["origin"]))
+    dot = sum(t * d for t, d in zip(to_point, base_axis["direction"]))
+    perpendicular = tuple(t - dot * d for t, d in zip(to_point, base_axis["direction"]))
+    assert abs(math.sqrt(sum(p * p for p in perpendicular)) - 15.0) < 1e-3
 
 
 # --- Validation / error handling ---------------------------------------------

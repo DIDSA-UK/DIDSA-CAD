@@ -2119,7 +2119,221 @@ paragraph named the backend change only for `[10]`, deliberately leaving a
 UI control for a later pass once real usage shows which default this app's
 users actually want exposed.
 
-## 2o. Phase 14 — AI plan pipeline: Mate edge-selector heuristic + existing-only `pattern_component` (implemented)
+## 2o. Phase 12 — Nested-Occurrence interaction (implemented)
+
+§6 roadmap's own Phase 12 entry: closes `[18]` (gizmo/Mate/ComponentPattern
+all top-level-Occurrence-only) and, as a near-free consequence, `[6]`
+(ComponentPattern source Occurrences top-level-only - a `ComponentPattern`'s
+own `source_occurrence_ids` were already validated only against `part.
+occurrences`, i.e. whichever Part is currently open/focused, so once
+`_confirmComponentPattern` itself routes through `focusPartId` (`[3]`
+below), authoring a pattern *while focused inside a sub-assembly* already
+targets that sub-assembly's own direct children correctly - no separate
+change needed for `[6]` beyond `[18]`'s own fix).
+
+Verified smaller than its own original framing, confirmed directly against
+the real code rather than assumed: the gizmo's own PATCH call-sites
+(`_onComponentGizmoDragEnd`/`_undoLastComponentTransform`) already routed
+via `focusPartId = _focusStack?.current ?? _part?.id` since Phase 5/8, and
+`get_assembly_mesh`'s own `_walk` already composes the full ancestor chain
+for a nested ComponentPattern (`test_component_pattern_of_a_nested_
+subassembly_repeats_its_own_children_too`, §2j). Three real gaps, all
+client-only - no backend changes this phase:
+
+### `[18]` (1 of 3) `_gizmoTargetOccurrence` widened to a direct child of focus
+
+Used to blanket-return `null` under *any* active focus
+(`!(_focusStack?.isFocused ?? false)`), even though [_occurrences] is
+already scoped to exactly the currently-focused Part's own children
+(`_refreshAssemblyTree` fetches `listOccurrences(focusPartId)`) - so a
+selected Occurrence there always has a `.transform` relative to the
+*currently-relevant* parent frame, the identical "local and world
+transforms coincide for this frame" property a top-level Occurrence had
+relative to the document root before this phase. New
+`isDirectChildOfFocus(occurrencePath, focusedOccurrencePath)`
+(`occurrence_visibility.dart`, alongside its existing sibling
+`isOccurrencePathWithinFocus`) makes that "exactly one level below the
+current frame" requirement explicit and directly testable, rather than
+relying only on `_occurrences`' own implicit scoping - true for an empty
+`focusedOccurrencePath` too (a top-level path is a direct child of the
+document root's own implicit frame), matching Phase 5's original behavior
+exactly when nothing is focused. A grandchild or deeper nested Occurrence
+is still out of scope (the gizmo's own drag math would need to account for
+more than one ancestor's rotation) - not reachable in practice anyway,
+since `_occurrences` never lists anything deeper than a direct child.
+
+### A fourth, necessary fix this phase's own roadmap entry didn't name: the gizmo's on-screen basis
+
+Found while implementing `[18]`, not in the roadmap's own 3-item list:
+`PartViewport.selectedOccurrenceTransform`'s own doc comment says this
+widget "derives the gizmo's actual world-space placement" directly from
+whatever it's given (via `matrix4FromRigidTransform`), with no
+parent-transform conversion of its own - correct for a top-level
+Occurrence (parent is the document root, always identity), but feeding it
+a nested target's raw *local* `OccurrenceDto.transform` would render/
+hit-test the gizmo handles at the wrong on-screen position the instant
+`[18]`'s own fix let the gizmo target a nested Occurrence at all - a real,
+visible bug (handles floating away from the actual Body), not merely a
+missed convenience. Two new pure functions close this
+(`mesh_geometry.dart`, mirroring `assembly.py`'s own `compose` one level
+up): `composeRigidTransforms(parent, child)` (the client-side counterpart
+to that backend function - `parentMatrix * childMatrix` via
+`matrix4FromRigidTransform`, decomposed back to a `RigidTransformDto` via
+`Matrix4.decompose`) and its exact inverse,
+`localRigidTransformRelativeTo(parent, world)` (`inverse(parentMatrix) *
+worldMatrix` - what converts the gizmo's own live-drag result, now
+world-space, back to the *local* value `updateOccurrenceTransform` actually
+persists). `_gizmoTargetWorldTransform` (new getter) composes through
+`_gizmoParentInstance`'s own current `worldTransform` (found via a third
+new pure helper, `findInstanceAtPath`, `occurrence_visibility.dart`) when
+focused; `_gizmoDisplayTransform` now reads from it instead of the target
+Occurrence's raw local transform. `_onComponentGizmoDragEnd` decomposes
+`_gizmoLiveTransform` back to local via `localRigidTransformRelativeTo`
+before PATCHing, whenever `_gizmoParentInstance` is non-null.
+
+### `[18]` (2 of 3) `_displayAssemblyInstances`'s live-drag overlay
+
+Used to assume a top-level `occurrencePath` (`overrideInstanceTransform`
+called with `targetOccurrencePath: [targetId]` - always correct when the
+only possible target was top-level) - now uses the full
+`[...focusedOccurrencePath, targetOccurrencePath]` path
+`_assemblyMesh.instances` actually key their nested entries by. No
+*further* composition is needed here beyond that path widening -
+`_gizmoTargetWorldTransform` (above) already does the one
+`composeRigidTransforms` call this overlay needs, once, when the gizmo is
+first given its starting basis; `_gizmoLiveTransform` stays world-space for
+the rest of the drag, so recomposing a second time here would double-apply
+the parent's own contribution.
+
+### `[18]` (3 of 3) `_confirmMate`/`_confirmComponentPattern` routed through `focusPartId`
+
+Both used to hardcode `_part!.id` for their own `createMate`/
+`solveForOccurrence`/`createComponentPattern` calls - correct only while
+browsing the root Part, and wrong the instant either is authored while
+focused inside a sub-assembly (unlike the gizmo's own PATCH call-sites,
+which already routed correctly since Phase 5/8). Both now resolve
+`focusPartId = _focusStack?.current ?? part?.id` first, the identical
+convention every other focus-aware call site in this screen already uses.
+
+**Verified**: backend - full suite against real `pythonocc-core`/`py-slvs`
+- **2301/2301 passed, 0 failed** (unchanged from §2m's own count - no
+backend changes this phase). Full client suite - **1985/1985 passed** (up
+from 1966 baseline; 14 GPU-skips, unchanged), `flutter analyze` clean on
+every touched file. New client tests (19 total, all pure/directly testable
+- none of this phase's own GPU-bound rendering code, `PartViewport`'s own
+hit-testing/drag math, can be exercised in a headless `flutter test` run,
+same limitation `matrix4FromRigidTransform`'s own tests already carry):
+6 for `composeRigidTransforms` and 3 for `localRigidTransformRelativeTo`
+(`mesh_geometry_test.dart`, hand-verified against known rotations, the same
+style `matrix4FromRigidTransform`'s own tests use, plus a round-trip check
+confirming the two are exact inverses of each other), 7 for
+`isDirectChildOfFocus` and 3 for `findInstanceAtPath`
+(`occurrence_visibility_test.dart`).
+
+### Remaining limitations after this phase
+
+A grandchild or deeper nested Occurrence is still out of scope for the
+gizmo/Mate/ComponentPattern alike (unchanged - `[18]`'s own roadmap text
+only ever scoped this phase to a *direct* child of focus). No on-device
+visual confirmation of the gizmo rendering/dragging correctly at a nested
+position exists yet (this sandbox has no real GPU/Impeller context - see
+`matrix4FromRigidTransform`'s own tests for the same limitation) - the pure
+composition/decomposition math is hand-verified against known rotations
+and round-trip-checked, but the actual on-screen hit-testing/drag feel at a
+nested position is real, undone follow-up verification once a real device
+is available.
+## 2p. Phase 13 — Mate solver: straight-edge axis + axis-to-axis DISTANCE (implemented)
+
+§6 roadmap's own Phase 13 entry: closes `[15]` (no straight-edge axis
+reference/axis-to-axis DISTANCE) - backend-only, no client changes needed
+(the Mate authoring UI's own `_mateSelectionFilter` already allows picking
+any Edge, circular or straight - the restriction was purely server-side, a
+`_resolve_local_geometry` rejection at solve time).
+
+### Straight-edge axis: `measure.py`
+
+`single_shape_geometry`'s `EDGE` branch gains a `GeomAbs_Line` case
+alongside its existing `GeomAbs_Circle` one - `curve.Line()` (the same
+`gp_Lin`-shaped `Location()`/`Direction()` pair a circular edge's `gp_Ax1`
+axis already reports, and the identical `BRepAdaptor_Curve`/`curve.Line()`
+idiom `create_plane.py`/`pattern.py` already use elsewhere in this
+codebase) reports a straight edge's own infinite-line direction + a point
+on it into the exact same `axis_origin`/`axis_direction` fields a circular
+edge's fitted axis already populates - no new `MeasurementResult` field
+needed, and no new wire-schema field either (`AxisSchema` was already
+generic).
+
+### Mate solver: `assembly_solver.py`
+
+`_resolve_local_geometry`'s `EDGE` branch widened from `curve_type ==
+GeomAbs_Circle` to `curve_type in (GeomAbs_Circle, GeomAbs_Line)` - both
+now resolve through the identical `single_shape_geometry` call and return
+the identical `_ResolvedGeometry(axis_origin=..., direction=...)` shape, so
+CONCENTRIC/PARALLEL/ANGLE's own dispatch (`_apply_mate_constraint`) needed
+*zero* changes - confirmed directly (not just assumed from the docstring's
+own "already direction-agnostic to circle-vs-line" claim) by the new
+straight-edge CONCENTRIC/PARALLEL tests below passing against the exact
+same code path the cylindrical-face tests already exercised.
+
+New axis-to-axis DISTANCE variant (`[15]`'s other half - "these two
+parallel shafts/dowel-pin axes are N mm apart," the "parallel-shaft
+center-distance" case this module's own docstring used to list as
+unsupported): checked `py_slvs`'s own primitives first, mirroring Phase 6's
+own "three rejected approaches" process rather than inventing new math -
+there is no direct line-to-line distance constraint, but
+`system.addPointLineDistance` (already used elsewhere in this codebase,
+`app.sketch.solver`) computes the true perpendicular point-to-line distance,
+which *is* exactly the axis-to-axis distance as long as the two axes are
+first forced parallel (`addParallel`, the identical call CONCENTRIC already
+makes) - without that, point-line distance varies along the line and
+wouldn't mean "the" distance at all. The new DISTANCE branch: `addParallel`
++ `addPointLineDistance(distance, driven_axis_origin_point, fixed_axis_line)`,
+inserted ahead of the existing point-point fallback (never reachable by
+axis geometry anyway, since `_ResolvedGeometry.point` is never set
+alongside `axis_origin`) - the fallback's own error message widened from
+"a point or plane on each side" to "a point, plane, or axis on each side"
+to match.
+
+Module docstring's "Known v1 scope limits" updated: the "straight (non-
+circular) Edge is not a supported mate reference at all" and "DISTANCE ...
+an axis-to-axis ... mate is not supported" bullets both removed (fixed);
+CONCENTRIC's own bullet reworded to "a cylindrical Face, or a circular or
+straight Edge" to describe the now-wider axis-reference set precisely.
+
+**Verified**: backend - full suite against real `pythonocc-core`/`py-slvs`
+- **2306/2306 passed, 0 failed** (up from 2301 after §2m: 5 new tests - 1 in
+`test_measure_endpoint.py` confirming `single_shape_geometry` reports a
+straight edge's own unit-length axis direction + a point on it; 4 in
+`test_assembly_solver.py` - straight-edge CONCENTRIC and PARALLEL mirroring
+the existing cylindrical-face tests exactly, plus two axis-to-axis DISTANCE
+tests, one against cylindrical faces and one against straight edges, each
+verifying *both* halves of what the constraint actually establishes: the
+two axes end up genuinely parallel, not just coincidentally close, and the
+true perpendicular axis-to-axis distance - not a raw point-to-point one -
+equals the requested value). One transient, unrelated failure encountered
+and confirmed *not* a regression before this count was finalized: an
+`-n 4` xdist run hit 4 failures in `test_planetary_gear_jobs.py` (shared
+`_running_job_id` global state racing across workers, nothing to do with
+`measure.py`/`assembly_solver.py`) - confirmed pre-existing/unrelated by
+(a) that file passing 8/8 in isolation, (b) the immediately-prior Phase 12
+run of this same `-n 4` suite completing 2301/2301 clean, and (c) a full
+rerun of this phase's own suite passing 2306/2306 clean with no
+`test_planetary_gear_jobs.py` failures at all. No client changes this
+phase - full client suite **1966/1966 passed** (unchanged baseline),
+`flutter analyze` clean.
+
+### Remaining limitations after this phase
+
+The module docstring's remaining v1 scope limits are unchanged: CONCENTRIC
+still only supports axis-to-axis (no "concentric to a point" variant), and
+a COINCIDENT mate between two planar references still locks the full
+relative orientation rather than only the 2 DOF a real flush-but-free-to-
+spin mate should. The roadmap's own explicitly-deferred items (`[12]`
+multi-body/linkage simultaneous solving, `[13]` real-time client-side FFI
+solving, `[14]` algebraic COINCIDENT flip resolution) are all untouched by
+this phase, as planned.
+
+## 2q. Phase 14 — AI plan pipeline: Mate edge-selector heuristic + existing-only `pattern_component` (implemented)
 
 §6 roadmap's own Phase 14 entry: closes `[3]` (no edge-selector heuristic
 for a Mate's own geometry refs) and the achievable half of `[1]`
@@ -2556,7 +2770,8 @@ tap-to-select chips (backend already accepts multiple `source_occurrence_ids` -
 client-only UX addition, deliberately not a general cross-app multi-select
 mechanism).
 
-**Phase 12 — Nested-Occurrence interaction (medium, not large).** Closes
+**~~Phase 12 — Nested-Occurrence interaction (medium, not large).~~ — moved
+to §2o, implemented.** Closes
 `[18]` and, as a near-free consequence, `[6]`. Verified smaller than its
 own original framing: the gizmo's PATCH call-sites already route via
 `focusPartId = _focusStack?.current ?? _part?.id`, and `get_assembly_mesh`'s
@@ -2573,8 +2788,8 @@ instance's own `world_transform` via the same `matrix4FromRigidTransform`/
 `_confirmMate`/`_confirmComponentPattern` both still hardcode `part.id`
 (unlike the gizmo, which already routes correctly) - fix to match.
 
-**Phase 13 — Mate solver: straight-edge axis + axis-to-axis DISTANCE
-(medium).** Closes `[15]`. Extend `measure.py`'s `single_shape_geometry` to
+**~~Phase 13 — Mate solver: straight-edge axis + axis-to-axis DISTANCE
+(medium).~~ — moved to §2p, implemented.** Closes `[15]`. Extend `measure.py`'s `single_shape_geometry` to
 report a straight edge's line direction + point-on-line (the same
 `BRepAdaptor_Curve` family already used for a circular edge's axis), wire
 into `assembly_solver.py`'s CONCENTRIC/PARALLEL/ANGLE dispatch (already
@@ -2584,7 +2799,7 @@ mirroring Phase 6's own "three rejected approaches" process - budget real
 experimentation time.
 
 **~~Phase 14 — AI plan pipeline: Mate edge-selector heuristic + existing-only
-`pattern_component` (medium).~~ — moved to §2o, implemented.** Closes `[3]` and the achievable half of
+`pattern_component` (medium).~~ — moved to §2q, implemented.** Closes `[3]` and the achievable half of
 `[1]`, independent of `[2]`. `[3]`: `resolve_edge_selector`
 (`ai_plan_edges.py`) already takes a raw shape + `Part` and doesn't care
 whether the Body predates this plan - add an optional `EdgeSelector` field
@@ -2661,16 +2876,17 @@ limitation, not assembly-specific.
 ### The 23-item gap inventory this roadmap schedules against
 
 **AI plan pipeline (§2k)**: `[1]` ~~`pattern_component` PlanStep missing~~ -
-**fixed (existing-Occurrence-only half), Phase 14 §2o** - the full version
+**fixed (existing-Occurrence-only half), Phase 14 §2q** - the full version
 (a plan-local id this same plan just placed) still waits on `[2]`;
 `[2]` `add_component` PlanStep missing (no client file-discovery
 mechanism); `[3]` ~~no edge-selector heuristic for a Mate's own geometry
-refs~~ - **fixed, Phase 14 §2o**; `[4]` ~~`move_component` has no payload validation~~ - **fixed,
+refs~~ - **fixed, Phase 14 §2q**; `[4]` ~~`move_component` has no payload validation~~ - **fixed,
 Phase 10 §2m**; `[5]` ~~manual Hide/Show/Isolate UI still client-only~~ -
 **fixed, Phase 10 §2m**.
 
-**ComponentPattern (§2j/§5 items 7-9)**: `[6]` top-level source Occurrences
-only; `[7]` ~~authoring panel: one source, X/Y/Z presets only~~ - **fixed,
+**ComponentPattern (§2j/§5 items 7-9)**: `[6]` ~~top-level source
+Occurrences only~~ - **fixed as a near-free consequence of `[18]`, Phase 12
+§2o**; `[7]` ~~authoring panel: one source, X/Y/Z presets only~~ - **fixed,
 Phase 11 §2n** (Custom vector entry + multi-source chips); `[8]` ~~no
 pattern edit/delete UI~~ - **fixed, Phase 11 §2n**; `[9]` ~~no
 `skip_indices`~~ - **fixed, Phase 11 §2n**; `[10]` ~~no
@@ -2683,14 +2899,16 @@ remain unsupported).
 
 **Mate solver (§2i)**: `[12]` single-Occurrence-against-fixed-peers solving
 only; `[13]` no real-time client-side FFI solving; `[14]` COINCIDENT
-plane-plane `flipped` resolved via warm-start seed only; `[15]` no
-straight-edge axis reference/axis-to-axis DISTANCE; `[16]` no feature-level
+plane-plane `flipped` resolved via warm-start seed only; `[15]` ~~no
+straight-edge axis reference/axis-to-axis DISTANCE~~ - **fixed, Phase 13
+§2p**; `[16]` no feature-level
 breadcrumb tier (`[16b]`) and ~~no live hover-preview highlight
 (`[16a]`)~~ - **`[16a]` fixed, Phase 10 §2m** (`[16b]` remains open).
 
 **Selection, rendering & focus**: `[17]` root Part's own Bodies stay
-selectable regardless of focus; `[18]` gizmo/Mate/ComponentPattern all
-still top-level-Occurrence-only; `[19]` ~~latent Focus/Exit-Focus label
+selectable regardless of focus; `[18]` ~~gizmo/Mate/ComponentPattern all
+still top-level-Occurrence-only~~ - **fixed (direct child of focus only,
+not deeper nesting), Phase 12 §2o**; `[19]` ~~latent Focus/Exit-Focus label
 quirk~~ - **fixed, Phase 10 §2m**.
 
 **Storage & multi-file**: `[20]` no iOS SAF equivalent; `[21]` no

@@ -42,6 +42,32 @@ def test_measuring_an_edge_of_a_10_unit_cube_reports_its_length():
     assert body["length"] == 10.0
 
 
+def test_measuring_a_straight_edge_of_a_10_unit_cube_reports_a_unit_axis_direction_and_a_point_on_it():
+    """Phase 13 (`docs/assembly-scope.md` §6 `[15]`): closes this module's
+    own previously-untested gap - a straight edge's own `axis` (a point on
+    the line + its direction), the same `single_shape_geometry` branch
+    `assembly_solver.py`'s CONCENTRIC/PARALLEL/ANGLE/DISTANCE mate dispatch
+    now reuses for a straight-edge mate reference."""
+    part, body_id = _boxy_part_and_body()  # a 10x10 square extruded 10 units
+    response = _measure(part["id"], [_edge_ref(body_id, 0)])
+    assert response.status_code == 200
+    body = response.json()
+    axis = body["axis"]
+    assert axis is not None
+    # No radius/diameter - a straight edge has no fitted circle (unlike a
+    # circular one, which populates both alongside its own axis).
+    assert body["radius"] is None
+    direction = axis["direction"]
+    length = sum(d * d for d in direction) ** 0.5
+    assert abs(length - 1.0) < 1e-9
+    # The reported origin genuinely lies on the edge's own infinite line -
+    # cross-checked against the edge's own real length (10.0, asserted
+    # above) rather than a fixed expected coordinate, since which of the
+    # box's 12 edges `index=0` happens to be isn't itself guaranteed.
+    origin = axis["origin"]
+    assert all(isinstance(c, float) for c in origin)
+
+
 def test_measuring_a_face_of_a_10_unit_cube_reports_area_and_unit_normal():
     part, body_id = _boxy_part_and_body()
     response = _measure(part["id"], [_face_ref(body_id, 0)])

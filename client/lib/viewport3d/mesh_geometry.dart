@@ -842,6 +842,69 @@ vm.Matrix4 matrix4FromRigidTransform(RigidTransformDto transform) {
   return vm.Matrix4.compose(translation, rotation, vm.Vector3(1, 1, 1));
 }
 
+/// Assembly support Phase 12 (`docs/assembly-scope.md` §6 `[18]`): the
+/// client-side counterpart to `backend/app/document/assembly.py`'s own
+/// `compose(parent, child)` - the world-space [RigidTransformDto] of a
+/// nested Occurrence placed by [child] (relative to its own immediate
+/// parent) inside a parent instance whose own world placement is [parent] -
+/// what [PartScreen._displayAssemblyInstances]'s live-drag overlay needs
+/// once the gizmo can target a direct child of a focused sub-assembly, not
+/// just a top-level Occurrence (whose local and world transforms happened
+/// to coincide, so no composition was ever needed before this phase).
+///
+/// Built via [matrix4FromRigidTransform] + [vm.Matrix4.decompose] rather
+/// than hand-rolled quaternion algebra - `parentMatrix * childMatrix`
+/// already has exactly the "apply child first, then parent" semantics
+/// `assembly.py`'s own `compose` docstring describes (the standard
+/// matrix-composition convention, and the same one every Node in this
+/// screen's own `flutter_scene` graph already relies on for parent-child
+/// placement), and `decompose` is vector_math's own well-tested inverse of
+/// [matrix4FromRigidTransform]'s `Matrix4.compose` - composing two
+/// `RigidTransformDto`s by hand here would mean re-deriving that inverse's
+/// own edge cases (near-identity rotation, axis sign) instead of reusing
+/// them. Scale is always `(1, 1, 1)` on both sides (`matrix4FromRigidTransform`'s
+/// own doc comment - `RigidTransform` has no scale field), so the composed
+/// scale is always `(1, 1, 1)` too and is discarded.
+RigidTransformDto composeRigidTransforms(RigidTransformDto parent, RigidTransformDto child) {
+  return _rigidTransformFromMatrix4(matrix4FromRigidTransform(parent) * matrix4FromRigidTransform(child));
+}
+
+/// [composeRigidTransforms]'s exact inverse: given [parent]'s own world
+/// placement and [world] (a *world*-space transform of something placed
+/// inside it), returns the *local* transform (relative to [parent]) that
+/// [composeRigidTransforms] would need to reproduce [world].
+///
+/// Assembly support Phase 12: what `PartScreen._onComponentGizmoDragEnd`
+/// needs once the gizmo's own on-screen basis is fed a nested target's
+/// composed *world* transform (so it renders/hit-tests/drags at the correct
+/// on-screen position - `PartViewport.selectedOccurrenceTransform`'s own
+/// doc comment: this widget "derives the gizmo's actual world-space
+/// placement" straight from whatever it's given, with no parent-transform
+/// conversion of its own) - the live-drag result it produces is therefore
+/// also world-space, but the backend's `Occurrence.transform` (what
+/// `updateOccurrenceTransform` persists) is always local to the
+/// Occurrence's own immediate parent, so that result must be converted back
+/// before it's ever PATCHed. `inverse(parentMatrix) * worldMatrix` is the
+/// standard "undo the parent's own contribution" decomposition - the exact
+/// inverse of `composeRigidTransforms`'s own `parentMatrix * childMatrix`.
+RigidTransformDto localRigidTransformRelativeTo(RigidTransformDto parent, RigidTransformDto world) {
+  final inverseParent = matrix4FromRigidTransform(parent).clone()..invert();
+  return _rigidTransformFromMatrix4(inverseParent * matrix4FromRigidTransform(world));
+}
+
+RigidTransformDto _rigidTransformFromMatrix4(vm.Matrix4 matrix) {
+  final translation = vm.Vector3.zero();
+  final rotation = vm.Quaternion.identity();
+  final scale = vm.Vector3.zero();
+  matrix.decompose(translation, rotation, scale);
+  final axis = rotation.axis;
+  return RigidTransformDto(
+    translation: [translation.x, translation.y, translation.z],
+    rotationAxis: [axis.x, axis.y, axis.z],
+    rotationAngleDegrees: rotation.radians * 180 / math.pi,
+  );
+}
+
 /// Assembly support Phase 4: the opacity half of "opacity/selectability
 /// split for non-primary Parts in the focus stack" (`docs/assembly-
 /// scope.md` §3) - pure and directly unit-testable, kept separate from
