@@ -2242,6 +2242,96 @@ composition/decomposition math is hand-verified against known rotations
 and round-trip-checked, but the actual on-screen hit-testing/drag feel at a
 nested position is real, undone follow-up verification once a real device
 is available.
+## 2p. Phase 13 — Mate solver: straight-edge axis + axis-to-axis DISTANCE (implemented)
+
+§6 roadmap's own Phase 13 entry: closes `[15]` (no straight-edge axis
+reference/axis-to-axis DISTANCE) - backend-only, no client changes needed
+(the Mate authoring UI's own `_mateSelectionFilter` already allows picking
+any Edge, circular or straight - the restriction was purely server-side, a
+`_resolve_local_geometry` rejection at solve time).
+
+### Straight-edge axis: `measure.py`
+
+`single_shape_geometry`'s `EDGE` branch gains a `GeomAbs_Line` case
+alongside its existing `GeomAbs_Circle` one - `curve.Line()` (the same
+`gp_Lin`-shaped `Location()`/`Direction()` pair a circular edge's `gp_Ax1`
+axis already reports, and the identical `BRepAdaptor_Curve`/`curve.Line()`
+idiom `create_plane.py`/`pattern.py` already use elsewhere in this
+codebase) reports a straight edge's own infinite-line direction + a point
+on it into the exact same `axis_origin`/`axis_direction` fields a circular
+edge's fitted axis already populates - no new `MeasurementResult` field
+needed, and no new wire-schema field either (`AxisSchema` was already
+generic).
+
+### Mate solver: `assembly_solver.py`
+
+`_resolve_local_geometry`'s `EDGE` branch widened from `curve_type ==
+GeomAbs_Circle` to `curve_type in (GeomAbs_Circle, GeomAbs_Line)` - both
+now resolve through the identical `single_shape_geometry` call and return
+the identical `_ResolvedGeometry(axis_origin=..., direction=...)` shape, so
+CONCENTRIC/PARALLEL/ANGLE's own dispatch (`_apply_mate_constraint`) needed
+*zero* changes - confirmed directly (not just assumed from the docstring's
+own "already direction-agnostic to circle-vs-line" claim) by the new
+straight-edge CONCENTRIC/PARALLEL tests below passing against the exact
+same code path the cylindrical-face tests already exercised.
+
+New axis-to-axis DISTANCE variant (`[15]`'s other half - "these two
+parallel shafts/dowel-pin axes are N mm apart," the "parallel-shaft
+center-distance" case this module's own docstring used to list as
+unsupported): checked `py_slvs`'s own primitives first, mirroring Phase 6's
+own "three rejected approaches" process rather than inventing new math -
+there is no direct line-to-line distance constraint, but
+`system.addPointLineDistance` (already used elsewhere in this codebase,
+`app.sketch.solver`) computes the true perpendicular point-to-line distance,
+which *is* exactly the axis-to-axis distance as long as the two axes are
+first forced parallel (`addParallel`, the identical call CONCENTRIC already
+makes) - without that, point-line distance varies along the line and
+wouldn't mean "the" distance at all. The new DISTANCE branch: `addParallel`
++ `addPointLineDistance(distance, driven_axis_origin_point, fixed_axis_line)`,
+inserted ahead of the existing point-point fallback (never reachable by
+axis geometry anyway, since `_ResolvedGeometry.point` is never set
+alongside `axis_origin`) - the fallback's own error message widened from
+"a point or plane on each side" to "a point, plane, or axis on each side"
+to match.
+
+Module docstring's "Known v1 scope limits" updated: the "straight (non-
+circular) Edge is not a supported mate reference at all" and "DISTANCE ...
+an axis-to-axis ... mate is not supported" bullets both removed (fixed);
+CONCENTRIC's own bullet reworded to "a cylindrical Face, or a circular or
+straight Edge" to describe the now-wider axis-reference set precisely.
+
+**Verified**: backend - full suite against real `pythonocc-core`/`py-slvs`
+- **2306/2306 passed, 0 failed** (up from 2301 after §2m: 5 new tests - 1 in
+`test_measure_endpoint.py` confirming `single_shape_geometry` reports a
+straight edge's own unit-length axis direction + a point on it; 4 in
+`test_assembly_solver.py` - straight-edge CONCENTRIC and PARALLEL mirroring
+the existing cylindrical-face tests exactly, plus two axis-to-axis DISTANCE
+tests, one against cylindrical faces and one against straight edges, each
+verifying *both* halves of what the constraint actually establishes: the
+two axes end up genuinely parallel, not just coincidentally close, and the
+true perpendicular axis-to-axis distance - not a raw point-to-point one -
+equals the requested value). One transient, unrelated failure encountered
+and confirmed *not* a regression before this count was finalized: an
+`-n 4` xdist run hit 4 failures in `test_planetary_gear_jobs.py` (shared
+`_running_job_id` global state racing across workers, nothing to do with
+`measure.py`/`assembly_solver.py`) - confirmed pre-existing/unrelated by
+(a) that file passing 8/8 in isolation, (b) the immediately-prior Phase 12
+run of this same `-n 4` suite completing 2301/2301 clean, and (c) a full
+rerun of this phase's own suite passing 2306/2306 clean with no
+`test_planetary_gear_jobs.py` failures at all. No client changes this
+phase - full client suite **1966/1966 passed** (unchanged baseline),
+`flutter analyze` clean.
+
+### Remaining limitations after this phase
+
+The module docstring's remaining v1 scope limits are unchanged: CONCENTRIC
+still only supports axis-to-axis (no "concentric to a point" variant), and
+a COINCIDENT mate between two planar references still locks the full
+relative orientation rather than only the 2 DOF a real flush-but-free-to-
+spin mate should. The roadmap's own explicitly-deferred items (`[12]`
+multi-body/linkage simultaneous solving, `[13]` real-time client-side FFI
+solving, `[14]` algebraic COINCIDENT flip resolution) are all untouched by
+this phase, as planned.
 
 ---
 
@@ -2552,7 +2642,7 @@ client-only UX addition, deliberately not a general cross-app multi-select
 mechanism).
 
 **~~Phase 12 — Nested-Occurrence interaction (medium, not large).~~ — moved
-to §2n, implemented.** Closes
+to §2o, implemented.** Closes
 `[18]` and, as a near-free consequence, `[6]`. Verified smaller than its
 own original framing: the gizmo's PATCH call-sites already route via
 `focusPartId = _focusStack?.current ?? _part?.id`, and `get_assembly_mesh`'s
@@ -2569,8 +2659,8 @@ instance's own `world_transform` via the same `matrix4FromRigidTransform`/
 `_confirmMate`/`_confirmComponentPattern` both still hardcode `part.id`
 (unlike the gizmo, which already routes correctly) - fix to match.
 
-**Phase 13 — Mate solver: straight-edge axis + axis-to-axis DISTANCE
-(medium).** Closes `[15]`. Extend `measure.py`'s `single_shape_geometry` to
+**~~Phase 13 — Mate solver: straight-edge axis + axis-to-axis DISTANCE
+(medium).~~ — moved to §2p, implemented.** Closes `[15]`. Extend `measure.py`'s `single_shape_geometry` to
 report a straight edge's line direction + point-on-line (the same
 `BRepAdaptor_Curve` family already used for a circular edge's axis), wire
 into `assembly_solver.py`'s CONCENTRIC/PARALLEL/ANGLE dispatch (already
@@ -2678,8 +2768,9 @@ remain unsupported).
 
 **Mate solver (§2i)**: `[12]` single-Occurrence-against-fixed-peers solving
 only; `[13]` no real-time client-side FFI solving; `[14]` COINCIDENT
-plane-plane `flipped` resolved via warm-start seed only; `[15]` no
-straight-edge axis reference/axis-to-axis DISTANCE; `[16]` no feature-level
+plane-plane `flipped` resolved via warm-start seed only; `[15]` ~~no
+straight-edge axis reference/axis-to-axis DISTANCE~~ - **fixed, Phase 13
+§2p**; `[16]` no feature-level
 breadcrumb tier (`[16b]`) and ~~no live hover-preview highlight
 (`[16a]`)~~ - **`[16a]` fixed, Phase 10 §2m** (`[16b]` remains open).
 
