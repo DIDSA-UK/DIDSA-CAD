@@ -870,6 +870,19 @@ class PartViewport extends StatefulWidget {
   /// coarser/finer thing selected instead," never "also select this."
   final ValueChanged<SelectionEntityRef>? onBreadcrumbSelect;
 
+  /// §6 roadmap Phase 10 (`[16a]`): fired with the breadcrumb tier under the
+  /// pointer/finger while held (`SelectionBreadcrumbBar.onPreview`), `null`
+  /// once released - [PartScreen] is expected to feed this straight into
+  /// [highlightOverride] (mirroring the "Select Other" sheet's own identical
+  /// [onHighlight]/[highlightOverride] round trip), the live hover-preview
+  /// highlight Phase 6b's own doc comment deliberately left unwired
+  /// (`docs/assembly-scope.md` §2i's own "Known v1 limitations", `[16a]`).
+  /// Additive-only - this widget's existing hover machinery is untouched,
+  /// [onBreadcrumbPreview] is only ever invoked from
+  /// [SelectionBreadcrumbBar]'s own gesture handling, never from
+  /// [_recomputeHover] itself.
+  final ValueChanged<SelectionEntityRef?>? onBreadcrumbPreview;
+
   /// Prompt A2: which entity kinds [_recomputeHover] considers - [PartScreen]
   /// owns this (its View submenu toggles write it, plus any future
   /// push/pop override - see `OverrideStack`), same controlled-widget
@@ -1056,6 +1069,7 @@ class PartViewport extends StatefulWidget {
     this.suppressHoverFallback = false,
     this.breadcrumbEntity,
     this.onBreadcrumbSelect,
+    this.onBreadcrumbPreview,
     this.selectionFilter = SelectionFilterState.defaults,
     this.isPerspective = false,
     this.farClip,
@@ -5520,11 +5534,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             // [SelectionBreadcrumbBar] itself renders nothing for a
             // one-tier chain, so this is a no-op overlay for the common
             // "nothing/many selected" and "already at the coarsest tier"
-            // cases. Deliberately no live hover-preview highlight wired
-            // into the 3D view yet (would need [highlightOverride]-style
-            // plumbing back out to `PartScreen` - left for a follow-up
-            // pass since this bar's own tap-to-retarget is the feature
-            // that was asked for).
+            // cases. §6 roadmap Phase 10 (`[16a]`): the live hover-preview
+            // highlight Phase 6b's own doc comment left for a follow-up is
+            // now wired - [onPreview] plumbs straight out to
+            // [widget.onBreadcrumbPreview], additive-only (this file's own
+            // hover machinery, [_recomputeHover]/[_syncHoverNode], is
+            // untouched - [PartScreen] is expected to feed the callback's
+            // value into [highlightOverride] the same way it already does
+            // for the "Select Other" sheet's own [onHighlight]).
             if (widget.breadcrumbEntity != null)
               Positioned(
                 bottom: 16,
@@ -5534,6 +5551,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                   child: SelectionBreadcrumbBar(
                     entity: widget.breadcrumbEntity!,
                     onSelect: (target) => widget.onBreadcrumbSelect?.call(target),
+                    onPreview: (target) => widget.onBreadcrumbPreview?.call(target),
                   ),
                 ),
               ),

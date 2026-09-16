@@ -435,36 +435,17 @@ class _PartScreenState extends State<PartScreen> {
   List<ComponentPatternDto> _componentPatterns = [];
   String? _selectedOccurrenceId;
 
-  /// Assembly support Phase 4: purely client-side Hide/Show for an
-  /// Occurrence, mirroring [_hiddenFeatureIds]'s own convention exactly -
-  /// no backend mutation endpoint exists for Occurrences at all
-  /// (`docs/assembly-scope.md` §2e's own documented gap), so this can never
-  /// be more than a session-only overlay on top of whatever
-  /// [OccurrenceDto.hidden] the backend happens to already report. Combined
-  /// with that field (never replacing it) everywhere an Occurrence's
-  /// effective hidden state is needed - see [_displayOccurrences].
-  final Set<String> _hiddenOccurrenceIds = {};
-
-  /// Assembly support Phase 4: "Isolate" on the Component context menu -
-  /// at most one Occurrence id at a time (unlike [_hiddenOccurrenceIds],
-  /// which has no such cap); every *other* Occurrence is treated as hidden
-  /// while this is set (see [_displayOccurrences]). No dedicated "show all"
-  /// action exists on that menu yet, so this is a toggle: Isolate again on
-  /// the same Occurrence clears it, same as there being no distinct
-  /// "un-isolate" affordance elsewhere in the UI yet.
-  String? _isolatedOccurrenceId;
-
-  /// Assembly support Phase 4: [_occurrences] with [_hiddenOccurrenceIds]/
-  /// [_isolatedOccurrenceId]'s purely-client-side overlays folded into each
-  /// entry's own [OccurrenceDto.hidden] - see
-  /// [applyOccurrenceVisibilityOverrides]'s own doc comment for the full
-  /// rule (factored out as a standalone pure function, directly unit-
-  /// tested, rather than living only as this getter's own logic).
-  List<OccurrenceDto> get _displayOccurrences => applyOccurrenceVisibilityOverrides(
-        _occurrences,
-        hiddenOccurrenceIds: _hiddenOccurrenceIds,
-        isolatedOccurrenceId: _isolatedOccurrenceId,
-      );
+  /// §6 roadmap Phase 10 (`[5]`): Hide/Show/Isolate used to be a purely
+  /// client-side overlay here (a `_hiddenOccurrenceIds`/
+  /// `_isolatedOccurrenceId` pair combined with [OccurrenceDto.hidden] via
+  /// `applyOccurrenceVisibilityOverrides`, since no backend mutation
+  /// endpoint existed for an Occurrence at all - `docs/assembly-scope.md`
+  /// §2e). `_onOccurrenceLongPress` was that overlay's only mutator, and now
+  /// PATCHes the real `hidden` field instead (`_setOccurrenceHidden`/
+  /// `_isolateOccurrence`) and re-fetches - so [_occurrences] itself is
+  /// always already the effective, backend-true display list, with no
+  /// separate overlay left to fold in.
+  List<OccurrenceDto> get _displayOccurrences => _occurrences;
 
   /// Assembly support Phase 4: Phase 2's own `assembly-mesh` fetch
   /// (`AssemblyMeshDto` - dedup'd per-Part geometry plus every placed
@@ -538,13 +519,11 @@ class _PartScreenState extends State<PartScreen> {
   /// stayed frozen at its pre-drag position until the PATCH/refetch
   /// completed.
   List<AssemblyOccurrenceInstanceDto> get _displayAssemblyInstances {
-    final overlaid = _assemblyMesh == null
-        ? const <AssemblyOccurrenceInstanceDto>[]
-        : applyInstanceVisibilityOverrides(
-            _assemblyMesh!.instances,
-            hiddenOccurrenceIds: _hiddenOccurrenceIds,
-            isolatedOccurrenceId: _isolatedOccurrenceId,
-          );
+    // §6 roadmap Phase 10 (`[5]`): [_assemblyMesh]'s own `hidden` per
+    // instance is already backend-true post-refetch - see
+    // [_displayOccurrences]'s own doc comment for why no client-only overlay
+    // is folded in here anymore.
+    final overlaid = _assemblyMesh == null ? const <AssemblyOccurrenceInstanceDto>[] : _assemblyMesh!.instances;
     final liveTransform = _gizmoLiveTransform;
     final targetId = _gizmoTargetOccurrence?.id;
     if (liveTransform == null || targetId == null) return overlaid;
@@ -1651,6 +1630,20 @@ class _PartScreenState extends State<PartScreen> {
     setState(() => _selectedEntities = {target});
   }
 
+  /// §6 roadmap Phase 10 (`[16a]`): [PartViewport.onBreadcrumbPreview]'s own
+  /// call site - fed into [highlightOverride] exactly like
+  /// [_selectOtherHighlight] already is for the "Select Other" sheet
+  /// (`[_handleSelectOtherRequested]`'s own `onHighlight`), the same
+  /// round-trip shape that field's own doc comment describes. The two never
+  /// overlap in practice (`_breadcrumbEntity` already returns `null` while
+  /// the Select Other sheet is open), so a plain `??` is enough to combine
+  /// them with no precedence ambiguity.
+  SelectionEntityRef? _breadcrumbPreviewHighlight;
+
+  void _onBreadcrumbPreview(SelectionEntityRef? target) {
+    setState(() => _breadcrumbPreviewHighlight = target);
+  }
+
   /// Item 4: "Unselected entity tap -> add; already-selected -> remove
   /// (toggle)" - passed to [PartViewport.onSelectionToggle], fired by a tap
   /// (Fix 4) when the cursor's hover hit is non-null.
@@ -1686,6 +1679,21 @@ class _PartScreenState extends State<PartScreen> {
     // ahead of the generic toggle" precedence every branch below already
     // uses for its own kind-specific behaviour.
     if (entity.kind == SelectionEntityKind.component) {
+      // §6 roadmap Phase 10 (`[11]`), appendix item 8's own suggested
+      // smaller fix: a derived `ComponentPattern` instance's own synthetic
+      // `occurrencePath` segment always contains `"#pattern:"`
+      // (`get_assembly_mesh`'s own `_walk`, `docs/assembly-scope.md` §2j) -
+      // it never names a real Occurrence, so selecting it as one (and then,
+      // e.g., opening "Pattern Component" against it) can only ever fail
+      // with a generic backend 422. Rejected here, before it ever reaches
+      // [_selectedOccurrenceId], with a clear reason instead.
+      if (entity.occurrenceId.contains('#pattern:')) {
+        setState(() {
+          _errorMessage =
+              'A derived pattern instance cannot be selected as a component - select its source component instead';
+        });
+        return;
+      }
       setState(() => _selectedOccurrenceId = entity.occurrenceId);
       return;
     }
@@ -17007,9 +17015,20 @@ class _PartScreenState extends State<PartScreen> {
   /// (unresolved `resolvedPartId`) can't be focused - there is nothing to
   /// push, so this surfaces an error rather than silently no-opping.
   ///
-  /// Hide/Show/Isolate are purely client-side (see [_hiddenOccurrenceIds]/
-  /// [_isolatedOccurrenceId]'s own doc comments - no backend mutation
-  /// endpoint for Occurrences exists at all, `docs/assembly-scope.md` §2e).
+  /// §6 roadmap Phase 10 (`[5]`): Hide/Show/Isolate now PATCH the real
+  /// `hidden` field (`DocumentApiClient.updateOccurrenceHidden`, Phase 8's
+  /// own persistence path - previously only called by
+  /// `ai_plan_translator.dart`) rather than mutating a client-only overlay
+  /// Set, then re-fetch the tree/mesh - the same PATCH-then-refetch shape
+  /// [_onComponentGizmoDragEnd] already uses for Move/Rotate. This is what
+  /// finally closes appendix item 1's remaining manual-UI half: Show can now
+  /// truly clear a backend-`hidden: true` Occurrence, not just this
+  /// session's own override. Isolate mirrors `ai_plan.py`'s own
+  /// `isolate_component` handler (`_isolateOccurrence`): hide every *other*
+  /// top-level sibling and show this one - toggled by re-detecting "was this
+  /// Occurrence already the only visible one" from the real, just-fetched
+  /// `_occurrences` list rather than a separate client-side flag, since
+  /// there's no longer a client-only "isolated id" to ask.
   /// Move/Rotate reaches this `switch` (appendix item 5 -
   /// `component_context_menu.dart`'s own entry is enabled now) but still
   /// needs no case body of its own: this method's very first line already
@@ -17029,12 +17048,16 @@ class _PartScreenState extends State<PartScreen> {
     setState(() => _selectedOccurrenceId = occurrence.id);
     final resolvedPartId = occurrence.resolvedPartId;
     final focusStack = _focusStack;
-    final isFocused = (focusStack?.isFocused ?? false) &&
-        resolvedPartId != null &&
-        focusStack!.current == resolvedPartId;
-    final hidden = occurrence.hidden ||
-        _hiddenOccurrenceIds.contains(occurrence.id) ||
-        (_isolatedOccurrenceId != null && _isolatedOccurrenceId != occurrence.id);
+    // §6 roadmap Phase 10 (`[19]`): was `focusStack.current ==
+    // resolvedPartId`, an always-false comparison for any real Occurrence
+    // (the Assembly tree only ever shows a Part's own *children*, so that
+    // equality could only ever hold for a self-referencing Occurrence, which
+    // cycle detection already forbids - see `docs/assembly-scope.md` §5
+    // appendix item 4's own "noticed but out of scope" note). Checking
+    // membership in the full focused chain is the real "is *this*
+    // Occurrence the one currently focused" question.
+    final isFocused = focusStack?.currentOccurrencePath.contains(occurrence.id) ?? false;
+    final hidden = occurrence.hidden;
     final action = await showComponentContextMenu(context, isFocused: isFocused, hidden: hidden);
     if (!mounted || action == null) return;
     switch (action) {
@@ -17049,16 +17072,11 @@ class _PartScreenState extends State<PartScreen> {
         setState(() => focusStack?.pop());
         await _refreshAssemblyTree();
       case ComponentContextMenuAction.hide:
-        setState(() => _hiddenOccurrenceIds.add(occurrence.id));
+        await _setOccurrenceHidden(occurrence, true);
       case ComponentContextMenuAction.show:
-        setState(() {
-          _hiddenOccurrenceIds.remove(occurrence.id);
-          if (_isolatedOccurrenceId == occurrence.id) _isolatedOccurrenceId = null;
-        });
+        await _setOccurrenceHidden(occurrence, false);
       case ComponentContextMenuAction.isolate:
-        setState(() {
-          _isolatedOccurrenceId = _isolatedOccurrenceId == occurrence.id ? null : occurrence.id;
-        });
+        await _isolateOccurrence(occurrence);
       case ComponentContextMenuAction.moveRotate:
         // Appendix item 5: no-op by design - selecting `occurrence` above
         // already made the gizmo target it (see this method's own doc
@@ -17069,6 +17087,49 @@ class _PartScreenState extends State<PartScreen> {
       case ComponentContextMenuAction.pattern:
         _openComponentPattern();
     }
+  }
+
+  /// §6 roadmap Phase 10 (`[5]`): Hide/Show's real persistence call -
+  /// PATCHes the backend's own `hidden` field via
+  /// [DocumentApiClient.updateOccurrenceHidden] and re-fetches the tree/mesh
+  /// so [_occurrences]/[_assemblyMesh] agree with the backend going forward,
+  /// the same PATCH-then-refetch shape [_onComponentGizmoDragEnd] already
+  /// uses for the gizmo's own transform persistence.
+  Future<void> _setOccurrenceHidden(OccurrenceDto occurrence, bool hidden) async {
+    final focusPartId = _focusStack?.current ?? _part?.id;
+    if (focusPartId == null) return;
+    await _runGuarded(() async {
+      await _api.updateOccurrenceHidden(focusPartId, occurrence.id, hidden);
+      await _refreshAssemblyTree();
+      await _refreshAssemblyMesh();
+    });
+  }
+
+  /// §6 roadmap Phase 10 (`[5]`): Isolate's real persistence call - mirrors
+  /// `ai_plan.py`'s own `_handle_isolate_component` one level up (client-side
+  /// instead of a dry-run scratch mutation): hides every *other* top-level
+  /// Occurrence and shows [occurrence] itself. Toggled the same way the old
+  /// client-only overlay was - Isolate again on an already-isolated
+  /// Occurrence shows every sibling again - but detected from the real,
+  /// already-fetched [_occurrences] list (every other Occurrence already
+  /// hidden, this one not) rather than a separate client-side flag, since
+  /// there's no longer a client-only "isolated id" to consult.
+  Future<void> _isolateOccurrence(OccurrenceDto occurrence) async {
+    final focusPartId = _focusStack?.current ?? _part?.id;
+    if (focusPartId == null) return;
+    final alreadyIsolated = _occurrences.every(
+      (other) => other.id == occurrence.id ? !other.hidden : other.hidden,
+    );
+    await _runGuarded(() async {
+      for (final other in _occurrences) {
+        final shouldBeHidden = alreadyIsolated ? false : other.id != occurrence.id;
+        if (other.hidden != shouldBeHidden) {
+          await _api.updateOccurrenceHidden(focusPartId, other.id, shouldBeHidden);
+        }
+      }
+      await _refreshAssemblyTree();
+      await _refreshAssemblyMesh();
+    });
   }
 
   /// Pushes the Sketch screen and, once it returns (back button or the
@@ -17294,10 +17355,10 @@ class _PartScreenState extends State<PartScreen> {
                   // existing, non-assembly usage.
                   assemblyGeometry: _assemblyMesh?.geometry ?? const [],
                   // Assembly support Phase 4: Hide/Isolate must reach the
-                  // viewport too, not just [AssemblyTreePanel] - see
-                  // [applyInstanceVisibilityOverrides]'s own doc comment for
-                  // why this needs occurrencePath-prefix matching rather
-                  // than [_displayOccurrences]'s simpler bare-id one.
+                  // viewport too, not just [AssemblyTreePanel] - both now
+                  // read the same backend-true `hidden` per instance (§6
+                  // roadmap Phase 10 `[5]` - see [_displayAssemblyInstances]'s
+                  // own doc comment).
                   // Phase 5: [_displayAssemblyInstances] additionally folds
                   // in the gizmo's own live-drag value, if any, so the
                   // moved Body itself tracks the drag - see that getter's
@@ -17447,10 +17508,11 @@ class _PartScreenState extends State<PartScreen> {
                   onSelectionToggle: _toggleSelectedEntity,
                   onClearSelection: _clearSelectedEntities,
                   onSelectOtherRequested: _handleSelectOtherRequested,
-                  highlightOverride: _selectOtherHighlight,
+                  highlightOverride: _selectOtherHighlight ?? _breadcrumbPreviewHighlight,
                   suppressHoverFallback: _selectOtherSheetOpen,
                   breadcrumbEntity: _breadcrumbEntity,
                   onBreadcrumbSelect: _onBreadcrumbSelect,
+                  onBreadcrumbPreview: _onBreadcrumbPreview,
                   selectionFilter: _selectionFilter,
                   isPerspective: _isPerspective,
                   farClip: _farClip,
