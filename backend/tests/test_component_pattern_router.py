@@ -10,6 +10,8 @@ Needs a real pythonocc-core environment (not available in this repo's own
 dev sandbox - see docs/status.md's dated entries for whether a real
 on-device/CI pass has actually run by the time this is read)."""
 
+import math
+
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -245,6 +247,86 @@ def test_create_circular_component_pattern_rejects_angle_total_out_of_range():
     assert response.status_code == 422
 
 
+def test_create_component_pattern_rejects_skip_index_zero():
+    mount = _make_box_part("Mount Validation Skip 1")
+    bolt = _make_box_part("Bolt Validation Skip 1")
+    _compose(mount["id"], [_occurrence_dict("occ-1", bolt["id"])], bolt["id"])
+    response = client.post(
+        f"/document/parts/{mount['id']}/component-patterns",
+        json={
+            "source_occurrence_ids": ["occ-1"],
+            "pattern_type": "linear",
+            "count": 3,
+            "spacing": 5.0,
+            "skip_indices": [0],
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_create_component_pattern_rejects_skip_index_at_or_above_count():
+    mount = _make_box_part("Mount Validation Skip 2")
+    bolt = _make_box_part("Bolt Validation Skip 2")
+    _compose(mount["id"], [_occurrence_dict("occ-1", bolt["id"])], bolt["id"])
+    response = client.post(
+        f"/document/parts/{mount['id']}/component-patterns",
+        json={
+            "source_occurrence_ids": ["occ-1"],
+            "pattern_type": "linear",
+            "count": 3,
+            "spacing": 5.0,
+            "skip_indices": [3],
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_create_circular_component_pattern_rejects_skip_index_at_or_above_count_angular():
+    mount = _make_box_part("Mount Validation Skip 3")
+    bolt = _make_box_part("Bolt Validation Skip 3")
+    _compose(mount["id"], [_occurrence_dict("occ-1", bolt["id"])], bolt["id"])
+    response = client.post(
+        f"/document/parts/{mount['id']}/component-patterns",
+        json={
+            "source_occurrence_ids": ["occ-1"],
+            "pattern_type": "circular",
+            "count_angular": 4,
+            "angle_total": 360.0,
+            "skip_indices": [4],
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_update_component_pattern_omitted_skip_indices_leaves_current_set_untouched():
+    mount = _make_box_part("Mount Validation Skip 4")
+    bolt = _make_box_part("Bolt Validation Skip 4")
+    _compose(mount["id"], [_occurrence_dict("occ-1", bolt["id"])], bolt["id"])
+    created = client.post(
+        f"/document/parts/{mount['id']}/component-patterns",
+        json={
+            "source_occurrence_ids": ["occ-1"],
+            "pattern_type": "linear",
+            "count": 4,
+            "spacing": 5.0,
+            "skip_indices": [2],
+        },
+    ).json()
+    assert created["skip_indices"] == [2]
+
+    updated = client.patch(
+        f"/document/parts/{mount['id']}/component-patterns/{created['id']}",
+        json={"spacing": 8.0},
+    ).json()
+    assert updated["skip_indices"] == [2]
+
+    cleared = client.patch(
+        f"/document/parts/{mount['id']}/component-patterns/{created['id']}",
+        json={"skip_indices": []},
+    ).json()
+    assert cleared["skip_indices"] == []
+
+
 def test_update_component_pattern_revalidates_the_merged_result():
     mount = _make_box_part("Mount Validation 7")
     bolt = _make_box_part("Bolt Validation 7")
@@ -341,6 +423,87 @@ def test_circular_component_pattern_expands_into_assembly_mesh_instances():
         (round(t[0], 6), round(t[1], 6)) for t in (i["world_transform"]["translation"] for i in bolt_instances)
     )
     assert translations == sorted([(10.0, 0.0), (0.0, 10.0), (-10.0, 0.0), (0.0, -10.0)])
+
+
+def test_linear_component_pattern_skip_indices_omits_an_instance_without_renumbering_the_rest():
+    mount = _make_box_part("Mount Expand Skip 1", size=40.0)
+    bolt = _make_box_part("Bolt Expand Skip 1", size=2.0)
+    _compose(
+        mount["id"],
+        [_occurrence_dict("occ-bolt-1", bolt["id"], translation=(5.0, 0.0, 0.0))],
+        bolt["id"],
+        component_patterns=[
+            {
+                "id": "pat-1",
+                "source_occurrence_ids": ["occ-bolt-1"],
+                "pattern_type": "linear",
+                "direction": [1.0, 0.0, 0.0],
+                "count": 4,
+                "spacing": 10.0,
+                "reverse": False,
+                "axis": None,
+                "count_angular": 1,
+                "angle_total": 360.0,
+                "reverse_angular": False,
+                "skip_indices": [2],
+                "orient_with_rotation": True,
+                "suppressed": False,
+            }
+        ],
+    )
+
+    mesh = _assembly_mesh(mount["id"])
+    bolt_instances = [i for i in mesh["instances"] if i["part_id"] == bolt["id"]]
+    # Real occurrence + indices 1 and 3 (index 2 skipped) = 3.
+    assert len(bolt_instances) == 3
+    translations_x = sorted(i["world_transform"]["translation"][0] for i in bolt_instances)
+    assert translations_x == [5.0, 15.0, 35.0]
+    # The skipped index's synthetic path never appears, and the surviving
+    # indices keep their own stable per-index suffix.
+    paths = {tuple(i["occurrence_path"]) for i in bolt_instances}
+    assert ("occ-bolt-1#pattern:pat-1:1",) in paths
+    assert ("occ-bolt-1#pattern:pat-1:3",) in paths
+    assert ("occ-bolt-1#pattern:pat-1:2",) not in paths
+
+
+def test_circular_component_pattern_orient_with_rotation_false_keeps_the_source_orientation():
+    mount = _make_box_part("Mount Expand Orient 1", size=40.0)
+    bolt = _make_box_part("Bolt Expand Orient 1", size=2.0)
+    _compose(
+        mount["id"],
+        [_occurrence_dict("occ-bolt-1", bolt["id"], translation=(10.0, 0.0, 0.0))],
+        bolt["id"],
+        component_patterns=[
+            {
+                "id": "pat-1",
+                "source_occurrence_ids": ["occ-bolt-1"],
+                "pattern_type": "circular",
+                "direction": [1.0, 0.0, 0.0],
+                "count": 1,
+                "spacing": 0.0,
+                "reverse": False,
+                "axis": {"origin": [0.0, 0.0, 0.0], "direction": [0.0, 0.0, 1.0]},
+                "count_angular": 4,
+                "angle_total": 360.0,
+                "reverse_angular": False,
+                "orient_with_rotation": False,
+                "suppressed": False,
+            }
+        ],
+    )
+
+    mesh = _assembly_mesh(mount["id"])
+    bolt_instances = [i for i in mesh["instances"] if i["part_id"] == bolt["id"]]
+    assert len(bolt_instances) == 4
+    # Positions still land on the circle (unaffected by orient_with_rotation)...
+    translations = sorted(
+        (round(t[0], 6), round(t[1], 6)) for t in (i["world_transform"]["translation"] for i in bolt_instances)
+    )
+    assert translations == sorted([(10.0, 0.0), (0.0, 10.0), (-10.0, 0.0), (0.0, -10.0)])
+    # ...but every derived instance keeps the (identity) source rotation
+    # rather than picking up its own step's rotation around the axis.
+    for instance in bolt_instances:
+        assert math.isclose(instance["world_transform"]["rotation_angle_degrees"], 0.0, abs_tol=1e-9)
 
 
 def test_suppressed_component_pattern_produces_no_derived_instances():
@@ -512,6 +675,8 @@ def test_component_pattern_survives_a_native_export_import_round_trip():
             "count_angular": 6,
             "angle_total": 180.0,
             "reverse_angular": True,
+            "skip_indices": [2, 4],
+            "orient_with_rotation": False,
         },
     ).json()
 
@@ -527,3 +692,5 @@ def test_component_pattern_survives_a_native_export_import_round_trip():
     assert pattern["angle_total"] == 180.0
     assert pattern["reverse_angular"] is True
     assert pattern["axis"] == {"origin": [1.0, 2.0, 3.0], "direction": [0.0, 1.0, 0.0]}
+    assert pattern["skip_indices"] == [2, 4]
+    assert pattern["orient_with_rotation"] is False

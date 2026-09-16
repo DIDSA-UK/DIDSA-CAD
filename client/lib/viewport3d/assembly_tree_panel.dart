@@ -103,6 +103,16 @@ class AssemblyTreePanel extends StatefulWidget {
   final void Function(OccurrenceDto occurrence) onOccurrenceLongPress;
   final void Function(MateDto mate)? onMateTap;
   final void Function(MateDto mate)? onMateLongPress;
+
+  /// Phase 11 (`docs/assembly-scope.md` §6 `[8]`): tap-to-edit/long-press-
+  /// to-delete for an already-authored `ComponentPattern` row - mirrors
+  /// [onMateTap]/[onMateLongPress]'s own optional, additive shape exactly
+  /// (both default to `null`, so this section stays read-only for any call
+  /// site that hasn't wired them, the same backward-compatible arrival
+  /// [patterns] itself already got in Phase 7).
+  final void Function(ComponentPatternDto pattern)? onPatternTap;
+  final void Function(ComponentPatternDto pattern)? onPatternLongPress;
+
   final VoidCallback onClose;
 
   const AssemblyTreePanel({
@@ -117,6 +127,8 @@ class AssemblyTreePanel extends StatefulWidget {
     required this.onClose,
     this.onMateTap,
     this.onMateLongPress,
+    this.onPatternTap,
+    this.onPatternLongPress,
   });
 
   @override
@@ -380,13 +392,12 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
     );
   }
 
-  /// Phase 7 (`docs/assembly-scope.md` §3 item 7 / §2j): read-only for now,
-  /// same scope [_buildMatesSection] itself still has (no tap/long-press
-  /// wired to editing or deleting an existing entry from this panel yet,
-  /// `PartScreen` never calls [AssemblyTreePanel.onMateTap]/
-  /// [onMateLongPress] either) - authoring happens via `PartScreen.
-  /// _openComponentPattern`/`ComponentPatternPanel`, this section exists so
-  /// an already-authored pattern is at least visible in the tree.
+  /// Phase 11 (`docs/assembly-scope.md` §6 `[8]`): [onPatternTap]/
+  /// [onPatternLongPress] now wire this section to real edit/delete
+  /// (`PartScreen._openComponentPatternForEdit`/`_confirmDeleteComponent
+  /// Pattern`) - the API methods (`updateComponentPattern`/
+  /// `deleteComponentPattern`) already existed and were already tested
+  /// (Phase 7), only this row's own tap/long-press were unwired.
   Widget _buildPatternsSection(BuildContext context) {
     return ExpansionTile(
       initiallyExpanded: true,
@@ -421,6 +432,8 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
           style: _rowSubtitleStyle,
         ),
         trailing: pattern.suppressed ? const Icon(Icons.visibility_off, size: 18) : null,
+        onTap: widget.onPatternTap == null ? null : () => widget.onPatternTap!(pattern),
+        onLongPress: widget.onPatternLongPress == null ? null : () => widget.onPatternLongPress!(pattern),
       ),
     );
   }

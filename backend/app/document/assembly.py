@@ -198,34 +198,62 @@ def _circular_pattern_step(axis: ComponentPatternAxis, angle_degrees: float) -> 
     return RigidTransform(translation=translation, rotation_axis=axis.direction, rotation_angle_degrees=angle_degrees)
 
 
-def expand_component_pattern_instances(pattern: ComponentPattern, source_transform: RigidTransform) -> list[RigidTransform]:
+def expand_component_pattern_instances(
+    pattern: ComponentPattern, source_transform: RigidTransform
+) -> dict[int, RigidTransform]:
     """Every *derived* instance transform for `pattern`, applied to
     `source_transform` (one of `pattern.source_occurrence_ids`' own current
     `Occurrence.transform`) - excludes index 0, the untouched seed
     Occurrence itself, the identical `PatternFeature`-precedent convention
     `ComponentPattern`'s own docstring documents ("count includes the
-    original"). Returns `[]` for `count`/`count_angular <= 1` (nothing to
+    original"). Returns `{}` for `count`/`count_angular <= 1` (nothing to
     derive). Callers compose each result onto whatever transform chain
     already places `source_transform`'s own parent (`GET /parts/{part_id}/
     assembly-mesh`'s own `_walk`) - this function only ever computes the
     *local* step relative to the source Occurrence's existing placement,
     same "local step, composed by the caller" split `compose_chain`'s own
-    per-level `compose` calls already use."""
+    per-level `compose` calls already use.
+
+    Keyed by the same 1-based index the loop below enumerates (`1` is the
+    first derived instance, matching `_rectangular_instances`/
+    `_circular_instances`'s own `dict[int, TopoDS_Shape]` convention one
+    level down in `app.document.pattern`) rather than returned as a plain
+    list, so a skipped index (Phase 11, `[9]`, `pattern.skip_indices`)
+    leaves every surviving instance's own id stable instead of shifting it
+    - the same "don't let a skip quietly renumber its neighbors" concern
+    that convention already protects against for Body-level Patterns."""
+    skip_indices = set(pattern.skip_indices)
     if pattern.pattern_type == ComponentPatternType.LINEAR:
         count = max(pattern.count, 1)
         sign = -1.0 if pattern.reverse else 1.0
-        instances = []
+        instances: dict[int, RigidTransform] = {}
         for index in range(1, count):
+            if index in skip_indices:
+                continue
             step = _linear_pattern_step(pattern.direction, pattern.spacing * index * sign)
-            instances.append(compose(step, source_transform))
+            instances[index] = compose(step, source_transform)
         return instances
 
     count = max(pattern.count_angular, 1)
     axis = pattern.axis if pattern.axis is not None else ComponentPatternAxis()
     step_angle = pattern.angle_total / count
     sign = -1.0 if pattern.reverse_angular else 1.0
-    instances = []
+    instances = {}
     for index in range(1, count):
+        if index in skip_indices:
+            continue
         step = _circular_pattern_step(axis, step_angle * index * sign)
-        instances.append(compose(step, source_transform))
+        composed = compose(step, source_transform)
+        if not pattern.orient_with_rotation:
+            # `[10]`: reposition around the circle (keep `composed`'s own
+            # translation, the fully rotation-aware displacement `compose`
+            # already derived) without also rotating the instance's own
+            # local orientation around `axis` - restore `source_transform`'s
+            # own rotation term in place of `composed`'s.
+            composed = RigidTransform(
+                translation=composed.translation,
+                rotation_axis=source_transform.rotation_axis,
+                rotation_angle_degrees=source_transform.rotation_angle_degrees,
+            )
+        instances[index] = composed
     return instances

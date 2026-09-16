@@ -1974,6 +1974,151 @@ into later roadmap phases (11/12) as originally planned - this phase
 deliberately stayed within the five small, independent fixes it bundled,
 not a broader completeness pass.
 
+## 2n. Phase 11 — ComponentPattern authoring & lifecycle completeness (implemented)
+
+§6 roadmap's own Phase 11 entry: closes gap-inventory items `[7]`/`[8]`/
+`[9]`/`[10]` - every still-open ComponentPattern authoring/UI gap §5 items
+7-9 catalogued, all four independent of each other and of Phase 10's own
+fixes.
+
+### `[9]` `skip_indices`
+
+`ComponentPattern` (`app.document.models`) gains `skip_indices: list[int] =
+field(default_factory=list)`, mirroring `PatternFeature.skip_indices`
+exactly - same field name, same "seed's own index 0 is never a valid entry"
+convention. `app.document.assembly.expand_component_pattern_instances`
+changed its own return type from a plain `list[RigidTransform]` to
+`dict[int, RigidTransform]`, keyed by the same 1-based index the Linear/
+Circular loops already enumerate internally - matching `app.document.
+pattern._rectangular_instances`/`_circular_instances`'s own `dict[int,
+TopoDS_Shape]` convention one level down, so a skipped index leaves every
+surviving instance's own synthetic `occurrence_path` id (`get_assembly_mesh`'s
+`_walk`) stable rather than shifting it - the "don't let a skip quietly
+renumber its neighbors" guarantee `PatternFeature.skip_indices` already gives
+Body-level Patterns. `router.py`'s `_validate_component_pattern_payload`
+gained a `skip_indices` parameter and reuses `_validate_pattern_skip_indices`
+verbatim (Pattern/Mirror scoping Phase 3's own validator), checked against
+whichever of `count`/`count_angular` is this pattern_type's own real total -
+both `create_component_pattern`/`update_component_pattern` call it with the
+merged result, the same "revalidate everything, not just the touched fields"
+discipline `update_pattern_feature` already follows.
+`ComponentPatternUpdate.skip_indices` gets the identical `None`-leaves-
+untouched-vs-`[]`-explicitly-clears distinction `PatternFeatureUpdate.
+skip_indices` already establishes. `native_format.py`'s `_component_pattern_
+to_dict`/`_component_pattern_from_dict` round-trip it (`.get(..., [])`
+default, so an older `.didsacad` file with no `skip_indices` key at all still
+imports cleanly).
+
+### `[10]` `orient_with_rotation`
+
+New Circular-only field, `orient_with_rotation: bool = True` (defaulting to
+today's only behavior, so no existing pattern's meaning changes - the same
+"additive, safe default" convention every other Phase-11-and-earlier new
+field already follows). §5 item 9's own write-up had already spelled out the
+exact change needed: `expand_component_pattern_instances`'s Circular branch
+still computes `compose(step, source_transform)` unconditionally (the
+correct *position* for every derived instance either way - `step`'s own
+translation term already correctly carries the source's world position
+around the axis, regardless of orientation mode), but when `orient_with_
+rotation` is `False`, the composed result's rotation term is discarded and
+replaced with `source_transform`'s own unchanged `rotation_axis`/
+`rotation_angle_degrees` - "translate around the circle, don't also rotate
+the instance's own local orientation," the Ferris-wheel-gondola behavior §5
+item 9 named as the missing second mode (Fusion 360's Circular Pattern
+"Orientation: Identical" option is the closest mainstream-tool analog).
+Ignored for `pattern_type == LINEAR` (a pure translation has no rotation
+term to begin with, so the field is simply absent from that branch's own
+math). Threaded through the same schema/router/native-format surface as
+`skip_indices` above - `ComponentPatternCreate`/`Update`/`Response` all gain
+the field, `native_format.py` round-trips it (`.get(..., True)` default for
+backward compat).
+
+### `[8]` Pattern row tap-to-edit / long-press-to-delete
+
+`AssemblyTreePanel` gains `onPatternTap`/`onPatternLongPress` (optional,
+default `null`, the same purely-additive arrival `onMateTap`/`onMateLongPress`
+themselves got, so a call site that doesn't wire them keeps the read-only
+behavior this section always had). `part_screen.dart` wires both to two new
+methods: `_openComponentPatternForEdit` (opens the same `ComponentPatternPanel`
+`_openComponentPattern` does, but pre-filled from the tapped pattern's own
+current values, with `_componentPatternEditingId` set so `_confirmComponentPattern`
+calls `updateComponentPattern` instead of `createComponentPattern`) and
+`_confirmDeleteComponentPattern` (an `AlertDialog` confirmation, then
+`deleteComponentPattern` + tree/mesh refresh, the same "ask first" precedent
+this screen's other destructive actions already follow). Both API methods
+(`updateComponentPattern`/`deleteComponentPattern`) and their own backend
+tests already existed since Phase 7 - only this row's own tap/long-press
+were ever unwired, exactly as the roadmap entry predicted.
+`ComponentPatternPanel` itself gained an `editingPatternId` field (title
+reads "Edit Pattern" instead of "Pattern Component", Confirm reads "Save"
+instead of "Confirm" - the only two visible differences between the create
+and edit flows, everything else in the panel is shared).
+
+### `[7]` Custom vector entry + multi-source chip authoring
+
+`ComponentPatternAxisPreset` (`component_pattern_panel.dart`) gains a fourth
+`custom` variant alongside `x`/`y`/`z`; selecting it reveals a free X/Y/Z
+number-field row (`_vectorFields`, mirroring the circular-mode axis-origin
+row's own per-component layout) instead of snapping to a world axis - closing
+this file's own previously-noted v1 UI limitation verbatim. Two new pure
+helpers make the mapping symmetric: `resolveComponentPatternVector(preset,
+custom)` (what a confirm/save actually sends - the custom vector verbatim for
+`custom`, else the preset's own unit vector) and `presetForVector(vector)`
+(its inverse - what `_openComponentPatternForEdit` uses to decide whether an
+already-authored pattern's own stored `direction`/`axis.direction` should
+highlight `x`/`y`/`z` or fall back to `custom`, tolerant of the float
+round-trip noise a value that has been through JSON/the API is never exactly
+free of).
+
+Multi-source authoring: `_componentPatternSourceOccurrenceIds` (`part_screen.
+dart`) is now a real, growable list rather than a single `String?` - the
+backend's own `source_occurrence_ids` already accepted more than one entry
+since Phase 7 (parity with `PatternFeature.source_body_ids`'s own Phase-6
+widening), only this panel's authoring UI was ever limited to one.
+`ComponentPatternPanel` shows one removable `Chip` per current source name
+(delete disabled on the last remaining one - `ComponentPatternCreate.
+source_occurrence_ids` requires at least one) plus a "+ Add source"
+`ChoiceChip` that toggles `_componentPatternPickingSources`. While that flag
+is set, `_onOccurrenceTap` (`AssemblyTreePanel.onOccurrenceTap`'s real call
+site) toggles the tapped Occurrence into/out of the source list instead of
+its ordinary select/focus behavior - a deliberately panel-local mechanism
+(the roadmap's own framing), not a second, general cross-app multi-select
+system layered onto the existing single-selection model.
+
+**Verified**: backend - full suite against real `pythonocc-core`/`py-slvs`
+- **2311/2311 passed, 0 failed** (up from 2301 after §2m: 10 new tests - 4 in
+`test_component_pattern_expand.py` (15 total in that file) covering
+`skip_indices`/`orient_with_rotation` for both Linear and Circular, 6 in
+`test_component_pattern_router.py` covering skip-index validation/expansion/
+round-trip at the real API + assembly-mesh layer). Caught and fixed one real
+regression from `expand_component_pattern_instances`'s own return-type change
+(`list[RigidTransform]` -> `dict[int, RigidTransform]`, needed for `[9]`'s
+stable-index guarantee): `test_didsacad_backward_compat.py::test_circular_
+component_pattern_with_no_axis_key_imports_and_still_expands_safely` iterated
+the old list return directly (`for transform in derived:`) - now iterates
+`derived.values()`, the only other call site anywhere in the repo (confirmed
+by a whole-repo grep) beyond this phase's own new/updated tests. Full client
+suite - **1984/1984 passed** (up from 1966 baseline; 14 GPU-skips,
+unchanged), `flutter analyze` clean on every touched file. New client tests
+(18 total: 15 in `component_pattern_panel_test.dart` covering `resolveComponentPatternVector`/
+`presetForVector`, the Custom segment/entry fields, source chips add/remove/
+lone-chip-no-delete, the picking-mode hint text, and the create-vs-edit
+title/button-label swap; 3 in `assembly_tree_panel_test.dart` covering
+pattern-row tap/long-press dispatch and the still-inert-when-unwired case).
+
+### Remaining limitations after this phase
+
+`[6]`/`[18]` (top-level-Occurrence-only across the gizmo/Mate/
+ComponentPattern) and §5 item 8's own "can a `ComponentPattern` be patterned"
+question are both still open, unchanged by this phase and scheduled into
+Phase 12 (`[18]`) - this phase stayed within the roadmap's own four
+authoring/UI items, not a broader nesting redesign. `orient_with_rotation`
+has no dedicated panel toggle yet (only the backend field/expansion branch
+and the DTO's own round-trip fidelity) - the roadmap's own Phase 11 scoping
+paragraph named the backend change only for `[10]`, deliberately leaving a
+UI control for a later pass once real usage shows which default this app's
+users actually want exposed.
+
 ---
 
 ## 3. Phase history (every originally-scoped phase implemented)
@@ -2153,7 +2298,8 @@ open.
    per-face OCCT history attribution exists anywhere in the backend, per
    6b's own original finding) - not a leftover bug, a follow-up that needs
    someone to first check what OCCT can actually report.
-7. **`ComponentPattern` has no per-instance skip (§2j).** Unlike body-level
+7. **~~`ComponentPattern` has no per-instance skip (§2j).~~ - fixed, Phase 11
+   (§2n, `[9]`).** Unlike body-level
    `PatternFeature`'s `skip_indices` (Pattern/Mirror scoping Phase 3), a
    `ComponentPattern` is all-or-nothing - there is no way to suppress one
    derived instance (e.g. omitting a single bolt from an otherwise-regular
@@ -2197,9 +2343,11 @@ open.
    reaching `_selectedOccurrenceId`. The larger question this item opened -
    whether a `ComponentPattern` can ever be patterned at all - is unchanged
    and still open.
-9. **No control over a Circular `ComponentPattern`'s own instance
+9. **~~No control over a Circular `ComponentPattern`'s own instance
    orientation - only one of the two standard behaviors is implemented,
-   with no toggle for the other.** Verified directly
+   with no toggle for the other.~~ - fixed (backend), Phase 11 (§2n, `[10]`)
+   - see that section's own "Remaining limitations" for the still-open
+   panel-toggle UI gap.** Verified directly
    (`apply_transform_to_direction` against each derived instance): a
    Circular pattern's derived instances currently always **rotate as they
    go around** the axis - `expand_component_pattern_instances`'s
@@ -2264,7 +2412,8 @@ always-false comparison while already in that method for `[5]`; `[16a]`
 wired the breadcrumb bar's existing `onPreview` hook to
 `PartViewport.highlightOverride` (additive-only).
 
-**Phase 11 — ComponentPattern authoring & lifecycle completeness (medium).**
+**~~Phase 11 — ComponentPattern authoring & lifecycle completeness
+(medium).~~ — moved to §2n, implemented.**
 `[9]` `skip_indices`, mirroring `PatternFeature.skip_indices` exactly
 (field + reuse of the already-generic `_validate_pattern_skip_indices` +
 a skip check in `expand_component_pattern_instances`'s two loops); `[10]`
@@ -2390,9 +2539,13 @@ Phase 10 §2m**; `[5]` ~~manual Hide/Show/Isolate UI still client-only~~ -
 **fixed, Phase 10 §2m**.
 
 **ComponentPattern (§2j/§5 items 7-9)**: `[6]` top-level source Occurrences
-only; `[7]` authoring panel: one source, X/Y/Z presets only; `[8]` no
-pattern edit/delete UI; `[9]` no `skip_indices`; `[10]` no
-`orient_with_rotation` toggle; `[11]` ~~a derived/synthetic pattern instance
+only; `[7]` ~~authoring panel: one source, X/Y/Z presets only~~ - **fixed,
+Phase 11 §2n** (Custom vector entry + multi-source chips); `[8]` ~~no
+pattern edit/delete UI~~ - **fixed, Phase 11 §2n**; `[9]` ~~no
+`skip_indices`~~ - **fixed, Phase 11 §2n**; `[10]` ~~no
+`orient_with_rotation` toggle~~ - **fixed (backend only), Phase 11 §2n** -
+no dedicated panel UI control yet, see that section's own "Remaining
+limitations"; `[11]` ~~a derived/synthetic pattern instance
 can be re-selected and "Pattern Component"'d, failing with a generic 422~~ -
 **fixed, Phase 10 §2m** (the smaller fix only - nested/compound patterns
 remain unsupported).
