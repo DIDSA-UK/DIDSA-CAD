@@ -484,40 +484,101 @@ class _PartScreenState extends State<PartScreen> {
   /// Assembly support Phase 5: the Occurrence the Move/Rotate gizmo should
   /// target right now, or `null` to hide it entirely (fed straight into
   /// [PartViewport.selectedOccurrenceTransform] via [_gizmoDisplayTransform]).
-  /// Scoped to a *top-level* Occurrence only (`!(_focusStack?.isFocused ??
-  /// false)`) - a deliberate v1 scope limit, not an oversight:
-  /// `OccurrenceDto.transform` is relative to its own immediate parent, and
-  /// only the root Part's own frame is guaranteed world identity, so only a
-  /// top-level Occurrence's local and world transforms coincide without
-  /// this screen needing to convert between the two (real, undone follow-up
-  /// work - editing a nested Occurrence needs the gizmo's own drag math to
-  /// account for whatever rotation its ancestor chain contributes).
+  ///
+  /// Phase 12 (`docs/assembly-scope.md` §6 `[18]`): widened from Phase 5's
+  /// own top-level-only v1 scope (which blanket-returned `null` under *any*
+  /// focus, `!(_focusStack?.isFocused ?? false)`) to also allow a *direct*
+  /// child of whichever Part is currently focused - [_occurrences] is
+  /// already scoped to exactly that Part's own children (`_refreshAssemblyTree`
+  /// fetches `listOccurrences(focusPartId)`), so `occurrence.transform` is
+  /// always relative to the currently-relevant parent frame either way, the
+  /// same "local and world transforms coincide for this frame" property a
+  /// top-level Occurrence had relative to the *document root's* frame
+  /// before this phase. [isDirectChildOfFocus] (`occurrence_visibility.dart`)
+  /// makes that "exactly one level below the current frame" requirement
+  /// explicit and testable, rather than relying only on [_occurrences]'
+  /// own implicit scoping. A grandchild or deeper nested Occurrence is
+  /// still out of scope (real, undone follow-up - the gizmo's own drag math
+  /// would need to account for more than one ancestor's rotation), but
+  /// nothing reaches that case here regardless: [_occurrences] never lists
+  /// anything deeper than a direct child to begin with.
   OccurrenceDto? get _gizmoTargetOccurrence {
     if (_lens != AssemblyLens.assembly) return null;
-    if (_focusStack?.isFocused ?? false) return null;
     final id = _selectedOccurrenceId;
     if (id == null) return null;
+    final focusedPath = _focusStack?.currentOccurrencePath ?? const <String>[];
+    if (!isDirectChildOfFocus([...focusedPath, id], focusedPath)) return null;
     for (final occurrence in _occurrences) {
       if (occurrence.id == id) return occurrence;
     }
     return null;
   }
 
+  /// Assembly support Phase 12 (`docs/assembly-scope.md` §6 `[18]`): the
+  /// currently-focused sub-assembly's own placed instance, looked up in
+  /// [_assemblyMesh]'s own `instances` by exact path
+  /// ([findInstanceAtPath]) - `null` while nothing is focused (the document
+  /// root's own frame is implicitly identity, so [_gizmoTargetWorldTransform]
+  /// needs no composition in that case) or while the mesh hasn't been
+  /// (re)fetched yet for the current focus. What [_gizmoTargetWorldTransform]/
+  /// [_onComponentGizmoDragEnd] both compose/decompose a nested target's own
+  /// local transform through.
+  AssemblyOccurrenceInstanceDto? get _gizmoParentInstance {
+    final focusedPath = _focusStack?.currentOccurrencePath ?? const <String>[];
+    if (focusedPath.isEmpty) return null;
+    final instances = _assemblyMesh?.instances ?? const <AssemblyOccurrenceInstanceDto>[];
+    return findInstanceAtPath(instances, focusedPath);
+  }
+
+  /// Assembly support Phase 12: [_gizmoTargetOccurrence]'s own *world*-space
+  /// transform - `PartViewport.selectedOccurrenceTransform`'s own doc
+  /// comment says this widget "derives the gizmo's actual world-space
+  /// placement" directly from whatever it's given, with no parent-transform
+  /// conversion of its own, so feeding it a nested target's raw *local*
+  /// `OccurrenceDto.transform` (correct only for a top-level Occurrence,
+  /// whose parent - the document root - is always identity) would render/
+  /// hit-test the gizmo at the wrong on-screen position. Composes through
+  /// [_gizmoParentInstance]'s own current `worldTransform`
+  /// ([composeRigidTransforms], `mesh_geometry.dart`) when focused; `null`
+  /// focus (or no [_gizmoParentInstance] found yet) means the target's own
+  /// local transform already *is* its world transform, unchanged from
+  /// Phase 5's original top-level-only behavior.
+  RigidTransformDto? get _gizmoTargetWorldTransform {
+    final occurrence = _gizmoTargetOccurrence;
+    if (occurrence == null) return null;
+    final parentInstance = _gizmoParentInstance;
+    if (parentInstance == null) return occurrence.transform;
+    return composeRigidTransforms(parentInstance.worldTransform, occurrence.transform);
+  }
+
   /// [PartViewport.selectedOccurrenceTransform]'s own value - the live-drag
-  /// override while one is in progress, otherwise [_gizmoTargetOccurrence]'s
-  /// own current transform (`null` propagates straight through when there's
-  /// no gizmo target at all, correctly hiding the gizmo).
-  RigidTransformDto? get _gizmoDisplayTransform => _gizmoLiveTransform ?? _gizmoTargetOccurrence?.transform;
+  /// override while one is in progress (already world-space, since the
+  /// gizmo composes drag deltas onto whatever world-space basis it was
+  /// started from - see [_gizmoTargetWorldTransform]'s own doc comment),
+  /// otherwise [_gizmoTargetWorldTransform] itself (`null` propagates
+  /// straight through when there's no gizmo target at all, correctly hiding
+  /// the gizmo).
+  RigidTransformDto? get _gizmoDisplayTransform => _gizmoLiveTransform ?? _gizmoTargetWorldTransform;
 
   /// Assembly support Phase 5: [_displayOccurrences]'s sibling for Phase 2's
   /// own placed-instance list - folds [_gizmoLiveTransform] into the
-  /// gizmo-target Occurrence's own instance entry (a top-level Occurrence's
-  /// `occurrencePath` is always exactly `[occurrenceId]`, per
-  /// [_gizmoTargetOccurrence]'s own scope limit) so the rendered Body itself
-  /// tracks the gizmo drag live, not just the gizmo overlay - without this,
-  /// dragging would move the manipulator handles while the actual geometry
-  /// stayed frozen at its pre-drag position until the PATCH/refetch
-  /// completed.
+  /// gizmo-target Occurrence's own instance entry so the rendered Body
+  /// itself tracks the gizmo drag live, not just the gizmo overlay - without
+  /// this, dragging would move the manipulator handles while the actual
+  /// geometry stayed frozen at its pre-drag position until the PATCH/
+  /// refetch completed.
+  ///
+  /// Phase 12 (`[18]`): [_gizmoLiveTransform] is already world-space (see
+  /// [_gizmoDisplayTransform]'s own doc comment), and [_assemblyMesh]'s own
+  /// instances are keyed by full `occurrencePath` (root-to-leaf), not a bare
+  /// id - so the override target here is [_focusStack]'s own
+  /// `currentOccurrencePath` plus the target's own id, not just `[targetId]`
+  /// the way a top-level-only target's path always happened to look before
+  /// this phase. No *further* composition is needed here beyond that path
+  /// widening - [_gizmoTargetWorldTransform] already did the one
+  /// `composeRigidTransforms` call this overlay needs, once, when the gizmo
+  /// itself was first given its starting basis; recomposing a second time
+  /// here would double-apply the parent's own contribution.
   List<AssemblyOccurrenceInstanceDto> get _displayAssemblyInstances {
     // §6 roadmap Phase 10 (`[5]`): [_assemblyMesh]'s own `hidden` per
     // instance is already backend-true post-refetch - see
@@ -525,11 +586,11 @@ class _PartScreenState extends State<PartScreen> {
     // is folded in here anymore.
     final overlaid = _assemblyMesh == null ? const <AssemblyOccurrenceInstanceDto>[] : _assemblyMesh!.instances;
     final liveTransform = _gizmoLiveTransform;
-    final targetId = _gizmoTargetOccurrence?.id;
-    if (liveTransform == null || targetId == null) return overlaid;
-    // [_gizmoTargetOccurrence]'s own scope limit (top-level only) means
-    // its occurrencePath is always exactly this single id.
-    return overrideInstanceTransform(overlaid, targetOccurrencePath: [targetId], transform: liveTransform);
+    final targetOccurrence = _gizmoTargetOccurrence;
+    if (liveTransform == null || targetOccurrence == null) return overlaid;
+    final focusedPath = _focusStack?.currentOccurrencePath ?? const <String>[];
+    final targetPath = [...focusedPath, targetOccurrence.id];
+    return overrideInstanceTransform(overlaid, targetOccurrencePath: targetPath, transform: liveTransform);
   }
 
   /// Prompt A3: one entry per independently-tessellated Body (Prompt A1's
@@ -2892,9 +2953,19 @@ class _PartScreenState extends State<PartScreen> {
     );
   }
 
+  /// Phase 12 (`docs/assembly-scope.md` §6 `[18]`): both API calls below
+  /// used to hardcode `_part!.id` - correct only while browsing the root
+  /// Part, and wrong the moment a Mate is authored while focused inside a
+  /// sub-assembly (the Mate, and the Occurrence `solveForOccurrence` drives,
+  /// both genuinely belong to whichever Part is currently focused, not the
+  /// document root) - unlike the gizmo's own PATCH call-sites
+  /// (`_onComponentGizmoDragEnd`/`_undoLastComponentTransform`), which
+  /// already routed via `focusPartId = _focusStack?.current ?? _part?.id`
+  /// since Phase 5/8. Now matches that same convention.
   Future<void> _confirmMate() async {
     final part = _part;
-    if (part == null || _selectedEntities.length != 2) return;
+    final focusPartId = _focusStack?.current ?? part?.id;
+    if (part == null || focusPartId == null || _selectedEntities.length != 2) return;
     final entities = _selectedEntities.toList();
     setState(() {
       _mateSaving = true;
@@ -2902,7 +2973,7 @@ class _PartScreenState extends State<PartScreen> {
     });
     try {
       await _api.createMate(
-        part.id,
+        focusPartId,
         type: _mateType,
         references: [for (final entity in entities) _mateEntityRefFor(entity)],
         value: _mateValue,
@@ -2916,7 +2987,7 @@ class _PartScreenState extends State<PartScreen> {
       final drivenOccurrenceId =
           entities[1].occurrenceId.isNotEmpty ? entities[1].occurrenceId : entities[0].occurrenceId;
       if (drivenOccurrenceId.isNotEmpty) {
-        await _api.solveForOccurrence(part.id, drivenOccurrenceId);
+        await _api.solveForOccurrence(focusPartId, drivenOccurrenceId);
       }
       if (!mounted) return;
       setState(() {
@@ -3006,17 +3077,24 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
+  /// Phase 12 (`docs/assembly-scope.md` §6 `[18]`): used to hardcode
+  /// `_part!.id` - wrong the moment a ComponentPattern is authored while
+  /// focused inside a sub-assembly (it genuinely belongs to whichever Part
+  /// is currently focused, not the document root), unlike the gizmo's own
+  /// PATCH call-sites, which already routed via `focusPartId` since Phase
+  /// 5/8. Now matches that same convention.
   Future<void> _confirmComponentPattern() async {
     final part = _part;
+    final focusPartId = _focusStack?.current ?? part?.id;
     final sourceId = _componentPatternSourceOccurrenceId;
-    if (part == null || sourceId == null) return;
+    if (part == null || focusPartId == null || sourceId == null) return;
     setState(() {
       _componentPatternSaving = true;
       _componentPatternError = null;
     });
     try {
       await _api.createComponentPattern(
-        part.id,
+        focusPartId,
         sourceOccurrenceIds: [sourceId],
         patternType: _componentPatternMode.apiValue,
         direction: componentPatternAxisPresetVector(_componentPatternDirection),
@@ -8345,15 +8423,30 @@ class _PartScreenState extends State<PartScreen> {
   /// clearing it first would show the stale pre-drag value for one frame
   /// while the PATCH/refetch is still in flight, a visible snap-back-then-
   /// snap-forward flicker this order avoids entirely.
+  ///
+  /// Phase 12 (`docs/assembly-scope.md` §6 `[18]`): [_gizmoLiveTransform] is
+  /// world-space (see [_gizmoDisplayTransform]'s own doc comment), but
+  /// `Occurrence.transform` - what `updateOccurrenceTransform` actually
+  /// persists - is always local to the Occurrence's own immediate parent.
+  /// [_gizmoParentInstance] found (a nested target) means [_gizmoLiveTransform]
+  /// must first be converted back via [localRigidTransformRelativeTo]
+  /// (`mesh_geometry.dart`, the exact inverse of [_gizmoTargetWorldTransform]'s
+  /// own [composeRigidTransforms] call); `null` (top-level, unchanged from
+  /// before this phase) means world and local already coincide, so the live
+  /// value is PATCHed as-is.
   Future<void> _onComponentGizmoDragEnd() async {
     final occurrence = _gizmoTargetOccurrence;
-    final finalTransform = _gizmoLiveTransform;
+    final liveWorldTransform = _gizmoLiveTransform;
     final focusPartId = _focusStack?.current ?? _part?.id;
-    if (occurrence == null || finalTransform == null || focusPartId == null) {
+    if (occurrence == null || liveWorldTransform == null || focusPartId == null) {
       setState(() => _gizmoLiveTransform = null);
       return;
     }
     final previousTransform = occurrence.transform;
+    final parentInstance = _gizmoParentInstance;
+    final finalTransform = parentInstance == null
+        ? liveWorldTransform
+        : localRigidTransformRelativeTo(parentInstance.worldTransform, liveWorldTransform);
     await _runGuarded(() async {
       await _api.updateOccurrenceTransform(focusPartId, occurrence.id, finalTransform);
       _componentTransformUndoStack.add((occurrence.id, previousTransform));

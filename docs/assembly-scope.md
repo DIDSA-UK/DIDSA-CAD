@@ -1974,6 +1974,130 @@ into later roadmap phases (11/12) as originally planned - this phase
 deliberately stayed within the five small, independent fixes it bundled,
 not a broader completeness pass.
 
+## 2n. Phase 12 — Nested-Occurrence interaction (implemented)
+
+§6 roadmap's own Phase 12 entry: closes `[18]` (gizmo/Mate/ComponentPattern
+all top-level-Occurrence-only) and, as a near-free consequence, `[6]`
+(ComponentPattern source Occurrences top-level-only - a `ComponentPattern`'s
+own `source_occurrence_ids` were already validated only against `part.
+occurrences`, i.e. whichever Part is currently open/focused, so once
+`_confirmComponentPattern` itself routes through `focusPartId` (`[3]`
+below), authoring a pattern *while focused inside a sub-assembly* already
+targets that sub-assembly's own direct children correctly - no separate
+change needed for `[6]` beyond `[18]`'s own fix).
+
+Verified smaller than its own original framing, confirmed directly against
+the real code rather than assumed: the gizmo's own PATCH call-sites
+(`_onComponentGizmoDragEnd`/`_undoLastComponentTransform`) already routed
+via `focusPartId = _focusStack?.current ?? _part?.id` since Phase 5/8, and
+`get_assembly_mesh`'s own `_walk` already composes the full ancestor chain
+for a nested ComponentPattern (`test_component_pattern_of_a_nested_
+subassembly_repeats_its_own_children_too`, §2j). Three real gaps, all
+client-only - no backend changes this phase:
+
+### `[18]` (1 of 3) `_gizmoTargetOccurrence` widened to a direct child of focus
+
+Used to blanket-return `null` under *any* active focus
+(`!(_focusStack?.isFocused ?? false)`), even though [_occurrences] is
+already scoped to exactly the currently-focused Part's own children
+(`_refreshAssemblyTree` fetches `listOccurrences(focusPartId)`) - so a
+selected Occurrence there always has a `.transform` relative to the
+*currently-relevant* parent frame, the identical "local and world
+transforms coincide for this frame" property a top-level Occurrence had
+relative to the document root before this phase. New
+`isDirectChildOfFocus(occurrencePath, focusedOccurrencePath)`
+(`occurrence_visibility.dart`, alongside its existing sibling
+`isOccurrencePathWithinFocus`) makes that "exactly one level below the
+current frame" requirement explicit and directly testable, rather than
+relying only on `_occurrences`' own implicit scoping - true for an empty
+`focusedOccurrencePath` too (a top-level path is a direct child of the
+document root's own implicit frame), matching Phase 5's original behavior
+exactly when nothing is focused. A grandchild or deeper nested Occurrence
+is still out of scope (the gizmo's own drag math would need to account for
+more than one ancestor's rotation) - not reachable in practice anyway,
+since `_occurrences` never lists anything deeper than a direct child.
+
+### A fourth, necessary fix this phase's own roadmap entry didn't name: the gizmo's on-screen basis
+
+Found while implementing `[18]`, not in the roadmap's own 3-item list:
+`PartViewport.selectedOccurrenceTransform`'s own doc comment says this
+widget "derives the gizmo's actual world-space placement" directly from
+whatever it's given (via `matrix4FromRigidTransform`), with no
+parent-transform conversion of its own - correct for a top-level
+Occurrence (parent is the document root, always identity), but feeding it
+a nested target's raw *local* `OccurrenceDto.transform` would render/
+hit-test the gizmo handles at the wrong on-screen position the instant
+`[18]`'s own fix let the gizmo target a nested Occurrence at all - a real,
+visible bug (handles floating away from the actual Body), not merely a
+missed convenience. Two new pure functions close this
+(`mesh_geometry.dart`, mirroring `assembly.py`'s own `compose` one level
+up): `composeRigidTransforms(parent, child)` (the client-side counterpart
+to that backend function - `parentMatrix * childMatrix` via
+`matrix4FromRigidTransform`, decomposed back to a `RigidTransformDto` via
+`Matrix4.decompose`) and its exact inverse,
+`localRigidTransformRelativeTo(parent, world)` (`inverse(parentMatrix) *
+worldMatrix` - what converts the gizmo's own live-drag result, now
+world-space, back to the *local* value `updateOccurrenceTransform` actually
+persists). `_gizmoTargetWorldTransform` (new getter) composes through
+`_gizmoParentInstance`'s own current `worldTransform` (found via a third
+new pure helper, `findInstanceAtPath`, `occurrence_visibility.dart`) when
+focused; `_gizmoDisplayTransform` now reads from it instead of the target
+Occurrence's raw local transform. `_onComponentGizmoDragEnd` decomposes
+`_gizmoLiveTransform` back to local via `localRigidTransformRelativeTo`
+before PATCHing, whenever `_gizmoParentInstance` is non-null.
+
+### `[18]` (2 of 3) `_displayAssemblyInstances`'s live-drag overlay
+
+Used to assume a top-level `occurrencePath` (`overrideInstanceTransform`
+called with `targetOccurrencePath: [targetId]` - always correct when the
+only possible target was top-level) - now uses the full
+`[...focusedOccurrencePath, targetOccurrencePath]` path
+`_assemblyMesh.instances` actually key their nested entries by. No
+*further* composition is needed here beyond that path widening -
+`_gizmoTargetWorldTransform` (above) already does the one
+`composeRigidTransforms` call this overlay needs, once, when the gizmo is
+first given its starting basis; `_gizmoLiveTransform` stays world-space for
+the rest of the drag, so recomposing a second time here would double-apply
+the parent's own contribution.
+
+### `[18]` (3 of 3) `_confirmMate`/`_confirmComponentPattern` routed through `focusPartId`
+
+Both used to hardcode `_part!.id` for their own `createMate`/
+`solveForOccurrence`/`createComponentPattern` calls - correct only while
+browsing the root Part, and wrong the instant either is authored while
+focused inside a sub-assembly (unlike the gizmo's own PATCH call-sites,
+which already routed correctly since Phase 5/8). Both now resolve
+`focusPartId = _focusStack?.current ?? part?.id` first, the identical
+convention every other focus-aware call site in this screen already uses.
+
+**Verified**: backend - full suite against real `pythonocc-core`/`py-slvs`
+- **2301/2301 passed, 0 failed** (unchanged from §2m's own count - no
+backend changes this phase). Full client suite - **1985/1985 passed** (up
+from 1966 baseline; 14 GPU-skips, unchanged), `flutter analyze` clean on
+every touched file. New client tests (19 total, all pure/directly testable
+- none of this phase's own GPU-bound rendering code, `PartViewport`'s own
+hit-testing/drag math, can be exercised in a headless `flutter test` run,
+same limitation `matrix4FromRigidTransform`'s own tests already carry):
+6 for `composeRigidTransforms` and 3 for `localRigidTransformRelativeTo`
+(`mesh_geometry_test.dart`, hand-verified against known rotations, the same
+style `matrix4FromRigidTransform`'s own tests use, plus a round-trip check
+confirming the two are exact inverses of each other), 7 for
+`isDirectChildOfFocus` and 3 for `findInstanceAtPath`
+(`occurrence_visibility_test.dart`).
+
+### Remaining limitations after this phase
+
+A grandchild or deeper nested Occurrence is still out of scope for the
+gizmo/Mate/ComponentPattern alike (unchanged - `[18]`'s own roadmap text
+only ever scoped this phase to a *direct* child of focus). No on-device
+visual confirmation of the gizmo rendering/dragging correctly at a nested
+position exists yet (this sandbox has no real GPU/Impeller context - see
+`matrix4FromRigidTransform`'s own tests for the same limitation) - the pure
+composition/decomposition math is hand-verified against known rotations
+and round-trip-checked, but the actual on-screen hit-testing/drag feel at a
+nested position is real, undone follow-up verification once a real device
+is available.
+
 ---
 
 ## 3. Phase history (every originally-scoped phase implemented)
@@ -2278,7 +2402,8 @@ tap-to-select chips (backend already accepts multiple `source_occurrence_ids` -
 client-only UX addition, deliberately not a general cross-app multi-select
 mechanism).
 
-**Phase 12 — Nested-Occurrence interaction (medium, not large).** Closes
+**~~Phase 12 — Nested-Occurrence interaction (medium, not large).~~ — moved
+to §2n, implemented.** Closes
 `[18]` and, as a near-free consequence, `[6]`. Verified smaller than its
 own original framing: the gizmo's PATCH call-sites already route via
 `focusPartId = _focusStack?.current ?? _part?.id`, and `get_assembly_mesh`'s
@@ -2389,8 +2514,9 @@ refs; `[4]` ~~`move_component` has no payload validation~~ - **fixed,
 Phase 10 §2m**; `[5]` ~~manual Hide/Show/Isolate UI still client-only~~ -
 **fixed, Phase 10 §2m**.
 
-**ComponentPattern (§2j/§5 items 7-9)**: `[6]` top-level source Occurrences
-only; `[7]` authoring panel: one source, X/Y/Z presets only; `[8]` no
+**ComponentPattern (§2j/§5 items 7-9)**: `[6]` ~~top-level source
+Occurrences only~~ - **fixed as a near-free consequence of `[18]`, Phase 12
+§2n**; `[7]` authoring panel: one source, X/Y/Z presets only; `[8]` no
 pattern edit/delete UI; `[9]` no `skip_indices`; `[10]` no
 `orient_with_rotation` toggle; `[11]` ~~a derived/synthetic pattern instance
 can be re-selected and "Pattern Component"'d, failing with a generic 422~~ -
@@ -2405,8 +2531,9 @@ breadcrumb tier (`[16b]`) and ~~no live hover-preview highlight
 (`[16a]`)~~ - **`[16a]` fixed, Phase 10 §2m** (`[16b]` remains open).
 
 **Selection, rendering & focus**: `[17]` root Part's own Bodies stay
-selectable regardless of focus; `[18]` gizmo/Mate/ComponentPattern all
-still top-level-Occurrence-only; `[19]` ~~latent Focus/Exit-Focus label
+selectable regardless of focus; `[18]` ~~gizmo/Mate/ComponentPattern all
+still top-level-Occurrence-only~~ - **fixed (direct child of focus only,
+not deeper nesting), Phase 12 §2n**; `[19]` ~~latent Focus/Exit-Focus label
 quirk~~ - **fixed, Phase 10 §2m**.
 
 **Storage & multi-file**: `[20]` no iOS SAF equivalent; `[21]` no
