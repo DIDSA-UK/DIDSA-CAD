@@ -943,7 +943,10 @@ def _handle_mate(v: _PlanValidator, step: MateStep) -> None:
 
 
 def _handle_move_component(v: _PlanValidator, step: MoveComponentStep) -> None:
+    from app.document.router import _validate_occurrence_transform_payload
+
     occurrence = v._lookup_occurrence(step.occurrence_id, "occurrence_id")
+    _validate_occurrence_transform_payload(step.rotation_axis, step.rotation_angle_degrees)
     occurrence.transform = RigidTransform(
         translation=step.translation,
         rotation_axis=step.rotation_axis,

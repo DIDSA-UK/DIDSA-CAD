@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
+import 'package:didsa_cad_client/viewport3d/assembly_tree_panel.dart';
 import 'package:didsa_cad_client/viewport3d/extrude_panel.dart';
 import 'package:didsa_cad_client/viewport3d/mirror_panel.dart';
 import 'package:didsa_cad_client/viewport3d/part_screen.dart';
@@ -49,9 +50,21 @@ class _FakeDocumentBackend {
   // Starts past every seeded Feature's id (seeds are always "feature-N" in
   // creation order) so a newly-created Feature's id never collides with a
   // seeded one.
-  _FakeDocumentBackend({List<Map<String, dynamic>>? seedFeatures}) : features = seedFeatures ?? [] {
+  _FakeDocumentBackend({List<Map<String, dynamic>>? seedFeatures, List<Map<String, dynamic>>? seedOccurrences})
+      : features = seedFeatures ?? [],
+        occurrences = seedOccurrences ?? [] {
     _nextFeatureId = features.length + 1;
   }
+
+  /// §6 roadmap Phase 10 (`[5]`): a minimal, mutable stand-in for a Part's
+  /// own `occurrences` list, real enough to drive Hide/Show/Isolate's now-
+  /// real `updateOccurrenceHidden` PATCH end to end through this harness -
+  /// the gap `docs/assembly-scope.md` §2e/§2f/§2g/§2j each flagged and
+  /// deferred, closed here as this phase's own one-time cost (future phases
+  /// in the roadmap reuse it too). Each entry mirrors `OccurrenceDto.
+  /// fromJson`'s own wire shape (`id`/`external_ref`/`resolved_part_id`/
+  /// `name_override`/`transform`/`suppressed`/`hidden`).
+  final List<Map<String, dynamic>> occurrences;
 
   static final Map<String, dynamic> _placeholderMesh = {
     'vertices': [
@@ -334,6 +347,54 @@ class _FakeDocumentBackend {
       features.removeAt(index);
       if (features.isNotEmpty) features.last['locked'] = false;
       return http.Response('', 204);
+    }
+
+    // §6 roadmap Phase 10 (`[5]`): the Assembly tree's own real fetch trio
+    // (`_refreshAssemblyTree`), plus the mesh fetch Hide/Show/Isolate's own
+    // PATCH-then-refetch also triggers - see [occurrences]'s own doc
+    // comment. Keyed by *any* `part_id` (not just `part-1`), since "Make
+    // Focus" re-fetches against whichever Part the focused Occurrence's own
+    // `resolved_part_id` names - this fake only ever seeds real content for
+    // `part-1` itself, every other `part_id` (a focused-into sub-Part this
+    // fake never separately modeled) gets an empty-but-valid response.
+    final occurrencesGetMatch = RegExp(r'^/document/parts/([^/]+)/occurrences$').firstMatch(path);
+    if (occurrencesGetMatch != null && method == 'GET') {
+      return _json(occurrencesGetMatch.group(1) == 'part-1' ? occurrences : <dynamic>[], 200);
+    }
+    final matesGetMatch = RegExp(r'^/document/parts/([^/]+)/mates$').firstMatch(path);
+    if (matesGetMatch != null && method == 'GET') {
+      return _json(<dynamic>[], 200);
+    }
+    final patternsGetMatch = RegExp(r'^/document/parts/([^/]+)/component-patterns$').firstMatch(path);
+    if (patternsGetMatch != null && method == 'GET') {
+      return _json(<dynamic>[], 200);
+    }
+    final assemblyMeshMatch = RegExp(r'^/document/parts/([^/]+)/assembly-mesh$').firstMatch(path);
+    if (assemblyMeshMatch != null && method == 'GET') {
+      final forRoot = assemblyMeshMatch.group(1) == 'part-1';
+      return _json({
+        'geometry': <dynamic>[],
+        'instances': [
+          if (forRoot)
+            for (final occurrence in occurrences)
+              {
+                'occurrence_path': [occurrence['id']],
+                'part_id': occurrence['resolved_part_id'] ?? 'unresolved',
+                'world_transform': occurrence['transform'],
+                'hidden': occurrence['hidden'],
+              },
+        ],
+      }, 200);
+    }
+    final occurrencePatchMatch =
+        RegExp(r'^/document/parts/part-1/occurrences/([^/]+)$').firstMatch(path);
+    if (occurrencePatchMatch != null && method == 'PATCH') {
+      final occurrenceId = occurrencePatchMatch.group(1);
+      final occurrence = occurrences.firstWhere((o) => o['id'] == occurrenceId, orElse: () => const {});
+      if (occurrence.isEmpty) return http.Response('not found: occurrence', 404);
+      if (body.containsKey('transform')) occurrence['transform'] = body['transform'];
+      if (body.containsKey('hidden')) occurrence['hidden'] = body['hidden'];
+      return _json(occurrence, 200);
     }
 
     return http.Response('not found: $path', 404);
@@ -3617,6 +3678,252 @@ void main() {
         tester.widget<PartViewport>(find.byType(PartViewport)).selectedEntities,
         {const SelectionEntityRef(kind: SelectionEntityKind.face, bodyId: 'body-1', id: 1)},
       );
+    });
+
+    // §6 roadmap Phase 10 (`[11]`), appendix item 8's own suggested smaller
+    // fix: a derived `ComponentPattern` instance's synthetic occurrencePath
+    // segment always contains "#pattern:" and never names a real Occurrence
+    // - tapping one in the viewport must be rejected before it reaches
+    // `_selectedOccurrenceId`, with a clear reason, rather than silently
+    // "selecting" something a later "Pattern Component" attempt would only
+    // fail against with a generic 422.
+    testWidgets('a synthetic pattern-instance component tap is rejected with a clear message', (tester) async {
+      final documentApi = DocumentApiClient(
+        httpClient: MockClient((request) async => _FakeDocumentBackend().handle(request)),
+      );
+      final sketchBackend = _FakeSketchBackend();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+            const SelectionEntityRef(
+              kind: SelectionEntityKind.component,
+              occurrenceId: 'occ-1#pattern:pat-1:2',
+            ),
+          );
+      await tester.pump();
+
+      expect(tester.takeException(), isNull);
+      expect(find.textContaining('derived pattern instance'), findsOneWidget);
+    });
+  });
+
+  // §6 roadmap Phase 10 (`[5]`): Hide/Show/Isolate wired to the real
+  // `updateOccurrenceHidden` PATCH (Phase 8's own persistence path,
+  // previously only exercised by `ai_plan_translator_test.dart`, never
+  // through this screen's own long-press menu) - the one-time
+  // `_FakeDocumentBackend` cost (`occurrences`/the four new routes above)
+  // this phase pays so this harness can finally drive a real end-to-end
+  // round trip, mirroring the gizmo's own already-real PATCH-then-refetch
+  // coverage.
+  group('Assembly support Phase 10: manual Hide/Show/Isolate persistence', () {
+    Map<String, dynamic> occurrence(String id, {bool hidden = false}) => {
+          'id': id,
+          'external_ref': 'parts/$id.didsa',
+          'resolved_part_id': '$id-part',
+          'name_override': null,
+          'transform': {
+            'translation': [0.0, 0.0, 0.0],
+            'rotation_axis': [0.0, 0.0, 1.0],
+            'rotation_angle_degrees': 0.0,
+          },
+          'suppressed': false,
+          'hidden': hidden,
+        };
+
+    Future<_FakeDocumentBackend> openInAssemblyLens(
+      WidgetTester tester, {
+      required List<Map<String, dynamic>> seedOccurrences,
+    }) async {
+      final backend = _FakeDocumentBackend(seedOccurrences: seedOccurrences);
+      final documentApi = DocumentApiClient(
+        httpClient: MockClient((request) async => backend.handle(request)),
+      );
+      final sketchBackend = _FakeSketchBackend();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      await tester.tap(find.byTooltip('Assembly tree'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      return backend;
+    }
+
+    testWidgets('Hide PATCHes hidden:true and the tree reflects it after refetch', (tester) async {
+      final backend = await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1')]);
+
+      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      expect(panel.occurrences.single.hidden, isFalse);
+      panel.onOccurrenceLongPress(panel.occurrences.single);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      await tester.tap(find.text('Hide'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(backend.occurrences.single['hidden'], isTrue);
+      final refreshed = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      expect(refreshed.occurrences.single.hidden, isTrue);
+    });
+
+    testWidgets('Show PATCHes hidden:false, truly clearing a backend-hidden Occurrence', (tester) async {
+      // Appendix item 1's remaining manual-UI half: unlike the old
+      // client-only overlay (which could only ever OR onto a backend-true
+      // `hidden`, never clear it - `docs/assembly-scope.md` §5 item 1), this
+      // seeds the Occurrence already hidden *from the backend* and confirms
+      // Show genuinely un-hides it, not just this session's own view of it.
+      final backend = await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1', hidden: true)]);
+
+      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      expect(panel.occurrences.single.hidden, isTrue);
+      panel.onOccurrenceLongPress(panel.occurrences.single);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(find.text('Show'), findsOneWidget);
+      await tester.tap(find.text('Show'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(backend.occurrences.single['hidden'], isFalse);
+      final refreshed = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      expect(refreshed.occurrences.single.hidden, isFalse);
+    });
+
+    testWidgets('Isolate hides every other top-level Occurrence and shows this one', (tester) async {
+      final backend = await openInAssemblyLens(
+        tester,
+        seedOccurrences: [occurrence('occ-1'), occurrence('occ-2')],
+      );
+
+      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      final target = panel.occurrences.firstWhere((o) => o.id == 'occ-1');
+      panel.onOccurrenceLongPress(target);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      await tester.tap(find.text('Isolate'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      final byId = {for (final o in backend.occurrences) o['id'] as String: o['hidden'] as bool};
+      expect(byId['occ-1'], isFalse);
+      expect(byId['occ-2'], isTrue);
+    });
+
+    testWidgets('Isolate again on the already-isolated Occurrence shows every sibling', (tester) async {
+      final backend = await openInAssemblyLens(
+        tester,
+        seedOccurrences: [occurrence('occ-1'), occurrence('occ-2', hidden: true)],
+      );
+
+      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      final target = panel.occurrences.firstWhere((o) => o.id == 'occ-1');
+      panel.onOccurrenceLongPress(target);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      await tester.tap(find.text('Isolate'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      final byId = {for (final o in backend.occurrences) o['id'] as String: o['hidden'] as bool};
+      expect(byId['occ-1'], isFalse);
+      expect(byId['occ-2'], isFalse);
+    });
+  });
+
+  // §6 roadmap Phase 10 (`[19]`): the Focus/Exit-Focus label's own latent
+  // quirk (`docs/assembly-scope.md` §5 appendix item 4's "noticed but out of
+  // scope" note) - `focusStack.current == resolvedPartId` could only ever be
+  // true for a self-referencing Occurrence (forbidden by cycle detection),
+  // so the menu could never actually show "Exit Focus" for a real nested
+  // focus. `currentOccurrencePath.contains(occurrence.id)` fixes this.
+  group('Assembly support Phase 10: Focus/Exit-Focus label', () {
+    testWidgets('long-pressing the just-focused Occurrence again offers Exit Focus, not Make Focus', (
+      tester,
+    ) async {
+      final occurrenceJson = {
+        'id': 'occ-1',
+        'external_ref': 'parts/bolt.didsa',
+        'resolved_part_id': 'bolt-part',
+        'name_override': null,
+        'transform': {
+          'translation': [0.0, 0.0, 0.0],
+          'rotation_axis': [0.0, 0.0, 1.0],
+          'rotation_angle_degrees': 0.0,
+        },
+        'suppressed': false,
+        'hidden': false,
+      };
+      final backend = _FakeDocumentBackend(seedOccurrences: [occurrenceJson]);
+      final documentApi = DocumentApiClient(
+        httpClient: MockClient((request) async => backend.handle(request)),
+      );
+      final sketchBackend = _FakeSketchBackend();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+      await tester.tap(find.byTooltip('Assembly tree'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      final occurrence = panel.occurrences.single;
+
+      // First long-press: unfocused, offers Make Focus - taking it pushes
+      // the focus stack (this Occurrence's own `resolvedPartId` becomes the
+      // new primary Part, and `AssemblyFocusStack.currentOccurrencePath`
+      // records `occurrence.id`).
+      panel.onOccurrenceLongPress(occurrence);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(find.text('Make Focus'), findsOneWidget);
+      await tester.tap(find.text('Make Focus'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      // Second long-press on the *same* Occurrence: the old
+      // `focusStack.current == resolvedPartId` comparison could never be
+      // true here (the Assembly tree only ever shows a Part's own
+      // *children* - this Occurrence itself was never re-listed as a
+      // child of the Part it now names), so the menu would incorrectly
+      // still offer "Make Focus" again. The fixed `currentOccurrencePath`
+      // check correctly recognizes this Occurrence as the one just focused.
+      final refreshedPanel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      final sameOccurrence = refreshedPanel.occurrences.firstWhere(
+        (o) => o.id == occurrence.id,
+        orElse: () => occurrence,
+      );
+      refreshedPanel.onOccurrenceLongPress(sameOccurrence);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(find.text('Exit Focus'), findsOneWidget);
+      expect(find.text('Make Focus'), findsNothing);
     });
   });
 }

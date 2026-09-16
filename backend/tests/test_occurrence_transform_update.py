@@ -221,3 +221,60 @@ def test_patching_leaves_every_other_occurrence_summary_field_alone():
     occurrences = client.get(f"/document/parts/{top_id}/occurrences").json()
     assert len(occurrences) == 1
     assert occurrences[0]["transform"]["translation"] == [9.0, 9.0, 9.0]
+
+
+def test_patching_a_nonzero_rotation_angle_with_a_zero_length_axis_is_rejected():
+    """§6 roadmap Phase 10 (`[4]`): `_validate_occurrence_transform_payload`
+    mirrors `_validate_move_body_payload`'s own guard - a rotation angle with
+    no real axis to rotate around is rejected outright, rather than silently
+    persisted as a no-op rotation."""
+    top_id, occurrence_id = _setup_top_with_one_occurrence()
+
+    response = client.patch(
+        f"/document/parts/{top_id}/occurrences/{occurrence_id}",
+        json={
+            "transform": {
+                "translation": [1.0, 0.0, 0.0],
+                "rotation_axis": [0.0, 0.0, 0.0],
+                "rotation_angle_degrees": 45.0,
+            }
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_patching_a_zero_rotation_angle_with_a_zero_length_axis_is_allowed():
+    """The zero-length axis is only rejected when it would actually be asked
+    to do something - a zero angle (the common translate-only case) is fine
+    regardless of what `rotation_axis` happens to carry."""
+    top_id, occurrence_id = _setup_top_with_one_occurrence()
+
+    response = client.patch(
+        f"/document/parts/{top_id}/occurrences/{occurrence_id}",
+        json={
+            "transform": {
+                "translation": [1.0, 0.0, 0.0],
+                "rotation_axis": [0.0, 0.0, 0.0],
+                "rotation_angle_degrees": 0.0,
+            }
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["transform"]["translation"] == [1.0, 0.0, 0.0]
+
+
+def test_patching_a_nonzero_rotation_angle_with_a_real_axis_is_allowed():
+    top_id, occurrence_id = _setup_top_with_one_occurrence()
+
+    response = client.patch(
+        f"/document/parts/{top_id}/occurrences/{occurrence_id}",
+        json={
+            "transform": {
+                "translation": [0.0, 0.0, 0.0],
+                "rotation_axis": [0.0, 1.0, 0.0],
+                "rotation_angle_degrees": 45.0,
+            }
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["transform"]["rotation_angle_degrees"] == 45.0

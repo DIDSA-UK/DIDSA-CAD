@@ -1680,6 +1680,30 @@ def _validate_move_body_payload(
         _validate_pattern_axis_ref(rotation_axis, field_name="rotation_axis")
 
 
+def _validate_occurrence_transform_payload(
+    rotation_axis: tuple[float, float, float], rotation_angle_degrees: float
+) -> None:
+    """§6 roadmap Phase 10, item `[4]`: mirrors `_validate_move_body_
+    payload`'s own guard, one level up. An Occurrence's `rotation_axis` is
+    a free world-space vector, never resolved from geometry
+    (`RigidTransform`'s own docstring), so unlike `_validate_pattern_axis_ref`
+    there is no reference shape to check - only the one payload that would
+    otherwise silently do nothing useful while still recording a "rotation":
+    a non-zero `rotation_angle_degrees` paired with a zero-length
+    `rotation_axis` (`_is_zero_vector`, the same helper `ComponentPattern`'s
+    own direction checks already share). Shared verbatim by both the real
+    `update_occurrence_transform` PATCH endpoint and `ai_plan.py`'s
+    `_handle_move_component` dry-run handler (imported there via a deferred,
+    in-function import - the same "leaf validator, deferred import" shape
+    `_validate_move_body_payload` already uses for `_handle_move_body`, since
+    `ai_plan.py` never imports `router.py` at module scope)."""
+    if rotation_angle_degrees != 0.0 and _is_zero_vector(rotation_axis):
+        raise HTTPException(
+            status_code=422,
+            detail="rotation_axis must not be the zero vector when rotation_angle_degrees is non-zero",
+        )
+
+
 def _validate_face_ref(ref: SubShapeRef, field_name: str = "face_ref") -> None:
     """Direct Editing family (fourth/fifth entries): `ref` must actually be
     a face (422, mirroring `_validate_fillet_edge_refs`'s own `shape_type
@@ -3147,6 +3171,9 @@ def update_occurrence_transform(
     part = get_part_or_404(part_id)
     occurrence = _get_occurrence_or_404(part, occurrence_id)
     if payload.transform is not None:
+        _validate_occurrence_transform_payload(
+            payload.transform.rotation_axis, payload.transform.rotation_angle_degrees
+        )
         occurrence.transform = RigidTransform(
             translation=payload.transform.translation,
             rotation_axis=payload.transform.rotation_axis,

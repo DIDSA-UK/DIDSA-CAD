@@ -1822,6 +1822,160 @@ backend-data-format concern only) - client suite unchanged from §2k's own
 
 ---
 
+## 2m. Phase 10 — Mechanical gap-closure sweep (implemented)
+
+§6 roadmap's own Phase 10 entry: five independent, bounded fixes closing
+gap-inventory items `[4]`/`[5]`/`[11]`/`[19]`/`[16a]`, bundled into one
+verification pass the same way Phase 9 bundled its own backward-compat
+matrix.
+
+### `[4]` `_validate_occurrence_transform_payload`
+
+`backend/app/document/router.py` gains a new validator, placed directly
+after `_validate_move_body_payload` and mirroring its own shape one level
+up: a `rotation_angle_degrees` that isn't `0.0` paired with a zero-length
+`rotation_axis` (`_is_zero_vector`, the same helper `ComponentPattern`'s own
+direction checks already share) is rejected with a 422 - a rotation with no
+real axis to turn around would otherwise persist silently as a no-op that
+still claims a value. `update_occurrence_transform` calls it before
+constructing the replacement `RigidTransform`. `ai_plan.py`'s
+`_handle_move_component` calls the exact same function via a deferred,
+in-function `from app.document.router import ...` - the identical "leaf
+validator lives in `router.py`, `ai_plan.py` imports it lazily to avoid a
+module-load-time circular import" shape `_handle_move_body`/
+`_validate_move_body_payload` already established, confirmed by reading
+that precedent before writing this one rather than assuming a plain
+module-level import would work (it would not: `router.py` imports
+`ai_plan.validate_ai_plan_steps` at module scope, so the reverse import
+must stay lazy). Real execution and the AI plan pipeline's own dry-run
+validation now agree on this payload the same way they already agree on
+every other assembly-mutation shape §2k's own module docstring promises.
+
+### `[5]` Manual Hide/Show/Isolate now persist for real
+
+`part_screen.dart`'s `_onOccurrenceLongPress` previously mutated a
+client-only `_hiddenOccurrenceIds`/`_isolatedOccurrenceId` Set pair (§2f) -
+the one remaining half of appendix item 1 Phase 8 (§2k) didn't close, since
+that phase only wired the AI plan pipeline to the widened `hidden` PATCH,
+not this screen's own menu. Hide/Show now call a new `_setOccurrenceHidden`
+helper (`DocumentApiClient.updateOccurrenceHidden`, then
+`_refreshAssemblyTree`/`_refreshAssemblyMesh` - the identical PATCH-then-
+refetch shape `_onComponentGizmoDragEnd` already uses for the gizmo's own
+transform persistence); Isolate calls a new `_isolateOccurrence` helper
+mirroring `ai_plan.py`'s own `_handle_isolate_component` one level up
+(client-side instead of a dry-run scratch mutation): hide every *other*
+top-level Occurrence, show this one, toggled by re-detecting "was this
+Occurrence already the only visible one" from the just-fetched
+`_occurrences` list rather than a separate client-side flag.
+
+Since `_onOccurrenceLongPress` was the *only* mutator of
+`_hiddenOccurrenceIds`/`_isolatedOccurrenceId` (confirmed by a whole-repo
+grep before removing them, not assumed), both fields - and the
+`applyOccurrenceVisibilityOverrides`/`applyInstanceVisibilityOverrides`
+calls in `_displayOccurrences`/`_displayAssemblyInstances` that combined
+them with the backend's own `hidden` - are now genuinely dead once this
+call site stops populating them, so both getters were simplified to read
+`_occurrences`/`_assemblyMesh!.instances` directly (still backend-true
+after every refetch, with no overlay left to fold in).
+`occurrence_visibility.dart`'s own `applyOccurrenceVisibilityOverrides`/
+`applyInstanceVisibilityOverrides` functions are untouched and still
+directly unit-tested (`overrideInstanceTransform`, their third sibling, is
+still a real call site - the gizmo's own live-drag overlay) - only their
+`part_screen.dart` call sites for the *overlay* were removed, not the
+functions themselves.
+
+This is the real fix appendix item 1 asked for, not just a relocation: a
+`hidden: true` Occurrence loaded from a file (never touched client-side
+this session) can now genuinely be shown again, since Show PATCHes the
+backend's own field directly rather than clearing a session-only mask that
+could only ever hide "more," never override what the backend already said.
+
+### `[11]` Reject a tap on a synthetic pattern-instance id
+
+`_toggleSelectedEntity`'s `component` branch (`part_screen.dart`) now checks
+`entity.occurrenceId.contains('#pattern:')` before setting
+`_selectedOccurrenceId` - a derived `ComponentPattern` instance's own
+synthetic `occurrencePath` segment always contains that substring
+(`get_assembly_mesh`'s own `_walk`, §2j), and never names a real Occurrence.
+Matched exactly against appendix item 8's own suggested smaller fix: instead
+of letting the tap through and only failing later at
+`createComponentPattern` with a generic `occurrence_not_found` 422, it's
+rejected immediately with `_errorMessage` set to a clear, specific reason.
+Item 8's larger question - whether a `ComponentPattern` can ever itself be
+patterned - is unchanged and still open (see §5 item 8's own remaining
+text); this closes only the "rougher than it should be" failure mode that
+item flagged on review, not the underlying nesting limitation.
+
+### `[19]` Fixed Focus/Exit-Focus label
+
+`_onOccurrenceLongPress`'s `isFocused` used to compare
+`focusStack.current == resolvedPartId` - appendix item 4's own "noticed but
+out of scope" note already found this could only ever be true for a
+self-referencing Occurrence (which cycle detection already forbids), so the
+menu's label was a latent quirk that could never actually flip to "Exit
+Focus" for a real nested focus. Now checks
+`focusStack.currentOccurrencePath.contains(occurrence.id)` -
+`AssemblyFocusStack.currentOccurrencePath` (added by the appendix item 4 fix
+itself) already tracks exactly the "is this Occurrence currently on the
+focused chain" question this label needs answered.
+
+### `[16a]` Breadcrumb hover-preview highlight, wired additively
+
+`SelectionBreadcrumbBar.onPreview` (built in Phase 6/6b, §2i, with no caller
+- that phase's own doc comment explicitly left this for a follow-up rather
+than risk further changes to `PartViewport`'s gesture-sensitive hover
+machinery in the same pass) now has one: `PartViewport` gained a new
+`onBreadcrumbPreview` field, plumbed straight from
+`SelectionBreadcrumbBar(onPreview: ...)` with no other change to that
+file's existing `_recomputeHover`/`_syncHoverNode` hover pipeline -
+genuinely additive, exactly as this phase's brief required.
+`part_screen.dart` gained `_breadcrumbPreviewHighlight`/
+`_onBreadcrumbPreview`, fed into the same `highlightOverride` field the
+"Select Other" sheet's own `_selectOtherHighlight` already uses
+(`highlightOverride: _selectOtherHighlight ?? _breadcrumbPreviewHighlight`)
+- the two never overlap in practice (`_breadcrumbEntity` already returns
+`null` while the Select Other sheet is open, per that getter's own existing
+guard), so a plain `??` combines them with no precedence ambiguity, no new
+field needed on `PartViewport` beyond the existing single-slot override.
+
+**Verified**: backend - full suite against real `pythonocc-core`/`py-slvs`
+- **2301/2301 passed** (up from 2296 after §2l: 5 new tests -
+3 in `test_occurrence_transform_update.py` covering the new validator's
+zero-angle/nonzero-angle/zero-axis matrix at the real PATCH endpoint, 2 in
+`test_ai_plan_assembly_steps.py` confirming the same rejection at the
+`/ai-plan/validate` layer and that a rejected dry run still doesn't persist
+against the real Part). Full client suite - **1966/1966 passed** (up from
+1960 baseline; 14 GPU-skips, unchanged), `flutter analyze` clean on every
+touched file. New client tests (6, all in `part_screen_test.dart`, built on
+a `_FakeDocumentBackend` extension - a mutable `occurrences` list plus real
+`GET .../occurrences`/`.../mates`/`.../component-patterns`/`.../assembly-
+mesh` routes and a `PATCH .../occurrences/{id}` handler, keyed by `part_id`
+so a "Make Focus" re-fetch against a different, focused-into Part id also
+resolves - the one-time cost §2e/§2f/§2g/§2j each flagged as a recurring
+gap, paid here so this harness can finally drive a real end-to-end
+Hide/Show/Isolate/Focus round trip, not just the dispatch-only coverage
+those phases fell back to): Hide persists and the tree reflects it after
+refetch, Show truly clears a backend-`hidden: true` Occurrence (appendix
+item 1's own real-fix proof, not just a relocation), Isolate hides every
+sibling and shows the target, Isolate-again-on-the-same-Occurrence shows
+every sibling, a synthetic pattern-instance tap surfaces the clear rejection
+message, and the Focus/Exit-Focus label correctly flips to "Exit Focus" on a
+second long-press of the just-focused Occurrence (the exact scenario the
+old, always-false comparison could never get right).
+
+### Remaining limitations after this phase
+
+None of these five fixes touch each other's own remaining scope limits -
+every "Known v1 limitation"/appendix item not explicitly named above is
+unchanged. In particular: `[6]`/`[18]` (top-level-Occurrence-only across the
+gizmo/Mate/ComponentPattern) and item 8's own larger "can a
+`ComponentPattern` be patterned" question are both still open, scheduled
+into later roadmap phases (11/12) as originally planned - this phase
+deliberately stayed within the five small, independent fixes it bundled,
+not a broader completeness pass.
+
+---
+
 ## 3. Phase history (every originally-scoped phase implemented)
 
 Phase 4 ("Whole-part selection + context menu") moved to §2f, Phase 5
@@ -1871,8 +2025,9 @@ at the same phase it always did.
 - COINCIDENT plane-plane `flipped` orientation, and no straight-edge axis
   reference or axis-to-axis DISTANCE for CONCENTRIC/PARALLEL/ANGLE — see
   §2i's own "Known v1 limitations from this phase" for the full list.
-- Selection breadcrumbs (§2i) have no feature-level tier and no live
-  hover-preview highlight into the 3D view yet.
+- Selection breadcrumbs (§2i) have no feature-level tier - the live
+  hover-preview highlight into the 3D view was added by Phase 10 (§2m,
+  `[16a]`).
 - Component patterns (§2j) only ever target top-level source Occurrences,
   the authoring panel supports one source and only the three world axes,
   and there is no edit/delete UI yet — see §2j's own "Known v1 limitations
@@ -1905,14 +2060,15 @@ whether they're worth fixing at all. Items 7-9 were added during Phase 7
 new `ComponentPattern` rather than a bug report - all three are still
 open.
 
-1. **Hide/Show/Isolate can only ever *OR* onto the backend's own `hidden`
-   flag, never override it.** No mutation endpoint exists for Occurrences
-   at all (§2e), so an Occurrence whose `hidden` arrived from the backend
-   as `true` (e.g. loaded from a file saved with it hidden) can never be
-   un-hidden client-side - Show only ever clears *this session's own*
-   override, not the backend's own value. Revisit once Phase 6+ (or
-   whichever phase finally adds a real Occurrence-mutation endpoint) makes
-   a true, persisted Show possible.
+1. **~~Hide/Show/Isolate can only ever *OR* onto the backend's own `hidden`
+   flag, never override it.~~ - fixed.** No mutation endpoint existed for
+   Occurrences at all (§2e); Phase 8 (§2k) added the widened `hidden` PATCH
+   but wired it to the AI plan pipeline only, leaving the manual UI still on
+   the old client-only overlay. Phase 10 (§2m, `[5]`) closed the remaining
+   half: `part_screen.dart`'s Hide/Show/Isolate now PATCH the real field
+   and re-fetch, so Show genuinely clears a backend-`hidden: true`
+   Occurrence (e.g. loaded from a file saved with it hidden), not just this
+   session's own override.
 2. **The root Part's own Bodies stay selectable regardless of focus
    state.** Once a component is focused elsewhere, its opacity correctly
    fades (`_syncMeshNode`'s `effectiveBodyOpacity`), but the ordinary
@@ -1970,7 +2126,8 @@ open.
    already forbids), so in practice the label the menu ever shows may
    itself be a latent, likely-inconsequential quirk predating this fix -
    not touched here since it's a distinct concern from the rendering gap
-   this item was actually about.
+   this item was actually about. **~~Fixed by Phase 10, §2m (`[19]`)~~** -
+   now checks `focusStack.currentOccurrencePath.contains(occurrence.id)`.
 5. **~~`component_context_menu.dart`'s "Move/Rotate" entry is still
    hardcoded `enabled: false`~~ - fixed in §2h (Phase 6a's own pass, while
    already in this area of the codebase).** Was found during the
@@ -2035,6 +2192,11 @@ open.
    supporting nested/compound patterns, or - the smaller fix - rejecting a
    `component`-kind tap on a synthetic (non-`Occurrence`) id before it ever
    reaches `_selectedOccurrenceId`, with a clear user-facing reason.
+   **The smaller fix: ~~done~~ by Phase 10, §2m (`[11]`)** - the plain-tap-
+   in-viewport path now surfaces a clear rejection message instead of ever
+   reaching `_selectedOccurrenceId`. The larger question this item opened -
+   whether a `ComponentPattern` can ever be patterned at all - is unchanged
+   and still open.
 9. **No control over a Circular `ComponentPattern`'s own instance
    orientation - only one of the two standard behaviors is implemented,
    with no toggle for the other.** Verified directly
@@ -2086,20 +2248,21 @@ Bracketed `[N]` ids below are stable references into this roadmap's own
 6-11, Mate solver 12-16, Selection/rendering/focus 17-19, Storage/
 multi-file 20-22, Other 23) - listed in full at the end of this section.
 
-**Phase 10 — Mechanical gap-closure sweep (small, low risk).** Bundles five
-independent, bounded fixes into one verification pass: `[4]` add
-`_validate_occurrence_transform_payload` (mirrors `_validate_move_body_
-payload`, `router.py`), reused by both the real PATCH endpoint and
-`ai_plan.py`'s dry-run handler; `[5]` wire the manual Hide/Show/Isolate
-context-menu actions (`part_screen.dart`'s `_onOccurrenceLongPress`,
-currently a client-only `Set`) to the real `updateOccurrenceHidden`
-persistence path Phase 8 added (only the AI plan pipeline calls it today) -
-closes appendix item 1's remaining manual-UI half; `[11]` reject a tap on a
-synthetic/derived pattern-instance id (`"#pattern:"`) before it reaches
-`_selectedOccurrenceId`, per appendix item 8's own suggested smaller fix;
-`[19]` fix the `isFocused` label's always-false comparison while already in
-that method for `[5]`; `[16a]` wire the breadcrumb bar's existing
-`onPreview` hook to `PartViewport.highlightOverride` (additive-only).
+**~~Phase 10 — Mechanical gap-closure sweep (small, low risk).~~ — moved to
+§2m, implemented.** Bundled five independent, bounded fixes into one
+verification pass: `[4]` added `_validate_occurrence_transform_payload`
+(mirrors `_validate_move_body_payload`, `router.py`), reused by both the
+real PATCH endpoint and `ai_plan.py`'s dry-run handler; `[5]` wired the
+manual Hide/Show/Isolate context-menu actions (`part_screen.dart`'s
+`_onOccurrenceLongPress`, previously a client-only `Set`) to the real
+`updateOccurrenceHidden` persistence path Phase 8 added (only the AI plan
+pipeline called it before) - closed appendix item 1's remaining manual-UI
+half; `[11]` rejected a tap on a synthetic/derived pattern-instance id
+(`"#pattern:"`) before it reaches `_selectedOccurrenceId`, per appendix item
+8's own suggested smaller fix; `[19]` fixed the `isFocused` label's
+always-false comparison while already in that method for `[5]`; `[16a]`
+wired the breadcrumb bar's existing `onPreview` hook to
+`PartViewport.highlightOverride` (additive-only).
 
 **Phase 11 — ComponentPattern authoring & lifecycle completeness (medium).**
 `[9]` `skip_indices`, mirroring `PatternFeature.skip_indices` exactly
@@ -2222,25 +2385,29 @@ limitation, not assembly-specific.
 **AI plan pipeline (§2k)**: `[1]` `pattern_component` PlanStep missing;
 `[2]` `add_component` PlanStep missing (no client file-discovery
 mechanism); `[3]` no edge-selector heuristic for a Mate's own geometry
-refs; `[4]` `move_component` has no payload validation; `[5]` manual
-Hide/Show/Isolate UI still client-only.
+refs; `[4]` ~~`move_component` has no payload validation~~ - **fixed,
+Phase 10 §2m**; `[5]` ~~manual Hide/Show/Isolate UI still client-only~~ -
+**fixed, Phase 10 §2m**.
 
 **ComponentPattern (§2j/§5 items 7-9)**: `[6]` top-level source Occurrences
 only; `[7]` authoring panel: one source, X/Y/Z presets only; `[8]` no
 pattern edit/delete UI; `[9]` no `skip_indices`; `[10]` no
-`orient_with_rotation` toggle; `[11]` a derived/synthetic pattern instance
-can be re-selected and "Pattern Component"'d, failing with a generic 422.
+`orient_with_rotation` toggle; `[11]` ~~a derived/synthetic pattern instance
+can be re-selected and "Pattern Component"'d, failing with a generic 422~~ -
+**fixed, Phase 10 §2m** (the smaller fix only - nested/compound patterns
+remain unsupported).
 
 **Mate solver (§2i)**: `[12]` single-Occurrence-against-fixed-peers solving
 only; `[13]` no real-time client-side FFI solving; `[14]` COINCIDENT
 plane-plane `flipped` resolved via warm-start seed only; `[15]` no
 straight-edge axis reference/axis-to-axis DISTANCE; `[16]` no feature-level
-breadcrumb tier (`[16b]`) and no live hover-preview highlight (`[16a]`).
+breadcrumb tier (`[16b]`) and ~~no live hover-preview highlight
+(`[16a]`)~~ - **`[16a]` fixed, Phase 10 §2m** (`[16b]` remains open).
 
 **Selection, rendering & focus**: `[17]` root Part's own Bodies stay
 selectable regardless of focus; `[18]` gizmo/Mate/ComponentPattern all
-still top-level-Occurrence-only; `[19]` latent Focus/Exit-Focus label
-quirk.
+still top-level-Occurrence-only; `[19]` ~~latent Focus/Exit-Focus label
+quirk~~ - **fixed, Phase 10 §2m**.
 
 **Storage & multi-file**: `[20]` no iOS SAF equivalent; `[21]` no
 multi-file save flow; `[22]` composed multi-file `part_id`s are

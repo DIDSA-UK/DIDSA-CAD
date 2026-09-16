@@ -168,6 +168,52 @@ def test_move_component_unknown_existing_occurrence_rejected():
     assert results["m1"]["error"]["type"] == "unknown_existing_id"
 
 
+def test_move_component_rejects_a_nonzero_angle_with_a_zero_length_axis():
+    """§6 roadmap Phase 10 (`[4]`): `_validate_occurrence_transform_payload`
+    is reused from `_handle_move_component`'s own dry-run path, not just the
+    real PATCH endpoint - a `move_component` step with a degenerate rotation
+    is rejected at validate time, the same way it would be rejected for real
+    execution."""
+    top_id, occ_a, _ = _setup_top_with_two_occurrences()
+
+    response = _validate(
+        top_id,
+        [
+            {
+                "local_id": "m1",
+                "kind": "move_component",
+                "occurrence_id": f"existing:{occ_a}",
+                "rotation_axis": [0.0, 0.0, 0.0],
+                "rotation_angle_degrees": 30.0,
+            }
+        ],
+    )
+    results = _results_by_local_id(response)
+
+    assert results["m1"]["ok"] is False
+
+
+def test_move_component_dry_run_rejection_does_not_persist_against_the_real_part():
+    top_id, occ_a, _ = _setup_top_with_two_occurrences()
+    real_part = get_part_or_404(top_id)
+
+    results = _PlanValidator(real_part).run(
+        [
+            MoveComponentStep(
+                local_id="m1",
+                occurrence_id=f"existing:{occ_a}",
+                translation=(9.0, 9.0, 9.0),
+                rotation_axis=(0.0, 0.0, 0.0),
+                rotation_angle_degrees=30.0,
+            )
+        ]
+    )
+
+    assert not any(r.ok for r in results), results
+    after = next(o for o in get_part_or_404(top_id).occurrences if o.id == occ_a)
+    assert after.transform.translation == (0.0, 0.0, 0.0)
+
+
 # --- hide_component / isolate_component -------------------------------------
 
 
