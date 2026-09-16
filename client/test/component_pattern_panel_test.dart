@@ -17,6 +17,43 @@ void main() {
     });
   });
 
+  group('resolveComponentPatternVector', () {
+    test('returns the world-axis unit vector for x/y/z, ignoring custom', () {
+      expect(
+        resolveComponentPatternVector(ComponentPatternAxisPreset.x, [9.0, 9.0, 9.0]),
+        [1.0, 0.0, 0.0],
+      );
+      expect(
+        resolveComponentPatternVector(ComponentPatternAxisPreset.y, [9.0, 9.0, 9.0]),
+        [0.0, 1.0, 0.0],
+      );
+    });
+
+    test('returns the custom vector verbatim for custom', () {
+      expect(
+        resolveComponentPatternVector(ComponentPatternAxisPreset.custom, [2.0, 3.0, 4.0]),
+        [2.0, 3.0, 4.0],
+      );
+    });
+  });
+
+  group('presetForVector', () {
+    test('recognizes each exact world axis', () {
+      expect(presetForVector([1.0, 0.0, 0.0]), ComponentPatternAxisPreset.x);
+      expect(presetForVector([0.0, 1.0, 0.0]), ComponentPatternAxisPreset.y);
+      expect(presetForVector([0.0, 0.0, 1.0]), ComponentPatternAxisPreset.z);
+    });
+
+    test('falls back to custom for anything else', () {
+      expect(presetForVector([1.0, 1.0, 0.0]), ComponentPatternAxisPreset.custom);
+      expect(presetForVector([0.0, 0.0, -1.0]), ComponentPatternAxisPreset.custom);
+    });
+
+    test('tolerates float round-trip noise around a world axis', () {
+      expect(presetForVector([1.0000000001, 0.0, -0.0000000001]), ComponentPatternAxisPreset.x);
+    });
+  });
+
   group('ComponentPatternMode', () {
     test('apiValue/fromApiValue round-trip both values', () {
       expect(ComponentPatternMode.linear.apiValue, 'linear');
@@ -38,12 +75,23 @@ void main() {
       bool saving = false,
       String? error,
       VoidCallback? onConfirm,
+      List<String> sourceOccurrenceNames = const ['Bolt'],
+      bool pickingMoreSources = false,
+      ComponentPatternAxisPreset direction = ComponentPatternAxisPreset.x,
+      ComponentPatternAxisPreset axisDirection = ComponentPatternAxisPreset.z,
+      String? editingPatternId,
     }) {
       return ComponentPatternPanel(
         mode: mode,
         onModeChanged: (_) {},
-        direction: ComponentPatternAxisPreset.x,
+        sourceOccurrenceNames: sourceOccurrenceNames,
+        onRemoveSource: (_) {},
+        pickingMoreSources: pickingMoreSources,
+        onPickingMoreSourcesChanged: (_) {},
+        direction: direction,
         onDirectionChanged: (_) {},
+        customDirection: const [1.0, 0.0, 0.0],
+        onCustomDirectionChanged: (_) {},
         count: 3,
         onCountChanged: (_) {},
         spacing: 10.0,
@@ -52,14 +100,17 @@ void main() {
         onReverseChanged: (_) {},
         axisOrigin: const [0.0, 0.0, 0.0],
         onAxisOriginChanged: (_) {},
-        axisDirection: ComponentPatternAxisPreset.z,
+        axisDirection: axisDirection,
         onAxisDirectionChanged: (_) {},
+        customAxisDirection: const [0.0, 0.0, 1.0],
+        onCustomAxisDirectionChanged: (_) {},
         countAngular: 4,
         onCountAngularChanged: (_) {},
         angleTotal: 360.0,
         onAngleTotalChanged: (_) {},
         reverseAngular: false,
         onReverseAngularChanged: (_) {},
+        editingPatternId: editingPatternId,
         saving: saving,
         error: error,
         onConfirm: onConfirm,
@@ -98,8 +149,14 @@ void main() {
       await tester.pumpWidget(wrap(ComponentPatternPanel(
         mode: ComponentPatternMode.linear,
         onModeChanged: (mode) => changedTo = mode,
+        sourceOccurrenceNames: const ['Bolt'],
+        onRemoveSource: (_) {},
+        pickingMoreSources: false,
+        onPickingMoreSourcesChanged: (_) {},
         direction: ComponentPatternAxisPreset.x,
         onDirectionChanged: (_) {},
+        customDirection: const [1.0, 0.0, 0.0],
+        onCustomDirectionChanged: (_) {},
         count: 3,
         onCountChanged: (_) {},
         spacing: 10.0,
@@ -110,6 +167,8 @@ void main() {
         onAxisOriginChanged: (_) {},
         axisDirection: ComponentPatternAxisPreset.z,
         onAxisDirectionChanged: (_) {},
+        customAxisDirection: const [0.0, 0.0, 1.0],
+        onCustomAxisDirectionChanged: (_) {},
         countAngular: 4,
         onCountAngularChanged: (_) {},
         angleTotal: 360.0,
@@ -158,8 +217,14 @@ void main() {
       await tester.pumpWidget(wrap(ComponentPatternPanel(
         mode: ComponentPatternMode.linear,
         onModeChanged: (_) {},
+        sourceOccurrenceNames: const ['Bolt'],
+        onRemoveSource: (_) {},
+        pickingMoreSources: false,
+        onPickingMoreSourcesChanged: (_) {},
         direction: ComponentPatternAxisPreset.x,
         onDirectionChanged: (_) {},
+        customDirection: const [1.0, 0.0, 0.0],
+        onCustomDirectionChanged: (_) {},
         count: 3,
         onCountChanged: (_) {},
         spacing: 10.0,
@@ -170,6 +235,8 @@ void main() {
         onAxisOriginChanged: (_) {},
         axisDirection: ComponentPatternAxisPreset.z,
         onAxisDirectionChanged: (_) {},
+        customAxisDirection: const [0.0, 0.0, 1.0],
+        onCustomAxisDirectionChanged: (_) {},
         countAngular: 4,
         onCountAngularChanged: (_) {},
         angleTotal: 360.0,
@@ -185,6 +252,186 @@ void main() {
       await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
       await tester.pump();
       expect(cancelled, isTrue);
+    });
+
+    // --- Phase 11 (`docs/assembly-scope.md` §6 `[7]`/`[8]`) -----------------
+
+    testWidgets('shows a Custom segment alongside X/Y/Z for direction/axis direction', (tester) async {
+      await tester.pumpWidget(wrap(buildPanel()));
+      expect(find.text('Custom'), findsOneWidget);
+    });
+
+    testWidgets('the X/Y/Z entry fields are hidden for a preset direction, shown for custom', (tester) async {
+      await tester.pumpWidget(wrap(buildPanel(direction: ComponentPatternAxisPreset.x)));
+      expect(find.byKey(const ValueKey('component-pattern-field-X')), findsNothing);
+
+      await tester.pumpWidget(wrap(buildPanel(direction: ComponentPatternAxisPreset.custom)));
+      expect(find.byKey(const ValueKey('component-pattern-field-X')), findsOneWidget);
+      expect(find.byKey(const ValueKey('component-pattern-field-Y')), findsOneWidget);
+      expect(find.byKey(const ValueKey('component-pattern-field-Z')), findsOneWidget);
+    });
+
+    testWidgets('editing the custom direction X field calls onCustomDirectionChanged', (tester) async {
+      List<double>? changedTo;
+      await tester.pumpWidget(wrap(ComponentPatternPanel(
+        mode: ComponentPatternMode.linear,
+        onModeChanged: (_) {},
+        sourceOccurrenceNames: const ['Bolt'],
+        onRemoveSource: (_) {},
+        pickingMoreSources: false,
+        onPickingMoreSourcesChanged: (_) {},
+        direction: ComponentPatternAxisPreset.custom,
+        onDirectionChanged: (_) {},
+        customDirection: const [1.0, 0.0, 0.0],
+        onCustomDirectionChanged: (vector) => changedTo = vector,
+        count: 3,
+        onCountChanged: (_) {},
+        spacing: 10.0,
+        onSpacingChanged: (_) {},
+        reverse: false,
+        onReverseChanged: (_) {},
+        axisOrigin: const [0.0, 0.0, 0.0],
+        onAxisOriginChanged: (_) {},
+        axisDirection: ComponentPatternAxisPreset.z,
+        onAxisDirectionChanged: (_) {},
+        customAxisDirection: const [0.0, 0.0, 1.0],
+        onCustomAxisDirectionChanged: (_) {},
+        countAngular: 4,
+        onCountAngularChanged: (_) {},
+        angleTotal: 360.0,
+        onAngleTotalChanged: (_) {},
+        reverseAngular: false,
+        onReverseAngularChanged: (_) {},
+        saving: false,
+        error: null,
+        onConfirm: null,
+        onCancel: () {},
+      )));
+
+      await tester.enterText(find.byKey(const ValueKey('component-pattern-field-X')), '2.5');
+      expect(changedTo, [2.5, 0.0, 0.0]);
+    });
+
+    testWidgets('shows one chip per source occurrence name', (tester) async {
+      await tester.pumpWidget(wrap(buildPanel(sourceOccurrenceNames: const ['Bolt', 'Washer'])));
+      expect(find.widgetWithText(Chip, 'Bolt'), findsOneWidget);
+      expect(find.widgetWithText(Chip, 'Washer'), findsOneWidget);
+    });
+
+    testWidgets('a lone source chip has no delete affordance', (tester) async {
+      await tester.pumpWidget(wrap(buildPanel(sourceOccurrenceNames: const ['Bolt'])));
+      final chip = tester.widget<Chip>(find.widgetWithText(Chip, 'Bolt'));
+      expect(chip.onDeleted, isNull);
+    });
+
+    testWidgets('tapping a chip delete icon invokes onRemoveSource with its index', (tester) async {
+      int? removedIndex;
+      await tester.pumpWidget(wrap(ComponentPatternPanel(
+        mode: ComponentPatternMode.linear,
+        onModeChanged: (_) {},
+        sourceOccurrenceNames: const ['Bolt', 'Washer'],
+        onRemoveSource: (i) => removedIndex = i,
+        pickingMoreSources: false,
+        onPickingMoreSourcesChanged: (_) {},
+        direction: ComponentPatternAxisPreset.x,
+        onDirectionChanged: (_) {},
+        customDirection: const [1.0, 0.0, 0.0],
+        onCustomDirectionChanged: (_) {},
+        count: 3,
+        onCountChanged: (_) {},
+        spacing: 10.0,
+        onSpacingChanged: (_) {},
+        reverse: false,
+        onReverseChanged: (_) {},
+        axisOrigin: const [0.0, 0.0, 0.0],
+        onAxisOriginChanged: (_) {},
+        axisDirection: ComponentPatternAxisPreset.z,
+        onAxisDirectionChanged: (_) {},
+        customAxisDirection: const [0.0, 0.0, 1.0],
+        onCustomAxisDirectionChanged: (_) {},
+        countAngular: 4,
+        onCountAngularChanged: (_) {},
+        angleTotal: 360.0,
+        onAngleTotalChanged: (_) {},
+        reverseAngular: false,
+        onReverseAngularChanged: (_) {},
+        saving: false,
+        error: null,
+        onConfirm: null,
+        onCancel: () {},
+      )));
+
+      final deleteIcon = find.descendant(
+        of: find.widgetWithText(Chip, 'Washer'),
+        matching: find.byIcon(Icons.cancel),
+      );
+      await tester.tap(deleteIcon);
+      expect(removedIndex, 1);
+    });
+
+    testWidgets('the "+ Add source" chip toggles onPickingMoreSourcesChanged', (tester) async {
+      bool? picking;
+      await tester.pumpWidget(wrap(buildPanel()));
+      // Rebuild once with a listener wired, then tap it.
+      await tester.pumpWidget(wrap(ComponentPatternPanel(
+        mode: ComponentPatternMode.linear,
+        onModeChanged: (_) {},
+        sourceOccurrenceNames: const ['Bolt'],
+        onRemoveSource: (_) {},
+        pickingMoreSources: false,
+        onPickingMoreSourcesChanged: (value) => picking = value,
+        direction: ComponentPatternAxisPreset.x,
+        onDirectionChanged: (_) {},
+        customDirection: const [1.0, 0.0, 0.0],
+        onCustomDirectionChanged: (_) {},
+        count: 3,
+        onCountChanged: (_) {},
+        spacing: 10.0,
+        onSpacingChanged: (_) {},
+        reverse: false,
+        onReverseChanged: (_) {},
+        axisOrigin: const [0.0, 0.0, 0.0],
+        onAxisOriginChanged: (_) {},
+        axisDirection: ComponentPatternAxisPreset.z,
+        onAxisDirectionChanged: (_) {},
+        customAxisDirection: const [0.0, 0.0, 1.0],
+        onCustomAxisDirectionChanged: (_) {},
+        countAngular: 4,
+        onCountAngularChanged: (_) {},
+        angleTotal: 360.0,
+        onAngleTotalChanged: (_) {},
+        reverseAngular: false,
+        onReverseAngularChanged: (_) {},
+        saving: false,
+        error: null,
+        onConfirm: null,
+        onCancel: () {},
+      )));
+
+      await tester.tap(find.text('+ Add source'));
+      await tester.pump();
+      expect(picking, isTrue);
+    });
+
+    testWidgets('shows a hint to tap a component in the tree while picking more sources', (tester) async {
+      await tester.pumpWidget(wrap(buildPanel(pickingMoreSources: true)));
+      expect(find.text('Tap a component in the tree to add it'), findsOneWidget);
+    });
+
+    testWidgets('title reads "Pattern Component" when creating, "Edit Pattern" when editing', (tester) async {
+      await tester.pumpWidget(wrap(buildPanel()));
+      expect(find.text('Pattern Component'), findsOneWidget);
+
+      await tester.pumpWidget(wrap(buildPanel(editingPatternId: 'pat-1')));
+      expect(find.text('Edit Pattern'), findsOneWidget);
+    });
+
+    testWidgets('confirm button reads "Confirm" when creating, "Save" when editing', (tester) async {
+      await tester.pumpWidget(wrap(buildPanel(onConfirm: () {})));
+      expect(find.widgetWithText(FilledButton, 'Confirm'), findsOneWidget);
+
+      await tester.pumpWidget(wrap(buildPanel(onConfirm: () {}, editingPatternId: 'pat-1')));
+      expect(find.widgetWithText(FilledButton, 'Save'), findsOneWidget);
     });
   });
 }

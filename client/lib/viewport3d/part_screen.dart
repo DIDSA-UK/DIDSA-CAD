@@ -484,40 +484,101 @@ class _PartScreenState extends State<PartScreen> {
   /// Assembly support Phase 5: the Occurrence the Move/Rotate gizmo should
   /// target right now, or `null` to hide it entirely (fed straight into
   /// [PartViewport.selectedOccurrenceTransform] via [_gizmoDisplayTransform]).
-  /// Scoped to a *top-level* Occurrence only (`!(_focusStack?.isFocused ??
-  /// false)`) - a deliberate v1 scope limit, not an oversight:
-  /// `OccurrenceDto.transform` is relative to its own immediate parent, and
-  /// only the root Part's own frame is guaranteed world identity, so only a
-  /// top-level Occurrence's local and world transforms coincide without
-  /// this screen needing to convert between the two (real, undone follow-up
-  /// work - editing a nested Occurrence needs the gizmo's own drag math to
-  /// account for whatever rotation its ancestor chain contributes).
+  ///
+  /// Phase 12 (`docs/assembly-scope.md` §6 `[18]`): widened from Phase 5's
+  /// own top-level-only v1 scope (which blanket-returned `null` under *any*
+  /// focus, `!(_focusStack?.isFocused ?? false)`) to also allow a *direct*
+  /// child of whichever Part is currently focused - [_occurrences] is
+  /// already scoped to exactly that Part's own children (`_refreshAssemblyTree`
+  /// fetches `listOccurrences(focusPartId)`), so `occurrence.transform` is
+  /// always relative to the currently-relevant parent frame either way, the
+  /// same "local and world transforms coincide for this frame" property a
+  /// top-level Occurrence had relative to the *document root's* frame
+  /// before this phase. [isDirectChildOfFocus] (`occurrence_visibility.dart`)
+  /// makes that "exactly one level below the current frame" requirement
+  /// explicit and testable, rather than relying only on [_occurrences]'
+  /// own implicit scoping. A grandchild or deeper nested Occurrence is
+  /// still out of scope (real, undone follow-up - the gizmo's own drag math
+  /// would need to account for more than one ancestor's rotation), but
+  /// nothing reaches that case here regardless: [_occurrences] never lists
+  /// anything deeper than a direct child to begin with.
   OccurrenceDto? get _gizmoTargetOccurrence {
     if (_lens != AssemblyLens.assembly) return null;
-    if (_focusStack?.isFocused ?? false) return null;
     final id = _selectedOccurrenceId;
     if (id == null) return null;
+    final focusedPath = _focusStack?.currentOccurrencePath ?? const <String>[];
+    if (!isDirectChildOfFocus([...focusedPath, id], focusedPath)) return null;
     for (final occurrence in _occurrences) {
       if (occurrence.id == id) return occurrence;
     }
     return null;
   }
 
+  /// Assembly support Phase 12 (`docs/assembly-scope.md` §6 `[18]`): the
+  /// currently-focused sub-assembly's own placed instance, looked up in
+  /// [_assemblyMesh]'s own `instances` by exact path
+  /// ([findInstanceAtPath]) - `null` while nothing is focused (the document
+  /// root's own frame is implicitly identity, so [_gizmoTargetWorldTransform]
+  /// needs no composition in that case) or while the mesh hasn't been
+  /// (re)fetched yet for the current focus. What [_gizmoTargetWorldTransform]/
+  /// [_onComponentGizmoDragEnd] both compose/decompose a nested target's own
+  /// local transform through.
+  AssemblyOccurrenceInstanceDto? get _gizmoParentInstance {
+    final focusedPath = _focusStack?.currentOccurrencePath ?? const <String>[];
+    if (focusedPath.isEmpty) return null;
+    final instances = _assemblyMesh?.instances ?? const <AssemblyOccurrenceInstanceDto>[];
+    return findInstanceAtPath(instances, focusedPath);
+  }
+
+  /// Assembly support Phase 12: [_gizmoTargetOccurrence]'s own *world*-space
+  /// transform - `PartViewport.selectedOccurrenceTransform`'s own doc
+  /// comment says this widget "derives the gizmo's actual world-space
+  /// placement" directly from whatever it's given, with no parent-transform
+  /// conversion of its own, so feeding it a nested target's raw *local*
+  /// `OccurrenceDto.transform` (correct only for a top-level Occurrence,
+  /// whose parent - the document root - is always identity) would render/
+  /// hit-test the gizmo at the wrong on-screen position. Composes through
+  /// [_gizmoParentInstance]'s own current `worldTransform`
+  /// ([composeRigidTransforms], `mesh_geometry.dart`) when focused; `null`
+  /// focus (or no [_gizmoParentInstance] found yet) means the target's own
+  /// local transform already *is* its world transform, unchanged from
+  /// Phase 5's original top-level-only behavior.
+  RigidTransformDto? get _gizmoTargetWorldTransform {
+    final occurrence = _gizmoTargetOccurrence;
+    if (occurrence == null) return null;
+    final parentInstance = _gizmoParentInstance;
+    if (parentInstance == null) return occurrence.transform;
+    return composeRigidTransforms(parentInstance.worldTransform, occurrence.transform);
+  }
+
   /// [PartViewport.selectedOccurrenceTransform]'s own value - the live-drag
-  /// override while one is in progress, otherwise [_gizmoTargetOccurrence]'s
-  /// own current transform (`null` propagates straight through when there's
-  /// no gizmo target at all, correctly hiding the gizmo).
-  RigidTransformDto? get _gizmoDisplayTransform => _gizmoLiveTransform ?? _gizmoTargetOccurrence?.transform;
+  /// override while one is in progress (already world-space, since the
+  /// gizmo composes drag deltas onto whatever world-space basis it was
+  /// started from - see [_gizmoTargetWorldTransform]'s own doc comment),
+  /// otherwise [_gizmoTargetWorldTransform] itself (`null` propagates
+  /// straight through when there's no gizmo target at all, correctly hiding
+  /// the gizmo).
+  RigidTransformDto? get _gizmoDisplayTransform => _gizmoLiveTransform ?? _gizmoTargetWorldTransform;
 
   /// Assembly support Phase 5: [_displayOccurrences]'s sibling for Phase 2's
   /// own placed-instance list - folds [_gizmoLiveTransform] into the
-  /// gizmo-target Occurrence's own instance entry (a top-level Occurrence's
-  /// `occurrencePath` is always exactly `[occurrenceId]`, per
-  /// [_gizmoTargetOccurrence]'s own scope limit) so the rendered Body itself
-  /// tracks the gizmo drag live, not just the gizmo overlay - without this,
-  /// dragging would move the manipulator handles while the actual geometry
-  /// stayed frozen at its pre-drag position until the PATCH/refetch
-  /// completed.
+  /// gizmo-target Occurrence's own instance entry so the rendered Body
+  /// itself tracks the gizmo drag live, not just the gizmo overlay - without
+  /// this, dragging would move the manipulator handles while the actual
+  /// geometry stayed frozen at its pre-drag position until the PATCH/
+  /// refetch completed.
+  ///
+  /// Phase 12 (`[18]`): [_gizmoLiveTransform] is already world-space (see
+  /// [_gizmoDisplayTransform]'s own doc comment), and [_assemblyMesh]'s own
+  /// instances are keyed by full `occurrencePath` (root-to-leaf), not a bare
+  /// id - so the override target here is [_focusStack]'s own
+  /// `currentOccurrencePath` plus the target's own id, not just `[targetId]`
+  /// the way a top-level-only target's path always happened to look before
+  /// this phase. No *further* composition is needed here beyond that path
+  /// widening - [_gizmoTargetWorldTransform] already did the one
+  /// `composeRigidTransforms` call this overlay needs, once, when the gizmo
+  /// itself was first given its starting basis; recomposing a second time
+  /// here would double-apply the parent's own contribution.
   List<AssemblyOccurrenceInstanceDto> get _displayAssemblyInstances {
     // §6 roadmap Phase 10 (`[5]`): [_assemblyMesh]'s own `hidden` per
     // instance is already backend-true post-refetch - see
@@ -525,11 +586,11 @@ class _PartScreenState extends State<PartScreen> {
     // is folded in here anymore.
     final overlaid = _assemblyMesh == null ? const <AssemblyOccurrenceInstanceDto>[] : _assemblyMesh!.instances;
     final liveTransform = _gizmoLiveTransform;
-    final targetId = _gizmoTargetOccurrence?.id;
-    if (liveTransform == null || targetId == null) return overlaid;
-    // [_gizmoTargetOccurrence]'s own scope limit (top-level only) means
-    // its occurrencePath is always exactly this single id.
-    return overrideInstanceTransform(overlaid, targetOccurrencePath: [targetId], transform: liveTransform);
+    final targetOccurrence = _gizmoTargetOccurrence;
+    if (liveTransform == null || targetOccurrence == null) return overlaid;
+    final focusedPath = _focusStack?.currentOccurrencePath ?? const <String>[];
+    final targetPath = [...focusedPath, targetOccurrence.id];
+    return overrideInstanceTransform(overlaid, targetOccurrencePath: targetPath, transform: liveTransform);
   }
 
   /// Prompt A3: one entry per independently-tessellated Body (Prompt A1's
@@ -2892,9 +2953,19 @@ class _PartScreenState extends State<PartScreen> {
     );
   }
 
+  /// Phase 12 (`docs/assembly-scope.md` §6 `[18]`): both API calls below
+  /// used to hardcode `_part!.id` - correct only while browsing the root
+  /// Part, and wrong the moment a Mate is authored while focused inside a
+  /// sub-assembly (the Mate, and the Occurrence `solveForOccurrence` drives,
+  /// both genuinely belong to whichever Part is currently focused, not the
+  /// document root) - unlike the gizmo's own PATCH call-sites
+  /// (`_onComponentGizmoDragEnd`/`_undoLastComponentTransform`), which
+  /// already routed via `focusPartId = _focusStack?.current ?? _part?.id`
+  /// since Phase 5/8. Now matches that same convention.
   Future<void> _confirmMate() async {
     final part = _part;
-    if (part == null || _selectedEntities.length != 2) return;
+    final focusPartId = _focusStack?.current ?? part?.id;
+    if (part == null || focusPartId == null || _selectedEntities.length != 2) return;
     final entities = _selectedEntities.toList();
     setState(() {
       _mateSaving = true;
@@ -2902,7 +2973,7 @@ class _PartScreenState extends State<PartScreen> {
     });
     try {
       await _api.createMate(
-        part.id,
+        focusPartId,
         type: _mateType,
         references: [for (final entity in entities) _mateEntityRefFor(entity)],
         value: _mateValue,
@@ -2916,7 +2987,7 @@ class _PartScreenState extends State<PartScreen> {
       final drivenOccurrenceId =
           entities[1].occurrenceId.isNotEmpty ? entities[1].occurrenceId : entities[0].occurrenceId;
       if (drivenOccurrenceId.isNotEmpty) {
-        await _api.solveForOccurrence(part.id, drivenOccurrenceId);
+        await _api.solveForOccurrence(focusPartId, drivenOccurrenceId);
       }
       if (!mounted) return;
       setState(() {
@@ -2940,37 +3011,56 @@ class _PartScreenState extends State<PartScreen> {
   // --- Phase 7 (`docs/assembly-scope.md` §3 item 7 / §2j): Component
   // Pattern ---------------------------------------------------------------
   // Unlike Mate, a ComponentPattern needs no face/edge/vertex picking - its
-  // source is whichever single Occurrence is already selected
+  // first source is whichever single Occurrence is already selected
   // (`_selectedOccurrenceId`, set by a tap in the Assembly tree or a
   // component long-press) when the panel is opened, mirroring how the
-  // Move/Rotate gizmo already targets that same selection. v1 UI scope:
-  // exactly one source Occurrence per pattern (the backend's own
-  // `ComponentPattern.source_occurrence_ids` accepts more, for parity with
-  // `PatternFeature.source_body_ids`'s own Phase-6-widened shape, but this
-  // panel only ever authors a single-source pattern).
+  // Move/Rotate gizmo already targets that same selection.
+  //
+  // Phase 11 (`docs/assembly-scope.md` §6 `[7]`): closed this section's own
+  // previously-noted v1 UI limitation - `_componentPatternSourceOccurrenceIds`
+  // is now a real list (backed by [ComponentPatternPanel]'s own chip row),
+  // and `[8]` wired [AssemblyTreePanel.onPatternTap]/[onPatternLongPress] to
+  // real edit/delete (`_openComponentPatternForEdit`/
+  // `_confirmDeleteComponentPattern`) - `_componentPatternEditingId` is what
+  // tells [_confirmComponentPattern] which of `createComponentPattern`/
+  // `updateComponentPattern` to call.
 
   bool _componentPatternPanelActive = false;
-  String? _componentPatternSourceOccurrenceId;
+  List<String> _componentPatternSourceOccurrenceIds = [];
+
+  /// `null` while authoring a brand-new pattern; the existing pattern's own
+  /// id while [_openComponentPatternForEdit] has this panel open to revise
+  /// it instead.
+  String? _componentPatternEditingId;
+
+  /// Phase 11 (`[7]`): `true` while this panel is in "pick more sources"
+  /// mode - `_onOccurrenceTap` checks this before its ordinary select
+  /// behavior (see that method's own doc comment).
+  bool _componentPatternPickingSources = false;
 
   ComponentPatternMode _componentPatternMode = ComponentPatternMode.linear;
   ComponentPatternAxisPreset _componentPatternDirection = ComponentPatternAxisPreset.x;
+  List<double> _componentPatternCustomDirection = [1.0, 0.0, 0.0];
   int _componentPatternCount = 3;
   double _componentPatternSpacing = 10.0;
   bool _componentPatternReverse = false;
   List<double> _componentPatternAxisOrigin = [0.0, 0.0, 0.0];
   ComponentPatternAxisPreset _componentPatternAxisDirection = ComponentPatternAxisPreset.z;
+  List<double> _componentPatternCustomAxisDirection = [0.0, 0.0, 1.0];
   int _componentPatternCountAngular = 4;
   double _componentPatternAngleTotal = 360.0;
   bool _componentPatternReverseAngular = false;
   bool _componentPatternSaving = false;
   String? _componentPatternError;
 
-  /// Opens [ComponentPatternPanel] targeting [_selectedOccurrenceId] - both
-  /// the Assembly Add menu's "Pattern Component" entry and the component
-  /// long-press menu's "Pattern" entry call this (the former requires a
-  /// selection to already exist, surfacing an error otherwise, since there
-  /// is no picking mode for "select a whole component" beyond the ordinary
-  /// default-browsing tap Assembly lens already supports).
+  /// Opens [ComponentPatternPanel] targeting [_selectedOccurrenceId] as its
+  /// sole initial source - both the Assembly Add menu's "Pattern Component"
+  /// entry and the component long-press menu's "Pattern" entry call this
+  /// (the former requires a selection to already exist, surfacing an error
+  /// otherwise, since there is no picking mode for "select a whole
+  /// component" beyond the ordinary default-browsing tap Assembly lens
+  /// already supports). More sources can be added from within the panel
+  /// itself (Phase 11, `[7]`) once it's open.
   void _openComponentPattern() {
     final sourceId = _selectedOccurrenceId;
     if (sourceId == null) {
@@ -2979,14 +3069,18 @@ class _PartScreenState extends State<PartScreen> {
     }
     setState(() {
       _componentPatternPanelActive = true;
-      _componentPatternSourceOccurrenceId = sourceId;
+      _componentPatternEditingId = null;
+      _componentPatternSourceOccurrenceIds = [sourceId];
+      _componentPatternPickingSources = false;
       _componentPatternMode = ComponentPatternMode.linear;
       _componentPatternDirection = ComponentPatternAxisPreset.x;
+      _componentPatternCustomDirection = [1.0, 0.0, 0.0];
       _componentPatternCount = 3;
       _componentPatternSpacing = 10.0;
       _componentPatternReverse = false;
       _componentPatternAxisOrigin = [0.0, 0.0, 0.0];
       _componentPatternAxisDirection = ComponentPatternAxisPreset.z;
+      _componentPatternCustomAxisDirection = [0.0, 0.0, 1.0];
       _componentPatternCountAngular = 4;
       _componentPatternAngleTotal = 360.0;
       _componentPatternReverseAngular = false;
@@ -2997,44 +3091,129 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
+  /// Phase 11 (`docs/assembly-scope.md` §6 `[8]`): [AssemblyTreePanel.
+  /// onPatternTap]'s real call site - opens the same [ComponentPatternPanel]
+  /// [_openComponentPattern] does, but pre-filled from `pattern`'s own
+  /// current values and with [_componentPatternEditingId] set, so
+  /// [_confirmComponentPattern] revises it in place instead of creating a
+  /// new one. `direction`/`axis.direction` each resolve to `custom` (rather
+  /// than silently snapping to the nearest world axis) unless they match one
+  /// exactly - see [presetForVector].
+  void _openComponentPatternForEdit(ComponentPatternDto pattern) {
+    final axis = pattern.axis;
+    setState(() {
+      _componentPatternPanelActive = true;
+      _componentPatternEditingId = pattern.id;
+      _componentPatternSourceOccurrenceIds = List.of(pattern.sourceOccurrenceIds);
+      _componentPatternPickingSources = false;
+      _componentPatternMode = ComponentPatternMode.fromApiValue(pattern.patternType);
+      _componentPatternDirection = presetForVector(pattern.direction);
+      _componentPatternCustomDirection = List.of(pattern.direction);
+      _componentPatternCount = pattern.count;
+      _componentPatternSpacing = pattern.spacing;
+      _componentPatternReverse = pattern.reverse;
+      _componentPatternAxisOrigin = axis == null ? [0.0, 0.0, 0.0] : List.of(axis.origin);
+      _componentPatternAxisDirection =
+          axis == null ? ComponentPatternAxisPreset.z : presetForVector(axis.direction);
+      _componentPatternCustomAxisDirection = axis == null ? [0.0, 0.0, 1.0] : List.of(axis.direction);
+      _componentPatternCountAngular = pattern.countAngular;
+      _componentPatternAngleTotal = pattern.angleTotal;
+      _componentPatternReverseAngular = pattern.reverseAngular;
+      _componentPatternSaving = false;
+      _componentPatternError = null;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+    });
+  }
+
   void _closeComponentPattern() {
     setState(() {
       _componentPatternPanelActive = false;
-      _componentPatternSourceOccurrenceId = null;
+      _componentPatternEditingId = null;
+      _componentPatternSourceOccurrenceIds = [];
+      _componentPatternPickingSources = false;
       _componentPatternError = null;
       _componentPatternSaving = false;
     });
   }
 
+  /// The same [occurrenceDisplayName] convention [AssemblyTreePanel] itself
+  /// uses, looked up by id instead of list index - what [ComponentPatternPanel]'s
+  /// `sourceOccurrenceNames` chips show for each of [_componentPatternSourceOccurrenceIds]
+  /// (a name is far more recognizable in a chip than a raw id). `null` if
+  /// `id` isn't (or is no longer) one of [_displayOccurrences] - the caller
+  /// falls back to the raw id itself in that case.
+  String? _occurrenceNameForId(String id) {
+    final index = _displayOccurrences.indexWhere((o) => o.id == id);
+    if (index < 0) return null;
+    return occurrenceDisplayName(_displayOccurrences, index);
+  }
+
+  /// Phase 11 (`[7]`): removes the source at `index` from the in-progress
+  /// pattern's own chip list - [ComponentPatternPanel] itself already
+  /// refuses to offer this when only one source remains (see that widget's
+  /// own `_sourceChips`), so `index` is always safe to remove here without a
+  /// separate empty-list guard.
+  void _removeComponentPatternSource(int index) {
+    setState(() {
+      _componentPatternSourceOccurrenceIds = [..._componentPatternSourceOccurrenceIds]..removeAt(index);
+    });
+  }
+
+  /// Phase 12 (`docs/assembly-scope.md` §6 `[18]`): used to hardcode
+  /// `_part!.id` - wrong the moment a ComponentPattern is authored while
+  /// focused inside a sub-assembly (it genuinely belongs to whichever Part
+  /// is currently focused, not the document root), unlike the gizmo's own
+  /// PATCH call-sites, which already routed via `focusPartId` since Phase
+  /// 5/8. Now matches that same convention.
   Future<void> _confirmComponentPattern() async {
     final part = _part;
-    final sourceId = _componentPatternSourceOccurrenceId;
-    if (part == null || sourceId == null) return;
+    final focusPartId = _focusStack?.current ?? part?.id;
+    final sourceIds = _componentPatternSourceOccurrenceIds;
+    if (part == null || focusPartId == null || sourceIds.isEmpty) return;
     setState(() {
       _componentPatternSaving = true;
       _componentPatternError = null;
     });
+    final direction = resolveComponentPatternVector(_componentPatternDirection, _componentPatternCustomDirection);
+    final axisDirection =
+        resolveComponentPatternVector(_componentPatternAxisDirection, _componentPatternCustomAxisDirection);
     try {
-      await _api.createComponentPattern(
-        part.id,
-        sourceOccurrenceIds: [sourceId],
-        patternType: _componentPatternMode.apiValue,
-        direction: componentPatternAxisPresetVector(_componentPatternDirection),
-        count: _componentPatternCount,
-        spacing: _componentPatternSpacing,
-        reverse: _componentPatternReverse,
-        axis: ComponentPatternAxisDto(
-          origin: _componentPatternAxisOrigin,
-          direction: componentPatternAxisPresetVector(_componentPatternAxisDirection),
-        ),
-        countAngular: _componentPatternCountAngular,
-        angleTotal: _componentPatternAngleTotal,
-        reverseAngular: _componentPatternReverseAngular,
-      );
+      final editingId = _componentPatternEditingId;
+      if (editingId == null) {
+        await _api.createComponentPattern(
+          focusPartId,
+          sourceOccurrenceIds: sourceIds,
+          patternType: _componentPatternMode.apiValue,
+          direction: direction,
+          count: _componentPatternCount,
+          spacing: _componentPatternSpacing,
+          reverse: _componentPatternReverse,
+          axis: ComponentPatternAxisDto(origin: _componentPatternAxisOrigin, direction: axisDirection),
+          countAngular: _componentPatternCountAngular,
+          angleTotal: _componentPatternAngleTotal,
+          reverseAngular: _componentPatternReverseAngular,
+        );
+      } else {
+        await _api.updateComponentPattern(
+          focusPartId,
+          editingId,
+          sourceOccurrenceIds: sourceIds,
+          direction: direction,
+          count: _componentPatternCount,
+          spacing: _componentPatternSpacing,
+          reverse: _componentPatternReverse,
+          axis: ComponentPatternAxisDto(origin: _componentPatternAxisOrigin, direction: axisDirection),
+          countAngular: _componentPatternCountAngular,
+          angleTotal: _componentPatternAngleTotal,
+          reverseAngular: _componentPatternReverseAngular,
+        );
+      }
       if (!mounted) return;
       setState(() {
         _componentPatternPanelActive = false;
-        _componentPatternSourceOccurrenceId = null;
+        _componentPatternEditingId = null;
+        _componentPatternSourceOccurrenceIds = [];
         _componentPatternSaving = false;
       });
       await _refreshAssemblyTree();
@@ -3045,6 +3224,36 @@ class _PartScreenState extends State<PartScreen> {
         _componentPatternSaving = false;
         _componentPatternError = e.message;
       });
+    }
+  }
+
+  /// Phase 11 (`docs/assembly-scope.md` §6 `[8]`): [AssemblyTreePanel.
+  /// onPatternLongPress]'s real call site - confirms, then deletes, mirroring
+  /// this screen's other destructive-action confirmations (e.g. the Feature
+  /// tree's own delete flow)'s "ask first" precedent.
+  Future<void> _confirmDeleteComponentPattern(ComponentPatternDto pattern) async {
+    final part = _part;
+    if (part == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete pattern?'),
+        content: const Text('This removes the pattern and every instance it derives. This cannot be undone.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Delete')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await _api.deleteComponentPattern(part.id, pattern.id);
+      if (!mounted) return;
+      await _refreshAssemblyTree();
+      await _refreshAssemblyMesh();
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() => _errorMessage = e.message);
     }
   }
 
@@ -8345,15 +8554,30 @@ class _PartScreenState extends State<PartScreen> {
   /// clearing it first would show the stale pre-drag value for one frame
   /// while the PATCH/refetch is still in flight, a visible snap-back-then-
   /// snap-forward flicker this order avoids entirely.
+  ///
+  /// Phase 12 (`docs/assembly-scope.md` §6 `[18]`): [_gizmoLiveTransform] is
+  /// world-space (see [_gizmoDisplayTransform]'s own doc comment), but
+  /// `Occurrence.transform` - what `updateOccurrenceTransform` actually
+  /// persists - is always local to the Occurrence's own immediate parent.
+  /// [_gizmoParentInstance] found (a nested target) means [_gizmoLiveTransform]
+  /// must first be converted back via [localRigidTransformRelativeTo]
+  /// (`mesh_geometry.dart`, the exact inverse of [_gizmoTargetWorldTransform]'s
+  /// own [composeRigidTransforms] call); `null` (top-level, unchanged from
+  /// before this phase) means world and local already coincide, so the live
+  /// value is PATCHed as-is.
   Future<void> _onComponentGizmoDragEnd() async {
     final occurrence = _gizmoTargetOccurrence;
-    final finalTransform = _gizmoLiveTransform;
+    final liveWorldTransform = _gizmoLiveTransform;
     final focusPartId = _focusStack?.current ?? _part?.id;
-    if (occurrence == null || finalTransform == null || focusPartId == null) {
+    if (occurrence == null || liveWorldTransform == null || focusPartId == null) {
       setState(() => _gizmoLiveTransform = null);
       return;
     }
     final previousTransform = occurrence.transform;
+    final parentInstance = _gizmoParentInstance;
+    final finalTransform = parentInstance == null
+        ? liveWorldTransform
+        : localRigidTransformRelativeTo(parentInstance.worldTransform, liveWorldTransform);
     await _runGuarded(() async {
       await _api.updateOccurrenceTransform(focusPartId, occurrence.id, finalTransform);
       _componentTransformUndoStack.add((occurrence.id, previousTransform));
@@ -16996,7 +17220,27 @@ class _PartScreenState extends State<PartScreen> {
   /// Features. No viewport hit-testing/opacity wiring yet (Phase 4/5 own
   /// that); this only drives [AssemblyTreePanel]'s own selected-row
   /// highlight for now.
+  ///
+  /// Phase 11 (`docs/assembly-scope.md` §6 `[7]`): while
+  /// [_componentPatternPickingSources] is active (the Pattern panel's own
+  /// "+ Add source" chip), a tap here toggles `occurrence` into/out of
+  /// [_componentPatternSourceOccurrenceIds] instead of the ordinary select
+  /// behavior above - the panel-local multi-select mechanism that field's
+  /// own doc comment describes, deliberately intercepted at this single
+  /// existing call site rather than adding a second, viewport-wide one.
   void _onOccurrenceTap(OccurrenceDto occurrence) {
+    if (_componentPatternPickingSources) {
+      setState(() {
+        final ids = [..._componentPatternSourceOccurrenceIds];
+        if (ids.contains(occurrence.id)) {
+          if (ids.length > 1) ids.remove(occurrence.id);
+        } else {
+          ids.add(occurrence.id);
+        }
+        _componentPatternSourceOccurrenceIds = ids;
+      });
+      return;
+    }
     setState(() => _selectedOccurrenceId = occurrence.id);
   }
 
@@ -17928,6 +18172,8 @@ class _PartScreenState extends State<PartScreen> {
                     onOccurrenceTap: _onOccurrenceTap,
                     onOccurrenceLongPress: _onOccurrenceLongPress,
                     onClose: () => setState(() => _featureTreeVisible = false),
+                    onPatternTap: _openComponentPatternForEdit,
+                    onPatternLongPress: _confirmDeleteComponentPattern,
                   ),
                 ),
                 Positioned.fill(
@@ -18112,8 +18358,19 @@ class _PartScreenState extends State<PartScreen> {
                     child: ComponentPatternPanel(
                       mode: _componentPatternMode,
                       onModeChanged: (mode) => setState(() => _componentPatternMode = mode),
+                      sourceOccurrenceNames: [
+                        for (final id in _componentPatternSourceOccurrenceIds)
+                          _occurrenceNameForId(id) ?? id,
+                      ],
+                      onRemoveSource: _removeComponentPatternSource,
+                      pickingMoreSources: _componentPatternPickingSources,
+                      onPickingMoreSourcesChanged: (picking) =>
+                          setState(() => _componentPatternPickingSources = picking),
                       direction: _componentPatternDirection,
                       onDirectionChanged: (preset) => setState(() => _componentPatternDirection = preset),
+                      customDirection: _componentPatternCustomDirection,
+                      onCustomDirectionChanged: (vector) =>
+                          setState(() => _componentPatternCustomDirection = vector),
                       count: _componentPatternCount,
                       onCountChanged: (count) => setState(() => _componentPatternCount = count),
                       spacing: _componentPatternSpacing,
@@ -18124,12 +18381,16 @@ class _PartScreenState extends State<PartScreen> {
                       onAxisOriginChanged: (origin) => setState(() => _componentPatternAxisOrigin = origin),
                       axisDirection: _componentPatternAxisDirection,
                       onAxisDirectionChanged: (preset) => setState(() => _componentPatternAxisDirection = preset),
+                      customAxisDirection: _componentPatternCustomAxisDirection,
+                      onCustomAxisDirectionChanged: (vector) =>
+                          setState(() => _componentPatternCustomAxisDirection = vector),
                       countAngular: _componentPatternCountAngular,
                       onCountAngularChanged: (count) => setState(() => _componentPatternCountAngular = count),
                       angleTotal: _componentPatternAngleTotal,
                       onAngleTotalChanged: (angle) => setState(() => _componentPatternAngleTotal = angle),
                       reverseAngular: _componentPatternReverseAngular,
                       onReverseAngularChanged: (reverse) => setState(() => _componentPatternReverseAngular = reverse),
+                      editingPatternId: _componentPatternEditingId,
                       saving: _componentPatternSaving,
                       error: _componentPatternError,
                       onConfirm: _confirmComponentPattern,

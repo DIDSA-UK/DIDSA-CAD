@@ -1974,7 +1974,275 @@ into later roadmap phases (11/12) as originally planned - this phase
 deliberately stayed within the five small, independent fixes it bundled,
 not a broader completeness pass.
 
-## 2n. Phase 13 — Mate solver: straight-edge axis + axis-to-axis DISTANCE (implemented)
+## 2n. Phase 11 — ComponentPattern authoring & lifecycle completeness (implemented)
+
+§6 roadmap's own Phase 11 entry: closes gap-inventory items `[7]`/`[8]`/
+`[9]`/`[10]` - every still-open ComponentPattern authoring/UI gap §5 items
+7-9 catalogued, all four independent of each other and of Phase 10's own
+fixes.
+
+### `[9]` `skip_indices`
+
+`ComponentPattern` (`app.document.models`) gains `skip_indices: list[int] =
+field(default_factory=list)`, mirroring `PatternFeature.skip_indices`
+exactly - same field name, same "seed's own index 0 is never a valid entry"
+convention. `app.document.assembly.expand_component_pattern_instances`
+changed its own return type from a plain `list[RigidTransform]` to
+`dict[int, RigidTransform]`, keyed by the same 1-based index the Linear/
+Circular loops already enumerate internally - matching `app.document.
+pattern._rectangular_instances`/`_circular_instances`'s own `dict[int,
+TopoDS_Shape]` convention one level down, so a skipped index leaves every
+surviving instance's own synthetic `occurrence_path` id (`get_assembly_mesh`'s
+`_walk`) stable rather than shifting it - the "don't let a skip quietly
+renumber its neighbors" guarantee `PatternFeature.skip_indices` already gives
+Body-level Patterns. `router.py`'s `_validate_component_pattern_payload`
+gained a `skip_indices` parameter and reuses `_validate_pattern_skip_indices`
+verbatim (Pattern/Mirror scoping Phase 3's own validator), checked against
+whichever of `count`/`count_angular` is this pattern_type's own real total -
+both `create_component_pattern`/`update_component_pattern` call it with the
+merged result, the same "revalidate everything, not just the touched fields"
+discipline `update_pattern_feature` already follows.
+`ComponentPatternUpdate.skip_indices` gets the identical `None`-leaves-
+untouched-vs-`[]`-explicitly-clears distinction `PatternFeatureUpdate.
+skip_indices` already establishes. `native_format.py`'s `_component_pattern_
+to_dict`/`_component_pattern_from_dict` round-trip it (`.get(..., [])`
+default, so an older `.didsacad` file with no `skip_indices` key at all still
+imports cleanly).
+
+### `[10]` `orient_with_rotation`
+
+New Circular-only field, `orient_with_rotation: bool = True` (defaulting to
+today's only behavior, so no existing pattern's meaning changes - the same
+"additive, safe default" convention every other Phase-11-and-earlier new
+field already follows). §5 item 9's own write-up had already spelled out the
+exact change needed: `expand_component_pattern_instances`'s Circular branch
+still computes `compose(step, source_transform)` unconditionally (the
+correct *position* for every derived instance either way - `step`'s own
+translation term already correctly carries the source's world position
+around the axis, regardless of orientation mode), but when `orient_with_
+rotation` is `False`, the composed result's rotation term is discarded and
+replaced with `source_transform`'s own unchanged `rotation_axis`/
+`rotation_angle_degrees` - "translate around the circle, don't also rotate
+the instance's own local orientation," the Ferris-wheel-gondola behavior §5
+item 9 named as the missing second mode (Fusion 360's Circular Pattern
+"Orientation: Identical" option is the closest mainstream-tool analog).
+Ignored for `pattern_type == LINEAR` (a pure translation has no rotation
+term to begin with, so the field is simply absent from that branch's own
+math). Threaded through the same schema/router/native-format surface as
+`skip_indices` above - `ComponentPatternCreate`/`Update`/`Response` all gain
+the field, `native_format.py` round-trips it (`.get(..., True)` default for
+backward compat).
+
+### `[8]` Pattern row tap-to-edit / long-press-to-delete
+
+`AssemblyTreePanel` gains `onPatternTap`/`onPatternLongPress` (optional,
+default `null`, the same purely-additive arrival `onMateTap`/`onMateLongPress`
+themselves got, so a call site that doesn't wire them keeps the read-only
+behavior this section always had). `part_screen.dart` wires both to two new
+methods: `_openComponentPatternForEdit` (opens the same `ComponentPatternPanel`
+`_openComponentPattern` does, but pre-filled from the tapped pattern's own
+current values, with `_componentPatternEditingId` set so `_confirmComponentPattern`
+calls `updateComponentPattern` instead of `createComponentPattern`) and
+`_confirmDeleteComponentPattern` (an `AlertDialog` confirmation, then
+`deleteComponentPattern` + tree/mesh refresh, the same "ask first" precedent
+this screen's other destructive actions already follow). Both API methods
+(`updateComponentPattern`/`deleteComponentPattern`) and their own backend
+tests already existed since Phase 7 - only this row's own tap/long-press
+were ever unwired, exactly as the roadmap entry predicted.
+`ComponentPatternPanel` itself gained an `editingPatternId` field (title
+reads "Edit Pattern" instead of "Pattern Component", Confirm reads "Save"
+instead of "Confirm" - the only two visible differences between the create
+and edit flows, everything else in the panel is shared).
+
+### `[7]` Custom vector entry + multi-source chip authoring
+
+`ComponentPatternAxisPreset` (`component_pattern_panel.dart`) gains a fourth
+`custom` variant alongside `x`/`y`/`z`; selecting it reveals a free X/Y/Z
+number-field row (`_vectorFields`, mirroring the circular-mode axis-origin
+row's own per-component layout) instead of snapping to a world axis - closing
+this file's own previously-noted v1 UI limitation verbatim. Two new pure
+helpers make the mapping symmetric: `resolveComponentPatternVector(preset,
+custom)` (what a confirm/save actually sends - the custom vector verbatim for
+`custom`, else the preset's own unit vector) and `presetForVector(vector)`
+(its inverse - what `_openComponentPatternForEdit` uses to decide whether an
+already-authored pattern's own stored `direction`/`axis.direction` should
+highlight `x`/`y`/`z` or fall back to `custom`, tolerant of the float
+round-trip noise a value that has been through JSON/the API is never exactly
+free of).
+
+Multi-source authoring: `_componentPatternSourceOccurrenceIds` (`part_screen.
+dart`) is now a real, growable list rather than a single `String?` - the
+backend's own `source_occurrence_ids` already accepted more than one entry
+since Phase 7 (parity with `PatternFeature.source_body_ids`'s own Phase-6
+widening), only this panel's authoring UI was ever limited to one.
+`ComponentPatternPanel` shows one removable `Chip` per current source name
+(delete disabled on the last remaining one - `ComponentPatternCreate.
+source_occurrence_ids` requires at least one) plus a "+ Add source"
+`ChoiceChip` that toggles `_componentPatternPickingSources`. While that flag
+is set, `_onOccurrenceTap` (`AssemblyTreePanel.onOccurrenceTap`'s real call
+site) toggles the tapped Occurrence into/out of the source list instead of
+its ordinary select/focus behavior - a deliberately panel-local mechanism
+(the roadmap's own framing), not a second, general cross-app multi-select
+system layered onto the existing single-selection model.
+
+**Verified**: backend - full suite against real `pythonocc-core`/`py-slvs`
+- **2311/2311 passed, 0 failed** (up from 2301 after §2m: 10 new tests - 4 in
+`test_component_pattern_expand.py` (15 total in that file) covering
+`skip_indices`/`orient_with_rotation` for both Linear and Circular, 6 in
+`test_component_pattern_router.py` covering skip-index validation/expansion/
+round-trip at the real API + assembly-mesh layer). Caught and fixed one real
+regression from `expand_component_pattern_instances`'s own return-type change
+(`list[RigidTransform]` -> `dict[int, RigidTransform]`, needed for `[9]`'s
+stable-index guarantee): `test_didsacad_backward_compat.py::test_circular_
+component_pattern_with_no_axis_key_imports_and_still_expands_safely` iterated
+the old list return directly (`for transform in derived:`) - now iterates
+`derived.values()`, the only other call site anywhere in the repo (confirmed
+by a whole-repo grep) beyond this phase's own new/updated tests. Full client
+suite - **1984/1984 passed** (up from 1966 baseline; 14 GPU-skips,
+unchanged), `flutter analyze` clean on every touched file. New client tests
+(18 total: 15 in `component_pattern_panel_test.dart` covering `resolveComponentPatternVector`/
+`presetForVector`, the Custom segment/entry fields, source chips add/remove/
+lone-chip-no-delete, the picking-mode hint text, and the create-vs-edit
+title/button-label swap; 3 in `assembly_tree_panel_test.dart` covering
+pattern-row tap/long-press dispatch and the still-inert-when-unwired case).
+
+### Remaining limitations after this phase
+
+`[6]`/`[18]` (top-level-Occurrence-only across the gizmo/Mate/
+ComponentPattern) and §5 item 8's own "can a `ComponentPattern` be patterned"
+question are both still open, unchanged by this phase and scheduled into
+Phase 12 (`[18]`) - this phase stayed within the roadmap's own four
+authoring/UI items, not a broader nesting redesign. `orient_with_rotation`
+has no dedicated panel toggle yet (only the backend field/expansion branch
+and the DTO's own round-trip fidelity) - the roadmap's own Phase 11 scoping
+paragraph named the backend change only for `[10]`, deliberately leaving a
+UI control for a later pass once real usage shows which default this app's
+users actually want exposed.
+
+## 2o. Phase 12 — Nested-Occurrence interaction (implemented)
+
+§6 roadmap's own Phase 12 entry: closes `[18]` (gizmo/Mate/ComponentPattern
+all top-level-Occurrence-only) and, as a near-free consequence, `[6]`
+(ComponentPattern source Occurrences top-level-only - a `ComponentPattern`'s
+own `source_occurrence_ids` were already validated only against `part.
+occurrences`, i.e. whichever Part is currently open/focused, so once
+`_confirmComponentPattern` itself routes through `focusPartId` (`[3]`
+below), authoring a pattern *while focused inside a sub-assembly* already
+targets that sub-assembly's own direct children correctly - no separate
+change needed for `[6]` beyond `[18]`'s own fix).
+
+Verified smaller than its own original framing, confirmed directly against
+the real code rather than assumed: the gizmo's own PATCH call-sites
+(`_onComponentGizmoDragEnd`/`_undoLastComponentTransform`) already routed
+via `focusPartId = _focusStack?.current ?? _part?.id` since Phase 5/8, and
+`get_assembly_mesh`'s own `_walk` already composes the full ancestor chain
+for a nested ComponentPattern (`test_component_pattern_of_a_nested_
+subassembly_repeats_its_own_children_too`, §2j). Three real gaps, all
+client-only - no backend changes this phase:
+
+### `[18]` (1 of 3) `_gizmoTargetOccurrence` widened to a direct child of focus
+
+Used to blanket-return `null` under *any* active focus
+(`!(_focusStack?.isFocused ?? false)`), even though [_occurrences] is
+already scoped to exactly the currently-focused Part's own children
+(`_refreshAssemblyTree` fetches `listOccurrences(focusPartId)`) - so a
+selected Occurrence there always has a `.transform` relative to the
+*currently-relevant* parent frame, the identical "local and world
+transforms coincide for this frame" property a top-level Occurrence had
+relative to the document root before this phase. New
+`isDirectChildOfFocus(occurrencePath, focusedOccurrencePath)`
+(`occurrence_visibility.dart`, alongside its existing sibling
+`isOccurrencePathWithinFocus`) makes that "exactly one level below the
+current frame" requirement explicit and directly testable, rather than
+relying only on `_occurrences`' own implicit scoping - true for an empty
+`focusedOccurrencePath` too (a top-level path is a direct child of the
+document root's own implicit frame), matching Phase 5's original behavior
+exactly when nothing is focused. A grandchild or deeper nested Occurrence
+is still out of scope (the gizmo's own drag math would need to account for
+more than one ancestor's rotation) - not reachable in practice anyway,
+since `_occurrences` never lists anything deeper than a direct child.
+
+### A fourth, necessary fix this phase's own roadmap entry didn't name: the gizmo's on-screen basis
+
+Found while implementing `[18]`, not in the roadmap's own 3-item list:
+`PartViewport.selectedOccurrenceTransform`'s own doc comment says this
+widget "derives the gizmo's actual world-space placement" directly from
+whatever it's given (via `matrix4FromRigidTransform`), with no
+parent-transform conversion of its own - correct for a top-level
+Occurrence (parent is the document root, always identity), but feeding it
+a nested target's raw *local* `OccurrenceDto.transform` would render/
+hit-test the gizmo handles at the wrong on-screen position the instant
+`[18]`'s own fix let the gizmo target a nested Occurrence at all - a real,
+visible bug (handles floating away from the actual Body), not merely a
+missed convenience. Two new pure functions close this
+(`mesh_geometry.dart`, mirroring `assembly.py`'s own `compose` one level
+up): `composeRigidTransforms(parent, child)` (the client-side counterpart
+to that backend function - `parentMatrix * childMatrix` via
+`matrix4FromRigidTransform`, decomposed back to a `RigidTransformDto` via
+`Matrix4.decompose`) and its exact inverse,
+`localRigidTransformRelativeTo(parent, world)` (`inverse(parentMatrix) *
+worldMatrix` - what converts the gizmo's own live-drag result, now
+world-space, back to the *local* value `updateOccurrenceTransform` actually
+persists). `_gizmoTargetWorldTransform` (new getter) composes through
+`_gizmoParentInstance`'s own current `worldTransform` (found via a third
+new pure helper, `findInstanceAtPath`, `occurrence_visibility.dart`) when
+focused; `_gizmoDisplayTransform` now reads from it instead of the target
+Occurrence's raw local transform. `_onComponentGizmoDragEnd` decomposes
+`_gizmoLiveTransform` back to local via `localRigidTransformRelativeTo`
+before PATCHing, whenever `_gizmoParentInstance` is non-null.
+
+### `[18]` (2 of 3) `_displayAssemblyInstances`'s live-drag overlay
+
+Used to assume a top-level `occurrencePath` (`overrideInstanceTransform`
+called with `targetOccurrencePath: [targetId]` - always correct when the
+only possible target was top-level) - now uses the full
+`[...focusedOccurrencePath, targetOccurrencePath]` path
+`_assemblyMesh.instances` actually key their nested entries by. No
+*further* composition is needed here beyond that path widening -
+`_gizmoTargetWorldTransform` (above) already does the one
+`composeRigidTransforms` call this overlay needs, once, when the gizmo is
+first given its starting basis; `_gizmoLiveTransform` stays world-space for
+the rest of the drag, so recomposing a second time here would double-apply
+the parent's own contribution.
+
+### `[18]` (3 of 3) `_confirmMate`/`_confirmComponentPattern` routed through `focusPartId`
+
+Both used to hardcode `_part!.id` for their own `createMate`/
+`solveForOccurrence`/`createComponentPattern` calls - correct only while
+browsing the root Part, and wrong the instant either is authored while
+focused inside a sub-assembly (unlike the gizmo's own PATCH call-sites,
+which already routed correctly since Phase 5/8). Both now resolve
+`focusPartId = _focusStack?.current ?? part?.id` first, the identical
+convention every other focus-aware call site in this screen already uses.
+
+**Verified**: backend - full suite against real `pythonocc-core`/`py-slvs`
+- **2301/2301 passed, 0 failed** (unchanged from §2m's own count - no
+backend changes this phase). Full client suite - **1985/1985 passed** (up
+from 1966 baseline; 14 GPU-skips, unchanged), `flutter analyze` clean on
+every touched file. New client tests (19 total, all pure/directly testable
+- none of this phase's own GPU-bound rendering code, `PartViewport`'s own
+hit-testing/drag math, can be exercised in a headless `flutter test` run,
+same limitation `matrix4FromRigidTransform`'s own tests already carry):
+6 for `composeRigidTransforms` and 3 for `localRigidTransformRelativeTo`
+(`mesh_geometry_test.dart`, hand-verified against known rotations, the same
+style `matrix4FromRigidTransform`'s own tests use, plus a round-trip check
+confirming the two are exact inverses of each other), 7 for
+`isDirectChildOfFocus` and 3 for `findInstanceAtPath`
+(`occurrence_visibility_test.dart`).
+
+### Remaining limitations after this phase
+
+A grandchild or deeper nested Occurrence is still out of scope for the
+gizmo/Mate/ComponentPattern alike (unchanged - `[18]`'s own roadmap text
+only ever scoped this phase to a *direct* child of focus). No on-device
+visual confirmation of the gizmo rendering/dragging correctly at a nested
+position exists yet (this sandbox has no real GPU/Impeller context - see
+`matrix4FromRigidTransform`'s own tests for the same limitation) - the pure
+composition/decomposition math is hand-verified against known rotations
+and round-trip-checked, but the actual on-screen hit-testing/drag feel at a
+nested position is real, undone follow-up verification once a real device
+is available.
+## 2p. Phase 13 — Mate solver: straight-edge axis + axis-to-axis DISTANCE (implemented)
 
 §6 roadmap's own Phase 13 entry: closes `[15]` (no straight-edge axis
 reference/axis-to-axis DISTANCE) - backend-only, no client changes needed
@@ -2244,7 +2512,8 @@ open.
    per-face OCCT history attribution exists anywhere in the backend, per
    6b's own original finding) - not a leftover bug, a follow-up that needs
    someone to first check what OCCT can actually report.
-7. **`ComponentPattern` has no per-instance skip (§2j).** Unlike body-level
+7. **~~`ComponentPattern` has no per-instance skip (§2j).~~ - fixed, Phase 11
+   (§2n, `[9]`).** Unlike body-level
    `PatternFeature`'s `skip_indices` (Pattern/Mirror scoping Phase 3), a
    `ComponentPattern` is all-or-nothing - there is no way to suppress one
    derived instance (e.g. omitting a single bolt from an otherwise-regular
@@ -2288,9 +2557,11 @@ open.
    reaching `_selectedOccurrenceId`. The larger question this item opened -
    whether a `ComponentPattern` can ever be patterned at all - is unchanged
    and still open.
-9. **No control over a Circular `ComponentPattern`'s own instance
+9. **~~No control over a Circular `ComponentPattern`'s own instance
    orientation - only one of the two standard behaviors is implemented,
-   with no toggle for the other.** Verified directly
+   with no toggle for the other.~~ - fixed (backend), Phase 11 (§2n, `[10]`)
+   - see that section's own "Remaining limitations" for the still-open
+   panel-toggle UI gap.** Verified directly
    (`apply_transform_to_direction` against each derived instance): a
    Circular pattern's derived instances currently always **rotate as they
    go around** the axis - `expand_component_pattern_instances`'s
@@ -2355,7 +2626,8 @@ always-false comparison while already in that method for `[5]`; `[16a]`
 wired the breadcrumb bar's existing `onPreview` hook to
 `PartViewport.highlightOverride` (additive-only).
 
-**Phase 11 — ComponentPattern authoring & lifecycle completeness (medium).**
+**~~Phase 11 — ComponentPattern authoring & lifecycle completeness
+(medium).~~ — moved to §2n, implemented.**
 `[9]` `skip_indices`, mirroring `PatternFeature.skip_indices` exactly
 (field + reuse of the already-generic `_validate_pattern_skip_indices` +
 a skip check in `expand_component_pattern_instances`'s two loops); `[10]`
@@ -2369,7 +2641,8 @@ tap-to-select chips (backend already accepts multiple `source_occurrence_ids` -
 client-only UX addition, deliberately not a general cross-app multi-select
 mechanism).
 
-**Phase 12 — Nested-Occurrence interaction (medium, not large).** Closes
+**~~Phase 12 — Nested-Occurrence interaction (medium, not large).~~ — moved
+to §2o, implemented.** Closes
 `[18]` and, as a near-free consequence, `[6]`. Verified smaller than its
 own original framing: the gizmo's PATCH call-sites already route via
 `focusPartId = _focusStack?.current ?? _part?.id`, and `get_assembly_mesh`'s
@@ -2387,7 +2660,7 @@ instance's own `world_transform` via the same `matrix4FromRigidTransform`/
 (unlike the gizmo, which already routes correctly) - fix to match.
 
 **~~Phase 13 — Mate solver: straight-edge axis + axis-to-axis DISTANCE
-(medium).~~ — moved to §2n, implemented.** Closes `[15]`. Extend `measure.py`'s `single_shape_geometry` to
+(medium).~~ — moved to §2p, implemented.** Closes `[15]`. Extend `measure.py`'s `single_shape_geometry` to
 report a straight edge's line direction + point-on-line (the same
 `BRepAdaptor_Curve` family already used for a circular edge's axis), wire
 into `assembly_solver.py`'s CONCENTRIC/PARALLEL/ANGLE dispatch (already
@@ -2480,10 +2753,15 @@ refs; `[4]` ~~`move_component` has no payload validation~~ - **fixed,
 Phase 10 §2m**; `[5]` ~~manual Hide/Show/Isolate UI still client-only~~ -
 **fixed, Phase 10 §2m**.
 
-**ComponentPattern (§2j/§5 items 7-9)**: `[6]` top-level source Occurrences
-only; `[7]` authoring panel: one source, X/Y/Z presets only; `[8]` no
-pattern edit/delete UI; `[9]` no `skip_indices`; `[10]` no
-`orient_with_rotation` toggle; `[11]` ~~a derived/synthetic pattern instance
+**ComponentPattern (§2j/§5 items 7-9)**: `[6]` ~~top-level source
+Occurrences only~~ - **fixed as a near-free consequence of `[18]`, Phase 12
+§2o**; `[7]` ~~authoring panel: one source, X/Y/Z presets only~~ - **fixed,
+Phase 11 §2n** (Custom vector entry + multi-source chips); `[8]` ~~no
+pattern edit/delete UI~~ - **fixed, Phase 11 §2n**; `[9]` ~~no
+`skip_indices`~~ - **fixed, Phase 11 §2n**; `[10]` ~~no
+`orient_with_rotation` toggle~~ - **fixed (backend only), Phase 11 §2n** -
+no dedicated panel UI control yet, see that section's own "Remaining
+limitations"; `[11]` ~~a derived/synthetic pattern instance
 can be re-selected and "Pattern Component"'d, failing with a generic 422~~ -
 **fixed, Phase 10 §2m** (the smaller fix only - nested/compound patterns
 remain unsupported).
@@ -2492,13 +2770,14 @@ remain unsupported).
 only; `[13]` no real-time client-side FFI solving; `[14]` COINCIDENT
 plane-plane `flipped` resolved via warm-start seed only; `[15]` ~~no
 straight-edge axis reference/axis-to-axis DISTANCE~~ - **fixed, Phase 13
-§2n**; `[16]` no feature-level
+§2p**; `[16]` no feature-level
 breadcrumb tier (`[16b]`) and ~~no live hover-preview highlight
 (`[16a]`)~~ - **`[16a]` fixed, Phase 10 §2m** (`[16b]` remains open).
 
 **Selection, rendering & focus**: `[17]` root Part's own Bodies stay
-selectable regardless of focus; `[18]` gizmo/Mate/ComponentPattern all
-still top-level-Occurrence-only; `[19]` ~~latent Focus/Exit-Focus label
+selectable regardless of focus; `[18]` ~~gizmo/Mate/ComponentPattern all
+still top-level-Occurrence-only~~ - **fixed (direct child of focus only,
+not deeper nesting), Phase 12 §2o**; `[19]` ~~latent Focus/Exit-Focus label
 quirk~~ - **fixed, Phase 10 §2m**.
 
 **Storage & multi-file**: `[20]` no iOS SAF equivalent; `[21]` no

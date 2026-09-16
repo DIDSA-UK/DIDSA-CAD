@@ -182,6 +182,65 @@ void main() {
     });
   });
 
+  // Assembly support Phase 12 (`docs/assembly-scope.md` §6 `[18]`):
+  // isOccurrencePathWithinFocus's stricter sibling - exactly one level
+  // below the focused path, not any depth.
+  group('isDirectChildOfFocus', () {
+    test('an empty focusedOccurrencePath treats a top-level path as a direct child', () {
+      expect(isDirectChildOfFocus(const ['a'], const []), isTrue);
+    });
+
+    test('an empty focusedOccurrencePath rejects an empty path (nothing to be a child of itself)', () {
+      expect(isDirectChildOfFocus(const [], const []), isFalse);
+    });
+
+    test('exactly one level below the focused path matches', () {
+      expect(isDirectChildOfFocus(const ['a', 'child'], const ['a']), isTrue);
+    });
+
+    test('the focused path\'s own exact path (zero levels deeper) does not match', () {
+      expect(isDirectChildOfFocus(const ['a'], const ['a']), isFalse);
+    });
+
+    test('two levels below the focused path (a grandchild) does not match', () {
+      expect(isDirectChildOfFocus(const ['a', 'child', 'grandchild'], const ['a']), isFalse);
+    });
+
+    test('a peer of the focused path does not match', () {
+      expect(isDirectChildOfFocus(const ['b', 'child'], const ['a']), isFalse);
+    });
+
+    test('a shorter path than the focused one does not match', () {
+      expect(isDirectChildOfFocus(const ['a'], const ['a', 'child']), isFalse);
+    });
+  });
+
+  // Assembly support Phase 12: the exact-path lookup PartScreen's own
+  // nested live-drag overlay needs to find the focused sub-assembly's own
+  // current placed instance.
+  group('findInstanceAtPath', () {
+    AssemblyOccurrenceInstanceDto instance(List<String> path) => AssemblyOccurrenceInstanceDto(
+          occurrencePath: path,
+          partId: 'part-${path.isEmpty ? "root" : path.last}',
+          worldTransform: _identity(),
+        );
+
+    test('finds the instance whose occurrencePath exactly matches', () {
+      final instances = [instance(const ['a']), instance(const ['a', 'child'])];
+      final found = findInstanceAtPath(instances, const ['a', 'child']);
+      expect(found, same(instances[1]));
+    });
+
+    test('returns null when no instance matches', () {
+      final instances = [instance(const ['a'])];
+      expect(findInstanceAtPath(instances, const ['does-not-exist']), isNull);
+    });
+
+    test('returns null for an empty instances list', () {
+      expect(findInstanceAtPath(const [], const ['a']), isNull);
+    });
+  });
+
   // Assembly support Phase 5: the Move/Rotate gizmo's own live-drag
   // overlay - an exact-path match, unlike isOccurrencePathWithinFocus's
   // prefix match.

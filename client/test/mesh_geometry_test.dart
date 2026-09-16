@@ -509,6 +509,125 @@ void main() {
     });
   });
 
+  // Assembly support Phase 12 (`docs/assembly-scope.md` §6 `[18]`): the
+  // client-side counterpart to `backend/app/document/assembly.py`'s own
+  // `compose` unit tests (`test_assembly_transform_apply.py`'s own "hand-
+  // verified against known rotations" testing style).
+  group('composeRigidTransforms', () {
+    RigidTransformDto identity() => RigidTransformDto(
+          translation: [0, 0, 0],
+          rotationAxis: [0, 0, 0],
+          rotationAngleDegrees: 0,
+        );
+
+    test('identity parent leaves the child transform unchanged', () {
+      final child = RigidTransformDto(
+        translation: [1, 2, 3],
+        rotationAxis: [0, 0, 1],
+        rotationAngleDegrees: 45,
+      );
+      final composed = composeRigidTransforms(identity(), child);
+      expect(composed.translation[0], closeTo(1, 1e-6));
+      expect(composed.translation[1], closeTo(2, 1e-6));
+      expect(composed.translation[2], closeTo(3, 1e-6));
+      expect(composed.rotationAngleDegrees, closeTo(45, 1e-4));
+    });
+
+    test('identity child leaves the parent transform unchanged', () {
+      final parent = RigidTransformDto(
+        translation: [5, -2, 10],
+        rotationAxis: [0, 1, 0],
+        rotationAngleDegrees: 30,
+      );
+      final composed = composeRigidTransforms(parent, identity());
+      expect(composed.translation[0], closeTo(5, 1e-6));
+      expect(composed.translation[1], closeTo(-2, 1e-6));
+      expect(composed.translation[2], closeTo(10, 1e-6));
+      expect(composed.rotationAngleDegrees, closeTo(30, 1e-4));
+    });
+
+    test('two pure translations add', () {
+      final parent = RigidTransformDto(translation: [10, 0, 0], rotationAxis: [0, 0, 0], rotationAngleDegrees: 0);
+      final child = RigidTransformDto(translation: [0, 5, 0], rotationAxis: [0, 0, 0], rotationAngleDegrees: 0);
+      final composed = composeRigidTransforms(parent, child);
+      expect(composed.translation[0], closeTo(10, 1e-6));
+      expect(composed.translation[1], closeTo(5, 1e-6));
+      expect(composed.translation[2], closeTo(0, 1e-6));
+    });
+
+    test('a 90-degree parent rotation about +Z carries the child\'s own translation around with it', () {
+      // Mirrors `matrix4FromRigidTransform`'s own "a 90-degree rotation
+      // about +Z maps +X to +Y" test one level up: a child sitting at
+      // (1, 0, 0) relative to a parent rotated +90 about Z lands at world
+      // (0, 1, 0) - the same "rotate the whole existing placement" behavior
+      // `assembly.py`'s own `compose` docstring (and this app's backend
+      // Circular ComponentPattern expansion) already establishes.
+      final parent = RigidTransformDto(translation: [0, 0, 0], rotationAxis: [0, 0, 1], rotationAngleDegrees: 90);
+      final child = RigidTransformDto(translation: [1, 0, 0], rotationAxis: [0, 0, 0], rotationAngleDegrees: 0);
+      final composed = composeRigidTransforms(parent, child);
+      expect(composed.translation[0], closeTo(0, 1e-6));
+      expect(composed.translation[1], closeTo(1, 1e-6));
+      expect(composed.translation[2], closeTo(0, 1e-6));
+    });
+
+    test('rotations compose: a 90-degree parent plus a 90-degree child about the same axis totals 180', () {
+      final parent = RigidTransformDto(translation: [0, 0, 0], rotationAxis: [0, 0, 1], rotationAngleDegrees: 90);
+      final child = RigidTransformDto(translation: [0, 0, 0], rotationAxis: [0, 0, 1], rotationAngleDegrees: 90);
+      final composed = composeRigidTransforms(parent, child);
+      expect(composed.rotationAngleDegrees, closeTo(180, 1e-4));
+    });
+
+    test('a rotated parent still correctly places a translated-and-rotated child', () {
+      // parent: translate (10, 0, 0), no rotation. child: translate (0, 5,
+      // 0), no rotation. World position: parent's own rotation (identity)
+      // applied to the child's translation, plus the parent's own
+      // translation -> (10, 5, 0). Cross-checked against the plain-Matrix4
+      // path directly (not just against this function's own math) so a bug
+      // shared between the production code and a hand-derived expectation
+      // can't hide from this test.
+      final parent = RigidTransformDto(translation: [10, 0, 0], rotationAxis: [0, 0, 1], rotationAngleDegrees: 0);
+      final child = RigidTransformDto(translation: [0, 5, 0], rotationAxis: [0, 0, 1], rotationAngleDegrees: 0);
+      final composed = composeRigidTransforms(parent, child);
+      final expectedMatrix = matrix4FromRigidTransform(parent) * matrix4FromRigidTransform(child);
+      final expectedPoint = expectedMatrix.transformed3(vm.Vector3.zero());
+      expect(composed.translation[0], closeTo(expectedPoint.x, 1e-6));
+      expect(composed.translation[1], closeTo(expectedPoint.y, 1e-6));
+      expect(composed.translation[2], closeTo(expectedPoint.z, 1e-6));
+    });
+  });
+
+  group('localRigidTransformRelativeTo', () {
+    test('is the exact inverse of composeRigidTransforms', () {
+      final parent = RigidTransformDto(translation: [3, -1, 7], rotationAxis: [0, 1, 0], rotationAngleDegrees: 40);
+      final local = RigidTransformDto(translation: [1, 2, 3], rotationAxis: [1, 0, 0], rotationAngleDegrees: 25);
+      final world = composeRigidTransforms(parent, local);
+      final recovered = localRigidTransformRelativeTo(parent, world);
+      expect(recovered.translation[0], closeTo(local.translation[0], 1e-5));
+      expect(recovered.translation[1], closeTo(local.translation[1], 1e-5));
+      expect(recovered.translation[2], closeTo(local.translation[2], 1e-5));
+      expect(recovered.rotationAngleDegrees, closeTo(local.rotationAngleDegrees, 1e-3));
+    });
+
+    test('an identity parent leaves world and local identical', () {
+      final identity = RigidTransformDto(translation: [0, 0, 0], rotationAxis: [0, 0, 0], rotationAngleDegrees: 0);
+      final world = RigidTransformDto(translation: [5, 6, 7], rotationAxis: [0, 0, 1], rotationAngleDegrees: 60);
+      final local = localRigidTransformRelativeTo(identity, world);
+      expect(local.translation[0], closeTo(5, 1e-6));
+      expect(local.translation[1], closeTo(6, 1e-6));
+      expect(local.translation[2], closeTo(7, 1e-6));
+      expect(local.rotationAngleDegrees, closeTo(60, 1e-4));
+    });
+
+    test('a pure-translation parent subtracts its own translation back out', () {
+      final parent = RigidTransformDto(translation: [10, 0, 0], rotationAxis: [0, 0, 0], rotationAngleDegrees: 0);
+      final world = RigidTransformDto(translation: [15, 5, 0], rotationAxis: [0, 0, 0], rotationAngleDegrees: 0);
+      final local = localRigidTransformRelativeTo(parent, world);
+      expect(local.translation[0], closeTo(5, 1e-6));
+      expect(local.translation[1], closeTo(5, 1e-6));
+      expect(local.translation[2], closeTo(0, 1e-6));
+    });
+  });
+
   // Assembly support Phase 4: the opacity half of "opacity/selectability
   // split for non-primary Parts" - pure and directly testable, independent
   // of [buildAssemblyInstanceNode]'s own GPU-bound Node construction.

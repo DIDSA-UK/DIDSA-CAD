@@ -408,4 +408,75 @@ void main() {
 
     expect(find.byIcon(Icons.visibility_off), findsOneWidget);
   });
+
+  // --- Phase 11 (`docs/assembly-scope.md` §6 `[8]`) -------------------------
+
+  testWidgets('tapping a pattern row calls onPatternTap when wired', (tester) async {
+    final pattern = _pattern('p1', patternType: 'linear', count: 5);
+    ComponentPatternDto? tapped;
+    await tester.pumpWidget(
+      _wrap(
+        AssemblyTreePanel(
+          visible: true,
+          occurrences: const [],
+          mates: const [],
+          patterns: [pattern],
+          selectedOccurrenceId: null,
+          onOccurrenceTap: (_) {},
+          onOccurrenceLongPress: (_) {},
+          onClose: () {},
+          onPatternTap: (p) => tapped = p,
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Linear 1'));
+    await tester.pumpAndSettle();
+    expect(tapped, same(pattern));
+  });
+
+  testWidgets('long-pressing a pattern row calls onPatternLongPress when wired', (tester) async {
+    final pattern = _pattern('p1', patternType: 'circular', count: 1, countAngular: 4);
+    ComponentPatternDto? longPressed;
+    await tester.pumpWidget(
+      _wrap(
+        AssemblyTreePanel(
+          visible: true,
+          occurrences: const [],
+          mates: const [],
+          patterns: [pattern],
+          selectedOccurrenceId: null,
+          onOccurrenceTap: (_) {},
+          onOccurrenceLongPress: (_) {},
+          onClose: () {},
+          onPatternLongPress: (p) => longPressed = p,
+        ),
+      ),
+    );
+
+    await tester.longPress(find.text('Circular 1'));
+    await tester.pumpAndSettle();
+    expect(longPressed, same(pattern));
+  });
+
+  testWidgets('a pattern row is inert (no tap/long-press callback invoked) when neither is wired', (tester) async {
+    await tester.pumpWidget(
+      _wrap(
+        AssemblyTreePanel(
+          visible: true,
+          occurrences: const [],
+          mates: const [],
+          patterns: [_pattern('p1')],
+          selectedOccurrenceId: null,
+          onOccurrenceTap: (_) {},
+          onOccurrenceLongPress: (_) {},
+          onClose: () {},
+        ),
+      ),
+    );
+
+    final tile = tester.widget<ListTile>(find.byType(ListTile).last);
+    expect(tile.onTap, isNull);
+    expect(tile.onLongPress, isNull);
+  });
 }
