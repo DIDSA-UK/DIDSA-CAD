@@ -83,11 +83,15 @@ breadcrumb hover-preview highlight), and §2j for Phase 7's own deliberate
 v1 scope limits (top-level source Occurrences only, one source per
 authored pattern in the UI even though the backend accepts several, no
 arbitrary custom axis/direction in the panel, no pattern edit/delete UI
-yet), and §2k for Phase 8's own deliberate v1 scope limits (`pattern_component`
+yet), §2k for Phase 8's own deliberate v1 scope limits (`pattern_component`
 and `add_component` both still deferred, no assembly-level edge-selector
 heuristic for a Mate's own geometry refs, the manual Hide/Show/Isolate UI
 still uses the pre-existing session-only overlay rather than the newly-
-widened `hidden` PATCH). Phase 9 is design-only.**
+widened `hidden` PATCH), and §2l for Phase 9 (hardening/migration/docs -
+the full `.didsacad` backward-compat test matrix, plus this document's own
+currency pass). Every phase §3 originally scoped is now implemented -
+`pattern_component`/`add_component` are the only two deliberately deferred
+pieces of the original brief, both tracked in §2k/§5, not silently dropped.**
 
 ---
 
@@ -1737,13 +1741,102 @@ original `on ApiException` - both fixed before re-running the full suite.
 
 ---
 
-## 3. Remaining phases (design-only)
+## 2l. Phase 9 — Hardening, migration, docs (implemented)
+
+§3's original item 9: the full `.didsacad` backward-compat test matrix, plus
+keeping this document current as phases land. `SCHEMA_VERSION`
+(`backend/app/document/native_format.py`) has never bumped across any of
+Phases 0-8 - every field the assembly effort ever added is purely additive,
+read back via `.get(key, default)` (Phase 0's own §2 already documents this
+convention; every later phase followed it without exception) - so
+"backward compat" here means confirming every one of those additive fields,
+across every phase, actually degrades to a sensible default when an older
+file's dict is missing it, not a version-branch migration.
+
+### The test matrix: `backend/tests/test_didsacad_backward_compat.py`
+
+A single Phase-0-vintage case (a file predating assembly support entirely -
+no `occurrences`/`mates` keys at all) already existed
+(`test_assembly_model.py`'s own `test_a_pre_assembly_file_with_no_
+occurrences_or_mates_keys_imports_with_empty_lists`, not duplicated here).
+This new file is the first place every *other* historically-real shape gets
+its own dedicated coverage, built by hand-constructing native-format dicts
+missing exactly the keys a file saved at that point in this feature's
+history would actually be missing (never round-tripping today's
+dataclasses through export first, which could never produce a dict lacking
+a field the current model always populates):
+
+- **Phase 0-1 vintage**: an Occurrence dict predating Phase 2's own
+  `resolved_part_id` wire field (§2c) imports with `part_id=None`; an
+  Occurrence dict with nothing but its own required `id` defaults every
+  other field (`external_ref`/`name_override`/`part_id`/`suppressed`/
+  `hidden`/`transform`) to exactly what a freshly-placed Occurrence already
+  has.
+- **Phase 0-6 vintage** (predates Phase 7): a Part dict with real
+  `occurrences`/`mates` content but no `component_patterns` key at all
+  imports that key as `[]`; a bare-minimum Mate dict (only `id`/`type`/
+  `references`) defaults `value`/`flipped`/`suppressed`.
+- **Phase 7 vintage**: a bare-minimum `ComponentPattern` dict defaults to a
+  no-op Linear pattern (`direction=(1,0,0)`, `count=1`, ...); a Circular
+  one with no `axis` key at all still imports *and* still expands safely
+  via the real `assembly.expand_component_pattern_instances` (falls back to
+  the world Z axis through the origin, per that function's own documented
+  default - confirmed by actually calling it, not just asserting the
+  imported dataclass shape); an `axis` dict missing its own `direction` key
+  defaults to world Z.
+- **Document-level**: a composed payload predating Phase 0's own optional
+  `root_part_id` field imports with `root_part_id=None`.
+- **`resolved_part_id`'s own real safety net** (not a historical-file case,
+  but the same "don't trust blindly" property every other default here
+  relies on): a `resolved_part_id` naming a Part not actually present in
+  this import payload - the ordinary shape a single-file save/reload
+  produces, per `Occurrence.part_id`'s own docstring - is cleared to
+  `None`; one naming a Part that *is* present in the same payload is
+  trusted, confirming both halves of `_resolve_occurrence_part_ids`'s own
+  validation actually work, not just the failure half.
+- **A mixed-vintage import**: one Document composed from three Parts at
+  three different points in this feature's history (pre-assembly, pre-
+  Phase-7, current) imported together in one call - confirms one Part's
+  missing keys never leak a default into a sibling Part that actually has
+  real data for that same field.
+
+### Doc-currency pass
+
+Read the whole document end to end (this session's own instruction, not
+just a targeted diff) looking for anything a prior phase's own update left
+stale. Found and fixed: §3's own heading ("Remaining phases (design-only)")
+and its lead sentence were accurate through Phase 7 but became wrong the
+moment Phase 8 implemented item 8 - nothing under §3 has been "design-only"
+or "remaining" since then. Retitled to reflect that every phase §3
+originally scoped is now implemented (see §3's own updated text below) -
+the numbered list itself is left exactly as every prior phase already
+struck it through in place, per this document's own established "strike
+through, don't delete" convention, so the historical record of what each
+item originally said stays intact.
+
+**Verified**: backend - full suite against real `pythonocc-core`/`py-slvs`
+- **2296/2296 passed** (up from 2285 after §2k: 11 new tests, all in
+`test_didsacad_backward_compat.py`). No client changes this phase (a
+backend-data-format concern only) - client suite unchanged from §2k's own
+**1960/1960**.
+
+---
+
+## 3. Phase history (every originally-scoped phase implemented)
 
 Phase 4 ("Whole-part selection + context menu") moved to §2f, Phase 5
 ("Move/Rotate gizmo + persisted placement + undo") to §2g, Phase 6a
 ("occurrence-attributed selection") to §2h, Phase 6/6b (the mate
-solver and the breadcrumb UI) to §2i, and Phase 7 ("Component pattern") to
-§2j - all implemented. Numbering below is otherwise unchanged from the
+solver and the breadcrumb UI) to §2i, Phase 7 ("Component pattern") to
+§2j, Phase 8 ("AI plan pipeline integration") to §2k, and Phase 9
+("Hardening, migration, docs") to §2l - every phase originally scoped here
+is now implemented (this section was titled "Remaining phases (design-only)"
+through Phase 7; retitled once Phase 8 made that description wrong - see
+§2l's own "Doc-currency pass"). The only pieces of the original brief left
+open are `pattern_component`/`add_component`, both deliberately deferred
+with a written reason (§2k), not silently dropped - anyone extending this
+feature further should start there, not by re-scoping a "Phase 10" from
+scratch. Numbering below is otherwise unchanged from the
 original plan (starts at 8 rather than being renumbered), so every
 existing cross-reference elsewhere in this document (e.g. §4's own "Phase
 5" undo note, which still correctly points at what's now §2g) still points
@@ -1763,8 +1856,7 @@ at the same phase it always did.
 8. **~~AI plan pipeline integration~~ — moved to §2k, `mate`/`move_component`/
    `hide_component`/`isolate_component` implemented; `pattern_component` and
    `add_component` remain deferred, see §2k's own notes on why.**
-9. **Hardening, migration, docs** — full `.didsacad` backward-compat test
-   matrix; keep this document current as phases land.
+9. **~~Hardening, migration, docs~~ — moved to §2l, implemented.**
 
 ## 4. Known v1 limitations (carried forward from the plan, restated so they
    don't get lost)
@@ -1974,3 +2066,185 @@ open.
    shaped fields already all have precedent for in this same phase, and a
    toggle in `ComponentPatternPanel` (Linear has no equivalent ambiguity -
    a translation-only pattern has no orientation question to begin with).
+
+---
+
+## 6. Follow-up roadmap (Phases 10–19, planned)
+
+Produced by a dedicated planning pass over every still-open item in §4/§5
+and each phase's own "Known v1 limitations" (Phases 6-8) once Phase 9
+closed out §3's original list. Every item below was cross-checked against
+the actual current code (not just this doc's own text) before being
+scheduled - a few turned out smaller than their original write-up implied
+(Phase 12 in particular). Continues this document's own Phase-N numbering
+and one-phase-one-PR convention; each phase below should get its own
+lettered section (§2m, §2n, ...) here once implemented, striking through
+(never deleting) whichever §4/§5 item(s) it closes.
+
+Bracketed `[N]` ids below are stable references into this roadmap's own
+23-item gap inventory (grouped: AI plan pipeline 1-5, ComponentPattern
+6-11, Mate solver 12-16, Selection/rendering/focus 17-19, Storage/
+multi-file 20-22, Other 23) - listed in full at the end of this section.
+
+**Phase 10 — Mechanical gap-closure sweep (small, low risk).** Bundles five
+independent, bounded fixes into one verification pass: `[4]` add
+`_validate_occurrence_transform_payload` (mirrors `_validate_move_body_
+payload`, `router.py`), reused by both the real PATCH endpoint and
+`ai_plan.py`'s dry-run handler; `[5]` wire the manual Hide/Show/Isolate
+context-menu actions (`part_screen.dart`'s `_onOccurrenceLongPress`,
+currently a client-only `Set`) to the real `updateOccurrenceHidden`
+persistence path Phase 8 added (only the AI plan pipeline calls it today) -
+closes appendix item 1's remaining manual-UI half; `[11]` reject a tap on a
+synthetic/derived pattern-instance id (`"#pattern:"`) before it reaches
+`_selectedOccurrenceId`, per appendix item 8's own suggested smaller fix;
+`[19]` fix the `isFocused` label's always-false comparison while already in
+that method for `[5]`; `[16a]` wire the breadcrumb bar's existing
+`onPreview` hook to `PartViewport.highlightOverride` (additive-only).
+
+**Phase 11 — ComponentPattern authoring & lifecycle completeness (medium).**
+`[9]` `skip_indices`, mirroring `PatternFeature.skip_indices` exactly
+(field + reuse of the already-generic `_validate_pattern_skip_indices` +
+a skip check in `expand_component_pattern_instances`'s two loops); `[10]`
+`orient_with_rotation: bool = True`, a new Circular-only branch composing
+only the step's translation term when `False` (§5 item 9's own write-up
+already spells out the exact change); `[8]` wire `assembly_tree_panel.dart`'s
+Patterns rows to tap-to-edit/long-press-to-delete (the API methods already
+exist and are tested, only the UI is missing); `[7]` a "Custom" arbitrary-
+vector entry mode plus panel-local multi-source authoring via repeatable
+tap-to-select chips (backend already accepts multiple `source_occurrence_ids` -
+client-only UX addition, deliberately not a general cross-app multi-select
+mechanism).
+
+**Phase 12 — Nested-Occurrence interaction (medium, not large).** Closes
+`[18]` and, as a near-free consequence, `[6]`. Verified smaller than its
+own original framing: the gizmo's PATCH call-sites already route via
+`focusPartId = _focusStack?.current ?? _part?.id`, and `get_assembly_mesh`'s
+`_walk` already composes the full ancestor chain for patterns (confirmed by
+the existing `test_component_pattern_of_a_nested_subassembly_repeats_its_
+own_children_too`). Three real gaps: (1) `_gizmoTargetOccurrence`
+blanket-returns `null` under any focus, even for a direct child of the
+focused sub-assembly - needs a new `isDirectChildOfFocus` alongside
+`occurrence_visibility.dart`'s existing `isOccurrencePathWithinFocus`; (2)
+`_displayAssemblyInstances`'s live-drag overlay assumes a top-level
+`occurrencePath` - a nested target needs composing through the parent
+instance's own `world_transform` via the same `matrix4FromRigidTransform`/
+`compose` convention `assembly.py`/`mesh_geometry.dart` already share; (3)
+`_confirmMate`/`_confirmComponentPattern` both still hardcode `part.id`
+(unlike the gizmo, which already routes correctly) - fix to match.
+
+**Phase 13 — Mate solver: straight-edge axis + axis-to-axis DISTANCE
+(medium).** Closes `[15]`. Extend `measure.py`'s `single_shape_geometry` to
+report a straight edge's line direction + point-on-line (the same
+`BRepAdaptor_Curve` family already used for a circular edge's axis), wire
+into `assembly_solver.py`'s CONCENTRIC/PARALLEL/ANGLE dispatch (already
+direction-agnostic to circle-vs-line), add an axis-to-axis DISTANCE
+variant. Check `py_slvs`'s own primitives before inventing new math,
+mirroring Phase 6's own "three rejected approaches" process - budget real
+experimentation time.
+
+**Phase 14 — AI plan pipeline: Mate edge-selector heuristic + existing-only
+`pattern_component` (medium).** Closes `[3]` and the achievable half of
+`[1]`, independent of `[2]`. `[3]`: `resolve_edge_selector`
+(`ai_plan_edges.py`) already takes a raw shape + `Part` and doesn't care
+whether the Body predates this plan - add an optional `EdgeSelector` field
+to `MateEntityRefStep`'s subshape variant, resolved via `_lookup_occurrence`
++ `compute_part_bodies`. `[1] partial`: new `PatternComponentStep`
+mirroring `ComponentPatternCreate`, `source_occurrence_ids` as
+`existing:<id>` only (matching `MateStep`'s own convention) - reuses
+`_validate_component_pattern_source_occurrence_ids`/`_validate_component_
+pattern_payload` directly.
+
+**Phase 15 — Multi-file save flow (medium-large).** Closes `[21]`.
+Deliberately sequenced before Phase 18: `add_component` as an AI step is
+only genuinely useful once a multi-part session can be saved back out.
+`AssemblyDocumentClient.savePart` already handles one Part; the gap is
+`PartScreen` never adopting `StorageService`/`ProjectRoot` at all. Adds
+`relativePathByPartId` session state, a relative-path prompt for a
+brand-new in-session Part, a "Save All" action, and finally enables
+`AssemblyAddMenuAction.createComponent`.
+
+**Phase 16 — Multi-file part-id/path persistence: investigate first
+(small, uncertain).** Closes `[22]` - but starts with a spike, not an
+assumed fix. `AssemblyGraphComposer` already trusts each file's own
+persisted `id` and re-derives a stable graph from `external_ref` on every
+reopen; confirm precisely what's still session-scoped in practice before
+designing anything. May close by correcting this doc rather than shipping
+code.
+
+**Phase 17 — iOS Storage Access Framework equivalent (medium, platform
+risk).** Closes `[20]`. New `IosStorageService` sibling to
+`SafStorageService`: `UIDocumentPickerViewController` + iOS
+security-scoped bookmarks, mirroring that class's own reachability-
+revalidation contract. Survey a maintained Dart bookmark plugin the way
+Phase 1 evaluated `saf_util`/`saf_stream` vs. `shared_storage`.
+
+**Phase 18 — AI plan pipeline: `add_component` + client file discovery
+(large).** Closes `[2]`. Feasibility confirmed directly: `saf_util`
+(already a dependency) exposes a real `Future<List<SafDocumentFile>>
+list(String uri)`; `dart:io`'s `Directory.list(recursive: true)` covers
+desktop - not blocked on a missing platform capability, just undesigned.
+`StorageService` gains `listFiles` (ship/checkpoint first, independently
+useful); a new `AddComponentStep` becomes the first `PlanStep` kind to
+ever *produce* a plan-local Occurrence id, needing a genuinely new
+execution path (`add_component.dart`'s `mergeComponentIntoDocument` reading
+via `StorageService` instead of `file_picker`) and a new plan-local-
+resolution branch in `_PlanValidator._lookup_occurrence` before its
+`existing:` fallback. The largest, most genuinely-new-design phase here.
+
+**Phase 19 — AI plan pipeline: `pattern_component` full version (small,
+depends on 18).** Closes the remainder of `[1]`. Extends
+`PatternComponentStep.source_occurrence_ids` to accept a plan-local
+`local_id`, threading the real created Occurrence id through
+`PlanTranslator.localIdToRealId` - the same mechanism every other step
+already uses. Pure payoff once Phase 18 lands.
+
+**Dependency summary**: Phases 10, 11, 12, 13, 14, and 17 are mutually
+independent - resequence or parallelize freely. The one hard chain is
+**15 → 18 → 19**. Phase 16 softly depends on 15.
+
+**Explicitly deferred again** (recommend re-stating, not silently
+dropping, if this roadmap is revisited): `[12]` multi-body/linkage
+simultaneous solving - real solver-architecture redesign, wait for a
+reported real use case; `[13]` real-time client-side FFI solving - would
+mean maintaining two solver implementations for a UX gain nobody has asked
+for; `[14]` algebraic (non-warm-start) COINCIDENT flip resolution - Phase 6
+already rejected three approaches before landing on today's
+correct-for-practical-cases seed; `[16b]` feature-level breadcrumb tier -
+needs per-face OCCT history attribution that doesn't exist anywhere in the
+backend, recommend a time-boxed spike first; `[17]` root Part's own Bodies
+staying selectable regardless of focus - an explicit "real usage-judgment
+call," touches `hitTestBodies` for a guarantee no bug report has asked
+for; `[23]` general document-level undo - an app-wide pre-existing
+limitation, not assembly-specific.
+
+### The 23-item gap inventory this roadmap schedules against
+
+**AI plan pipeline (§2k)**: `[1]` `pattern_component` PlanStep missing;
+`[2]` `add_component` PlanStep missing (no client file-discovery
+mechanism); `[3]` no edge-selector heuristic for a Mate's own geometry
+refs; `[4]` `move_component` has no payload validation; `[5]` manual
+Hide/Show/Isolate UI still client-only.
+
+**ComponentPattern (§2j/§5 items 7-9)**: `[6]` top-level source Occurrences
+only; `[7]` authoring panel: one source, X/Y/Z presets only; `[8]` no
+pattern edit/delete UI; `[9]` no `skip_indices`; `[10]` no
+`orient_with_rotation` toggle; `[11]` a derived/synthetic pattern instance
+can be re-selected and "Pattern Component"'d, failing with a generic 422.
+
+**Mate solver (§2i)**: `[12]` single-Occurrence-against-fixed-peers solving
+only; `[13]` no real-time client-side FFI solving; `[14]` COINCIDENT
+plane-plane `flipped` resolved via warm-start seed only; `[15]` no
+straight-edge axis reference/axis-to-axis DISTANCE; `[16]` no feature-level
+breadcrumb tier (`[16b]`) and no live hover-preview highlight (`[16a]`).
+
+**Selection, rendering & focus**: `[17]` root Part's own Bodies stay
+selectable regardless of focus; `[18]` gizmo/Mate/ComponentPattern all
+still top-level-Occurrence-only; `[19]` latent Focus/Exit-Focus label
+quirk.
+
+**Storage & multi-file**: `[20]` no iOS SAF equivalent; `[21]` no
+multi-file save flow; `[22]` composed multi-file `part_id`s are
+session-scoped only.
+
+**Other**: `[23]` undo scoped to component-transform drags only (app-wide
+pre-existing limitation, not assembly-specific).
