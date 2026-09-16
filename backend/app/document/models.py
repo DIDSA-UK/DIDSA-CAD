@@ -3216,6 +3216,21 @@ class ComponentPattern:
     count_angular: int = 1
     angle_total: float = 360.0
     reverse_angular: bool = False
+    # Phase 11 (`docs/assembly-scope.md` §6 `[9]`): mirrors `PatternFeature.
+    # skip_indices` exactly - suppresses specific derived instances by the
+    # same 1-based, seed-excluded index `expand_component_pattern_
+    # instances` already enumerates (Linear's `range(1, count)`, Circular's
+    # `range(1, count_angular)`), validated the same way (`app.document.
+    # router._validate_pattern_skip_indices`, reused verbatim).
+    skip_indices: list[int] = field(default_factory=list)
+    # Phase 11 (`docs/assembly-scope.md` §6 `[10]`): Circular-only - `True`
+    # (default) rotates each derived instance's own orientation around
+    # `axis` along with its position, the existing Phase 7 behavior. `False`
+    # repositions each instance around the circle without also rotating its
+    # own local orientation (e.g. patterning bolts/pins that should stay
+    # upright). Ignored for `pattern_type == LINEAR` (a pure translation has
+    # no rotation term to begin with).
+    orient_with_rotation: bool = True
     suppressed: bool = False
 
 

@@ -222,8 +222,12 @@ def test_circular_component_pattern_with_no_axis_key_imports_and_still_expands_s
 
     assert len(derived) == 3  # count_angular=4 minus the untouched seed at index 0
     # A pure rotation about the world Z axis through the origin never moves
-    # a source already sitting at the origin.
-    for transform in derived:
+    # a source already sitting at the origin. Phase 11 (`docs/assembly-
+    # scope.md` §6 `[9]`): `expand_component_pattern_instances` now returns
+    # `dict[int, RigidTransform]` (keyed by the same 1-based index, so a
+    # `skip_indices` entry doesn't renumber its surviving neighbors) rather
+    # than a plain list - iterate `.values()`.
+    for transform in derived.values():
         assert transform.translation == (0.0, 0.0, 0.0)
 
 

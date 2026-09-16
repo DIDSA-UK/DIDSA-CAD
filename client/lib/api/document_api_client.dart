@@ -1567,6 +1567,12 @@ class ComponentPatternDto {
   final int countAngular;
   final double angleTotal;
   final bool reverseAngular;
+  // Phase 11 (`docs/assembly-scope.md` §6 `[9]`/`[10]`): round-tripped for
+  // fidelity (an edit re-`PATCH`ing only the fields this client's own panel
+  // exposes must not silently drop either of these), no dedicated panel UI
+  // yet - the roadmap scopes that authoring surface separately.
+  final List<int> skipIndices;
+  final bool orientWithRotation;
   final bool suppressed;
 
   const ComponentPatternDto({
@@ -1581,6 +1587,8 @@ class ComponentPatternDto {
     this.countAngular = 1,
     this.angleTotal = 360.0,
     this.reverseAngular = false,
+    this.skipIndices = const [],
+    this.orientWithRotation = true,
     this.suppressed = false,
   });
 
@@ -1598,6 +1606,8 @@ class ComponentPatternDto {
         countAngular: json['count_angular'] as int? ?? 1,
         angleTotal: (json['angle_total'] as num?)?.toDouble() ?? 360.0,
         reverseAngular: json['reverse_angular'] as bool? ?? false,
+        skipIndices: (json['skip_indices'] as List?)?.cast<int>() ?? const [],
+        orientWithRotation: json['orient_with_rotation'] as bool? ?? true,
         suppressed: json['suppressed'] as bool? ?? false,
       );
 }
