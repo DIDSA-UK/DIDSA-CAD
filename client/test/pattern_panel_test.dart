@@ -238,6 +238,7 @@ void main() {
       await tester.pumpWidget(
         harness(hasSecondDirection: true, onActiveDirectionSlotChanged: (s) => slot = s),
       );
+      await tester.ensureVisible(find.byTooltip('Pick Direction').at(1));
       await tester.tap(find.byTooltip('Pick Direction').at(1));
       expect(slot, 2);
     });
