@@ -17274,12 +17274,15 @@ class _PartScreenState extends State<PartScreen> {
   /// `_occurrences` list rather than a separate client-side flag, since
   /// there's no longer a client-only "isolated id" to ask.
   /// Move/Rotate reaches this `switch` (appendix item 5 -
-  /// `component_context_menu.dart`'s own entry is enabled now) but still
-  /// needs no case body of its own: this method's very first line already
-  /// selected `occurrence` (`_selectedOccurrenceId = occurrence.id`), which
-  /// is exactly what [_gizmoTargetOccurrence] reads to show the gizmo - the
-  /// menu action is a confirmation of an already-real effect, not a trigger
-  /// for a new one. Mate (Phase 6) opens the same generic 2-entity picking
+  /// `component_context_menu.dart`'s own entry is enabled now): this
+  /// method's very first line already selected `occurrence`
+  /// (`_selectedOccurrenceId = occurrence.id`), which is exactly what
+  /// [_gizmoTargetOccurrence] reads to show the gizmo, so the menu action
+  /// itself is mostly a confirmation of an already-real effect - but its
+  /// case body isn't quite the no-op it used to be (bug fix: it also forces
+  /// [_selectionMode] off, see that case's own doc comment for why a
+  /// manipulator tool left in Selection mode broke orbiting entirely).
+  /// Mate (Phase 6) opens the same generic 2-entity picking
   /// flow [_onAssemblyAddPressed]'s own "Add Mate" entry does -
   /// `occurrence` itself isn't pre-selected into it (a Mate targets a
   /// specific face/edge/vertex, not a whole component), so long-pressing a
@@ -17325,10 +17328,27 @@ class _PartScreenState extends State<PartScreen> {
       case ComponentContextMenuAction.isolate:
         await _isolateOccurrence(occurrence);
       case ComponentContextMenuAction.moveRotate:
-        // Appendix item 5: no-op by design - selecting `occurrence` above
-        // already made the gizmo target it (see this method's own doc
-        // comment).
-        break;
+        // Bug fix: selecting `occurrence` above already made the gizmo
+        // target it (see this method's own doc comment) - but the gizmo's
+        // own handle hit-test only wins priority over the *ordinary*
+        // gesture dispatch it's checked ahead of (`PartViewport._onPointerDown`);
+        // it doesn't change which dispatch that ordinary fallback actually
+        // is. If [_selectionMode] was already on - true by default once any
+        // other picker-based tool has ever been opened this session, since
+        // nothing in this file resets it back off on its own (see that
+        // field's own doc comment) - a drag that misses the gizmo's own
+        // (thin, precise) handles falls into Selection mode's own tap/
+        // marquee gesture instead of freely orbiting, so there was no way
+        // to orbit the camera around to *find* a handle to grab in the
+        // first place: single-finger drag did nothing (a quick drag never
+        // arms the marquee's own long-press), two-finger drag only ever
+        // pinch-panned (no orbit gesture exists in Selection mode at all).
+        // Same "one-time default on open, the FAB can freely toggle it
+        // either way from there" contract `_openExtrudePanel`'s own
+        // `_selectionMode = true` already uses, just the opposite
+        // direction - a manipulator, not a multi-entity picker, needs free
+        // orbit to line up a handle, not Selection mode's own tap-to-pick.
+        setState(() => _selectionMode = false);
       case ComponentContextMenuAction.mate:
         _openMate();
       case ComponentContextMenuAction.pattern:
