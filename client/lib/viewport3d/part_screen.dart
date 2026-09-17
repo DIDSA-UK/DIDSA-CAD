@@ -59,6 +59,7 @@ import 'knit_surface_panel.dart';
 import 'loft_panel.dart';
 import 'loft_surface_panel.dart';
 import 'merge_panel.dart';
+import 'mate_context_menu.dart';
 import 'mate_panel.dart';
 import 'component_pattern_panel.dart';
 import 'measurement_panel.dart';
@@ -436,6 +437,16 @@ class _PartScreenState extends State<PartScreen> {
   List<MateDto> _mates = [];
   List<ComponentPatternDto> _componentPatterns = [];
   String? _selectedOccurrenceId;
+
+  /// Test report item 5: [AssemblyTreePanel.selectedMateId]'s own backing
+  /// state - mirrors [_selectedOccurrenceId]'s identical "which tree row is
+  /// selected" role, just for the Mates section. Set by [_onMateTap]
+  /// alongside [_selectedEntities] (that Mate's own referenced geometry),
+  /// cleared whenever something else takes over [_selectedEntities] (an
+  /// Occurrence tap, opening another picking tool, etc.) the same way
+  /// [_selectedOccurrenceId] itself has no single dedicated "clear" call site
+  /// either - both are just plain selection state.
+  String? _selectedMateId;
 
   /// §6 roadmap Phase 10 (`[5]`): Hide/Show/Isolate used to be a purely
   /// client-side overlay here (a `_hiddenOccurrenceIds`/
@@ -1901,6 +1912,10 @@ class _PartScreenState extends State<PartScreen> {
         }
         _selectedEntities = next;
       });
+      // Test report item 3 (New Mate ghost preview): every selection change
+      // needs a fresh preview, same "fires on every change" precedent
+      // [_scheduleMeasureQuery]'s own call site above already sets.
+      unawaited(_scheduleMatePreview());
       return;
     }
     if (_filletActive && entity.kind == SelectionEntityKind.face) {
@@ -2990,7 +3005,26 @@ class _PartScreenState extends State<PartScreen> {
   String _mateType = kMateTypes.first;
   double? _mateValue;
   bool _mateFlipped = false;
+
+  /// Test report item 4: `Mate.allow_rotation`'s own live value while
+  /// authoring/editing a concentric Mate - defaults `true` (free spin,
+  /// [mateTypeHasAllowRotation]'s own docstring), meaningless otherwise.
+  bool _mateAllowRotation = true;
   bool _mateSaving = false;
+
+  /// Test report item 3 (New Mate ghost preview): [_scheduleMatePreview]'s
+  /// own live result - the target Part id / solved transform [PartViewport.
+  /// matePreviewPartId]/[matePreviewTransform] render as a translucent
+  /// ghost. Both `null` whenever there's nothing to show (fewer than 2
+  /// entities picked yet, no drivable Occurrence, or the dry-run solve
+  /// didn't converge) - see that method's own doc comment.
+  String? _matePreviewPartId;
+  RigidTransformDto? _matePreviewTransform;
+
+  /// [_scheduleMatePreview]'s own monotonic guard - mirrors
+  /// [_measureRequestToken]'s identical "no Feature/Occurrence is mutated,
+  /// so a plain token beats a `Timer`-based debounce" reasoning exactly.
+  int _matePreviewRequestToken = 0;
 
   /// Set when [_confirmMate]'s `createMate`/`solveForOccurrence` call fails -
   /// surfaced inline in [MatePanel] (mirrors [_measurementError]'s identical
@@ -3025,8 +3059,11 @@ class _PartScreenState extends State<PartScreen> {
       _mateType = kMateTypes.first;
       _mateValue = null;
       _mateFlipped = false;
+      _mateAllowRotation = true;
       _mateError = null;
       _mateSaving = false;
+      _matePreviewPartId = null;
+      _matePreviewTransform = null;
       _selectionMode = true;
       _toolbarOpen = false;
       _featureTreeVisible = false;
@@ -3041,8 +3078,27 @@ class _PartScreenState extends State<PartScreen> {
       _entitiesBeforeMate = null;
       _mateError = null;
       _mateSaving = false;
+      _matePreviewPartId = null;
+      _matePreviewTransform = null;
       _selectionFilterOverrides.pop();
     });
+  }
+
+  /// Test report item 2/3: whichever of `occurrenceIds` names an Occurrence
+  /// that's actually safe to drive (not the root Part's own `""` id, not
+  /// `fixed`) - shared by [_confirmMate]/[_openMateEdit]/
+  /// [_scheduleMatePreview], all three of which need the exact same "prefer
+  /// the earlier entries, but skip a `fixed` one" pick (test report item
+  /// 2's own fix: mating to a `fixed` part must never try to drive the
+  /// fixed side just because it happened to be picked/listed first).
+  String? _drivableOccurrenceId(Iterable<String> occurrenceIds) {
+    for (final id in occurrenceIds) {
+      if (id.isEmpty) continue;
+      final index = _occurrences.indexWhere((o) => o.id == id);
+      final isFixed = index != -1 && _occurrences[index].fixed;
+      if (!isFixed) return id;
+    }
+    return null;
   }
 
   /// [SelectionEntityRef] -> the wire shape `DocumentApiClient.createMate`
@@ -3063,6 +3119,62 @@ class _PartScreenState extends State<PartScreen> {
       occurrenceId: entity.occurrenceId,
       subshapeRef: SubShapeRefDto(bodyId: entity.bodyId, shapeType: shapeType, index: entity.id),
     );
+  }
+
+  /// Test report item 3 (New Mate ghost preview): fires on every live change
+  /// to the New Mate flow's own state (both entities picked, or the
+  /// type/value/flipped/allowRotation choice), fetching [DocumentApiClient.
+  /// previewMateSolve] against whichever referenced Occurrence would
+  /// actually be driven ([_drivableOccurrenceId], the same not-`fixed` pick
+  /// [_confirmMate] itself uses) and feeding the result into
+  /// [_matePreviewPartId]/[_matePreviewTransform] for [PartViewport] to
+  /// render as a ghost. Mirrors [_scheduleMeasureQuery]'s own "cheap,
+  /// stateless, nothing is mutated - a monotonic request token beats a
+  /// `Timer`-based debounce" shape exactly, since this is equally read-only.
+  Future<void> _scheduleMatePreview() async {
+    final part = _part;
+    final focusPartId = _focusStack?.current ?? part?.id;
+    if (part == null || focusPartId == null || _selectedEntities.length != 2) {
+      setState(() {
+        _matePreviewPartId = null;
+        _matePreviewTransform = null;
+      });
+      return;
+    }
+    final entities = _selectedEntities.toList();
+    final drivenOccurrenceId = _drivableOccurrenceId([entities[1].occurrenceId, entities[0].occurrenceId]);
+    final drivenIndex = drivenOccurrenceId == null ? -1 : _occurrences.indexWhere((o) => o.id == drivenOccurrenceId);
+    final drivenPartId = drivenIndex == -1 ? null : _occurrences[drivenIndex].resolvedPartId;
+    if (drivenOccurrenceId == null || drivenPartId == null) {
+      setState(() {
+        _matePreviewPartId = null;
+        _matePreviewTransform = null;
+      });
+      return;
+    }
+    final token = ++_matePreviewRequestToken;
+    try {
+      final result = await _api.previewMateSolve(
+        focusPartId,
+        drivenOccurrenceId,
+        type: _mateType,
+        references: [for (final entity in entities) _mateEntityRefFor(entity)],
+        value: _mateValue,
+        flipped: _mateFlipped,
+        allowRotation: _mateAllowRotation,
+      );
+      if (!mounted || token != _matePreviewRequestToken) return;
+      setState(() {
+        _matePreviewPartId = result.converged ? drivenPartId : null;
+        _matePreviewTransform = result.converged ? result.transform : null;
+      });
+    } on ApiException {
+      if (!mounted || token != _matePreviewRequestToken) return;
+      setState(() {
+        _matePreviewPartId = null;
+        _matePreviewTransform = null;
+      });
+    }
   }
 
   /// Phase 12 (`docs/assembly-scope.md` §6 `[18]`): both API calls below
@@ -3090,15 +3202,19 @@ class _PartScreenState extends State<PartScreen> {
         references: [for (final entity in entities) _mateEntityRefFor(entity)],
         value: _mateValue,
         flipped: _mateFlipped,
+        allowRotation: _mateAllowRotation,
       );
       // Drives whichever side names a real placed Occurrence (never the
-      // root's own `""` id) - the second-picked entity's own Occurrence if
-      // it has one, else the first's; the router's own validation already
-      // guarantees the two references don't both name `""`, so at least one
-      // of these two is always real.
-      final drivenOccurrenceId =
-          entities[1].occurrenceId.isNotEmpty ? entities[1].occurrenceId : entities[0].occurrenceId;
-      if (drivenOccurrenceId.isNotEmpty) {
+      // root's own `""` id) that's actually safe to drive (not `fixed` -
+      // test report item 2's own fix: mating to a `fixed` part must never
+      // try to drive the fixed side just because it happened to be picked
+      // second) - the second-picked entity's own Occurrence preferred over
+      // the first's, via [_drivableOccurrenceId]. `null` when neither side
+      // is drivable (both fixed, or a fixed Occurrence mated to the root
+      // Part's own content) - there is no Occurrence left that a solve
+      // could legally move, so none is attempted.
+      final drivenOccurrenceId = _drivableOccurrenceId([entities[1].occurrenceId, entities[0].occurrenceId]);
+      if (drivenOccurrenceId != null) {
         await _api.solveForOccurrence(focusPartId, drivenOccurrenceId);
       }
       if (!mounted) return;
@@ -3107,6 +3223,8 @@ class _PartScreenState extends State<PartScreen> {
         _selectedEntities = {};
         _entitiesBeforeMate = null;
         _mateSaving = false;
+        _matePreviewPartId = null;
+        _matePreviewTransform = null;
         _selectionFilterOverrides.pop();
       });
       await _refreshAssemblyTree();
@@ -17613,6 +17731,171 @@ class _PartScreenState extends State<PartScreen> {
     }
   }
 
+  /// Test report item 5: [AssemblyTreePanel.onMateTap] - selects the mate
+  /// (mirrors [_onOccurrenceTap]'s own "which tree row is selected" role,
+  /// via [_selectedMateId]) and highlights the faces/edges/vertices it
+  /// references by feeding them into [_selectedEntities], the same shared
+  /// highlight set every other selection flow in this screen already
+  /// renders from. A `plane_ref`/`point_ref` side (never authored from this
+  /// app's own UI, only reachable via an AI-plan-authored Mate) has no
+  /// [SelectionEntityRef] equivalent and is silently skipped - highlighting
+  /// is a display nicety, not something worth failing the whole tap over.
+  void _onMateTap(MateDto mate) {
+    final entities = <SelectionEntityRef>{};
+    for (final ref in mate.references) {
+      final sub = ref.subshapeRef;
+      if (sub == null) continue;
+      final kind = switch (sub.shapeType) {
+        'face' => SelectionEntityKind.face,
+        'edge' => SelectionEntityKind.edge,
+        'vertex' => SelectionEntityKind.vertex,
+        _ => null,
+      };
+      if (kind == null) continue;
+      entities.add(SelectionEntityRef(kind: kind, bodyId: sub.bodyId, id: sub.index, occurrenceId: ref.occurrenceId));
+    }
+    setState(() {
+      _selectedMateId = mate.id;
+      _selectedOccurrenceId = null;
+      _selectedEntities = entities;
+    });
+  }
+
+  /// Test report item 6: [AssemblyTreePanel.onMateLongPress] - selects the
+  /// row first (same "select, then offer more" precedence
+  /// [_onOccurrenceLongPress]'s own doc comment already documents), then
+  /// [showMateContextMenu]'s own two actions.
+  Future<void> _onMateLongPress(MateDto mate) async {
+    _onMateTap(mate);
+    final action = await showMateContextMenu(context);
+    if (!mounted || action == null) return;
+    switch (action) {
+      case MateContextMenuAction.edit:
+        await _openMateEdit(mate);
+      case MateContextMenuAction.delete:
+        await _confirmDeleteMate(mate);
+    }
+  }
+
+  /// `MateContextMenuAction.edit`'s own handler - a small dialog revising
+  /// `value`/`flipped`/`allowRotation` in place via [DocumentApiClient.
+  /// updateMate] (never the Mate's own type/references - see that
+  /// endpoint's own narrow mutation surface, `MateUpdate`'s docstring), then
+  /// re-solves the same way [_confirmMate] does right after authoring a
+  /// brand-new Mate, so a revised value/flip/allow-rotation choice visibly
+  /// re-snaps its target immediately. Picks the driven Occurrence the same
+  /// not-`fixed` way [_confirmMate] itself now does (test report item 2's
+  /// own fix) rather than always preferring one particular side.
+  Future<void> _openMateEdit(MateDto mate) async {
+    final part = _part;
+    final focusPartId = _focusStack?.current ?? part?.id;
+    if (part == null || focusPartId == null) return;
+    double? value = mate.value;
+    bool flipped = mate.flipped;
+    bool allowRotation = mate.allowRotation;
+    final save = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text('Edit ${mateTypeLabel(mate.type)} Mate'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (mateTypeNeedsValue(mate.type))
+                TextFormField(
+                  initialValue: value?.toString() ?? '',
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: InputDecoration(labelText: mate.type == 'angle' ? 'Angle (degrees)' : 'Distance (mm)'),
+                  onChanged: (text) => value = double.tryParse(text),
+                ),
+              if (mateTypeHasFlip(mate.type))
+                CheckboxListTile(
+                  value: flipped,
+                  onChanged: (checked) => setDialogState(() => flipped = checked ?? false),
+                  title: const Text('Flipped'),
+                  controlAffinity: ListTileControlAffinity.leading,
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                ),
+              if (mateTypeHasAllowRotation(mate.type))
+                CheckboxListTile(
+                  value: allowRotation,
+                  onChanged: (checked) => setDialogState(() => allowRotation = checked ?? true),
+                  title: const Text('Allow rotation'),
+                  controlAffinity: ListTileControlAffinity.leading,
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                ),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: (mateTypeNeedsValue(mate.type) && value == null)
+                  ? null
+                  : () => Navigator.of(context).pop(true),
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (save != true || !mounted) return;
+    try {
+      await _api.updateMate(focusPartId, mate.id, value: value, flipped: flipped, allowRotation: allowRotation);
+      // Same not-`fixed` driven-Occurrence pick [_confirmMate] itself uses
+      // ([_drivableOccurrenceId], test report item 2) - a revised Mate can
+      // just as easily end up trying to drive a `fixed` peer as a freshly-
+      // authored one can.
+      final drivenOccurrenceId = _drivableOccurrenceId(mate.references.map((r) => r.occurrenceId));
+      if (drivenOccurrenceId != null) {
+        await _api.solveForOccurrence(focusPartId, drivenOccurrenceId);
+      }
+      if (!mounted) return;
+      await _refreshAssemblyTree();
+      await _refreshAssemblyMesh();
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() => _errorMessage = e.message);
+    }
+  }
+
+  /// `MateContextMenuAction.delete`'s own handler - mirrors
+  /// [_confirmDeleteComponentPattern]'s identical "ask first, then delete
+  /// and refresh" shape.
+  Future<void> _confirmDeleteMate(MateDto mate) async {
+    final part = _part;
+    final focusPartId = _focusStack?.current ?? part?.id;
+    if (part == null || focusPartId == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete mate?'),
+        content: const Text('This removes the mate. This cannot be undone.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Delete')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await _api.deleteMate(focusPartId, mate.id);
+      if (!mounted) return;
+      setState(() {
+        if (_selectedMateId == mate.id) {
+          _selectedMateId = null;
+          _selectedEntities = {};
+        }
+      });
+      await _refreshAssemblyTree();
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() => _errorMessage = e.message);
+    }
+  }
+
   /// Bug fix: `AssemblyFocusStack.pop`, then re-fetches the tree - the exact
   /// same two lines the `exitFocus` case above always ran, factored out so
   /// [AssemblyTreePanel]'s own breadcrumb row (its [AssemblyTreePanel.
@@ -17917,6 +18200,12 @@ class _PartScreenState extends State<PartScreen> {
                   // moved Body itself tracks the drag - see that getter's
                   // own doc comment.
                   assemblyInstances: _displayAssemblyInstances,
+                  // Test report item 3 (New Mate ghost preview): both `null`
+                  // outside an active New Mate flow, or whenever there's
+                  // nothing solved to show yet - see [_matePreviewPartId]'s
+                  // own doc comment.
+                  matePreviewPartId: _matePreviewPartId,
+                  matePreviewTransform: _matePreviewTransform,
                   // Assembly support Phase 5: `null` whenever there's no
                   // gizmo to show - see [_gizmoDisplayTransform]'s own doc
                   // comment for every case that covers.
@@ -18490,10 +18779,19 @@ class _PartScreenState extends State<PartScreen> {
                     onOccurrenceTap: _onOccurrenceTap,
                     onOccurrenceLongPress: _onOccurrenceLongPress,
                     onClose: () => setState(() => _featureTreeVisible = false),
+                    onMateTap: _onMateTap,
+                    onMateLongPress: _onMateLongPress,
+                    selectedMateId: _selectedMateId,
                     onPatternTap: _openComponentPatternForEdit,
                     onPatternLongPress: _confirmDeleteComponentPattern,
                     focusedLabel: _focusStack?.currentLabel,
                     onExitFocus: () => unawaited(_exitAssemblyFocus()),
+                    // Test report item 1: the tree's own root row - whichever
+                    // Part these Components/Mates/Patterns sections actually
+                    // belong to, exactly mirroring `_refreshAssemblyTree`'s
+                    // own "`_focusStack.current`, defaulting to the root
+                    // Part" precedent for *which* Part's data to show.
+                    rootLabel: _focusStack?.currentLabel ?? _part?.name ?? 'Assembly',
                   ),
                 ),
                 Positioned.fill(
@@ -18656,9 +18954,23 @@ class _PartScreenState extends State<PartScreen> {
                       mateType: _mateType,
                       value: _mateValue,
                       flipped: _mateFlipped,
-                      onMateTypeChanged: (type) => setState(() => _mateType = type),
-                      onValueChanged: (value) => setState(() => _mateValue = value),
-                      onFlippedChanged: (flipped) => setState(() => _mateFlipped = flipped),
+                      allowRotation: _mateAllowRotation,
+                      onMateTypeChanged: (type) {
+                        setState(() => _mateType = type);
+                        unawaited(_scheduleMatePreview());
+                      },
+                      onValueChanged: (value) {
+                        setState(() => _mateValue = value);
+                        unawaited(_scheduleMatePreview());
+                      },
+                      onFlippedChanged: (flipped) {
+                        setState(() => _mateFlipped = flipped);
+                        unawaited(_scheduleMatePreview());
+                      },
+                      onAllowRotationChanged: (allow) {
+                        setState(() => _mateAllowRotation = allow);
+                        unawaited(_scheduleMatePreview());
+                      },
                       saving: _mateSaving,
                       error: _mateError,
                       onConfirm: _selectedEntities.length == 2 &&

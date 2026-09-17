@@ -2265,6 +2265,62 @@ void main() {
         throwsA(isA<ApiException>().having((e) => e.statusCode, 'statusCode', 422)),
       );
     });
+
+    // Test report item 3 (New Mate ghost preview).
+    test('previewMateSolve posts the Mate payload and parses a converged result', () async {
+      Uri? capturedUri;
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedUri = request.url;
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'converged': true,
+            'transform': {
+              'translation': [1.0, 2.0, 3.0],
+              'rotation_axis': [0.0, 0.0, 1.0],
+              'rotation_angle_degrees': 90.0,
+            },
+          });
+        }),
+      );
+
+      final result = await client.previewMateSolve(
+        'part-1',
+        'occ-1',
+        type: 'concentric',
+        references: const [
+          MateEntityRefDto(occurrenceId: 'occ-1', subshapeRef: SubShapeRefDto(bodyId: 'b1', shapeType: 'face', index: 0)),
+          MateEntityRefDto(occurrenceId: '', subshapeRef: SubShapeRefDto(bodyId: 'b2', shapeType: 'face', index: 1)),
+        ],
+        allowRotation: false,
+      );
+
+      expect(capturedUri?.path, '/document/parts/part-1/occurrences/occ-1/preview-mate-solve');
+      expect(capturedBody['type'], 'concentric');
+      expect(capturedBody['allow_rotation'], false);
+      expect(result.converged, isTrue);
+      expect(result.transform?.translation, [1.0, 2.0, 3.0]);
+    });
+
+    test('previewMateSolve parses an unconverged result with a null transform', () async {
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async => jsonResponse({'converged': false, 'transform': null})),
+      );
+
+      final result = await client.previewMateSolve(
+        'part-1',
+        'occ-1',
+        type: 'distance',
+        references: const [
+          MateEntityRefDto(occurrenceId: 'occ-1', subshapeRef: SubShapeRefDto(bodyId: 'b1', shapeType: 'face', index: 0)),
+          MateEntityRefDto(occurrenceId: '', subshapeRef: SubShapeRefDto(bodyId: 'b2', shapeType: 'face', index: 1)),
+        ],
+      );
+
+      expect(result.converged, isFalse);
+      expect(result.transform, isNull);
+    });
   });
 
   group('Phase 7 (docs/assembly-scope.md §3 item 7): DocumentApiClient ComponentPattern CRUD', () {

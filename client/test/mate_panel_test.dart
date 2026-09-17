@@ -65,6 +65,8 @@ void main() {
         onMateTypeChanged: (_) {},
         onValueChanged: (_) {},
         onFlippedChanged: (_) {},
+        allowRotation: false,
+        onAllowRotationChanged: (_) {},
         saving: false,
         error: null,
         onConfirm: null,
@@ -85,6 +87,8 @@ void main() {
         onMateTypeChanged: (_) {},
         onValueChanged: (_) {},
         onFlippedChanged: (_) {},
+        allowRotation: false,
+        onAllowRotationChanged: (_) {},
         saving: false,
         error: null,
         onConfirm: null,
@@ -101,6 +105,8 @@ void main() {
         onMateTypeChanged: (_) {},
         onValueChanged: (_) {},
         onFlippedChanged: (_) {},
+        allowRotation: false,
+        onAllowRotationChanged: (_) {},
         saving: false,
         error: null,
         onConfirm: null,
@@ -120,6 +126,8 @@ void main() {
         onMateTypeChanged: (_) {},
         onValueChanged: (_) {},
         onFlippedChanged: (_) {},
+        allowRotation: false,
+        onAllowRotationChanged: (_) {},
         saving: false,
         error: null,
         onConfirm: null,
@@ -138,13 +146,18 @@ void main() {
         onMateTypeChanged: (_) {},
         onValueChanged: (_) {},
         onFlippedChanged: (_) {},
+        allowRotation: false,
+        onAllowRotationChanged: (_) {},
         saving: false,
         error: null,
         onConfirm: null,
         onCancel: () {},
       )));
-      expect(find.byType(CheckboxListTile), findsOneWidget);
+      // Test report item 4: concentric now also shows "Allow rotation" -
+      // both checkboxes are meaningful for this type.
+      expect(find.byType(CheckboxListTile), findsNWidgets(2));
       expect(find.text('Flipped'), findsOneWidget);
+      expect(find.text('Allow rotation'), findsOneWidget);
 
       await tester.pumpWidget(wrap(MatePanel(
         selectedEntities: const {},
@@ -155,12 +168,58 @@ void main() {
         onMateTypeChanged: (_) {},
         onValueChanged: (_) {},
         onFlippedChanged: (_) {},
+        allowRotation: false,
+        onAllowRotationChanged: (_) {},
         saving: false,
         error: null,
         onConfirm: null,
         onCancel: () {},
       )));
       expect(find.byType(CheckboxListTile), findsNothing);
+    });
+
+    testWidgets('shows an Allow rotation checkbox only for concentric', (tester) async {
+      await tester.pumpWidget(wrap(MatePanel(
+        selectedEntities: const {},
+        bodyNames: const {},
+        mateType: 'coincident',
+        value: null,
+        flipped: false,
+        onMateTypeChanged: (_) {},
+        onValueChanged: (_) {},
+        onFlippedChanged: (_) {},
+        allowRotation: true,
+        onAllowRotationChanged: (_) {},
+        saving: false,
+        error: null,
+        onConfirm: null,
+        onCancel: () {},
+      )));
+      // coincident has Flipped but not Allow rotation.
+      expect(find.text('Flipped'), findsOneWidget);
+      expect(find.text('Allow rotation'), findsNothing);
+    });
+
+    testWidgets('unchecking Allow rotation calls onAllowRotationChanged(false)', (tester) async {
+      bool? changedTo;
+      await tester.pumpWidget(wrap(MatePanel(
+        selectedEntities: const {},
+        bodyNames: const {},
+        mateType: 'concentric',
+        value: null,
+        flipped: false,
+        onMateTypeChanged: (_) {},
+        onValueChanged: (_) {},
+        onFlippedChanged: (_) {},
+        allowRotation: true,
+        onAllowRotationChanged: (checked) => changedTo = checked,
+        saving: false,
+        error: null,
+        onConfirm: null,
+        onCancel: () {},
+      )));
+      await tester.tap(find.text('Allow rotation'));
+      expect(changedTo, isFalse);
     });
 
     testWidgets('lists selected entities by body name and kind', (tester) async {
@@ -176,6 +235,8 @@ void main() {
         onMateTypeChanged: (_) {},
         onValueChanged: (_) {},
         onFlippedChanged: (_) {},
+        allowRotation: false,
+        onAllowRotationChanged: (_) {},
         saving: false,
         error: null,
         onConfirm: null,
@@ -198,6 +259,8 @@ void main() {
         onMateTypeChanged: (_) {},
         onValueChanged: (_) {},
         onFlippedChanged: (_) {},
+        allowRotation: false,
+        onAllowRotationChanged: (_) {},
         saving: false,
         error: 'Mate could not be solved',
         onConfirm: null,
@@ -216,6 +279,8 @@ void main() {
         onMateTypeChanged: (_) {},
         onValueChanged: (_) {},
         onFlippedChanged: (_) {},
+        allowRotation: false,
+        onAllowRotationChanged: (_) {},
         saving: true,
         error: null,
         onConfirm: () {},
@@ -237,6 +302,8 @@ void main() {
         onMateTypeChanged: (_) {},
         onValueChanged: (_) {},
         onFlippedChanged: (_) {},
+        allowRotation: false,
+        onAllowRotationChanged: (_) {},
         saving: false,
         error: null,
         onConfirm: null,
@@ -257,6 +324,8 @@ void main() {
         onMateTypeChanged: (type) => changedTo = type,
         onValueChanged: (_) {},
         onFlippedChanged: (_) {},
+        allowRotation: false,
+        onAllowRotationChanged: (_) {},
         saving: false,
         error: null,
         onConfirm: null,

@@ -2858,6 +2858,10 @@ class MateResponse(BaseModel):
     value: float | None = None
     flipped: bool = False
     suppressed: bool = False
+    # Test report item 4: `Mate.allow_rotation`'s own wire form - see that
+    # field's own docstring. Defaults `True` (free spin) so a pre-existing
+    # Mate round-trips through this response unchanged.
+    allow_rotation: bool = True
 
 
 class MateCreate(BaseModel):
@@ -2877,22 +2881,43 @@ class MateCreate(BaseModel):
     references: list[MateEntityRefResponse]
     value: float | None = None
     flipped: bool = False
+    # Test report item 4: only meaningful for `type == "concentric"` -
+    # ignored (but still stored) for every other type, mirroring `value`'s
+    # own "meaningful for a subset of types" convention. Defaults `True`
+    # (free spin), `Mate.allow_rotation`'s own default.
+    allow_rotation: bool = True
 
 
 class MateUpdate(BaseModel):
     """`PATCH /parts/{part_id}/mates/{mate_id}`'s request body - `value`/
-    `flipped`/`suppressed` only (never `type`/`references`; changing what a
-    Mate actually references is a new Mate, not an edit of this one, the
-    same "narrow mutation surface" `OccurrenceTransformUpdate` itself
-    already accepts for `Occurrence`). Omitted (`None`) means "leave this
-    field as it currently is" - `flipped`/`suppressed` are themselves
-    booleans, so `None` (not `False`) is what "omitted" has to mean here,
-    the same optional-vs-omitted convention every other partial-update
-    schema in this file already uses."""
+    `flipped`/`suppressed`/`allow_rotation` only (never `type`/`references`;
+    changing what a Mate actually references is a new Mate, not an edit of
+    this one, the same "narrow mutation surface" `OccurrenceTransformUpdate`
+    itself already accepts for `Occurrence`). Omitted (`None`) means "leave
+    this field as it currently is" - these are themselves booleans, so
+    `None` (not `False`) is what "omitted" has to mean here, the same
+    optional-vs-omitted convention every other partial-update schema in this
+    file already uses."""
 
     value: float | None = None
     flipped: bool | None = None
     suppressed: bool | None = None
+    allow_rotation: bool | None = None
+
+
+class MateSolvePreviewResponse(BaseModel):
+    """Test report item 3 (New Mate ghost preview): `POST /parts/{part_id}/
+    occurrences/{occurrence_id}/preview-mate-solve`'s response - a dry-run
+    counterpart to `OccurrenceResponse` (`solve_for_occurrence`'s own
+    success shape). `transform` is `None` whenever `converged` is `False`
+    (an in-progress, not-yet-fully-specified, or geometrically invalid
+    payload - all expected, frequent states while the user is still
+    picking/adjusting a Mate's type/value/flip, never reported as an error
+    the way `solve_for_occurrence`'s own 422 is for an *already-created*
+    Mate)."""
+
+    converged: bool
+    transform: RigidTransformResponse | None = None
 
 
 class ComponentPatternAxisSchema(BaseModel):

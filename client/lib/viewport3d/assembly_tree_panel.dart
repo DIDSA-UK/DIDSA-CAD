@@ -104,6 +104,14 @@ class AssemblyTreePanel extends StatefulWidget {
   final void Function(MateDto mate)? onMateTap;
   final void Function(MateDto mate)? onMateLongPress;
 
+  /// Test report item 5: mirrors [selectedOccurrenceId]'s own "which row is
+  /// selected" convention for the Mates section - [onMateTap]'s real call
+  /// site (`part_screen.dart`'s `_onMateTap`) sets this alongside selecting
+  /// the mate's own referenced geometry into the viewport's highlight set,
+  /// so the tapped row visibly stays marked selected the same way an
+  /// Occurrence row already does.
+  final String? selectedMateId;
+
   /// Phase 11 (`docs/assembly-scope.md` §6 `[8]`): tap-to-edit/long-press-
   /// to-delete for an already-authored `ComponentPattern` row - mirrors
   /// [onMateTap]/[onMateLongPress]'s own optional, additive shape exactly
@@ -128,6 +136,20 @@ class AssemblyTreePanel extends StatefulWidget {
   final String? focusedLabel;
   final VoidCallback? onExitFocus;
 
+  /// Test report item 1: the tree used to start straight in at the
+  /// Components/Mates/Patterns sections, with no row at all for the part
+  /// those sections actually belong to - an NX/SolidWorks-style assembly
+  /// tree always shows the containing part/assembly itself as the tree's
+  /// own root, with its components nested beneath it. [rootLabel] is that
+  /// row's own display name - the currently-open Part's name while
+  /// unfocused, or [focusedLabel] once "Make Focus" has drilled into a
+  /// sub-component (in which case this same row keeps doubling as the
+  /// breadcrumb [onExitFocus] tap target, rather than showing two separate
+  /// "which part am I looking at" rows). Defaults to `'Assembly'` so no
+  /// existing call site (in particular this widget's own tests) breaks by
+  /// omitting it.
+  final String rootLabel;
+
   const AssemblyTreePanel({
     super.key,
     required this.visible,
@@ -140,10 +162,12 @@ class AssemblyTreePanel extends StatefulWidget {
     required this.onClose,
     this.onMateTap,
     this.onMateLongPress,
+    this.selectedMateId,
     this.onPatternTap,
     this.onPatternLongPress,
     this.focusedLabel,
     this.onExitFocus,
+    this.rootLabel = 'Assembly',
   });
 
   @override
@@ -235,7 +259,7 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
                                     ],
                                   ),
                                 ),
-                                if (widget.focusedLabel != null) _buildFocusBreadcrumb(context),
+                                _buildParentPartRow(context),
                                 Expanded(child: _buildGroupedTree(context)),
                               ],
                             );
@@ -254,31 +278,45 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
     );
   }
 
-  /// Bug fix: the breadcrumb row shown while [AssemblyTreePanel.focusedLabel]
-  /// is non-null - a back arrow plus the focused Part's own display name,
-  /// tapping either calls [AssemblyTreePanel.onExitFocus] (mirrors
-  /// [ComponentContextMenuAction.exitFocus]'s effect exactly, just reachable
-  /// without needing an Occurrence row to long-press). Sits between the
-  /// panel's header and its tree/empty-state body, so it's visible
-  /// regardless of whether the focused Part has any Occurrences of its own
-  /// to show below it.
-  Widget _buildFocusBreadcrumb(BuildContext context) {
+  /// Test report item 1 (formerly `_buildFocusBreadcrumb`, shown only while
+  /// [AssemblyTreePanel.focusedLabel] was non-null): now the tree's own
+  /// permanent root row, always shown - the containing part/assembly itself,
+  /// with [_buildGroupedTree]'s Components/Mates/Patterns sections indented
+  /// beneath it (see that method's own `Padding`), the same "parent node,
+  /// indented children" shape an NX/SolidWorks-style assembly tree always
+  /// shows. While unfocused this is a plain, non-interactive header naming
+  /// [AssemblyTreePanel.rootLabel] (the currently-open Part); once "Make
+  /// Focus" has drilled into a sub-component, [focusedLabel] itself (e.g.
+  /// "Bracket") wins over [rootLabel] - this is what keeps this row doubling
+  /// as the breadcrumb back button (mirrors [ComponentContextMenuAction.
+  /// exitFocus]'s effect exactly, just reachable without needing an
+  /// Occurrence row to long-press) - never two separate "which part am I
+  /// looking at" rows, and never a caller-supplied [rootLabel] silently
+  /// overriding the one name a `focusedLabel`-only caller (e.g. this widget's
+  /// own pre-existing tests) actually gave this row to show.
+  Widget _buildParentPartRow(BuildContext context) {
+    final focused = widget.focusedLabel != null;
     return Material(
       color: Theme.of(context).colorScheme.surfaceContainerHighest,
       child: InkWell(
-        onTap: widget.onExitFocus,
+        onTap: focused ? widget.onExitFocus : null,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
           child: Row(
             children: [
-              const Icon(Icons.arrow_back, size: 18),
-              const SizedBox(width: 6),
+              if (focused) ...[
+                const Icon(Icons.arrow_back, size: 18),
+                const SizedBox(width: 6),
+              ] else ...[
+                const Icon(Icons.view_in_ar, size: 18),
+                const SizedBox(width: 6),
+              ],
               Expanded(
                 child: Text(
-                  widget.focusedLabel!,
+                  widget.focusedLabel ?? widget.rootLabel,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
                 ),
               ),
             ],
@@ -347,7 +385,12 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
         ),
       );
     }
+    // Test report item 1: indented under `_buildParentPartRow`'s own root
+    // row (a plain leading inset - `ExpansionTile`'s own leading icon already
+    // contributes some, this is the "these sections belong to that part"
+    // indent on top of it) rather than starting flush with the panel's edge.
     return ListView(
+      padding: const EdgeInsets.only(left: 16),
       children: [
         _buildComponentsSection(context),
         if (widget.mates.isNotEmpty) _buildMatesSection(context),
@@ -442,6 +485,7 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
       child: ListTile(
         dense: true,
         visualDensity: VisualDensity.compact,
+        selected: mate.id == widget.selectedMateId,
         leading: const Icon(Icons.link, size: 24),
         title: Text(
           mateDisplayName(widget.mates, index),

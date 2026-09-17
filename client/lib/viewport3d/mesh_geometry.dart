@@ -963,13 +963,32 @@ Node buildAssemblyInstanceNode(
   MeshDto mesh, {
   required vm.Matrix4 localTransform,
   required double opacity,
+  // Test report item 3 (New Mate ghost preview): lets
+  // `PartViewport._syncMatePreviewNode` reuse this same builder with a
+  // distinctive tint instead of the neutral default every ordinary placed
+  // instance already renders with - a preview needs to read as "not real
+  // geometry yet", not just "translucent" (which
+  // `assemblyInstanceOpacity`'s own non-primary-focus fade already means).
+  // RGB only; alpha always comes from [opacity] below, matching every
+  // pre-existing call site's exact prior color when this is omitted.
+  vm.Vector3? tint,
 }) {
   final isTranslucent = opacity < 1.0;
   final geometry = geometryFromMesh(mesh, doubleSidedWinding: isTranslucent);
+  final color = tint ?? vm.Vector3(0.68, 0.72, 0.78);
   final material = PhysicallyBasedMaterial()
     ..alphaMode = isTranslucent ? AlphaMode.blend : AlphaMode.opaque
-    ..baseColorFactor = vm.Vector4(0.68, 0.72, 0.78, opacity)
+    ..baseColorFactor = vm.Vector4(color.x, color.y, color.z, opacity)
     ..roughnessFactor = 0.6
     ..metallicFactor = 0.1;
   return Node(name: 'assembly-instance', localTransform: localTransform, mesh: Mesh(geometry, material));
 }
+
+/// Test report item 3: the ghost preview's own fixed opacity/tint - a
+/// desaturated blue, distinct from [kNonPrimaryAssemblyOpacity]'s neutral
+/// dimming (that means "context, not what you're editing"; this means "not
+/// placed yet, only a proposal"). Not user-adjustable, the same "fixed
+/// signal, not a rendering preference" precedent [kNonPrimaryAssemblyOpacity]
+/// itself already sets.
+const double kMatePreviewOpacity = 0.45;
+final vm.Vector3 kMatePreviewTint = vm.Vector3(0.30, 0.58, 0.95);

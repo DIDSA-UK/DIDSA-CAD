@@ -95,6 +95,29 @@ class PartViewport extends StatefulWidget {
   /// end, so [didUpdateWidget]'s `!=` check here stays meaningful.
   final List<String> focusedOccurrencePath;
 
+  /// Test report item 3 (New Mate ghost preview): the target Part id whose
+  /// geometry [PartViewportState._syncMatePreviewNode] should render as a
+  /// translucent, distinctly-tinted ("not placed yet, only a proposal")
+  /// preview instance - looked up against [assemblyGeometry] the same way
+  /// [assemblyInstances]' own per-instance loop already does, just for one
+  /// synthetic instance instead of a real [AssemblyOccurrenceInstanceDto].
+  /// `null` (the default) renders no preview at all - every pre-existing
+  /// caller (nothing was authoring a Mate before this) is unaffected. Always
+  /// paired with [matePreviewTransform] - one non-null without the other
+  /// renders nothing, the same "both or neither" contract
+  /// [selectedOccurrenceTransform]/[selectedOccurrenceBoundingRadius] don't
+  /// quite share (that pair tolerates a null radius) but this one needs,
+  /// since there's no meaningful "preview this Part's geometry at no
+  /// particular place" state.
+  final String? matePreviewPartId;
+
+  /// [PartScreen]'s own live-solved (or last-solved) transform for whichever
+  /// Occurrence is the driven side of the Mate currently being authored -
+  /// `null` while unsolved/not converged (e.g. mid-edit with an invalid
+  /// value), in which case no ghost renders at all rather than one frozen at
+  /// a stale position.
+  final RigidTransformDto? matePreviewTransform;
+
   /// Assembly support Phase 5 (`docs/assembly-scope.md` §3): the Move/
   /// Rotate gizmo's own target - the selected Occurrence's own current
   /// `RigidTransformDto` (during a live drag, [PartScreen]'s own optimistic
@@ -966,6 +989,8 @@ class PartViewport extends StatefulWidget {
     this.assemblyGeometry = const [],
     this.assemblyInstances = const [],
     this.focusedOccurrencePath = const [],
+    this.matePreviewPartId,
+    this.matePreviewTransform,
     this.selectedOccurrenceTransform,
     this.selectedOccurrenceBoundingRadius,
     this.onComponentGizmoDragUpdate,
@@ -1166,6 +1191,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// [_meshNodes] itself uses. Always empty for every Part with no
   /// Occurrences at all.
   Map<String, Node> _assemblyInstanceNodes = {};
+
+  /// Test report item 3: one Node per Body of [PartViewport.matePreviewPartId]'s
+  /// own geometry, keyed by bodyId - [_assemblyInstanceNodes]' own sibling
+  /// for the ghost preview, rebuilt wholesale by [_syncMatePreviewNode] the
+  /// same "clear, then rebuild" shape. Always empty outside an active New
+  /// Mate flow.
+  Map<String, Node> _matePreviewNodes = {};
 
   /// Stage 11: the Part's real OCCT edge polylines, one [Node] per Body
   /// (Prompt A3), rendered separately from [_meshNodes]' filled faces -
@@ -1648,6 +1680,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         );
         _syncMeshNode();
         _syncAssemblyInstanceNodes();
+        _syncMatePreviewNode();
         _syncComponentGizmoNode();
         _syncEdgesNode();
         _syncAssemblyInstanceEdgesNode();
@@ -1727,6 +1760,15 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         widget.assemblyInstances != oldWidget.assemblyInstances ||
         widget.focusedOccurrencePath != oldWidget.focusedOccurrencePath) {
       setState(_syncAssemblyInstanceNodes);
+    }
+    // Test report item 3: [_syncMatePreviewNode]'s own three inputs - a
+    // separate rebuild from [_syncAssemblyInstanceNodes] above (its own,
+    // unrelated Node map), the same "each sync method owns exactly its own
+    // Node map" convention every other pair here already follows.
+    if (widget.assemblyGeometry != oldWidget.assemblyGeometry ||
+        widget.matePreviewPartId != oldWidget.matePreviewPartId ||
+        widget.matePreviewTransform != oldWidget.matePreviewTransform) {
+      setState(_syncMatePreviewNode);
     }
     // Bug fix (bug report: "on child parts... edges do not appear to
     // render"): [_syncAssemblyInstanceEdgesNode]'s own inputs - the
@@ -2311,6 +2353,40 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           scene.add(node);
           _assemblyInstanceNodes['$occurrenceKey/${body.bodyId}'] = node;
         }
+      }
+    }
+  }
+
+  /// Test report item 3 (New Mate ghost preview): [_assemblyInstanceNodes]'
+  /// own sibling for [PartViewport.matePreviewPartId]/[matePreviewTransform] -
+  /// same "clear, then rebuild wholesale" shape, just always at most one
+  /// synthetic instance instead of looping [PartViewport.assemblyInstances].
+  /// Renders nothing at all unless *both* inputs are non-null (see
+  /// [PartViewport.matePreviewPartId]'s own doc comment for why this is a
+  /// deliberate "both or neither" pair rather than tolerating one alone).
+  void _syncMatePreviewNode() {
+    final scene = _scene;
+    if (scene == null) return;
+    for (final node in _matePreviewNodes.values) {
+      scene.remove(node);
+    }
+    _matePreviewNodes = {};
+    final partId = widget.matePreviewPartId;
+    final previewTransform = widget.matePreviewTransform;
+    if (partId == null || previewTransform == null) return;
+    final transform = matrix4FromRigidTransform(previewTransform);
+    for (final partGeometry in widget.assemblyGeometry) {
+      if (partGeometry.partId != partId) continue;
+      for (final body in partGeometry.bodies) {
+        if (body.mesh.vertices.isEmpty) continue;
+        final node = buildAssemblyInstanceNode(
+          body.mesh,
+          localTransform: transform,
+          opacity: kMatePreviewOpacity,
+          tint: kMatePreviewTint,
+        );
+        scene.add(node);
+        _matePreviewNodes[body.bodyId] = node;
       }
     }
   }

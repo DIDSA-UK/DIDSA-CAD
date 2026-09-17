@@ -191,6 +191,21 @@ class _ResolvedGeometry:
     axis_origin: Vec3 | None = None
     direction: Vec3 | None = None
 
+    # Test report item 4: a unit vector perpendicular to `direction`,
+    # populated only alongside an axis (`axis_origin`/`direction` from a
+    # cylindrical Face or circular/straight Edge) - `None` for a plane/point
+    # reference, and unused by every `MateType` except CONCENTRIC's own
+    # `allow_rotation=False` branch (`_add_mate_constraints`/`_mate_
+    # residual_satisfied`). Computed once, in `_resolve_local_geometry`, from
+    # the *local*, untransformed `direction` (via `_axis_perpendicular`) -
+    # `_place_in_world` then carries it through the same rotation `direction`
+    # itself gets, so the constraint-building and residual-verification
+    # passes always compare the *same* transformed vector, never two
+    # independently-recomputed ones that could disagree once `direction`
+    # itself has been rotated (see `_axis_perpendicular`'s own docstring for
+    # why recomputing from a rotated vector isn't safe).
+    perp: Vec3 | None = None
+
 
 def _resolve_local_geometry(target_part: Part, bodies: dict, ref: MateEntityRef) -> _ResolvedGeometry:
     """`ref`'s own geometry, in `target_part`'s local frame (from `bodies`,
@@ -222,7 +237,11 @@ def _resolve_local_geometry(target_part: Part, bodies: dict, ref: MateEntityRef)
         if surface_type == GeomAbs_Cylinder:
             geometry = single_shape_geometry(sub, shape)
             assert geometry.axis_origin is not None and geometry.axis_direction is not None
-            return _ResolvedGeometry(axis_origin=geometry.axis_origin, direction=geometry.axis_direction)
+            return _ResolvedGeometry(
+                axis_origin=geometry.axis_origin,
+                direction=geometry.axis_direction,
+                perp=_axis_perpendicular(geometry.axis_direction),
+            )
         raise _unsupported_mate_geometry(ref, "point, plane, or axis")
 
     if sub.shape_type == SubShapeType.EDGE:
@@ -239,7 +258,11 @@ def _resolve_local_geometry(target_part: Part, bodies: dict, ref: MateEntityRef)
             # `axis_origin`/`direction` pair came from in the first place.
             geometry = single_shape_geometry(sub, shape)
             assert geometry.axis_origin is not None and geometry.axis_direction is not None
-            return _ResolvedGeometry(axis_origin=geometry.axis_origin, direction=geometry.axis_direction)
+            return _ResolvedGeometry(
+                axis_origin=geometry.axis_origin,
+                direction=geometry.axis_direction,
+                perp=_axis_perpendicular(geometry.axis_direction),
+            )
         raise _unsupported_mate_geometry(ref, "an axis (a circular or straight edge)")
 
     # SubShapeType.BODY - no meaningful point/plane/axis of its own.
@@ -258,6 +281,11 @@ def _place_in_world(geometry: _ResolvedGeometry, transform: RigidTransform) -> _
     direction = (
         apply_transform_to_direction(transform, geometry.direction) if geometry.direction is not None else None
     )
+    # Test report item 4: `perp` rotates exactly like `direction` (it's just
+    # another direction vector, in the same local frame) - never
+    # recomputed from the already-transformed `direction` above, see
+    # `_ResolvedGeometry.perp`'s own docstring for why that would disagree.
+    perp = apply_transform_to_direction(transform, geometry.perp) if geometry.perp is not None else None
     plane = None
     if geometry.plane is not None:
         plane = ResolvedPlane(
@@ -266,7 +294,7 @@ def _place_in_world(geometry: _ResolvedGeometry, transform: RigidTransform) -> _
             x_axis=apply_transform_to_direction(transform, geometry.plane.x_axis),
             y_axis=apply_transform_to_direction(transform, geometry.plane.y_axis),
         )
-    return _ResolvedGeometry(point=point, plane=plane, axis_origin=axis_origin, direction=direction)
+    return _ResolvedGeometry(point=point, plane=plane, axis_origin=axis_origin, direction=direction, perp=perp)
 
 
 def _target_part_and_transform(
@@ -310,6 +338,26 @@ def _cross(a: Vec3, b: Vec3) -> Vec3:
 
 def _magnitude(v: Vec3) -> float:
     return math.sqrt(_dot(v, v))
+
+
+def _axis_perpendicular(direction: Vec3) -> Vec3:
+    """A unit vector perpendicular to `direction` - `_ResolvedGeometry.perp`'s
+    own populator (test report item 4, CONCENTRIC's `allow_rotation=False`
+    branch). Deterministic and a pure function of `direction` alone (the
+    same "pick whichever world axis isn't nearly parallel, cross it in"
+    technique `_quaternion_aligning`'s own near-180-degree branch already
+    uses) - **not** meant to reconstruct any particular real-world reference
+    on the part (a plain cylindrical/circular axis has no such reference to
+    begin with, unlike e.g. a keyway), just to give CONCENTRIC's own extra
+    angle-lock constraint two well-defined, always-available lines to pin
+    together. This is why `allow_rotation=False` is documented as a
+    canonical-phase lock, not a "freeze wherever it currently is" one: the
+    driven side ends up at whichever of its own infinite rotational
+    positions makes this canonical perpendicular line up with the fixed
+    side's, not necessarily the position it happened to be dragged to."""
+    axis = _normalize(direction)
+    arbitrary = (1.0, 0.0, 0.0) if abs(axis[0]) < 0.9 else (0.0, 1.0, 0.0)
+    return _normalize(_cross(axis, arbitrary))
 
 
 def _point_plane_distance(point: Vec3, plane_origin: Vec3, plane_normal: Vec3) -> float:
@@ -592,6 +640,24 @@ def _add_mate_constraints(
         fixed_line = _fixed_line(system, fixed.axis_origin, fixed.direction)
         system.addParallel(driven_line, fixed_line, group=_SOLVE_GROUP)
         system.addPointOnLine(driven_origin_point, fixed_line, group=_SOLVE_GROUP)
+        # Test report item 4: "Allow rotation" unchecked - on top of the
+        # axis-to-axis lock above (which alone leaves both translation along,
+        # and rotation about, the shared axis free), also locks rotation
+        # about that axis by forcing a deterministic perpendicular reference
+        # line on each side (`_ResolvedGeometry.perp`, always populated
+        # alongside an axis reference) parallel to one another - an
+        # `addAngle(0, ...)` between them rather than a second `addParallel`
+        # so this reads as what it is (a rotation-lock constraint), even
+        # though `addParallel` would be numerically equivalent (0 degrees).
+        # Translation along the axis stays free either way - this only ever
+        # removes the spin DOF, never combines with an implicit DISTANCE/
+        # COINCIDENT lock, matching the "CONCENTRIC only supports axis-to-
+        # axis" v1 scope this module's own docstring already documents.
+        if not mate.allow_rotation:
+            assert driven.perp is not None and fixed.perp is not None
+            driven_perp_line = builder.line(driven.axis_origin, driven.perp)
+            fixed_perp_line = _fixed_line(system, fixed.axis_origin, fixed.perp)
+            system.addAngle(0.0, False, driven_perp_line, fixed_perp_line, group=_SOLVE_GROUP)
         return
 
     if mate.type == MateType.PARALLEL:
@@ -747,9 +813,21 @@ def _mate_residual_satisfied(mate: Mate, driven_world: _ResolvedGeometry, fixed:
             or fixed.direction is None
         ):
             return False
-        return _directions_parallel(driven_world.direction, fixed.direction) and (
+        axis_satisfied = _directions_parallel(driven_world.direction, fixed.direction) and (
             _point_line_distance(driven_world.axis_origin, fixed.axis_origin, fixed.direction) <= _RESIDUAL_TOLERANCE
         )
+        if not axis_satisfied:
+            return False
+        # Test report item 4: mirrors `_add_mate_constraints`' own extra
+        # `allow_rotation=False` constraint - `driven_world.perp`/`fixed.perp`
+        # went through the exact same `_place_in_world` rotation `direction`
+        # itself did, so this residual check compares the same two lines
+        # that constraint actually built.
+        if not mate.allow_rotation:
+            if driven_world.perp is None or fixed.perp is None:
+                return False
+            return _directions_parallel(driven_world.perp, fixed.perp)
+        return True
 
     if mate.type == MateType.PARALLEL:
         if driven_world.direction is None or fixed.direction is None:
@@ -827,13 +905,27 @@ def _applicable_mates(part: Part, driven_occurrence_id: str) -> list[tuple[Mate,
     return applicable
 
 
-def solve_occurrence(document: Document, part: Part, driven_occurrence_id: str) -> MateSolveResult:
-    """Solves every Mate in `part.mates` that references
-    `driven_occurrence_id`, against every other referenced Occurrence held
-    fixed at its own current transform - the real prerequisite this
-    module's own docstring describes. `driven_occurrence_id` must name a
-    real, top-level entry in `part.occurrences` (never `""` - the root has
-    no transform of its own to solve for).
+def _find_occurrence(part: Part, occurrence_id: str) -> Occurrence:
+    for occurrence in part.occurrences:
+        if occurrence.id == occurrence_id:
+            return occurrence
+    raise _driven_occurrence_not_found(occurrence_id)
+
+
+def _solve_occurrence_against(
+    document: Document,
+    part: Part,
+    driven_occurrence: Occurrence,
+    applicable: list[tuple[Mate, MateEntityRef, MateEntityRef]],
+) -> MateSolveResult:
+    """The shared tail of `solve_occurrence`/`preview_mate_solve` (test
+    report item 3, New Mate ghost preview) - given `driven_occurrence` and
+    its own already-gathered `applicable` Mate list (the real ones from
+    `part.mates` for `solve_occurrence`; that same list plus one
+    hypothetical, not-yet-created Mate for `preview_mate_solve`'s own live
+    "New Mate" ghost preview), does the actual `py_slvs` solve and returns
+    the result. Never mutates `driven_occurrence` or `part.mates` itself -
+    each caller decides separately whether/how to persist anything.
 
     No applicable Mates at all is not an error - returns the Occurrence's
     own current transform, trivially "converged" (nothing to satisfy).
@@ -843,20 +935,11 @@ def solve_occurrence(document: Document, part: Part, driven_occurrence_id: str) 
     router's own `solve_for_occurrence` endpoint) snaps to the *nearest*
     mate-satisfying placement rather than jumping to some other,
     arbitrarily-different valid solution."""
-    driven_occurrence: Occurrence | None = None
-    for occurrence in part.occurrences:
-        if occurrence.id == driven_occurrence_id:
-            driven_occurrence = occurrence
-            break
-    if driven_occurrence is None:
-        raise _driven_occurrence_not_found(driven_occurrence_id)
-
-    applicable = _applicable_mates(part, driven_occurrence_id)
     if not applicable:
         return MateSolveResult(converged=True, transform=driven_occurrence.transform, dof=6)
 
     if driven_occurrence.part_id is None or driven_occurrence.part_id not in document.parts:
-        raise _unresolved_mate_occurrence(driven_occurrence_id)
+        raise _unresolved_mate_occurrence(driven_occurrence.id)
     driven_target_part = document.parts[driven_occurrence.part_id]
     driven_bodies = compute_part_bodies(driven_target_part)
 
@@ -944,3 +1027,44 @@ def solve_occurrence(document: Document, part: Part, driven_occurrence_id: str) 
         )
 
     return MateSolveResult(converged=converged, transform=transform, dof=system.Dof)
+
+
+def solve_occurrence(document: Document, part: Part, driven_occurrence_id: str) -> MateSolveResult:
+    """Solves every Mate in `part.mates` that references
+    `driven_occurrence_id`, against every other referenced Occurrence held
+    fixed at its own current transform - the real prerequisite this
+    module's own docstring describes. `driven_occurrence_id` must name a
+    real, top-level entry in `part.occurrences` (never `""` - the root has
+    no transform of its own to solve for). See `_solve_occurrence_against`
+    for the actual solve."""
+    driven_occurrence = _find_occurrence(part, driven_occurrence_id)
+    applicable = _applicable_mates(part, driven_occurrence_id)
+    return _solve_occurrence_against(document, part, driven_occurrence, applicable)
+
+
+def preview_mate_solve(
+    document: Document, part: Part, driven_occurrence_id: str, extra_mate: Mate
+) -> MateSolveResult:
+    """Test report item 3 (New Mate ghost preview): like `solve_occurrence`,
+    but against `part.mates` *plus* one hypothetical `extra_mate` - never
+    appended to `part.mates`, never persisted anywhere. Lets the client show
+    a live ghost preview of where a Mate currently being authored in the UI
+    (`MatePanel`, before the user ever taps Confirm) would actually place
+    its driven Occurrence, recomputed on every type/value/flip/allow-
+    rotation change. `extra_mate.references` must have exactly 2 entries,
+    exactly one of them naming `driven_occurrence_id` (the router's own
+    `preview_mate_solve_endpoint` builds it directly from the same payload
+    shape `POST .../mates` validates, so this is always true in practice);
+    if neither or both do, `extra_mate` is silently dropped and this behaves
+    exactly like `solve_occurrence` (the real Mates already on
+    `driven_occurrence_id`, if any) rather than raising - a live preview
+    tolerates a still-being-edited, momentarily-nonsensical selection."""
+    driven_occurrence = _find_occurrence(part, driven_occurrence_id)
+    applicable = _applicable_mates(part, driven_occurrence_id)
+    if len(extra_mate.references) == 2:
+        first, second = extra_mate.references
+        if first.occurrence_id == driven_occurrence_id and second.occurrence_id != driven_occurrence_id:
+            applicable = [*applicable, (extra_mate, first, second)]
+        elif second.occurrence_id == driven_occurrence_id and first.occurrence_id != driven_occurrence_id:
+            applicable = [*applicable, (extra_mate, second, first)]
+    return _solve_occurrence_against(document, part, driven_occurrence, applicable)
