@@ -584,6 +584,85 @@ class _PartScreenState extends State<PartScreen> {
   /// the gizmo).
   RigidTransformDto? get _gizmoDisplayTransform => _gizmoLiveTransform ?? _gizmoTargetWorldTransform;
 
+  /// On-device feedback ("the gizmo is the wrong size"): memoizes
+  /// [_gizmoTargetBoundingRadius] by Occurrence id, keyed separately from
+  /// that getter itself so a live gizmo drag's own `setState` calls
+  /// (`_onComponentGizmoDragUpdate`, potentially one per pointer-move frame)
+  /// don't each re-walk every vertex of the target's geometry - the target's
+  /// own shape never changes while this tool only ever moves/rotates it, so
+  /// the cached radius stays valid for as long as the same Occurrence stays
+  /// targeted.
+  String? _gizmoBoundingRadiusCacheOccurrenceId;
+  double? _gizmoBoundingRadiusCacheValue;
+
+  /// The Move/Rotate gizmo's own size input
+  /// (`component_gizmo.dart`'s `kComponentGizmoSizeFraction`,
+  /// `PartViewport.selectedOccurrenceBoundingRadius`): [_gizmoTargetOccurrence]'s
+  /// own world-space bounding-sphere radius, unioned across every descendant
+  /// instance too (`isOccurrencePathWithinFocus`) so a sub-assembly target
+  /// sizes the gizmo to its own overall extent, not just whatever geometry
+  /// its own direct Occurrence entry happens to carry. `null` while there's
+  /// no target, or [_assemblyMesh] hasn't (re)loaded its geometry yet -
+  /// [PartViewport] falls back to a fixed world-unit gizmo size in that case
+  /// (see [ComponentGizmoBasis]'s own sizing doc comments).
+  double? get _gizmoTargetBoundingRadius {
+    final occurrence = _gizmoTargetOccurrence;
+    if (occurrence == null) {
+      _gizmoBoundingRadiusCacheOccurrenceId = null;
+      _gizmoBoundingRadiusCacheValue = null;
+      return null;
+    }
+    if (_gizmoBoundingRadiusCacheOccurrenceId == occurrence.id && _gizmoBoundingRadiusCacheValue != null) {
+      return _gizmoBoundingRadiusCacheValue;
+    }
+    final radius = _computeOccurrenceBoundingRadius(occurrence);
+    _gizmoBoundingRadiusCacheOccurrenceId = occurrence.id;
+    _gizmoBoundingRadiusCacheValue = radius;
+    return radius;
+  }
+
+  /// [_gizmoTargetBoundingRadius]'s actual computation - the world-space AABB
+  /// of every visible instance at or beneath [occurrence]'s own full path
+  /// (`[...focusedPath, occurrence.id]`), transformed by each instance's own
+  /// [AssemblyOccurrenceInstanceDto.worldTransform] exactly the way
+  /// [_syncAssemblyInstanceNodes]/`PartViewport._assemblyInstanceBounds`
+  /// already place/bound that same geometry, just scoped to one Occurrence's
+  /// own subtree instead of the whole visible assembly.
+  double? _computeOccurrenceBoundingRadius(OccurrenceDto occurrence) {
+    final assemblyMesh = _assemblyMesh;
+    if (assemblyMesh == null) return null;
+    final focusedPath = _focusStack?.currentOccurrencePath ?? const <String>[];
+    final targetPath = [...focusedPath, occurrence.id];
+    vm.Vector3? min;
+    vm.Vector3? max;
+    for (final instance in assemblyMesh.instances) {
+      if (instance.hidden) continue;
+      if (!isOccurrencePathWithinFocus(instance.occurrencePath, targetPath)) continue;
+      AssemblyBodyGeometryDto? geometry;
+      for (final candidate in assemblyMesh.geometry) {
+        if (candidate.partId == instance.partId) {
+          geometry = candidate;
+          break;
+        }
+      }
+      if (geometry == null) continue;
+      final transform = matrix4FromRigidTransform(instance.worldTransform);
+      for (final body in geometry.bodies) {
+        for (final vertex in body.mesh.vertices) {
+          final world = transform.transformed3(vm.Vector3(vertex[0], vertex[1], vertex[2]));
+          min = min == null
+              ? world
+              : vm.Vector3(math.min(min.x, world.x), math.min(min.y, world.y), math.min(min.z, world.z));
+          max = max == null
+              ? world
+              : vm.Vector3(math.max(max.x, world.x), math.max(max.y, world.y), math.max(max.z, world.z));
+        }
+      }
+    }
+    if (min == null || max == null) return null;
+    return (max - min).length * 0.5;
+  }
+
   /// Assembly support Phase 5: [_displayOccurrences]'s sibling for Phase 2's
   /// own placed-instance list - folds [_gizmoLiveTransform] into the
   /// gizmo-target Occurrence's own instance entry so the rendered Body
@@ -17789,6 +17868,9 @@ class _PartScreenState extends State<PartScreen> {
                   // gizmo to show - see [_gizmoDisplayTransform]'s own doc
                   // comment for every case that covers.
                   selectedOccurrenceTransform: _gizmoDisplayTransform,
+                  // On-device feedback ("the gizmo is the wrong size"): see
+                  // [_gizmoTargetBoundingRadius]'s own doc comment.
+                  selectedOccurrenceBoundingRadius: _gizmoTargetBoundingRadius,
                   onComponentGizmoDragUpdate: _onComponentGizmoDragUpdate,
                   onComponentGizmoDragEnd: () => unawaited(_onComponentGizmoDragEnd()),
                   // Fixed (§5 appendix item 4): was just `_focusStack.current`
@@ -19666,6 +19748,13 @@ class _PartScreenState extends State<PartScreen> {
                       !_moveBodyActive &&
                       !_deleteFaceActive &&
                       !_moveFaceActive &&
+                      // Bug fix ("the 'new' FAB should not obscure the
+                      // Move/Rotate toolbar"): same "hide the FAB outright"
+                      // list every other bottom-docked ResizableToolPanel
+                      // tool is already in (see the Measure/Section fix
+                      // comment below) - Move/Rotate's own panel was never
+                      // added when it was introduced.
+                      !_moveRotateComponentActive &&
                       !_profilePickerActive &&
                       !_pathPickerActive &&
                       // On-device feedback ("the tooltip at the top of the

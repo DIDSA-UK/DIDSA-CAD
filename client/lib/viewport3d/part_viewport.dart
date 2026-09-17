@@ -117,6 +117,17 @@ class PartViewport extends StatefulWidget {
   /// "where is the selected component right now."
   final RigidTransformDto? selectedOccurrenceTransform;
 
+  /// On-device feedback ("the gizmo is the wrong size"): the gizmo's own
+  /// size input - [selectedOccurrenceTransform]'s target's own world-space
+  /// bounding-sphere radius (`PartScreen._gizmoTargetBoundingRadius`,
+  /// unioned across a sub-assembly target's own descendants too), fed
+  /// straight into [buildComponentGizmoNode]/[hitTestComponentGizmo]'s own
+  /// `targetBoundingRadius` param so the rendered gizmo and its hit-test
+  /// always agree on the exact same size. `null` (no target, or its
+  /// geometry hasn't loaded) falls back to a fixed world-unit constant -
+  /// see [ComponentGizmoBasis]'s own file's sizing doc comments.
+  final double? selectedOccurrenceBoundingRadius;
+
   /// Fired on every pointer-move while a gizmo handle is being dragged,
   /// with the full resulting [RigidTransformDto] already composed
   /// ([composeTranslation]/[composeRotation]) - mirrors
@@ -956,6 +967,7 @@ class PartViewport extends StatefulWidget {
     this.assemblyInstances = const [],
     this.focusedOccurrencePath = const [],
     this.selectedOccurrenceTransform,
+    this.selectedOccurrenceBoundingRadius,
     this.onComponentGizmoDragUpdate,
     this.onComponentGizmoDragEnd,
     this.bodiesHidden = false,
@@ -1737,7 +1749,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // call as new state, which rebuilds this widget with a new
     // [selectedOccurrenceTransform], which this comparison then picks up -
     // [_updateComponentGizmoDrag] itself never calls this directly.
-    if (widget.selectedOccurrenceTransform != oldWidget.selectedOccurrenceTransform) {
+    if (widget.selectedOccurrenceTransform != oldWidget.selectedOccurrenceTransform ||
+        // On-device feedback ("the gizmo is the wrong size"): the gizmo's
+        // own size now derives from this too (see its own doc comment) -
+        // without this check, selecting a differently-sized Occurrence
+        // while the previous one's transform happened to match (e.g. two
+        // Occurrences placed at the same identity transform) would leave
+        // the old, wrong-sized gizmo Node in place.
+        widget.selectedOccurrenceBoundingRadius != oldWidget.selectedOccurrenceBoundingRadius) {
       setState(_syncComponentGizmoNode);
     }
     if (widget.sectionPlanes != oldWidget.sectionPlanes || widget.activeSectionId != oldWidget.activeSectionId) {
@@ -2870,8 +2889,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       ray,
       basis,
       _viewportSize,
-      cameraPosition: _camera.position,
       fovRadiansY: _camera.fovRadiansY,
+      targetBoundingRadius: widget.selectedOccurrenceBoundingRadius,
     );
     if (hit == null) return false;
 
@@ -3002,9 +3021,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final node = buildComponentGizmoNode(
       basis,
       highlightedHandle: _componentGizmoDragHandle,
-      cameraPosition: _camera.position,
-      viewportSize: _viewportSize,
-      fovRadiansY: _camera.fovRadiansY,
+      targetBoundingRadius: widget.selectedOccurrenceBoundingRadius,
     );
     scene.add(node);
     _componentGizmoNode = node;
