@@ -1780,6 +1780,7 @@ def _mate_to_dict(mate: Mate) -> dict:
         "value": mate.value,
         "flipped": mate.flipped,
         "suppressed": mate.suppressed,
+        "allow_rotation": mate.allow_rotation,
     }
 
 
@@ -1791,6 +1792,12 @@ def _mate_from_dict(data: dict) -> Mate:
         value=data.get("value"),
         flipped=data.get("flipped", False),
         suppressed=data.get("suppressed", False),
+        # Test report item 4: purely additive, same `.get(key, default)`
+        # evolutionary-field convention every other Mate field already uses -
+        # a file saved before this existed simply lacks the key and imports
+        # as `True` (free spin), matching the dataclass field's own default
+        # and every pre-existing Mate's actual solved behavior exactly.
+        allow_rotation=data.get("allow_rotation", True),
     )
 
 

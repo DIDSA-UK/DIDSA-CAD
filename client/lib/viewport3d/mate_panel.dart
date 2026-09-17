@@ -37,6 +37,15 @@ bool mateTypeNeedsValue(String type) => type == 'distance' || type == 'angle';
 /// just be inert clutter.
 bool mateTypeHasFlip(String type) => type == 'coincident' || type == 'concentric' || type == 'angle';
 
+/// Test report item 4: whether [type] has a meaningful "Allow rotation"
+/// choice - `concentric` only, mirroring `Mate.allow_rotation`'s own
+/// backend docstring ("`CONCENTRIC`-only, ignored by every other
+/// `MateType`"). A plain concentric axis-to-axis lock already leaves
+/// rotation about (and translation along) the shared axis free; unchecking
+/// this additionally locks the spin DOF - see `assembly_solver.py`'s own
+/// CONCENTRIC branch for how.
+bool mateTypeHasAllowRotation(String type) => type == 'concentric';
+
 /// Phase 6: the bottom-sheet-style panel [PartScreen] opens while picking a
 /// Mate's two references - structural clone of [FilletPanel]'s
 /// Confirm/Cancel shape on the same [ResizableToolPanel] shell, with
@@ -53,9 +62,14 @@ class MatePanel extends StatelessWidget {
   final double? value;
   final bool flipped;
 
+  /// Test report item 4: [mateTypeHasAllowRotation]'s own live value -
+  /// meaningless (but still passed) while `mateType != 'concentric'`.
+  final bool allowRotation;
+
   final ValueChanged<String> onMateTypeChanged;
   final ValueChanged<double?> onValueChanged;
   final ValueChanged<bool> onFlippedChanged;
+  final ValueChanged<bool> onAllowRotationChanged;
 
   final bool saving;
   final String? error;
@@ -70,9 +84,11 @@ class MatePanel extends StatelessWidget {
     required this.mateType,
     required this.value,
     required this.flipped,
+    required this.allowRotation,
     required this.onMateTypeChanged,
     required this.onValueChanged,
     required this.onFlippedChanged,
+    required this.onAllowRotationChanged,
     required this.saving,
     required this.error,
     required this.onConfirm,
@@ -121,6 +137,16 @@ class MatePanel extends StatelessWidget {
               value: flipped,
               onChanged: (checked) => onFlippedChanged(checked ?? false),
               title: const Text('Flipped'),
+              controlAffinity: ListTileControlAffinity.leading,
+              contentPadding: EdgeInsets.zero,
+              dense: true,
+            ),
+          if (mateTypeHasAllowRotation(mateType))
+            CheckboxListTile(
+              value: allowRotation,
+              onChanged: (checked) => onAllowRotationChanged(checked ?? true),
+              title: const Text('Allow rotation'),
+              subtitle: const Text('Free to spin about the shared axis', style: TextStyle(fontSize: 11)),
               controlAffinity: ListTileControlAffinity.leading,
               contentPadding: EdgeInsets.zero,
               dense: true,

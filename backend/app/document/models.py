@@ -3069,7 +3069,21 @@ class Mate:
     disambiguate. Solving (turning a Mate into a resolved `RigidTransform`
     for the Occurrences it references) is `app.document.assembly_solver`'s
     job (Phase 6), not this dataclass's - this is data only, mirroring how
-    a Feature's own dataclass never resolves its own geometry either."""
+    a Feature's own dataclass never resolves its own geometry either.
+
+    Test report item 4: `allow_rotation`, `CONCENTRIC`-only (ignored by every
+    other `MateType`, same "meaningful for a subset of types" precedent
+    `value` itself already sets for `DISTANCE`/`ANGLE`). A plain CONCENTRIC
+    mate only ever locks two axes onto one line (`assembly_solver`'s own
+    `_add_mate_constraints`) - rotation about, and translation along, the
+    shared axis both stay free, a deliberate v1 simplification that module's
+    own docstring already documents. Defaults `True` (free spin) so every
+    pre-existing Mate - authored before this field existed - keeps behaving
+    exactly as it always has; setting it `False` additionally locks spin
+    about the shared axis (see `assembly_solver._add_mate_constraints`'s
+    CONCENTRIC branch for how, and that module's own docstring for why this
+    is a canonical-phase lock, not a "freeze wherever it currently is"
+    one)."""
 
     id: str
     type: MateType
@@ -3077,6 +3091,7 @@ class Mate:
     value: float | None = None
     flipped: bool = False
     suppressed: bool = False
+    allow_rotation: bool = True
 
 
 @dataclass

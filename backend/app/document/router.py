@@ -12,7 +12,7 @@ from OCC.Core.TopoDS import TopoDS_Shape
 from app.document.ai_plan import validate_ai_plan as validate_ai_plan_steps
 from app.document.ai_plan_schemas import PlanValidateRequest, PlanValidateResponse
 from app.document.assembly import compose_chain, expand_component_pattern_instances
-from app.document.assembly_solver import MateSolveResult, solve_occurrence
+from app.document.assembly_solver import MateSolveResult, preview_mate_solve, solve_occurrence
 from app.document.bevel import _spiral_hand_from_feature, resolve_bevel_gear, resolve_bevel_gear_coarse
 from app.document.bevel_pair import resolve_bevel_pair, resolve_bevel_pair_coarse, resolve_member_profile_shifts
 from app.document.chamfer import resolve_chamfer
@@ -204,6 +204,7 @@ from app.document.schemas import (
     MateCreate,
     MateEntityRefResponse,
     MateResponse,
+    MateSolvePreviewResponse,
     MateUpdate,
     OccurrenceResponse,
     OccurrenceTransformUpdate,
@@ -3117,6 +3118,7 @@ def _mate_response(mate: Mate) -> MateResponse:
         value=mate.value,
         flipped=mate.flipped,
         suppressed=mate.suppressed,
+        allow_rotation=mate.allow_rotation,
     )
 
 
@@ -3282,6 +3284,7 @@ def create_mate(part_id: str, payload: MateCreate) -> MateResponse:
         references=[_mate_entity_ref_to_domain(ref) for ref in payload.references],
         value=payload.value,
         flipped=payload.flipped,
+        allow_rotation=payload.allow_rotation,
     )
     part.mates.append(mate)
     return _mate_response(mate)
@@ -3296,8 +3299,9 @@ def _get_mate_or_404(part: Part, mate_id: str) -> Mate:
 
 @router.patch("/parts/{part_id}/mates/{mate_id}", response_model=MateResponse)
 def update_mate(part_id: str, mate_id: str, payload: MateUpdate) -> MateResponse:
-    """`value`/`flipped`/`suppressed` only - see `MateUpdate`'s own
-    docstring for why `type`/`references` aren't editable here."""
+    """`value`/`flipped`/`suppressed`/`allow_rotation` only - see
+    `MateUpdate`'s own docstring for why `type`/`references` aren't editable
+    here."""
     part = get_part_or_404(part_id)
     mate = _get_mate_or_404(part, mate_id)
     if payload.value is not None:
@@ -3306,6 +3310,8 @@ def update_mate(part_id: str, mate_id: str, payload: MateUpdate) -> MateResponse
         mate.flipped = payload.flipped
     if payload.suppressed is not None:
         mate.suppressed = payload.suppressed
+    if payload.allow_rotation is not None:
+        mate.allow_rotation = payload.allow_rotation
     return _mate_response(mate)
 
 
@@ -3604,6 +3610,65 @@ def solve_for_occurrence(part_id: str, occurrence_id: str) -> OccurrenceResponse
         raise _mate_solve_did_not_converge(occurrence_id, result)
     occurrence.transform = result.transform
     return _occurrence_response(occurrence)
+
+
+def _rigid_transform_response(transform: RigidTransform) -> RigidTransformResponse:
+    return RigidTransformResponse(
+        translation=transform.translation,
+        rotation_axis=transform.rotation_axis,
+        rotation_angle_degrees=transform.rotation_angle_degrees,
+    )
+
+
+@router.post(
+    "/parts/{part_id}/occurrences/{occurrence_id}/preview-mate-solve",
+    response_model=MateSolvePreviewResponse,
+)
+def preview_mate_solve_endpoint(
+    part_id: str, occurrence_id: str, payload: MateCreate
+) -> MateSolvePreviewResponse:
+    """Test report item 3 (New Mate ghost preview): a dry-run counterpart to
+    `solve_for_occurrence` - solves `payload` (the same shape `POST
+    .../mates` accepts) as a *hypothetical* Mate referencing `occurrence_id`,
+    against `occurrence_id`'s real peers (both its own already-created Mates
+    and `payload` itself), without creating a Mate or mutating
+    `occurrence_id`'s own `transform` at all (`preview_mate_solve`'s own
+    docstring). `MatePanel` calls this on every type/value/flip/allow-
+    rotation change while the user is still picking/adjusting, well before
+    ever tapping Confirm.
+
+    Deliberately tolerant where `solve_for_occurrence`/`create_mate` are
+    strict: an in-progress payload (missing `value` for `distance`/`angle`,
+    a reference the geometry resolver can't yet use for this `type`, a
+    still-`fixed` driven Occurrence, or a solve that genuinely doesn't
+    converge) reports `converged: false` rather than a 4xx - none of those
+    are errors mid-edit, they're just "no ghost to show yet." Only a
+    structurally-broken request (unknown `part_id`/`occurrence_id`, not
+    exactly 2 references) is a real 404/422, mirroring every other
+    endpoint's own payload-shape validation."""
+    part = get_part_or_404(part_id)
+    occurrence = _get_occurrence_or_404(part, occurrence_id)
+    if len(payload.references) != 2:
+        raise HTTPException(status_code=422, detail="A Mate must have exactly 2 references")
+    if occurrence.fixed:
+        return MateSolvePreviewResponse(converged=False, transform=None)
+    try:
+        for ref in payload.references:
+            _validate_mate_entity_ref(part, ref)
+        extra_mate = Mate(
+            id="preview",
+            type=MateType(payload.type),
+            references=[_mate_entity_ref_to_domain(ref) for ref in payload.references],
+            value=payload.value,
+            flipped=payload.flipped,
+            allow_rotation=payload.allow_rotation,
+        )
+        result = preview_mate_solve(get_document(), part, occurrence_id, extra_mate)
+    except HTTPException:
+        return MateSolvePreviewResponse(converged=False, transform=None)
+    if not result.converged:
+        return MateSolvePreviewResponse(converged=False, transform=None)
+    return MateSolvePreviewResponse(converged=True, transform=_rigid_transform_response(result.transform))
 
 
 @router.post(

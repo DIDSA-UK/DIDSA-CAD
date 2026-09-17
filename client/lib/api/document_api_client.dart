@@ -1505,6 +1505,13 @@ class MateDto {
   final bool flipped;
   final bool suppressed;
 
+  /// Test report item 4: `Mate.allow_rotation`'s own wire form - see that
+  /// field's own backend docstring. Only meaningful for `type ==
+  /// 'concentric'`, defaults `true` (free spin, every pre-existing Mate's
+  /// actual solved behavior) so older sessions/tests omitting this key keep
+  /// working unchanged.
+  final bool allowRotation;
+
   MateDto({
     required this.id,
     required this.type,
@@ -1512,6 +1519,7 @@ class MateDto {
     this.value,
     this.flipped = false,
     this.suppressed = false,
+    this.allowRotation = true,
   });
 
   factory MateDto.fromJson(Map<String, dynamic> json) => MateDto(
@@ -1523,6 +1531,25 @@ class MateDto {
         value: (json['value'] as num?)?.toDouble(),
         flipped: json['flipped'] as bool? ?? false,
         suppressed: json['suppressed'] as bool? ?? false,
+        allowRotation: json['allow_rotation'] as bool? ?? true,
+      );
+}
+
+/// Test report item 3 (New Mate ghost preview):
+/// [DocumentApiClient.previewMateSolve]'s own response shape -
+/// `app.document.schemas.MateSolvePreviewResponse`. [transform] is `null`
+/// whenever [converged] is `false`.
+class MateSolvePreviewDto {
+  final bool converged;
+  final RigidTransformDto? transform;
+
+  const MateSolvePreviewDto({required this.converged, this.transform});
+
+  factory MateSolvePreviewDto.fromJson(Map<String, dynamic> json) => MateSolvePreviewDto(
+        converged: json['converged'] as bool,
+        transform: json['transform'] == null
+            ? null
+            : RigidTransformDto.fromJson(json['transform'] as Map<String, dynamic>),
       );
 }
 
@@ -4292,6 +4319,11 @@ class DocumentApiClient {
     required List<MateEntityRefDto> references,
     double? value,
     bool flipped = false,
+    // Test report item 4: only meaningful for `type == 'concentric'`, but
+    // always sent (mirrors `MateCreate.allow_rotation`'s own always-present,
+    // default-`true` wire shape) rather than gated on `type` here - the
+    // backend already ignores it for every other type.
+    bool allowRotation = true,
   }) =>
       _send(
         () => _httpClient.post(
@@ -4302,16 +4334,17 @@ class DocumentApiClient {
                 'references': references.map((r) => r.toJson()).toList(),
                 if (value != null) 'value': value,
                 'flipped': flipped,
+                'allow_rotation': allowRotation,
               }),
             ),
         (body) => MateDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// `PATCH /document/parts/{part_id}/mates/{mate_id}` - `value`/`flipped`/
-  /// `suppressed` only, mirroring [MateUpdate]'s own narrow mutation
-  /// surface server-side (never `type`/`references` - a new Mate, not an
-  /// edit of this one). Omitted (`null`) means "leave this field as it
-  /// currently is" - same optional-vs-omitted convention every other
+  /// `suppressed`/`allowRotation` only, mirroring [MateUpdate]'s own narrow
+  /// mutation surface server-side (never `type`/`references` - a new Mate,
+  /// not an edit of this one). Omitted (`null`) means "leave this field as
+  /// it currently is" - same optional-vs-omitted convention every other
   /// partial-update call in this file already uses.
   Future<MateDto> updateMate(
     String partId,
@@ -4319,6 +4352,7 @@ class DocumentApiClient {
     double? value,
     bool? flipped,
     bool? suppressed,
+    bool? allowRotation,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -4328,6 +4362,7 @@ class DocumentApiClient {
                 if (value != null) 'value': value,
                 if (flipped != null) 'flipped': flipped,
                 if (suppressed != null) 'suppressed': suppressed,
+                if (allowRotation != null) 'allow_rotation': allowRotation,
               }),
             ),
         (body) => MateDto.fromJson(body as Map<String, dynamic>),
@@ -4360,6 +4395,39 @@ class DocumentApiClient {
               headers: _headers,
             ),
         (body) => OccurrenceDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Test report item 3 (New Mate ghost preview): `POST /document/parts/
+  /// {part_id}/occurrences/{occurrence_id}/preview-mate-solve` - a dry-run
+  /// counterpart to [solveForOccurrence] for a Mate that doesn't exist yet
+  /// (the one currently being authored in [MatePanel]). Never throws for an
+  /// unconverged/in-progress payload - unlike [solveForOccurrence], `false`
+  /// is an entirely expected, frequent response here (see the endpoint's
+  /// own docstring), so this returns [MateSolvePreviewDto.converged]`==
+  /// false, transform: null` rather than an [ApiException] for that case;
+  /// only a genuinely malformed request still throws.
+  Future<MateSolvePreviewDto> previewMateSolve(
+    String partId,
+    String occurrenceId, {
+    required String type,
+    required List<MateEntityRefDto> references,
+    double? value,
+    bool flipped = false,
+    bool allowRotation = true,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/occurrences/$occurrenceId/preview-mate-solve'),
+              headers: _headers,
+              body: jsonEncode({
+                'type': type,
+                'references': references.map((r) => r.toJson()).toList(),
+                if (value != null) 'value': value,
+                'flipped': flipped,
+                'allow_rotation': allowRotation,
+              }),
+            ),
+        (body) => MateSolvePreviewDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Phase 7 (`docs/assembly-scope.md` §3 item 7): `GET /document/parts/
