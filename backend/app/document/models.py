@@ -3162,6 +3162,18 @@ class Occurrence:
     suppressed: bool = False
     hidden: bool = False
     fixed: bool = False
+    # Bug report (assembly testing): "a colour disc that when tapped allows
+    # user to select the colour of that part" - a `"#RRGGBB"` hex string
+    # override for this Occurrence's own rendered color, `None` (the
+    # default) meaning "no override, render with the viewport's ordinary
+    # default body colour" - the same override-vs-inherit-default shape
+    # `ViewPreferences.bodyColourHex` already gives every *unplaced* Body,
+    # just per-Occurrence instead of global. Applies only to this
+    # Occurrence's own placed instance - `app.document.router._walk` passes
+    # each instance its own Occurrence's `color` directly, the same
+    # per-instance (not inherited-down-the-tree) shape it already gives
+    # `hidden`.
+    color: str | None = None
 
 
 class ComponentPatternType(str, Enum):
@@ -3170,10 +3182,18 @@ class ComponentPatternType(str, Enum):
     `PatternType`'s own "one dataclass, many construction methods"
     precedent, one level up (Occurrences instead of Bodies). Named `LINEAR`/
     `CIRCULAR`, not `RECTANGULAR`/`CIRCULAR` like the body-level
-    `PatternType` - a `ComponentPattern` only ever repeats along one
-    direction (no `direction_2`/2D-grid equivalent, per the original
-    scope's own "linear + circular" wording), so "rectangular" would
-    overstate what this actually does."""
+    `PatternType`.
+
+    Bug report (assembly testing): "add option for second direction when
+    patterning a component in an assembly (similar to pattern body or
+    feature in a part)" - `LINEAR` now optionally crosses `direction` with
+    `direction_2` for a 2D grid, the same way `PatternType.RECTANGULAR`
+    already crosses `direction_1`/`direction_2` (see `ComponentPattern`'s
+    own docstring) - `direction_2` is simply inert (never resolved/applied)
+    while `count_2 <= 1`, so this stays "LINEAR" rather than being renamed
+    "RECTANGULAR": a `ComponentPattern` still has no Circular-style second
+    axis concept of its own, and every existing single-direction pattern
+    (`count_2` defaulting to `1`) is unaffected."""
 
     LINEAR = "linear"
     CIRCULAR = "circular"
@@ -3232,7 +3252,18 @@ class ComponentPattern:
     as `PatternFeature`'s identical convention - which fields are actually
     meaningful for a given `pattern_type` is a router/expansion concern
     (`app.document.assembly.expand_component_pattern_instances`), not
-    encoded in this dataclass."""
+    encoded in this dataclass.
+
+    Bug report (assembly testing): `direction_2`/`count_2`/`spacing_2`/
+    `reverse_2` (Linear-only, mirroring `direction`/`count`/`spacing`/
+    `reverse`) are the optional second direction `ComponentPatternType`'s
+    own docstring describes - `direction` alone is crossed with
+    `direction_2` for a 2D grid of `count * count_2` total placements
+    (index 0 the untouched seed, same convention as every other index
+    here), the identical `PatternFeature.direction_1`/`direction_2`
+    relationship one level up. Inert (never resolved/applied) while
+    `count_2 <= 1`, its default - every pattern authored before this field
+    existed round-trips unchanged."""
 
     id: str
     source_occurrence_ids: list[str]
@@ -3242,6 +3273,10 @@ class ComponentPattern:
     count: int = 1
     spacing: float = 0.0
     reverse: bool = False
+    direction_2: tuple[float, float, float] = (0.0, 1.0, 0.0)
+    count_2: int = 1
+    spacing_2: float = 0.0
+    reverse_2: bool = False
     # Circular:
     axis: ComponentPatternAxis | None = None
     count_angular: int = 1
@@ -3250,9 +3285,12 @@ class ComponentPattern:
     # Phase 11 (`docs/assembly-scope.md` §6 `[9]`): mirrors `PatternFeature.
     # skip_indices` exactly - suppresses specific derived instances by the
     # same 1-based, seed-excluded index `expand_component_pattern_
-    # instances` already enumerates (Linear's `range(1, count)`, Circular's
-    # `range(1, count_angular)`), validated the same way (`app.document.
-    # router._validate_pattern_skip_indices`, reused verbatim).
+    # instances` already enumerates (Linear's flattened `i * count_2 + j`,
+    # row-major - the identical `PatternFeature.skip_indices` convention,
+    # unaffected by `count_2 == 1` since `j` never exceeds 0 then -
+    # Circular's own plain `range(1, count_angular)`), validated the same
+    # way (`app.document.router._validate_pattern_skip_indices`, reused
+    # verbatim).
     skip_indices: list[int] = field(default_factory=list)
     # Phase 11 (`docs/assembly-scope.md` §6 `[10]`): Circular-only - `True`
     # (default) rotates each derived instance's own orientation around

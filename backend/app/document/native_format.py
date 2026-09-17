@@ -1733,6 +1733,12 @@ def _occurrence_to_dict(occurrence: Occurrence) -> dict:
         "suppressed": occurrence.suppressed,
         "hidden": occurrence.hidden,
         "fixed": occurrence.fixed,
+        # Bug report (assembly testing): purely additive, same `.get(key,
+        # default)` evolutionary-field convention every other field here
+        # already uses - a file saved before this existed simply lacks the
+        # key and imports as `None` (no colour override), matching every
+        # pre-existing Occurrence's actual unset state exactly.
+        "color": occurrence.color,
     }
 
 
@@ -1751,6 +1757,7 @@ def _occurrence_from_dict(data: dict) -> Occurrence:
         suppressed=data.get("suppressed", False),
         hidden=data.get("hidden", False),
         fixed=data.get("fixed", False),
+        color=data.get("color"),
     )
 
 
@@ -1824,6 +1831,12 @@ def _component_pattern_to_dict(pattern: ComponentPattern) -> dict:
         "count": pattern.count,
         "spacing": pattern.spacing,
         "reverse": pattern.reverse,
+        # Bug report (assembly testing): the optional second direction -
+        # see `ComponentPattern`'s own doc comment on these four fields.
+        "direction_2": list(pattern.direction_2),
+        "count_2": pattern.count_2,
+        "spacing_2": pattern.spacing_2,
+        "reverse_2": pattern.reverse_2,
         "axis": _component_pattern_axis_to_dict(pattern.axis),
         "count_angular": pattern.count_angular,
         "angle_total": pattern.angle_total,
@@ -1836,6 +1849,7 @@ def _component_pattern_to_dict(pattern: ComponentPattern) -> dict:
 
 def _component_pattern_from_dict(data: dict) -> ComponentPattern:
     direction = data.get("direction", [1.0, 0.0, 0.0])
+    direction_2 = data.get("direction_2", [0.0, 1.0, 0.0])
     return ComponentPattern(
         id=_require(data, "id"),
         source_occurrence_ids=list(data.get("source_occurrence_ids", [])),
@@ -1844,6 +1858,15 @@ def _component_pattern_from_dict(data: dict) -> ComponentPattern:
         count=data.get("count", 1),
         spacing=data.get("spacing", 0.0),
         reverse=data.get("reverse", False),
+        # Bug report (assembly testing): purely additive, same `.get(key,
+        # default)` evolutionary-field convention every other field here
+        # already uses - a file saved before this existed simply lacks the
+        # keys and imports with `count_2 == 1` (inert), matching every
+        # pre-existing pattern's actual single-direction behavior exactly.
+        direction_2=(direction_2[0], direction_2[1], direction_2[2]),
+        count_2=data.get("count_2", 1),
+        spacing_2=data.get("spacing_2", 0.0),
+        reverse_2=data.get("reverse_2", False),
         axis=_component_pattern_axis_from_dict(data.get("axis")),
         count_angular=data.get("count_angular", 1),
         angle_total=data.get("angle_total", 360.0),

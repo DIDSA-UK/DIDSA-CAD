@@ -2763,6 +2763,12 @@ class AssemblyOccurrenceInstance(BaseModel):
     part_id: str
     world_transform: RigidTransformResponse
     hidden: bool = False
+    # Bug report (assembly testing): the placed instance's own `"#RRGGBB"`
+    # colour override, echoed straight from `Occurrence.color` - see that
+    # field's own doc comment. `None` means "no override" (render with the
+    # viewport's own default body colour), same as every pre-existing
+    # instance before this field existed.
+    color: str | None = None
 
 
 class AssemblyMeshResponse(BaseModel):
@@ -2799,6 +2805,9 @@ class OccurrenceResponse(BaseModel):
     suppressed: bool = False
     hidden: bool = False
     fixed: bool = False
+    # Bug report (assembly testing): mirrors `Occurrence.color`'s own doc
+    # comment - the Assembly tree's own colour-disc row reads this directly.
+    color: str | None = None
 
 
 class OccurrenceTransformUpdate(BaseModel):
@@ -2830,11 +2839,28 @@ class OccurrenceTransformUpdate(BaseModel):
     unchanged convention. Sending `transform` together with `fixed=true` (or
     against an Occurrence already `fixed`, when `fixed` itself is omitted)
     is rejected with a 422 by `update_occurrence_transform` itself, not
-    validated here - see that endpoint's own docstring."""
+    validated here - see that endpoint's own docstring.
+
+    Bug report (assembly testing): widened again to also accept `color`,
+    the Assembly tree's own colour-disc row - same omitted-means-unchanged
+    convention as `hidden`/`fixed`, with one wrinkle a plain `str | None`
+    can't express on its own: omitting `color` entirely must leave the
+    Occurrence's current override untouched, but the colour picker also
+    needs a way to explicitly *clear* an override back to "no override" -
+    both would otherwise serialize identically (`null`)/deserialize to the
+    same `None`. `update_occurrence_transform` resolves this the same way
+    `ComponentPatternUpdate.skip_indices` resolves its own analogous
+    omitted-vs-explicitly-cleared ambiguity, just with the sentinel this
+    field's own type actually affords: `None` (omitted) leaves the current
+    override untouched; `""` (empty string) explicitly clears it back to
+    `None`; anything else is stored verbatim, the same "opaque, client-owned
+    string, never parsed or validated by this backend" convention
+    `GearGroup.display_color` already establishes for a display colour."""
 
     transform: RigidTransformResponse | None = None
     hidden: bool | None = None
     fixed: bool | None = None
+    color: str | None = None
 
 
 class MateEntityRefResponse(BaseModel):
@@ -2941,6 +2967,13 @@ class ComponentPatternResponse(BaseModel):
     count: int = 1
     spacing: float = 0.0
     reverse: bool = False
+    # Bug report (assembly testing): the optional second direction - see
+    # `app.document.models.ComponentPattern`'s own doc comment on these four
+    # fields.
+    direction_2: tuple[float, float, float] = (0.0, 1.0, 0.0)
+    count_2: int = 1
+    spacing_2: float = 0.0
+    reverse_2: bool = False
     axis: ComponentPatternAxisSchema | None = None
     count_angular: int = 1
     angle_total: float = 360.0
@@ -2955,13 +2988,15 @@ class ComponentPatternCreate(BaseModel):
     {part_id}/component-patterns`'s request body - creates a `ComponentPattern`
     repeating every top-level Occurrence named in `source_occurrence_ids`,
     either Linear (`pattern_type="linear"`, the default) - along `direction`
-    (`count` instances, `spacing` apart) - or Circular (`pattern_type=
-    "circular"`) - `count_angular` instances spaced evenly across
-    `angle_total` degrees around `axis`. Which field group is actually
-    required depends on `pattern_type` (see `app.document.router.
-    _validate_component_pattern_create`), the same "payload shape validated
-    by the API layer, not the schema" split `PatternFeatureCreate` already
-    uses for its own two construction methods."""
+    (`count` instances, `spacing` apart), optionally crossed with a second
+    `direction_2` (`count_2` instances, `spacing_2` apart) for a 2D grid once
+    `count_2 > 1` - or Circular (`pattern_type="circular"`) - `count_angular`
+    instances spaced evenly across `angle_total` degrees around `axis`. Which
+    field group is actually required depends on `pattern_type` (see
+    `app.document.router._validate_component_pattern_create`), the same
+    "payload shape validated by the API layer, not the schema" split
+    `PatternFeatureCreate` already uses for its own two construction
+    methods."""
 
     source_occurrence_ids: list[str]
     pattern_type: Literal["linear", "circular"] = "linear"
@@ -2969,6 +3004,10 @@ class ComponentPatternCreate(BaseModel):
     count: int = 1
     spacing: float = 0.0
     reverse: bool = False
+    direction_2: tuple[float, float, float] = (0.0, 1.0, 0.0)
+    count_2: int = 1
+    spacing_2: float = 0.0
+    reverse_2: bool = False
     axis: ComponentPatternAxisSchema | None = None
     count_angular: int = 1
     angle_total: float = 360.0
@@ -2994,6 +3033,10 @@ class ComponentPatternUpdate(BaseModel):
     count: int | None = None
     spacing: float | None = None
     reverse: bool | None = None
+    direction_2: tuple[float, float, float] | None = None
+    count_2: int | None = None
+    spacing_2: float | None = None
+    reverse_2: bool | None = None
     axis: ComponentPatternAxisSchema | None = None
     count_angular: int | None = None
     angle_total: float | None = None

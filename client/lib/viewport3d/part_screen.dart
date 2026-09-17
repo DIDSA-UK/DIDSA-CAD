@@ -83,6 +83,7 @@ import 'revolve_surface_panel.dart';
 import 'move_body_panel.dart';
 import 'move_face_panel.dart';
 import 'move_rotate_component_panel.dart';
+import 'occurrence_colour_sheet.dart';
 import 'rollback.dart';
 import 'ruled_surface_panel.dart';
 import 'scale_body_panel.dart';
@@ -3274,6 +3275,19 @@ class _PartScreenState extends State<PartScreen> {
   int _componentPatternCount = 3;
   double _componentPatternSpacing = 10.0;
   bool _componentPatternReverse = false;
+
+  // Bug report (assembly testing): the optional second direction - mirrors
+  // [_patternHasSecondDirection]/[_patternDirection2]/etc.'s own identical
+  // shape one level up (`PatternPanel`'s Rectangular mode), just against
+  // [ComponentPatternAxisPreset]'s free-vector shape instead of a live
+  // viewport edge/Sketch-Line pick - see [_setComponentPatternHasSecondDirection].
+  bool _componentPatternHasSecondDirection = false;
+  ComponentPatternAxisPreset _componentPatternDirection2 = ComponentPatternAxisPreset.y;
+  List<double> _componentPatternCustomDirection2 = [0.0, 1.0, 0.0];
+  int _componentPatternCount2 = 1;
+  double _componentPatternSpacing2 = 0.0;
+  bool _componentPatternReverse2 = false;
+
   List<double> _componentPatternAxisOrigin = [0.0, 0.0, 0.0];
   ComponentPatternAxisPreset _componentPatternAxisDirection = ComponentPatternAxisPreset.z;
   List<double> _componentPatternCustomAxisDirection = [0.0, 0.0, 1.0];
@@ -3308,6 +3322,12 @@ class _PartScreenState extends State<PartScreen> {
       _componentPatternCount = 3;
       _componentPatternSpacing = 10.0;
       _componentPatternReverse = false;
+      _componentPatternHasSecondDirection = false;
+      _componentPatternDirection2 = ComponentPatternAxisPreset.y;
+      _componentPatternCustomDirection2 = [0.0, 1.0, 0.0];
+      _componentPatternCount2 = 1;
+      _componentPatternSpacing2 = 0.0;
+      _componentPatternReverse2 = false;
       _componentPatternAxisOrigin = [0.0, 0.0, 0.0];
       _componentPatternAxisDirection = ComponentPatternAxisPreset.z;
       _componentPatternCustomAxisDirection = [0.0, 0.0, 1.0];
@@ -3342,6 +3362,12 @@ class _PartScreenState extends State<PartScreen> {
       _componentPatternCount = pattern.count;
       _componentPatternSpacing = pattern.spacing;
       _componentPatternReverse = pattern.reverse;
+      _componentPatternHasSecondDirection = pattern.count2 > 1;
+      _componentPatternDirection2 = presetForVector(pattern.direction2);
+      _componentPatternCustomDirection2 = List.of(pattern.direction2);
+      _componentPatternCount2 = pattern.count2;
+      _componentPatternSpacing2 = pattern.spacing2;
+      _componentPatternReverse2 = pattern.reverse2;
       _componentPatternAxisOrigin = axis == null ? [0.0, 0.0, 0.0] : List.of(axis.origin);
       _componentPatternAxisDirection =
           axis == null ? ComponentPatternAxisPreset.z : presetForVector(axis.direction);
@@ -3364,6 +3390,29 @@ class _PartScreenState extends State<PartScreen> {
       _componentPatternPickingSources = false;
       _componentPatternError = null;
       _componentPatternSaving = false;
+    });
+  }
+
+  /// [ComponentPatternPanel.onSecondDirectionToggled]'s callback - mirrors
+  /// [_setPatternHasSecondDirection]'s own shape exactly: enabling bumps
+  /// [_componentPatternCount2] up to a sensible default of 2 if it's still
+  /// at its inert `1` (and gives [_componentPatternSpacing2] a non-zero
+  /// default too, otherwise the newly-revealed section would start as a
+  /// silent no-op); disabling clears every Direction-2 field back to its
+  /// default rather than leaving a stale, merely-inert value around.
+  void _setComponentPatternHasSecondDirection(bool enabled) {
+    setState(() {
+      _componentPatternHasSecondDirection = enabled;
+      if (enabled) {
+        if (_componentPatternCount2 < 2) _componentPatternCount2 = 2;
+        if (_componentPatternSpacing2 <= 0) _componentPatternSpacing2 = 10.0;
+      } else {
+        _componentPatternDirection2 = ComponentPatternAxisPreset.y;
+        _componentPatternCustomDirection2 = [0.0, 1.0, 0.0];
+        _componentPatternCount2 = 1;
+        _componentPatternSpacing2 = 0.0;
+        _componentPatternReverse2 = false;
+      }
     });
   }
 
@@ -3408,6 +3457,15 @@ class _PartScreenState extends State<PartScreen> {
     final direction = resolveComponentPatternVector(_componentPatternDirection, _componentPatternCustomDirection);
     final axisDirection =
         resolveComponentPatternVector(_componentPatternAxisDirection, _componentPatternCustomAxisDirection);
+    // Bug report (assembly testing): mirrors [_confirmPattern]'s own
+    // [_patternHasSecondDirection]-gated shape exactly - unchecked, a
+    // second direction turned back off would otherwise still resend
+    // whatever stale [_componentPatternDirection2]/etc. values are sitting
+    // around from before it was last disabled (see
+    // [_setComponentPatternHasSecondDirection]'s own doc comment).
+    final hasSecondDirection = _componentPatternHasSecondDirection;
+    final direction2 =
+        resolveComponentPatternVector(_componentPatternDirection2, _componentPatternCustomDirection2);
     try {
       final editingId = _componentPatternEditingId;
       if (editingId == null) {
@@ -3419,6 +3477,10 @@ class _PartScreenState extends State<PartScreen> {
           count: _componentPatternCount,
           spacing: _componentPatternSpacing,
           reverse: _componentPatternReverse,
+          direction2: direction2,
+          count2: hasSecondDirection ? _componentPatternCount2 : 1,
+          spacing2: hasSecondDirection ? _componentPatternSpacing2 : 0.0,
+          reverse2: hasSecondDirection ? _componentPatternReverse2 : false,
           axis: ComponentPatternAxisDto(origin: _componentPatternAxisOrigin, direction: axisDirection),
           countAngular: _componentPatternCountAngular,
           angleTotal: _componentPatternAngleTotal,
@@ -3433,6 +3495,10 @@ class _PartScreenState extends State<PartScreen> {
           count: _componentPatternCount,
           spacing: _componentPatternSpacing,
           reverse: _componentPatternReverse,
+          direction2: direction2,
+          count2: hasSecondDirection ? _componentPatternCount2 : 1,
+          spacing2: hasSecondDirection ? _componentPatternSpacing2 : 0.0,
+          reverse2: hasSecondDirection ? _componentPatternReverse2 : false,
           axis: ComponentPatternAxisDto(origin: _componentPatternAxisOrigin, direction: axisDirection),
           countAngular: _componentPatternCountAngular,
           angleTotal: _componentPatternAngleTotal,
@@ -17941,6 +18007,37 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
+  /// Bug report (assembly testing): [AssemblyTreePanel.onOccurrenceColorTap]'s
+  /// real call site - opens [showOccurrenceColourSheet] pre-highlighting
+  /// `occurrence`'s own current override, then persists whatever was picked
+  /// via [_setOccurrenceColor]. `null` (dismissed without a choice) does
+  /// nothing, mirroring every other picker-sheet call site in this file
+  /// (`_onBodyColourChanged`'s own `showColourSwatchSheet` caller, etc.).
+  Future<void> _onOccurrenceColorTap(OccurrenceDto occurrence) async {
+    final hex = await showOccurrenceColourSheet(context, selectedHex: occurrence.color);
+    if (!mounted || hex == null) return;
+    await _setOccurrenceColor(occurrence, hex);
+  }
+
+  /// The colour disc's real persistence call - mirrors [_setOccurrenceHidden]
+  /// exactly, PATCHing the backend's own `color` field via
+  /// [DocumentApiClient.updateOccurrenceColor] and re-fetching both the tree
+  /// (the disc itself reads `_occurrences`) *and* the assembly mesh (the
+  /// viewport reads `_assemblyMesh`'s own per-instance `color` to tint the
+  /// rendered Body - `PartViewport._syncAssemblyInstanceNodes`), the same
+  /// "changes what's visible" pairing Hide/Show already needs both fetches
+  /// for. [hex] is `''` for [showOccurrenceColourSheet]'s own "Default" tile
+  /// (explicitly clears the override) or a real `"#RRGGBB"` swatch.
+  Future<void> _setOccurrenceColor(OccurrenceDto occurrence, String hex) async {
+    final focusPartId = _focusStack?.current ?? _part?.id;
+    if (focusPartId == null) return;
+    await _runGuarded(() async {
+      await _api.updateOccurrenceColor(focusPartId, occurrence.id, hex);
+      await _refreshAssemblyTree();
+      await _refreshAssemblyMesh();
+    });
+  }
+
   /// §6 roadmap Phase 10 (`[5]`): Isolate's real persistence call - mirrors
   /// `ai_plan.py`'s own `_handle_isolate_component` one level up (client-side
   /// instead of a dry-run scratch mutation): hides every *other* top-level
@@ -18504,7 +18601,28 @@ class _PartScreenState extends State<PartScreen> {
                 // empty-selection gate would already hide this too, but this
                 // stays explicit rather than relying on that as an implicit
                 // side effect).
-                if (!_extrudeActive &&
+                // Bug report (assembly testing): "when a face, edge, body is
+                // selected in assembly mode, the context bar offers tools
+                // that were for use in the part editor for modelling... only
+                // assembly tools should be offered" - every action
+                // [SelectionContextPanel] can ever show (Chamfer/Fillet/
+                // Move Face/Move Body/Create Plane/Mirror/Pattern/etc., via
+                // `selection_actions.dart`'s `contextActionsFor`) is a
+                // Part-editing Feature, none of them meaningful against an
+                // Assembly's own Occurrences - so this whole drawer is
+                // Part-lens only now, mirroring how [FeatureTreePanel]
+                // itself is already gated to `_lens == AssemblyLens.part`
+                // just below. Assembly lens has its own dedicated pickers
+                // for the entity selections it does support (Mate's 2-ref
+                // cap, Pattern's source picker - see [_toggleSelectedEntity]'s
+                // own `_mateActive`/[_componentPatternPickingSources]
+                // branches), so this generic Part-tool row never needs an
+                // Assembly-lens equivalent of its own; it would otherwise
+                // still float on top of those flows too, offering the same
+                // irrelevant Part tools while picking Mate/Pattern
+                // references.
+                if (_lens == AssemblyLens.part &&
+                    !_extrudeActive &&
                     !_surfaceActive &&
                     !_createPlaneActive &&
                     !_filletActive &&
@@ -18778,6 +18896,9 @@ class _PartScreenState extends State<PartScreen> {
                     selectedOccurrenceId: _selectedOccurrenceId,
                     onOccurrenceTap: _onOccurrenceTap,
                     onOccurrenceLongPress: _onOccurrenceLongPress,
+                    onOccurrenceVisibilityToggle: (occurrence) =>
+                        unawaited(_setOccurrenceHidden(occurrence, !occurrence.hidden)),
+                    onOccurrenceColorTap: (occurrence) => unawaited(_onOccurrenceColorTap(occurrence)),
                     onClose: () => setState(() => _featureTreeVisible = false),
                     onMateTap: _onMateTap,
                     onMateLongPress: _onMateLongPress,
@@ -19005,6 +19126,19 @@ class _PartScreenState extends State<PartScreen> {
                       onSpacingChanged: (spacing) => setState(() => _componentPatternSpacing = spacing),
                       reverse: _componentPatternReverse,
                       onReverseChanged: (reverse) => setState(() => _componentPatternReverse = reverse),
+                      hasSecondDirection: _componentPatternHasSecondDirection,
+                      onSecondDirectionToggled: _setComponentPatternHasSecondDirection,
+                      direction2: _componentPatternDirection2,
+                      onDirection2Changed: (preset) => setState(() => _componentPatternDirection2 = preset),
+                      customDirection2: _componentPatternCustomDirection2,
+                      onCustomDirection2Changed: (vector) =>
+                          setState(() => _componentPatternCustomDirection2 = vector),
+                      count2: _componentPatternCount2,
+                      onCount2Changed: (count) => setState(() => _componentPatternCount2 = count),
+                      spacing2: _componentPatternSpacing2,
+                      onSpacing2Changed: (spacing) => setState(() => _componentPatternSpacing2 = spacing),
+                      reverse2: _componentPatternReverse2,
+                      onReverse2Changed: (reverse) => setState(() => _componentPatternReverse2 = reverse),
                       axisOrigin: _componentPatternAxisOrigin,
                       onAxisOriginChanged: (origin) => setState(() => _componentPatternAxisOrigin = origin),
                       axisDirection: _componentPatternAxisDirection,
@@ -19643,6 +19777,20 @@ class _PartScreenState extends State<PartScreen> {
                               heroTag: 'feature-tree-fab',
                               tooltip: 'Feature tree',
                               onPressed: _toggleFeatureTree,
+                              // Bug report (assembly testing): "add the tree
+                              // button to those that change colour" - this
+                              // FAB opens [AssemblyTreePanel] in Assembly
+                              // lens (same [_featureTreeVisible] flag,
+                              // [FeatureTreePanel] in Part lens), but never
+                              // picked up the lens tint the toggle FAB right
+                              // below it already has. Same pair/gating as
+                              // that FAB now.
+                              backgroundColor: _lens == AssemblyLens.assembly
+                                  ? assemblyLensButtonColors(Theme.of(context).colorScheme).$1
+                                  : null,
+                              foregroundColor: _lens == AssemblyLens.assembly
+                                  ? assemblyLensButtonColors(Theme.of(context).colorScheme).$2
+                                  : null,
                               child: const SvgIcon('assets/icons/feature/feature_tree.svg'),
                             ),
                           const SizedBox(height: 8),
@@ -19666,8 +19814,22 @@ class _PartScreenState extends State<PartScreen> {
                               // `AssemblyTreePanel`'s header use, reverting
                               // to the FAB's own default color (`null`) in
                               // Part lens.
+                              //
+                              // Bug report (assembly testing): "lighter tone
+                              // of the same reddish colour closer to the
+                              // tone of the blue buttons in part lens" - was
+                              // [assemblyLensAccentColor]'s bare `tertiary`
+                              // (a saturated, darker red than the light
+                              // `primaryContainer` blue Part lens buttons
+                              // default to); now [assemblyLensButtonColors]'
+                              // `tertiaryContainer`/`onTertiaryContainer`
+                              // pair, the equivalent lighter "container"
+                              // tone - see that function's own doc comment.
                               backgroundColor: _lens == AssemblyLens.assembly
-                                  ? assemblyLensAccentColor(Theme.of(context).colorScheme, _lens)
+                                  ? assemblyLensButtonColors(Theme.of(context).colorScheme).$1
+                                  : null,
+                              foregroundColor: _lens == AssemblyLens.assembly
+                                  ? assemblyLensButtonColors(Theme.of(context).colorScheme).$2
                                   : null,
                               child: Icon(
                                 _lens == AssemblyLens.part ? Icons.view_in_ar_outlined : Icons.category_outlined,
@@ -20080,7 +20242,13 @@ class _PartScreenState extends State<PartScreen> {
                         // SectionPanel is the same bottom-docked
                         // ResizableToolPanel shell too, but was likewise
                         // missing from this list.
-                        _sectionPanelOpen)
+                        _sectionPanelOpen ||
+                        // Bug report (assembly testing): "the 'new' fab sits
+                        // on top of the assembly mode 'pattern component'
+                        // tool bar" - ComponentPatternPanel is the same
+                        // bottom-docked ResizableToolPanel shell as every
+                        // other tool in this list, but was never added to it.
+                        _componentPatternPanelActive)
                     ? 180
                     : 0,
               ),
@@ -20142,6 +20310,12 @@ class _PartScreenState extends State<PartScreen> {
                       // just never got added here too.
                       !_measureActive &&
                       // Bug report (assembly testing): "the 'new' fab sits
+                      // on top of the assembly mode 'pattern component' tool
+                      // bar" - same gap as the Measure/Section/Mate panels'
+                      // own fixes just above/below - ComponentPatternPanel
+                      // was never added to this hide list.
+                      !_componentPatternPanelActive &&
+                      // Bug report (assembly testing): "the 'new' fab sits
                       // on top of the mates tool bar obscuring part of it" -
                       // `MatePanel` is the same bottom-docked
                       // `ResizableToolPanel` shape as every other tool in
@@ -20159,8 +20333,14 @@ class _PartScreenState extends State<PartScreen> {
                       // toggle FAB above - this is the FAB whose own flyout
                       // changes shape between lenses (Feature tools vs Add
                       // Component/Mate/Pattern), so it gets the same signal.
+                      // Bug report (assembly testing): now the lighter
+                      // `tertiaryContainer`/`onTertiaryContainer` pair - see
+                      // [assemblyLensButtonColors]'s own doc comment.
                       backgroundColor: _lens == AssemblyLens.assembly
-                          ? assemblyLensAccentColor(Theme.of(context).colorScheme, _lens)
+                          ? assemblyLensButtonColors(Theme.of(context).colorScheme).$1
+                          : null,
+                      foregroundColor: _lens == AssemblyLens.assembly
+                          ? assemblyLensButtonColors(Theme.of(context).colorScheme).$2
                           : null,
                       child: const SvgIcon('assets/icons/viewport/viewport_add.svg'),
                     ),

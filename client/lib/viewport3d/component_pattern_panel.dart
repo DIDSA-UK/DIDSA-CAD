@@ -115,6 +115,29 @@ class ComponentPatternPanel extends StatelessWidget {
   final bool reverse;
   final ValueChanged<bool> onReverseChanged;
 
+  /// Bug report (assembly testing): "add option for second direction when
+  /// patterning a component in an assembly (similar to pattern body or
+  /// feature in a part)" - mirrors `PatternPanel.hasSecondDirection`'s own
+  /// shape exactly, one level up (a free world-axis-preset vector instead
+  /// of a live viewport edge/Sketch-Line pick - this panel's own Direction
+  /// 1 already uses that same preset-button shape, see this class's own
+  /// module doc comment on why). When false, every Direction-2-related
+  /// field below is hidden entirely, same "optional, off by default"
+  /// convention.
+  final bool hasSecondDirection;
+  final ValueChanged<bool> onSecondDirectionToggled;
+
+  final ComponentPatternAxisPreset direction2;
+  final ValueChanged<ComponentPatternAxisPreset> onDirection2Changed;
+  final List<double> customDirection2;
+  final ValueChanged<List<double>> onCustomDirection2Changed;
+  final int count2;
+  final ValueChanged<int> onCount2Changed;
+  final double spacing2;
+  final ValueChanged<double> onSpacing2Changed;
+  final bool reverse2;
+  final ValueChanged<bool> onReverse2Changed;
+
   // Circular:
   final List<double> axisOrigin;
   final ValueChanged<List<double>> onAxisOriginChanged;
@@ -160,6 +183,18 @@ class ComponentPatternPanel extends StatelessWidget {
     required this.onSpacingChanged,
     required this.reverse,
     required this.onReverseChanged,
+    required this.hasSecondDirection,
+    required this.onSecondDirectionToggled,
+    required this.direction2,
+    required this.onDirection2Changed,
+    required this.customDirection2,
+    required this.onCustomDirection2Changed,
+    required this.count2,
+    required this.onCount2Changed,
+    required this.spacing2,
+    required this.onSpacing2Changed,
+    required this.reverse2,
+    required this.onReverse2Changed,
     required this.axisOrigin,
     required this.onAxisOriginChanged,
     required this.axisDirection,
@@ -280,6 +315,61 @@ class ComponentPatternPanel extends StatelessWidget {
           contentPadding: EdgeInsets.zero,
           dense: true,
         ),
+        const SizedBox(height: 8),
+        if (hasSecondDirection) ...[
+          const Divider(),
+          const Text('Direction 2', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 4),
+          _axisPresetButtons(direction2, onDirection2Changed),
+          if (direction2 == ComponentPatternAxisPreset.custom) ...[
+            const SizedBox(height: 8),
+            _vectorFields(customDirection2, onCustomDirection2Changed, keyPrefix: 'direction2-'),
+          ],
+          const SizedBox(height: 8),
+          _numberField(
+            'Count',
+            count2.toString(),
+            (text) {
+              final parsed = int.tryParse(text);
+              if (parsed != null) onCount2Changed(parsed);
+            },
+            fieldKey: const ValueKey('component-pattern-field-direction2-Count'),
+          ),
+          const SizedBox(height: 8),
+          _numberField(
+            'Spacing (mm)',
+            spacing2.toString(),
+            (text) {
+              final parsed = double.tryParse(text);
+              if (parsed != null) onSpacing2Changed(parsed);
+            },
+            fieldKey: const ValueKey('component-pattern-field-direction2-Spacing (mm)'),
+          ),
+          CheckboxListTile(
+            value: reverse2,
+            onChanged: (checked) => onReverse2Changed(checked ?? false),
+            title: const Text('Reverse'),
+            controlAffinity: ListTileControlAffinity.leading,
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+          ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: () => onSecondDirectionToggled(false),
+              icon: const Icon(Icons.remove_circle_outline),
+              label: const Text('Remove second direction'),
+            ),
+          ),
+        ] else
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: () => onSecondDirectionToggled(true),
+              icon: const Icon(Icons.add),
+              label: const Text('Add second direction'),
+            ),
+          ),
       ];
 
   List<Widget> _circularFields(BuildContext context) => [
@@ -349,28 +439,46 @@ class ComponentPatternPanel extends StatelessWidget {
   /// [ComponentPatternAxisPreset.custom] reveals - mirrors [_circularFields]'
   /// own `axisOrigin` 3-field row exactly (same layout, same per-component
   /// `_numberField` reuse), just for a direction vector instead of a point.
-  Widget _vectorFields(List<double> vector, ValueChanged<List<double>> onChanged) {
+  // Bug report (assembly testing): `keyPrefix` disambiguates Direction 2's
+  // own X/Y/Z fields from Direction 1's identically-labeled ones - see
+  // [_numberField]'s own `fieldKey` doc comment. Every pre-existing call
+  // site leaves this at its default `''`, so its own keys stay exactly the
+  // bare `X`/`Y`/`Z` ones they always were.
+  Widget _vectorFields(List<double> vector, ValueChanged<List<double>> onChanged, {String keyPrefix = ''}) {
     return Row(
       children: [
         for (var i = 0; i < 3; i++) ...[
           if (i > 0) const SizedBox(width: 8),
           Expanded(
-            child: _numberField(['X', 'Y', 'Z'][i], vector[i].toString(), (text) {
-              final parsed = double.tryParse(text);
-              if (parsed == null) return;
-              final updated = [...vector];
-              updated[i] = parsed;
-              onChanged(updated);
-            }),
+            child: _numberField(
+              ['X', 'Y', 'Z'][i],
+              vector[i].toString(),
+              (text) {
+                final parsed = double.tryParse(text);
+                if (parsed == null) return;
+                final updated = [...vector];
+                updated[i] = parsed;
+                onChanged(updated);
+              },
+              fieldKey: ValueKey('component-pattern-field-$keyPrefix${['X', 'Y', 'Z'][i]}'),
+            ),
           ),
         ],
       ],
     );
   }
 
-  Widget _numberField(String label, String initialValue, ValueChanged<String> onChanged) {
+  // Bug report (assembly testing): `fieldKey` lets a caller override the
+  // default `label`-derived key - needed once Direction 2's own "Count"/
+  // "Spacing (mm)"/X/Y/Z fields could be mounted alongside Direction 1's
+  // identically-labeled ones (both visible at once whenever
+  // [hasSecondDirection] is true), which would otherwise collide (two
+  // sibling widgets under the same [ValueKey] - Flutter rejects that).
+  // Every pre-existing call site leaves this `null`, so its own key stays
+  // exactly the bare `label`-derived one it always was.
+  Widget _numberField(String label, String initialValue, ValueChanged<String> onChanged, {Key? fieldKey}) {
     return TextFormField(
-      key: ValueKey('component-pattern-field-$label'),
+      key: fieldKey ?? ValueKey('component-pattern-field-$label'),
       initialValue: initialValue,
       keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
       decoration: InputDecoration(labelText: label),

@@ -41,3 +41,25 @@ Color assemblyLensAccentColor(ColorScheme colorScheme, AssemblyLens lens) {
       ? (colorScheme.tertiaryContainer, colorScheme.onTertiaryContainer)
       : (colorScheme.surface, colorScheme.onSurface);
 }
+
+/// The background/foreground pair for a lens-tinted *button* (the small
+/// FABs in the top-left column: hamburger/feature-tree/lens-toggle) -
+/// Assembly lens's own [ColorScheme.tertiaryContainer]/
+/// [ColorScheme.onTertiaryContainer]. Bug report (assembly testing):
+/// [assemblyLensAccentColor]'s bare [ColorScheme.tertiary] read as a much
+/// darker/more saturated red than Part lens's own buttons (which use
+/// `FloatingActionButton`'s M3 default of [ColorScheme.primaryContainer]/
+/// [ColorScheme.onPrimaryContainer] - a light "container" tone, not the
+/// fully-saturated [ColorScheme.primary] tone). This pairs
+/// `tertiaryContainer` with `onTertiaryContainer` for the same lighter
+/// tonal weight *and* keeps the icon legible on it (an explicit
+/// foreground is needed here - unlike Part lens's `null`/`null`, where
+/// `FloatingActionButton` already supplies a matching default pair on its
+/// own, an explicit `backgroundColor` with no matching `foregroundColor`
+/// would otherwise still default to `onPrimaryContainer`, not
+/// `onTertiaryContainer`). Callers only apply this pair while
+/// `lens == AssemblyLens.assembly`; Part lens keeps passing `null` to both
+/// params so `FloatingActionButton` keeps its own default look untouched.
+(Color background, Color onBackground) assemblyLensButtonColors(ColorScheme colorScheme) {
+  return (colorScheme.tertiaryContainer, colorScheme.onTertiaryContainer);
+}

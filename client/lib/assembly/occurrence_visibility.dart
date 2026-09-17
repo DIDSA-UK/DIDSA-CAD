@@ -39,6 +39,18 @@ List<OccurrenceDto> applyOccurrenceVisibilityOverrides(
         hidden: occurrence.hidden ||
             hiddenOccurrenceIds.contains(occurrence.id) ||
             (isolatedOccurrenceId != null && occurrence.id != isolatedOccurrenceId),
+        // Bug fix (found alongside the `color` field below): `fixed` was
+        // missing from this reconstruction too - every Occurrence's own
+        // "Fix" state silently reset to `false` the instant Hide/Isolate
+        // was used anywhere in this session, since this function rebuilds a
+        // fresh `OccurrenceDto` per entry (to fold the visibility overrides
+        // into `hidden`) and every field left off that constructor falls
+        // back to its own default.
+        fixed: occurrence.fixed,
+        // Bug report (assembly testing): same gap as `fixed` just above -
+        // without this, a colour-disc override would appear to "forget"
+        // itself the same way.
+        color: occurrence.color,
       ),
   ];
 }
@@ -76,6 +88,10 @@ List<AssemblyOccurrenceInstanceDto> applyInstanceVisibilityOverrides(
         hidden: instance.hidden ||
             instance.occurrencePath.any(hiddenOccurrenceIds.contains) ||
             (isolatedOccurrenceId != null && !instance.occurrencePath.contains(isolatedOccurrenceId)),
+        // Bug report (assembly testing): same "every field left off this
+        // reconstruction falls back to its own default" gap
+        // [applyOccurrenceVisibilityOverrides] has for `fixed`/`color`.
+        color: instance.color,
       ),
   ];
 }
@@ -186,6 +202,12 @@ List<AssemblyOccurrenceInstanceDto> overrideInstanceTransform(
           partId: instance.partId,
           worldTransform: transform,
           hidden: instance.hidden,
+          // Bug report (assembly testing): same "every field left off this
+          // reconstruction falls back to its own default" gap this file's
+          // other two DTO-rebuilding functions have for `color` - without
+          // this, a coloured component would flash back to the neutral
+          // default tint for the duration of every Move/Rotate gizmo drag.
+          color: instance.color,
         )
       else
         instance,

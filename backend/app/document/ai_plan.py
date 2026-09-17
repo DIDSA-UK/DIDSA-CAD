@@ -1109,7 +1109,15 @@ def _handle_pattern_component(v: _PlanValidator, step: PatternComponentStep) -> 
     pattern_type = ComponentPatternType(step.pattern_type)
     axis = _component_pattern_axis_to_domain(step.axis)
     _validate_component_pattern_payload(
-        pattern_type, step.direction, step.count, axis, step.count_angular, step.angle_total, step.skip_indices
+        pattern_type,
+        step.direction,
+        step.count,
+        axis,
+        step.count_angular,
+        step.angle_total,
+        step.skip_indices,
+        count_2=step.count_2,
+        direction_2=step.direction_2,
     )
     pattern = ComponentPattern(
         id=str(uuid.uuid4()),
@@ -1119,6 +1127,10 @@ def _handle_pattern_component(v: _PlanValidator, step: PatternComponentStep) -> 
         count=step.count,
         spacing=step.spacing,
         reverse=step.reverse,
+        direction_2=step.direction_2,
+        count_2=step.count_2,
+        spacing_2=step.spacing_2,
+        reverse_2=step.reverse_2,
         axis=axis,
         count_angular=step.count_angular,
         angle_total=step.angle_total,

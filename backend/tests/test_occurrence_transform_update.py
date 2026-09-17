@@ -382,3 +382,103 @@ def test_solving_a_fixed_occurrence_is_rejected():
     response = client.post(f"/document/parts/{top_id}/occurrences/{occurrence_id}/solve")
     assert response.status_code == 422
     assert response.json()["detail"]["type"] == "occurrence_is_fixed"
+
+
+# --- Bug report (assembly testing): the colour-disc's own `color` field --
+
+
+def test_a_fresh_occurrence_reports_no_colour_override():
+    top_id, occurrence_id = _setup_top_with_one_occurrence()
+    occurrences = client.get(f"/document/parts/{top_id}/occurrences").json()
+    assert occurrences[0]["id"] == occurrence_id
+    assert occurrences[0]["color"] is None
+
+
+def test_patching_color_only_leaves_transform_untouched():
+    top_id, occurrence_id = _setup_top_with_one_occurrence()
+    client.patch(
+        f"/document/parts/{top_id}/occurrences/{occurrence_id}",
+        json={
+            "transform": {
+                "translation": [4.0, 0.0, 0.0],
+                "rotation_axis": [0.0, 0.0, 1.0],
+                "rotation_angle_degrees": 0.0,
+            }
+        },
+    )
+
+    response = client.patch(
+        f"/document/parts/{top_id}/occurrences/{occurrence_id}",
+        json={"color": "#FF8800"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["color"] == "#FF8800"
+    assert body["transform"]["translation"] == [4.0, 0.0, 0.0]
+
+
+def test_omitting_color_leaves_the_current_override_untouched():
+    top_id, occurrence_id = _setup_top_with_one_occurrence()
+    client.patch(
+        f"/document/parts/{top_id}/occurrences/{occurrence_id}",
+        json={"color": "#00FF00"},
+    )
+
+    response = client.patch(
+        f"/document/parts/{top_id}/occurrences/{occurrence_id}",
+        json={"hidden": True},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["hidden"] is True
+    assert body["color"] == "#00FF00"
+
+
+def test_an_empty_string_color_explicitly_clears_the_override():
+    top_id, occurrence_id = _setup_top_with_one_occurrence()
+    client.patch(
+        f"/document/parts/{top_id}/occurrences/{occurrence_id}",
+        json={"color": "#00FF00"},
+    )
+
+    response = client.patch(
+        f"/document/parts/{top_id}/occurrences/{occurrence_id}",
+        json={"color": ""},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["color"] is None
+
+
+def test_color_survives_a_native_export_import_round_trip():
+    top_id, occurrence_id = _setup_top_with_one_occurrence()
+    client.patch(
+        f"/document/parts/{top_id}/occurrences/{occurrence_id}",
+        json={"color": "#123456"},
+    )
+
+    exported = _export_part(top_id)
+    exported_occurrence = exported["document"]["parts"][0]["occurrences"][0]
+    assert exported_occurrence["color"] == "#123456"
+
+    _import_composed(exported)
+    occurrences = client.get(f"/document/parts/{top_id}/occurrences").json()
+    assert occurrences[0]["color"] == "#123456"
+
+
+def test_assembly_mesh_instance_reports_the_occurrence_color():
+    top_id, occurrence_id = _setup_top_with_one_occurrence()
+    client.patch(
+        f"/document/parts/{top_id}/occurrences/{occurrence_id}",
+        json={"color": "#ABCDEF"},
+    )
+
+    mesh = client.get(f"/document/parts/{top_id}/assembly-mesh").json()
+    bolt_instance = next(i for i in mesh["instances"] if i["occurrence_path"] == [occurrence_id])
+    assert bolt_instance["color"] == "#ABCDEF"
+    # The root Part's own local-content instance (occurrence_path == [])
+    # has no Occurrence of its own to carry a colour override.
+    root_instance = next(i for i in mesh["instances"] if i["occurrence_path"] == [])
+    assert root_instance["color"] is None

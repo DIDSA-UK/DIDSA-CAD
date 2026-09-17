@@ -15,6 +15,7 @@ OccurrenceDto _occurrence(
   bool hidden = false,
   bool suppressed = false,
   bool fixed = false,
+  String? color,
 }) =>
     OccurrenceDto(
       id: id,
@@ -25,6 +26,7 @@ OccurrenceDto _occurrence(
       hidden: hidden,
       suppressed: suppressed,
       fixed: fixed,
+      color: color,
     );
 
 MateDto _mate(String id, {String type = 'coincident', bool suppressed = false}) => MateDto(
@@ -215,7 +217,120 @@ void main() {
       ),
     );
 
-    expect(find.byIcon(Icons.visibility_off), findsOneWidget);
+    // Bug report (assembly testing): the row's own visibility icon is now
+    // an always-visible interactive toggle (see the "inline visibility
+    // toggle" test group below), not the old plain-Icon read-only trailing
+    // marker - `Icons.visibility_off_outlined` mirrors
+    // `component_context_menu.dart`'s own Hide/Show icon pair exactly.
+    expect(find.byIcon(Icons.visibility_off_outlined), findsOneWidget);
+  });
+
+  // --- Bug report (assembly testing): the inline visibility toggle/colour
+  // disc ("add two toggles in line with the part names") -----------------
+
+  testWidgets('a visible occurrence shows the visibility-on trailing icon', (tester) async {
+    await tester.pumpWidget(
+      _wrap(
+        AssemblyTreePanel(
+          visible: true,
+          occurrences: [_occurrence('o1', externalRef: 'parts/bolt.didsa')],
+          mates: const [],
+          selectedOccurrenceId: null,
+          onOccurrenceTap: (_) {},
+          onOccurrenceLongPress: (_) {},
+          onClose: () {},
+        ),
+      ),
+    );
+
+    expect(find.byIcon(Icons.visibility_outlined), findsOneWidget);
+    expect(find.byIcon(Icons.visibility_off_outlined), findsNothing);
+  });
+
+  testWidgets('tapping the visibility toggle calls onOccurrenceVisibilityToggle with that occurrence',
+      (tester) async {
+    final occurrence = _occurrence('o1', externalRef: 'parts/bolt.didsa');
+    OccurrenceDto? toggled;
+    await tester.pumpWidget(
+      _wrap(
+        AssemblyTreePanel(
+          visible: true,
+          occurrences: [occurrence],
+          mates: const [],
+          selectedOccurrenceId: null,
+          onOccurrenceTap: (_) {},
+          onOccurrenceLongPress: (_) {},
+          onOccurrenceVisibilityToggle: (o) => toggled = o,
+          onClose: () {},
+        ),
+      ),
+    );
+
+    await tester.tap(find.byIcon(Icons.visibility_outlined));
+    expect(toggled, same(occurrence));
+  });
+
+  testWidgets('tapping the visibility toggle does not also trigger onOccurrenceTap', (tester) async {
+    bool rowTapped = false;
+    OccurrenceDto? toggled;
+    await tester.pumpWidget(
+      _wrap(
+        AssemblyTreePanel(
+          visible: true,
+          occurrences: [_occurrence('o1', externalRef: 'parts/bolt.didsa')],
+          mates: const [],
+          selectedOccurrenceId: null,
+          onOccurrenceTap: (_) => rowTapped = true,
+          onOccurrenceLongPress: (_) {},
+          onOccurrenceVisibilityToggle: (o) => toggled = o,
+          onClose: () {},
+        ),
+      ),
+    );
+
+    await tester.tap(find.byIcon(Icons.visibility_outlined));
+    expect(toggled, isNotNull);
+    expect(rowTapped, isFalse);
+  });
+
+  testWidgets('the colour disc calls onOccurrenceColorTap with that occurrence when tapped', (tester) async {
+    final occurrence = _occurrence('o1', externalRef: 'parts/bolt.didsa', color: '#FF8800');
+    OccurrenceDto? tapped;
+    await tester.pumpWidget(
+      _wrap(
+        AssemblyTreePanel(
+          visible: true,
+          occurrences: [occurrence],
+          mates: const [],
+          selectedOccurrenceId: null,
+          onOccurrenceTap: (_) {},
+          onOccurrenceLongPress: (_) {},
+          onOccurrenceColorTap: (o) => tapped = o,
+          onClose: () {},
+        ),
+      ),
+    );
+
+    await tester.tap(find.byKey(const ValueKey('occurrence-color-disc-o1')));
+    expect(tapped, same(occurrence));
+  });
+
+  testWidgets('an occurrence with no colour override does not crash rendering the disc', (tester) async {
+    await tester.pumpWidget(
+      _wrap(
+        AssemblyTreePanel(
+          visible: true,
+          occurrences: [_occurrence('o1', externalRef: 'parts/bolt.didsa')],
+          mates: const [],
+          selectedOccurrenceId: null,
+          onOccurrenceTap: (_) {},
+          onOccurrenceLongPress: (_) {},
+          onClose: () {},
+        ),
+      ),
+    );
+
+    expect(find.text('bolt'), findsOneWidget);
   });
 
   // Bug report (assembly testing): "Long pressing a part in the assembly

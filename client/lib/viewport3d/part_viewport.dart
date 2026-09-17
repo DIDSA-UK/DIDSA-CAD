@@ -2345,11 +2345,23 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       );
       final transform = matrix4FromRigidTransform(instance.worldTransform);
       final occurrenceKey = instance.occurrencePath.join('/');
+      // Bug report (assembly testing): "a colour disc that when tapped
+      // allows user to select the colour of that part" - [instance.color]
+      // (`Occurrence.color`, echoed straight from the backend) reuses
+      // [buildAssemblyInstanceNode]'s own pre-existing `tint` param, until
+      // now only ever fed [kMatePreviewTint] - `null` (no override) leaves
+      // that builder's own neutral default tint exactly as it always was.
+      final tint = instance.color == null ? null : vector4FromHex(instance.color!).xyz;
       for (final partGeometry in widget.assemblyGeometry) {
         if (partGeometry.partId != instance.partId) continue;
         for (final body in partGeometry.bodies) {
           if (body.mesh.vertices.isEmpty) continue;
-          final node = buildAssemblyInstanceNode(body.mesh, localTransform: transform, opacity: opacity);
+          final node = buildAssemblyInstanceNode(
+            body.mesh,
+            localTransform: transform,
+            opacity: opacity,
+            tint: tint,
+          );
           scene.add(node);
           _assemblyInstanceNodes['$occurrenceKey/${body.bodyId}'] = node;
         }
