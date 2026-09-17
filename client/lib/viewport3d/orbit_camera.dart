@@ -678,16 +678,39 @@ class OrbitCamera {
   /// one height-limited, so this picks whichever bound is actually tighter
   /// rather than assuming a square viewport.
   ///
-  /// No-op (leaves [distance] untouched) for a non-positive [radius] or an
-  /// empty [viewportSize] - nothing meaningful to frame yet, same "caller
-  /// falls back to the `default*` constants" contract [setZoomBoundsForRadius]
-  /// already uses.
+  /// No-op (leaves [distance]/[halfHeight] untouched) for a non-positive
+  /// [radius] or an empty [viewportSize] - nothing meaningful to frame yet,
+  /// same "caller falls back to the `default*` constants" contract
+  /// [setZoomBoundsForRadius] already uses.
+  ///
+  /// Bug fix ("Reset view doesn't set the correct zoom level... too
+  /// close"): this used to only ever set [distance] - correct for
+  /// [isPerspective], but [isPerspective] defaults to `false` (see that
+  /// field's own doc comment) and, more importantly, [halfHeight] stopped
+  /// being *derived* from [distance] once Item 6 moved orthographic zoom
+  /// onto its own independent state (see [halfHeight]'s own doc comment:
+  /// "read directly ... instead of being derived from distance on every
+  /// call the way it used to be"). This method's own doc comment above
+  /// ("so perspective/orthographic frame the same body identically") never
+  /// got updated for that - in orthographic mode [halfHeight] was left
+  /// exactly wherever [reset] had just set it (`_halfHeightForDistance
+  /// (_defaultDistance)`, a fixed value tuned for the reference planes' own
+  /// small size), so "Reset view" had *no visible effect at all* on the
+  /// actual rendered framing for any body/assembly bigger than that tuning
+  /// - it looked "too close" because it was, literally unchanged from
+  /// whatever a prior zoom-in had left it at. [halfHeight] needs no `tan`
+  /// conversion the way [distance] does (it's already a world-space
+  /// half-extent, with no perspective foreshortening to invert) - the same
+  /// [limitingFraction] that scales [distance] by `1/tan(halfFovY)` instead
+  /// divides [radius] directly.
   void frameRadius(double radius, Size viewportSize) {
     if (radius <= 0 || viewportSize.isEmpty) return;
     const halfFovY = 45 * math.pi / 180 / 2;
     final aspectRatio = viewportSize.width / viewportSize.height;
-    final limitingTan = math.tan(halfFovY) * math.min(1.0, aspectRatio);
+    final limitingFraction = math.min(1.0, aspectRatio);
+    final limitingTan = math.tan(halfFovY) * limitingFraction;
     distance = (radius * _frameRadiusPadding / limitingTan).clamp(minDistance, maxDistance);
+    halfHeight = (radius * _frameRadiusPadding / limitingFraction).clamp(minHalfHeight, maxHalfHeight);
   }
 }
 

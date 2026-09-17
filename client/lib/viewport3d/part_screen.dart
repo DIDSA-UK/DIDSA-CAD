@@ -8659,6 +8659,27 @@ class _PartScreenState extends State<PartScreen> {
   /// while the PATCH/refetch is still in flight, a visible snap-back-then-
   /// snap-forward flicker this order avoids entirely.
   ///
+  /// Bug fix ("rotate about one axis, then another - the second rotation
+  /// doesn't visually take"): that clear is only safe if [_gizmoLiveTransform]
+  /// still holds *this* call's own [liveWorldTransform] by the time the
+  /// `await` below finishes - a handle can be released and a different one
+  /// grabbed the instant its own pointer-up fires, well before this async
+  /// work completes, so a second drag can easily start (and its own
+  /// [_onComponentGizmoDragUpdate] calls move [_gizmoLiveTransform] on to
+  /// its own in-progress value) entirely within this drag's own PATCH/
+  /// refetch round-trip. Nulling it out unconditionally here, once this
+  /// `await` finally resolves, would silently overwrite whatever the
+  /// second drag has since done to it: while that second drag's finger is
+  /// still down, a one-frame snap back to *this* drag's own final position;
+  /// or, if the unlucky timing instead lands in the narrow gap between the
+  /// second drag's own last move update and its own pointer-up, that
+  /// second drag's own [_onComponentGizmoDragEnd] call reads a `null`
+  /// `liveWorldTransform` right as it starts and takes its own early-return
+  /// branch above - silently dropping the whole second rotation, never
+  /// PATCHing it at all. [identical], not `==` (`RigidTransformDto` has
+  /// value equality) - a coincidentally-equal value must not be treated as
+  /// "still mine".
+  ///
   /// Phase 12 (`docs/assembly-scope.md` §6 `[18]`): [_gizmoLiveTransform] is
   /// world-space (see [_gizmoDisplayTransform]'s own doc comment), but
   /// `Occurrence.transform` - what `updateOccurrenceTransform` actually
@@ -8688,7 +8709,11 @@ class _PartScreenState extends State<PartScreen> {
       await _refreshAssemblyTree();
       await _refreshAssemblyMesh();
     });
-    if (mounted) setState(() => _gizmoLiveTransform = null);
+    // Bug fix: see this method's own doc comment above - only clear it if
+    // nothing newer has claimed it in the meantime.
+    if (mounted && identical(_gizmoLiveTransform, liveWorldTransform)) {
+      setState(() => _gizmoLiveTransform = null);
+    }
   }
 
   /// Assembly support Phase 5: pops [_componentTransformUndoStack]'s most

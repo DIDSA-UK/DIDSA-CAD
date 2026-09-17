@@ -288,14 +288,18 @@ Node buildComponentGizmoNode(
 vm.Vector3 composeTranslation(vm.Vector3 currentTranslation, vm.Vector3 worldDelta) =>
     currentTranslation + worldDelta;
 
-/// Applies a rotate-handle drag: composes [deltaAngleRadians] about local
+/// Applies a rotate-handle drag: composes [deltaAngleRadians] about
 /// [deltaAxis] *onto* the Occurrence's existing rotation
 /// ([currentAxis]/[currentAngleDegrees]), rather than replacing it -
-/// `q_current * q_delta` (the delta expressed in the object's own,
-/// already-rotated local frame - the same "handles follow the entity's own
-/// orientation" convention [ComponentGizmoBasis] itself is built from, so a
-/// rotate-handle drag keeps spinning the object about its own current axis,
-/// not a world-fixed one). Returns a new single equivalent axis-angle pair -
+/// `q_delta * q_current` (the delta is a *world-space* axis - the object's
+/// current, already-rotated local axis, the same "handles follow the
+/// entity's own orientation" convention [ComponentGizmoBasis] itself is
+/// built from - composed as the rotation applied *after* the existing one,
+/// so a rotate-handle drag keeps spinning the object about its own current
+/// axis, not a world-fixed one; see this function's own inline doc comment
+/// on `qNew` for why the operand order matters here and both orders happen
+/// to agree whenever a caller only ever composes rotations about a single
+/// shared axis). Returns a new single equivalent axis-angle pair -
 /// `RigidTransform` has no quaternion field of its own
 /// (`matrix4FromRigidTransform`'s own doc comment), so every rotation this
 /// app persists must always collapse back to one axis-angle pair no matter
@@ -313,7 +317,28 @@ vm.Vector3 composeTranslation(vm.Vector3 currentTranslation, vm.Vector3 worldDel
       ? vm.Quaternion.identity()
       : vm.Quaternion.axisAngle(currentAxis.normalized(), currentAngleDegrees * math.pi / 180);
   final qDelta = vm.Quaternion.axisAngle(deltaAxis.normalized(), deltaAngleRadians);
-  final qNew = qCurrent * qDelta;
+  // Bug fix ("rotate about one axis, then another - the second rotation
+  // turns about an unexpected axis"): [deltaAxis] is always expressed in
+  // WORLD-space coordinates - it's [ComponentGizmoBasis.xAxis]/[yAxis]/
+  // [zAxis] (or `PartViewport`'s own `basis.xAxis` etc. for a rotate-handle
+  // drag), the object's *current*, already-rotated local axis read straight
+  // off its placement matrix's own column vectors, not the object's
+  // canonical (pre-rotation) body-frame axis. Composing a world-space-axis
+  // rotation "on top of" an existing orientation is `qDelta * qCurrent`
+  // (apply [qCurrent] first, then [qDelta] - standard extrinsic
+  // composition: `(q1*q2)*v*(q1*q2)⁻¹` applies `q2` first, `q1` second, so
+  // the *later* rotation is the left-hand operand), not `qCurrent * qDelta`
+  // - swapping the operands doesn't merely reorder an already-symmetric
+  // case: quaternion multiplication only commutes when both rotations
+  // share the same axis (or either is the identity), which every existing
+  // `composeRotation` unit test happens to do - a *single* rotation from
+  // identity, two rotations about the *same* axis, or a rotation composed
+  // with its own exact inverse - so the wrong order passed unnoticed until
+  // two genuinely different axes were composed back-to-back (a rotate
+  // handle drag starting from a non-identity `currentAxis`/
+  // `currentAngleDegrees`, i.e. the *second* rotation in a session, not the
+  // first).
+  final qNew = qDelta * qCurrent;
   final axis = qNew.axis;
   if (axis.length2 < 1e-12) return (vm.Vector3(0, 0, 1), 0.0);
   return (axis.normalized(), qNew.radians * 180 / math.pi);
