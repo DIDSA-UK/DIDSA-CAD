@@ -115,6 +115,19 @@ class AssemblyTreePanel extends StatefulWidget {
 
   final VoidCallback onClose;
 
+  /// Bug fix: previously this panel had no idea whether "Make Focus" had
+  /// drilled into a sub-component - the only way back to [onExitFocus]'s
+  /// same effect was long-pressing a row and picking "Exit Focus" from
+  /// `component_context_menu.dart`'s menu, which doesn't exist as an option
+  /// when the just-focused Part has no Occurrences of its own: this tree
+  /// then renders [_buildGroupedTree]'s own empty state with nothing at all
+  /// to long-press, leaving the user stuck unable to navigate back out.
+  /// [focusedLabel] non-null (`AssemblyFocusStack.currentLabel`) now always
+  /// shows a breadcrumb row with its own tap target instead, independent of
+  /// whether [occurrences] is empty.
+  final String? focusedLabel;
+  final VoidCallback? onExitFocus;
+
   const AssemblyTreePanel({
     super.key,
     required this.visible,
@@ -129,6 +142,8 @@ class AssemblyTreePanel extends StatefulWidget {
     this.onMateLongPress,
     this.onPatternTap,
     this.onPatternLongPress,
+    this.focusedLabel,
+    this.onExitFocus,
   });
 
   @override
@@ -220,6 +235,7 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
                                     ],
                                   ),
                                 ),
+                                if (widget.focusedLabel != null) _buildFocusBreadcrumb(context),
                                 Expanded(child: _buildGroupedTree(context)),
                               ],
                             );
@@ -235,6 +251,40 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
           ),
         );
       },
+    );
+  }
+
+  /// Bug fix: the breadcrumb row shown while [AssemblyTreePanel.focusedLabel]
+  /// is non-null - a back arrow plus the focused Part's own display name,
+  /// tapping either calls [AssemblyTreePanel.onExitFocus] (mirrors
+  /// [ComponentContextMenuAction.exitFocus]'s effect exactly, just reachable
+  /// without needing an Occurrence row to long-press). Sits between the
+  /// panel's header and its tree/empty-state body, so it's visible
+  /// regardless of whether the focused Part has any Occurrences of its own
+  /// to show below it.
+  Widget _buildFocusBreadcrumb(BuildContext context) {
+    return Material(
+      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+      child: InkWell(
+        onTap: widget.onExitFocus,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+          child: Row(
+            children: [
+              const Icon(Icons.arrow_back, size: 18),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  widget.focusedLabel!,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -283,7 +333,14 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
         child: Padding(
           padding: const EdgeInsets.all(24),
           child: Text(
-            'No components yet',
+            // Bug fix: a focused leaf Part (no Occurrences of its own) hits
+            // this same empty state - "No components yet" alone read as
+            // this Part having nothing in it at all, with no hint that
+            // there's a whole rest-of-assembly one tap away via the
+            // breadcrumb above.
+            widget.focusedLabel != null
+                ? 'This component has no sub-components of its own'
+                : 'No components yet',
             textAlign: TextAlign.center,
             style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 13),
           ),

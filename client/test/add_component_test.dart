@@ -235,5 +235,79 @@ void main() {
       final occurrence = (root['occurrences'] as List).cast<Map<String, dynamic>>().single;
       expect(occurrence['name_override'], 'Main bolt');
     });
+
+    // Bug fix (assembly rendering bug #2): `export_native`'s `sketches` list
+    // (`native_format.py`) lives alongside `document`, not inside it - every
+    // Sketch referenced by a SketchFeature on the exported Parts, keyed by
+    // id in the backend's own global sketch store. `POST /import/native`
+    // fully replaces that store from whatever `sketches` the merged payload
+    // carries, so dropping the incoming component's own `sketches` here left
+    // any SketchFeature on its Part (e.g. an Extrude) pointing at a sketch
+    // id the store never received - the backend 404s computing that Part's
+    // geometry (`get_sketch_or_404`), so the new Occurrence showed up in the
+    // tree (Parts/Occurrences merge fine) but never rendered.
+    group('sketches', () {
+      Map<String, dynamic> sketch(String id) => {'id': id, 'entities': [], 'constraints': [], 'plane': null};
+
+      test('carries the incoming component\'s own sketches into the merged payload', () {
+        final current = _documentPayload(parts: [_part('root')], rootPartId: 'root');
+        final component = {
+          ..._documentPayload(parts: [_part('bolt')], rootPartId: 'bolt'),
+          'sketches': [sketch('sk-bolt')],
+        };
+
+        final merged = mergeComponentIntoDocument(
+          currentPayload: current,
+          componentPayload: component,
+          rootPartId: 'root',
+          occurrenceId: 'occ-1',
+        );
+
+        final sketches = (merged['sketches'] as List).cast<Map<String, dynamic>>();
+        expect(sketches.map((s) => s['id']), contains('sk-bolt'));
+      });
+
+      test('preserves the current session\'s own sketches alongside the incoming ones', () {
+        final current = {
+          ..._documentPayload(parts: [_part('root')], rootPartId: 'root'),
+          'sketches': [sketch('sk-root')],
+        };
+        final component = {
+          ..._documentPayload(parts: [_part('bolt')], rootPartId: 'bolt'),
+          'sketches': [sketch('sk-bolt')],
+        };
+
+        final merged = mergeComponentIntoDocument(
+          currentPayload: current,
+          componentPayload: component,
+          rootPartId: 'root',
+          occurrenceId: 'occ-1',
+        );
+
+        final sketchIds = (merged['sketches'] as List).cast<Map<String, dynamic>>().map((s) => s['id']);
+        expect(sketchIds, containsAll(['sk-root', 'sk-bolt']));
+      });
+
+      test('dedups sketches by id rather than duplicating one already present', () {
+        final current = {
+          ..._documentPayload(parts: [_part('root')], rootPartId: 'root'),
+          'sketches': [sketch('sk-shared')],
+        };
+        final component = {
+          ..._documentPayload(parts: [_part('bolt')], rootPartId: 'bolt'),
+          'sketches': [sketch('sk-shared')],
+        };
+
+        final merged = mergeComponentIntoDocument(
+          currentPayload: current,
+          componentPayload: component,
+          rootPartId: 'root',
+          occurrenceId: 'occ-1',
+        );
+
+        final sketches = (merged['sketches'] as List).cast<Map<String, dynamic>>();
+        expect(sketches.where((s) => s['id'] == 'sk-shared'), hasLength(1));
+      });
+    });
   });
 }

@@ -31,6 +31,17 @@ class AssemblyFocusStack {
   /// never a deep-equality one).
   List<String> _occurrencePath = const [];
 
+  /// Bug fix: the display name shown for each [push] onto [_occurrencePath],
+  /// same "parallel stack" shape as [_occurrencePath] itself. Lets
+  /// `AssemblyTreePanel` show a breadcrumb naming whichever Part is
+  /// currently focused - previously there was no client-side record of it
+  /// at all once [_refreshAssemblyTree] re-fetched (a focused Part with no
+  /// Occurrences of its own renders an empty tree with nothing to long-press
+  /// "Exit Focus" on, leaving the user stuck with no visible way back out -
+  /// see `AssemblyTreePanel`'s own breadcrumb row for the other half of this
+  /// fix).
+  List<String> _labelPath = const [];
+
   AssemblyFocusStack(this.rootPartId);
 
   /// The currently-focused Part id - [rootPartId] until something is pushed.
@@ -45,14 +56,22 @@ class AssemblyFocusStack {
   /// See [_occurrencePath]'s own doc comment.
   List<String> get currentOccurrencePath => _occurrencePath;
 
+  /// The display name of whichever Part is currently focused - `null` while
+  /// unfocused (at [rootPartId]), else [_labelPath]'s last entry.
+  String? get currentLabel => _labelPath.isEmpty ? null : _labelPath.last;
+
   /// Focuses [partId] via the Occurrence identified by [occurrenceId] - e.g.
   /// "Make Focus" on a Component context menu (Phase 4). [occurrenceId] is
   /// appended to [currentOccurrencePath] (not replacing it) so a focus
   /// pushed while already focused several levels deep still records the
-  /// *whole* chain down to it, not just this one step.
-  void push(String partId, String occurrenceId) {
+  /// *whole* chain down to it, not just this one step. [displayName] is
+  /// whatever the focused Occurrence was labelled at focus time (e.g.
+  /// `occurrenceDisplayName`'s own result) - purely for [currentLabel]'s own
+  /// breadcrumb display, never resolved again after this call.
+  void push(String partId, String occurrenceId, String displayName) {
     _overrides.push(partId);
     _occurrencePath = [..._occurrencePath, occurrenceId];
+    _labelPath = [..._labelPath, displayName];
   }
 
   /// Un-focuses back to whatever was focused before, or [rootPartId] if this
@@ -60,6 +79,9 @@ class AssemblyFocusStack {
   String? pop() {
     if (_occurrencePath.isNotEmpty) {
       _occurrencePath = _occurrencePath.sublist(0, _occurrencePath.length - 1);
+    }
+    if (_labelPath.isNotEmpty) {
+      _labelPath = _labelPath.sublist(0, _labelPath.length - 1);
     }
     return _overrides.pop();
   }
@@ -69,5 +91,6 @@ class AssemblyFocusStack {
   void clear() {
     _overrides.clear();
     _occurrencePath = const [];
+    _labelPath = const [];
   }
 }

@@ -107,6 +107,28 @@ Map<String, dynamic> mergeComponentIntoDocument({
       if (!currentPartIds.contains(part['id'])) part,
   ];
 
+  // Bug fix: `export_native`'s `sketches` list (`native_format.py`) lives
+  // alongside `document`, not inside it - every Sketch referenced by any
+  // SketchFeature across the exported Parts, keyed by id in the backend's
+  // own global sketch store (`replace_all_sketches` on `POST
+  // /import/native`, a full replace of that store). Dropping
+  // [componentPayload]'s own `sketches` here left every SketchFeature on
+  // the newly-merged Part (e.g. an Extrude) pointing at a sketch id the
+  // re-imported store never received - `compute_part_bodies` then 404s via
+  // `get_sketch_or_404`, so the new Occurrence shows up in the tree (parts
+  // merged fine) but never renders (its geometry can't be computed).
+  // Deduped by sketch id, same convention as [mergedParts] above.
+  final currentSketches = ((currentPayload['sketches'] as List?) ?? const [])
+      .cast<Map<String, dynamic>>();
+  final componentSketches = ((componentPayload['sketches'] as List?) ?? const [])
+      .cast<Map<String, dynamic>>();
+  final currentSketchIds = {for (final sketch in currentSketches) sketch['id'] as String};
+  final mergedSketches = [
+    ...currentSketches,
+    for (final sketch in componentSketches)
+      if (!currentSketchIds.contains(sketch['id'])) sketch,
+  ];
+
   final newOccurrence = <String, dynamic>{
     'id': occurrenceId,
     'external_ref': externalRef,
@@ -137,5 +159,6 @@ Map<String, dynamic> mergeComponentIntoDocument({
       ...currentDocument,
       'parts': updatedParts,
     },
+    'sketches': mergedSketches,
   };
 }

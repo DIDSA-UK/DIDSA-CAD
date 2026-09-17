@@ -3848,6 +3848,43 @@ void main() {
       expect(byId['occ-1'], isFalse);
       expect(byId['occ-2'], isFalse);
     });
+
+    // Bug fix: "Move/Rotate" used to be a pure no-op case body (selecting
+    // the Occurrence already made the gizmo target it) - but the gizmo's
+    // own handle hit-test only ever wins priority over whichever *ordinary*
+    // gesture dispatch is next in line; it doesn't change what that
+    // fallback actually is. Selection mode's own dispatch has no orbit
+    // gesture at all (a quick single-finger drag arms nothing, a two-finger
+    // drag only ever pinch-pans), so a Selection-mode session left on from
+    // any earlier picker-based tool (nothing in this file resets it back
+    // off on its own) broke the camera orbit needed to even find a handle
+    // to grab. "Move/Rotate" now forces Selection mode off, the same
+    // "one-time default on open" contract `_openExtrudePanel` already uses
+    // in the opposite direction.
+    testWidgets('Move/Rotate forces Selection mode off so the camera can orbit to find a handle', (
+      tester,
+    ) async {
+      await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1')]);
+
+      // `openInAssemblyLens` only ever switches lens (`_toggleAssemblyLens`
+      // never touches `_featureTreeVisible`) - the selection-mode FAB is
+      // already reachable, same as every other test in this group reaches
+      // `AssemblyTreePanel.onOccurrenceLongPress` directly rather than via
+      // an on-screen tap into the (slid-off-by-default) tree.
+      await tester.tap(find.byTooltip('Switch to selection mode'));
+      await tester.pump();
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).selectionMode, isTrue);
+
+      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      panel.onOccurrenceLongPress(panel.occurrences.single);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      await tester.tap(find.text('Move/Rotate'));
+      await tester.pump();
+
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).selectionMode, isFalse);
+    });
   });
 
   // §6 roadmap Phase 10 (`[19]`): the Focus/Exit-Focus label's own latent
