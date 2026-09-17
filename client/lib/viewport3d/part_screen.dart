@@ -27,6 +27,7 @@ import '../assembly/assembly_lens_theme.dart';
 import '../assembly/focus_stack.dart';
 import '../assembly/occurrence_visibility.dart';
 import 'component_context_menu.dart';
+import 'component_gizmo.dart';
 import '../connection_screen.dart';
 import '../didsa_logo_button.dart';
 import '../gear/bevel_design_screen.dart';
@@ -80,6 +81,7 @@ import 'revolve_panel.dart';
 import 'revolve_surface_panel.dart';
 import 'move_body_panel.dart';
 import 'move_face_panel.dart';
+import 'move_rotate_component_panel.dart';
 import 'rollback.dart';
 import 'ruled_surface_panel.dart';
 import 'scale_body_panel.dart';
@@ -481,6 +483,25 @@ class _PartScreenState extends State<PartScreen> {
   /// [_onComponentGizmoDragEnd]'s own single PATCH per gesture does).
   final List<(String occurrenceId, RigidTransformDto previousTransform)> _componentTransformUndoStack = [];
 
+  /// Bug fix ("the gizmo shows up on plain selection, not just while the
+  /// Move/Rotate tool is active"): the actual tool-active flag that was
+  /// missing - mirrors [_moveBodyActive]'s own role for Move Body. Selecting
+  /// an Occurrence (a tap, or the long-press that opens
+  /// [showComponentContextMenu]) no longer implies "show the gizmo" by
+  /// itself; only choosing the menu's own Move/Rotate entry
+  /// ([_onOccurrenceLongPress]'s `moveRotate` case) does, exactly like every
+  /// other tool in this file requires its own explicit open call before its
+  /// panel/gizmo appears. [_closeMoveRotateComponentPanel] is this flag's
+  /// only "off" switch.
+  bool _moveRotateComponentActive = false;
+
+  /// The collapsible toolbar's own current tab - which panel (translate or
+  /// rotate) [MoveRotateComponentPanel] is showing right now. Reset to
+  /// [MoveRotateComponentMode.move] each time the tool is (re)opened -
+  /// mirrors every other tool's own "always starts on its default step"
+  /// convention.
+  MoveRotateComponentMode _moveRotateComponentMode = MoveRotateComponentMode.move;
+
   /// Assembly support Phase 5: the Occurrence the Move/Rotate gizmo should
   /// target right now, or `null` to hide it entirely (fed straight into
   /// [PartViewport.selectedOccurrenceTransform] via [_gizmoDisplayTransform]).
@@ -504,6 +525,9 @@ class _PartScreenState extends State<PartScreen> {
   /// anything deeper than a direct child to begin with.
   OccurrenceDto? get _gizmoTargetOccurrence {
     if (_lens != AssemblyLens.assembly) return null;
+    // Bug fix: the gizmo is a tool's own manipulator, not a side effect of
+    // selection - see [_moveRotateComponentActive]'s own doc comment.
+    if (!_moveRotateComponentActive) return null;
     final id = _selectedOccurrenceId;
     if (id == null) return null;
     final focusedPath = _focusStack?.currentOccurrencePath ?? const <String>[];
@@ -1616,6 +1640,7 @@ class _PartScreenState extends State<PartScreen> {
       _moveBodyActive ||
       _deleteFaceActive ||
       _moveFaceActive ||
+      _moveRotateComponentActive ||
       _profilePickerActive ||
       _pathPickerActive ||
       _planeSelectionMode ||
@@ -8603,6 +8628,112 @@ class _PartScreenState extends State<PartScreen> {
       await _api.updateOccurrenceTransform(focusPartId, occurrenceId, previousTransform);
       await _refreshAssemblyTree();
       await _refreshAssemblyMesh();
+    });
+  }
+
+  /// The Move/Rotate toolbar's own persistence call - [MoveRotateComponentPanel]'s
+  /// Apply button's typed-delta counterpart to [_onComponentGizmoDragEnd]'s
+  /// drag-end PATCH: same world-to-local conversion via
+  /// [_gizmoParentInstance]/[localRigidTransformRelativeTo], same undo-stack
+  /// push, same PATCH-then-refetch shape. [newWorldTransform] is expected
+  /// already composed onto [_gizmoTargetWorldTransform]'s current value
+  /// (see [_applyMoveRotateComponentMove]/[_applyMoveRotateComponentRotate]).
+  Future<void> _applyGizmoWorldTransform(RigidTransformDto newWorldTransform) async {
+    final occurrence = _gizmoTargetOccurrence;
+    final focusPartId = _focusStack?.current ?? _part?.id;
+    if (occurrence == null || focusPartId == null) return;
+    final previousTransform = occurrence.transform;
+    final parentInstance = _gizmoParentInstance;
+    final finalTransform = parentInstance == null
+        ? newWorldTransform
+        : localRigidTransformRelativeTo(parentInstance.worldTransform, newWorldTransform);
+    await _runGuarded(() async {
+      await _api.updateOccurrenceTransform(focusPartId, occurrence.id, finalTransform);
+      _componentTransformUndoStack.add((occurrence.id, previousTransform));
+      await _refreshAssemblyTree();
+      await _refreshAssemblyMesh();
+    });
+  }
+
+  /// [MoveRotateComponentPanel]'s Move panel Apply button: translates the
+  /// gizmo's current target along its own local X/Y/Z axes by [dx]/[dy]/[dz]
+  /// respectively - the exact same [ComponentGizmoBasis]/[composeTranslation]
+  /// math a translate-handle drag itself uses (`PartViewport._updateComponentGizmoDrag`),
+  /// just with a typed vector instead of a dragged one.
+  Future<void> _applyMoveRotateComponentMove(double dx, double dy, double dz) async {
+    final worldTransform = _gizmoTargetWorldTransform;
+    if (worldTransform == null) return;
+    final basis = ComponentGizmoBasis.fromMatrix(matrix4FromRigidTransform(worldTransform));
+    final worldDelta = basis.xAxis * dx + basis.yAxis * dy + basis.zAxis * dz;
+    final newTranslation = composeTranslation(
+      vm.Vector3(worldTransform.translation[0], worldTransform.translation[1], worldTransform.translation[2]),
+      worldDelta,
+    );
+    await _applyGizmoWorldTransform(RigidTransformDto(
+      translation: [newTranslation.x, newTranslation.y, newTranslation.z],
+      rotationAxis: worldTransform.rotationAxis,
+      rotationAngleDegrees: worldTransform.rotationAngleDegrees,
+    ));
+  }
+
+  /// [MoveRotateComponentPanel]'s Rotate panel Apply button: rotates the
+  /// gizmo's current target about its own local X, then Y, then Z axis (in
+  /// that order - each [composeRotation] call composes onto the previous
+  /// one's result) by [dxDegrees]/[dyDegrees]/[dzDegrees] - a zero component
+  /// is skipped entirely (matches [composeRotation]'s own "no rotation" no-
+  /// op, and avoids reducing an already-canonical axis/angle pair to
+  /// `([0,0,1], 0)` for no reason when only one or two axes are actually
+  /// used, the common case). Each [deltaAxis] passed to [composeRotation] is
+  /// this target's own local axis *as of the start of this call* (`basis`,
+  /// built once from [worldTransform]) - the same "the object's own already-
+  /// rotated local frame" axis a single rotate-handle drag itself always
+  /// composes against (`PartViewport._updateComponentGizmoDrag`'s own
+  /// `rotationAxis: basis.xAxis` etc.), just applied up to three times in
+  /// one Apply instead of the one axis a single drag gesture is limited to.
+  Future<void> _applyMoveRotateComponentRotate(double dxDegrees, double dyDegrees, double dzDegrees) async {
+    final worldTransform = _gizmoTargetWorldTransform;
+    if (worldTransform == null) return;
+    final basis = ComponentGizmoBasis.fromMatrix(matrix4FromRigidTransform(worldTransform));
+    var axis = vm.Vector3(
+      worldTransform.rotationAxis[0],
+      worldTransform.rotationAxis[1],
+      worldTransform.rotationAxis[2],
+    );
+    var angleDegrees = worldTransform.rotationAngleDegrees;
+    for (final (deltaAxis, deltaDegrees) in [
+      (basis.xAxis, dxDegrees),
+      (basis.yAxis, dyDegrees),
+      (basis.zAxis, dzDegrees),
+    ]) {
+      if (deltaDegrees == 0) continue;
+      final (newAxis, newAngleDegrees) = composeRotation(
+        currentAxis: axis,
+        currentAngleDegrees: angleDegrees,
+        deltaAxis: deltaAxis,
+        deltaAngleRadians: deltaDegrees * math.pi / 180,
+      );
+      axis = newAxis;
+      angleDegrees = newAngleDegrees;
+    }
+    await _applyGizmoWorldTransform(RigidTransformDto(
+      translation: worldTransform.translation,
+      rotationAxis: [axis.x, axis.y, axis.z],
+      rotationAngleDegrees: angleDegrees,
+    ));
+  }
+
+  /// [MoveRotateComponentPanel]'s Done button (and this tool's only other
+  /// "off" switch besides never having been opened) - mirrors
+  /// [_cancelMoveBody]'s "restore ambient state" shape, minus any rollback/
+  /// preview-Feature cleanup (this tool never creates one; every Apply
+  /// already PATCHed straight to the real, persisted Occurrence transform,
+  /// same as a gizmo drag itself does). Leaves [_selectedOccurrenceId] alone
+  /// so the Occurrence stays selected/highlighted after closing - only the
+  /// gizmo itself (via [_moveRotateComponentActive]) and its toolbar go away.
+  void _closeMoveRotateComponentPanel() {
+    setState(() {
+      _moveRotateComponentActive = false;
+      _moveRotateComponentMode = MoveRotateComponentMode.move;
     });
   }
 
@@ -17348,7 +17479,16 @@ class _PartScreenState extends State<PartScreen> {
         // `_selectionMode = true` already uses, just the opposite
         // direction - a manipulator, not a multi-entity picker, needs free
         // orbit to line up a handle, not Selection mode's own tap-to-pick.
-        setState(() => _selectionMode = false);
+        //
+        // Bug fix: this is also the tool's own real "on" switch now (see
+        // [_moveRotateComponentActive]'s own doc comment) - without it,
+        // [_gizmoTargetOccurrence] stays hidden even though `occurrence` was
+        // just selected above.
+        setState(() {
+          _selectionMode = false;
+          _moveRotateComponentActive = true;
+          _moveRotateComponentMode = MoveRotateComponentMode.move;
+        });
       case ComponentContextMenuAction.mate:
         _openMate();
       case ComponentContextMenuAction.pattern:
@@ -18558,6 +18698,30 @@ class _PartScreenState extends State<PartScreen> {
                       onRotationAngleChanged: _onMoveBodyRotationAngleChanged,
                       onConfirm: _confirmMoveBody,
                       onCancel: _cancelMoveBody,
+                    ),
+                  ),
+                // Bug fix ("the Move/Rotate tool has no collapsible toolbar
+                // of its own"): mirrors every other tool panel's slot shape
+                // immediately above - shown for exactly as long as
+                // [_moveRotateComponentActive] is (see that field's own doc
+                // comment for how it's opened/closed), independent of
+                // [_gizmoTargetOccurrence] itself so the toolbar (with its
+                // own Done button) stays reachable even for the one frame a
+                // just-selected Occurrence hasn't resolved into a gizmo
+                // target yet. Also gated on Assembly lens, same as
+                // [_gizmoTargetOccurrence] itself - [_toggleAssemblyLens] is
+                // a "purely a UI-state flip" that deliberately never touches
+                // this flag, so this stays defensive against a stale toolbar
+                // surviving a switch back to Part lens.
+                if (_moveRotateComponentActive && _lens == AssemblyLens.assembly)
+                  Positioned.fill(
+                    key: const ValueKey('move-rotate-component-panel-slot'),
+                    child: MoveRotateComponentPanel(
+                      mode: _moveRotateComponentMode,
+                      onModeChanged: (mode) => setState(() => _moveRotateComponentMode = mode),
+                      onApplyMove: (dx, dy, dz) => unawaited(_applyMoveRotateComponentMove(dx, dy, dz)),
+                      onApplyRotate: (dx, dy, dz) => unawaited(_applyMoveRotateComponentRotate(dx, dy, dz)),
+                      onDone: _closeMoveRotateComponentPanel,
                     ),
                   ),
                 // Direct Editing family (fourth entry), V2: [DeleteFacePanel]

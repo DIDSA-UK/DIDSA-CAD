@@ -5692,6 +5692,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                     // invisible despite being added to the Scene.
                     ..._sectionQuadNodes.values,
                     if (_sectionGizmoNode != null) _sectionGizmoNode!,
+                    // Bug fix ("the Move/Rotate gizmo does not render in
+                    // Assembly mode"): same root cause the section-gizmo
+                    // comment right above already documents - built from
+                    // `PolylineGeometry` (see `buildComponentGizmoNode`) but
+                    // never added to this list, so its camera-facing strip
+                    // geometry never got built and it rendered as
+                    // degenerate/invisible despite being added to the Scene.
+                    if (_componentGizmoNode != null) _componentGizmoNode!,
                     if (_sketchPlaneSurfaceNode != null) _sketchPlaneSurfaceNode!,
                     if (_sketchPlaneGridNode != null) _sketchPlaneGridNode!,
                     if (_drawGhostGuideNode != null) _drawGhostGuideNode!,
