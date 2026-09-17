@@ -114,6 +114,19 @@ Quaternion = tuple[float, float, float, float]
 _FIXED_GROUP = 1
 _SOLVE_GROUP = 2
 
+# `solve_occurrence`'s own residual-verified-convergence fallback (see
+# `_mate_residual_satisfied`'s own docstring) - mirrors `app.sketch.solver`'s
+# identically-named, identically-scoped `_RESIDUAL_TOLERANCE` constant and
+# the reasoning behind it (`py_slvs`'s own `result_code` cannot always tell
+# "solved, just redundantly so" apart from a genuine conflict). Millimetre-
+# scale absolute tolerance - unlike the sketch solver's own version this
+# isn't scaled to the geometry's own size, since a mate's two references can
+# come from Parts of wildly different scale (a tiny bolt mated to a large
+# plate) where "size of the larger one" would be far too loose a floor for
+# the smaller one's own real tolerance needs.
+_RESIDUAL_TOLERANCE = 1e-4
+_RESIDUAL_ANGLE_TOLERANCE_DEGREES = 1e-2
+
 
 def _unsupported_mate_geometry(ref: MateEntityRef, needed: str) -> HTTPException:
     """Structured 422, same envelope `app.document.extrude._missing_reference`/
@@ -281,6 +294,42 @@ def _normalize(v: Vec3) -> Vec3:
     if length < 1e-12:
         return (0.0, 0.0, 1.0)
     return (v[0] / length, v[1] / length, v[2] / length)
+
+
+def _vec_sub(a: Vec3, b: Vec3) -> Vec3:
+    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+
+def _dot(a: Vec3, b: Vec3) -> float:
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def _cross(a: Vec3, b: Vec3) -> Vec3:
+    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+
+
+def _magnitude(v: Vec3) -> float:
+    return math.sqrt(_dot(v, v))
+
+
+def _point_plane_distance(point: Vec3, plane_origin: Vec3, plane_normal: Vec3) -> float:
+    return abs(_dot(_vec_sub(point, plane_origin), _normalize(plane_normal)))
+
+
+def _point_line_distance(point: Vec3, line_origin: Vec3, line_direction: Vec3) -> float:
+    # |cross(offset, direction)| is exactly the perpendicular distance for a
+    # *unit* direction (|offset| * sin(theta)) - the same identity
+    # `_quaternion_aligning` already relies on via its own cross product.
+    return _magnitude(_cross(_vec_sub(point, line_origin), _normalize(line_direction)))
+
+
+def _directions_parallel(a: Vec3, b: Vec3) -> bool:
+    # Cross-product magnitude of two unit vectors is `sin(theta)` - zero for
+    # either same- or opposite-direction parallel vectors, matching
+    # `addParallel`'s own sign-agnostic semantics (see `_direction_lock`'s
+    # own docstring: *which* sign is `flipped`'s job via the warm-start seed,
+    # never an extra constraint here).
+    return _magnitude(_cross(_normalize(a), _normalize(b))) <= _RESIDUAL_TOLERANCE
 
 
 def _quaternion_from_axis_angle(axis: Vec3, angle_degrees: float) -> Quaternion:
@@ -637,6 +686,129 @@ def _add_mate_constraints(
     raise AssertionError(f"unhandled MateType: {mate.type}")  # pragma: no cover
 
 
+def _mate_residual_satisfied(mate: Mate, driven_world: _ResolvedGeometry, fixed: _ResolvedGeometry) -> bool:
+    """Recomputes `mate`'s own constraint violation directly from
+    `driven_world` (the driven Occurrence's geometry placed into world space
+    by the just-solved transform) and `fixed` (already world-placed) -
+    `solve_occurrence`'s own residual-verified-convergence fallback, run only
+    when `py_slvs`'s raw `result_code` reported failure.
+
+    Mirrors `app.sketch.solver._residual_verified_convergence`'s exact
+    reasoning (see that function's own docstring for the full story):
+    `result_code` cannot tell "every constraint is actually satisfied, just
+    redundantly so in a way this build's rank-deficiency handling doesn't
+    cleanly certify" apart from a genuine conflict. Confirmed directly
+    against the bug report this fixes - a CONCENTRIC mate (bolt shaft to
+    hole axis) followed by a COINCIDENT mate (bolt-head underside plane to
+    plate face): a bolt's own head-underside plane normal is, by
+    construction, parallel to its own shaft axis, so `_direction_lock`'s own
+    `addParallel` (COINCIDENT's plane-plane branch) ends up forcing the
+    *exact same* direction CONCENTRIC's `addParallel` already forces, via a
+    second, independently-built pair of line entities - mathematically
+    redundant, not conflicting, but `py_slvs` reports a non-zero
+    `result_code` for it regardless (same "redundant produces the identical
+    ambiguous code as a real conflict" shape `app.sketch.solver`'s own
+    `_REDUNDANCY_SAFE_CONSTRAINT_TYPES`/`_residual_verified_convergence`
+    comments already document at length for the 2D sketch solver).
+
+    Each branch below checks exactly the geometric relationship the
+    matching branch of `_add_mate_constraints` encodes as a `py_slvs`
+    constraint - a plane-plane COINCIDENT checks point-in-plane distance
+    *and* direction parallelism (`_direction_lock`'s own pair), CONCENTRIC
+    checks axis-direction parallelism *and* the driven axis origin lying on
+    the fixed axis line, and so on. Returns `False` (never raises) for any
+    geometry shape `_add_mate_constraints` itself would have rejected before
+    ever reaching `system.solve` - reaching this function at all already
+    means the constraints were built successfully, so a missing point/plane/
+    axis here can only mean the solve genuinely left it unset, a real
+    non-convergence rather than an ambiguous one."""
+    if mate.type == MateType.COINCIDENT:
+        if driven_world.plane is not None and fixed.plane is not None:
+            return _point_plane_distance(
+                driven_world.plane.origin, fixed.plane.origin, fixed.plane.normal
+            ) <= _RESIDUAL_TOLERANCE and _directions_parallel(driven_world.plane.normal, fixed.plane.normal)
+        if driven_world.plane is not None:
+            if fixed.point is None:
+                return False
+            return _point_plane_distance(fixed.point, driven_world.plane.origin, driven_world.plane.normal) <= _RESIDUAL_TOLERANCE
+        if fixed.plane is not None:
+            if driven_world.point is None:
+                return False
+            return _point_plane_distance(driven_world.point, fixed.plane.origin, fixed.plane.normal) <= _RESIDUAL_TOLERANCE
+        if driven_world.point is None or fixed.point is None:
+            return False
+        return _magnitude(_vec_sub(driven_world.point, fixed.point)) <= _RESIDUAL_TOLERANCE
+
+    if mate.type == MateType.CONCENTRIC:
+        if (
+            driven_world.axis_origin is None
+            or driven_world.direction is None
+            or fixed.axis_origin is None
+            or fixed.direction is None
+        ):
+            return False
+        return _directions_parallel(driven_world.direction, fixed.direction) and (
+            _point_line_distance(driven_world.axis_origin, fixed.axis_origin, fixed.direction) <= _RESIDUAL_TOLERANCE
+        )
+
+    if mate.type == MateType.PARALLEL:
+        if driven_world.direction is None or fixed.direction is None:
+            return False
+        return _directions_parallel(driven_world.direction, fixed.direction)
+
+    if mate.type == MateType.ANGLE:
+        if driven_world.direction is None or fixed.direction is None or mate.value is None:
+            return False
+        dot = max(-1.0, min(1.0, _dot(_normalize(driven_world.direction), _normalize(fixed.direction))))
+        actual_degrees = math.degrees(math.acos(dot))
+        target_degrees = abs(mate.value) % 360
+        target_degrees = min(target_degrees, 360 - target_degrees)
+        # `addAngle`'s own `supplement` toggle (`mate.flipped`) picks which
+        # of the two branches `mateTypeHasFlip` already documents client-side
+        # - either is a legitimate solved state here.
+        supplement_degrees = 180 - target_degrees
+        return (
+            abs(actual_degrees - target_degrees) <= _RESIDUAL_ANGLE_TOLERANCE_DEGREES
+            or abs(actual_degrees - supplement_degrees) <= _RESIDUAL_ANGLE_TOLERANCE_DEGREES
+        )
+
+    if mate.type == MateType.DISTANCE:
+        if mate.value is None:
+            return False
+        target = abs(mate.value)
+        if driven_world.plane is not None and fixed.plane is not None:
+            actual = _point_plane_distance(driven_world.plane.origin, fixed.plane.origin, fixed.plane.normal)
+            return abs(actual - target) <= _RESIDUAL_TOLERANCE and _directions_parallel(
+                driven_world.plane.normal, fixed.plane.normal
+            )
+        if driven_world.plane is not None:
+            if fixed.point is None:
+                return False
+            actual = _point_plane_distance(fixed.point, driven_world.plane.origin, driven_world.plane.normal)
+            return abs(actual - target) <= _RESIDUAL_TOLERANCE
+        if fixed.plane is not None:
+            if driven_world.point is None:
+                return False
+            actual = _point_plane_distance(driven_world.point, fixed.plane.origin, fixed.plane.normal)
+            return abs(actual - target) <= _RESIDUAL_TOLERANCE
+        if (
+            driven_world.axis_origin is not None
+            and driven_world.direction is not None
+            and fixed.axis_origin is not None
+            and fixed.direction is not None
+        ):
+            actual = _point_line_distance(driven_world.axis_origin, fixed.axis_origin, fixed.direction)
+            return abs(actual - target) <= _RESIDUAL_TOLERANCE and _directions_parallel(
+                driven_world.direction, fixed.direction
+            )
+        if driven_world.point is None or fixed.point is None:
+            return False
+        actual = _magnitude(_vec_sub(driven_world.point, fixed.point))
+        return abs(actual - target) <= _RESIDUAL_TOLERANCE
+
+    return False  # pragma: no cover - every MateType is handled above
+
+
 def _applicable_mates(part: Part, driven_occurrence_id: str) -> list[tuple[Mate, MateEntityRef, MateEntityRef]]:
     """Every non-suppressed Mate in `part.mates` with exactly one of its two
     `references` naming `driven_occurrence_id` - returned as `(mate,
@@ -752,4 +924,23 @@ def solve_occurrence(document: Document, part: Part, driven_occurrence_id: str) 
     )
     axis, angle = _axis_angle_from_quaternion(quaternion)
     transform = RigidTransform(translation=translation, rotation_axis=axis, rotation_angle_degrees=angle)
+
+    # Bug fix (on-device feedback: a CONCENTRIC mate followed by a
+    # COINCIDENT one on the same driven Occurrence - a bolt shaft in a hole,
+    # then its head-underside plane against the plate face - reported
+    # `mate_solve_did_not_converge` even though the solved position was
+    # geometrically exact): `result_code` alone can't distinguish a genuine
+    # conflict from a merely-redundant-but-satisfied constraint set (see
+    # `_mate_residual_satisfied`'s own docstring for the full mechanism,
+    # mirroring `app.sketch.solver`'s identical, already-proven fallback for
+    # the 2D solver) - so a `result_code != 0` here gets one more chance:
+    # recompute every applicable Mate's own residual directly from the
+    # just-solved `transform`, and only keep reporting non-convergence if at
+    # least one Mate's constraint is actually still violated.
+    if not converged:
+        converged = all(
+            _mate_residual_satisfied(mate, _place_in_world(driven_geometry, transform), fixed_geometry)
+            for mate, _driven_ref, driven_geometry, fixed_geometry in resolved
+        )
+
     return MateSolveResult(converged=converged, transform=transform, dof=system.Dof)

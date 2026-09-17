@@ -533,7 +533,15 @@ class _PartScreenState extends State<PartScreen> {
     final focusedPath = _focusStack?.currentOccurrencePath ?? const <String>[];
     if (!isDirectChildOfFocus([...focusedPath, id], focusedPath)) return null;
     for (final occurrence in _occurrences) {
-      if (occurrence.id == id) return occurrence;
+      if (occurrence.id != id) continue;
+      // Assembly testing bug fix: a `fixed` Occurrence's own transform is
+      // locked server-side (`occurrence_is_fixed`, `update_occurrence_
+      // transform`/`solve_for_occurrence`) - showing a gizmo that can only
+      // ever fail to persist its own drag would be worse than showing none,
+      // so this mirrors `component_context_menu.dart`'s own disabled
+      // Move/Rotate entry for the same Occurrence.
+      if (occurrence.fixed) return null;
+      return occurrence;
     }
     return null;
   }
@@ -17540,7 +17548,8 @@ class _PartScreenState extends State<PartScreen> {
     // Occurrence the one currently focused" question.
     final isFocused = focusStack?.currentOccurrencePath.contains(occurrence.id) ?? false;
     final hidden = occurrence.hidden;
-    final action = await showComponentContextMenu(context, isFocused: isFocused, hidden: hidden);
+    final fixed = occurrence.fixed;
+    final action = await showComponentContextMenu(context, isFocused: isFocused, hidden: hidden, fixed: fixed);
     if (!mounted || action == null) return;
     switch (action) {
       case ComponentContextMenuAction.makeFocus:
@@ -17562,6 +17571,10 @@ class _PartScreenState extends State<PartScreen> {
         await _setOccurrenceHidden(occurrence, false);
       case ComponentContextMenuAction.isolate:
         await _isolateOccurrence(occurrence);
+      case ComponentContextMenuAction.fix:
+        await _setOccurrenceFixed(occurrence, true);
+      case ComponentContextMenuAction.float:
+        await _setOccurrenceFixed(occurrence, false);
       case ComponentContextMenuAction.moveRotate:
         // Bug fix: selecting `occurrence` above already made the gizmo
         // target it (see this method's own doc comment) - but the gizmo's
@@ -17627,6 +17640,21 @@ class _PartScreenState extends State<PartScreen> {
       await _api.updateOccurrenceHidden(focusPartId, occurrence.id, hidden);
       await _refreshAssemblyTree();
       await _refreshAssemblyMesh();
+    });
+  }
+
+  /// Assembly testing bug fix: Fix/Float's real persistence call - mirrors
+  /// [_setOccurrenceHidden] exactly, PATCHing the backend's own `fixed`
+  /// field via [DocumentApiClient.updateOccurrenceFixed] and re-fetching the
+  /// tree so [_occurrences] agrees with the backend going forward. No mesh
+  /// re-fetch needed (unlike Hide/Show) - `fixed` never changes what's
+  /// visible, only what can subsequently move.
+  Future<void> _setOccurrenceFixed(OccurrenceDto occurrence, bool fixed) async {
+    final focusPartId = _focusStack?.current ?? _part?.id;
+    if (focusPartId == null) return;
+    await _runGuarded(() async {
+      await _api.updateOccurrenceFixed(focusPartId, occurrence.id, fixed);
+      await _refreshAssemblyTree();
     });
   }
 
@@ -19801,6 +19829,15 @@ class _PartScreenState extends State<PartScreen> {
                       // instead, hiding the FAB outright - Measure/Section
                       // just never got added here too.
                       !_measureActive &&
+                      // Bug report (assembly testing): "the 'new' fab sits
+                      // on top of the mates tool bar obscuring part of it" -
+                      // `MatePanel` is the same bottom-docked
+                      // `ResizableToolPanel` shape as every other tool in
+                      // this list (see its own `if (_mateActive)
+                      // Positioned.fill(...)` slot above), it just never got
+                      // added here - same omission as the Measure/Section
+                      // and Move/Rotate fixes right above.
+                      !_mateActive &&
                       !_sectionPanelOpen)
                     FloatingActionButton(
                       heroTag: 'add-fab',

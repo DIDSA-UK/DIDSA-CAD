@@ -14,6 +14,7 @@ OccurrenceDto _occurrence(
   String? nameOverride,
   bool hidden = false,
   bool suppressed = false,
+  bool fixed = false,
 }) =>
     OccurrenceDto(
       id: id,
@@ -23,6 +24,7 @@ OccurrenceDto _occurrence(
       transform: _identity(),
       hidden: hidden,
       suppressed: suppressed,
+      fixed: fixed,
     );
 
 MateDto _mate(String id, {String type = 'coincident', bool suppressed = false}) => MateDto(
@@ -214,6 +216,27 @@ void main() {
     );
 
     expect(find.byIcon(Icons.visibility_off), findsOneWidget);
+  });
+
+  // Bug report (assembly testing): "Long pressing a part in the assembly
+  // tree should offer the option to fix/float" - the tree row itself shows
+  // a pin icon so a fixed component is visible without opening the menu.
+  testWidgets('a fixed occurrence shows the push-pin trailing icon', (tester) async {
+    await tester.pumpWidget(
+      _wrap(
+        AssemblyTreePanel(
+          visible: true,
+          occurrences: [_occurrence('o1', externalRef: 'parts/bolt.didsa', fixed: true)],
+          mates: const [],
+          selectedOccurrenceId: null,
+          onOccurrenceTap: (_) {},
+          onOccurrenceLongPress: (_) {},
+          onClose: () {},
+        ),
+      ),
+    );
+
+    expect(find.byIcon(Icons.push_pin), findsOneWidget);
   });
 
   testWidgets('an unresolved occurrence (no resolvedPartId) shows "Missing file"', (tester) async {

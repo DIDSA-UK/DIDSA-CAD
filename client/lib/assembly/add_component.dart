@@ -129,6 +129,17 @@ Map<String, dynamic> mergeComponentIntoDocument({
       if (!currentSketchIds.contains(sketch['id'])) sketch,
   ];
 
+  // Bug report (assembly testing): "The first part added to an assembly
+  // should have a fix constraint auto applied" - a Mate-driven placement is
+  // only ever meaningful relative to at least one fixed reference, the same
+  // "first component is grounded by convention" rule real CAD tools apply.
+  // Determined from `rootPartId`'s own pre-merge Occurrence list (the same
+  // one `currentParts`, still un-mutated at this point, already holds) -
+  // this is genuinely the first Occurrence exactly when that list is empty.
+  final currentRootPart = currentParts.firstWhere((part) => part['id'] == rootPartId);
+  final existingOccurrences = (currentRootPart['occurrences'] as List?) ?? const [];
+  final isFirstOccurrence = existingOccurrences.isEmpty;
+
   final newOccurrence = <String, dynamic>{
     'id': occurrenceId,
     'external_ref': externalRef,
@@ -137,6 +148,7 @@ Map<String, dynamic> mergeComponentIntoDocument({
     'transform': null,
     'suppressed': false,
     'hidden': false,
+    'fixed': isFirstOccurrence,
   };
 
   final updatedParts = [

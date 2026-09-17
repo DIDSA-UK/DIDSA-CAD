@@ -2798,6 +2798,7 @@ class OccurrenceResponse(BaseModel):
     transform: RigidTransformResponse
     suppressed: bool = False
     hidden: bool = False
+    fixed: bool = False
 
 
 class OccurrenceTransformUpdate(BaseModel):
@@ -2822,10 +2823,18 @@ class OccurrenceTransformUpdate(BaseModel):
     unchanged, the same optional-vs-omitted convention every other partial-
     update schema in this file already uses - a caller wanting only
     `transform` (the gizmo) or only `hidden` (an AI plan step) sends just
-    that one field."""
+    that one field.
+
+    Assembly testing bug fix: widened again to also accept `fixed`, the
+    Component context menu's own Fix/Float toggle - same omitted-means-
+    unchanged convention. Sending `transform` together with `fixed=true` (or
+    against an Occurrence already `fixed`, when `fixed` itself is omitted)
+    is rejected with a 422 by `update_occurrence_transform` itself, not
+    validated here - see that endpoint's own docstring."""
 
     transform: RigidTransformResponse | None = None
     hidden: bool | None = None
+    fixed: bool | None = None
 
 
 class MateEntityRefResponse(BaseModel):

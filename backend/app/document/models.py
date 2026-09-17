@@ -3122,7 +3122,22 @@ class Occurrence:
     leaves `part_id=None` regardless of what was echoed into
     `resolved_part_id` when it was last saved: never assume it survives a
     single-file save/reload round-trip on its own, only a same-session
-    composed-graph one."""
+    composed-graph one.
+
+    `fixed` (assembly testing bug fix) is a "Fix" constraint, mirroring real
+    CAD's own fixed/grounded-component convention: `True` locks this
+    Occurrence's own `transform` against every mutation path that would
+    otherwise drive it (the gizmo's drag-end PATCH and a Mate solve
+    targeting it - `app.document.router`'s `update_occurrence_transform`/
+    `solve_for_occurrence` both reject those attempts with a 422 while this
+    is set), never against being referenced as the *other*, already-fixed
+    side of a Mate driving some other Occurrence - `assembly_solver.py`'s own
+    solve already treats every non-driven Occurrence that way regardless of
+    this flag. The client auto-applies this to the very first Occurrence
+    added to a Part's own assembly (`add_component.dart`'s
+    `mergeComponentIntoDocument`) - a Mate-driven placement is only ever
+    meaningful relative to at least one fixed reference, the same
+    "first component is grounded by convention" real CAD tools apply."""
 
     id: str
     part_id: str | None = None
@@ -3131,6 +3146,7 @@ class Occurrence:
     transform: RigidTransform = field(default_factory=RigidTransform)
     suppressed: bool = False
     hidden: bool = False
+    fixed: bool = False
 
 
 class ComponentPatternType(str, Enum):

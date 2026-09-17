@@ -1732,6 +1732,7 @@ def _occurrence_to_dict(occurrence: Occurrence) -> dict:
         "transform": _rigid_transform_to_dict(occurrence.transform),
         "suppressed": occurrence.suppressed,
         "hidden": occurrence.hidden,
+        "fixed": occurrence.fixed,
     }
 
 
@@ -1749,6 +1750,7 @@ def _occurrence_from_dict(data: dict) -> Occurrence:
         transform=_rigid_transform_from_dict(data.get("transform")),
         suppressed=data.get("suppressed", False),
         hidden=data.get("hidden", False),
+        fixed=data.get("fixed", False),
     )
 
 
