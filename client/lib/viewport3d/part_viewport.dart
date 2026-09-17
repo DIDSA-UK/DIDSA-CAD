@@ -27,7 +27,6 @@ import 'scene_preferences.dart';
 import 'screen_projection.dart';
 import 'section_gizmo.dart';
 import 'section_plane.dart';
-import 'selection_breadcrumbs.dart';
 import 'selection_filter.dart';
 import 'selection_hit_test.dart';
 import 'sketch_constraint_overlay.dart';
@@ -854,35 +853,6 @@ class PartViewport extends StatefulWidget {
   /// up, so nothing is highlighted except an explicit [highlightOverride].
   final bool suppressHoverFallback;
 
-  /// Phase 6b (`docs/assembly-scope.md` §3): the single selected entity to
-  /// show a [SelectionBreadcrumbBar] for, or `null` to hide it entirely -
-  /// [PartScreen] is expected to pass this only when exactly one entity is
-  /// selected (a breadcrumb chain for a multi-entity selection has no single
-  /// answer to "retarget to"), same "controlled widget, this class stays
-  /// opaque to the selection-count policy" shape [selectedPlane]/
-  /// [highlightOverride] already use.
-  final SelectionEntityRef? breadcrumbEntity;
-
-  /// Fired when a breadcrumb tier is tapped (see [SelectionBreadcrumbBar.
-  /// onSelect]) - [PartScreen] is expected to *replace* the current
-  /// selection with the tapped tier's target (not toggle/accumulate the way
-  /// [onSelectionToggle] does), since a breadcrumb tap means "I want this
-  /// coarser/finer thing selected instead," never "also select this."
-  final ValueChanged<SelectionEntityRef>? onBreadcrumbSelect;
-
-  /// §6 roadmap Phase 10 (`[16a]`): fired with the breadcrumb tier under the
-  /// pointer/finger while held (`SelectionBreadcrumbBar.onPreview`), `null`
-  /// once released - [PartScreen] is expected to feed this straight into
-  /// [highlightOverride] (mirroring the "Select Other" sheet's own identical
-  /// [onHighlight]/[highlightOverride] round trip), the live hover-preview
-  /// highlight Phase 6b's own doc comment deliberately left unwired
-  /// (`docs/assembly-scope.md` §2i's own "Known v1 limitations", `[16a]`).
-  /// Additive-only - this widget's existing hover machinery is untouched,
-  /// [onBreadcrumbPreview] is only ever invoked from
-  /// [SelectionBreadcrumbBar]'s own gesture handling, never from
-  /// [_recomputeHover] itself.
-  final ValueChanged<SelectionEntityRef?>? onBreadcrumbPreview;
-
   /// Prompt A2: which entity kinds [_recomputeHover] considers - [PartScreen]
   /// owns this (its View submenu toggles write it, plus any future
   /// push/pop override - see `OverrideStack`), same controlled-widget
@@ -1067,9 +1037,6 @@ class PartViewport extends StatefulWidget {
     this.onSelectOtherRequested,
     this.highlightOverride,
     this.suppressHoverFallback = false,
-    this.breadcrumbEntity,
-    this.onBreadcrumbSelect,
-    this.onBreadcrumbPreview,
     this.selectionFilter = SelectionFilterState.defaults,
     this.isPerspective = false,
     this.farClip,
@@ -2222,11 +2189,15 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// just double-render it) using [buildAssemblyInstanceNode], placed via
   /// [matrix4FromRigidTransform] and shaded via [assemblyInstanceOpacity] -
   /// see both functions' own doc comments for the placement/opacity rules.
-  /// Deliberately does not touch the camera target/zoom bounds
-  /// [_syncMeshNode] manages - the root Part's own geometry stays what
-  /// frames the camera, matching this file's "lens/assembly state never
-  /// moves the camera on its own" convention elsewhere (e.g. the lens
-  /// toggle itself, `docs/assembly-scope.md` §2d).
+  /// Deliberately does not touch the camera's own target/orientation
+  /// (position) - the root Part's own geometry stays what the camera
+  /// itself frames, matching this file's "lens/assembly state never moves
+  /// the camera on its own" convention elsewhere (e.g. the lens toggle
+  /// itself, `docs/assembly-scope.md` §2d). It does, however, call
+  /// [_syncZoomBounds] (bug fix: "cannot zoom out sufficiently to view a
+  /// 150mm x 200mm plate") - that only ever widens/narrows which zoom
+  /// levels are *reachable*, never the camera's current position, so it
+  /// doesn't conflict with the "never moves the camera" rule above.
   void _syncAssemblyInstanceNodes() {
     final scene = _scene;
     if (scene == null) return;
@@ -2234,6 +2205,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       scene.remove(node);
     }
     _assemblyInstanceNodes = {};
+    // Bug fix (bug report: "cannot zoom out sufficiently to view a 150mm x
+    // 200mm plate", after the assembly rollout): placed-instance geometry
+    // growing (or shrinking, e.g. the last instance being removed) must
+    // re-derive the zoom bounds immediately, not wait for [widget.bodies]
+    // to also happen to change (which, for a document with no Bodies of its
+    // own, it never will) - see [_syncZoomBounds]'s own doc comment.
+    _syncZoomBounds(boundsOfBodies(widget.bodies));
     if (widget.assemblyInstances.isEmpty) return;
     final focusedPath = widget.focusedOccurrencePath;
     for (final instance in widget.assemblyInstances) {
@@ -2313,20 +2291,83 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// changes) and [_syncSketchNodes] (whenever [widget.sketchGeometries]
   /// changes) so either growing large enough re-widens the bound, not just
   /// whichever one happens to trigger a rebuild first.
+  ///
+  /// Bug fix (bug report: "cannot zoom out sufficiently to view a 150mm x
+  /// 200mm plate", after the assembly rollout): also folds in
+  /// [_assemblyInstanceBounds] - a document that's purely an assembly
+  /// *container* (every real Body living on a placed Occurrence's own Part,
+  /// none on this root Part itself) left [bodyBounds] permanently null, so
+  /// [OrbitCamera.maxDistance] never widened past its tiny hardcoded
+  /// default (300 world units) no matter how large the actual assembly was.
+  /// [_syncAssemblyInstanceNodes]'s own doc comment explains why *that*
+  /// method deliberately never touches the camera's target/orientation -
+  /// this doesn't either: [OrbitCamera.setZoomBoundsForRadius] only ever
+  /// widens/narrows which zoom levels are *reachable*, exactly like the
+  /// Sketch-bounds case above already relies on, never moving the camera's
+  /// own current position on its own.
   void _syncZoomBounds(MeshBounds? bodyBounds) {
     final sketchPoints = widget.sketchGeometries.values.expand((geometry) => geometry.points);
     final sketchBounds = boundsOfPoints(sketchPoints);
+    final assemblyBounds = _assemblyInstanceBounds();
     final bodyRadius = bodyBounds?.boundingSphereRadius ?? 0;
     final sketchRadius = sketchBounds?.boundingSphereRadius ?? 0;
-    final radius = math.max(bodyRadius, sketchRadius);
+    final assemblyRadius = assemblyBounds?.boundingSphereRadius ?? 0;
+    final radius = math.max(bodyRadius, math.max(sketchRadius, assemblyRadius));
     // Center paired with whichever bound actually contributed [radius] above
     // - see [OrbitCamera.setZoomBoundsForRadius]'s own doc comment for why
     // this (not [OrbitCamera.target]) drives near-clip against the real
     // geometry's own extent.
     final center = radius <= 0
         ? null
-        : (bodyRadius >= sketchRadius ? bodyBounds!.center : sketchBounds!.center);
+        : (radius == assemblyRadius
+            ? assemblyBounds!.center
+            : (bodyRadius >= sketchRadius ? bodyBounds!.center : sketchBounds!.center));
     _camera.setZoomBoundsForRadius(radius, center: center);
+  }
+
+  /// [_syncZoomBounds]'s assembly-geometry input - every visible instance's
+  /// own local mesh bounds ([boundsOfMesh], the same per-Body bounding
+  /// sphere [boundsOfBodies] derives from), transformed into world space by
+  /// [matrix4FromRigidTransform] the same way [_syncAssemblyInstanceNodes]/
+  /// [_worldTrianglesForOccurrence] already place that same geometry for
+  /// rendering/hit-testing. Only the *center* is run through [transform] -
+  /// a rigid transform (rotation + translation, no scale) maps a sphere to
+  /// a congruent sphere, so the radius is unaffected and, critically, the
+  /// world-space AABB of that transformed sphere is exactly `worldCenter ±
+  /// radius` on every axis (a sphere is rotationally symmetric about its
+  /// own center, unlike a cube - transforming pre-offset corner points
+  /// instead, and taking their AABB, would only be correct for an
+  /// axis-aligned rotation, silently under-bounding any instance rotated by
+  /// some other angle). Skips a Hidden instance exactly like
+  /// [_syncAssemblyInstanceNodes] does. Returns `null` when nothing is
+  /// visible, same null-when-empty contract as [boundsOfMesh]/
+  /// [boundsOfBodies]/[boundsOfPoints].
+  MeshBounds? _assemblyInstanceBounds() {
+    vm.Vector3? min;
+    vm.Vector3? max;
+    for (final instance in widget.assemblyInstances) {
+      if (instance.occurrencePath.isEmpty || instance.hidden) continue;
+      final transform = matrix4FromRigidTransform(instance.worldTransform);
+      for (final partGeometry in widget.assemblyGeometry) {
+        if (partGeometry.partId != instance.partId) continue;
+        for (final body in partGeometry.bodies) {
+          final localBounds = boundsOfMesh(body.mesh);
+          if (localBounds == null) continue;
+          final worldCenter = transform.transformed3(localBounds.center);
+          final r = vm.Vector3.all(localBounds.boundingSphereRadius);
+          final lo = worldCenter - r;
+          final hi = worldCenter + r;
+          min = min == null
+              ? lo
+              : vm.Vector3(math.min(min.x, lo.x), math.min(min.y, lo.y), math.min(min.z, lo.z));
+          max = max == null
+              ? hi
+              : vm.Vector3(math.max(max.x, hi.x), math.max(max.y, hi.y), math.max(max.z, hi.z));
+        }
+      }
+    }
+    if (min == null || max == null) return null;
+    return MeshBounds(center: (min + max) * 0.5, boundingSphereRadius: (max - min).length * 0.5);
   }
 
   /// Stage 11: rebuilds [_edgesNodes] from [PartViewport.bodies]' real OCCT
@@ -3871,8 +3912,41 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       _hoverHit = null;
       return;
     }
-    _hoverHit = candidates.reduce((a, b) => a.rayT <= b.rayT ? a : b);
+    // Bug fix (bug report: "cursor select isn't working as desired in
+    // assembly mode... should still select edges and faces with same
+    // prioritisation as in part mode"): [hitTestBodies]/[hitTestMeshEntities]
+    // always check vertex, then edge, strictly *before* face/body - vertex/
+    // edge win unconditionally, never merely by whichever candidate's rayT
+    // happens to be smaller. The plain rayT-only reduce this used to be lost
+    // that guarantee the moment a vertex/edge candidate tied - which it
+    // always does, since a vertex/edge lies exactly on its own owning face's
+    // surface, at the same ray-intersection point - with [componentHit]'s
+    // whole-instance face hit on that same geometry: [componentHit] sat
+    // earlier in this list, so `a.rayT <= b.rayT`'s tie-break silently
+    // favoured it every time, meaning a tap near a placed instance's own
+    // edge/vertex always fell back to selecting the whole component
+    // instead. Tiering by kind first (vertex/edge unconditionally ahead of
+    // everything else), then by rayT within a tier, restores the exact same
+    // guarantee Part mode already has - [componentHit] still competes
+    // fairly by rayT against a plain face/plane hit, just never against a
+    // vertex/edge one.
+    _hoverHit = candidates.reduce((a, b) {
+      final tierA = _hoverHitTier(a);
+      final tierB = _hoverHitTier(b);
+      if (tierA != tierB) return tierA < tierB ? a : b;
+      return a.rayT <= b.rayT ? a : b;
+    });
   }
+
+  /// [_recomputeHover]'s own kind-based tie-break - vertex (0) and edge (1)
+  /// unconditionally outrank every coarser kind (2), mirroring
+  /// [hitTestBodies]/[hitTestMeshEntities]'s own "vertex, then edge, checked
+  /// before face/body" order.
+  static int _hoverHitTier(HoverHit hit) => switch (hit.entity.kind) {
+        SelectionEntityKind.vertex => 0,
+        SelectionEntityKind.edge => 1,
+        _ => 2,
+      };
 
   /// [_hoverHitTestComponents]/[_hoverHitTestComponentEntities]'s shared
   /// "selectability" computation - the Phase 4 opacity/selectability split
@@ -5527,34 +5601,6 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               ),
             if (ViewPreferences.debugShowCameraOrientation)
               DebugCameraOrientationOverlay(camera: _camera.cameraFor(size)),
-            // Phase 6b (`docs/assembly-scope.md` §3): an unintrusive
-            // containment-chain breadcrumb bar for whichever single entity
-            // is selected right now - [PartScreen] gates [breadcrumbEntity]
-            // to exactly one selected entity, and
-            // [SelectionBreadcrumbBar] itself renders nothing for a
-            // one-tier chain, so this is a no-op overlay for the common
-            // "nothing/many selected" and "already at the coarsest tier"
-            // cases. §6 roadmap Phase 10 (`[16a]`): the live hover-preview
-            // highlight Phase 6b's own doc comment left for a follow-up is
-            // now wired - [onPreview] plumbs straight out to
-            // [widget.onBreadcrumbPreview], additive-only (this file's own
-            // hover machinery, [_recomputeHover]/[_syncHoverNode], is
-            // untouched - [PartScreen] is expected to feed the callback's
-            // value into [highlightOverride] the same way it already does
-            // for the "Select Other" sheet's own [onHighlight]).
-            if (widget.breadcrumbEntity != null)
-              Positioned(
-                bottom: 16,
-                left: 0,
-                right: 0,
-                child: Center(
-                  child: SelectionBreadcrumbBar(
-                    entity: widget.breadcrumbEntity!,
-                    onSelect: (target) => widget.onBreadcrumbSelect?.call(target),
-                    onPreview: (target) => widget.onBreadcrumbPreview?.call(target),
-                  ),
-                ),
-              ),
           ],
         );
       },

@@ -83,6 +83,7 @@ import 'move_face_panel.dart';
 import 'rollback.dart';
 import 'ruled_surface_panel.dart';
 import 'scale_body_panel.dart';
+import 'selection_breadcrumbs.dart';
 import 'selection_context_panel.dart';
 import 'selection_filter.dart';
 import 'select_other_sheet.dart';
@@ -1675,7 +1676,7 @@ class _PartScreenState extends State<PartScreen> {
     return _selectedEntities.single;
   }
 
-  /// Phase 6b: passed to [PartViewport.onBreadcrumbSelect] - a breadcrumb
+  /// Phase 6b: passed to [SelectionBreadcrumbBar.onSelect] - a breadcrumb
   /// tap always *replaces* the selection with its target (never
   /// accumulates the way the generic [_toggleSelectedEntity] does, since
   /// "retarget to this tier" only ever means one thing selected
@@ -1691,7 +1692,7 @@ class _PartScreenState extends State<PartScreen> {
     setState(() => _selectedEntities = {target});
   }
 
-  /// §6 roadmap Phase 10 (`[16a]`): [PartViewport.onBreadcrumbPreview]'s own
+  /// §6 roadmap Phase 10 (`[16a]`): [SelectionBreadcrumbBar.onPreview]'s own
   /// call site - fed into [highlightOverride] exactly like
   /// [_selectOtherHighlight] already is for the "Select Other" sheet
   /// (`[_handleSelectOtherRequested]`'s own `onHighlight`), the same
@@ -17791,9 +17792,6 @@ class _PartScreenState extends State<PartScreen> {
                   onSelectOtherRequested: _handleSelectOtherRequested,
                   highlightOverride: _selectOtherHighlight ?? _breadcrumbPreviewHighlight,
                   suppressHoverFallback: _selectOtherSheetOpen,
-                  breadcrumbEntity: _breadcrumbEntity,
-                  onBreadcrumbSelect: _onBreadcrumbSelect,
-                  onBreadcrumbPreview: _onBreadcrumbPreview,
                   selectionFilter: _selectionFilter,
                   isPerspective: _isPerspective,
                   farClip: _farClip,
@@ -17987,6 +17985,35 @@ class _PartScreenState extends State<PartScreen> {
                         onMoveFace: _onMoveFaceTapped,
                       ),
                       bodyNames: _selectionBodyNames,
+                    ),
+                  ),
+                // Bug fix (bug report: "Breadcrumb UI isn't showing"):
+                // rendered here, above [SelectionListDrawer] in this Stack's
+                // paint order (it used to live inside [PartViewport]'s own
+                // internal Stack instead - much earlier in this outer
+                // Stack's paint order than the drawer above, so the drawer's
+                // sheet painted straight over it). [_breadcrumbEntity]
+                // already returns null whenever [_anyToolPanelOpen] (a
+                // superset of every flag gating the drawer above) is true,
+                // so this is never shown while the drawer itself is hidden -
+                // the `bottom` offset only has to clear the drawer's own
+                // `initialChildSize: 0.18` (see [SelectionListDrawer]),
+                // not every `maxChildSize: 0.4` the user might drag it open
+                // to.
+                if (_breadcrumbEntity != null)
+                  Positioned.fill(
+                    child: LayoutBuilder(
+                      builder: (context, constraints) => Align(
+                        alignment: Alignment.bottomCenter,
+                        child: Padding(
+                          padding: EdgeInsets.only(bottom: constraints.maxHeight * 0.18 + 16),
+                          child: SelectionBreadcrumbBar(
+                            entity: _breadcrumbEntity!,
+                            onSelect: _onBreadcrumbSelect,
+                            onPreview: _onBreadcrumbPreview,
+                          ),
+                        ),
+                      ),
                     ),
                   ),
                 // Assembly support Phase 3: only one of FeatureTreePanel/
