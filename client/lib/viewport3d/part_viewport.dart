@@ -2443,22 +2443,34 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   }
 
   /// [_syncZoomBounds]'s assembly-geometry input - every visible instance's
-  /// own local mesh bounds ([boundsOfMesh], the same per-Body bounding
-  /// sphere [boundsOfBodies] derives from), transformed into world space by
+  /// own real mesh vertices, each transformed into world space by
   /// [matrix4FromRigidTransform] the same way [_syncAssemblyInstanceNodes]/
   /// [_worldTrianglesForOccurrence] already place that same geometry for
-  /// rendering/hit-testing. Only the *center* is run through [transform] -
-  /// a rigid transform (rotation + translation, no scale) maps a sphere to
-  /// a congruent sphere, so the radius is unaffected and, critically, the
-  /// world-space AABB of that transformed sphere is exactly `worldCenter ±
-  /// radius` on every axis (a sphere is rotationally symmetric about its
-  /// own center, unlike a cube - transforming pre-offset corner points
-  /// instead, and taking their AABB, would only be correct for an
-  /// axis-aligned rotation, silently under-bounding any instance rotated by
-  /// some other angle). Skips a Hidden instance exactly like
-  /// [_syncAssemblyInstanceNodes] does. Returns `null` when nothing is
-  /// visible, same null-when-empty contract as [boundsOfMesh]/
-  /// [boundsOfBodies]/[boundsOfPoints].
+  /// rendering/hit-testing, unioned into one world-space AABB. Skips a
+  /// Hidden instance exactly like [_syncAssemblyInstanceNodes] does. Returns
+  /// `null` when nothing is visible, same null-when-empty contract as
+  /// [boundsOfMesh]/[boundsOfBodies]/[boundsOfPoints].
+  ///
+  /// Bug fix ("Reset view doesn't set the correct zoom level considering
+  /// the size of parts contained within the assembly"): this used to union
+  /// each Body's own *bounding-sphere* radius, re-padded out to an
+  /// axis-aligned cube (`worldCenter ± Vector3.all(radius)`) at every
+  /// instance's own world position - deliberately rotation-safe (a rigid
+  /// transform maps a sphere to a congruent sphere, so unlike transforming
+  /// the local AABB's own corner points, this could never under-bound a
+  /// rotated instance), but for anything elongated rather than roughly
+  /// cube-shaped (a long bracket, a shaft, a plate) that same safety margin
+  /// padded every axis out to the body's own *longest* dimension, not its
+  /// actual width/depth - compounding across every instance in the
+  /// assembly into a badly over-estimated overall radius, and so a "Reset
+  /// view" zoomed out far past what the assembly's real extent needed.
+  /// Transforming every real vertex directly and taking the AABB of the
+  /// results is exact regardless of rotation (no corner-point
+  /// approximation to under-bound in the first place) - slower per call
+  /// than reusing each Body's own precomputed bounding-sphere radius, but
+  /// this is only ever called from an explicit "Reset view" press or a
+  /// geometry (re)load, never from a per-frame/per-drag hot path the way
+  /// gizmo sizing is.
   MeshBounds? _assemblyInstanceBounds() {
     vm.Vector3? min;
     vm.Vector3? max;
@@ -2468,18 +2480,15 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       for (final partGeometry in widget.assemblyGeometry) {
         if (partGeometry.partId != instance.partId) continue;
         for (final body in partGeometry.bodies) {
-          final localBounds = boundsOfMesh(body.mesh);
-          if (localBounds == null) continue;
-          final worldCenter = transform.transformed3(localBounds.center);
-          final r = vm.Vector3.all(localBounds.boundingSphereRadius);
-          final lo = worldCenter - r;
-          final hi = worldCenter + r;
-          min = min == null
-              ? lo
-              : vm.Vector3(math.min(min.x, lo.x), math.min(min.y, lo.y), math.min(min.z, lo.z));
-          max = max == null
-              ? hi
-              : vm.Vector3(math.max(max.x, hi.x), math.max(max.y, hi.y), math.max(max.z, hi.z));
+          for (final vertex in body.mesh.vertices) {
+            final world = transform.transformed3(vm.Vector3(vertex[0], vertex[1], vertex[2]));
+            min = min == null
+                ? world
+                : vm.Vector3(math.min(min.x, world.x), math.min(min.y, world.y), math.min(min.z, world.z));
+            max = max == null
+                ? world
+                : vm.Vector3(math.max(max.x, world.x), math.max(max.y, world.y), math.max(max.z, world.z));
+          }
         }
       }
     }
