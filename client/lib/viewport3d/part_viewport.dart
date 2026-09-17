@@ -1162,6 +1162,18 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// themselves are also showing.
   Map<String, Node> _edgesNodes = {};
 
+  /// Bug fix (bug report: "on child parts, edges do not appear to render"):
+  /// [_edgesNodes]' own placed-instance sibling, built by
+  /// [_syncAssemblyInstanceEdgesNode] the same "clear, then rebuild" shape
+  /// [_assemblyInstanceNodes] itself uses, keyed by the same
+  /// `'<joined occurrencePath>/<bodyId>'` convention. [_syncAssemblyInstanceNodes]
+  /// only ever built the filled-faces side of a placed instance
+  /// ([buildAssemblyInstanceNode]) - nothing ever built its edge polylines
+  /// at all, so a placed instance's edges never rendered regardless of
+  /// [PartViewport.renderMode]. Always empty for every Part with no
+  /// Occurrences at all.
+  Map<String, Node> _assemblyInstanceEdgesNodes = {};
+
   /// `docs/lod-strategy/01-design.md` SS5 chunk 5: one filled-faces [Node]
   /// per [PartViewport.transientCoarsePreviewBodies] entry, keyed by that
   /// entry's own (synthetic) `body_id` - a separate map from [_meshNodes]
@@ -1626,6 +1638,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         _syncAssemblyInstanceNodes();
         _syncComponentGizmoNode();
         _syncEdgesNode();
+        _syncAssemblyInstanceEdgesNode();
         _syncReferencePlaneNodes();
         _syncSketchNodes();
         _syncCreatePlaneNodes();
@@ -1702,6 +1715,19 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         widget.assemblyInstances != oldWidget.assemblyInstances ||
         widget.focusedOccurrencePath != oldWidget.focusedOccurrencePath) {
       setState(_syncAssemblyInstanceNodes);
+    }
+    // Bug fix (bug report: "on child parts... edges do not appear to
+    // render"): [_syncAssemblyInstanceEdgesNode]'s own inputs - the
+    // [assemblyGeometry]/[assemblyInstances] pair [_syncAssemblyInstanceNodes]
+    // above already keys off (unlike that method, this one doesn't need
+    // [focusedOccurrencePath] - edge visibility isn't dimmed by focus the
+    // way filled-face opacity is), plus [renderMode]/[bodiesHidden], the
+    // same pair [_syncEdgesNode] itself keys off for the identical reason.
+    if (widget.assemblyGeometry != oldWidget.assemblyGeometry ||
+        widget.assemblyInstances != oldWidget.assemblyInstances ||
+        widget.renderMode != oldWidget.renderMode ||
+        widget.bodiesHidden != oldWidget.bodiesHidden) {
+      setState(_syncAssemblyInstanceEdgesNode);
     }
     // Assembly support Phase 5: [_syncComponentGizmoNode]'s own single
     // input - a separate rebuild from [_syncAssemblyInstanceNodes] above
@@ -2189,15 +2215,35 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// just double-render it) using [buildAssemblyInstanceNode], placed via
   /// [matrix4FromRigidTransform] and shaded via [assemblyInstanceOpacity] -
   /// see both functions' own doc comments for the placement/opacity rules.
-  /// Deliberately does not touch the camera's own target/orientation
-  /// (position) - the root Part's own geometry stays what the camera
-  /// itself frames, matching this file's "lens/assembly state never moves
-  /// the camera on its own" convention elsewhere (e.g. the lens toggle
-  /// itself, `docs/assembly-scope.md` §2d). It does, however, call
-  /// [_syncZoomBounds] (bug fix: "cannot zoom out sufficiently to view a
-  /// 150mm x 200mm plate") - that only ever widens/narrows which zoom
-  /// levels are *reachable*, never the camera's current position, so it
-  /// doesn't conflict with the "never moves the camera" rule above.
+  /// Does not touch the camera's own target/orientation *while orbiting/
+  /// panning/zooming* - once [_hasFramedCamera] is true, this never moves
+  /// it again, matching this file's "lens/assembly state never moves the
+  /// camera on its own" convention elsewhere (e.g. the lens toggle itself,
+  /// `docs/assembly-scope.md` §2d). It does, however, call [_syncZoomBounds]
+  /// (bug fix: "cannot zoom out sufficiently to view a 150mm x 200mm plate")
+  /// - that only ever widens/narrows which zoom levels are *reachable*,
+  /// never the camera's current position, so it doesn't conflict with that
+  /// rule.
+  ///
+  /// Bug fix (bug report: "clipping seen when orbiting, not zoom/pan - the
+  /// clip plane seems to be between the camera and the origin"): the *one-
+  /// time initial frame* [_syncMeshNode] already gives root-Part-owned
+  /// Bodies (see its own [_hasFramedCamera] guard just below its `bounds`
+  /// computation) never had an assembly-geometry equivalent - a document
+  /// that's purely an assembly container (no Bodies of its own) left
+  /// [_hasFramedCamera] permanently false, so [OrbitCamera.target] stayed
+  /// wherever [_syncMeshNode]'s own empty-Bodies branch kept resetting it
+  /// (the world origin) forever, never the assembly's real center. Orbiting
+  /// swings the camera *around* that stale target - with real geometry
+  /// sitting elsewhere, some of it ends up much closer to the camera than
+  /// [OrbitCamera.distance] (camera-to-*target*) would suggest at certain
+  /// orbit angles, close enough to cross the near clip plane, while
+  /// [OrbitCamera.distance] itself (what zoom/pan actually change) stays
+  /// exactly the same - matching "not affected by zoom or pan, only seen
+  /// when orbiting" exactly. Framing the target here the first time real
+  /// assembly geometry exists is the same one-time, `_hasFramedCamera`-
+  /// gated contract [_syncMeshNode] already uses, not a new "moves the
+  /// camera during interaction" case.
   void _syncAssemblyInstanceNodes() {
     final scene = _scene;
     if (scene == null) return;
@@ -2212,6 +2258,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // to also happen to change (which, for a document with no Bodies of its
     // own, it never will) - see [_syncZoomBounds]'s own doc comment.
     _syncZoomBounds(boundsOfBodies(widget.bodies));
+    if (!_hasFramedCamera && widget.bodies.isEmpty) {
+      final assemblyBounds = _assemblyInstanceBounds();
+      if (assemblyBounds != null) {
+        _camera.setTarget(assemblyBounds.center);
+        _hasFramedCamera = true;
+      }
+    }
     if (widget.assemblyInstances.isEmpty) return;
     final focusedPath = widget.focusedOccurrencePath;
     for (final instance in widget.assemblyInstances) {
@@ -2238,6 +2291,51 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           final node = buildAssemblyInstanceNode(body.mesh, localTransform: transform, opacity: opacity);
           scene.add(node);
           _assemblyInstanceNodes['$occurrenceKey/${body.bodyId}'] = node;
+        }
+      }
+    }
+  }
+
+  /// Bug fix (bug report: "on child parts, dynamic highlight is not
+  /// working on edges and edges do not appear to render"):
+  /// [_syncAssemblyInstanceNodes]' own edge-polyline sibling -
+  /// [_syncEdgesNode]'s identical role (gated on [ViewportRenderModeX.
+  /// showsEdges]/[PartViewport.bodiesHidden], with the same shaded-with-
+  /// edges towards-camera bias), just for placed-instance geometry instead
+  /// of [PartViewport.bodies]. Mirrors [_syncAssemblyInstanceNodes]'s own
+  /// instance/Body traversal (skip an empty `occurrencePath` - the root
+  /// Part's own content, already covered by [_syncEdgesNode] - and skip a
+  /// Hidden instance) rather than [previewOverlayMesh]/[coarseOverlayMeshes]
+  /// substitution, neither of which has any placed-instance equivalent (a
+  /// live-edit preview only ever touches this root Part's own Bodies).
+  void _syncAssemblyInstanceEdgesNode() {
+    final scene = _scene;
+    if (scene == null) return;
+    for (final node in _assemblyInstanceEdgesNodes.values) {
+      scene.remove(node);
+    }
+    _assemblyInstanceEdgesNodes = {};
+    if (!widget.renderMode.showsEdges) return;
+    if (widget.bodiesHidden) return;
+    final biased = widget.renderMode == ViewportRenderMode.shadedWithEdges;
+    for (final instance in widget.assemblyInstances) {
+      if (instance.occurrencePath.isEmpty || instance.hidden) continue;
+      final transform = matrix4FromRigidTransform(instance.worldTransform);
+      final occurrenceKey = instance.occurrencePath.join('/');
+      for (final partGeometry in widget.assemblyGeometry) {
+        if (partGeometry.partId != instance.partId) continue;
+        for (final body in partGeometry.bodies) {
+          var segments = [
+            for (final s in edgeSegmentsFromMesh(body.mesh))
+              (transform.transformed3(s.$1), transform.transformed3(s.$2)),
+          ];
+          if (segments.isEmpty) continue;
+          if (biased) {
+            segments = biasSegmentsTowardCamera(segments, _camera.position, kEdgeDepthBias);
+          }
+          final node = buildMeshEdgesNode(segments, color: widget.renderMode.edgeColor);
+          scene.add(node);
+          _assemblyInstanceEdgesNodes['$occurrenceKey/${body.bodyId}'] = node;
         }
       }
     }
@@ -2401,6 +2499,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// currently on screen to rescale.
   void _resyncCameraDependentOverlays() {
     _syncEdgesNode();
+    // Bug fix (bug report: "on child parts, edges do not appear to
+    // render"): [_syncAssemblyInstanceEdgesNode]'s own towards-camera bias
+    // (shaded-with-edges mode) needs the same per-completed-gesture resync
+    // [_syncEdgesNode] itself gets here.
+    _syncAssemblyInstanceEdgesNode();
     if (_sectionGizmoNode != null || _sectionQuadNodes.isNotEmpty) _syncSectionNodes();
   }
 
@@ -3725,6 +3828,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         setState(() {
           _endMarquee();
           _syncEdgesNode();
+          _syncAssemblyInstanceEdgesNode();
         });
         return;
       }
@@ -3914,22 +4018,30 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
     // Bug fix (bug report: "cursor select isn't working as desired in
     // assembly mode... should still select edges and faces with same
-    // prioritisation as in part mode"): [hitTestBodies]/[hitTestMeshEntities]
-    // always check vertex, then edge, strictly *before* face/body - vertex/
-    // edge win unconditionally, never merely by whichever candidate's rayT
-    // happens to be smaller. The plain rayT-only reduce this used to be lost
-    // that guarantee the moment a vertex/edge candidate tied - which it
-    // always does, since a vertex/edge lies exactly on its own owning face's
-    // surface, at the same ray-intersection point - with [componentHit]'s
-    // whole-instance face hit on that same geometry: [componentHit] sat
-    // earlier in this list, so `a.rayT <= b.rayT`'s tie-break silently
-    // favoured it every time, meaning a tap near a placed instance's own
-    // edge/vertex always fell back to selecting the whole component
-    // instead. Tiering by kind first (vertex/edge unconditionally ahead of
-    // everything else), then by rayT within a tier, restores the exact same
-    // guarantee Part mode already has - [componentHit] still competes
-    // fairly by rayT against a plain face/plane hit, just never against a
-    // vertex/edge one.
+    // prioritisation as in part mode"; follow-up: "the cursor can now select
+    // edges, but not faces"): [hitTestBodies]/[hitTestMeshEntities] always
+    // check vertex, then edge, strictly *before* face/body - vertex/edge win
+    // unconditionally, never merely by whichever candidate's rayT happens to
+    // be smaller. A plain rayT-only reduce loses that guarantee the moment a
+    // fine-grained candidate ties - which it always does against
+    // [componentHit], since a vertex/edge/face all lie exactly on (or, for
+    // an edge/vertex, within a screen-space tolerance of) the same triangle
+    // [componentHit] itself ray-tests, at the same ray-intersection point:
+    // [componentHit] sat earlier in the candidates list, so `a.rayT <=
+    // b.rayT`'s tie-break silently favoured it every time, meaning a tap
+    // *anywhere* on a placed instance always fell back to selecting the
+    // whole component - first only vertex/edge escaped this (the initial
+    // fix), then this follow-up found face still didn't. [component] is
+    // therefore its own, strictly lowest tier - vertex/edge/face/body/plane
+    // all still compete fairly by rayT *among themselves* exactly as
+    // before (e.g. a real Body face vs. a reference plane), but every one
+    // of them now outranks a same-point whole-component hit unconditionally,
+    // matching Part mode's own "there is no whole-component competing kind
+    // at all" reality. [_hoverHitTestComponents] (`componentHit`) is only
+    // ever the *sole* candidate once vertex/edge/face are all turned off in
+    // some exclusive picking mode (Make Focus/Move-Rotate/Mate/Pattern) -
+    // this tiering never affects that case, since nothing else is left to
+    // outrank it there.
     _hoverHit = candidates.reduce((a, b) {
       final tierA = _hoverHitTier(a);
       final tierB = _hoverHitTier(b);
@@ -3939,12 +4051,16 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   }
 
   /// [_recomputeHover]'s own kind-based tie-break - vertex (0) and edge (1)
-  /// unconditionally outrank every coarser kind (2), mirroring
+  /// unconditionally outrank every coarser kind, mirroring
   /// [hitTestBodies]/[hitTestMeshEntities]'s own "vertex, then edge, checked
-  /// before face/body" order.
+  /// before face/body" order; [component] (3) is its own strictly-lowest
+  /// tier, below even face/body/plane (2, which still compete fairly by
+  /// rayT among themselves, unaffected) - see this method's own call site
+  /// for why.
   static int _hoverHitTier(HoverHit hit) => switch (hit.entity.kind) {
         SelectionEntityKind.vertex => 0,
         SelectionEntityKind.edge => 1,
+        SelectionEntityKind.component => 3,
         _ => 2,
       };
 
@@ -4762,7 +4878,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   // ---- A3: recentre + auto-fit far clip ---------------------------------
 
   /// Called by the "Reset view" button: resets the camera and, if a mesh is
-  /// loaded, auto-fits the far clip to `max(kDefaultFarClip, 2 * diagonal)`.
+  /// loaded (root-Part Bodies, falling back to placed assembly-instance
+  /// geometry when there are none), auto-fits the far clip to
+  /// `max(kDefaultFarClip, 4 * radius)`.
   void _doRecentre() {
     _camera.reset();
     // C3: "Reset view" moves the camera - resync the edge overlay's
@@ -4770,6 +4888,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // the section triad/plane-quad's own constant-on-screen-size scaling
     // (see [_resyncCameraDependentOverlays]) the same way.
     _syncEdgesNode();
+    _syncAssemblyInstanceEdgesNode();
     if (_sectionGizmoNode != null || _sectionQuadNodes.isNotEmpty) _syncSectionNodes();
     double minX = double.infinity, maxX = double.negativeInfinity;
     double minY = double.infinity, maxY = double.negativeInfinity;
@@ -4783,19 +4902,32 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         if (v[2] < minZ) minZ = v[2]; if (v[2] > maxZ) maxZ = v[2];
       }
     }
-    if (!hasVertex) return;
-    final dx = maxX - minX, dy = maxY - minY, dz = maxZ - minZ;
-    final diagonal = math.sqrt(dx * dx + dy * dy + dz * dz);
-    final newFarClip = math.max(kDefaultFarClip, 2.0 * diagonal);
+    double radius;
+    if (hasVertex) {
+      final dx = maxX - minX, dy = maxY - minY, dz = maxZ - minZ;
+      radius = math.sqrt(dx * dx + dy * dy + dz * dz) / 2;
+    } else {
+      // Bug fix (bug report: "clipping seen when orbiting... the clip
+      // plane seems to be between the camera and the origin"): a document
+      // with no Bodies of its own (a pure assembly container) has nothing
+      // in the loop above, but placed-instance geometry can still exist -
+      // same fallback [_syncZoomBounds]/[_assemblyInstanceBounds] already
+      // use, so "Reset view" auto-fits the real assembly extent instead of
+      // leaving distance at whatever [OrbitCamera.reset]'s own fixed
+      // default happens to be.
+      final assemblyBounds = _assemblyInstanceBounds();
+      if (assemblyBounds == null) return;
+      radius = assemblyBounds.boundingSphereRadius;
+    }
+    final newFarClip = math.max(kDefaultFarClip, 4.0 * radius);
     _camera.farClip = newFarClip;
     _camera.nearClip = kDefaultNearClip;
     widget.onFarClipChanged?.call(newFarClip);
     // On-device feedback: "Reset view" alone left the camera at a fixed
     // distance tuned only for the reference planes' own size, too close to
     // show a body significantly larger than that - frame the real geometry
-    // instead (half the diagonal is the same bounding-sphere-radius
-    // approximation `boundsOfMesh`/`boundsOfBodies` already use elsewhere).
-    _camera.frameRadius(diagonal / 2, _viewportSize);
+    // instead.
+    _camera.frameRadius(radius, _viewportSize);
   }
 
   // -----------------------------------------------------------------------
@@ -4893,6 +5025,58 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     return const [];
   }
 
+  /// Bug fix (bug report: "on child parts, dynamic highlight is not
+  /// working on edges and edges do not appear to render"): [_bodyFor]'s own
+  /// occurrence-attributed sibling - unlike [_worldTrianglesForOccurrence]
+  /// (every Body's *triangles*, pre-transformed, for a whole-component
+  /// highlight), this resolves one specific [bodyId] within [occurrenceKey]
+  /// and returns its still-*local*-space [BodyMeshDto] alongside the
+  /// [vm.Matrix4] to place it with - [faceTrianglesForId]/[edgeSegmentsForId]/
+  /// [vertexPositionForId] all need the real per-id lookup those functions
+  /// only know how to do in local space, so the transform has to stay
+  /// separate rather than being baked in here the way
+  /// [_worldTrianglesForOccurrence] bakes it into whole, undifferentiated
+  /// triangles. [_buildEntityHighlightNode]/[_syncSelectedEntityNodes] both
+  /// used to call plain [_bodyFor] unconditionally, regardless of
+  /// [SelectionEntityRef.occurrenceId] - correct for the root Part's own
+  /// entities (occurrenceId empty, [_bodyFor] already searches
+  /// [PartViewport.bodies]), but a face/edge/vertex/body entity *on* a
+  /// placed Occurrence has no Body of that id in [PartViewport.bodies] at
+  /// all (it lives in [PartViewport.assemblyGeometry] instead) - [_bodyFor]
+  /// always returned null for those, silently dropping the highlight
+  /// entirely. Returns null if the Occurrence, its Part's geometry, or this
+  /// specific Body no longer resolves (e.g. a stale hover/selection against
+  /// one a recompute just removed) - same "nothing to add" contract
+  /// [_bodyFor] itself already has.
+  (BodyMeshDto, vm.Matrix4)? _bodyForOccurrence(String occurrenceKey, String bodyId) {
+    for (final instance in widget.assemblyInstances) {
+      if (instance.occurrencePath.join('/') != occurrenceKey) continue;
+      final transform = matrix4FromRigidTransform(instance.worldTransform);
+      for (final partGeometry in widget.assemblyGeometry) {
+        if (partGeometry.partId != instance.partId) continue;
+        for (final body in partGeometry.bodies) {
+          if (body.bodyId == bodyId) return (body, transform);
+        }
+      }
+      return null;
+    }
+    return null;
+  }
+
+  /// [_buildEntityHighlightNode]/[_syncSelectedEntityNodes]'s shared face/
+  /// edge/vertex/body Body resolution - [_bodyFor] (root Part geometry,
+  /// untransformed) when [entity.occurrenceId] is empty, [_bodyForOccurrence]
+  /// (placed-instance geometry, transformed into world space) otherwise. The
+  /// returned [vm.Matrix4] is the identity for the root-Part case - callers
+  /// always apply it uniformly rather than branching a second time.
+  (BodyMeshDto, vm.Matrix4)? _bodyAndTransformFor(SelectionEntityRef entity) {
+    if (entity.occurrenceId.isEmpty) {
+      final body = _bodyFor(entity.bodyId);
+      return body == null ? null : (body, vm.Matrix4.identity());
+    }
+    return _bodyForOccurrence(entity.occurrenceId, entity.bodyId);
+  }
+
   /// Rebuilds all three selected-entity highlight nodes (one per kind, each
   /// combining every currently-selected entity of that kind) from
   /// [PartViewport.selectedEntities] - Item 3: "selected entities = distinct
@@ -4933,22 +5117,44 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         entity.sketchFeatureId.isNotEmpty && entity.sketchFeatureId == widget.activeSketchFeatureId;
     for (final entity in widget.selectedEntities) {
       switch (entity.kind) {
+        // Bug fix (bug report: "on child parts, dynamic highlight is not
+        // working on edges"): same [_bodyAndTransformFor] fix
+        // [_buildEntityHighlightNode] uses - see that method's own doc
+        // comment.
         case SelectionEntityKind.face:
-          final body = _bodyFor(entity.bodyId);
-          if (body != null) faceTriangles.addAll(faceTrianglesForId(body.mesh, entity.id));
+          final resolved = _bodyAndTransformFor(entity);
+          if (resolved != null) {
+            final (body, transform) = resolved;
+            for (final t in faceTrianglesForId(body.mesh, entity.id)) {
+              faceTriangles.add((transform.transformed3(t.$1), transform.transformed3(t.$2), transform.transformed3(t.$3)));
+            }
+          }
         case SelectionEntityKind.edge:
-          final body = _bodyFor(entity.bodyId);
-          if (body != null) edgeSegments.addAll(edgeSegmentsForId(body.mesh, entity.id));
+          final resolved = _bodyAndTransformFor(entity);
+          if (resolved != null) {
+            final (body, transform) = resolved;
+            for (final s in edgeSegmentsForId(body.mesh, entity.id)) {
+              edgeSegments.add((transform.transformed3(s.$1), transform.transformed3(s.$2)));
+            }
+          }
         case SelectionEntityKind.vertex:
-          final body = _bodyFor(entity.bodyId);
-          final position = body == null ? null : vertexPositionForId(body.mesh, entity.id);
-          if (position != null) vertexPositions.add(position);
+          final resolved = _bodyAndTransformFor(entity);
+          if (resolved != null) {
+            final (body, transform) = resolved;
+            final position = vertexPositionForId(body.mesh, entity.id);
+            if (position != null) vertexPositions.add(transform.transformed3(position));
+          }
         case SelectionEntityKind.body:
           // Prompt A3: a Body selection highlights every one of its faces,
           // not just one - reuses the same "selected faces" Node/colour
           // rather than introducing a fourth highlight Node type.
-          final body = _bodyFor(entity.bodyId);
-          if (body != null) faceTriangles.addAll(trianglesFromMesh(body.mesh));
+          final resolved = _bodyAndTransformFor(entity);
+          if (resolved != null) {
+            final (body, transform) = resolved;
+            for (final t in trianglesFromMesh(body.mesh)) {
+              faceTriangles.add((transform.transformed3(t.$1), transform.transformed3(t.$2), transform.transformed3(t.$3)));
+            }
+          }
         case SelectionEntityKind.sketchPoint:
           final geometry = widget.sketchGeometries[entity.sketchFeatureId];
           final index = geometry?.pointIds.indexOf(entity.sketchEntityId) ?? -1;
@@ -5167,10 +5373,21 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final alwaysOnTop = forceAlwaysOnTop ||
         (entity.sketchFeatureId.isNotEmpty && entity.sketchFeatureId == widget.activeSketchFeatureId);
     switch (entity.kind) {
+      // Bug fix (bug report: "on child parts, dynamic highlight is not
+      // working on edges"): face/edge/vertex/body all resolve their own
+      // Body via [_bodyAndTransformFor] now, not plain [_bodyFor] - see
+      // that method's own doc comment for why a placed-instance entity
+      // (non-empty [SelectionEntityRef.occurrenceId]) always came back null
+      // before. [transform] is the identity for the root-Part case, so
+      // `transform.transformed3(...)` below is a no-op then.
       case SelectionEntityKind.face:
-        final body = _bodyFor(entity.bodyId);
-        if (body == null) return null;
-        final triangles = faceTrianglesForId(body.mesh, entity.id);
+        final resolved = _bodyAndTransformFor(entity);
+        if (resolved == null) return null;
+        final (body, transform) = resolved;
+        final triangles = [
+          for (final t in faceTrianglesForId(body.mesh, entity.id))
+            (transform.transformed3(t.$1), transform.transformed3(t.$2), transform.transformed3(t.$3)),
+        ];
         if (triangles.isEmpty) return null;
         // On-device feedback ("dynamic face[s] hilight is not working") -
         // see [biasTrianglesAlongNormal]'s own doc comment.
@@ -5180,9 +5397,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           alwaysOnTop: alwaysOnTop,
         );
       case SelectionEntityKind.edge:
-        final body = _bodyFor(entity.bodyId);
-        if (body == null) return null;
-        final segments = edgeSegmentsForId(body.mesh, entity.id);
+        final resolved = _bodyAndTransformFor(entity);
+        if (resolved == null) return null;
+        final (body, transform) = resolved;
+        final segments = [
+          for (final s in edgeSegmentsForId(body.mesh, entity.id))
+            (transform.transformed3(s.$1), transform.transformed3(s.$2)),
+        ];
         if (segments.isEmpty) return null;
         return buildMeshEdgesNode(
           segments,
@@ -5191,17 +5412,22 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           alwaysOnTop: alwaysOnTop,
         );
       case SelectionEntityKind.vertex:
-        final body = _bodyFor(entity.bodyId);
-        if (body == null) return null;
+        final resolved = _bodyAndTransformFor(entity);
+        if (resolved == null) return null;
+        final (body, transform) = resolved;
         final position = vertexPositionForId(body.mesh, entity.id);
         if (position == null) return null;
-        return buildVertexMarkersNode([position], color: color, alwaysOnTop: alwaysOnTop);
+        return buildVertexMarkersNode([transform.transformed3(position)], color: color, alwaysOnTop: alwaysOnTop);
       case SelectionEntityKind.body:
         // Prompt A3: whole-Body highlight - same as a Body-kind selection
         // (see _syncSelectedEntityNodes), just for the hover case.
-        final body = _bodyFor(entity.bodyId);
-        if (body == null) return null;
-        final triangles = trianglesFromMesh(body.mesh);
+        final resolved = _bodyAndTransformFor(entity);
+        if (resolved == null) return null;
+        final (body, transform) = resolved;
+        final triangles = [
+          for (final t in trianglesFromMesh(body.mesh))
+            (transform.transformed3(t.$1), transform.transformed3(t.$2), transform.transformed3(t.$3)),
+        ];
         if (triangles.isEmpty) return null;
         return buildHighlightFacesNode(
           biasTrianglesAlongNormal(triangles, kEdgeDepthBias),
@@ -5476,6 +5702,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                     ..._sketchNodes.values,
                     ..._createPlaneNodes.values,
                     ..._edgesNodes.values,
+                    ..._assemblyInstanceEdgesNodes.values,
                     if (_hoverNode != null) _hoverNode!,
                     if (_selectedEdgesNode != null) _selectedEdgesNode!,
                     if (_selectedVerticesNode != null) _selectedVerticesNode!,

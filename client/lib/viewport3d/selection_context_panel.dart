@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'selection_actions.dart';
+import 'selection_breadcrumbs.dart';
 import 'selection_hit_test.dart';
 
 /// Stage 23 Item 6: the compact horizontal row of operations available for
@@ -12,6 +13,13 @@ import 'selection_hit_test.dart';
 ///
 /// C2 is the first to wire a real callback (Create Plane); Prompt D wires
 /// Fillet; Prompt E wires Chamfer.
+///
+/// Bug fix (on-device feedback: the breadcrumb bar used to float over the
+/// 3D viewport as its own overlay, obscuring part of [SelectionListDrawer]'s
+/// own sheet no matter where it sat): [SelectionBreadcrumbBar] now renders
+/// as this panel's own leading row, above the action-button row, sharing
+/// this panel's [Material]/padding instead of floating separately - see
+/// [breadcrumbEntity].
 class SelectionContextPanel extends StatelessWidget {
   final Set<SelectionEntityRef> selectedEntities;
 
@@ -109,6 +117,20 @@ class SelectionContextPanel extends StatelessWidget {
   /// *enabled* Move Face button - same gating/contract as [onDeleteFace].
   final VoidCallback? onMoveFace;
 
+  /// [SelectionBreadcrumbBar.entity] - the one selected entity to show a
+  /// breadcrumb row for, or `null` to hide it entirely (see that class's
+  /// own doc comment for when [PartScreen] passes a real value). Independent
+  /// of [selectedEntities]/[contextActionsFor]'s own action row below - a
+  /// selection with zero context actions (e.g. a lone edge) still gets its
+  /// breadcrumb row if it qualifies.
+  final SelectionEntityRef? breadcrumbEntity;
+
+  /// [SelectionBreadcrumbBar.onSelect]'s own call site.
+  final ValueChanged<SelectionEntityRef>? onBreadcrumbSelect;
+
+  /// [SelectionBreadcrumbBar.onPreview]'s own call site.
+  final ValueChanged<SelectionEntityRef?>? onBreadcrumbPreview;
+
   const SelectionContextPanel({
     super.key,
     required this.selectedEntities,
@@ -128,6 +150,9 @@ class SelectionContextPanel extends StatelessWidget {
     this.onMoveBody,
     this.onDeleteFace,
     this.onMoveFace,
+    this.breadcrumbEntity,
+    this.onBreadcrumbSelect,
+    this.onBreadcrumbPreview,
   });
 
   @override
@@ -139,7 +164,9 @@ class SelectionContextPanel extends StatelessWidget {
       isFacePlanar: isFacePlanar,
       isSolidBody: isSolidBody,
     );
-    if (actions.isEmpty) return const SizedBox.shrink();
+    final entity = breadcrumbEntity;
+    final hasBreadcrumb = entity != null && breadcrumbTiersFor(entity).length >= 2;
+    if (actions.isEmpty && !hasBreadcrumb) return const SizedBox.shrink();
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       child: Material(
@@ -147,18 +174,42 @@ class SelectionContextPanel extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-          child: SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                for (final action in actions)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 4),
-                    child: _buildActionButton(action),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (hasBreadcrumb)
+                Padding(
+                  padding: EdgeInsets.only(bottom: actions.isEmpty ? 0 : 6),
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: SelectionBreadcrumbBar(
+                      // `hasBreadcrumb` above already guarantees `entity` is
+                      // non-null here - Dart's null-safety promotion
+                      // doesn't track that through the intermediate `bool`,
+                      // so this stays an explicit `!` rather than a second
+                      // (functionally redundant) null check.
+                      entity: entity!,
+                      onSelect: (target) => onBreadcrumbSelect?.call(target),
+                      onPreview: (target) => onBreadcrumbPreview?.call(target),
+                    ),
                   ),
-              ],
-            ),
+                ),
+              if (actions.isNotEmpty)
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      for (final action in actions)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 4),
+                          child: _buildActionButton(action),
+                        ),
+                    ],
+                  ),
+                ),
+            ],
           ),
         ),
       ),
