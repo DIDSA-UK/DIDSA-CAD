@@ -117,6 +117,17 @@ class PartViewport extends StatefulWidget {
   /// "where is the selected component right now."
   final RigidTransformDto? selectedOccurrenceTransform;
 
+  /// On-device feedback ("the gizmo is the wrong size"): the gizmo's own
+  /// size input - [selectedOccurrenceTransform]'s target's own world-space
+  /// bounding-sphere radius (`PartScreen._gizmoTargetBoundingRadius`,
+  /// unioned across a sub-assembly target's own descendants too), fed
+  /// straight into [buildComponentGizmoNode]/[hitTestComponentGizmo]'s own
+  /// `targetBoundingRadius` param so the rendered gizmo and its hit-test
+  /// always agree on the exact same size. `null` (no target, or its
+  /// geometry hasn't loaded) falls back to a fixed world-unit constant -
+  /// see [ComponentGizmoBasis]'s own file's sizing doc comments.
+  final double? selectedOccurrenceBoundingRadius;
+
   /// Fired on every pointer-move while a gizmo handle is being dragged,
   /// with the full resulting [RigidTransformDto] already composed
   /// ([composeTranslation]/[composeRotation]) - mirrors
@@ -956,6 +967,7 @@ class PartViewport extends StatefulWidget {
     this.assemblyInstances = const [],
     this.focusedOccurrencePath = const [],
     this.selectedOccurrenceTransform,
+    this.selectedOccurrenceBoundingRadius,
     this.onComponentGizmoDragUpdate,
     this.onComponentGizmoDragEnd,
     this.bodiesHidden = false,
@@ -1737,7 +1749,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // call as new state, which rebuilds this widget with a new
     // [selectedOccurrenceTransform], which this comparison then picks up -
     // [_updateComponentGizmoDrag] itself never calls this directly.
-    if (widget.selectedOccurrenceTransform != oldWidget.selectedOccurrenceTransform) {
+    if (widget.selectedOccurrenceTransform != oldWidget.selectedOccurrenceTransform ||
+        // On-device feedback ("the gizmo is the wrong size"): the gizmo's
+        // own size now derives from this too (see its own doc comment) -
+        // without this check, selecting a differently-sized Occurrence
+        // while the previous one's transform happened to match (e.g. two
+        // Occurrences placed at the same identity transform) would leave
+        // the old, wrong-sized gizmo Node in place.
+        widget.selectedOccurrenceBoundingRadius != oldWidget.selectedOccurrenceBoundingRadius) {
       setState(_syncComponentGizmoNode);
     }
     if (widget.sectionPlanes != oldWidget.sectionPlanes || widget.activeSectionId != oldWidget.activeSectionId) {
@@ -2733,6 +2752,21 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // Bug fix: never let a second pointer hijack an already-in-progress
     // drag - see [_sectionDragPointerId]'s own doc comment.
     if (_sectionDragHandle != null) return false;
+    // Bug fix ("two-finger drag/pinch-zoom doesn't work in certain
+    // circumstances"): a pointer landing on a gizmo handle while another
+    // finger is *already* down is part of an already-in-progress multi-
+    // finger gesture (an orbit in progress, or the first half of a pinch),
+    // not a fresh single-finger grab - starting a drag for it would leave
+    // that other finger's own two-finger gesture never recognised as such,
+    // since this new drag would then own the pointer whose *move* events
+    // [_onPointerMove] otherwise routes into the ordinary [_activeTouches]/
+    // [_applyPinchPan] path (see [_onPointerDown]'s own doc comment on this
+    // bug's companion half, for the opposite ordering). Only ever the
+    // *first* touch of a gesture may grab a handle; [_activeTouches] is
+    // empty exactly when there is no other touch currently down (mouse
+    // pointers never populate it at all - see [_handlePointerDown] - so
+    // this never blocks a mouse-driven grab).
+    if (_activeTouches.isNotEmpty) return false;
     SectionPlane? foundPlane;
     for (final p in widget.sectionPlanes) {
       if (p.id == activeId) {
@@ -2862,6 +2896,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // Bug fix precedent (see [_sectionDragPointerId]'s own doc comment):
     // never let a second pointer hijack an already-in-progress drag.
     if (_componentGizmoDragHandle != null) return false;
+    // Bug fix ("two-finger drag/pinch-zoom doesn't work in certain
+    // circumstances" while Move/Rotate is active): see
+    // [_tryBeginSectionGizmoDrag]'s identical guard for the full failure
+    // chain this prevents - only the *first* touch of a gesture may grab a
+    // handle.
+    if (_activeTouches.isNotEmpty) return false;
 
     final basis = ComponentGizmoBasis.fromMatrix(matrix4FromRigidTransform(transform));
     final camera = _camera.cameraFor(_viewportSize);
@@ -2870,8 +2910,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       ray,
       basis,
       _viewportSize,
-      cameraPosition: _camera.position,
       fovRadiansY: _camera.fovRadiansY,
+      targetBoundingRadius: widget.selectedOccurrenceBoundingRadius,
     );
     if (hit == null) return false;
 
@@ -3002,9 +3042,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final node = buildComponentGizmoNode(
       basis,
       highlightedHandle: _componentGizmoDragHandle,
-      cameraPosition: _camera.position,
-      viewportSize: _viewportSize,
-      fovRadiansY: _camera.fovRadiansY,
+      targetBoundingRadius: widget.selectedOccurrenceBoundingRadius,
     );
     scene.add(node);
     _componentGizmoNode = node;
@@ -3663,7 +3701,23 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // [PartViewport.activeSectionId] actually names one of
     // [PartViewport.sectionPlanes] - i.e. only while [SectionPanel] is open
     // and editing a specific section.
-    if (_tryBeginSectionGizmoDrag(event.localPosition, event.pointer)) return;
+    if (_tryBeginSectionGizmoDrag(event.localPosition, event.pointer)) {
+      // Bug fix ("two-finger drag/pinch-zoom doesn't work in certain
+      // circumstances" while a gizmo handle is being dragged): this
+      // drag-owning pointer used to never reach [_handlePointerDown] at all
+      // (this method returned right here) - the only place that populates
+      // [_activeTouches] - so a genuine second finger's own down/move saw
+      // exactly *one* active touch, routing its move into a single-finger
+      // orbit instead of [_applyPinchPan]. Feeding it through here too
+      // (pure bookkeeping - a no-op for a mouse pointer, no camera effect)
+      // lets that second finger be correctly recognised as forming a
+      // two-touch gesture. [_tryBeginSectionGizmoDrag] itself now also
+      // refuses to start a fresh drag at all once another touch is already
+      // down (see its own doc comment) - the companion half of this fix,
+      // for the opposite ordering.
+      _handlePointerDown(event);
+      return;
+    }
     // Assembly support Phase 5: the Move/Rotate gizmo's own handle grab -
     // same "checked first, ahead of everything else" precedence as the
     // section gizmo just above (a manipulator grab always wins over
@@ -3671,7 +3725,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // [PartViewport.selectedOccurrenceTransform] is non-null - i.e. only
     // while a top-level Occurrence is selected in Assembly lens (see that
     // field's own doc comment for the full gating).
-    if (_tryBeginComponentGizmoDrag(event.localPosition, event.pointer)) return;
+    if (_tryBeginComponentGizmoDrag(event.localPosition, event.pointer)) {
+      // Bug fix: same [_activeTouches] bookkeeping as the section gizmo's
+      // own grab just above - see that branch's own doc comment.
+      _handlePointerDown(event);
+      return;
+    }
     if (widget.selectionMode) {
       // P25: mirrors sketch_canvas.dart's own "the marquee gesture only
       // ever tracks one pointer - a second finger touching down mid-drag
@@ -3724,6 +3783,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // falls through to the normal handling below, which keeps
     // [_activeTouches] correctly up to date.
     if (_sectionDragHandle != null && event.pointer == _sectionDragPointerId) {
+      // Bug fix ("two-finger drag/pinch-zoom doesn't work in certain
+      // circumstances"): keeps this pointer's own entry in [_activeTouches]
+      // (added when the drag began - see [_onPointerDown]'s own doc
+      // comment) live rather than frozen at its down position, so a second,
+      // genuinely independent finger's own [_applyPinchPan] math measures
+      // this one's real motion too, not a stale anchor point.
+      if (event.kind != PointerDeviceKind.mouse) _activeTouches[event.pointer] = event.localPosition;
       _updateSectionGizmoDrag(event.localPosition);
       return;
     }
@@ -3732,6 +3798,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // - see [_sectionDragPointerId]'s own doc comment for the stuck-touch-
     // state bug class this guards against.
     if (_componentGizmoDragHandle != null && event.pointer == _componentGizmoDragPointerId) {
+      // Bug fix: same live [_activeTouches] update as the section gizmo's
+      // own drag just above.
+      if (event.kind != PointerDeviceKind.mouse) _activeTouches[event.pointer] = event.localPosition;
       _updateComponentGizmoDrag(event.localPosition);
       return;
     }
@@ -3799,6 +3868,16 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // correctly removes it from [_activeTouches] instead of leaving an
     // orphaned entry that never gets removed.
     if (_sectionDragHandle != null && event.pointer == _sectionDragPointerId) {
+      // Bug fix ("two-finger drag/pinch-zoom doesn't work in certain
+      // circumstances"): this pointer was added to [_activeTouches] when
+      // its drag began (see [_onPointerDown]'s own doc comment) - remove it
+      // now, same as every other gesture's own pointer-up handling, so it
+      // doesn't linger as a stale/orphaned entry that would poison a later
+      // touch's own [_activeTouches.length] check.
+      if (event.kind != PointerDeviceKind.mouse) {
+        _activeTouches.remove(event.pointer);
+        if (_activeTouches.isEmpty) _hadMultiTouch = false;
+      }
       setState(() {
         _sectionDragHandle = null;
         _sectionDragPointerId = null;
@@ -3811,6 +3890,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // Assembly support Phase 5: same pointer-ownership gating as the
     // section gizmo just above.
     if (_componentGizmoDragHandle != null && event.pointer == _componentGizmoDragPointerId) {
+      // Bug fix: same [_activeTouches] cleanup as the section gizmo's own
+      // drag-end just above.
+      if (event.kind != PointerDeviceKind.mouse) {
+        _activeTouches.remove(event.pointer);
+        if (_activeTouches.isEmpty) _hadMultiTouch = false;
+      }
       setState(() {
         _componentGizmoDragHandle = null;
         _componentGizmoDragPointerId = null;
@@ -4877,9 +4962,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
 
   // ---- A3: recentre + auto-fit far clip ---------------------------------
 
-  /// Called by the "Reset view" button: resets the camera and, if a mesh is
-  /// loaded (root-Part Bodies, falling back to placed assembly-instance
-  /// geometry when there are none), auto-fits the far clip to
+  /// Called by the "Reset view" button: resets the camera and, if any
+  /// geometry is loaded (root-Part Bodies unioned with placed
+  /// assembly-instance geometry - see this method's own "wrong size" bug
+  /// fix below), re-centers on it and auto-fits the far clip to
   /// `max(kDefaultFarClip, 4 * radius)`.
   void _doRecentre() {
     _camera.reset();
@@ -4890,35 +4976,30 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     _syncEdgesNode();
     _syncAssemblyInstanceEdgesNode();
     if (_sectionGizmoNode != null || _sectionQuadNodes.isNotEmpty) _syncSectionNodes();
-    double minX = double.infinity, maxX = double.negativeInfinity;
-    double minY = double.infinity, maxY = double.negativeInfinity;
-    double minZ = double.infinity, maxZ = double.negativeInfinity;
-    var hasVertex = false;
-    for (final body in widget.bodies) {
-      for (final v in body.mesh.vertices) {
-        hasVertex = true;
-        if (v[0] < minX) minX = v[0]; if (v[0] > maxX) maxX = v[0];
-        if (v[1] < minY) minY = v[1]; if (v[1] > maxY) maxY = v[1];
-        if (v[2] < minZ) minZ = v[2]; if (v[2] > maxZ) maxZ = v[2];
-      }
-    }
-    double radius;
-    if (hasVertex) {
-      final dx = maxX - minX, dy = maxY - minY, dz = maxZ - minZ;
-      radius = math.sqrt(dx * dx + dy * dy + dz * dz) / 2;
-    } else {
-      // Bug fix (bug report: "clipping seen when orbiting... the clip
-      // plane seems to be between the camera and the origin"): a document
-      // with no Bodies of its own (a pure assembly container) has nothing
-      // in the loop above, but placed-instance geometry can still exist -
-      // same fallback [_syncZoomBounds]/[_assemblyInstanceBounds] already
-      // use, so "Reset view" auto-fits the real assembly extent instead of
-      // leaving distance at whatever [OrbitCamera.reset]'s own fixed
-      // default happens to be.
-      final assemblyBounds = _assemblyInstanceBounds();
-      if (assemblyBounds == null) return;
-      radius = assemblyBounds.boundingSphereRadius;
-    }
+    // Bug fix ("Reset view doesn't account for the size of the assembly
+    // parts... it tries to zoom to its own internal geometry extremities,
+    // which often won't exist"): this used to hand-roll an AABB purely over
+    // [widget.bodies]' own local vertices, falling back to
+    // [_assemblyInstanceBounds] *only* when [widget.bodies] was entirely
+    // empty - so any document that has local root-Part Bodies of its own
+    // (even a small placeholder/reference one) alongside placed assembly
+    // Occurrences ignored the assembly's real, usually much larger extent
+    // altogether. Takes the same "whichever bound is actually bigger wins"
+    // union [_syncZoomBounds] already uses for the near/far-clip radius
+    // (see that method's own doc comment) - and, the part that method never
+    // needed since it only ever adjusts zoom *limits*, re-centers on that
+    // bound's own center too via [OrbitCamera.setTarget], rather than
+    // leaving [OrbitCamera.reset] to fall back on `_defaultTarget` (itself
+    // set the same bodies-only way, by [_syncMeshNode], whenever any local
+    // Body exists at all).
+    final bodyBounds = boundsOfBodies(widget.bodies);
+    final assemblyBounds = _assemblyInstanceBounds();
+    final bodyRadius = bodyBounds?.boundingSphereRadius ?? 0;
+    final assemblyRadius = assemblyBounds?.boundingSphereRadius ?? 0;
+    final radius = math.max(bodyRadius, assemblyRadius);
+    if (radius <= 0) return;
+    final center = assemblyRadius > bodyRadius ? assemblyBounds!.center : bodyBounds!.center;
+    _camera.setTarget(center);
     final newFarClip = math.max(kDefaultFarClip, 4.0 * radius);
     _camera.farClip = newFarClip;
     _camera.nearClip = kDefaultNearClip;
@@ -5692,6 +5773,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                     // invisible despite being added to the Scene.
                     ..._sectionQuadNodes.values,
                     if (_sectionGizmoNode != null) _sectionGizmoNode!,
+                    // Bug fix ("the Move/Rotate gizmo does not render in
+                    // Assembly mode"): same root cause the section-gizmo
+                    // comment right above already documents - built from
+                    // `PolylineGeometry` (see `buildComponentGizmoNode`) but
+                    // never added to this list, so its camera-facing strip
+                    // geometry never got built and it rendered as
+                    // degenerate/invisible despite being added to the Scene.
+                    if (_componentGizmoNode != null) _componentGizmoNode!,
                     if (_sketchPlaneSurfaceNode != null) _sketchPlaneSurfaceNode!,
                     if (_sketchPlaneGridNode != null) _sketchPlaneGridNode!,
                     if (_drawGhostGuideNode != null) _drawGhostGuideNode!,

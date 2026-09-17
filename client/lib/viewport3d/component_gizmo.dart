@@ -72,16 +72,19 @@ class ComponentGizmoBasis {
 }
 
 /// World-space half-length of each translation arrow's shaft, and the
-/// radius of each rotation ring, used only as a fallback - same role
-/// [kSectionGizmoArrowLength]/[kSectionGizmoRingRadius] play for the
-/// section gizmo, see that constant's own doc comment.
+/// radius of each rotation ring, used only as a fallback - when no
+/// [ComponentGizmoHit]/[buildComponentGizmoNode] caller can supply the
+/// target's own bounding-sphere radius at all (e.g. an empty/placeholder
+/// mesh - see [_componentGizmoArrowLength]'s own doc comment for the normal,
+/// size-based case).
 const double kComponentGizmoArrowLength = 5.0;
 const double kComponentGizmoRingRadius = 3.5;
 
-/// Desired constant on-screen size (screen pixels) - see
-/// [kSectionGizmoArrowLengthPixels]'s own doc comment for the technique.
-const double kComponentGizmoArrowLengthPixels = 80.0;
-const double kComponentGizmoRingRadiusPixels = 60.0;
+/// On-device feedback ("the gizmo is the wrong size"): a rotation ring
+/// reads as a fraction of its own translate arrow's length - kept as a
+/// ratio (not a second independent constant/fraction) so the two stay in
+/// proportion however the gizmo's overall size is actually derived.
+const double kComponentGizmoRingToArrowRatio = kComponentGizmoRingRadius / kComponentGizmoArrowLength;
 
 /// Number of straight segments approximating each rotation ring - see
 /// [kSectionGizmoRingSegments]'s own doc comment.
@@ -93,21 +96,29 @@ double _worldUnitsPerPixelAtDepth(double depth, Size viewportSize, {double fovRa
   return worldHeightAtDepth / viewportSize.height;
 }
 
-double _componentGizmoWorldScale({
-  required double desiredScreenPixels,
-  required double fallbackWorldUnits,
-  required vm.Vector3 origin,
-  vm.Vector3? cameraPosition,
-  Size? viewportSize,
-  double fovRadiansY = kCameraVerticalFovRadians,
-}) {
-  if (cameraPosition == null || viewportSize == null || viewportSize.height <= 0) {
-    return fallbackWorldUnits;
-  }
-  final depth = (origin - cameraPosition).length;
-  if (depth <= 0) return fallbackWorldUnits;
-  return desiredScreenPixels * _worldUnitsPerPixelAtDepth(depth, viewportSize, fovRadiansY: fovRadiansY);
-}
+/// On-device feedback ("the gizmo is the wrong size"): this used to hold a
+/// constant *on-screen pixel* size regardless of the target's own scale
+/// (`_componentGizmoWorldScale`, a `desiredScreenPixels`-driven helper this
+/// replaces) - a whole sub-assembly and a single small bolt got an
+/// identically-sized manipulator, which read as wrong next to whichever one
+/// it actually was sized for. The gizmo's overall size now instead tracks
+/// [targetBoundingRadius] - the selected Occurrence's (and, for a
+/// sub-assembly, its own descendants') real world-space bounding-sphere
+/// radius (`PartScreen._gizmoTargetBoundingRadius`) - at roughly this
+/// fraction of it, so a big part gets a big gizmo and a small part a small
+/// one, the same "the gizmo is roughly part-sized" convention most CAD
+/// tools use. Falls back to the fixed [kComponentGizmoArrowLength] world-
+/// unit constant only when no bounding radius is available at all (`null`
+/// or non-positive - an empty/placeholder mesh).
+const double kComponentGizmoSizeFraction = 2 / 3;
+
+double _componentGizmoArrowLength(double? targetBoundingRadius) =>
+    (targetBoundingRadius != null && targetBoundingRadius > 0)
+        ? targetBoundingRadius * kComponentGizmoSizeFraction
+        : kComponentGizmoArrowLength;
+
+double _componentGizmoRingRadius(double? targetBoundingRadius) =>
+    _componentGizmoArrowLength(targetBoundingRadius) * kComponentGizmoRingToArrowRatio;
 
 (double, double)? _closestRaySegmentDistance(vm.Ray ray, vm.Vector3 segStart, vm.Vector3 segEnd) {
   final d1 = ray.direction.normalized();
@@ -152,25 +163,11 @@ ComponentGizmoHit? hitTestComponentGizmo(
   ComponentGizmoBasis basis,
   Size viewportSize, {
   double radiusPixels = kSelectionHitRadiusPixels,
-  vm.Vector3? cameraPosition,
   double fovRadiansY = kCameraVerticalFovRadians,
+  double? targetBoundingRadius,
 }) {
-  final arrowLength = _componentGizmoWorldScale(
-    desiredScreenPixels: kComponentGizmoArrowLengthPixels,
-    fallbackWorldUnits: kComponentGizmoArrowLength,
-    origin: basis.origin,
-    cameraPosition: cameraPosition,
-    viewportSize: viewportSize,
-    fovRadiansY: fovRadiansY,
-  );
-  final ringRadius = _componentGizmoWorldScale(
-    desiredScreenPixels: kComponentGizmoRingRadiusPixels,
-    fallbackWorldUnits: kComponentGizmoRingRadius,
-    origin: basis.origin,
-    cameraPosition: cameraPosition,
-    viewportSize: viewportSize,
-    fovRadiansY: fovRadiansY,
-  );
+  final arrowLength = _componentGizmoArrowLength(targetBoundingRadius);
+  final ringRadius = _componentGizmoRingRadius(targetBoundingRadius);
 
   ComponentGizmoHit? best;
   double? bestPixelDistance;
@@ -239,27 +236,11 @@ vm.Vector4 componentGizmoHandleColor(ComponentGizmoHandleKind kind, {bool highli
 Node buildComponentGizmoNode(
   ComponentGizmoBasis basis, {
   ComponentGizmoHandleKind? highlightedHandle,
-  vm.Vector3? cameraPosition,
-  Size? viewportSize,
-  double fovRadiansY = kCameraVerticalFovRadians,
+  double? targetBoundingRadius,
 }) {
   final primitives = <MeshPrimitive>[];
-  final arrowLength = _componentGizmoWorldScale(
-    desiredScreenPixels: kComponentGizmoArrowLengthPixels,
-    fallbackWorldUnits: kComponentGizmoArrowLength,
-    origin: basis.origin,
-    cameraPosition: cameraPosition,
-    viewportSize: viewportSize,
-    fovRadiansY: fovRadiansY,
-  );
-  final ringRadius = _componentGizmoWorldScale(
-    desiredScreenPixels: kComponentGizmoRingRadiusPixels,
-    fallbackWorldUnits: kComponentGizmoRingRadius,
-    origin: basis.origin,
-    cameraPosition: cameraPosition,
-    viewportSize: viewportSize,
-    fovRadiansY: fovRadiansY,
-  );
+  final arrowLength = _componentGizmoArrowLength(targetBoundingRadius);
+  final ringRadius = _componentGizmoRingRadius(targetBoundingRadius);
 
   void addArrow(ComponentGizmoHandleKind kind, vm.Vector3 axis) {
     final tip = basis.origin + axis * arrowLength;
