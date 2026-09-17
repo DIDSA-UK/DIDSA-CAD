@@ -83,7 +83,6 @@ import 'move_face_panel.dart';
 import 'rollback.dart';
 import 'ruled_surface_panel.dart';
 import 'scale_body_panel.dart';
-import 'selection_breadcrumbs.dart';
 import 'selection_context_panel.dart';
 import 'selection_filter.dart';
 import 'select_other_sheet.dart';
@@ -17983,37 +17982,17 @@ class _PartScreenState extends State<PartScreen> {
                         onMoveBody: _onMoveBodyTapped,
                         onDeleteFace: _onDeleteFaceTapped,
                         onMoveFace: _onMoveFaceTapped,
+                        // Bug fix (on-device feedback: the breadcrumb bar
+                        // used to float over the viewport as its own
+                        // overlay, obscuring part of this same drawer no
+                        // matter where it sat) - now rendered as this
+                        // panel's own leading row instead, sharing its
+                        // Material/padding rather than a separate overlay.
+                        breadcrumbEntity: _breadcrumbEntity,
+                        onBreadcrumbSelect: _onBreadcrumbSelect,
+                        onBreadcrumbPreview: _onBreadcrumbPreview,
                       ),
                       bodyNames: _selectionBodyNames,
-                    ),
-                  ),
-                // Bug fix (bug report: "Breadcrumb UI isn't showing"):
-                // rendered here, above [SelectionListDrawer] in this Stack's
-                // paint order (it used to live inside [PartViewport]'s own
-                // internal Stack instead - much earlier in this outer
-                // Stack's paint order than the drawer above, so the drawer's
-                // sheet painted straight over it). [_breadcrumbEntity]
-                // already returns null whenever [_anyToolPanelOpen] (a
-                // superset of every flag gating the drawer above) is true,
-                // so this is never shown while the drawer itself is hidden -
-                // the `bottom` offset only has to clear the drawer's own
-                // `initialChildSize: 0.18` (see [SelectionListDrawer]),
-                // not every `maxChildSize: 0.4` the user might drag it open
-                // to.
-                if (_breadcrumbEntity != null)
-                  Positioned.fill(
-                    child: LayoutBuilder(
-                      builder: (context, constraints) => Align(
-                        alignment: Alignment.bottomCenter,
-                        child: Padding(
-                          padding: EdgeInsets.only(bottom: constraints.maxHeight * 0.18 + 16),
-                          child: SelectionBreadcrumbBar(
-                            entity: _breadcrumbEntity!,
-                            onSelect: _onBreadcrumbSelect,
-                            onPreview: _onBreadcrumbPreview,
-                          ),
-                        ),
-                      ),
                     ),
                   ),
                 // Assembly support Phase 3: only one of FeatureTreePanel/

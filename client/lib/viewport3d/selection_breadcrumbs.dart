@@ -99,16 +99,30 @@ List<BreadcrumbTierInfo> breadcrumbTiersFor(SelectionEntityRef entity) {
   return tiers;
 }
 
-/// Phase 6b: an unintrusive horizontal bar of [breadcrumbTiersFor]'s own
-/// tappable icons - the user's own proposal ("an unintrusive horizontal
-/// breadcrumb bar... as tappable icons, each one retargeting the selection
-/// up a level"), reusing `select_other_sheet.dart`'s own hover-preview/
-/// tap-commit interaction *grammar* (a tap commits immediately; a hovered/
-/// held tier previews via [onPreview]) per that Mate's own doc comment
-/// pointing at it as "the closest existing precedent... reuse that
-/// interaction grammar rather than inventing a new one") - but as a small
-/// persistent bar, never a modal sheet, since the whole point is staying
-/// out of the way of the 3D view it annotates.
+/// Phase 6b: a horizontal row of [breadcrumbTiersFor]'s own tappable icons -
+/// the user's own proposal ("an unintrusive horizontal breadcrumb bar... as
+/// tappable icons, each one retargeting the selection up a level"), reusing
+/// `select_other_sheet.dart`'s own hover-preview/tap-commit interaction
+/// *grammar* (a tap commits immediately; a hovered/held tier previews via
+/// [onPreview]) per that Mate's own doc comment pointing at it as "the
+/// closest existing precedent... reuse that interaction grammar rather than
+/// inventing a new one").
+///
+/// Bug fix (on-device feedback: a standalone floating pill over the 3D
+/// viewport obscured part of [SelectionListDrawer]'s own sheet no matter
+/// where it sat): this used to render itself inside its own [Material] pill,
+/// positioned as a floating overlay. It's now embedded directly inside
+/// [SelectionContextPanel] instead (that panel already supplies its own
+/// [Material]/padding), so this returns a bare [Row] - no card of its own,
+/// no floating position to fight the drawer over.
+///
+/// Bug fix (on-device feedback, "reverse the order of the breadcrumbs,
+/// parents on the left"): [breadcrumbTiersFor] itself still returns nearest-
+/// to-farthest (entity, then Body, then Component - see its own doc
+/// comment, unchanged since other callers/tests key off that exact order);
+/// this widget reverses *only its own rendering* of that list, so the
+/// coarsest (parent-most) tier paints left, the tapped entity itself right -
+/// the conventional "ancestors first" breadcrumb reading order.
 class SelectionBreadcrumbBar extends StatefulWidget {
   final SelectionEntityRef entity;
   final ValueChanged<SelectionEntityRef> onSelect;
@@ -146,29 +160,25 @@ class _SelectionBreadcrumbBarState extends State<SelectionBreadcrumbBar> {
       return const SizedBox.shrink();
     }
     final colorScheme = Theme.of(context).colorScheme;
-    return Material(
-      color: colorScheme.surface.withValues(alpha: 0.92),
-      elevation: 2,
-      borderRadius: BorderRadius.circular(20),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            for (var i = 0; i < tiers.length; i++) ...[
-              if (i > 0)
-                Icon(Icons.chevron_right, size: 16, color: colorScheme.onSurfaceVariant),
-              _BreadcrumbTierButton(
-                tierInfo: tiers[i],
-                previewed: _previewed == tiers[i].target,
-                onTap: () => widget.onSelect(tiers[i].target),
-                onPreviewStart: () => _setPreview(tiers[i].target),
-                onPreviewEnd: () => _setPreview(null),
-              ),
-            ],
-          ],
-        ),
-      ),
+    // Parents-on-the-left: reverse [tiers]' own nearest-to-farthest order
+    // purely for display (see this class's own doc comment) - every index
+    // below refers to this reversed list, not [breadcrumbTiersFor]'s
+    // original one.
+    final displayTiers = tiers.reversed.toList();
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (var i = 0; i < displayTiers.length; i++) ...[
+          if (i > 0) Icon(Icons.chevron_right, size: 16, color: colorScheme.onSurfaceVariant),
+          _BreadcrumbTierButton(
+            tierInfo: displayTiers[i],
+            previewed: _previewed == displayTiers[i].target,
+            onTap: () => widget.onSelect(displayTiers[i].target),
+            onPreviewStart: () => _setPreview(displayTiers[i].target),
+            onPreviewEnd: () => _setPreview(null),
+          ),
+        ],
+      ],
     );
   }
 }
