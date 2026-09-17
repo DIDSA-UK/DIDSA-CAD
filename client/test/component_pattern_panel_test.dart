@@ -529,6 +529,7 @@ void main() {
         hasSecondDirection: false,
         onSecondDirectionToggled: (e) => enabled = e,
       )));
+      await tester.ensureVisible(find.text('Add second direction'));
       await tester.tap(find.text('Add second direction'));
       expect(enabled, isTrue);
     });
