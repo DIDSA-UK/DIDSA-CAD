@@ -50,9 +50,13 @@ enum PatternMode {
 /// Because Direction 1 and Direction 2 can each independently come from an
 /// edge tap, [activeDirectionSlot] (set by [PartScreen], changed here via
 /// [onActiveDirectionSlotChanged]) says which of the two a viewport edge tap
-/// currently fills - shown as a simple two-chip toggle once Direction 2 is
-/// enabled (Direction 1 is the only possible target beforehand). Circular's
-/// own single axis pick never needs this - only one thing can ever be live.
+/// currently fills. Both direction sections are always visible once Direction
+/// 2 is enabled, so a standalone chip toggle for this had no visible effect
+/// of its own (bug report: "doesn't do anything") - instead, each section's
+/// own "Pick Direction" affordance button now makes its section the live one
+/// before showing its hint, so which slot a viewport tap fills always
+/// matches whichever section the user just pressed pick on. Circular's own
+/// single axis pick never needs this - only one thing can ever be live.
 class PatternPanel extends StatefulWidget {
   /// 'Pattern' when creating a brand-new Feature (default), 'Edit Pattern'
   /// when [PartScreen] opened this to edit an already-existing one instead -
@@ -106,8 +110,9 @@ class PatternPanel extends StatefulWidget {
   final void Function(bool reverse)? onReverse2Changed;
 
   /// Which direction slot (`1` or `2`) the next viewport edge tap fills -
-  /// see this class's own doc comment. Only ever shown/changeable once
-  /// [hasSecondDirection] is true; always effectively `1` otherwise.
+  /// see this class's own doc comment. Only ever changeable (by pressing a
+  /// section's own "Pick Direction" button) once [hasSecondDirection] is
+  /// true; always effectively `1` otherwise.
   final int activeDirectionSlot;
   final void Function(int slot) onActiveDirectionSlotChanged;
 
@@ -382,16 +387,20 @@ class _PatternPanelState extends State<PatternPanel> {
   /// [OutlinedButton.icon] with a text label, to stay narrow enough to sit
   /// alongside the X/Y/Z buttons without overflowing this panel's own
   /// narrowest-supported surface width (see `pattern_panel_test.dart`).
-  Widget _pickAffordanceButton(String tooltip, String hintText) => IconButton(
+  Widget _pickAffordanceButton(String tooltip, String hintText, {VoidCallback? onBeforeHint}) => IconButton(
         tooltip: tooltip,
-        onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(hintText), duration: const Duration(seconds: 3)),
-        ),
+        onPressed: () {
+          onBeforeHint?.call();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(hintText), duration: const Duration(seconds: 3)),
+          );
+        },
         icon: const Icon(Icons.touch_app_outlined, size: 20),
       );
 
   Widget _directionSection({
     required String label,
+    required int slot,
     required bool hasDirection,
     required String? summary,
     required void Function(String) onSetFixedAxis,
@@ -424,7 +433,12 @@ class _PatternPanelState extends State<PatternPanel> {
               ),
             ),
             _pickAffordanceButton(
-                'Pick Direction', 'Tap an edge or Sketch Line in the viewport to set $label'),
+              'Pick Direction',
+              'Tap an edge or Sketch Line in the viewport to set $label',
+              onBeforeHint: widget.hasSecondDirection
+                  ? () => widget.onActiveDirectionSlotChanged(slot)
+                  : null,
+            ),
             const SizedBox(width: 4),
             _axisButton('x', onSetFixedAxis),
             const SizedBox(width: 4),
@@ -502,21 +516,9 @@ class _PatternPanelState extends State<PatternPanel> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if (widget.hasSecondDirection)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: SegmentedButton<int>(
-              segments: const [
-                ButtonSegment(value: 1, label: Text('Direction 1')),
-                ButtonSegment(value: 2, label: Text('Direction 2')),
-              ],
-              selected: {widget.activeDirectionSlot},
-              onSelectionChanged: (selection) =>
-                  widget.onActiveDirectionSlotChanged(selection.first),
-            ),
-          ),
         _directionSection(
           label: 'Direction 1',
+          slot: 1,
           hasDirection: widget.hasDirection1,
           summary: widget.direction1Summary,
           onSetFixedAxis: widget.onSetDirection1FixedAxis,
@@ -531,6 +533,7 @@ class _PatternPanelState extends State<PatternPanel> {
         if (widget.hasSecondDirection) ...[
           _directionSection(
             label: 'Direction 2',
+            slot: 2,
             hasDirection: widget.hasDirection2,
             summary: widget.direction2Summary,
             onSetFixedAxis: widget.onSetDirection2FixedAxis,

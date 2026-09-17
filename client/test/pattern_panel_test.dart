@@ -198,8 +198,7 @@ void main() {
 
     testWidgets('Direction 2 controls appear once enabled', (tester) async {
       await tester.pumpWidget(harness(hasSecondDirection: true));
-      // Two: the segmented-toggle chip label and the section's own heading.
-      expect(find.text('Direction 2'), findsNWidgets(2));
+      expect(find.text('Direction 2'), findsOneWidget);
       expect(find.text('Remove second direction'), findsOneWidget);
     });
 
@@ -222,15 +221,35 @@ void main() {
       expect(enabled, isFalse);
     });
 
-    testWidgets('the active-direction-slot toggle only appears once a second direction exists',
-        (tester) async {
+    testWidgets('no standalone active-direction-slot toggle is ever shown', (tester) async {
       await tester.pumpWidget(harness(hasSecondDirection: false));
-      // Only the section's own heading - no segmented-toggle chip yet.
       expect(find.text('Direction 1'), findsOneWidget);
       await tester.pumpWidget(harness(hasSecondDirection: true));
-      // Now both the segmented-toggle chip and the section's own heading.
-      expect(find.text('Direction 1'), findsNWidgets(2));
-      expect(find.text('Direction 2'), findsNWidgets(2));
+      // Only each section's own heading - both direction fields are always
+      // visible once Direction 2 is enabled, so a separate toggle chip
+      // would have no visible effect of its own and has been removed.
+      expect(find.text('Direction 1'), findsOneWidget);
+      expect(find.text('Direction 2'), findsOneWidget);
+    });
+
+    testWidgets("tapping Direction 2's own \"Pick Direction\" button makes it the active slot",
+        (tester) async {
+      int? slot;
+      await tester.pumpWidget(
+        harness(hasSecondDirection: true, onActiveDirectionSlotChanged: (s) => slot = s),
+      );
+      await tester.tap(find.byTooltip('Pick Direction').at(1));
+      expect(slot, 2);
+    });
+
+    testWidgets("tapping Direction 1's own \"Pick Direction\" button makes it the active slot",
+        (tester) async {
+      int? slot;
+      await tester.pumpWidget(
+        harness(hasSecondDirection: true, onActiveDirectionSlotChanged: (s) => slot = s),
+      );
+      await tester.tap(find.byTooltip('Pick Direction').at(0));
+      expect(slot, 1);
     });
   });
 
