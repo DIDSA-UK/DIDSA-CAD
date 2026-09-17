@@ -948,10 +948,18 @@ const double kNonPrimaryAssemblyOpacity = 0.25;
 /// face-culling fix [meshBuffersFromMesh]'s own doc comment already
 /// established for [PartViewport]'s ordinary Body Transparency slider,
 /// needed again here since this is a second, independent translucency
-/// source. A fixed neutral tint, not [PartViewport.bodyColourHex] - no
-/// per-Part colour exists in the data model yet (a real, documented gap,
-/// not an oversight), so every placed instance currently renders with the
-/// same neutral material regardless of which Part it places.
+/// source. [tint] defaults to a fixed neutral colour, not
+/// [PartViewport.bodyColourHex] - every placed instance with no [tint]
+/// given renders with that same neutral material regardless of which Part
+/// it places.
+///
+/// Bug report (assembly testing): [tint] itself used to be reachable only
+/// from [kMatePreviewTint] (this doc comment's own former "no per-Part
+/// colour exists in the data model yet" gap) - `PartViewport.
+/// _syncAssemblyInstanceNodes` now also feeds it a real per-Occurrence
+/// override (`AssemblyOccurrenceInstanceDto.color`, backed by
+/// `Occurrence.color` - the Assembly tree's own colour-disc row), the same
+/// param, no new plumbing needed here.
 ///
 /// GPU-bound (delegates to [geometryFromMesh]), so - like every other
 /// Node-builder in this file - this cannot be exercised in a headless
@@ -969,6 +977,9 @@ Node buildAssemblyInstanceNode(
   // instance already renders with - a preview needs to read as "not real
   // geometry yet", not just "translucent" (which
   // `assemblyInstanceOpacity`'s own non-primary-focus fade already means).
+  // Bug report (assembly testing): also what `_syncAssemblyInstanceNodes`
+  // feeds a real per-Occurrence colour override through - see this
+  // function's own doc comment above.
   // RGB only; alpha always comes from [opacity] below, matching every
   // pre-existing call site's exact prior color when this is omitted.
   vm.Vector3? tint,

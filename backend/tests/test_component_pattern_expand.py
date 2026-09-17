@@ -80,6 +80,82 @@ def test_linear_pattern_count_of_one_derives_nothing():
     assert expand_component_pattern_instances(pattern, RigidTransform.identity()) == {}
 
 
+# --- Bug report (assembly testing): the optional second direction ------
+
+
+def test_linear_pattern_crosses_direction_and_direction_2_into_a_2d_grid():
+    """A 2x2 grid: `count`/`count_2` each 2, `direction`/`direction_2`
+    perpendicular - mirrors `PatternFeature`'s own Rectangular
+    `direction_1`/`direction_2` cross exactly, one level up. Flattened
+    row-major index `i * count_2 + j` (index 0, the untouched seed at
+    `i=0, j=0`, is never a key)."""
+    pattern = _linear_pattern(
+        direction=(1.0, 0.0, 0.0),
+        count=2,
+        spacing=10.0,
+        direction_2=(0.0, 1.0, 0.0),
+        count_2=2,
+        spacing_2=5.0,
+    )
+    instances = expand_component_pattern_instances(pattern, RigidTransform.identity())
+    assert sorted(instances.keys()) == [1, 2, 3]
+    _assert_vec_close(instances[1].translation, (0.0, 5.0, 0.0))  # i=0, j=1
+    _assert_vec_close(instances[2].translation, (10.0, 0.0, 0.0))  # i=1, j=0
+    _assert_vec_close(instances[3].translation, (10.0, 5.0, 0.0))  # i=1, j=1
+
+
+def test_linear_pattern_reverse_2_flips_the_second_direction():
+    pattern = _linear_pattern(
+        direction=(1.0, 0.0, 0.0),
+        count=1,
+        spacing=0.0,
+        direction_2=(0.0, 1.0, 0.0),
+        count_2=2,
+        spacing_2=5.0,
+        reverse_2=True,
+    )
+    instances = expand_component_pattern_instances(pattern, RigidTransform.identity())
+    assert len(instances) == 1
+    _assert_vec_close(instances[1].translation, (0.0, -5.0, 0.0))
+
+
+def test_linear_pattern_direction_2_is_inert_while_count_2_is_one():
+    """`count_2` defaulting to `1` (every pattern authored before the
+    second direction existed) means `direction_2`/`spacing_2`/`reverse_2`
+    are never resolved/applied, whatever they're set to - the identical
+    "`direction_2` inert unless `count_2 > 1`" convention `PatternFeature`
+    already uses one level up."""
+    pattern = _linear_pattern(
+        direction=(1.0, 0.0, 0.0),
+        count=3,
+        spacing=10.0,
+        direction_2=(0.0, 0.0, 0.0),
+        count_2=1,
+        spacing_2=999.0,
+        reverse_2=True,
+    )
+    instances = expand_component_pattern_instances(pattern, RigidTransform.identity())
+    assert sorted(instances.keys()) == [1, 2]
+    _assert_vec_close(instances[1].translation, (10.0, 0.0, 0.0))
+    _assert_vec_close(instances[2].translation, (20.0, 0.0, 0.0))
+
+
+def test_linear_pattern_2d_grid_skip_indices_uses_the_flattened_index():
+    pattern = _linear_pattern(
+        direction=(1.0, 0.0, 0.0),
+        count=2,
+        spacing=10.0,
+        direction_2=(0.0, 1.0, 0.0),
+        count_2=2,
+        spacing_2=5.0,
+        skip_indices=[2],
+    )
+    instances = expand_component_pattern_instances(pattern, RigidTransform.identity())
+    assert sorted(instances.keys()) == [1, 3]
+    _assert_vec_close(instances[1].translation, (0.0, 5.0, 0.0))
+    _assert_vec_close(instances[3].translation, (10.0, 5.0, 0.0))
+
+
 def test_linear_pattern_skip_indices_omits_specific_instances_without_renumbering():
     """Phase 11 (`[9]`): skipping index 1 leaves index 2 keyed at `2`, not
     shifted down to `1` - the same "stable id per index" guarantee

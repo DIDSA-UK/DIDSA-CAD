@@ -214,24 +214,39 @@ def expand_component_pattern_instances(
     same "local step, composed by the caller" split `compose_chain`'s own
     per-level `compose` calls already use.
 
-    Keyed by the same 1-based index the loop below enumerates (`1` is the
-    first derived instance, matching `_rectangular_instances`/
-    `_circular_instances`'s own `dict[int, TopoDS_Shape]` convention one
-    level down in `app.document.pattern`) rather than returned as a plain
-    list, so a skipped index (Phase 11, `[9]`, `pattern.skip_indices`)
-    leaves every surviving instance's own id stable instead of shifting it
-    - the same "don't let a skip quietly renumber its neighbors" concern
-    that convention already protects against for Body-level Patterns."""
+    Keyed by the same index the loop below enumerates - Linear's own
+    flattened `i * count_2 + j` (row-major, mirroring `_rectangular_
+    instances`'s identical convention one level down in
+    `app.document.pattern`; `1` is simply the first derived instance
+    whenever `count_2 == 1`), Circular's plain `1`-based angular-step index
+    - rather than returned as a plain list, so a skipped index (Phase 11,
+    `[9]`, `pattern.skip_indices`) leaves every surviving instance's own id
+    stable instead of shifting it - the same "don't let a skip quietly
+    renumber its neighbors" concern that convention already protects
+    against for Body-level Patterns."""
     skip_indices = set(pattern.skip_indices)
     if pattern.pattern_type == ComponentPatternType.LINEAR:
-        count = max(pattern.count, 1)
-        sign = -1.0 if pattern.reverse else 1.0
+        count_1 = max(pattern.count, 1)
+        count_2 = max(pattern.count_2, 1)
+        sign_1 = -1.0 if pattern.reverse else 1.0
+        sign_2 = -1.0 if pattern.reverse_2 else 1.0
         instances: dict[int, RigidTransform] = {}
-        for index in range(1, count):
-            if index in skip_indices:
-                continue
-            step = _linear_pattern_step(pattern.direction, pattern.spacing * index * sign)
-            instances[index] = compose(step, source_transform)
+        for i in range(count_1):
+            for j in range(count_2):
+                index = i * count_2 + j
+                if index == 0 or index in skip_indices:
+                    continue
+                step = _linear_pattern_step(pattern.direction, pattern.spacing * i * sign_1)
+                if count_2 > 1:
+                    step_2 = _linear_pattern_step(pattern.direction_2, pattern.spacing_2 * j * sign_2)
+                    step = RigidTransform(
+                        translation=(
+                            step.translation[0] + step_2.translation[0],
+                            step.translation[1] + step_2.translation[1],
+                            step.translation[2] + step_2.translation[2],
+                        )
+                    )
+                instances[index] = compose(step, source_transform)
         return instances
 
     count = max(pattern.count_angular, 1)

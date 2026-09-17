@@ -1391,11 +1391,18 @@ class AssemblyOccurrenceInstanceDto {
   final RigidTransformDto worldTransform;
   final bool hidden;
 
+  /// Bug report (assembly testing): mirrors `Occurrence.color` - echoed
+  /// straight from the placing Occurrence, `null` meaning "no override,
+  /// render with the viewport's own default body colour". See
+  /// [OccurrenceDto.color]'s own doc comment.
+  final String? color;
+
   AssemblyOccurrenceInstanceDto({
     required this.occurrencePath,
     required this.partId,
     required this.worldTransform,
     this.hidden = false,
+    this.color,
   });
 
   factory AssemblyOccurrenceInstanceDto.fromJson(Map<String, dynamic> json) =>
@@ -1404,6 +1411,7 @@ class AssemblyOccurrenceInstanceDto {
         partId: json['part_id'] as String,
         worldTransform: RigidTransformDto.fromJson(json['world_transform'] as Map<String, dynamic>),
         hidden: json['hidden'] as bool? ?? false,
+        color: json['color'] as String?,
       );
 }
 
@@ -1434,6 +1442,14 @@ class OccurrenceDto {
   /// reaches this.
   final bool fixed;
 
+  /// Bug report (assembly testing): mirrors `Occurrence.color` - a
+  /// `"#RRGGBB"` hex override for this Occurrence's own rendered colour, or
+  /// `null` for "no override" (render with the viewport's own default body
+  /// colour). See `DocumentApiClient.updateOccurrenceColor`'s own doc
+  /// comment for the mutation call, and `AssemblyTreePanel`'s colour-disc
+  /// row for where the user reaches this.
+  final String? color;
+
   OccurrenceDto({
     required this.id,
     this.externalRef,
@@ -1443,6 +1459,7 @@ class OccurrenceDto {
     this.suppressed = false,
     this.hidden = false,
     this.fixed = false,
+    this.color,
   });
 
   factory OccurrenceDto.fromJson(Map<String, dynamic> json) => OccurrenceDto(
@@ -1454,6 +1471,7 @@ class OccurrenceDto {
         suppressed: json['suppressed'] as bool? ?? false,
         hidden: json['hidden'] as bool? ?? false,
         fixed: json['fixed'] as bool? ?? false,
+        color: json['color'] as String?,
       );
 }
 
@@ -1600,6 +1618,13 @@ class ComponentPatternDto {
   final int count;
   final double spacing;
   final bool reverse;
+  // Bug report (assembly testing): the optional second direction - see the
+  // backend's `app.document.models.ComponentPattern` doc comment on these
+  // four fields.
+  final List<double> direction2;
+  final int count2;
+  final double spacing2;
+  final bool reverse2;
   final ComponentPatternAxisDto? axis;
   final int countAngular;
   final double angleTotal;
@@ -1620,6 +1645,10 @@ class ComponentPatternDto {
     this.count = 1,
     this.spacing = 0.0,
     this.reverse = false,
+    this.direction2 = const [0.0, 1.0, 0.0],
+    this.count2 = 1,
+    this.spacing2 = 0.0,
+    this.reverse2 = false,
     this.axis,
     this.countAngular = 1,
     this.angleTotal = 360.0,
@@ -1637,6 +1666,12 @@ class ComponentPatternDto {
         count: json['count'] as int? ?? 1,
         spacing: (json['spacing'] as num?)?.toDouble() ?? 0.0,
         reverse: json['reverse'] as bool? ?? false,
+        direction2: json['direction_2'] == null
+            ? const [0.0, 1.0, 0.0]
+            : (json['direction_2'] as List).map((v) => (v as num).toDouble()).toList(),
+        count2: json['count_2'] as int? ?? 1,
+        spacing2: (json['spacing_2'] as num?)?.toDouble() ?? 0.0,
+        reverse2: json['reverse_2'] as bool? ?? false,
         axis: json['axis'] == null
             ? null
             : ComponentPatternAxisDto.fromJson(json['axis'] as Map<String, dynamic>),
@@ -4300,6 +4335,30 @@ class DocumentApiClient {
         (body) => OccurrenceDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// Bug report (assembly testing): `PATCH /document/parts/{part_id}/
+  /// occurrences/{occurrence_id}` with only `color` set - mirrors
+  /// [updateOccurrenceHidden]/[updateOccurrenceFixed] exactly, the Assembly
+  /// tree's own colour-disc row's persistence call. [hex] is a `"#RRGGBB"`
+  /// string to set a real override, or `''` (empty string) to explicitly
+  /// clear it back to "no override" - the same tri-state
+  /// `OccurrenceTransformUpdate.color` documents on the backend (`null`
+  /// isn't reachable through this method's own non-nullable [hex] param,
+  /// matching how [updateOccurrenceHidden]/[updateOccurrenceFixed] each
+  /// only ever send their own one field to begin with).
+  Future<OccurrenceDto> updateOccurrenceColor(
+    String partId,
+    String occurrenceId,
+    String hex,
+  ) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/occurrences/$occurrenceId'),
+              headers: _headers,
+              body: jsonEncode({'color': hex}),
+            ),
+        (body) => OccurrenceDto.fromJson(body as Map<String, dynamic>),
+      );
+
   /// Assembly support: `GET /document/parts/{part_id}/mates` - the
   /// Assembly tree's own Mates list for [partId], full detail (unlike
   /// [PartDto.mateIds], ids only).
@@ -4456,6 +4515,12 @@ class DocumentApiClient {
     int count = 1,
     double spacing = 0.0,
     bool reverse = false,
+    // Bug report (assembly testing): the optional second direction - see
+    // [ComponentPatternDto]'s own doc comment on these four fields.
+    List<double> direction2 = const [0.0, 1.0, 0.0],
+    int count2 = 1,
+    double spacing2 = 0.0,
+    bool reverse2 = false,
     ComponentPatternAxisDto? axis,
     int countAngular = 1,
     double angleTotal = 360.0,
@@ -4479,6 +4544,10 @@ class DocumentApiClient {
                 'count': count,
                 'spacing': spacing,
                 'reverse': reverse,
+                'direction_2': direction2,
+                'count_2': count2,
+                'spacing_2': spacing2,
+                'reverse_2': reverse2,
                 if (axis != null) 'axis': axis.toJson(),
                 'count_angular': countAngular,
                 'angle_total': angleTotal,
@@ -4503,6 +4572,12 @@ class DocumentApiClient {
     int? count,
     double? spacing,
     bool? reverse,
+    // Bug report (assembly testing): the optional second direction - see
+    // [ComponentPatternDto]'s own doc comment on these four fields.
+    List<double>? direction2,
+    int? count2,
+    double? spacing2,
+    bool? reverse2,
     ComponentPatternAxisDto? axis,
     int? countAngular,
     double? angleTotal,
@@ -4519,6 +4594,10 @@ class DocumentApiClient {
                 if (count != null) 'count': count,
                 if (spacing != null) 'spacing': spacing,
                 if (reverse != null) 'reverse': reverse,
+                if (direction2 != null) 'direction_2': direction2,
+                if (count2 != null) 'count_2': count2,
+                if (spacing2 != null) 'spacing_2': spacing2,
+                if (reverse2 != null) 'reverse_2': reverse2,
                 if (axis != null) 'axis': axis.toJson(),
                 if (countAngular != null) 'count_angular': countAngular,
                 if (angleTotal != null) 'angle_total': angleTotal,

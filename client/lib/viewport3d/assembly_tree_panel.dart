@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../api/document_api_client.dart';
 import '../assembly/assembly_lens.dart';
 import '../assembly/assembly_lens_theme.dart';
+import 'view_preferences.dart' show colorFromHex;
 
 /// The display name for the Occurrence at [index] in [occurrences] - mirrors
 /// `feature_tree_panel.dart`'s `featureDisplayName` (same "shared between the
@@ -104,6 +105,20 @@ class AssemblyTreePanel extends StatefulWidget {
   final void Function(MateDto mate)? onMateTap;
   final void Function(MateDto mate)? onMateLongPress;
 
+  /// Bug report (assembly testing): "in the assembly tree, add two toggles
+  /// in line with the part names - one to toggle visibility ... the other
+  /// a colour disc" - each Component row's own trailing visibility toggle
+  /// (mirrors `component_context_menu.dart`'s Hide/Show entry's own
+  /// `visibility_outlined`/`visibility_off_outlined` icon pair, just reached
+  /// directly from the row instead of via long-press) and colour disc
+  /// (opens `occurrence_colour_sheet.dart`'s `showOccurrenceColourSheet`).
+  /// Both optional, same "row stays usable without it, just without this one
+  /// affordance" convention [onMateTap]/[onMateLongPress] already establish -
+  /// `null` disables (never hides) the corresponding button, so a call site
+  /// that hasn't wired one yet still renders every row correctly.
+  final void Function(OccurrenceDto occurrence)? onOccurrenceVisibilityToggle;
+  final void Function(OccurrenceDto occurrence)? onOccurrenceColorTap;
+
   /// Test report item 5: mirrors [selectedOccurrenceId]'s own "which row is
   /// selected" convention for the Mates section - [onMateTap]'s real call
   /// site (`part_screen.dart`'s `_onMateTap`) sets this alongside selecting
@@ -160,6 +175,8 @@ class AssemblyTreePanel extends StatefulWidget {
     required this.onOccurrenceTap,
     required this.onOccurrenceLongPress,
     required this.onClose,
+    this.onOccurrenceVisibilityToggle,
+    this.onOccurrenceColorTap,
     this.onMateTap,
     this.onMateLongPress,
     this.selectedMateId,
@@ -456,11 +473,68 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
             // gizmo won't target (`component_context_menu.dart`'s Fix/Float
             // entry is the only way to change it).
             if (occurrence.fixed) const Icon(Icons.push_pin, size: 18),
-            if (occurrence.hidden) const Icon(Icons.visibility_off, size: 18),
+            // Bug report (assembly testing): the colour disc - see
+            // [_buildColorDisc]'s own doc comment.
+            _buildColorDisc(context, occurrence),
+            // Bug report (assembly testing): was a plain read-only
+            // `Icons.visibility_off` icon, shown only while hidden - now an
+            // always-visible toggle (mirrors `component_context_menu.dart`'s
+            // Hide/Show entry's own icon pair, reachable directly from the
+            // row instead of only via long-press), so both hiding *and*
+            // showing a component again are one tap away without opening
+            // that menu.
+            IconButton(
+              tooltip: occurrence.hidden ? 'Show' : 'Hide',
+              icon: Icon(
+                occurrence.hidden ? Icons.visibility_off_outlined : Icons.visibility_outlined,
+                size: 18,
+              ),
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+              onPressed: widget.onOccurrenceVisibilityToggle == null
+                  ? null
+                  : () => widget.onOccurrenceVisibilityToggle!(occurrence),
+            ),
           ],
         ),
         onTap: () => widget.onOccurrenceTap(occurrence),
         onLongPress: () => widget.onOccurrenceLongPress(occurrence),
+      ),
+    );
+  }
+
+  /// Bug report (assembly testing): "a colour disc that when tapped allows
+  /// user to select the colour of that part" - a small filled circle
+  /// showing [OccurrenceDto.color] (or, while unset, a hollow "no
+  /// override" ring so the disc itself still reads as tappable rather than
+  /// vanishing entirely), tapping it invokes
+  /// [AssemblyTreePanel.onOccurrenceColorTap] - that callback is what
+  /// actually opens `occurrence_colour_sheet.dart`'s
+  /// `showOccurrenceColourSheet` (kept out of this widget so it stays a
+  /// plain data-plus-callbacks leaf, the same split every other row/section
+  /// in this file already follows for its own tap handling).
+  Widget _buildColorDisc(BuildContext context, OccurrenceDto occurrence) {
+    final hex = occurrence.color;
+    final onTap = widget.onOccurrenceColorTap == null ? null : () => widget.onOccurrenceColorTap!(occurrence);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      child: InkWell(
+        key: ValueKey('occurrence-color-disc-${occurrence.id}'),
+        customBorder: const CircleBorder(),
+        onTap: onTap,
+        child: Container(
+          width: 18,
+          height: 18,
+          decoration: BoxDecoration(
+            color: hex == null ? Colors.transparent : colorFromHex(hex),
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: hex == null ? Theme.of(context).colorScheme.outline : Colors.black26,
+              width: hex == null ? 1.5 : 1,
+            ),
+          ),
+        ),
       ),
     );
   }

@@ -80,6 +80,9 @@ void main() {
       ComponentPatternAxisPreset direction = ComponentPatternAxisPreset.x,
       ComponentPatternAxisPreset axisDirection = ComponentPatternAxisPreset.z,
       String? editingPatternId,
+      bool hasSecondDirection = false,
+      ValueChanged<bool>? onSecondDirectionToggled,
+      ComponentPatternAxisPreset direction2 = ComponentPatternAxisPreset.y,
     }) {
       return ComponentPatternPanel(
         mode: mode,
@@ -98,6 +101,18 @@ void main() {
         onSpacingChanged: (_) {},
         reverse: false,
         onReverseChanged: (_) {},
+        hasSecondDirection: hasSecondDirection,
+        onSecondDirectionToggled: onSecondDirectionToggled ?? (_) {},
+        direction2: direction2,
+        onDirection2Changed: (_) {},
+        customDirection2: const [0.0, 1.0, 0.0],
+        onCustomDirection2Changed: (_) {},
+        count2: 2,
+        onCount2Changed: (_) {},
+        spacing2: 5.0,
+        onSpacing2Changed: (_) {},
+        reverse2: false,
+        onReverse2Changed: (_) {},
         axisOrigin: const [0.0, 0.0, 0.0],
         onAxisOriginChanged: (_) {},
         axisDirection: axisDirection,
@@ -163,6 +178,18 @@ void main() {
         onSpacingChanged: (_) {},
         reverse: false,
         onReverseChanged: (_) {},
+        hasSecondDirection: false,
+        onSecondDirectionToggled: (_) {},
+        direction2: ComponentPatternAxisPreset.y,
+        onDirection2Changed: (_) {},
+        customDirection2: const [0.0, 1.0, 0.0],
+        onCustomDirection2Changed: (_) {},
+        count2: 1,
+        onCount2Changed: (_) {},
+        spacing2: 0.0,
+        onSpacing2Changed: (_) {},
+        reverse2: false,
+        onReverse2Changed: (_) {},
         axisOrigin: const [0.0, 0.0, 0.0],
         onAxisOriginChanged: (_) {},
         axisDirection: ComponentPatternAxisPreset.z,
@@ -231,6 +258,18 @@ void main() {
         onSpacingChanged: (_) {},
         reverse: false,
         onReverseChanged: (_) {},
+        hasSecondDirection: false,
+        onSecondDirectionToggled: (_) {},
+        direction2: ComponentPatternAxisPreset.y,
+        onDirection2Changed: (_) {},
+        customDirection2: const [0.0, 1.0, 0.0],
+        onCustomDirection2Changed: (_) {},
+        count2: 1,
+        onCount2Changed: (_) {},
+        spacing2: 0.0,
+        onSpacing2Changed: (_) {},
+        reverse2: false,
+        onReverse2Changed: (_) {},
         axisOrigin: const [0.0, 0.0, 0.0],
         onAxisOriginChanged: (_) {},
         axisDirection: ComponentPatternAxisPreset.z,
@@ -290,6 +329,18 @@ void main() {
         onSpacingChanged: (_) {},
         reverse: false,
         onReverseChanged: (_) {},
+        hasSecondDirection: false,
+        onSecondDirectionToggled: (_) {},
+        direction2: ComponentPatternAxisPreset.y,
+        onDirection2Changed: (_) {},
+        customDirection2: const [0.0, 1.0, 0.0],
+        onCustomDirection2Changed: (_) {},
+        count2: 1,
+        onCount2Changed: (_) {},
+        spacing2: 0.0,
+        onSpacing2Changed: (_) {},
+        reverse2: false,
+        onReverse2Changed: (_) {},
         axisOrigin: const [0.0, 0.0, 0.0],
         onAxisOriginChanged: (_) {},
         axisDirection: ComponentPatternAxisPreset.z,
@@ -343,6 +394,18 @@ void main() {
         onSpacingChanged: (_) {},
         reverse: false,
         onReverseChanged: (_) {},
+        hasSecondDirection: false,
+        onSecondDirectionToggled: (_) {},
+        direction2: ComponentPatternAxisPreset.y,
+        onDirection2Changed: (_) {},
+        customDirection2: const [0.0, 1.0, 0.0],
+        onCustomDirection2Changed: (_) {},
+        count2: 1,
+        onCount2Changed: (_) {},
+        spacing2: 0.0,
+        onSpacing2Changed: (_) {},
+        reverse2: false,
+        onReverse2Changed: (_) {},
         axisOrigin: const [0.0, 0.0, 0.0],
         onAxisOriginChanged: (_) {},
         axisDirection: ComponentPatternAxisPreset.z,
@@ -390,6 +453,18 @@ void main() {
         onSpacingChanged: (_) {},
         reverse: false,
         onReverseChanged: (_) {},
+        hasSecondDirection: false,
+        onSecondDirectionToggled: (_) {},
+        direction2: ComponentPatternAxisPreset.y,
+        onDirection2Changed: (_) {},
+        customDirection2: const [0.0, 1.0, 0.0],
+        onCustomDirection2Changed: (_) {},
+        count2: 1,
+        onCount2Changed: (_) {},
+        spacing2: 0.0,
+        onSpacing2Changed: (_) {},
+        reverse2: false,
+        onReverse2Changed: (_) {},
         axisOrigin: const [0.0, 0.0, 0.0],
         onAxisOriginChanged: (_) {},
         axisDirection: ComponentPatternAxisPreset.z,
@@ -432,6 +507,59 @@ void main() {
 
       await tester.pumpWidget(wrap(buildPanel(onConfirm: () {}, editingPatternId: 'pat-1')));
       expect(find.widgetWithText(FilledButton, 'Save'), findsOneWidget);
+    });
+
+    // --- Bug report (assembly testing): the optional second direction ----
+
+    testWidgets('Direction 2 controls are hidden until enabled', (tester) async {
+      await tester.pumpWidget(wrap(buildPanel(hasSecondDirection: false)));
+      expect(find.text('Direction 2'), findsNothing);
+      expect(find.text('Add second direction'), findsOneWidget);
+    });
+
+    testWidgets('Direction 2 controls appear once enabled', (tester) async {
+      await tester.pumpWidget(wrap(buildPanel(hasSecondDirection: true)));
+      expect(find.text('Direction 2'), findsOneWidget);
+      expect(find.text('Remove second direction'), findsOneWidget);
+    });
+
+    testWidgets('tapping "Add second direction" fires onSecondDirectionToggled(true)', (tester) async {
+      bool? enabled;
+      await tester.pumpWidget(wrap(buildPanel(
+        hasSecondDirection: false,
+        onSecondDirectionToggled: (e) => enabled = e,
+      )));
+      await tester.tap(find.text('Add second direction'));
+      expect(enabled, isTrue);
+    });
+
+    testWidgets('tapping "Remove second direction" fires onSecondDirectionToggled(false)', (tester) async {
+      bool? enabled;
+      await tester.pumpWidget(wrap(buildPanel(
+        hasSecondDirection: true,
+        onSecondDirectionToggled: (e) => enabled = e,
+      )));
+      await tester.ensureVisible(find.text('Remove second direction'));
+      await tester.tap(find.text('Remove second direction'));
+      expect(enabled, isFalse);
+    });
+
+    testWidgets('Direction 2 shows its own Count/Spacing/Reverse fields, not just Direction 1\'s', (tester) async {
+      await tester.pumpWidget(wrap(buildPanel(hasSecondDirection: true)));
+      // "Count"/"Spacing (mm)"/"Reverse" each appear twice - once per direction.
+      expect(find.text('Count'), findsNWidgets(2));
+      expect(find.text('Spacing (mm)'), findsNWidgets(2));
+      expect(find.text('Reverse'), findsNWidgets(2));
+    });
+
+    testWidgets('Direction 2 custom X/Y/Z fields are distinct widgets from Direction 1\'s', (tester) async {
+      await tester.pumpWidget(wrap(buildPanel(
+        hasSecondDirection: true,
+        direction: ComponentPatternAxisPreset.custom,
+        direction2: ComponentPatternAxisPreset.custom,
+      )));
+      expect(find.byKey(const ValueKey('component-pattern-field-X')), findsOneWidget);
+      expect(find.byKey(const ValueKey('component-pattern-field-direction2-X')), findsOneWidget);
     });
   });
 }

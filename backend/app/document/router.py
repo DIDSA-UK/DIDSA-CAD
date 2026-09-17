@@ -3098,6 +3098,7 @@ def _occurrence_response(occurrence: Occurrence) -> OccurrenceResponse:
         suppressed=occurrence.suppressed,
         hidden=occurrence.hidden,
         fixed=occurrence.fixed,
+        color=occurrence.color,
     )
 
 
@@ -3191,7 +3192,11 @@ def update_occurrence_transform(
     field is applied - never a partial mutation. Checked against the
     request's own *effective* `fixed` value (`payload.fixed` if given, else
     the Occurrence's current one) so `{transform, fixed: false}` in the same
-    call - unfixing and repositioning in one round trip - still works."""
+    call - unfixing and repositioning in one round trip - still works.
+
+    Bug report (assembly testing): widened again to also accept `color` -
+    see `OccurrenceTransformUpdate.color`'s own docstring for its
+    `None`-omitted/`""`-clears/anything-else-stored-verbatim tri-state."""
     part = get_part_or_404(part_id)
     occurrence = _get_occurrence_or_404(part, occurrence_id)
     effective_fixed = payload.fixed if payload.fixed is not None else occurrence.fixed
@@ -3210,6 +3215,8 @@ def update_occurrence_transform(
         occurrence.hidden = payload.hidden
     if payload.fixed is not None:
         occurrence.fixed = payload.fixed
+    if payload.color is not None:
+        occurrence.color = payload.color or None
     return _occurrence_response(occurrence)
 
 
@@ -3344,6 +3351,10 @@ def _component_pattern_response(pattern: ComponentPattern) -> ComponentPatternRe
         count=pattern.count,
         spacing=pattern.spacing,
         reverse=pattern.reverse,
+        direction_2=pattern.direction_2,
+        count_2=pattern.count_2,
+        spacing_2=pattern.spacing_2,
+        reverse_2=pattern.reverse_2,
         axis=_component_pattern_axis_response(pattern.axis),
         count_angular=pattern.count_angular,
         angle_total=pattern.angle_total,
@@ -3385,28 +3396,51 @@ def _validate_component_pattern_source_occurrence_ids(part: Part, source_occurre
             )
 
 
-def _validate_component_pattern_linear_payload(direction: tuple[float, float, float], count: int) -> None:
+def _validate_component_pattern_linear_payload(
+    direction: tuple[float, float, float],
+    count: int,
+    count_2: int,
+    direction_2: tuple[float, float, float],
+) -> None:
     """Mirrors `_validate_pattern_rectangular_payload`'s own shape, one
     level up: `direction` must be non-zero (a zero vector would otherwise
     silently fall back to `assembly._normalize`'s own +Z default -
     `ComponentPattern`'s docstring on `_linear_pattern_step` says this is
-    rejected here rather than defended against there); `count` must be >= 2
-    (a single-instance pattern derives nothing beyond the untouched seed,
-    the same no-op guard `PatternFeature`'s own count checks already use)
-    and capped at `_PATTERN_MAX_TOTAL_INSTANCES`, the same sanity limit
-    body-level patterns already share."""
+    rejected here rather than defended against there); `count`/`count_2`
+    must each be >= 1 (a "pattern" of fewer than one instance in either
+    direction is meaningless), their product must be at least 2 (a
+    single-instance grid derives nothing beyond the untouched seed, the
+    same no-op guard `PatternFeature`'s own count checks already use) and
+    capped at `_PATTERN_MAX_TOTAL_INSTANCES`, the same sanity limit
+    body-level patterns already share.
+
+    Bug report (assembly testing): `direction_2` only needs to be
+    well-formed (non-zero) once `count_2 > 1` actually puts it to use -
+    mirrors `_validate_pattern_rectangular_payload`'s own "`direction_2`
+    required exactly when `count_2 > 1`" rule, just against a plain vector
+    (always present, never `None`) instead of an optional
+    `PatternDirectionRef`."""
     if _is_zero_vector(direction):
         raise HTTPException(status_code=422, detail="ComponentPattern direction must not be the zero vector")
-    if count < 2:
+    if count < 1 or count_2 < 1:
+        raise HTTPException(status_code=422, detail="ComponentPattern count and count_2 must each be >= 1")
+    total = count * count_2
+    if total < 2:
         raise HTTPException(
             status_code=422,
-            detail="ComponentPattern count must be >= 2 - otherwise no new instance is produced beyond "
-            "the existing source Occurrence(s)",
+            detail="ComponentPattern count * count_2 must be >= 2 - otherwise no new instance is produced "
+            "beyond the existing source Occurrence(s)",
         )
-    if count > _PATTERN_MAX_TOTAL_INSTANCES:
+    if total > _PATTERN_MAX_TOTAL_INSTANCES:
         raise HTTPException(
             status_code=422,
-            detail=f"ComponentPattern count must not exceed {_PATTERN_MAX_TOTAL_INSTANCES} (got {count})",
+            detail=f"ComponentPattern count * count_2 must not exceed {_PATTERN_MAX_TOTAL_INSTANCES} "
+            f"total instances (got {total})",
+        )
+    if count_2 > 1 and _is_zero_vector(direction_2):
+        raise HTTPException(
+            status_code=422,
+            detail="ComponentPattern direction_2 must not be the zero vector when count_2 > 1",
         )
 
 
@@ -3446,20 +3480,24 @@ def _validate_component_pattern_payload(
     count_angular: int,
     angle_total: float,
     skip_indices: list[int],
+    count_2: int = 1,
+    direction_2: tuple[float, float, float] = (0.0, 1.0, 0.0),
 ) -> None:
     """The single entry point both `create_component_pattern`/`update_
     component_pattern` call - mirrors `_validate_pattern_payload`'s own
     per-`pattern_type` dispatch. `skip_indices` (Phase 11, `[9]`) reuses
     `_validate_pattern_skip_indices` verbatim, against whichever of
-    `count`/`count_angular` is this pattern_type's own actual total
-    instance count - the same per-`pattern_type` field selection every
-    other check here already makes."""
+    `count * count_2`/`count_angular` is this pattern_type's own actual
+    total instance count - the same per-`pattern_type` field selection
+    every other check here already makes. `count_2`/`direction_2` default
+    to their own inert values so every pre-existing call site (before the
+    second direction existed) keeps validating exactly as before."""
     if pattern_type == ComponentPatternType.CIRCULAR:
         _validate_component_pattern_circular_payload(axis, count_angular, angle_total)
         _validate_pattern_skip_indices(skip_indices, count_angular)
     else:
-        _validate_component_pattern_linear_payload(direction, count)
-        _validate_pattern_skip_indices(skip_indices, count)
+        _validate_component_pattern_linear_payload(direction, count, count_2, direction_2)
+        _validate_pattern_skip_indices(skip_indices, count * max(count_2, 1))
 
 
 @router.post("/parts/{part_id}/component-patterns", response_model=ComponentPatternResponse, status_code=201)
@@ -3481,6 +3519,8 @@ def create_component_pattern(part_id: str, payload: ComponentPatternCreate) -> C
         payload.count_angular,
         payload.angle_total,
         payload.skip_indices,
+        count_2=payload.count_2,
+        direction_2=payload.direction_2,
     )
     pattern = ComponentPattern(
         id=str(uuid.uuid4()),
@@ -3490,6 +3530,10 @@ def create_component_pattern(part_id: str, payload: ComponentPatternCreate) -> C
         count=payload.count,
         spacing=payload.spacing,
         reverse=payload.reverse,
+        direction_2=payload.direction_2,
+        count_2=payload.count_2,
+        spacing_2=payload.spacing_2,
+        reverse_2=payload.reverse_2,
         axis=axis,
         count_angular=payload.count_angular,
         angle_total=payload.angle_total,
@@ -3531,6 +3575,14 @@ def update_component_pattern(
         pattern.spacing = payload.spacing
     if payload.reverse is not None:
         pattern.reverse = payload.reverse
+    if payload.direction_2 is not None:
+        pattern.direction_2 = payload.direction_2
+    if payload.count_2 is not None:
+        pattern.count_2 = payload.count_2
+    if payload.spacing_2 is not None:
+        pattern.spacing_2 = payload.spacing_2
+    if payload.reverse_2 is not None:
+        pattern.reverse_2 = payload.reverse_2
     if payload.axis is not None:
         pattern.axis = _component_pattern_axis_to_domain(payload.axis)
     if payload.count_angular is not None:
@@ -3553,6 +3605,8 @@ def update_component_pattern(
         pattern.count_angular,
         pattern.angle_total,
         pattern.skip_indices,
+        count_2=pattern.count_2,
+        direction_2=pattern.direction_2,
     )
     return _component_pattern_response(pattern)
 
@@ -8312,6 +8366,7 @@ def get_assembly_mesh(
         transform_chain: list[RigidTransform],
         hidden: bool,
         ancestors: frozenset[str],
+        color: str | None = None,
     ) -> None:
         _geometry_for(part)
         world_transform = compose_chain(transform_chain)
@@ -8325,6 +8380,7 @@ def get_assembly_mesh(
                     rotation_angle_degrees=world_transform.rotation_angle_degrees,
                 ),
                 hidden=hidden,
+                color=color,
             )
         )
         child_ancestors = ancestors | {part.id}
@@ -8340,6 +8396,7 @@ def get_assembly_mesh(
                 [*transform_chain, occurrence.transform],
                 occurrence.hidden,
                 child_ancestors,
+                color=occurrence.color,
             )
         # Phase 7 (`docs/assembly-scope.md` §3 item 7): every ComponentPattern
         # owned by `part` derives its own extra instances on top of each of
@@ -8370,6 +8427,7 @@ def get_assembly_mesh(
                         [*transform_chain, derived_transform],
                         source_occurrence.hidden,
                         child_ancestors,
+                        color=source_occurrence.color,
                     )
 
     _walk(root_part, [], [], hidden=False, ancestors=frozenset())

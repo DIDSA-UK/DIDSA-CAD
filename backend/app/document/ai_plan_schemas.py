@@ -620,6 +620,13 @@ class PatternComponentStep(BaseModel):
     count: int = 1
     spacing: float = 0.0
     reverse: bool = False
+    # Bug report (assembly testing): the optional second direction, mirrors
+    # `ComponentPatternCreate`'s own identical fields - see
+    # `app.document.models.ComponentPattern`'s doc comment on these four.
+    direction_2: tuple[float, float, float] = (0.0, 1.0, 0.0)
+    count_2: int = 1
+    spacing_2: float = 0.0
+    reverse_2: bool = False
     axis: ComponentPatternAxisSchema | None = None
     count_angular: int = 1
     angle_total: float = 360.0

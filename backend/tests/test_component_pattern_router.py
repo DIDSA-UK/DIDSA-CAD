@@ -225,6 +225,88 @@ def test_create_linear_component_pattern_rejects_count_below_two():
     assert response.status_code == 422
 
 
+# --- Bug report (assembly testing): the optional second direction ------
+
+
+def test_create_linear_component_pattern_accepts_count_one_when_count_2_supplies_the_second_instance():
+    """`count`/`count_2` need only their *product* to be >= 2, mirroring
+    `PatternFeature`'s own `count_1 * count_2` rule - a 1xN grid (this
+    pattern's own `count == 1`) is valid as long as `count_2 > 1`."""
+    mount = _make_box_part("Mount 2D Validation 1")
+    bolt = _make_box_part("Bolt 2D Validation 1")
+    _compose(mount["id"], [_occurrence_dict("occ-1", bolt["id"])], bolt["id"])
+    response = client.post(
+        f"/document/parts/{mount['id']}/component-patterns",
+        json={
+            "source_occurrence_ids": ["occ-1"],
+            "pattern_type": "linear",
+            "count": 1,
+            "direction_2": [0.0, 1.0, 0.0],
+            "count_2": 2,
+            "spacing_2": 5.0,
+        },
+    )
+    assert response.status_code == 201
+
+
+def test_create_linear_component_pattern_rejects_zero_direction_2_when_count_2_above_one():
+    mount = _make_box_part("Mount 2D Validation 2")
+    bolt = _make_box_part("Bolt 2D Validation 2")
+    _compose(mount["id"], [_occurrence_dict("occ-1", bolt["id"])], bolt["id"])
+    response = client.post(
+        f"/document/parts/{mount['id']}/component-patterns",
+        json={
+            "source_occurrence_ids": ["occ-1"],
+            "pattern_type": "linear",
+            "direction": [1.0, 0.0, 0.0],
+            "count": 3,
+            "spacing": 10.0,
+            "direction_2": [0.0, 0.0, 0.0],
+            "count_2": 2,
+            "spacing_2": 5.0,
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_component_pattern_direction_2_round_trips_through_create_and_update():
+    mount = _make_box_part("Mount 2D Validation 3")
+    bolt = _make_box_part("Bolt 2D Validation 3")
+    _compose(mount["id"], [_occurrence_dict("occ-1", bolt["id"])], bolt["id"])
+    create_response = client.post(
+        f"/document/parts/{mount['id']}/component-patterns",
+        json={
+            "source_occurrence_ids": ["occ-1"],
+            "pattern_type": "linear",
+            "direction": [1.0, 0.0, 0.0],
+            "count": 3,
+            "spacing": 10.0,
+            "direction_2": [0.0, 1.0, 0.0],
+            "count_2": 2,
+            "spacing_2": 5.0,
+            "reverse_2": True,
+        },
+    )
+    assert create_response.status_code == 201
+    pattern = create_response.json()
+    assert pattern["direction_2"] == [0.0, 1.0, 0.0]
+    assert pattern["count_2"] == 2
+    assert pattern["spacing_2"] == 5.0
+    assert pattern["reverse_2"] is True
+
+    update_response = client.patch(
+        f"/document/parts/{mount['id']}/component-patterns/{pattern['id']}",
+        json={"count_2": 4, "spacing_2": 8.0},
+    )
+    assert update_response.status_code == 200
+    updated = update_response.json()
+    assert updated["count_2"] == 4
+    assert updated["spacing_2"] == 8.0
+    # Fields not named in the PATCH stay untouched.
+    assert updated["direction_2"] == [0.0, 1.0, 0.0]
+    assert updated["reverse_2"] is True
+
+
 def test_create_circular_component_pattern_rejects_count_angular_below_two():
     mount = _make_box_part("Mount Validation 5")
     bolt = _make_box_part("Bolt Validation 5")
@@ -389,6 +471,50 @@ def test_linear_component_pattern_expands_into_assembly_mesh_instances():
     paths = {tuple(i["occurrence_path"]) for i in bolt_instances}
     assert ("occ-bolt-1",) in paths
     assert len(paths) == 3
+
+
+def test_linear_component_pattern_with_second_direction_expands_into_a_2d_grid():
+    """Bug report (assembly testing): a 2x2 grid (`count=2`, `count_2=2`) -
+    mirrors `test_linear_component_pattern_expands_into_assembly_mesh_
+    instances`'s own shape, crossing `direction`/`direction_2` the same
+    row-major `i * count_2 + j` way `PatternFeature`'s own Rectangular mode
+    already does one level down."""
+    mount = _make_box_part("Mount Expand Grid 1", size=30.0)
+    bolt = _make_box_part("Bolt Expand Grid 1", size=2.0)
+    _compose(
+        mount["id"],
+        [_occurrence_dict("occ-bolt-1", bolt["id"], translation=(5.0, 0.0, 0.0))],
+        bolt["id"],
+        component_patterns=[
+            {
+                "id": "pat-1",
+                "source_occurrence_ids": ["occ-bolt-1"],
+                "pattern_type": "linear",
+                "direction": [1.0, 0.0, 0.0],
+                "count": 2,
+                "spacing": 10.0,
+                "reverse": False,
+                "direction_2": [0.0, 1.0, 0.0],
+                "count_2": 2,
+                "spacing_2": 5.0,
+                "reverse_2": False,
+                "axis": None,
+                "count_angular": 1,
+                "angle_total": 360.0,
+                "reverse_angular": False,
+                "suppressed": False,
+            }
+        ],
+    )
+
+    mesh = _assembly_mesh(mount["id"])
+    bolt_instances = [i for i in mesh["instances"] if i["part_id"] == bolt["id"]]
+    # 2x2 grid = 4 total placements (including the untouched seed).
+    assert len(bolt_instances) == 4
+    translations = sorted(
+        (round(t[0], 6), round(t[1], 6)) for t in (i["world_transform"]["translation"] for i in bolt_instances)
+    )
+    assert translations == sorted([(5.0, 0.0), (5.0, 5.0), (15.0, 0.0), (15.0, 5.0)])
 
 
 def test_circular_component_pattern_expands_into_assembly_mesh_instances():
