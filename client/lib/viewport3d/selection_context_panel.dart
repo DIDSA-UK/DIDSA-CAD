@@ -184,12 +184,10 @@ class SelectionContextPanel extends StatelessWidget {
                   child: SingleChildScrollView(
                     scrollDirection: Axis.horizontal,
                     child: SelectionBreadcrumbBar(
-                      // `hasBreadcrumb` above already guarantees `entity` is
-                      // non-null here - Dart's null-safety promotion
-                      // doesn't track that through the intermediate `bool`,
-                      // so this stays an explicit `!` rather than a second
-                      // (functionally redundant) null check.
-                      entity: entity!,
+                      // `hasBreadcrumb`'s own `entity != null && ...` already
+                      // promotes `entity` to non-null here - Dart's flow
+                      // analysis tracks that through this `final bool`.
+                      entity: entity,
                       onSelect: (target) => onBreadcrumbSelect?.call(target),
                       onPreview: (target) => onBreadcrumbPreview?.call(target),
                     ),
