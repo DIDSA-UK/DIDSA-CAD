@@ -286,12 +286,14 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
   /// indented children" shape an NX/SolidWorks-style assembly tree always
   /// shows. While unfocused this is a plain, non-interactive header naming
   /// [AssemblyTreePanel.rootLabel] (the currently-open Part); once "Make
-  /// Focus" has drilled into a sub-component ([AssemblyTreePanel.focusedLabel]
-  /// non-null - by then [rootLabel] itself is the caller's `focusedLabel`,
-  /// see that field's own doc comment), this same row keeps doubling as the
-  /// breadcrumb back button (mirrors [ComponentContextMenuAction.exitFocus]'s
-  /// effect exactly, just reachable without needing an Occurrence row to
-  /// long-press) - never two separate "which part am I looking at" rows.
+  /// Focus" has drilled into a sub-component, [focusedLabel] itself (e.g.
+  /// "Bracket") wins over [rootLabel] - this is what keeps this row doubling
+  /// as the breadcrumb back button (mirrors [ComponentContextMenuAction.
+  /// exitFocus]'s effect exactly, just reachable without needing an
+  /// Occurrence row to long-press) - never two separate "which part am I
+  /// looking at" rows, and never a caller-supplied [rootLabel] silently
+  /// overriding the one name a `focusedLabel`-only caller (e.g. this widget's
+  /// own pre-existing tests) actually gave this row to show.
   Widget _buildParentPartRow(BuildContext context) {
     final focused = widget.focusedLabel != null;
     return Material(
@@ -311,7 +313,7 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
               ],
               Expanded(
                 child: Text(
-                  widget.rootLabel,
+                  widget.focusedLabel ?? widget.rootLabel,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
