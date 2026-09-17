@@ -21,6 +21,8 @@ enum ComponentContextMenuAction {
   isolate,
   mate,
   pattern,
+  fix,
+  float,
 }
 
 /// Shows the Component context menu for one Occurrence -
@@ -56,6 +58,7 @@ Future<ComponentContextMenuAction?> showComponentContextMenu(
   BuildContext context, {
   required bool isFocused,
   required bool hidden,
+  required bool fixed,
 }) {
   return showActionSheet<ComponentContextMenuAction>(context, [
     ActionSheetEntry(
@@ -63,10 +66,17 @@ Future<ComponentContextMenuAction?> showComponentContextMenu(
       label: isFocused ? 'Exit Focus' : 'Make Focus',
       icon: isFocused ? Icons.output_outlined : Icons.center_focus_strong_outlined,
     ),
-    const ActionSheetEntry(
+    ActionSheetEntry(
       action: ComponentContextMenuAction.moveRotate,
       label: 'Move/Rotate',
       icon: Icons.open_with,
+      // A `fixed` Occurrence's own gizmo never shows (`_gizmoTargetOccurrence`'s
+      // own doc comment) and the backend rejects a transform PATCH against
+      // one outright (`occurrence_is_fixed`) - disabling this entry up front
+      // avoids offering an action that would silently do nothing (no gizmo
+      // ever appears) or surface a raw server error either way.
+      enabled: !fixed,
+      disabledReason: fixed ? 'Float this component first' : null,
     ),
     ActionSheetEntry(
       action: hidden ? ComponentContextMenuAction.show : ComponentContextMenuAction.hide,
@@ -77,6 +87,18 @@ Future<ComponentContextMenuAction?> showComponentContextMenu(
       action: ComponentContextMenuAction.isolate,
       label: 'Isolate',
       icon: Icons.filter_center_focus,
+    ),
+    // Bug report (assembly testing): "I can't find a method of applying a
+    // fix on a part" - a "Fix" constraint (mirrors real CAD's own fixed/
+    // grounded-component convention), same "label names the next state"
+    // convention Hide/Show above already uses. Backed by `Occurrence.fixed`
+    // (`update_occurrence_transform`'s own `fixed` field) - locks this
+    // Occurrence's transform against the gizmo and any Mate solve
+    // targeting it (see that endpoint's own `occurrence_is_fixed` 422).
+    ActionSheetEntry(
+      action: fixed ? ComponentContextMenuAction.float : ComponentContextMenuAction.fix,
+      label: fixed ? 'Float' : 'Fix',
+      icon: fixed ? Icons.push_pin : Icons.push_pin_outlined,
     ),
     const ActionSheetEntry(
       action: ComponentContextMenuAction.mate,

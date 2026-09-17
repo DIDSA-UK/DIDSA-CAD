@@ -1426,6 +1426,14 @@ class OccurrenceDto {
   final bool suppressed;
   final bool hidden;
 
+  /// Assembly testing bug fix: mirrors `Occurrence.fixed` - a "Fix"
+  /// constraint locking this Occurrence's own transform against the gizmo
+  /// and any Mate solve targeting it. See `DocumentApiClient.
+  /// updateOccurrence`'s own doc comment for the mutation call, and
+  /// `component_context_menu.dart`'s Fix/Float entry for where the user
+  /// reaches this.
+  final bool fixed;
+
   OccurrenceDto({
     required this.id,
     this.externalRef,
@@ -1434,6 +1442,7 @@ class OccurrenceDto {
     required this.transform,
     this.suppressed = false,
     this.hidden = false,
+    this.fixed = false,
   });
 
   factory OccurrenceDto.fromJson(Map<String, dynamic> json) => OccurrenceDto(
@@ -1444,6 +1453,7 @@ class OccurrenceDto {
         transform: RigidTransformDto.fromJson(json['transform'] as Map<String, dynamic>),
         suppressed: json['suppressed'] as bool? ?? false,
         hidden: json['hidden'] as bool? ?? false,
+        fixed: json['fixed'] as bool? ?? false,
       );
 }
 
@@ -4238,6 +4248,27 @@ class DocumentApiClient {
               _uri('/document/parts/$partId/occurrences/$occurrenceId'),
               headers: _headers,
               body: jsonEncode({'hidden': hidden}),
+            ),
+        (body) => OccurrenceDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Assembly testing bug fix: `PATCH /document/parts/{part_id}/occurrences/
+  /// {occurrence_id}` with only `fixed` set - mirrors [updateOccurrenceHidden]
+  /// exactly, the Component context menu's own Fix/Float entry's persistence
+  /// call. Sending `fixed: true` on an Occurrence with a pending `transform`
+  /// change of its own is never done from this method (it only ever sends
+  /// `fixed`), so the backend's own "transform+fixed together" 422
+  /// (`occurrence_is_fixed`) never applies to a call made through here.
+  Future<OccurrenceDto> updateOccurrenceFixed(
+    String partId,
+    String occurrenceId,
+    bool fixed,
+  ) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/occurrences/$occurrenceId'),
+              headers: _headers,
+              body: jsonEncode({'fixed': fixed}),
             ),
         (body) => OccurrenceDto.fromJson(body as Map<String, dynamic>),
       );

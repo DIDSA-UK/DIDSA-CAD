@@ -3096,6 +3096,7 @@ def _occurrence_response(occurrence: Occurrence) -> OccurrenceResponse:
         ),
         suppressed=occurrence.suppressed,
         hidden=occurrence.hidden,
+        fixed=occurrence.fixed,
     )
 
 
@@ -3146,6 +3147,17 @@ def _get_occurrence_or_404(part: Part, occurrence_id: str) -> Occurrence:
     raise HTTPException(status_code=404, detail="Occurrence not found")
 
 
+def _occurrence_is_fixed(occurrence_id: str) -> HTTPException:
+    """Structured 422 - same envelope `_mate_solve_did_not_converge` below
+    already established - for any attempt to move a `fixed` Occurrence,
+    whether a direct gizmo PATCH (`update_occurrence_transform`) or a Mate
+    solve targeting it (`solve_for_occurrence`)."""
+    return HTTPException(
+        status_code=422,
+        detail={"type": "occurrence_is_fixed", "occurrence_id": occurrence_id},
+    )
+
+
 @router.patch("/parts/{part_id}/occurrences/{occurrence_id}", response_model=OccurrenceResponse)
 def update_occurrence_transform(
     part_id: str, occurrence_id: str, payload: OccurrenceTransformUpdate
@@ -3167,9 +3179,22 @@ def update_occurrence_transform(
 
     Phase 8 (`docs/assembly-scope.md` §2k) widened this to also accept
     `hidden`, both fields now omitted-means-unchanged - see
-    `OccurrenceTransformUpdate`'s own docstring for why."""
+    `OccurrenceTransformUpdate`'s own docstring for why.
+
+    Assembly testing bug fix: widened again to also accept `fixed` - and,
+    since a "Fix" constraint is meaningless if `transform` could still be
+    PATCHed straight past it, a `transform` sent alongside (or against an
+    Occurrence already `fixed`, when `fixed` itself is omitted here) is now
+    rejected with a structured 422 (`_occurrence_is_fixed`) *before* either
+    field is applied - never a partial mutation. Checked against the
+    request's own *effective* `fixed` value (`payload.fixed` if given, else
+    the Occurrence's current one) so `{transform, fixed: false}` in the same
+    call - unfixing and repositioning in one round trip - still works."""
     part = get_part_or_404(part_id)
     occurrence = _get_occurrence_or_404(part, occurrence_id)
+    effective_fixed = payload.fixed if payload.fixed is not None else occurrence.fixed
+    if payload.transform is not None and effective_fixed:
+        raise _occurrence_is_fixed(occurrence_id)
     if payload.transform is not None:
         _validate_occurrence_transform_payload(
             payload.transform.rotation_axis, payload.transform.rotation_angle_degrees
@@ -3181,6 +3206,8 @@ def update_occurrence_transform(
         )
     if payload.hidden is not None:
         occurrence.hidden = payload.hidden
+    if payload.fixed is not None:
+        occurrence.fixed = payload.fixed
     return _occurrence_response(occurrence)
 
 
@@ -3561,9 +3588,17 @@ def solve_for_occurrence(part_id: str, occurrence_id: str) -> OccurrenceResponse
     arbitrarily different valid one. The same call is also made right after
     `create_mate` for the newly-mated Occurrence, so a freshly-authored
     Mate visibly snaps its target into place immediately, matching real
-    CAD mate-authoring UX."""
+    CAD mate-authoring UX.
+
+    Assembly testing bug fix: rejects with the same structured 422
+    (`_occurrence_is_fixed`) `update_occurrence_transform` now does, for the
+    same reason - a `fixed` Occurrence's own `transform` is locked, so it can
+    never be the *driven* side of a Mate solve either, only ever referenced
+    as an already-fixed peer for solving some other Occurrence."""
     part = get_part_or_404(part_id)
     occurrence = _get_occurrence_or_404(part, occurrence_id)
+    if occurrence.fixed:
+        raise _occurrence_is_fixed(occurrence_id)
     result = solve_occurrence(get_document(), part, occurrence_id)
     if not result.converged:
         raise _mate_solve_did_not_converge(occurrence_id, result)

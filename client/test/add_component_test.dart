@@ -63,6 +63,59 @@ void main() {
       expect(occurrences.single['hidden'], false);
     });
 
+    // Bug report (assembly testing): "The first part added to an assembly
+    // should have a fix constraint auto applied."
+    test('auto-fixes the first Occurrence added to an empty root Part', () {
+      final current = _documentPayload(parts: [_part('root')], rootPartId: 'root');
+      final component = _documentPayload(parts: [_part('bolt')], rootPartId: 'bolt');
+
+      final merged = mergeComponentIntoDocument(
+        currentPayload: current,
+        componentPayload: component,
+        rootPartId: 'root',
+        occurrenceId: 'occ-1',
+      );
+
+      final root = (merged['document']['parts'] as List)
+          .cast<Map<String, dynamic>>()
+          .firstWhere((p) => p['id'] == 'root');
+      final occurrence = (root['occurrences'] as List).cast<Map<String, dynamic>>().single;
+      expect(occurrence['fixed'], true);
+    });
+
+    test('does not auto-fix a second Occurrence added to a root Part that already has one', () {
+      final existingOccurrence = {
+        'id': 'occ-existing',
+        'external_ref': 'washer.didsa',
+        'resolved_part_id': 'washer',
+        'name_override': null,
+        'transform': null,
+        'suppressed': false,
+        'hidden': false,
+        'fixed': true,
+      };
+      final current = _documentPayload(
+        parts: [_part('root', occurrences: [existingOccurrence]), _part('washer')],
+        rootPartId: 'root',
+      );
+      final component = _documentPayload(parts: [_part('bolt')], rootPartId: 'bolt');
+
+      final merged = mergeComponentIntoDocument(
+        currentPayload: current,
+        componentPayload: component,
+        rootPartId: 'root',
+        occurrenceId: 'occ-new',
+        externalRef: 'bolt.didsa',
+      );
+
+      final root = (merged['document']['parts'] as List)
+          .cast<Map<String, dynamic>>()
+          .firstWhere((p) => p['id'] == 'root');
+      final occurrences = (root['occurrences'] as List).cast<Map<String, dynamic>>();
+      final newOccurrence = occurrences.firstWhere((o) => o['id'] == 'occ-new');
+      expect(newOccurrence['fixed'], false);
+    });
+
     test('preserves existing Occurrences on the root Part rather than replacing them', () {
       final existingOccurrence = {
         'id': 'occ-existing',

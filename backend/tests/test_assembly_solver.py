@@ -471,6 +471,88 @@ def test_concentric_aligns_two_straight_edge_axes():
     assert math.sqrt(sum(p * p for p in perpendicular)) < _TOLERANCE
 
 
+def test_coincident_after_concentric_on_the_same_occurrence_still_converges():
+    """Bug report (assembly testing): mating a "bolt" shape's shaft
+    CONCENTRIC to a hole's own bore, then adding a further COINCIDENT mate
+    between the bolt's own head-underside plane and the plate's top face,
+    reported `mate_solve_did_not_converge` (a 422) even though the resulting
+    placement is geometrically exact. Root cause (see `assembly_solver.
+    _mate_residual_satisfied`'s own docstring for the full story): a bolt's
+    own head-underside plane normal is, by construction, parallel to its own
+    shaft axis, so COINCIDENT's own `_direction_lock` ends up forcing the
+    *same* direction CONCENTRIC's own `addParallel` already forces, via a
+    second, independently-built pair of line entities - mathematically
+    redundant, not conflicting, but `py_slvs` reports a non-zero
+    `result_code` for it regardless. `solve_occurrence` now falls back to
+    verifying each Mate's own residual directly against the solved
+    positions before giving up.
+
+    Modeled with two plain cylinders exactly like
+    `test_concentric_aligns_two_cylinder_axes` above (`Bolt`'s own shaft +
+    flat end cap, `Plate`'s own bore + flat top face) - a cylinder's flat end
+    cap already has a normal parallel to its own axis, exactly the
+    geometric relationship that triggers this, without needing to model a
+    literal bolt head/counterbore."""
+    plate = _make_cylinder_part("Plate", radius=10.0, depth=5.0)
+    bolt = _make_cylinder_part("Bolt", radius=3.0, depth=20.0)
+    _place_occurrence(
+        plate["id"], bolt["id"], translation=(77.0, -12.0, 40.0), rotation_axis=(1.0, 0.0, 0.0), rotation_angle_degrees=30.0
+    )
+
+    plate_bore = _find_cylindrical_face(plate["id"], plate["body_id"])
+    bolt_shaft = _find_cylindrical_face(bolt["id"], bolt["body_id"])
+    _create_mate(
+        plate["id"],
+        mate_type="concentric",
+        driven_ref={"subshape_ref": {"body_id": bolt["body_id"], "shape_type": "face", "index": bolt_shaft}},
+        fixed_ref={"subshape_ref": {"body_id": plate["body_id"], "shape_type": "face", "index": plate_bore}},
+    )
+    _solve(plate["id"])  # The first mate alone always converged - not the bug.
+
+    plate_top = _find_planar_face(plate["id"], plate["body_id"], (0.0, 0.0, 1.0))
+    bolt_bottom = _find_planar_face(bolt["id"], bolt["body_id"], (0.0, 0.0, -1.0))
+    _create_mate(
+        plate["id"],
+        mate_type="coincident",
+        driven_ref={"subshape_ref": {"body_id": bolt["body_id"], "shape_type": "face", "index": bolt_bottom}},
+        fixed_ref={"subshape_ref": {"body_id": plate["body_id"], "shape_type": "face", "index": plate_top}},
+    )
+    # The actual regression: `_solve` asserts `status_code == 200` (with
+    # `response.text` on failure) - before this fix, this call raised a 422
+    # `mate_solve_did_not_converge` even though the geometry checked below
+    # is exactly satisfied.
+    occurrence = _solve(plate["id"])
+    transform = _rigid_transform_from_response(occurrence)
+
+    # CONCENTRIC still holds: the bolt's shaft axis is parallel to, and
+    # passes through, the plate's own bore axis.
+    bolt_axis = _measure_face(bolt["id"], bolt["body_id"], bolt_shaft)["axis"]
+    plate_axis = _measure_face(plate["id"], plate["body_id"], plate_bore)["axis"]
+    world_axis_origin = apply_transform_to_point(transform, tuple(bolt_axis["origin"]))
+    world_axis_direction = apply_transform_to_direction(transform, tuple(bolt_axis["direction"]))
+    cross = (
+        world_axis_direction[1] * plate_axis["direction"][2] - world_axis_direction[2] * plate_axis["direction"][1],
+        world_axis_direction[2] * plate_axis["direction"][0] - world_axis_direction[0] * plate_axis["direction"][2],
+        world_axis_direction[0] * plate_axis["direction"][1] - world_axis_direction[1] * plate_axis["direction"][0],
+    )
+    assert math.sqrt(sum(c * c for c in cross)) < 1e-3
+    to_point = tuple(w - b for w, b in zip(world_axis_origin, plate_axis["origin"]))
+    dot = sum(t * d for t, d in zip(to_point, plate_axis["direction"]))
+    perpendicular = tuple(t - dot * d for t, d in zip(to_point, plate_axis["direction"]))
+    assert math.sqrt(sum(p * p for p in perpendicular)) < _TOLERANCE
+
+    # COINCIDENT also holds: the bolt's own local bottom-face origin
+    # ((0,0,0) in its own frame, the cylinder's base cap) lands exactly on
+    # the plate's own top plane (z=5.0, its own local frame, per `depth`
+    # above) - mirrors `test_coincident_plane_to_plane_not_flipped_faces_
+    # the_planes_toward_each_other`'s identical "known local coordinates,
+    # not-flipped means opposing normals" convention.
+    world_point = apply_transform_to_point(transform, (0.0, 0.0, 0.0))
+    assert abs(world_point[2] - 5.0) < _TOLERANCE
+    world_normal = apply_transform_to_direction(transform, (0.0, 0.0, -1.0))
+    assert _vectors_close(world_normal, (0.0, 0.0, -1.0), tolerance=1e-3)
+
+
 # --- PARALLEL ------------------------------------------------------------
 
 

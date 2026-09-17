@@ -35,7 +35,7 @@ def _import_composed(payload: dict) -> None:
     assert response.status_code == 200
 
 
-def _setup_top_with_one_occurrence() -> tuple[str, str]:
+def _setup_top_with_one_occurrence(*, fixed: bool = False) -> tuple[str, str]:
     """Returns (top_part_id, occurrence_id) - a Top Part with one real
     Occurrence (`occ-bolt-1`, placing a Bolt Part) already imported,
     mirroring `test_assembly_tree_endpoints.py`'s own composed-payload
@@ -58,6 +58,7 @@ def _setup_top_with_one_occurrence() -> tuple[str, str]:
             },
             "suppressed": False,
             "hidden": False,
+            "fixed": fixed,
         }
     ]
     top_part_dict["mates"] = []
@@ -278,3 +279,106 @@ def test_patching_a_nonzero_rotation_angle_with_a_real_axis_is_allowed():
     )
     assert response.status_code == 200
     assert response.json()["transform"]["rotation_angle_degrees"] == 45.0
+
+
+# Bug report (assembly testing): "Long pressing a part in the assembly tree
+# should offer the option to fix/float" - `OccurrenceTransformUpdate.fixed`,
+# `OccurrenceResponse.fixed`, and the `occurrence_is_fixed` 422 guard both
+# `update_occurrence_transform` and `solve_for_occurrence` now enforce.
+
+
+def test_patching_fixed_only_leaves_transform_untouched():
+    top_id, occurrence_id = _setup_top_with_one_occurrence()
+    client.patch(
+        f"/document/parts/{top_id}/occurrences/{occurrence_id}",
+        json={
+            "transform": {
+                "translation": [4.0, 0.0, 0.0],
+                "rotation_axis": [0.0, 0.0, 1.0],
+                "rotation_angle_degrees": 0.0,
+            }
+        },
+    )
+
+    response = client.patch(
+        f"/document/parts/{top_id}/occurrences/{occurrence_id}",
+        json={"fixed": True},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["fixed"] is True
+    assert body["transform"]["translation"] == [4.0, 0.0, 0.0]
+
+
+def test_patching_transform_on_a_fixed_occurrence_is_rejected():
+    top_id, occurrence_id = _setup_top_with_one_occurrence(fixed=True)
+
+    response = client.patch(
+        f"/document/parts/{top_id}/occurrences/{occurrence_id}",
+        json={
+            "transform": {
+                "translation": [1.0, 0.0, 0.0],
+                "rotation_axis": [0.0, 0.0, 1.0],
+                "rotation_angle_degrees": 0.0,
+            }
+        },
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["type"] == "occurrence_is_fixed"
+
+    # Rejected before any mutation - the transform stays exactly as seeded.
+    occurrences = client.get(f"/document/parts/{top_id}/occurrences").json()
+    unchanged = next(o for o in occurrences if o["id"] == occurrence_id)
+    assert unchanged["transform"]["translation"] == [0.0, 0.0, 0.0]
+
+
+def test_patching_transform_together_with_fixed_true_is_rejected():
+    top_id, occurrence_id = _setup_top_with_one_occurrence(fixed=False)
+
+    response = client.patch(
+        f"/document/parts/{top_id}/occurrences/{occurrence_id}",
+        json={
+            "transform": {
+                "translation": [1.0, 0.0, 0.0],
+                "rotation_axis": [0.0, 0.0, 1.0],
+                "rotation_angle_degrees": 0.0,
+            },
+            "fixed": True,
+        },
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["type"] == "occurrence_is_fixed"
+
+
+def test_patching_transform_together_with_fixed_false_on_an_already_fixed_occurrence_is_allowed():
+    """`{transform, fixed: false}` in the same call - unfixing and
+    repositioning in one round trip - is the one case a `fixed` Occurrence's
+    `transform` may still change, since the request's own *effective*
+    `fixed` (what it's about to become, not what it currently is) is what
+    the guard checks."""
+    top_id, occurrence_id = _setup_top_with_one_occurrence(fixed=True)
+
+    response = client.patch(
+        f"/document/parts/{top_id}/occurrences/{occurrence_id}",
+        json={
+            "transform": {
+                "translation": [2.0, 0.0, 0.0],
+                "rotation_axis": [0.0, 0.0, 1.0],
+                "rotation_angle_degrees": 0.0,
+            },
+            "fixed": False,
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["fixed"] is False
+    assert body["transform"]["translation"] == [2.0, 0.0, 0.0]
+
+
+def test_solving_a_fixed_occurrence_is_rejected():
+    top_id, occurrence_id = _setup_top_with_one_occurrence(fixed=True)
+
+    response = client.post(f"/document/parts/{top_id}/occurrences/{occurrence_id}/solve")
+    assert response.status_code == 422
+    assert response.json()["detail"]["type"] == "occurrence_is_fixed"

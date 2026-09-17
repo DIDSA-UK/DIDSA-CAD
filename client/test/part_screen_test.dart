@@ -394,6 +394,7 @@ class _FakeDocumentBackend {
       if (occurrence.isEmpty) return http.Response('not found: occurrence', 404);
       if (body.containsKey('transform')) occurrence['transform'] = body['transform'];
       if (body.containsKey('hidden')) occurrence['hidden'] = body['hidden'];
+      if (body.containsKey('fixed')) occurrence['fixed'] = body['fixed'];
       return _json(occurrence, 200);
     }
 
@@ -3725,7 +3726,7 @@ void main() {
   // round trip, mirroring the gizmo's own already-real PATCH-then-refetch
   // coverage.
   group('Assembly support Phase 10: manual Hide/Show/Isolate persistence', () {
-    Map<String, dynamic> occurrence(String id, {bool hidden = false}) => {
+    Map<String, dynamic> occurrence(String id, {bool hidden = false, bool fixed = false}) => {
           'id': id,
           'external_ref': 'parts/$id.didsa',
           'resolved_part_id': '$id-part',
@@ -3737,6 +3738,7 @@ void main() {
           },
           'suppressed': false,
           'hidden': hidden,
+          'fixed': fixed,
         };
 
     Future<_FakeDocumentBackend> openInAssemblyLens(
@@ -3847,6 +3849,61 @@ void main() {
       final byId = {for (final o in backend.occurrences) o['id'] as String: o['hidden'] as bool};
       expect(byId['occ-1'], isFalse);
       expect(byId['occ-2'], isFalse);
+    });
+
+    // Bug report (assembly testing): "I can't find a method of applying a
+    // fix on a part" - Fix/Float wired the same PATCH-then-refetch way
+    // Hide/Show above already are, through `_setOccurrenceFixed`.
+    testWidgets('Fix PATCHes fixed:true and the tree reflects it after refetch', (tester) async {
+      final backend = await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1')]);
+
+      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      expect(panel.occurrences.single.fixed, isFalse);
+      panel.onOccurrenceLongPress(panel.occurrences.single);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      await tester.tap(find.text('Fix'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(backend.occurrences.single['fixed'], isTrue);
+      final refreshed = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      expect(refreshed.occurrences.single.fixed, isTrue);
+    });
+
+    testWidgets('Float PATCHes fixed:false, and Move/Rotate re-enables', (tester) async {
+      final backend = await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1', fixed: true)]);
+
+      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      expect(panel.occurrences.single.fixed, isTrue);
+      panel.onOccurrenceLongPress(panel.occurrences.single);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      // Fixed, so Move/Rotate renders disabled - same guard
+      // `component_context_menu_test.dart` already covers directly.
+      final moveRotateTile = tester.widget<ListTile>(
+        find.ancestor(of: find.text('Move/Rotate'), matching: find.byType(ListTile)),
+      );
+      expect(moveRotateTile.enabled, isFalse);
+
+      expect(find.text('Float'), findsOneWidget);
+      await tester.tap(find.text('Float'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(backend.occurrences.single['fixed'], isFalse);
+      final refreshed = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      expect(refreshed.occurrences.single.fixed, isFalse);
+
+      refreshed.onOccurrenceLongPress(refreshed.occurrences.single);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      final reenabledTile = tester.widget<ListTile>(
+        find.ancestor(of: find.text('Move/Rotate'), matching: find.byType(ListTile)),
+      );
+      expect(reenabledTile.enabled, isTrue);
     });
 
     // Bug fix: "Move/Rotate" used to be a pure no-op case body (selecting

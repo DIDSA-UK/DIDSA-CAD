@@ -406,6 +406,13 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
           mainAxisSize: MainAxisSize.min,
           children: [
             if (unresolved) const Icon(Icons.link_off, size: 18, color: Colors.red),
+            // Assembly testing bug fix: same "still visible, clearly
+            // flagged" trailing-icon convention the `hidden`/`unresolved`
+            // icons right alongside it already use - a `fixed` Occurrence's
+            // own row now shows at a glance which component the Move/Rotate
+            // gizmo won't target (`component_context_menu.dart`'s Fix/Float
+            // entry is the only way to change it).
+            if (occurrence.fixed) const Icon(Icons.push_pin, size: 18),
             if (occurrence.hidden) const Icon(Icons.visibility_off, size: 18),
           ],
         ),
