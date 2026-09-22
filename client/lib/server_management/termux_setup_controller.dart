@@ -65,6 +65,15 @@ class TermuxSetupController {
 
   Future<String?> _getLastCommandStdout() => _channel.invokeMethod<String>('getLastCommandStdout');
 
+  /// Whatever Termux itself reported as the reason the *last* dispatched
+  /// command didn't run - e.g. "Termux error 2: RunCommandService requires
+  /// `allow-external-apps`..." when that Termux property isn't set yet.
+  /// Null whenever the last dispatch had no such error (including a
+  /// perfectly successful one, or nothing dispatched yet at all) - callers
+  /// use this to turn a bare "nothing happened" timeout into the actual,
+  /// specific reason, when Termux provided one.
+  Future<String?> lastCommandError() => _channel.invokeMethod<String>('getLastCommandError');
+
   Future<bool> _dispatch(List<String> arguments) async {
     final result = await _channel.invokeMethod<bool>('runCommand', {
       'executable': TermuxSetupCommands.executable,

@@ -66,6 +66,12 @@ class _FirstInstallScreenState extends State<FirstInstallScreen> {
     // can actually dispatch to it - skipping it otherwise avoids a pointless
     // ~15s poll-to-timeout on every screen open before permission exists.
     final status = hasPermission ? await _setupController.checkSetupStatus() : SetupStatus.unknown;
+    // Android accepting a dispatch (the permission check above) doesn't
+    // mean Termux itself ran it - e.g. `allow-external-apps` still being
+    // false in termux.properties makes Termux refuse it outright, with its
+    // own specific reason attached to the result. Surface that reason
+    // directly instead of only ever showing a bare "status unknown".
+    final lastError = hasPermission ? await _setupController.lastCommandError() : null;
     if (!mounted) return;
     setState(() {
       _termuxInstalled = termuxInstalled;
@@ -73,6 +79,7 @@ class _FirstInstallScreenState extends State<FirstInstallScreen> {
       _hasPermission = hasPermission;
       _status = status;
       _checkingStatus = false;
+      if (lastError != null) _statusMessage = lastError;
     });
   }
 
@@ -105,12 +112,21 @@ class _FirstInstallScreenState extends State<FirstInstallScreen> {
       },
     );
     if (!mounted) return;
+    // Android accepting the dispatch (result.dispatched) only means it
+    // handed the intent to Termux, not that Termux actually ran it - e.g.
+    // `allow-external-apps` still being false makes Termux refuse it
+    // outright, with its own specific reason attached. Without this check,
+    // that refusal would otherwise show as a misleading "done".
+    final lastError = result.dispatched ? await _setupController.lastCommandError() : null;
+    if (!mounted) return;
     setState(() {
       _busy = false;
       _status = result.status;
-      _statusMessage = result.dispatched
-          ? '$label - done. See the checklist above for the current state.'
-          : '$label - could not reach Termux. Check the permission in Step 3.';
+      _statusMessage = !result.dispatched
+          ? '$label - could not reach Termux. Check the permission in Step 3.'
+          : lastError != null
+              ? '$label - $lastError'
+              : '$label - done. See the checklist above for the current state.';
     });
   }
 

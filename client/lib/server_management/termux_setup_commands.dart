@@ -33,7 +33,18 @@ class TermuxSetupCommands {
   /// directly.
   static const String executable = '/data/data/com.termux/files/usr/bin/bash';
 
-  static const String micromambaBin = '~/.local/bin/micromamba';
+  /// Deliberately `/usr/local/bin`, not `~/.local/bin` (a first version of
+  /// this class used that) - `/usr/local/bin` is part of bash's own
+  /// compiled-in default `PATH`, so a bare `micromamba` command resolves
+  /// even in a non-interactive `bash -lc` login shell that never sources
+  /// `.bashrc`/`.profile` at all (see [_stage4Body]'s own doc comment on
+  /// why this class itself never relies on that - `~/.local/bin` needs
+  /// `.profile` to add it, which a non-interactive shell typically skips).
+  /// [TermuxCommands]'s pre-existing start/restart scripts assume exactly
+  /// this - a bare `micromamba shell hook`/`micromamba activate` with no
+  /// path of its own - so this has to be somewhere already on `PATH` by
+  /// default, not just a path this class's own scripts happen to know.
+  static const String micromambaBin = '/usr/local/bin/micromamba';
   static const String setupLogFile = '~/didsa-setup.log';
   static const String repoUrl = 'https://github.com/DIDSA-UK/DIDSA-CAD.git';
 
@@ -76,7 +87,8 @@ class TermuxSetupCommands {
   static List<String> installStage1() => ['-lc', _wrapTopLevel(_stage1Body)];
 
   /// Stage 2: installs the Debian proot itself. Idempotent - skips the
-  /// (slow) install if `proot-distro list` already shows it.
+  /// (slow) install if a real login attempt shows it's already there and
+  /// bootable (see [_debianLoginCheck]'s own doc comment).
   static List<String> installStage2() => ['-lc', _wrapTopLevel(_stage2Body)];
 
   /// Stage 3: inside Debian - the packages `git`/`curl`/`micromamba`'s own
@@ -86,11 +98,14 @@ class TermuxSetupCommands {
 
   /// Stage 4: inside Debian - installs the static `micromamba` binary to
   /// [micromambaBin]. Deliberately the static binary (arch-detected via
-  /// `uname -m`), not the interactive `install.sh`, and always referenced
-  /// by this fixed full path elsewhere in this class (and in
-  /// [TermuxCommands]'s own start/restart scripts would need updating to
-  /// match) rather than relying on a `bash -lc` login shell actually
-  /// sourcing whatever rc file `install.sh` would otherwise have edited.
+  /// `uname -m`), not the interactive `install.sh`, and installed to a
+  /// directory already on a non-interactive shell's default `PATH` (see
+  /// [micromambaBin]'s own doc comment) rather than relying on a
+  /// `bash -lc` login shell actually sourcing whatever rc file
+  /// `install.sh` would otherwise have edited - this is also exactly why
+  /// [TermuxCommands]'s own pre-existing start/restart scripts (a bare
+  /// `micromamba shell hook`/`micromamba activate`, no path of their own)
+  /// work unmodified against whatever this stage installs.
   static List<String> installStage4() => ['-lc', _wrapTopLevel(_nestInDebian(_stage4Body))];
 
   /// Stage 5: inside Debian - clones (or fast-forward-pulls, if already
@@ -138,7 +153,19 @@ class TermuxSetupCommands {
       '&& pkg upgrade -y $_aptNonInteractiveFlags '
       '&& pkg install -y $_aptNonInteractiveFlags proot-distro';
 
-  static const String _stage2Body = 'proot-distro list 2>/dev/null | grep -q "^debian" || proot-distro install debian';
+  // A real login attempt, not text-parsing `proot-distro list` (its table
+  // formatting - column widths, a leading marker on the current entry,
+  // exact section headers - isn't documented/stable enough to anchor a
+  // grep against safely; a leading-whitespace/bullet mismatch there was
+  // the actual, confirmed cause of Debian reporting "not installed" here
+  // even right after a genuinely successful `proot-distro install debian`,
+  // which then also skipped every later stage's own check, all of them
+  // nested inside this same "if debianInstalled" guard). `login ... -- true`
+  // is authoritative: it only succeeds if Debian is actually installed and
+  // bootable, regardless of what the list command's own output looks like.
+  static const String _debianLoginCheck = 'proot-distro login debian -- true >/dev/null 2>&1';
+
+  static const String _stage2Body = '$_debianLoginCheck || proot-distro install debian';
 
   static const String _stage3Body =
       'export DEBIAN_FRONTEND=noninteractive\n'
@@ -146,17 +173,25 @@ class TermuxSetupCommands {
 
   static const String _stage4Body =
       'set -e\n'
-      'mkdir -p ~/.local/bin\n'
+      'mkdir -p /usr/local/bin\n'
       'if [ ! -x $micromambaBin ]; then\n'
-      '  arch=\$(uname -m)\n'
-      '  case "\$arch" in\n'
-      '    aarch64) mm_arch=linux-aarch64 ;;\n'
-      '    x86_64) mm_arch=linux-64 ;;\n'
-      '    *) echo "unsupported architecture: \$arch" >&2; exit 1 ;;\n'
-      '  esac\n'
-      '  cd /tmp\n'
-      '  curl -Ls "https://micro.mamba.pm/api/micromamba/\$mm_arch/latest" | tar -xj bin/micromamba\n'
-      '  mv bin/micromamba $micromambaBin\n'
+      // An earlier version of this class installed to ~/.local/bin instead
+      // (not reliably on PATH for a non-interactive shell - see
+      // [micromambaBin]'s own doc comment) - reuse it via a move, rather
+      // than re-downloading, for anyone who already ran that version.
+      '  if [ -x ~/.local/bin/micromamba ]; then\n'
+      '    mv ~/.local/bin/micromamba $micromambaBin\n'
+      '  else\n'
+      '    arch=\$(uname -m)\n'
+      '    case "\$arch" in\n'
+      '      aarch64) mm_arch=linux-aarch64 ;;\n'
+      '      x86_64) mm_arch=linux-64 ;;\n'
+      '      *) echo "unsupported architecture: \$arch" >&2; exit 1 ;;\n'
+      '    esac\n'
+      '    cd /tmp\n'
+      '    curl -Ls "https://micro.mamba.pm/api/micromamba/\$mm_arch/latest" | tar -xj bin/micromamba\n'
+      '    mv bin/micromamba $micromambaBin\n'
+      '  fi\n'
       '  chmod +x $micromambaBin\n'
       'fi\n'
       '$micromambaBin --version';
@@ -177,10 +212,10 @@ class TermuxSetupCommands {
   }
 
   static const String _statusInnerBody =
-      'mm=false; [ -x ~/.local/bin/micromamba ] && mm=true\n'
+      'mm=false; [ -x $micromambaBin ] && mm=true\n'
       'env=false\n'
       'if [ "\$mm" = true ]; then\n'
-      '  ~/.local/bin/micromamba env list 2>/dev/null | grep -q "^didsa " && env=true\n'
+      '  $micromambaBin env list 2>/dev/null | grep -q "^didsa " && env=true\n'
       'fi\n'
       'repo=false; [ -d ~/DIDSA-CAD/.git ] && repo=true\n'
       'branch=null\n'
@@ -195,7 +230,7 @@ class TermuxSetupCommands {
       'command -v proot-distro >/dev/null 2>&1 && prootDistroInstalled=true\n'
       'debianInstalled=false\n'
       'if [ "\$prootDistroInstalled" = true ]; then\n'
-      '  proot-distro list 2>/dev/null | grep -q "^debian" && debianInstalled=true\n'
+      '  $_debianLoginCheck && debianInstalled=true\n'
       'fi\n'
       'micromambaInstalled=false\n'
       'condaEnvCreated=false\n'

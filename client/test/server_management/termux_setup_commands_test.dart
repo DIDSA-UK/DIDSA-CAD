@@ -35,16 +35,24 @@ void main() {
     test('checkStatus does not itself hold a wake lock - it is quick, unlike the install stages', () {
       final script = TermuxSetupCommands.checkStatus().last;
       expect(script, isNot(contains('termux-wake-lock')));
-      expect(script, contains('proot-distro list'));
       expect(script, contains('prootDistroInstalled'));
     });
 
-    test('checkStatus only probes inside Debian when debianInstalled is true', () {
+    test('checkStatus determines debianInstalled via a real login attempt, not by parsing '
+        '`proot-distro list` text (whose exact table formatting is not documented/stable enough to '
+        'anchor a grep against - a leading-whitespace/bullet mismatch there was the actual, confirmed '
+        'cause of a real device reporting Debian as "not installed" right after installing it)', () {
+      final script = TermuxSetupCommands.checkStatus().last;
+      expect(script, isNot(contains('proot-distro list')));
+      expect(script, contains('proot-distro login debian -- true >/dev/null 2>&1 && debianInstalled=true'));
+    });
+
+    test('checkStatus only probes inside Debian (the nested bash -lc login) when debianInstalled is true', () {
       final script = TermuxSetupCommands.checkStatus().last;
       final guardIndex = script.indexOf('if [ "\$debianInstalled" = true ]');
-      final loginIndex = script.indexOf('proot-distro login debian');
+      final nestedLoginIndex = script.indexOf('proot-distro login debian -- bash -lc');
       expect(guardIndex, greaterThanOrEqualTo(0));
-      expect(loginIndex, greaterThan(guardIndex));
+      expect(nestedLoginIndex, greaterThan(guardIndex));
     });
 
     test('checkStatus prints exactly one JSON object with every expected field', () {
@@ -80,9 +88,10 @@ void main() {
       expect(script, contains('pkg upgrade -y'));
     });
 
-    test('stage 2 installs debian only if not already installed', () {
+    test('stage 2 installs debian only if a real login attempt says it is not already there', () {
       final script = TermuxSetupCommands.installStage2().last;
-      expect(script, contains('proot-distro list'));
+      expect(script, isNot(contains('proot-distro list')));
+      expect(script, contains('proot-distro login debian -- true >/dev/null 2>&1'));
       expect(script, contains('proot-distro install debian'));
       expect(script, contains('||'));
     });
@@ -95,18 +104,27 @@ void main() {
       expect(script, contains('DEBIAN_FRONTEND=noninteractive'));
     });
 
-    test('stage 4 installs the static micromamba binary, arch-detected, to a fixed path', () {
+    test('stage 4 installs the static micromamba binary, arch-detected, to a fixed path on the '
+        'default PATH (not ~/.local/bin - not reliably on PATH for a non-interactive shell, the '
+        'confirmed cause of a real device\'s "micromamba: command not found" when starting the server)', () {
       final script = TermuxSetupCommands.installStage4().last;
       expect(script, contains('uname -m'));
       expect(script, contains('linux-aarch64'));
       expect(script, contains('linux-64'));
       expect(script, contains('micro.mamba.pm/api/micromamba'));
-      expect(script, contains('~/.local/bin/micromamba'));
+      expect(script, contains('/usr/local/bin/micromamba'));
     });
 
     test('stage 4 skips the download if micromamba is already installed', () {
       final script = TermuxSetupCommands.installStage4().last;
       expect(script, contains('if [ ! -x'));
+    });
+
+    test('stage 4 migrates a stale ~/.local/bin/micromamba from an earlier version of this class '
+        'instead of re-downloading', () {
+      final script = TermuxSetupCommands.installStage4().last;
+      expect(script, contains('if [ -x ~/.local/bin/micromamba ]'));
+      expect(script, contains('mv ~/.local/bin/micromamba /usr/local/bin/micromamba'));
     });
 
     // installStage5's output is quoted *twice*: once for the branch name
