@@ -192,6 +192,22 @@ class TermuxSetupCommands {
 
   static const String _stage2Body = '$_debianLoginCheck || proot-distro install debian';
 
+  // Same reasoning as _debianLoginCheck above, for the exact same class of
+  // bug: `micromamba env list`'s output is a human-formatted table (env
+  // names indented, an inactive/active marker column, ...), not stable,
+  // documented, machine-readable text - anchoring `grep -q "^didsa "`
+  // against it (an earlier version of this class did exactly that, in both
+  // this idempotency guard and the status check below) doesn't reliably
+  // match, so a genuinely-created env still reported as not-created - a
+  // real, confirmed on-device symptom: the checklist never showed the env
+  // as created, even long after a manual run had visibly finished creating
+  // it successfully. `micromamba run -n <env> python -c "import uvicorn"`
+  // is authoritative instead: it only succeeds if the env exists *and* has
+  // what this project's backend actually needs, which is the real thing
+  // worth confirming here, not merely that some env named "didsa" exists.
+  static const String _condaEnvReadyCheck =
+      '$micromambaBin run -n $condaEnv python -c "import uvicorn" >/dev/null 2>&1';
+
   static const String _stage3Body =
       'export DEBIAN_FRONTEND=noninteractive\n'
       'apt-get update && apt-get install -y $_aptNonInteractiveFlags git curl ca-certificates bzip2';
@@ -231,7 +247,7 @@ class TermuxSetupCommands {
         'else\n'
         '  git clone --branch $quotedBranch $repoUrl $repoDir\n'
         'fi\n'
-        'if ! $micromambaBin env list 2>/dev/null | grep -q "^$condaEnv "; then\n'
+        'if ! $_condaEnvReadyCheck; then\n'
         '  $micromambaBin create -n $condaEnv -y -f $backendDir/environment.yml\n'
         'fi';
   }
@@ -240,7 +256,7 @@ class TermuxSetupCommands {
       'mm=false; [ -x $micromambaBin ] && mm=true\n'
       'env=false\n'
       'if [ "\$mm" = true ]; then\n'
-      '  $micromambaBin env list 2>/dev/null | grep -q "^didsa " && env=true\n'
+      '  $_condaEnvReadyCheck && env=true\n'
       'fi\n'
       'repo=false; [ -d ~/DIDSA-CAD/.git ] && repo=true\n'
       'branch=null\n'
