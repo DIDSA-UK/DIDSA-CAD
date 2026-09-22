@@ -1149,8 +1149,26 @@ class _PartScreenState extends State<PartScreen> {
       });
       return;
     }
-    final bodyIds = _computedBodyIds;
-    if (bodyIds.isEmpty) {
+    // Bug report (assembly testing: "Section in assembly doesn't section
+    // parts") - [_computedBodyIds] alone only ever covers the currently-
+    // open root Part's own local geometry (`GET /mesh`'s own result); a
+    // pure assembly-container document (no bodies of its own) always sent
+    // an empty request, and even a component with some local geometry
+    // could never section its own children's. Every non-empty,
+    // non-hidden [_assemblyMesh] instance's own bodies are now targeted
+    // too, each carrying its own joined `occurrencePath` as `occurrenceId`
+    // (matching `app.document.section`'s identical convention) so the
+    // backend can resolve and world-place each one independently.
+    final targets = [
+      for (final bodyId in _computedBodyIds) SectionBodyTargetDto(bodyId: bodyId),
+      for (final instance in _assemblyMesh?.instances ?? const <AssemblyOccurrenceInstanceDto>[])
+        if (instance.occurrencePath.isNotEmpty && !instance.hidden)
+          for (final partGeometry in _assemblyMesh?.geometry ?? const <AssemblyBodyGeometryDto>[])
+            if (partGeometry.partId == instance.partId)
+              for (final body in partGeometry.bodies)
+                SectionBodyTargetDto(occurrenceId: instance.occurrencePath.join('/'), bodyId: body.bodyId),
+    ];
+    if (targets.isEmpty) {
       if (!mounted) return;
       setState(() {
         _sectionPreviewMeshes = {};
@@ -1161,14 +1179,26 @@ class _PartScreenState extends State<PartScreen> {
     try {
       final results = await _api.sectionPreview(
         part.id,
-        bodyIds: bodyIds,
+        targets: targets,
         planes: [for (final s in enabled) s.toRequestJson()],
         quality: _meshQuality,
       );
       if (!mounted) return;
       setState(() {
-        _sectionPreviewMeshes = {for (final r in results) r.bodyId: r.mesh};
-        _sectionPreviewCutFaceIds = {for (final r in results) r.bodyId: r.cutFaceIds};
+        // Root-content results (`occurrenceId == ''`) keep the pre-existing
+        // bare-`bodyId` key ([PartViewport._applySectionToMesh]'s own
+        // lookup); a placed-instance result is keyed
+        // `'<occurrencePath>/<bodyId>'`, matching
+        // [PartViewportState._assemblyInstanceNodes]'s own established
+        // convention ([PartViewportState._syncAssemblyInstanceNodes] looks
+        // it up the same way).
+        _sectionPreviewMeshes = {
+          for (final r in results) (r.occurrenceId.isEmpty ? r.bodyId : '${r.occurrenceId}/${r.bodyId}'): r.mesh,
+        };
+        _sectionPreviewCutFaceIds = {
+          for (final r in results)
+            (r.occurrenceId.isEmpty ? r.bodyId : '${r.occurrenceId}/${r.bodyId}'): r.cutFaceIds,
+        };
       });
     } on ApiException {
       // On-device note: a section wholly missing every Body (e.g. placed
@@ -2961,7 +2991,10 @@ class _PartScreenState extends State<PartScreen> {
     }
     final refs = [
       for (final entity in _selectedEntities)
-        SubShapeRefDto(bodyId: entity.bodyId, shapeType: _subShapeTypeFor(entity.kind), index: entity.id),
+        MeasureEntityRefDto(
+          occurrenceId: entity.occurrenceId,
+          subshapeRef: SubShapeRefDto(bodyId: entity.bodyId, shapeType: _subShapeTypeFor(entity.kind), index: entity.id),
+        ),
     ];
     final token = ++_measureRequestToken;
     setState(() => _measurementLoading = true);

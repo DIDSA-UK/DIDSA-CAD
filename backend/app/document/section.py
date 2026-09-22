@@ -77,8 +77,9 @@ from OCC.Core.TopAbs import TopAbs_FACE
 from OCC.Core.TopExp import TopExp_Explorer
 from OCC.Core.TopoDS import TopoDS_Shape, topods
 
-from app.document.extrude import compute_part_bodies
-from app.document.models import Part, ResolvedPlane
+from app.document.assembly import resolve_occurrence_target
+from app.document.extrude import apply_rigid_transform_to_shape, compute_part_bodies
+from app.document.models import Document, Part, ResolvedPlane
 from app.document.plane_geometry import arbitrary_perpendicular_basis
 from app.document.split import plane_block
 
@@ -109,14 +110,43 @@ class SectionPlaneSpec:
     flipped: bool = False
 
 
+@dataclass(frozen=True)
+class SectionBodyTarget:
+    """One Body to section - `occurrence_id` (mirroring `MateEntityRef`'s/
+    `MeasureEntityRef`'s identical convention: `""` for the currently-open
+    Part's own root content, non-empty for a placed Occurrence's own target
+    Part) plus the `body_id` itself.
+
+    Assembly-testing bug fix ("Section in assembly doesn't section parts"):
+    `compute_section_mesh` previously took a bare `body_ids: list[str]`
+    against one `part`, always resolved via that one Part's own `compute_
+    part_bodies` - an assembly container Part with no local bodies of its
+    own (everything placed via Occurrences) always resolved to nothing to
+    section, and even a component with some local geometry could never
+    section its own children's bodies."""
+
+    occurrence_id: str
+    body_id: str
+
+
 @dataclass
 class SectionBody:
     """One Body's own trimmed shape plus which of its (dense, `TopExp_
     Explorer`-order) face ids are newly-created cut-cap faces - the raw
     ingredients `app.document.router.preview_section` tessellates and
     tags, mirroring how `compute_part_bodies` itself returns raw shapes
-    for the router to tessellate, not pre-tessellated mesh data."""
+    for the router to tessellate, not pre-tessellated mesh data.
 
+    `occurrence_id` (assembly-testing bug fix) echoes back the requesting
+    `SectionBodyTarget.occurrence_id` - needed on the way out, not just the
+    way in, because the *same* `body_id` can legitimately appear more than
+    once in one response (two Occurrences placing the same Part definition,
+    each its own distinct `SectionBodyTarget`, e.g. two identical bolts),
+    each independently trimmed after being placed at its own world
+    position - `occurrence_id` is what lets the client tell those two
+    trimmed results apart and render each at its own instance."""
+
+    occurrence_id: str
     body_id: str
     shape: TopoDS_Shape
     cut_face_ids: list[int]
@@ -227,39 +257,86 @@ def _no_section_planes() -> HTTPException:
     return HTTPException(status_code=422, detail={"type": "no_section_planes"})
 
 
-def _unknown_body_id(body_id: str) -> HTTPException:
-    """Structured 422 for a `body_ids` entry that doesn't currently exist -
-    same shape as `app.document.extrude._missing_reference`'s own `body_id`
+def _unknown_body_id(occurrence_id: str, body_id: str) -> HTTPException:
+    """Structured 422 for a `SectionBodyTarget` whose `body_id` doesn't
+    currently exist within its own `occurrence_id`'s target Part - same
+    shape as `app.document.extrude._missing_reference`'s own `body_id`
     field, but for a whole Body reference rather than a SubShapeRef, since
     a section preview targets Bodies directly, not a face/edge/vertex on
     one."""
-    return HTTPException(status_code=422, detail={"type": "unknown_body_id", "body_id": body_id})
+    return HTTPException(
+        status_code=422, detail={"type": "unknown_body_id", "occurrence_id": occurrence_id, "body_id": body_id}
+    )
+
+
+def _missing_occurrence(occurrence_id: str) -> HTTPException:
+    """Assembly-testing bug fix: mirrors `app.document.measure.
+    _missing_occurrence`'s identical `missing_reference` envelope for a
+    `SectionBodyTarget.occurrence_id` that doesn't resolve to a real,
+    top-level Occurrence of the open Part."""
+    return HTTPException(status_code=422, detail={"type": "missing_reference", "occurrence_id": occurrence_id})
 
 
 def compute_section_mesh(
+    document: Document,
     part: Part,
-    body_ids: list[str],
+    targets: list[SectionBodyTarget],
     planes: list[SectionPlaneSpec],
     excluded_feature_ids: frozenset[str] = frozenset(),
 ) -> list[SectionBody]:
-    """The trimmed shape + cut-face ids for each of `body_ids`, cut by the
+    """The trimmed shape + cut-face ids for each of `targets`, cut by the
     intersection of `planes` (see `_trim_solid_by_planes`) - the single
     entry point `app.document.router.preview_section` calls. Returns raw
     `TopoDS_Shape`s, not tessellated mesh data, mirroring `compute_part_
     bodies`' own shape-only contract - tessellation (and its own `quality`
     parameter) is the router's job, exactly as for `GET /mesh`.
 
-    Fails closed with `no_section_planes` (empty `planes`) or `unknown_
-    body_id` (a `body_ids` entry not present in `compute_part_bodies`'
-    result) - both structured 422s, matching every other resolver in this
-    codebase."""
+    Assembly-testing bug fix ("Section in assembly doesn't section parts"):
+    each target now names its own Occurrence (`SectionBodyTarget.
+    occurrence_id`, resolved via the shared `app.document.assembly.
+    resolve_occurrence_target` - the same helper the Measure tool fix
+    uses), and its Body's local shape is placed into world space
+    (`app.document.extrude.apply_rigid_transform_to_shape`) *before*
+    trimming - `planes` are already given in world space (the client's own
+    section-gizmo state, which places a plane relative to the whole
+    assembly view, not any one Part's local frame), so trimming a
+    world-placed shape against world-space planes needs no separate
+    "transform the plane into the Body's local frame" step at all. A
+    `""` `occurrence_id` (the currently-open Part's own root content) is
+    already at the assembly's own world origin, so its shape is used as-is
+    - identical to the pre-existing single-Part behavior when every target
+    is the root Part's own.
+
+    Fails closed with `no_section_planes` (empty `planes`), `missing_
+    reference` (a target's `occurrence_id` doesn't resolve), or `unknown_
+    body_id` (a target's `body_id` not present in its own resolved target
+    Part's `compute_part_bodies` result) - all structured 422s, matching
+    every other resolver in this codebase."""
     if not planes:
         raise _no_section_planes()
-    bodies = compute_part_bodies(part, excluded_feature_ids)
+    bodies_by_part_id: dict[str, dict[str, TopoDS_Shape]] = {}
     results: list[SectionBody] = []
-    for body_id in body_ids:
-        if body_id not in bodies:
-            raise _unknown_body_id(body_id)
-        trimmed = _trim_solid_by_planes(bodies[body_id], planes)
-        results.append(SectionBody(body_id=body_id, shape=trimmed, cut_face_ids=_cut_face_ids(trimmed, planes)))
+    for target in targets:
+        try:
+            target_part, transform = resolve_occurrence_target(document, part, target.occurrence_id)
+        except KeyError:
+            raise _missing_occurrence(target.occurrence_id) from None
+        target_bodies = bodies_by_part_id.get(target_part.id)
+        if target_bodies is None:
+            part_excluded_feature_ids = excluded_feature_ids if target_part is part else frozenset()
+            target_bodies = compute_part_bodies(target_part, part_excluded_feature_ids)
+            bodies_by_part_id[target_part.id] = target_bodies
+        if target.body_id not in target_bodies:
+            raise _unknown_body_id(target.occurrence_id, target.body_id)
+        local_shape = target_bodies[target.body_id]
+        world_shape = local_shape if transform is None else apply_rigid_transform_to_shape(local_shape, transform)
+        trimmed = _trim_solid_by_planes(world_shape, planes)
+        results.append(
+            SectionBody(
+                occurrence_id=target.occurrence_id,
+                body_id=target.body_id,
+                shape=trimmed,
+                cut_face_ids=_cut_face_ids(trimmed, planes),
+            )
+        )
     return results

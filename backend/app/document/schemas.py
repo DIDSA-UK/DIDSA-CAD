@@ -1,6 +1,6 @@
-from typing import Literal, Union
+from typing import Any, Literal, Union
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator, model_validator
 
 from app.document.models import (
     BevelGearType,
@@ -249,15 +249,49 @@ class SubShapeRefSchema(BaseModel):
     index: int
 
 
+class MeasureEntityRefSchema(BaseModel):
+    """Measure tool: one already-picked entity - `occurrence_id` (`""` for
+    the currently-open Part's own root content, non-empty for a placed
+    Occurrence, mirroring `MateEntityRefResponse`'s identical convention)
+    plus the sub-shape itself. Assembly-testing bug fix: `MeasureRequest`
+    previously carried bare `SubShapeRefSchema`s only, always resolved
+    against the URL's own `part_id` - a face picked on a placed Occurrence
+    (a *different* Part's own body cache) could never resolve, always
+    `missing_reference` regardless of which face was actually picked."""
+
+    occurrence_id: str = ""
+    subshape_ref: SubShapeRefSchema
+
+
 class MeasureRequest(BaseModel):
     """Measure tool: the wire payload for POST /parts/{part_id}/measure - 1
-    or 2 [SubShapeRefSchema]s (an already-picked vertex/edge/face). Order is
-    cosmetic only (which ref becomes point_a/shape1 vs point_b/shape2 in the
-    response) - every named result (axis_distance, normal_distance) is
-    symmetric in its two inputs, so swapping refs never changes what's
-    reported, just which point is labelled A vs B."""
+    or 2 [MeasureEntityRefSchema]s (an already-picked vertex/edge/face,
+    optionally on a placed Occurrence). Order is cosmetic only (which ref
+    becomes point_a/shape1 vs point_b/shape2 in the response) - every named
+    result (axis_distance, normal_distance) is symmetric in its two inputs,
+    so swapping refs never changes what's reported, just which point is
+    labelled A vs B."""
 
-    refs: list[SubShapeRefSchema]
+    refs: list[MeasureEntityRefSchema]
+
+    @field_validator("refs", mode="before")
+    @classmethod
+    def _wrap_legacy_flat_refs(cls, value: Any) -> Any:
+        """Backward compatibility: before the assembly-testing bug fix that
+        added `occurrence_id`, a ref's *only* wire shape was a bare
+        `{body_id, shape_type, index}` - still accepted here, defaulting to
+        `occurrence_id=""` (this Part's own root content), the exact
+        meaning that shape already had. Anything already carrying its own
+        `subshape_ref` key (the new, assembly-aware shape) passes through
+        unchanged."""
+        if not isinstance(value, list):
+            return value
+        return [
+            {"occurrence_id": "", "subshape_ref": item}
+            if isinstance(item, dict) and "subshape_ref" not in item and "body_id" in item
+            else item
+            for item in value
+        ]
 
 
 class AxisSchema(BaseModel):
@@ -2639,6 +2673,20 @@ class SectionPlaneRequest(BaseModel):
     flipped: bool = False
 
 
+class SectionBodyTargetRequest(BaseModel):
+    """One Body to section - `occurrence_id` (`""` for the currently-open
+    Part's own root content, non-empty for a placed Occurrence's own target
+    Part, mirroring `MeasureEntityRefSchema`'s identical convention) plus
+    the `body_id` itself. Assembly-testing bug fix ("Section in assembly
+    doesn't section parts"): `SectionPreviewRequest` previously carried
+    bare `body_ids: list[str]`, always resolved against the URL's own
+    `part_id` - an assembly container Part with no local bodies of its own
+    always had nothing to section."""
+
+    occurrence_id: str = ""
+    body_id: str
+
+
 class SectionPreviewRequest(BaseModel):
     """`POST /parts/{part_id}/section-preview`'s request body - the
     sectioning tool's own transient, client-held state (which Bodies are
@@ -2646,8 +2694,26 @@ class SectionPreviewRequest(BaseModel):
     every request; nothing here is ever persisted server-side (see
     `app.document.section`'s own module docstring)."""
 
-    body_ids: list[str]
+    targets: list[SectionBodyTargetRequest]
     planes: list[SectionPlaneRequest]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _wrap_legacy_body_ids(cls, data: Any) -> Any:
+        """Backward compatibility: before the assembly-testing bug fix that
+        added `occurrence_id`, this request's own field was a bare
+        `body_ids: list[str]`, not `targets` - still accepted here (a whole
+        top-level payload validator, since the wire *key* itself changed,
+        not just one field's own shape), each id defaulting to
+        `occurrence_id=""` (this Part's own root content), the exact
+        meaning it already had. Mirrors `MeasureRequest`'s analogous
+        `_wrap_legacy_flat_refs` field validator (that one only needed a
+        per-item shape change, not a renamed key, so a field validator was
+        enough there)."""
+        if isinstance(data, dict) and "targets" not in data and "body_ids" in data:
+            data = dict(data)
+            data["targets"] = [{"occurrence_id": "", "body_id": body_id} for body_id in data.pop("body_ids")]
+        return data
 
 
 class SectionBodyMeshResponse(BaseModel):
@@ -2660,8 +2726,17 @@ class SectionBodyMeshResponse(BaseModel):
     fields). `cut_face_ids` are the subset of `mesh.face_ids` that are
     newly-created cut-cap faces (see `app.document.section`'s own
     "Cut-face tagging" docstring) - the client renders triangles whose
-    `face_ids` entry is in this list with a distinct cut-face material."""
+    `face_ids` entry is in this list with a distinct cut-face material.
 
+    `occurrence_id` (assembly-testing bug fix) says which placed Occurrence
+    this trimmed Body came from (`""` for the currently-open Part's own
+    root content) - needed because the *same* `body_id` can legitimately
+    appear more than once in one response (two Occurrences placing the
+    same Part definition, each independently trimmed after being placed at
+    its own world position - see `app.document.section.SectionBody`'s own
+    docstring)."""
+
+    occurrence_id: str = ""
     body_id: str
     source: Literal["section"] = "section"
     mesh: MeshVertexData

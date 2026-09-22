@@ -1192,6 +1192,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// Occurrences at all.
   Map<String, Node> _assemblyInstanceNodes = {};
 
+  /// Sectioning Tool (assembly-testing bug fix: "Section in assembly
+  /// doesn't section parts") - [_sectionCutCapNodes]' own placed-instance
+  /// sibling, keyed the same `'<joined occurrencePath>/<bodyId>'` way
+  /// [_assemblyInstanceNodes] itself is. Always empty unless the accurate
+  /// backend section-preview result for a given placed instance both
+  /// arrived and actually produced cut faces.
+  Map<String, Node> _assemblyInstanceSectionCutCapNodes = {};
+
   /// Test report item 3: one Node per Body of [PartViewport.matePreviewPartId]'s
   /// own geometry, keyed by bodyId - [_assemblyInstanceNodes]' own sibling
   /// for the ghost preview, rebuilt wholesale by [_syncMatePreviewNode] the
@@ -1758,7 +1766,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // this class already follows.
     if (widget.assemblyGeometry != oldWidget.assemblyGeometry ||
         widget.assemblyInstances != oldWidget.assemblyInstances ||
-        widget.focusedOccurrencePath != oldWidget.focusedOccurrencePath) {
+        widget.focusedOccurrencePath != oldWidget.focusedOccurrencePath ||
+        // Sectioning Tool (assembly-testing bug fix): mirrors [_syncMeshNode]'s
+        // own identical trio above - the clip (or its accurate swap-in) is
+        // applied inside this method's own per-instance-Body loop too now.
+        widget.sectionPlanes != oldWidget.sectionPlanes ||
+        widget.sectionPreviewMeshes != oldWidget.sectionPreviewMeshes ||
+        widget.sectionPreviewCutFaceIds != oldWidget.sectionPreviewCutFaceIds) {
       setState(_syncAssemblyInstanceNodes);
     }
     // Test report item 3: [_syncMatePreviewNode]'s own three inputs - a
@@ -2312,6 +2326,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       scene.remove(node);
     }
     _assemblyInstanceNodes = {};
+    for (final node in _assemblyInstanceSectionCutCapNodes.values) {
+      scene.remove(node);
+    }
+    _assemblyInstanceSectionCutCapNodes = {};
+    final enabledSections = widget.sectionPlanes.where((p) => p.enabled).toList();
     // Bug fix (bug report: "cannot zoom out sufficiently to view a 150mm x
     // 200mm plate", after the assembly rollout): placed-instance geometry
     // growing (or shrinking, e.g. the last instance being removed) must
@@ -2356,14 +2375,56 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         if (partGeometry.partId != instance.partId) continue;
         for (final body in partGeometry.bodies) {
           if (body.mesh.vertices.isEmpty) continue;
+          final sectionKey = '$occurrenceKey/${body.bodyId}';
+          var displayMesh = body.mesh;
+          var nodeTransform = transform;
+          MeshDto? cutCapMesh;
+          if (enabledSections.isNotEmpty) {
+            final accurate = widget.sectionPreviewMeshes[sectionKey];
+            if (accurate != null) {
+              // Sectioning Tool (assembly-testing bug fix: "Section in
+              // assembly doesn't section parts") - the backend already
+              // places a placed-Occurrence's own trimmed Body into world
+              // space (`app.document.section.compute_section_mesh`'s own
+              // assembly-aware fix), so this renders it as-is, with the
+              // identity transform, rather than double-applying [transform]
+              // on top of an already-placed result.
+              final cutFaceIds = widget.sectionPreviewCutFaceIds[sectionKey] ?? const <int>{};
+              final (bodyPart, capPart) = splitMeshByCutFaces(accurate, cutFaceIds);
+              displayMesh = bodyPart;
+              nodeTransform = vm.Matrix4.identity();
+              if (capPart.triangleIndices.isNotEmpty) cutCapMesh = capPart;
+            }
+            // else: the accurate result for this instance hasn't settled
+            // yet (still debounced, or this Body genuinely misses every
+            // enabled plane) - renders the full, unclipped instance rather
+            // than attempting [_applySectionToMesh]'s own client-side
+            // `approximateClipMesh` fallback, which clips in the mesh's own
+            // local frame; doing the same here would need every vertex
+            // pre-transformed into world space each frame during a drag, a
+            // real per-frame cost this first pass defers (a short-lived gap
+            // during an active drag, not a correctness issue - the accurate
+            // result settles ~200ms after the gizmo is released, same as
+            // the root Part's own bodies).
+          }
+          if (displayMesh.triangleIndices.isEmpty) continue;
           final node = buildAssemblyInstanceNode(
-            body.mesh,
-            localTransform: transform,
+            displayMesh,
+            localTransform: nodeTransform,
             opacity: opacity,
             tint: tint,
           );
           scene.add(node);
-          _assemblyInstanceNodes['$occurrenceKey/${body.bodyId}'] = node;
+          _assemblyInstanceNodes[sectionKey] = node;
+          if (cutCapMesh != null) {
+            final capGeometry = geometryFromMesh(cutCapMesh, doubleSidedWinding: true);
+            final capMaterial = UnlitMaterial()
+              ..alphaMode = AlphaMode.opaque
+              ..baseColorFactor = vm.Vector4(0.85, 0.55, 0.15, 1.0);
+            final capNode = Node(mesh: Mesh(capGeometry, capMaterial));
+            scene.add(capNode);
+            _assemblyInstanceSectionCutCapNodes[sectionKey] = capNode;
+          }
         }
       }
     }
@@ -4573,21 +4634,44 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (cursor == null) return;
     final camera = _camera.cameraFor(_viewportSize);
     final ray = camera.screenPointToRay(cursor, _viewportSize);
-    final candidates = (widget.bodies.isEmpty && widget.sketchGeometries.isEmpty)
-        ? const <HoverHit>[]
-        : hitTestAllCandidates(
-            ray: ray,
-            viewportSize: _viewportSize,
-            bodies: widget.bodies,
-            sketchGeometries: widget.sketchGeometries,
-            filter: widget.selectionFilter,
-            orthographicHalfHeight: _orthographicHalfHeightOf(camera),
-            fovRadiansY: _perspectiveFovOf(camera),
-            // Bug report ("Select Other ... still does not cover bodies in
-            // the selection list") - see [hitTestAllCandidates]'s own doc
-            // comment for this parameter.
-            includeBodyCandidateWithFaces: true,
-          );
+    final candidates = <HoverHit>[
+      if (widget.bodies.isNotEmpty || widget.sketchGeometries.isNotEmpty)
+        ...hitTestAllCandidates(
+          ray: ray,
+          viewportSize: _viewportSize,
+          bodies: widget.bodies,
+          sketchGeometries: widget.sketchGeometries,
+          filter: widget.selectionFilter,
+          orthographicHalfHeight: _orthographicHalfHeightOf(camera),
+          fovRadiansY: _perspectiveFovOf(camera),
+          // Bug report ("Select Other ... still does not cover bodies in
+          // the selection list") - see [hitTestAllCandidates]'s own doc
+          // comment for this parameter.
+          includeBodyCandidateWithFaces: true,
+        ),
+      // Bug report (assembly testing: "Select Other function does not work
+      // in assembly mode ... double tap and hold does nothing") -
+      // [hitTestAllCandidates] above only ever sees [widget.bodies] (the
+      // root Part's own local geometry), so a pure assembly-container
+      // document (no bodies of its own) always produced an empty list
+      // regardless of how many placed Occurrences were actually under the
+      // cursor. Mirrors [_hoverHitTestComponentEntities]'s own assembly
+      // instance walk, offering placed-Occurrence faces/edges/vertices/
+      // components as candidates too, gated the same way that hover
+      // hit-test already is.
+      if (widget.assemblyInstances.isNotEmpty)
+        ...hitTestAllComponentInstanceCandidates(
+          ray: ray,
+          viewportSize: _viewportSize,
+          instances: widget.assemblyInstances,
+          geometry: widget.assemblyGeometry,
+          selectableOccurrencePaths: _selectableOccurrencePaths(),
+          filter: widget.selectionFilter,
+          orthographicHalfHeight: _orthographicHalfHeightOf(camera),
+          fovRadiansY: _perspectiveFovOf(camera),
+          includeBodyCandidateWithFaces: true,
+        ),
+    ]..sort((a, b) => a.rayT.compareTo(b.rayT));
     if (candidates.isEmpty) return;
     final toUndo = _lastTapToggledEntity;
     _lastTapToggledEntity = null;

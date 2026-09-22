@@ -243,6 +243,7 @@ def _create_mate(
     driven_occurrence_id: str = "occ-driven",
     value: float | None = None,
     flipped: bool = False,
+    allow_rotation: bool | None = None,
 ) -> dict:
     payload = {
         "type": mate_type,
@@ -254,6 +255,8 @@ def _create_mate(
     }
     if value is not None:
         payload["value"] = value
+    if allow_rotation is not None:
+        payload["allow_rotation"] = allow_rotation
     response = client.post(f"/document/parts/{root_part_id}/mates", json=payload)
     assert response.status_code == 201, response.text
     return response.json()
@@ -274,6 +277,87 @@ def _rigid_transform_from_response(occurrence: dict):
         rotation_axis=tuple(transform["rotation_axis"]),
         rotation_angle_degrees=transform["rotation_angle_degrees"],
     )
+
+
+# --- Measure (assembly mode) -----------------------------------------------
+
+
+def test_measure_face_on_a_placed_occurrence_does_not_404_and_reports_world_space():
+    """Bug report (assembly testing): Measure returned a 422
+    `missing_reference` whenever the selected face belonged to a placed
+    Occurrence rather than the currently-open root Part - the request only
+    ever carried a bare `body_id`, resolved against the *root* Part's own
+    body cache, which never contains a child Occurrence's own body ids.
+    Root cause and fix: `MeasureEntityRef.occurrence_id` (mirroring `Mate
+    EntityRef`'s identical convention) now says which Part's body cache to
+    resolve against, and the resulting local geometry is placed into world
+    space (`measure._shape_in_world`) via that Occurrence's own transform
+    before being measured - this test's own `translation` is deliberately
+    non-zero specifically so a passing assertion is real evidence the
+    result came back in world space, not the child Part's untouched local
+    frame."""
+    base = _make_cylinder_part("BasePost", radius=10.0, depth=5.0)
+    pin = _make_cylinder_part("Pin", radius=3.0, depth=20.0)
+    _place_occurrence(base["id"], pin["id"], translation=(50.0, 0.0, 0.0), rotation_angle_degrees=0.0)
+
+    pin_face = _find_cylindrical_face(pin["id"], pin["body_id"])
+    response = client.post(
+        f"/document/parts/{base['id']}/measure",
+        json={
+            "refs": [
+                {
+                    "occurrence_id": "occ-driven",
+                    "subshape_ref": {"body_id": pin["body_id"], "shape_type": "face", "index": pin_face},
+                }
+            ]
+        },
+    )
+    assert response.status_code == 200, response.text
+    axis = response.json()["axis"]
+    # The pin's own local axis origin is (0, 0, *) (extruded along local Z
+    # from a sketch centered on the origin) - after placing it via the
+    # Occurrence's own (50, 0, 0) translation, the world-space origin's own
+    # x coordinate must reflect that shift, not still read ~0.
+    assert abs(axis["origin"][0] - 50.0) < _TOLERANCE
+    assert abs(response.json()["radius"] - 3.0) < _TOLERANCE
+
+
+def test_measure_with_unresolvable_occurrence_id_is_a_missing_reference_422():
+    """The other half of the same fix: an `occurrence_id` that doesn't name
+    a real, top-level Occurrence of the open Part is reported the same
+    `missing_reference` shape a stale `body_id`/`index` already gets, not
+    an uncaught 500 or a different error `type` the client would need a
+    separate case for."""
+    base = _make_cylinder_part("BasePost", radius=10.0, depth=5.0)
+    response = client.post(
+        f"/document/parts/{base['id']}/measure",
+        json={
+            "refs": [
+                {
+                    "occurrence_id": "does-not-exist",
+                    "subshape_ref": {"body_id": base["body_id"], "shape_type": "face", "index": 0},
+                }
+            ]
+        },
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["type"] == "missing_reference"
+
+
+def test_measure_legacy_flat_ref_shape_still_works():
+    """Backward compatibility: a ref given as the pre-fix bare `{body_id,
+    shape_type, index}` shape (every existing part-mode caller, before this
+    endpoint had any notion of `occurrence_id`) is still accepted as-is,
+    defaulting to the root Part's own content - `MeasureRequest`'s own
+    `_wrap_legacy_flat_refs` validator."""
+    base = _make_cylinder_part("BasePost", radius=10.0, depth=5.0)
+    base_face = _find_cylindrical_face(base["id"], base["body_id"])
+    response = client.post(
+        f"/document/parts/{base['id']}/measure",
+        json={"refs": [{"body_id": base["body_id"], "shape_type": "face", "index": base_face}]},
+    )
+    assert response.status_code == 200, response.text
+    assert abs(response.json()["radius"] - 10.0) < _TOLERANCE
 
 
 # --- COINCIDENT --------------------------------------------------------------
@@ -547,6 +631,136 @@ def test_coincident_after_concentric_on_the_same_occurrence_still_converges():
     # above) - mirrors `test_coincident_plane_to_plane_not_flipped_faces_
     # the_planes_toward_each_other`'s identical "known local coordinates,
     # not-flipped means opposing normals" convention.
+    world_point = apply_transform_to_point(transform, (0.0, 0.0, 0.0))
+    assert abs(world_point[2] - 5.0) < _TOLERANCE
+    world_normal = apply_transform_to_direction(transform, (0.0, 0.0, -1.0))
+    assert _vectors_close(world_normal, (0.0, 0.0, -1.0), tolerance=1e-3)
+
+
+def test_concentric_with_rotation_locked_converges_and_locks_spin():
+    """Bug report (assembly testing, test report item 4): a CONCENTRIC mate
+    between two cylinder axes with `allow_rotation=False` reported
+    `mate_solve_did_not_converge`. Root cause: the rotation-lock constraint
+    used `addAngle(0.0, ...)`, whose residual (`cos(theta) - cos(0)`) has a
+    Jacobian that is exactly zero at its own 0-degree target - the identical
+    degeneracy `_direction_lock`'s own docstring already documents and
+    avoids for COINCIDENT's plane-lock. Fixed by switching to `addParallel`
+    (non-degenerate Jacobian at the same target) plus a warm-start seed
+    (`_quaternion_aligning_axis_and_perp`) so Newton starts on the correct
+    0-degree branch rather than drifting to the equally-valid-to-`addParallel`
+    180-degree one.
+
+    Modeled exactly like `test_concentric_aligns_two_cylinder_axes` above,
+    just with `allow_rotation=False` added - this is the actual repro from
+    the bug report (a bolt shaft mated concentric to a hole, rotation not
+    allowed)."""
+    base = _make_cylinder_part("BasePost", radius=10.0, depth=5.0)
+    pin = _make_cylinder_part("Pin", radius=3.0, depth=20.0)
+    _place_occurrence(base["id"], pin["id"], translation=(77.0, -12.0, 5.0), rotation_axis=(1.0, 0.0, 0.0), rotation_angle_degrees=30.0)
+
+    base_face = _find_cylindrical_face(base["id"], base["body_id"])
+    pin_face = _find_cylindrical_face(pin["id"], pin["body_id"])
+
+    _create_mate(
+        base["id"],
+        mate_type="concentric",
+        driven_ref={"subshape_ref": {"body_id": pin["body_id"], "shape_type": "face", "index": pin_face}},
+        fixed_ref={"subshape_ref": {"body_id": base["body_id"], "shape_type": "face", "index": base_face}},
+        allow_rotation=False,
+    )
+    # The actual regression: before the fix, this raised a 422
+    # `mate_solve_did_not_converge` (`_solve` asserts `status_code == 200`
+    # with `response.text` on failure).
+    occurrence = _solve(base["id"])
+    transform = _rigid_transform_from_response(occurrence)
+
+    pin_axis = _measure_face(pin["id"], pin["body_id"], pin_face)["axis"]
+    base_axis = _measure_face(base["id"], base["body_id"], base_face)["axis"]
+
+    world_origin = apply_transform_to_point(transform, tuple(pin_axis["origin"]))
+    world_direction = apply_transform_to_direction(transform, tuple(pin_axis["direction"]))
+
+    # CONCENTRIC's own axis-to-axis lock still holds.
+    cross = (
+        world_direction[1] * base_axis["direction"][2] - world_direction[2] * base_axis["direction"][1],
+        world_direction[2] * base_axis["direction"][0] - world_direction[0] * base_axis["direction"][2],
+        world_direction[0] * base_axis["direction"][1] - world_direction[1] * base_axis["direction"][0],
+    )
+    assert math.sqrt(sum(c * c for c in cross)) < 1e-3
+    to_point = tuple(w - b for w, b in zip(world_origin, base_axis["origin"]))
+    dot = sum(t * d for t, d in zip(to_point, base_axis["direction"]))
+    perpendicular = tuple(t - dot * d for t, d in zip(to_point, base_axis["direction"]))
+    assert math.sqrt(sum(p * p for p in perpendicular)) < _TOLERANCE
+
+    # The new rotation lock also holds: both cylinders were extruded from a
+    # sketch on the XY plane along local +Z, so `_axis_perpendicular`'s own
+    # deterministic formula gives each an identical *local* perp of
+    # (0, 1, 0) - after solving, the driven (pin) side's own perp reference,
+    # placed into world space, must end up parallel to the fixed (base)
+    # side's (which - `base` being the un-transformed root occurrence - is
+    # still exactly (0, 1, 0) in world space too).
+    world_perp = apply_transform_to_direction(transform, (0.0, 1.0, 0.0))
+    perp_cross = (
+        world_perp[1] * 0.0 - world_perp[2] * 1.0,
+        world_perp[2] * 0.0 - world_perp[0] * 0.0,
+        world_perp[0] * 1.0 - world_perp[1] * 0.0,
+    )
+    assert math.sqrt(sum(c * c for c in perp_cross)) < 1e-3
+
+
+def test_concentric_rotation_locked_then_coincident_still_converges():
+    """The exact two-mate bolt-in-hole repro from the bug report: a
+    CONCENTRIC mate with `allow_rotation=False` (bolt shaft to hole bore),
+    immediately followed by a COINCIDENT mate (bolt underside to plate top)
+    on the same driven Occurrence - both must solve and converge, mirroring
+    `test_coincident_after_concentric_on_the_same_occurrence_still_converges`
+    above but with rotation locked on the first mate too."""
+    plate = _make_cylinder_part("Plate", radius=10.0, depth=5.0)
+    bolt = _make_cylinder_part("Bolt", radius=3.0, depth=20.0)
+    _place_occurrence(
+        plate["id"], bolt["id"], translation=(77.0, -12.0, 40.0), rotation_axis=(1.0, 0.0, 0.0), rotation_angle_degrees=30.0
+    )
+
+    plate_bore = _find_cylindrical_face(plate["id"], plate["body_id"])
+    bolt_shaft = _find_cylindrical_face(bolt["id"], bolt["body_id"])
+    _create_mate(
+        plate["id"],
+        mate_type="concentric",
+        driven_ref={"subshape_ref": {"body_id": bolt["body_id"], "shape_type": "face", "index": bolt_shaft}},
+        fixed_ref={"subshape_ref": {"body_id": plate["body_id"], "shape_type": "face", "index": plate_bore}},
+        allow_rotation=False,
+    )
+    # The first regression: before the fix, this alone raised a 422.
+    _solve(plate["id"])
+
+    plate_top = _find_planar_face(plate["id"], plate["body_id"], (0.0, 0.0, 1.0))
+    bolt_bottom = _find_planar_face(bolt["id"], bolt["body_id"], (0.0, 0.0, -1.0))
+    _create_mate(
+        plate["id"],
+        mate_type="coincident",
+        driven_ref={"subshape_ref": {"body_id": bolt["body_id"], "shape_type": "face", "index": bolt_bottom}},
+        fixed_ref={"subshape_ref": {"body_id": plate["body_id"], "shape_type": "face", "index": plate_top}},
+    )
+    # The second regression: adding this mate on top of the first must also
+    # converge, not just the first mate in isolation.
+    occurrence = _solve(plate["id"])
+    transform = _rigid_transform_from_response(occurrence)
+
+    bolt_axis = _measure_face(bolt["id"], bolt["body_id"], bolt_shaft)["axis"]
+    plate_axis = _measure_face(plate["id"], plate["body_id"], plate_bore)["axis"]
+    world_axis_origin = apply_transform_to_point(transform, tuple(bolt_axis["origin"]))
+    world_axis_direction = apply_transform_to_direction(transform, tuple(bolt_axis["direction"]))
+    cross = (
+        world_axis_direction[1] * plate_axis["direction"][2] - world_axis_direction[2] * plate_axis["direction"][1],
+        world_axis_direction[2] * plate_axis["direction"][0] - world_axis_direction[0] * plate_axis["direction"][2],
+        world_axis_direction[0] * plate_axis["direction"][1] - world_axis_direction[1] * plate_axis["direction"][0],
+    )
+    assert math.sqrt(sum(c * c for c in cross)) < 1e-3
+    to_point = tuple(w - b for w, b in zip(world_axis_origin, plate_axis["origin"]))
+    dot = sum(t * d for t, d in zip(to_point, plate_axis["direction"]))
+    perpendicular = tuple(t - dot * d for t, d in zip(to_point, plate_axis["direction"]))
+    assert math.sqrt(sum(p * p for p in perpendicular)) < _TOLERANCE
+
     world_point = apply_transform_to_point(transform, (0.0, 0.0, 0.0))
     assert abs(world_point[2] - 5.0) < _TOLERANCE
     world_normal = apply_transform_to_direction(transform, (0.0, 0.0, -1.0))

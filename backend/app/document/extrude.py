@@ -26,7 +26,7 @@ from OCC.Core.BRepGProp import brepgprop
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakePrism
 from OCC.Core.Geom import Geom_BezierCurve
 from OCC.Core.GeomAbs import GeomAbs_BSplineSurface, GeomAbs_Circle
-from OCC.Core.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Elips, gp_Pnt, gp_Trsf, gp_Vec
+from OCC.Core.gp import gp_Ax1, gp_Ax2, gp_Circ, gp_Dir, gp_Elips, gp_Pnt, gp_Trsf, gp_Vec
 from OCC.Core.GProp import GProp_GProps
 from OCC.Core.ShapeUpgrade import ShapeUpgrade_ShapeConvertToBezier, ShapeUpgrade_UnifySameDomain
 from OCC.Core.TColgp import TColgp_Array1OfPnt
@@ -74,6 +74,7 @@ from app.document.models import (
     Part,
     PatternFeature,
     PlanarSurfaceFeature,
+    RigidTransform,
     PlanetaryGearFeature,
     RackFeature,
     RackType,
@@ -3115,6 +3116,36 @@ def resolve_subshape_from_bodies(bodies: dict[str, TopoDS_Shape], ref: SubShapeR
         raise _missing_reference(ref)
 
     return shape_map.FindKey(ref.index + 1)
+
+
+def apply_rigid_transform_to_shape(shape: TopoDS_Shape, transform: RigidTransform) -> TopoDS_Shape:
+    """Places `shape` (in its own Part's local frame) into world space via
+    `transform` - shared by the Measure tool and the Section tool (both
+    assembly-testing bug fixes: a face/body picked on a placed Occurrence
+    needs to be measured/sectioned in world space, not its own Part's
+    untouched local frame). Two independent, sequential
+    `BRepBuilderAPI_Transform` calls (rotate about the world origin, then
+    translate) rather than composing a single `gp_Trsf` via `Multiplied()`,
+    mirroring `app.document.move_body`'s own established pattern (see that
+    module's own docstring for why: this codebase has no other precedent
+    for `gp_Trsf` composition ordering, so two calls whose own individual
+    meaning is unambiguous is preferred). Rotate-then-translate matches
+    `RigidTransform`'s own convention (`app.document.assembly.
+    apply_transform_to_point`'s identical plain-vector-math version) -
+    `rotation_angle_degrees == 0`/a zero translation each skip their own
+    call entirely, the common case for an axis-aligned or un-rotated
+    Occurrence."""
+    if transform.rotation_angle_degrees != 0:
+        rotation = gp_Trsf()
+        rotation.SetRotation(
+            gp_Ax1(gp_Pnt(0.0, 0.0, 0.0), gp_Dir(*transform.rotation_axis)), math.radians(transform.rotation_angle_degrees)
+        )
+        shape = BRepBuilderAPI_Transform(shape, rotation, True).Shape()
+    if transform.translation != (0.0, 0.0, 0.0):
+        translation = gp_Trsf()
+        translation.SetTranslation(gp_Vec(*transform.translation))
+        shape = BRepBuilderAPI_Transform(shape, translation, True).Shape()
+    return shape
 
 
 def edge_endpoint_vertex_refs(bodies: dict[str, TopoDS_Shape], ref: SubShapeRef) -> tuple[SubShapeRef, SubShapeRef]:

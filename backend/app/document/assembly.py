@@ -18,7 +18,7 @@ transform composition agree.
 
 import math
 
-from app.document.models import ComponentPattern, ComponentPatternAxis, ComponentPatternType, RigidTransform
+from app.document.models import ComponentPattern, ComponentPatternAxis, ComponentPatternType, Document, Part, RigidTransform
 
 Vec3 = tuple[float, float, float]
 # Row-major: Mat3[row][col].
@@ -125,6 +125,35 @@ def compose_chain(transforms: list[RigidTransform]) -> RigidTransform:
     for transform in transforms:
         result = compose(result, transform)
     return result
+
+
+def resolve_occurrence_target(document: Document, part: Part, occurrence_id: str) -> tuple[Part, RigidTransform | None]:
+    """The Part `occurrence_id` places, plus that Occurrence's own current
+    `transform` - `None` for the special `""` ("this Part's own root
+    content") occurrence id, which needs no transform at all (already at the
+    assembly's own world origin). Shared by the mate solver
+    (`assembly_solver._target_part_and_transform`, its original owner) and
+    the Measure tool (assembly-testing bug fix: a face picked on a placed
+    Occurrence needs to resolve against *that* Occurrence's own target Part,
+    not whichever Part the request's own URL happens to name) - lives here,
+    not in either caller, so neither has to depend on the other (measure.py
+    has no reason to import the much heavier `py_slvs`-dependent
+    `assembly_solver` module just for this).
+
+    Raises `KeyError(occurrence_id)` - never a framework-specific HTTP
+    exception, since this module has no HTTP dependency of its own - for an
+    `occurrence_id` that isn't a top-level Occurrence of `part` with an
+    already-resolved target Part; each caller wraps that into its own 422
+    shape (`assembly_solver._unresolved_mate_occurrence`, `measure.
+    _missing_occurrence`)."""
+    if occurrence_id == "":
+        return part, None
+    for occurrence in part.occurrences:
+        if occurrence.id == occurrence_id:
+            if occurrence.part_id is None or occurrence.part_id not in document.parts:
+                raise KeyError(occurrence_id)
+            return document.parts[occurrence.part_id], occurrence.transform
+    raise KeyError(occurrence_id)
 
 
 def apply_transform_to_point(transform: RigidTransform, point: Vec3) -> Vec3:

@@ -128,6 +128,23 @@ class SubShapeRefDto {
   Map<String, dynamic> toJson() => {'body_id': bodyId, 'shape_type': shapeType, 'index': index};
 }
 
+/// Assembly-testing bug fix: the wire counterpart to the backend's
+/// `MeasureEntityRefSchema` - `occurrenceId` (`""` for the currently-open
+/// Part's own root content, mirroring [MateEntityRefDto]'s identical
+/// convention; non-empty for a placed Occurrence's own geometry) plus the
+/// sub-shape itself. Previously `DocumentApiClient.measure` sent bare
+/// [SubShapeRefDto]s only, always resolved against the URL's own `partId` -
+/// a face picked on a placed Occurrence (a *different* Part's own body
+/// cache) could never resolve, always a `missing_reference` 422.
+class MeasureEntityRefDto {
+  final String occurrenceId;
+  final SubShapeRefDto subshapeRef;
+
+  const MeasureEntityRefDto({required this.occurrenceId, required this.subshapeRef});
+
+  Map<String, dynamic> toJson() => {'occurrence_id': occurrenceId, 'subshape_ref': subshapeRef.toJson()};
+}
+
 /// Measure tool: the wire counterpart to the backend's `AxisSchema` - a
 /// circular edge's or cylindrical face's own fitted axis (origin + unit
 /// direction), only ever set on [MeasurementResultDto.axis].
@@ -1695,14 +1712,43 @@ class ComponentPatternDto {
 /// newly-created cut-cap faces - `PartViewport` renders triangles whose
 /// `faceIds` entry is in this set with a visually distinct material from
 /// the rest of the body, the standard CAD section-view convention.
+/// Assembly-testing bug fix: one Body to section - `occurrenceId` (`''` for
+/// the currently-open Part's own root content, non-empty for a placed
+/// Occurrence's own target Part, mirroring [MeasureEntityRefDto]'s
+/// identical convention) plus the `bodyId` itself. Previously
+/// `DocumentApiClient.sectionPreview` sent bare Body id strings only,
+/// always resolved against the URL's own `partId` - an assembly container
+/// Part with no local bodies of its own always had nothing to section.
+class SectionBodyTargetDto {
+  final String occurrenceId;
+  final String bodyId;
+
+  const SectionBodyTargetDto({this.occurrenceId = '', required this.bodyId});
+
+  Map<String, dynamic> toJson() => {'occurrence_id': occurrenceId, 'body_id': bodyId};
+}
+
 class SectionPreviewResultDto {
+  /// Assembly-testing bug fix: which placed Occurrence this trimmed Body
+  /// came from (`''` for the currently-open Part's own root content) -
+  /// needed because the *same* [bodyId] can legitimately appear more than
+  /// once in one response (two Occurrences placing the same Part
+  /// definition, each independently trimmed after being placed at its own
+  /// world position).
+  final String occurrenceId;
   final String bodyId;
   final MeshDto mesh;
   final Set<int> cutFaceIds;
 
-  SectionPreviewResultDto({required this.bodyId, required this.mesh, required this.cutFaceIds});
+  SectionPreviewResultDto({
+    this.occurrenceId = '',
+    required this.bodyId,
+    required this.mesh,
+    required this.cutFaceIds,
+  });
 
   factory SectionPreviewResultDto.fromJson(Map<String, dynamic> json) => SectionPreviewResultDto(
+        occurrenceId: json['occurrence_id'] as String? ?? '',
         bodyId: json['body_id'] as String,
         mesh: MeshDto.fromJson(json['mesh'] as Map<String, dynamic>),
         cutFaceIds: (json['cut_face_ids'] as List? ?? const []).map((v) => v as int).toSet(),
@@ -2687,7 +2733,7 @@ class DocumentApiClient {
   /// Feature is created) and has no matching update/delete counterpart -
   /// it's called fresh on every selection change (see
   /// `PartScreen._scheduleMeasureQuery`).
-  Future<MeasurementResultDto> measure(String partId, List<SubShapeRefDto> refs) => _send(
+  Future<MeasurementResultDto> measure(String partId, List<MeasureEntityRefDto> refs) => _send(
         () => _httpClient.post(
               _uri('/document/parts/$partId/measure'),
               headers: _headers,
@@ -4639,7 +4685,7 @@ class DocumentApiClient {
   /// (see [_detailOf]).
   Future<List<SectionPreviewResultDto>> sectionPreview(
     String partId, {
-    required List<String> bodyIds,
+    required List<SectionBodyTargetDto> targets,
     required List<Map<String, dynamic>> planes,
     double? quality,
   }) =>
@@ -4649,7 +4695,7 @@ class DocumentApiClient {
                 queryParameters: quality == null ? null : {'quality': quality.toString()},
               ),
               headers: _headers,
-              body: jsonEncode({'body_ids': bodyIds, 'planes': planes}),
+              body: jsonEncode({'targets': targets.map((t) => t.toJson()).toList(), 'planes': planes}),
             ),
         (body) => (body as List)
             .map((b) => SectionPreviewResultDto.fromJson(b as Map<String, dynamic>))
