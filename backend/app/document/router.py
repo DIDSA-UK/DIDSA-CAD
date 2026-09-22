@@ -1620,9 +1620,12 @@ def _validate_delete_body_ids(part: Part, body_ids: list[str]) -> None:
     a single Body is a perfectly normal case, unlike merging one). Each
     entry must resolve (via `base_feature_id`, same round-trip tolerance as
     `_validate_merge_body_ids`) to a Feature that currently produces a Body
-    in this Part - identical `produces == Produces.BODY` check, no
-    Boss/Cut-specific producer-type set to narrow against (same reasoning
-    as `_validate_merge_body_ids`'s own docstring)."""
+    or a Surface in this Part (on-device feedback: "surfaces should be a
+    valid target for delete body" - deleting a Surface's shell is exactly
+    as shape-agnostic as deleting a Body's solid, a plain dict pop in
+    `delete_body.py`; the restriction to `Produces.BODY` only was purely
+    this validation's own gap, not a geometry limitation - see
+    `_validate_move_body_payload`'s identical fix)."""
     if not body_ids:
         raise HTTPException(
             status_code=422,
@@ -1631,11 +1634,14 @@ def _validate_delete_body_ids(part: Part, body_ids: list[str]) -> None:
         )
     for body_id in body_ids:
         source_feature = part.get_feature(base_feature_id(body_id))
-        # Bug fix: see _validate_merge_body_ids's identical fix above.
-        if source_feature is None or resolve_feature_produces(source_feature, part) != Produces.BODY:
+        if source_feature is None or resolve_feature_produces(source_feature, part) not in (
+            Produces.BODY,
+            Produces.SURFACE,
+        ):
             raise HTTPException(
                 status_code=400,
-                detail=f"body_ids entry {body_id!r} does not refer to a Body-producing Feature in this Part",
+                detail=f"body_ids entry {body_id!r} does not refer to a Body- or Surface-producing "
+                "Feature in this Part",
             )
 
 
@@ -1646,18 +1652,24 @@ def _validate_scale_body_factor(part: Part, body_id: str, factor: float) -> None
     shape `_validate_merge_body_ids`'s fewer-than-2 case uses). `body_id`
     must resolve (via `base_feature_id`, same round-trip tolerance as
     `_validate_delete_body_ids`) to a Feature that currently produces a
-    Body in this Part."""
+    Body or a Surface in this Part - `scale_body.py`'s own
+    `BRepBuilderAPI_Transform` call is shape-agnostic, so a Surface's shell
+    scales exactly as well as a Body's solid does (same fix as
+    `_validate_delete_body_ids`/`_validate_move_body_payload` above)."""
     if factor <= 0:
         raise HTTPException(
             status_code=422,
             detail="ScaleBodyFeature requires factor > 0 - zero or negative is not a scale",
         )
     source_feature = part.get_feature(base_feature_id(body_id))
-    # Bug fix: see _validate_merge_body_ids's identical fix above.
-    if source_feature is None or resolve_feature_produces(source_feature, part) != Produces.BODY:
+    if source_feature is None or resolve_feature_produces(source_feature, part) not in (
+        Produces.BODY,
+        Produces.SURFACE,
+    ):
         raise HTTPException(
             status_code=400,
-            detail=f"body_id {body_id!r} does not refer to a Body-producing Feature in this Part",
+            detail=f"body_id {body_id!r} does not refer to a Body- or Surface-producing Feature "
+            "in this Part",
         )
 
 

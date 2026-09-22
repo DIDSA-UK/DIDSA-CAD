@@ -1131,13 +1131,25 @@ class _PartScreenState extends State<PartScreen> {
   /// The accurate half of this tool's own two-tier preview (see this
   /// screen's own module-level brief on the fast client-side clip vs. the
   /// backend's properly-capped result). Fetches one section-preview per
-  /// currently-computed solid Body (surfaces have no volume to section) in
-  /// parallel with itself only - unlike Fillet/Chamfer's own
-  /// `Future.wait([_refreshMesh(), _refreshXPreviewMesh()])` pairing, there
-  /// is no "stable pick body" mesh to keep in sync here at all (a section
-  /// never changes which ids are pickable - see `docs/live-preview-pattern.md`'s
-  /// own decision tree, step 1: a section, like Create Plane, never modifies
-  /// Body-level geometry), so nothing else needs to run alongside this.
+  /// currently-computed Body *and* Surface (bug fix: "sectioning of surfaces
+  /// results in an odd looking triangulation effect" - a Surface's shell
+  /// clips against a plane exactly as well as a solid Body's does, via the
+  /// same `_trim_solid_by_planes`/`BRepAlgoAPI_Common` path the backend
+  /// already uses for both; the old "surfaces have no volume to section"
+  /// assumption behind excluding them here was simply wrong, and left every
+  /// Surface permanently on [approximateClipMesh]'s own per-triangle-discard
+  /// fallback - `PartViewport._applySectionToMesh` only ever uses that cheap
+  /// path when this map has no accurate entry for a Body, which for a
+  /// Surface was *always*, not just momentarily mid-drag the way a solid
+  /// Body's own brief intends - producing the reported jagged, mesh-
+  /// resolution-limited cut edge permanently rather than the properly
+  /// re-tessellated one) in parallel with itself only - unlike Fillet/
+  /// Chamfer's own `Future.wait([_refreshMesh(), _refreshXPreviewMesh()])`
+  /// pairing, there is no "stable pick body" mesh to keep in sync here at
+  /// all (a section never changes which ids are pickable - see `docs/live-
+  /// preview-pattern.md`'s own decision tree, step 1: a section, like
+  /// Create Plane, never modifies Body-level geometry), so nothing else
+  /// needs to run alongside this.
   Future<void> _refreshSectionPreview() async {
     final part = _part;
     final enabled = _sectionPlanes.where((s) => s.enabled).toList();
@@ -1161,6 +1173,7 @@ class _PartScreenState extends State<PartScreen> {
     // backend can resolve and world-place each one independently.
     final targets = [
       for (final bodyId in _computedBodyIds) SectionBodyTargetDto(bodyId: bodyId),
+      for (final bodyId in _computedSurfaceIds) SectionBodyTargetDto(bodyId: bodyId),
       for (final instance in _assemblyMesh?.instances ?? const <AssemblyOccurrenceInstanceDto>[])
         if (instance.occurrencePath.isNotEmpty && !instance.hidden)
           for (final partGeometry in _assemblyMesh?.geometry ?? const <AssemblyBodyGeometryDto>[])
@@ -2074,11 +2087,13 @@ class _PartScreenState extends State<PartScreen> {
       _setLoftGuideCurve(entity);
       return;
     }
-    // Phase 1 surfacing package: Loft Surface's own guide-curve sub-pick -
-    // mirrors the Loft guide-curve special-case just above exactly (Loft
-    // Surface has no alignment-point sub-picker at all, see
-    // `loft_surface_panel.dart`'s own doc comment, so there is no
-    // equivalent of the `_loftAlignmentPickIndex` branch above to mirror).
+    // Phase 1 surfacing package: Loft Surface's own alignment-point/
+    // guide-curve sub-picks - mirrors the Loft special-cases just above
+    // exactly.
+    if (_loftSurfaceAlignmentPickIndex != null && entity.kind == SelectionEntityKind.sketchPoint) {
+      _setLoftSurfaceAlignmentPoint(entity);
+      return;
+    }
     if (_loftSurfacePickingGuideCurve &&
         (entity.kind == SelectionEntityKind.sketchLine ||
             entity.kind == SelectionEntityKind.sketchArc ||
@@ -6760,9 +6775,9 @@ class _PartScreenState extends State<PartScreen> {
   /// LoftSurfaceFeature - mirrors [_editingLoftFeatureId].
   String? _editingLoftSurfaceFeatureId;
 
-  /// Mirrors [_loftEditSnapshot], minus `mode`/`thickness`/`targetBodyIds`/
-  /// `alignmentPoints` (no alignment-point sub-picker in this panel).
-  ({bool ruled, SketchEntityRefDto? guideCurveRef})? _loftSurfaceEditSnapshot;
+  /// Mirrors [_loftEditSnapshot], minus `mode`/`thickness`/`targetBodyIds`.
+  ({bool ruled, List<SketchEntityRefDto?> alignmentPoints, SketchEntityRefDto? guideCurveRef})?
+      _loftSurfaceEditSnapshot;
 
   bool _loftSurfaceRuled = false;
 
@@ -6770,9 +6785,21 @@ class _PartScreenState extends State<PartScreen> {
   SketchEntityRefDto? _loftSurfaceGuideCurveRef;
   bool _loftSurfacePickingGuideCurve = false;
 
-  /// Mirrors [_entitiesBeforeLoftSubPick] - stashes nothing else, since this
-  /// panel has no target-body picking of its own to stash/restore around
-  /// the guide-curve sub-pick.
+  /// Mirrors [_loftAlignmentPoints] exactly - without a per-section
+  /// alignment_point, `_apply_alignment_point_translation` (backend
+  /// `app.document.loft`) never reads `guide_curve_refs` at all (its own
+  /// early-return fires whenever no section has an alignment point), so a
+  /// Loft Surface guide curve was previously always a no-op. Kept the same
+  /// length as [_loftSurfaceSections] by [_openLoftSurfacePanel]/
+  /// [_openLoftSurfacePanelForEdit].
+  List<SketchEntityRefDto?> _loftSurfaceAlignmentPoints = [];
+
+  /// Mirrors [_loftAlignmentPickIndex] exactly.
+  int? _loftSurfaceAlignmentPickIndex;
+
+  /// Mirrors [_entitiesBeforeLoftSubPick] - shared by both the guide-curve
+  /// and alignment-point sub-picks, same as [_entitiesBeforeLoftSubPick]
+  /// itself is shared on the Loft side.
   Set<SelectionEntityRef>? _entitiesBeforeLoftSurfaceSubPick;
 
   /// Mirrors [_loftDebounce].
@@ -6849,12 +6876,13 @@ class _PartScreenState extends State<PartScreen> {
       _previewLoftSurfaceFeatureId = null;
       _meshBeforeLoftSurface = _bodies;
       _loftSurfaceRuled = false;
+      _loftSurfaceAlignmentPoints = List.filled(sections.length, null);
       _loftSurfaceGuideCurveRef = null;
     });
   }
 
   /// Mirrors [_openLoftPanelForEdit] exactly, minus `mode`/`thickness`/
-  /// `targetBodyIds`/alignment points.
+  /// `targetBodyIds`.
   bool _openLoftSurfacePanelForEdit(FeatureDto feature) {
     if (feature.sections.length < 2) return false;
     final sections = [
@@ -6864,15 +6892,21 @@ class _PartScreenState extends State<PartScreen> {
     final resolvedSections = sections.cast<FeatureDto>();
 
     final ruled = feature.ruled;
+    final alignmentPoints = [for (final section in feature.sections) section.alignmentPoint];
     final guideCurveRef = feature.guideCurveRefs.isNotEmpty ? feature.guideCurveRefs.first : null;
 
     setState(() {
       _loftSurfaceSections = resolvedSections;
       _editingLoftSurfaceFeatureId = feature.id;
       _previewLoftSurfaceFeatureId = feature.id;
-      _loftSurfaceEditSnapshot = (ruled: ruled, guideCurveRef: guideCurveRef);
+      _loftSurfaceEditSnapshot = (
+        ruled: ruled,
+        alignmentPoints: alignmentPoints,
+        guideCurveRef: guideCurveRef,
+      );
       _meshBeforeLoftSurface = _bodies;
       _loftSurfaceRuled = ruled;
+      _loftSurfaceAlignmentPoints = alignmentPoints;
       _loftSurfaceGuideCurveRef = guideCurveRef;
     });
     return true;
@@ -6884,7 +6918,12 @@ class _PartScreenState extends State<PartScreen> {
     if (part == null || _loftSurfaceSections.length < 2) return;
 
     final sections = [
-      for (final section in _loftSurfaceSections) LoftSectionDto(sketchFeatureId: section.id),
+      for (var i = 0; i < _loftSurfaceSections.length; i++)
+        LoftSectionDto(
+          sketchFeatureId: _loftSurfaceSections[i].id,
+          alignmentPoint:
+              i < _loftSurfaceAlignmentPoints.length ? _loftSurfaceAlignmentPoints[i] : null,
+        ),
     ];
     final guideCurveRefs =
         _loftSurfaceGuideCurveRef == null ? <SketchEntityRefDto>[] : [_loftSurfaceGuideCurveRef!];
@@ -6951,8 +6990,13 @@ class _PartScreenState extends State<PartScreen> {
       _meshBeforeLoftSurface = null;
       _editingLoftSurfaceFeatureId = null;
       _loftSurfaceEditSnapshot = null;
+      _loftSurfaceAlignmentPoints = [];
       _loftSurfaceGuideCurveRef = null;
-      if (_loftSurfacePickingGuideCurve) {
+      // Defensive: abandons an in-flight alignment-point/guide-curve
+      // sub-pick if Confirm was pressed without finishing it first - mirrors
+      // [_confirmLoft]'s own identical defensive cleanup.
+      if (_loftSurfaceAlignmentPickIndex != null || _loftSurfacePickingGuideCurve) {
+        _loftSurfaceAlignmentPickIndex = null;
         _loftSurfacePickingGuideCurve = false;
         _selectionFilterOverrides.pop();
         _selectedEntities = _entitiesBeforeLoftSurfaceSubPick ?? {};
@@ -6965,8 +7009,7 @@ class _PartScreenState extends State<PartScreen> {
     await _endRollback();
   }
 
-  /// Mirrors [_cancelLoft] exactly, minus target-body/alignment-point
-  /// concerns.
+  /// Mirrors [_cancelLoft] exactly, minus target-body concerns.
   Future<void> _cancelLoftSurface() async {
     _loftSurfaceDebounce?.cancel();
     final part = _part;
@@ -6982,8 +7025,10 @@ class _PartScreenState extends State<PartScreen> {
       _meshBeforeLoftSurface = null;
       _editingLoftSurfaceFeatureId = null;
       _loftSurfaceEditSnapshot = null;
+      _loftSurfaceAlignmentPoints = [];
       _loftSurfaceGuideCurveRef = null;
-      if (_loftSurfacePickingGuideCurve) {
+      if (_loftSurfaceAlignmentPickIndex != null || _loftSurfacePickingGuideCurve) {
+        _loftSurfaceAlignmentPickIndex = null;
         _loftSurfacePickingGuideCurve = false;
         _selectionFilterOverrides.pop();
         _selectedEntities = _entitiesBeforeLoftSurfaceSubPick ?? {};
@@ -6997,7 +7042,12 @@ class _PartScreenState extends State<PartScreen> {
       if (wasEditing && editSnapshot != null) {
         await _runGuarded(() async {
           final revertSections = [
-            for (final section in sections) LoftSectionDto(sketchFeatureId: section.id),
+            for (var i = 0; i < sections.length; i++)
+              LoftSectionDto(
+                sketchFeatureId: sections[i].id,
+                alignmentPoint:
+                    i < editSnapshot.alignmentPoints.length ? editSnapshot.alignmentPoints[i] : null,
+              ),
           ];
           final revertGuideCurveRefs =
               editSnapshot.guideCurveRef == null ? <SketchEntityRefDto>[] : [editSnapshot.guideCurveRef!];
@@ -7023,6 +7073,59 @@ class _PartScreenState extends State<PartScreen> {
       }
     }
     await _endRollback();
+  }
+
+  /// [LoftSurfacePanel.onPickAlignmentPoint] - mirrors
+  /// [_startLoftAlignmentPointPick] exactly, minus the target-body-picking
+  /// stash (there is none here).
+  void _startLoftSurfaceAlignmentPointPick(int index) {
+    setState(() {
+      _loftSurfaceAlignmentPickIndex = index;
+      _entitiesBeforeLoftSurfaceSubPick = _selectedEntities;
+      _selectedEntities = {};
+      _selectionFilterOverrides.push(_loftAlignmentPointSelectionFilter);
+    });
+  }
+
+  /// [_toggleSelectedEntity]'s Loft Surface alignment-point special case -
+  /// mirrors [_setLoftAlignmentPoint] exactly.
+  void _setLoftSurfaceAlignmentPoint(SelectionEntityRef entity) {
+    final index = _loftSurfaceAlignmentPickIndex;
+    if (index == null) return;
+    final sketchId = _sketchIdForFeatureId(entity.sketchFeatureId);
+    if (sketchId == null) return; // Defensive - see _sketchIdForFeatureId's own doc comment.
+    setState(() {
+      if (index < _loftSurfaceAlignmentPoints.length) {
+        _loftSurfaceAlignmentPoints[index] = SketchEntityRefDto(
+          sketchId: sketchId,
+          entityType: 'point',
+          entityId: entity.sketchEntityId,
+        );
+      }
+      _loftSurfaceAlignmentPickIndex = null;
+      _selectedEntities = _entitiesBeforeLoftSurfaceSubPick ?? {};
+      _entitiesBeforeLoftSurfaceSubPick = null;
+      _selectionFilterOverrides.pop();
+    });
+    _scheduleLoftSurfacePreview();
+  }
+
+  /// [LoftSurfacePanel.onClearAlignmentPoint] - mirrors
+  /// [_clearLoftAlignmentPoint] exactly.
+  void _clearLoftSurfaceAlignmentPoint(int index) {
+    if (index >= _loftSurfaceAlignmentPoints.length) return;
+    setState(() => _loftSurfaceAlignmentPoints[index] = null);
+    _scheduleLoftSurfacePreview();
+  }
+
+  /// Mirrors [_cancelLoftAlignmentPointPick] exactly.
+  void _cancelLoftSurfaceAlignmentPointPick() {
+    setState(() {
+      _loftSurfaceAlignmentPickIndex = null;
+      _selectedEntities = _entitiesBeforeLoftSurfaceSubPick ?? {};
+      _entitiesBeforeLoftSurfaceSubPick = null;
+      _selectionFilterOverrides.pop();
+    });
   }
 
   /// [LoftSurfacePanel.onPickGuideCurve] - mirrors [_startLoftGuideCurvePick]
@@ -19761,8 +19864,13 @@ class _PartScreenState extends State<PartScreen> {
                       title: _editingLoftSurfaceFeatureId != null ? 'Edit Loft Surface' : 'Loft Surface',
                       initialRuled: _loftSurfaceRuled,
                       sectionCount: _loftSurfaceSections.length,
+                      alignmentPointsSet: [for (final ref in _loftSurfaceAlignmentPoints) ref != null],
                       guideCurveSet: _loftSurfaceGuideCurveRef != null,
+                      pickingAlignmentPointIndex: _loftSurfaceAlignmentPickIndex,
                       pickingGuideCurve: _loftSurfacePickingGuideCurve,
+                      onPickAlignmentPoint: _startLoftSurfaceAlignmentPointPick,
+                      onClearAlignmentPoint: _clearLoftSurfaceAlignmentPoint,
+                      onCancelAlignmentPointPick: _cancelLoftSurfaceAlignmentPointPick,
                       onPickGuideCurve: _startLoftSurfaceGuideCurvePick,
                       onClearGuideCurve: _clearLoftSurfaceGuideCurve,
                       onCancelGuideCurvePick: _cancelLoftSurfaceGuideCurvePick,
@@ -19780,7 +19888,10 @@ class _PartScreenState extends State<PartScreen> {
                       title: _editingRuledSurfaceFeatureId != null ? 'Edit Ruled Surface' : 'Ruled Surface',
                       sectionNames: [
                         for (final section in _ruledSurfaceSections)
-                          featureDisplayName(_features, _features.indexOf(section)),
+                          if (_features.indexWhere((f) => f.id == section.id) case final index when index >= 0)
+                            featureDisplayName(_features, index)
+                          else
+                            section.id,
                       ],
                       ready: _previewRuledSurfaceFeatureId != null,
                       onConfirm: _confirmRuledSurface,

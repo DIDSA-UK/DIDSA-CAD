@@ -1355,6 +1355,20 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   vm.Vector3? _sectionDragPerpAxis;
   double? _sectionDragStartAngle;
 
+  /// Bug fix ("the red and green [rotation rings] switch colours during
+  /// rotation") - [_sectionDragStartBasis] is the gizmo's whole (x, y, z)
+  /// basis frozen at rotate-drag-start (same moment [_sectionDragRotationAxis]
+  /// etc. are frozen, just kept whole here rather than relabeled per-handle);
+  /// [_sectionDragRenderBasis] is [_updateSectionGizmoDrag]'s own live
+  /// re-rotation of it (by the same incremental angle already applied to
+  /// [_sectionDragStartNormal]), recomputed on every pointer-move and
+  /// consumed by [_syncSectionNodes] as [buildSectionGizmoNode]'s own
+  /// `basisOverride` - see that parameter's doc comment for why rendering
+  /// needs this instead of letting [buildSectionGizmoNode] re-derive a basis
+  /// from the live (mid-drag) normal itself every frame.
+  SectionGizmoBasis? _sectionDragStartBasis;
+  SectionGizmoBasis? _sectionDragRenderBasis;
+
   /// Assembly support Phase 5 (`docs/assembly-scope.md` §3): the selected
   /// component's own Move/Rotate gizmo Node - mirrors [_sectionGizmoNode]'s
   /// identical "single optional Node, null while nothing to show" shape.
@@ -1876,6 +1890,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       _sectionDragHandle = null;
       _sectionDragPointerId = null;
       _sectionDragSectionId = null;
+      _sectionDragStartBasis = null;
+      _sectionDragRenderBasis = null;
       _activeTouches.clear();
       _hadMultiTouch = false;
     }
@@ -2919,6 +2935,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             cameraPosition: _camera.position,
             viewportSize: _viewportSize,
             fovRadiansY: _camera.fovRadiansY,
+            basisOverride: activePlane.id == _sectionDragSectionId ? _sectionDragRenderBasis : null,
           );
     if (_sectionGizmoNode != null) scene.add(_sectionGizmoNode!);
   }
@@ -3039,6 +3056,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       _sectionDragRefAxis = refAxis;
       _sectionDragPerpAxis = perpAxis;
       _sectionDragStartAngle = startAngle;
+      _sectionDragStartBasis = rotationAxis == null ? null : basis;
+      _sectionDragRenderBasis = rotationAxis == null ? null : basis;
       _syncSectionNodes();
     });
     return true;
@@ -3086,6 +3105,25 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         if (currentAngle == null) return; // Momentarily looking edge-on - hold the last good value.
         final delta = currentAngle - startAngle;
         final newNormal = rotateAroundAxis(startNormal, rotationAxis, delta).normalized();
+        // Bug fix ("the red and green [rotation rings] switch colours during
+        // rotation") - continuously re-rotates the frozen drag-start basis by
+        // the exact same [rotationAxis]/[delta] just applied to the normal,
+        // instead of letting [_syncSectionNodes] re-derive a fresh basis from
+        // [newNormal] via [arbitraryPerpendicularBasis] (which has a
+        // discontinuity - see [buildSectionGizmoNode]'s own `basisOverride`
+        // doc comment). No `setState` needed here: [onSectionGizmoDragUpdate]
+        // just below already triggers [PartScreen]'s own `setState`, which
+        // hands this widget a new [PartViewport.sectionPlanes] and rebuilds
+        // via [didUpdateWidget] -> [_syncSectionNodes], by which point this
+        // field is already set.
+        final startBasis = _sectionDragStartBasis;
+        if (startBasis != null) {
+          _sectionDragRenderBasis = SectionGizmoBasis(
+            xAxis: rotateAroundAxis(startBasis.xAxis, rotationAxis, delta).normalized(),
+            yAxis: rotateAroundAxis(startBasis.yAxis, rotationAxis, delta).normalized(),
+            zAxis: newNormal,
+          );
+        }
         widget.onSectionGizmoDragUpdate?.call(sectionId, startOrigin, newNormal);
         break;
     }
@@ -4090,6 +4128,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         _sectionDragHandle = null;
         _sectionDragPointerId = null;
         _sectionDragSectionId = null;
+        _sectionDragStartBasis = null;
+        _sectionDragRenderBasis = null;
         _syncSectionNodes();
       });
       widget.onSectionGizmoDragEnd?.call();

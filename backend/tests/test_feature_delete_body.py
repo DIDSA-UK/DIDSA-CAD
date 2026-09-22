@@ -112,6 +112,22 @@ def _make_box(part_id: str, *, x0: float, y0: float = 0.0, size: float = 10.0) -
     return next(bid for bid in after if bid not in before)
 
 
+def _make_surface(part_id: str, *, x0: float, y0: float = 0.0, size: float = 10.0) -> str:
+    """Creates an Extrude-Surface (`SurfaceFeature` - "Extrude but a shell
+    instead of a solid"), `size` x `size` in XY at (x0, y0), 0..10 in Z, and
+    returns its own new Body id - bug fix regression coverage ("Surfaces are
+    not valid targets for delete body... and should be")."""
+    before = set(_body_ids(part_id))
+    sketch = _create_square_sketch_feature(part_id, x0=x0, y0=y0, size=size)
+    response = client.post(
+        f"/document/parts/{part_id}/surface-features",
+        json={"sketch_feature_id": sketch["id"], "start_distance": 0.0, "end_distance": 10.0},
+    )
+    assert response.status_code == 201, response.text
+    after = _body_ids(part_id)
+    return next(bid for bid in after if bid not in before)
+
+
 # --- Creation validation -------------------------------------------------------
 
 
@@ -129,6 +145,21 @@ def test_delete_body_with_an_unknown_body_id_is_rejected():
     response = _create_delete_body(part["id"], ["not-a-real-feature-id"])
 
     assert response.status_code == 400
+
+
+def test_delete_body_accepts_a_surface_body_id():
+    """Bug fix ("Surfaces are not valid targets for delete body... and
+    should be"): `apply_delete_body_to_bodies`'s own `bodies.pop(...)` is
+    shape-agnostic, so a Surface's shell deletes exactly like a solid
+    Body's does - the old `!= Produces.BODY` check in
+    `_validate_delete_body_ids` was purely this validation's own gap."""
+    part = _create_part()
+    body_id = _make_surface(part["id"], x0=0.0)
+
+    response = _create_delete_body(part["id"], [body_id])
+
+    assert response.status_code == 201, response.text
+    assert body_id not in _body_ids(part["id"])
 
 
 def test_delete_body_accepts_a_single_body_id():

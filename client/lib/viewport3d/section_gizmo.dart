@@ -25,14 +25,14 @@ import 'selection_hit_test.dart' show kSelectionHitRadiusPixels, kCameraVertical
 /// at [OrbitCamera]'s default distance without dwarfing a typical Body, the
 /// same "large enough to be visible/tappable, not dominating" reasoning
 /// `reference_planes.dart`'s own `referencePlaneSize` doc comment gives.
-const double kSectionGizmoArrowLength = 6.0;
-const double kSectionGizmoRingRadius = 4.5;
+const double kSectionGizmoArrowLength = 12.0;
+const double kSectionGizmoRingRadius = 9.0;
 
 /// Desired constant on-screen size (in screen pixels) for the translate-
 /// arrow half-length and rotation-ring radius respectively - see
 /// [_sectionGizmoWorldScale]'s own doc comment.
-const double kSectionGizmoArrowLengthPixels = 90.0;
-const double kSectionGizmoRingRadiusPixels = 70.0;
+const double kSectionGizmoArrowLengthPixels = 180.0;
+const double kSectionGizmoRingRadiusPixels = 140.0;
 
 /// Number of straight segments approximating each rotation ring, both for
 /// rendering (a closed [PolylineGeometry] loop) and for hit-testing (see
@@ -409,8 +409,28 @@ Node buildSectionGizmoNode(
   vm.Vector3? cameraPosition,
   Size? viewportSize,
   double fovRadiansY = kCameraVerticalFovRadians,
+  SectionGizmoBasis? basisOverride,
 }) {
-  final basis = sectionGizmoBasis(plane.normal);
+  // Bug fix ("the red and green [rotation rings] switch colours during
+  // rotation"): [arbitraryPerpendicularBasis] has a hard discontinuity in
+  // its own fallback-reference-vector choice (see its own doc comment) -
+  // whenever [plane.normal]'s own Z component crosses the threshold that
+  // choice pivots on, calling [sectionGizmoBasis] fresh from the *live*
+  // normal here (as every frame during an active rotate-drag does, since
+  // this Node is rebuilt from [PartViewport.sectionPlanes]'s own live state
+  // on every frame of the drag) discontinuously swaps which world
+  // direction the derived xAxis/yAxis resolve to - and since the rotateX/
+  // rotateY rings' own colors are tied to axis identity below, that reads
+  // as red and green suddenly swapping mid-drag. [basisOverride] (supplied
+  // by [PartViewport] only while a rotate-handle drag is active, by
+  // continuously rotating the *drag-start* basis by the same incremental
+  // angle already applied to the normal, never by re-deriving from
+  // [arbitraryPerpendicularBasis] again) sidesteps the discontinuity
+  // entirely - the rendered basis then rotates exactly as smoothly as
+  // [plane.normal] itself does. The idle (no drag in progress) path is
+  // unaffected: [arbitraryPerpendicularBasis] is only ever discontinuous
+  // under continuous rotation, never for a single static normal.
+  final basis = basisOverride ?? sectionGizmoBasis(plane.normal);
   final primitives = <MeshPrimitive>[];
   // See [_sectionGizmoWorldScale]'s own doc comment - keeps this in sync
   // with [hitTestSectionGizmo]'s identical computation for the same
