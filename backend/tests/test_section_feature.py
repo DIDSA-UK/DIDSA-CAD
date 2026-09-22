@@ -90,6 +90,30 @@ def _boxy_part_and_body() -> tuple[dict, str]:
     return part, _first_body_id(part["id"])
 
 
+def _flat_surface_part_and_body() -> tuple[dict, str]:
+    """A plain 10x10 Extrude-Surface (a shell, not a solid - `is_surface`
+    `True`, `SurfaceFeature` "Extrude but a shell instead of a solid") over
+    the same square profile `_boxy_part_and_body` extrudes into a solid -
+    bug fix regression coverage ("sectioning of surfaces results in an odd
+    looking triangulation effect"): the client-side root cause (excluding
+    Surfaces from the accurate `section-preview` request entirely, always
+    falling back to a crude per-triangle-discard clip) has no backend-side
+    symptom to reproduce here - `_trim_solid_by_planes`/`BRepAlgoAPI_Common`
+    already handles a Surface's own shell/face target correctly (verified
+    directly against real OCCT) - so this test exists purely to lock that
+    already-correct behavior in as a real, executable regression test (the
+    original gap: zero test in this file ever targeted a Surface body at
+    all)."""
+    part = _create_part()
+    sketch_feature = _create_square_sketch_feature(part["id"])
+    response = client.post(
+        f"/document/parts/{part['id']}/surface-features",
+        json={"sketch_feature_id": sketch_feature["id"], "start_distance": 0.0, "end_distance": 10.0},
+    )
+    assert response.status_code == 201, response.text
+    return part, _first_body_id(part["id"])
+
+
 def _box_with_through_hole_and_body() -> tuple[dict, str]:
     """The same 10x10x10 box, with a 4x4 square hole cut straight through
     it in Z (x/y in [3, 7], the full z height) - built as a second, smaller
@@ -157,6 +181,31 @@ def test_cutting_a_box_with_one_plane_keeps_roughly_half_the_volume_and_caps_the
 
     (min_x, min_y, min_z), (max_x, max_y, max_z) = _bbox(body["mesh"])
     # +normal (z) side is kept: z in [5, 10], x/y unchanged from the box's own [0, 10].
+    assert abs(min_z - 5.0) < _TOLERANCE
+    assert abs(max_z - 10.0) < _TOLERANCE
+    assert abs(min_x - 0.0) < _TOLERANCE and abs(max_x - 10.0) < _TOLERANCE
+    assert abs(min_y - 0.0) < _TOLERANCE and abs(max_y - 10.0) < _TOLERANCE
+
+
+def test_cutting_a_surface_keeps_roughly_half_the_shell_with_no_stray_geometry():
+    """Bug fix regression test (see `_flat_surface_part_and_body`'s own
+    docstring): a Surface's shell clips exactly like a solid Body's does -
+    no cut-cap is expected (there is no volume to cap), but the kept
+    half's own bounding box should still land exactly on the cutting
+    plane, and the resulting mesh should contain real, non-degenerate
+    triangles (not an empty/broken result) - a `BRepAlgoAPI_Common`
+    mixed-dimension trim producing garbage geometry would show up here as
+    either a wildly wrong bounding box or zero triangles."""
+    part, body_id = _flat_surface_part_and_body()
+    bodies = _section_preview(part["id"], [body_id], [_plane((0, 0, 5), (0, 0, 1))])
+    assert len(bodies) == 1
+    body = bodies[0]
+    assert body["body_id"] == body_id
+    mesh = body["mesh"]
+    assert len(mesh["triangle_indices"]) > 0
+
+    (min_x, min_y, min_z), (max_x, max_y, max_z) = _bbox(mesh)
+    # +normal (z) side is kept: z in [5, 10], x/y unchanged from the profile's own [0, 10].
     assert abs(min_z - 5.0) < _TOLERANCE
     assert abs(max_z - 10.0) < _TOLERANCE
     assert abs(min_x - 0.0) < _TOLERANCE and abs(max_x - 10.0) < _TOLERANCE

@@ -27,9 +27,21 @@ class LoftSurfacePanel extends StatefulWidget {
   /// Mirrors [LoftPanel.sectionCount] exactly.
   final int sectionCount;
 
+  /// Mirrors [LoftPanel.alignmentPointsSet] exactly.
+  final List<bool> alignmentPointsSet;
+
   /// Mirrors [LoftPanel.guideCurveSet]/[LoftPanel.pickingGuideCurve] exactly.
   final bool guideCurveSet;
   final bool pickingGuideCurve;
+
+  /// Mirrors [LoftPanel.pickingAlignmentPointIndex] exactly.
+  final int? pickingAlignmentPointIndex;
+
+  /// Mirrors [LoftPanel.onPickAlignmentPoint]/[LoftPanel.onClearAlignmentPoint]/
+  /// [LoftPanel.onCancelAlignmentPointPick] exactly.
+  final void Function(int sectionIndex) onPickAlignmentPoint;
+  final void Function(int sectionIndex) onClearAlignmentPoint;
+  final VoidCallback onCancelAlignmentPointPick;
 
   final VoidCallback onPickGuideCurve;
   final VoidCallback onClearGuideCurve;
@@ -45,8 +57,13 @@ class LoftSurfacePanel extends StatefulWidget {
     this.tooltip,
     this.initialRuled = false,
     required this.sectionCount,
+    this.alignmentPointsSet = const [],
     this.guideCurveSet = false,
     this.pickingGuideCurve = false,
+    this.pickingAlignmentPointIndex,
+    required this.onPickAlignmentPoint,
+    required this.onClearAlignmentPoint,
+    required this.onCancelAlignmentPointPick,
     required this.onPickGuideCurve,
     required this.onClearGuideCurve,
     required this.onCancelGuideCurvePick,
@@ -105,36 +122,87 @@ class _LoftSurfacePanelState extends State<LoftSurfacePanel> {
             onChanged: _onRuledChanged,
           ),
           const SizedBox(height: 4),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            dense: true,
-            title: const Text('Guide curve (optional)'),
-            subtitle: Text(
-              widget.pickingGuideCurve
-                  ? 'Tap a line, arc, ellipse or spline in the viewport…'
-                  : (widget.guideCurveSet ? 'Set' : 'Not set'),
-            ),
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: widget.pickingGuideCurve
-                  ? [
-                      TextButton(
-                        onPressed: widget.onCancelGuideCurvePick,
-                        child: const Text('Cancel'),
-                      ),
-                    ]
-                  : [
-                      TextButton(
-                        onPressed: widget.onPickGuideCurve,
-                        child: Text(widget.guideCurveSet ? 'Change' : 'Pick'),
-                      ),
-                      if (widget.guideCurveSet)
-                        IconButton(
-                          tooltip: 'Clear guide curve',
-                          icon: const Icon(Icons.close, size: 18),
-                          onPressed: widget.onClearGuideCurve,
-                        ),
-                    ],
+          Theme(
+            data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+            child: ExpansionTile(
+              tilePadding: EdgeInsets.zero,
+              title: const Text('Guide curve & alignment points (advanced)', style: TextStyle(fontSize: 13)),
+              childrenPadding: EdgeInsets.zero,
+              children: [
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  title: const Text('Guide curve'),
+                  subtitle: Text(
+                    widget.pickingGuideCurve
+                        ? 'Tap a line, arc, ellipse or spline in the viewport…'
+                        : (widget.guideCurveSet ? 'Set' : 'Not set'),
+                  ),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: widget.pickingGuideCurve
+                        ? [
+                            TextButton(
+                              onPressed: widget.onCancelGuideCurvePick,
+                              child: const Text('Cancel'),
+                            ),
+                          ]
+                        : [
+                            TextButton(
+                              onPressed: widget.onPickGuideCurve,
+                              child: Text(widget.guideCurveSet ? 'Change' : 'Pick'),
+                            ),
+                            if (widget.guideCurveSet)
+                              IconButton(
+                                tooltip: 'Clear guide curve',
+                                icon: const Icon(Icons.close, size: 18),
+                                onPressed: widget.onClearGuideCurve,
+                              ),
+                          ],
+                  ),
+                ),
+                for (var i = 0; i < widget.sectionCount; i++)
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    dense: true,
+                    title: Text('Section ${i + 1} alignment point'),
+                    subtitle: Text(
+                      widget.pickingAlignmentPointIndex == i
+                          ? 'Tap a point in the viewport…'
+                          : (i < widget.alignmentPointsSet.length && widget.alignmentPointsSet[i]
+                              ? 'Set'
+                              : 'Not set'),
+                    ),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: widget.pickingAlignmentPointIndex == i
+                          ? [
+                              TextButton(
+                                onPressed: widget.onCancelAlignmentPointPick,
+                                child: const Text('Cancel'),
+                              ),
+                            ]
+                          : [
+                              TextButton(
+                                onPressed: widget.pickingAlignmentPointIndex == null
+                                    ? () => widget.onPickAlignmentPoint(i)
+                                    : null,
+                                child: Text(
+                                  i < widget.alignmentPointsSet.length && widget.alignmentPointsSet[i]
+                                      ? 'Change'
+                                      : 'Pick',
+                                ),
+                              ),
+                              if (i < widget.alignmentPointsSet.length && widget.alignmentPointsSet[i])
+                                IconButton(
+                                  tooltip: 'Clear alignment point',
+                                  icon: const Icon(Icons.close, size: 18),
+                                  onPressed: () => widget.onClearAlignmentPoint(i),
+                                ),
+                            ],
+                    ),
+                  ),
+              ],
             ),
           ),
           const SizedBox(height: 8),
