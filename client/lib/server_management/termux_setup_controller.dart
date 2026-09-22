@@ -132,8 +132,7 @@ class TermuxSetupController {
   /// back (or null if the dispatch itself failed, or nothing arrived within
   /// [timeout]) - a lightweight, near-instant read, safe to call repeatedly
   /// while a much longer install/remove script is still running in the
-  /// background, for live progress feedback (see
-  /// [TermuxSetupCommands.doneMarker]/[runAndWait]).
+  /// background, for live progress feedback (see [runAndWait]).
   Future<String?> tailSetupLog({Duration timeout = const Duration(seconds: 8)}) async {
     final dispatched = await _dispatch(TermuxSetupCommands.tailLog());
     if (!dispatched) return null;
@@ -146,31 +145,31 @@ class TermuxSetupController {
     return null;
   }
 
-  /// Dispatches [arguments], then repeatedly (every [pollInterval]) tails
-  /// the setup log for live progress and checks whether it has reached
-  /// [TermuxSetupCommands.doneMarker] - the "still running"/"finished"
-  /// signal a bare RUN_COMMAND dispatch doesn't otherwise provide, so the
-  /// First Installation screen isn't just a spinner for minutes at a time.
-  /// [onProgress] is called with the latest non-null log tail on every
-  /// poll; the marker check compares against the log tail captured right
-  /// before dispatching, so a stale marker line from an earlier run (still
-  /// within the tailed window) isn't mistaken for this run's own
-  /// completion. Always finishes with one more [checkSetupStatus] call
-  /// (real confirmation, not the marker itself - same "confirm via a real
-  /// check, not an exit code" posture as [checkStatus]/[checkSetupStatus]
-  /// elsewhere), whether the marker was seen or [maxWait] was simply
-  /// reached first. `dispatched: false` (with [SetupStatus.unknown], no
-  /// polling attempted at all) means the RUN_COMMAND intent itself couldn't
-  /// even be sent - distinct from a genuine timeout, so the caller can show
-  /// "check the permission" rather than "done" for a run that never started.
+  /// Builds a fresh, per-call marker (see [TermuxSetupCommands.doneMarker]'s
+  /// own doc comment for why a *fixed* one is unsafe to poll for) and
+  /// dispatches whatever [buildArguments] returns for it, then repeatedly
+  /// (every [pollInterval]) tails the setup log for live progress and checks
+  /// whether *this* marker specifically has appeared - the "still
+  /// running"/"finished" signal a bare RUN_COMMAND dispatch doesn't
+  /// otherwise provide, so the First Installation screen isn't just a
+  /// spinner for minutes at a time. [onProgress] is called with the latest
+  /// non-null log tail on every poll. Always finishes with one more
+  /// [checkSetupStatus] call (real confirmation, not the marker itself -
+  /// same "confirm via a real check, not an exit code" posture as
+  /// [checkStatus]/[checkSetupStatus] elsewhere), whether the marker was
+  /// seen or [maxWait] was simply reached first. `dispatched: false` (with
+  /// [SetupStatus.unknown], no polling attempted at all) means the
+  /// RUN_COMMAND intent itself couldn't even be sent - distinct from a
+  /// genuine timeout, so the caller can show "check the permission" rather
+  /// than "done" for a run that never started.
   Future<({bool dispatched, SetupStatus status})> runAndWait(
-    List<String> arguments, {
+    List<String> Function(String marker) buildArguments, {
     void Function(String tail)? onProgress,
     Duration maxWait = const Duration(minutes: 10),
     Duration pollInterval = const Duration(seconds: 5),
   }) async {
-    final baselineTail = await tailSetupLog(timeout: const Duration(seconds: 3)) ?? '';
-    final dispatched = await _dispatch(arguments);
+    final marker = '${TermuxSetupCommands.doneMarker}_${DateTime.now().microsecondsSinceEpoch}';
+    final dispatched = await _dispatch(buildArguments(marker));
     if (!dispatched) return (dispatched: false, status: SetupStatus.unknown);
 
     final deadline = DateTime.now().add(maxWait);
@@ -179,7 +178,7 @@ class TermuxSetupController {
       final tail = await tailSetupLog();
       if (tail != null) {
         onProgress?.call(tail);
-        if (tail != baselineTail && tail.contains(TermuxSetupCommands.doneMarker)) break;
+        if (tail.contains(marker)) break;
       }
     }
     return (dispatched: true, status: await checkSetupStatus());

@@ -55,6 +55,15 @@ void main() {
       expect(nestedLoginIndex, greaterThan(guardIndex));
     });
 
+    test('checkStatus determines condaEnvCreated via a real functional check (env exists AND can '
+        'import uvicorn), not by parsing `micromamba env list`\'s human table output - same reasoning '
+        'as the debianInstalled fix, and a confirmed real cause of a genuinely-created env never '
+        'showing as created', () {
+      final script = TermuxSetupCommands.checkStatus().last;
+      expect(script, isNot(contains('env list')));
+      expect(script, contains('micromamba run -n didsa python -c "import uvicorn"'));
+    });
+
     test('checkStatus prints exactly one JSON object with every expected field', () {
       final script = TermuxSetupCommands.checkStatus().last;
       for (final field in [
@@ -168,10 +177,15 @@ void main() {
       expect(script, isNot(contains("o'brien")));
     });
 
-    test('stage 5 creates the didsa env (overriding environment.yml\'s own "base" name) only if missing', () {
+    test('stage 5 creates the didsa env (overriding environment.yml\'s own "base" name) only if a real '
+        'functional check says it is not already usable - not by grepping `micromamba env list`\'s human '
+        'table output (whose exact formatting is not documented/stable enough to anchor a grep against - '
+        'the same class of bug as the Debian check above, and a confirmed real cause of a genuinely-'
+        'created env never showing as created)', () {
       final script = TermuxSetupCommands.installStage5().last;
-      expect(script, contains('micromamba env list'));
-      expect(script, contains('grep -q "^didsa "'));
+      expect(script, isNot(contains('env list')));
+      expect(script, isNot(contains('grep')));
+      expect(script, contains('micromamba run -n didsa python -c "import uvicorn"'));
       expect(script, contains('micromamba create -n didsa -y -f ~/DIDSA-CAD/backend/environment.yml'));
     });
 
