@@ -61,20 +61,28 @@ class TermuxResultService : Service() {
     }
 
     /// The same "result" bundle's own "err"/"errmsg" pair (Termux's
-    /// documented RUN_COMMAND error fields - err is a nonzero int, errmsg
-    /// the human-readable reason, e.g. "RunCommandService requires
-    /// `allow-external-apps`..." when that Termux property isn't set) -
-    /// this is what actually let a real device's own Termux error report
-    /// confirm the true cause of a First Installation dispatch going
-    /// nowhere, instead of the Dart side only ever seeing a bare timeout.
-    /// Only stored when Termux actually reported a nonzero err/non-null
-    /// errmsg - a successful dispatch has neither.
+    /// documented RUN_COMMAND error fields - errmsg the human-readable
+    /// reason, e.g. "RunCommandService requires `allow-external-apps`..."
+    /// when that Termux property isn't set) - this is what actually let a
+    /// real device's own Termux error report confirm the true cause of a
+    /// First Installation dispatch going nowhere, instead of the Dart side
+    /// only ever seeing a bare timeout.
+    ///
+    /// err's "no error" sentinel is -1, not 0 - confirmed on a real device
+    /// where a completely successful dispatch (a plain git fetch/checkout
+    /// that visibly worked, with real stdout and no errmsg) still reported
+    /// err=-1, which an earlier version of this method misread as an error
+    /// ("Termux error -1: (no message)") on *every* successful dispatch,
+    /// while an actual failure (allow-external-apps unset) reported a
+    /// genuinely positive err (2) with a real errmsg. So this only treats
+    /// [errCode] as meaningful when it's positive - never 0 or negative -
+    /// and otherwise falls back to whether [errMsg] itself is present.
     private fun extractError(intent: Intent?): String? {
         val resultBundle = intent?.extras?.getBundle("result") ?: return null
-        val errCode = resultBundle.getInt("err", 0)
+        val errCode = resultBundle.getInt("err", -1)
         val errMsg = resultBundle.getString("errmsg")
-        if (errCode == 0 && errMsg.isNullOrEmpty()) return null
-        return "Termux error $errCode: ${errMsg ?: "(no message)"}"
+        if (errCode <= 0 && errMsg.isNullOrEmpty()) return null
+        return if (errMsg.isNullOrEmpty()) "Termux error $errCode" else "Termux error $errCode: $errMsg"
     }
 
     private fun dumpIntentExtras(intent: Intent?): String {

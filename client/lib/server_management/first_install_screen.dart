@@ -94,7 +94,7 @@ class _FirstInstallScreenState extends State<FirstInstallScreen> {
     if (granted) unawaited(_refreshAll());
   }
 
-  Future<void> _run(String label, List<String> arguments) async {
+  Future<void> _run(String label, List<String> arguments, {Duration? maxWait}) async {
     setState(() {
       _busy = true;
       _statusMessage = '$label - sent to Termux, waiting for it to start...';
@@ -110,6 +110,7 @@ class _FirstInstallScreenState extends State<FirstInstallScreen> {
         if (!mounted) return;
         setState(() => _statusMessage = '$label - still running...\n\n$tail');
       },
+      maxWait: maxWait ?? const Duration(minutes: 10),
     );
     if (!mounted) return;
     // Android accepting the dispatch (result.dispatched) only means it
@@ -128,6 +129,14 @@ class _FirstInstallScreenState extends State<FirstInstallScreen> {
               ? '$label - $lastError'
               : '$label - done. See the checklist above for the current state.';
     });
+    // runAndWait's own final check can race a still-settling filesystem
+    // (a git clone/conda env registration that only just finished writing)
+    // or simply give up at maxWait while the dispatched script is still
+    // genuinely running in the background - a full, independent refresh
+    // (not just trusting that one snapshot) is what actually keeps the
+    // checklist above honest without the user having to tap Recheck
+    // themselves every time.
+    unawaited(_refreshAll());
   }
 
   Future<void> _removeEverything() async {
@@ -259,6 +268,13 @@ class _FirstInstallScreenState extends State<FirstInstallScreen> {
                     ? () => _run(
                           'Run all remaining steps',
                           TermuxSetupCommands.installAllRemaining(branch: _branchController.text.trim()),
+                          // Includes creating the didsa conda env, by far the
+                          // slowest single step here (pythonocc-core is a
+                          // large compiled geometry kernel) - the default
+                          // 10-minute wait can be too short over a slow
+                          // connection, which otherwise looks like this step
+                          // "finished" when it's actually still downloading.
+                          maxWait: const Duration(minutes: 25),
                         )
                     : null,
                 icon: const Icon(Icons.rocket_launch),
@@ -307,6 +323,9 @@ class _FirstInstallScreenState extends State<FirstInstallScreen> {
                 onRun: () => _run(
                   'Clone repo and create environment',
                   TermuxSetupCommands.installStage5(branch: _branchController.text.trim()),
+                  // See "Run all remaining steps"'s own comment - this is
+                  // the same slow conda-env-creation step on its own.
+                  maxWait: const Duration(minutes: 25),
                 ),
                 copyText: TermuxSetupCommands.installStage5(branch: _branchController.text.trim()).last,
               ),
