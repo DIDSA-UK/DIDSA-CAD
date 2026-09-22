@@ -92,7 +92,7 @@ class TermuxSetupCommands {
   /// cheap no-op, not a repeated slow install.
   static List<String> installAllRemaining({String branch = 'main'}) => [
         '-lc',
-        _wrapTopLevel('$_stage1Body && $_stage2Body && ${_nestInDebian('$_stage3Body\n${_stage4Body}\n${_stage5Body(branch)}')}'),
+        _wrapTopLevel('$_stage1Body && $_stage2Body && ${_nestInDebian('$_stage3Body\n$_stage4Body\n${_stage5Body(branch)}')}'),
       ];
 
   /// Removes the entire Debian proot in one shot - `micromamba`, the

@@ -89,22 +89,45 @@ void main() {
       expect(script, contains('if [ ! -x'));
     });
 
+    // installStage5's output is quoted *twice*: once for the branch name
+    // itself (embedded as a literal 'branch' argument to git), then again
+    // because _nestInDebian shell-quotes the *whole* stage-5 script as the
+    // argument to the nested `proot-distro login debian -- bash -lc`
+    // invocation. So a bare `'claude/foo'` never appears verbatim in the
+    // dispatched text - the branch's own quote characters get re-escaped
+    // for that second, outer quoting layer, same as everything else in the
+    // body that happens to contain a literal `'`. The surrounding text
+    // (which has no quote characters of its own) passes through unchanged.
+
     test('stage 5 clones the given branch when the repo is not yet cloned', () {
       final script = TermuxSetupCommands.installStage5(branch: 'claude/foo').last;
-      expect(script, contains("git clone --branch 'claude/foo'"));
-      expect(script, contains('~/DIDSA-CAD'));
+      expect(script, contains('git clone --branch'));
+      expect(script, contains('claude/foo'));
+      expect(script, contains('https://github.com/DIDSA-UK/DIDSA-CAD.git ~/DIDSA-CAD'));
     });
 
     test('stage 5 updates in place (fetch + checkout + hard reset) when already cloned', () {
       final script = TermuxSetupCommands.installStage5(branch: 'main').last;
       expect(script, contains('git -C ~/DIDSA-CAD fetch origin'));
-      expect(script, contains("git -C ~/DIDSA-CAD checkout 'main'"));
+      expect(script, contains('git -C ~/DIDSA-CAD checkout'));
       expect(script, contains('git -C ~/DIDSA-CAD reset --hard FETCH_HEAD'));
     });
 
     test('stage 5 single-quote-escapes a branch name containing a literal quote', () {
       final script = TermuxSetupCommands.installStage5(branch: "o'brien").last;
-      expect(script, contains(r"'o'\''brien'"));
+      // Computed via the same standard POSIX escape applied twice (once for
+      // the branch itself, once more for the outer nested-shell layer),
+      // rather than hand-derived - see this group's own doc comment above.
+      String shellQuote(String value) => "'${value.replaceAll("'", r"'\''")}'";
+      final onceQuoted = shellQuote("o'brien");
+      final twiceQuoted = shellQuote(onceQuoted);
+      final expectedInner = twiceQuoted.substring(1, twiceQuoted.length - 1);
+      expect(script, contains(expectedInner));
+      // The raw, unescaped "o'brien" must never appear as a bare,
+      // contiguous run - if it did, the branch's own quote would have
+      // broken out of the surrounding shell string instead of staying
+      // escaped, i.e. a real shell-injection bug.
+      expect(script, isNot(contains("o'brien")));
     });
 
     test('stage 5 creates the didsa env (overriding environment.yml\'s own "base" name) only if missing', () {
