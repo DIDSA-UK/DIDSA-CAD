@@ -209,21 +209,45 @@ void main() {
       });
       final controller = TermuxSetupController();
 
-      final result = await controller.runAndWait(['-lc', 'echo hi']);
+      final result = await controller.runAndWait((marker) => ['-lc', 'echo hi']);
 
       expect(result.dispatched, isFalse);
       expect(result.status.isComplete, isFalse);
     });
 
-    test('polls progress until the done marker appears, then confirms via a real status check', () async {
+    test('builds a fresh marker per call and passes it to buildArguments', () async {
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        if (call.method == 'runCommand') return true;
+        if (call.method == 'getLastCommandStdout') return jsonEncode({});
+        return null;
+      });
+      final controller = TermuxSetupController();
+      final markers = <String>[];
+
+      await controller.runAndWait((marker) {
+        markers.add(marker);
+        return ['-lc', 'echo hi'];
+      }, pollInterval: const Duration(milliseconds: 5), maxWait: const Duration(milliseconds: 10));
+      await controller.runAndWait((marker) {
+        markers.add(marker);
+        return ['-lc', 'echo hi'];
+      }, pollInterval: const Duration(milliseconds: 5), maxWait: const Duration(milliseconds: 10));
+
+      expect(markers, hasLength(2));
+      expect(markers.toSet(), hasLength(2)); // each call gets its own, distinct marker
+      expect(markers.every((m) => m.startsWith(TermuxSetupCommands.doneMarker)), isTrue);
+    });
+
+    test('polls progress until this call\'s own marker appears, then confirms via a real status check', () async {
       final progressUpdates = <String>[];
+      String? marker;
       var tailCalls = 0;
       messenger.setMockMethodCallHandler(channel, (call) async {
         if (call.method == 'runCommand') return true;
         if (call.method == 'getLastCommandStdout') {
           tailCalls += 1;
-          if (tailCalls <= 2) return 'still working...'; // baseline + one in-flight poll, no marker yet
-          if (tailCalls == 3) return 'still working...\n${TermuxSetupCommands.doneMarker}';
+          if (tailCalls <= 2) return 'still working...'; // no marker yet
+          if (tailCalls == 3) return 'still working...\n$marker';
           // The final checkSetupStatus dispatch's own result.
           return jsonEncode({
             'prootDistroInstalled': true,
@@ -239,7 +263,10 @@ void main() {
       final controller = TermuxSetupController();
 
       final result = await controller.runAndWait(
-        ['-lc', 'echo hi'],
+        (m) {
+          marker = m;
+          return ['-lc', 'echo hi'];
+        },
         onProgress: progressUpdates.add,
         pollInterval: const Duration(milliseconds: 5),
         maxWait: const Duration(seconds: 2),
@@ -248,7 +275,47 @@ void main() {
       expect(result.dispatched, isTrue);
       expect(result.status.prootDistroInstalled, isTrue);
       expect(progressUpdates, isNotEmpty);
-      expect(progressUpdates.last, contains(TermuxSetupCommands.doneMarker));
+      expect(progressUpdates.last, contains(marker!));
+    });
+
+    // Regression test: the log file (~/didsa-setup.log) is append-only and
+    // shared across every dispatch this class has ever made, and tailLog
+    // only ever shows its last N lines - so a *stale* marker from an
+    // earlier, already-finished run can still be sitting inside that tail
+    // window right as a brand new run starts. A previous version of this
+    // method used one fixed marker string for every call and broke out of
+    // its poll loop the moment the tail changed at all while that old
+    // marker was still present - reporting a stage "done" within seconds
+    // of dispatching it, even though the real work had barely started. Each
+    // call's own unique marker (see the "builds a fresh marker" test above)
+    // is what actually fixes this - confirmed here by never returning the
+    // real marker at all and asserting runAndWait still polls all the way
+    // to maxWait rather than stopping early on the stale one.
+    test('never mistakes an old, unrelated marker still in the tail for this run\'s own completion', () async {
+      var tailCalls = 0;
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        if (call.method == 'runCommand') return true;
+        if (call.method == 'getLastCommandStdout') {
+          tailCalls += 1;
+          // A stale marker from some earlier run, still present, plus new
+          // output being appended on every poll - so the tail keeps
+          // changing, exactly the condition that broke the old logic.
+          return 'unrelated new output line $tailCalls\n${TermuxSetupCommands.doneMarker}_999999';
+        }
+        return null;
+      });
+      final controller = TermuxSetupController();
+      final stopwatch = Stopwatch()..start();
+
+      await controller.runAndWait(
+        (marker) => ['-lc', 'echo hi'],
+        pollInterval: const Duration(milliseconds: 10),
+        maxWait: const Duration(milliseconds: 60),
+      );
+
+      // Ran all the way to (approximately) maxWait rather than breaking out
+      // early on the stale marker.
+      expect(stopwatch.elapsedMilliseconds, greaterThanOrEqualTo(55));
     });
 
     test('gives up after maxWait if the marker never appears, but still confirms via a real status check', () async {
@@ -273,7 +340,7 @@ void main() {
       final controller = TermuxSetupController();
 
       final result = await controller.runAndWait(
-        ['-lc', 'echo hi'],
+        (marker) => ['-lc', 'echo hi'],
         pollInterval: const Duration(milliseconds: 5),
         maxWait: const Duration(milliseconds: 30),
       );

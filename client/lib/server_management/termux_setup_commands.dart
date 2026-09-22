@@ -48,13 +48,30 @@ class TermuxSetupCommands {
   static const String setupLogFile = '~/didsa-setup.log';
   static const String repoUrl = 'https://github.com/DIDSA-UK/DIDSA-CAD.git';
 
-  /// Echoed to [setupLogFile] at the end of every install/remove script
-  /// (success or failure alike - see [_wrapTopLevel]) as a marker
-  /// [TermuxSetupController.runAndWait] can watch for in the log tail, since
-  /// a dispatched RUN_COMMAND has no live "still running"/"finished" signal
-  /// of its own. Not a success marker - only that the dispatched script
-  /// itself has reached its end; actual success is still confirmed
-  /// separately via [checkStatus], same as everywhere else in this class.
+  /// Default value of every install/remove method's own `marker` parameter
+  /// - echoed to [setupLogFile] at the script's end (success or failure
+  /// alike - see [_wrapTopLevel]) as a signal [TermuxSetupController
+  /// .runAndWait] can watch for in the log tail, since a dispatched
+  /// RUN_COMMAND has no live "still running"/"finished" signal of its own.
+  /// Not a success marker - only that the dispatched script itself has
+  /// reached its end; actual success is still confirmed separately via
+  /// [checkStatus], same as everywhere else in this class.
+  ///
+  /// [setupLogFile] is append-only and shared across every run this class
+  /// has ever dispatched, and [TermuxSetupCommands.tailLog] only ever shows
+  /// its last N lines - so a *fixed* marker string is not safe to poll for:
+  /// an earlier, already-completed dispatch's own marker can still be
+  /// sitting inside that tail window when a *new* dispatch starts, and the
+  /// window changing at all (even from unrelated new output) then reads as
+  /// "the marker just appeared". This was a real, confirmed bug - a fast,
+  /// wrong "done" reported for a stage 5 run that had barely started,
+  /// because an earlier successful run's own marker was still in-window.
+  /// [TermuxSetupController.runAndWait] instead builds a fresh,
+  /// per-dispatch-unique marker (this value plus a timestamp) and passes it
+  /// to whichever `installXxx`/`removeEverything` call it's driving, via
+  /// each method's own `marker` parameter - this default is only for
+  /// callers that don't care about polling at all (e.g. the copy/paste text
+  /// shown for a user to run manually, or these classes' own tests).
   static const String doneMarker = '===DIDSA_SETUP_STAGE_DONE===';
 
   // Reused from TermuxCommands rather than redefined, so both command sets
@@ -83,18 +100,21 @@ class TermuxSetupCommands {
   /// Stage 1: Termux-level only - installs `proot-distro` itself (plus
   /// keeping Termux's own package index current, since a stale index is a
   /// common cause of the later `apt-get`/`proot-distro install` steps
-  /// failing with "package not found").
-  static List<String> installStage1() => ['-lc', _wrapTopLevel(_stage1Body)];
+  /// failing with "package not found"). [marker] - see [doneMarker]'s own
+  /// doc comment for why a caller polling for completion must pass its own
+  /// unique value here rather than relying on the default.
+  static List<String> installStage1({String marker = doneMarker}) => ['-lc', _wrapTopLevel(_stage1Body, marker)];
 
   /// Stage 2: installs the Debian proot itself. Idempotent - skips the
   /// (slow) install if a real login attempt shows it's already there and
   /// bootable (see [_debianLoginCheck]'s own doc comment).
-  static List<String> installStage2() => ['-lc', _wrapTopLevel(_stage2Body)];
+  static List<String> installStage2({String marker = doneMarker}) => ['-lc', _wrapTopLevel(_stage2Body, marker)];
 
   /// Stage 3: inside Debian - the packages `git`/`curl`/`micromamba`'s own
   /// install step need, which a fresh `proot-distro install debian` doesn't
   /// include by default.
-  static List<String> installStage3() => ['-lc', _wrapTopLevel(_nestInDebian(_stage3Body))];
+  static List<String> installStage3({String marker = doneMarker}) =>
+      ['-lc', _wrapTopLevel(_nestInDebian(_stage3Body), marker)];
 
   /// Stage 4: inside Debian - installs the static `micromamba` binary to
   /// [micromambaBin]. Deliberately the static binary (arch-detected via
@@ -106,7 +126,8 @@ class TermuxSetupCommands {
   /// [TermuxCommands]'s own pre-existing start/restart scripts (a bare
   /// `micromamba shell hook`/`micromamba activate`, no path of their own)
   /// work unmodified against whatever this stage installs.
-  static List<String> installStage4() => ['-lc', _wrapTopLevel(_nestInDebian(_stage4Body))];
+  static List<String> installStage4({String marker = doneMarker}) =>
+      ['-lc', _wrapTopLevel(_nestInDebian(_stage4Body), marker)];
 
   /// Stage 5: inside Debian - clones (or fast-forward-pulls, if already
   /// cloned) this repo to [repoDir], then creates the `didsa` conda env from
@@ -114,17 +135,20 @@ class TermuxSetupCommands {
   /// deliberately overrides that file's own internal `name: base` - see
   /// [condaEnv]'s own doc comment in [TermuxCommands] for why the name
   /// actually used here differs from the Dockerfile's.
-  static List<String> installStage5({String branch = 'main'}) =>
-      ['-lc', _wrapTopLevel(_nestInDebian(_stage5Body(branch)))];
+  static List<String> installStage5({String branch = 'main', String marker = doneMarker}) =>
+      ['-lc', _wrapTopLevel(_nestInDebian(_stage5Body(branch)), marker)];
 
   /// All five stages, `&&`-chained inside one dispatched command - the
   /// screen's "Run all remaining steps" convenience action. Each stage's own
   /// idempotency guard means re-running a stage already completed earlier in
   /// this same chain (or on a previous, partially-successful run) is a
   /// cheap no-op, not a repeated slow install.
-  static List<String> installAllRemaining({String branch = 'main'}) => [
+  static List<String> installAllRemaining({String branch = 'main', String marker = doneMarker}) => [
         '-lc',
-        _wrapTopLevel('$_stage1Body && $_stage2Body && ${_nestInDebian('$_stage3Body\n$_stage4Body\n${_stage5Body(branch)}')}'),
+        _wrapTopLevel(
+          '$_stage1Body && $_stage2Body && ${_nestInDebian('$_stage3Body\n$_stage4Body\n${_stage5Body(branch)}')}',
+          marker,
+        ),
       ];
 
   /// Removes the entire Debian proot in one shot - `micromamba`, the
@@ -133,7 +157,8 @@ class TermuxSetupCommands {
   /// installed". Termux, Termux:API, `proot-distro` itself, and F-Droid are
   /// left alone - Android doesn't let one app silently uninstall another,
   /// and those are the user's own apps to remove if they want.
-  static List<String> removeEverything() => ['-lc', _wrapTopLevel('proot-distro remove debian --yes')];
+  static List<String> removeEverything({String marker = doneMarker}) =>
+      ['-lc', _wrapTopLevel('proot-distro remove debian --yes', marker)];
 
   // DEBIAN_FRONTEND=noninteractive plus the explicit --force-confdef/
   // --force-confold dpkg options (not just apt's own -y) are required here
@@ -256,10 +281,11 @@ class TermuxSetupCommands {
   /// released via `trap ... EXIT` even on failure) and tees output to
   /// [setupLogFile], the same "confirm via a real check afterward rather
   /// than trusting an exit code" posture [TermuxCommands] already uses for
-  /// the server's own start/stop.
-  static String _wrapTopLevel(String body) =>
+  /// the server's own start/stop. [marker] - see [doneMarker]'s own doc
+  /// comment for why this is a parameter, not always the same constant.
+  static String _wrapTopLevel(String body, String marker) =>
       'termux-wake-lock; trap \'termux-wake-unlock\' EXIT\n'
-      '{ $body ; echo $doneMarker ; } 2>&1 | tee -a $setupLogFile';
+      '{ $body ; echo $marker ; } 2>&1 | tee -a $setupLogFile';
 
   /// Standard POSIX single-quote escaping - identical to
   /// [TermuxCommands]'s own private helper of the same name and already

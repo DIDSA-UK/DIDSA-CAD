@@ -94,7 +94,7 @@ class _FirstInstallScreenState extends State<FirstInstallScreen> {
     if (granted) unawaited(_refreshAll());
   }
 
-  Future<void> _run(String label, List<String> arguments, {Duration? maxWait}) async {
+  Future<void> _run(String label, List<String> Function(String marker) buildArguments, {Duration? maxWait}) async {
     setState(() {
       _busy = true;
       _statusMessage = '$label - sent to Termux, waiting for it to start...';
@@ -105,7 +105,7 @@ class _FirstInstallScreenState extends State<FirstInstallScreen> {
     // progress instead of just a spinner, and only reports done once a
     // real status check confirms it, not just the dispatch finishing.
     final result = await _setupController.runAndWait(
-      arguments,
+      buildArguments,
       onProgress: (tail) {
         if (!mounted) return;
         setState(() => _statusMessage = '$label - still running...\n\n$tail');
@@ -160,7 +160,7 @@ class _FirstInstallScreenState extends State<FirstInstallScreen> {
       ),
     );
     if (confirmed != true) return;
-    await _run('Remove everything', TermuxSetupCommands.removeEverything());
+    await _run('Remove everything', (marker) => TermuxSetupCommands.removeEverything(marker: marker));
   }
 
   @override
@@ -267,7 +267,10 @@ class _FirstInstallScreenState extends State<FirstInstallScreen> {
                 onPressed: (_hasPermission ?? false) && !_busy && _branchValid
                     ? () => _run(
                           'Run all remaining steps',
-                          TermuxSetupCommands.installAllRemaining(branch: _branchController.text.trim()),
+                          (marker) => TermuxSetupCommands.installAllRemaining(
+                            branch: _branchController.text.trim(),
+                            marker: marker,
+                          ),
                           // Includes creating the didsa conda env, by far the
                           // slowest single step here (pythonocc-core is a
                           // large compiled geometry kernel) - the default
@@ -292,28 +295,29 @@ class _FirstInstallScreenState extends State<FirstInstallScreen> {
                 label: 'Install proot-distro',
                 done: _status.prootDistroInstalled,
                 enabled: (_hasPermission ?? false) && !_busy,
-                onRun: () => _run('Install proot-distro', TermuxSetupCommands.installStage1()),
+                onRun: () => _run('Install proot-distro', (marker) => TermuxSetupCommands.installStage1(marker: marker)),
                 copyText: TermuxSetupCommands.installStage1().last,
               ),
               _StageRow(
                 label: 'Install Debian (proot-distro)',
                 done: _status.debianInstalled,
                 enabled: (_hasPermission ?? false) && !_busy,
-                onRun: () => _run('Install Debian', TermuxSetupCommands.installStage2()),
+                onRun: () => _run('Install Debian', (marker) => TermuxSetupCommands.installStage2(marker: marker)),
                 copyText: TermuxSetupCommands.installStage2().last,
               ),
               _StageRow(
                 label: 'Install Debian packages (git, curl, ...)',
                 done: _status.debianInstalled,
                 enabled: (_hasPermission ?? false) && !_busy,
-                onRun: () => _run('Install Debian packages', TermuxSetupCommands.installStage3()),
+                onRun: () =>
+                    _run('Install Debian packages', (marker) => TermuxSetupCommands.installStage3(marker: marker)),
                 copyText: TermuxSetupCommands.installStage3().last,
               ),
               _StageRow(
                 label: 'Install micromamba',
                 done: _status.micromambaInstalled,
                 enabled: (_hasPermission ?? false) && !_busy,
-                onRun: () => _run('Install micromamba', TermuxSetupCommands.installStage4()),
+                onRun: () => _run('Install micromamba', (marker) => TermuxSetupCommands.installStage4(marker: marker)),
                 copyText: TermuxSetupCommands.installStage4().last,
               ),
               _StageRow(
@@ -322,7 +326,7 @@ class _FirstInstallScreenState extends State<FirstInstallScreen> {
                 enabled: (_hasPermission ?? false) && !_busy && _branchValid,
                 onRun: () => _run(
                   'Clone repo and create environment',
-                  TermuxSetupCommands.installStage5(branch: _branchController.text.trim()),
+                  (marker) => TermuxSetupCommands.installStage5(branch: _branchController.text.trim(), marker: marker),
                   // See "Run all remaining steps"'s own comment - this is
                   // the same slow conda-env-creation step on its own.
                   maxWait: const Duration(minutes: 25),
