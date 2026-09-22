@@ -5,10 +5,6 @@ import 'package:flutter/services.dart';
 
 import 'termux_setup_commands.dart';
 
-/// One stage of the on-device install, in the order the First Installation
-/// screen runs (and displays) them.
-enum SetupStage { prootDistro, debianDistro, debianPackages, micromamba, repoAndEnv }
-
 /// A single `checkSetupStatus()` result - either a real, parsed snapshot, or
 /// [unknown] when no result arrived in time (most likely because step 3,
 /// `allow-external-apps`, isn't actually set yet - see [SetupStatus.unknown]
@@ -49,14 +45,6 @@ class SetupStatus {
   );
 
   bool get isComplete => prootDistroInstalled && debianInstalled && micromambaInstalled && condaEnvCreated && repoCloned;
-
-  bool isStageComplete(SetupStage stage) => switch (stage) {
-        SetupStage.prootDistro => prootDistroInstalled,
-        SetupStage.debianDistro => debianInstalled,
-        SetupStage.debianPackages => debianInstalled, // no separate signal captured - folded into stage 2/4's own checks
-        SetupStage.micromamba => micromambaInstalled,
-        SetupStage.repoAndEnv => condaEnvCreated && repoCloned,
-      };
 }
 
 /// Dispatches [TermuxSetupCommands] and reads the results back - the
@@ -131,15 +119,60 @@ class TermuxSetupController {
     }
   }
 
-  Future<bool> runStage(SetupStage stage, {String branch = 'main'}) => _dispatch(switch (stage) {
-        SetupStage.prootDistro => TermuxSetupCommands.installStage1(),
-        SetupStage.debianDistro => TermuxSetupCommands.installStage2(),
-        SetupStage.debianPackages => TermuxSetupCommands.installStage3(),
-        SetupStage.micromamba => TermuxSetupCommands.installStage4(),
-        SetupStage.repoAndEnv => TermuxSetupCommands.installStage5(branch: branch),
-      });
+  /// Dispatches a `tail` of the setup log and returns whatever text comes
+  /// back (or null if the dispatch itself failed, or nothing arrived within
+  /// [timeout]) - a lightweight, near-instant read, safe to call repeatedly
+  /// while a much longer install/remove script is still running in the
+  /// background, for live progress feedback (see
+  /// [TermuxSetupCommands.doneMarker]/[runAndWait]).
+  Future<String?> tailSetupLog({Duration timeout = const Duration(seconds: 8)}) async {
+    final dispatched = await _dispatch(TermuxSetupCommands.tailLog());
+    if (!dispatched) return null;
+    final deadline = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(deadline)) {
+      final stdout = await _getLastCommandStdout();
+      if (stdout != null && stdout.trim().isNotEmpty) return stdout;
+      await Future.delayed(const Duration(milliseconds: 300));
+    }
+    return null;
+  }
 
-  Future<bool> runAllRemaining({String branch = 'main'}) => _dispatch(TermuxSetupCommands.installAllRemaining(branch: branch));
+  /// Dispatches [arguments], then repeatedly (every [pollInterval]) tails
+  /// the setup log for live progress and checks whether it has reached
+  /// [TermuxSetupCommands.doneMarker] - the "still running"/"finished"
+  /// signal a bare RUN_COMMAND dispatch doesn't otherwise provide, so the
+  /// First Installation screen isn't just a spinner for minutes at a time.
+  /// [onProgress] is called with the latest non-null log tail on every
+  /// poll; the marker check compares against the log tail captured right
+  /// before dispatching, so a stale marker line from an earlier run (still
+  /// within the tailed window) isn't mistaken for this run's own
+  /// completion. Always finishes with one more [checkSetupStatus] call
+  /// (real confirmation, not the marker itself - same "confirm via a real
+  /// check, not an exit code" posture as [checkStatus]/[checkSetupStatus]
+  /// elsewhere), whether the marker was seen or [maxWait] was simply
+  /// reached first. `dispatched: false` (with [SetupStatus.unknown], no
+  /// polling attempted at all) means the RUN_COMMAND intent itself couldn't
+  /// even be sent - distinct from a genuine timeout, so the caller can show
+  /// "check the permission" rather than "done" for a run that never started.
+  Future<({bool dispatched, SetupStatus status})> runAndWait(
+    List<String> arguments, {
+    void Function(String tail)? onProgress,
+    Duration maxWait = const Duration(minutes: 10),
+    Duration pollInterval = const Duration(seconds: 5),
+  }) async {
+    final baselineTail = await tailSetupLog(timeout: const Duration(seconds: 3)) ?? '';
+    final dispatched = await _dispatch(arguments);
+    if (!dispatched) return (dispatched: false, status: SetupStatus.unknown);
 
-  Future<bool> removeEverything() => _dispatch(TermuxSetupCommands.removeEverything());
+    final deadline = DateTime.now().add(maxWait);
+    while (DateTime.now().isBefore(deadline)) {
+      await Future.delayed(pollInterval);
+      final tail = await tailSetupLog();
+      if (tail != null) {
+        onProgress?.call(tail);
+        if (tail != baselineTail && tail.contains(TermuxSetupCommands.doneMarker)) break;
+      }
+    }
+    return (dispatched: true, status: await checkSetupStatus());
+  }
 }
