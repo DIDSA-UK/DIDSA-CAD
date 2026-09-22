@@ -53,6 +53,7 @@ class MainActivity : FlutterActivity() {
                 }
                 "getLastCommandResult" -> result.success(getLastCommandResult())
                 "getLastCommandStdout" -> result.success(getLastCommandStdout())
+                "getLastCommandError" -> result.success(getLastCommandError())
                 "isPackageInstalled" -> {
                     val packageName = call.argument<String>("packageName")
                     if (packageName == null) {
@@ -190,6 +191,16 @@ class MainActivity : FlutterActivity() {
     private fun getLastCommandStdout(): String? {
         val prefs = getSharedPreferences(TermuxResultService.prefsName, MODE_PRIVATE)
         return prefs.getString(TermuxResultService.lastStdoutKey, null)
+    }
+
+    /// The last dispatched command's own Termux-reported error, if any -
+    /// see TermuxResultService.extractError's own doc comment. Null when
+    /// the last result had no error (including "no result at all yet") -
+    /// the Dart side falls back to its own generic timeout messaging in
+    /// that case.
+    private fun getLastCommandError(): String? {
+        val prefs = getSharedPreferences(TermuxResultService.prefsName, MODE_PRIVATE)
+        return prefs.getString(TermuxResultService.lastErrorKey, null)
     }
 
     /// True only if [packageName] is both installed and visible to this app

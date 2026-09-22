@@ -177,6 +177,30 @@ void main() {
     });
   });
 
+  group('lastCommandError', () {
+    test('returns whatever Termux reported as the last dispatch error', () async {
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        if (call.method == 'getLastCommandError') {
+          return 'Termux error 2: RunCommandService requires `allow-external-apps`...';
+        }
+        return null;
+      });
+      final controller = TermuxSetupController();
+
+      expect(
+        await controller.lastCommandError(),
+        'Termux error 2: RunCommandService requires `allow-external-apps`...',
+      );
+    });
+
+    test('returns null when the last dispatch had no error', () async {
+      messenger.setMockMethodCallHandler(channel, (call) async => null);
+      final controller = TermuxSetupController();
+
+      expect(await controller.lastCommandError(), isNull);
+    });
+  });
+
   group('runAndWait', () {
     test('reports dispatched:false with an unknown status if the dispatch itself fails', () async {
       messenger.setMockMethodCallHandler(channel, (call) async {

@@ -35,6 +35,12 @@ class TermuxResultService : Service() {
         } else {
             editor.remove(lastStdoutKey)
         }
+        val error = extractError(intent)
+        if (error != null) {
+            editor.putString(lastErrorKey, error)
+        } else {
+            editor.remove(lastErrorKey)
+        }
         editor.apply()
         stopSelf(startId)
         return START_NOT_STICKY
@@ -52,6 +58,23 @@ class TermuxResultService : Service() {
     private fun extractStdout(intent: Intent?): String? {
         val resultBundle = intent?.extras?.getBundle("result") ?: return null
         return resultBundle.getString("stdout")
+    }
+
+    /// The same "result" bundle's own "err"/"errmsg" pair (Termux's
+    /// documented RUN_COMMAND error fields - err is a nonzero int, errmsg
+    /// the human-readable reason, e.g. "RunCommandService requires
+    /// `allow-external-apps`..." when that Termux property isn't set) -
+    /// this is what actually let a real device's own Termux error report
+    /// confirm the true cause of a First Installation dispatch going
+    /// nowhere, instead of the Dart side only ever seeing a bare timeout.
+    /// Only stored when Termux actually reported a nonzero err/non-null
+    /// errmsg - a successful dispatch has neither.
+    private fun extractError(intent: Intent?): String? {
+        val resultBundle = intent?.extras?.getBundle("result") ?: return null
+        val errCode = resultBundle.getInt("err", 0)
+        val errMsg = resultBundle.getString("errmsg")
+        if (errCode == 0 && errMsg.isNullOrEmpty()) return null
+        return "Termux error $errCode: ${errMsg ?: "(no message)"}"
     }
 
     private fun dumpIntentExtras(intent: Intent?): String {
@@ -85,5 +108,6 @@ class TermuxResultService : Service() {
         const val lastResultKey = "last_result"
         const val lastResultTimeKey = "last_result_time"
         const val lastStdoutKey = "last_stdout"
+        const val lastErrorKey = "last_error"
     }
 }
