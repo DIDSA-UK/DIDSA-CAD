@@ -52,6 +52,15 @@ class MainActivity : FlutterActivity() {
                     }
                 }
                 "getLastCommandResult" -> result.success(getLastCommandResult())
+                "getLastCommandStdout" -> result.success(getLastCommandStdout())
+                "isPackageInstalled" -> {
+                    val packageName = call.argument<String>("packageName")
+                    if (packageName == null) {
+                        result.error("bad_args", "packageName is required", null)
+                    } else {
+                        result.success(isPackageInstalled(packageName))
+                    }
+                }
                 else -> result.notImplemented()
             }
         }
@@ -169,4 +178,29 @@ class MainActivity : FlutterActivity() {
         val time = prefs.getLong(TermuxResultService.lastResultTimeKey, 0L)
         return "Received at $time (epoch ms):\n$result"
     }
+
+    /// The nested "result" bundle's own "stdout" extra, captured separately
+    /// by TermuxResultService from the generic dump [getLastCommandResult]
+    /// reads - see that class's own doc comment. Used by the First
+    /// Installation screen's status check, which needs just the JSON a
+    /// dispatched script printed, not a human-readable dump of every extra
+    /// Termux happened to send back. Null (not a placeholder string) when
+    /// nothing has arrived yet, or the last result had no such extra, so the
+    /// Dart side can tell "no data" apart from "a real, empty string".
+    private fun getLastCommandStdout(): String? {
+        val prefs = getSharedPreferences(TermuxResultService.prefsName, MODE_PRIVATE)
+        return prefs.getString(TermuxResultService.lastStdoutKey, null)
+    }
+
+    /// True only if [packageName] is both installed and visible to this app
+    /// - see AndroidManifest.xml's <queries> block, which must list
+    /// [packageName] (API 30+ package-visibility) or this silently reads as
+    /// "not installed" even when it genuinely is.
+    private fun isPackageInstalled(packageName: String): Boolean =
+        try {
+            packageManager.getPackageInfo(packageName, 0)
+            true
+        } catch (e: PackageManager.NameNotFoundException) {
+            false
+        }
 }

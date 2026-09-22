@@ -26,12 +26,32 @@ class TermuxResultService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val prefs = getSharedPreferences(prefsName, MODE_PRIVATE)
-        prefs.edit()
+        val editor = prefs.edit()
             .putString(lastResultKey, dumpIntentExtras(intent))
             .putLong(lastResultTimeKey, System.currentTimeMillis())
-            .apply()
+        val stdout = extractStdout(intent)
+        if (stdout != null) {
+            editor.putString(lastStdoutKey, stdout)
+        } else {
+            editor.remove(lastStdoutKey)
+        }
+        editor.apply()
         stopSelf(startId)
         return START_NOT_STICKY
+    }
+
+    /// Termux's documented RUN_COMMAND result schema nests stdout/stderr/
+    /// exitCode inside a "result" Bundle extra - unlike [dumpIntentExtras]
+    /// (which deliberately stays schema-agnostic, see this class's own doc
+    /// comment above), this one field is read by its documented, literal
+    /// key name, since the First Installation screen's status check needs
+    /// exactly this value, not a human-readable dump of everything present.
+    /// Returns null - never a placeholder string - if the "result"/"stdout"
+    /// extras aren't there, so the Dart side can tell "no data" apart from a
+    /// real, empty captured string.
+    private fun extractStdout(intent: Intent?): String? {
+        val resultBundle = intent?.extras?.getBundle("result") ?: return null
+        return resultBundle.getString("stdout")
     }
 
     private fun dumpIntentExtras(intent: Intent?): String {
@@ -64,5 +84,6 @@ class TermuxResultService : Service() {
         const val prefsName = "termux_result"
         const val lastResultKey = "last_result"
         const val lastResultTimeKey = "last_result_time"
+        const val lastStdoutKey = "last_stdout"
     }
 }

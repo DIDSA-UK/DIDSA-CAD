@@ -4,8 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../config.dart';
+import 'first_install_screen.dart';
 import 'termux_commands.dart';
 import 'termux_controller.dart';
+import 'termux_urls.dart';
 
 /// Lets the user control an on-device standalone backend (Termux +
 /// proot-distro, see this project's own setup discussion) from inside the
@@ -147,6 +149,15 @@ class _ServerManagementScreenState extends State<ServerManagementScreen> {
         padding: const EdgeInsets.all(16),
         children: [
           _StatusPane(checking: _checkingLiveStatus, status: _liveStatus, onRefresh: _refreshLiveStatus),
+          const SizedBox(height: 12),
+          // Entry point for a brand-new device that has none of Termux/
+          // proot-distro/micromamba/the didsa env set up yet - everything
+          // below this assumes that already exists.
+          OutlinedButton.icon(
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const FirstInstallScreen())),
+            icon: const Icon(Icons.new_releases_outlined),
+            label: const Text('New device? Run first-time setup'),
+          ),
           const SizedBox(height: 16),
           Text(
             "Controls a backend running locally on this device, via Termux - it cannot reach, and has "
@@ -354,9 +365,6 @@ class _StatusPane extends StatelessWidget {
 class _SetupInstructions extends StatelessWidget {
   const _SetupInstructions();
 
-  static const _termuxUrl = 'https://f-droid.org/en/packages/com.termux/';
-  static const _termuxApiUrl = 'https://f-droid.org/en/packages/com.termux.api/';
-
   @override
   Widget build(BuildContext context) {
     final bodyStyle = Theme.of(context).textTheme.bodySmall;
@@ -387,14 +395,14 @@ class _SetupInstructions extends StatelessWidget {
           point(
             '2',
             GestureDetector(
-              onTap: () => launchUrl(Uri.parse(_termuxUrl), mode: LaunchMode.externalApplication),
+              onTap: () => launchUrl(Uri.parse(TermuxUrls.termux), mode: LaunchMode.externalApplication),
               child: Text('Termux must be installed (F-Droid, not Play Store).', style: linkStyle),
             ),
           ),
           point(
             '3',
             GestureDetector(
-              onTap: () => launchUrl(Uri.parse(_termuxApiUrl), mode: LaunchMode.externalApplication),
+              onTap: () => launchUrl(Uri.parse(TermuxUrls.termuxApi), mode: LaunchMode.externalApplication),
               child: Text('Termux:API must be installed.', style: linkStyle),
             ),
           ),

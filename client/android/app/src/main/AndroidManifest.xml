@@ -87,6 +87,11 @@
              this, the RUN_COMMAND intent to Termux silently fails to
              resolve - see server_management_screen.dart. -->
         <package android:name="com.termux"/>
+        <!-- First Installation screen (client/lib/server_management/
+             first_install_screen.dart): needed so isPackageInstalled can
+             tell whether Termux:API is installed, same package-visibility
+             requirement as com.termux above. -->
+        <package android:name="com.termux.api"/>
         <!-- AI Modelling workstream 11 (voice input): same package-
              visibility requirement as above, for `speech_to_text`'s own
              on-device recognition service lookup - without this, Android
