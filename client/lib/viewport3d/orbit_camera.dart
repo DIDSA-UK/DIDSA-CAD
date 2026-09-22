@@ -75,9 +75,23 @@ class OrbitCamera {
   /// the same minimum depth budget.
   static const double _minFarClip = kDefaultFarClip;
 
-  /// [nearClip] is derived as `farClip / _nearFarRatio` - a 1:10000 near/far
-  /// ratio is safe for a 24-bit depth buffer and avoids z-fighting.
-  static const double _nearFarRatio = 10000.0;
+  /// [nearClip] is derived as `farClip / _nearFarRatio`.
+  ///
+  /// Bug fix (bug report: "when orbiting a part, it gets clipped... not
+  /// affected by zoom... recentre fixes it... looks like a near clip
+  /// plane, should be much more generous by default"): most instances of
+  /// this were actually [OrbitCamera.target] going stale relative to real
+  /// geometry (see [PartViewportState.reframeCameraIfStillFollowing]'s own
+  /// fix for that root cause) - but as defense-in-depth, and per the
+  /// explicit ask for a more generous default, this was doubled from
+  /// `10000.0` to `20000.0`, halving [nearClip]/[effectiveNearClip] for the
+  /// same [farClip]/[distance] so real geometry has to get twice as close to
+  /// the camera before the near plane starts clipping it, at any orbit
+  /// angle. Still safe for a 24-bit depth buffer (a 1:20000 near/far ratio
+  /// is well within what 24 bits of depth precision comfortably resolves;
+  /// z-fighting risk only becomes real several orders of magnitude further
+  /// out than this).
+  static const double _nearFarRatio = 20000.0;
 
   /// [minDistance] is derived as `nearClip * _minDistanceNearClipFactor` -
   /// keeps the camera just outside the near clip plane, so zooming in is

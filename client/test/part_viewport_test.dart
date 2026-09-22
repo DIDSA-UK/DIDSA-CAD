@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:vector_math/vector_math.dart' as vm;
 
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
@@ -287,6 +288,123 @@ void main() {
       expect(targetAfterSecondUpdate.x, targetAfterFirstFrame.x);
       expect(targetAfterSecondUpdate.y, targetAfterFirstFrame.y);
       expect(targetAfterSecondUpdate.z, targetAfterFirstFrame.z);
+    },
+  );
+
+  testWidgets(
+    'bug fix (bug report: "when orbiting a part, it sometimes orbits about the wrong point"): '
+    'reframeCameraIfStillFollowing re-centers the camera once explicitly called after geometry '
+    'moves well away from where it was first framed - unlike an ordinary widget.bodies update '
+    '(the previous test), which must never move the camera on its own',
+    (tester) async {
+      final key = GlobalKey<PartViewportState>();
+      final shiftedBody = BodyMeshDto(
+        bodyId: 'body-1',
+        source: 'computed',
+        mesh: MeshDto(
+          vertices: [
+            [100, 100, 100],
+            [110, 100, 100],
+            [100, 110, 100],
+          ],
+          normals: _boxMesh.normals,
+          triangleIndices: _boxMesh.triangleIndices,
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 400,
+              height: 400,
+              child: PartViewport(
+                key: key,
+                bodies: [shiftedBody],
+                selectedPlane: null,
+                onPlaneTap: (_) {},
+                onBackgroundTap: () {},
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      // Simulates the real one-time auto-frame having already happened at
+      // the *original* body's own centre - see [debugMarkFramedAt]'s own
+      // doc comment for why this stands in for the real trigger (needs a
+      // real GPU/Impeller backend this widget-test harness doesn't have).
+      key.currentState!.debugMarkFramedAt(vm.Vector3(5, 5, 0));
+
+      // Now the explicit call [PartScreen] makes after a committed change -
+      // this must actually move the target onto the current geometry's
+      // centre, since the camera hasn't been panned away from where it was
+      // auto-framed.
+      key.currentState!.reframeCameraIfStillFollowing();
+      await tester.pump();
+
+      // [shiftedBody]'s own AABB centre - min (100,100,100), max
+      // (110,110,100) - matches [MeshBounds]'s "bounding centre, not vertex
+      // average" contract (see that class's own doc comment).
+      final targetAfterReframe = key.currentState!.debugCameraTarget;
+      expect(targetAfterReframe.x, closeTo(105.0, 1e-6));
+      expect(targetAfterReframe.y, closeTo(105.0, 1e-6));
+      expect(targetAfterReframe.z, closeTo(100.0, 1e-6));
+    },
+  );
+
+  testWidgets(
+    'reframeCameraIfStillFollowing never fights a deliberate user pan, even when the geometry '
+    'centre has since moved',
+    (tester) async {
+      final key = GlobalKey<PartViewportState>();
+      final shiftedBody = BodyMeshDto(
+        bodyId: 'body-1',
+        source: 'computed',
+        mesh: MeshDto(
+          vertices: [
+            [100, 100, 100],
+            [110, 100, 100],
+            [100, 110, 100],
+          ],
+          normals: _boxMesh.normals,
+          triangleIndices: _boxMesh.triangleIndices,
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 400,
+              height: 400,
+              child: PartViewport(
+                key: key,
+                bodies: [shiftedBody],
+                selectedPlane: null,
+                onPlaneTap: (_) {},
+                onBackgroundTap: () {},
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      key.currentState!.debugMarkFramedAt(vm.Vector3(5, 5, 0));
+
+      // User pans the camera away from the auto-framed target on purpose.
+      key.currentState!.debugPanCameraTarget(vm.Vector3(500, 500, 500));
+      final targetAfterUserPan = key.currentState!.debugCameraTarget.clone();
+
+      key.currentState!.reframeCameraIfStillFollowing();
+      await tester.pump();
+
+      final targetAfterReframe = key.currentState!.debugCameraTarget;
+      expect(targetAfterReframe.x, targetAfterUserPan.x);
+      expect(targetAfterReframe.y, targetAfterUserPan.y);
+      expect(targetAfterReframe.z, targetAfterUserPan.z);
     },
   );
 

@@ -1156,6 +1156,34 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   @visibleForTesting
   Set<String> get debugTransientMeshNodeBodyIds => _transientMeshNodes.keys.toSet();
 
+  /// Test-only stand-in for a real manual pan gesture (`panByScreenDelta`
+  /// needs a live GPU-backed viewport size/ray-cast to behave meaningfully,
+  /// which this widget-test harness doesn't have) - moves [OrbitCamera
+  /// .target] directly (like [OrbitCamera.panByScreenDelta] itself, not
+  /// [OrbitCamera.setTarget] - a real pan never touches [OrbitCamera
+  /// .setTarget]'s own `_defaultTarget` side effect), so
+  /// [reframeCameraIfStillFollowing]'s "never fight a deliberate user pan"
+  /// guard can be exercised without one.
+  @visibleForTesting
+  void debugPanCameraTarget(vm.Vector3 delta) => _camera.target = _camera.target + delta;
+
+  /// Test-only stand-in for the real one-time auto-frame [_syncMeshNode]/
+  /// [_syncAssemblyInstanceNodes] perform once `Scene.initializeStaticResources()`
+  /// resolves and [_hasFramedCamera] flips - that resolution needs a real
+  /// GPU/Impeller backend this widget-test harness doesn't have (confirmed:
+  /// it never resolves here, same as an on-device sandbox with no GPU), so
+  /// [_hasFramedCamera]/[_lastAutoFramedTarget] would otherwise never become
+  /// testable at all. Sets exactly what a real auto-frame sets, the same
+  /// "simulate the internal state directly, not the real trigger for it"
+  /// shape [debugForceSectionDrag]/[debugForceComponentGizmoDrag] already
+  /// use for their own hard-to-reproduce-in-a-test triggers.
+  @visibleForTesting
+  void debugMarkFramedAt(vm.Vector3 target) {
+    _camera.setTarget(target);
+    _hasFramedCamera = true;
+    _lastAutoFramedTarget = target;
+  }
+
   /// On-device feedback: "after selecting axis for revolve, 3d viewport
   /// moves and shouldn't" - [_syncMeshNode] used to re-center the camera
   /// target on every single mesh update, not just the first, so any live
@@ -1171,6 +1199,25 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// different Part) gets a fresh [PartViewportState] and so a fresh,
   /// unframed camera, exactly as before this fix.
   bool _hasFramedCamera = false;
+
+  /// The geometry centre [_camera.target] was last set to by an *auto*-frame
+  /// (the one-time initial frame [_hasFramedCamera] gates, ["Reset
+  /// View"]/[_doRecentre], or [reframeCameraIfStillFollowing] itself) - null
+  /// until the first of those has happened. Lets [reframeCameraIfStillFollowing]
+  /// tell "the camera is still sitting where auto-framing last put it" apart
+  /// from "the user has since panned it somewhere else on purpose", without
+  /// which it could not re-centre on later geometry changes (e.g. a Boolean
+  /// that moves the model's effective centre well away from where it started)
+  /// without also fighting a deliberate user pan - see that method's own doc
+  /// comment.
+  vm.Vector3? _lastAutoFramedTarget;
+
+  /// World-space distance (relative to the current scene radius) below
+  /// which [reframeCameraIfStillFollowing] treats [_camera.target] as "the
+  /// user hasn't moved it" / a geometry-centre change as "not worth
+  /// re-centring for" - relative rather than a fixed absolute epsilon so it
+  /// scales sensibly for both a tiny and a very large part.
+  static const double _autoFrameFollowRelativeEpsilon = 1e-3;
 
   /// Null until `flutter_scene`'s static resources (shaders, default
   /// textures) finish loading - [Scene.render] silently skips frames before
@@ -2265,8 +2312,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
     final bounds = boundsOfBodies(bodies);
     if (!_hasFramedCamera) {
-      _camera.setTarget(bounds?.center ?? vm.Vector3.zero());
+      final target = bounds?.center ?? vm.Vector3.zero();
+      _camera.setTarget(target);
       _hasFramedCamera = true;
+      _lastAutoFramedTarget = target;
     }
     // Near/far clip and min/max zoom bounds still track the current
     // geometry on every update (a body that's grown significantly must not
@@ -2343,6 +2392,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       if (assemblyBounds != null) {
         _camera.setTarget(assemblyBounds.center);
         _hasFramedCamera = true;
+        _lastAutoFramedTarget = assemblyBounds.center;
       }
     }
     if (widget.assemblyInstances.isEmpty) return;
@@ -5181,6 +5231,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (radius <= 0) return;
     final center = assemblyRadius > bodyRadius ? assemblyBounds!.center : bodyBounds!.center;
     _camera.setTarget(center);
+    _lastAutoFramedTarget = center;
     final newFarClip = math.max(kDefaultFarClip, 4.0 * radius);
     _camera.farClip = newFarClip;
     _camera.nearClip = kDefaultNearClip;
@@ -5190,6 +5241,55 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // show a body significantly larger than that - frame the real geometry
     // instead.
     _camera.frameRadius(radius, _viewportSize);
+  }
+
+  /// Bug fix (bug report: "when orbiting a part, it sometimes orbits about
+  /// the wrong point... it should orbit about the centre of the geometry in
+  /// the model"): [_hasFramedCamera]'s own doc comment already documents
+  /// *why* [OrbitCamera.target] only ever auto-moves once, on the very first
+  /// frame - an ordinary [widget.bodies] update (a live feature-preview
+  /// refresh, mid-edit) must never re-centre the camera, or every such
+  /// update would feel like the earlier "viewport moves and shouldn't" bug
+  /// all over again. But that contract has no allowance at all for a
+  /// *committed*, session-later change that moves the model's effective
+  /// centre well away from where it started (e.g. a Boolean that removes
+  /// most of the original body, or an undo/redo that swaps in very
+  /// different geometry) - [target] then stays wherever it was first framed
+  /// forever, so orbiting keeps pivoting around a point that may no longer
+  /// be anywhere near the actual geometry.
+  ///
+  /// This is a distinct, explicitly-invoked escape hatch for exactly that
+  /// case - [PartScreen] calls it after a feature confirms/deletes and after
+  /// undo/redo (never from the continuous [widget.bodies] sync path
+  /// [_syncMeshNode]/[_syncAssemblyInstanceNodes] use, so the "does not move
+  /// the camera on its own" contract above is untouched for live-preview
+  /// updates). It only ever moves [target] if both:
+  ///  - the camera is still sitting where the last auto-frame (initial
+  ///    frame, "Reset View", or a previous call to this method) put it - see
+  ///    [_lastAutoFramedTarget] - i.e. the user hasn't since panned away on
+  ///    purpose, which this must never fight; and
+  ///  - the current geometry's own centre has actually moved somewhere else
+  ///    meaningfully (see [_autoFrameFollowRelativeEpsilon]), so this is a
+  ///    no-op on every ordinary "nothing about the overall shape changed
+  ///    much" edit.
+  void reframeCameraIfStillFollowing() {
+    if (!_hasFramedCamera) return;
+    final lastAutoFramed = _lastAutoFramedTarget;
+    if (lastAutoFramed == null) return;
+    final bodyBounds = boundsOfBodies(widget.bodies);
+    final assemblyBounds = _assemblyInstanceBounds();
+    final bodyRadius = bodyBounds?.boundingSphereRadius ?? 0;
+    final assemblyRadius = assemblyBounds?.boundingSphereRadius ?? 0;
+    final radius = math.max(bodyRadius, assemblyRadius);
+    if (radius <= 0) return;
+    final center = assemblyRadius > bodyRadius ? assemblyBounds!.center : bodyBounds!.center;
+    final epsilon = math.max(radius, 1.0) * _autoFrameFollowRelativeEpsilon;
+    if ((_camera.target - lastAutoFramed).length > epsilon) return; // user has panned away - never fight that
+    if ((center - lastAutoFramed).length <= epsilon) return; // geometry centre hasn't moved meaningfully
+    setState(() {
+      _camera.setTarget(center);
+      _lastAutoFramedTarget = center;
+    });
   }
 
   // -----------------------------------------------------------------------
