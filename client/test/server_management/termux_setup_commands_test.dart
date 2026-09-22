@@ -9,6 +9,7 @@ void main() {
     test('every command runs via bash -lc, not proot-distro directly', () {
       for (final argv in [
         TermuxSetupCommands.checkStatus(),
+        TermuxSetupCommands.tailLog(),
         TermuxSetupCommands.installStage1(),
         TermuxSetupCommands.installStage2(),
         TermuxSetupCommands.installStage3(),
@@ -22,6 +23,13 @@ void main() {
       }
       expect(TermuxSetupCommands.executable, isNot(contains('proot-distro')));
       expect(TermuxSetupCommands.executable, contains('/bash'));
+    });
+
+    test('tailLog reads the last lines of the setup log, falling back if it does not exist yet', () {
+      final script = TermuxSetupCommands.tailLog().last;
+      expect(script, contains('tail -n'));
+      expect(script, contains(TermuxSetupCommands.setupLogFile));
+      expect(script, contains('||'));
     });
 
     test('checkStatus does not itself hold a wake lock - it is quick, unlike the install stages', () {
@@ -57,9 +65,19 @@ void main() {
   group('install stages', () {
     test('stage 1 installs proot-distro at the Termux level', () {
       final script = TermuxSetupCommands.installStage1().last;
-      expect(script, contains('pkg install -y proot-distro'));
+      expect(script, contains('pkg install -y'));
+      expect(script, contains('proot-distro'));
       expect(script, contains('termux-wake-lock'));
       expect(script, contains("trap 'termux-wake-unlock' EXIT"));
+    });
+
+    test('stage 1 update/upgrade/install are all non-interactive, so a conffile prompt cannot hang '
+        'forever with no TTY to answer it (the confirmed cause of a stuck dpkg lock)', () {
+      final script = TermuxSetupCommands.installStage1().last;
+      expect(script, contains('DEBIAN_FRONTEND=noninteractive'));
+      expect(script, contains('--force-confdef'));
+      expect(script, contains('--force-confold'));
+      expect(script, contains('pkg upgrade -y'));
     });
 
     test('stage 2 installs debian only if not already installed', () {
@@ -69,10 +87,12 @@ void main() {
       expect(script, contains('||'));
     });
 
-    test('stage 3 runs apt-get inside debian via a nested proot-distro login', () {
+    test('stage 3 runs apt-get inside debian via a nested proot-distro login, non-interactively', () {
       final script = TermuxSetupCommands.installStage3().last;
       expect(script, contains('proot-distro login debian -- bash -lc'));
-      expect(script, contains('apt-get install -y git curl ca-certificates bzip2'));
+      expect(script, contains('apt-get install -y'));
+      expect(script, contains('git curl ca-certificates bzip2'));
+      expect(script, contains('DEBIAN_FRONTEND=noninteractive'));
     });
 
     test('stage 4 installs the static micromamba binary, arch-detected, to a fixed path', () {
@@ -139,9 +159,9 @@ void main() {
 
     test('installAllRemaining chains every stage in order inside one dispatched command', () {
       final script = TermuxSetupCommands.installAllRemaining(branch: 'main').last;
-      final stage1 = script.indexOf('pkg install -y proot-distro');
+      final stage1 = script.indexOf('pkg install -y');
       final stage2 = script.indexOf('proot-distro install debian');
-      final stage3 = script.indexOf('apt-get install -y git curl');
+      final stage3 = script.indexOf('apt-get install -y');
       final stage4 = script.indexOf('micro.mamba.pm/api/micromamba');
       final stage5 = script.indexOf('micromamba create -n didsa');
       for (final index in [stage1, stage2, stage3, stage4, stage5]) {
@@ -177,6 +197,29 @@ void main() {
         expect(script, contains("trap 'termux-wake-unlock' EXIT"));
         expect(script, contains(TermuxSetupCommands.setupLogFile));
       }
+    });
+
+    test('echoes the done marker to the log at the end regardless of success or failure', () {
+      // Unconditional (";", not "&&") so it fires even if the body failed -
+      // it only ever means "the dispatched script reached its end", not
+      // "succeeded" (actual success is still confirmed by a real status
+      // check - see TermuxSetupController.runAndWait's own doc comment).
+      for (final argv in [
+        TermuxSetupCommands.installStage1(),
+        TermuxSetupCommands.installStage2(),
+        TermuxSetupCommands.installStage3(),
+        TermuxSetupCommands.installStage4(),
+        TermuxSetupCommands.installStage5(),
+        TermuxSetupCommands.installAllRemaining(),
+        TermuxSetupCommands.removeEverything(),
+      ]) {
+        final script = argv.last;
+        expect(script, contains('echo ${TermuxSetupCommands.doneMarker}'));
+      }
+      // checkStatus/tailLog are quick, single reads, not install/remove
+      // scripts - they don't hold a wake lock or emit the marker at all.
+      expect(TermuxSetupCommands.checkStatus().last, isNot(contains(TermuxSetupCommands.doneMarker)));
+      expect(TermuxSetupCommands.tailLog().last, isNot(contains(TermuxSetupCommands.doneMarker)));
     });
   });
 }

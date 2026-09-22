@@ -87,32 +87,30 @@ class _FirstInstallScreenState extends State<FirstInstallScreen> {
     if (granted) unawaited(_refreshAll());
   }
 
-  Future<void> _run(String label, Future<bool> Function() dispatch) async {
+  Future<void> _run(String label, List<String> arguments) async {
     setState(() {
       _busy = true;
-      _statusMessage = '$label - sent to Termux, waiting...';
+      _statusMessage = '$label - sent to Termux, waiting for it to start...';
     });
-    final dispatched = await dispatch();
-    if (!dispatched) {
-      if (!mounted) return;
-      setState(() {
-        _busy = false;
-        _statusMessage = '$label - could not reach Termux. Check the permission in Step 3.';
-      });
-      return;
-    }
     // Setup stages can genuinely take minutes (apt-get, a multi-hundred-MB
-    // pythonocc-core download under proot's ptrace overhead) - there is no
-    // progress signal to wait on beyond re-running the status probe once
-    // the dispatch has had time to actually do something, same "confirm via
-    // a real check afterward" posture as ServerManagementScreen's own
-    // pollUntil.
-    final status = await _setupController.checkSetupStatus(timeout: const Duration(minutes: 5));
+    // pythonocc-core download under proot's ptrace overhead) - runAndWait
+    // polls the live setup log every few seconds so this shows real
+    // progress instead of just a spinner, and only reports done once a
+    // real status check confirms it, not just the dispatch finishing.
+    final result = await _setupController.runAndWait(
+      arguments,
+      onProgress: (tail) {
+        if (!mounted) return;
+        setState(() => _statusMessage = '$label - still running...\n\n$tail');
+      },
+    );
     if (!mounted) return;
     setState(() {
       _busy = false;
-      _status = status;
-      _statusMessage = '$label - done. See the checklist above for the current state.';
+      _status = result.status;
+      _statusMessage = result.dispatched
+          ? '$label - done. See the checklist above for the current state.'
+          : '$label - could not reach Termux. Check the permission in Step 3.';
     });
   }
 
@@ -137,7 +135,7 @@ class _FirstInstallScreenState extends State<FirstInstallScreen> {
       ),
     );
     if (confirmed != true) return;
-    await _run('Remove everything', _setupController.removeEverything);
+    await _run('Remove everything', TermuxSetupCommands.removeEverything());
   }
 
   @override
@@ -244,39 +242,46 @@ class _FirstInstallScreenState extends State<FirstInstallScreen> {
                 onPressed: (_hasPermission ?? false) && !_busy && _branchValid
                     ? () => _run(
                           'Run all remaining steps',
-                          () => _setupController.runAllRemaining(branch: _branchController.text.trim()),
+                          TermuxSetupCommands.installAllRemaining(branch: _branchController.text.trim()),
                         )
                     : null,
                 icon: const Icon(Icons.rocket_launch),
                 label: const Text('Run all remaining steps'),
               ),
               const SizedBox(height: 12),
+              Text(
+                "Don't paste these commands manually into Termux at the same time as tapping Run - "
+                'running the same install twice at once can leave one copy stuck waiting for a lock the '
+                'other is holding (e.g. "Waiting for cache lock").',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(fontStyle: FontStyle.italic),
+              ),
+              const SizedBox(height: 8),
               _StageRow(
                 label: 'Install proot-distro',
                 done: _status.prootDistroInstalled,
                 enabled: (_hasPermission ?? false) && !_busy,
-                onRun: () => _run('Install proot-distro', () => _setupController.runStage(SetupStage.prootDistro)),
+                onRun: () => _run('Install proot-distro', TermuxSetupCommands.installStage1()),
                 copyText: TermuxSetupCommands.installStage1().last,
               ),
               _StageRow(
                 label: 'Install Debian (proot-distro)',
                 done: _status.debianInstalled,
                 enabled: (_hasPermission ?? false) && !_busy,
-                onRun: () => _run('Install Debian', () => _setupController.runStage(SetupStage.debianDistro)),
+                onRun: () => _run('Install Debian', TermuxSetupCommands.installStage2()),
                 copyText: TermuxSetupCommands.installStage2().last,
               ),
               _StageRow(
                 label: 'Install Debian packages (git, curl, ...)',
                 done: _status.debianInstalled,
                 enabled: (_hasPermission ?? false) && !_busy,
-                onRun: () => _run('Install Debian packages', () => _setupController.runStage(SetupStage.debianPackages)),
+                onRun: () => _run('Install Debian packages', TermuxSetupCommands.installStage3()),
                 copyText: TermuxSetupCommands.installStage3().last,
               ),
               _StageRow(
                 label: 'Install micromamba',
                 done: _status.micromambaInstalled,
                 enabled: (_hasPermission ?? false) && !_busy,
-                onRun: () => _run('Install micromamba', () => _setupController.runStage(SetupStage.micromamba)),
+                onRun: () => _run('Install micromamba', TermuxSetupCommands.installStage4()),
                 copyText: TermuxSetupCommands.installStage4().last,
               ),
               _StageRow(
@@ -285,7 +290,7 @@ class _FirstInstallScreenState extends State<FirstInstallScreen> {
                 enabled: (_hasPermission ?? false) && !_busy && _branchValid,
                 onRun: () => _run(
                   'Clone repo and create environment',
-                  () => _setupController.runStage(SetupStage.repoAndEnv, branch: _branchController.text.trim()),
+                  TermuxSetupCommands.installStage5(branch: _branchController.text.trim()),
                 ),
                 copyText: TermuxSetupCommands.installStage5(branch: _branchController.text.trim()).last,
               ),
@@ -295,18 +300,32 @@ class _FirstInstallScreenState extends State<FirstInstallScreen> {
           if (_statusMessage != null)
             Container(
               padding: const EdgeInsets.all(12),
+              constraints: const BoxConstraints(maxHeight: 260),
               decoration: BoxDecoration(
                 color: Theme.of(context).colorScheme.surfaceContainerHighest,
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: Row(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   if (_busy)
                     const Padding(
-                      padding: EdgeInsets.only(right: 12),
+                      padding: EdgeInsets.only(bottom: 8),
                       child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
                     ),
-                  Expanded(child: Text(_statusMessage!)),
+                  // Scrollable and monospace - once a stage is running,
+                  // this holds live tail output from ~/didsa-setup.log
+                  // (see TermuxSetupController.runAndWait), which can run
+                  // to many lines over a multi-minute install.
+                  Flexible(
+                    child: SingleChildScrollView(
+                      child: SelectableText(
+                        _statusMessage!,
+                        style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                      ),
+                    ),
+                  ),
                 ],
               ),
             ),

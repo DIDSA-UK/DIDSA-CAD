@@ -37,6 +37,15 @@ class TermuxSetupCommands {
   static const String setupLogFile = '~/didsa-setup.log';
   static const String repoUrl = 'https://github.com/DIDSA-UK/DIDSA-CAD.git';
 
+  /// Echoed to [setupLogFile] at the end of every install/remove script
+  /// (success or failure alike - see [_wrapTopLevel]) as a marker
+  /// [TermuxSetupController.runAndWait] can watch for in the log tail, since
+  /// a dispatched RUN_COMMAND has no live "still running"/"finished" signal
+  /// of its own. Not a success marker - only that the dispatched script
+  /// itself has reached its end; actual success is still confirmed
+  /// separately via [checkStatus], same as everywhere else in this class.
+  static const String doneMarker = '===DIDSA_SETUP_STAGE_DONE===';
+
   // Reused from TermuxCommands rather than redefined, so both command sets
   // agree on exactly where the distro/repo/env live.
   static const String repoDir = TermuxCommands.repoDir;
@@ -51,6 +60,14 @@ class TermuxSetupCommands {
   /// return value from this dispatch, only whatever TermuxResultService
   /// later captures).
   static List<String> checkStatus() => ['-lc', _statusScript];
+
+  /// The last [lines] lines of [setupLogFile] - lets the First Installation
+  /// screen show real, live progress from a still-running install/remove
+  /// dispatch (`apt-get`/`micromamba create` can genuinely take minutes,
+  /// and RUN_COMMAND itself gives no other progress signal - see
+  /// [TermuxSetupController.runAndWait]), rather than a bare spinner.
+  static List<String> tailLog({int lines = 60}) =>
+      ['-lc', 'tail -n $lines $setupLogFile 2>/dev/null || printf "(no setup log yet)"'];
 
   /// Stage 1: Termux-level only - installs `proot-distro` itself (plus
   /// keeping Termux's own package index current, since a stale index is a
@@ -103,13 +120,29 @@ class TermuxSetupCommands {
   /// and those are the user's own apps to remove if they want.
   static List<String> removeEverything() => ['-lc', _wrapTopLevel('proot-distro remove debian --yes')];
 
-  static const String _stage1Body = 'pkg update -y && pkg upgrade -y && pkg install -y proot-distro';
+  // DEBIAN_FRONTEND=noninteractive plus the explicit --force-confdef/
+  // --force-confold dpkg options (not just apt's own -y) are required here
+  // - a RUN_COMMAND dispatch has no TTY at all, so an ordinary conffile
+  // prompt ("keep the locally modified version?") that -y alone doesn't
+  // suppress just hangs forever waiting for input that can never arrive,
+  // holding Termux's dpkg lock (`.../dpkg/lock-frontend`) until the
+  // dispatch is killed - the actual, confirmed cause of a stuck
+  // "Waiting for cache lock" seen running these steps manually alongside
+  // an earlier, still-hung dispatch of this same stage.
+  static const String _aptNonInteractiveFlags =
+      '-o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"';
+
+  static const String _stage1Body =
+      'export DEBIAN_FRONTEND=noninteractive\n'
+      'pkg update -y '
+      '&& pkg upgrade -y $_aptNonInteractiveFlags '
+      '&& pkg install -y $_aptNonInteractiveFlags proot-distro';
 
   static const String _stage2Body = 'proot-distro list 2>/dev/null | grep -q "^debian" || proot-distro install debian';
 
   static const String _stage3Body =
       'export DEBIAN_FRONTEND=noninteractive\n'
-      'apt-get update && apt-get install -y git curl ca-certificates bzip2';
+      'apt-get update && apt-get install -y $_aptNonInteractiveFlags git curl ca-certificates bzip2';
 
   static const String _stage4Body =
       'set -e\n'
@@ -191,7 +224,7 @@ class TermuxSetupCommands {
   /// the server's own start/stop.
   static String _wrapTopLevel(String body) =>
       'termux-wake-lock; trap \'termux-wake-unlock\' EXIT\n'
-      '{ $body ; } 2>&1 | tee -a $setupLogFile';
+      '{ $body ; echo $doneMarker ; } 2>&1 | tee -a $setupLogFile';
 
   /// Standard POSIX single-quote escaping - identical to
   /// [TermuxCommands]'s own private helper of the same name and already
