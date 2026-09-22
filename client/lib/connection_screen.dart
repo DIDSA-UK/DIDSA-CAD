@@ -1,3 +1,6 @@
+import 'dart:async' show unawaited;
+import 'dart:io' show Platform;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show TextInput;
 import 'package:http/http.dart' as http;
@@ -7,6 +10,7 @@ import 'ai/ai_system_prompt_preferences.dart';
 import 'config.dart';
 import 'mesh_viewer/mesh_viewer_screen.dart';
 import 'mesh_viewer/mesh_viewer_settings_screen.dart';
+import 'server_management/battery_optimization_controller.dart';
 import 'server_management/server_management_screen.dart';
 import 'server_management/termux_controller.dart';
 import 'sketch/sketcher_settings_screen.dart';
@@ -30,7 +34,17 @@ class ConnectionScreen extends StatefulWidget {
   /// Overridable for tests, so a health check doesn't hit the real network.
   final http.Client? httpClient;
 
-  const ConnectionScreen({super.key, this.isSettingsRevisit = false, this.httpClient});
+  /// Overridable for tests, so the Android battery-optimisation channel
+  /// (unavailable on the test/desktop/iOS platforms this runs on in CI)
+  /// never gets invoked for real - see [_maybeOfferBatteryOptimization].
+  final BatteryOptimizationController? batteryOptimizationController;
+
+  const ConnectionScreen({
+    super.key,
+    this.isSettingsRevisit = false,
+    this.httpClient,
+    this.batteryOptimizationController,
+  });
 
   @override
   State<ConnectionScreen> createState() => _ConnectionScreenState();
@@ -78,6 +92,44 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
       _serverUrlController.text = ApiConfig.baseUrl;
       _apiKeyController.text = ApiConfig.apiKey;
     });
+    // Cold launch only, not a "Connection Settings" revisit - this screen's
+    // own doc comment on [_loadExisting] already notes it's shared between
+    // both, but re-prompting every time the user opens Connection Settings
+    // mid-session would be excessive.
+    if (!widget.isSettingsRevisit) {
+      unawaited(_maybeOfferBatteryOptimization());
+    }
+  }
+
+  /// Android-only: Android's battery optimisation can kill this app in the
+  /// background, taking any unsaved modelling progress with it - offers to
+  /// exempt the app from it, once, on cold launch. A no-op on every other
+  /// platform. See [BatteryOptimizationController] and MainActivity.kt's
+  /// `isIgnoringBatteryOptimizations`/`requestIgnoreBatteryOptimizations`.
+  Future<void> _maybeOfferBatteryOptimization() async {
+    if (!Platform.isAndroid) return;
+    final controller = widget.batteryOptimizationController ?? BatteryOptimizationController();
+    if (await controller.isIgnoringOptimizations()) return;
+    if (await controller.isPromptDismissed()) return;
+    if (!mounted) return;
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Disable battery optimisation?'),
+        content: const Text(
+          'Battery optimisation may unexpectedly kill this app and unsaved progress can be lost. '
+          'Disabling it for this app keeps it running reliably in the background.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Not now')),
+          FilledButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Disable')),
+        ],
+      ),
+    );
+    await controller.setPromptDismissed();
+    if (accepted == true) {
+      await controller.requestIgnoreOptimizations();
+    }
   }
 
   @override

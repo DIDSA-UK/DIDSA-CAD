@@ -5482,7 +5482,10 @@ class SketchController extends ChangeNotifier {
       result[polygon.vertexPointIds[i]] = (center.x + radius * math.cos(angle), center.y + radius * math.sin(angle));
     }
     if (inscribedRadiusPointId != null) {
-      final inradius = radius * math.cos(math.pi / polygon.sides);
+      final inscribedConstraint = _circleRadiusConstraint(inscribedCircle!);
+      final inradius = (inscribedConstraint != null && !inscribedConstraint.provisional)
+          ? inscribedConstraint.distance
+          : radius * math.cos(math.pi / polygon.sides);
       final midAngle = baseAngle + math.pi / polygon.sides;
       result[inscribedRadiusPointId] =
           (center.x + inradius * math.cos(midAngle), center.y + inradius * math.sin(midAngle));

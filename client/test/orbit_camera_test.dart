@@ -553,8 +553,8 @@ void main() {
     camera.setZoomBoundsForRadius(10);
     // farClip = max(3000, radius * 4) = max(3000, 40) = 3000 for a small body.
     expect(camera.farClip, 3000);
-    expect(camera.nearClip, closeTo(0.3, 1e-9)); // farClip / 10000
-    expect(camera.minDistance, closeTo(0.6, 1e-9)); // nearClip * 2
+    expect(camera.nearClip, closeTo(0.15, 1e-9)); // farClip / 20000
+    expect(camera.minDistance, closeTo(0.3, 1e-9)); // nearClip * 2
     expect(camera.maxDistance, 200); // radius * _maxDistanceRadiusFactor (20)
 
     // Shrinking the bounds below the camera's current distance (80) must
@@ -576,8 +576,8 @@ void main() {
     // range. farClip = radius * 22, above the 1000 floor.
     expect(camera.farClip, 22000);
     expect(camera.farClip, greaterThan(camera.maxDistance + 1000));
-    expect(camera.nearClip, closeTo(2.2, 1e-9)); // farClip / 10000
-    expect(camera.minDistance, closeTo(4.4, 1e-9)); // nearClip * 2
+    expect(camera.nearClip, closeTo(1.1, 1e-9)); // farClip / 20000
+    expect(camera.minDistance, closeTo(2.2, 1e-9)); // nearClip * 2
   });
 
   test(
@@ -628,13 +628,13 @@ void main() {
   group('effectiveNearClip', () {
     test('tightens well past the static nearClip once zoomed in close on a large body', () {
       final camera = OrbitCamera()..setZoomBoundsForRadius(1000);
-      // From the "large body" test above: nearClip = 2.2, minDistance = 4.4.
-      expect(camera.nearClip, closeTo(2.2, 1e-9));
+      // From the "large body" test above: nearClip = 1.1, minDistance = 2.2.
+      expect(camera.nearClip, closeTo(1.1, 1e-9));
 
       camera.distance = camera.minDistance;
-      // distance / 10000 = 4.4 / 10000 = 0.00044 - far tighter than the
-      // static nearClip (2.2) the old, unfixed behaviour was stuck with.
-      expect(camera.effectiveNearClip, closeTo(0.00044, 1e-9));
+      // distance / 20000 = 2.2 / 20000 = 0.00011 - far tighter than the
+      // static nearClip (1.1) the old, unfixed behaviour was stuck with.
+      expect(camera.effectiveNearClip, closeTo(0.00011, 1e-9));
       expect(camera.effectiveNearClip, lessThan(camera.nearClip));
     });
 
@@ -642,8 +642,8 @@ void main() {
       final camera = OrbitCamera()..setZoomBoundsForRadius(1000);
 
       camera.distance = camera.maxDistance;
-      // distance / 10000 = 20000 / 10000 = 2.0, which is actually *less*
-      // than the static nearClip (2.2) here too - min() keeps whichever is
+      // distance / 20000 = 20000 / 20000 = 1.0, which is actually *less*
+      // than the static nearClip (1.1) here too - min() keeps whichever is
       // smaller, so a normal zoomed-out view is only ever unaffected or
       // tightened, never loosened past the old value.
       expect(camera.effectiveNearClip, lessThanOrEqualTo(camera.nearClip));
@@ -658,11 +658,24 @@ void main() {
 
     test('matches the un-fixed nearClip for a small/default body at a normal distance', () {
       final camera = OrbitCamera();
-      // Default state: nearClip = 0.1, distance = 80 -> 80/10000 = 0.008,
+      // Default state: nearClip = 0.1, distance = 80 -> 80/20000 = 0.004,
       // already tighter than 0.1, so effectiveNearClip differs even here -
       // by design (see the getter's own doc comment: this can only ever
       // tighten, never loosen, relative to the old plain nearClip).
       expect(camera.effectiveNearClip, lessThanOrEqualTo(camera.nearClip));
+    });
+
+    test(
+        'bug fix (bug report: "near clip plane... should be much more generous by default"): the '
+        'near/far ratio was doubled (10000 -> 20000), halving effectiveNearClip for the same farClip/'
+        'distance, so real geometry has to get twice as close to the camera before it clips, at any '
+        'orbit angle', () {
+      final camera = OrbitCamera()..setZoomBoundsForRadius(1000);
+      camera.distance = camera.maxDistance; // stays inside the sceneRadius-based tightening branch
+      // farClip = 22000 (see the "large body" setZoomBoundsForRadius test) ->
+      // nearClip = farClip / 20000 = 1.1, half of what a 1:10000 ratio would
+      // have given (2.2).
+      expect(camera.nearClip, closeTo(1.1, 1e-9));
     });
   });
 

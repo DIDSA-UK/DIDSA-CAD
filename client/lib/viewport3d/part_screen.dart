@@ -1480,6 +1480,30 @@ class _PartScreenState extends State<PartScreen> {
   /// Body(ies) take over rendering through the ordinary [_bodies] path.
   List<BodyMeshDto> _pendingCreateCoarsePreviewBodies = [];
 
+  /// Bug fix (on-device feedback: "if I flip the direction of the pattern a
+  /// ghost of the preview in the original direction persists, ... even
+  /// after exiting the tool"): mirrors [_meshRefreshGeneration]'s own idiom
+  /// for [_pendingCreateCoarsePreviewBodies]'s writers
+  /// ([_showPatternCreateCoarsePreview]/[_showLoftCreateCoarsePreview]).
+  /// Bumped by every new coarse-preview request *and* by
+  /// [_clearPendingCreateCoarsePreview], so neither direction of the race
+  /// (a stale response landing after a clear, or a stale response landing
+  /// after a newer request) can resurrect/clobber [_pendingCreateCoarsePreviewBodies].
+  int _createCoarsePreviewGeneration = 0;
+
+  /// Bug fix, same on-device feedback as [_createCoarsePreviewGeneration]:
+  /// the Future for a `createPatternFeature` call already in flight, if any
+  /// - a second [_ensurePatternFeatureExists] call arriving before the
+  /// first's create resolves (e.g. two quick "flip direction" taps) queues
+  /// behind this instead of firing a second, concurrent create that could
+  /// orphan a duplicate server-side PatternFeature. Cleared the moment the
+  /// create it refers to settles.
+  Future<FeatureDto>? _patternFeatureCreateInFlight;
+
+  /// [_patternFeatureCreateInFlight]'s exact counterpart for
+  /// [_ensureLoftFeatureExists]'s own `createLoftFeature` call.
+  Future<FeatureDto>? _loftFeatureCreateInFlight;
+
   /// [FeatureTreePanel.pendingDetailFeatureIds] - maps [_pendingCoarseBodyIds]
   /// back to the Feature id that produced each Body ([baseFeatureId],
   /// `body_naming.dart`'s existing, correct Body-to-Feature helper - handles
@@ -6298,16 +6322,33 @@ class _PartScreenState extends State<PartScreen> {
 
     final existingId = _previewLoftFeatureId;
     if (existingId == null) {
-      unawaited(_showLoftCreateCoarsePreview(
-        sections: sections,
-        mode: mode.apiValue,
-        ruled: ruled,
-        targetBodyIds: targetBodyIds,
-        thickness: thickness,
-        guideCurveRefs: guideCurveRefs,
-      ));
-      try {
-        final created = await _api.createLoftFeature(
+      // Bug fix: mirrors [_ensurePatternFeatureExists]'s own identical fix
+      // via [_patternFeatureCreateInFlight] - see that field's doc comment.
+      if (_loftFeatureCreateInFlight != null) {
+        final created = await _loftFeatureCreateInFlight!;
+        await _api.updateLoftFeature(
+          part.id,
+          created.id,
+          sections: sections,
+          mode: mode.apiValue,
+          ruled: ruled,
+          targetBodyIds: targetBodyIds,
+          thickness: thickness,
+          thinFromClosedProfile: thinFromClosedProfile,
+          guideCurveRefs: guideCurveRefs,
+        );
+      } else {
+        final generation = ++_createCoarsePreviewGeneration;
+        unawaited(_showLoftCreateCoarsePreview(
+          generation: generation,
+          sections: sections,
+          mode: mode.apiValue,
+          ruled: ruled,
+          targetBodyIds: targetBodyIds,
+          thickness: thickness,
+          guideCurveRefs: guideCurveRefs,
+        ));
+        final createFuture = _api.createLoftFeature(
           part.id,
           sections: sections,
           mode: mode.apiValue,
@@ -6317,9 +6358,14 @@ class _PartScreenState extends State<PartScreen> {
           thinFromClosedProfile: thinFromClosedProfile,
           guideCurveRefs: guideCurveRefs,
         );
-        _previewLoftFeatureId = created.id;
-      } finally {
-        _clearPendingCreateCoarsePreview();
+        _loftFeatureCreateInFlight = createFuture;
+        try {
+          final created = await createFuture;
+          _previewLoftFeatureId = created.id;
+        } finally {
+          _loftFeatureCreateInFlight = null;
+          _clearPendingCreateCoarsePreview();
+        }
       }
     } else {
       await _api.updateLoftFeature(
@@ -6409,6 +6455,11 @@ class _PartScreenState extends State<PartScreen> {
       if (sections.any((section) => _selectedFeatureId == section.id)) {
         _selectedFeatureId = null;
       }
+      // Bug fix: mirrors [_confirmPattern]/[_cancelPattern]'s own identical
+      // fix - exiting the tool must never leave a stale coarse-preview
+      // ghost behind.
+      _createCoarsePreviewGeneration++;
+      _pendingCreateCoarsePreviewBodies = [];
     });
     await _endRollback();
   }
@@ -6444,6 +6495,11 @@ class _PartScreenState extends State<PartScreen> {
       if (sections.any((section) => _selectedFeatureId == section.id)) {
         _selectedFeatureId = null;
       }
+      // Bug fix: mirrors [_confirmPattern]/[_cancelPattern]'s own identical
+      // fix - exiting the tool must never leave a stale coarse-preview
+      // ghost behind.
+      _createCoarsePreviewGeneration++;
+      _pendingCreateCoarsePreviewBodies = [];
     });
     if (part != null && previewId != null) {
       if (wasEditing && editSnapshot != null) {
@@ -8808,6 +8864,14 @@ class _PartScreenState extends State<PartScreen> {
       _features = features;
       _recomputeCreatePlaneGeometries();
     });
+    // Bug fix (bug report: "when orbiting a part, it sometimes orbits about
+    // the wrong point"): this is the app's one real "a committed change just
+    // landed" choke point (every feature create/update/delete confirm and
+    // cancel flow calls this once at the end - never a live/debounced
+    // preview tick) - see [PartViewportState.reframeCameraIfStillFollowing]'s
+    // own doc comment for why re-centring belongs here and not in the
+    // continuous mesh-sync path.
+    _viewportKey.currentState?.reframeCameraIfStillFollowing();
   }
 
   /// Assembly support Phase 3: fetches [_focusStack]'s currently-primary
@@ -9201,7 +9265,17 @@ class _PartScreenState extends State<PartScreen> {
   /// *something* real for the exact duration the slow real request is in
   /// flight. Best-effort: a failed preview never blocks or fails the real
   /// create call it runs alongside.
+  ///
+  /// [generation] must be the value [_createCoarsePreviewGeneration] held
+  /// *before* this request was fired (see call sites) - bug fix (on-device
+  /// feedback: "if I flip the direction of the pattern a ghost of the
+  /// preview in the original direction persists"): without this guard, a
+  /// slower, stale response (e.g. from before a direction flip) could land
+  /// and overwrite a newer, already-current preview with no way to
+  /// supersede it again. Mirrors [_refreshMesh]/[_refreshCoarseOverlay]'s
+  /// own [_meshRefreshGeneration] idiom.
   Future<void> _showPatternCreateCoarsePreview({
+    required int generation,
     required List<String> sourceBodyIds,
     List<String> sourceFeatureIds = const [],
     String patternType = 'rectangular',
@@ -9249,14 +9323,16 @@ class _PartScreenState extends State<PartScreen> {
     } catch (_) {
       return;
     }
-    if (!mounted) return;
+    if (!mounted || generation != _createCoarsePreviewGeneration) return;
     setState(() => _pendingCreateCoarsePreviewBodies = coarse);
   }
 
-  /// Mirrors [_showPatternCreateCoarsePreview] exactly, for a brand-new
-  /// LoftFeature's own real `createLoftFeature` call
-  /// ([_ensureLoftFeatureExists]'s `existingId == null` branch).
+  /// Mirrors [_showPatternCreateCoarsePreview] exactly (including the
+  /// [generation] staleness guard), for a brand-new LoftFeature's own real
+  /// `createLoftFeature` call ([_ensureLoftFeatureExists]'s
+  /// `existingId == null` branch).
   Future<void> _showLoftCreateCoarsePreview({
+    required int generation,
     required List<LoftSectionDto> sections,
     required String mode,
     bool ruled = false,
@@ -9280,7 +9356,7 @@ class _PartScreenState extends State<PartScreen> {
     } catch (_) {
       return;
     }
-    if (!mounted) return;
+    if (!mounted || generation != _createCoarsePreviewGeneration) return;
     setState(() => _pendingCreateCoarsePreviewBodies = coarse);
   }
 
@@ -9288,8 +9364,11 @@ class _PartScreenState extends State<PartScreen> {
   /// [_showLoftCreateCoarsePreview] most recently populated - called the
   /// moment the real create call they ran alongside returns (successfully
   /// or not), so the transient overlay never outlives the request it was
-  /// standing in for.
+  /// standing in for. Also bumps [_createCoarsePreviewGeneration], so a
+  /// still-in-flight older preview response can never resurrect the overlay
+  /// after this clear.
   void _clearPendingCreateCoarsePreview() {
+    _createCoarsePreviewGeneration++;
     if (_pendingCreateCoarsePreviewBodies.isEmpty) return;
     setState(() => _pendingCreateCoarsePreviewBodies = []);
   }
@@ -17024,20 +17103,42 @@ class _PartScreenState extends State<PartScreen> {
       if (axis == null) return;
       final existingId = _previewPatternFeatureId;
       if (existingId == null) {
-        unawaited(_showPatternCreateCoarsePreview(
-          sourceBodyIds: sourceBodyIds,
-          sourceFeatureIds: _patternSourceFeatureIds,
-          patternType: 'circular',
-          axis: axis,
-          countAngular: _patternCountAngular,
-          angleTotal: _patternAngleTotal,
-          reverseAngular: _patternReverseAngular,
-          skipIndices: skipIndices,
-          merge: _patternMerge,
-          toolFeatureId: _patternToolFeatureId,
-        ));
-        try {
-          final created = await _api.createPatternFeature(
+        // Bug fix: queue behind an already-in-flight create (e.g. a second
+        // "flip direction" tap before the first create resolved) instead of
+        // firing a second, concurrent createPatternFeature call that could
+        // orphan a duplicate server-side Feature - see
+        // [_patternFeatureCreateInFlight]'s own doc comment.
+        if (_patternFeatureCreateInFlight != null) {
+          final created = await _patternFeatureCreateInFlight!;
+          await _api.updatePatternFeature(
+            part.id,
+            created.id,
+            sourceBodyIds: sourceBodyIds,
+            sourceFeatureIds: _patternSourceFeatureIds,
+            axis: axis,
+            countAngular: _patternCountAngular,
+            angleTotal: _patternAngleTotal,
+            reverseAngular: _patternReverseAngular,
+            skipIndices: skipIndices,
+            merge: _patternMerge,
+            toolFeatureId: _patternToolFeatureId,
+          );
+        } else {
+          final generation = ++_createCoarsePreviewGeneration;
+          unawaited(_showPatternCreateCoarsePreview(
+            generation: generation,
+            sourceBodyIds: sourceBodyIds,
+            sourceFeatureIds: _patternSourceFeatureIds,
+            patternType: 'circular',
+            axis: axis,
+            countAngular: _patternCountAngular,
+            angleTotal: _patternAngleTotal,
+            reverseAngular: _patternReverseAngular,
+            skipIndices: skipIndices,
+            merge: _patternMerge,
+            toolFeatureId: _patternToolFeatureId,
+          ));
+          final createFuture = _api.createPatternFeature(
             part.id,
             sourceBodyIds: sourceBodyIds,
             sourceFeatureIds: _patternSourceFeatureIds,
@@ -17050,9 +17151,14 @@ class _PartScreenState extends State<PartScreen> {
             merge: _patternMerge,
             toolFeatureId: _patternToolFeatureId,
           );
-          _previewPatternFeatureId = created.id;
-        } finally {
-          _clearPendingCreateCoarsePreview();
+          _patternFeatureCreateInFlight = createFuture;
+          try {
+            final created = await createFuture;
+            _previewPatternFeatureId = created.id;
+          } finally {
+            _patternFeatureCreateInFlight = null;
+            _clearPendingCreateCoarsePreview();
+          }
         }
       } else {
         await _api.updatePatternFeature(
@@ -17079,23 +17185,46 @@ class _PartScreenState extends State<PartScreen> {
     final hasSecondDirection = _patternHasSecondDirection;
     final existingId = _previewPatternFeatureId;
     if (existingId == null) {
-      unawaited(_showPatternCreateCoarsePreview(
-        sourceBodyIds: sourceBodyIds,
-        sourceFeatureIds: _patternSourceFeatureIds,
-        direction1: direction1,
-        count1: _patternCount1,
-        spacing1: _patternSpacing1,
-        reverse1: _patternReverse1,
-        direction2: hasSecondDirection ? _patternDirection2 : null,
-        count2: hasSecondDirection ? _patternCount2 : 1,
-        spacing2: hasSecondDirection ? _patternSpacing2 : 0.0,
-        reverse2: hasSecondDirection ? _patternReverse2 : false,
-        skipIndices: skipIndices,
-        merge: _patternMerge,
-        toolFeatureId: _patternToolFeatureId,
-      ));
-      try {
-        final created = await _api.createPatternFeature(
+      // Bug fix: see the circular branch above's identical comment on
+      // [_patternFeatureCreateInFlight].
+      if (_patternFeatureCreateInFlight != null) {
+        final created = await _patternFeatureCreateInFlight!;
+        await _api.updatePatternFeature(
+          part.id,
+          created.id,
+          sourceBodyIds: sourceBodyIds,
+          sourceFeatureIds: _patternSourceFeatureIds,
+          direction1: direction1,
+          count1: _patternCount1,
+          spacing1: _patternSpacing1,
+          reverse1: _patternReverse1,
+          direction2: hasSecondDirection ? _patternDirection2 : null,
+          count2: hasSecondDirection ? _patternCount2 : 1,
+          spacing2: hasSecondDirection ? _patternSpacing2 : 0.0,
+          reverse2: hasSecondDirection ? _patternReverse2 : false,
+          skipIndices: skipIndices,
+          merge: _patternMerge,
+          toolFeatureId: _patternToolFeatureId,
+        );
+      } else {
+        final generation = ++_createCoarsePreviewGeneration;
+        unawaited(_showPatternCreateCoarsePreview(
+          generation: generation,
+          sourceBodyIds: sourceBodyIds,
+          sourceFeatureIds: _patternSourceFeatureIds,
+          direction1: direction1,
+          count1: _patternCount1,
+          spacing1: _patternSpacing1,
+          reverse1: _patternReverse1,
+          direction2: hasSecondDirection ? _patternDirection2 : null,
+          count2: hasSecondDirection ? _patternCount2 : 1,
+          spacing2: hasSecondDirection ? _patternSpacing2 : 0.0,
+          reverse2: hasSecondDirection ? _patternReverse2 : false,
+          skipIndices: skipIndices,
+          merge: _patternMerge,
+          toolFeatureId: _patternToolFeatureId,
+        ));
+        final createFuture = _api.createPatternFeature(
           part.id,
           sourceBodyIds: sourceBodyIds,
           sourceFeatureIds: _patternSourceFeatureIds,
@@ -17111,9 +17240,14 @@ class _PartScreenState extends State<PartScreen> {
           merge: _patternMerge,
           toolFeatureId: _patternToolFeatureId,
         );
-        _previewPatternFeatureId = created.id;
-      } finally {
-        _clearPendingCreateCoarsePreview();
+        _patternFeatureCreateInFlight = createFuture;
+        try {
+          final created = await createFuture;
+          _previewPatternFeatureId = created.id;
+        } finally {
+          _patternFeatureCreateInFlight = null;
+          _clearPendingCreateCoarsePreview();
+        }
       }
     } else {
       await _api.updatePatternFeature(
@@ -17227,6 +17361,11 @@ class _PartScreenState extends State<PartScreen> {
       _patternEditSnapshot = null;
       _meshBeforePattern = null;
       _selectionFilterOverrides.pop();
+      // Bug fix: exiting the tool must never leave a stale coarse-preview
+      // ghost behind, regardless of in-flight request timing - see
+      // [_createCoarsePreviewGeneration]'s own doc comment.
+      _createCoarsePreviewGeneration++;
+      _pendingCreateCoarsePreviewBodies = [];
     });
     await _endRollback();
   }
@@ -17268,6 +17407,11 @@ class _PartScreenState extends State<PartScreen> {
       _patternEditSnapshot = null;
       _meshBeforePattern = null;
       _selectionFilterOverrides.pop();
+      // Bug fix: exiting the tool must never leave a stale coarse-preview
+      // ghost behind, regardless of in-flight request timing - see
+      // [_createCoarsePreviewGeneration]'s own doc comment.
+      _createCoarsePreviewGeneration++;
+      _pendingCreateCoarsePreviewBodies = [];
     });
     if (part != null && previewId != null) {
       if (wasEditing && editSnapshot != null) {

@@ -22,6 +22,13 @@
          needs a runtime grant (MainActivity.kt's requestPermission), not
          just this manifest declaration. -->
     <uses-permission android:name="com.termux.permission.RUN_COMMAND"/>
+    <!-- Startup battery-optimisation check (see connection_screen.dart's
+         `_maybeOfferDisableBatteryOptimization`): required to launch
+         Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, which asks the
+         user to exempt this app from battery optimisation so Android
+         doesn't kill it (and any unsaved modelling progress) in the
+         background - see MainActivity.kt's requestIgnoreBatteryOptimizations. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
     <application
         android:label="didsa_cad_client"
         android:name="${applicationName}"

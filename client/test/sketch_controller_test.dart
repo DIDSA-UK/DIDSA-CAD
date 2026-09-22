@@ -4911,6 +4911,61 @@ void main() {
   });
 
   test(
+      'bug fix: a confirmed dimension on the inscribed reference circle acts as a driving dimension '
+      'and holds the circle at its confirmed size while dragging a polygon vertex, instead of being '
+      'silently overwritten by the live tangent-circle formula', () async {
+    controller.togglePolygonReferenceCircles();
+    controller.selectDrawTool(SketchTool.polygon);
+    controller.setPolygonSides(6);
+    await controller.handleCanvasTap(0, 0); // centre
+    await controller.handleCanvasTap(10, 0); // first vertex - radius 10
+    controller.exitToSelectMode();
+    final polygon = controller.polygons.values.single;
+    final inscribed = controller.circles[polygon.inscribedCircleId]!;
+
+    final inscribedConstraintId =
+        controller.constraints.values.whereType<DistanceConstraintDto>().firstWhere((c) =>
+            (c.pointAId == inscribed.centerPointId && c.pointBId == inscribed.radiusPointId) ||
+            (c.pointAId == inscribed.radiusPointId && c.pointBId == inscribed.centerPointId)).id;
+    final inscribedConstraint = controller.constraints[inscribedConstraintId] as DistanceConstraintDto;
+    final confirmedInradius = inscribedConstraint.distance;
+    controller.constraints[inscribedConstraintId] = DistanceConstraintDto(
+      id: inscribedConstraint.id,
+      pointAId: inscribedConstraint.pointAId,
+      pointBId: inscribedConstraint.pointBId,
+      distance: inscribedConstraint.distance,
+      provisional: false,
+    );
+
+    backend.requestLog.clear();
+    final vertex0 = controller.points[polygon.vertexPointIds[0]]!;
+    controller.cursorX = vertex0.x;
+    controller.cursorY = vertex0.y;
+    expect(controller.beginPointDrag(polygon.vertexPointIds[0]), isTrue);
+    // Resize to radius 20 - the inscribed circle must NOT resize to match.
+    await controller.updatePointDrag(0, 20);
+    await controller.endPointDrag();
+
+    expect(
+      backend.requestLog.any((r) => r.contains('/constraints/$inscribedConstraintId')),
+      isFalse,
+      reason: 'a confirmed reference-circle dimension must never be PATCHed by a vertex drag',
+    );
+    final center = controller.points[polygon.centerPointId]!;
+    final inscribedAfter = controller.points[inscribed.radiusPointId]!;
+    final actualInradius = math.sqrt(
+      math.pow(inscribedAfter.x - center.x, 2) + math.pow(inscribedAfter.y - center.y, 2),
+    );
+    expect(actualInradius, closeTo(confirmedInradius, 1e-6),
+        reason: 'the confirmed dimension must drive/clamp the inscribed circle\'s size, not the '
+            'live vertex-drag formula');
+    // The circle should still rotate to stay tangent to the moved edge.
+    final expectedAngle = math.pi / 2 + math.pi / 6;
+    expect(inscribedAfter.x, closeTo(actualInradius * math.cos(expectedAngle), 1e-6));
+    expect(inscribedAfter.y, closeTo(actualInradius * math.sin(expectedAngle), 1e-6));
+  });
+
+  test(
       'the inscribed circle also translates correctly when dragging the Polygon\'s own centre, same '
       'as every vertex', () async {
     controller.togglePolygonReferenceCircles();

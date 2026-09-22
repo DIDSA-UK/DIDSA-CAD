@@ -3,7 +3,10 @@ package uk.snail_shell.didsa_cad_client
 import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
@@ -62,6 +65,8 @@ class MainActivity : FlutterActivity() {
                         result.success(isPackageInstalled(packageName))
                     }
                 }
+                "isIgnoringBatteryOptimizations" -> result.success(isIgnoringBatteryOptimizations())
+                "requestIgnoreBatteryOptimizations" -> requestIgnoreBatteryOptimizations(result)
                 else -> result.notImplemented()
             }
         }
@@ -214,4 +219,33 @@ class MainActivity : FlutterActivity() {
         } catch (e: PackageManager.NameNotFoundException) {
             false
         }
+
+    /// See connection_screen.dart's own doc comment on why this is checked
+    /// on every cold launch: Android's battery optimisation can kill this
+    /// app in the background (and with it, any unsaved modelling progress),
+    /// so the app offers to exempt itself. True already means nothing to do
+    /// - the system settings toggle is already off for this app.
+    private fun isIgnoringBatteryOptimizations(): Boolean {
+        val powerManager = getSystemService(POWER_SERVICE) as PowerManager
+        return powerManager.isIgnoringBatteryOptimizations(packageName)
+    }
+
+    /// Launches the system "exempt this app from battery optimisation"
+    /// settings screen - unlike [requestRunCommandPermission] this is a
+    /// Settings Activity the user interacts with directly, not a runtime
+    /// permission grant dialog, so there is no onRequestPermissionsResult
+    /// callback to wire up: the Dart side re-checks
+    /// [isIgnoringBatteryOptimizations] itself once the user returns to the
+    /// app. [result] only reports whether the settings screen could be
+    /// launched at all.
+    private fun requestIgnoreBatteryOptimizations(result: MethodChannel.Result) {
+        try {
+            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+            intent.data = Uri.parse("package:$packageName")
+            startActivity(intent)
+            result.success(true)
+        } catch (e: Exception) {
+            result.success(false)
+        }
+    }
 }
