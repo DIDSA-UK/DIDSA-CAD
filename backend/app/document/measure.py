@@ -28,8 +28,9 @@ from OCC.Core.GProp import GProp_GProps
 from OCC.Core.TopAbs import TopAbs_REVERSED
 from OCC.Core.TopoDS import TopoDS_Face, TopoDS_Shape, topods
 
-from app.document.extrude import compute_part_bodies, resolve_subshape_from_bodies
-from app.document.models import Part, SubShapeRef, SubShapeType
+from app.document.assembly import resolve_occurrence_target
+from app.document.extrude import apply_rigid_transform_to_shape, compute_part_bodies, resolve_subshape_from_bodies
+from app.document.models import Document, MeasureEntityRef, Part, SubShapeRef, SubShapeType
 
 # Same tolerances `move_face.py`'s `_axes_coincide` already uses to decide
 # whether two independently-fit cylinder/cone axes are "the same infinite
@@ -98,6 +99,17 @@ def _measure_failed(refs: list[SubShapeRef]) -> HTTPException:
             "refs": [{"body_id": r.body_id, "shape_type": r.shape_type.value, "index": r.index} for r in refs],
         },
     )
+
+
+def _missing_occurrence(occurrence_id: str) -> HTTPException:
+    """Assembly-testing bug fix: mirrors `app.document.extrude.
+    _missing_reference`'s `missing_reference` envelope - a
+    `MeasureEntityRef.occurrence_id` that doesn't resolve to a real,
+    top-level Occurrence of the open Part is exactly as much "the client's
+    picked reference no longer exists" as a stale `body_id`/`index` is, so
+    it gets the same `type` rather than a new one the client would need a
+    separate case for."""
+    return HTTPException(status_code=422, detail={"type": "missing_reference", "occurrence_id": occurrence_id})
 
 
 def _point(p: gp_Pnt) -> tuple[float, float, float]:
@@ -370,29 +382,77 @@ def mass_properties(part: Part) -> tuple[dict[str, float], dict[str, float]]:
 
 
 def measure(
-    part: Part, refs: list[SubShapeRef], excluded_feature_ids: frozenset[str] = frozenset()
+    document: Document,
+    part: Part,
+    refs: list[MeasureEntityRef],
+    excluded_feature_ids: frozenset[str] = frozenset(),
 ) -> MeasurementResult:
     """Entry point for `router.measure_entities` - `refs` must already be
     validated as length 1 or 2 (the router's job, mirroring every other
     endpoint's "payload shape in the router, resolution in here" split).
-    Resolves every ref against one shared `compute_part_bodies` snapshot so
-    two refs into two different Bodies still see a mutually consistent
-    Part state, then dispatches on how many entities were selected. Raises
-    the existing `missing_reference` 422 (via `resolve_subshape_from_bodies`)
-    if any ref no longer resolves.
 
-    Also always computes `body_volumes`/`body_masses` for every *distinct*
-    Body among `refs` (regardless of whether any ref's own shape_type is
-    BODY - selecting a face still reports its owning Body's volume/mass),
-    and attaches them to whichever `MeasurementResult` `single_shape_geometry`/
-    `_measure_pair` produced."""
-    bodies = compute_part_bodies(part, excluded_feature_ids)
-    shapes = [resolve_subshape_from_bodies(bodies, ref) for ref in refs]
-    if len(shapes) == 1:
-        result = single_shape_geometry(refs[0], shapes[0])
+    Assembly-testing bug fix: each ref now carries its own `occurrence_id`
+    (mirroring `app.document.assembly_solver`'s identical need), resolved
+    via the shared `app.document.assembly.resolve_occurrence_target` -
+    `""` means `part`'s own root content (the pre-existing, single-Part
+    behavior, unchanged), non-empty means a placed Occurrence's target Part,
+    whose local geometry is then placed into world space
+    (`app.document.extrude.apply_rigid_transform_to_shape`) before measuring, so two refs picked on two
+    *different* Occurrences still measure a real, physically-meaningful
+    relationship (e.g. the true distance between them) rather than mixing
+    two unrelated local frames. `excluded_feature_ids` only ever applies to
+    `part`'s own root content (a live feature-editing preview's own
+    in-progress Part) - it would not be meaningful against an unrelated
+    Occurrence's target Part. Raises `missing_reference` (422) if any ref's
+    `occurrence_id` doesn't resolve (`_missing_occurrence`) or its
+    `body_id`/`index` doesn't (the existing `resolve_subshape_from_bodies`
+    behavior, unchanged).
+
+    Bodies are still resolved through one shared `compute_part_bodies`
+    snapshot per distinct target Part (not once per ref) - two refs into
+    the same Occurrence's target Part (or both into `part`'s own root
+    content) still see a mutually consistent state, exactly like the
+    pre-existing single-Part behavior."""
+    bodies_by_part_id: dict[str, tuple[Part, dict[str, TopoDS_Shape]]] = {}
+    resolved: list[tuple[SubShapeRef, TopoDS_Shape]] = []
+    ref_target_part_ids: list[str] = []
+    for ref in refs:
+        try:
+            target_part, transform = resolve_occurrence_target(document, part, ref.occurrence_id)
+        except KeyError:
+            raise _missing_occurrence(ref.occurrence_id) from None
+        cached = bodies_by_part_id.get(target_part.id)
+        if cached is None:
+            part_excluded_feature_ids = excluded_feature_ids if target_part is part else frozenset()
+            target_bodies = compute_part_bodies(target_part, part_excluded_feature_ids)
+            bodies_by_part_id[target_part.id] = (target_part, target_bodies)
+        else:
+            _, target_bodies = cached
+        local_shape = resolve_subshape_from_bodies(target_bodies, ref.subshape_ref)
+        shape = local_shape if transform is None else apply_rigid_transform_to_shape(local_shape, transform)
+        resolved.append((ref.subshape_ref, shape))
+        ref_target_part_ids.append(target_part.id)
+
+    if len(resolved) == 1:
+        result = single_shape_geometry(resolved[0][0], resolved[0][1])
     else:
-        result = _measure_pair(refs[0], shapes[0], refs[1], shapes[1])
+        result = _measure_pair(resolved[0][0], resolved[0][1], resolved[1][0], resolved[1][1])
 
-    body_ids = {ref.body_id for ref in refs}
-    result.body_volumes, result.body_masses = _body_volumes_and_masses(part, bodies, body_ids)
+    # Also always computes `body_volumes`/`body_masses` for every *distinct*
+    # Body among `refs` (regardless of whether any ref's own shape_type is
+    # BODY - selecting a face still reports its owning Body's volume/mass),
+    # grouped by whichever target Part each ref actually resolved against -
+    # unchanged from the pre-existing single-Part behavior when every ref
+    # shares one target Part (the overwhelmingly common case).
+    body_volumes: dict[str, float] = {}
+    body_masses: dict[str, float] = {}
+    body_ids_by_part_id: dict[str, set[str]] = {}
+    for ref, target_part_id in zip(refs, ref_target_part_ids):
+        body_ids_by_part_id.setdefault(target_part_id, set()).add(ref.subshape_ref.body_id)
+    for target_part_id, body_ids in body_ids_by_part_id.items():
+        target_part, target_bodies = bodies_by_part_id[target_part_id]
+        volumes, masses = _body_volumes_and_masses(target_part, target_bodies, body_ids)
+        body_volumes.update(volumes)
+        body_masses.update(masses)
+    result.body_volumes, result.body_masses = body_volumes, body_masses
     return result

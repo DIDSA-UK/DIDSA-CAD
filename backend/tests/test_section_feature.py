@@ -227,3 +227,99 @@ def test_an_unknown_body_id_is_rejected():
     detail = response_json["detail"]
     assert detail["type"] == "unknown_body_id"
     assert detail["body_id"] == "not-a-real-body-id"
+
+
+# --- Assembly mode (bug report: "Section in assembly doesn't section parts") -
+
+
+def _export_part(part_id: str) -> dict:
+    response = client.get("/document/export/native", params={"part_id": part_id})
+    assert response.status_code == 200
+    return response.json()
+
+
+def _place_occurrence(root_part_id: str, driven_part_id: str, *, translation: tuple[float, float, float]) -> None:
+    """Composes `driven_part_id` as a top-level Occurrence of `root_part_id`
+    (`occ-driven`), placed at `translation` with no rotation - mirrors
+    `test_assembly_solver.py`'s own identical export/edit/import
+    convention for building a minimal two-Part assembly document."""
+    root_export = _export_part(root_part_id)
+    driven_export = _export_part(driven_part_id)
+    root_part_dict = root_export["document"]["parts"][0]
+    root_part_dict["occurrences"] = [
+        {
+            "id": "occ-driven",
+            "external_ref": f"parts/{driven_part_id}.didsa",
+            "resolved_part_id": driven_part_id,
+            "name_override": None,
+            "transform": {
+                "translation": list(translation),
+                "rotation_axis": [0.0, 0.0, 1.0],
+                "rotation_angle_degrees": 0.0,
+            },
+            "suppressed": False,
+            "hidden": False,
+        }
+    ]
+    root_part_dict["mates"] = []
+    composed_payload = {
+        "schema_version": root_export["schema_version"],
+        "document": {
+            "id": "composed-doc",
+            "root_part_id": root_part_id,
+            "parts": [root_part_dict, driven_export["document"]["parts"][0]],
+        },
+        "sketches": [*root_export["sketches"], *driven_export["sketches"]],
+    }
+    response = client.post("/document/import/native", json=composed_payload)
+    assert response.status_code == 200
+
+
+def test_sectioning_a_placed_occurrence_trims_it_in_world_space():
+    """Bug report: the Section tool previously only ever trimmed the
+    currently-open root Part's own local `body_ids` - a target on a placed
+    Occurrence either resolved to nothing (an assembly container with no
+    local bodies of its own) or silently ignored the Occurrence's own
+    placement. This box is translated 50 units in X - a cutting plane at
+    world x=55 (through the middle of the *translated* box, well outside
+    the box's own local [0, 10] extent) only produces a real cut if the
+    Body was actually placed into world space before trimming."""
+    root, _root_body_id = _boxy_part_and_body()
+    driven, driven_body_id = _boxy_part_and_body()
+    _place_occurrence(root["id"], driven["id"], translation=(50.0, 0.0, 0.0))
+
+    response = client.post(
+        f"/document/parts/{root['id']}/section-preview",
+        json={
+            "targets": [{"occurrence_id": "occ-driven", "body_id": driven_body_id}],
+            "planes": [_plane((55.0, 0.0, 0.0), (1.0, 0.0, 0.0))],
+        },
+    )
+    assert response.status_code == 200, response.text
+    bodies = response.json()
+    assert len(bodies) == 1
+    body = bodies[0]
+    assert body["occurrence_id"] == "occ-driven"
+    assert body["body_id"] == driven_body_id
+    assert len(body["cut_face_ids"]) > 0
+
+    (min_x, min_y, min_z), (max_x, max_y, max_z) = _bbox(body["mesh"])
+    # +normal (x) side kept: world x in [55, 60] (local [5, 10] + the 50
+    # translation) - y/z unchanged from the box's own local [0, 10].
+    assert abs(min_x - 55.0) < _TOLERANCE
+    assert abs(max_x - 60.0) < _TOLERANCE
+    assert abs(min_y - 0.0) < _TOLERANCE and abs(max_y - 10.0) < _TOLERANCE
+    assert abs(min_z - 0.0) < _TOLERANCE and abs(max_z - 10.0) < _TOLERANCE
+
+
+def test_sectioning_an_unresolvable_occurrence_id_is_a_missing_reference_422():
+    root, _root_body_id = _boxy_part_and_body()
+    response = client.post(
+        f"/document/parts/{root['id']}/section-preview",
+        json={
+            "targets": [{"occurrence_id": "does-not-exist", "body_id": "irrelevant"}],
+            "planes": [_plane((0, 0, 5), (0, 0, 1))],
+        },
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["type"] == "missing_reference"

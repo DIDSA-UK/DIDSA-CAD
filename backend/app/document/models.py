@@ -268,6 +268,23 @@ class SubShapeRef:
     index: int
 
 
+@dataclass(frozen=True)
+class MeasureEntityRef:
+    """Measure tool: one already-picked entity for `POST /parts/{part_id}/
+    measure` - `occurrence_id` (mirroring `MateEntityRef`'s own convention:
+    `""` means the currently-open Part's own root content, non-empty names a
+    top-level Occurrence's placed geometry) plus the `SubShapeRef` itself.
+
+    Assembly-testing bug fix: `measure` previously took bare `SubShapeRef`s
+    only, always resolved against the URL's own `part_id` - a face picked on
+    a placed Occurrence (a *different* Part's own body cache, at a
+    different world placement) could never resolve, always a
+    `missing_reference` 422 regardless of which face was actually picked."""
+
+    occurrence_id: str
+    subshape_ref: SubShapeRef
+
+
 class PlaneType(str, Enum):
     """Which plane-construction method a `CreatePlaneFeature` uses - mirrors
     `ExtrudeType`/`SubShapeType`'s str-Enum pattern.

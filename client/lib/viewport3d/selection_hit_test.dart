@@ -1966,3 +1966,183 @@ HoverHit? hitTestComponentInstanceEntities({
     rayT: bestFace.rayT,
   );
 }
+
+/// Bug report (assembly testing: "Select Other does not work in assembly
+/// mode ... double tap and hold does nothing. It should function the same
+/// as in part mode with parts also being offered as valid selections"):
+/// [hitTestAllCandidates]'s own "every candidate along the ray, not just
+/// the nearest" contract, applied to placed Occurrence-instance geometry
+/// instead of [PartViewport.bodies]. Root cause of the bug this fixes:
+/// [_fireSelectOther] only ever called [hitTestAllCandidates] against
+/// [PartViewport.bodies] (the root Part's own local geometry) - a document
+/// that is a pure assembly container (no bodies of its own, everything
+/// placed via Occurrences) produced an empty candidate list every time, so
+/// the "Select Other" sheet never opened at all, regardless of gesture
+/// handling (which is itself lens-agnostic and unaffected).
+///
+/// Mirrors [hitTestComponentInstanceEntities]'s own walk (skip an empty
+/// `occurrencePath` - the root Part's own content, already covered by
+/// [hitTestAllCandidates] itself; skip an instance outside
+/// [selectableOccurrencePaths] entirely; resolve [instance.partId] into
+/// [geometry]; transform each Body's local mesh into world space via
+/// [matrix4FromRigidTransform]) but keeps every face the ray crosses per
+/// Body-on-an-Occurrence (via [hitTestAllFaces], the same "back face" fix
+/// [hitTestAllCandidates] already has for the root Part's own bodies),
+/// plus one whole-component ([SelectionEntityKind.component]) candidate per
+/// Occurrence instance that has a face hit - the "parts also being offered
+/// as valid selections" half of the bug report, matching
+/// [hitTestComponentInstances]'s own single-best contract but offered here
+/// as one more candidate among many, exactly like a Body candidate already
+/// sits alongside its own face candidates below.
+List<HoverHit> hitTestAllComponentInstanceCandidates({
+  required vm.Ray ray,
+  required Size viewportSize,
+  required List<AssemblyOccurrenceInstanceDto> instances,
+  required List<AssemblyBodyGeometryDto> geometry,
+  required Set<String> selectableOccurrencePaths,
+  SelectionFilterState filter = SelectionFilterState.defaults,
+  double radiusPixels = kSelectionHitRadiusPixels,
+  double vertexRadiusPixels = kVertexSelectionHitRadiusPixels,
+  double? orthographicHalfHeight,
+  double fovRadiansY = kCameraVerticalFovRadians,
+  // Mirrors [hitTestAllCandidates]'s own parameter of the same name/intent
+  // - [_fireSelectOther] (this function's sole intended caller, alongside
+  // [hitTestAllCandidates] itself) passes true so a whole-Body candidate is
+  // offered even when `filter.body` is false.
+  bool includeBodyCandidateWithFaces = false,
+}) {
+  HoverHit? bestVertex;
+  HoverHit? bestEdge;
+  // Keyed by "occurrenceKey|bodyId" - the same Part definition (and so the
+  // same bodyId) can be placed at more than one Occurrence, each its own
+  // distinct set of face candidates.
+  final bodyFaceHits = <String, List<HoverHit>>{};
+  final bodyOccurrenceKeys = <String, String>{};
+  final bodyIds = <String, String>{};
+
+  for (final instance in instances) {
+    if (instance.occurrencePath.isEmpty) continue;
+    final occurrenceKey = instance.occurrencePath.join('/');
+    if (!selectableOccurrencePaths.contains(occurrenceKey)) continue;
+    final transform = matrix4FromRigidTransform(instance.worldTransform);
+    for (final partGeometry in geometry) {
+      if (partGeometry.partId != instance.partId) continue;
+      for (final body in partGeometry.bodies) {
+        final mesh = body.mesh;
+        final mapKey = '$occurrenceKey|${body.bodyId}';
+        if (filter.vertex) {
+          final worldVertices = [
+            for (final v in topologyVerticesFromMesh(mesh)) transform.transformed3(v),
+          ];
+          final hit = hitTestVertices(
+            ray,
+            viewportSize,
+            worldVertices,
+            mesh.topologyVertexIds,
+            radiusPixels: vertexRadiusPixels,
+            orthographicHalfHeight: orthographicHalfHeight,
+            fovRadiansY: fovRadiansY,
+          );
+          if (hit != null &&
+              (bestVertex == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestVertex.pixelDistance!, bestVertex.rayT))) {
+            bestVertex = HoverHit(
+              entity: SelectionEntityRef(
+                kind: SelectionEntityKind.vertex,
+                bodyId: body.bodyId,
+                id: hit.entity.id,
+                occurrenceId: occurrenceKey,
+              ),
+              rayT: hit.rayT,
+              pixelDistance: hit.pixelDistance,
+            );
+          }
+        }
+        if (filter.edge) {
+          final worldSegments = [
+            for (final s in edgeSegmentsFromMesh(mesh)) (transform.transformed3(s.$1), transform.transformed3(s.$2)),
+          ];
+          final hit = hitTestEdges(
+            ray,
+            viewportSize,
+            worldSegments,
+            mesh.edgeIds,
+            radiusPixels: radiusPixels,
+            orthographicHalfHeight: orthographicHalfHeight,
+            fovRadiansY: fovRadiansY,
+          );
+          if (hit != null &&
+              (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
+            bestEdge = HoverHit(
+              entity: SelectionEntityRef(
+                kind: SelectionEntityKind.edge,
+                bodyId: body.bodyId,
+                id: hit.entity.id,
+                occurrenceId: occurrenceKey,
+              ),
+              rayT: hit.rayT,
+              pixelDistance: hit.pixelDistance,
+            );
+          }
+        }
+        if (filter.face || filter.body) {
+          final worldTriangles = [
+            for (final t in trianglesFromMesh(mesh))
+              (transform.transformed3(t.$1), transform.transformed3(t.$2), transform.transformed3(t.$3)),
+          ];
+          final hits = hitTestAllFaces(ray, worldTriangles, mesh.faceIds);
+          if (hits.isNotEmpty) {
+            bodyFaceHits[mapKey] = hits;
+            bodyOccurrenceKeys[mapKey] = occurrenceKey;
+            bodyIds[mapKey] = body.bodyId;
+          }
+        }
+      }
+    }
+  }
+
+  final candidates = <HoverHit>[];
+  if (bestVertex != null) candidates.add(bestVertex);
+  if (bestEdge != null) candidates.add(bestEdge);
+  for (final entry in bodyFaceHits.entries) {
+    final occurrenceKey = bodyOccurrenceKeys[entry.key]!;
+    final bodyId = bodyIds[entry.key]!;
+    if (filter.body || (filter.face && includeBodyCandidateWithFaces)) {
+      candidates.add(HoverHit(
+        entity: SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: bodyId, occurrenceId: occurrenceKey),
+        rayT: entry.value.first.rayT,
+      ));
+    }
+    if (filter.face) {
+      for (final hit in entry.value) {
+        candidates.add(HoverHit(
+          entity: SelectionEntityRef(kind: SelectionEntityKind.face, bodyId: bodyId, id: hit.entity.id, occurrenceId: occurrenceKey),
+          rayT: hit.rayT,
+        ));
+      }
+    }
+  }
+
+  // One whole-component candidate per selectable Occurrence instance that
+  // had a face hit - "parts also being offered as valid selections", gated
+  // on `filter.component` exactly like [_hoverHitTestComponents]'s own tap/
+  // hover use of [hitTestComponentInstances] - a picker whose filter can't
+  // accept a component pick at all (e.g. Fillet's edge-only filter) has no
+  // reason to offer one here either, consistent with how face/vertex/edge
+  // candidates above are already gated on their own filter bits.
+  if (filter.component) {
+    final componentOccurrenceKeys = <String>{for (final key in bodyOccurrenceKeys.values) key};
+    for (final occurrenceKey in componentOccurrenceKeys) {
+      final nearestT = bodyFaceHits.entries
+          .where((entry) => bodyOccurrenceKeys[entry.key] == occurrenceKey)
+          .map((entry) => entry.value.first.rayT)
+          .reduce((a, b) => a < b ? a : b);
+      candidates.add(HoverHit(
+        entity: SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: occurrenceKey),
+        rayT: nearestT,
+      ));
+    }
+  }
+
+  candidates.sort((a, b) => a.rayT.compareTo(b.rayT));
+  return candidates;
+}

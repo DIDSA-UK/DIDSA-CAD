@@ -79,13 +79,14 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+import numpy as np
 from fastapi import HTTPException
 from OCC.Core.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
 from OCC.Core.GeomAbs import GeomAbs_Circle, GeomAbs_Cylinder, GeomAbs_Line, GeomAbs_Plane
 from OCC.Core.TopoDS import topods
 from py_slvs import slvs
 
-from app.document.assembly import apply_transform_to_direction, apply_transform_to_point
+from app.document.assembly import apply_transform_to_direction, apply_transform_to_point, resolve_occurrence_target
 from app.document.create_plane import resolve_plane_ref, resolve_point_ref_position
 from app.document.extrude import compute_part_bodies, resolve_subshape_from_bodies
 from app.document.measure import single_shape_geometry
@@ -301,17 +302,15 @@ def _target_part_and_transform(
     document: Document, part: Part, occurrence_id: str
 ) -> tuple[Part, RigidTransform | None]:
     """The Part whose local bodies `occurrence_id` places, plus that
-    Occurrence's own current `transform` - `None` for the special `""`
-    ("this Part's own root content") occurrence id, which needs no
-    transform at all (already at the assembly's own world origin)."""
-    if occurrence_id == "":
-        return part, None
-    for occurrence in part.occurrences:
-        if occurrence.id == occurrence_id:
-            if occurrence.part_id is None or occurrence.part_id not in document.parts:
-                raise _unresolved_mate_occurrence(occurrence_id)
-            return document.parts[occurrence.part_id], occurrence.transform
-    raise _unresolved_mate_occurrence(occurrence_id)
+    Occurrence's own current `transform` - thin wrapper over
+    `app.document.assembly.resolve_occurrence_target` (this module's
+    original owner, now shared with the Measure tool - see that function's
+    own docstring) that translates its plain `KeyError` into this module's
+    own established `unresolved_mate_occurrence` 422 shape."""
+    try:
+        return resolve_occurrence_target(document, part, occurrence_id)
+    except KeyError:
+        raise _unresolved_mate_occurrence(occurrence_id) from None
 
 
 # ---- Axis-angle <-> quaternion (this module's own private FFI boundary) --
@@ -434,6 +433,55 @@ def _quaternion_aligning(source: Vec3, target: Vec3) -> Quaternion:
     s = math.sqrt((1.0 + dot) * 2.0)
     inv_s = 1.0 / s
     return (s * 0.5, cross[0] * inv_s, cross[1] * inv_s, cross[2] * inv_s)
+
+
+def _quaternion_multiply(a: Quaternion, b: Quaternion) -> Quaternion:
+    """Standard Hamilton product `a * b` - rotating a vector by `b` then by
+    `a` is the same as rotating it once by `_quaternion_multiply(a, b)`."""
+    aw, ax, ay, az = a
+    bw, bx, by, bz = b
+    return (
+        aw * bw - ax * bx - ay * by - az * bz,
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+    )
+
+
+def _rotate_vector_by_quaternion(q: Quaternion, v: Vec3) -> Vec3:
+    """Rotates `v` by unit quaternion `q` (the standard `q * v * q^-1`,
+    expanded via its cross-product form rather than a full quaternion
+    multiply)."""
+    qw, qx, qy, qz = q
+    qv = (qx, qy, qz)
+    t = _cross(qv, v)
+    t = (t[0] * 2.0, t[1] * 2.0, t[2] * 2.0)
+    cross_t = _cross(qv, t)
+    return (v[0] + qw * t[0] + cross_t[0], v[1] + qw * t[1] + cross_t[1], v[2] + qw * t[2] + cross_t[2])
+
+
+def _quaternion_aligning_axis_and_perp(
+    driven_axis: Vec3, driven_perp: Vec3, fixed_axis: Vec3, fixed_perp: Vec3
+) -> Quaternion:
+    """CONCENTRIC's own warm-start seed for the `allow_rotation=False` branch
+    (test report item 4, bolt-in-hole repro) - unlike COINCIDENT's
+    `_quaternion_aligning` (a single alignment: only the +/- sign along one
+    already-shared axis is ambiguous), the rotation-locked branch needs two:
+    first bring `driven_axis` onto `fixed_axis` (`_quaternion_aligning`
+    itself, same as COINCIDENT's use), then - about that now-shared axis -
+    bring the perpendicular reference line along too, so the new
+    `addParallel` rotation-lock constraint (see its own call site's comment
+    for why it replaced `addAngle`) starts on the correct 0-degree branch
+    rather than the 180-degree one. The second alignment is guaranteed to
+    rotate about (a multiple of) `fixed_axis` alone, never disturbing the
+    first: `driven_perp` is perpendicular to `driven_axis` by construction
+    (`_axis_perpendicular`), the first rotation preserves that
+    perpendicularity, and two vectors both perpendicular to the same axis can
+    only be brought together by rotating about that axis."""
+    axis_alignment = _quaternion_aligning(driven_axis, fixed_axis)
+    perp_after_axis_alignment = _rotate_vector_by_quaternion(axis_alignment, driven_perp)
+    twist_alignment = _quaternion_aligning(perp_after_axis_alignment, fixed_perp)
+    return _quaternion_multiply(twist_alignment, axis_alignment)
 
 
 def _quaternion_from_basis(x_axis: Vec3, y_axis: Vec3, z_axis: Vec3) -> Quaternion:
@@ -657,7 +705,19 @@ def _add_mate_constraints(
             assert driven.perp is not None and fixed.perp is not None
             driven_perp_line = builder.line(driven.axis_origin, driven.perp)
             fixed_perp_line = _fixed_line(system, fixed.axis_origin, fixed.perp)
-            system.addAngle(0.0, False, driven_perp_line, fixed_perp_line, group=_SOLVE_GROUP)
+            # Bug fix (test report item 4, bolt-in-hole repro): was
+            # `addAngle(0.0, ...)`, whose residual (`cos(theta) - cos(0)`) has
+            # a Jacobian that is *exactly* zero at its own target (`sin(0) ==
+            # 0`) - the identical degeneracy `_direction_lock`'s own docstring
+            # documents and avoids for COINCIDENT's plane-lock ("rejected
+            # approach 3"). `addParallel` has the same 0-degree solution but a
+            # non-degenerate (cross-product) Jacobian there, so the solve can
+            # actually converge onto it - see `solve_occurrence`'s own
+            # `seed_rotation_quaternion` handling for how the resulting
+            # sign/branch ambiguity (parallel is satisfied at 0 *or* 180
+            # degrees) is resolved via a warm start instead of a constraint,
+            # the same pattern already used for COINCIDENT.
+            system.addParallel(driven_perp_line, fixed_perp_line, group=_SOLVE_GROUP)
         return
 
     if mate.type == MateType.PARALLEL:
@@ -887,6 +947,201 @@ def _mate_residual_satisfied(mate: Mate, driven_world: _ResolvedGeometry, fixed:
     return False  # pragma: no cover - every MateType is handled above
 
 
+def _mate_residual_vector(mate: Mate, driven_world: _ResolvedGeometry, fixed: _ResolvedGeometry) -> tuple[float, ...]:
+    """Fix (test report item 4's own "dof" follow-up - see `MateSolveResult.
+    dof`'s own docstring for why `system.Dof` itself can't be trusted): the
+    continuous, everywhere-smooth counterpart of `_mate_residual_satisfied`
+    above - encodes the exact same geometric relationship each
+    `_add_mate_constraints` branch builds, but as a residual *vector* (never
+    a boolean, and deliberately never an `abs`/`sqrt`-based magnitude or an
+    `acos`-based angle) so `_independent_dof`'s own finite-difference
+    Jacobian is well-defined and non-degenerate exactly at a converged
+    solution, not just away from it - the identical "a magnitude/cosine
+    measure's own Jacobian vanishes at its own target" lesson this module's
+    CONCENTRIC `allow_rotation=False` fix already learned (see that branch's
+    own comment in `_add_mate_constraints`) applies equally to *diagnosing*
+    DOF, not just to *solving* for it.
+
+    Entries are allowed to be linearly dependent on one another (e.g. a
+    `cross(a, b)` residual's 3 components, only 2 of which are ever
+    independent for a unit-vector pair) - deliberately not hand-reduced to
+    a minimal independent set, since `_independent_dof`'s own `numpy.
+    linalg.matrix_rank` (SVD-based) already finds the *true* combined rank
+    across every mate's own residual stacked together, correctly
+    regardless of how many redundant-looking components any one mate
+    contributes - unlike `system.Dof`'s own naive per-equation tally, which
+    is exactly the failure mode this fix replaces (`app/sketch/solver.py`'s
+    own sibling docstring: "does not distinguish [a genuinely redundant
+    equation] ... it reports 0 even while a real ... degree of freedom ...
+    remains")."""
+    if mate.type == MateType.COINCIDENT:
+        if driven_world.plane is not None and fixed.plane is not None:
+            offset = _vec_sub(driven_world.plane.origin, fixed.plane.origin)
+            return (_dot(offset, fixed.plane.normal), *_cross(driven_world.plane.normal, fixed.plane.normal))
+        if driven_world.plane is not None:
+            if fixed.point is None:
+                return ()
+            offset = _vec_sub(fixed.point, driven_world.plane.origin)
+            return (_dot(offset, driven_world.plane.normal),)
+        if fixed.plane is not None:
+            if driven_world.point is None:
+                return ()
+            offset = _vec_sub(driven_world.point, fixed.plane.origin)
+            return (_dot(offset, fixed.plane.normal),)
+        if driven_world.point is None or fixed.point is None:
+            return ()
+        return _vec_sub(driven_world.point, fixed.point)
+
+    if mate.type == MateType.CONCENTRIC:
+        if (
+            driven_world.axis_origin is None
+            or driven_world.direction is None
+            or fixed.axis_origin is None
+            or fixed.direction is None
+        ):
+            return ()
+        residual = (
+            *_cross(driven_world.direction, fixed.direction),
+            *_cross(_vec_sub(driven_world.axis_origin, fixed.axis_origin), fixed.direction),
+        )
+        if not mate.allow_rotation:
+            if driven_world.perp is None or fixed.perp is None:
+                return residual
+            residual = (*residual, *_cross(driven_world.perp, fixed.perp))
+        return residual
+
+    if mate.type == MateType.PARALLEL:
+        if driven_world.direction is None or fixed.direction is None:
+            return ()
+        return _cross(driven_world.direction, fixed.direction)
+
+    if mate.type == MateType.ANGLE:
+        if driven_world.direction is None or fixed.direction is None or mate.value is None:
+            return ()
+        target_degrees = abs(mate.value) % 360
+        target_degrees = min(target_degrees, 360 - target_degrees)
+        dot = _dot(_normalize(driven_world.direction), _normalize(fixed.direction))
+        return (dot - math.cos(math.radians(target_degrees)),)
+
+    if mate.type == MateType.DISTANCE:
+        if mate.value is None:
+            return ()
+        target_sq = mate.value * mate.value
+        if driven_world.plane is not None and fixed.plane is not None:
+            offset = _vec_sub(driven_world.plane.origin, fixed.plane.origin)
+            signed = _dot(offset, fixed.plane.normal)
+            return (signed * signed - target_sq, *_cross(driven_world.plane.normal, fixed.plane.normal))
+        if driven_world.plane is not None:
+            if fixed.point is None:
+                return ()
+            offset = _vec_sub(fixed.point, driven_world.plane.origin)
+            signed = _dot(offset, driven_world.plane.normal)
+            return (signed * signed - target_sq,)
+        if fixed.plane is not None:
+            if driven_world.point is None:
+                return ()
+            offset = _vec_sub(driven_world.point, fixed.plane.origin)
+            signed = _dot(offset, fixed.plane.normal)
+            return (signed * signed - target_sq,)
+        if (
+            driven_world.axis_origin is not None
+            and driven_world.direction is not None
+            and fixed.axis_origin is not None
+            and fixed.direction is not None
+        ):
+            perp = _cross(_vec_sub(driven_world.axis_origin, fixed.axis_origin), fixed.direction)
+            perp_sq = _dot(perp, perp)
+            return (
+                perp_sq - target_sq,
+                *_cross(driven_world.direction, fixed.direction),
+            )
+        if driven_world.point is None or fixed.point is None:
+            return ()
+        offset = _vec_sub(driven_world.point, fixed.point)
+        return (_dot(offset, offset) - target_sq,)
+
+    return ()  # pragma: no cover - every MateType is handled above
+
+
+# A central-difference step small enough that a converged solve's own
+# residual is locally linear to well within finite-difference noise (every
+# geometric quantity here is in millimetres/unitless directions - the same
+# order of magnitude `_RESIDUAL_TOLERANCE` itself already assumes), large
+# enough that float64 subtraction cancellation doesn't itself dominate the
+# result.
+_DOF_JACOBIAN_STEP = 1e-6
+
+
+def _independent_dof(
+    resolved: list[tuple[Mate, MateEntityRef, _ResolvedGeometry, _ResolvedGeometry]],
+    solved_transform: RigidTransform,
+) -> int:
+    """Replaces `system.Dof` (`py_slvs`'s own naive params-minus-equations
+    count, confirmed unpatchable - `py-slvs==1.0.6` is a precompiled,
+    pinned third-party wheel with no vendored source in this repo, its
+    internals unreachable from here) with a from-scratch, numerically
+    robust count: the rank of the numerical Jacobian of every applicable
+    Mate's own `_mate_residual_vector`, stacked together, with respect to a
+    *minimal* 6-parameter local perturbation of `solved_transform` (3
+    translation + 3 rotation via a tangent-space perturbation composed onto
+    the already-solved orientation - never the redundant 4-parameter unit
+    quaternion itself, whose own unit-norm constraint would otherwise
+    inflate the apparent rank by exactly 1 every time). `6 - rank` is the
+    true count of genuinely independent remaining degrees of freedom,
+    correctly collapsing redundant-but-consistent constraints to their real
+    rank the same way `numpy.linalg.matrix_rank`'s SVD-based tolerance
+    always does - unlike `system.Dof`, confirmed by this module's own
+    sibling (`app/sketch/solver.py`) to misreport in exactly this
+    "redundant equation counted as if independent" direction.
+
+    No applicable Mates (`resolved` empty) trivially returns 6 (every rigid-
+    body DOF free), matching `_solve_occurrence_against`'s own pre-existing
+    early return for that case."""
+    if not resolved:
+        return 6
+
+    def transform_for(delta: tuple[float, float, float, float, float, float]) -> RigidTransform:
+        dtx, dty, dtz, rx, ry, rz = delta
+        angle = math.sqrt(rx * rx + ry * ry + rz * rz)
+        delta_quaternion = (
+            (1.0, 0.0, 0.0, 0.0)
+            if angle < 1e-12
+            else _quaternion_from_axis_angle((rx / angle, ry / angle, rz / angle), math.degrees(angle))
+        )
+        base_quaternion = _quaternion_from_axis_angle(solved_transform.rotation_axis, solved_transform.rotation_angle_degrees)
+        axis, angle_degrees = _axis_angle_from_quaternion(_quaternion_multiply(delta_quaternion, base_quaternion))
+        translation = (
+            solved_transform.translation[0] + dtx,
+            solved_transform.translation[1] + dty,
+            solved_transform.translation[2] + dtz,
+        )
+        return RigidTransform(translation=translation, rotation_axis=axis, rotation_angle_degrees=angle_degrees)
+
+    def residual_at(delta: tuple[float, float, float, float, float, float]) -> list[float]:
+        transform = transform_for(delta)
+        values: list[float] = []
+        for mate, _driven_ref, driven_geometry, fixed_geometry in resolved:
+            values.extend(_mate_residual_vector(mate, _place_in_world(driven_geometry, transform), fixed_geometry))
+        return values
+
+    baseline = residual_at((0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    if not baseline:
+        return 6
+
+    jacobian = np.zeros((len(baseline), 6))
+    for i in range(6):
+        plus_delta = [0.0] * 6
+        plus_delta[i] = _DOF_JACOBIAN_STEP
+        minus_delta = [0.0] * 6
+        minus_delta[i] = -_DOF_JACOBIAN_STEP
+        plus = residual_at(tuple(plus_delta))
+        minus = residual_at(tuple(minus_delta))
+        jacobian[:, i] = [(p - m) / (2 * _DOF_JACOBIAN_STEP) for p, m in zip(plus, minus)]
+
+    rank = int(np.linalg.matrix_rank(jacobian))
+    return max(0, 6 - rank)
+
+
 def _applicable_mates(part: Part, driven_occurrence_id: str) -> list[tuple[Mate, MateEntityRef, MateEntityRef]]:
     """Every non-suppressed Mate in `part.mates` with exactly one of its two
     `references` naming `driven_occurrence_id` - returned as `(mate,
@@ -966,6 +1221,29 @@ def _solve_occurrence_against(
             target_direction = fixed_geometry.plane.normal if mate.flipped else tuple(-c for c in fixed_geometry.plane.normal)
             seed_rotation_quaternion = _quaternion_aligning(driven_geometry.plane.normal, target_direction)
             break
+    if seed_rotation_quaternion is None:
+        # CONCENTRIC's own warm start (test report item 4, bolt-in-hole
+        # repro) - only needed for the `allow_rotation=False` branch, whose
+        # new `addParallel` rotation lock (see that call site's own comment)
+        # is sign-agnostic and otherwise leaves Newton to find the correct
+        # 0-vs-180-degree branch unaided, starting from whatever orientation
+        # the Occurrence already happens to be at. Skipped whenever a
+        # COINCIDENT seed above already applies - one seed is enough to get
+        # Newton close, and COINCIDENT's own disambiguation need (same
+        # docstring) takes priority.
+        for mate, _driven_ref, driven_geometry, fixed_geometry in resolved:
+            if (
+                mate.type == MateType.CONCENTRIC
+                and not mate.allow_rotation
+                and driven_geometry.direction is not None
+                and driven_geometry.perp is not None
+                and fixed_geometry.direction is not None
+                and fixed_geometry.perp is not None
+            ):
+                seed_rotation_quaternion = _quaternion_aligning_axis_and_perp(
+                    driven_geometry.direction, driven_geometry.perp, fixed_geometry.direction, fixed_geometry.perp
+                )
+                break
 
     system = slvs.System()
     seed_translation = driven_occurrence.transform.translation
@@ -1026,7 +1304,17 @@ def _solve_occurrence_against(
             for mate, _driven_ref, driven_geometry, fixed_geometry in resolved
         )
 
-    return MateSolveResult(converged=converged, transform=transform, dof=system.Dof)
+    # Fix (test report item 4's own "dof" follow-up): `system.Dof` itself
+    # (`py_slvs`'s own naive params-minus-equations count) is replaced with
+    # `_independent_dof`'s rank-based recomputation - see that function's
+    # own docstring for why. Computed from `transform` regardless of
+    # `converged` (an unconverged solve's own `transform` is still whatever
+    # Newton's method last reached, a meaningful point to report DOF
+    # around, exactly like `system.Dof` itself was already read
+    # unconditionally here before this fix).
+    dof = _independent_dof(resolved, transform)
+
+    return MateSolveResult(converged=converged, transform=transform, dof=dof)
 
 
 def solve_occurrence(document: Document, part: Part, driven_occurrence_id: str) -> MateSolveResult:

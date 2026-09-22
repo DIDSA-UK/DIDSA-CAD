@@ -132,6 +132,7 @@ from app.document.models import (
     MaterialAssignment,
     Mate,
     MateEntityRef,
+    MeasureEntityRef,
     MateType,
     MergeFeature,
     MergeMode,
@@ -238,6 +239,7 @@ from app.document.schemas import (
     MoveFaceFeatureResponse,
     MoveFaceFeatureUpdate,
     AxisSchema,
+    MeasureEntityRefSchema,
     MeasureRequest,
     MeasurementResultSchema,
     ScaleBodyFeatureCreate,
@@ -358,7 +360,7 @@ from app.document.schemas import (
     ThickenFeatureResponse,
     ThickenFeatureUpdate,
 )
-from app.document.section import SectionPlaneSpec, compute_section_mesh
+from app.document.section import SectionBodyTarget, SectionPlaneSpec, compute_section_mesh
 from app.document.split import CONNECTABLE_CURVE_ENTITY_TYPES, resolve_split
 from app.document.sweep import resolve_sweep
 from app.document.store import get_document, get_part_or_404, replace_document
@@ -430,6 +432,10 @@ def _subshape_ref_to_domain(schema: SubShapeRefSchema) -> SubShapeRef:
 
 def _subshape_ref_to_schema(ref: SubShapeRef) -> SubShapeRefSchema:
     return SubShapeRefSchema(body_id=ref.body_id, shape_type=ref.shape_type, index=ref.index)
+
+
+def _measure_entity_ref_to_domain(schema: MeasureEntityRefSchema) -> MeasureEntityRef:
+    return MeasureEntityRef(occurrence_id=schema.occurrence_id, subshape_ref=_subshape_ref_to_domain(schema.subshape_ref))
 
 
 def _sketch_entity_ref_to_domain(schema: SketchEntityRefSchema) -> SketchEntityRef:
@@ -5055,8 +5061,9 @@ def measure_entities(part_id: str, payload: MeasureRequest) -> MeasurementResult
         raise HTTPException(
             status_code=422, detail={"type": "invalid_measure_selection", "count": len(payload.refs)}
         )
-    refs = [_subshape_ref_to_domain(ref) for ref in payload.refs]
-    result = compute_measurement(part, refs)
+    document = get_document()
+    refs = [_measure_entity_ref_to_domain(ref) for ref in payload.refs]
+    result = compute_measurement(document, part, refs)
     return _measurement_result_to_schema(result)
 
 
@@ -8440,8 +8447,10 @@ def preview_section(
     part_id: str, payload: SectionPreviewRequest, quality: float | None = Query(default=None, ge=0.0, le=1.0)
 ) -> list[SectionBodyMeshResponse]:
     """The sectioning tool's own stateless preview endpoint (`docs/roadmap.
-    md`'s "Analysis tools" entry) - trims each of `payload.body_ids`' own
-    current shape (per `GET /mesh`'s own `compute_part_bodies`) by the
+    md`'s "Analysis tools" entry) - trims each of `payload.targets`' own
+    current shape (per `GET /mesh`'s own `compute_part_bodies`, resolved
+    against each target's own Occurrence - assembly-testing bug fix, see
+    `app.document.section.compute_section_mesh`'s own docstring) by the
     intersection of `payload.planes`, and tessellates the result, exactly
     like `_coarse_preview_response` does for a not-yet-created Feature
     payload. Never calls `part.add_feature`, never touches `app.document.
@@ -8450,11 +8459,14 @@ def preview_section(
     matching `app.document.section`'s own module-level "not a Feature"
     framing exactly."""
     part = get_part_or_404(part_id)
+    document = get_document()
     mesh_quality = DEFAULT_MESH_QUALITY if quality is None else mesh_quality_from_slider(quality)
     planes = [SectionPlaneSpec(origin=p.origin, normal=p.normal, flipped=p.flipped) for p in payload.planes]
-    section_bodies = compute_section_mesh(part, payload.body_ids, planes)
+    targets = [SectionBodyTarget(occurrence_id=t.occurrence_id, body_id=t.body_id) for t in payload.targets]
+    section_bodies = compute_section_mesh(document, part, targets, planes)
     return [
         SectionBodyMeshResponse(
+            occurrence_id=body.occurrence_id,
             body_id=body.body_id,
             mesh=_mesh_vertex_data(tessellate_shape(body.shape, mesh_quality)),
             cut_face_ids=body.cut_face_ids,
