@@ -3780,6 +3780,43 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     return null;
   }
 
+  /// Assembly support Phase 20 Stage 2 (`docs/assembly-scope.md` §6 `[24]`):
+  /// [ray] expressed in the focused Part's own local frame instead of the
+  /// camera's world one - the inverse of [PartViewport.focusWorldTransformMatrix]
+  /// applied to [Ray.origin] (a point - needs the full inverse, rotation
+  /// *and* translation) and [Ray.direction] (a direction - needs only the
+  /// inverse's rotation component, via [vm.Matrix4.rotated3]; translating a
+  /// direction makes no sense). Every Body/sketch-plane/created-Plane
+  /// hit-test this file calls (`hitTestBodies`/`hitTestSketchPlane`/
+  /// `hitTestCreatePlanes`) operates on the focused Part's own **local**
+  /// geometry - unaffected by focus, this is what those calls need instead
+  /// of the raw camera ray; the three fixed reference planes
+  /// (`hitTestReferencePlanes`) are a viewport convention, never Part-owned,
+  /// and stay on the plain world [ray]. Identity
+  /// [PartViewport.focusWorldTransformMatrix] (nothing focused, or focused
+  /// exactly at the document root) makes this the exact same ray as [ray]
+  /// itself - zero behavior change for every existing non-assembly or
+  /// root-focused scenario.
+  ///
+  /// Correctness note, load-bearing for every caller below: `RigidTransform`
+  /// (`docs/assembly-scope.md` §1) is a pure rotation+translation, never a
+  /// scale - its inverse is therefore also a rigid isometry, so a
+  /// `HoverHit.rayT`/similar computed against the *local* ray this returns
+  /// stays numerically equal to the same physical point's distance along
+  /// the original *world* [ray] (both parametrizations trace the same line
+  /// at the same "speed"). `ray.at(t)` and `_toLocalRay(ray).at(t)` name the
+  /// same physical point in their own respective frames for any shared `t`
+  /// - what lets [_recomputeHover]'s "compete candidates by `rayT`" logic,
+  /// and a caller like [_handleTap]'s own section-placement branch (which
+  /// hit-tests against the local ray but then reads the resulting `rayT`
+  /// back against the *world* [ray] to get a real on-screen 3D point),
+  /// mix local- and world-space candidates with no renormalization.
+  vm.Ray _toLocalRay(vm.Ray ray) {
+    final focusTransform = widget.focusWorldTransformMatrix;
+    if (focusTransform == null) return ray;
+    return localRayFromWorldRay(focusTransform, ray);
+  }
+
   /// Converts a confirmed tap into a [ReferencePlaneKind] hit-test, via the
   /// same [PerspectiveCamera.screenPointToRay] `flutter_scene` already
   /// builds for its own picking/`raycast.dart` - reused here rather than
@@ -3787,6 +3824,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   void _handleTap(Offset localPosition) {
     final camera = _camera.cameraFor(_viewportSize);
     final ray = camera.screenPointToRay(localPosition, _viewportSize);
+    final localRay = _toLocalRay(ray);
     // Sectioning Tool: while [SectionPanel] is open and awaiting a fresh
     // placement, a tap re-anchors the active section instead of doing
     // whatever it would ordinarily do (selecting a reference plane, opening
@@ -3804,7 +3842,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         widget.onSectionPlacementTap!(vm.Vector3.zero(), _referencePlaneNormal(referenceHit.plane));
         return;
       }
-      final createHit = hitTestCreatePlanes(ray, widget.createPlanes);
+      final createHit = hitTestCreatePlanes(localRay, widget.createPlanes);
       if (createHit != null) {
         final geometry = widget.createPlanes[createHit.featureId];
         if (geometry != null) {
@@ -3813,7 +3851,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         }
       }
       final faceHit = hitTestBodies(
-        ray: ray,
+        ray: localRay,
         viewportSize: _viewportSize,
         bodies: widget.bodies,
         filter: const SelectionFilterState(vertex: false, edge: false, face: true, body: false),
@@ -3840,7 +3878,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // C3: checked after the three fixed reference planes so those keep
     // first claim on a tap (see [PartViewport.onCreatePlaneTap]'s own doc
     // comment).
-    final createPlaneHit = hitTestCreatePlanes(ray, widget.createPlanes);
+    final createPlaneHit = hitTestCreatePlanes(localRay, widget.createPlanes);
     if (createPlaneHit != null) {
       widget.onCreatePlaneTap?.call(createPlaneHit.featureId);
       return;
@@ -3851,7 +3889,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // above.
     final sketchPlaneBasis = widget.sketchPlaneBasis;
     if (sketchPlaneBasis != null) {
-      final sketchHit = hitTestSketchPlane(ray, sketchPlaneBasis);
+      final sketchHit = hitTestSketchPlane(localRay, sketchPlaneBasis);
       if (sketchHit != null) {
         if (widget.preferEntityPick) {
           final (localX, localY) = worldPointToSketch(sketchPlaneBasis, sketchHit.$1);
@@ -3866,7 +3904,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             // plane-tap miss behavior below. On-device feedback: Convert
             // Entities widens this via [preferEntityPickIncludesFace].
             final bodyHit = hitTestBodies(
-              ray: ray,
+              ray: localRay,
               viewportSize: _viewportSize,
               bodies: widget.bodies,
               filter: SelectionFilterState(
@@ -4357,6 +4395,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
     final camera = _camera.cameraFor(_viewportSize);
     final ray = camera.screenPointToRay(cursor, _viewportSize);
+    final localRay = _toLocalRay(ray);
     // Prompt C1: previously gated on `widget.bodies.isEmpty` alone, which
     // skipped hit-testing entirely for a Part with no Bodies yet (e.g. a
     // bare Sketch with no Extrude) - now also runs whenever there's Sketch
@@ -4364,7 +4403,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final meshHit = (widget.bodies.isEmpty && widget.sketchGeometries.isEmpty)
         ? null
         : hitTestBodies(
-            ray: ray,
+            ray: localRay,
             viewportSize: _viewportSize,
             bodies: widget.bodies,
             sketchGeometries: widget.sketchGeometries,
@@ -4376,7 +4415,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             orthographicHalfHeight: _orthographicHalfHeightOf(camera),
             fovRadiansY: _perspectiveFovOf(camera),
           );
-    final planeHit = _hoverHitTestPlanes(ray);
+    final planeHit = _hoverHitTestPlanes(ray, localRay);
     // Assembly support Phase 4: a third candidate, competed by [HoverHit.
     // rayT] the exact same way [meshHit]/[planeHit] already compete against
     // each other just below - see [_hoverHitTestComponents]'s own doc
@@ -4462,7 +4501,19 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       for (final instance in widget.assemblyInstances)
         if (instance.occurrencePath.isNotEmpty &&
             !instance.hidden &&
-            (focusedPath.isEmpty || isOccurrencePathWithinFocus(instance.occurrencePath, focusedPath)))
+            (focusedPath.isEmpty || isOccurrencePathWithinFocus(instance.occurrencePath, focusedPath)) &&
+            // Assembly support Phase 20 Stage 2: the exact focused instance
+            // itself is excluded - its own rendering is already suppressed
+            // in [_syncAssemblyInstanceNodes] (Stage 1, covered instead by
+            // [_syncMeshNode]'s focus-transform-aware path), and its
+            // geometry is now separately hit-testable as ordinary
+            // vertex/edge/face/body content via [_toLocalRay] - leaving it
+            // "selectable" here too would offer a stale, invisible
+            // whole-component hit target competing with that real one. A
+            // *nested* child instance one level deeper is unaffected - it's
+            // still a genuine, still-rendered sub-component of whatever's
+            // focused.
+            !pathEquals(instance.occurrencePath, focusedPath))
           instance.occurrencePath.join('/'),
     };
   }
@@ -4540,9 +4591,16 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// turns every other kind off (e.g. Fillet's edge/face-only filter) still
   /// left planes selectable regardless, since there was nothing here to
   /// turn off in the first place.
-  HoverHit? _hoverHitTestPlanes(vm.Ray ray) {
+  /// Assembly support Phase 20 Stage 2: takes both rays now, not one -
+  /// [hitTestReferencePlanes] needs [worldRay] (the three fixed planes are
+  /// never Part-owned, unaffected by focus), [hitTestCreatePlanes] needs
+  /// [localRay] (Create-Plane geometry is the focused Part's own local
+  /// data - see [_toLocalRay]'s own doc comment for the full reasoning).
+  /// Both parameters are the exact same ray for every non-assembly/
+  /// root-focused caller, so this is a no-op widening there.
+  HoverHit? _hoverHitTestPlanes(vm.Ray worldRay, vm.Ray localRay) {
     if (!widget.selectionFilter.plane) return null;
-    final referenceHit = widget.referencePlanesHidden ? null : hitTestReferencePlanes(ray);
+    final referenceHit = widget.referencePlanesHidden ? null : hitTestReferencePlanes(worldRay);
     if (referenceHit != null) {
       return HoverHit(
         entity: SelectionEntityRef(
@@ -4552,7 +4610,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         rayT: referenceHit.rayT,
       );
     }
-    final createHit = hitTestCreatePlanes(ray, widget.createPlanes);
+    final createHit = hitTestCreatePlanes(localRay, widget.createPlanes);
     if (createHit == null) return null;
     return HoverHit(
       entity: SelectionEntityRef(kind: SelectionEntityKind.createPlane, planeFeatureId: createHit.featureId),
@@ -4615,10 +4673,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   bool _hasEntityNearScreenPoint(Offset screenPosition) {
     final camera = _camera.cameraFor(_viewportSize);
     final ray = camera.screenPointToRay(screenPosition, _viewportSize);
+    final localRay = _toLocalRay(ray);
     final meshHit = (widget.bodies.isEmpty && widget.sketchGeometries.isEmpty)
         ? null
         : hitTestBodies(
-            ray: ray,
+            ray: localRay,
             viewportSize: _viewportSize,
             bodies: widget.bodies,
             sketchGeometries: widget.sketchGeometries,
@@ -4630,7 +4689,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             orthographicHalfHeight: _orthographicHalfHeightOf(camera),
             fovRadiansY: _perspectiveFovOf(camera),
           );
-    return meshHit != null || _hoverHitTestPlanes(ray) != null;
+    return meshHit != null || _hoverHitTestPlanes(ray, localRay) != null;
   }
 
   /// Starts the long-press timer when [downScreen] lands on genuinely empty
@@ -4688,8 +4747,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final basis = widget.sketchPlaneBasis;
     if (anchor == null || current == null || basis == null) return;
     final camera = _camera.cameraFor(_viewportSize);
-    final anchorHit = hitTestSketchPlane(camera.screenPointToRay(anchor, _viewportSize), basis);
-    final currentHit = hitTestSketchPlane(camera.screenPointToRay(current, _viewportSize), basis);
+    final anchorHit = hitTestSketchPlane(_toLocalRay(camera.screenPointToRay(anchor, _viewportSize)), basis);
+    final currentHit = hitTestSketchPlane(_toLocalRay(camera.screenPointToRay(current, _viewportSize)), basis);
     if (anchorHit == null || currentHit == null) return;
     final (anchorX, anchorY) = worldPointToSketch(basis, anchorHit.$1);
     final (currentX, currentY) = worldPointToSketch(basis, currentHit.$1);
@@ -4777,10 +4836,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (cursor == null) return;
     final camera = _camera.cameraFor(_viewportSize);
     final ray = camera.screenPointToRay(cursor, _viewportSize);
+    final localRay = _toLocalRay(ray);
     final candidates = <HoverHit>[
       if (widget.bodies.isNotEmpty || widget.sketchGeometries.isNotEmpty)
         ...hitTestAllCandidates(
-          ray: ray,
+          ray: localRay,
           viewportSize: _viewportSize,
           bodies: widget.bodies,
           sketchGeometries: widget.sketchGeometries,
@@ -4930,7 +4990,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         // just the sketch-local cursor hit's own coordinate along the
         // locked axis.
         if (linearItem.orientation == 'vertical' || linearItem.orientation == 'horizontal') {
-          final ray = _camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize);
+          final ray = _toLocalRay(_camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize));
           final hit = hitTestSketchPlane(ray, basis);
           if (hit != null) {
             final (cursorX, cursorY) = worldPointToSketch(basis, hit.$1);
@@ -5113,7 +5173,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         final vertexAndRays = angleDimensionVertexAndRays(angleItem);
         if (vertexAndRays != null) {
           final (vertex, ray1, ray2) = vertexAndRays;
-          final ray = _camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize);
+          final ray = _toLocalRay(_camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize));
           final hit = hitTestSketchPlane(ray, basis);
           if (hit != null) {
             final (cursorX, cursorY) = worldPointToSketch(basis, hit.$1);
@@ -5193,7 +5253,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       _drawCursorWorldHit = null;
       return;
     }
-    final ray = _camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize);
+    final ray = _toLocalRay(_camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize));
     final hit = hitTestSketchPlane(ray, basis);
     _drawCursorWorldHit = hit?.$1;
   }
@@ -5236,7 +5296,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           // own comment for why a face is excluded by default and how
           // [preferEntityPickIncludesFace] widens it.
           final camera = _camera.cameraFor(_viewportSize);
-          final ray = camera.screenPointToRay(cursor, _viewportSize);
+          final ray = _toLocalRay(camera.screenPointToRay(cursor, _viewportSize));
           final bodyHit = hitTestBodies(
             ray: ray,
             viewportSize: _viewportSize,
