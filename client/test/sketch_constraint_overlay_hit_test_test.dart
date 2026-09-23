@@ -131,6 +131,70 @@ void main() {
     expect(constraintOverlayItemAt(camera, viewportSize, basis, const [], Offset.zero), isNull);
   });
 
+  // Assembly-audit gap `[28]` (`docs/assembly-scope.md`): a Sketch on a
+  // focused sub-Part sits in that Part's own local frame - `basis` alone
+  // (world-space, unaffected by focus) is not enough; a real focusTransform
+  // must be composed on before projecting, or the label renders/hit-tests
+  // at the wrong screen position while sketching on a focused sub-Part.
+  test('constraintOverlayItemLabelCenter composes a given focusTransform before projecting', () {
+    const item = ConstraintLabelItem(
+      constraintId: 'c0',
+      selected: false,
+      anchorA: (0.0, 0.0),
+      anchorB: (0.0, 0.0),
+      text: 'V',
+      labelOffset: Offset.zero,
+      plainBlackText: false,
+    );
+    final unfocusedCenter = constraintOverlayItemLabelCenter(camera, viewportSize, basis, item);
+    final focusTransform = vm.Matrix4.identity()..setTranslation(vm.Vector3(2, 0, 0));
+    final focusedCenter = constraintOverlayItemLabelCenter(
+      camera,
+      viewportSize,
+      basis,
+      item,
+      focusTransform: focusTransform,
+    );
+
+    expect(unfocusedCenter, isNotNull);
+    expect(focusedCenter, isNotNull);
+    // The focused version composes a real translation, so it must land at a
+    // genuinely different screen position - not silently fall back to the
+    // unfocused projection.
+    expect((focusedCenter! - unfocusedCenter!).distance, greaterThan(1.0));
+  });
+
+  test('constraintOverlayItemAt finds the item at its focus-composed centre, not the unfocused one', () {
+    const item = ConstraintLabelItem(
+      constraintId: 'c0',
+      selected: false,
+      anchorA: (0.0, 0.0),
+      anchorB: (0.0, 0.0),
+      text: 'V',
+      labelOffset: Offset.zero,
+      plainBlackText: false,
+    );
+    final focusTransform = vm.Matrix4.identity()..setTranslation(vm.Vector3(2, 0, 0));
+    final focusedCenter = constraintOverlayItemLabelCenter(
+      camera,
+      viewportSize,
+      basis,
+      item,
+      focusTransform: focusTransform,
+    )!;
+
+    expect(
+      constraintOverlayItemAt(camera, viewportSize, basis, [item], focusedCenter, focusTransform: focusTransform),
+      'c0',
+    );
+    // Hit-testing against the unfocused position (the pre-fix behavior)
+    // must no longer find it once a real focusTransform is in play.
+    expect(
+      constraintOverlayItemAt(camera, viewportSize, basis, [item], focusedCenter),
+      isNull,
+    );
+  });
+
   test(
       'constraintOverlayItemLabelCenter uses a canonical (order-independent) perpendicular '
       'normal for a diagonal ConstraintLinearDimensionItem - on-device feedback ("swiping '

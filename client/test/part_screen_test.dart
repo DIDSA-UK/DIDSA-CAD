@@ -61,9 +61,15 @@ class _FakeDocumentBackend {
   // Starts past every seeded Feature's id (seeds are always "feature-N" in
   // creation order) so a newly-created Feature's id never collides with a
   // seeded one.
-  _FakeDocumentBackend({List<Map<String, dynamic>>? seedFeatures, List<Map<String, dynamic>>? seedOccurrences})
-      : features = seedFeatures ?? [],
-        occurrences = seedOccurrences ?? [] {
+  _FakeDocumentBackend({
+    List<Map<String, dynamic>>? seedFeatures,
+    List<Map<String, dynamic>>? seedOccurrences,
+    List<Map<String, dynamic>>? seedMates,
+    List<Map<String, dynamic>>? seedComponentPatterns,
+  })  : features = seedFeatures ?? [],
+        occurrences = seedOccurrences ?? [],
+        mates = seedMates ?? [],
+        componentPatterns = seedComponentPatterns ?? [] {
     _nextFeatureId = features.length + 1;
   }
 
@@ -76,6 +82,18 @@ class _FakeDocumentBackend {
   /// fromJson`'s own wire shape (`id`/`external_ref`/`resolved_part_id`/
   /// `name_override`/`transform`/`suppressed`/`hidden`).
   final List<Map<String, dynamic>> occurrences;
+
+  /// Assembly-audit gap `[27]` (`docs/assembly-scope.md`): [occurrences]'
+  /// own siblings, needed for real end-to-end coverage of the cascade-
+  /// delete warning and its Undo - previously this fake's own `GET .../
+  /// mates`/`GET .../component-patterns` routes always answered `[]`
+  /// unconditionally (no test before this gap ever needed a real Mate/
+  /// ComponentPattern tracked here). Each entry mirrors `MateDto.fromJson`/
+  /// `ComponentPatternDto.fromJson`'s own wire shape.
+  final List<Map<String, dynamic>> mates;
+  final List<Map<String, dynamic>> componentPatterns;
+  int _nextMateId = 1;
+  int _nextPatternId = 1;
 
   /// The current name of `part-1` itself - only ever changed by a real
   /// `POST /document/import/native` re-import (Phase 15's "Create
@@ -533,11 +551,65 @@ class _FakeDocumentBackend {
     }
     final matesGetMatch = RegExp(r'^/document/parts/([^/]+)/mates$').firstMatch(path);
     if (matesGetMatch != null && method == 'GET') {
-      return _json(<dynamic>[], 200);
+      return _json(matesGetMatch.group(1) == 'part-1' ? mates : <dynamic>[], 200);
+    }
+    if (matesGetMatch != null && method == 'POST') {
+      final mate = {
+        'id': 'mate-${_nextMateId++}',
+        'type': body['type'],
+        'references': body['references'],
+        'value': body['value'],
+        'flipped': body['flipped'] ?? false,
+        'suppressed': false,
+        'allow_rotation': body['allow_rotation'] ?? true,
+      };
+      mates.add(mate);
+      return _json(mate, 201);
+    }
+    final mateDeleteMatch = RegExp(r'^/document/parts/part-1/mates/([^/]+)$').firstMatch(path);
+    if (mateDeleteMatch != null && method == 'DELETE') {
+      final mateId = mateDeleteMatch.group(1);
+      final index = mates.indexWhere((m) => m['id'] == mateId);
+      if (index == -1) return http.Response('not found: mate', 404);
+      mates.removeAt(index);
+      return http.Response('', 204);
     }
     final patternsGetMatch = RegExp(r'^/document/parts/([^/]+)/component-patterns$').firstMatch(path);
     if (patternsGetMatch != null && method == 'GET') {
-      return _json(<dynamic>[], 200);
+      return _json(patternsGetMatch.group(1) == 'part-1' ? componentPatterns : <dynamic>[], 200);
+    }
+    if (patternsGetMatch != null && method == 'POST') {
+      final pattern = {
+        'id': 'pattern-${_nextPatternId++}',
+        'source_occurrence_ids': body['source_occurrence_ids'],
+        'pattern_type': body['pattern_type'] ?? 'linear',
+        'direction': body['direction'] ?? [1.0, 0.0, 0.0],
+        'count': body['count'] ?? 1,
+        'spacing': body['spacing'] ?? 0.0,
+        'reverse': body['reverse'] ?? false,
+        'direction_2': body['direction_2'] ?? [0.0, 1.0, 0.0],
+        'count_2': body['count_2'] ?? 1,
+        'spacing_2': body['spacing_2'] ?? 0.0,
+        'reverse_2': body['reverse_2'] ?? false,
+        'axis': body['axis'],
+        'count_angular': body['count_angular'] ?? 1,
+        'angle_total': body['angle_total'] ?? 360.0,
+        'reverse_angular': body['reverse_angular'] ?? false,
+        'skip_indices': body['skip_indices'] ?? <dynamic>[],
+        'orient_with_rotation': body['orient_with_rotation'] ?? true,
+        'suppressed': false,
+      };
+      componentPatterns.add(pattern);
+      return _json(pattern, 201);
+    }
+    final patternDeleteMatch =
+        RegExp(r'^/document/parts/part-1/component-patterns/([^/]+)$').firstMatch(path);
+    if (patternDeleteMatch != null && method == 'DELETE') {
+      final patternId = patternDeleteMatch.group(1);
+      final index = componentPatterns.indexWhere((p) => p['id'] == patternId);
+      if (index == -1) return http.Response('not found: pattern', 404);
+      componentPatterns.removeAt(index);
+      return http.Response('', 204);
     }
     final assemblyMeshMatch = RegExp(r'^/document/parts/([^/]+)/assembly-mesh$').firstMatch(path);
     if (assemblyMeshMatch != null && method == 'GET') {
@@ -552,6 +624,7 @@ class _FakeDocumentBackend {
                 'part_id': occurrence['resolved_part_id'] ?? 'unresolved',
                 'world_transform': occurrence['transform'],
                 'hidden': occurrence['hidden'],
+                'color': occurrence['color'],
               },
         ],
       }, 200);
@@ -565,7 +638,50 @@ class _FakeDocumentBackend {
       if (body.containsKey('transform')) occurrence['transform'] = body['transform'];
       if (body.containsKey('hidden')) occurrence['hidden'] = body['hidden'];
       if (body.containsKey('fixed')) occurrence['fixed'] = body['fixed'];
+      if (body.containsKey('color')) occurrence['color'] = (body['color'] as String).isEmpty ? null : body['color'];
       return _json(occurrence, 200);
+    }
+    // Assembly-audit gap `[27]` (`docs/assembly-scope.md`): the cascade
+    // delete and its own client-supplied-id restore (Undo).
+    if (occurrencesGetMatch != null && method == 'POST') {
+      final id = body['id'] as String;
+      if (occurrences.any((o) => o['id'] == id)) {
+        return http.Response('already exists', 409);
+      }
+      final restored = {
+        'id': id,
+        'external_ref': body['external_ref'],
+        'resolved_part_id': null,
+        'name_override': body['name_override'],
+        'transform': body['transform'] ??
+            {
+              'translation': [0.0, 0.0, 0.0],
+              'rotation_axis': [0.0, 0.0, 1.0],
+              'rotation_angle_degrees': 0.0,
+            },
+        'suppressed': body['suppressed'] ?? false,
+        'hidden': body['hidden'] ?? false,
+        'fixed': body['fixed'] ?? false,
+        'color': body['color'],
+      };
+      occurrences.add(restored);
+      return _json(restored, 201);
+    }
+    final occurrenceDeleteMatch =
+        RegExp(r'^/document/parts/part-1/occurrences/([^/]+)$').firstMatch(path);
+    if (occurrenceDeleteMatch != null && method == 'DELETE') {
+      final occurrenceId = occurrenceDeleteMatch.group(1);
+      final index = occurrences.indexWhere((o) => o['id'] == occurrenceId);
+      if (index == -1) return http.Response('not found: occurrence', 404);
+      mates.removeWhere(
+        (m) => (m['references'] as List)
+            .any((r) => (r as Map<String, dynamic>)['occurrence_id'] == occurrenceId),
+      );
+      componentPatterns.removeWhere(
+        (p) => (p['source_occurrence_ids'] as List).contains(occurrenceId),
+      );
+      occurrences.removeAt(index);
+      return http.Response('', 204);
     }
 
     return http.Response('not found: $path', 404);
@@ -4247,6 +4363,192 @@ void main() {
     });
   });
 
+  group('Assembly-audit gap [27]: occurrence delete + cascade + undo', () {
+    Map<String, dynamic> occurrence(String id) => {
+          'id': id,
+          'external_ref': 'parts/$id.didsa',
+          'resolved_part_id': '$id-part',
+          'name_override': null,
+          'transform': {
+            'translation': [0.0, 0.0, 0.0],
+            'rotation_axis': [0.0, 0.0, 1.0],
+            'rotation_angle_degrees': 0.0,
+          },
+          'suppressed': false,
+          'hidden': false,
+          'fixed': false,
+        };
+
+    Future<_FakeDocumentBackend> openInAssemblyLens(
+      WidgetTester tester, {
+      required List<Map<String, dynamic>> seedOccurrences,
+      List<Map<String, dynamic>>? seedMates,
+      List<Map<String, dynamic>>? seedComponentPatterns,
+    }) async {
+      final backend = _FakeDocumentBackend(
+        seedOccurrences: seedOccurrences,
+        seedMates: seedMates,
+        seedComponentPatterns: seedComponentPatterns,
+      );
+      final documentApi = DocumentApiClient(
+        httpClient: MockClient((request) async => backend.handle(request)),
+      );
+      final sketchBackend = _FakeSketchBackend();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      await tester.tap(find.byTooltip('Assembly tree'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      return backend;
+    }
+
+    Map<String, dynamic> mateReferencing(String id, String occurrenceId) => {
+          'id': id,
+          'type': 'coincident',
+          'references': [
+            {
+              'occurrence_id': occurrenceId,
+              'subshape_ref': null,
+              'plane_ref': {'face_ref': null, 'fixed_plane': 'XY', 'plane_feature_id': null},
+              'point_ref': null,
+            },
+            {
+              'occurrence_id': '',
+              'subshape_ref': null,
+              'plane_ref': {'face_ref': null, 'fixed_plane': 'XY', 'plane_feature_id': null},
+              'point_ref': null,
+            },
+          ],
+          'value': null,
+          'flipped': false,
+          'suppressed': false,
+          'allow_rotation': true,
+        };
+
+    Map<String, dynamic> patternSourcedFrom(String id, List<String> sourceOccurrenceIds) => {
+          'id': id,
+          'source_occurrence_ids': sourceOccurrenceIds,
+          'pattern_type': 'linear',
+          'direction': [1.0, 0.0, 0.0],
+          'count': 3,
+          'spacing': 10.0,
+          'reverse': false,
+          'direction_2': [0.0, 1.0, 0.0],
+          'count_2': 1,
+          'spacing_2': 0.0,
+          'reverse_2': false,
+          'axis': null,
+          'count_angular': 1,
+          'angle_total': 360.0,
+          'reverse_angular': false,
+          'skip_indices': <dynamic>[],
+          'orient_with_rotation': true,
+          'suppressed': false,
+        };
+
+    testWidgets('the warning dialog names every affected mate and pattern', (tester) async {
+      final backend = await openInAssemblyLens(
+        tester,
+        seedOccurrences: [occurrence('occ-1'), occurrence('occ-2')],
+        seedMates: [mateReferencing('mate-1', 'occ-1')],
+        seedComponentPatterns: [patternSourcedFrom('pattern-1', ['occ-1'])],
+      );
+
+      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      final target = panel.occurrences.firstWhere((o) => o.id == 'occ-1');
+      panel.onOccurrenceLongPress(target);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      await tester.tap(find.text('Delete'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(find.textContaining('1 mate(s)'), findsOneWidget);
+      expect(find.textContaining('1 pattern(s)'), findsOneWidget);
+      // Cancelling leaves everything untouched.
+      await tester.tap(find.text('Cancel'));
+      await tester.pump();
+      expect(backend.occurrences, hasLength(2));
+      expect(backend.mates, hasLength(1));
+      expect(backend.componentPatterns, hasLength(1));
+    });
+
+    testWidgets('confirming deletes the occurrence and cascades its mate and pattern', (tester) async {
+      final backend = await openInAssemblyLens(
+        tester,
+        seedOccurrences: [occurrence('occ-1'), occurrence('occ-2')],
+        seedMates: [mateReferencing('mate-1', 'occ-1'), mateReferencing('mate-2', 'occ-2')],
+        seedComponentPatterns: [patternSourcedFrom('pattern-1', ['occ-1'])],
+      );
+
+      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      final target = panel.occurrences.firstWhere((o) => o.id == 'occ-1');
+      panel.onOccurrenceLongPress(target);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('Delete'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      await tester.tap(find.text('Delete').last);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(backend.occurrences.map((o) => o['id']), ['occ-2']);
+      expect(backend.mates.map((m) => m['id']), ['mate-2']);
+      expect(backend.componentPatterns, isEmpty);
+    });
+
+    testWidgets('Undo restores the deleted occurrence, mate, and pattern with a preserved id', (tester) async {
+      final backend = await openInAssemblyLens(
+        tester,
+        seedOccurrences: [occurrence('occ-1')],
+        seedMates: [mateReferencing('mate-1', 'occ-1')],
+        seedComponentPatterns: [patternSourcedFrom('pattern-1', ['occ-1'])],
+      );
+
+      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      panel.onOccurrenceLongPress(panel.occurrences.single);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('Delete'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('Delete').last);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(backend.occurrences, isEmpty);
+      expect(backend.mates, isEmpty);
+      expect(backend.componentPatterns, isEmpty);
+
+      expect(find.byTooltip('Undo delete'), findsOneWidget);
+      await tester.tap(find.byTooltip('Undo delete'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(backend.occurrences.map((o) => o['id']), ['occ-1']);
+      expect(backend.mates, hasLength(1));
+      expect(
+        (backend.mates.single['references'] as List)
+            .map((r) => (r as Map<String, dynamic>)['occurrence_id']),
+        contains('occ-1'),
+      );
+      expect(backend.componentPatterns, hasLength(1));
+      expect(backend.componentPatterns.single['source_occurrence_ids'], ['occ-1']);
+    });
+  });
+
   // Assembly support Phase 20 (`docs/assembly-scope.md` §6 `[24]`): Part-lens
   // Feature-authoring/mesh-refresh now targets whichever Part is focused,
   // not always the root - `meshRequestsByPartId`/`featuresGetRequestsByPartId`
@@ -4332,6 +4634,79 @@ void main() {
       expect(backend.meshRequests.length, greaterThan(rootMeshRequestsBeforeFocus));
       expect(backend.featuresGetCount, greaterThan(rootFeaturesGetCountBeforeFocus));
     });
+
+    // Colour-during-focus fix (`docs/assembly-scope.md`): before this fix,
+    // `PartViewport.focusOccurrenceColorHex` didn't exist at all, so a
+    // colored component's tint silently reverted to the global default for
+    // the whole focus session. `_focusOccurrenceColorHex` reuses the exact
+    // same `_gizmoParentInstance` lookup `_focusWorldTransformMatrix` above
+    // already relies on, so this only needs to confirm the wiring, not a
+    // second, independent lookup.
+    testWidgets(
+      "focusing a coloured component threads its colour into PartViewport, "
+      'clearing on Exit Focus',
+      (tester) async {
+        final occurrenceJson = {
+          'id': 'occ-1',
+          'external_ref': 'parts/bracket.didsa',
+          'resolved_part_id': 'part-2',
+          'name_override': null,
+          'transform': {
+            'translation': [0.0, 0.0, 0.0],
+            'rotation_axis': [0.0, 0.0, 1.0],
+            'rotation_angle_degrees': 0.0,
+          },
+          'suppressed': false,
+          'hidden': false,
+          'color': '#AABBCC',
+        };
+        final backend = _FakeDocumentBackend(seedOccurrences: [occurrenceJson]);
+        final documentApi = DocumentApiClient(
+          httpClient: MockClient((request) async => backend.handle(request)),
+        );
+        final sketchBackend = _FakeSketchBackend();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: PartScreen(
+              documentApi: documentApi,
+              sketchApiFactory: () =>
+                  SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+            ),
+          ),
+        );
+        await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+        expect(tester.widget<PartViewport>(find.byType(PartViewport)).focusOccurrenceColorHex, isNull);
+
+        await tester.tap(find.byTooltip('Assembly tree'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+        panel.onOccurrenceLongPress(panel.occurrences.single);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.text('Make Focus'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+
+        expect(tester.widget<PartViewport>(find.byType(PartViewport)).focusOccurrenceColorHex, '#AABBCC');
+
+        final refocusedPanel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+        final sameOccurrence = refocusedPanel.occurrences.firstWhere(
+          (o) => o.id == 'occ-1',
+          orElse: () => panel.occurrences.single,
+        );
+        refocusedPanel.onOccurrenceLongPress(sameOccurrence);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.text('Exit Focus'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+
+        expect(tester.widget<PartViewport>(find.byType(PartViewport)).focusOccurrenceColorHex, isNull);
+      },
+    );
   });
 
   // §6 roadmap Phase 15 (`docs/assembly-scope.md`): the multi-file save

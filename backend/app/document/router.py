@@ -25,6 +25,7 @@ from app.document.create_plane import (
 )
 from app.document.extrude import (
     _register_solids,
+    apply_rigid_transform_to_shape,
     cached_feature_warnings,
     coarse_eligible_feature_ids,
     compute_part_bodies,
@@ -207,6 +208,7 @@ from app.document.schemas import (
     MateResponse,
     MateSolvePreviewResponse,
     MateUpdate,
+    OccurrenceCreate,
     OccurrenceResponse,
     OccurrenceTransformUpdate,
     RigidTransformResponse,
@@ -3236,6 +3238,69 @@ def update_occurrence_transform(
     if payload.color is not None:
         occurrence.color = payload.color or None
     return _occurrence_response(occurrence)
+
+
+@router.post("/parts/{part_id}/occurrences", response_model=OccurrenceResponse, status_code=201)
+def create_occurrence(part_id: str, payload: OccurrenceCreate) -> OccurrenceResponse:
+    """Restores a fully-known `Occurrence` onto `part_id` - see
+    `OccurrenceCreate`'s own docstring for why `id` is client-supplied
+    (unlike `create_mate`/`create_component_pattern`'s own server-generated
+    ids) and why this endpoint exists at all (Assembly-lens "Undo" after an
+    Occurrence delete, `docs/assembly-scope.md`). 409s on a duplicate id -
+    restoring is expected to target a fresh id (whatever `delete_occurrence`
+    just removed), never to silently overwrite an already-live Occurrence."""
+    part = get_part_or_404(part_id)
+    if any(occurrence.id == payload.id for occurrence in part.occurrences):
+        raise HTTPException(status_code=409, detail=f"Occurrence '{payload.id}' already exists")
+    transform = (
+        RigidTransform(
+            translation=payload.transform.translation,
+            rotation_axis=payload.transform.rotation_axis,
+            rotation_angle_degrees=payload.transform.rotation_angle_degrees,
+        )
+        if payload.transform is not None
+        else RigidTransform()
+    )
+    occurrence = Occurrence(
+        id=payload.id,
+        external_ref=payload.external_ref,
+        name_override=payload.name_override,
+        transform=transform,
+        suppressed=payload.suppressed,
+        hidden=payload.hidden,
+        fixed=payload.fixed,
+        color=payload.color,
+    )
+    part.occurrences.append(occurrence)
+    return _occurrence_response(occurrence)
+
+
+@router.delete("/parts/{part_id}/occurrences/{occurrence_id}", status_code=204)
+def delete_occurrence(part_id: str, occurrence_id: str) -> Response:
+    """Removes `occurrence_id` from `part_id` - the first delete an
+    Occurrence has ever had (`docs/assembly-scope.md`: every prior mutation
+    was a `PATCH`; Mates/ComponentPatterns both had real `DELETE` endpoints
+    long before an Occurrence itself did). Cascades: any Mate referencing
+    this Occurrence in either of its two `references` (`create_mate`'s own
+    "exactly 2 references" invariant means checking both is exhaustive),
+    and any ComponentPattern naming it in `source_occurrence_ids` (even as
+    one of several - a multi-source pattern loses one of its sources here
+    the same "whole feature, not a partial mutation" way a single-source one
+    does, keeping the client's own pre-delete warning dialog simple and
+    exhaustively enumerable), are removed in full rather than left dangling
+    or silently shrunk. Same-Part-scoped only - both Mate and ComponentPattern
+    references are already validated at creation time to only ever name a
+    top-level Occurrence of this same Part (`_validate_mate_entity_ref`/
+    `_validate_component_pattern_source_occurrence_ids`), so no cross-Part
+    walk is needed here either."""
+    part = get_part_or_404(part_id)
+    occurrence = _get_occurrence_or_404(part, occurrence_id)
+    part.mates = [m for m in part.mates if not any(r.occurrence_id == occurrence_id for r in m.references)]
+    part.component_patterns = [
+        p for p in part.component_patterns if occurrence_id not in p.source_occurrence_ids
+    ]
+    part.occurrences.remove(occurrence)
+    return Response(status_code=204)
 
 
 def _mate_entity_ref_to_domain(schema: MateEntityRefResponse) -> MateEntityRef:
@@ -8614,4 +8679,140 @@ def export_part_glb(part_id: str) -> Response:
         content=data,
         media_type="model/gltf-binary",
         headers={"Content-Disposition": f'attachment; filename="{part.name}.glb"'},
+    )
+
+
+def _walk_assembly_export_bodies(
+    document: Document,
+    part: Part,
+    occurrence_path: list[str],
+    transform_chain: list[RigidTransform],
+    ancestors: frozenset[str],
+    out: dict[str, TopoDS_Shape],
+) -> None:
+    """Assembly-audit gap `[29]` (`docs/assembly-scope.md`): the export
+    formats' own counterpart to `get_assembly_mesh`'s own `_walk` (same
+    traversal shape - resolved-`part_id`/suppressed/cycle skips, the same
+    `ComponentPattern` expansion so a pattern's own derived instances are
+    included too - deliberately *not* shared code with that function, since
+    it produces tessellated mesh data for the viewport while this produces
+    real `TopoDS_Shape`s for a file export; forking the two avoids risking
+    the existing, already-tested assembly-mesh path for this new one).
+    Every placed instance's own Body gets `apply_rigid_transform_to_shape`
+    (already built for the Section/Measure tools' own cross-occurrence
+    fixes, `extrude.py`) applied with its real composed world transform, and
+    is entered into `out` under its own unique key (`occurrence_path` joined
+    with the Body id) - unlike `get_assembly_mesh`'s own geometry dedup by
+    Part id, every instance gets its own real, correctly-positioned copy
+    here, since a file export has no equivalent of "one shared mesh, many
+    instance transforms" the way the interactive viewport does."""
+    bodies = compute_part_bodies(part)
+    world_transform = compose_chain(transform_chain)
+    prefix = "/".join(occurrence_path) if occurrence_path else part.id
+    for body_id, shape in bodies.items():
+        out[f"{prefix}#{body_id}"] = apply_rigid_transform_to_shape(shape, world_transform)
+    child_ancestors = ancestors | {part.id}
+    for occurrence in part.occurrences:
+        if occurrence.suppressed or occurrence.part_id is None:
+            continue
+        child_part = document.parts.get(occurrence.part_id)
+        if child_part is None or child_part.id in child_ancestors:
+            continue
+        _walk_assembly_export_bodies(
+            document,
+            child_part,
+            [*occurrence_path, occurrence.id],
+            [*transform_chain, occurrence.transform],
+            child_ancestors,
+            out,
+        )
+    for pattern in part.component_patterns:
+        if pattern.suppressed:
+            continue
+        for source_id in pattern.source_occurrence_ids:
+            source_occurrence = next((o for o in part.occurrences if o.id == source_id), None)
+            if source_occurrence is None or source_occurrence.suppressed or source_occurrence.part_id is None:
+                continue
+            pattern_child_part = document.parts.get(source_occurrence.part_id)
+            if pattern_child_part is None or pattern_child_part.id in child_ancestors:
+                continue
+            derived_transforms = expand_component_pattern_instances(pattern, source_occurrence.transform)
+            for index, derived_transform in derived_transforms.items():
+                _walk_assembly_export_bodies(
+                    document,
+                    pattern_child_part,
+                    [*occurrence_path, f"{source_occurrence.id}#pattern:{pattern.id}:{index}"],
+                    [*transform_chain, derived_transform],
+                    child_ancestors,
+                    out,
+                )
+
+
+def _assembly_export_bodies_or_400(part_id: str) -> tuple[Part, dict[str, TopoDS_Shape]]:
+    """[_export_bodies_or_400]'s assembly-scoped sibling - every placed
+    instance's own real, world-positioned geometry (including
+    `ComponentPattern`-derived ones), not just [part_id]'s own local Bodies.
+    400s for a Part with nothing reachable to export at all, the same
+    "don't silently emit an empty/invalid file" contract."""
+    document = get_document()
+    root_part = get_part_or_404(part_id)
+    bodies: dict[str, TopoDS_Shape] = {}
+    _walk_assembly_export_bodies(document, root_part, [], [], frozenset(), bodies)
+    if not bodies:
+        raise HTTPException(status_code=400, detail="Part has no geometry to export")
+    return root_part, bodies
+
+
+@router.get("/parts/{part_id}/export/assembly-step")
+def export_part_assembly_step(part_id: str) -> Response:
+    """Assembly-audit gap `[29]` (`docs/assembly-scope.md`): [export_part_step]'s
+    own assembly-aware sibling - every placed Occurrence's real geometry, at
+    its real composed world transform, not just [part_id]'s own local
+    Bodies (which the plain `export/step` endpoint stays scoped to,
+    unchanged, for backward compatibility with every existing caller/test).
+    `part=None` (geometry only, no MBD/material metadata) - a per-body
+    material resolution would need a Part-per-instance mapping
+    `export_step` has no shape for today, and guessing at [root_part]'s own
+    default for every instance's material would be actively misleading
+    rather than merely incomplete, so this stays geometry-only until that's
+    worth building."""
+    root_part, bodies = _assembly_export_bodies_or_400(part_id)
+    data = export_step(bodies, part=None)
+    return Response(
+        content=data,
+        media_type="application/step",
+        headers={"Content-Disposition": f'attachment; filename="{root_part.name}.step"'},
+    )
+
+
+@router.get("/parts/{part_id}/export/assembly-stl")
+def export_part_assembly_stl(part_id: str) -> Response:
+    root_part, bodies = _assembly_export_bodies_or_400(part_id)
+    data = encode_stl(_merged_body_mesh_data(bodies))
+    return Response(
+        content=data,
+        media_type="model/stl",
+        headers={"Content-Disposition": f'attachment; filename="{root_part.name}.stl"'},
+    )
+
+
+@router.get("/parts/{part_id}/export/assembly-obj")
+def export_part_assembly_obj(part_id: str) -> Response:
+    root_part, bodies = _assembly_export_bodies_or_400(part_id)
+    data = encode_obj(_merged_body_mesh_data(bodies)).encode("utf-8")
+    return Response(
+        content=data,
+        media_type="text/plain",
+        headers={"Content-Disposition": f'attachment; filename="{root_part.name}.obj"'},
+    )
+
+
+@router.get("/parts/{part_id}/export/assembly-glb")
+def export_part_assembly_glb(part_id: str) -> Response:
+    root_part, bodies = _assembly_export_bodies_or_400(part_id)
+    data = encode_glb(_merged_body_mesh_data(bodies))
+    return Response(
+        content=data,
+        media_type="model/gltf-binary",
+        headers={"Content-Disposition": f'attachment; filename="{root_part.name}.glb"'},
     )
