@@ -8568,12 +8568,13 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   /// Shared "unsaved work would be lost" confirmation for leaving the Part -
-  /// used both by [_exitToConnectionScreen] (File > Exit) and the system
-  /// back gesture (see the [PopScope] in [build]), which is just as
-  /// destructive to unsaved changes as the toolbar's own Exit action.
-  /// Returns `true` only if the user actually confirmed (and the widget is
-  /// still mounted afterwards) - callers don't need to separately re-check
-  /// [mounted].
+  /// used by [_exitToConnectionScreen] (File > Exit), the system back
+  /// gesture (see the [PopScope] in [build]), [_startNewPart], and (Phase
+  /// 16, §2s) [_onOpenProjectPressed] - navigating to a different project
+  /// is just as destructive to the current session's unsaved changes as
+  /// any of those. Returns `true` only if the user actually confirmed (and
+  /// the widget is still mounted afterwards) - callers don't need to
+  /// separately re-check [mounted].
   Future<bool> _confirmExitPart() async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -10390,13 +10391,25 @@ class _PartScreenState extends State<PartScreen> {
 
   /// Assembly support Phase 15 (`docs/assembly-scope.md` §6): lazily
   /// acquires [_projectRoot] the first time "Save All"/"Create Component…"
-  /// needs one - [StorageService.pickOrCreateProjectRoot] throws
+  /// needs one. Phase 16 (§2s) fix: tries [StorageService.lastUsedProjectRoot]
+  /// first - both `StorageService` implementations already re-validate the
+  /// persisted root is still reachable/granted before returning it non-null
+  /// (`DesktopStorageService` checks the directory still exists,
+  /// `SafStorageService` re-checks the SAF grant), so a non-null result here
+  /// needs no further validation of its own. Falls back to
+  /// [StorageService.pickOrCreateProjectRoot] otherwise, which throws
   /// [StorageException] on cancel (unlike `file_picker`'s null-on-cancel
   /// convention elsewhere in this screen), treated here as a silent no-op
   /// rather than an error.
   Future<ProjectRoot?> _ensureProjectRoot() async {
     final existing = _projectRoot;
     if (existing != null) return existing;
+    final lastUsed = await _storageService.lastUsedProjectRoot();
+    if (lastUsed != null) {
+      if (!mounted) return null;
+      setState(() => _projectRoot = lastUsed);
+      return lastUsed;
+    }
     try {
       final root = await _storageService.pickOrCreateProjectRoot();
       if (!mounted) return null;
@@ -10563,9 +10576,15 @@ class _PartScreenState extends State<PartScreen> {
   /// pointed at the resolved root Part - the same "fresh screen, not a
   /// reload in place" shape [_openNativeFile] already uses, since every
   /// transient per-Part field on this screen needs to start clean against
-  /// the newly-opened Part's own ids.
+  /// the newly-opened Part's own ids. Bug fix (Phase 16, §2s): confirms via
+  /// [_confirmExitPart] first - this used to navigate away with no warning
+  /// at all, silently discarding any unsaved edits still only in the
+  /// backend's in-memory session, unlike every other "abandon the current
+  /// session" path on this screen.
   Future<void> _onOpenProjectPressed() async {
     setState(() => _toolbarOpen = false);
+    if (!await _confirmExitPart()) return;
+    if (!mounted) return;
     final root = await _ensureProjectRoot();
     if (root == null || !mounted) return;
     final relativePath = await showOpenProjectPathPromptDialog(context);

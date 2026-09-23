@@ -68,16 +68,37 @@ class _FakeStorageService implements StorageService {
   Future<bool> exists(FileHandle handle) async => files.containsKey(handle.relativePath);
 }
 
-Map<String, dynamic> _singlePartPayload({required String id, required String name}) => {
+Map<String, dynamic> _singlePartPayload({
+  required String id,
+  required String name,
+  List<Map<String, dynamic>> occurrences = const [],
+}) => {
   'schema_version': 1,
   'document': {
     'id': 'doc-$id',
     'root_part_id': id,
     'parts': [
-      {'id': id, 'name': name, 'features': [], 'occurrences': [], 'mates': []},
+      {'id': id, 'name': name, 'features': [], 'occurrences': occurrences, 'mates': []},
     ],
   },
   'sketches': [],
+};
+
+/// Phase 16 (`docs/assembly-scope.md` §2s): the same `_occurrence` shape
+/// `assembly_graph_composer_test.dart`'s own fixture already establishes -
+/// duplicated here per this file's existing small-fake convention rather
+/// than shared.
+Map<String, dynamic> _occurrence(String id, String externalRef) => {
+  'id': id,
+  'external_ref': externalRef,
+  'name_override': null,
+  'transform': {
+    'translation': [0.0, 0.0, 0.0],
+    'rotation_axis': [0.0, 0.0, 1.0],
+    'rotation_angle_degrees': 0.0,
+  },
+  'suppressed': false,
+  'hidden': false,
 };
 
 http.Response _jsonResponse(Object body, {int status = 200}) =>
@@ -318,6 +339,127 @@ void main() {
       expect(result.failures, hasLength(1));
       expect(result.failures.single.partId, 'part-child');
       expect(result.failures.single.relativePath, 'bracket_child.DIDSAprt');
+    });
+  });
+
+  // §6 roadmap Phase 16 (`docs/assembly-scope.md` §2s): the spike this
+  // phase's own roadmap entry called for - confirming gap `[22]`
+  // ("composed multi-file part_ids are session-scoped only") isn't a real
+  // defect. `AssemblyGraphComposer.compose`'s own maps
+  // (`resolvedByPath`/`partIdByPath`) are local variables created fresh
+  // inside `compose()` itself (`assembly_graph_composer.dart:94-97`) - no
+  // instance-level cache carries anything between calls - so these tests
+  // pin exactly that: calling `openAssembly` more than once on the same
+  // `AssemblyDocumentClient`/`AssemblyGraphComposer` instance never leaks
+  // state from an earlier call into a later one.
+  group('Phase 16: multi-file part-id/path persistence spike', () {
+    test('open, save, and reopen the same project in one session round-trips ids and paths', () async {
+      final storage = _FakeStorageService();
+      storage.put('bracket.didsa', _singlePartPayload(id: 'part-bracket', name: 'Bracket'));
+      storage.put(
+        'top.didsa',
+        _singlePartPayload(id: 'part-top', name: 'Top', occurrences: [_occurrence('occ-1', 'bracket.didsa')]),
+      );
+      final tempDir = await Directory.systemTemp.createTemp('didsa_assembly_doc_client_test_');
+      addTearDown(() => tempDir.delete(recursive: true));
+
+      final documentApiClient = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          if (request.method == 'POST' && request.url.path.endsWith('/import/native')) {
+            return _jsonResponse({'document_id': 'doc-1', 'part_ids': ['part-top', 'part-bracket']});
+          }
+          if (request.method == 'GET' && request.url.path.endsWith('/export/native')) {
+            final partId = request.url.queryParameters['part_id'];
+            final payload = partId == 'part-bracket'
+                ? _singlePartPayload(id: 'part-bracket', name: 'Bracket')
+                : _singlePartPayload(
+                    id: 'part-top',
+                    name: 'Top',
+                    occurrences: [_occurrence('occ-1', 'bracket.didsa')],
+                  );
+            return _jsonResponse(payload);
+          }
+          return _jsonResponse({}, status: 404);
+        }),
+      );
+      final client = AssemblyDocumentClient(
+        storageService: storage,
+        documentApiClient: documentApiClient,
+        composer: AssemblyGraphComposer(storageService: storage, fileCache: FileCache(cacheDirectory: tempDir)),
+      );
+
+      final firstOpen = await client.openAssembly(root, 'top.didsa');
+
+      // Simulate "edit, then Save All" happening in between the two opens.
+      await client.saveAll(
+        root,
+        {
+          'schema_version': 1,
+          'document': {
+            'id': 'doc-1',
+            'root_part_id': 'part-top',
+            'parts': [
+              {
+                'id': 'part-top',
+                'name': 'Top',
+                'features': [],
+                'occurrences': [_occurrence('occ-1', 'bracket.didsa')],
+                'mates': [],
+              },
+              {'id': 'part-bracket', 'name': 'Bracket', 'features': [], 'occurrences': [], 'mates': []},
+            ],
+          },
+          'sketches': [],
+        },
+        firstOpen.relativePathByPartId,
+      );
+
+      final secondOpen = await client.openAssembly(root, 'top.didsa');
+
+      expect(secondOpen.rootPartId, firstOpen.rootPartId);
+      expect(secondOpen.relativePathByPartId, firstOpen.relativePathByPartId);
+      expect(secondOpen.staleRelativePaths, isEmpty);
+    });
+
+    test('opening project B after project A cleanly supersedes it - no leaked state', () async {
+      final storage = _FakeStorageService();
+      storage.put('a.didsa', _singlePartPayload(id: 'part-a', name: 'A'));
+      storage.put('b.didsa', _singlePartPayload(id: 'part-b', name: 'B'));
+      final tempDir = await Directory.systemTemp.createTemp('didsa_assembly_doc_client_test_');
+      addTearDown(() => tempDir.delete(recursive: true));
+
+      final importBodies = <Map<String, dynamic>>[];
+      final documentApiClient = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          if (request.method == 'POST' && request.url.path.endsWith('/import/native')) {
+            importBodies.add(jsonDecode(request.body) as Map<String, dynamic>);
+            return _jsonResponse({'document_id': 'doc-1', 'part_ids': ['part-a']});
+          }
+          return _jsonResponse({}, status: 404);
+        }),
+      );
+      final client = AssemblyDocumentClient(
+        storageService: storage,
+        documentApiClient: documentApiClient,
+        composer: AssemblyGraphComposer(storageService: storage, fileCache: FileCache(cacheDirectory: tempDir)),
+      );
+
+      final openedA = await client.openAssembly(root, 'a.didsa');
+      final openedB = await client.openAssembly(root, 'b.didsa');
+
+      expect(openedA.relativePathByPartId, {'part-a': 'a.didsa'});
+      // The second `openAssembly` call's own result must not carry over
+      // project A's Part id - `compose`'s maps start empty every call.
+      expect(openedB.relativePathByPartId, {'part-b': 'b.didsa'});
+
+      expect(importBodies, hasLength(2));
+      final secondImportPartIds = (importBodies[1]['document']['parts'] as List)
+          .cast<Map<String, dynamic>>()
+          .map((p) => p['id']);
+      // `import_native` is a full replace (`AssemblyDocumentClient
+      // .openAssembly`'s own doc comment) - the second call's own payload
+      // carries only project B's Part, confirming no accidental merge.
+      expect(secondImportPartIds, ['part-b']);
     });
   });
 }

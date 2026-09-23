@@ -583,11 +583,26 @@ class _FakeStorageService implements StorageService {
   final Map<String, Uint8List> files = {};
   final DesktopProjectRoot root = const DesktopProjectRoot('/fake/project');
 
-  @override
-  Future<ProjectRoot> pickOrCreateProjectRoot({String suggestedName = 'didsa/projects'}) async => root;
+  /// Phase 16 (`docs/assembly-scope.md` §2s): how many times
+  /// [pickOrCreateProjectRoot] was actually invoked - lets a test confirm
+  /// [presetLastUsedRoot] genuinely short-circuits the picker rather than
+  /// merely returning the same root either way.
+  int pickOrCreateProjectRootCallCount = 0;
+
+  /// Phase 16: `null` by default (every pre-Phase-16 test's own behavior,
+  /// unchanged) - set by a test to a specific [ProjectRoot] (or left `null`
+  /// to simulate "nothing persisted yet") to drive `PartScreen
+  /// ._ensureProjectRoot`'s new `lastUsedProjectRoot`-first path.
+  ProjectRoot? presetLastUsedRoot;
 
   @override
-  Future<ProjectRoot?> lastUsedProjectRoot() async => null;
+  Future<ProjectRoot> pickOrCreateProjectRoot({String suggestedName = 'didsa/projects'}) async {
+    pickOrCreateProjectRootCallCount++;
+    return root;
+  }
+
+  @override
+  Future<ProjectRoot?> lastUsedProjectRoot() async => presetLastUsedRoot;
 
   @override
   Future<FileHandle?> resolve(ProjectRoot root, String relativePath) async {
@@ -4350,5 +4365,114 @@ void main() {
         expect(writtenOccurrence['external_ref'], 'bracket.DIDSAprt');
       },
     );
+  });
+
+  // §6 roadmap Phase 16 (`docs/assembly-scope.md` §2s): the spike this
+  // phase's own roadmap entry called for confirmed gap `[22]` isn't a real
+  // defect - `assembly_document_client_test.dart`'s own new "Phase 16"
+  // group pins the actual round-trip property (`openAssembly` called twice
+  // in one session never leaks state) directly at the composer/client
+  // level, real `AssemblyGraphComposer`/temp-dir `FileCache` and all. A
+  // third, widget-level "Open Project… through the real screen" test was
+  // attempted here too, but real `dart:io` file I/O combined with
+  // `testWidgets`' own fake-async pump loop proved reliably too slow/flaky
+  // in this sandbox (consistently hit the 10-minute per-test timeout even
+  // after removing every other moving part) - dropped rather than kept
+  // flaky, since the property it would have added on top of the
+  // composer-level tests is already covered there. These two tests instead
+  // cover what the spike found *along the way*: `[25]` (Open Project…
+  // never guarded against discarding unsaved changes) and `[26]`
+  // (`lastUsedProjectRoot` never actually wired into `_ensureProjectRoot`) -
+  // both fast, reliable, and driven through the real screen.
+  group('Assembly support Phase 16: Open Project hardening', () {
+    testWidgets('Open Project… asks to confirm before navigating away, per [25]', (tester) async {
+      final backend = _FakeDocumentBackend();
+      final storage = _FakeStorageService();
+      final documentApi = DocumentApiClient(
+        httpClient: MockClient((request) async => backend.handle(request)),
+      );
+      final sketchBackend = _FakeSketchBackend();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+            storageService: storage,
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      await tester.tap(find.byTooltip('Open toolbar'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('File'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.ensureVisible(find.text('Open Project…'));
+      await tester.pump();
+      await tester.tap(find.text('Open Project…'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(find.text('Exit this project?'), findsOneWidget);
+      await tester.tap(find.text('Cancel'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      // Cancelling never reached `_ensureProjectRoot` at all - the folder
+      // picker was never shown, and the "Part 1" screen is still here.
+      expect(storage.pickOrCreateProjectRootCallCount, 0);
+      expect(find.text('Open Project'), findsNothing);
+      expect(find.text('Part 1'), findsOneWidget);
+    });
+
+    testWidgets('Save All skips the folder picker when a valid last-used root is known, per [26]', (
+      tester,
+    ) async {
+      final backend = _FakeDocumentBackend();
+      final storage = _FakeStorageService()..presetLastUsedRoot = const DesktopProjectRoot('/fake/project');
+      final documentApi = DocumentApiClient(
+        httpClient: MockClient((request) async => backend.handle(request)),
+      );
+      final sketchBackend = _FakeSketchBackend();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+            storageService: storage,
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      await tester.tap(find.byTooltip('Open toolbar'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('File'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.ensureVisible(find.text('Save All'));
+      await tester.pump();
+      await tester.tap(find.text('Save All'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(find.text('Save "Part 1" as…'), findsOneWidget);
+      await tester.enterText(find.byType(TextFormField), 'top.DIDSAprt');
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(find.text('Saved 1 file(s)'), findsOneWidget);
+      // The preset last-used root was used directly - the native picker
+      // (`pickOrCreateProjectRoot`) was never invoked.
+      expect(storage.pickOrCreateProjectRootCallCount, 0);
+    });
   });
 }
